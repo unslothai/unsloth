@@ -33,8 +33,15 @@ def pin_arena_enabled() -> bool:
 
 
 def _alloc_slab(nbytes: int) -> Any:
-    """One pinned slab. A power-of-two request, so torch's host allocator rounds nothing."""
+    """One pinned slab. Registered host memory where supported (``registered_pinned_empty``), else a power-of-two
+    request to torch's host allocator, which then rounds nothing."""
     import torch
+
+    from .diffusion_memory import registered_pinned_empty
+
+    slab = registered_pinned_empty(nbytes)
+    if slab is not None:
+        return slab
     return torch.empty(nbytes, dtype = torch.uint8, pin_memory = True)
 
 

@@ -464,6 +464,10 @@ _REACHED_THROUGH_A_GATE = {
         "core/inference/video_minimax_h3_te.py",
         "pin_module_in_place",
     ): "h3_te_pin_allowed / stream_h3_text_encoder",
+    (
+        "core/inference/video_minimax_h3_te.py",
+        "_pinned_arena",
+    ): "pin_module_in_place",
     ("core/inference/diffusion_preview.py", "_device_map"): "exempt: tiny, async preview",
     (
         "core/inference/diffusion_preview.py",

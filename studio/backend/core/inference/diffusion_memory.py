@@ -6442,6 +6442,33 @@ class _RegisteredHostBuffer:
             pass
 
 
+# "0" restores torch's pinned allocator for the up-front pinned slabs (group-offload arena, H3 conditioner / VAE).
+REGISTERED_SLAB_ENV = "UNSLOTH_DIFFUSION_REGISTERED_SLABS"
+
+
+def registered_pinned_empty(nbytes: int) -> Optional[Any]:
+    """A page-locked uint8 host tensor of ``nbytes`` in registered memory, or None (use torch's pinned allocator).
+
+    Torch's allocator faults and locks every page on one thread (MiniMax-H3's 20.4 GB denoiser slabs plus its
+    27 GB conditioner arenas: about 13 + 5 s of a load). Here the pages are first touched by ``zero_`` on torch's
+    intra-op threads and then registered, which only locks them. The memory and its contents are the same."""
+    if (os.environ.get(REGISTERED_SLAB_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
+        return None
+    if int(nbytes) <= 0 or not _fast_pin_supported():
+        return None
+    import numpy as np
+    import torch
+
+    try:
+        holder = _RegisteredHostBuffer(int(nbytes))
+        buf = torch.from_numpy(np.asarray(holder))
+        buf.zero_()
+        holder.register()
+    except Exception:  # noqa: BLE001 - mapping or registration refused: the pinned allocator instead
+        return None
+    return buf
+
+
 def registered_host_copy(src: Any) -> Any:
     """A contiguous copy of host tensor ``src`` in CUDA-registered (pinned) memory."""
     import numpy as np
