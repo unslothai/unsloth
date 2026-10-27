@@ -75,7 +75,6 @@ Check "managed on PATH -> bundled" ((Get-NodeDecision -NodeVersion 'v24.18.0' -N
 Check "managed + skip -> read-only" ((Get-NodeDecision -NodeVersion 'v24.18.0' -NpmVersion '11.0.0' -ManagedOnPath $true -SkipInstall '1') -eq 'system')
 Check "broken managed + skip -> skip" ((Get-NodeDecision -NodeVersion '' -NpmVersion '' -ManagedOnPath $true -SkipInstall '1') -eq 'skip')
 
-# Resolve real commands from PATH instead of only passing a boolean to the decision.
 foreach ($name in @('Test-ManagedNodeOnPath', 'Get-CanonicalDir', 'Get-PathState', 'Test-AccessDeniedError')) {
     $helper = @($ast.FindAll({ param($n)
         $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name
