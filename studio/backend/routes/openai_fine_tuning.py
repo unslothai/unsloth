@@ -413,8 +413,6 @@ def _training_config(body: FineTuningJobCreate) -> dict[str, Any]:
     return config
 
 
-# Queue
-
 QUEUE_POLL_S = 5.0
 # A 409 with training idle is a conflict that will not clear by waiting (resume, offline state): give up.
 QUEUE_IDLE_CONFLICTS = 12
