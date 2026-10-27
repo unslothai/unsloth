@@ -113,6 +113,11 @@ def _case_load(rank, world, tmp, ckpt, schedule = "gpipe", n_mb = 2, v = None):
     ids, labels = batch(full)
     pp_full = ppn.apply_pipeline_parallel(full, mesh, n_microbatches = n_mb, schedule = schedule, config = config)
     full_after = _storage_bytes(full)
+    seen, kept_numel = set(), 0
+    for n, p in full.named_parameters():
+        if "lora_" not in n and id(p) not in seen:
+            seen.add(id(p))
+            kept_numel += p.numel()
     with ppl.pipeline_sharded_loading(mesh, schedule = schedule, config = config) as state:
         model = _load(ckpt)
     stats = dict(model._unsloth_pp_preload)
@@ -146,6 +151,7 @@ def _case_load(rank, world, tmp, ckpt, schedule = "gpipe", n_mb = 2, v = None):
         "sharded": res,
         "local": pp.local_stages,
         "bounds": pp.bounds,
+        "kept_numel": kept_numel,
         "guards": len(model.base_model.model.__dict__.get("_unsloth_pp_preload_guards", ())),
     }
 
@@ -253,6 +259,8 @@ def test_sharded_loading_matches_full_load_then_split(arch, world, schedule, v, 
         total_numel = total_numel or n
         assert n == total_numel  # every rank saw the whole model, read part of it
         assert stats["placeholder_numel"] > 0 and stats["read_bytes"] == stats["loaded_numel"] * 4, stats
+        # Exactly what this rank's stage keeps after a full load is split: nothing more was read.
+        assert stats["loaded_numel"] == res["kept_numel"], (rank, stats["loaded_numel"], res["kept_numel"])
         # Load peak: only this rank's share of the weights exists, and after the split it is what a full load
         # leaves (same stage).
         assert res["bytes"]["loaded"] < res["bytes"]["full"], res["bytes"]
