@@ -17,12 +17,12 @@ from core.rag.embed_llama_server import LlamaServerBackend
 from core.systemone.native_worker import NativeClefAgent, NativeError
 
 _CHILD_SERVER = r"""
-import http.server
+import http.server, sys
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200); self.end_headers(); self.wfile.write(b'{"status":"ok"}')
     def log_message(self, *a): pass
-s = http.server.HTTPServer(("127.0.0.1", 0), H)
+s = http.server.HTTPServer((sys.argv[1] if len(sys.argv) > 1 else "127.0.0.1", 0), H)
 print(s.server_address[1], flush=True)
 s.serve_forever()
 """
@@ -64,8 +64,8 @@ def serving_child():
     p.wait()
 
 
-def _embedder(process, port, monkeypatch):
-    monkeypatch.setattr(config, "EMBED_HOST", "127.0.0.1")
+def _embedder(process, port, monkeypatch, host = "127.0.0.1"):
+    monkeypatch.setattr(config, "EMBED_HOST", host)
     b = LlamaServerBackend.__new__(LlamaServerBackend)
     b._process, b._port = process, port
     return b
@@ -86,6 +86,21 @@ def test_embedder_refuses_a_port_another_process_answers(foreign_port, idle_chil
 def test_embedder_accepts_its_own_child(serving_child, monkeypatch):
     b = _embedder(*serving_child, monkeypatch)
     assert b._wait_for_health(timeout = 10.0, interval = 0.05) is True
+
+
+def test_embedder_accepts_its_own_child_on_a_configured_host(monkeypatch):
+    p = subprocess.Popen(
+        [sys.executable, "-c", _CHILD_SERVER, "127.0.0.2"], stdout = subprocess.PIPE, text = True
+    )
+    try:
+        line = p.stdout.readline()
+        if not line:
+            pytest.skip("127.0.0.2 is not bindable here")
+        b = _embedder(p, int(line), monkeypatch, host = "127.0.0.2")
+        assert b._wait_for_health(timeout = 10.0, interval = 0.05) is True
+    finally:
+        p.kill()
+        p.wait()
 
 
 def test_dictation_refuses_a_port_another_process_answers(foreign_port, idle_child):

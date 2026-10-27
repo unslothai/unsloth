@@ -936,7 +936,9 @@ class LlamaServerBackend:
             try:
                 # trust_env=False: a proxy that 503s 127.0.0.1 must not block this probe.
                 if httpx.get(url, timeout = 2.0, trust_env = False).status_code == 200:
-                    return LlamaCppBackend._health_listener_is_ours(self._process, self._port)
+                    return LlamaCppBackend._health_listener_is_ours(
+                        self._process, self._port, config.EMBED_HOST
+                    )
             except (*_TRANSPORT_ERRORS, httpx.TimeoutException):
                 pass
             time.sleep(interval)

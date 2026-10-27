@@ -17875,7 +17875,7 @@ class LlamaCppBackend:
             return s.getsockname()[1]
 
     @staticmethod
-    def _health_listener_is_ours(process, port) -> bool:
+    def _health_listener_is_ours(process, port, bind_host = None) -> bool:
         """False when the port answering /health is demonstrably not held by our child's tree.
 
         _find_free_port releases the port before llama-server binds it, so another local user could
@@ -17904,13 +17904,19 @@ class LlamaCppBackend:
             return True
 
         windows = _socket_owner_is_always_named()
+        bind_ips = set(_LOOPBACK_REACHABLE_BIND_IPS)
+        if bind_host:
+            try:
+                bind_ips.update(a[4][0] for a in socket.getaddrinfo(bind_host, port))
+            except OSError:
+                pass
 
         def _listens(conn) -> bool:
             laddr = getattr(conn, "laddr", None)
             if not (
                 bool(laddr)
                 and getattr(laddr, "port", None) == port
-                and getattr(laddr, "ip", None) in _LOOPBACK_REACHABLE_BIND_IPS
+                and getattr(laddr, "ip", None) in bind_ips
             ):
                 return False
             if conn.status == psutil.CONN_LISTEN:
