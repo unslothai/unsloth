@@ -236,18 +236,53 @@ def _cudnn_length_bucketed_sdpa(
     if attn_mask is None:
         out = scaled_dot_product_attention(Q, K, V, is_causal = True, **kwargs)
         return out[..., :q_len, :]
-    # Padded query rows attend everything (no fully masked row) and are sliced off; padded keys are masked.
-    rows = attn_mask.shape[-2]
-    shape = (*attn_mask.shape[:-2], rows if rows == 1 else rows + pad, q_len + pad)
-    if attn_mask.dtype == torch.bool:
-        padded = attn_mask.new_ones(shape)
-        padded[..., :rows, q_len:] = False
+    if (
+        attn_mask.dtype != torch.bool
+        and torch.is_grad_enabled()
+        and (Q.requires_grad or K.requires_grad or V.requires_grad)
+        and not torch.compiler.is_compiling()
+    ):
+        padded = _shared_padded_mask(attn_mask, pad)
     else:
-        padded = attn_mask.new_zeros(shape)
-        padded[..., :rows, q_len:] = torch.finfo(attn_mask.dtype).min
-    padded[..., :rows, :q_len] = attn_mask
+        padded = _padded_bucket_mask(attn_mask, pad)
     out = scaled_dot_product_attention(Q, K, V, attn_mask = padded, **kwargs)
     return out[..., :q_len, :]
+
+
+def _padded_bucket_mask(attn_mask, pad):
+    # Padded query rows attend everything (no fully masked row) and are sliced off; padded keys are masked.
+    rows, k_len = attn_mask.shape[-2], attn_mask.shape[-1]
+    shape = (*attn_mask.shape[:-2], rows if rows == 1 else rows + pad, k_len + pad)
+    if attn_mask.dtype == torch.bool:
+        padded = attn_mask.new_ones(shape)
+        padded[..., :rows, k_len:] = False
+    else:
+        padded = attn_mask.new_zeros(shape)
+        padded[..., :rows, k_len:] = torch.finfo(attn_mask.dtype).min
+    padded[..., :rows, :k_len] = attn_mask
+    return padded
+
+
+# SDPA saves an additive mask for backward as is (cuDNN converts a bool one per call anyway), so a
+# padded copy per layer held B * Lp^2 elements per layer until backward: every layer of a forward gets
+# the same mask, so its padded copy is built once, dropped with the source mask.
+try:
+    from torch.utils.weak import WeakIdKeyDictionary as _WeakIdKeyDictionary
+
+    _PADDED_ADDITIVE_MASKS = _WeakIdKeyDictionary()
+except Exception:
+    _PADDED_ADDITIVE_MASKS = None
+
+
+def _shared_padded_mask(attn_mask, pad):
+    if _PADDED_ADDITIVE_MASKS is None:
+        return _padded_bucket_mask(attn_mask, pad)
+    hit = _PADDED_ADDITIVE_MASKS.get(attn_mask)
+    if hit is not None and hit[0] == attn_mask._version and hit[1] == pad:
+        return hit[2]
+    padded = _padded_bucket_mask(attn_mask, pad)
+    _PADDED_ADDITIVE_MASKS[attn_mask] = (attn_mask._version, pad, padded)
+    return padded
 
 
 def _rerouted_sdpa(*args, **kwargs):
@@ -266,11 +301,16 @@ try:
         _SDPBackend.EFFICIENT_ATTENTION,
         _SDPBackend.MATH,
     ]
+    # Decode pins, indexed by _decode_cudnn_free_index: the caller's enabled flash / efficient / math.
+    _DECODE_CUDNN_FREE_BACKENDS = (None,) + tuple(
+        [b for j, b in enumerate(_XFORMERS_LIKE_BACKENDS) if i >> j & 1] for i in range(1, 8)
+    )
     _CUDNN_CHOICE = (
         int(_SDPBackend.CUDNN_ATTENTION) if hasattr(_SDPBackend, "CUDNN_ATTENTION") else None
     )
 except Exception:
     _rerouted_sdpa = scaled_dot_product_attention
+    _DECODE_CUDNN_FREE_BACKENDS = (None,) * 8
     _CUDNN_CHOICE = None
 
 
@@ -328,6 +368,17 @@ _DECODE_PICKS_CUDNN = {}
 
 def _decode_picks_cudnn(query, key, attn_mask, enable_gqa):
     """Whether torch would pick cuDNN for this decode call (else sdpa_kernel is ~25 us of overhead)."""
+    cuda = torch.backends.cuda
+    # Everything torch's pick reads: toggling any backend or the priority order re-probes.
+    backends = (
+        cuda.flash_sdp_enabled(),
+        cuda.cudnn_sdp_enabled(),
+        cuda.mem_efficient_sdp_enabled(),
+        cuda.math_sdp_enabled(),
+        tuple(getattr(torch._C, "_get_sdp_priority_order", tuple)()),
+        torch.are_deterministic_algorithms_enabled(),
+        torch.is_deterministic_algorithms_warn_only_enabled(),
+    )
     cache_key = (
         query.device.index,
         query.dtype,
@@ -336,18 +387,10 @@ def _decode_picks_cudnn(query, key, attn_mask, enable_gqa):
         key.shape[1],
         attn_mask is not None,
         enable_gqa,
-        torch.backends.cuda.cudnn_sdp_enabled(),
+        backends,
     )
     picks = _DECODE_PICKS_CUDNN.get(cache_key)
     if picks is None:
-        cuda = torch.backends.cuda
-        backends = (
-            cuda.flash_sdp_enabled(),
-            cuda.cudnn_sdp_enabled(),
-            cuda.mem_efficient_sdp_enabled(),
-            cuda.math_sdp_enabled(),
-            tuple(getattr(torch._C, "_get_sdp_priority_order", tuple)()),
-        )
         gqa, mha = _sdpa_gqa_choices(
             str(query.device), query.dtype, query.shape[-1], query.shape[1], key.shape[1],
             False, attn_mask is not None, False, 0.0, backends, single_query = True,
@@ -373,9 +416,25 @@ def decode_scaled_dot_product_attention(query, key, value, *args, **kwargs):
             )
         )  # fmt: skip
     ):
-        with _sdpa_kernel(_XFORMERS_LIKE_BACKENDS):
-            return F.scaled_dot_product_attention(query, key, value, *args, **kwargs)
+        # Only the caller's own non-cuDNN backends (sdpa_kernel([MATH]) stays math); a cuDNN-only
+        # policy is left as is.
+        backends = _DECODE_CUDNN_FREE_BACKENDS[_decode_cudnn_free_index()]
+        if backends is not None:
+            with _sdpa_kernel(backends):
+                return F.scaled_dot_product_attention(query, key, value, *args, **kwargs)
     return F.scaled_dot_product_attention(query, key, value, *args, **kwargs)
+
+
+def _decode_cudnn_free_index():
+    """Bit 0 / 1 / 2: flash / efficient / math SDPA enabled; 0 when cuDNN is disabled (nothing to avoid)."""
+    cuda = torch.backends.cuda
+    if not cuda.cudnn_sdp_enabled():
+        return 0
+    return (
+        (1 if cuda.flash_sdp_enabled() else 0)
+        | (2 if cuda.mem_efficient_sdp_enabled() else 0)
+        | (4 if cuda.math_sdp_enabled() else 0)
+    )
 
 
 decode_scaled_dot_product_attention.__doc__ = (
@@ -670,6 +729,8 @@ def _constant_probe(fn):
 
 _sdpa_backend_state = _constant_probe(_sdpa_backend_state)
 _sdpa_masked_choice = _constant_probe(_sdpa_masked_choice)
+# Traced: read under the caller's sdpa_kernel at trace time, like SDPA's own backend pick.
+_decode_cudnn_free_index = _constant_probe(_decode_cudnn_free_index)
 
 
 @functools.lru_cache(maxsize = 128)
