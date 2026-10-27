@@ -190,8 +190,15 @@ def _ppo_scores_are_tempered_logits(model, queries, generation_config):
     top-p, min new tokens, bad words, ... including ones inherited from ``model.generation_config``) changes the
     scores TRL reads its old log-probs from. Built the way ``generate`` builds its list."""
     from transformers import LogitsProcessorList, TemperatureLogitsWarper
+    from unsloth.models.rl import _caller_sampling_only
 
-    config, model_kwargs = model._prepare_generation_config(generation_config)
+    kwargs = {"generation_config": generation_config}
+    if getattr(getattr(model, "generate", None), "_unsloth_caller_sampling_only", False):
+        # The normalisation Unsloth's patched generate applies (transformers 4.x: TRL's sampling, not the model's).
+        kwargs = _caller_sampling_only(model, kwargs)
+    config, model_kwargs = model._prepare_generation_config(
+        kwargs.pop("generation_config"), **kwargs
+    )
     model._prepare_special_tokens(config, True, device = queries.device)
     processors = model._get_logits_processor(
         generation_config = config,

@@ -400,6 +400,63 @@ def test_ppo_rollout_logprobs_match_trl_generation_scores(inherited):
         assert scores is None and not fallbacks
 
 
+def test_ppo_rollout_check_follows_the_patched_generate():
+    # PPO generates through Unsloth's generate_with_clone, which on transformers 4.x keeps TRL's sampling
+    # (use_model_defaults=False): an inherited top_p must not count as a processor there.
+    from transformers import GenerationConfig
+    from unsloth.models.rl import _caller_sampling_only, _generate_accepts_use_model_defaults
+
+    module = _ppo_module()
+    batch_generation = _batch_generation(module)
+    model = _hidden_gpt2()
+    model.generation_config.top_p = 0.8
+    original_generate = model.generate
+
+    def generate_with_clone(*args, **kwargs):
+        return original_generate(*args, **_caller_sampling_only(model, kwargs))
+
+    generate_with_clone._unsloth_caller_sampling_only = True
+    model.generate = generate_with_clone
+    T = 0.7 + 1e-7
+    generation_config = GenerationConfig(
+        max_new_tokens = 6, temperature = T, top_k = 0.0, top_p = 1.0, do_sample = True
+    )
+    trainer = SimpleNamespace(
+        model = SimpleNamespace(policy = model),
+        accelerator = SimpleNamespace(unwrap_model = lambda m, **k: m),
+        is_fsdp_enabled = False,
+        is_deepspeed_enabled = False,
+    )
+    route = frl.ppo_route(trainer)
+    queries = torch.tensor([[1, 2, 3, 4], [1, 5, 6, 7], [0, 1, 8, 9]])
+    torch.manual_seed(123)
+    want, trl_scores = batch_generation(model, queries, 2, 0, generation_config)
+    torch.manual_seed(123)
+    got, scores = frl.ppo_batch_generation(
+        route, batch_generation, model, queries, 2, 0, generation_config
+    )
+    torch.testing.assert_close(got, want)
+    responses = want[:, queries.shape[1] :]
+    trl_old = module.selective_log_softmax(trl_scores, responses)
+    if scores is None:
+        old = frl.ppo_policy_logprobs(
+            route,
+            module.forward,
+            module.selective_log_softmax,
+            trainer.model,
+            want,
+            responses,
+            queries.shape[1],
+            0,
+            T,
+        )
+    else:
+        old = module.selective_log_softmax(scores, responses)
+    torch.testing.assert_close(old, trl_old, atol = 1e-5, rtol = 1e-5)
+    if _generate_accepts_use_model_defaults():
+        assert scores is None
+
+
 def test_ppo_kill_switch_keeps_trl(monkeypatch):
     module = _ppo_module()
     model = _wrapper(module, _Policy())
