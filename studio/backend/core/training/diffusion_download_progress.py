@@ -46,7 +46,6 @@ def download_snapshot(bars: Iterable[Any]) -> dict[str, Any] | None:
 
 def _active_downloads() -> dict[str, Any] | None:
     from tqdm.std import tqdm
-
     with tqdm.get_lock():
         bars = list(tqdm._instances)
     return download_snapshot(bars)
@@ -55,7 +54,12 @@ def _active_downloads() -> dict[str, Any] | None:
 class TrainingDownloadProgress:
     """Forward trainer events, adding byte progress only during its model-loading phase."""
 
-    def __init__(self, emit: Callable[[dict], None], sample = _active_downloads, interval: float = 0.5):
+    def __init__(
+        self,
+        emit: Callable[[dict], None],
+        sample = _active_downloads,
+        interval: float = 0.5,
+    ):
         self._emit = emit
         self._sample = sample
         self._interval = interval

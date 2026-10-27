@@ -8,14 +8,23 @@ import pytest
 from core.training.diffusion_download_progress import TrainingDownloadProgress, download_snapshot
 
 
-def bar(done = 4, total = 10, desc = "weights.safetensors", unit = "B", disable = False):
+def bar(
+    done = 4,
+    total = 10,
+    desc = "weights.safetensors",
+    unit = "B",
+    disable = False,
+):
     return SimpleNamespace(n = done, total = total, desc = desc, unit = unit, disable = disable)
 
 
 def test_download_snapshot_counts_only_active_bytes():
     snapshot = download_snapshot([bar(), bar(1, 100, unit = "it"), bar(disable = True)])
     assert snapshot == {
-        "bytes_done": 4, "bytes_total": 10, "label": "weights.safetensors", "scope": "active_files",
+        "bytes_done": 4,
+        "bytes_total": 10,
+        "label": "weights.safetensors",
+        "scope": "active_files",
     }
     assert download_snapshot([bar(0)])["bytes_done"] == 0
 
@@ -28,9 +37,12 @@ def test_parallel_file_downloads_share_one_current_batch():
 
 
 def test_xet_transfer_and_reconstruction_are_not_counted_twice():
-    snapshot = download_snapshot([
-        bar(10, 10, "Downloading bytes"), bar(4, 10, "Reconstructing (incomplete total...)"),
-    ])
+    snapshot = download_snapshot(
+        [
+            bar(10, 10, "Downloading bytes"),
+            bar(4, 10, "Reconstructing (incomplete total...)"),
+        ]
+    )
     assert snapshot["bytes_done"] == 4
     assert snapshot["bytes_total"] == 10
 
@@ -55,7 +67,9 @@ def test_download_progress_clears_when_file_bars_close():
     assert events[-1] == {"type": "model_download_progress", "download_progress": None}
 
 
-@pytest.mark.parametrize("phase", ["preparing", "model_load_completed", "progress", "complete", "error"])
+@pytest.mark.parametrize(
+    "phase", ["preparing", "model_load_completed", "progress", "complete", "error"]
+)
 def test_byte_progress_cannot_replace_later_training_phases(phase):
     events = []
     monitor = None
