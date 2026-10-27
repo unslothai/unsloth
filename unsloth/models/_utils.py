@@ -10034,8 +10034,7 @@ class _AutoCheckpointSkip:
         return False
 
     def _agree_across_ranks(self, count, device):
-        """torchrun: the smallest count over all ranks, so every rank keeps as many layers (one
-        collective, at the planning forward, which every rank reaches at the same step)."""
+        """torchrun: MIN of count over ranks (one collective, at the planning forward every rank reaches)."""
         try:
             from .loader_utils import is_distributed
             distributed = is_distributed()

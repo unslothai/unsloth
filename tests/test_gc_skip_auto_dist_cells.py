@@ -100,7 +100,6 @@ def _fake_scenario(rank, scenario, usable):
         with torch.inference_mode():
             model(torch.zeros(1, 16, 4))
     model(torch.zeros(1, 16, 4))
-    # Later steps must not reach the collective again.
     T._fake_step(model, rows = 16)
     model(torch.zeros(1, 16, 4))
     return {"kept": list(planner.kept), "all_reduce": calls["all_reduce"]}
@@ -190,7 +189,6 @@ def _worker(rank, world, port, kind, scenario, usable, queue):
             init_method = f"tcp://127.0.0.1:{port}",
             rank = rank,
             world_size = world,
-            # A collective only some ranks take fails here instead of hanging the test.
             timeout = datetime.timedelta(seconds = 30),
         )
         run = _fake_scenario if kind == "fake" else _ddp_scenario
@@ -291,13 +289,11 @@ def test_world_size_one_process_group_plans_alone():
 
 @pytest.mark.parametrize(
     "static_graph, find_unused, accumulation",
-    # static_graph + no_sync and find_unused_parameters fail with reentrant checkpointing with or
-    # without the plan (DDP's own limits), so they are not cells here.
+    # static_graph + no_sync and find_unused_parameters fail with reentrant checkpointing regardless (DDP limits).
     [(False, False, 1), (False, False, 2), (True, False, 1)],
 )
 def test_ddp_training_unchanged_and_ranks_agree(static_graph, find_unused, accumulation):
-    # Rank 0 fits 4 layers, rank 1 fits 2: both keep the same 2, and losses / weights match the
-    # fully checkpointed run bit for bit.
+    # Rank 0 fits 4, rank 1 fits 2: both keep 2; losses / weights match full checkpointing bitwise.
     usable = [8 * GIB, 2 * GIB + GIB // 4]
     auto = _launch("ddp", (static_graph, find_unused, accumulation, True), usable)
     reference = _launch("ddp", (static_graph, find_unused, accumulation, False), usable)
