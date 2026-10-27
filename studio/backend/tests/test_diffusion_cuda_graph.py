@@ -1689,44 +1689,6 @@ def test_eager_as_recorded_runs_the_original_call_when_the_copies_do_not_fit(mon
         cg.uninstall_all([handle])
 
 
-def test_eager_as_recorded_retries_on_the_originals_when_the_step_beside_the_copies_does_not_fit():
-    """The copies fit but the step does not fit beside them (a near-capacity resident model): free the copies and run
-    the step on the caller's tensors, which it fitted beside before, instead of failing the render."""
-    torch = pytest.importorskip("torch")
-    import torch.nn as nn
-    import weakref
-
-    seen: list = []
-    copy_refs: list = []
-
-    class LenDiT(nn.Module):
-        def forward(
-            self,
-            hidden_states,
-            encoder_hidden_states,
-            return_dict = True,
-        ):
-            inference = encoder_hidden_states.is_inference()
-            seen.append((inference, all(r() is None for r in copy_refs)))
-            if not inference:
-                copy_refs.append(weakref.ref(encoder_hidden_states))
-                raise torch.cuda.OutOfMemoryError("no room beside the copies")
-            return (hidden_states + encoder_hidden_states.mean(),)
-
-    module = type("Flux3Transformer2DModel", (LenDiT,), {})()
-    handle = _armed(module)
-    try:
-        with torch.inference_mode():
-            hidden, txt = torch.randn(1, 4, 8), torch.randn(1, 3, 8)
-            got = handle._eager_as_recorded((hidden, txt), {"return_dict": False})[0]
-        # The copy first, then the originals with the copy already freed.
-        assert seen == [(False, True), (True, True)]
-        assert torch.equal(got, hidden + txt.mean())
-        assert handle.stats["eager_calls"] == 1
-    finally:
-        cg.uninstall_all([handle])
-
-
 def test_a_refused_capture_runs_eager_and_records_on_a_later_call(stub_torch, monkeypatch):
     monkeypatch.setattr(cg, "OUTSIDE_WAIT_S", 0.05)
     retired = []

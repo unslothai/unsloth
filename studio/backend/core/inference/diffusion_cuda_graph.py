@@ -1498,24 +1498,15 @@ class GraphedForward:
         ]
         if not picks:
             return self._eager(args, kwargs)
-        oom = _torch().cuda.OutOfMemoryError
         try:
             copies = self._statics([live[i] for i in picks])
-        except oom:  # no room for the copies: run as before, at the cost of a recompile
+        except (
+            _torch().cuda.OutOfMemoryError
+        ):  # no room for the copies: run as before, at the cost of a recompile
             return self._eager(args, kwargs)
         for i, fresh in zip(picks, copies):
             live[i] = fresh
-        del copies, fresh  # only ``copied`` may hold the copies past here
-        copied = _rebuild(spec, live)
-        del live
-        try:
-            return self._eager(*copied)
-        except oom as exc:
-            # The copies fit but the step beside them did not: free them (the traceback's frames hold them too) and
-            # run the step as before on the caller's own tensors, which the step alone fitted beside.
-            exc.__traceback__ = None
-        del copied
-        self.stats["eager_calls"] -= 1
+        args, kwargs = _rebuild(spec, live)
         return self._eager(args, kwargs)
 
     def _background_call(self, args: tuple, kwargs: dict) -> Any:
