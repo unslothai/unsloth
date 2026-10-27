@@ -232,3 +232,20 @@ def allow_split_backward():
         functorch_config.donated_buffer = False
         return True
     return False
+
+
+_SINGLE_BACKWARD_MODULES = ("unsloth.kernels.fast_lora",)
+
+
+def single_backward_kernels(model):
+    """Unsloth fused LoRA kernels attached to `model` (apply_qkv / apply_o / the MLP forward). Their backward
+    reuses saved activations in place, so it can run once per forward only; a zero-bubble schedule runs the
+    graph twice (input pass, then weight pass) and fails on a modified saved tensor (seen on T4, torch 2.14.1)."""
+    found = set()
+    for module in model.modules():
+        candidates = list(module.__dict__.values()) + [getattr(type(module), "forward", None)]
+        for value in candidates:
+            fn = getattr(value, "__func__", value)
+            if callable(fn) and getattr(fn, "__module__", None) in _SINGLE_BACKWARD_MODULES:
+                found.add(getattr(fn, "__name__", repr(fn)))
+    return sorted(found)
