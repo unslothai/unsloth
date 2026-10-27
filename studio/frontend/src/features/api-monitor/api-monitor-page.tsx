@@ -52,6 +52,7 @@ import {
   ApiIcon,
   ArrowDataTransferVerticalIcon,
   Cancel01Icon,
+  Clock01Icon,
   CodeIcon,
   ComputerTerminal01Icon,
   Delete02Icon,
@@ -62,7 +63,6 @@ import {
   RemoveCircleIcon,
   Search01Icon,
   Settings02Icon,
-  Timer01Icon,
 } from "@hugeicons/core-free-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { PauseIcon } from "@/lib/media-control-icons";
@@ -413,11 +413,12 @@ function Fact({
     <div className={cn("flex min-w-0 items-center", className)} title={label}>
       <dt className="sr-only">{label}</dt>
       <dd className="flex min-w-0 items-center gap-1.5 whitespace-nowrap text-ui-12 text-foreground">
+        {/* 1em: sized from the value beside it, so it follows the UI font size. */}
         {icon ? (
           <HugeiconsIcon
             icon={icon}
             strokeWidth={1.75}
-            className="size-3.5 shrink-0 text-muted-foreground"
+            className="size-[1em] shrink-0 text-muted-foreground"
           />
         ) : null}
         {children}
@@ -582,7 +583,7 @@ const RequestRow = memo(function RequestRow({
             }
           >
             <HugeiconsIcon
-              icon={Timer01Icon}
+              icon={Clock01Icon}
               strokeWidth={1.75}
               className="size-3"
             />
@@ -1390,7 +1391,7 @@ export function ApiMonitorPage(): ReactElement {
         </dl>
         <dl className={FACT_CELL}>
           {rowStats.avgDurationMs != null ? (
-            <Fact label="Total time, average per request" icon={Timer01Icon}>
+            <Fact label="Total time, average per request" icon={Clock01Icon}>
               <span className="tabular-nums">
                 {formatDuration(rowStats.avgDurationMs)}
               </span>
@@ -1611,12 +1612,13 @@ export function ApiMonitorPage(): ReactElement {
                     ? "1 model answering requests"
                     : `${served.length} models answering requests`}
                 </p>
-                <div className="flex flex-col gap-3 @3xl/served:grid @3xl/served:grid-cols-[minmax(0,max-content)_auto_auto_auto_auto_1fr] @3xl/served:items-center @3xl/served:gap-x-6 @3xl/served:gap-y-1.5">
+                {/* Fact columns hug their content: a fixed width left a short value's slack before the next. */}
+                <div className="flex flex-col gap-3 @3xl/served:grid @3xl/served:grid-cols-[minmax(0,max-content)_auto_auto_auto_auto_1fr] @3xl/served:items-center @3xl/served:gap-x-8 @3xl/served:gap-y-1.5">
                   {served.map((model) => (
                     // A subgrid, not `contents`: the row needs a box (gaps included) to hover.
                     <div
                       key={model.checkpoint}
-                      className="group/row flex flex-wrap items-center gap-x-3 gap-y-1 @md/served:gap-x-4 @3xl/served:col-span-full @3xl/served:grid @3xl/served:grid-cols-subgrid @3xl/served:gap-x-6"
+                      className="group/row flex flex-wrap items-center gap-x-3 gap-y-1 @md/served:gap-x-4 @3xl/served:col-span-full @3xl/served:grid @3xl/served:grid-cols-subgrid @3xl/served:gap-x-8"
                     >
                       <span className="order-1 flex min-w-0 flex-1 items-center gap-1 text-ui-12 @max-3xl/served:basis-full @max-3xl/served:items-start @3xl/served:order-none">
                         <span
