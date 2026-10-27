@@ -10357,7 +10357,6 @@ class VideoBackend:
                 f"no hosted pre-quantized {scheme} checkpoint for {fam.name} {workflow}"
             )
             scheme = None
-        # Resolve both precision and provenance before pricing the unified-memory load.
         te_scheme = self._h3_te_quant_scheme(fam, text_encoder_quant, base, umem_target)
         te_index_source = self._h3_te_index_source(pipe) if te_scheme is not None else None
         te_index_declined = False
@@ -10367,8 +10366,7 @@ class VideoBackend:
             ):
                 te_scheme = None
                 te_index_declined = True
-        # Both checks price the full model, so retain the free pool from before any component is seeded.
-        # Re-reading after a hosted component lands would count its allocation against the model twice.
+        # Keep the pre-seed free pool: re-reading after seeding double-counts hosted components.
         preseed_memory = settled_snapshot_device_memory(umem_target)
         self._raise_on_modular_unified_shortfall(
             fam,
@@ -10512,7 +10510,6 @@ class VideoBackend:
         # Seed the hosted conditioner: a runtime cast peaks at bf16 and would download 62 GB dense.
         text_encoder_quant_engaged: Optional[str] = None
         text_encoder_quant_reason = "released bfloat16 components"
-        # From here the request is normalized; None is the explicit dense pin.
         text_encoder_quant = (
             None if text_encoder_quant_is_auto else normalize_te_quant(text_encoder_quant)
         )
