@@ -738,6 +738,32 @@ def dpo_trainer_prepare_dataset(function_name, function):
     return function
 
 
+def dpo_trainer_reference_snapshot(function_name, function):
+    if function_name != "__init__" or "_unsloth_dpo_model_is_instance" in function:
+        return function
+    # The reference must include in-memory training, not reload the original checkpoint.
+    function, count = re.subn(
+        r"(?m)^(?P<indent>[ \t]*)ref_model_init_kwargs = [^\n]+\n"
+        r"(?:(?P=indent)[^\n]*\n)*?"
+        r"(?P=indent)self\.ref_model = create_model_from_path\(ref_model_path, \*\*ref_model_init_kwargs\)",
+        lambda m: (
+            f"{m['indent']}from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled\n"
+            f"{m['indent']}if _unsloth_dpo_model_is_instance and not is_deepspeed_zero3_enabled():\n"
+            f"{m['indent']}    from trl.experimental.utils import create_reference_model\n"
+            f"{m['indent']}    self.ref_model = create_reference_model(self.model)\n"
+            f"{m['indent']}else:\n" + textwrap.indent(m[0], "    ")
+        ),
+        function,
+        count = 1,
+    )
+    if count:
+        function = _insert_after_docstring(
+            function, ["_unsloth_dpo_model_is_instance = not isinstance(model, str)"]
+        )
+    return function
+
+
+RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_reference_snapshot)
 RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_prepare_dataset)
 RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(dpo_trainer_vision_process_row))
 RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_vision_signature_columns)
