@@ -787,6 +787,9 @@ class _StageContext:
         self.tuple_format = tuple_format
         self.active = False
         self.stage_input = None
+        # The step's token count, given to every stage forward from here rather than as a schedule kwarg:
+        # a non-tensor kwarg reaches torch's split backward (zero bubble) as a stage input on torch < 2.13.
+        self.num_items_in_batch = None
 
     def configure(self, start, end, is_first, is_last):
         """The stage about to run (several stages of one rank share this context, one runs at a time)."""
@@ -850,6 +853,8 @@ class _PPStageModule(nn.Module):
         try:
             # Pass-through layers return hidden states only: no per-layer attentions / hidden states.
             kwargs.update(output_attentions = False, output_hidden_states = False)
+            if ctx.num_items_in_batch is not None:
+                kwargs["num_items_in_batch"] = ctx.num_items_in_batch
             out = self.model(input_ids = input_ids, use_cache = False, **kwargs)
         except _StageOutput as stop:
             hidden = stop.hidden
@@ -1247,7 +1252,7 @@ class PipelineParallel:
                 value = value.to(device)
             step_kwargs[key] = value
         step_kwargs["labels"] = labels.to(device)
-        step_kwargs["num_items_in_batch"] = num_items_in_batch
+        self.ctx.num_items_in_batch = num_items_in_batch
         if scaler is not None and scaler.is_enabled():
             scaler.scale(
                 torch.zeros((), device = device)
@@ -1260,6 +1265,7 @@ class PipelineParallel:
             schedule.step(*args, target = target, return_outputs = False, **step_kwargs)
         finally:
             self._scaler = None
+            self.ctx.num_items_in_batch = None
         if self.dp_mesh is not None:
             self._average_replicated_grads()
         if self.is_last:
