@@ -7753,7 +7753,6 @@ def test_a_text_load_batch_row_carries_one_bos_as_the_single_path_does(monkeypat
 
 @pytest.mark.parametrize("speculative", (None, "draft"))
 def test_a_vision_row_times_its_prefill_wherever_the_batch_runs_it(monkeypatch, speculative):
-    """A speculative batch prefills a row inside add(), a plain one in its first step."""
     from core.inference import mlx_inference
 
     engine = _batch_engine(monkeypatch)
