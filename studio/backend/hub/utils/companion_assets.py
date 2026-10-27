@@ -179,17 +179,7 @@ def _hosted_component_table() -> dict[str, dict[str, set[tuple[str, str, str]]]]
             if name:
                 files.setdefault(str(name).lower(), set()).add((*owner, kind))
 
-    families: list[tuple[str, object]] = []
-    for registry, module in (
-        ("image", "core.inference.diffusion_families"),
-        ("video", "core.inference.video_families"),
-    ):
-        try:
-            families += [
-                (registry, fam) for fam in __import__(module, fromlist = ["_FAMILIES"])._FAMILIES
-            ]
-        except Exception as exc:  # noqa: BLE001 -- one missing registry never hides the other
-            logger.debug("%s family table unavailable: %s", registry, exc)
+    families = _family_tables()
     by_name: dict[str, list[tuple[str, str]]] = {}
     for registry, fam in families:
         by_name.setdefault(str(fam.name), []).append((registry, str(fam.name)))
@@ -289,27 +279,35 @@ def _hosted_names(table, repo_id: str) -> Optional[set[str]]:
     return None if files is None else set(files)
 
 
+def _family_tables() -> list[tuple[str, object]]:
+    """``[(registry, family)]`` for the image and video tables; one missing registry never hides the other."""
+    families: list[tuple[str, object]] = []
+    try:
+        from core.inference.diffusion_families import _FAMILIES as image_families
+        families += [("image", fam) for fam in image_families]
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("image family table unavailable: %s", exc)
+    try:
+        from core.inference.video_families import _FAMILIES as video_families
+        families += [("video", fam) for fam in video_families]
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("video family table unavailable: %s", exc)
+    return families
+
+
 def _base_families() -> dict[str, set[tuple[str, str]]]:
     """``{base_id_lower: {(registry, family)}}``: every identity of a curated base a hosted component is loaded
     beside. Only these ids pin a hosted denoiser; an arbitrary VAE repo never becomes a dependent by filename."""
     out: dict[str, set[tuple[str, str]]] = {}
-    for registry, module in (
-        ("image", "core.inference.diffusion_families"),
-        ("video", "core.inference.video_families"),
-    ):
-        try:
-            fams = __import__(module, fromlist = ["_FAMILIES"])._FAMILIES
-        except Exception:  # noqa: BLE001
-            continue
-        for fam in fams:
-            bases = {
-                getattr(fam, "base_repo", None),
-                *(getattr(fam, "named_variant_bases", ()) or ()),
-            }
-            bases |= {row[0] for row in getattr(fam, "prequant_variant_repos", ()) or ()}
-            bases |= {row[0] for row in getattr(fam, "te_prequant_variant_repos", ()) or ()}
-            for base in _with_mirrors(b for b in bases if b):
-                out.setdefault(_normalise(base), set()).add((registry, str(fam.name)))
+    for registry, fam in _family_tables():
+        bases = {
+            getattr(fam, "base_repo", None),
+            *(getattr(fam, "named_variant_bases", ()) or ()),
+        }
+        bases |= {row[0] for row in getattr(fam, "prequant_variant_repos", ()) or ()}
+        bases |= {row[0] for row in getattr(fam, "te_prequant_variant_repos", ()) or ()}
+        for base in _with_mirrors(b for b in bases if b):
+            out.setdefault(_normalise(base), set()).add((registry, str(fam.name)))
     return out
 
 
