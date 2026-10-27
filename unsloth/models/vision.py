@@ -5619,6 +5619,11 @@ class FastBaseModel:
         from ..tokenizer_utils import zero_pad_embedding_rows
 
         zero_pad_embedding_rows(model, tokenizer)
+        try:
+            from ..kernels.fast_lora import install_mlp_output_unused
+            install_mlp_output_unused(model)
+        except Exception as e:
+            logger.warning(f"Unsloth: recompute down_proj skip not installed: {e}")
         # One compiled region per decoder layer (_block_compile.py).
         try:
             from ._block_compile import patch_block_compile

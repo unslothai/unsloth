@@ -11,7 +11,9 @@
 
 import os
 import sys
+import types
 import torch
+from contextlib import contextmanager
 from unsloth_zoo.utils import Version
 from .utils import (
     _has_active_dora_adapter,
@@ -29,6 +31,120 @@ from .utils import (
 from . import rms_layernorm as _rms_layernorm
 
 _is_compiling = torch.compiler.is_compiling
+
+try:
+    from unsloth_zoo.gradient_checkpointing import in_gradient_checkpoint_recompute
+except ImportError:
+
+    def in_gradient_checkpoint_recompute():
+        return False
+
+
+# A list, not a thread-local: a compiled decoder block reads it, so Dynamo guards on its value and
+# compiles the recompute as its own graph.
+_MLP_OUTPUT_UNUSED = [False]
+
+
+@contextmanager
+def mlp_output_unused(layer):
+    """Lets LoRA_MLP skip act(e, g) and down_proj inside the checkpoint recompute of `layer`.
+
+    The recompute re-runs one decoder layer only to rebuild what its backward saves, then calls
+    torch.autograd.backward on the layer output: no value after the MLP is read. LoRA_MLP's backward
+    needs only X, e and g (it rebuilds h itself), so the rest of its forward is dead work there.
+
+    For callers whose MLP output only reaches the layer output. Active only when the layer is the whole
+    checkpoint unit: transformers set gradient_checkpointing on it, a recompute is running, and grad is on
+    (a layer inside a larger checkpointed block runs under no_grad, its output still needed).
+    Entered outside compiled code: eagerly by the layer itself, or by the block wrapper around a compiled layer.
+    """
+    if not (
+        getattr(layer, "gradient_checkpointing", False)
+        and torch.is_grad_enabled()
+        and not _is_compiling()
+        and in_gradient_checkpoint_recompute()
+    ):
+        yield
+        return
+    previous = _MLP_OUTPUT_UNUSED[0]
+    _MLP_OUTPUT_UNUSED[0] = True
+    try:
+        yield
+    finally:
+        _MLP_OUTPUT_UNUSED[0] = previous
+
+
+@contextmanager
+def _mlp_output_unused_trial():
+    # The block wrapper's trial forward compiles the recompute graph ahead (models/_block_compile.py).
+    previous = _MLP_OUTPUT_UNUSED[0]
+    _MLP_OUTPUT_UNUSED[0] = True
+    try:
+        yield
+    finally:
+        _MLP_OUTPUT_UNUSED[0] = previous
+
+
+mlp_output_unused.trial = _mlp_output_unused_trial
+
+
+# Decoder layers whose MLP output only reaches the residual add, trained through PEFT LoRA.
+_MLP_OUTPUT_ONLY_TO_RESIDUAL = ("Qwen3_5DecoderLayer",)
+
+
+class _OutputUnusedLinear(torch.autograd.Function):
+    """F.linear whose output nobody reads: forward only allocates it, backward sends dY @ W to X."""
+
+    @staticmethod
+    def forward(ctx, X, W):
+        ctx.save_for_backward(W)
+        return X.new_empty((*X.shape[:-1], W.shape[0]))
+
+    @staticmethod
+    def backward(ctx, dY):
+        (W,) = ctx.saved_tensors
+        return dY.matmul(W), None
+
+
+def _down_proj_base_forward(self, X):
+    if _MLP_OUTPUT_UNUSED[0]:
+        # Recompute: PEFT still needs this node for dY @ W, not its output.
+        return _OutputUnusedLinear.apply(X, self.weight)
+    return torch.nn.Linear.forward(self, X)
+
+
+def _is_bnb_linear4bit(module):
+    try:
+        import bitsandbytes as bnb
+    except Exception:
+        return False
+    return isinstance(module, bnb.nn.Linear4bit)
+
+
+def install_mlp_output_unused(model):
+    """Lets a checkpoint recompute skip the base down_proj GEMM of PEFT LoRA MLPs.
+
+    Frozen bases without bias, in decoder layers whose MLP output only reaches the residual add:
+    16-bit nn.Linear here, NF4 Linear4bit where a compiled block runs it (models/_block_compile.py).
+    The LoRA branch and act(gate) * up still run: PEFT's backward needs them.
+    """
+    installed = 0
+    for layer in model.modules():
+        if type(layer).__name__ not in _MLP_OUTPUT_ONLY_TO_RESIDUAL:
+            continue
+        base = getattr(getattr(getattr(layer, "mlp", None), "down_proj", None), "base_layer", None)
+        if base is None or base.bias is not None or base.weight.requires_grad:
+            continue
+        if type(base) is torch.nn.Linear and base.weight.dtype in (torch.float16, torch.bfloat16):
+            base.forward = types.MethodType(_down_proj_base_forward, base)
+        elif _is_bnb_linear4bit(base):
+            base._unsloth_output_unused = True
+        else:
+            continue
+        type(layer)._unsloth_mlp_output_unused = mlp_output_unused
+        installed += 1
+    return installed
+
 
 # Inductor before torch 2.11 miscompiles traced backward passes and produces wrong LoRA gradients.
 TRACE_LORA_FUNCTIONS = Version(torch.__version__) >= Version("2.11.0")
@@ -417,8 +533,12 @@ class LoRA_MLP(torch.autograd.Function):
         if plain:
             e = matmul_lora(X, gateW, gateW_quant, gateA, gateB, gateS)
             g = matmul_lora(X, upW, upW_quant, upA, upB, upS)
-            h = _forward_function(e, g)
-            i = matmul_lora(h, downW, downW_quant, downA, downB, downS)
+            if _MLP_OUTPUT_UNUSED[0]:
+                # Recompute: only the graph is used, see mlp_output_unused.
+                i = torch.empty_like(X)
+            else:
+                h = _forward_function(e, g)
+                i = matmul_lora(h, downW, downW_quant, downA, downB, downS)
             masks = (None, None, None)
         else:
             # Masks are drawn gate, up, down: the order PEFT's down(act(gate(X)) * up(X)) draws them in.
