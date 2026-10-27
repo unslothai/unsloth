@@ -129,6 +129,23 @@ def test_a_loop_or_a_lost_group_fails_on_the_generate_step():
         "reads instruction_phrase, which is disabled" in i["message"] for i in caught.value.issues
     )
     doc = _flow()
+    for name, other in (("left", "right"), ("right", "left")):
+        column = copy.deepcopy(_column(doc, "domain"))
+        column.update(id = name, label = name, disabled = True)
+        column["params"]["column"] = {"column_type": "expression", "name": name, "expr": "{{ " + other + " }}"}
+        doc["nodes"].append(column)
+        doc["edges"].append(
+            {
+                "id": f"{other}__{name}",
+                "source": other,
+                "source_port": "out",
+                "target": name,
+                "target_port": "in",
+                "kind": "data",
+            }
+        )
+    assert compiler.validate(doc)["ok"], compiler.validate(doc)
+    doc = _flow()
     doc["groups"][0]["kind"] = None
     with pytest.raises(CompileError):
         compile_flow(doc)
@@ -147,13 +164,20 @@ def test_seed_tokens_stay_out_and_local_seed_paths_stay_on_this_machine():
     payload["recipe"]["seed_config"] = {
         "source": {"seed_type": "unstructured", "paths": ["/home/me/.unsloth/uploads/x/a.pdf"]}
     }
-    payload["ui"] = {"unstructured_file_ids": ["u1"], "unstructured_file_names": ["a.pdf"]}
+    payload["ui"] = {
+        "unstructured_file_ids": ["u1"],
+        "unstructured_file_names": ["a.pdf"],
+        "unstructured_upload_uid": "up1",
+        "seed_preview_rows": [{"text": "private page"}],
+    }
     doc, _ = flow_from_recipe(payload, name = "SQL")
     assert doc["groups"][0]["config"]["seed_config"]["source"]["paths"]
     data_bytes, _, _ = asyncio.run(package.export_flow(doc, "json", None))
     group = json.loads(data_bytes)["groups"][0]
     assert "paths" not in group["config"]["seed_config"]["source"]
-    assert "unstructured_file_ids" not in (group.get("ui") or {})
+    for mode in ("json", "package", "baked"):
+        out, _, _ = asyncio.run(package.export_flow(doc, mode, None))
+        assert b"private page" not in out and b"up1" not in out and b"a.pdf" not in out
 
 
 def test_importing_strips_tool_servers_and_keys_and_says_so():

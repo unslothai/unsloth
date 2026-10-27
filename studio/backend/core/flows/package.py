@@ -164,19 +164,27 @@ async def _embed(value: Any, read_media: ReadMedia, files: dict[str, tuple[bytes
 
 
 _LOCAL_SEEDS = ("local", "unstructured")
-_UPLOAD_UI = ("unstructured_file_ids", "unstructured_file_names", "unstructured_file_sizes")
+_UPLOAD_UI = (
+    "unstructured_file_ids",
+    "unstructured_file_names",
+    "unstructured_file_sizes",
+    "unstructured_upload_uid",
+    "local_file_name",
+    "seed_preview_rows",
+)
 
 
 def _drop_local_seeds(doc: dict) -> None:
-    """A recipe group's uploaded seed lives on this machine: its path and upload ids stay here."""
+    """A recipe group's uploaded seed lives on this machine: its paths, upload ids and rows stay here."""
     for group in doc.get("groups") or []:
         if not isinstance(group, dict) or group.get("kind") != "recipe":
             continue
         seed = (group.get("config") or {}).get("seed_config")
         source = seed.get("source") if isinstance(seed, dict) else None
-        if isinstance(source, dict) and source.get("seed_type") in _LOCAL_SEEDS:
-            source.pop("path", None)
-            source.pop("paths", None)
+        if not isinstance(source, dict) or source.get("seed_type") not in _LOCAL_SEEDS:
+            continue
+        source.pop("path", None)
+        source.pop("paths", None)
         if isinstance(group.get("ui"), dict):
             for key in _UPLOAD_UI:
                 group["ui"].pop(key, None)
