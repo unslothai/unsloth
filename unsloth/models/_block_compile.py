@@ -692,6 +692,9 @@ def _precheck_band(layer, seq_len, args, kwargs):
 
 # Mode of the block being traced (_SPLIT: flex_attention outside); dynamo guards on it.
 _IN_BLOCK = [0]
+# True only inside Unsloth's own compiled block (fullgraph=False, a graph break is legal), not when the
+# block is inlined into a user's torch.compile, which may be fullgraph=True. Read by unsloth_zoo.
+_IN_COMPILED_REGION = [False]
 _PACKED_MODULE = "unsloth.utils.hf_packed_attention"
 _NO_PACKED = [False]
 _OFF, _FULL, _SPLIT = 0, 1, 2
@@ -868,6 +871,7 @@ def _wrap(
         previous = inline_flag[0]
         inline_flag[0] = True
         _IN_BLOCK[0] = mode
+        _IN_COMPILED_REGION[0] = True
         packed_module = sys.modules.get(_PACKED_MODULE)
         packed = getattr(packed_module, "IN_COMPILED_BLOCK", _NO_PACKED)
         packed_previous = packed[0]
@@ -899,6 +903,7 @@ def _wrap(
         finally:
             inline_flag[0] = previous
             _IN_BLOCK[0] = _OFF
+            _IN_COMPILED_REGION[0] = False
             packed[0] = packed_previous
 
     def _inline(self, hidden_states, args, kwargs, mode):

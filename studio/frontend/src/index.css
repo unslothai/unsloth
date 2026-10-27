@@ -4954,11 +4954,11 @@ html.force-reduced-motion .sidebar-section-drop-line {
 }
 
 /* Scales the container query's em with the UI size; children reset to the inherited 1rem. */
-.browser-panel {
+.browser-panel-body {
 	font-size: calc(1rem * var(--ui-space-scale, 1));
 }
 
-.browser-panel > * {
+.browser-panel-body > * {
 	font-size: 1rem;
 }
 

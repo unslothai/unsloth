@@ -62,7 +62,6 @@ def studio(monkeypatch):
     async def get_training_status(current_subject, via_api_key):
         return live["status"]
 
-    # Module state the routes keep between requests.
     monkeypatch.setattr(openai_fine_tuning, "_STARTED", {})
     monkeypatch.setattr(openai_fine_tuning, "_CANCELLING", set())
     monkeypatch.setattr(openai_fine_tuning, "_BATCH_OF", {})

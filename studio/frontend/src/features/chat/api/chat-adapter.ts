@@ -6826,7 +6826,8 @@ export function createOpenAIStreamAdapter(
             repetition_penalty: params.repetitionPenalty,
             presence_penalty: params.presencePenalty,
             // Omit when unset (server draws a seed) or unread, so a stale GGUF pin is never sent.
-            ...(params.seed == null || !modelReadsSamplingSeed(activeModel)
+            ...(params.seed == null ||
+            !modelReadsSamplingSeed(activeModel, runtime.loadedEngine)
               ? {}
               : { seed: params.seed }),
             // Turn-scoped: a stale screenshot here made the backend refuse every later text turn's durable run.
