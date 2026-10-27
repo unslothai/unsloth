@@ -347,7 +347,6 @@ def _without_padding(turns: Any) -> Any:
     if not isinstance(turns, list):
         return turns
     from core.training.rl import _drop_nulls
-
     return [
         {**_drop_nulls(m), "content": m.get("content")} if isinstance(m, dict) else m for m in turns
     ]
