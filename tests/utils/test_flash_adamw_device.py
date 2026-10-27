@@ -67,3 +67,46 @@ def test_adamw_flash_noncurrent_cuda_device(dtype, quantize, entry):
                 )
             if "error_bits" in a:
                 torch.testing.assert_close(a["error_bits"], b["error_bits"], rtol = 0, atol = 0)
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_adamw_flash_uncompressed_state_dict_round_trip_noncurrent_device(dtype):
+    """compress_state_dict=False dequantizes the moments on save and requantizes them on load,
+    both with Triton: a parameter on cuda:1 with cuda:0 current must save and resume."""
+    pytest.importorskip("flashoptim")
+    from unsloth.optimizers.flash_adamw import _get_flash_adamw_class
+
+    torch.cuda.set_device(0)
+    optimizer_cls = _get_flash_adamw_class()
+    kwargs = dict(quantize = True, compress_state_dict = False, lr = 0.001)
+    params = [
+        torch.nn.Parameter(torch.ones(65, device = f"cuda:{i}", dtype = dtype)) for i in (0, 1)
+    ]
+    optimizer = optimizer_cls(params, **kwargs)
+    for grad in (0.125, -0.25):
+        for p in params:
+            p.grad = torch.full_like(p, grad)
+        optimizer.step()
+    expected = {}
+    for i, p in enumerate(params):
+        with torch.cuda.device(p.device):
+            expected[i] = {k: optimizer.state[p][k].materialize() for k in ("exp_avg", "exp_avg_sq")}
+
+    saved = optimizer.state_dict()
+    assert torch.cuda.current_device() == 0, "the caller's device must be restored"
+    for i, p in enumerate(params):
+        for key, value in expected[i].items():
+            assert saved["state"][i][key].device == p.device
+            torch.testing.assert_close(saved["state"][i][key], value, rtol = 0, atol = 0)
+
+    resumed = optimizer_cls(params, **kwargs)
+    resumed.load_state_dict(saved)
+    assert torch.cuda.current_device() == 0, "the caller's device must be restored"
+    for i, p in enumerate(params):
+        for key, value in expected[i].items():
+            with torch.cuda.device(p.device):
+                loaded = resumed.state[p][key].materialize()
+            assert loaded.device == p.device
+            torch.testing.assert_close(loaded.float(), value.float(), rtol = 0.02, atol = 1e-6)
+        p.grad = torch.full_like(p, 0.0625)
+    resumed.step()
