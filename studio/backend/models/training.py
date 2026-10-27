@@ -646,7 +646,9 @@ class TrainingStartRequest(BaseModel):
     use_rslora: bool = Field(False, description = "Use RSLoRA")
     use_loftq: bool = Field(False, description = "Use LoftQ")
     use_dora: bool = Field(False, description = "Use DoRA")
-    train_on_completions: bool = Field(True, description = "Train on assistant completions where supported")
+    train_on_completions: bool = Field(
+        True, description = "Train on assistant completions where supported"
+    )
 
     finetune_vision_layers: bool = Field(False, description = "Finetune vision layers")
     finetune_language_layers: bool = Field(True, description = "Finetune language layers")
@@ -712,7 +714,9 @@ class TrainingStartRequest(BaseModel):
         if "packing" not in self.model_fields_set and non_chat:
             self.packing = False
         if "train_on_completions" not in self.model_fields_set and (
-            non_chat or self.dataset_streaming or self.training_type == "Continued Pretraining"
+            non_chat
+            or self.dataset_streaming
+            or self.training_type == "Continued Pretraining"
             or self.format_type in ("raw", "raw_text")
         ):
             self.train_on_completions = False
