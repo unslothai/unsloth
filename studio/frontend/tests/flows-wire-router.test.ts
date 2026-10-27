@@ -354,3 +354,48 @@ test("the path rounds every bend and keeps hops on the straight part", () => {
   );
   assert.match(tight, /Q 50 0 50 4 L 50 4 Q 50 8 54 8/);
 });
+
+test("Comic Strip Machine: wires into a loop frame take the short way, not a lap round the graph", () => {
+  // Card and frame geometry as the editor measures the bundled example.
+  const rects = [
+    card("look", 640, 0, 260, 97),
+    card("captions", 640, 380, 260, 97),
+    card("ref", 960, 0, 260, 249),
+    card("each", 1024, 304, 260, 124),
+    card("draw", 1344, 304, 260, 249),
+    card("page", 1792, 190, 260, 169),
+  ];
+  const frame = { id: "loop", x: 988, y: 172, width: 716, height: 316 };
+  const at = (edge: EdgeIn, sourceOffset: number, targetOffset: number): EdgeIn => ({
+    ...edge,
+    sourceOffset,
+    targetOffset,
+    sink: `${edge.target}:${targetOffset}`,
+  });
+  const edges = [
+    at(wire("ref", "draw"), 57, 105),
+    at(wire("each", "page"), 105, 57),
+    at(wire("captions", "page"), 57, 81),
+    at(wire("draw", "each"), 57, 81),
+  ];
+  const { routes } = routeWires(rects, edges, {}, undefined, [frame]);
+  const length = (id: string): number =>
+    segments((routes.get(id) as Route).points).reduce(
+      (sum, [a, b]) => sum + Math.abs(a.x - b.x) + Math.abs(a.y - b.y),
+      0,
+    );
+  assert.ok(length("ref->draw") < 600, `ref->draw is ${length("ref->draw")} px`);
+  assert.ok(length("each->page") < 800, `each->page is ${length("each->page")} px`);
+  for (const edge of edges) {
+    const route = routes.get(edge.id) as Route;
+    assert.equal(route.blocked, false);
+    for (const [a, b] of segments(route.points)) {
+      for (const rect of rects) {
+        assert.ok(!hitsInterior(a, b, rect), `${edge.id} passes under ${rect.id}`);
+      }
+    }
+  }
+  for (const [a, b] of segments((routes.get("captions->page") as Route).points)) {
+    assert.ok(!hitsInterior(a, b, frame), "captions->page goes round the loop frame");
+  }
+});

@@ -27,7 +27,6 @@ import {
 const HOP_RADIUS = 4;
 const CORNER_RADIUS = 10;
 const DIM_OPACITY = 0.3;
-const GROUP_HEADER = 32;
 const ZONE_MARGIN = 6;
 // Handles sit a few px outside the card; more than this means the route is from before a move.
 const ENDPOINT_TOLERANCE = 2;
@@ -114,8 +113,6 @@ function buildRequest(
         width: width + ZONE_MARGIN * 2,
         height: height + ZONE_MARGIN * 2,
       });
-      // Nothing runs over a frame's title bar, not even its own wires.
-      rects.push({ id: `${node.id}:title`, x, y, width, height: GROUP_HEADER });
       continue;
     }
     rects.push({ id: node.id, x, y, width, height });

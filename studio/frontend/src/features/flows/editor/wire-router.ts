@@ -656,7 +656,10 @@ function searchPath(
         cost += costs.overlapPenalty;
       }
       if (q === goal && nd !== goalDir) {
-        // Arriving along the target side instead of into it costs one more bend.
+        // Never double back into the stub from the card side; arriving along the side costs a bend.
+        if (nd === (goalDir + 2) % 4) {
+          continue;
+        }
         cost += costs.bendPenalty;
       }
       if (q !== goal) {
@@ -1103,9 +1106,10 @@ const DEFAULT_OPTIONS: Required<WireRouterOptions> = {
   laneGap: 6,
   bendPenalty: 40,
   crossingPenalty: 60,
-  overlapPenalty: 400,
-  clearancePenalty: 150,
-  nearPenalty: 3,
+  overlapPenalty: 200,
+  // Per grid step in a card's clearance band; small, since a tight channel splits into many steps.
+  clearancePenalty: 12,
+  nearPenalty: 1,
   ringPenalty: 2,
   hopRadius: 4,
   cellBudget: 400_000,
@@ -1395,7 +1399,7 @@ export function routeWires(
         });
         const ends = [item.sourcePort, item.sourceStub, item.targetPort, item.targetStub];
         const grid = buildGrid(
-          local,
+          local.map((rect) => inflate(rect, 1)),
           localObstacles,
           localZones,
           ends.map((p) => p.x),
@@ -1416,7 +1420,15 @@ export function routeWires(
       raw[index] = points ? { key: item.key, points, blocked: false } : blockedRoute(item);
     }
   } else {
-    const grid = buildGrid(rects, obstacles, zones, extraXs, extraYs, clearance * 2);
+    // Cards grow a pixel so no wire runs exactly along a card's border.
+    const grid = buildGrid(
+      rects.map((rect) => inflate(rect, 1)),
+      obstacles,
+      zones,
+      extraXs,
+      extraYs,
+      clearance * 2,
+    );
     for (const item of prepared) {
       const at = (point: WirePoint): number =>
         indexOf(grid.xs, point.x) * grid.ny + indexOf(grid.ys, point.y);
