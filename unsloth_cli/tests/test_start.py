@@ -2888,6 +2888,46 @@ def test_codex_session_from_a_saved_home_reads_its_origin(fake_studio, tmp_path,
     }
 
 
+def test_codex_carries_mcp_servers_written_as_root_keys(fake_studio, tmp_path, monkeypatch):
+    tomllib = pytest.importorskip("tomllib")
+    source_home = tmp_path / "user-codex"
+    source_home.mkdir()
+    (source_home / "config.toml").write_text(
+        'mcp_servers.docs.command = "python3"\n'
+        'mcp_servers.docs.env = { "API KEY" = "x" }\n'
+        'mcp_servers.notes = { url = "http://n/mcp", tools = { search = { enabled = false } } }\n'
+    )
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    home = tmp_path / "agents" / "codex"
+
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    config = tomllib.loads((home / "config.toml").read_text())
+    assert (
+        config["mcp_servers"]
+        == tomllib.loads((source_home / "config.toml").read_text())["mcp_servers"]
+    )
+
+
+def test_codex_remembers_an_empty_custom_codex_home(fake_studio, tmp_path, monkeypatch):
+    tomllib = pytest.importorskip("tomllib")
+    user_home = tmp_path / "user-home"
+    (user_home / ".codex").mkdir(parents = True)
+    (user_home / ".codex" / "config.toml").write_text('[mcp_servers.unrelated]\nurl = "http://u"\n')
+    monkeypatch.setenv("HOME", str(user_home))
+    monkeypatch.setenv("USERPROFILE", str(user_home))
+    custom = tmp_path / "custom-codex"
+    custom.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(custom))
+    home = tmp_path / "agents" / "codex"
+
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    (custom / "config.toml").write_text('[mcp_servers.fresh]\nurl = "http://f/mcp"\n')
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    config = tomllib.loads((home / "config.toml").read_text())
+    assert config["mcp_servers"] == {"fresh": {"url": "http://f/mcp"}}
+
+
 def test_codex_carries_mcp_servers_with_multiline_values(fake_studio, tmp_path, monkeypatch):
     tomllib = pytest.importorskip("tomllib")
     source_home = tmp_path / "user-codex"

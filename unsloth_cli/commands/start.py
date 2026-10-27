@@ -3435,7 +3435,7 @@ def _toml_chunks(text: str) -> list:
     return chunks
 
 
-def _toml_parses(text: str) -> Optional[bool]:
+def _toml_loads():
     try:
         import tomllib  # novermin
     except ImportError:
@@ -3443,11 +3443,43 @@ def _toml_parses(text: str) -> Optional[bool]:
             import tomli as tomllib
         except ImportError:
             return None
+    return tomllib.loads
+
+
+def _toml_parses(text: str) -> Optional[bool]:
+    loads = _toml_loads()
+    if loads is None:
+        return None
     try:
-        tomllib.loads(text)
+        loads(text)
     except ValueError:
         return False
     return True
+
+
+def _toml_key(key: str) -> str:
+    return key if re.fullmatch(r"[A-Za-z0-9_-]+", key) else _toml_value(key)
+
+
+def _toml_value(value) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, str):
+        # JSON string escapes are TOML's, except that TOML also forbids a raw DEL.
+        return json.dumps(value, ensure_ascii = False).replace("\x7f", "\\u007f")
+    if isinstance(value, float) and value != value:
+        return "nan"
+    if isinstance(value, float) and value in (float("inf"), float("-inf")):
+        return "inf" if value > 0 else "-inf"
+    if isinstance(value, (int, float)):
+        return repr(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_value(v) for v in value) + "]"
+    if isinstance(value, dict):
+        return (
+            "{ " + ", ".join(f"{_toml_key(k)} = {_toml_value(v)}" for k, v in value.items()) + " }"
+        )
+    return value.isoformat()  # TOML dates and times
 
 
 _CODEX_MCP_MANIFEST = "unsloth_mcp_servers.json"
@@ -3473,7 +3505,22 @@ def _codex_mcp_tables(source: Path, seen: frozenset) -> list:
         text = (source / "config.toml").read_text(encoding = "utf-8")
     except OSError:
         return []
-    tables = [c for c in _toml_chunks(text) if _codex_mcp_server(c)]
+    loads = _toml_loads()
+    if loads is None:
+        tables = [c for c in _toml_chunks(text) if _codex_mcp_server(c)]
+    else:
+        # Parsed, so root dotted keys, inline tables and a bare [mcp_servers] all count.
+        try:
+            servers = loads(text).get("mcp_servers")
+        except ValueError:
+            servers = None
+        tables = [
+            f"[mcp_servers.{_toml_key(name)}]\n"
+            + "".join(f"{_toml_key(k)} = {_toml_value(v)}\n" for k, v in spec.items())
+            + "\n"
+            for name, spec in (servers.items() if isinstance(servers, dict) else ())
+            if isinstance(spec, dict)
+        ]
     origin, inherited = _codex_mcp_manifest(source)
     if isinstance(origin, str) and str(Path(origin).resolve(strict = False)) not in seen:
         tables = [c for c in tables if _codex_mcp_server(c) not in inherited]
@@ -3501,12 +3548,11 @@ def _with_user_codex_mcp_servers(text: str, home: Path) -> str:
         out = out.rstrip("\n") + "\n\n" + "".join(tables).rstrip("\n") + "\n"
     if _toml_parses(out) is False:
         return text
-    manifest = home / _CODEX_MCP_MANIFEST
-    if servers or manifest.exists():
-        manifest.write_text(
-            json.dumps({"source": source_key, "tables": sorted(servers)}) + "\n",
-            encoding = "utf-8",
-        )
+    # Written even when empty: a recipe shell's CODEX_HOME=home must still find a custom origin.
+    (home / _CODEX_MCP_MANIFEST).write_text(
+        json.dumps({"source": source_key, "tables": sorted(servers)}) + "\n",
+        encoding = "utf-8",
+    )
     return out
 
 
