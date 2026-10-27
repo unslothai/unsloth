@@ -14675,8 +14675,8 @@ class LlamaCppBackend:
         rows: list[dict] = []
         for line in result.stdout.strip().splitlines():
             parts = line.split("\t")
-            # 4 columns from an older probe (no name); 5 with the name column.
-            if len(parts) not in (4, 5, 6):
+            # 4 columns from an older probe (no name); 5 with the name column, 7 with the PCI id.
+            if len(parts) not in (4, 5, 6, 7):
                 continue
             try:
                 free_b, total_b = int(parts[1]), int(parts[3])
@@ -14692,6 +14692,7 @@ class LlamaCppBackend:
                         "name": parts[4].strip() if len(parts) >= 5 else "",
                         # Absent on an older staged probe, so it reads unknown and declines.
                         "type_known": len(parts) >= 6 and parts[5].strip() == "1",
+                        "pci_id": parts[6].strip().lower() if len(parts) >= 7 else "",
                     }
                 )
             except ValueError:

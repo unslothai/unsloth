@@ -64,11 +64,12 @@ def test_missing_description_symbol_keeps_igpu_detection():
     )
     lib = _types.SimpleNamespace(ggml_backend_vk_reg = _FakeCFunction(1))
 
-    flags, names, known = _igpu_flags_and_names(base, lib, 1)
+    flags, names, known, pci_ids = _igpu_flags_and_names(base, lib, 1)
 
     assert flags == [True]
     assert names == ["Legacy Vulkan iGPU"]
     assert known == [True]
+    assert pci_ids == [""]
 
 
 def _make_vulkan_install(tmp_path: Path) -> str:
