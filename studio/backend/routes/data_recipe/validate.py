@@ -29,8 +29,7 @@ from .jobs import _resolve_seed_endpoint
 logger = get_logger(__name__)
 router = APIRouter()
 
-# A stdio provider is a command this host would run, so only a UI session may supply one. Annotated, not a
-# Depends default, so a direct call gets False.
+# Only UI sessions may supply stdio commands, since this host would run them; Annotated so direct calls get False.
 ViaApiKey = Annotated[bool, Depends(authenticated_via_api_key)]
 
 _GITHUB_VALIDATE_NOTE = (
@@ -185,8 +184,7 @@ def validate(payload: RecipePayload, via_api_key: ViaApiKey = False) -> Validate
         try:
             build_config_builder(recipe)
         except ModuleNotFoundError as exc:
-            # data_designer is an optional runtime dep and full validation is deferred to run start, so only ITS
-            # ImportError is bypassed; others still fail.
+            # Only data_designer's own ImportError is bypassed (optional dep).
             if not (exc.name or "").startswith("data_designer"):
                 raise
             logger.debug(
@@ -227,8 +225,7 @@ def validate(payload: RecipePayload, via_api_key: ViaApiKey = False) -> Validate
         try:
             parsed_errors = _collect_validation_errors(recipe)
         except Exception:
-            # It re-reads the seed, so an unreadable one raises here too; escaping turns an
-            # answerable "this recipe is wrong" into a 500.
+            # The seed is re-read here; keep errors answerable instead of a 500.
             parsed_errors = []
         return ValidateResponse(
             valid = False,

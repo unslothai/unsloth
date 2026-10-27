@@ -33,12 +33,13 @@ const LABELS: Readonly<Record<string, string>> = {
   "wan2.1-t2v-14b": "Wan2.1 T2V 14B",
   "hunyuanvideo-1.5": "HunyuanVideo 1.5 (480p)",
   "hunyuanvideo-1.5-720p": "HunyuanVideo 1.5 (720p)",
+  "cosmos3-nano": "Cosmos3-Nano",
+  "cosmos3-edge": "Cosmos3-Edge",
 };
 
 export const FAMILY_OVERRIDE_HINT =
   "Architecture family. Auto detects it from the repository or pipeline metadata. Choose one only for a custom Diffusers pipeline whose metadata does not identify a supported family.";
 
-/** Options come from the backend registry, so a new family cannot leave the UI stale. */
 export function familyOverrideOptions(supported: readonly string[] | null | undefined): [string, string][] {
   const names = [...new Set(supported ?? [])].filter(Boolean);
   return [["auto", "Auto (detect)"], ...names.map((n): [string, string] => [n, LABELS[n] ?? n])];

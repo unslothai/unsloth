@@ -582,22 +582,16 @@ test("a config that never read the stored value is not sent as a clear", () => {
 
 test("the load sends the flags only once they are known", () => {
   const composer = readSrc("features/chat/shared-composer.tsx").replace(/\s+/g, " ");
-  assert.match(
-    composer,
-    /ownConfig\.llamaExtraArgs !== undefined \? .* \{ llama_extra_args: ownConfig\.llamaExtraArgs \?\? \[\] \} : \{\}/,
-  );
+  assert.match(composer, /\.\.\.llamaServerLoadFields\(ownConfig, \{/);
 });
 
 test("the panel's own Load goes through the runtime, which sends them too", () => {
   const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts").replace(/\s+/g, " ");
   assert.match(
     runtime,
-    /const loadLlamaExtraArgs = pendingLoadConfig\?\.llamaExtraArgs/,
+    /let loadLlamaExtraArgs = pendingLoadConfig\?\.llamaExtraArgs/,
   );
-  assert.match(
-    runtime,
-    /isGguf && !targetIsDiffusion && loadLlamaExtraArgs !== undefined \? \{ llama_extra_args: loadLlamaExtraArgs \?\? \[\] \} : \{\}/,
-  );
+  assert.match(runtime, /llamaExtraArgs: loadLlamaExtraArgs,/);
 });
 
 test("the box follows a config change it did not make", () => {
@@ -705,15 +699,8 @@ test("a hydrated list is judged even when the row cannot be", () => {
 
 test("the runtime preflight is sized with the arguments the load sends", () => {
   const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts").replace(/\s+/g, " ");
-  // A --ctx-size or cache override changes the memory /validate estimates.
-  const validateCall = runtime.slice(
-    runtime.indexOf("await validateModel({"),
-    runtime.indexOf("// Upgrade consent runs before"),
-  );
-  assert.match(
-    validateCall,
-    /loadLlamaExtraArgs !== undefined \? \{ llama_extra_args: loadLlamaExtraArgs \?\? \[\] \}/,
-  );
+  // A --ctx-size or cache override changes the memory /validate estimates, so it sends the load's own request.
+  assert.match(runtime, /await validateModel\(\{ \.\.\.loadRequest\(\),/);
 });
 
 test("a catalogue read from the previous binary is discarded", () => {

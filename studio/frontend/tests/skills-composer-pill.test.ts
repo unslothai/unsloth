@@ -36,7 +36,7 @@ test("unticking every skill keeps the pill; its X and the + menu switch Skills o
   assert.equal(skillsSwitchedOn(null, 2), true);
   assert.equal(skillsSwitchedOn(true, 0), true);
   assert.equal(skillsSwitchedOn(false, 2), false);
-  assert.match(PILL, /role="button"[\s\S]*?setSkillsOn\(false\);[\s\S]*?<XIcon className="composer-pill-x" \/>/);
+  assert.match(PILL, /role="button"[\s\S]*?setSkillsOn\(false\);[\s\S]*?<HugeiconsIcon icon=\{Cancel01Icon\} className="composer-pill-x" \/>/);
   for (const source of [THREAD, SHARED]) {
     assert.match(source, /onSelect=\{\(\) => setSkillsOn\(!skillsOn\)\}/);
   }

@@ -257,9 +257,7 @@ def detect_custom_format_heuristic(dataset):
         if score > 0:
             user_candidates.append((col, score))
     if not user_candidates and not any(col != assistant_col for col in user_potential):
-        # has_keyword drops "context" from user_potential because "text" only matches
-        # inside it. When nothing else can hold the user turn, that column is a better
-        # user turn than an assistant-worded leftover.
+        # "text" only matches inside "context"; prefer it over an assistant-worded leftover.
         shadowed_potential = [
             col
             for col in content_columns
@@ -509,11 +507,9 @@ def detect_multimodal_dataset(dataset):
 
     detected_text_col = None
     if audio_columns:
-        # Two passes, not one list: a set carrying both an instruction-like "prompt" and a real
-        # "transcript" would be mapped by schema order, training an ASR set against its instructions.
+        # Two passes so a real "transcript" beats an instruction-like "prompt".
         transcript_names = ("text", "sentence", "transcript", "transcription", "label")
-        # TTS corpora name the line to speak rather than a transcript of it: SparkTTS sets use "prompt",
-        # LJSpeech derivatives "normalized_text".
+        # TTS sets name the line to speak: SparkTTS "prompt", LJSpeech "normalized_text".
         fallback_names = ("prompt", "normalized_text")
         for candidates in (transcript_names, fallback_names):
             for col_name in column_names:
@@ -838,8 +834,7 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
     }
 
 
-# The aliases `standardize_data_formats` accepts. Keys are normalised: look them up
-# through `_normalize_role_alias`.
+# Aliases standardize_data_formats accepts; keys are normalised, so use _normalize_role_alias.
 _ROLE_MAP = {
     "human": "user",
     "user": "user",

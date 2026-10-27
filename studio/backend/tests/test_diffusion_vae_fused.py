@@ -542,6 +542,28 @@ def test_wan_attention_oom_retries_stock_for_that_call_only(monkeypatch):
     assert not getattr(block, "_unsloth_vae_fused_failed", False)
 
 
+def test_fused_install_can_leave_a_wan_encoder_stock(monkeypatch):
+    diffusers = pytest.importorskip("diffusers")
+    monkeypatch.setattr(F, "runtime_ok", lambda: True)
+
+    def patched(part):
+        return sorted(name for name, m in part.named_modules() if "forward" in m.__dict__)
+
+    def tiny():
+        torch.manual_seed(0)
+        return diffusers.AutoencoderKLWan(
+            base_dim = 32, z_dim = 4, dim_mult = [1, 2, 2, 2], num_res_blocks = 1
+        ).eval()
+
+    both, decoder_only = tiny(), tiny()
+    n_both = F.install(both)
+    n_decoder = F.install(decoder_only, encoder = False)
+    assert patched(both.encoder) and patched(both.decoder)
+    assert patched(decoder_only.encoder) == []
+    assert patched(decoder_only.decoder) == patched(both.decoder)
+    assert 0 < n_decoder < n_both
+
+
 @pytest.mark.parametrize("frames", [1, 2, 4])
 def test_causal_cache_is_a_compact_two_frame_copy(frames):
     # a view would pin the whole (frames + 2)-frame conv input per cache slot until the next chunk

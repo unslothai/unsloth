@@ -16,10 +16,8 @@ export const AUTH_TOKEN_KEY = "unsloth_auth_token";
 export const AUTH_REFRESH_TOKEN_KEY = "unsloth_auth_refresh_token";
 export const AUTH_MUST_CHANGE_PASSWORD_KEY = "unsloth_auth_must_change_password";
 /**
- * The cross-document counterpart to `authSessionEpoch`, which is per-document memory and so
- * says nothing to another tab. Written when a session begins, removed when it ends, never on
- * a refresh, so a `storage` listener can tell an account switch from an hourly rotation. The
- * value is opaque: it marks a session boundary, not the account.
+ * Cross-tab counterpart to `authSessionEpoch`: written when a session begins, removed when it
+ * ends, never on refresh, so a `storage` listener can tell a switch from a rotation.
  */
 export const AUTH_SESSION_MARK_KEY = "unsloth_auth_session_mark";
 
@@ -65,9 +63,7 @@ export function storeAuthTokens(
   accessToken: string,
   refreshToken: string,
 ): void {
-  // must_change_password is set via setMustChangePassword(), not here: routing
-  // it through would let CodeQL trace the boolean into localStorage and flag the
-  // deliberate JWT writes as sensitive-info storage.
+  // must_change_password is set via setMustChangePassword() so CodeQL does not flag the JWT writes.
   if (!canUseStorage()) return;
   const sessionStarted = !localStorage.getItem(AUTH_TOKEN_KEY);
   localStorage.setItem(AUTH_TOKEN_KEY, accessToken);
@@ -80,10 +76,8 @@ export function storeAuthTokens(
     );
     window.dispatchEvent(new Event(AUTH_SESSION_STORED_EVENT));
   } else if (!localStorage.getItem(AUTH_SESSION_MARK_KEY)) {
-    // A session signed in before this key existed. Written on its next refresh so a later
-    // sign-out has a key to remove, since removing an absent one raises no storage event and
-    // would leave the other tabs on a signed-out account's titles. Not a new session, so no
-    // epoch bump: the tokens here are a rotation.
+    // Backfill the key for pre-existing sessions so a later sign-out has something to remove (and
+    // fire a storage event). Not a new session, so no epoch bump.
     localStorage.setItem(
       AUTH_SESSION_MARK_KEY,
       `${Date.now()}.${Math.random()}`,
@@ -101,9 +95,8 @@ export function clearAuthTokens(): void {
   window.dispatchEvent(new Event(AUTH_SESSION_CLEARED_EVENT));
 }
 
-// Flag stored as key presence (constant "1" or absence), not a derived boolean,
-// so CodeQL doesn't flow must_change_password into localStorage.setItem. The
-// value is a route hint (/change-password vs /chat), not a secret.
+// Stored as key presence so CodeQL does not flow must_change_password into setItem.
+// The value is a route hint, not a secret.
 export function mustChangePassword(): boolean {
   if (!canUseStorage()) return false;
   return localStorage.getItem(AUTH_MUST_CHANGE_PASSWORD_KEY) !== null;
@@ -126,11 +119,7 @@ export function getPostAuthRoute(): PostAuthRoute {
   return "/chat";
 }
 
-/**
- * Whether this session may read its account's settings yet. Until a required password change lands,
- * the backend refuses every other route with a 403, and the bootstrap sign-in on /change-password
- * stores its tokens a step before that change.
- */
+/** Until a required password change lands, the backend 403s every other route. */
 export function hasSettledAuthSession(): boolean {
   return hasAuthToken() && getPostAuthRoute() === "/chat";
 }

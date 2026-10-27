@@ -147,29 +147,23 @@ def test_capability_probe_reports_api_key_file_and_fails_open():
     assert 'server_caps.get("supports_api_key_file", True)' in src
 
 
-def _llama_requests(tree):
-    """Every build_request / post in routes/inference.py whose URL is a llama-server target."""
-    for node in ast.walk(tree):
-        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
-            continue
-        if node.func.attr not in ("build_request", "post"):
-            continue
-        names = {a.id for a in node.args if isinstance(a, ast.Name)}
-        if names & {"target_url", "url"} and not names & {"provider_url"}:
-            yield node
-
-
-def test_every_llama_request_in_inference_routes_sends_auth():
+def test_inference_routes_reach_llama_server_only_through_one_owner():
     src = (BACKEND / "routes" / "inference.py").read_text(encoding = "utf-8")
     tree = ast.parse(src)
-    calls = list(_llama_requests(tree))
-    assert len(calls) >= 10, "the call-site scan matched too few requests to mean anything"
-    missing = []
-    for call in calls:
-        headers = next((kw.value for kw in call.keywords if kw.arg == "headers"), None)
-        text = ast.unparse(headers) if headers is not None else ""
-        if "upstream_headers" not in text and "_openai_passthrough_upstream_headers" not in text:
-            missing.append(f"line {call.lineno}: {ast.unparse(call)[:120]}")
-    assert not missing, "llama-server requests without the backend auth header:\n" + "\n".join(
-        missing
+    owner = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "_LlamaUpstream"
     )
+    owned = {id(node) for node in ast.walk(owner)}
+    stray = []
+    for node in ast.walk(tree):
+        if id(node) in owned:
+            continue
+        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == (
+            "_openai_passthrough_upstream_headers"
+        ):
+            stray.append(f"line {node.lineno}: {ast.unparse(node)[:120]}")
+        if isinstance(node, ast.JoinedStr) and ".base_url}/" in ast.unparse(node):
+            stray.append(f"line {node.lineno}: {ast.unparse(node)[:120]}")
+    assert not stray, "llama-server requests built outside _LlamaUpstream:\n" + "\n".join(stray)

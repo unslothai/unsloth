@@ -151,8 +151,8 @@ def test_flag_set_after_for_inference_is_kept(fbm):
 def test_lifted_for_inference_runs_its_real_helpers(fbm):
     # The lifted for_inference calls the real _utils.py guards, not a None the namespace made up.
     model = _Model()
-    model._unsloth_tp = True
-    with pytest.raises(RuntimeError, match = "tensor parallel"):
+    model._unsloth_pp = True
+    with pytest.raises(RuntimeError, match = "pipeline parallel"):
         fbm.for_inference(model)
 
 
@@ -168,6 +168,7 @@ def _fast_llama_for_training():
         resolve_training_gradient_checkpointing = lambda model, flag, checkpointing = None: False,
         arm_gradient_checkpointing = lambda model, checkpointing = None: False,
         set_module_gradient_checkpointing = lambda module, flag: None,
+        _tensor_parallel_for_training = lambda model: None,  # tp_replica.py: no tp model here
     )
     module = ast.fix_missing_locations(ast.Module(body = [fn], type_ignores = []))
     exec(compile(module, str(MODELS / "llama.py"), "exec"), namespace)

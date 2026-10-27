@@ -160,9 +160,7 @@ def standardize_chat_format(
                 # Use the inferred keys first, falling back per-message so mixed ShareGPT/ChatML rows keep valid turns.
                 original_role = message.get(role_key)
                 original_content = message.get(content_key)
-                # Blank counts as absent for the ROLE, matching the preview: `is None` here
-                # trained {"role": "", "from": "gpt"} as a user turn. Content is not blank-
-                # checked, because an empty message is a legitimate value.
+                # Blank role counts as absent, as in the preview; an is None check trained a blank-role gpt turn as a user turn. Blank content is legitimate.
                 if not _normalize_role_alias(original_role):
                     original_role = message.get("role") or message.get("from") or ""
                 if original_content is None:
@@ -420,10 +418,7 @@ def convert_to_vlm_format(
     dataset_name = None,
     progress_callback = None,
 ):
-    """Convert simple {image, text} format to VLM messages format.
-
-    Returns a LIST of dicts with a 'messages' field, not a HuggingFace Dataset, to preserve PIL Images. For URL-based datasets, runs a 200-sample parallel probe first to estimate speed and failure rate via progress_callback, an optional callable(status_message=str).
-    """
+    """Returns a list, not a Dataset, so PIL Images are preserved; URL datasets are probed first."""
     from PIL import Image
     from utils.account_context import current_account
     from .vlm_processing import generate_smart_vlm_instruction
@@ -458,8 +453,7 @@ def convert_to_vlm_format(
         uses_dynamic = False
 
     def _convert_single_sample(sample):
-        """Convert a single sample to VLM format."""
-        # Image may be a PIL Image, local path, URL, or bare filename
+        """Image may be a PIL Image, local path, URL, or bare filename."""
         image_data = sample[image_column]
 
         if isinstance(image_data, str):

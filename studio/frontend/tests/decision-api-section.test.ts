@@ -20,7 +20,11 @@ const API = read("../src/features/settings/api/systemone.ts");
 const API_TAB = read("../src/features/settings/tabs/api-keys-tab.tsx");
 
 test("the API tab renders the section and search finds it", () => {
-  assert.match(API_TAB, /<DecisionApiSection \/>/);
+  const tabs = read("../src/features/settings/components/api-example-tabs.tsx");
+  assert.match(API_TAB, /<ApiExamplesPanel/);
+  assert.match(tabs, /<DecisionApiSection showHeading=\{false\} \/>/);
+  assert.match(tabs, /searchLabel: "settings\.apiKeys\.decisionApi\.title"/);
+  assert.match(tabs, /data-settings-label=\{\s*entry\.searchLabel \? t\(entry\.searchLabel\) : undefined\s*\}/);
   assert.ok(
     SETTINGS_SEARCH_INDEX["api-keys"].includes(
       "settings.apiKeys.decisionApi.title",
@@ -32,11 +36,13 @@ test("the API tab renders the section and search finds it", () => {
   );
 });
 
-test("only the owner sees it, below the chat usage examples", () => {
+test("only the owner sees it, as a tab after the chat, media and audio examples", () => {
+  const tabs = read("../src/features/settings/components/api-example-tabs.tsx");
   assert.match(
-    API_TAB,
-    /<UsageExamples[\s\S]*?\/>\s*(?:\{\/\*[^*]*\*\/\}\s*)?\{isOwner \? <DecisionApiSection \/> : null\}/,
+    tabs,
+    /id: "audio",[\s\S]*?\.\.\.\(isOwner\s*\? \[\s*\{\s*id: "decision" as const/,
   );
+  assert.match(tabs, /if \(tab === "decision" && !isOwner\) return;/);
   assert.doesNotMatch(SECTION, /useIsAccountOwner/);
 });
 
@@ -172,4 +178,12 @@ test("a failed first load still renders the section with its error", () => {
     SECTION,
     /translate\("settings.apiKeys.decisionApi.loadError"\)/,
   );
+});
+
+test("Open Connections works off the dialog too, where the API page shows this card", () => {
+  assert.match(
+    SECTION,
+    /onClick=\{\(\) =>\s*useSettingsDialogStore\.getState\(\)\.openDialog\("connections"\)\s*\}/,
+  );
+  assert.doesNotMatch(SECTION, /setActiveTab\("connections"\)/);
 });

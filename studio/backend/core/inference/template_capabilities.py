@@ -166,8 +166,7 @@ def _scan(body, aliases, guarded):
     for node in body:
         if isinstance(node, nodes.Output):
             for value in node.nodes:
-                # `{{ m.content if m.role == 'tool' else '' }}` holds its check in
-                # the expression, where an `{% if %}` usually would.
+                # `{{ m.content if m.role == 'tool' else '' }}` keeps the check inline instead of an `{% if %}`.
                 if _is_payload(value) and (
                     guarded or _reads_catalog(value, aliases) or _checks_tool_role(value)
                 ):
@@ -180,14 +179,10 @@ def _scan(body, aliases, guarded):
             # `{% set _ = catalog.append(tools) %}`: the same mutation without `do`.
             aliases |= _receiver_gaining_catalog(node.node, aliases, guarded)
             if _reads_catalog(node.node, aliases) or guarded or _checks_tool_role(node.node):
-                # Three ways a name comes to hold tool-conditional content: LFM2 fills
-                # `ns.system_prompt` inside the guard and renders it outside; a guard
-                # runs the statement only when tools exist, so even a constant counts;
-                # and a stored `m.role == 'tool'` renders what the inline test does.
+                # Guarded statements count even for constants (LFM2 fills ns.system_prompt in its guard); a stored m.role == tool check renders like the inline test.
                 aliases |= _bound_names(node.target)
             else:
-                # Plain names only: one field says nothing about the rest of the
-                # container. glm-4-9b-chat rebinds `tools` off a message.
+                # Plain names only: one field says nothing about the rest of its container; glm-4-9b-chat rebinds tools off a message.
                 aliases -= _rebound_names(node.target)
             continue
 
@@ -241,8 +236,7 @@ def _scan(body, aliases, guarded):
 
 def template_supports_tools(template) -> bool:
     """Inspect syntax only; rendering and parser support remain backend checks."""
-    # Outside the cache: lru_cache hashes first, so a dict-valued template would
-    # raise past every fail-closed branch below.
+    # Outside the cache: lru_cache hashes first, so a dict would raise past fail-closed branches.
     if not isinstance(template, str):
         return False
     # `str.__str__`, not `str(...)`: an override would raise out here, unhandled.
