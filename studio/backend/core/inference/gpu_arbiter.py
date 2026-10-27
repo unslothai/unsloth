@@ -147,7 +147,10 @@ def _evict_chat() -> None:
         _commit_swap_kv(unloaded)
     orchestrator = get_inference_backend()
     if orchestrator.active_model_name:
+        unloaded = _mlx_chat_identity(orchestrator)
         orchestrator.unload_model(orchestrator.active_model_name)
+        if unloaded is not None:
+            _commit_swap_kv(unloaded)
     # In-flight loads lack active_model_name; cancel_load must drop the loading marker before teardown.
     for pending in list(getattr(orchestrator, "loading_models", ()) or ()):
         orchestrator.cancel_load(pending)
@@ -169,6 +172,14 @@ def _chat_identity(llama):
     try:
         from core.inference.llama_keepwarm import _loaded_identity
         return _loaded_identity(llama)
+    except Exception:
+        return None
+
+
+def _mlx_chat_identity(orchestrator):
+    try:
+        from core.inference.chat_swap_kv import mlx_chat_identity
+        return mlx_chat_identity(orchestrator)
     except Exception:
         return None
 

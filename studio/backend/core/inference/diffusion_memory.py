@@ -2400,6 +2400,21 @@ def plan_fits_total_capacity(plan: Any) -> bool:
     return int(required) <= budget
 
 
+def mps_plan_tight(plan: Any) -> bool:
+    """Whether an Apple MPS plan, which stays resident whatever it needs (unified memory), needs more than the 0.85
+    share of its budget a discrete plan stays resident in. False on every other device or when a size is unknown."""
+    try:
+        if plan.device_memory.device != "mps":
+            return False
+        required = plan.estimates.get("resident_required_mib")
+        budget = plan.estimates.get("safe_device_budget_mib")
+    except Exception:  # noqa: BLE001 - malformed plan: not tight
+        return False
+    if required is None or budget is None:
+        return False
+    return int(required) > int(int(budget) * 0.85)
+
+
 def total_capacity_budget_mib(memory: DeviceMemory) -> Optional[int]:
     """TOTAL capacity minus the same reserve the free budget takes, times the 0.85 resident margin. None when the
     total is unknown. Shared with the dense prefetch gate so the two cannot disagree."""
