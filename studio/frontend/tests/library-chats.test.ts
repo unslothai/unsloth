@@ -414,7 +414,15 @@ test("sections have created and last modified dates, and Last modified is the de
 test("chat, project and section cards are a little shorter than square, dated bottom left", () => {
   const items = readSrc("features/library/chats/chats-items.tsx");
   const card = items.slice(items.indexOf("const CARD = cn("), items.indexOf("const ICON ="));
-  assert.match(card, /aspect-\[8\/7\]/);
+  assert.doesNotMatch(card, /aspect-\[/);
+  assert.match(card, /min-h-0 min-w-0/);
+  assert.match(card, /CHAT_CARD_ROW_MIN =\s*"calc\(var\(--spacing\) \* 26 \+ 2\.75 \* var\(--text-ui-14\) \+ 3 \* var\(--text-ui-12\)\)"/);
+  const grid = readSrc("features/library/components/library-cards.tsx");
+  assert.match(grid, /max\(\$\{minRowHeight\}, calc\(\(100cqw - \$\{columns - 1\} \* var\(--spacing\) \* 5\) \/ \$\{columns\} \* 7 \/ 8\)\)/);
+  assert.match(grid, /<div className="@container">\{grid\}<\/div>/);
+  const library = readSrc("features/library/chats/chats-library.tsx");
+  assert.doesNotMatch(library, /<CardGrid(?! minRowHeight=\{CHAT_CARD_ROW_MIN\})/);
+  assert.doesNotMatch(library, /aspect-\[8\/7\]/);
   assert.doesNotMatch(card, /overflow-hidden/);
   assert.match(card, /self-stretch/);
   assert.doesNotMatch(items, /cn\(CARD, "min-h-/);
