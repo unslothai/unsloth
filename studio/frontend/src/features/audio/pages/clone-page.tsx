@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import type { ModelOption } from "@/features/model-picker/components/model-selector/types";
 import { toast } from "@/lib/toast";
-import { FloppyDiskIcon, SpeechToTextIcon } from "@hugeicons/core-free-icons";
+import { ClosedCaptionIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ComponentProps, useState } from "react";
 import type { AudioGalleryClip } from "../api";
@@ -98,7 +98,7 @@ function CloneInputs({
               }
               onClick={() => void transcriber.transcribe(reference)}
             >
-              <HugeiconsIcon icon={SpeechToTextIcon} className="size-3.5" />
+              <HugeiconsIcon icon={ClosedCaptionIcon} className="size-[1em]" />
               {transcriber.transcribing ? "Transcribing…" : "Transcribe"}
             </Button>
           </div>
@@ -109,7 +109,7 @@ function CloneInputs({
             aria-busy={transcriber.transcribing}
             onChange={(event) => setReferenceText(event.target.value)}
             placeholder="Type the words in the clip exactly, or press Transcribe."
-            className="min-h-16 rounded-lg"
+            className="min-h-16"
           />
           {transcriber.error ? (
             <p
@@ -152,7 +152,7 @@ function CloneInputs({
           value={clone.text}
           onChange={(event) => setText(event.target.value)}
           placeholder="Type what the voice should say…"
-          className="min-h-28 rounded-lg"
+          className="min-h-28"
         />
         {clone.text.trim() ? null : (
           <div
@@ -267,11 +267,10 @@ export function CloneFooter({
             <Button
               type="button"
               variant="outline"
-              className="h-11 px-5"
+              className="text-ui-13"
               disabled={!canSave}
               onClick={() => setSaving(true)}
             >
-              <HugeiconsIcon icon={FloppyDiskIcon} className="size-4" />
               Save voice…
             </Button>
           )

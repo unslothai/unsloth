@@ -10,6 +10,7 @@ import warnings
 
 import pytest
 import torch
+from real_accelerator import has_real_cuda
 
 pytestmark = pytest.mark.skipif(
     importlib.util.find_spec("torchao") is None, reason = "require torchao"
@@ -75,6 +76,56 @@ def test_nvfp4_scheme_layers_where_fp4_gemm_runs(monkeypatch):
     assert type(layer.odd) is torch.nn.Linear
 
 
+@pytest.mark.parametrize("lora", [False, True])
+def test_nvfp4_needs_in_features_divisible_by_32(monkeypatch, lora):
+    # _scaled_mm takes the packed FP4 K / 2 and needs it divisible by 16: K = 16, 48, 80 cannot run.
+    monkeypatch.setattr(qat_utils, "_qat_forward_runs", lambda *a: True)
+    if lora:
+        from peft import LoraConfig, get_peft_model
+
+        monkeypatch.setenv("UNSLOTH_QAT_FAKE_QUANTIZE_LORA", "1")
+        model = get_peft_model(
+            _tiny_qwen3(), LoraConfig(r = 16, lora_alpha = 16, target_modules = ["q_proj"])
+        )
+        model = _prepare_model_for_qat(model, "nvfp4")
+        q_proj = model.base_model.model.model.layers[0].self_attn.q_proj
+        assert isinstance(q_proj.base_layer, _nvfp4_linear())
+        assert isinstance(q_proj.lora_A["default"], _nvfp4_linear())  # K = 128
+        assert type(q_proj.lora_B["default"]) is torch.nn.Linear  # K = r = 16
+        return
+    widths = (16, 32, 48, 64, 80, 96)
+    model = torch.nn.Sequential(*(torch.nn.Linear(k, 128, bias = False) for k in widths)).to(
+        torch.bfloat16
+    )
+    with warnings.catch_warnings(record = True) as caught:
+        warnings.simplefilter("always")
+        model = _prepare_model_for_qat(model, "nvfp4")
+    got = {k: isinstance(m, _nvfp4_linear()) for k, m in zip(widths, model)}
+    assert got == {k: k % 32 == 0 for k in widths}
+    assert any("in_features not divisible by 32" in str(w.message) for w in caught)
+
+
+@pytest.mark.skipif(
+    not has_real_cuda()
+    or not torch.cuda.is_available()
+    or torch.cuda.get_device_capability() < (10, 0),
+    reason = "needs an FP4 tensor core GPU",
+)
+def test_nvfp4_admitted_widths_run_on_gpu():
+    widths = (16, 32, 48, 64, 80, 96)
+    model = torch.nn.ModuleList(torch.nn.Linear(k, 128, bias = False) for k in widths).to(
+        "cuda", torch.bfloat16
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        model = _prepare_model_for_qat(model, "nvfp4")
+    for k, layer in zip(widths, model):
+        assert isinstance(layer, _nvfp4_linear()) == (k % 32 == 0), k
+        x = torch.randn(16, k, device = "cuda", dtype = torch.bfloat16, requires_grad = True)
+        layer(x).float().sum().backward()
+        assert x.grad is not None
+
+
 def test_nvfp4_plain_module_without_hf_heads(monkeypatch):
     monkeypatch.setattr(qat_utils, "_qat_forward_runs", lambda *a: True)
     model = torch.nn.Sequential(torch.nn.Linear(64, 128, bias = False)).to(torch.bfloat16)
@@ -128,7 +179,7 @@ def test_mx_qat_linear_takes_float32_activations_under_autocast(weight_dtype):
     # Autocast feeds float32 activations into bfloat16 (or float32) linears.
     # torchao's CPU fake-quant backward cannot mix a float32 weight with bfloat16 activations.
     device = "cpu" if weight_dtype == torch.bfloat16 else "cuda"
-    if device == "cuda" and not torch.cuda.is_available():
+    if device == "cuda" and not has_real_cuda():
         pytest.skip("float32 weights under autocast need the CUDA MX path")
     model = torch.nn.Sequential(torch.nn.Linear(64, 128, bias = False)).to(device, weight_dtype)
     model = _prepare_model_for_qat(model, _mx_torchao_config())
@@ -307,3 +358,56 @@ def test_nvfp4_accepts_rank4_inputs(monkeypatch):
     for shape in [(6, 64), (2, 3, 64), (2, 3, 5, 64)]:
         out = model(torch.randn(*shape, dtype = torch.bfloat16))
         assert out.shape == (*shape[:-1], 128)
+
+
+def _torchao_nvfp4_contract_forward(self, x):
+    # What torchao's NVFP4 QAT forward accepts: nvfp4_quantize asserts these, then the output follows x.
+    assert x.dim() == 2, x.shape
+    assert x.dtype in (torch.bfloat16, torch.float32), f"{x.dtype} not supported"
+    assert x.is_contiguous(), "Only support contiguous data for now"
+    return (x.float() @ self.weight.float().t()).to(x.dtype)
+
+
+def test_nvfp4_accepts_strided_inputs(monkeypatch):
+    _probe_ok(monkeypatch)
+    model = torch.nn.Sequential(torch.nn.Linear(64, 128, bias = False)).to(torch.bfloat16)
+    ref = model[0].weight.detach().clone()
+    model = _prepare_model_for_qat(model, "nvfp4")
+    monkeypatch.setattr(_nvfp4_linear(), "forward", _torchao_nvfp4_contract_forward)
+    base = torch.randn(4, 6, 128, dtype = torch.bfloat16)
+    for x in [base[0, :, ::2], base[:, :, :64], base.transpose(0, 1)[..., 64:].unsqueeze(0)]:
+        assert not x.is_contiguous()
+        out = model(x)
+        assert out.shape == (*x.shape[:-1], 128) and out.dtype == torch.bfloat16
+        expected = (x.float() @ ref.float().t()).to(torch.bfloat16)
+        torch.testing.assert_close(out, expected)
+
+
+@pytest.mark.parametrize("weight_dtype", [torch.bfloat16, torch.float32])
+def test_nvfp4_takes_float16_autocast_activations(monkeypatch, weight_dtype):
+    # Linear(63, 64) stays plain (63 is not a multiple of 16) and emits float16 under autocast.
+    _probe_ok(monkeypatch)
+    torch.manual_seed(0)
+    model = torch.nn.Sequential(
+        torch.nn.Linear(63, 64, bias = False), torch.nn.Linear(64, 128, bias = False)
+    ).to(weight_dtype)
+    model = _prepare_model_for_qat(model, "nvfp4")
+    assert not isinstance(model[0], _nvfp4_linear()) and isinstance(model[1], _nvfp4_linear())
+    monkeypatch.setattr(_nvfp4_linear(), "forward", _torchao_nvfp4_contract_forward)
+    x = torch.randn(2, 3, 63, dtype = weight_dtype, requires_grad = True)
+    with torch.autocast("cpu", dtype = torch.float16):
+        out = model(x)
+    assert out.dtype == torch.float16 and out.shape == (2, 3, 128)
+    out.float().sum().backward()
+    assert x.grad is not None and model[1].weight.grad is not None
+
+
+def test_nvfp4_float16_activations_under_bfloat16_autocast_return_bfloat16(monkeypatch):
+    _probe_ok(monkeypatch)
+    model = torch.nn.Sequential(torch.nn.Linear(64, 128, bias = False)).to(torch.bfloat16)
+    model = _prepare_model_for_qat(model, "nvfp4")
+    monkeypatch.setattr(_nvfp4_linear(), "forward", _torchao_nvfp4_contract_forward)
+    x = torch.randn(2, 3, 64, dtype = torch.float16)
+    with torch.autocast("cpu", dtype = torch.bfloat16):
+        out = model(x)
+    assert out.dtype == torch.bfloat16 and out.shape == (2, 3, 128)

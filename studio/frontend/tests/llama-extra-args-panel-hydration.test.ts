@@ -69,9 +69,9 @@ test("a background auto-load hydrates a server-only override", () => {
   assert.match(ADAPTER, /const cleaned = clean\(resolvedExtraArgs\);/);
   // Cached inventory can return a different loadId than the one the row was written under.
   assert.match(ADAPTER, /candidate\.id,\n\s*candidate\.ggufVariant \?\? null,/);
-  assert.equal(
-    ADAPTER.match(/llama_extra_args: resolvedExtraArgs \?\? \[\]/g)?.length,
-    2,
+  assert.match(
+    ADAPTER,
+    /llamaServerLoadFields\(\s*\{ \.\.\.config, llamaExtraArgs: resolvedExtraArgs \}/,
   );
   assert.match(ADAPTER, /candidate\.kind === "gguf" &&\s*\n?\s*!isDiffusion/);
 });

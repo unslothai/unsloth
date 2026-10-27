@@ -146,6 +146,9 @@ def _cast_input_to_weight_dtype(module, args):
     return (x.to(weight.dtype),) + tuple(args[1:])
 
 
+_INPUT_CAST_DTYPES = frozenset((torch.float16, torch.bfloat16, torch.float32))
+
+
 def cast_mixed_linear_inputs(model, load_dtype):
     """Outside autocast, cast inputs of Linears moved off load_dtype (Falcon-H1 / Nemotron-H fp16) to the weight dtype."""
     hooked = 0
@@ -155,9 +158,10 @@ def cast_mixed_linear_inputs(model, load_dtype):
         ):
             continue
         weight = getattr(module, "weight", None)
+        # Not is_floating_point(): FP8Linear / FbgemmFp8Linear keep float8 weights and quantize their own input.
         if (
             not isinstance(weight, torch.Tensor)
-            or not weight.is_floating_point()
+            or weight.dtype not in _INPUT_CAST_DTYPES
             or weight.dtype == load_dtype
         ):
             continue

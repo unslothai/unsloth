@@ -289,7 +289,7 @@ test("dialog actions and reconciliation stop when the dialog closes", () => {
   );
   assert.match(
     CHAT_MCP_SERVERS_DIALOG,
-    /<Button size="sm" onClick=\{startCreate\} disabled=\{importing\}>/,
+    /<Button variant="secondary" size="sm" onClick=\{startCreate\} disabled=\{importing\}>/,
   );
 });
 

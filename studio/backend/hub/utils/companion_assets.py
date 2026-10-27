@@ -328,6 +328,9 @@ def _sd_cpp_component_specs(
         vae = getattr(fam, "sd_cpp_vae", None)
         if vae and vae[0]:
             specs.add((vae[0], vae[1]))
+        tokenizer = getattr(fam, "sd_cpp_tokenizer", None)
+        if tokenizer and tokenizer[0]:
+            specs.add((tokenizer[0], tokenizer[1]))
         # EVERY set the family could pick: there is no header to read and a renamed FLUX.2-klein 9B file carries no size token, so guessing answers 4B and leaves the 9B encoder unprotected.
         for encoder in sd_cpp_text_encoder_candidates(fam) or ():
             if encoder and encoder[0]:
@@ -391,7 +394,6 @@ def _with_mirrors(bases: Iterable[str]) -> set[str]:
 
 def known_companion_base_ids() -> set[str]:
     """Every id (lowercased) that is a curated image-family companion base, or its mirror. Deliberately NOT "anything a link ever named": orphan cleanup offers only repos this set recognises, so a mis-recorded link can never turn an unrelated repo into a delete candidate."""
-    # The pairs are companion bases by construction, existing only because a GGUF pick of that family needs an ungated copy, and they cover the variants one family entry serves through a card tag.
     bases = _curated_base_ids()
     # The native engine's component-only repos ARE the companions for an sd.cpp pick, and the largest half of the footprint; leaving them out made them link-only strangers. Safe against a chat model borrowed as a text encoder, since the orphan listing skips any repo holding a GGUF.
     try:

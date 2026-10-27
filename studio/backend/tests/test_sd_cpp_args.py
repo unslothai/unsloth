@@ -1101,3 +1101,114 @@ def test_mmap_env_override_and_no_duplicate(monkeypatch, tmp_path):
     monkeypatch.delenv("UNSLOTH_DIFFUSION_SD_CPP_MMAP")
     for cmd in _all_builders(new, extra_args = ["--mmap"]):
         assert cmd.count("--mmap") == 1
+
+
+@pytest.mark.parametrize(
+    "ccs,expected",
+    [
+        ([(8, 0)], "1024"),  # A100
+        ([(9, 0)], "1024"),  # H100
+        ([(10, 0)], "1024"),  # B200
+        ([(10, 3)], "1024"),
+        ([(12, 0)], "4096"),  # RTX PRO 6000 / RTX 50
+        ([(8, 9)], None),  # L4 / RTX 40: MMQ stays faster
+        ([(8, 6)], None),
+        ([(8, 7)], None),
+        ([(7, 5)], None),
+        ([(11, 0)], None),
+        ([(8, 0), (10, 0)], "1024"),
+        ([(8, 0), (8, 9)], None),  # sd.cpp may land on either card
+        ([(10, 0), (12, 0)], None),
+        ([], None),
+    ],
+)
+def test_quant_cublas_env_follows_the_measured_architectures(ccs, expected):
+    env = _sd_cpp_args_module.quant_cublas_env(ccs, environ = {}, weight_types = frozenset({"Q8_0"}))
+    assert env == ({} if expected is None else {"GGML_CUDA_QUANT_CUBLAS_MIN_BATCH": expected})
+
+
+@pytest.mark.parametrize("user_value", ["0", "512"])
+def test_quant_cublas_env_never_overrides_the_user(user_value):
+    environ = {"GGML_CUDA_QUANT_CUBLAS_MIN_BATCH": user_value}
+    assert (
+        _sd_cpp_args_module.quant_cublas_env(
+            [(10, 0)], environ = environ, weight_types = frozenset({"Q8_0"})
+        )
+        == {}
+    )
+
+
+@pytest.mark.parametrize(
+    "weight_types,expected",
+    [
+        (frozenset({"Q8_0"}), "1024"),
+        (frozenset({"Q4_K"}), None),  # k-quants keep MMQ
+        (frozenset({"Q4_K", "Q5_K"}), None),
+        (frozenset({"Q8_0", "Q4_K"}), None),  # a mixed file would route its k-quants too
+        (frozenset({"Q4_0"}), None),
+        (frozenset(), None),  # unquantized: nothing to route
+        (None, None),  # unknown (safetensors, unreadable)
+    ],
+)
+def test_quant_cublas_env_only_for_q8_0_diffusion_ggufs(weight_types, expected):
+    env = _sd_cpp_args_module.quant_cublas_env([(10, 0)], environ = {}, weight_types = weight_types)
+    assert env == ({} if expected is None else {"GGML_CUDA_QUANT_CUBLAS_MIN_BATCH": expected})
+
+
+def test_gguf_quantized_weight_types_reads_the_tensor_table(tmp_path):
+    gguf = pytest.importorskip("gguf")
+    import numpy as np
+
+    def write(name, tensors):
+        path = tmp_path / name
+        w = gguf.GGUFWriter(str(path), "test")
+        for tname, arr, qtype in tensors:
+            if qtype is None:
+                w.add_tensor(tname, arr)
+            elif arr is None:  # gguf-py cannot quantize k-quants: write zeroed blocks of that type
+                blocks = np.zeros((4, gguf.GGML_QUANT_SIZES[qtype][1]), dtype = np.uint8)
+                w.add_tensor(tname, blocks, raw_dtype = qtype)
+            else:
+                w.add_tensor(tname, gguf.quants.quantize(arr, qtype), raw_dtype = qtype)
+        w.write_header_to_file()
+        w.write_kv_data_to_file()
+        w.write_tensors_to_file()
+        w.close()
+        return str(path)
+
+    x = np.ones((4, 256), dtype = np.float32)
+    q8 = write(
+        "q8.gguf",
+        [("a", x, gguf.GGMLQuantizationType.Q8_0), ("n", np.ones(4, dtype = np.float32), None)],
+    )
+    mixed = write(
+        "mixed.gguf",
+        [("a", x, gguf.GGMLQuantizationType.Q8_0), ("b", x, gguf.GGMLQuantizationType.Q4_0)],
+    )
+    types_of = _sd_cpp_args_module.gguf_quantized_weight_types
+    assert types_of(q8) == frozenset({"Q8_0"})
+    assert types_of(mixed) == frozenset({"Q8_0", "Q4_0"})
+    assert types_of(str(tmp_path / "missing.gguf")) is None
+    assert types_of(str(tmp_path / "model.safetensors")) is None
+    assert types_of(None) is None
+
+    k_quant = write("te_q4k.gguf", [("w", None, gguf.GGMLQuantizationType.Q4_K)])
+    dense = write("vae_f16.gguf", [("w", x.astype(np.float16), None)])
+    all_types = _sd_cpp_args_module.model_files_quantized_weight_types
+
+    def route(files):
+        return _sd_cpp_args_module.quant_cublas_env(
+            [(10, 0)], environ = {}, weight_types = all_types(files)
+        )
+
+    with_k_te = SdCppModelFiles(diffusion_model = q8, llm = k_quant)
+    assert all_types(with_k_te) == frozenset({"Q8_0", "Q4_K"})
+    assert route(with_k_te) == {}
+    assert route(SdCppModelFiles(diffusion_model = q8, t5xxl = k_quant, vae = dense)) == {}
+    q8_only = SdCppModelFiles(
+        diffusion_model = q8, llm = q8, vae = dense, clip_l = str(tmp_path / "c.safetensors")
+    )
+    assert all_types(q8_only) == frozenset({"Q8_0"})
+    assert route(q8_only) == {"GGML_CUDA_QUANT_CUBLAS_MIN_BATCH": "1024"}
+    assert all_types(SdCppModelFiles(diffusion_model = q8, llm = str(tmp_path / "x.gguf"))) is None
+    assert all_types(SdCppModelFiles(diffusion_model = str(tmp_path / "m.safetensors"))) is None

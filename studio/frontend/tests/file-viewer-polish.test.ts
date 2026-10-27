@@ -14,12 +14,19 @@ const { audioWorkflowTab } = await import("../src/features/audio/workflows.ts");
 
 const read = (file: string) => readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8");
 
-test("audio reads as ai-speech everywhere and Text to Speech as text-to-speech", () => {
+test("audio reads as the bars-only icon everywhere and Text to Speech as ai-speech with its sparkle", () => {
   assert.equal(ATTACHMENT_KIND_ICONS.audio, AiSpeechIcon);
   assert.equal(audioWorkflowTab("speak").icon, TextToSpeechIcon);
-  assert.notEqual(AiSpeechIcon, TextToSpeechIcon);
+  const paths = (icon: unknown) => (icon as [string, { d: string }][]).map(([, attrs]) => attrs.d);
+  const sparkle = (d: string) => d.startsWith("M18.5 3.9375");
+  assert.ok(!paths(AiSpeechIcon).some(sparkle), "audio carries no sparkle");
+  assert.ok(paths(TextToSpeechIcon).some(sparkle), "Text to Speech keeps ai-speech's sparkle");
   for (const file of ["components/app-sidebar.tsx", "components/command-palette.tsx", "features/library/file-kind.ts"]) {
     assert.doesNotMatch(read(file), /AudioWave01Icon/, file);
+  }
+  // Chat's audio chips and Upload audio used lucide's headphones.
+  for (const file of ["features/chat/shared-composer.tsx", "components/assistant-ui/thread.tsx"]) {
+    assert.doesNotMatch(read(file), /HeadphonesIcon/, file);
   }
 });
 
@@ -38,7 +45,9 @@ test("the lightbox backdrop is a faint grey in light mode and near black in dark
 
 test("the video player uses Studio's icons and full screen turns into exit full screen", () => {
   const video = read("features/browser/video-file.tsx");
-  assert.doesNotMatch(video, /from "lucide-react"/);
+  // Studio's play glyph is lucide's; everything else here stays Hugeicons.
+  assert.match(video, /import \{ PlayIcon \} from "lucide-react";/);
+  assert.doesNotMatch(video, /import \{[^}]*\w[^}]*,[^}]*\} from "lucide-react"/);
   assert.match(video, /addEventListener\("fullscreenchange", sync\)/);
   assert.match(video, /icon=\{fullscreened \? ArrowShrink01Icon : ArrowExpand01Icon\}/);
   assert.match(video, /fullscreened \? t\("browser\.video\.exitFullscreen"\) : t\("browser\.video\.fullscreen"\)/);
@@ -74,4 +83,22 @@ test("the desktop Open lists apps, opens a local copy, and never opens programs"
   for (const command of ["browser_file_local_copy", "browser_file_apps", "browser_file_open", "browser_file_path", "browser_file_reveal"]) {
     assert.match(main, new RegExp(`browser_open_with::${command},`), command);
   }
+});
+
+test("file bars show no menu or button that only repeats one beside it", () => {
+  const panel = read("features/browser/browser-panel.tsx");
+  const between = (start: string, end: string) =>
+    panel.slice(panel.indexOf(start), panel.indexOf(end, panel.indexOf(start)));
+  assert.match(panel, /const hasMenu = isTauri \|\| tabType !== null;/);
+  assert.match(panel, /\{hasMenu \? \(\s*<DropdownMenu onOpenChange/);
+  const floating = between("function FloatingFileToolbar(", "const SPLIT_PILL");
+  const nameMenu = between("function FloatingFileToolbar(", "</DropdownMenuContent>");
+  assert.doesNotMatch(nameMenu, /browser\.file\.openIn|saveBrowserDownload/);
+  assert.match(floating, /\{kind \? \(\s*<DropdownMenu>/);
+  assert.match(floating, /title=\{entry\.name\}/);
+  assert.doesNotMatch(floating, /kind === "html"|runAgain|toggleConsole/);
+  const chromeMenu = between("function BrowserFileToolbar(", "function FloatingFileToolbar(");
+  const menu = chromeMenu.slice(chromeMenu.indexOf("<PanelMenu"));
+  assert.doesNotMatch(menu, /onSelect=\{runAgain\}|onSelect=\{toggleConsole\}/);
+  assert.match(menu, /\{isTauri \|\| !tabType \? \(\s*<DropdownMenuItem disabled=\{!blob\} onSelect=\{openInNewChat\}>/);
 });

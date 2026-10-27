@@ -9,8 +9,8 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import {
-  CheckmarkCircle01Icon,
   InformationCircleIcon,
+  CheckmarkCircle02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { EXPORT_METHODS, type ExportMethod } from "../constants";
@@ -18,9 +18,7 @@ import { EXPORT_METHODS, type ExportMethod } from "../constants";
 interface MethodPickerProps {
   value: ExportMethod | null;
   onChange: (v: ExportMethod) => void;
-  /** Methods that should be shown but disabled (greyed out, not clickable). */
   disabledMethods?: ExportMethod[];
-  /** Optional reason shown in a tooltip on disabled methods. */
   disabledReason?: string;
 }
 
@@ -68,7 +66,7 @@ export function MethodPicker({ value, onChange, disabledMethods = [], disabledRe
                 isDisabled
                   ? "ring-border opacity-40 cursor-not-allowed"
                   : selected
-                    ? "ring-1 ring-ring-strong bg-primary/5"
+                    ? "ring-1 ring-ring-strong bg-wash-5"
                     : "ring-border hover:bg-muted/40",
               )}
             >
@@ -82,7 +80,7 @@ export function MethodPicker({ value, onChange, disabledMethods = [], disabledRe
               >
                 {selected && (
                   <HugeiconsIcon
-                    icon={CheckmarkCircle01Icon}
+                    icon={CheckmarkCircle02Icon}
                     className="size-3 text-primary-foreground"
                   />
                 )}

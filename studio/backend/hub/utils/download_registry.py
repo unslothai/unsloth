@@ -78,11 +78,7 @@ def http_max_file_bytes() -> int:
 
 
 def http_size_ceiling_reason(largest_file_bytes: Optional[int]) -> Optional[str]:
-    """Why HTTP cannot serve a download whose biggest file is *largest_file_bytes*, or None.
-
-    An unknown size (``None``/0, e.g. metadata that could not be read) is not evidence of anything and
-    leaves the transport choice exactly as it was.
-    """
+    """An unknown size (None or 0) is no evidence, so the transport choice is left exactly as it was."""
     try:
         largest = int(largest_file_bytes or 0)
     except (TypeError, ValueError):
@@ -138,11 +134,7 @@ def get_download_transport_capabilities(
     ram_gate: bool = False,
     largest_file_bytes: Optional[int] = None,
 ) -> DownloadTransportCapabilities:
-    """Return transport availability and the current Auto choice.
-
-    ``probe`` checks live Xet health, ``ram_gate`` applies memory pressure, and
-    ``largest_file_bytes`` applies the HTTP size limit.
-    """
+    """probe checks live Xet health, ram_gate applies memory pressure, largest_file_bytes HTTP size limit."""
     xet_available = importlib.util.find_spec("hf_xet") is not None
     http_reason = http_size_ceiling_reason(largest_file_bytes)
     auto_transport = TRANSPORT_XET if xet_available else TRANSPORT_HTTP
@@ -331,7 +323,7 @@ def _is_our_worker(pid: int, repo_id: Optional[str]) -> bool:
 
 def _kill_orphan(pid: int) -> bool:
     """Signal the process and wait for it to actually be gone; True once it is. The wait is what makes the boot sweep meaningful: the signal only schedules the death, and a sweep that runs a microsecond later still sees the worker's Hugging Face blob lock and spares a partial nothing will ever finish. Bounded, because a pid we cannot reap is not a reason to hold up startup, and answering False there matters: a survivor must keep its breadcrumb and must not have its live partial claimed as ours to delete."""
-    # Repeated here because this one sends the signal, and a helper that kills should not depend on every future caller having checked first.
+    # Rechecked here: a helper that kills must not rely on every caller checking first.
     if not is_signalable_pid(pid):
         return False
     try:
@@ -507,8 +499,6 @@ class _PurgeOutcome(NamedTuple):
 
 
 # Only the unresumable sweep waits out ABANDONED_PARTIAL_SECONDS: it reclaims disk, while a marker-mismatch purge exists to stop a corrupt append and cannot defer.
-
-
 def _purge_incomplete_blobs(
     entry: Path,
     only_hashes: Optional[frozenset[str]] = None,
@@ -518,12 +508,7 @@ def _purge_incomplete_blobs(
     owned_hashes: Optional[frozenset[str]] = None,
     owns_all_blobs: bool = False,
 ) -> _PurgeOutcome:
-    """Delete selected partials while preserving protected concurrent writes, reporting failed deletions so sparse partials cannot receive an HTTP marker.
-
-    ``unresumable_only`` restricts the sweep to partials no writer can reuse AND that nothing has touched for ``ABANDONED_PARTIAL_SECONDS``. Unlinking a live partial does not stop its writer on POSIX: it keeps filling an unlinked inode and then fails at the rename, so the cost of that mistake is another client's whole download.
-
-    ``owned_hashes``, or ``owns_all_blobs`` for a job that owns its whole repo dir, are blobs whose only Unsloth-side writer has just been reaped. Those do not wait out the full grace, since the corpse would outlive the retry that follows a cancel, but they are not simply trusted either: registry ownership proves OUR writer is gone, never that no independent process shares the cache. They go through a stillness probe instead, the one liveness test that survives a filesystem where flock is granted to every caller.
-    """
+    """unresumable_only sweeps only partials idle past ABANDONED_PARTIAL_SECONDS, never a live writer's."""
     now = time.time()
     blobs_dir = entry / "blobs"
     if not blobs_dir.is_dir():
@@ -723,14 +708,7 @@ def prepare_cache_for_transport(
     protected_blob_hashes: Optional[frozenset[str]] = None,
     root: Optional[Path] = None,
 ) -> int:
-    """Guarantee any pre-existing ``.incomplete`` blobs are SAFE to resume under *mode*. Returns the number of partial blobs purged for untrusted provenance.
-
-    Two marker scopes govern GGUF downloads: ``only_blob_hashes`` are the variant's own main-quant blobs, judged by the ``variant``-scoped marker, and ``None`` widens the scope to every partial for full-repo snapshots/datasets. ``companion_blob_hashes`` are blobs shared across sibling variants (a vision mmproj), judged by a separate repo-scoped companion marker, so a companion partial is trusted against the transport that wrote it rather than whichever sibling variant resumes next.
-
-    In HTTP mode a partial is trusted ONLY when its governing marker equals ``"http"``; any missing, unreadable or mismatched marker purges, since the HTTP resumer would otherwise append to a sparse XET/parallel-Range partial and silently produce a corrupt blob. On huggingface_hub >= 1.18 there is no resumer left to trust a partial for, so the marker is bypassed and every selected partial purges. In XET mode incomplete blobs are purged (``hf_xet.download_files`` rewrites from scratch, so this only fixes UI accounting), scoped to ``only_blob_hashes`` so companion blobs survive.
-
-    ``protected_blob_hashes`` are blobs a concurrent same-repo peer is writing and are excluded from every purge. ``root`` selects the cache captured by the caller, defaulting to the active ``HF_HUB_CACHE`` root for workers that inherit their cache through the environment. Markers are written for the new mode before returning, except when an HTTP purge cannot remove every selected partial, since withholding the marker keeps the surviving partial untrusted.
-    """
+    """Only http-marked partials resume; others are purged. Protected blobs are excluded from every purge."""
     if mode not in VALID_TRANSPORTS:
         if mode == TRANSPORT_AUTO:
             # "auto" is a request preference, not a cache writer: naming it turns "invalid transport" into the actual bug.
@@ -876,7 +854,6 @@ def sweep_abandoned_partials(
     root: Optional[str | Path] = None,
 ) -> int:
     """Remove partials nothing can resume and nothing has touched; returns how many went. ``prepare_cache_for_transport`` runs once, before a download, and skips anything still inside the abandonment grace, which lands on the common case: the orphan is the file a hard kill left behind and the user restarts within seconds. Run this when a download reaches a terminal state and every file skipped then gets a second look, by which point the grace has long since elapsed."""
-    # DownloadMetadata.hub_cache is a str and every caller hands its captured root straight through, so normalize here rather than trusting each one.
     if isinstance(root, str):
         root = Path(root) if root else None
     removed = 0
@@ -916,14 +893,7 @@ def is_resumable_partial(
     *,
     root: Optional[Path] = None,
 ) -> bool:
-    """True only when a partial exists AND something can still resume from it.
-
-    Two ways to fail that: XET partials exist on disk but ``hf_xet`` rewrites the destination from scratch, so the marker has to say HTTP; and an HTTP partial is only resumable while a writer that reopens it is installed, and the UI turns this flag into "Resume with HTTP to keep the progress you already have", which must not be promised for bytes about to be swept.
-
-    Decided per cache entry, the way :func:`prepare_cache_for_transport` decides what to purge, because one repo can own several active directories at once (a case-sensitive filesystem holds ``models--Org--Model`` beside ``models--org--model``) and a marker only vouches for partials sitting beside it. Within an entry the split matters too: main blobs answer to the variant marker while a shared companion answers to ``.transport.companion``, and a blob in neither set, or a variant with no manifest, backs nothing rather than an unscoped yes.
-
-    ``root`` is the hub cache the row being judged was found in: a row can come from a remembered, legacy or custom cache, and that root holds both its own partials and its own manifest scope, so leaving it out asked the ACTIVE root about a directory it does not contain. ``None`` keeps the active root.
-    """
+    """True only for an HTTP partial vouched for by its own cache entry; XET partials never resume."""
     main, companion = (
         _manifest_hash_split(repo_type, repo_id, variant, root = root) if variant else (set(), set())
     )
@@ -1228,8 +1198,7 @@ class DownloadRegistry:
         # Monotonic across keys so an evicted then re-claimed key never reuses a prior generation, which would let a stale cancel match a new run.
         self._generation_seq = 0
         self._deleting: dict[str, set[Optional[str]]] = {}
-        # A whole-cache purge, which begin_delete cannot express: it reserves one
-        # repository, and emptying the root has to hold every one of them.
+        # Whole-cache purge, which begin_delete cannot express, must hold every repository, not just one.
         self._purging = 0
         # Publish external cache owners under the same lock as Model Hub jobs.
         self._repository_owners: dict[str, object] = {}
@@ -1752,16 +1721,8 @@ class DownloadRegistry:
             return True
 
     def begin_cache_purge(self) -> bool:
-        """Reserve the WHOLE cache for a purge. False while anything is active.
-
-        ``begin_delete`` closes the check-then-delete race for one repository by
-        making :func:`claim` reject it until the delete finishes. A purge empties
-        the root instead, so it needs the same promise over every repository, or
-        a worker that claims just after the check writes into a tree already
-        being removed. The two exclude each other in both directions, since a
-        scoped delete is removing files from the same root. Counted, so
-        overlapping purges of two caches that share this registry nest.
-        """
+        """Reserves the whole cache for a purge, refusing while any repo is active or deleting;
+        purges nest."""
         with self._lock:
             if not self._purging:
                 if self._repository_owners or self._deleting:

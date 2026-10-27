@@ -646,6 +646,49 @@ def test_installer_reuses_recorded_cache(monkeypatch, tmp_path):
     assert install.install_environment()["UV_CACHE_DIR"] == str(tmp_path / "explicit")
 
 
+@pytest.mark.parametrize("image_python", [False, True])
+def test_docker_engine_python_survives_image_replacement(isolated, monkeypatch, image_python):
+    import shutil
+
+    app = isolated / "app"
+    app.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_APP", str(app))
+    monkeypatch.delenv("UV_PYTHON_INSTALL_DIR", raising = False)
+    if image_python:
+        (app / "python").mkdir()
+        linked_python = isolated / "linked-python"
+        linked_python.symlink_to(app / "python", target_is_directory = True)
+        monkeypatch.setenv("UV_PYTHON_INSTALL_DIR", str(linked_python))
+
+    # Model uv's interpreter symlink with a small file, then discard the app layer.
+    python_home = Path(install.install_environment()["UV_PYTHON_INSTALL_DIR"])
+    python_home.mkdir(parents = True, exist_ok = True)
+    interpreter = python_home / "python3.13"
+    interpreter.touch()
+    for engine in ("vllm", "sglang"):
+        marker = active(isolated, engine)
+        python = marker.parent / "env-prior" / "bin" / "python"
+        python.unlink()
+        python.symlink_to(interpreter)
+    shutil.rmtree(app)
+    app.mkdir()
+    for engine in ("vllm", "sglang"):
+        assert install.installed(engine) is not None
+
+
+def test_docker_engine_python_respects_external_store(isolated, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_APP", str(isolated / "app"))
+    external = str(isolated / "persistent-python")
+    monkeypatch.setenv("UV_PYTHON_INSTALL_DIR", external)
+    assert install.install_environment()["UV_PYTHON_INSTALL_DIR"] == external
+
+
+def test_native_engine_python_keeps_uv_default(isolated, monkeypatch):
+    monkeypatch.delenv("UNSLOTH_STUDIO_APP", raising = False)
+    monkeypatch.delenv("UV_PYTHON_INSTALL_DIR", raising = False)
+    assert "UV_PYTHON_INSTALL_DIR" not in install.install_environment()
+
+
 @pytest.mark.parametrize("engine", ["vllm", "sglang"])
 def test_argv_owns_network_and_memory_settings(engine):
     argv = launch_arguments(engine, "/env/bin/python", "org/model", 45678, "private", 4096)
@@ -1149,8 +1192,14 @@ def test_memory_budget_uses_selected_gpu_and_reserves_headroom(monkeypatch):
     assert commands[0][commands[0].index("--id") + 1] == "1"
     # vLLM TorchAO weights overrun the reservation in sampler warmup, so keep 6 GiB more free.
     assert engine_adapters.gpu_memory_fraction([1], 512 + 6144) == 0.395
-    monkeypatch.setattr(vram_budget_settings, "get_vram_budget_fraction", lambda: 0.5)
-    assert engine_adapters.gpu_memory_fraction([1]) == 0.5
+    monkeypatch.setattr(
+        engine_adapters.subprocess, "run", lambda *a, **kw: SimpleNamespace(stdout = "24576, 24000")
+    )
+    monkeypatch.setattr(vram_budget_settings, "get_vram_budget_fraction", lambda: 0.85)
+    assert engine_adapters.gpu_memory_fraction([1]) == 0.85
+    # A GGUF-only low budget must not shrink an engine that cannot offload to the CPU.
+    monkeypatch.setattr(vram_budget_settings, "get_vram_budget_fraction", lambda: 0.3)
+    assert engine_adapters.gpu_memory_fraction([1]) == engine_adapters.MANAGED_ENGINE_BUDGET_FLOOR
     monkeypatch.setattr(
         engine_adapters.subprocess, "run", lambda *a, **kw: SimpleNamespace(stdout = "24576, 256")
     )

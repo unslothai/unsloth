@@ -26,17 +26,7 @@ export type FenceMode = "off" | "defer" | "tokenize" | "window";
 // Keep highlighted spans stable: line-window updates can stall Chrome during rapid scrollbar drags.
 export const SHIP_DEFAULT: FenceMode = "defer";
 
-/**
- * AN UNSET FLAG AND AN UNRECOGNISED ONE DO NOT RESOLVE TO THE SAME MODE. Unset means an install
- * that never heard of this flag, and takes `SHIP_DEFAULT`. An unrecognised non-empty value means
- * somebody tried to configure it and mistyped: resolving that to the default would silently ignore
- * the attempt, so it degrades to `off`, which is never wrong-looking and is what this flag gave
- * before the default moved. Same rule for the env var and the runtime global.
- *
- * @param runtime  `__UNSLOTH_DEFER_FENCE_HIGHLIGHT__`: string, boolean or absent. The boolean is
- *                 the devtools-console form and has to work in BOTH directions.
- * @param build    `VITE_UNSLOTH_DEFER_FENCE_HIGHLIGHT`, `""` when never set.
- */
+/** Unset takes SHIP_DEFAULT; an unrecognised non-empty value degrades to `off`, never the default. */
 export const resolveFenceMode = (
   runtime: unknown,
   build: string,
