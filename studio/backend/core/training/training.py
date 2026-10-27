@@ -3946,7 +3946,12 @@ class TrainingBackend:
             if output_dir:
                 member["output_dir"] = output_dir
             clear_output_dir = clear_output_dir or member["cancelled"]
-        self._persist_member(run_id, flush = True)
+        # Retried like the finalize below: a member that fails before its first step needs its row created.
+        for attempt in range(_DB_FINALIZE_RETRIES):
+            self._persist_member(run_id, flush = True)
+            if member["created"] or account_is_retired() or attempt + 1 == _DB_FINALIZE_RETRIES:
+                break
+            time.sleep(_DB_FINALIZE_RETRY_S)
         if not member["created"] or account_is_retired():
             return
         from storage.studio_db import finish_run

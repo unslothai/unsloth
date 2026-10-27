@@ -166,6 +166,24 @@ def test_member_finalize_survives_a_transient_db_error(db, tmp_path, monkeypatch
     assert db.get_run("job_a")["status"] == "completed"
 
 
+def test_member_error_before_progress_survives_a_transient_db_error(db, tmp_path, monkeypatch):
+    b = _batch_backend(tmp_path)
+    real, calls = db.create_run, []
+
+    def flaky(**kwargs):
+        calls.append(kwargs["id"])
+        if len(calls) == 1:
+            raise RuntimeError("database is locked")
+        return real(**kwargs)
+
+    monkeypatch.setattr(db, "create_run", flaky)
+    monkeypatch.setattr(training_mod, "_DB_FINALIZE_RETRY_S", 0)
+    b._handle_event({"type": "error", "member_run_id": "job_c", "error": "empty dataset"})
+    assert calls == ["job_c", "job_c"]
+    row = db.get_run("job_c")
+    assert row["status"] == "error" and row["error_message"] == "empty dataset"
+
+
 def test_member_error_before_progress_still_records_its_row(db, tmp_path):
     b = _batch_backend(tmp_path)
     b._handle_event({"type": "error", "member_run_id": "job_c", "error": "empty dataset"})
