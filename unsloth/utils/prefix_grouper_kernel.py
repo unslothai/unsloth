@@ -190,29 +190,28 @@ def build_seg_info_multigroup(
     group_meta : list of dicts with 'base', 'P', 'prefix_last_index', 'suffix_slices'
         (flat offsets), enough to build the completion index map.
     """
-    group_of_list = []
-    is_prefix_list = []
-    suffix_of_list = []
+    T = sum(P + sum(R_list) for P, R_list in group_specs)
+    T_pad = _pad_len(T)
+    labels_cpu = torch.full((2, T_pad), _PAD_GROUP, dtype = torch.long)
+    group_of_cpu, suffix_of_cpu = labels_cpu[0], labels_cpu[1]
+    is_prefix_cpu = torch.zeros(T_pad, dtype = torch.bool)
     group_meta = []
 
     base = 0
     suffix_counter = 0
     sig_parts = []
     for gid, (P, R_list) in enumerate(group_specs):
-        # Prefix.
-        group_of_list.append(torch.full((P,), gid, dtype = torch.long, device = device))
-        is_prefix_list.append(torch.ones(P, dtype = torch.bool, device = device))
-        suffix_of_list.append(torch.full((P,), -1, dtype = torch.long, device = device))
         prefix_last_index = base + P - 1
+        is_prefix_cpu[base : base + P] = True
+        suffix_of_cpu[base : base + P] = -1
         suffix_slices = []
         cursor = base + P
         for r in R_list:
-            group_of_list.append(torch.full((r,), gid, dtype = torch.long, device = device))
-            is_prefix_list.append(torch.zeros(r, dtype = torch.bool, device = device))
-            suffix_of_list.append(torch.full((r,), suffix_counter, dtype = torch.long, device = device))
+            suffix_of_cpu[cursor : cursor + r] = suffix_counter
             suffix_slices.append((cursor, cursor + r))
             cursor += r
             suffix_counter += 1
+        group_of_cpu[base:cursor] = gid
         group_meta.append(
             {
                 "base": base,
@@ -224,12 +223,9 @@ def build_seg_info_multigroup(
         sig_parts.append((P, tuple(R_list)))
         base = cursor
 
-    group_of_kv = torch.cat(group_of_list)
-    is_prefix = torch.cat(is_prefix_list)
-    suffix_of_kv = torch.cat(suffix_of_list)
-    group_of_kv, is_prefix, suffix_of_kv, T, T_pad = _pad_labels(
-        group_of_kv, is_prefix, suffix_of_kv, device
-    )
+    labels = labels_cpu.to(device)
+    group_of_kv, suffix_of_kv = labels[0], labels[1]
+    is_prefix = is_prefix_cpu.to(device)
     sig = ("multi", T_pad, tuple(sig_parts))
     seg = PrefixSegInfo(
         group_of_kv = group_of_kv,
