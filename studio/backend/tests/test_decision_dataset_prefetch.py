@@ -32,7 +32,9 @@ def test_prefetch_keeps_account_and_scoped_resource_context(monkeypatch):
     account = bind_account(AccountContext("alice", "Alice"))
     scope = resource_scope.set("private-snapshot")
     try:
-        with decision._DecisionRows(configuration, lambda: False, lambda _m: None, lambda _m: None) as rows:
+        with decision._DecisionRows(
+            configuration, lambda: False, lambda _m: None, lambda _m: None
+        ) as rows:
             assert rows.result(_no_stop) is expected
             assert rows.result(_no_stop) is expected
     finally:
@@ -155,9 +157,12 @@ def test_raw_rows_overlap_checkpoint_and_model_load_but_preparation_waits(
     model, tokenizer = object(), object()
     events = Queue()
     config = {
-        "model_name": "example/decision", "decision_layout": layout,
-        "training_type": "Full Finetuning", "random_seed": 7,
-        "gradient_checkpointing": "none", "hf_token": "job-token",
+        "model_name": "example/decision",
+        "decision_layout": layout,
+        "training_type": "Full Finetuning",
+        "random_seed": 7,
+        "gradient_checkpointing": "none",
+        "hf_token": "job-token",
     }
 
     def load_rows(cfg, should_stop, status, warn):
@@ -214,22 +219,41 @@ def test_prefetch_keeps_strict_cached_splits_bounds_revision_and_token(monkeypat
     worker = importlib.import_module("core.training.worker")
     reads = []
     config = {
-        "hf_dataset": "org/decisions", "dataset_snapshot_path": "/verified/cache",
-        "dataset_revision": "pinned-commit", "require_exact_resume_resources": True,
-        "train_split": "train", "eval_split": "validation", "eval_steps": 0.1,
-        "dataset_slice_start": 8, "dataset_slice_end": 32, "random_seed": 7,
+        "hf_dataset": "org/decisions",
+        "dataset_snapshot_path": "/verified/cache",
+        "dataset_revision": "pinned-commit",
+        "require_exact_resume_resources": True,
+        "train_split": "train",
+        "eval_split": "validation",
+        "eval_steps": 0.1,
+        "dataset_slice_start": 8,
+        "dataset_slice_end": 32,
+        "random_seed": 7,
         "hf_token": "test-job-token",
     }
 
-    def cached(cfg, split, token, *, row_limit = None):
+    def cached(
+        cfg,
+        split,
+        token,
+        *,
+        row_limit = None,
+    ):
         reads.append(
-            (split, row_limit, cfg["dataset_revision"], token, cfg["require_exact_resume_resources"])
+            (
+                split,
+                row_limit,
+                cfg["dataset_revision"],
+                token,
+                cfg["require_exact_resume_resources"],
+            )
         )
         return [{"state": str(i)} for i in range(33 if split == "train" else 10)]
 
     monkeypatch.setattr(worker, "_load_cached_dataset_for_config", cached)
     monkeypatch.setattr(
-        cache_safe, "load_dataset_cache_safe",
+        cache_safe,
+        "load_dataset_cache_safe",
         lambda *_a, **_kw: pytest.fail("strict cache must not read the network"),
     )
     with decision._DecisionRows(config, lambda: False, lambda _m: None, lambda _m: None) as pending:
@@ -249,13 +273,18 @@ def test_prefetch_strict_missing_snapshot_never_falls_back_to_hub(monkeypatch):
     worker = importlib.import_module("core.training.worker")
     monkeypatch.setattr(worker, "_load_cached_dataset_for_config", lambda *_a, **_kw: None)
     monkeypatch.setattr(
-        cache_safe, "load_dataset_cache_safe",
+        cache_safe,
+        "load_dataset_cache_safe",
         lambda *_a, **_kw: pytest.fail("strict cache must not read the network"),
     )
     config = {
-        "hf_dataset": "org/decisions", "dataset_snapshot_path": "/missing/cache",
-        "dataset_revision": "pinned-commit", "require_exact_resume_resources": True,
-        "train_split": "train", "eval_steps": 0, "random_seed": 7,
+        "hf_dataset": "org/decisions",
+        "dataset_snapshot_path": "/missing/cache",
+        "dataset_revision": "pinned-commit",
+        "require_exact_resume_resources": True,
+        "train_split": "train",
+        "eval_steps": 0,
+        "random_seed": 7,
     }
     with decision._DecisionRows(config, lambda: False, lambda _m: None, lambda _m: None) as pending:
         with pytest.raises(FileNotFoundError, match = "exact cached dataset split 'train'"):
