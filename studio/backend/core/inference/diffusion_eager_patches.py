@@ -106,9 +106,7 @@ _orig_rmsnorm_forward: Optional[Callable] = None
 
 
 def _rmsnorm_forward(self, hidden_states):
-    # Fall back to the exact original where F.rms_norm is NOT equivalent to diffusers: NPU / bias / fp32-weight, a
-    # tuple `dim` (diffusers reduces only the LAST dim), or a dtype mismatch (diffusers computes variance in fp32 from
-    # the ORIGINAL tensor).
+    # Fall back where F.rms_norm differs from diffusers: NPU, bias, tuple dim, dtype mismatch.
     if _NPU or self.bias is not None or _orig_rmsnorm_forward is None or len(tuple(self.dim)) != 1:
         return _orig_rmsnorm_forward(self, hidden_states)  # type: ignore[misc]
     weight = self.weight
@@ -121,8 +119,7 @@ def _rmsnorm_forward(self, hidden_states):
     return _orig_rmsnorm_forward(self, hidden_states)  # type: ignore[misc]
 
 
-# Install / uninstall via the shared patch backend: the live original is fingerprinted so a changed forward is left
-# UNPATCHED, and stashed for exact restore.
+# True for families needing multiple denoisers no single file carries (Ideogram 4), so only a full pipeline load is valid
 def _specs():
     return [
         (_AdaLayerNormContinuous, _adaln_continuous_forward),
@@ -137,14 +134,14 @@ _patched: list[type] = []
 
 
 def install_compile_safe_patches() -> int:
-    """Install the shared compile-safe speedup patches (idempotent).
-
-    Returns the number of patches applied. A second call while installed is a no-op.
-    """
+    """Returns the number of patches applied; a second call while installed is a no-op."""
     global _orig_rmsnorm_forward
     if not _patches_enabled():
         uninstall_patches()
         return 0
+    if _fp16_rmsnorm_only:
+        # full set must install from the stock classes
+        uninstall_fp16_rmsnorm()
     if _patched:
         return len(_patched)
     for cls, new_fn in _specs():
@@ -174,10 +171,68 @@ def install_compile_safe_patches() -> int:
 def uninstall_patches() -> None:
     """Restore every patched class to its exact original ``forward`` (idempotent)."""
     global _orig_rmsnorm_forward
-    for cls in list(_patched):
+    for cls in list(_patched) + list(_fp16_rmsnorm_only):
         revert_patch(cls, "forward")
     _patched.clear()
+    _fp16_rmsnorm_only.clear()
     _orig_rmsnorm_forward = None
+
+
+# fp16 ``off`` tier: fused RMSNorm alone (Colab T4 Z-Image: 4.4 s of a 29.9 s denoise in decomposed RMSNorm).
+# F.rms_norm rounds once (diffusers twice): nearer fp64, not bit-identical.
+FP16_RMSNORM_ENV = "UNSLOTH_DIFFUSION_FP16_RMSNORM"
+FP16_RMSNORM_CLASSES = ("ZImageTransformer2DModel",)
+_fp16_rmsnorm_only: list[type] = []
+
+
+def fp16_rmsnorm_enabled() -> bool:
+    return (os.environ.get(FP16_RMSNORM_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def fp16_rmsnorm_wanted(denoiser: object, dtype: object, speed_mode: Optional[str]) -> bool:
+    return (
+        fp16_rmsnorm_enabled()
+        and _patches_enabled()
+        and str(speed_mode or "").strip().lower() == "off"
+        and dtype == torch.float16
+        and type(denoiser).__name__ in FP16_RMSNORM_CLASSES
+    )
+
+
+def install_fp16_rmsnorm() -> bool:
+    """False when the full set already holds it or the patch is refused."""
+    global _orig_rmsnorm_forward
+    if _fp16_rmsnorm_only:
+        return True
+    if _patched or _RMSNorm is None or not hasattr(F, "rms_norm"):
+        return False
+    _orig_rmsnorm_forward = _RMSNorm.forward
+    if not apply_patch(_RMSNorm, "forward", _rmsnorm_forward, match_level = "relaxed"):
+        _orig_rmsnorm_forward = None
+        return False
+    _fp16_rmsnorm_only.append(_RMSNorm)
+    logger.info(
+        "eager-patch: fused RMSNorm on the fp16 eager tier (%s)", ", ".join(FP16_RMSNORM_CLASSES)
+    )
+    return True
+
+
+def uninstall_fp16_rmsnorm() -> None:
+    global _orig_rmsnorm_forward
+    for cls in list(_fp16_rmsnorm_only):
+        revert_patch(cls, "forward")
+    if _fp16_rmsnorm_only and not _patched:
+        _orig_rmsnorm_forward = None
+    _fp16_rmsnorm_only.clear()
+
+
+def fp16_rmsnorm_installed() -> bool:
+    return bool(_fp16_rmsnorm_only)
 
 
 def is_installed() -> bool:

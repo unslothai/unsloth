@@ -98,8 +98,7 @@ export function useSandboxImage<T extends Element = HTMLImageElement>(
 
     return () => {
       controller.abort();
-      // The URL is ours to give up: an aborted fetch that had already made one would otherwise
-      // pin the bytes for the rest of the session.
+      // Revoke even if aborted, or the bytes stay pinned for the session.
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
   }, [url, nearViewport]);

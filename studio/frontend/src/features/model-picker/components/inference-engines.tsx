@@ -268,11 +268,8 @@ export function InferenceEnginesSection() {
   const engineNote = (engine: EngineStatus) =>
     engine.unsupported_reason ||
     (isOwner || engine.installed ? undefined : t("managedEngines.ownerRequired"));
-  return (
-    <SettingsSection
-      title={t("managedEngines.title")}
-      description={t("managedEngines.description")}
-    >
+  const rows = (
+    <>
       {error && <p role="alert">{error}</p>}
       {engines.map((engine) => (
         <SettingsRow
@@ -283,6 +280,14 @@ export function InferenceEnginesSection() {
           <EngineInstall engine={engine} management={true} />
         </SettingsRow>
       ))}
+    </>
+  );
+  return (
+    <SettingsSection
+      title={t("managedEngines.title")}
+      description={t("managedEngines.description")}
+    >
+      {rows}
     </SettingsSection>
   );
 }

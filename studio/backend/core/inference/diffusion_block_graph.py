@@ -55,8 +55,7 @@ def block_graphs_requested() -> bool:
     return (os.environ.get(BLOCK_GRAPHS_ENV) or "").strip().lower() in ("1", "on", "true", "yes")
 
 
-# Default: only where every block stays on the device. Streamed steps are copy-bound (no gain, extra VRAM); model
-# offload re-uploads the weights every render, so every block would record again.
+# Streamed steps are copy-bound; model offload re-records every render.
 OPT_IN_REASON = (
     "offloaded denoiser streams its blocks: per-block CUDA graphs measured no faster (streamed steps are "
     "copy-bound) and hold extra VRAM; set " + BLOCK_GRAPHS_ENV + "=1 to record per block"
@@ -68,8 +67,7 @@ MODEL_OFFLOAD_REASON = (
 )
 
 
-# Call trees. Like diffusion_cuda_graph's, plus the per-layer prefix K/V caches Qwen-Image-2.1 passes to each block:
-# read-only on a cached step, so their two tensors become static buffers too.
+# Auto engages FBCache only at 20+ steps, since its win scales with step count: "dev" schedules qualify, distilled turbo never does
 
 
 def _kv_layer_cache(obj: Any) -> bool:
@@ -595,8 +593,7 @@ class BlockGraph:
                 dst.copy_(src)
             static_args, static_kwargs = _unwalk(key, iter(entry.static_in))
             if slot not in self.shared.warmed:
-                # Once per block class and layout, on the compute stream (its cached blocks stay reusable): any guard
-                # the static buffers trip recompiles here, never inside the recording.
+                # Any guard the static buffers trip recompiles here, never inside the recording.
                 self.compute(*static_args, **static_kwargs)
                 self.shared.warmed.add(slot)
                 self.stats["warmups"] += 1
@@ -1647,10 +1644,7 @@ def compile_below_hooks_enabled() -> bool:
 
 
 def compile_below_offload_hooks(transformer: Any, logger: Any = None) -> int:
-    """Compile each offload-hooked block's own ``forward`` so the hooks stay eager outside the compiled region.
-
-    Traced through, the hooks graph-break the block and put residency state into the guards, so every release /
-    re-pin recompiles. Idempotent; returns the blocks moved."""
+    """Compiles each block's own forward, keeping hooks eager; traced hooks recompile on every release."""
     if not compile_below_hooks_enabled():
         return 0
     kwargs = getattr(transformer, "_unsloth_regional_compile_kwargs", None)

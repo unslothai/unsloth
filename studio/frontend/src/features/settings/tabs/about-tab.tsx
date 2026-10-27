@@ -19,7 +19,9 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
+import { InferenceEnginesSection } from "@/features/model-picker/components/inference-engines";
 import { EngineVersionsSection } from "../components/engine-versions-section";
+import { StandaloneEnvironmentSection } from "./resources-tab";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { StudioVersionSection } from "../components/studio-version-section";
@@ -75,9 +77,8 @@ async function fetchInstallSource(): Promise<UpdateInstallSource> {
   }
 }
 
-// Every accelerator runtime the backend reported, not just the first: a dual CUDA+XPU build in
-// XPU mode reports both, so returning CUDA alone hid the XPU row. Module scope on purpose --
-// inlining this pushes AboutTab past the cognitive-complexity ceiling.
+// Every reported runtime: a dual CUDA+XPU build reports both. Module scope keeps AboutTab under
+// the complexity limit.
 type RuntimeRow = { labelKey: TranslationKey; version: string };
 
 function acceleratorRuntimes(hw: HardwareInfo): RuntimeRow[] {
@@ -132,7 +133,6 @@ export function AboutTab() {
         setInstallSource(nextInstallSource);
       }
     });
-    // Left undefined on browser builds so the row stays off entirely.
     if (isTauri) {
       loadDesktopAppVersion().then((version) => {
         if (!canceled) {
@@ -174,6 +174,9 @@ export function AboutTab() {
       <StudioVersionSection desktopAppVersion={desktopAppVersion} />
 
       <EngineVersionsSection />
+      <InferenceEnginesSection />
+
+      <StandaloneEnvironmentSection />
 
       <div ref={updateSectionRef} className="scroll-mt-5">
         <SettingsSection title={t("settings.about.updates")}>
@@ -191,7 +194,6 @@ export function AboutTab() {
         <SettingsSection title={t("settings.about.hardware")}>
           {hw.gpus.map((gpu, i) => (
             <SettingsRow
-              // Index key: device order from the backend is stable per request.
               // biome-ignore lint/suspicious/noArrayIndexKey: The hardware API does not expose a stable device id.
               key={i}
               label={
@@ -290,9 +292,8 @@ export function AboutTab() {
       </SettingsSection>
 
       {!isTauri && (
-        <SettingsSection title={t("settings.about.dangerZone")}>
+        <SettingsSection danger={true} title={t("settings.about.dangerZone")}>
           <SettingsRow
-            destructive={true}
             label={t("settings.about.shutDownStudio")}
             description={t("settings.about.shutDownStudioDescription")}
           >

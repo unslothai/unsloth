@@ -280,11 +280,14 @@ def _free_mib(
     """(free MiB after the fp32 output accumulator, decoder bytes per param / 2); None off CUDA."""
     import torch
 
+    from .diffusion_memory import cuda_reusable_cache_bytes, user_budget_reserve_bytes
+
     if getattr(z, "device", None) is None or z.device.type != "cuda":
         return None
-    free, _ = torch.cuda.mem_get_info(z.device)
+    free, total = torch.cuda.mem_get_info(z.device)
     if cached:
-        free += torch.cuda.memory_reserved(z.device) - torch.cuda.memory_allocated(z.device)
+        free += cuda_reusable_cache_bytes(z.device)
+    free -= user_budget_reserve_bytes(z.device, total)
     ratio = _geometry(vae)[0]
     frames = z.shape[2] if z.dim() == 5 else 1
     # fp32 accumulator

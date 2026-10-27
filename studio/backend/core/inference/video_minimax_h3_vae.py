@@ -444,8 +444,7 @@ def _guarded(fast: Any, stock: Any, label: str) -> Any:
     return forward
 
 
-# Activations travel as (tensor, pending_bias): the next fused pass adds the conv bias, avoiding PyTorch's
-# separate strided bias pass. A 1x1 conv folds its input's pending bias through its weight exactly.
+# Activations travel as (tensor, pending_bias): the next fused pass adds the conv bias.
 
 
 def _bias_view(bias: Any) -> Any:
@@ -989,7 +988,9 @@ def _tile_batch_size(z: Any) -> int:
     if env.isdigit() and int(env) > 0:
         return int(env)
     try:
-        free, _ = torch.cuda.mem_get_info(z.device)
+        from .diffusion_memory import user_budget_reserve_bytes
+        free, total = torch.cuda.mem_get_info(z.device)
+        free = max(0, int(free) - user_budget_reserve_bytes(z.device, total))
     except Exception:  # noqa: BLE001
         return 1
     return int(

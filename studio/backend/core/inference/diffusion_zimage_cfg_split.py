@@ -22,8 +22,9 @@ recompile. Group offload counts as resident (checked per call) while every offlo
 Under a CFG-parallel router the halves go to ``run_pair`` (identity pairing never matches fresh tensors). Kill switch: ``UNSLOTH_DIFFUSION_ZIMAGE_CFG_SPLIT=0``.
 
 Studio arms it ``compiled_only``: a render splits only while the denoiser runs compiled code or replays CUDA graphs,
-checked per render since a deferred compile can engage after the load. An eager denoiser has no graph to keep, and
-there the two serial calls cost more than one batched guided call (B200, eager, random weights: ~2x at 256px,
+checked per render since a deferred compile can engage after the load. The eager render that records inputs for a
+pending background compile splits too, so the compile builds the guidance-off batch graph the compiled renders run.
+Any other eager denoiser has no graph to keep, and there the two serial calls cost more than one batched guided call (B200, eager, random weights: ~2x at 256px,
 ~1.3-1.5x at 512px, parity at 1024px). An eager guided call that runs out of memory batched retries as the two
 calls (half the activations) for the rest of that render. An active CFG-parallel router keeps the split eager too:
 its replica runs the guidance-off half concurrently, and it cannot pair one batched call. Graphs are read from the
@@ -252,11 +253,20 @@ def _routed_now(slots: dict) -> bool:
     )
 
 
+def _records_for_compile(denoiser: Any) -> bool:
+    try:
+        from .diffusion_bg_compile import recording
+        return recording(denoiser)
+    except Exception:  # noqa: BLE001 - unknown: nothing records
+        return False
+
+
 def _eager_now(pipe: Any, denoiser: Any, slots: dict) -> bool:
-    """compiled_only with nothing compiled or graphed and no active router: the render stays batched (split on OOM)."""
+    """compiled_only, nothing compiled/graphed/recording and no active router: stays batched (split on OOM)."""
     return (
         bool(slots.get(_COMPILED_ONLY_ATTR))
         and not _graphs_engaged(pipe, denoiser)
+        and not _records_for_compile(denoiser)
         and not _routed_now(slots)
     )
 

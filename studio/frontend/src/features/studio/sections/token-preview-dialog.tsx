@@ -27,8 +27,10 @@ import { useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { CopyIcon, ShuffleIcon, TextSelectIcon } from "lucide-react";
+import { ShuffleIcon, TextSelectIcon } from "lucide-react";
 import { type ReactNode, memo, useEffect, useMemo, useState } from "react";
+import { Copy01Icon } from "@/lib/copy-icon";
+import { HugeiconsIcon } from "@hugeicons/react";
 
 // Neighbouring tokens alternate shades so their boundaries stay visible.
 const TRAINED_SHADES = [
@@ -143,7 +145,7 @@ function SampleCard({
           className="ml-auto h-6 px-2 text-xs"
           onClick={copyIds}
         >
-          <CopyIcon className="size-3" />
+          <HugeiconsIcon icon={Copy01Icon} className="size-3" />
           {t("studio.dataset.tokenPreview.copyIds")}
         </Button>
       </div>

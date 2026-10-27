@@ -336,10 +336,16 @@ def _row_examples(row: dict, max_len: int) -> list[tuple[list[int], list[int]]]:
         labels = [t if m else -100 for t, m in zip(ids, row["assistant_masks"])]
     else:
         labels = list(ids)
-    # Packed rows restart position_ids at every example; split there so no draft crosses a boundary.
-    positions = row.get("position_ids")
+    # Split packed rows so no draft crosses an example: TRL's packed dataset records `seq_lengths`
+    # (its collator builds position_ids later); older layouts restart `position_ids` at 0.
     cuts = [0]
-    if positions is not None:
+    lengths = row.get("seq_lengths")
+    positions = row.get("position_ids")
+    if lengths is not None and len(lengths) and sum(int(n) for n in lengths) == len(ids):
+        for n in lengths:
+            cuts.append(cuts[-1] + int(n))
+        cuts.pop()
+    elif positions is not None:
         cuts = [i for i, p in enumerate(positions) if p == 0] or [0]
     cuts.append(len(ids))
     out = []

@@ -56,6 +56,33 @@ def _offline(env) -> bool:
     )
 
 
+def _mig_rows(gpu_ids: list[int]):
+    """R570+ MIG rows for these ids, or None (untranslatable: keep the physical-id behaviour)."""
+    try:
+        from utils.hardware import mig
+
+        from .engine_install import gpu_platform
+
+        if gpu_platform() == "rocm":
+            return None
+        rows = mig.rows_for(gpu_ids)
+        if rows is None or mig.mask_for(gpu_ids) is None:
+            return None
+        return rows
+    except Exception:
+        return None
+
+
+def _child_cuda_mask(gpu_ids: list[int]) -> str:
+    """Instance UUIDs on an R570+ MIG host (numeric ids would name the whole host), else the numeric mask."""
+    try:
+        from utils.hardware import mig
+        pinned = mig.mask_for(gpu_ids)
+    except Exception:
+        pinned = None
+    return pinned or ",".join(str(i) for i in gpu_ids)
+
+
 def validate_load(engine: str, request) -> list[int]:
     """Returns the physical GPU ids to launch on, all inside the GPUs Studio may use."""
     profile(engine)
@@ -88,8 +115,10 @@ def validate_load(engine: str, request) -> list[int]:
                 f"{ENGINE_NAMES[engine]} cannot select AMD GPUs while Unsloth runs with {mask}. "
                 "Use only HIP_VISIBLE_DEVICES or only ROCR_VISIBLE_DEVICES instead."
             )
-    for gpu_id in gpu_ids:
-        reason = support_reason(engine, gpu_id)
+    mig_rows = _mig_rows(gpu_ids)
+    for position, gpu_id in enumerate(gpu_ids):
+        checked = int(mig_rows[position]["physical_index"]) if mig_rows else gpu_id
+        reason = support_reason(engine, checked)
         if reason:
             raise ValueError(f"GPU {gpu_id}: {reason}")
     info = installed(engine)
@@ -256,7 +285,7 @@ def validate_model(
             template,
             # The detector reads DeepSeek's `thinking` toggle off the id; a renamed local directory loses it.
             f"deepseek {config.identifier}"
-            if reasoning_parser == "deepseek_v3"
+            if reasoning_parser in ("deepseek_v3", "deepseek-v3")
             else config.identifier,
             log_source = "managed engine",
         )
@@ -682,7 +711,7 @@ class ManagedEngine:
                             child_env.get("PATH", os.defpath),
                         ]
                     )
-                    child_env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in (gpu_ids or [0]))
+                    child_env["CUDA_VISIBLE_DEVICES"] = _child_cuda_mask(gpu_ids or [0])
                     rocm = info.get("platform") == "rocm"
                     if rocm:
                         child_env.update(_rocm_visibility(child_env, gpu_ids or [0]))
@@ -1008,8 +1037,8 @@ class ManagedEngine:
         messages,
         preserve_thinking = None,
     ):
-        """vLLM reads a past turn's thinking from ``reasoning``, Studio keeps it as ``reasoning_content``."""
-        if not (self.reasoning_parser and preserve_thinking):
+        """vLLM reads a past turn's thinking from ``reasoning``; SGLang and Studio keep ``reasoning_content``."""
+        if self.engine != "vllm" or not (self.reasoning_parser and preserve_thinking):
             return messages
         # Moved, not copied: the context fit prices the whole message, so a copy charges the thought twice.
         return [

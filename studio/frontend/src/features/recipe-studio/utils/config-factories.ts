@@ -412,9 +412,8 @@ export function makeSeedConfig(
     hf_split: "",
     hf_path: "",
     hf_token: "",
-    // Empty, not getHfEndpoint(): a seed created before /api/health reports the
-    // mirror would pin the official host into the recipe, and the field is not
-    // user-editable. buildSeedConfig resolves a blank one at build time.
+    // Blank, not getHfEndpoint(): a seed created before /api/health reports the mirror would pin the
+    // official host. buildSeedConfig resolves a blank one at build time.
     hf_endpoint: "",
     local_file_name: "",
     ...(seedSourceType === "unstructured"

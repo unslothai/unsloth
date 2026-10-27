@@ -7,9 +7,7 @@ export const TRANSPORT = {
   AUTO: "auto",
 } as const;
 
-// The two transports a download can run on. "auto" is a preference, resolved to one of these
-// before a download starts; only these reach a `.transport` marker on disk, which records the
-// writer so a resume picks the right strategy.
+// Only resolved transports are written to the on-disk `.transport` marker.
 export const RESOLVED_TRANSPORTS = [TRANSPORT.HTTP, TRANSPORT.XET] as const;
 export type ResolvedTransport = (typeof RESOLVED_TRANSPORTS)[number];
 
@@ -19,12 +17,8 @@ export const TRANSPORT_MODES = [
   TRANSPORT.XET,
 ] as const;
 export type TransportMode = (typeof TRANSPORT_MODES)[number];
-// Auto until someone picks otherwise: the backend chooses per machine (RAM, hf_xet build,
-// recent Xet failures) and effectiveTransportMode() resolves it before any download starts.
-// Only a floor, since the install's setting arrives from /api/settings/download-transport.
 export const DEFAULT_TRANSPORT_MODE: TransportMode = TRANSPORT.AUTO;
 
-/** The preference in force: this browser's own choice, else the install's setting, else Auto. */
 export function pickTransportMode(
   stored: unknown,
   installed: unknown,
@@ -45,12 +39,7 @@ export function isTransportMode(value: unknown): value is TransportMode {
   );
 }
 
-/** The transport a started job is really running on.
- *
- * An accepted start can mean the backend attached this client to a job another
- * one had already begun, which keeps the transport it started on. Trusting the
- * locally requested value there offers Pause for a Xet run, or Cancel for a
- * resumable HTTP one. */
+/** May attach to another client's job, which keeps its own transport. */
 export function transportAfterStart(
   requested: ResolvedTransport,
   reported: unknown,
@@ -58,12 +47,7 @@ export function transportAfterStart(
   return isResolvedTransport(reported) ? reported : requested;
 }
 
-/** Whether a probe response describes the run a job is currently on.
- *
- * A cancel and restart between the request and its reply makes the answer
- * about a different job, possibly on the other transport. A job with no
- * generation recorded yet has nothing better to go on, so any generation the
- * probe reports is taken (along with the generation itself). */
+/** A cancel/restart between request and reply makes the answer about a different run. */
 export function probeDescribesCurrentRun(
   known: unknown,
   reported: unknown,
@@ -78,21 +62,13 @@ export type AdoptedTransports = {
   cancelTransport?: ResolvedTransport;
 };
 
-/** What a probe says about the pair. `cancelTransport: null` is the backend
- * reporting no marker, which is not the same as a source that cannot report one
- * at all (undefined). */
+/** `cancelTransport: null` = no marker; undefined = source cannot report one. */
 export type ReportedTransports = {
   transport?: ResolvedTransport;
   cancelTransport?: ResolvedTransport | null;
 };
 
-/** What an adopted job records for its transport pair: what the backend just
- * reported, else what was restored from storage.
- *
- * Both fields together, so a probe carrying only one cannot erase the other.
- * `/download-status` has no cancel marker at all, and it can win the hydration
- * race against `/active-downloads`, which does. A reported null still clears a
- * stored marker: the run being adopted is the one the backend just described. */
+/** Merge both fields so a probe carrying only one (e.g. /download-status) cannot erase the other. */
 export function adoptedTransports(
   reported: ReportedTransports,
   existing: AdoptedTransports | undefined,
@@ -117,13 +93,7 @@ export function isResolvedTransport(
 
 export type MismatchStartAction = ResolvedTransport | "conflict";
 
-/** When a partial on disk was written by a different transport than this start
- * resolved to, pick whether to continue or ask the user.
- *
- * Xet cannot byte-resume. Auto and HTTP follow the stall watchdog's HTTP
- * fallback instead of parking the start on a Hub dialog Chat/Video cannot
- * resolve. Only an explicit Xet preference versus a resumable HTTP partial is
- * a real choice (keep resumable bytes, or restart on Xet). */
+/** Xet cannot byte-resume; only explicit Xet vs a resumable HTTP partial asks the user. */
 export function mismatchStartAction(
   preferred: TransportMode,
   resolved: ResolvedTransport,
