@@ -14436,6 +14436,18 @@ class DiffusionBackend:
                     # Sole clear of published progress, on every exit.
                     self._gen = None
 
+    @contextmanager
+    def generation_waiter(self, cancel: threading.Event):
+        """Registers a request waiting to generate outside ``generate``, so a Stop during a model change
+        sets ``cancel`` as it cancels the generations queued on the slot."""
+        with self._generation_cancel_lock:
+            self._queued_generate_cancels.add(cancel)
+        try:
+            yield
+        finally:
+            with self._generation_cancel_lock:
+                self._queued_generate_cancels.discard(cancel)
+
     def generation_running(self) -> bool:
         """Whether generation or a model change holds the generation lock."""
         return self._generate_lock.locked()

@@ -2404,7 +2404,6 @@ class _QueuedVideo:
     size: str
     seconds: str
     starting: bool = False
-    cancel_requested: bool = False
     idle_conflicts: int = 0
 
 
@@ -2484,9 +2483,7 @@ def _own_queued_video(video_id: str) -> Optional[_QueuedVideo]:
         (
             entry
             for entry in list(_VIDEO_QUEUE)
-            if entry.id == video_id
-            and entry.account.account_id == account_id
-            and not entry.cancel_requested
+            if entry.id == video_id and entry.account.account_id == account_id
         ),
         None,
     )
@@ -2497,19 +2494,31 @@ def _own_queued_videos() -> list[VideoJob]:
     return [
         _queued_video_job(entry)
         for entry in list(_VIDEO_QUEUE)
-        if entry.account.account_id == account_id and not entry.cancel_requested
+        if entry.account.account_id == account_id
     ]
 
 
 def _queued_job_display(
     body: VideoJobCreateRequest, inputs: _VideoCreateInputs
 ) -> tuple[str, str, str]:
-    """Model, size and seconds as an immediate start reports them, read off the model loaded now."""
+    """Model, size and seconds as an immediate start reports them. The loaded model's are read only when it
+    is the one that will render, and then a managed account must be allowed it, as on an immediate start."""
+    from core.inference.gpu_arbiter import VIDEO
+    from core.inference.media_auto_switch import resident_answers_media_request
     from core.inference.video import get_video_backend
+    from utils.openai_auto_switch_settings import get_media_auto_switch_enabled
 
     status = get_video_backend().status()
-    defaults = status.get("defaults") or {}
-    if isinstance(body.model, str) and body.model.strip():
+    named = isinstance(body.model, str) and bool(body.model.strip())
+    resident_renders = (
+        not named
+        or not get_media_auto_switch_enabled()
+        or resident_answers_media_request(status, body.model, owner = VIDEO)
+    )
+    if resident_renders and account_access.managed_account():
+        account_access.require_media_generation_access(status, "video")
+    defaults = (status.get("defaults") or {}) if resident_renders else {}
+    if named:
         model = public_model_id(body.model) or body.model
     else:
         resident = status.get("repo_id")
@@ -2620,21 +2629,25 @@ def _drop_queued_video(entry: _QueuedVideo) -> None:
 
 
 async def _settle_failed_queued_video(entry: _QueuedVideo, exc: BaseException) -> None:
-    """Persist failure, then honor any concurrent delete.
-    Keep ``starting`` set during persistence so DELETE defers cleanup."""
+    """Record a refused start as a failed job and drop it from the queue. ``starting`` stays set while
+    the record is written, so a DELETE waits for it and then deletes the record."""
     entry.starting = True
     try:
-        if not entry.cancel_requested:
-            await asyncio.to_thread(_fail_queued_video, entry, exc)
+        await asyncio.to_thread(_fail_queued_video, entry, exc)
     except Exception:  # noqa: BLE001 -- persistence failure must not block the queue
         logger.exception("Could not record queued video %s as failed", entry.id)
     finally:
         _drop_queued_video(entry)
         entry.starting = False
-    if entry.cancel_requested and not await asyncio.to_thread(
-        run_as, entry.account, _forget_openai_job, entry.id
-    ):
-        logger.warning("openai_videos.queued_forget_failed: %s", entry.id)
+
+
+def _queued_account_active(account: AccountContext) -> bool:
+    """A queued video starts only while its account is still enabled."""
+    if account.is_owner:
+        return True
+    from auth.storage import get_account_by_id
+
+    return get_account_by_id(account.account_id) is not None
 
 
 async def _start_queued_video(entry: _QueuedVideo) -> bool:
@@ -2642,13 +2655,14 @@ async def _start_queued_video(entry: _QueuedVideo) -> bool:
     async with _video_start_lock():
         if entry not in _VIDEO_QUEUE:
             return True
-        if entry.cancel_requested:
-            _drop_queued_video(entry)
-            return True
         if await asyncio.to_thread(_video_engine_busy):
             return False
-        # Recheck deletion after the await; claim the entry without yielding.
-        if entry not in _VIDEO_QUEUE or entry.cancel_requested:
+        active = await asyncio.to_thread(_queued_account_active, entry.account)
+        # Recheck deletion after the awaits; claim the entry without yielding.
+        if entry not in _VIDEO_QUEUE:
+            return True
+        if not active:
+            logger.info("openai_videos.queued_account_disabled: %s", entry.id)
             _drop_queued_video(entry)
             return True
         entry.starting = True
@@ -2667,7 +2681,7 @@ async def _start_queued_video(entry: _QueuedVideo) -> bool:
                 ),
             )
         except Exception as exc:  # noqa: BLE001 -- settle failures and continue draining
-            wait = None if entry.cancel_requested else _video_wait(exc)
+            wait = _video_wait(exc)
             if wait == "conflict":
                 entry.idle_conflicts += 1
                 if entry.idle_conflicts >= VIDEO_QUEUE_IDLE_CONFLICTS:
@@ -2679,13 +2693,9 @@ async def _start_queued_video(entry: _QueuedVideo) -> bool:
                 logger.exception("Could not start queued video %s", entry.id)
             await _settle_failed_queued_video(entry, exc)
             return True
+        # Started: a DELETE waiting on this entry now finds the running job instead.
         _drop_queued_video(entry)
-    if entry.cancel_requested:
-        # Honor a DELETE received during startup.
-        try:
-            await arun_as(entry.account, openai_delete_video(entry.id, entry.subject))
-        except HTTPException as exc:
-            logger.warning("openai_videos.queued_delete_failed: %s", exc.detail)
+        entry.starting = False
     return True
 
 
@@ -2700,6 +2710,7 @@ async def _drain_video_queue_once() -> None:
         # A started job already has its own record.
         if entry in _VIDEO_QUEUE:
             await _settle_failed_queued_video(entry, exc)
+        entry.starting = False
 
 
 async def _drain_video_queue() -> None:
@@ -2815,12 +2826,21 @@ async def openai_delete_video(video_id: str, current_subject: str = Depends(get_
     from core.inference.video import get_video_backend
 
     queued = _own_queued_video(video_id)
-    if queued is not None:
-        # Defer deletion until any in-flight start finishes.
+    if queued is not None and queued.starting:
+        # A start, or the record of its refusal, is in flight: wait, then delete what it leaves.
+        deadline = _time.monotonic() + _DELETE_SETTLE_TIMEOUT_S
+        while queued.starting and _time.monotonic() < deadline:
+            await asyncio.sleep(0.05)
         if queued.starting:
-            queued.cancel_requested = True
-        else:
-            _drop_queued_video(queued)
+            raise _openai_video_error(
+                409,
+                "The video is starting; retry the delete shortly.",
+                code = "video_not_ready",
+            )
+        queued = _own_queued_video(video_id)
+    if queued is not None:
+        # Still waiting: it leaves the queue and never runs.
+        _drop_queued_video(queued)
         return VideoJobDeleteResponse(id = video_id)
     video = await asyncio.to_thread(_lookup_video, video_id)
     if video is None:

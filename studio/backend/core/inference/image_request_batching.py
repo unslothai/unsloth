@@ -84,6 +84,13 @@ def _split(result: dict[str, Any], members: list[_Member]) -> list[dict[str, Any
     return parts
 
 
+def _share(exc: BaseException, members: list[_Member]) -> None:
+    """Raise ``exc`` in each waiting member too, each with its own copy."""
+    for member in members:
+        if not member.future.done():
+            member.future.set_exception(type(exc)(*exc.args))
+
+
 def _close(batch: _Batch) -> None:
     if _OPEN.get(batch.key) is batch:
         del _OPEN[batch.key]
@@ -123,8 +130,14 @@ async def generate(
     batch.members.append(_Member(prompt, request_seeds(seed, n), loop.create_future()))
     batch.images = n
     try:
-        while busy():
-            await asyncio.sleep(POLL_S)
+        try:
+            while busy():
+                await asyncio.sleep(POLL_S)
+        except Exception as exc:
+            # A cancel while waiting (a Stop during a model change) ends every request collected so far.
+            if shared_outcome(exc):
+                _share(exc, batch.members[1:])
+            raise
         _close(batch)
         members = list(batch.members)
         if len(members) == 1:
@@ -140,9 +153,7 @@ async def generate(
             parts = _split(await run_batch(prompts, seeds), members)
         except Exception as exc:  # noqa: BLE001 -- fall back unless the outcome applies to every request
             if shared_outcome(exc):
-                for member in members[1:]:
-                    if not member.future.done():
-                        member.future.set_exception(type(exc)(*exc.args))
+                _share(exc, members[1:])
                 raise
             logger.info("openai_images.batch_failed: %s; each request runs alone", exc)
             return None

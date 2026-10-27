@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 
 import httpx
 import pytest
@@ -29,6 +30,7 @@ class _Backend:
         self.fail_lists = False
         self.cancel_lists = False
         self.calls: list[dict] = []
+        self.waiters: list = []
         self.is_loaded = True
 
     def status(self) -> dict:
@@ -41,6 +43,19 @@ class _Backend:
 
     def generation_running(self) -> bool:
         return self.rendering
+
+    @contextlib.contextmanager
+    def generation_waiter(self, cancel):
+        self.waiters.append(cancel)
+        try:
+            yield
+        finally:
+            self.waiters.remove(cancel)
+
+    def stop_during_a_model_change(self) -> None:
+        """What a Stop does to generations waiting on the slot while a model changes."""
+        for cancel in list(self.waiters):
+            cancel.set()
 
     def generate(
         self,
@@ -201,6 +216,30 @@ def test_a_cancelled_batch_ends_every_request_without_rendering_again(studio):
     assert saved == []
     assert all(r.status_code >= 400 for r in responses)
     assert responses[0].status_code == responses[1].status_code
+
+
+def test_a_stop_while_a_batch_waits_cancels_every_request_in_it(studio):
+    app, backend, saved = studio
+
+    async def run():
+        transport = httpx.ASGITransport(app = app)
+        async with httpx.AsyncClient(transport = transport, base_url = "http://studio") as client:
+            backend.rendering = True
+            sent = [
+                asyncio.ensure_future(
+                    client.post("/v1/images/generations", json = _b64({"prompt": p}))
+                )
+                for p in ("a fox", "a cat")
+            ]
+            await _until(lambda: _waiting() >= 2 and backend.waiters)
+            backend.stop_during_a_model_change()
+            return await asyncio.gather(*sent)
+
+    responses = asyncio.run(run())
+    assert backend.calls == [] and saved == []
+    assert all(r.status_code >= 400 for r in responses)
+    assert responses[0].status_code == responses[1].status_code
+    assert backend.waiters == []
 
 
 def test_a_request_that_finds_the_engine_idle_renders_at_once_alone(studio):

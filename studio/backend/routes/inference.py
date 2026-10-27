@@ -50004,7 +50004,12 @@ async def _batched_openai_images(
     ):
         return None
 
+    # Set by a Stop during a model change, as for a generation queued on the engine's slot.
+    stopped = threading.Event()
+
     def busy() -> bool:
+        if stopped.is_set():
+            raise RuntimeError(DIFFUSION_CANCELLED_MSG)
         try:
             return bool(running())
         except Exception:  # noqa: BLE001 -- no busy signal; render individually
@@ -50039,15 +50044,17 @@ async def _batched_openai_images(
     def cancelled(exc: BaseException) -> bool:
         return isinstance(exc, RuntimeError) and str(exc) == DIFFUSION_CANCELLED_MSG
 
-    return await image_request_batching.generate(
-        key,
-        body.prompt,
-        body.n,
-        body.seed,
-        busy = busy,
-        run_batch = run_batch,
-        shared_outcome = cancelled,
-    )
+    waiter = getattr(backend, "generation_waiter", None)
+    with waiter(stopped) if waiter is not None else nullcontext():
+        return await image_request_batching.generate(
+            key,
+            body.prompt,
+            body.n,
+            body.seed,
+            busy = busy,
+            run_batch = run_batch,
+            shared_outcome = cancelled,
+        )
 
 
 # Split out so the monitor row can wrap the whole handler without reindenting it.

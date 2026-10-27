@@ -32,6 +32,20 @@ def _drain() -> None:
     asyncio.run(video_routes._drain_video_queue_once())
 
 
+def _delete_in_background(client, video_id: str) -> tuple:
+    """Send a DELETE on another thread, as a client would while the drain is busy with the video."""
+    import threading
+    import time
+
+    result = {}
+    thread = threading.Thread(
+        target = lambda: result.update(response = client.delete(f"/v1/videos/{video_id}"))
+    )
+    thread.start()
+    time.sleep(0.2)  # long enough for the DELETE to reach the queue
+    return thread, result
+
+
 def _render_one(
     client,
     backend,
@@ -114,15 +128,19 @@ def test_a_video_deleted_while_its_start_is_in_flight_is_deleted_once_started(
     backend.gate.set()
     _wait_terminal(client, first["id"])
     real_start = video_routes._start_openai_video
+    pending = []
 
     async def _start_then_delete(*args, **kwargs):
         job = await real_start(*args, **kwargs)
-        # Delete before startup returns.
-        assert client.delete(f"/v1/videos/{queued['id']}").status_code == 200
+        # The DELETE arrives before the start returns, so it waits for it and then deletes the job.
+        pending.append(await asyncio.to_thread(_delete_in_background, client, queued["id"]))
         return job
 
     monkeypatch.setattr(video_routes, "_start_openai_video", _start_then_delete)
     _drain()
+    [(thread, result)] = pending
+    thread.join(10)
+    assert result["response"].status_code == 200, result["response"].json()
     assert video_routes._VIDEO_QUEUE == []
     assert client.get(f"/v1/videos/{queued['id']}").status_code == 404
     assert gallery_module.owned_video_path(queued["id"]) is None
@@ -234,19 +252,103 @@ def test_a_delete_while_a_refused_start_is_recorded_leaves_no_failed_job(
     _wait_terminal(client, first["id"])
     backend.loaded = False
     real_fail = video_routes._fail_queued_video
-    deleted = []
+    pending = []
 
     def _fail_with_a_delete(entry, exc):
-        # Delete during failure persistence.
-        deleted.append(client.delete(f"/v1/videos/{queued['id']}").status_code)
+        # The DELETE arrives while the failed job is written, so it waits and then deletes that record.
+        pending.append(_delete_in_background(client, queued["id"]))
         real_fail(entry, exc)
 
     monkeypatch.setattr(video_routes, "_fail_queued_video", _fail_with_a_delete)
     _drain()
-    assert deleted == [200]
+    [(thread, result)] = pending
+    thread.join(10)
+    assert result["response"].status_code == 200, result["response"].json()
     assert video_routes._VIDEO_QUEUE == []
     assert client.get(f"/v1/videos/{queued['id']}").status_code == 404
     assert queued["id"] not in [v["id"] for v in client.get("/v1/videos").json()["data"]]
+
+
+def test_a_delete_during_a_start_that_does_not_settle_is_refused_rather_than_reported_done(
+    client, backend, monkeypatch
+):
+    monkeypatch.setattr(video_routes, "_DELETE_SETTLE_TIMEOUT_S", 0.2)
+    _render_one(client, backend)
+    queued = client.post("/v1/videos", json = {"prompt": "slow start"}).json()
+    [entry] = video_routes._VIDEO_QUEUE
+    entry.starting = True
+    still = client.delete(f"/v1/videos/{queued['id']}")
+    assert still.status_code == 409
+    assert still.json()["error"]["code"] == "video_not_ready"
+    assert video_routes._VIDEO_QUEUE == [entry]
+    entry.starting = False
+    assert client.delete(f"/v1/videos/{queued['id']}").status_code == 200
+    assert video_routes._VIDEO_QUEUE == []
+    backend.gate.set()
+
+
+def test_a_queued_video_of_a_disabled_account_never_starts(client, backend):
+    first = _render_one(client, backend)
+    client.post("/v1/videos", json = {"prompt": "theirs"})
+    # No such account is enabled in this Studio home, as after an admin disables it.
+    video_routes._VIDEO_QUEUE[0].account = _OTHER
+    backend.gate.set()
+    _wait_terminal(client, first["id"])
+    _drain()
+    assert video_routes._VIDEO_QUEUE == []
+    assert backend.last_generate_kwargs["prompt"] == "first"
+
+
+def test_the_account_check_reads_the_accounts_current_state(monkeypatch):
+    import auth.storage as storage
+
+    accounts = {}
+    monkeypatch.setattr(storage, "get_account_by_id", accounts.get)
+    assert video_routes._queued_account_active(_OTHER) is False
+    accounts[_OTHER.account_id] = _OTHER
+    assert video_routes._queued_account_active(_OTHER) is True
+    owner = AccountContext("owner", "owner", "owner")
+    assert video_routes._queued_account_active(owner) is True
+
+
+def test_a_managed_account_denied_the_loaded_model_gets_a_403_not_its_name(
+    client, backend, monkeypatch
+):
+    from fastapi import HTTPException
+
+    from hub.services.models import account_access
+
+    _render_one(client, backend)
+
+    def _deny(status, modality = None):
+        raise HTTPException(status_code = 403, detail = "Model not found")
+
+    monkeypatch.setattr(account_access, "managed_account", lambda: True)
+    monkeypatch.setattr(account_access, "require_media_generation_access", _deny)
+    denied = client.post("/v1/videos", json = {"prompt": "x"})
+    assert denied.status_code == 403
+    assert "LTX" not in denied.text
+    assert video_routes._VIDEO_QUEUE == []
+    backend.gate.set()
+
+
+def test_a_queued_job_for_another_model_shows_none_of_the_loaded_models_details(
+    client, backend, monkeypatch
+):
+    import utils.openai_auto_switch_settings as auto_switch_settings
+    from core.inference import media_auto_switch
+
+    _render_one(client, backend)
+    monkeypatch.setattr(auto_switch_settings, "get_media_auto_switch_enabled", lambda: True)
+    monkeypatch.setattr(media_auto_switch, "resident_answers_media_request", lambda *a, **k: False)
+    queued = client.post("/v1/videos", json = {"prompt": "x", "model": "org/other-video"}).json()
+    assert queued["status"] == "queued"
+    assert (queued["model"], queued["size"], queued["seconds"]) == (
+        "org/other-video",
+        "auto",
+        "auto",
+    )
+    backend.gate.set()
 
 
 def test_a_queued_job_reports_the_size_and_seconds_an_immediate_start_would(client, backend):
