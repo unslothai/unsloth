@@ -197,7 +197,9 @@ def test_a_host_weight_is_written_as_captured_even_if_it_is_onloaded_mid_write(
         assert torch.equal(got[k], v), k
 
 
-def test_an_onload_right_after_the_sync_does_not_reach_the_written_bytes(monkeypatch, base_dir, cache_root):
+def test_an_onload_right_after_the_sync_does_not_reach_the_written_bytes(
+    monkeypatch, base_dir, cache_root
+):
     _as_if_on_the_accelerator(monkeypatch)
     model = _native(base_dir)
     expected = {k: v.detach().clone() for k, v in model.state_dict().items()}
