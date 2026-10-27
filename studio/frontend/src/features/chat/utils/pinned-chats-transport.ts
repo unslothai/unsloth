@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { ChatSettingsRequestError } from "./settings-retry.ts";
+import { createNavigationNonce } from "../../../lib/navigation-nonce.ts";
 
 import {
   applyPinOperation,
@@ -65,20 +66,31 @@ function isUnsupported(error: unknown): boolean {
   return onlyUnsupportedPins && rejectsPinField;
 }
 
-/** Drop pins a later entry unpins: the server cannot place a chat deleted while offline. */
+/** Drop pins a later entry unpins: the server cannot place a chat deleted while offline. The
+ *  unpin fences each dropped pin's ID, so another tab's delayed replay of it is never applied. */
 function compactReplay(operations: PinOperation[]): PinOperation[] {
-  const unpinnedLater = new Set<string>();
+  const unpinFor = new Map<string, PinOperation & { cancels: string[] }>();
   const kept: PinOperation[] = [];
   for (const operation of [...operations].reverse()) {
     if (!operation.pinned) {
-      operation.ids.forEach((id) => unpinnedLater.add(id));
+      const fence = { ...operation, cancels: [...(operation.cancels ?? [])] };
+      operation.ids.forEach((id) => unpinFor.set(id, fence));
+      kept.push(fence);
+      continue;
+    }
+    const fenceId = operation.ids.find((id) => unpinFor.has(id));
+    if (fenceId === undefined) {
       kept.push(operation);
       continue;
     }
-    const ids = operation.ids.filter((id) => !unpinnedLater.has(id));
-    if (ids.length > 0) kept.push({ ...operation, ids });
+    unpinFor.get(fenceId)!.cancels.push(operation.operationId);
+    const ids = operation.ids.filter((id) => !unpinFor.has(id));
+    // The fenced ID would acknowledge the remainder unapplied: send it under a new one.
+    if (ids.length > 0) kept.push({ ...operation, ids, operationId: createNavigationNonce() });
   }
-  return kept.reverse();
+  return kept
+    .reverse()
+    .map(({ cancels, ...operation }) => (cancels?.length ? { ...operation, cancels } : operation));
 }
 
 function sameIds(left: string[] | undefined, right: string[]): boolean {

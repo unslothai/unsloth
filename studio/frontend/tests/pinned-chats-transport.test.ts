@@ -358,6 +358,7 @@ test("orphan-only migration may leave pins absent before a valid operation is re
 
 test("upgrade replay skips a pin whose chat was unpinned (deleted) later in the offline log", async () => {
   let remote: string[] = ["chat"];
+  const sent: PinOperation[] = [];
   const tombstones = new Set<string>();
   let fallback: PinnedChatsFallbackState | undefined = {
     baseIds: [],
@@ -367,6 +368,7 @@ test("upgrade replay skips a pin whose chat was unpinned (deleted) later in the 
   const transport = createPinnedChatsTransport({
     load: async () => remote.slice(),
     compareAndSet: async (expected, next, operation) => {
+      if (operation) sent.push(operation);
       // The upgraded server never learned the deleted comparison's pair ID.
       if (next.includes("pair")) return { pinnedIds: remote.slice(), applied: false };
       if (JSON.stringify(expected) !== JSON.stringify(remote)) return { pinnedIds: remote.slice(), applied: false };
@@ -382,5 +384,7 @@ test("upgrade replay skips a pin whose chat was unpinned (deleted) later in the 
   assert.deepEqual(await transport.load(), ["new", "chat"]);
   assert.equal(fallback, undefined);
   assert.ok(tombstones.has("pair"));
+  // Another tab may already be replaying the dropped pin: the unpin fences its ID.
+  assert.deepEqual(sent.find((op) => !op.pinned)?.cancels, ["01"]);
 });
 
