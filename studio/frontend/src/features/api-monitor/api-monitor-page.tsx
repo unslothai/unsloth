@@ -29,25 +29,23 @@ import {
   type ModelConfigHandoffRequest,
   createModelConfigHandoffRequestId,
 } from "@/features/model-picker";
-import { useIsAccountOwner } from "@/features/auth";
 import {
   loadLanAccess,
   publishLanUrls,
   useSettingsDialogStore,
 } from "@/features/settings";
 // Not through the barrel: these pull in chat, which every barrel importer would then load.
-import { RAISED_SURFACE } from "@/features/library/surface";
+import {
+  type ApiExampleKind,
+  ApiExampleTabNav,
+} from "@/features/settings/components/api-example-tabs";
 import { AudioApiExamples } from "@/features/settings/components/audio-api-examples";
 import { DecisionApiSection } from "@/features/settings/components/decision-api-section";
 import { MediaApiExamples } from "@/features/settings/components/media-api-examples";
-import {
-  UsageExamples,
-  useApiTunnelPref,
-} from "@/features/settings/components/usage-examples";
+import { useApiTunnelPref } from "@/features/settings/components/usage-examples";
 import { remoteApiOrigin } from "@/features/settings/api/remote-access-state";
 import { getApiBase, isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
-import { AiSpeechIcon, MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
@@ -55,10 +53,7 @@ import {
   ArrowDataTransferVerticalIcon,
   Cancel01Icon,
   CodeIcon,
-  BotIcon,
   ComputerTerminal01Icon,
-  Image01Icon,
-  TaskDone01Icon,
   Delete02Icon,
   FileSearchIcon,
   FlashIcon,
@@ -860,8 +855,6 @@ function RequestDetail({
   );
 }
 
-type QuickStartKind = "chat" | "media" | "audio" | "decision" | "agents";
-
 function QuickStart({
   baseUrl,
   model,
@@ -870,18 +863,8 @@ function QuickStart({
   model: string | null;
 }): ReactElement {
   const choices = useApiExampleChoices(baseUrl, "curl");
-  const isOwner = useIsAccountOwner();
-  const [useTunnel, setUseTunnel] = useApiTunnelPref();
-  const [kind, setKind] = useState<QuickStartKind>("chat");
-  const kinds: { id: QuickStartKind; label: string; icon: IconSvgElement }[] = [
-    { id: "chat", label: "Chat", icon: MessageCircleIcon },
-    { id: "media", label: "Images / Video", icon: Image01Icon },
-    { id: "audio", label: "Audio", icon: AiSpeechIcon },
-    ...(isOwner
-      ? [{ id: "decision" as const, label: "Decision", icon: TaskDone01Icon }]
-      : []),
-    { id: "agents", label: "Agents", icon: BotIcon },
-  ];
+  const [useTunnel] = useApiTunnelPref();
+  const [kind, setKind] = useState<ApiExampleKind>("chat");
   return (
     <div className="flex flex-col items-center gap-4 px-6 py-12 text-center">
       <span className="flex size-10 items-center justify-center icon-disc text-muted-foreground">
@@ -901,32 +884,7 @@ function QuickStart({
             : "Load a model, then send a request to see it here."}
         </p>
       </div>
-      <nav aria-label="Example" className="flex flex-wrap justify-center gap-1">
-        {kinds.map((entry) => (
-          <button
-            key={entry.id}
-            type="button"
-            aria-current={entry.id === kind ? "page" : undefined}
-            onClick={() => setKind(entry.id)}
-            className={cn(
-              "flex h-9 shrink-0 items-center gap-2 rounded-full px-3.5 font-heading text-ui-15 text-foreground/80 transition-colors hover:text-foreground",
-              // On a card, so a step above it, not the card colour.
-              entry.id === kind &&
-                cn(
-                  RAISED_SURFACE,
-                  "font-medium text-foreground dark:bg-accent",
-                ),
-            )}
-          >
-            <HugeiconsIcon
-              icon={entry.icon}
-              strokeWidth={1.75}
-              className="size-4 shrink-0"
-            />
-            {entry.label}
-          </button>
-        ))}
-      </nav>
+      <ApiExampleTabNav kind={kind} onChange={setKind} className="justify-center" />
       {kind === "chat" ? (
         <div className="w-full max-w-2xl text-left">
           <ApiExampleBox
@@ -946,14 +904,8 @@ function QuickStart({
             <MediaApiExamples useTunnel={useTunnel} showHeading={false} />
           ) : kind === "audio" ? (
             <AudioApiExamples useTunnel={useTunnel} showHeading={false} />
-          ) : kind === "decision" ? (
-            <DecisionApiSection showHeading={false} />
           ) : (
-            <UsageExamples
-              useTunnel={useTunnel}
-              onUseTunnelChange={setUseTunnel}
-              agentsOnly={true}
-            />
+            <DecisionApiSection showHeading={false} />
           )}
         </div>
       )}
@@ -1461,10 +1413,15 @@ export function ApiMonitorPage(): ReactElement {
   };
   return (
     <>
-      {/* Model picker where Chat keeps it; sticky, so the log scrolls under it. */}
+      {/* Model picker where Chat keeps it; sticky, so the log scrolls under it. On the native
+          macOS titlebar the root insets non-chat pages below it, so this lifts back into the
+          titlebar row as Chat's header sits; z-40 and pointer-events-none as there, so the
+          empty row still drags the window. */}
       <div
         className={cn(
-          "sticky top-0 z-30 flex min-h-[calc(48px*var(--ui-space-scale,1))] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)]",
+          "pointer-events-none sticky top-0 z-40 flex min-h-[calc(48px*var(--ui-space-scale,1))] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)]",
+          !isMobileShell &&
+            "-mt-[calc(var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))-var(--studio-content-top-inset,0px))]",
           isMobileShell
             ? "pl-12"
             : pinned
@@ -1474,7 +1431,7 @@ export function ApiMonitorPage(): ReactElement {
                 : "pl-[calc(0.5rem*var(--ui-space-scale,1)+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]",
         )}
       >
-        <div data-tour="api-toolbar" className="flex min-w-0 max-w-full">
+        <div data-tour="api-toolbar" className="pointer-events-auto flex min-w-0 max-w-full">
           <ApiModelLoadControls
             runtime={runtime}
             activeModel={data?.active_model}

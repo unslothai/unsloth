@@ -7,6 +7,7 @@ import { useApiMonitorOverlayStore } from "@/features/api-monitor/overlay-store"
 import { getApiMonitor } from "@/features/chat/api/chat-api";
 import type { ApiMonitorResponse } from "@/features/chat/types/api";
 import { useLocale, useT } from "@/i18n";
+import { cn } from "@/lib/utils";
 import { ActivityIcon } from "@hugeicons/core-free-icons";
 import { ArrowRightIcon } from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -16,7 +17,12 @@ import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
-export function MonitorLink(): ReactElement {
+/** `hideHeading`: the API tab lists it under its access group's heading. */
+export function MonitorLink({
+  hideHeading = false,
+}: {
+  hideHeading?: boolean;
+} = {}): ReactElement {
   const navigate = useNavigate();
   const locale = useLocale();
   const t = useT();
@@ -40,8 +46,11 @@ export function MonitorLink(): ReactElement {
   const recent = data?.entries.length ?? 0;
 
   return (
-    <SettingsSection title={t("settings.resources.liveMonitor.apiTitle")}>
-      <div className="flex flex-col pt-3">
+    <SettingsSection
+      title={t("settings.resources.liveMonitor.apiTitle")}
+      hideHeading={hideHeading}
+    >
+      <div className={cn("flex flex-col", hideHeading ? "pt-2" : "pt-3")}>
         <button
           type="button"
           onClick={() => {

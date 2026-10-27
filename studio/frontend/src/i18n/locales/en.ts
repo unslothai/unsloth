@@ -3331,7 +3331,7 @@ export const en = {
         loadError: "Couldn't load Decision API settings.",
         sendsTo: "Requests are sent to {provider}.",
         connectionMissing: "This connection is gone or has no decision models. Pick another model.",
-        addConnection: "To use a hosted decision model, add TypeSafe, Liquid AI or OpenRouter in Connections.",
+        addConnection: "To use a cloud hosted decision model, add TypeSafe, OpenRouter etc. in Connections.",
         openConnections: "Open Connections",
       },
       mcp: {
