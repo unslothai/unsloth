@@ -3310,7 +3310,11 @@ def _gated_method(cls, name, fast, original):
     return gated
 
 
-def runs_fast_forward(module, fast, name = "forward"):
+def runs_fast_forward(
+    module,
+    fast,
+    name = "forward",
+):
     """True when `module` runs Unsloth's `fast` as its class `name`: directly, or through the gate that
     pre_patch installs (which runs `fast` only on modules marked by mark_unsloth_fast_path)."""
     method = getattr(type(module), name, None)

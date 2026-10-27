@@ -36,7 +36,6 @@ class _Stack(torch.nn.Module):
         self.layers = torch.nn.ModuleList([_Layer(attn_cls()) for _ in range(2)])
         if marked:
             from unsloth.models.llama import mark_unsloth_fast_path
-
             mark_unsloth_fast_path(self)
 
 
