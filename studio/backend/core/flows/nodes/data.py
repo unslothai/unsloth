@@ -152,7 +152,10 @@ class RunHistory:
             return
         self.seq += 1
         self.record.update(fields, lastEventId = self.seq)
-        if self.record["status"] in ("completed", "error", "cancelled") and not self.record["finishedAt"]:
+        if (
+            self.record["status"] in ("completed", "error", "cancelled")
+            and not self.record["finishedAt"]
+        ):
             self.record["finishedAt"] = int(time.time() * 1000)
         from storage import flows_db
 
@@ -253,15 +256,11 @@ async def run_recipe(
         return "running", shown, None
 
     try:
-        status = await poll_job(
-            ctx, status = job_status, parse = parse, cancel = cancel, interval = POLL_S
-        )
+        status = await poll_job(ctx, status = job_status, parse = parse, cancel = cancel, interval = POLL_S)
     except BaseException as exc:
         if history.record.get("status") not in ("error", "cancelled"):
             failed = isinstance(exc, FlowNodeError)
-            await history.update(
-                status = "error" if failed else "cancelled", error = str(exc) or None
-            )
+            await history.update(status = "error" if failed else "cancelled", error = str(exc) or None)
         raise
     preview: list = []
     total = None

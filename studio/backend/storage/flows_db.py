@@ -502,7 +502,11 @@ def save_recipe_run(flow_id: str, node_id: str, record: dict) -> None:
         conn.close()
 
 
-def recipe_runs(flow_id: str, node_id: str, limit: int = 50) -> list[dict]:
+def recipe_runs(
+    flow_id: str,
+    node_id: str,
+    limit: int = 50,
+) -> list[dict]:
     conn = get_connection()
     try:
         rows = conn.execute(
