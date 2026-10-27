@@ -2661,6 +2661,8 @@ _MISS = object()
 
 # GGUF unsigned value-type id -> byte width (uint8, uint16, uint32, uint64).
 _GGUF_UINT_WIDTHS = {0: 1, 2: 2, 4: 4, 10: 8}
+# First bytes of the vocabulary entries kept as markup candidates: b"<" and b"[".
+_GGUF_MARKUP_FIRST_BYTES = frozenset(b"<[")
 
 
 @contextlib.contextmanager
@@ -18097,7 +18099,8 @@ class LlamaCppBackend:
             if elem_sz is not None:
                 f.seek(elem_sz * alen, 1)
             elif atype == 8:
-                for _ in range(alen):
+                from utils.models.gguf_metadata import skip_gguf_strings
+                for _ in range(alen - skip_gguf_strings(f, alen)):
                     slen = struct.unpack("<Q", f.read(8))[0]
                     f.seek(slen, 1)
             else:
@@ -18118,9 +18121,16 @@ class LlamaCppBackend:
 
         if atype == 8:  # STRING: kept only for the delimiter-shaped entries (#7066).
             from core.inference.chat_template_helpers import delimiter_shaped_tokens
+            from utils.models.gguf_metadata import take_gguf_strings_by_first_byte
 
+            done, raws = take_gguf_strings_by_first_byte(f, alen, _GGUF_MARKUP_FIRST_BYTES)
             kept: list = []
-            for _ in range(alen):
+            for raw in raws:
+                try:
+                    kept.append(raw.decode("utf-8"))
+                except UnicodeDecodeError:
+                    continue
+            for _ in range(alen - done):
                 n = struct.unpack("<Q", f.read(8))[0]
                 raw = f.read(n)
                 # Only <...> / [...] entries are kept, so skip decoding the rest; UTF-8 makes the first byte
