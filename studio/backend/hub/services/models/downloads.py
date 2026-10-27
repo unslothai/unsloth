@@ -562,6 +562,11 @@ async def cancel_download_model_response(body: CancelDownloadRequest):
             detail = f"Invalid gguf_variant: {variant!r}",
         )
     key = _download_job_key(repo_id, variant)
+    from hub.services import training_downloads
+
+    if training_downloads.is_training_variant(variant):
+        state = await asyncio.to_thread(training_downloads.cancel, key, body.generation)
+        return {"job_key": key, "state": state}
     if load_downloads.is_load_owned(_registry, key):
         raise HTTPException(
             status_code = 409,
@@ -787,6 +792,11 @@ async def get_gguf_download_progress_response(
     hf_token: Optional[str] = None,
 ) -> dict:
     """Return download progress for a specific GGUF variant."""
+    from hub.services import training_downloads
+
+    if training_downloads.is_training_variant(variant):
+        key = _download_job_key(repo_id, variant)
+        return await asyncio.to_thread(training_downloads.progress, key)
     try:
         repo_id, variant = await _audio_cpp_target(repo_id, variant, hf_token)
     except HTTPException:
