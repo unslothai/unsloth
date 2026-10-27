@@ -230,7 +230,7 @@ def flow_from_recipe(
     for provider in recipe.get("model_providers") or []:
         if isinstance(provider, dict) and any(provider.get(k) for k in _SECRET_KEYS):
             notices.append(
-                f"Provider {provider.get('name')}: its API key was left out, flows do not keep keys."
+                f"Provider {provider.get('name')}: add its API key again, flows do not keep keys."
             )
         for key in _SECRET_KEYS:
             if isinstance(provider, dict):
@@ -238,7 +238,7 @@ def flow_from_recipe(
     seed = recipe.get("seed_config")
     seed_source = seed.get("source") if isinstance(seed, dict) else None
     if isinstance(seed_source, dict) and seed_source.pop("token", None):
-        notices.append("Seed data: its access token was left out, flows do not keep tokens.")
+        notices.append("Seed data: add its access token again, flows do not keep tokens.")
     graph = import_recipe({"recipe": recipe, "run": run, "ui": ui}, group_id = "recipe")
     graph["group"]["label"] = name[:200] or "Data Recipe"
     generate = graph["nodes"][-1]
