@@ -158,11 +158,7 @@ def header_has_fp8_weights(path: Optional[str], *, fnuz_only: bool = False) -> O
 
 
 def scan_comfy_quant(path: Optional[str]) -> Optional[ComfyQuantScan]:
-    """The ComfyUI quantization a safetensors single file declares, or None for a plain checkpoint.
-
-    Torch-free: reads the header and the few hundred bytes of ``.comfy_quant`` JSON. Never raises for
-    a file it cannot read as safetensors (the regular loader reports that); returns a scan whose
-    ``problems`` are non-empty for one it must refuse."""
+    """Torch-free header read; None for a plain checkpoint, and never raises on an unreadable file."""
     if not path or not str(path).lower().endswith(".safetensors") or not os.path.isfile(path):
         return None
     try:
@@ -872,10 +868,7 @@ def comfy_int8_backend(
     *,
     offload: bool = False,
 ) -> Optional[str]:
-    """Which of Studio's int8 runtimes takes the int8 layers, by the rule its own int8 quant follows:
-    ``"torchao"`` (``Int8Tensor``) on a resident plan, ``"native"`` (the torchao-free twin, plain
-    buffers the offload hooks can move) under offload or on a host without the torchao path, None
-    (dequantize to bf16) where neither runs. ``UNSLOTH_DIFFUSION_COMFY_INT8=0`` always dequantizes."""
+    """int8 runtime: torchao when resident, native under offload, None to dequantise to bf16."""
     if (os.environ.get(COMFY_INT8_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
         return None
     try:
@@ -1056,11 +1049,7 @@ def load_comfy_prequant(
     config_subfolder: str = "transformer",
     logger: Any = None,
 ) -> Any:
-    """A hosted (or local) ComfyUI-format prequant as the transformer Studio's own ``scheme`` checkpoint
-    rebuilds into, on the CPU: int8 layers as ``Int8Tensor`` under ConvRot-rotating Linears, fp8 layers as
-    per-row ``Float8Tensor``. Placement, small-M padding and the rest stay with the caller, exactly as for
-    Studio's own checkpoints. Raises ``ValueError`` for a file it must refuse: a format Studio cannot run,
-    layers of another scheme, or a recorded base model that is not ``base``."""
+    """Rebuilds a ComfyUI prequant on the CPU as Studio's scheme; ValueError for formats it cannot run."""
     name = os.path.basename(str(path))
     scan = scan_comfy_quant(path)
     if scan is None:

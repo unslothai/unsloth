@@ -26,7 +26,28 @@ import torch
 transformers = pytest.importorskip("transformers")
 trl = pytest.importorskip("trl")
 
-from transformers import LlamaConfig, LlamaForCausalLM
+from transformers import LlamaConfig
+
+
+def _pristine_llama_for_causal_lm():
+    """transformers' own LlamaForCausalLM, loaded fresh from its file. Once a GPU test in the same
+    process loads a model through unsloth, unsloth's patches (CUDA rotary caches, fast forwards) sit
+    on the shared Llama classes, and this file's float64 CPU model would run through them."""
+    import importlib.util
+    import sys
+
+    import transformers.models.llama.modeling_llama as installed
+
+    name = "transformers.models.llama._pristine_modeling_llama"
+    if name not in sys.modules:
+        spec = importlib.util.spec_from_file_location(name, installed.__file__)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    return sys.modules[name].LlamaForCausalLM
+
+
+LlamaForCausalLM = _pristine_llama_for_causal_lm()
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]

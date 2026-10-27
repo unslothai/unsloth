@@ -433,7 +433,7 @@ class Fast_RoPE_Embedding_QK(torch.autograd.Function):
 
         if has_indices:
             # TRL's rotary indices are always int32, so the cast is only for safety.
-            rope_ptr = rope_indices.reshape(-1).to(dtype = torch.int32, device = Q.device)
+            rope_ptr = rope_indices.reshape(-1).to(dtype = torch.int32, device = Q.device).contiguous()
         else:
             rope_ptr = None
 
@@ -704,7 +704,9 @@ def fast_rope_embedding(
         return _fast_rope_embedding_untraced(Q, K, cos, sin, rope_embedding_indices)
     cos, sin = cos.squeeze(), sin.squeeze()
     if rope_embedding_indices is not None:
-        rope_ptr = rope_embedding_indices.reshape(-1).to(dtype = torch.int32, device = Q.device)
+        rope_ptr = (
+            rope_embedding_indices.reshape(-1).to(dtype = torch.int32, device = Q.device).contiguous()
+        )
         return torch.ops.unsloth.rope_embedding_qk(Q, K, cos, sin, rope_ptr, False)
     Q_out = torch.ops.unsloth.rope_embedding(Q.transpose(1, 2), cos, sin, False).transpose(1, 2)
     K_out = torch.ops.unsloth.rope_embedding(K.transpose(1, 2), cos, sin, False).transpose(1, 2)

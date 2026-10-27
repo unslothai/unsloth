@@ -99,11 +99,9 @@ class LoadRequest(BaseModel):
     )
     model_path: str = Field(..., description = "Model identifier or local path")
     _gguf_companion_roots: tuple[str, ...] = PrivateAttr(default = ())
-    # `()` is both the default and auto-switch's deliberate "do not widen", so only this
-    # marker separates unset from explicitly empty.
+    # `()` also means "do not widen", so this marks unset vs explicitly empty.
     _gguf_companion_roots_set: bool = PrivateAttr(default = False)
-    # Auto-switch only: the alias its owner-override lookup used, so the managed path-flag
-    # check reads the same override row.
+    # Auto-switch only: the owner-override alias, so the managed path-flag check reads the same row.
     _override_alias_id: Optional[str] = PrivateAttr(default = None)
     # The catalog id a load by path should keep advertising (Open WebUI /models/load).
     _advertised_id: Optional[str] = PrivateAttr(default = None)
@@ -169,8 +167,7 @@ class LoadRequest(BaseModel):
     def normalize_blank_chat_template_override(cls, value: Optional[str]) -> Optional[str]:
         if value is None:
             return None
-        # Char count is a lower bound on UTF-8 byte length: reject an oversized
-        # template before spending work encoding it.
+        # Char count is a lower bound on UTF-8 bytes: cheap early reject.
         if len(value) > MAX_CHAT_TEMPLATE_BYTES:
             raise ValueError(f"Chat template exceeds the {MAX_CHAT_TEMPLATE_BYTES}-byte limit.")
         if value.strip() == "":
@@ -485,10 +482,8 @@ class LoadRequest(BaseModel):
     )
     @classmethod
     def _no_booleans(cls, value: Any) -> Any:
-        # bool subclasses int and pydantic parses non-strictly, so `true` arrives as 1 and the load
-        # launches --batch-size 1, which llama-server aborts on: a 500 rather than a 422. Mirrors
-        # ModelOverrideRequest._no_booleans. Kept off the annotation: an Annotated BeforeValidator stops
-        # the Field constraints folding into the int core schema, and they leak into OpenAPI as ge/le.
+        # bool is an int: `true` would launch --batch-size 1 and llama-server aborts (500 not 422).
+        # Kept off the annotation: an Annotated BeforeValidator leaks Field bounds into OpenAPI.
         if isinstance(value, bool):
             raise ValueError("Expected a number, got a boolean.")
         return value
@@ -496,8 +491,7 @@ class LoadRequest(BaseModel):
     @field_validator("tensor_split")
     @classmethod
     def _reject_degenerate_tensor_split(cls, value: Optional[List[float]]) -> Optional[List[float]]:
-        # A negative / non-finite / all-zero split is silently dropped at launch (stored as None) yet
-        # still compared raw in the reload dedupe, so an identical Apply reloads forever. [] = no split.
+        # Bad splits are dropped at launch but compared raw in reload dedupe (reload loop).
         if not value:
             return value
         import math
@@ -560,8 +554,7 @@ class UnloadRequest(BaseModel):
             "unload takes away the llama-server they are decoding on."
         ),
     )
-    # The resident model is keyed on the path, so an unresolved handle matches nothing and
-    # reports success while the model keeps its GPU.
+    # Unresolved handle matches no resident model and falsely reports success.
     _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
 
 
@@ -629,8 +622,7 @@ class SttLoadRequest(BaseModel):
 
     @model_validator(mode = "after")
     def _fold_audio_gguf_variant(self):
-        # The audio.cpp sidecar takes ``id:variant``, so every route that resolves, downloads,
-        # loads or compares the model sees the same string.
+        # The audio.cpp sidecar takes ``id:variant``, so every route must build the same string.
         engine = (self.engine or "").strip().lower()
         model = (self.model or "").strip()
         variant = (self.gguf_variant or "").strip()
@@ -686,14 +678,12 @@ class ValidateModelRequest(BaseModel):
     gguf_variant: Optional[str] = Field(
         None, description = "GGUF quantization variant (e.g. 'Q4_K_M')"
     )
-    # Intended load settings so validate's coexistence check matches the follow-up
-    # /load; defaults preserve old behavior for callers that omit them.
+    # Intended load settings so the coexistence check matches the follow-up /load.
     max_seq_length: int = Field(0, ge = 0, le = MAX_REQUESTABLE_CONTEXT)
     load_in_4bit: bool = Field(True)
     cache_type_kv: Optional[str] = Field(None)
     tensor_parallel: bool = Field(False)
-    # Sized with, like the other intended load settings above: the follow-up /load opens no projector
-    # when this is set, so a preflight that charges for one would refuse a load that then fits.
+    # Follow-up /load opens no projector when set, so do not charge for one.
     disable_vision: bool = Field(False)
     gpu_ids: Optional[List[int]] = Field(None)
     # Sized with too: preflighting a CPU load would refuse one that takes no VRAM.
@@ -880,9 +870,7 @@ class TransformersUpgradeCheckRequest(BaseModel):
     hf_token: Optional[str] = Field(
         None, description = "HuggingFace token, so gated repos resolve their config.json"
     )
-    # Cache pin, in the same four fields /models/remote-code-scan takes and resolved by the same
-    # precedence: a cached model loads from its pinned snapshot, whose config.json can name a
-    # different architecture than the repo's current one.
+    # Cache pin: a pinned snapshot's config.json can name a different architecture.
     prefer_local_cache: bool = Field(
         False,
         description = "Inspect the cached snapshot rather than the Hub repo, when one is pinned.",
@@ -910,8 +898,7 @@ class TransformersUpgradeCheckRequest(BaseModel):
         "installing would strand that checkpoint's exact 4-bit resume.",
     )
 
-    # This route SWALLOWS a failed lookup and answers "no upgrade needed", so training starts
-    # and dies at model load in the worker.
+    # This route swallows a failed lookup, so training would die at model load.
     _resolve_the_handle = field_validator(
         "model_name", "model_local_path", "model_snapshot_path", "model_snapshot_repo_id"
     )(resolve_inventory_handle)
@@ -1169,8 +1156,7 @@ class EstimateMemoryRequest(BaseModel):
     _no_booleans = field_validator(
         "n_batch", "n_ubatch", "ctx_checkpoints", "n_ctx", "max_seq_length", mode = "before"
     )(LoadRequest._no_booleans.__func__)
-    # Unresolved, the reference reads as a Hub id and the panel is told the estimate is
-    # unavailable for a row it was offered.
+    # Unresolved, the handle reads as a Hub id and the panel is told the estimate is unavailable.
     _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
 
 
@@ -1336,6 +1322,17 @@ class EstimateMemoryResponse(BaseModel):
         description = "True when --n-cpu-moe is set: experts move per-tensor, not "
         "per-block, so the GPU/host split above ignores it and reads high.",
     )
+    lookup_table_bytes: int = Field(
+        0,
+        description = "Lookup-only tables (per-layer embeddings / Engram) in the model "
+        "file. Never in gpu_bytes; excluded from weights_bytes and total_bytes when "
+        "lookup_table_on_disk is true.",
+    )
+    lookup_table_on_disk: bool = Field(
+        False,
+        description = "True when llama.cpp streams those tables from disk (its default "
+        "lazy mode), so only the rows in use are paged in.",
+    )
     mlx_offload: Optional[MlxOffloadEstimate] = Field(
         None,
         description = "MLX: what the load reads from disk instead of memory, priced in "
@@ -1447,6 +1444,12 @@ class MemoryEstimate(BaseModel):
     gpu_layers: Optional[int] = Field(None, description = "Layers placed on the GPU, when known")
     moe_offload_unmodelled: bool = Field(
         False, description = "--n-cpu-moe is set, so the GPU figure reads high"
+    )
+    lookup_table_bytes: int = Field(
+        0, description = "Lookup-only tables in the model file, never charged to the GPU"
+    )
+    lookup_table_on_disk: bool = Field(
+        False, description = "Those tables are streamed from disk, not resident"
     )
     mlx_offload: Optional[MlxOffloadEstimate] = Field(
         None, description = "MLX: what the load reads from disk; null when not MLX"
@@ -1736,9 +1739,8 @@ class _InferenceRuntimeFields(BaseModel):
     reasoning_budget_message: str = Field(
         "", description = "Effective llama-server reasoning-budget exhaustion message."
     )
-    # The effective pair folds in LLAMA_ARG_THINK_BUDGET*, which no client can send or clear, so a
-    # caller comparing its own request against it reads a machine-wide default as a difference and
-    # reloads forever. These echo what the load ASKED for, which a client can reproduce.
+    # Echo what the load asked for: the effective pair folds in LLAMA_ARG_THINK_BUDGET* env, which
+    # a client cannot reproduce, so comparing against it reloads forever.
     requested_reasoning_budget: int = Field(
         -1, description = "Reasoning token budget this load requested, before the environment."
     )
@@ -2631,8 +2633,7 @@ class ChatMessage(BaseModel):
     @field_validator("reasoning_content", mode = "before")
     @classmethod
     def _ignore_non_string_reasoning(cls, value):
-        # This field used to be ignored as an unknown key. Some compatible gateways send structured
-        # reasoning, so declaring the string form must not turn those requests into validation errors.
+        # Gateways may send structured reasoning; do not turn it into a validation error.
         return value if isinstance(value, str) else None
 
     @model_validator(mode = "after")
@@ -2641,8 +2642,7 @@ class ChatMessage(BaseModel):
             raise ValueError('"tool_calls" is only valid on role="assistant" messages.')
         if self.tool_call_id is not None and self.role != "tool":
             raise ValueError('"tool_call_id" is only valid on role="tool" messages.')
-        # llama-server renders the marker into whatever turn carried it, so off a user turn the
-        # result is template-dependent.
+        # llama-server puts the marker in any turn carrying it, so off a user turn it is template-dependent.
         if (
             self.role != "user"
             and isinstance(self.content, list)
@@ -2651,8 +2651,7 @@ class ChatMessage(BaseModel):
             raise ValueError(f'"video_url" parts are not valid on role="{self.role}" messages.')
 
         if self.role == "tool":
-            # tool_call_id resolution happens at ChatCompletionRequest scope. OpenAI accepts empty tool
-            # results (commands with no output); normalize to "" instead of a 400 agentic clients treat as fatal.
+            # OpenAI accepts empty tool results; normalize to "" instead of a 400.
             if self.content is None or self.content == []:
                 self.content = ""
         elif self.role == "assistant":
@@ -2680,9 +2679,7 @@ def resolve_thinking_onto_enable_thinking(request):
     when both are given. Shared with counting, which must resolve the reasoning preamble exactly as
     the completion does."""
     if request.thinking is not None and request.enable_thinking is None:
-        # Derived, not an explicit x-unsloth override: out of model_fields_set so route
-        # precedence still ranks it below the nested controls. Also covers an explicit
-        # null, which pydantic records as set.
+        # Derived, not an x-unsloth override: kept out of model_fields_set so precedence ranks it below nested controls; covers explicit null.
         object.__setattr__(request, "enable_thinking", request.thinking.type == "enabled")
         request.model_fields_set.discard("enable_thinking")
     return request
@@ -2721,11 +2718,7 @@ class ReasoningControlsRequest(BaseModel):
         return resolve_thinking_onto_enable_thinking(self)
 
 
-# Recognized permission_mode values. The field accepts a plain string rather than a Literal so an
-# unrecognized value from a newer client degrades to the safest gate ("ask") instead of a 422.
-# None stays unset at the request boundary: the tool loops normalize it to the product default
-# "auto", while the route's confirm-gate derivation keeps an unset mode lenient (a non-streaming
-# request cannot prompt, so it runs).
+# Plain string, not Literal: unknown modes degrade to ask instead of a 422; None stays unset at the request boundary.
 _KNOWN_PERMISSION_MODES = ("ask", "auto", "off", "full")
 
 
@@ -2762,13 +2755,8 @@ class SandboxAttachment(BaseModel):
 
 
 class ChatCompletionRequest(BaseModel):
-    """OpenAI-compatible chat completion request.
+    """Accept unknown fields so future OpenAI fields are not dropped before route code runs. Mirrors AnthropicMessagesRequest and ResponsesRequest."""
 
-    Non-OpenAI extension fields are marked with 'x-unsloth'.
-    """
-
-    # Accept unknown fields so future OpenAI fields aren't dropped before route
-    # code runs. Mirrors AnthropicMessagesRequest and ResponsesRequest.
     model_config = {"extra": "allow"}
     # "off" with the client's own confirm_tool_calls=false: no prompt at all, even without OS isolation.
     _off_confirm_opt_out: bool = PrivateAttr(default = False)
@@ -2792,8 +2780,7 @@ class ChatCompletionRequest(BaseModel):
     max_tokens: Optional[int] = Field(
         None, ge = 1, description = "Maximum tokens to generate (None = until EOS)"
     )
-    # OpenAI's documented range is [-2, 2] on both penalties. Widening only admits requests that used
-    # to be rejected. A negative value boosts repetition wherever the backend applies the penalty.
+    # Matches OpenAI's [-2, 2] range; negative values boost repetition where the backend applies them.
     presence_penalty: float = Field(
         0.0,
         ge = -2.0,
@@ -2812,8 +2799,7 @@ class ChatCompletionRequest(BaseModel):
             " only; llama-server also counts the prompt, within its own window."
         ),
     )
-    # Ids are not range-checked here: MLX bounds-checks nothing either, so a
-    # stray is dropped at the processors rather than failing the request.
+    # Token ids are not range-checked; MLX does not either, so a stray id is dropped at the processors.
     logit_bias: Optional[Dict[int, Annotated[float, Field(ge = -100.0, le = 100.0)]]] = Field(
         None,
         description = "Additive per-token logit bias keyed by token id, each in [-100, 100]. Ids past the model's logit width are ignored.",
@@ -2822,8 +2808,7 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "OpenAI stop sequences: a single string or list of strings at which generation halts.",
     )
-    # Declared rather than left to model_extra so the schema documents it and a
-    # backend that cannot constrain decoding can refuse it by name.
+    # Declared, not left to model_extra, so the schema documents it and a backend can refuse it by name.
     response_format: Optional[Dict[str, Any]] = Field(
         None,
         description = (
@@ -3208,8 +3193,7 @@ class ChatCompletionRequest(BaseModel):
         literals are coerced to keep explicit opt-outs working."""
         if isinstance(value, str):
             lowered = value.strip().lower()
-            # Match Pydantic v1's bool coercion table; anything else stays a
-            # string for Gemini's cachedContent resource path.
+            # Pydantic v1 bool table; anything else stays a string (Gemini cachedContent path).
             if lowered in ("true", "t", "1", "yes", "y", "on"):
                 return True
             if lowered in ("false", "f", "0", "no", "n", "off"):
@@ -3310,12 +3294,9 @@ class ChatCompletionRequest(BaseModel):
         passthrough require the result id to match the assistant's tool_calls[].id. Prefer
         function.name match, else first unconsumed tool_call; synth a random id only if none exists.
         A user turn breaks the lookup."""
-        # Both passes below were a backwards rescan per tool result, O(n^2) for one assistant with n
-        # calls. Each is now one forward pass with an index, the same search, since the backward walk
-        # never left the current user-delimited segment.
+        # One forward pass with an index instead of an O(n^2) backward rescan.
         messages = self.messages
-        # The first pass only feeds the second, so with every tool_call_id present there is
-        # nothing to do (the common case).
+        # The first pass only feeds the second; when every tool_call_id is present there is nothing to do.
         for msg in messages:
             if msg.role == "tool" and not msg.tool_call_id:
                 break
@@ -3325,8 +3306,7 @@ class ChatCompletionRequest(BaseModel):
         # Pre-mark explicit ids so a missing-id sibling can't steal a claimed one.
         consumed: set[tuple[int, int]] = set()
 
-        # Newest assistant call per explicit id in this segment; within one assistant the first index
-        # wins, matching the old first-match-nearest-assistant walk. Only ``str`` ids are indexed.
+        # Newest assistant call per explicit str id; within one assistant the first index wins.
         latest_by_id: dict = {}
         for asst_idx, msg in enumerate(messages):
             role = msg.role
@@ -3348,10 +3328,7 @@ class ChatCompletionRequest(BaseModel):
                 if claimed is not None:
                     consumed.add(claimed)
 
-        # Assistants in this segment with an unclaimed call, oldest first, so the nearest is on top. A
-        # drained assistant never refills, so popping it is permanent and the walk past it happens once
-        # overall, not once per tool result. Each frame keeps its calls in order plus the same indexes
-        # bucketed by function name; one consumed out of turn is dropped when it reaches a queue front.
+        # Oldest first so the nearest is on top; a drained assistant never refills.
         stack: list = []
         for asst_idx, msg in enumerate(messages):
             role = msg.role
@@ -3387,8 +3364,7 @@ class ChatCompletionRequest(BaseModel):
                 if not in_order:
                     stack.pop()
                     continue
-                # Name match anywhere in this assistant, else its first remaining call,
-                # exactly as the old in-order scan did.
+                # Match by name anywhere in this assistant, else take its first remaining call.
                 chosen = None
                 if msg.name:
                     named = by_name.get(msg.name)
@@ -3433,8 +3409,7 @@ class ChatCompletionRequest(BaseModel):
     @field_validator("permission_mode", mode = "before")
     @classmethod
     def _coerce_permission_mode(cls, value: Any) -> Any:
-        # Accept any string so an unknown mode degrades to 'ask' instead of a
-        # 422; mirrors the tool loops' unknown -> ask fallback.
+        # Unknown mode degrades to 'ask' instead of a 422.
         return _normalize_permission_mode(value)
 
     @model_validator(mode = "after")
@@ -3458,11 +3433,7 @@ class ChatCompletionRequest(BaseModel):
             and self.confirm_tool_calls is True
             and not (self.provider_id or self.provider_type)
         ):
-            # An explicit confirm_tool_calls=True with no mode opted into the pre-permission-mode contract of
-            # gating every call, so resolve it to "ask" rather than let the loop apply the "auto" default,
-            # which would silently weaken that opt-in to high-risk calls only. Unlike the "ask" branch below
-            # this only sets permission_mode, which is inert unless Unsloth's own tool loop runs, so it needs
-            # no enable_tools/mcp gate. A bare unset request still defaults to auto.
+            # Explicit confirm_tool_calls=True with no mode means "ask", not the weaker "auto" default.
             self.permission_mode = "ask"
         elif (
             self.permission_mode == "ask"
@@ -3470,16 +3441,7 @@ class ChatCompletionRequest(BaseModel):
             and not (self.provider_id or self.provider_type)
             and (self.enable_tools is True or bool(self.mcp_enabled))
         ):
-            # "Ask" gates every call, so a direct API caller that omits the legacy confirm flag must still hit
-            # the confirmation gate for Unsloth's own tool loop. An explicit confirm_tool_calls=False wins over
-            # the mode, so only self-enable when the flag is unset, and only when that loop is actually
-            # requested (enable_tools / mcp_enabled): the router enters the loop on those signals, not on
-            # enabled_tools alone. A plain client-tool passthrough must route verbatim, and external-provider
-            # routing rejects confirm_tool_calls with tools, so skip the fold there.
-            #
-            # "auto" is deliberately NOT folded: it only prompts for a call the classifier flags, so leaving
-            # confirm_tool_calls unset lets _confirm_gate_needs_stream apply the safe-only exception instead of
-            # an explicit confirm forcing stream=true. The mode still drives the loop's per-call gate.
+            # Self-enable only if the flag is unset and the Unsloth tool loop is requested, not for passthrough or external providers; auto stays unfolded.
             self.confirm_tool_calls = True
         return self
 
@@ -3589,8 +3551,7 @@ class ChatCountTokensRequest(ReasoningControlsRequest):
     def _coerce_permission_mode(cls, value: Any) -> Any:
         return _normalize_permission_mode(value)
 
-    # The very function the completion request runs, not a copy: a count renders replayed
-    # tool history through the same templates, which read the id off the result message.
+    # Uses the completion path's own function, not a copy, so counts render replayed tool history alike.
     _resolve_missing_tool_call_ids = model_validator(mode = "after")(
         ChatCompletionRequest._resolve_missing_tool_call_ids
     )
@@ -3604,8 +3565,7 @@ class ChatCountTokensRequest(ReasoningControlsRequest):
         elif self.bypass_permissions:
             self.permission_mode = "full"
         elif self.permission_mode is None and self.confirm_tool_calls is True:
-            # The same reading a completion gives it: gating every call is the pre-permission-mode way of
-            # asking for "ask", and the loop's retrieval gate turns on that. Local-only endpoint.
+            # confirm_tool_calls=true maps to permission_mode 'ask', which the loop's retrieval gate keys on.
             self.permission_mode = "ask"
         return self
 
@@ -3849,8 +3809,7 @@ class ResponsesInputMessage(BaseModel):
     role: Literal["system", "user", "assistant", "developer"]
     content: Union[str, list[ResponsesContentPart]]
 
-    # Codex attaches a `phase` field to assistant messages and requires clients
-    # to preserve it across turns; we round-trip it, llama-server ignores it.
+    # Codex requires its `phase` field round-tripped on assistant messages.
     model_config = {"extra": "allow"}
 
 
@@ -3991,8 +3950,7 @@ class ResponsesRequest(BaseModel):
     max_output_tokens: Optional[int] = Field(None, ge = 1)
     stream: bool = Field(False, description = "Whether to stream the response via SSE")
 
-    # OpenAI function-calling fields, forwarded via the Chat Completions pass-through. Plain list so
-    # built-in tool shapes round-trip without validation errors.
+    # Plain dict list so built-in tool shapes round-trip without validation errors.
     tools: Optional[list[dict]] = Field(
         None,
         description = (
@@ -4167,19 +4125,15 @@ class AnthropicToolResultBlock(BaseModel):
     @field_validator("content", mode = "before")
     @classmethod
     def _coerce_null_content(cls, v):
-        # Some clients send null content for an empty tool result; the str|list
-        # union would 400 on it, so treat null as "".
+        # Null tool result content would 400 on the str|list union.
         return "" if v is None else v
 
 
-# Block types with typed models. Anything else (a search_result or document, a provider block a
-# resumed session replays, or a future type) is accepted as an unknown block, which the converter
-# renders if it can and otherwise drops, rather than 400-ing the whole request on strict validation.
+# Unknown block types are accepted; the converter renders them if it can, else drops them.
 _KNOWN_ANTHROPIC_BLOCK_TYPES = frozenset(
     {"text", "image", "tool_use", "tool_result", "thinking", "redacted_thinking"}
 )
-# Thinking blocks are replayed only in assistant turns; the converter drops them
-# from user content, so accepting them there would silently lose a user turn.
+# The converter drops thinking blocks from user content, which would lose the turn.
 _USER_ANTHROPIC_BLOCK_TYPES = frozenset(
     {"text", "image", "tool_use", "tool_result", "search_result", "document"}
 )
@@ -4192,16 +4146,14 @@ class AnthropicUnknownBlock(BaseModel):
     @field_validator("type")
     @classmethod
     def _only_unknown_types(cls, v):
-        # Known types parse as their typed models above (so a malformed known block
-        # still fails cleanly); this fallback only catches the rest.
+        # Known types go to their typed models so a malformed one still fails; this only catches the rest.
         if v in _KNOWN_ANTHROPIC_BLOCK_TYPES:
             raise ValueError("known block type handled by its typed model")
         return v
 
 
 class AnthropicThinkingBlock(BaseModel):
-    # Clients replay thinking blocks with tool results (Anthropic's tool-use protocol requires it), so
-    # the request model must accept them; conversion drops them from the prompt.
+    # Clients replay thinking blocks with tool results, so accept them; conversion then drops them.
     type: Literal["thinking"]
     thinking: str = ""
     signature: str = ""
@@ -4303,12 +4255,7 @@ _CLAUDE_STYLE_REMINDER_SUFFIX = (
 
 
 def _is_repeated_claude_style_reminder(text: str, retained_system: list[str]) -> bool:
-    """Keep Claude's per-tool style reminder from growing an unchanged system prefix.
-
-    Only the exact standalone reminder is redundant, and only when both its style
-    heading and an identical reminder are already retained. Never deduplicate
-    arbitrary instructions or text from user/tool messages.
-    """
+    """Drop an exact standalone style reminder already retained; never dedupe other user or tool text."""
     if not text.endswith(_CLAUDE_STYLE_REMINDER_SUFFIX):
         return False
     style = text[: -len(_CLAUDE_STYLE_REMINDER_SUFFIX)]
@@ -4327,20 +4274,12 @@ class AnthropicMessage(BaseModel):
     @model_validator(mode = "before")
     @classmethod
     def _normalize_content(cls, data):
-        # Role-aware leniency that never silently drops real user input:
-        #  - assistant: a resumed tool-only turn's null content -> "" (str|list would 400 on null; ""
-        #    keeps the converter's `for block in content` safe). Unknown blocks validate via
-        #    AnthropicUnknownBlock and are dropped by the converter.
-        #  - user: keep strict. Null user content stays None so str|list rejects it (400) rather than
-        #    forwarding an empty prompt, and block types the converter cannot translate are rejected,
-        #    since it silently skips unknown user blocks: a user turn made only of them would validate
-        #    yet send no content.
+        # Assistant: null content becomes empty. User: stay strict, rejecting null and unconvertible blocks so no input is silently dropped.
         if not isinstance(data, dict):
             return data
         content = data.get("content")
         if data.get("role") == "assistant":
-            # Coerce only an explicit null (resumed tool-only turn). A missing
-            # content key stays malformed so the required-field check still 400s.
+            # Only an explicit null; a missing key still 400s.
             if "content" in data and content is None:
                 return {**data, "content": ""}
             return data
@@ -4349,12 +4288,10 @@ class AnthropicMessage(BaseModel):
                 btype = (
                     block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
                 )
-                # Guard the value: a non-string type is unsupported too, and a membership test on an unhashable
-                # value would raise TypeError, escaping as a 500 instead of a clean 400.
+                # True if auto-load may run; guards keep invalid requests from loading. Reads configured setting, not effective TTL: residency stops unloads, not reloads.
                 if not isinstance(btype, str) or btype not in _USER_ANTHROPIC_BLOCK_TYPES:
                     raise ValueError(f"unsupported content block type {btype!r} in a user message")
-                # A PDF, url or file document cannot be read. Only inside a tool result, which
-                # clients resend with history, does it degrade to a note instead of a 400.
+                # Unreadable documents degrade to a note only inside a tool result.
                 if btype == "document":
                     source = (
                         block.get("source")
@@ -4371,8 +4308,7 @@ class AnthropicMessage(BaseModel):
 
 
 class AnthropicTool(BaseModel):
-    # User-defined client tools have input_schema; Anthropic-schema client tools
-    # and server tools use type/name.
+    # User-defined tools carry input_schema; server and Anthropic-schema client tools use type/name.
     type: Optional[str] = None
     name: Optional[str] = None
     description: Optional[str] = None
@@ -4381,9 +4317,7 @@ class AnthropicTool(BaseModel):
 
 
 class AnthropicThinkingConfig(BaseModel):
-    # Deliberately `str`, not a Literal. Anthropic ships thinking types beyond enabled/disabled
-    # (adaptive tiers) and Claude Code sends them, and a strict Literal turns an unrecognized value
-    # into a hard 400. Only "disabled" means off; treat anything else as a request to think.
+    # str, not Literal: Claude Code sends adaptive tiers; only "disabled" means off.
     type: str = "enabled"
     # Forwarded to llama-server as thinking_budget_tokens when thinking is on.
     budget_tokens: Optional[int] = None
@@ -4425,15 +4359,13 @@ class AnthropicMessagesRequest(BaseModel):
     enable_tools: Optional[bool] = None
     enabled_tools: Optional[list[str]] = None
     thinking: Optional[AnthropicThinkingConfig] = None
-    # [x-unsloth] reasoning controls mirroring the OpenAI endpoint. These win
-    # over `thinking` when both are present, matching enable_tools precedence.
+    # These win over `thinking` when both are present.
     enable_thinking: Optional[bool] = None
     reasoning_effort: Optional[
         Literal["none", "minimal", "low", "medium", "high", "max", "xhigh"]
     ] = None
     preserve_thinking: Optional[bool] = None
-    # Anthropic's current spelling of the effort dial. Claude Code sends the tier
-    # here, never in reasoning_effort, so without this the level is dropped.
+    # Claude Code sends the effort tier here, never in reasoning_effort.
     output_config: Optional[dict] = None
     session_id: Optional[str] = None
     thread_id: Optional[str] = Field(
@@ -4468,9 +4400,7 @@ class AnthropicMessagesRequest(BaseModel):
     def _effort_from_output_config(self) -> "AnthropicMessagesRequest":
         if self.reasoning_effort is not None or not isinstance(self.output_config, dict):
             return self
-        # Only once thinking is already on. `reasoning_effort` is the x-unsloth override that deliberately
-        # outranks `thinking`, but Claude Code sends output_config.effort on EVERY request, including with
-        # thinking off, and adopting it there would re-enable thinking the caller switched off.
+        # Claude Code sends output_config.effort even with thinking off; do not re-enable it.
         if self.resolved_enable_thinking() is not True:
             return self
         effort = self.output_config.get("effort")
@@ -4565,8 +4495,7 @@ class AnthropicMessagesRequest(BaseModel):
     @field_validator("permission_mode", mode = "before")
     @classmethod
     def _coerce_permission_mode(cls, value: Any) -> Any:
-        # Accept any string so an unknown mode degrades to 'ask' instead of a
-        # 422; mirrors the tool loops' unknown -> ask fallback.
+        # Unknown mode degrades to 'ask' instead of a 422.
         return _normalize_permission_mode(value)
 
     @model_validator(mode = "after")
@@ -4619,8 +4548,7 @@ class AnthropicResponseWebSearchToolResultBlock(BaseModel):
 class AnthropicResponseThinkingBlock(BaseModel):
     type: Literal["thinking"] = "thinking"
     thinking: str
-    # Anthropic signs thinking blocks so they can be replayed on a later turn. Nothing local can
-    # produce a valid signature, so it stays empty; clients that only render the trace do not check it.
+    # Nothing local can produce a valid Anthropic signature.
     signature: str = ""
 
 
@@ -4906,10 +4834,7 @@ class DiffusionLoadRequest(BaseModel):
     @field_validator("loras")
     @classmethod
     def _unique_lora_ids(cls, value: Optional[list["LoraSpec"]]) -> Optional[list["LoraSpec"]]:
-        # Same guard DiffusionGenerateRequest carries, and it matters more here: _resolve_lora_set
-        # suffixes colliding adapter names, so a repeated id resolves the SAME adapter twice and
-        # set_adapters stacks both copies past the per-adapter weight bound. On the generation path that
-        # is one bad image; here the adapters are baked into the quantized build before compilation.
+        # Repeated ids would stack the same adapter past the weight bound.
         if value:
             seen: set[str] = set()
             for spec in value:
@@ -5231,7 +5156,6 @@ class DiffusionGenerateRequest(BaseModel):
             )
         return self
 
-    # Image-conditioned workflows (base64 or data-URL): init_image alone runs img2img, init_image + mask_image runs inpaint.
     # Cap each base64 string so one request cannot buffer a multi-GB payload; ~32 MiB fits a full 4096px image.
     init_image: Optional[str] = Field(
         None,
@@ -6257,8 +6181,7 @@ class DiffusionInferenceInfoResponse(BaseModel):
 
 
 # ── OpenAI-compatible images API (POST /v1/images/generations) ──
-# Shapes mirror OpenAI's CreateImageRequest / ImagesResponse. GPT-image-only knobs are accepted
-# and ignored, like dall-e-2. The size string is parsed and `stream` rejected in the route.
+# OpenAI-compatible images API; GPT-image-only knobs are accepted and ignored. The route parses size and rejects stream.
 
 
 class ImageGenerationRequest(BaseModel):
@@ -6493,9 +6416,7 @@ class AudioGalleryItem(BaseModel):
 _AUDIO_ID_PATTERN = r"^[A-Za-z0-9_-]{1,128}$"
 # A run names audio by id only. Option names with these words carry a location...
 _AUDIO_FILE_OPTION_WORDS = frozenset({"path", "paths", "file", "files", "dir", "url", "uri"})
-# ...and a text value under a name ending in these is a clip (source_audio, voice_ref), while
-# min_new_audio_steps, audio_chunk_mode or a boolean no_ref are settings.
-# Other media too: ControlFoley's string ``video`` option is a file the runtime would open.
+# Options ending in audio, ref, video etc. name clip files; min_new_audio_steps is a setting.
 _AUDIO_CLIP_OPTION_ENDINGS = frozenset({"audio", "wav", "ref", "video", "image", "img", "midi"})
 
 
@@ -7453,12 +7374,7 @@ class VideoGenerateRequest(BaseModel):
 
     @model_validator(mode = "after")
     def _keyframe_canvas_needs_both_axes(self) -> "VideoGenerateRequest":
-        # Omit both axes for "match source", or provide both for an explicit canvas. KEYFRAME requests
-        # only: there a half-specified canvas is silently discarded, since _resolve_keyframes matches the
-        # source aspect whenever either axis is missing, so the API would accept one recipe and draw
-        # another. Without a keyframe the backend deliberately resolves the missing axis from the family's
-        # default preset, so applying the rule everywhere would reject half-specified LTX, Wan, Hunyuan
-        # and prompt-only H3 calls that have always been valid.
+        # Keyframe only: a half-specified canvas is silently replaced by the source aspect; other families resolve the missing axis from a preset.
         if not (self.first_frame or self.last_frame):
             return self
         if (self.width is None) != (self.height is None):
@@ -7498,8 +7414,7 @@ class GalleryVideo(BaseModel):
         "clips saved before keyframes existed.",
     )
     model: Optional[str] = Field(None, description = "Model repo id that produced it")
-    # The load-time BUILD, mirroring GalleryImage: the repo id alone does not say which checkpoint ran
-    # or at what precision. All optional, so sidecars written before this existed still list.
+    # All optional so old sidecars still list; the repo id alone omits the checkpoint and precision.
     model_kind: Optional[str] = Field(
         None, description = "How the model was loaded: gguf, single_file or pipeline"
     )

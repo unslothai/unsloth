@@ -242,7 +242,6 @@ def _chunked_cross_entropy_forward(
     ).to(tl.float32)
 
     # Cohere logit scaling t * x; Gemma 2 softcapping t * tanh(1/t * x).
-    # Do logit scaling for Cohere
     if DO_LOGIT_SCALING:
         logits = LOGIT_SCALE * logits
     if DO_SOFTCAPPING:
@@ -579,9 +578,7 @@ if (Version(torch.__version__) < Version("2.4.0")) and not hasattr(
 def patch_loss_functions(torch_compile = True):
     _patch_loss_functions(fast_cross_entropy_loss, torch_compile = torch_compile)
 
-    # Redirect LOSS_MAPPING aliases still pointing at stock ForCausalLMLoss (e.g.
-    # ForConditionalGeneration for Qwen3.5, Csm). unsloth_zoo also does this; remove once the floor
-    # pin passes unslothai/unsloth-zoo#656.
+    # Redirect LOSS_MAPPING aliases still on stock ForCausalLMLoss; drop once zoo floor has #656.
     try:
         import transformers.loss.loss_utils as _lu
         _unsloth_loss = _lu.LOSS_MAPPING.get("ForCausalLM")

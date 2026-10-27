@@ -269,8 +269,7 @@ def PatchRL(FastLanguageModel):
 
     @contextmanager
     def unsloth_unwrap_model_for_generation(model, *args, **kwargs):
-        # Snapshot before TRL's unwrap CM, which calls gradient_checkpointing_disable() before
-        # yielding. Keep the mode value (e.g. "unsloth"), not a bool, so the finally restore matches.
+        # Snapshot before the TRL unwrap CM turns checkpointing off; keep the mode, not a bool, to restore it
         use_gradient_checkpointing = next(
             (
                 v
@@ -400,8 +399,7 @@ def PatchRL(FastLanguageModel):
                     if self.args.past_index >= 0:
                         self._past = outputs[self.args.past_index - 1]
         finally:
-            # An eval that raises must not leave logits forced on: UNSLOTH_RETURN_LOGITS=1 also
-            # blocks packing and padding-free for the next train() in this process.
+            # A raising eval must not leave UNSLOTH_RETURN_LOGITS=1 on, which blocks packing and padding-free
             os.environ["UNSLOTH_RETURN_LOGITS"] = _old_return_logits
         if prediction_loss_only:
             return (loss, None, None)
@@ -1451,10 +1449,8 @@ _DENSE_ROUTER_AUX_LOSS_OFF = (
     "pass\n"
 )
 
-# The one assignment of `self.aux_loss_enabled` in TRL's GRPOTrainer.__init__, whatever its right-hand
-# side. TRL 1.7.0 wrote `is_moe and args.router_aux_loss_coef != 0.0`; TRL main (#7248) reads the
-# coefficient from the model config when it is None. Anchoring on the exact expression lost the
-# fail-fast below on the first rewrite. Read without importing by tests/version_compat.
+# Matches the one assignment of `self.aux_loss_enabled` in GRPOTrainer.__init__, whatever its RHS.
+# Read without importing by tests/version_compat.
 _GRPO_AUX_LOSS_ENABLED_LINE = r"^([ \t]*)self\.aux_loss_enabled = [^\n]+$"
 _GRPO_AUX_LOSS_REJECT = (
     'if self.aux_loss_enabled: raise NotImplementedError("Unsloth GRPO does not compute the MoE router '
@@ -1479,12 +1475,7 @@ def _guard_kbit_prep_against_peft_models():
         if Version(trl.__version__) >= Version("0.24.0"):
             return False
     except Exception:
-        # A TRL run from a source tree with no distribution metadata sets
-        # __version__ = "unknown", which does not parse. Fall through to the
-        # source check rather than bailing, because bailing leaves exactly the
-        # pre-0.24 installs this exists for on the upcast. The source check is
-        # self-guarding: 0.24.0 and above already carry the clause, so they
-        # spell the branch differently and never match OLD.
+        # Unknown version from a source-tree TRL: fall through, do not bail, or pre-0.24 installs skip upcast
         pass
     try:
         from trl.models import utils as trl_models_utils
@@ -1501,21 +1492,14 @@ def _guard_kbit_prep_against_peft_models():
         source = inspect.getsource(original)
     except Exception:
         return False
-    # Bail rather than guess: if the branch is not spelled the way we expect, a
-    # blind edit is worse than leaving the upcast in place.
+    # Bail rather than blindly edit an unexpected spelling.
     if source.count(OLD) != 1:
         return False
     import functools, textwrap
 
     source = textwrap.dedent(source).replace(OLD, NEW)
 
-    # exec against the module's LIVE __dict__, not a copy of it. The body closes
-    # over PeftModel, prepare_model_for_kbit_training, get_peft_model,
-    # dataclasses and version, and a copy would freeze those at patch time: a
-    # later rebinding in trl.models.utils (another library patching it, a test
-    # swapping it out) would be invisible to the replacement while the original
-    # would have seen it. The exec defines only this one name, which is the name
-    # we are replacing anyway.
+    # exec against the module's LIVE __dict__ so later rebindings of its globals stay visible.
     namespace = vars(trl_models_utils)
     exec(compile(source, getattr(trl_models_utils, "__file__", "<unsloth>"), "exec"), namespace)
     patched = namespace.get("prepare_peft_model")
@@ -1524,10 +1508,7 @@ def _guard_kbit_prep_against_peft_models():
     functools.update_wrapper(patched, original)
     setattr(patched, _UNSLOTH_KBIT_PREP_GUARD_FLAG, True)
 
-    # Rebind everywhere, not just at the definition. Each trainer module does
-    # `from ..models import prepare_peft_model` at import time, so it holds its
-    # own reference; in TRL 0.22.2 that is seven modules, and sft_trainer is the
-    # one GKD actually inherits.
+    # Rebind everywhere: each trainer module holds its own `from ..models import prepare_peft_model`.
     rebound = 0
     for module in list(sys.modules.values()):
         if module is None:
@@ -1578,26 +1559,14 @@ def _widen_sft_config_instance_check(patched_config):
     shim = _WidenedInstanceCheck(
         installed.__name__,
         (installed,),
-        # Carry the patched-config marker in the shim's OWN __dict__, not only by
-        # inheritance. Callers that walk back to TRL's pristine class do it with
-        # `while "_unsloth_patched_rl_config" in cls.__dict__`, which is the right
-        # test because the generated subclass is renamed onto TRL's own name; a
-        # shim without the marker stops that walk on itself and answers with
-        # Unsloth's field set (tests/version_compat/test_trl_padding_free_max_length.py).
+        # Carry the marker in the shim's OWN __dict__: callers walk back to TRL's pristine class with
+        # `while "_unsloth_patched_rl_config" in cls.__dict__`.
         {
             _UNSLOTH_SFT_CONFIG_SHIM_FLAG: True,
             _UNSLOTH_PATCHED_CONFIG_FLAG: True,
         },
     )
-    # Answer to the module the shim is actually installed at, NOT to the module
-    # the class it stands in for calls home. Pickle stores a class as __module__
-    # plus __qualname__ and refuses unless the object living there IS the class,
-    # so a shim claiming `trl.trainer.sft_config` while the patched class still
-    # sits there is unpicklable, and `torch.save(trainer.args, ...)` from
-    # Trainer._save raises PicklingError. That is the failure
-    # _patch_config_pickle_identity exists to prevent, so point the shim at its
-    # own home and leave the patched class's home alone: both then pickle, and
-    # every other binding of the name keeps resolving exactly as it did before.
+    # Point the shim at its own module: pickle refuses unless __module__.__qualname__ IS the class.
     shim.__qualname__ = installed.__name__
     shim.__name__ = installed.__name__
     shim.__module__ = getattr(sft_trainer_module, "__name__", installed.__module__)
@@ -2194,11 +2163,8 @@ def _install_grpo_hidden_states_forward_wrapper(model):
         _note_grpo_hidden_states_success(target_model)
         return _replace_outputs_logits(outputs, hidden_states)
 
-    # generate() validates its kwargs against inspect.signature(self.forward), so a bare
-    # (*args, **kwargs) wrapper makes every forward-only vision kwarg look unused.
-    # __signature__ and NOT functools.wraps: wraps sets __wrapped__, and accelerate's
-    # extract_model_from_parallel(keep_fp32_wrapper = False) walks that chain every GRPO
-    # step and rebinds past this wrapper, losing it. inspect.unwrap() stops at __signature__.
+    # generate() validates kwargs against inspect.signature(self.forward). Use __signature__, not
+    # functools.wraps: accelerate unwraps __wrapped__ every GRPO step and would drop this wrapper.
     wrapped_forward.__signature__ = forward_signature
     for _attribute in ("__name__", "__qualname__", "__doc__", "__module__"):
         try:
@@ -2804,9 +2770,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         model_length_default = "model.max_seq_length"
         explicit_max_length = ""
         if trainer_file == "sft_trainer":
-            # A model limit must not widen a limit the CALLER asked for, and `SFTConfig.max_length`
-            # defaults to 1024 on every TRL from 0.22 to 1.x, so capping on "positive" instead
-            # would cap every run that named no length at all down to 1024.
+            # Never widen a caller's limit; SFTConfig.max_length defaults to 1024, so do not cap on positive.
             explicit_max_length = (
                 "_unsloth_explicit_max_length = None\n"
                 "try:\n"
@@ -3359,8 +3323,6 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         "logging_steps": 1,
         "max_seq_length": None,
         "num_generations": 8,
-        # "steps_per_generation": 1,     # Otherwise defaults to ga_steps, which is wrong
-        # "generation_batch_size": None, # Useless. If steps_per_generation is set, generation_batch_size clashes
         "vllm_mode": "colocate",
         "generation_kwargs": {},
         "bf16": False,
@@ -3580,8 +3542,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             + "\n"
         )
 
-    # Check for loss_type = dr_grpo and scale_rewards for GRPO; DAPO uses per-token loss, so BNPO loss is used. See huggingface/trl#3130 (comment 2746947835).
-    # TRL >= 0.22 defaults scale_rewards to "group" (= True).
+    # Check dr_grpo loss_type with scale_rewards for GRPO; TRL >= 0.22 defaults scale_rewards to group.
     if "loss_type" in call_args and "scale_rewards" in call_args:
         check_dr_grpo = (
             "if loss_type.lower() == 'dr_grpo':\n"
@@ -3690,34 +3651,9 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     RLConfig_extra_args = extra_args
     RLConfig_call_args = call_args
 
-    # Unsloth gradient checkpointing requires the reentrant path. The
-    # non-reentrant one recomputes every packed forward during backward and
-    # compares what each pass saved, so a region packed compiled and recomputed
-    # eagerly aborts the backward with "A different number of tensors was saved
-    # during the original forward and recomputation".
-    #
-    # Two different things push it to non-reentrant, and deleting the key only
-    # answers one of them:
-    #
-    #   TRL 0.27.0+ sets use_reentrant=False explicitly, which the delete below
-    #   used to handle on its own.
-    #
-    #   transformers substitutes {"use_reentrant": False} whenever
-    #   gradient_checkpointing_kwargs is None (see gradient_checkpointing_enable
-    #   in modeling_utils). A config on older TRL never sets the key at all, so
-    #   there is nothing to delete and transformers picks False for us.
-    #
-    # So the value is pinned rather than removed, for every TRL version. This is
-    # not hypothetical on older TRL: GKDConfig turns gradient_checkpointing on by
-    # default, so a distillation run reaches the non-reentrant path without ever
-    # having asked for gradient checkpointing at all.
-    #
-    # Only touched when gradient checkpointing is actually on, since otherwise
-    # transformers never reads these kwargs.
-    # A config asking for context_fn or debug is left alone. torch accepts
-    # neither under use_reentrant=True and raises as soon as a checkpointed
-    # forward runs, so pinning those would turn a working non-reentrant setup
-    # into a crash. determinism_check carries over fine and is not excluded.
+    # Unsloth gradient checkpointing requires use_reentrant=True: non-reentrant recompute aborts on
+    # packed compiled regions. Pinned (not deleted) because transformers substitutes False when the kwargs
+    # are None. context_fn / debug configs are left alone: torch rejects them under reentrant.
     RLConfig_post = (
         "        # Unsloth: keep the reentrant checkpoint path\n"
         "        if getattr(self, 'gradient_checkpointing', False):\n"
@@ -4078,10 +4014,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         except Exception as e:
             logger.info(f"Unsloth: Could not widen the {RLConfig_name} isinstance check: {e}")
         try:
-            # Idempotent: the flag on the replacement makes repeat calls no-ops.
-            # Called from here rather than at import so TRL's trainer modules,
-            # which each hold their own reference to the name, are already
-            # imported and can be rebound in one pass.
+            # Called here, not at import, so TRL's trainer modules exist and are rebound in one pass.
             _guard_kbit_prep_against_peft_models()
         except Exception as e:
             logger.info(f"Unsloth: Could not guard the kbit prep against PEFT models: {e}")
@@ -4137,8 +4070,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             )
 
 
-# TRL 1.10+ rejects the list train_dataset the vision notebooks pass; Dataset.from_list is no fix (re-encodes images).
-# Only list / tuple: a torch IterableDataset would skip TRL's streaming handling (dispatch_batches, RepeatSampler).
+# TRL 1.10+ rejects list train_dataset; only list or tuple, since IterableDataset skips TRL streaming
 _LIST_TRAIN_DATASET_TRAINERS = frozenset(("sft_trainer", "grpo_trainer", "rloo_trainer"))
 _TRL_TRAIN_DATASET_TYPE_CHECK = re.compile(
     r"(elif\s+not\s+isinstance\(\s*train_dataset\s*,\s*)\(?\s*(Dataset(?:\s*,\s*IterableDataset)?)\s*\)?(\s*\)\s*:)"
@@ -4235,8 +4167,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 + "if (getattr(args, 'use_vllm', False) == False):\n"
                 + " " * 16
                 + "args.use_vllm = True\n"
-                # TRL >= 0.27 hands args.top_k to vLLM's SamplingParams unchanged, and it rejects None;
-                # the config-time guard misses this when vLLM comes only from fast_inference.
+                # TRL 0.27+ passes top_k to vLLM unchanged and vLLM rejects None; config guard misses fast_inference
                 + " " * 12
                 + "if getattr(args, 'top_k', -1) is None or getattr(args, 'top_k', -1) == 0:\n"
                 + " " * 16

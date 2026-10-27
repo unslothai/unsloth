@@ -139,6 +139,11 @@ export const ar = {
     more: "المزيد",
     addressPlaceholder: "ابحث أو أدخل عنوان URL",
     local: "محلي",
+    browserUse: {
+      label: "استخدام المتصفح",
+      description: "السماح للنماذج بالتحكم في المتصفح المدمج",
+      unavailable: "حمّل نموذجًا يمكنه استدعاء الأدوات ليتمكن من استخدام المتصفح.",
+    },
     suggested: "مقترحات",
     suggestedMenu: {
       open: "فتح",
@@ -496,7 +501,6 @@ export const ar = {
       clearDataFailed: "تعذّر مسح بيانات المواقع. حاول مرة أخرى.",
     },
   },
-  // English fallback until this experimental feature is translated.
   managedEngines: en.managedEngines,
   sandboxSetup: {
     levelTitle: "وضع حماية نظام التشغيل غير متاح",
@@ -701,7 +705,6 @@ export const ar = {
     shutdown: "إيقاف التشغيل",
   },
   shell: {
-    // The Help submenu of the account menu, and the desktop app's Help menu.
     helpMenu: {
       documentation: "الوثائق",
       keyboardShortcuts: "اختصارات لوحة المفاتيح",
@@ -773,11 +776,8 @@ export const ar = {
       export: "تصدير",
       recents: "العناصر الأخيرة",
       noChatsYet: "لا توجد محادثات بعد",
-      // Shown under an empty project folder in the sidebar.
       noChats: "لا توجد محادثات",
-      // Shown in the Projects section when every project is pinned, so it has no rows.
       allProjectsPinned: "كل المشاريع مثبتة",
-      // Same, when some of them are filed in custom sections instead.
       allProjectsFiled: "كل المشاريع مثبتة أو ضمن أقسام",
       noProjects: "لا توجد مشاريع",
       showMore: "عرض المزيد",
@@ -879,11 +879,9 @@ export const ar = {
       organizeChats: "تنظيم المحادثات",
       organizeProjects: "تنظيم المشاريع",
       sortPinnedChats: "ترتيب المحادثات المثبتة",
-      // Header of the menu's section-visibility toggles.
       show: "إظهار",
       newSection: "قسم جديد",
     },
-    // User-made sidebar sections that group chats and projects.
     sections: {
       createTitle: "قسم جديد",
       createDescription: "جمّع المحادثات والمشاريع بالطريقة التي تناسبك",
@@ -894,16 +892,13 @@ export const ar = {
       edit: "تعديل",
       remove: "إزالة القسم",
       markAllRead: "تعليم الكل كمقروء",
-      // The row menu's one submenu for projects and sections, and its headings.
       moveTo: "نقل إلى",
       section: "قسم",
       sectionsHeading: "الأقسام",
       removeFromProject: "إزالة من المشروع",
       newSection: "قسم جديد",
       removeFromSection: "إزالة من القسم",
-      // Names the project or section the row leaves; the two above are for when it is not one.
       removeFrom: "إزالة من {name}",
-      // Shown in a section with nothing filed in it yet.
       empty: "اسحب المحادثات أو المشاريع إلى هنا",
       sectionOptions: "خيارات القسم",
       newChatInSection: "محادثة جديدة في {name}",
@@ -1421,13 +1416,13 @@ export const ar = {
       builtinNeedsUpdate:
         "تحتاج الحاوية المدمجة في Windows إلى الإصدار {required} أو أحدث، بينما يعمل هذا الكمبيوتر بالإصدار {current}. ثبّت آخر تحديث لـ Windows لاستخدامها دون خطوة مسؤول، أو فعّل وضع الحماية الاحتياطي أدناه.",
       unsupportedBuild: "يتطلب وضع حماية Windows (MXC) إصدار Windows 11 24H2 (البنية 26100) أو أحدث، لذا فهو غير متاح على هذا الكمبيوتر.",
-      permissionsIntro: "اختر متى تسأل الأدوات أولاً، وما إذا كان Python والطرفية يعملان أيضاً داخل وضع حماية نظام التشغيل.",
       permissionLabel: "أذونات الأدوات",
+      levelRowLabel: "مستوى وضع الحماية",
       levelPickerTitle: "كيف يجب عزل الكود؟",
       levelOff: "معطّل",
       levelOffShort: "الوصول الكامل يوقف وضع الحماية",
-      levelHighDetail: "حماية على مستوى النظام. يعمل Python والطرفية داخل وضع حماية نظام التشغيل (bubblewrap أو Seatbelt أو MXC) إضافة إلى الضمانات البرمجية. من دون وضع حماية يعمل، تسأل الاستدعاءات الخطرة أولاً.",
-      levelLowDetail: "حماية برمجية. يعمل Python والطرفية بالضمانات البرمجية فقط، خارج وضع حماية نظام التشغيل. تسأل الاستدعاءات الخطرة أولاً ما لم تختر الوصول الكامل.",
+      levelHighDetail: "يعمل Python والطرفية داخل وضع حماية نظام التشغيل (bubblewrap أو Seatbelt أو MXC) إضافة إلى الضمانات البرمجية. من دون وضع حماية يعمل، تسأل الاستدعاءات الخطرة أولاً.",
+      levelLowDetail: "يعمل Python والطرفية بالضمانات البرمجية فقط، خارج وضع حماية نظام التشغيل. تسأل الاستدعاءات الخطرة أولاً ما لم تختر الوصول الكامل.",
       levelLabel: "وضع الحماية",
       levelHigh: "عالٍ",
       levelLow: "منخفض",
@@ -2058,13 +2053,13 @@ export const ar = {
         },
         details: {
           ask:
-            "يطلب الموافقة قبل كل استدعاء أداة، بما في ذلك شيفرة الطرفية وPython وعمليات البحث في الويب وتعديل الملفات وأدوات MCP. الأدوات التي يشغّلها مزوّد خارجي لا تتوقف لطلب الموافقة. الأنسب عندما تريد مراجعة كل خطوة.",
+            "يطلب الموافقة قبل كل استدعاء أداة، بما في ذلك شيفرة الطرفية وPython وعمليات البحث في الويب وتعديل الملفات وأدوات MCP. الأدوات التي يشغّلها مزوّد خارجي لا تتوقف لطلب الموافقة.",
           auto:
             "يشغّل استدعاءات الأدوات المعتادة تلقائيًا ولا يطلب الموافقة إلا عندما يبدو الإجراء خطرًا، مثل قراءة بيانات الاعتماد أو رفع الصلاحيات أو تشغيل أوامر مدمّرة.",
           off:
-            "يشغّل كل استدعاءات الأدوات دون سؤال. تظل شيفرة Python والطرفية تعمل داخل صندوق العزل، الذي يحدّ من الملفات التي يمكنها الوصول إليها على جهازك. إذا لم يكن على هذا الكمبيوتر وضع حماية يعمل لنظام التشغيل، فإن استدعاءات Python والطرفية الخطرة تطلب الموافقة أولًا.",
+            "يشغّل كل استدعاءات الأدوات دون سؤال. تظل شيفرة Python والطرفية تعمل داخل صندوق العزل، الذي يحدّ من الملفات التي يمكنها الوصول إليها على جهازك. من دون وضع حماية يعمل، تسأل الاستدعاءات الخطرة أولاً.",
           full:
-            "يشغّل كل استدعاءات الأدوات دون سؤال ويوقف صندوق عزل الشيفرة، فيمكن لشيفرة Python والطرفية قراءة أي ملف يصل إليه حسابك وتغييره. الأنسب للمهام الموثوقة التي تحتاج إلى العمل خارج صندوق العزل.",
+            "يشغّل كل استدعاءات الأدوات دون سؤال ويوقف صندوق عزل الشيفرة، فيمكن لشيفرة Python والطرفية قراءة أي ملف يصل إليه حسابك وتغييره.",
         },
       },
     },
@@ -2320,6 +2315,7 @@ export const ar = {
       liveMonitor: {
         title: "المراقبة المباشرة",
         apiTitle: "مراقبة API",
+        apiDescription: "شاهد ما ترسله التطبيقات الأخرى إلى واجهة برمجة هذا الخادم فور وصوله.",
         summary: "الطلبات المباشرة والأخطاء واستخدام التوكنات",
         status: "نشطة: {active} · حديثة: {recent} · {model}",
         noModelLoaded: "لا يوجد نموذج محمّل",
@@ -2422,7 +2418,6 @@ export const ar = {
           updateChecksDisabled:
             "عمليات التحقق من التحديثات معطّلة (UNSLOTH_DISABLE_UPDATE_CHECK=1)، لذلك لا يتم البحث عن الخلفيات المتاحة.",
         },
-        // لا يظهر: كلمات إضافية لبحث الإعدادات.
         llamaBackendKeywords:
           "llama.cpp backend gguf استدلال cuda rocm hip vulkan metal cpu gpu مسرّع prebuilt تبديل محرك",
       },
@@ -2435,6 +2430,7 @@ export const ar = {
         noRamReserveDescription: "يقلل ذاكرة النظام المحجوزة لأوزان النموذج.",
         noRamReserveHint: "يتخطى التحميل المعتمد على تعيين الذاكرة في إصدارات ويندوز المدعومة عندما يكون النموذج محمّلاً بالكامل على كرت الرسوميات، فلا تبقى صفحاته مقيمة. وإلا يُبقي التحميل المعتمد على تعيين الذاكرة. قد تستهلك مخازن المعالج المطلوبة ذاكرة النظام. ويحذف ‎--no-mmap‎ و‎--mlock‎.",
         multiModel: "إبقاء عدة نماذج محمّلة",
+        openSystemSettings: "إعدادات النظام",
         multiModelOff: "إيقاف",
         multiModelFit: "عندما تتسع",
         multiModelAlways: "دائمًا",
@@ -2455,7 +2451,6 @@ export const ar = {
         reloadRequired: "أعد تحميل النموذج لتطبيق خيارات الذاكرة الجديدة.",
         loadError: "تعذّر تحميل إعدادات ذاكرة النموذج",
         saveError: "تعذّر حفظ إعدادات ذاكرة النموذج",
-        // Not rendered: extra terms the settings search matches these rows on.
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu ذاكرة رام مقيم تثبيت قفل إبقاء محمل تفريغ خامل mmap no-mmap load-mode تبديل ترحيل",
         multiModelKeywords:
@@ -2597,8 +2592,6 @@ export const ar = {
       docsLabel: "فتح توثيق unsloth start",
       agentDocs: "فتح توثيق إعداد {agent}",
       copyGeneratedCommand: "نسخ الأمر المُنشأ",
-      // English is the baseline until translated: the three-part sentence is assembled around an
-      // inline link and needs restructuring first.
       automaticSettingsNote:
         "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
       configurationNote:
@@ -3142,13 +3135,22 @@ export const ar = {
       readDocs: "قراءة وثائق API",
       noAccess: "لا يوجد وصول إلى API بعد.",
       accessTokens: "توكنات الوصول",
+      columnName: "الاسم",
+      columnToken: "التوكن",
+      columnCreated: "تاريخ الإنشاء",
+      columnLastUsed: "آخر استخدام",
+      columnExpires: "ينتهي",
       loadError: "تعذّر تحميل وصول API.",
       createError: "تعذّر إنشاء توكن الوصول.",
       revokeError: "تعذّر إلغاء توكن الوصول.",
       never: "دون انتهاء",
-      tokenNamePlaceholder: "اسم التوكن (مثل production)",
+      tokenNamePlaceholder: "اسم التوكن",
       newAccessTokenName: "اسم توكن الوصول الجديد",
       createToken: "إنشاء توكن",
+      neverExpiresHint: "لا ينتهي أبدًا",
+      expiresInDaysHint: "ينتهي خلال {n} يومًا",
+      createTokenHint: "إنشاء توكن باسم \"{name}\"",
+      defaultTokenName: "توكن جديد {n}",
       creating: "جارٍ الإنشاء...",
       newTokenCreated: "تم إنشاء توكن وصول جديد",
       accessTokenCopied: "تم نسخ توكن الوصول",
@@ -3182,13 +3184,16 @@ export const ar = {
       expired: "منتهي الصلاحية",
       expiredStatus: "منتهي الصلاحية",
       today: "اليوم",
-      created: "أُنشئ {value}",
-      used: "آخر استخدام: {value}",
-      expires: "الانتهاء: {value}",
       actionsFor: "إجراءات {name}",
       copyPrefix: "نسخ البادئة",
       copyFailed: "تعذّر النسخ",
       revokeToken: "إلغاء التوكن",
+      regenerateToken: "إعادة إنشاء التوكن",
+      regenerateTitle: "إعادة إنشاء توكن الوصول \"{name}\"؟",
+      regenerateDescription: "سيحل محله توكن جديد بالاسم نفسه ومدة الصلاحية نفسها. تفقد التطبيقات التي تستخدم التوكن الحالي الوصول فورًا.",
+      regenerateAction: "إعادة الإنشاء",
+      regenerating: "جارٍ إعادة الإنشاء...",
+      regenerateError: "تعذّرت إعادة إنشاء توكن الوصول.",
       revokeTitle: 'إلغاء توكن الوصول "{name}"؟',
       revokeDescription:
         "ستفقد التطبيقات التي تستخدم هذا التوكن الوصول فورًا. لا يمكن التراجع عن هذا الإجراء.",
@@ -4350,6 +4355,21 @@ export const ar = {
       archiveSuccessful: "أرشفة عمليات التشغيل الناجحة",
       project: "المشروع",
       projectNone: "بلا",
+      model: "النموذج",
+      modelLoaded: "أي نموذج محمّل",
+      modelOnDevice: "على هذا الجهاز",
+      modelNote: "إذا لم يكن هذا النموذج محمّلًا عند تشغيل المهمة، يسألك Unsloth أولًا.",
+      modelNoteAllowed: "ينتقل إلى هذا النموذج فقط أثناء ابتعادك عن Unsloth، ثم يعود إلى ما كان لديك.",
+      modelEmpty: "نزّل نموذجًا من مركز النماذج أو أضف اتصالًا لاختيار نموذج آخر.",
+      modelMissing: "{model} (ليس على هذا الجهاز)",
+      allowLoad: "التبديل تلقائيًا أثناء ابتعادي",
+      allowLoadHint:
+        "عندما يحين موعد هذه المهمة ولم تستخدم Unsloth منذ 5 دقائق، تحمّل هذا النموذج دون سؤال وتنفّذ المهمة ثم تعود إلى النموذج الذي كان لديك. إذا كنت تستخدم Unsloth أو يجري تدريب في ذلك الوقت، يتم تخطي التشغيل ويبقى نموذجك كما هو. عند إيقاف الخيار، يسأل Unsloth قبل التحميل.",
+      reasoning: "جهد التفكير",
+      reasoningDefault: "افتراضي",
+      reasoningOff: "إيقاف",
+      reasoningLowest: "الأدنى",
+      reasoningHighest: "الأعلى",
       create: "إنشاء",
     },
     deleteDialog: {
@@ -4358,6 +4378,10 @@ export const ar = {
     },
     errors: {
       noModel: "لم يكن هناك نموذج مُحمَّل. حمّل نموذجًا في المحادثة، ثم شغّل المهمة مرة أخرى.",
+      modelNotLoaded: "لم يكن نموذج المهمة محمّلًا. حمّله في الدردشة ثم شغّل المهمة مجددًا.",
+      modelLoadFailed: "تعذّر تحميل نموذج المهمة. تأكّد أنه لا يزال منزّلًا في مركز النماذج.",
+      modelBusy: "تم تخطيها أثناء استخدامك Unsloth، فلم يتغيّر نموذجك.",
+      connectionUnavailable: "اتصال المهمة مفقود أو متوقف. تحقّق منه في الاتصالات.",
       timeout: "استغرق النموذج وقتًا طويلًا جدًا للإجابة.",
       cancelled: "توقف التشغيل قبل اكتماله.",
       interrupted: "أُغلق Unsloth قبل اكتمال التشغيل.",
@@ -4367,6 +4391,13 @@ export const ar = {
       updateFailed: "تعذّر تحديث المهمة",
       deleteFailed: "تعذّر حذف المهمة",
       runFailed: "تعذّر بدء المهمة",
+    },
+    loadPrompt: {
+      title: "تحميل {model}؟",
+      description: "تعمل «{title}» على {model}، وهو غير محمّل. تشغيلها ينقل الدردشة إلى {model} حتى تنتهي، ثم يعيدها.",
+      always: "لا تسألني مجددًا. بدّل فقط أثناء ابتعادي عن Unsloth.",
+      notNow: "ليس الآن",
+      load: "تحميل وتشغيل",
     },
     toast: {
       finished: "«{title}» جاهزة",
@@ -4390,7 +4421,6 @@ export const ar = {
       all: "الكل",
       chats: "المحادثات",
     },
-    // The Chats tab: conversations and projects, kept apart from every file tab.
     chats: {
       sections: {
         chats: "المحادثات",
@@ -4524,6 +4554,7 @@ export const ar = {
       modelsTitle: "لا توجد نماذج مضبوطة بعد",
       modelsDescription: "تظهر هنا النماذج التي تدربها أو تصدّرها في Unsloth.",
       createFolder: "إنشاء مجلد",
+      generateImage: "إنشاء صورة",
       generateVideo: "إنشاء فيديو",
       generateAudio: "إنشاء صوت",
       trainModel: "تدريب نموذج",

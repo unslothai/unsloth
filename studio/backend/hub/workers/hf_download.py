@@ -88,12 +88,7 @@ def _protected_blob_hashes() -> frozenset[str]:
 
 
 def _parent_is_alive(parent_pid: int) -> bool:
-    """Whether the recorded parent (the backend) is still running.
-
-    Liveness ONLY: ``os.kill(pid, 0)`` on POSIX, an ``OpenProcess`` handle on Windows, against the *recorded* PID (never os.getppid(), so POSIX reparenting to init after the backend dies still resolves as dead). Probe ambiguity is treated as alive so a transient error never kills a healthy download.
-
-    Deliberately does NOT compare psutil ``create_time()`` for PID-reuse detection: it is not stable across reads on some platforms, so an exact match can spuriously kill a live download. PID-reuse after parent death is covered by the boot-time orphan reaper.
-    """
+    """Probes the recorded parent PID, never getppid(), so reparenting to init still reads as dead."""
     if sys.platform == "win32":
         import ctypes
         from ctypes import wintypes

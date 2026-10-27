@@ -48,7 +48,6 @@ function readPersistedProfile(): {
     const parsed = JSON.parse(raw) as unknown;
     if (!parsed || typeof parsed !== "object") return null;
 
-    // Zustand persist shape: { state: {...}, version }
     const maybeState =
       "state" in parsed ? (parsed as { state?: unknown }).state : parsed;
     if (!maybeState || typeof maybeState !== "object") return null;
@@ -91,7 +90,6 @@ export function ProfilePersonalizationPanel() {
   const lastNicknameRef = useRef(nickname);
 
   const sessionSub = decodeJwtSubject(getAuthToken()) ?? "";
-  // Fallback only: the draft being typed still wins over this.
   const loginName = loginDisplayName(sessionSub);
   const previewName = draftName.trim() || loginName || "Unsloth";
 
@@ -107,8 +105,6 @@ export function ProfilePersonalizationPanel() {
     setDraftNickname((draft) => (draft === previous ? nickname : draft));
   }, [nickname]);
 
-  // Committed on blur and on Enter rather than behind a Save button, so each
-  // field is a single row like the rest of Settings.
   const saveName = () => {
     const trimmed = draftName.trim();
     if (trimmed !== draftName) setDraftName(trimmed);
@@ -143,9 +139,7 @@ export function ProfilePersonalizationPanel() {
     }
   };
 
-  // Escape, or any programmatic close, unmounts the tab without dispatching a
-  // blur, which would drop whatever was typed. Commit the drafts on the way
-  // out; both saves no-op on an unchanged value, so a double commit is safe.
+  // Escape unmounts without a blur, so commit drafts on the way out; saves no-op when unchanged.
   const flushDrafts = useRef<() => void>(() => {});
   useEffect(() => {
     flushDrafts.current = () => {
@@ -181,10 +175,8 @@ export function ProfilePersonalizationPanel() {
     }
   };
 
-  // The avatar is shown all over the app (sidebar, chat messages, greeting),
-  // so writing it to the store can trigger a wide re-render. Mark the picked
-  // value locally first so its ring moves this frame, then commit the store
-  // write on the next frame. Boxed because null is a valid pick (no picture).
+  // The avatar store write re-renders widely, so mark the pick locally first and commit next frame.
+  // Boxed because null is a valid pick.
   const [pendingAvatar, setPendingAvatar] = useState<{
     value: string | null;
   } | null>(null);
@@ -217,8 +209,6 @@ export function ProfilePersonalizationPanel() {
 
       <div className="flex items-center gap-10 py-6 pr-2">
         <div className="relative shrink-0">
-          {/* The picture itself is the shortcut to "upload a photo"; the pencil
-              opens the rest of the options. */}
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
@@ -344,8 +334,7 @@ export function ProfilePersonalizationPanel() {
                         aria-label={label}
                         title={label}
                         className={cn(
-                          // No transition here: animating the ring makes the old
-                          // icon's selection border linger when switching sloths.
+                          // No transition: animating the ring makes the old selection border linger.
                           "relative aspect-square overflow-hidden rounded-full bg-muted ring-1 ring-border hover:ring-ring focus-visible:outline-none focus-visible:ring-ring",
                           selected &&
                             "ring-2 ring-ring-strong hover:ring-ring-strong",

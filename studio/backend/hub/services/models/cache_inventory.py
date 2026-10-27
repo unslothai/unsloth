@@ -300,7 +300,6 @@ def _cached_repo_file_name(file_obj) -> str:
 
 def cached_repo_files(revision) -> list:
     """``revision.files`` without the Finder metadata companions. Every classification below reads these by name, and a "._" companion carries the described file's own name, so it answers each one the way the real file does."""
-    # The "._" name is on the snapshot entry while the bytes are in the content-addressed blob, but the entry is a symlink to it, so one open reads both.
     return [
         f
         for f in getattr(revision, "files", ()) or ()
@@ -738,10 +737,7 @@ def _scan_cached_gguf(
                         tts_only = row_task in _AUDIO_ONLY_GGUF_TASKS,
                     )
                 )
-                # Preserve a snapshot-pinned load id for a single cache: refs/main can
-                # be stale or dangling even when a different snapshot holds the quant.
-                # Only a repository spanning distinct cache roots needs repo-wide
-                # resolution so chat can choose the requested quant's owning copy.
+                # refs/main can be stale; only multi-root repos need repo-wide resolution.
                 repo_cache_roots.setdefault(key, set()).add(repo_path.parent)
                 if _prefer_cache_row(row, existing):
                     seen_lower[key] = row

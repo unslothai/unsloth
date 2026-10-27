@@ -36,8 +36,6 @@ import {
 } from "./use-rag-documents";
 import { useUploadQueue } from "./use-upload-queue";
 
-/** Project "Sources" tab: documents indexed for retrieval in every chat that
- * belongs to the project. */
 export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const lister = useCallback(
@@ -113,8 +111,6 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
     [handleItems],
   );
 
-  // Desktop drops arrive as paths; the upload mints a lease per file rather
-  // than reading a document through the webview.
   const handleNativeIntents = useCallback(
     (intents: NativeIntent[]) =>
       handleItems(
@@ -144,8 +140,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
 
   const empty = documents.length === 0;
 
-  // Tauri suppresses webview drop events, so the plain `onDrop` this panel
-  // carried never fired on desktop: no border, file ignored (#9036).
+  // Tauri suppresses webview drop events, so a plain onDrop never fires on desktop.
   const {
     ref: dropRef,
     dragging,

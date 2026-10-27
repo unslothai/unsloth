@@ -222,12 +222,7 @@ def _entry_key(
 
 
 def normalize_hub_cache(hub_cache: str | Path) -> str:
-    """The one spelling of a hub cache path every state key is derived from.
-
-    ``resolve`` first, so a junction, a mapped drive, an 8.3 short name or a ``~`` all collapse onto the directory they name, then ``normcase`` so a case-insensitive filesystem cannot spell one directory two ways. Both matter on Windows; on POSIX ``normcase`` is identity.
-
-    Kept here rather than in download_manifest so the digest and the manifest reader cannot normalize differently: a resolved/unresolved pair of the same directory used to produce two ``cache-<digest>`` scopes, one holding the manifest and the other the one looked in, a complete download that could never report complete.
-    """
+    """Resolves, then applies normcase, so manifest writers and readers derive the same state key."""
     try:
         resolved = str(Path(hub_cache).expanduser().resolve(strict = False))
     except (OSError, RuntimeError, ValueError):

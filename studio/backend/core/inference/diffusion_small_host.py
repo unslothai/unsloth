@@ -781,8 +781,7 @@ class _EncoderPrefetcher:
                         )
                     continue
                 nbytes += n
-                # Compute-stream pool (a side-stream block stays cached away from the denoise); the copy waits for
-                # work queued there, covering the last user of a freed block.
+                # Copy waits on the compute stream so it covers the last user of a freed block.
                 with torch.cuda.stream(compute):
                     dst = torch.empty(src.shape, dtype = src.dtype, device = self.device)
                     queued = torch.cuda.Event()

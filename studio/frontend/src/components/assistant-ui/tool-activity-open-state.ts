@@ -12,18 +12,13 @@ interface ToolActivityTransition {
   visibility: DisplayVisibility;
   previousVisibility: DisplayVisibility;
   isRunning: boolean;
-  /** The answer has started, so the call is finished and no longer worth watching. */
   hasText: boolean;
-  /** null until the user clicks this card's trigger. */
   override?: boolean | null;
-  /** True on the render where the call starts again. Regenerate reuses this card, so the
-   *  previous round's hand-set state is already stale when the new round begins. */
+  /** True when the call starts again; regenerate reuses this card, so hand-set state is stale. */
   startedNewRound?: boolean;
 }
 
-/** Where a card sits after the setting, the run or the answer changed. Changing the setting
- *  re-applies it to every card, so Settings reaches messages already on screen. Between changes
- *  a hand-set card keeps its state, except that auto still closes it once the answer starts. */
+/** Changing the setting re-applies it to every card; auto closes a hand-set card once text starts. */
 export function resolveToolActivityOpen({
   currentOpen,
   visibility,
@@ -34,9 +29,7 @@ export function resolveToolActivityOpen({
   override = null,
 }: ToolActivityTransition) {
   if (visibility !== previousVisibility || startedNewRound) {
-    // A new round re-runs the call in this same card, so it starts where the setting puts it:
-    // Expand while running opens it to watch the fresh call, and the old round's hand-set
-    // state is dropped rather than carried into a round the user never set it for.
+    // A new round starts where the setting puts it; the old round's hand-set state is dropped.
     return defaultOpenFor(visibility, isRunning);
   }
   if (override !== null) {
@@ -55,8 +48,6 @@ export function resolveToolActivityOpen({
   return currentOpen;
 }
 
-/** A new round starts when the call resumes. Regenerate reuses the card, so the previous
- *  round's hand-set state has to clear on the render the new one begins, like Thinking. */
 export function startsNewToolRound(
   isRunning: boolean,
   wasRunning: boolean,
@@ -66,15 +57,11 @@ export function startsNewToolRound(
 
 export interface ToolActivityPreferenceState {
   visibility: DisplayVisibility;
-  /** Still running. A live prop, so it falls to false when the call finishes. */
   active: boolean;
-  /** null until the user clicks the trigger. */
   override: boolean | null;
 }
 
-/** The state uncontrolled cards and groups keep. A setting change hands the card back to the
- *  setting; activity changing on its own only moves cards the user has not touched, so auto can
- *  close a card when its call ends without discarding a manual open. */
+/** A setting change hands the card back; activity only moves cards the user has not touched. */
 export function syncToolActivityPreference(
   current: ToolActivityPreferenceState,
   visibility: DisplayVisibility,
@@ -83,8 +70,6 @@ export function syncToolActivityPreference(
   if (current.visibility === visibility && current.active === active) {
     return current;
   }
-  // A setting change or a new round hands the card back to the setting, matching the controlled
-  // cards: a regenerated run reuses this card, so the old round's hand-set state must not carry.
   const kept =
     current.visibility === visibility && !startsNewToolRound(active, current.active);
   return {
@@ -94,7 +79,6 @@ export function syncToolActivityPreference(
   };
 }
 
-/** Whether such a card is open right now. */
 export function toolActivityOpen(state: ToolActivityPreferenceState): boolean {
   return state.override ?? defaultOpenFor(state.visibility, state.active);
 }

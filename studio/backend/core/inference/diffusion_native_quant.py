@@ -31,8 +31,8 @@ _INT8PACK_PROBED: dict = {}
 # torch._int_mm needs M > 16 and K, N multiples of 8.
 _INT_MM_MIN_ROWS = 17
 _INT_MM_CHUNK_ELEMS = 1 << 25
-# Compiled linear holds only the int32 accumulator (no fp32 temporaries), so 4x the eager chunk.
-_INT_MM_FUSED_CHUNK_ELEMS = 1 << 27
+# Compiled linear holds int32 acc + output chunk (6 B/elem); eager's row budget keeps its peak <= eager's (#15183 used 4x).
+_INT_MM_FUSED_CHUNK_ELEMS = _INT_MM_CHUNK_ELEMS
 # ``0`` keeps eager CUDA W8A8 kernels instead of one compiled function per linear.
 NATIVE_INT8_FUSED_ENV = "UNSLOTH_NATIVE_INT8_FUSED"
 # fp8 codes a native fp8 layer may hold; e5m2 only from a checkpoint (the quantise path writes e4m3fn).
@@ -222,11 +222,7 @@ def int8_rotation_group() -> int:
 
 @lru_cache(maxsize = 1)
 def _row_major_op() -> Any:
-    """``unsloth_studio::native_row_major``: a row-major copy Inductor cannot re-layout, or None.
-
-    cuBLASLt runs int8 GEMMs only with a row-major activation. Inductor lays the int8 activation out in the stride
-    order of whatever produced it (a transposed view upstream, even one passed through ``.contiguous()``, which it
-    drops), so ``torch._int_mm`` can get it column-major and fail with CUBLAS_STATUS_NOT_SUPPORTED."""
+    """Row-major copy Inductor cannot re-layout; cuBLASLt int8 GEMMs fail on a column-major activation."""
     import torch
 
     ns = getattr(torch.ops, "unsloth_studio", None)
@@ -509,6 +505,11 @@ def native_linear_class():
                 x.is_cuda and torch.cuda.is_current_stream_capturing()
             ):
                 return None
+            from .diffusion_bg_compile import eager_forced  # noqa: PLC0415
+
+            # Detailer crops and in-flight background compiles must not compile on this thread (#15063).
+            if eager_forced():
+                return None
             fn = _fused_w8a8()
             if fn is None:
                 return None
@@ -521,12 +522,17 @@ def native_linear_class():
                 if rows <= chunk or chunk < 2 * _INT_MM_MIN_ROWS:
                     out = fn(x2, rot_h, self.weight_q, self.weight_scale, bias)
                 else:
-                    out = torch.cat(
-                        [
-                            fn(part.detach(), rot_h, self.weight_q, self.weight_scale, bias)
-                            for part in torch.tensor_split(x2, -(-rows // chunk))
-                        ]
-                    )
+                    # Allocated from the first chunk to keep the compiled dtype (autocast can differ from x2's).
+                    out = None
+                    start = 0
+                    for part in torch.tensor_split(x2, -(-rows // chunk)):
+                        got = fn(part.detach(), rot_h, self.weight_q, self.weight_scale, bias)
+                        if out is None:
+                            out = got.new_empty(rows, self.out_features)
+                        stop = start + part.shape[0]
+                        out[start:stop].copy_(got)
+                        del got
+                        start = stop
             except torch.cuda.OutOfMemoryError:
                 raise
             except Exception as exc:  # noqa: BLE001 - a compile failure falls back to the eager kernels

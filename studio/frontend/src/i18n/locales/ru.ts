@@ -139,6 +139,11 @@ export const ru = {
     more: "Ещё",
     addressPlaceholder: "Введите запрос или URL",
     local: "Локальный",
+    browserUse: {
+      label: "Работа с браузером",
+      description: "Разрешить моделям управлять встроенным браузером",
+      unavailable: "Загрузите модель с поддержкой вызова инструментов, чтобы она могла работать с браузером.",
+    },
     suggested: "Рекомендуемые",
     suggestedMenu: {
       open: "Открыть",
@@ -496,7 +501,6 @@ export const ru = {
       clearDataFailed: "Не удалось очистить данные сайтов. Повторите попытку.",
     },
   },
-  // English fallback until this experimental feature is translated.
   managedEngines: en.managedEngines,
   sandboxSetup: {
     levelTitle: "Песочница ОС недоступна",
@@ -704,7 +708,6 @@ export const ru = {
     shutdown: "Выключить",
   },
   shell: {
-    // The Help submenu of the account menu, and the desktop app's Help menu.
     helpMenu: {
       documentation: "Документация",
       keyboardShortcuts: "Сочетания клавиш",
@@ -776,11 +779,8 @@ export const ru = {
       export: "Экспорт",
       recents: "Недавние",
       noChatsYet: "Пока нет чатов",
-      // Shown under an empty project folder in the sidebar.
       noChats: "Нет чатов",
-      // Shown in the Projects section when every project is pinned, so it has no rows.
       allProjectsPinned: "Все проекты закреплены",
-      // Same, when some of them are filed in custom sections instead.
       allProjectsFiled: "Все проекты закреплены или находятся в разделах",
       noProjects: "Нет проектов",
       showMore: "Показать больше",
@@ -882,11 +882,9 @@ export const ru = {
       organizeChats: "Настроить чаты",
       organizeProjects: "Настроить проекты",
       sortPinnedChats: "Сортировать закреплённые чаты",
-      // Header of the menu's section-visibility toggles.
       show: "Показывать",
       newSection: "Новый раздел",
     },
-    // User-made sidebar sections that group chats and projects.
     sections: {
       createTitle: "Новый раздел",
       createDescription: "Группируйте чаты и проекты как угодно",
@@ -897,16 +895,13 @@ export const ru = {
       edit: "Изменить",
       remove: "Удалить раздел",
       markAllRead: "Отметить все как прочитанные",
-      // The row menu's one submenu for projects and sections, and its headings.
       moveTo: "Переместить в",
       section: "Раздел",
       sectionsHeading: "Разделы",
       removeFromProject: "Убрать из проекта",
       newSection: "Новый раздел",
       removeFromSection: "Убрать из раздела",
-      // Names the project or section the row leaves; the two above are for when it is not one.
       removeFrom: "Убрать из {name}",
-      // Shown in a section with nothing filed in it yet.
       empty: "Перетащите сюда чаты или проекты",
       sectionOptions: "Параметры раздела",
       newChatInSection: "Новый чат в «{name}»",
@@ -1424,13 +1419,13 @@ export const ru = {
       builtinNeedsUpdate:
         "Встроенному контейнеру Windows нужна сборка {required} или новее, а на этом ПК установлена {current}. Установите последнее обновление Windows, чтобы использовать его без шага администратора, или включите резервную песочницу ниже.",
       unsupportedBuild: "Песочнице Windows (MXC) нужна Windows 11 24H2 (сборка 26100) или новее, поэтому на этом ПК она недоступна.",
-      permissionsIntro: "Выберите, когда инструменты спрашивают заранее и запускаются ли Python и Терминал также в песочнице ОС.",
       permissionLabel: "Разрешения инструментов",
+      levelRowLabel: "Уровень песочницы",
       levelPickerTitle: "Как изолировать код?",
       levelOff: "Отключена",
       levelOffShort: "Полный доступ отключает песочницу",
-      levelHighDetail: "Песочница ОС. Python и Терминал работают в песочнице ОС (bubblewrap, Seatbelt или MXC) поверх программной защиты. Без рабочей песочницы ОС рискованные вызовы сначала спрашивают.",
-      levelLowDetail: "Программная песочница. Python и Терминал работают только с программной защитой, вне песочницы ОС. Рискованные вызовы сначала спрашивают, кроме режима Полный доступ.",
+      levelHighDetail: "Python и Терминал работают в песочнице ОС (bubblewrap, Seatbelt или MXC) поверх программной защиты. Без рабочей песочницы ОС рискованные вызовы сначала спрашивают.",
+      levelLowDetail: "Python и Терминал работают только с программной защитой, вне песочницы ОС. Рискованные вызовы сначала спрашивают, кроме режима Полный доступ.",
       levelLabel: "Песочница",
       levelHigh: "Высокий",
       levelLow: "Низкий",
@@ -2068,13 +2063,13 @@ export const ru = {
         },
         details: {
           ask:
-            "Спрашивает перед каждым вызовом инструмента, включая код в терминале и Python, веб-поиск, правку файлов и инструменты MCP. Инструменты, которые выполняет внешний провайдер, не приостанавливаются. Подходит, если вы хотите проверять каждый шаг.",
+            "Спрашивает перед каждым вызовом инструмента, включая код в терминале и Python, веб-поиск, правку файлов и инструменты MCP. Инструменты, которые выполняет внешний провайдер, не приостанавливаются.",
           auto:
             "Сам выполняет обычные вызовы инструментов и спрашивает, только когда действие выглядит рискованным, например чтение учётных данных, повышение привилегий или разрушительные команды.",
           off:
-            "Выполняет все вызовы инструментов без вопросов. Код Python и терминала по-прежнему запускается в песочнице, которая ограничивает доступ к файлам на вашем компьютере. Если на этом компьютере нет рабочей песочницы ОС, рискованные вызовы Python и терминала сначала требуют подтверждения.",
+            "Выполняет все вызовы инструментов без вопросов. Код Python и терминала по-прежнему запускается в песочнице, которая ограничивает доступ к файлам на вашем компьютере. Без рабочей песочницы ОС рискованные вызовы сначала спрашивают.",
           full:
-            "Выполняет все вызовы инструментов без вопросов и отключает песочницу для кода, поэтому код Python и терминала может читать и изменять любые файлы, доступные вашей учётной записи. Подходит для надёжных задач, которым нужно работать вне песочницы.",
+            "Выполняет все вызовы инструментов без вопросов и отключает песочницу для кода, поэтому код Python и терминала может читать и изменять любые файлы, доступные вашей учётной записи.",
         },
       },
     },
@@ -2330,6 +2325,7 @@ export const ru = {
       liveMonitor: {
         title: "Монитор в реальном времени",
         apiTitle: "Монитор API",
+        apiDescription: "Смотрите, что другие приложения отправляют в API этого сервера, по мере поступления.",
         summary: "Активные запросы, ошибки и использование токенов",
         status: "активных: {active} · недавних: {recent} · {model}",
         noModelLoaded: "модель не загружена",
@@ -2434,7 +2430,6 @@ export const ru = {
           updateChecksDisabled:
             "Проверка обновлений отключена (UNSLOTH_DISABLE_UPDATE_CHECK=1), поэтому доступные бэкенды не запрашиваются.",
         },
-        // Не отображается: дополнительные слова для поиска по настройкам.
         llamaBackendKeywords:
           "llama.cpp backend gguf инференс cuda rocm hip vulkan metal cpu gpu ускоритель prebuilt переключить движок",
       },
@@ -2447,6 +2442,7 @@ export const ru = {
         noRamReserveDescription: "Уменьшает объём ОЗУ, занятый весами модели.",
         noRamReserveHint: "Пропускает загрузку через отображение файла в память в поддерживаемых сборках Windows, когда модель полностью выгружена на видеокарту, чтобы её страницы не оставались в памяти. В остальных случаях сохраняет загрузку через отображение файла в память. Необходимые буферы ЦП всё равно могут занимать ОЗУ. Убирает --no-mmap и --mlock.",
         multiModel: "Держать несколько моделей загруженными",
+        openSystemSettings: "Настройки системы",
         multiModelOff: "Выкл.",
         multiModelFit: "Если помещаются",
         multiModelAlways: "Всегда",
@@ -2467,7 +2463,6 @@ export const ru = {
         reloadRequired: "Перезагрузите модель, чтобы применить новые параметры памяти.",
         loadError: "Не удалось загрузить настройки памяти модели",
         saveError: "Не удалось сохранить настройки памяти модели",
-        // Not rendered: extra terms the settings search matches these rows on.
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu память озу резидентный закрепить блокировать держать загружен выгрузка простой mmap no-mmap load-mode подкачка",
         multiModelKeywords:
@@ -2609,8 +2604,6 @@ export const ru = {
       docsLabel: "Открыть документацию по unsloth start",
       agentDocs: "Открыть документацию по настройке {agent}",
       copyGeneratedCommand: "Копировать сформированную команду",
-      // English is the baseline until translated: the three-part sentence is assembled around an
-      // inline link and needs restructuring first.
       automaticSettingsNote:
         "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
       configurationNote:
@@ -3158,13 +3151,22 @@ export const ru = {
       readDocs: "Читать документацию API",
       noAccess: "Доступа к API пока нет.",
       accessTokens: "Токены доступа",
+      columnName: "Имя",
+      columnToken: "Токен",
+      columnCreated: "Создан",
+      columnLastUsed: "Последнее использование",
+      columnExpires: "Истекает",
       loadError: "Не удалось загрузить доступ к API.",
       createError: "Не удалось создать токен доступа.",
       revokeError: "Не удалось отозвать токен доступа.",
       never: "Никогда",
-      tokenNamePlaceholder: "Имя токена (например, production)",
+      tokenNamePlaceholder: "Имя токена",
       newAccessTokenName: "Имя нового токена доступа",
       createToken: "Создать токен",
+      neverExpiresHint: "Бессрочный",
+      expiresInDaysHint: "Истекает через {n} дн.",
+      createTokenHint: "Создать токен «{name}»",
+      defaultTokenName: "Новый токен {n}",
       creating: "Создание...",
       newTokenCreated: "Новый токен доступа создан",
       accessTokenCopied: "Токен доступа скопирован",
@@ -3198,13 +3200,16 @@ export const ru = {
       expired: "истёк",
       expiredStatus: "Истёк",
       today: "сегодня",
-      created: "Создан {value}",
-      used: "Использование: {value}",
-      expires: "Срок действия: {value}",
       actionsFor: "Действия для {name}",
       copyPrefix: "Копировать префикс",
       copyFailed: "Не удалось скопировать",
       revokeToken: "Отозвать токен",
+      regenerateToken: "Перевыпустить токен",
+      regenerateTitle: "Перевыпустить токен доступа «{name}»?",
+      regenerateDescription: "Новый токен с тем же именем и сроком действия заменит этот. Приложения с текущим токеном сразу потеряют доступ.",
+      regenerateAction: "Перевыпустить",
+      regenerating: "Перевыпуск...",
+      regenerateError: "Не удалось перевыпустить токен доступа.",
       revokeTitle: 'Отозвать токен доступа «{name}»?',
       revokeDescription:
         "Приложения, использующие этот токен, немедленно потеряют доступ. Это действие нельзя отменить.",
@@ -4382,6 +4387,21 @@ export const ru = {
       archiveSuccessful: "Архивировать успешные запуски",
       project: "Проект",
       projectNone: "Нет",
+      model: "Модель",
+      modelLoaded: "Любая загруженная модель",
+      modelOnDevice: "На этом устройстве",
+      modelNote: "Если при запуске задачи модель не загружена, Unsloth сначала спросит.",
+      modelNoteAllowed: "Переключается на эту модель, только пока вы не пользуетесь Unsloth, а потом возвращает вашу.",
+      modelEmpty: "Чтобы выбрать другую, скачайте модель в Model Hub или добавьте подключение.",
+      modelMissing: "{model} (нет на этом устройстве)",
+      allowLoad: "Переключать автоматически, когда меня нет",
+      allowLoadHint:
+        "Когда подходит время задачи и вы не пользовались Unsloth 5 минут, она без вопроса загружает эту модель, выполняет задачу и возвращает прежнюю модель. Если в это время вы работаете в Unsloth или идёт обучение, запуск пропускается, а ваша модель остаётся как есть. Если выключено, Unsloth спрашивает перед загрузкой.",
+      reasoning: "Глубина рассуждений",
+      reasoningDefault: "По умолчанию",
+      reasoningOff: "Выкл.",
+      reasoningLowest: "Минимальная",
+      reasoningHighest: "Максимальная",
       create: "Создать",
     },
     deleteDialog: {
@@ -4390,6 +4410,10 @@ export const ru = {
     },
     errors: {
       noModel: "Модель не была загружена. Загрузите модель в чате и запустите задачу снова.",
+      modelNotLoaded: "Модель задачи не была загружена. Загрузите её в чате и запустите задачу снова.",
+      modelLoadFailed: "Не удалось загрузить модель задачи. Проверьте, что она всё ещё скачана в Model Hub.",
+      modelBusy: "Пропущено, пока вы пользовались Unsloth: модель не тронута.",
+      connectionUnavailable: "Подключение задачи отсутствует или отключено. Проверьте его в разделе «Подключения».",
       timeout: "Модель отвечала слишком долго.",
       cancelled: "Запуск был остановлен до завершения.",
       interrupted: "Unsloth закрылся до завершения запуска.",
@@ -4399,6 +4423,13 @@ export const ru = {
       updateFailed: "Не удалось обновить задачу",
       deleteFailed: "Не удалось удалить задачу",
       runFailed: "Не удалось запустить задачу",
+    },
+    loadPrompt: {
+      title: "Загрузить {model}?",
+      description: "«{title}» работает на {model}, но она не загружена. Запуск переключит чат на {model} до завершения, затем вернёт обратно.",
+      always: "Больше не спрашивать. Переключать, только пока я не пользуюсь Unsloth.",
+      notNow: "Не сейчас",
+      load: "Загрузить и запустить",
     },
     toast: {
       finished: "«{title}»: готово",
@@ -4422,7 +4453,6 @@ export const ru = {
       all: "Все",
       chats: "Чаты",
     },
-    // The Chats tab: conversations and projects, kept apart from every file tab.
     chats: {
       sections: {
         chats: "Чаты",
@@ -4556,6 +4586,7 @@ export const ru = {
       modelsTitle: "Дообученных моделей пока нет",
       modelsDescription: "Здесь появляются модели, которые вы обучаете или экспортируете в Unsloth.",
       createFolder: "Создать папку",
+      generateImage: "Создать изображение",
       generateVideo: "Сгенерировать видео",
       generateAudio: "Сгенерировать аудио",
       trainModel: "Обучить модель",

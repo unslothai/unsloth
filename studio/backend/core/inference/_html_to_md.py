@@ -44,10 +44,7 @@ _SKIP_TAGS = frozenset(
         "datalist",
     }
 )
-# <aside> is NOT skipped: docs use it for admonition callouts (real content); page-furniture asides are excluded by the
-# main-content scoping pass instead.
-
-# void elements never produce an end tag, so they must not join the open-element stack used to bound hidden subtrees
+# The aside element is not skipped (docs use it for callouts); the main-content scoping pass excludes page-furniture asides instead
 _VOID_TAGS = frozenset(
     {
         "area",
@@ -69,10 +66,7 @@ _VOID_TAGS = frozenset(
 
 
 def _style_hides_element(style: str) -> bool:
-    """True when an inline ``style`` sets ``display:none`` / ``visibility:hidden``.
-
-    Parsed per property so an unrelated value that merely contains ``none`` is
-    not misread as hidden."""
+    """Checks display:none and visibility:hidden per declaration, so a value that merely contains none is not read as hidden"""
     lowered = style.lower()
     if "none" not in lowered and "hidden" not in lowered:
         return False
@@ -91,10 +85,7 @@ def _style_hides_element(style: str) -> bool:
 
 
 def _is_hidden_element(attr_dict: dict) -> bool:
-    """True when the element is not rendered: ``hidden`` attribute,
-    ``aria-hidden="true"``, or an inline ``style`` hiding it. Such JS-only
-    placeholders ship in the HTML but must not reach the output. ``hidden`` is
-    enumerated: any present value (even ``hidden="false"``) means not rendered."""
+    """Any present hidden attribute counts, even hidden=false, since presence means not rendered; aria-hidden=true and inline hiding styles count too"""
     if "hidden" in attr_dict:
         return True
     if (attr_dict.get("aria-hidden") or "").strip().lower() == "true":
@@ -111,17 +102,11 @@ def _span_attr(attr_dict: dict, name: str) -> int:
 
 
 def _is_aria_heading(attr_dict: dict) -> bool:
-    """True for ``role="heading"``, which titles a page just as ``h1``-``h6`` does.
-
-    ``role`` is a token list authors use for fallbacks (``role="future-role
-    heading"``), so any token counts. WAI-ARIA takes the first token naming a
-    real role, which would need the whole role table; matching anywhere is the
-    safe direction, since keeping a stray title beats dropping a real one."""
+    """Any role token counts: WAI-ARIA's first-token rule needs the full role table, so match loosely."""
     return "heading" in (attr_dict.get("role") or "").lower().split()
 
 
-# HTML5 optional end tags: a listed start tag implicitly closes an open element of the key type (as browsers do), else
-# an unclosed ``<p hidden>``/``<li hidden>`` swallows every following sibling. Keys: closable elements; values: closers.
+# HTML5 optional end tags: a listed start tag implicitly closes an open element of the key type, else an unclosed p hidden swallows later siblings
 _P_CLOSING_TAGS = frozenset(
     {
         "address",
@@ -178,9 +163,7 @@ _IMPLICIT_CLOSERS: dict = {
 }
 
 
-# Item tag -> container tags that re-scope it: a nested container makes an inner item a descendant, not an
-# optional-close sibling, so recovery must stop there rather than close (and un-hide) the outer item and leak its
-# nested content.
+# A nested container makes an inner item a descendant, so recovery must stop there.
 _CLOSE_BARRIERS: dict = {
     "li": frozenset({"ul", "ol", "menu"}),
     "dt": frozenset({"dl"}),
@@ -534,8 +517,7 @@ class _HeaderFrame:
         # Tallied on emit; re-cleaning each parent's buffer would be quadratic.
         self.rendered_chars: int = 0
         self.heading_chars: int = 0
-        # Buffers open now enclose the frame, later ones nest. Link/cell sequence numbers, not flags: an inner one
-        # replaces the outer in the renderer's single slot.
+        # Store link/cell sequence numbers, not flags, since an inner one replaces the outer in one slot
         self.outer_list_depth = list_depth
         self.outer_link_seq = link_seq
         self.outer_cell_seq = cell_seq
@@ -552,10 +534,7 @@ class _HeaderFrame:
         closed_by_own_tag: bool,
         strip: bool | None = None,
     ) -> str:
-        """The buffer, or only its headings when the header is link furniture.
-
-        Without a matching ``</header>`` the header may have adopted the page
-        body, so keep it whole."""
+        """Returns the buffer, or only its headings when the header is link furniture; without a closing header tag, keep it whole"""
         self.stripped = False
         if not closed_by_own_tag:
             return "".join(self.parts)
@@ -868,8 +847,7 @@ class _MarkdownRenderer(HTMLParser):
         self._dropped_chars: int = 0
         self._seg_dropped_start: int = 0
         self.scope_dropped: list[int] = []
-        # Heading text per segment: role="heading", hgroup and linked h1 render as prose, so ATX reparsing alone
-        # cannot keep them out of the gate.
+        # Track heading text per segment: role="heading", hgroup and linked h1 render as prose ATX misses
         self._seg_heading_texts: list[str] = []
         self.scope_heading_prose: list[int] = []
         # Open-tag indices of headings, unwound with _hidden_marks.
@@ -927,11 +905,7 @@ class _MarkdownRenderer(HTMLParser):
         ] = []
 
     def _nested_buffer_open(self, frame: _HeaderFrame) -> bool:
-        """True when a side buffer opened *inside* *frame* still holds content.
-
-        Such a buffer emits into the frame when it closes; an enclosing one
-        (already open at ``<header>``) must not capture it."""
-        # Only the buffer _emit would pick matters, in its order; OR-ing them calls an enclosing one nested.
+        """An enclosing buffer opened before the header must not capture the frame's content."""
         if self._in_link:
             return self._link_seq != frame.outer_link_seq
         if self._in_cell:
@@ -946,8 +920,7 @@ class _MarkdownRenderer(HTMLParser):
         if text:
             self._li_marker_pending = False
         frame = self._header_stack[-1] if self._header_stack else None
-        # Tee wherever the text routes, so a heading in a nested buffer is captured. A link opened inside the frame
-        # delivers twice, so tee only the formatted form; an enclosing link, once.
+        # Tee wherever text routes; a link inside the frame arrives twice, so tee only its formatted form
         in_nested_link = (
             self._in_link and self._link_seq != frame.outer_link_seq if frame else False
         )
@@ -1296,13 +1269,7 @@ class _MarkdownRenderer(HTMLParser):
             self._sup_starts.pop()
 
     def _close_implicit(self, tag: str) -> None:
-        """HTML5 optional-end-tag recovery for a start tag about to open.
-
-        Pops each implicitly-closed ancestor (and its hidden marks), scanning the
-        whole stack so an open ``<p>``/``<li>`` still closes under an unclosed inline
-        ``<span>``. Stops at a ``_CLOSE_BARRIERS`` container so recovery never crosses
-        a nested list/table/dl and leaks the outer item's hidden content. Runs even
-        for skipped ``<nav>``/``<footer>``, which also close ``<p>``."""
+        """Recovery stops at _CLOSE_BARRIERS containers so an outer item hidden content cannot leak; runs even for skipped nav and footer, which also close p"""
         if not self._closable_open:
             return
         barriers = _IMPLICIT_CLOSE_BARRIERS.get(tag, frozenset())
@@ -1355,10 +1322,7 @@ class _MarkdownRenderer(HTMLParser):
             closed_by_own_tag = False
 
     def _finalize_nested_buffers(self, frame: _HeaderFrame) -> None:
-        """Close side buffers opened inside *frame* whose end tags the page omitted.
-
-        Their content is the header's, so it has to land in the frame before the
-        strip is judged; otherwise it is emitted afterwards and escapes."""
+        """Closes side buffers opened in the frame whose end tags were omitted; their content must reach the frame before the strip is judged"""
         if self._in_link and self._link_seq != frame.outer_link_seq:
             # the header boundary proves this anchor did not adopt the body: its text is furniture
             frame.link_chars += self._link_header_chars
@@ -1506,16 +1470,13 @@ class _MarkdownRenderer(HTMLParser):
         return True
 
     def _exit_tag(self, tag: str) -> bool:
-        """Pop to the matching open tag; return True when the end tag should
-        be rendered (False = it closed inside a hidden / out-of-scope region)."""
-        # Recover an <a> left open before the segment is recorded, or its text is stranded.
+        """Recovers an open a element before the segment is recorded, or its text is stranded"""
         if self._in_link and self._scope_tags is not None and tag in self._scope_tags:
             self._finish_link()
         suppressed = bool(self._hidden_marks) or (
             self._scope_tags is not None and self._scope_depth == 0
         )
-        # An element that IS the heading emits when its buffer closes, after the mark pops; flush it here while the tee
-        # still recognises it.
+        # Flush the heading here while the tee still recognises it; it emits only after its mark pops
         if self._in_link and tag == "a" and self._heading_marks:
             self._finish_link()
         if tag not in _VOID_TAGS:
@@ -2012,8 +1973,7 @@ class _MarkdownRenderer(HTMLParser):
             return
         # Collapse all whitespace (including newlines) per HTML rules.
         text = re.sub(r"\s+", " ", data)
-        # Sized after collapsing, as the reader sees it: raw spaces in a link cleared the floor at ~100% density and
-        # dropped the byline.
+        # Count after collapsing: raw spaces in a link inflated it past the floor.
         self._count_header_text(text)
         # Suppress whitespace-only nodes between table elements (source indentation).
         if self._in_table and not self._in_cell and not text.strip():
@@ -2043,8 +2003,7 @@ class _MarkdownRenderer(HTMLParser):
 
     def flush_pending(self) -> None:
         """Flush open side-buffers into ``_out`` after close(), recovering truncated HTML."""
-        # Headers first: a frame finalizes its inner buffers, then emits into the enclosing link or cell, which must
-        # still be open here; it is finalized below.
+        # Headers first: a frame emits into the enclosing link or cell, which must still be open.
         self._flush_header_frames()
 
         if self._in_link:
@@ -2072,9 +2031,7 @@ class _MarkdownRenderer(HTMLParser):
             else:
                 self._out.append("\n\n" + prefixed + "\n\n")
 
-        # A scope left open by truncated HTML never reached _exit_tag, so its output never joined scope_segments and
-        # would score 0. Flush the still-open segment here (after the side-buffers) so a truncated main-content page is
-        # scored.
+        # Flushes a scope left open by truncated HTML after the side-buffers, else the page scores 0
         if self._scope_seg_start is not None:
             self.scope_segments.append("".join(self._out[self._scope_seg_start :]))
             self.scope_dropped.append(self._dropped_chars - self._seg_dropped_start)
@@ -2115,8 +2072,7 @@ def _cleanup(text: str) -> str:
     return "\n".join(out).strip()
 
 
-# Known boilerplate fragments stripped from main-content conversions, matched only against short lines. Sources:
-# GitHub page furniture / client-side error placeholders, skip-links, cookie banners.
+# Boilerplate removed from main content; matched only on short lines (GitHub, skip-links, cookies)
 _BOILERPLATE_FRAGMENTS = (
     "skip to content",
     "skip to main content",
@@ -2146,11 +2102,7 @@ _BOILERPLATE_NORMALIZED = frozenset(
 
 
 def _line_is_boilerplate(line: str) -> bool:
-    """True only when a whole line is composed of known furniture phrases.
-
-    Splits on sentence terminators and requires every segment to be furniture, so a
-    line stacking several phrases is dropped while prose that merely quotes one is
-    kept (its other words leave a non-furniture segment)."""
+    """Every sentence segment must be furniture, so prose that merely quotes one phrase is kept."""
     normalized = re.sub(r"\s+", " ", line).strip().casefold()
     if not normalized:
         return False
@@ -2172,10 +2124,7 @@ def _fence_state(line: str, fence: int) -> int:
 
 
 def _strip_boilerplate_lines(text: str, site_links: SiteLinks | None = None) -> str:
-    """Drop short lines that consist entirely of known page-furniture phrases.
-
-    Fenced code blocks are preserved verbatim: boilerplate never renders
-    inside ``<pre>``, while READMEs legitimately quote error strings."""
+    """Fenced code is kept verbatim: boilerplate never renders in pre, and READMEs quote error strings."""
     out: list[str] = []
     fence = 0
     for line in text.split("\n"):
@@ -2372,8 +2321,7 @@ def _visible_len(line: str) -> int:
     return total
 
 
-# A scoped conversion below this size is judged not to be the page's main content (e.g. an empty <article> stub) and the
-# next candidate is tried.
+# Scoped conversions shorter than this are rejected as main content, e.g. an empty article stub
 _MIN_MAIN_CONTENT_CHARS = 200
 
 

@@ -140,6 +140,11 @@ export const ja = {
     more: "その他",
     addressPlaceholder: "検索または URL を入力",
     local: "ローカル",
+    browserUse: {
+      label: "ブラウザ操作",
+      description: "モデルに内蔵ブラウザを操作させる",
+      unavailable: "ブラウザを使わせるには、ツールを呼び出せるモデルを読み込んでください。",
+    },
     suggested: "おすすめ",
     suggestedMenu: {
       open: "開く",
@@ -497,7 +502,6 @@ export const ja = {
       clearDataFailed: "サイトデータを消去できませんでした。もう一度お試しください。",
     },
   },
-  // English fallback until this experimental feature is translated.
   managedEngines: en.managedEngines,
   sandboxSetup: {
     levelTitle: "OS サンドボックスを利用できません",
@@ -703,7 +707,6 @@ export const ja = {
     shutdown: "シャットダウン",
   },
   shell: {
-    // The Help submenu of the account menu, and the desktop app's Help menu.
     helpMenu: {
       documentation: "ドキュメント",
       keyboardShortcuts: "キーボードショートカット",
@@ -775,11 +778,8 @@ export const ja = {
       export: "エクスポート",
       recents: "履歴",
       noChatsYet: "チャットがまだありません",
-      // Shown under an empty project folder in the sidebar.
       noChats: "チャットなし",
-      // Shown in the Projects section when every project is pinned, so it has no rows.
       allProjectsPinned: "すべてのプロジェクトをピン留め済み",
-      // Same, when some of them are filed in custom sections instead.
       allProjectsFiled: "すべてのプロジェクトがピン留め済みまたはセクション内にあります",
       noProjects: "プロジェクトはありません",
       showMore: "もっと見る",
@@ -881,11 +881,9 @@ export const ja = {
       organizeChats: "チャットを整理",
       organizeProjects: "プロジェクトを整理",
       sortPinnedChats: "ピン留めチャットを並べ替え",
-      // Header of the menu's section-visibility toggles.
       show: "表示",
       newSection: "新しいセクション",
     },
-    // User-made sidebar sections that group chats and projects.
     sections: {
       createTitle: "新しいセクション",
       createDescription: "チャットやプロジェクトを自由にグループ化できます",
@@ -896,16 +894,13 @@ export const ja = {
       edit: "編集",
       remove: "セクションを削除",
       markAllRead: "すべて既読にする",
-      // The row menu's one submenu for projects and sections, and its headings.
       moveTo: "移動先",
       section: "セクション",
       sectionsHeading: "セクション",
       removeFromProject: "プロジェクトから削除",
       newSection: "新しいセクション",
       removeFromSection: "セクションから削除",
-      // Names the project or section the row leaves; the two above are for when it is not one.
       removeFrom: "{name}から削除",
-      // Shown in a section with nothing filed in it yet.
       empty: "ここにチャットやプロジェクトをドラッグ",
       sectionOptions: "セクションのオプション",
       newChatInSection: "{name} に新しいチャット",
@@ -1423,13 +1418,13 @@ export const ja = {
       builtinNeedsUpdate:
         "Windows の組み込みコンテナーにはビルド {required} 以降が必要ですが、この PC は {current} です。管理者の手順なしで使うには最新の Windows Update をインストールするか、下のフォールバック サンドボックスをオンにしてください。",
       unsupportedBuild: "Windows サンドボックス (MXC) には Windows 11 24H2 (ビルド 26100) 以降が必要なため、この PC では使用できません。",
-      permissionsIntro: "ツールが先に確認するタイミングと、Python とターミナルを OS サンドボックス内でも実行するかを選びます。",
       permissionLabel: "ツールの権限",
+      levelRowLabel: "サンドボックスのレベル",
       levelPickerTitle: "コードをどのように隔離しますか？",
       levelOff: "無効",
       levelOffShort: "フルアクセスではサンドボックスがオフになります",
-      levelHighDetail: "OS サンドボックス。Python とターミナルは、ソフトウェアの保護に加えて OS サンドボックス (bubblewrap、Seatbelt または MXC) 内で実行されます。OS サンドボックスが動作しない場合、危険な呼び出しは先に確認します。",
-      levelLowDetail: "ソフトウェア サンドボックス。Python とターミナルはソフトウェアの保護のみで、OS サンドボックスの外で実行されます。フルアクセス以外では、危険な呼び出しは先に確認します。",
+      levelHighDetail: "Python とターミナルは、ソフトウェアの保護に加えて OS サンドボックス (bubblewrap、Seatbelt または MXC) 内で実行されます。OS サンドボックスが動作しない場合、危険な呼び出しは先に確認します。",
+      levelLowDetail: "Python とターミナルはソフトウェアの保護のみで、OS サンドボックスの外で実行されます。フルアクセス以外では、危険な呼び出しは先に確認します。",
       levelLabel: "サンドボックス",
       levelHigh: "高",
       levelLow: "低",
@@ -2043,13 +2038,13 @@ export const ja = {
         },
         details: {
           ask:
-            "ターミナルや Python のコード、ウェブ検索、ファイル編集、MCP ツールを含め、すべてのツール呼び出しの前に確認します。外部プロバイダーが実行するツールは一時停止されません。各ステップを確認したいときに最適です。",
+            "ターミナルや Python のコード、ウェブ検索、ファイル編集、MCP ツールを含め、すべてのツール呼び出しの前に確認します。外部プロバイダーが実行するツールは一時停止されません。",
           auto:
             "通常のツール呼び出しは自動で実行し、認証情報の読み取り、権限昇格、破壊的なコマンドなど、危険そうな操作のときだけ確認します。",
           off:
-            "すべてのツール呼び出しを確認なしで実行します。Python とターミナルのコードは引き続きサンドボックス内で実行され、コンピューター上でアクセスできるファイルが制限されます。このコンピューターで OS サンドボックスが動作しない場合、危険な Python とターミナルの呼び出しは先に確認します。",
+            "すべてのツール呼び出しを確認なしで実行します。Python とターミナルのコードは引き続きサンドボックス内で実行され、コンピューター上でアクセスできるファイルが制限されます。OS サンドボックスが動作しない場合、危険な呼び出しは先に確認します。",
           full:
-            "すべてのツール呼び出しを確認なしで実行し、コードサンドボックスをオフにします。Python とターミナルのコードは、アカウントがアクセスできる任意のファイルを読み取り、変更できます。サンドボックスの外で作業する必要がある、信頼できるタスクに最適です。",
+            "すべてのツール呼び出しを確認なしで実行し、コードサンドボックスをオフにします。Python とターミナルのコードは、アカウントがアクセスできる任意のファイルを読み取り、変更できます。",
         },
       },
     },
@@ -2300,6 +2295,7 @@ export const ja = {
       liveMonitor: {
         title: "リアルタイムモニター",
         apiTitle: "API モニター",
+        apiDescription: "他のアプリがこのサーバーの API に送る内容を、届いたそばから確認できます。",
         summary: "処理中のリクエスト、エラー、トークン使用量",
         status: "処理中 {active} 件 · 最近 {recent} 件 · {model}",
         noModelLoaded: "モデル未読み込み",
@@ -2404,7 +2400,6 @@ export const ja = {
           updateChecksDisabled:
             "更新チェックが無効になっているため (UNSLOTH_DISABLE_UPDATE_CHECK=1)、利用可能なバックエンドは確認されません。",
         },
-        // 非表示: 設定検索用の追加キーワード。
         llamaBackendKeywords:
           "llama.cpp backend gguf 推論 cuda rocm hip vulkan metal cpu gpu アクセラレータ prebuilt 切り替え エンジン",
       },
@@ -2417,6 +2412,7 @@ export const ja = {
         noRamReserveDescription: "モデルの重みが占有する RAM を減らします。",
         noRamReserveHint: "モデルが GPU に完全にオフロードされている場合、対応する Windows ビルドではメモリマップ読み込みを行わず、ファイルのページが常駐しないようにします。それ以外ではメモリマップ読み込みを維持します。必要な CPU バッファは RAM を使用することがあります。--no-mmap と --mlock を除去します。",
         multiModel: "複数のモデルを読み込んだままにする",
+        openSystemSettings: "システム設定",
         multiModelOff: "オフ",
         multiModelFit: "収まる場合",
         multiModelAlways: "常に",
@@ -2437,7 +2433,6 @@ export const ja = {
         reloadRequired: "新しいメモリ設定を適用するにはモデルを再読み込みしてください。",
         loadError: "モデルメモリ設定の読み込みに失敗しました",
         saveError: "モデルメモリ設定の保存に失敗しました",
-        // Not rendered: extra terms the settings search matches these rows on.
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu メモリ ram 常駐 固定 ロック 保持 ロード済み アンロード アイドル mmap no-mmap load-mode スワップ ページング",
         multiModelKeywords:
@@ -2579,8 +2574,6 @@ export const ja = {
       docsLabel: "unsloth start のドキュメントを開く",
       agentDocs: "{agent} のセットアップドキュメントを開く",
       copyGeneratedCommand: "生成されたコマンドをコピー",
-      // English is the baseline until translated: the three-part sentence is assembled around an
-      // inline link and needs restructuring first.
       automaticSettingsNote:
         "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
       configurationNote:
@@ -3117,13 +3110,22 @@ export const ja = {
       readDocs: "API ドキュメントを読む",
       noAccess: "アクセストークンはまだありません。",
       accessTokens: "アクセストークン",
+      columnName: "名前",
+      columnToken: "トークン",
+      columnCreated: "作成",
+      columnLastUsed: "最終使用",
+      columnExpires: "有効期限",
       loadError: "アクセストークンを読み込めませんでした。",
       createError: "アクセストークンを作成できませんでした。",
       revokeError: "アクセストークンを失効させることができませんでした。",
       never: "なし",
-      tokenNamePlaceholder: "トークン名 (例: production)",
+      tokenNamePlaceholder: "トークン名",
       newAccessTokenName: "新規アクセストークン名",
       createToken: "トークンを作成",
+      neverExpiresHint: "期限なし",
+      expiresInDaysHint: "{n} 日後に期限切れ",
+      createTokenHint: "「{name}」という名前のトークンを作成",
+      defaultTokenName: "新しいトークン {n}",
       creating: "作成中...",
       newTokenCreated: "新規アクセストークンが作成されました",
       accessTokenCopied: "アクセストークンをコピーしました",
@@ -3155,13 +3157,16 @@ export const ja = {
       expired: "期限切れ",
       expiredStatus: "期限切れ",
       today: "今日",
-      created: "作成日時 {value}",
-      used: "使用日時 {value}",
-      expires: "有効期限 {value}",
       actionsFor: "{name} のアクション",
       copyPrefix: "プレフィックスをコピー",
       copyFailed: "コピーできませんでした",
       revokeToken: "トークンを失効",
+      regenerateToken: "トークンを再生成",
+      regenerateTitle: "アクセストークン「{name}」を再生成しますか?",
+      regenerateDescription: "同じ名前と有効期間の新しいトークンに置き換えます。現在のトークンを使うアプリはすぐにアクセスできなくなります。",
+      regenerateAction: "再生成",
+      regenerating: "再生成中...",
+      regenerateError: "アクセストークンを再生成できませんでした。",
       revokeTitle: 'アクセストークン "{name}" を失効させますか？',
       revokeDescription: "このトークンを使用しているアプリはすぐにアクセスできなくなります。この操作は取り消せません。",
       revokeAction: '"{name}" を失効',
@@ -4300,6 +4305,21 @@ export const ja = {
       archiveSuccessful: "成功した実行をアーカイブ",
       project: "プロジェクト",
       projectNone: "なし",
+      model: "モデル",
+      modelLoaded: "その時に読み込まれているモデル",
+      modelOnDevice: "このデバイス",
+      modelNote: "実行時にこのモデルが読み込まれていなければ、先に確認します。",
+      modelNoteAllowed: "Unsloth を使っていない間だけこのモデルに切り替え、終わったら元に戻します。",
+      modelEmpty: "別のモデルを選ぶには、Model Hub でダウンロードするか接続を追加してください。",
+      modelMissing: "{model}（このデバイスにありません）",
+      allowLoad: "離席中は自動で切り替える",
+      allowLoadHint:
+        "このタスクの時刻になり、Unsloth を 5 分間使っていない場合は、確認せずにこのモデルを読み込んでタスクを実行し、その後元のモデルに戻します。その時点で Unsloth を使用中か学習中の場合、実行はスキップされ、モデルはそのままです。オフにすると、読み込む前に Unsloth が確認します。",
+      reasoning: "思考の深さ",
+      reasoningDefault: "デフォルト",
+      reasoningOff: "オフ",
+      reasoningLowest: "最低",
+      reasoningHighest: "最高",
       create: "作成",
     },
     deleteDialog: {
@@ -4308,6 +4328,10 @@ export const ja = {
     },
     errors: {
       noModel: "モデルが読み込まれていませんでした。チャットでモデルを読み込んでから、もう一度タスクを実行してください。",
+      modelNotLoaded: "タスクのモデルが読み込まれていませんでした。チャットで読み込んでから、もう一度実行してください。",
+      modelLoadFailed: "タスクのモデルを読み込めませんでした。Model Hub にダウンロードされたままか確認してください。",
+      modelBusy: "Unsloth を使用中だったためスキップし、モデルはそのままにしました。",
+      connectionUnavailable: "タスクの接続が見つからないか、オフになっています。接続を確認してください。",
       timeout: "モデルの応答に時間がかかりすぎました。",
       cancelled: "実行は完了前に停止されました。",
       interrupted: "実行が完了する前に Unsloth が閉じられました。",
@@ -4317,6 +4341,13 @@ export const ja = {
       updateFailed: "タスクを更新できませんでした",
       deleteFailed: "タスクを削除できませんでした",
       runFailed: "タスクを開始できませんでした",
+    },
+    loadPrompt: {
+      title: "{model} を読み込みますか？",
+      description: "「{title}」は {model} で実行されますが、読み込まれていません。実行すると終わるまでチャットが {model} に切り替わり、その後元に戻ります。",
+      always: "今後は確認しない。Unsloth を使っていない間だけ切り替える。",
+      notNow: "今はしない",
+      load: "読み込んで実行",
     },
     toast: {
       finished: "「{title}」が完了しました",
@@ -4340,7 +4371,6 @@ export const ja = {
       all: "すべて",
       chats: "チャット",
     },
-    // The Chats tab: conversations and projects, kept apart from every file tab.
     chats: {
       sections: {
         chats: "チャット",
@@ -4474,6 +4504,7 @@ export const ja = {
       modelsTitle: "ファインチューニング済みモデルはまだありません",
       modelsDescription: "Unsloth でトレーニングまたはエクスポートしたモデルがここに表示されます。",
       createFolder: "フォルダを作成",
+      generateImage: "画像を生成",
       generateVideo: "動画を生成",
       generateAudio: "音声を生成",
       trainModel: "モデルをトレーニング",
