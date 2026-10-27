@@ -1423,8 +1423,8 @@ NODE_SPECS: list[dict] = [
         "recipe.generate",
         "Recipe Dataset",
         "data",
-        "Runs the Data Recipe group it sits in as one job and outputs the dataset. Select it to edit the "
-        "recipe's models, seed and processors.",
+        "Runs the Data Recipe group it sits in as one job and outputs the dataset; select it to edit the "
+        "recipe's models, seed and processors. Added on its own, it starts a new recipe group.",
         inputs = [inp("seed", "dataset", "Seed dataset", optional = True)],
         outputs = [out("dataset", "dataset"), out("preview", "json")],
         params = [

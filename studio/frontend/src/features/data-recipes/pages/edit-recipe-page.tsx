@@ -9,6 +9,7 @@ import type { ReactElement } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getCachedRecipe, getRecipe, primeRecipeCache, saveRecipe } from "../data/recipes-db";
 import type { RecipeRecord } from "../types";
+import { openRecipeInFlows } from "../data/open-in-flows";
 
 type EditRecipePageProps = {
   recipeId: string;
@@ -145,6 +146,7 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
       initialPayload={loadState.record.payload}
       initialSavedAt={loadState.record.updatedAt}
       onPersistRecipe={handlePersist}
+      onOpenInFlows={() => openRecipeInFlows(loadState.record.id, navigate)}
     />
   );
 }

@@ -1479,7 +1479,7 @@ def learning_recipe(stem: str, title: str, description: str) -> B:
         "pipeline",
         description + " A Data Recipe as a group: double-click a column to edit it, select Recipe "
         "Dataset for its models, seed and rows.",
-        tags = ["dataset", "data recipe"],
+        tags = ["data", "data recipe", "dataset"],
     )
     doc, _ = flow_from_recipe(payload, name = title)
     _place_recipe(b, doc, 0, 0, preview = True)

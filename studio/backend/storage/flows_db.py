@@ -100,13 +100,13 @@ def _summary_from_columns(row: sqlite3.Row) -> dict:
 
 
 def recipe_flows() -> dict[str, str]:
-    """Saved Data Recipe id -> the flow it was brought into (`meta.from_recipe.id`)."""
+    """Saved Data Recipe id -> the newest flow it was brought into (`meta.from_recipe.id`)."""
     conn = get_connection()
     try:
         rows = conn.execute(
             "SELECT id, json_extract(doc_json, '$.meta.from_recipe.id') AS recipe FROM flows"
             " WHERE json_extract(doc_json, '$.meta.from_recipe.id') IS NOT NULL"
-            " ORDER BY created_at"
+            " ORDER BY created_at DESC"
         ).fetchall()
         found: dict[str, str] = {}
         for row in rows:

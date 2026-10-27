@@ -252,7 +252,7 @@ def flow_from_recipe(
         "target_port": "value",
         "kind": "data",
     }
-    meta: dict[str, Any] = {"tags": ["dataset", "data recipe"]}
+    meta: dict[str, Any] = {"tags": ["data", "data recipe"]}
     if source:
         meta["from_recipe"] = source
     doc = {

@@ -247,6 +247,30 @@ export async function importNotebook(
   };
 }
 
+/** A saved Data Recipe (by id) or recipe JSON as a new flow with one Recipe group. */
+export const importRecipe = (
+  source: { recipe_id: string } | { payload: unknown; name?: string },
+) =>
+  request<{ flow: FlowRecord; report: { notices: string[] } }>(
+    "/import/recipe",
+    json("POST", source),
+  );
+
+export interface RecipeMigration {
+  created: {
+    recipe_id: string;
+    flow_id: string;
+    name: string;
+    notices: string[];
+  }[];
+  skipped: { recipe_id: string; flow_id: string }[];
+  failed: { recipe_id: string; name: string; error: string }[];
+}
+
+/** One flow per saved Data Recipe not in Flows yet; repeating it creates nothing new. */
+export const importAllRecipes = () =>
+  request<RecipeMigration>("/import/recipes", { method: "POST" });
+
 export interface NotebookEntry {
   id: string;
   title: string;

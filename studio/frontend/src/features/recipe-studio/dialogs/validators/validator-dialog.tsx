@@ -23,7 +23,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { type ReactElement, useMemo, useRef } from "react";
-import { useRecipeStudioStore } from "../../stores/recipe-studio";
+import { useRecipeConfigs } from "../../stores/recipe-configs-context";
 import type { ValidatorConfig } from "../../types";
 import {
   isValidatorCodeLang,
@@ -53,7 +53,7 @@ export function ValidatorDialog({
   config,
   onUpdate,
 }: ValidatorDialogProps): ReactElement {
-  const configs = useRecipeStudioStore((state) => state.configs);
+  const configs = useRecipeConfigs();
   const targetColumnId = `${config.id}-target-column`;
   const oxcModeId = `${config.id}-oxc-mode`;
   const oxcCodeShapeId = `${config.id}-oxc-code-shape`;

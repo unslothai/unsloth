@@ -231,9 +231,9 @@ def client():
         yield test_client
 
 
-def _save_recipe(recipe_id: str, name: str, payload = SQL) -> None:
+def _save_recipe(recipe_id: str, name: str, payload = SQL, updated = 2) -> None:
     data_recipes_db.upsert_recipe(
-        {"id": recipe_id, "name": name, "payload": payload, "createdAt": 1, "updatedAt": 2}
+        {"id": recipe_id, "name": name, "payload": payload, "createdAt": 1, "updatedAt": updated}
     )
 
 
@@ -246,6 +246,11 @@ def test_import_a_saved_recipe_or_recipe_json(client):
     assert compiler.validate(doc)["ok"]
     loose = client.post("/api/flows/import/recipe", json = {"payload": SQL, "name": "Loose"}).json()
     assert "from_recipe" not in loose["flow"]["doc"]["meta"]
+    again = client.post("/api/flows/import/recipe", json = {"recipe_id": "r1"}).json()
+    assert again["flow"]["id"] == body["flow"]["id"] and again["report"]["reused"]
+    _save_recipe("r1", "My SQL", updated = 3)
+    changed = client.post("/api/flows/import/recipe", json = {"recipe_id": "r1"}).json()
+    assert changed["flow"]["id"] != body["flow"]["id"]
     assert client.post("/api/flows/import/recipe", json = {"recipe_id": "nope"}).status_code == 404
     assert client.post("/api/flows/import/recipe", json = {}).status_code == 400
     assert data_recipes_db.get_recipe("r1")["payload"] == SQL

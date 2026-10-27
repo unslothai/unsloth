@@ -269,13 +269,20 @@ def _recipe_source(record: dict) -> dict:
 
 @router.post("/import/recipe")
 def import_recipe(body: RecipeImportBody) -> dict:
-    """A saved Data Recipe (by id) or recipe JSON as a new flow; the recipe itself is left alone."""
+    """A saved Data Recipe (by id) or recipe JSON as a new flow; the recipe itself is left alone.
+    Asking again for an unchanged saved recipe opens the flow made last time."""
     from storage import data_recipes_db
 
     if body.recipe_id:
         record = data_recipes_db.get_recipe(body.recipe_id)
         if record is None:
             raise HTTPException(status_code = 404, detail = "Recipe not found")
+        # The recipe unchanged since its newest flow was made: open that flow again.
+        known = flows_db.recipe_flows().get(record["id"])
+        existing = flows_db.get_flow(known) if known else None
+        made_from = ((existing or {}).get("doc", {}).get("meta") or {}).get("from_recipe") or {}
+        if existing and made_from.get("updatedAt") == record.get("updatedAt") and not body.name:
+            return {"flow": existing, "report": {"notices": [], "reused": True}}
         payload, name, source = record["payload"], record.get("name"), _recipe_source(record)
     elif body.payload is not None:
         payload, name, source = body.payload, None, None
