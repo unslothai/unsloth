@@ -101,6 +101,14 @@ def _case_multi(
         )
         for k, module in zip(pp.local_stages, pp.stage_modules)
     ]
+    calls = {}
+    for i, layer in enumerate(pp.parts.layers):
+        if type(layer).__name__ != "_PPPassThrough":
+            handles.append(
+                layer.register_forward_pre_hook(
+                    lambda m, a, i = i: calls.__setitem__(i, calls.get(i, 0) + 1)
+                )
+            )
     opt = torch.optim.AdamW(pp.parameters(), lr = 1e-2, foreach = False)
     losses, norms, grads = [], [], None
     for step in range(steps):
@@ -146,6 +154,8 @@ def _case_multi(
         "info": dict(model.__dict__.get("_unsloth_pp") or {}),
         "repr": repr(pp),
         "torch_map": torch_map,
+        "layer_calls": calls,
+        "gc": gc,
         "n_mb": n_mb,
     }
 
@@ -190,6 +200,9 @@ def _check_multi(results, saved, pp, schedule, layers = N_LAYERS, v = 2):
         owns_first, owns_last = 0 in res["local_stages"], total - 1 in res["local_stages"]
         assert res["alive"] == {"embed": owns_first, "head": owns_last}, (rank, res["alive"])
         owned_layers = {i for k in res["local_stages"] for i in range(*bounds[k])}
+        if res["gc"] is None:
+            # Each owned layer runs once per micro-batch: a stage never runs this rank's other stages' layers.
+            assert res["layer_calls"] == {i: res["n_mb"] for i in owned_layers}, (rank, res["layer_calls"])
         for i, name in enumerate(res["layer_types"]):
             assert (name == "_PPPassThrough") == (i not in owned_layers), (rank, i, name)
         assert "split for pipeline parallelism" in (res["direct_error"] or "")
