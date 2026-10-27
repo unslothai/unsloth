@@ -464,3 +464,40 @@ test("an older intent another tab journaled replays before this tab's newer one"
   assert.deepEqual(server, []);
 });
 
+test("a twice-trimmed offline bulk pin keeps its place ahead of the unpins that fence it", async () => {
+  const storage = new MemoryStorage();
+  let server: string[] = [];
+  const acknowledged = new Set<string>();
+  let online = false;
+  function client() {
+    const disk = createPinnedChatsJournal(storage, "server|session");
+    return createPinnedChatsSync({
+      load: async () => server.slice(),
+      compareAndSet: async (expected, next, operation) => {
+        if (!online) throw new Error("offline");
+        const id = operation && (operation.serverId ?? operation.operationId);
+        if (id && acknowledged.has(id)) return { applied: true, pinnedIds: server.slice() };
+        if (JSON.stringify(expected ?? []) !== JSON.stringify(server)) return { applied: false, pinnedIds: server.slice() };
+        server = next.slice();
+        if (id) acknowledged.add(id);
+        operation?.cancels?.forEach((cancelled) => acknowledged.add(cancelled));
+        return { applied: true, pinnedIds: server.slice() };
+      },
+      readLegacy: () => [],
+      readPending: disk.readPending,
+      writePending: disk.writePending,
+      publish: () => undefined,
+    });
+  }
+  const offline = client();
+  await offline.refresh().catch(() => undefined);
+  await assert.rejects(offline.setPinned(["a", "b", "c"], true));
+  await offline.setPinned(["a"], false).catch(() => undefined);
+  await offline.setPinned(["b"], false).catch(() => undefined);
+  online = true;
+  // After a reload, a fresh client replays the journal in its stored order.
+  const reloaded = client();
+  await reloaded.refresh().catch(() => undefined);
+  await reloaded.refresh().catch(() => undefined);
+  assert.deepEqual(server, ["c"]);
+});

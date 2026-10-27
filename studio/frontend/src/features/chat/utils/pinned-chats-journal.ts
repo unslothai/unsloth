@@ -73,20 +73,41 @@ export function createPinnedChatsJournal(storage: Storage, scope: string) {
     baseIds?: string[],
   ): void {
     const keep = new Set<string>();
-    for (const operation of operations) {
+    const keyOf = (operation: PinOperation) =>
+      `${prefix}${kind}:${operation.operationId}`;
+    const storedOrder = (key: string): number | undefined => {
+      const raw = storage.getItem(key);
+      if (raw === null) return undefined;
+      const order = (JSON.parse(raw) as Entry).order;
+      return Number.isFinite(order) ? order : undefined;
+    };
+    let previous: number | undefined;
+    operations.forEach((operation, index) => {
       validatePinOperation(operation);
-      const key = `${prefix}${kind}:${operation.operationId}`;
-      if (storage.getItem(key) === null) {
+      const key = keyOf(operation);
+      let order = storedOrder(key);
+      if (order === undefined) {
         // Seen here and gone now: another tab acknowledged or cancelled it. Never recreate it.
-        if (observed[kind].has(key)) continue;
-        lastOrder = Math.max(Date.now(), lastOrder + 1);
-        storage.setItem(
-          key,
-          JSON.stringify({ operation, baseIds, order: lastOrder }),
-        );
+        if (observed[kind].has(key)) return;
+        // A replacement (a trimmed pin) keeps its queue position: it must replay before the
+        // unpin that fences its server ID, so it slots between its stored neighbours.
+        let next: number | undefined;
+        for (const later of operations.slice(index + 1)) {
+          next = storedOrder(keyOf(later));
+          if (next !== undefined) break;
+        }
+        order =
+          next === undefined
+            ? Math.max(Date.now(), lastOrder + 1, (previous ?? 0) + 1)
+            : previous === undefined
+              ? next - 1
+              : (previous + next) / 2;
+        lastOrder = Math.max(lastOrder, order);
+        storage.setItem(key, JSON.stringify({ operation, baseIds, order }));
       }
+      previous = order;
       keep.add(key);
-    }
+    });
     // A fallback seed is needed even before the first offline mutation.
     if (
       kind === "fallback" &&
