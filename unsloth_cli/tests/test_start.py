@@ -2887,6 +2887,16 @@ def test_codex_session_from_a_saved_home_reads_its_origin(fake_studio, tmp_path,
         "fresh": {"url": "http://f/mcp"},
     }
 
+    (source_home / "config.toml").write_text(
+        '[mcp_servers.fresh]\nurl = "http://f/mcp"\n\n[mcp_servers.local]\nurl = "http://l/mcp"\n'
+    )
+    start.write_codex_config("http://h", {"id": "m"}, session, keep_mcp_servers = True)
+    config = tomllib.loads((session / "config.toml").read_text())
+    assert config["mcp_servers"] == {
+        "local": {"url": "http://l/mcp"},
+        "fresh": {"url": "http://f/mcp"},
+    }
+
 
 def test_codex_carries_mcp_servers_written_as_root_keys(fake_studio, tmp_path, monkeypatch):
     tomllib = pytest.importorskip("tomllib")

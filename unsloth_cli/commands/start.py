@@ -3523,8 +3523,10 @@ def _codex_mcp_tables(source: Path, seen: frozenset) -> list:
         ]
     origin, inherited = _codex_mcp_manifest(source)
     if isinstance(origin, str) and str(Path(origin).resolve(strict = False)) not in seen:
-        tables = [c for c in tables if _codex_mcp_server(c) not in inherited]
-        tables += _codex_mcp_tables(Path(origin), seen | {str(Path(origin).resolve(strict = False))})
+        upstream = _codex_mcp_tables(Path(origin), seen | {str(Path(origin).resolve(strict = False))})
+        # The origin wins a name clash, as it does when that saved home is synced.
+        taken = inherited | {_codex_mcp_server(c) for c in upstream}
+        tables = [c for c in tables if _codex_mcp_server(c) not in taken] + upstream
     return tables
 
 
