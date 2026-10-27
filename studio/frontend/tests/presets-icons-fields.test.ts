@@ -45,7 +45,7 @@ test("component file fields are the selects' 36px", () => {
   const page = readSrc("features/images/images-page.tsx");
   assert.match(
     page,
-    /rows=\{1\}[\s\S]{0,200}className="h-9 min-h-9 resize-y rounded-\[18px\] py-2 font-mono text-xs leading-5"/,
+    /rows=\{1\}[\s\S]{0,200}className="min-h-9 overflow-hidden rounded-\[18px\] py-\[calc\(\(var\(--spacing\)\*9-2px-1lh\)\/2\)\] font-mono text-xs leading-5"/,
   );
   assert.match(
     page,
