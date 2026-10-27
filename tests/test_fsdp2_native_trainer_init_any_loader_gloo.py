@@ -75,12 +75,24 @@ def _load_launch(calls):
         ({"UNSLOTH_FSDP2": "1", "WORLD_SIZE": "1"}, False),
         ({"WORLD_SIZE": "2"}, False),
         ({"UNSLOTH_FSDP2": "1", "WORLD_SIZE": "2", "UNSLOTH_FSDP2_BACKEND": "accelerate"}, False),
+        # UNSLOTH_TP_SIZE alone: the wrapper applies tensor parallel (an encoder trained as plain DDP before).
+        ({"UNSLOTH_TP_SIZE": "2", "WORLD_SIZE": "2"}, True),
+        ({"UNSLOTH_TP_SIZE": "2", "WORLD_SIZE": "4", "UNSLOTH_FSDP2_BACKEND": "accelerate"}, True),
+        ({"UNSLOTH_TP_SIZE": "1", "WORLD_SIZE": "2"}, False),
+        ({"UNSLOTH_PP_SIZE": "2", "WORLD_SIZE": "2"}, True),
     ],
 )
 def test_installer_wraps_trainer_only_under_native_fsdp2(monkeypatch, env, applies):
     from transformers import Trainer
 
-    for key in ("UNSLOTH_FSDP2", "WORLD_SIZE", "UNSLOTH_FSDP2_BACKEND", "ACCELERATE_USE_FSDP"):
+    for key in (
+        "UNSLOTH_FSDP2",
+        "WORLD_SIZE",
+        "UNSLOTH_FSDP2_BACKEND",
+        "ACCELERATE_USE_FSDP",
+        "UNSLOTH_TP_SIZE",
+        "UNSLOTH_PP_SIZE",
+    ):
         monkeypatch.delenv(key, raising = False)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
