@@ -468,3 +468,21 @@ def test_an_upload_during_the_last_walk_is_never_undone_with_it(chat, monkeypatc
     report = _rewind(history, ["u1"])
     assert "upload.txt" in report.conflicts
     assert (workdir / "upload.txt").read_text(encoding = "utf-8") == "mine\n"
+
+
+def test_a_rewind_after_a_capped_walk_keeps_a_later_user_edit(chat):
+    workdir, history = chat
+    (workdir / "src").mkdir()
+    keep = workdir / "src" / "keep.txt"
+    keep.write_text("original\n", encoding = "utf-8")
+    file_history.set_turn("chat-1", "u1")
+    _edit("src/keep.txt", "original", "model")
+    keep.write_text("user later edit\n", encoding = "utf-8")
+
+    def capped(wd):  # a walk whose budget ran out before src/
+        snap, _complete = _walk(wd)
+        return {rel: key for rel, key in snap.items() if not rel.startswith("src/")}, False
+
+    report = history.rewind("chat-1", ["u1"], capped)
+    assert report.conflicts == ["src/keep.txt"]
+    assert keep.read_text(encoding = "utf-8") == "user later edit\n"

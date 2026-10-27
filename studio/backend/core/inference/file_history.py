@@ -140,6 +140,23 @@ def _key(snap_value) -> tuple:
     return (snap_value[0], snap_value[1], snap_value[2] if len(snap_value) > 2 else None)
 
 
+def _probe(workdir: str, rels: "Iterable[str]") -> dict:
+    """Regular files among *rels*, keyed as a walk keys them; one behind a linked folder counts as gone."""
+    root = os.path.realpath(workdir)
+    found = {}
+    for rel in rels:
+        path = os.path.join(root, *rel.split("/"))
+        try:
+            if os.path.realpath(os.path.dirname(path)) != os.path.dirname(path):
+                continue
+            info = os.lstat(path)
+        except OSError:
+            continue
+        if stat_mod.S_ISREG(info.st_mode):
+            found[rel] = (info.st_mtime_ns, info.st_size, None)
+    return found
+
+
 class FileHistory:
     """One per account. Every method is blocking: call it from a worker thread."""
 
@@ -326,7 +343,13 @@ class FileHistory:
 
     def _walk_sync(self, workdir: str, walk) -> dict:
         snap, complete = walk(workdir)
-        return self._sync(workdir, snap, None, complete)
+        changes = self._sync(workdir, snap, None, complete)
+        if not complete:
+            # A capped walk never reached these: read them directly, or a rewind trusts a stale state
+            # and overwrites the user's later edit.
+            missed = {rel for rel in self._load_state(workdir) if rel not in snap}
+            changes.update(self._sync(workdir, _probe(workdir, missed), missed))
+        return changes
 
     def _record(
         self,
