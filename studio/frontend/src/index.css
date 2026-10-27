@@ -291,6 +291,8 @@
 	--destructive-button: #ce4035;
 	/* Bypass permissions accent: bright, saturated yellow (not dark gold). */
 	--bypass: #c99d00;
+	/* Full access in permission menus: ChatGPT's orange, a touch yellower. */
+	--full-access: #eb6702;
 	--border-base: oklch(0.9208 0 0);
 	--input-base: oklch(0.9208 0 0);
 	--ring: #262626;
@@ -470,6 +472,7 @@
 	--destructive-button: #ed716a;
 	/* Bypass permissions accent: bright, saturated neon yellow on dark. */
 	--bypass: #ffd60a;
+	--full-access: #ff8f30;
 	/* One step lighter than --muted so outlines stay visible on muted surfaces; matches the hover tone. */
 	--border-base: #3a3a3a;
 	--input-base: #3a3a3a;
@@ -1967,6 +1970,7 @@ html[data-chat-font] .aui-root {
 	--color-border: var(--border);
 	--color-destructive: var(--destructive);
 	--color-bypass: var(--bypass);
+	--color-full-access: var(--full-access);
 	--color-accent-foreground: var(--accent-foreground);
 	--color-accent: var(--accent);
 	--color-muted-foreground: var(--muted-foreground);
@@ -3862,6 +3866,14 @@ html[data-chat-font] .aui-root {
 	}
 	.unsloth-plus-menu :is([data-slot="dropdown-menu-item"], [data-slot="context-menu-item"])[data-variant="destructive"]:is(:hover, :focus, :focus-visible, [data-highlighted]) {
 		background-color: color-mix(in oklab, var(--destructive) 10%, transparent) !important;
+	}
+	/* After the hover ink's color: inherit, so the row stays orange highlighted. The unscoped pair
+	   covers menus without .unsloth-plus-menu (Run settings), over Radix's focus ink. */
+	:is([data-slot="dropdown-menu-item"], [data-slot="context-menu-item"]).menu-item-full-access,
+	:is([data-slot="dropdown-menu-item"], [data-slot="context-menu-item"]).menu-item-full-access *,
+	.unsloth-plus-menu :is([data-slot="dropdown-menu-item"], [data-slot="context-menu-item"]).menu-item-full-access,
+	.unsloth-plus-menu :is([data-slot="dropdown-menu-item"], [data-slot="context-menu-item"]).menu-item-full-access * {
+		color: var(--full-access) !important;
 	}
 
 	/* nowrap so the menu sizes to "Preserve thinking". */
