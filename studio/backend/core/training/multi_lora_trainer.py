@@ -288,7 +288,11 @@ def _tokenize_member(dataset_info, tokenizer, config: dict, model_name: str, max
         first_sample_text,
         resolve_add_special_tokens,
     )
-    from utils.datasets.pretokenized import PRETOKENIZED_FORMAT, _collator_masks_user_labels
+    from utils.datasets.pretokenized import (
+        PRETOKENIZED_FORMAT,
+        _collator_masks_user_labels,
+        _mask_error,
+    )
 
     dataset = dataset_info["dataset"] if isinstance(dataset_info, dict) else dataset_info
     final_format = (
@@ -297,8 +301,13 @@ def _tokenize_member(dataset_info, tokenizer, config: dict, model_name: str, max
     member_tok = _member_tokenizer(tokenizer, model_name, final_format)
     labels = None
     if final_format == PRETOKENIZED_FORMAT:
-        input_ids = [list(x)[:max_length] for x in dataset["input_ids"]]
         masks = dataset["assistant_masks"] if "assistant_masks" in dataset.column_names else None
+        # As prepare_pretokenized_dataset does for a lone job: a mask must cover every token of its row.
+        if masks is not None and any(
+            m is None or len(m) != len(ids) for m, ids in zip(masks, dataset["input_ids"])
+        ):
+            raise _mask_error("assistant_masks")
+        input_ids = [list(x)[:max_length] for x in dataset["input_ids"]]
         if "labels" in dataset.column_names:
             labels = [list(x)[:max_length] for x in dataset["labels"]]
             if not _collator_masks_user_labels():

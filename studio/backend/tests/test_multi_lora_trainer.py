@@ -436,6 +436,15 @@ def test_pretokenized_assistant_masks_become_labels():
     assert [labels for _, labels in rows] == [[-100, -100, 7, 8], [-100, 10, 11]]
 
 
+def test_a_pretokenized_mask_of_the_wrong_length_is_refused():
+    info = {
+        "dataset": Dataset.from_dict({"input_ids": [[5, 6, 7, 8]], "assistant_masks": [[0, 1]]}),
+        "final_format": "pretokenized",
+    }
+    with pytest.raises(ValueError, match = "assistant_masks"):
+        mlt._tokenize_member(info, _tokenizer(), {}, "tiny/qwen3", 64)
+
+
 @pytest.mark.parametrize("collator_masks_labels", [True, False])
 def test_pretokenized_labels_and_assistant_masks(monkeypatch, collator_masks_labels):
     import utils.datasets.pretokenized as pretokenized

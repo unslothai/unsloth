@@ -630,6 +630,7 @@ def _batchable(request: TrainingStartRequest) -> bool:
             request.enable_wandb or request.enable_tensorboard or request.early_stopping_patience
         )
         and request.lr_scheduler_type != "reduce_lr_on_plateau"
+        and not request.offload_layers
         and not (
             request.is_dataset_image
             or request.is_dataset_audio
