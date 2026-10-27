@@ -64,6 +64,7 @@ test("advanced settings summary uses method-aware LoRA defaults", () => {
     countNonDefaultAdvancedSettings({
       ...defaultState,
       trainingMethod: "cpt",
+      trainOnCompletions: false,
       loraRank: 128,
       loraAlpha: 32,
       loraVariant: "rslora",

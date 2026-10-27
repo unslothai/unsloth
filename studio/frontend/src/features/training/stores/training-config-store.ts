@@ -1743,11 +1743,15 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               patch.trainOnCompletions !== undefined;
             return {
               ...patch,
-              trainingToggleChoices: {
-                ...state.trainingToggleChoices,
-                ...(patch.packing !== undefined ? { packing: patch.packing } : {}),
-                ...(patch.trainOnCompletions !== undefined ? { trainOnCompletions: patch.trainOnCompletions } : {}),
-              },
+              ...(patch.packing !== undefined || patch.trainOnCompletions !== undefined
+                ? {
+                    trainingToggleChoices: {
+                      ...state.trainingToggleChoices,
+                      ...(patch.packing !== undefined ? { packing: patch.packing } : {}),
+                      ...(patch.trainOnCompletions !== undefined ? { trainOnCompletions: patch.trainOnCompletions } : {}),
+                    },
+                  }
+                : {}),
               ...(importsPatience
                 ? {
                     earlyStoppingPatience: earlyStoppingPatienceFrom(

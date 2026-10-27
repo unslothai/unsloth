@@ -710,14 +710,15 @@ class TrainingStartRequest(BaseModel):
 
     @model_validator(mode = "after")
     def _default_training_objective_toggles(self) -> "TrainingStartRequest":
-        non_chat = self.is_embedding or self.is_decision
+        # getattr: validate_assignment on a model_construct() instance lacks required fields.
+        non_chat = getattr(self, "is_embedding", False) or getattr(self, "is_decision", False)
         if "packing" not in self.model_fields_set and non_chat:
             self.packing = False
         if "train_on_completions" not in self.model_fields_set and (
             non_chat
-            or self.dataset_streaming
-            or self.training_type == "Continued Pretraining"
-            or self.format_type in ("raw", "raw_text")
+            or getattr(self, "dataset_streaming", False)
+            or getattr(self, "training_type", None) == "Continued Pretraining"
+            or getattr(self, "format_type", None) in ("raw", "raw_text")
         ):
             self.train_on_completions = False
         return self
