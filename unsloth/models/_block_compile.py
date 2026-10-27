@@ -93,8 +93,7 @@ def _graphed_call(compiled, device, *args, **kwargs):
     managers = _CUDAGRAPH_STATE["managers"]
     manager = managers.get(device)
     if manager is None:
-        # Cached once found: one tree manager per device until a reset. It may predate the
-        # first block call (another region made it), so look before the call too.
+        # The manager may predate the first block call (another region made it).
         manager = _tree_manager(device)
         if manager is not None:
             managers[device] = manager
@@ -127,9 +126,8 @@ def _pool_release_verdict(managers, ours):
 
 
 def _release_graph_pool():
-    """After graphs went off: free the cudagraph tree pool (torch keeps it while the tree lives).
-    reset_cudagraph_trees() shuts down every device's tree; an old tree function called afterwards
-    fails ("Running CUDAGraph after shutdown"), so it runs only when every tree function is ours."""
+    """Free the cudagraph tree pool via reset_cudagraph_trees(), only when every tree function is ours:
+    a foreign one called afterwards fails ("Running CUDAGraph after shutdown")."""
     state = _CUDAGRAPH_STATE
     if state["release"] is not None:
         return
@@ -200,8 +198,7 @@ def _note_hidden_states_exposed(module, args, kwargs):
 
 
 def _watch_hidden_states(model):
-    """Every forward of the model and of each decoder list's owner records whether it returns
-    hidden states (each entry overwrites the flag, so no reset is needed)."""
+    """Hook the model and each decoder list's owner to record whether hidden states are returned."""
     modules = dict(model.named_modules())
     lists = {id(layer_list) for layer_list in _layer_lists(model)}
     owners = [model]
@@ -215,15 +212,9 @@ def _watch_hidden_states(model):
 
 
 def _pool_outputs_stay_valid(layer, hidden_states):
-    """A grad-mode call outside backward leaves a forward pending, and cudagraph trees start no new
-    generation while one is pending (can_start_new_generation, torch/_inductor/cudagraph_trees.py:
-    2.10 L2377, 2.13 L2557, 2.14 L2820; run() sets the flag after every FORWARD node: 2.10 L2037,
-    2.13 L2182, 2.14 L2410). The next block and the backward then read this call's outputs and
-    produce the input gradient inside the same generation, so neither needs a copy out of the
-    pool. Checkpointed blocks run without grad (forward) or inside backward (recompute), where a
-    block call can start a new generation and overwrite what the previous block handed on. The
-    grad-mode trial before a checkpointed block's first call takes the recompute's path too, so it
-    records what the recompute replays."""
+    """A grad-mode call outside backward leaves a forward pending, so cudagraph trees start no new
+    generation (can_start_new_generation) and its outputs need no copy out of the pool. Checkpointed
+    calls (no-grad forward, recompute in backward, and the trial standing in for it) may start one."""
     return (
         not _IN_TRIAL[0]
         and not _HIDDEN_STATES_EXPOSED[0]
@@ -234,11 +225,8 @@ def _pool_outputs_stay_valid(layer, hidden_states):
 
 
 def _input_grad_must_leave_pool(hidden_states):
-    """The copy-skip path hands this block's input gradient on inside the pool. Two consumers outlive
-    the generation: a leaf input keeps it as .grad (enable_input_require_grads makes the embedding
-    output one, and the tree then counts it live, so the pool is never released), and a checkpoint's
-    backward reads it only after recomputing its own block, a new torch.compile invocation that starts
-    a new generation once a backward ran (CUDAGraphTreeManager.can_start_new_generation)."""
+    """True when the input gradient outlives the generation: a leaf's .grad (kept live, so the pool is
+    never released) or a checkpoint's backward, which recomputes (a new generation) before reading it."""
     if not hidden_states.requires_grad:
         return False
     node = hidden_states.grad_fn
