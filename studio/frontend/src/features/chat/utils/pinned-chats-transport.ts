@@ -31,6 +31,8 @@ interface PinnedChatsTransportOptions {
   onUnsupported?: () => void;
 }
 
+class ReplayConflictError extends Error {}
+
 const PIN_OPERATION_FIELDS = new Set([
   "operationId",
   "unpinnedChatIds",
@@ -194,7 +196,7 @@ export function createPinnedChatsTransport(options: PinnedChatsTransportOptions)
           break;
         }
       }
-      if (!applied) throw new Error("Pinned chats changed in another browser. Please try again.");
+      if (!applied) throw new ReplayConflictError("Pinned chats changed in another browser. Please try again.");
     }
     assertCurrent(epoch);
     // Cleared only once every write is acknowledged; the server deduplicates a retried replay.
@@ -241,7 +243,9 @@ export function createPinnedChatsTransport(options: PinnedChatsTransportOptions)
           (error instanceof Error && ["AbortError", "TimeoutError"].includes(error.name)) ||
           (error instanceof ChatSettingsRequestError &&
             (error.status >= 500 || error.status === 429 || error.status === 408));
-        if (state && transient) return state.pinnedIds;
+        // A replay the server keeps refusing (a chat still awaiting import) keeps the saved
+        // view usable, so a later unpin can join the journal and compact that pin away.
+        if (state && (transient || error instanceof ReplayConflictError)) return state.pinnedIds;
         return fallback(error, epoch).pinnedIds;
       }
     },

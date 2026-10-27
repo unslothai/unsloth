@@ -278,7 +278,8 @@ test("replay conflict retries are bounded and leave the recovery journal intact"
   const transport = createPinnedChatsTransport({ ...f.options,
     compareAndSet: async () => { conflicts += 1; return { applied: false, pinnedIds: ["racer"] }; },
   });
-  await assert.rejects(transport.load(), /changed in another browser/);
+  // The saved view stands in until the replay can land.
+  assert.deepEqual(await transport.load(), ["new", "legacy"]);
   assert.equal(conflicts, 8);
   assert.equal(f.fallback?.operations.length, 1);
 });
@@ -437,5 +438,41 @@ test("an upgrade replay retries a trimmed bulk pin under the same ID", async () 
   const replays = ids.filter((id) => id !== "02");
   assert.equal(new Set(replays).size, 1);
   assert.deepEqual(remote, []);
+});
+
+test("a replay the server keeps refusing still lets a later unpin cancel that pin", async () => {
+  let remote: string[] = [];
+  let fallback: PinnedChatsFallbackState | undefined = {
+    baseIds: [],
+    pinnedIds: ["pair"],
+    operations: [pin("01", ["pair"])],
+  };
+  const options = {
+    load: async () => remote.slice(),
+    compareAndSet: async (expected: string[] | undefined, next: string[]) => {
+      // A legacy comparison still awaiting import: the upgraded server cannot place it.
+      if (next.includes("pair") || JSON.stringify(expected) !== JSON.stringify(remote)) {
+        return { pinnedIds: remote.slice(), applied: false };
+      }
+      remote = next.slice();
+      return { pinnedIds: remote.slice(), applied: true };
+    },
+    migrateLegacy: async () => remote.slice(),
+    readLegacy: () => [],
+    readFallback: () => fallback && structuredClone(fallback),
+    writeFallback: (value: PinnedChatsFallbackState | undefined) => {
+      fallback = value && structuredClone(value);
+    },
+  };
+  const transport = createPinnedChatsTransport(options);
+  let visible: string[] = [];
+  const sync = createPinnedChatsSync({ ...transport, readLegacy: () => [], publish: (ids) => { visible = ids; } });
+  await sync.refresh();
+  assert.deepEqual(visible, ["pair"]);
+  await sync.setPinned(["pair"], false);
+  await sync.setPinned(["chat"], true);
+  await sync.refresh();
+  assert.deepEqual(remote, ["chat"]);
+  assert.equal(fallback, undefined);
 });
 
