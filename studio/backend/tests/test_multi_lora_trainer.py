@@ -127,6 +127,7 @@ def _run(
     members,
     on_event = None,
     trainer_attrs = None,
+    datasets = None,
     **extra,
 ):
     base = _base()
@@ -148,6 +149,7 @@ def _run(
         }
         for m in members
     }
+    data.update(datasets or {})
     inboxes = []
 
     def load_base(trainer, config, hf_token, event_queue):
@@ -443,6 +445,28 @@ def test_a_pretokenized_mask_of_the_wrong_length_is_refused():
     }
     with pytest.raises(ValueError, match = "assistant_masks"):
         mlt._tokenize_member(info, _tokenizer(), {}, "tiny/qwen3", 64)
+
+
+def test_a_pretokenized_token_outside_the_vocabulary_is_refused():
+    info = {
+        "dataset": Dataset.from_dict({"input_ids": [[5, 6, 900]]}),
+        "final_format": "pretokenized",
+    }
+    with pytest.raises(ValueError, match = "outside this model's vocabulary"):
+        mlt._tokenize_member(info, _tokenizer(), {}, "tiny/qwen3", 64, vocab_size = 64)
+
+
+def test_one_members_bad_dataset_fails_only_that_member(monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    bad = {
+        "dataset": Dataset.from_dict({"input_ids": [[5, 6, 900]] * 4}),
+        "final_format": "pretokenized",
+    }
+    events, _model, _pristine = _run(monkeypatch, MEMBERS[:2], datasets = {"job_a": bad})
+    a, b = _member_events(events, "job_a"), _member_events(events, "job_b")
+    assert [e["type"] for e in a] == ["error"] and "vocabulary" in a[0]["error"]
+    assert b[-1]["type"] == "complete"
+    assert events[-1]["type"] == "complete" and "member_run_id" not in events[-1]
 
 
 @pytest.mark.parametrize("collator_masks_labels", [True, False])

@@ -278,7 +278,14 @@ def _member_tokenizer(tokenizer, model_name: str, final_format: str):
     return get_training_chat_template(copy.deepcopy(tokenizer), model_name, final_format)
 
 
-def _tokenize_member(dataset_info, tokenizer, config: dict, model_name: str, max_length: int):
+def _tokenize_member(
+    dataset_info,
+    tokenizer,
+    config: dict,
+    model_name: str,
+    max_length: int,
+    vocab_size = None,
+):
     """(tokenizer to save, [(input_ids, labels)]) with the single SFT path's tokenization and masking."""
     from datasets import Dataset
 
@@ -291,7 +298,7 @@ def _tokenize_member(dataset_info, tokenizer, config: dict, model_name: str, max
     from utils.datasets.pretokenized import (
         PRETOKENIZED_FORMAT,
         _collator_masks_user_labels,
-        _mask_error,
+        prepare_pretokenized_dataset,
     )
 
     dataset = dataset_info["dataset"] if isinstance(dataset_info, dict) else dataset_info
@@ -301,12 +308,12 @@ def _tokenize_member(dataset_info, tokenizer, config: dict, model_name: str, max
     member_tok = _member_tokenizer(tokenizer, model_name, final_format)
     labels = None
     if final_format == PRETOKENIZED_FORMAT:
+        # The lone job's checks (ids inside the vocabulary, mask and label lengths) and truncation: a bad
+        # dataset then fails only its own member, never the shared forward.
+        dataset = prepare_pretokenized_dataset(
+            dataset, max_seq_length = max_length, vocab_size = vocab_size
+        )
         masks = dataset["assistant_masks"] if "assistant_masks" in dataset.column_names else None
-        # As prepare_pretokenized_dataset does for a lone job: a mask must cover every token of its row.
-        if masks is not None and any(
-            m is None or len(m) != len(ids) for m, ids in zip(masks, dataset["input_ids"])
-        ):
-            raise _mask_error("assistant_masks")
         input_ids = [list(x)[:max_length] for x in dataset["input_ids"]]
         if "labels" in dataset.column_names:
             labels = [list(x)[:max_length] for x in dataset["labels"]]
@@ -667,7 +674,12 @@ def _run(event_queue, stop_queue, config: dict, members: list) -> None:
             continue
         try:
             member.tokenizer, member.rows = _tokenize_member(
-                datasets.pop(member.run_id), tokenizer, member.config, model_name, max_length
+                datasets.pop(member.run_id),
+                tokenizer,
+                member.config,
+                model_name,
+                max_length,
+                vocab_size = int(model.get_input_embeddings().num_embeddings),
             )
         except Exception as exc:
             member.done = True
