@@ -17,7 +17,6 @@ import {
   ArrowTurnBackwardIcon,
   Delete02Icon,
   Download01Icon,
-  Edit02Icon,
   Edit03Icon,
   Folder01Icon,
   FolderAddIcon,
@@ -36,8 +35,6 @@ import { OVERLAY_CONTROL } from "../surface";
 
 const ICON = "size-icon";
 
-/** Folders a target can move into, depth-first with their nesting depth. A folder is never offered
- *  itself or anything under it. */
 function moveDestinations(
   folders: LibraryFolder[],
   target: LibraryTarget,
@@ -123,7 +120,7 @@ export function LibraryActionsMenu({
         </DropdownMenuItem>
         {item && hasImagePreview(item) && (
           <DropdownMenuItem onSelect={() => actions.editImage(item)}>
-            <HugeiconsIcon icon={Edit02Icon} strokeWidth={1.75} className={ICON} />
+            <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className={ICON} />
             {t("library.menu.editImage")}
           </DropdownMenuItem>
         )}

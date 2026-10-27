@@ -239,6 +239,8 @@ def _launched(
     template,
     model_identifier = "test",
     architecture = None,
+    gguf_template = None,
+    extra_args = None,
 ):
     """The backend and argv the real ``load_model`` builds on one host, for one vintage."""
     platform, is_wsl = OSES[os_label]
@@ -252,6 +254,10 @@ def _launched(
     memory = [] if vendor == "cpu" else [(0, 24_000, 24_000)]
     backend, gguf = _backend(tmp_path, vulkan = False, memory = memory)
     backend._architecture = architecture
+    if gguf_template is not None:
+        backend._read_gguf_metadata = lambda _path: _embed_template(
+            backend, gguf_template, model_identifier
+        )
     monkeypatch.setattr(
         LlamaCppBackend,
         "probe_server_capabilities",
@@ -263,8 +269,20 @@ def _launched(
         model_identifier = model_identifier,
         n_ctx = 4096,
         chat_template_override = template,
+        extra_args = tuple(extra_args) if extra_args else None,
     )
     return backend, captured["cmd"]
+
+
+def _embed_template(backend, template, model_identifier):
+    """What the real header read leaves behind for a GGUF that embeds ``template``."""
+    backend._chat_template = template
+    flags = llama_cpp.detect_reasoning_flags(template, model_identifier)
+    backend._supports_reasoning = flags["supports_reasoning"]
+    backend._reasoning_style = flags["reasoning_style"]
+    backend._reasoning_always_on = flags["reasoning_always_on"]
+    backend._supports_preserve_thinking = flags["supports_preserve_thinking"]
+    backend._preserve_thinking_default = flags["preserve_thinking_default"]
 
 
 def _argv_for(tmp_path, monkeypatch, **kwargs):
@@ -275,6 +293,7 @@ def _argv_for(tmp_path, monkeypatch, **kwargs):
 def _no_inherited_reasoning(monkeypatch):
     monkeypatch.delenv("LLAMA_ARG_REASONING", raising = False)
     monkeypatch.delenv("LLAMA_ARG_REASONING_EFFORT", raising = False)
+    monkeypatch.delenv("LLAMA_ARG_REASONING_PRESERVE", raising = False)
 
 
 def _reasoning_slice(cmd: list[str]) -> list[str]:
@@ -466,6 +485,100 @@ class TestAnInheritedReasoningModeIsHonoured:
         )
         assert json.loads(_reasoning_slice(cmd)[1]) == {"reasoning_effort": effort}
         assert backend.reasoning_default is thinks
+
+
+QWEN38 = "unsloth/Qwen3.8-27B-GGUF"
+# Replays history reasoning per its own preserve_thinking default, as Qwen3.8's template does.
+_HISTORY_TEMPLATE = (
+    "{% if enable_thinking %}<think>{% endif %}{% for m in messages %}"
+    "{% if PRESERVE %}{{ m.reasoning_content }}{% endif %}{{ m.content }}{% endfor %}"
+)
+KEEPS_TEMPLATE = _HISTORY_TEMPLATE.replace(
+    "PRESERVE", "preserve_thinking is undefined or preserve_thinking is true"
+)
+DROPS_TEMPLATE = _HISTORY_TEMPLATE.replace("PRESERVE", "preserve_thinking|default(false)")
+
+
+class TestThePreserveThinkingLaunchDefault:
+    """The launch-time preserve_thinking kwarg beats --[no-]reasoning-preserve inside
+    llama-server, so the kwarg itself must follow the user's flag and template (#15115)."""
+
+    def _preserve(self, tmp_path, monkeypatch, **kwargs):
+        kwargs.setdefault("model_identifier", QWEN38)
+        backend, cmd = _launched(
+            tmp_path, monkeypatch, os_label = "linux", vendor = "nvidia", modern = True, **kwargs
+        )
+        kwargs_json = json.loads(_reasoning_slice(cmd)[3])
+        assert kwargs_json["preserve_thinking"] is backend.preserve_thinking_default
+        return backend.preserve_thinking_default
+
+    def test_qwen38_keeps_its_on_default_with_its_own_template(self, tmp_path, monkeypatch):
+        assert self._preserve(tmp_path, monkeypatch, template = None, gguf_template = THINKING_TEMPLATE)
+
+    def test_an_override_defaulting_off_turns_the_qwen38_default_off(self, tmp_path, monkeypatch):
+        assert not self._preserve(tmp_path, monkeypatch, template = DROPS_TEMPLATE)
+
+    @pytest.mark.parametrize("model_identifier", [QWEN38, "test"])
+    def test_an_override_defaulting_on_keeps_it_on(self, tmp_path, monkeypatch, model_identifier):
+        assert self._preserve(
+            tmp_path, monkeypatch, template = KEEPS_TEMPLATE, model_identifier = model_identifier
+        )
+
+    def test_an_unrenderable_override_gets_the_off_default(self, tmp_path, monkeypatch):
+        assert not self._preserve(
+            tmp_path, monkeypatch, template = THINKING_TEMPLATE + "{{ raise_exception('x') }}"
+        )
+
+    @pytest.mark.parametrize("flag", ["--no-reasoning-preserve", "--no_reasoning_preserve"])
+    def test_no_reasoning_preserve_turns_the_qwen38_default_off(self, tmp_path, monkeypatch, flag):
+        assert not self._preserve(
+            tmp_path,
+            monkeypatch,
+            template = None,
+            gguf_template = THINKING_TEMPLATE,
+            extra_args = [flag],
+        )
+
+    def test_reasoning_preserve_turns_it_on_for_an_override(self, tmp_path, monkeypatch):
+        assert self._preserve(
+            tmp_path,
+            monkeypatch,
+            template = THINKING_TEMPLATE,
+            model_identifier = "test",
+            extra_args = ["--reasoning-preserve"],
+        )
+
+    def test_the_last_flag_wins(self, tmp_path, monkeypatch):
+        assert not self._preserve(
+            tmp_path,
+            monkeypatch,
+            template = None,
+            gguf_template = THINKING_TEMPLATE,
+            extra_args = ["--reasoning-preserve", "--no-reasoning-preserve"],
+        )
+
+    @pytest.mark.parametrize("value,expected", [("0", False), ("off", False), ("1", True)])
+    def test_the_inherited_env_is_honoured(self, tmp_path, monkeypatch, value, expected):
+        monkeypatch.setenv("LLAMA_ARG_REASONING_PRESERVE", value)
+        assert (
+            self._preserve(
+                tmp_path,
+                monkeypatch,
+                template = THINKING_TEMPLATE,
+                model_identifier = "test",
+            )
+            is expected
+        )
+
+    def test_the_extras_beat_the_env(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("LLAMA_ARG_REASONING_PRESERVE", "0")
+        assert self._preserve(
+            tmp_path,
+            monkeypatch,
+            template = None,
+            gguf_template = THINKING_TEMPLATE,
+            extra_args = ["--reasoning-preserve"],
+        )
 
 
 class TestInheritedExtrasTreatBothSpellingsAlike:

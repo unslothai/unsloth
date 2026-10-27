@@ -111,8 +111,7 @@ class McpImage:
         return WITHHELD_RESULT if self._reencoded_in(head) else head
 
     def _reencoded_in(self, text: str) -> bool:
-        # Slices spread over the image, at every base64 alignment, catch wrapped, escaped, percent, url-safe and
-        # hex copies, partial ones too.
+        # Slices at every base64 alignment catch wrapped, escaped, url-safe and hex copies, even partial.
         compact = "".join(text.split()).replace("\\n", "").replace("\\r", "").replace("\\/", "/")
         if "%" in compact:
             compact = unquote(compact)

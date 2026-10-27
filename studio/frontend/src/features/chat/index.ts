@@ -110,11 +110,13 @@ export {
 } from "./tool-output-scope";
 export { useToolAwaitingApproval } from "./tool-approval";
 export {
+  FullAccessConfirmDialog,
   PermissionModeDropdown,
   useActivePermissionMode,
+  usePermissionModeChoice,
   useSandboxCapability,
 } from "./permission-mode-select";
-export { sandboxSwitchState } from "./sandbox-level";
+export { SANDBOX_DOCS_URL, sandboxSwitchState } from "./sandbox-level";
 export { pickSandboxLevel } from "./sandbox-pick";
 export { SandboxSetupDialog } from "./sandbox-setup-dialog";
 export {
@@ -283,7 +285,6 @@ export {
 } from "./utils/pre-stream-run-reservation";
 export { claimThreadCreation } from "./utils/chat-thread-creation-claim";
 export { useChatProjectScope } from "./chat-project-scope";
-// Audio swaps the same llama-server Chat decodes on, so it needs the same confirmation.
 export {
   confirmStopRunningChatsIfNeeded,
   type StopRunningChatsDecision,
@@ -331,6 +332,7 @@ export {
 } from "./stores/plus-menu-prefs-store";
 export {
   useChatModelRuntime,
+  resyncInferenceStatusAfterKeptModelsUnload,
   resyncInferenceStatusAfterServerModelChange,
 } from "./hooks/use-chat-model-runtime";
 export { compareModelDisplayName } from "./lib/external-model-label";
@@ -345,9 +347,13 @@ export {
   isExternalModelId,
   parseExternalModelId,
 } from "./external-providers";
+export type { ExternalProviderConfig } from "./external-providers";
+export {
+  externalReasoningTakesEffort,
+  getExternalReasoningCapabilities,
+} from "./provider-capabilities";
 // A provider catalogue lands async, so capability reads need to re-run when it does.
 export { modelCatalogVersion, subscribeModelCatalog } from "./model-catalog";
-// What a per-model reasoning pin displaced in the live runtime, so clearing it can put it back.
 export {
   noteEffortDisplacedByPin,
   reconcilePinnedReasoningEffort,

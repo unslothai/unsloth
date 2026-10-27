@@ -8,9 +8,13 @@ from __future__ import annotations
 import re
 from typing import Optional
 
+# NVFP is the quant only last in the name (Model-NVFP4.gguf, NVFP4/); mid-name it is part of a
+# community model name (Qwen3.8-27B-NVFP4-MTP-HIGH). MXFP predates NVFP, so it matches anywhere.
 GGUF_QUANT_RE = re.compile(
     r"(UD-)?"
-    r"((?:MX|NV)FP[0-9]+(?:_[A-Z0-9]+)*"
+    r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"
+    r"|NVFP[0-9]+(?:_[A-Z0-9]+)*"
+    r"(?=(?:-[0-9]+(?:[.][0-9]+)?bpw)?(?:-[0-9]{3,}-of-[0-9]{3,})?(?:[.]gguf)?$)"
     r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
     r"|P?TQ[0-9]+_[0-9]+"
     r"|Q[0-9]+_K_[A-Z]+"

@@ -1157,3 +1157,16 @@ def test_messages_carry_preserve_thinking_to_a_vllm_connection(v1, monkeypatch):
         m for m in FakeExternalClient.calls[-1]["stream"]["messages"] if m["role"] == "assistant"
     )
     assert assistant["reasoning_content"] == "earlier thought"
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [("top_k", 250), ("temperature", 3.0), ("top_p", 1.5), ("max_tokens", 0)],
+)
+def test_messages_rejects_a_sampling_value_chat_refuses_with_a_400(v1, field, value):
+    resp = v1.post("/v1/messages", json = _messages_body(**{field: value}))
+
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["type"] == "error"
+    assert field in resp.json()["error"]["message"]
+    assert FakeExternalClient.calls == []

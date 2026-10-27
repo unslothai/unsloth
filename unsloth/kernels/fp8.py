@@ -114,15 +114,26 @@ except:
         "Unsloth: Could not find fbgemm_gpu.experimental.gemm.triton_gemm.fp8_gemm.triton_quantize_fp8_block"
     )
 
-try:
-    from torchao.prototype.blockwise_fp8_inference.blockwise_quantization import (
-        blockwise_fp8_gemm as torchao_blockwise_gemm,
-    )
-except:
-    torchao_blockwise_gemm = None
-    logger.info(
-        "Unsloth: Could not find torchao.prototype.blockwise_fp8_inference.blockwise_quantization.blockwise_fp8_gemm"
-    )
+
+def _import_torchao_blockwise_gemm():
+    # torchao <= 0.17 ships blockwise_fp8_gemm under prototype; 0.18 moved it to torchao.kernel.
+    try:
+        from torchao.prototype.blockwise_fp8_inference.blockwise_quantization import (
+            blockwise_fp8_gemm,
+        )
+        return blockwise_fp8_gemm
+    except Exception:
+        pass
+    try:
+        from torchao.kernel.blockwise_quantization import blockwise_fp8_gemm
+        return blockwise_fp8_gemm
+    except Exception:
+        pass
+    logger.info("Unsloth: Could not find torchao blockwise_fp8_gemm")
+    return None
+
+
+torchao_blockwise_gemm = _import_torchao_blockwise_gemm()
 
 
 # ROCm Triton fuses fp32 multiply + fp16 cast into v_fma_mixlo_f16, which drops -0.0 and rounds
@@ -245,7 +256,10 @@ def _scale_mul(x, s, dtype):
         return _scale_dequant_one_pass(x, s, dtype)
     if dtype != torch.float16:
         return x.to(dtype) * s.to(dtype)
-    if torch.compiler.is_compiling():
+    # out= has no autograd: a trainable weight or scale takes the fp32 expression (same bits).
+    if torch.compiler.is_compiling() or (
+        torch.is_grad_enabled() and (x.requires_grad or s.requires_grad)
+    ):
         return (x.to(torch.float32) * s.to(torch.float32)).to(dtype)
     x16 = x.to(dtype)
     return torch.mul(x16, s.to(torch.float32), out = torch.empty_like(x16))
@@ -333,8 +347,7 @@ def weight_dequant(
             raise ValueError(f"Incompatible shapes {x.shape = }, {s.shape = }")
         return y
     else:
-        # Block quantized weight: scale shape is (ceil(m/block_m), ceil(n/block_n)). Go through the
-        # any-shape helper so fast_dequantize's callers get the pre-sm89 fallback too.
+        # Block scales: the any-shape helper also gives fast_dequantize callers the pre-sm89 fallback.
         return _blockwise_weight_dequant_any_shape(
             x, s, getattr(s, "block_size", None) or [128, 128], dtype
         )
@@ -582,11 +595,45 @@ def _fp8_tma_gemm_ok(A, B, C, BLOCK_SIZE_M, block_n, block_k, long_idx):
     return checked
 
 
+# from_tensor re-validates every field per call (~4 us each): validate once per (dtype, block shape).
+_FP8_TMA_DESC_FIELDS = {}
+
+
+def _fp8_tma_descriptor(tensor, rows, cols, block_shape):
+    key = (tensor.dtype, block_shape)
+    fields = _FP8_TMA_DESC_FIELDS.get(key)
+    if fields is None:
+        proto = _TensorDescriptor.from_tensor(tensor.view(rows, cols), list(block_shape))
+        # Tensor-independent fields only: caching `base` would keep the first GEMM's tensor alive.
+        fields = {
+            k: v
+            for k, v in (getattr(proto, "__dict__", None) or {}).items()
+            if k not in ("base", "shape", "strides")
+        }
+        _FP8_TMA_DESC_FIELDS[key] = fields
+    # A sliced weight's row pitch is not its width: keep from_tensor's real strides.
+    if (
+        not fields
+        or rows <= 0
+        or cols <= 0
+        or tensor.numel() != rows * cols
+        or not tensor.is_contiguous()
+    ):
+        return _TensorDescriptor.from_tensor(tensor.view(rows, cols), list(block_shape))
+    desc = _TensorDescriptor.__new__(_TensorDescriptor)
+    desc.__dict__.update(fields)
+    desc.base = tensor
+    desc.shape = [rows, cols]
+    desc.strides = [cols, 1]
+    desc.block_shape = list(block_shape)
+    return desc
+
+
 def _launch_fp8_tma_gemm(A, B, C, As, Bs, M, N, K, block_n, block_k):
     BLOCK_SIZE_M = 128
-    a_desc = _TensorDescriptor.from_tensor(A.view(M, K), [BLOCK_SIZE_M, block_k])
-    b_desc = _TensorDescriptor.from_tensor(B, [block_n, block_k])
-    c_desc = _TensorDescriptor.from_tensor(C.view(M, N), [BLOCK_SIZE_M, block_n])
+    a_desc = _fp8_tma_descriptor(A, M, K, (BLOCK_SIZE_M, block_k))
+    b_desc = _fp8_tma_descriptor(B, N, K, (block_n, block_k))
+    c_desc = _fp8_tma_descriptor(C, M, N, (BLOCK_SIZE_M, block_n))
     grid = (triton.cdiv(M, BLOCK_SIZE_M) * triton.cdiv(N, block_n),)
     _w8a8_block_fp8_matmul_tma[grid](
         a_desc,
@@ -857,9 +904,10 @@ def _small_m_config(M, N, K, device):
 
 def can_use_fp8_block_small_m(X, weight, weight_scale, block_size):
     # Eager only: under torch.compile the M bound below would guard on the symbolic M and recompile.
+    # torchao writes bf16 only (fp16 falls to act_quant + Triton GEMM), so fp16 keeps the fused kernel.
     if (
         not _FP8_BLOCK_SMALL_M
-        or fp8_block_matmul is not w8a8_block_fp8_matmul_triton
+        or (fp8_block_matmul is not w8a8_block_fp8_matmul_triton and X.dtype != torch.float16)
         or torch.compiler.is_compiling()
     ):
         return False
@@ -945,8 +993,16 @@ def torchao_block_matmul(
     output_dtype: torch.dtype = torch.bfloat16,
 ) -> torch.Tensor:
     # torchao's kernel indexes in int32 too, so route launches past 2**31 elements to the int64 one.
-    if long_indexing(act_q, weight_q) or (
-        act_q.numel() // act_q.shape[-1] * weight_q.shape[0] >= 2**31
+    # It also reads the weight scale with block_size[1] along N, writes bf16 only (fp16 outputs would
+    # round through bf16), and is slower on some GPUs (_prefer_triton_block_matmul_at).
+    # Empty inputs (an MoE expert that got no tokens) too: torchao buckets M with log2(M).
+    if (
+        act_q.numel() == 0
+        or output_dtype != torch.bfloat16
+        or long_indexing(act_q, weight_q)
+        or (act_q.numel() // act_q.shape[-1] * weight_q.shape[0] >= 2**31)
+        or block_size[0] != block_size[1]
+        or _prefer_triton_block_matmul_at(act_q.device, act_q.numel() // act_q.shape[-1])
     ):
         return w8a8_block_fp8_matmul_triton(
             act_q, weight_q, act_scale, weight_scale, block_size, output_dtype = output_dtype
@@ -962,12 +1018,39 @@ def torchao_block_matmul(
     return out.to(output_dtype)
 
 
+def _prefer_triton_block_matmul_at(device, M):
+    # Outputs match bit for bit, so this is speed only (torchao 0.18, Llama-8B shapes):
+    # sm_89 (L4): torchao is 1.73x slower than the pointer kernel at K = 14336, a net loss per layer.
+    # sm_100: above 64 rows w8a8_block_fp8_matmul_triton takes BLOCK_SIZE_M = 128 and the TMA kernel
+    # (~2x torchao); at 64 rows or fewer it runs the pointer kernel, which torchao beats by 1.1-2.3x.
+    if device.type != "cuda" or torch.version.hip is not None:
+        return False
+    index = device.index if device.index is not None else torch.cuda.current_device()
+    if tuple(torch.cuda.get_device_capability(index)) == (8, 9):
+        return True
+    return (
+        M > 64 and _FP8_TMA_GEMM and _TensorDescriptor is not None and _fp8_tma_gemm_arch_at(index)
+    )
+
+
+def _select_fp8_block_matmul():
+    # torchao_block_matmul hands each call to the Triton function where that is faster; pick Triton
+    # outright only when every GPU prefers it at every M (sm_89), which also keeps the fused small-M
+    # kernel there for bf16 (can_use_fp8_block_small_m), as torchao beats it on sm_90 / sm_100 / sm_120.
+    if torchao_blockwise_gemm is None:
+        return w8a8_block_fp8_matmul_triton
+    count = torch.cuda.device_count() if torch.cuda.is_available() else 0
+    if count and all(
+        _prefer_triton_block_matmul_at(torch.device("cuda", i), 1) for i in range(count)
+    ):
+        return w8a8_block_fp8_matmul_triton
+    return torchao_block_matmul
+
+
 # fbgemm <= 1.3.0 silently corrupts blockwise outputs for some shapes (fixed in 1.4.0), so never
-# use it for block FP8. Preference: fbgemm (>=1.4.0) > torchao > triton (similar outputs/losses);
-# torchao is ~3x faster than triton but 15-30% slower than fbgemm on H100.
-fp8_block_matmul = (
-    torchao_block_matmul if torchao_blockwise_gemm is not None else w8a8_block_fp8_matmul_triton
-)
+# use it for block FP8. Preference: fbgemm (>=1.4.0) > torchao > triton (similar outputs/losses),
+# except where the Triton kernels beat torchao (_prefer_triton_block_matmul_at).
+fp8_block_matmul = _select_fp8_block_matmul()
 
 
 def _rocm_fp8e4nv_kernel_supported(device):
@@ -1546,6 +1629,10 @@ def _with_fp8_block_gemv(block_forward):
 def _fp8_block_small_m_first(X, weight, weight_scale):
     # 100+ SM parts: the fused small-M kernel is faster, so try it first (eager only; compiled uses the GEMV).
     if not (torch.is_grad_enabled() and X.requires_grad):
+        # torchao selected: GEMV first (skips act_quant, beat the fused kernel at K = 14336 on sm_120).
+        gemv_first = fp8_block_matmul is not w8a8_block_fp8_matmul_triton
+        if gemv_first and can_use_fp8_block_gemv(X, weight, weight_scale):
+            return fp8_block_gemv(X, weight, weight_scale)
         if (
             can_use_fp8_block_small_m(
                 X, weight, weight_scale, _fp8_block_size(weight, weight_scale)
@@ -1554,7 +1641,7 @@ def _fp8_block_small_m_first(X, weight, weight_scale):
             and not _fp8_kernel_unsupported(weight, torch.float8_e4m3fn)
         ):
             return fp8_block_small_m_linear(X, weight, weight_scale)
-        if can_use_fp8_block_gemv(X, weight, weight_scale):
+        if not gemv_first and can_use_fp8_block_gemv(X, weight, weight_scale):
             return fp8_block_gemv(X, weight, weight_scale)
     return fp8_torch_block_quant_forward(X, weight, weight_scale)
 
@@ -1565,9 +1652,7 @@ _DEQUANT_CHUNK_ELEMS = 8 * 1024 * 1024
 
 
 def _torch_blockwise_dequant(weight, weight_scale, block_size, out_dtype):
-    # no_grad to match the triton kernel this stands in for, which builds no graph. Not
-    # torch.compiled: the callers are already compiled regions, and compiling the loop here
-    # unrolls one graph per chunk, which measured slower than eager.
+    # no_grad like the triton kernel; not compiled, since per-chunk graphs were slower than eager.
     with torch.no_grad():
         m, n = weight.shape
         out = torch.empty(m, n, dtype = out_dtype, device = weight.device)
@@ -1797,10 +1882,7 @@ class FP8BlockQuantLinear(torch.autograd.Function):
             weight = weight.contiguous()
 
         if X.shape[-1] % block_size[1] != 0 or _fp8_kernel_unsupported(weight, torch.float8_e4m3fn):
-            # Hidden dim not divisible by the activation block, or a dtype this device cannot compile
-            # (act_quant and the gemm below both take fp8e4nv pointers, so pre-sm89 must skip both):
-            # dequant plus plain matmul, using the un-expanded scale so a scalar per-tensor scale
-            # keeps the fast path in forward and backward.
+            # Odd hidden dim or pre-sm89 fp8 skips act_quant and gemm: dequant plus matmul, keeping the un-expanded scale
             W_deq = _blockwise_weight_dequant_any_shape(
                 weight, original_weight_scale, block_size, X.dtype
             )
@@ -2257,10 +2339,8 @@ if FbgemmFp8Linear is not None:
 if FP8Linear is not None:
     FP8Linear.forward = module_forward_patch(fp8_block_quant_linear, "weight_scale_inv")
 
-# FP8GroupedLinear's fused grouped matmul has no autograd formula, so training backward fails:
-# dequant the frozen fp8 weight for a differentiable bmm while eval keeps the fused kernel. Gate
-# on self.training, not is_grad_enabled, so the grad-checkpoint no-grad forward and its recompute
-# match.
+# Fused grouped matmul has no backward: dequant for training, gate on self.training so
+# the checkpoint no-grad forward and its recompute match.
 if FP8GroupedLinear is not None:
     _fp8_grouped_forward_orig = FP8GroupedLinear.forward
 

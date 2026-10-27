@@ -21,8 +21,7 @@ MXC_SCHEMA_VERSION = "0.8.0-alpha"
 PROFILE_ID = "unsloth-mxc-windows-processcontainer-v2"
 RELEASE_REPOSITORY = "microsoft/mxc"
 RELEASE_TAG = "v0.8.0"
-# Microsoft's @microsoft/mxc-sdk 0.8.0 npm package: every x64 binary is byte-identical to the
-# v0.8.0 release zip (358 MB, which adds only .pdb/.dwp symbols), at 26 MB.
+# @microsoft/mxc-sdk 0.8.0 npm: x64 binaries identical to the release zip, 26 MB vs 358 MB
 RELEASE_ASSET = "@microsoft/mxc-sdk@0.8.0"
 RELEASE_URL = "https://registry.npmjs.org/@microsoft/mxc-sdk/-/mxc-sdk-0.8.0.tgz"
 RELEASE_ARCHIVE_SIZE = 25_881_758

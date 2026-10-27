@@ -16,8 +16,8 @@ export type TourOpenDetail = {
   id?: string;
 };
 
-// Tour ids with a live listener. A page can mount its controller behind a gate (Video) or disable
-// it while it loads (Train), and the menu must not offer a tour nothing answers.
+// Pages can mount controllers behind a gate or disable them while loading; the menu must not
+// offer a tour nothing answers.
 const listening = new Map<string, number>();
 const listeningSubscribers = new Set<() => void>();
 
@@ -39,7 +39,6 @@ function subscribeToListening(notify: () => void): () => void {
   };
 }
 
-/** Whether opening this tour would reach anyone. False for a null id. */
 export function useTourAvailable(id: string | null): boolean {
   return useSyncExternalStore(
     subscribeToListening,
@@ -90,8 +89,7 @@ export function useGuidedTourController({
     };
   }, [enabled, hasRuntime, id, steps.length]);
 
-  // Keyed on `enabled` alone, so a page going inactive mid-tour drops the tour rather than
-  // silently restarting it at step one on return, while a changing step count leaves it alone.
+  // Keyed on `enabled` alone so an inactive page drops the tour instead of restarting it.
   useEffect(() => {
     if (!enabled) return;
     return () => setOpen(false);

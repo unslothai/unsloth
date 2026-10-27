@@ -61,8 +61,7 @@ _SYSTEM_READ_ROOTS = (
     "/proc",
     "/sys",
 )
-# Pseudo-devices every tool needs, then the accelerator nodes. The rest of /dev stays out: other
-# sessions' ptys, same-UID shm objects and, for a root-run Studio, every block and character device.
+# Pseudo-devices plus accelerator nodes; the rest of /dev stays out: other session ptys, same-UID shm, and block devices.
 _DEVICE_NODES = ("/dev/null", "/dev/zero", "/dev/full", "/dev/random", "/dev/urandom", "/dev/tty")
 _ACCELERATOR_NODES = (
     "/dev/nvidiactl",
@@ -424,11 +423,8 @@ def _landlock_preexec(
             try:
                 parent_fd = os.open(path, os.O_PATH | os.O_CLOEXEC)
             except FileNotFoundError:
-                # The rules come from a directory walk, and a path can go between that walk and
-                # this open: a cache purge, a model delete, an account delete. Landlock denies by
-                # default, so dropping a grant only ever narrows the child, while raising here
-                # kills the whole tool call as "Exception occurred in preexec_fn", which names
-                # neither the path nor the reason.
+                # A path can vanish after the walk; Landlock denies by default, so skipping only narrows,
+                # while raising kills the call as an opaque preexec_fn error.
                 continue
             try:
                 beneath = _PathBeneathAttr(access & handled, parent_fd)
