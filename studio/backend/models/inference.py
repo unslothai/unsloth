@@ -3574,6 +3574,13 @@ class ToolConfirmRequest(BaseModel):
     session_id: Optional[str] = None
     approval_id: Optional[str] = None
     decision: Literal["allow", "deny"] = "deny"
+    permission_mode: Optional[Literal["full"]] = None
+
+    @model_validator(mode = "after")
+    def _check_full_access_upgrade(self):
+        if self.permission_mode == "full" and (self.decision != "allow" or not self.session_id):
+            raise ValueError("A Full access upgrade requires Allow and the exact chat session")
+        return self
 
 
 class BrowserActionResultRequest(BaseModel):
