@@ -3989,8 +3989,8 @@ class UnslothTrainer:
         save_steps: int = 0,
         weight_decay: float = 0.001,
         random_seed: int = 3407,
-        packing: bool = False,
-        train_on_completions: bool = False,
+        packing: bool = True,
+        train_on_completions: bool = True,
         enable_wandb: bool = False,
         wandb_project: str = "unsloth-training",
         wandb_token: str = None,
@@ -5034,6 +5034,14 @@ class UnslothTrainer:
                     else:
                         logger.info(f"{message}\n")
 
+                # Rows as the trainer holds them (packed when packing is on), so the drop check counts masking only.
+                pre_mask_dataset = self.trainer.train_dataset
+                pre_mask_len = (
+                    None
+                    if pre_mask_dataset is None or detect_streaming_dataset(pre_mask_dataset)
+                    else len(pre_mask_dataset)
+                )
+
                 # No try/except: an exception here is a real masking failure.
                 self.trainer, masking_applied = apply_completion_masking(
                     self.trainer,
@@ -5054,10 +5062,12 @@ class UnslothTrainer:
                             logger.info("Skipping post-filter length check for streaming dataset\n")
                         else:
                             filtered_len = len(self.trainer.train_dataset)
-                            original_dataset_obj = (
-                                dataset["dataset"] if isinstance(dataset, dict) else dataset
-                            )
-                            original_len = len(original_dataset_obj)
+                            original_len = pre_mask_len
+                            if original_len is None:
+                                original_dataset_obj = (
+                                    dataset["dataset"] if isinstance(dataset, dict) else dataset
+                                )
+                                original_len = len(original_dataset_obj)
                             dropped = original_len - filtered_len
                             drop_pct = (
                                 round(100 * dropped / original_len, 1) if original_len > 0 else 0

@@ -2570,6 +2570,8 @@ export const ptBR = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "Tempo de atividade",
         processMemory: "Memória do processo",
         notInstalled: "Não instalado",
@@ -3323,6 +3325,7 @@ export const ptBR = {
       desktopAppVersionUnavailable: "Indisponível",
       llamaCppVersion: "Versão do llama.cpp",
       audioCppVersion: "Versão do audio.cpp",
+      mlxVersion: "Versão do MLX",
       whisperCppVersion: "Versão do whisper.cpp",
       engines: {
         title: "Motores",

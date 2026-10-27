@@ -1472,7 +1472,6 @@ def test_ngram_mod_extras_are_respelled_for_a_legacy_build():
         "--top-k",
         "20",
     ]
-    # Chained with MTP the draft range is MTP's, as _build_ngram_mod_flags leaves it.
     assert translate_ngram_mod_args(knobs, "legacy", chain_with_mtp = True) == [
         "--spec-ngram-size-n",
         "16",
@@ -1483,6 +1482,36 @@ def test_ngram_mod_extras_are_respelled_for_a_legacy_build():
     assert translate_ngram_mod_args(["--spec-ngram-mod-n-max"], "legacy") == [
         "--spec-ngram-mod-n-max"
     ]
+
+
+def test_the_launch_respells_user_ngram_mod_extras_last():
+    """Source check: reaching the emit point needs a real binary."""
+    import inspect
+
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    emit = src[src.index("_emit_extra_args = self._strip_mmproj_args(") :]
+    emit = emit[: emit.index("cmd.extend(str(a) for a in _emit_extra_args)")]
+    assert "translate_ngram_mod_args(" in emit
+    assert '_caps.get("ngram_mod_flavor")' in emit
+    assert emit.index("_strip_device_extra_args") < emit.index("translate_ngram_mod_args(")
+    assert "_extra_args_requests_mtp(" in emit[emit.index("translate_ngram_mod_args(") :]
+
+
+def test_ngram_mod_underscore_spelling_is_respelled_too():
+    from core.inference.llama_server_args import translate_ngram_mod_args
+    assert translate_ngram_mod_args(
+        ["--spec_ngram_mod_n_min", "8", "--spec_ngram_mod_n_match=4"], "legacy"
+    ) == ["--draft-min", "8", "--spec-ngram-size-n", "4"]
+
+
+def test_user_spec_type_with_mtp_counts_as_chained():
+    from core.inference.llama_cpp import _child_spec_env, _extra_args_requests_mtp
+
+    extras = ["--spec-type", "ngram-mod,draft-mtp", "--spec-ngram-mod-n-min", "48"]
+    assert _extra_args_requests_mtp(extras, env = _child_spec_env(extras))
+    assert not _extra_args_requests_mtp(["--spec-ngram-mod-n-min", "48"], env = {})
 
 
 def test_owner_only_path_flags_names_each_file_option_once():
