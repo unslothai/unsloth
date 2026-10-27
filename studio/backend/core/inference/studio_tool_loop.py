@@ -1349,6 +1349,7 @@ async def stream_with_studio_tools(
         policy.permission_mode, policy.bypass_permissions
     )
     from state.tool_approvals import LiveToolPermissions, bind_permission_upgrade
+
     live_permissions = LiveToolPermissions(session_id, cancel_event)
     scoped_tool_stream = account_tool_stream(stream_tool_execution)
     confirm_tool_calls = policy.confirm_calls
@@ -1816,7 +1817,9 @@ async def stream_with_studio_tools(
             call_id = decision.tool_call_id
             # Same id for a call the provider named; for one it did not, the card answers to the id the client minted
             card_id = decision.card_id
-            permission_mode, bypass_permissions = live_permissions.apply(permission_mode, bypass_permissions)
+            permission_mode, bypass_permissions = live_permissions.apply(
+                permission_mode, bypass_permissions
+            )
             needs_confirmation = needs_tool_confirmation(
                 confirm_tool_calls = confirm_tool_calls,
                 bypass_permissions = bypass_permissions,
@@ -1882,7 +1885,9 @@ async def stream_with_studio_tools(
                         if not waiter.done():
                             waiter.cancel()
                     verdict = waiter.result() if waiter.done() else None
-                permission_mode, bypass_permissions = live_permissions.apply(permission_mode, bypass_permissions)
+                permission_mode, bypass_permissions = live_permissions.apply(
+                    permission_mode, bypass_permissions
+                )
                 if bypass_permissions:
                     strict_isolation = False
                 if verdict == "deny":

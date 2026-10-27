@@ -192,6 +192,7 @@ def load_mentioned_skills(
             approval_id = new_approval_id()
             slot = begin_tool_decision(session_id, approval_id)
             from state.tool_approvals import bind_permission_upgrade
+
             bind_permission_upgrade(slot, permission_upgrade)
             try:
                 yield {**event, "status": "awaiting_approval", "approval_id": approval_id}
