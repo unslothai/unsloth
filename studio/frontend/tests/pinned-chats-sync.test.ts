@@ -10,6 +10,10 @@ import {
   validatePinOperation,
   validatePinnedIds,
 } from "../src/features/chat/utils/pinned-chats-sync.ts";
+import {
+  ChatSettingsRequestError,
+  isRetryablePinError,
+} from "../src/features/chat/utils/settings-retry.ts";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -779,5 +783,25 @@ test("unpinning a chat the server cannot place yet cancels its queued pin instea
   assert.deepEqual(value, ["chat"]);
   assert.deepEqual(visible, ["chat"]);
   assert.ok(operations.some((op) => !op.pinned && op.ids.includes("pair")));
+});
+
+test("a 401 from a transient token-refresh failure keeps the queued pin for a later retry", async () => {
+  const backend = server(["old"]);
+  const disk = journal();
+  let unauthorized = true;
+  const a = durableClient(backend, disk, {
+    isRetryable: isRetryablePinError,
+    compareAndSet: (expected, next) =>
+      unauthorized
+        ? Promise.reject(new ChatSettingsRequestError("Unauthorized", 401, null))
+        : backend.compareAndSet(expected, next),
+  });
+  await a.sync.refresh();
+  await assert.rejects(a.sync.setPinned(["new"], true));
+  assert.equal(disk.read().length, 1);
+  unauthorized = false;
+  await a.sync.refresh();
+  assert.deepEqual(backend.value, ["new", "old"]);
+  assert.equal(isRetryablePinError(new ChatSettingsRequestError("Bad request", 400, null)), false);
 });
 

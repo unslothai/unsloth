@@ -24,6 +24,15 @@ export function isTerminalSettingsRejection(error: unknown): boolean {
   return status >= 400 && status < 500;
 }
 
+/** Pin intents survive a 401: authFetch keeps the session through a transient refresh failure,
+ *  and sign-out discards the queue itself. */
+export function isRetryablePinError(error: unknown): boolean {
+  return (
+    !isTerminalSettingsRejection(error) ||
+    (error as ChatSettingsRequestError).status === 401
+  );
+}
+
 /** Top-level fields from FastAPI detail[].loc[0]; empty means drop the whole patch. */
 export function rejectedSettingKeys(detail: unknown): string[] {
   if (!Array.isArray(detail)) return [];

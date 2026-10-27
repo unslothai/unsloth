@@ -17,7 +17,7 @@ import {
 import { createPinnedChatsJournal } from "./utils/pinned-chats-journal";
 import { createPinnedChatsSync } from "./utils/pinned-chats-sync";
 import { createPinnedChatsTransport } from "./utils/pinned-chats-transport";
-import { isTerminalSettingsRejection } from "./utils/settings-retry";
+import { isRetryablePinError } from "./utils/settings-retry";
 
 function scope(): string {
   // Desktop's backend port changes between launches of the same installation.
@@ -58,7 +58,7 @@ function createRuntime(sessionScope: string) {
     readLegacy,
     readPending: journal.readPending,
     writePending: journal.writePending,
-    isRetryable: (error) => !isTerminalSettingsRejection(error),
+    isRetryable: isRetryablePinError,
     publish: (pinnedIds) => usePinnedChatsStore.setState({ pinnedIds }),
     onError: () =>
       toast.error("Could not sync pinned chats. Try again when connected.", {
