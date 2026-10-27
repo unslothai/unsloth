@@ -292,6 +292,28 @@ def test_a_stop_during_a_real_model_change_reaches_a_generation_that_starts_afte
     assert str(exc.value) != DIFFUSION_CANCELLED_MSG
 
 
+def test_a_stop_while_a_failed_batch_unwinds_keeps_its_requests_from_rendering_alone(studio):
+    app, backend, saved = studio
+    backend.fail_lists = True
+    real_generate = backend.generate
+
+    def _fail_then_stop(**kwargs):
+        try:
+            return real_generate(**kwargs)
+        finally:
+            # The shared call has failed; a Stop lands before that failure reaches the handlers.
+            if kwargs.get("prompts") is not None:
+                backend.stop_during_a_model_change()
+
+    backend.generate = _fail_then_stop
+    bodies = [_b64({"prompt": "a fox"}), _b64({"prompt": "a cat"})]
+    responses = _post_while_rendering(app, backend, bodies, waiting = 2)
+    assert [call["prompts"] is not None for call in backend.calls] == [True]
+    assert saved == []
+    assert all(r.status_code >= 400 for r in responses)
+    assert responses[0].status_code == responses[1].status_code
+
+
 def test_a_request_that_finds_the_engine_idle_renders_at_once_alone(studio):
     app, backend, _saved = studio
 

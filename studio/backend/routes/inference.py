@@ -50054,7 +50054,7 @@ async def _batched_openai_images(
 
     waiter = getattr(backend, "generation_waiter", None)
     with waiter(stopped) if waiter is not None else nullcontext():
-        return await image_request_batching.generate(
+        result = await image_request_batching.generate(
             key,
             body.prompt,
             body.n,
@@ -50063,6 +50063,10 @@ async def _batched_openai_images(
             run_batch = run_batch,
             shared_outcome = cancelled,
         )
+        # A Stop recorded while the batch ran is final: never fall back to rendering alone or retry.
+        if result is None and stopped.is_set():
+            raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+        return result
 
 
 # Split out so the monitor row can wrap the whole handler without reindenting it.
