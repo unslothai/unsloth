@@ -144,3 +144,20 @@ def test_a_silent_video_has_no_audio_track_to_extract():
     assert response.status_code == 400
     assert response.json()["detail"].startswith("This video has no audio track")
     assert list(run_as(ALICE, audio_inputs.inputs_dir).iterdir()) == []
+
+
+def test_a_frame_png_is_lossless_at_the_gallery_compress_level(monkeypatch, tmp_path):
+    from core.inference import image_gallery
+
+    np = pytest.importorskip("numpy")
+    path = tmp_path / "clip.mp4"
+    path.write_bytes(_real_mp4_bytes(frames = 4, size = (64, 48), rate = 4))
+    monkeypatch.delenv(image_gallery.PNG_COMPRESS_LEVEL_ENV, raising = False)
+    fast = video_gallery.frame_png(path, "last")
+    monkeypatch.setenv(image_gallery.PNG_COMPRESS_LEVEL_ENV, "9")
+    small = video_gallery.frame_png(path, "last")
+    # The level only changes the zlib stream, never the decoded pixels.
+    assert fast != small
+    assert np.array_equal(
+        np.asarray(Image.open(io.BytesIO(fast))), np.asarray(Image.open(io.BytesIO(small)))
+    )

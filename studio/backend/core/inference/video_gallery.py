@@ -325,8 +325,11 @@ def frame_png(
         raise ValueError("This clip could not be decoded.") from None
     if max_px:
         image.thumbnail((max_px, max_px), Image.LANCZOS)
+    from core.inference.image_gallery import png_compress_level
+
     buf = io.BytesIO()
-    image.save(buf, format = "PNG")
+    # The gallery's lossless level (1 unless overridden): Pillow's default 6 is ~2.5x the encode time.
+    image.save(buf, format = "PNG", compress_level = png_compress_level())
     return buf.getvalue()
 
 

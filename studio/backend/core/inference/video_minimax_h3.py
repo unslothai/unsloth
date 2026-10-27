@@ -992,7 +992,8 @@ def stage_h3_references(
     images: list[str] = []
     for index, image in enumerate(references.images):
         path = scratch / f"ref-image-{index:02d}.png"
-        image.save(path, format = "PNG")
+        # Scratch files sd-cli decodes once: zlib level 1 is lossless and ~2.5x faster than Pillow's 6.
+        image.save(path, format = "PNG", compress_level = 1)
         images.append(str(path))
 
     videos: list[str] = []
@@ -1002,7 +1003,7 @@ def stage_h3_references(
         directory = scratch / f"ref-video-{index:02d}"
         directory.mkdir()
         for frame_index, frame in enumerate(frames):
-            frame.save(directory / f"{frame_index:05d}.png", format = "PNG")
+            frame.save(directory / f"{frame_index:05d}.png", format = "PNG", compress_level = 1)
         videos.append(str(directory))
         if waveform is None:
             # Positional pairing cannot express "skip this one", so stop pairing here.

@@ -1060,7 +1060,8 @@ def mask_to_png(mask: Any) -> bytes:
 
     array = (mask.to("cpu").numpy().astype("uint8")) * 255
     buffer = io.BytesIO()
-    Image.fromarray(array, mode = "L").save(buffer, format = "PNG", optimize = True)
+    # optimize (zlib 9) costs ~6x level 1 on a 1 MP mask for a few KB; the pixels are the same.
+    Image.fromarray(array, mode = "L").save(buffer, format = "PNG", compress_level = 1)
     return buffer.getvalue()
 
 
