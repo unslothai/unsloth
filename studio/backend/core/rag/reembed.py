@@ -37,8 +37,10 @@ class _Stopped(Exception):
 
 
 class _Job:
-    def __init__(self) -> None:
+    def __init__(self, model: str | None = None) -> None:
         self.id = str(uuid.uuid4())
+        # Set on automatic jobs: they re-embed for this model only and stop if Settings picks another.
+        self.model = model
         self.status = "running"
         self.done = 0
         self.failed = 0
@@ -160,6 +162,8 @@ def _run(job: _Job) -> None:
             if job.stop.is_set() or account_is_retired():
                 raise _Stopped
             model = config.effective_embedding_model()
+            if job.model is not None and model != job.model:
+                raise _Stopped
             identity = embeddings.embedding_identity(model)
             conn = rag_db.get_connection()
             try:
@@ -208,7 +212,7 @@ def _run(job: _Job) -> None:
         job.current = 0.0
 
 
-def start() -> dict:
+def start(model: str | None = None) -> dict:
     """Start re-embedding this account's stale documents, or return the job already running."""
     if account_is_retired():
         raise RuntimeError("Account is retired")
@@ -217,7 +221,7 @@ def start() -> dict:
         job = _jobs.get(key)
         if job is not None and job.status == "running":
             return job.snapshot()
-        job = _Job()
+        job = _Job(model)
         job.remaining = sum(stale_counts().values())
         job.thread = account_thread(target = _run, args = (job,), daemon = True)
         _jobs[key] = job
@@ -229,6 +233,10 @@ def start() -> dict:
 
 
 def start_after_backend_change(identity: str) -> None:
+    """Re-embed on its own only after an upgrade moved the same model from llama-server to
+    sentence-transformers; a runtime fallback the other way must not overwrite the ST vectors."""
+    if not identity.startswith("sentence-transformers:"):
+        return
     key = account_key("reembed")
     with _lock:
         if (key, identity) in _checked or key in _jobs:
@@ -242,8 +250,12 @@ def start_after_backend_change(identity: str) -> None:
         stale = _stale_documents(conn, identity)
     finally:
         conn.close()
-    if stale and all(config.embedding_identity_model(d["embedding_model"]) == model for d in stale):
-        start()
+    if stale and all(
+        d["embedding_model"].startswith("llama-server:")
+        and config.embedding_identity_model(d["embedding_model"]) == model
+        for d in stale
+    ):
+        start(model)
 
 
 def status() -> dict | None:

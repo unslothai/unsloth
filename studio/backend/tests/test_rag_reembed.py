@@ -126,6 +126,41 @@ def test_documents_left_from_a_model_switch_keep_re_embedding_with_the_user(
     assert reembed.status() is None
 
 
+def test_a_runtime_fallback_to_llama_server_leaves_the_st_vectors_alone(
+    models, tmp_path, monkeypatch
+):
+    scope = store.kb_scope("K13")
+    monkeypatch.setattr(embeddings, "_identity_backend_is_llama", lambda name: False)
+    doc = _ingest(tmp_path, scope, "a.txt", "alpha bravo")
+    st = _row(doc)[0]
+    monkeypatch.setattr(embeddings, "_identity_backend_is_llama", lambda name: True)
+    with _connect() as c:
+        retrieval.retrieve_dense(c, scope, "alpha bravo", k = 1, model_name = OLD)
+    assert reembed.status() is None and _row(doc)[0] == st
+
+
+def test_a_model_switch_stops_an_automatic_re_embed(models, tmp_path, monkeypatch):
+    scope = store.kb_scope("K14")
+    monkeypatch.setattr(embeddings, "_identity_backend_is_llama", lambda name: True)
+    _ingest(tmp_path, scope, "a.txt", "alpha bravo")
+    monkeypatch.setattr(embeddings, "_identity_backend_is_llama", lambda name: False)
+    healthy = _ingest(tmp_path, scope, "b.txt", "charlie delta")
+    encode = embeddings.encode
+
+    def switch_while_a_encodes(texts, model_name, **kw):
+        if texts == ["alpha bravo"]:
+            models["model"] = NEW
+        return encode(texts, model_name, **kw)
+
+    monkeypatch.setattr(embeddings, "encode", switch_while_a_encodes)
+    with _connect() as c:
+        retrieval.retrieve_dense(c, scope, "alpha", k = 1, model_name = OLD)
+    reembed._jobs["reembed"].thread.join(timeout = 10)
+    assert reembed.status()["status"] == "cancelled"
+    assert _row(healthy)[0] == embeddings.embedding_identity(OLD)
+    assert all(m != NEW for m, _ in models["encoded"])
+
+
 def test_failures_keep_the_old_index_and_only_a_streak_ends_the_job(models, tmp_path, monkeypatch):
     monkeypatch.setattr(reembed, "_MAX_CONSECUTIVE_FAILURES", 2)
     scope = store.kb_scope("K1")
