@@ -180,6 +180,25 @@ def test_explicit_flex_is_per_model_not_per_type(routed):
     assert routed_model.config._attn_implementation == "sdpa"
 
 
+@pytest.mark.parametrize("compiled", ["torch_compile_arg", "compiled_model"])
+def test_whole_model_compile_keeps_flex(routed, monkeypatch, compiled):
+    # The outer compile inlines the blocks, where the varlen wrapper falls back to dense-mask SDPA.
+    from unsloth.utils import packing
+
+    monkeypatch.setattr(hpa, "enable_hf_packed_attention", lambda: True)
+    config = _gemma()
+    model = types.SimpleNamespace(config = config)
+    args = types.SimpleNamespace()
+    if compiled == "torch_compile_arg":
+        args.torch_compile = True
+    else:
+        model._orig_mod = types.SimpleNamespace(config = config)
+    collator = types.SimpleNamespace(padding_free = True, torch_call = lambda examples: {})
+    trainer = types.SimpleNamespace(data_collator = collator, args = args)
+    packing.enable_padding_free_metadata(model, trainer)
+    assert config._attn_implementation == "flex_attention"
+
+
 def test_padding_free_metadata_makes_the_switch(routed, monkeypatch):
     from unsloth.utils import packing
 
