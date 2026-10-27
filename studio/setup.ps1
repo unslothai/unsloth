@@ -5146,6 +5146,7 @@ $NodeDir = $null
 $SysNodeVersion = ""
 $SysNpmVersion = ""
 $NodeSource = $null
+$NodeOnPathIsManaged = $false
 
 if (-not $IsPipInstall) {
     $_masterRoot = Get-MasterRootOverride
@@ -5186,8 +5187,9 @@ if (-not $IsPipInstall) {
     # Under Stop a bare `node -v` throws past 2>$null.
     $SysNodeVersion = try { if (Get-Command node -ErrorAction SilentlyContinue) { (node -v 2>$null) } else { "" } } catch { "" }
     $SysNpmVersion = try { if (Get-Command npm -ErrorAction SilentlyContinue) { (npm -v 2>$null) } else { "" } } catch { "" }
+    $NodeOnPathIsManaged = Test-ManagedNodeOnPath -InstallDir $NodeDir
     $NodeSource = Get-NodeDecision -NodeVersion "$SysNodeVersion" -NpmVersion "$SysNpmVersion" `
-        -SkipInstall "$($env:UNSLOTH_SKIP_NODE_INSTALL)" -ManagedOnPath (Test-ManagedNodeOnPath -InstallDir $NodeDir)
+        -SkipInstall "$($env:UNSLOTH_SKIP_NODE_INSTALL)" -ManagedOnPath $NodeOnPathIsManaged
 }
 
 if ($IsPipInstall) {
@@ -5197,8 +5199,10 @@ if ($IsPipInstall) {
 } else {
     if ($NodeSource -eq "system") {
         substep "Node $SysNodeVersion and npm $SysNpmVersion already meet requirements (system)."
-    } elseif ($NodeSource -eq "bundled") {
+    } elseif ($NodeSource -eq "bundled" -and $NodeOnPathIsManaged) {
         substep "Checking the isolated Node against the configured version (system Node/npm left untouched)."
+    } elseif ($NodeSource -eq "bundled") {
+        substep "Node='$SysNodeVersion' npm='$SysNpmVersion' unsuitable; will use an isolated Node (system left untouched)."
     } else {
         substep "Node='$SysNodeVersion' npm='$SysNpmVersion' unsuitable and UNSLOTH_SKIP_NODE_INSTALL set; frontend build will be skipped." "Yellow"
     }
