@@ -2789,8 +2789,7 @@ class InferenceOrchestrator:
         if estimated:
             window = context_length
             context_length = int(window * (1 - _ESTIMATED_FIT_HEADROOM))
-            # The cap is sent as is and SGLang refuses prompt + cap past the window, while the fit
-            # reserves at most a quarter for the reply: a larger cap shrinks the fit instead.
+            # SGLang refuses prompt + cap past the window; the fit reserves at most a quarter for it.
             if max_tokens and 0 < max_tokens < window:
                 context_length = min(context_length, window - max_tokens)
 
