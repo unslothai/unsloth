@@ -19,7 +19,8 @@ import type {
   ImageMessagePart,
   ImageMessagePartComponent,
 } from "@assistant-ui/react";
-import { Copy01Icon, Download01Icon } from "@hugeicons/core-free-icons";
+import { Download01Icon } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type VariantProps, cva } from "class-variance-authority";
 import { ImageIcon, ImageOffIcon, ShieldAlertIcon } from "lucide-react";
@@ -350,7 +351,6 @@ function ImageContentFilterError({
 
 export type ImageActionsProps = {
   part: ImageMessagePart;
-  /** Shows a regenerate button (only when set and the part has a `prompt`). */
   onRegenerate?: () => void | Promise<void>;
   className?: string;
 };

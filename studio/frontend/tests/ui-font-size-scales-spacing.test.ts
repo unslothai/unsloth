@@ -161,9 +161,9 @@ test("the titlebar reserves room for its controls, which stay in the band", () =
 });
 
 test("the composer's one-row clamp is one row at any size", () => {
-  // The editor box wins over the input's min-height, so all three clamps and the JS floor move together.
+  // The editor box wins over the input's min-height, so all four clamps (the welcome expansion included) and the JS floor move together.
   const clamps = CSS.match(/calc\(40px \* var\(--ui-space-scale, 1\)\)/g) ?? [];
-  assert.equal(clamps.length, 3, "a 40px composer clamp is still fixed");
+  assert.equal(clamps.length, 4, "a 40px composer clamp is still fixed");
   const thread = readSrc("components/assistant-ui/thread.tsx");
   assert.match(thread, /const oneRowHeight = Math\.round\(40 \* uiSpaceScale\);/);
   assert.doesNotMatch(thread, /Math\.max\(40, editorHeight\)/);
@@ -412,7 +412,7 @@ test("composite settings controls shrink inside their row", () => {
     ),
   );
   const resources = readSrc("features/settings/tabs/resources-tab.tsx");
-  assert.ok(resources.includes("flex min-w-0 flex-wrap items-center justify-between"));
+  assert.ok(resources.includes("flex min-w-0 flex-wrap items-start justify-between"));
   assert.ok(
     resources.includes(
       '"flex w-[min(calc(392px*var(--ui-space-scale,1)),100%)] shrink-0 flex-col',

@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Elapsed time as a run reads it: "45s", "3m 36s", "1h 4m". Whole seconds past an hour are
- *  noise, so the hour form drops them. */
+/** "45s", "3m 36s", "1h 4m"; the hour form drops seconds. */
 export function formatWorkedFor(seconds: number): string {
   const total = Math.max(0, Math.round(seconds));
   if (total < 60) return `${total}s`;

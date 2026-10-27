@@ -204,21 +204,21 @@ GLYPH_GEOMETRY = """() => {
     return {
         dx: centre.x - (view.x + view.width / 2),
         dy: centre.y - (view.y + view.height / 2),
+        width: bbox.width,
     };
 }"""
 
 
 def check_resume_icon_centred(page, base):
-    # The play glyph is off-centre in its own viewBox; the icon shifts it back.
+    # Optically centred: 1/12 of the glyph's width right of centre (queue-resume-icon.tsx).
     seed(page, base)
     page.get_by_role("button", name = "Simulate paused queue", exact = True).click()
     page.get_by_role("button", name = "More options for queued prompt 1", exact = True).click()
     page.get_by_role("menuitem", name = "Resume queue", exact = True).wait_for()
     offset = page.evaluate(GLYPH_GEOMETRY)
-    # The raw glyph is 0.15 units off centre.
-    assert abs(offset["dx"]) < 0.05, offset
+    assert abs(offset["dx"] - offset["width"] / 12) < 0.1, offset
     assert abs(offset["dy"]) < 0.05, offset
-    print("PASS: the resume glyph is centred in its icon box", flush = True)
+    print("PASS: the resume glyph is optically centred in its icon box", flush = True)
 
 
 def check_queue_frame_clips_scrollbar(page, base):

@@ -542,8 +542,7 @@ def get_visible_gpu_utilization(
     }
 
 
-# /dev/kfd is what HIP opens; /dev/dri/renderD* is what BOTH HIP and the Vulkan loader
-# open, so switching backend is no way around a closed render node.
+# Both HIP and the Vulkan loader open renderD*, so switching backend does not help.
 _KFD_NODE = "/dev/kfd"
 _DRI_RENDER_GLOB = "/dev/dri/renderD*"
 
@@ -552,11 +551,7 @@ _AMD_PCI_VENDOR_ID = "0x1002"
 
 
 def _render_node_vendor(path: str) -> "str | None":
-    """The PCI vendor id behind a ``/dev/dri/renderD*`` node, or None if it cannot be read.
-
-    None is not "some other vendor": a container can map the node while masking or not
-    mounting the sysfs entry that names it, and the callers answer differently for the two.
-    """
+    """None means unreadable, not another vendor, since a container can mask the sysfs entry."""
     vendor_file = f"/sys/class/drm/{os.path.basename(path)}/device/vendor"
     try:
         with open(vendor_file, encoding = "utf-8") as fh:
@@ -566,28 +561,12 @@ def _render_node_vendor(path: str) -> "str | None":
 
 
 def _render_node_is_amd(path: str) -> bool:
-    """Whether a ``/dev/dri/renderD*`` node belongs to an AMD GPU.
-
-    Render nodes are ``root:render`` for EVERY vendor, so an NVIDIA-only host has
-    exactly the same closed nodes and none of the problem -- CUDA opens
-    ``/dev/nvidia*`` instead. Without this, the render-group advice below would be
-    given to every CUDA user whose probe came back empty for an unrelated reason.
-    Read from sysfs, which is world-readable, so the answer does not need the access
-    this is testing for.
-    """
+    """Render nodes are root:render for every vendor, so only AMD nodes may earn the render-group advice."""
     return _render_node_vendor(path) == _AMD_PCI_VENDOR_ID
 
 
 def _kfd_topology_amd_state() -> "bool | None":
-    """Whether KFD's topology names an AMD GPU, or ``None`` when it cannot be read.
-
-    _kfd_topology_has_an_amd_gpu collapses those two, which is right wherever the question
-    is "is there evidence". Deciding whether /dev/kfd belongs in the CLOSED list needs them
-    apart: a topology that reads and reports only NVIDIA (vendor 4318) or the CPU node is
-    positive evidence the node is not AMD's to repair, while one that cannot be read is no
-    evidence either way and is exactly what a container hiding the sysfs while mapping the
-    node produces.
-    """
+    """None when unreadable, which is no evidence either way; a container may hide the sysfs entry."""
     nodes = "/sys/class/kfd/kfd/topology/nodes"
     try:
         entries = os.listdir(nodes)
@@ -605,49 +584,22 @@ def _kfd_topology_amd_state() -> "bool | None":
         _read_one = True
         if re.search(r"\bvendor_id\s+4098\b", properties):
             return True
-    # A directory that lists but whose properties will not open says nothing either, and
-    # neither does a PARTIAL read: the CPU node opening while the GPU node does not is one
-    # entry short of "names none", and False there drops /dev/kfd from the closed list, so a
-    # host whose KFD is video and whose render node is render is told to join only render
-    # and left with KFD shut. install.sh's _kfd_gfx_targets states the same rule.
+    # A partial read is unknown, not False; install.sh's _kfd_gfx_targets uses the same rule.
     return None if _missed_one or not _read_one else False
 
 
 def _a_confirmed_amd_render_node_exists() -> bool:
-    """Whether DRM names an AMD render node outright, with its vendor actually read.
-
-    The strict counterpart to _amd_render_node_exists, which reads an unreadable vendor as
-    present on purpose. Nothing here may be assumed: this is used as INDEPENDENT evidence
-    of AMD silicon where KFD's topology cannot be read, so an unknown vendor would let an
-    NVIDIA-only host claim an AMD node.
-    """
+    """Requires the vendor to be read: an unknown vendor would let an NVIDIA-only host pass as AMD."""
     return any(_render_node_is_amd(path) for path in glob.glob(_DRI_RENDER_GLOB))
 
 
 def _kfd_topology_has_an_amd_gpu() -> bool:
-    """Whether KFD enumerates an AMD GPU node, so ``/dev/kfd`` is one worth opening.
-
-    Mirrors ``hardware._linux_kfd_reports_an_amd_gpu``: gpu_id 0 is the CPU node, and
-    NVIDIA's open kernel module registers KFD nodes of its own under vendor_id 4318,
-    so AMD ownership is confirmed rather than assumed.
-    """
+    """Mirrors hardware's KFD check: NVIDIA's KFD nodes (vendor_id 4318) must not count as AMD."""
     return _kfd_topology_amd_state() is True
 
 
 def amd_kfd_gpu_node_count() -> Optional[int]:
-    """How many AMD GPU agents KFD enumerates, or ``None`` when that cannot be read.
-
-    The ordinal space a visibility mask indexes: HIP numbers GPU agents, so the CPU node
-    every KFD topology carries is excluded twice over -- it reports ``vendor_id 0``, the
-    guard install.sh already relies on, and a ``simd_count`` of zero. A node that reports
-    no ``simd_count`` at all is counted, since dropping it would understate the bound and
-    an understated bound is what calls a valid selector a blocker. Read from
-    world-readable sysfs, so it answers on the closed-node host this module exists for.
-
-    ``None`` and 0 are both "unknown" to callers by design -- a topology that is missing,
-    unreadable, or reports no GPU bounds nothing, and treating it as a bound would make
-    every selector on the host look like it names a device that is not there.
-    """
+    """None and 0 both mean unknown: an unreadable or GPU-less topology must not bound valid selectors."""
     nodes = "/sys/class/kfd/kfd/topology/nodes"
     try:
         entries = os.listdir(nodes)
@@ -659,12 +611,7 @@ def amd_kfd_gpu_node_count() -> Optional[int]:
             with open(os.path.join(nodes, entry, "properties"), encoding = "utf-8") as fh:
                 properties = fh.read()
         except (OSError, UnicodeDecodeError):
-            # Unknown propagates, exactly as _amd_render_node_exists treats an unreadable
-            # vendor. Skipping the entry would answer with a SMALLER count on a multi-GPU
-            # host where one topology entry is momentarily unreadable, and an understated
-            # bound is the thing this function's own contract says calls a valid selector
-            # a blocker: HIP_VISIBLE_DEVICES=1 against a count of 1 reads as hiding every
-            # device, and the user is sent to clear a mask that hides nothing.
+            # Unknown propagates: skipping would understate the count and flag a valid selector.
             return None
         if not re.search(r"\bvendor_id\s+4098\b", properties):
             continue
@@ -709,35 +656,19 @@ def amd_kfd_gpu_gfx_targets(
 
 
 def _amd_render_node_exists() -> bool:
-    """Whether any AMD render node is present at all.
-
-    Presence, not openability. A container given ``--device /dev/kfd`` and not
-    ``--device /dev/dri`` passes every probe in this file, and ROCr opens a render node
-    to talk to amdgpu, so it initialises nothing; ``docker/run.sh`` passes both devices
-    for that reason. Group membership cannot create the node, so this is an independent
-    blocker rather than part of the permission repair.
-    """
+    """Presence, not openability: /dev/kfd without /dev/dri passes every probe yet initialises nothing."""
     _unreadable = False
     for path in glob.glob(_DRI_RENDER_GLOB):
         _vendor = _render_node_vendor(path)
         if _vendor == _AMD_PCI_VENDOR_ID:
             return True
         _unreadable = _unreadable or _vendor is None
-    # A node whose vendor could not be READ is not evidence that no AMD node exists, and the
-    # caller turns "does not exist" into "recreate the container with --device /dev/dri" --
-    # advice for a device that shape has already mapped. Unknown reads as present, which
-    # withdraws a sentence rather than inventing one.
+    # An unreadable vendor counts as present, so no wrong --device advice is given.
     return _unreadable
 
 
 def an_amd_render_node_is_open() -> bool:
-    """Whether this user can open at least one AMD render node.
-
-    The counterpart to amd_nodes_closed_to_this_user, and the reason it is not simply
-    "closed is empty": a multi-AMD host can have one node shut and another open, and a
-    caller explaining an empty GPU probe needs to know that the runtime had a node to
-    use. False off Linux, where there are no such nodes to open.
-    """
+    """Not just closed-is-empty: a multi-AMD host can shut one render node while another is open."""
     if platform.system() != "Linux":
         return False
     for path in sorted(glob.glob(_DRI_RENDER_GLOB)):
@@ -751,16 +682,10 @@ def an_amd_render_node_is_open() -> bool:
     return False
 
 
-# RADV radeon_icd.x86_64.json, AMDVLK amd_icd64 / amd_pro_icd64 / amdvlk64, Adrenalin
-# amd-vulkan64.json. install_llama_prebuilt._AMD_VULKAN_ICD_NEEDLES is the same list for
-# the same reason and a test below holds the two together; it is copied rather than
-# imported so the inference path does not pull in the installer.
+# Keep in sync with install_llama_prebuilt._AMD_VULKAN_ICD_NEEDLES (copied, not imported).
 _AMD_VULKAN_ICD_NEEDLES = ("radeon", "radv", "amdvlk", "amd_icd", "amd_pro", "amd_vulkan")
 
-# Mesa and AMDVLK both register a 32-bit manifest beside the 64-bit one, and a 64-bit
-# llama-server cannot load either vendor's. Same rule and same needles as
-# install_llama_prebuilt._is_amd_64_bit, which rejects them for the same reason; a test
-# holds the two lists together.
+# A 64-bit llama-server cannot load 32-bit ICDs; same needles as install_llama_prebuilt.
 _VULKAN_ICD_32_BIT_NEEDLES = ("i686", "i386")
 
 
@@ -779,21 +704,7 @@ def _vulkan_glob_matches(pattern: str, name: str) -> bool:
 
 
 def _vulkan_loader_allows(path: str) -> bool:
-    """Whether the loader's own driver filters leave this manifest loadable.
-
-    They apply to every driver the loader knows, a forced list included, and match the
-    manifest's basename. Select is an allowlist and disable is a denylist that WINS over it:
-    "The values from the disable environment variable will be considered before the enable
-    or select environment variable", and VK_LOADER_DRIVERS_DISABLE is "also checked before
-    other driver environment variables (such as VK_LOADER_DRIVERS_SELECT)" (Vulkan-Loader,
-    LoaderInterfaceArchitecture.md). Drivers have no VK_LOADER_LAYERS_ALLOW counterpart to
-    name one back, so selecting radeon* while also disabling radeon* leaves the loader with
-    no driver at all, where treating a set select list as the whole answer counted Radeon as
-    usable and reported only the device-node repair.
-
-    install_llama_prebuilt._vulkan_loader_allows is the same rule for the same reason; a
-    test below runs the two against one table so they cannot drift.
-    """
+    """VK_LOADER_DRIVERS_DISABLE beats the select list: a driver both selected and disabled never loads."""
 
     def _globs(env_name: str) -> "list[str]":
         value = os.environ.get(env_name) or ""
@@ -824,12 +735,7 @@ _ld_cache_read = False
 
 
 def _ld_so_conf_dirs(path: str = _LD_SO_CONF, _seen: "set[str] | None" = None) -> "list[str]":
-    """The extra library directories /etc/ld.so.conf names, include lines followed.
-
-    Read because a driver installed outside the defaults is the ordinary shape for a
-    vendor package -- amdgpu-pro puts its libraries under /opt -- and missing that
-    directory would make a live driver look like a stale registration.
-    """
+    """ld.so.conf library dirs, includes followed: vendor drivers install outside the defaults."""
     _seen = set() if _seen is None else _seen
     if path in _seen:
         return []
@@ -872,12 +778,7 @@ def _system_library_dirs() -> "list[str]":
 
 
 def _ld_cache_sonames() -> "frozenset[str] | None":
-    """Every soname in the loader's cache, or None when the cache cannot be read.
-
-    None is not an empty set: musl ships no `ldconfig -p` and a minimal container may ship
-    no ldconfig at all, and answering "nothing is installed" there would call every bare
-    registration stale. Read once, since the diagnosis asks it per manifest.
-    """
+    """None when the cache is unreadable, not empty: that would make every bare registration look stale."""
     global _ld_cache_sonames_cached, _ld_cache_read
 
     if _ld_cache_read:
@@ -893,10 +794,7 @@ def _ld_cache_sonames() -> "frozenset[str] | None":
                 [_exe, "-p"],
                 capture_output = True,
                 text = True,
-                # Named rather than inherited, as every other call here does: the default
-                # is locale.getencoding(), which is ASCII under the C locale a CI runner
-                # or container routinely has, and a library path outside it would then
-                # raise instead of being read.
+                # Explicit utf-8: the default is ASCII under the C locale and would raise on a path.
                 encoding = "utf-8",
                 errors = "replace",
                 timeout = 10,
@@ -912,14 +810,7 @@ def _ld_cache_sonames() -> "frozenset[str] | None":
             for line in (_out.stdout or "").splitlines()
             if "=>" in line and line.strip()
         }
-        # Unconditionally, including the empty case: glibc's ldconfig prints
-        # "0 libs found in cache" and exits 0 for a cache that is present and empty, and
-        # exits 1 with nothing on stdout when the cache file is absent. The non-zero arm
-        # above is what separates those, so storing only a non-empty set collapsed the
-        # distinction this function's contract is built on -- a fresh container whose cache
-        # has not been built read as "cannot enumerate", and _a_bare_soname_resolves then
-        # answered True for a soname that is on no search path and in no cache, which
-        # withholds the reinstall half of the repair rather than offering it.
+        # Store even an empty set: an empty cache (exit 0) differs from an absent one (exit 1).
         _ld_cache_sonames_cached = frozenset(_names)
         return _ld_cache_sonames_cached
     return _ld_cache_sonames_cached
@@ -962,19 +853,7 @@ def _a_bare_soname_resolves(
 
 
 def _icd_manifest_is_usable(path: str) -> bool:
-    """Whether a manifest still points at a driver library that is there.
-
-    A leftover or malformed JSON is a registration with no device behind it. A bare soname
-    is resolved rather than assumed: it is the form NVIDIA registers under, and a removed
-    package leaves the manifest behind, so trusting the name counted a driver that is not
-    there and withheld the reinstall half of the repair.
-
-    The three fields checked are the three loader_parse_icd_manifest skips the file for:
-    a missing or non-string file_format_version, a missing ICD.library_path, and a missing
-    or non-string ICD.api_version. An UNRECOGNISED file_format_version is deliberately not
-    one of them -- the loader only logs "may cause errors" there and carries on, so
-    refusing it would drop a driver the loader loads.
-    """
+    """Usable if its JSON fields are valid and its library resolves; unknown file_format_version passes."""
     try:
         with open(path, "r", encoding = "utf-8") as handle:
             manifest = json.load(handle)
@@ -1009,22 +888,13 @@ def _is_an_amd_icd_name(path: str) -> bool:
 
 
 def _is_a_32_bit_icd_name(path: str) -> bool:
-    """Whether a manifest's own filename marks it as the 32-bit build of a driver.
-
-    Asked of EVERY vendor rather than of AMD alone, unlike the installer's copy: the
-    question there is "is an AMD driver installed", and here it is "what can this binary
-    load", which a 32-bit NVIDIA or Intel manifest answers no to just as squarely.
-    """
+    """Applies to every vendor, not just AMD: a 32-bit NVIDIA or Intel manifest cannot load here either."""
     stem = PurePath(path).stem.lower().replace("-", "_")
     return stem.endswith("32") or any(n in stem for n in _VULKAN_ICD_32_BIT_NEEDLES)
 
 
 def _icd_library_path(path: str) -> "str | None":
-    """The library file a manifest points at, when it can be found on disk.
-
-    Separate from _icd_manifest_is_usable, which asks whether the loader has SOMETHING to
-    load: this asks which file, so the file itself can be read.
-    """
+    """The library a manifest points at, if on disk; asks which file, so the file itself can be read."""
     try:
         with open(path, "r", encoding = "utf-8") as handle:
             library = (json.load(handle).get("ICD") or {}).get("library_path")
@@ -1040,10 +910,7 @@ def _icd_library_path(path: str) -> "str | None":
             return library if os.path.isfile(library) else None
         except OSError:
             return None
-    # Every match, not the first: a multilib host carries the same soname in both
-    # bitnesses, ld.so picks the one matching the process, and the search order does not.
-    # sorted(glob) puts /usr/lib/i386-linux-gnu ahead of x86_64, so taking the first hit
-    # handed the 32-bit copy to _an_icd_is_32_bit and discarded a driver the loader loads.
+    # Every match: multilib hosts carry both bitnesses and sorted glob puts i386 first.
     _first: "str | None" = None
     for _directory in _dynamic_loader_search_dirs():
         _candidate = os.path.join(_directory, library)
@@ -1056,19 +923,12 @@ def _icd_library_path(path: str) -> "str | None":
             return _candidate
         if _first is None:
             _first = _candidate
-    # No 64-bit copy: hand back whatever is there, so a genuinely 32-bit-only
-    # registration is still read from the object rather than from its filename.
+    # No 64-bit copy: return whatever exists, so a 32-bit-only registration is read from the object.
     return _first
 
 
 def _icd_manifest_declares_32_bit(path: str) -> "bool | None":
-    """The manifest's own architecture claim, or None where it makes none.
-
-    ICD.library_arch is the loader's own field, a string "32" or "64", and the loader reads
-    it for exactly this purpose: to skip a driver whose bitness cannot match the process
-    before trying to open it. Optional, and Debian strips it back out of Mesa's manifests
-    to keep one file across architectures, so its absence is ordinary and decides nothing.
-    """
+    """The optional ICD.library_arch claim, or None: Debian strips it, so absence decides nothing."""
     try:
         with open(path, "r", encoding = "utf-8") as handle:
             declared = (json.load(handle).get("ICD") or {}).get("library_arch")
@@ -1085,12 +945,7 @@ def _icd_manifest_declares_32_bit(path: str) -> "bool | None":
 
 
 def _library_file_is_32_bit(path: str) -> "bool | None":
-    """The ELF class of a library file, or None where the file does not say.
-
-    e_ident[EI_CLASS] is byte 4 of every ELF file and is 1 for 32-bit, 2 for 64-bit. Read
-    rather than inferred, so a manifest that declares nothing and is named neutrally is
-    still answered by the object itself.
-    """
+    """e_ident[EI_CLASS] byte: 1 is 32-bit, 2 is 64-bit; read from the object itself."""
     try:
         with open(path, "rb") as handle:
             header = handle.read(5)
@@ -1106,17 +961,7 @@ def _library_file_is_32_bit(path: str) -> "bool | None":
 
 
 def _an_icd_is_32_bit(path: str) -> bool:
-    """Whether this manifest registers a driver a 64-bit process cannot load.
-
-    Three sources in order of how much they know. The manifest's declared library_arch is
-    the loader's own answer. Failing that the library's ELF class is the object's own, which
-    covers the case a filename cannot: Mesa's manifests carry no marker once Debian has
-    rewritten them. The filename needles are the last resort, and the only one the installer
-    has, since it decides this before any library is resolvable.
-
-    A 64-bit process is assumed, which is what Studio ships; on a 32-bit build the question
-    inverts, and no build of that shape exists here.
-    """
+    """Checks library_arch, then the ELF class, then filename needles; assumes a 64-bit process."""
     declared = _icd_manifest_declares_32_bit(path)
     if declared is not None:
         return declared
@@ -1129,14 +974,7 @@ def _an_icd_is_32_bit(path: str) -> bool:
 
 
 def _vulkan_icd_search_dirs() -> "list[str]":
-    """The icd.d directories the loader would search, in its own order.
-
-    From the XDG variables, since the loader falls back to the defaults only when one is
-    unset: reading the defaults regardless both misses a custom layout's only manifest and
-    counts stale ones the loader would never read.
-    install_llama_prebuilt._vulkan_icd_search_dirs is the same list, and a test holds them
-    together.
-    """
+    """icd.d dirs from the XDG variables, falling back to defaults only when unset, as the loader does."""
 
     def _paths(var: str, default: str) -> "list[str]":
         value = os.environ.get(var)
@@ -1173,16 +1011,7 @@ def _vulkan_icd_search_dirs() -> "list[str]":
 
 
 def _vulkan_icd_manifest_paths() -> "list[str]":
-    """Every ICD manifest the loader knows about here, before its filters are applied.
-
-    A forced list REPLACES the search rather than adding to it, and VK_DRIVER_FILES
-    supersedes VK_ICD_FILENAMES rather than joining it. VK_ADD_DRIVER_FILES is the additive
-    one: the loader reads it FIRST and then the search, and ignores it entirely when either
-    force list is set. It may name a manifest no search directory holds, so leaving it out
-    made a host with an added driver look like one that has only what the walk found.
-
-    Linux only, since the render nodes this is asked about exist nowhere else.
-    """
+    """VK_DRIVER_FILES or VK_ICD_FILENAMES replaces the search; VK_ADD_DRIVER_FILES is ignored then."""
     for var in ("VK_DRIVER_FILES", "VK_ICD_FILENAMES"):
         if (os.environ.get(var) or "").strip():
             return _forced_icd_manifest_paths(var)
@@ -1190,10 +1019,7 @@ def _vulkan_icd_manifest_paths() -> "list[str]":
 
 
 def _searched_vulkan_icd_manifest_paths() -> "list[str]":
-    """The half of the above a forced list REPLACES: the search, plus the additive list.
-
-    Split out so the attribution below can ask what clearing a forced list would expose.
-    """
+    """Search plus additive list, the half a forced list replaces; split out for the attribution check."""
     if platform.system() != "Linux":
         return []
     added = (os.environ.get("VK_ADD_DRIVER_FILES") or "").strip()
@@ -1207,17 +1033,7 @@ def _searched_vulkan_icd_manifest_paths() -> "list[str]":
 
 
 def the_vulkan_loader_can_only_load_amd() -> bool:
-    """Whether every driver this loader would actually load is an AMD one.
-
-    Then no other vendor's driver is ever opened, so its render node is not a path this
-    binary has however open it is. Three things decide it and all three are the loader's
-    own: which manifests it looks at (a forced list, else the search dirs), its driver
-    filters, and whether each manifest still resolves to a library.
-
-    POSITIVE evidence only, so both "nothing could be enumerated" and "the filters leave no
-    driver at all" answer False. The second is not an oversight: a loader with no driver
-    explains an empty probe by itself, and the closed AMD node is then not the cause either.
-    """
+    """Positive evidence only: at least one loadable manifest, and every loadable one is AMD."""
     loadable = _loadable_icd_manifests()
     if not loadable:
         return False
@@ -1230,8 +1046,7 @@ def _loadable_icd_manifests(paths: "list[str] | None" = None) -> "list[str]":
     return [
         path
         for path in (_vulkan_icd_manifest_paths() if paths is None else paths)
-        # A 32-bit manifest is registered beside the 64-bit one and this binary cannot load
-        # it, so it is neither evidence of an AMD driver nor of another vendor's.
+        # A 32-bit manifest is unloadable here, so it is neither evidence of AMD nor of another vendor.
         if not _an_icd_is_32_bit(path)
         and _vulkan_loader_allows(path)
         and _icd_manifest_is_usable(path)
@@ -1239,17 +1054,7 @@ def _loadable_icd_manifests(paths: "list[str] | None" = None) -> "list[str]":
 
 
 def the_vulkan_loader_has_no_usable_driver() -> bool:
-    """Whether the loader would find driver manifests here and load none of them.
-
-    A second blocker rather than a competing explanation: a removed library, a filter that
-    disables the last driver, or a 32-bit-only registration leaves the probe empty however
-    the render node is owned, so opening the node repairs nothing on its own.
-
-    Positive evidence only, and the two failing answers are different. An enumeration that
-    found NOTHING says only that this cannot read the loader's configuration -- a registry
-    layout, a distribution that registers drivers some other way -- so it answers False. An
-    enumeration that found manifests and could load none of them is the claim itself.
-    """
+    """Manifests were found but none is loadable; finding none at all answers False, not True."""
     paths = _vulkan_icd_manifest_paths()
     if not paths:
         return False
@@ -1270,12 +1075,7 @@ def _vulkan_override_patterns(var: str) -> "list[str]":
 
 
 def _the_loader_would_have_a_driver_without(cleared: "frozenset[str]") -> bool:
-    """Whether the loader would end up with a usable driver if ``cleared`` were unset.
-
-    Asked once rather than restated per variable: a repair only counts if it leaves a
-    driver the loader can LOAD. Filename allowance alone named a filter over a manifest
-    whose library was gone, where clearing it changes nothing and the fix is a reinstall.
-    """
+    """Would a driver still load with these overrides unset? A filename allowance alone is not enough."""
     forced = [var for var in ("VK_DRIVER_FILES", "VK_ICD_FILENAMES") if _is_set(var)]
     if not set(forced) & cleared:
         candidates = _vulkan_icd_manifest_paths()
@@ -1317,21 +1117,7 @@ def _forced_icd_manifest_paths(var: str) -> "list[str]":
 
 
 def the_vulkan_loader_override_to_blame() -> "str | None":
-    """The environment variable to name when the loader can load none of its manifests.
-
-    ``the_vulkan_loader_has_no_usable_driver`` answers for three causes and only one is
-    repaired by installing a driver. A filter that disables every manifest, and a forced
-    list pointing at paths that do not resolve, are settings: reinstalling leaves the
-    variable in place and the probe just as empty.
-
-    Decided by the counterfactual rather than by any precedence between the variables:
-    the smallest set whose removal leaves the loader a driver it can LOAD. One variable
-    if one is enough, all of them together when no single removal helps, and ``None``
-    when removing every override still leaves nothing -- which is the missing-library and
-    32-bit case the reinstall sentence was written for.
-
-    Order within a combined answer follows ``_DRIVER_OVERRIDES``, not the environment.
-    """
+    """Smallest override set whose removal leaves a loadable driver; None when no override is to blame."""
     if not _vulkan_icd_manifest_paths():
         return None
     overrides = [var for var in _DRIVER_OVERRIDES if _is_set(var)]
@@ -1346,13 +1132,7 @@ def the_vulkan_loader_override_to_blame() -> "str | None":
 
 
 def a_non_amd_render_node_is_open() -> bool:
-    """Whether a render node belonging to some OTHER vendor is open to this user.
-
-    Vulkan enumerates any vendor, so on a mixed host an open Intel or NVIDIA render node is
-    a complete path for a Vulkan-only build: a closed AMD node is then a second finding
-    rather than why the probe came back empty. HIP has no such alternative, which is why
-    the caller asks this only for Vulkan. Only nodes whose vendor was READ count.
-    """
+    """Vulkan can use any vendor's node, so an open non-AMD one is a path; HIP has no such fallback."""
     if platform.system() != "Linux":
         return False
     for path in sorted(glob.glob(_DRI_RENDER_GLOB)):
@@ -1368,20 +1148,7 @@ def a_non_amd_render_node_is_open() -> bool:
 
 
 def amd_nodes_closed_to_this_user() -> list[str]:
-    """AMD device nodes that exist on this host and this user cannot open.
-
-    Every AMD probe in this tree tests that the node EXISTS. On a stock Linux distribution
-    these are ``root:render`` mode 0660, so a user outside that group passes all of them
-    and then cannot open the device: HIP counts zero devices, the Vulkan loader enumerates
-    none, and both look exactly like owning no GPU. That is the whole of #10466.
-
-    Only AMD-owned nodes count, since every vendor's render node has these permissions and
-    an NVIDIA box would report an identical closed list with no such problem.
-
-    ``os.access`` rather than a trial ``open()``: opening ``/dev/kfd`` initialises KFD state
-    for the process, which the probes calling this exist to avoid. Empty off Linux, on a
-    host with no AMD nodes, and for root.
-    """
+    """AMD nodes this user cannot open; uses os.access because open() on /dev/kfd initialises KFD."""
     if platform.system() != "Linux":
         return []
     closed = []
@@ -1395,14 +1162,7 @@ def amd_nodes_closed_to_this_user() -> list[str]:
         if _amd_in_topology is None:
             _amd_in_topology = _kfd_topology_has_an_amd_gpu()
         if path == _KFD_NODE:
-            # DRM is independent evidence of the same silicon, and it is only consulted
-            # where KFD's own topology could not be read at all -- a readable topology
-            # naming no AMD GPU still excludes the node, which is what keeps an NVIDIA-only
-            # host silent. Without the fallback a host whose sysfs is hidden reported only
-            # the render node, and where the two carry different owning groups (video
-            # against render) the hint named a membership that leaves KFD shut and ROCm
-            # with nothing to open. Vendor-confirmed, never assumed: an unreadable render
-            # vendor is not evidence of AMD either.
+            # DRM is consulted only when KFD topology is unreadable; vendor-confirmed, never assumed.
             if _amd_in_topology or (
                 _kfd_topology_amd_state() is None and _a_confirmed_amd_render_node_exists()
             ):
@@ -1412,27 +1172,13 @@ def amd_nodes_closed_to_this_user() -> list[str]:
         if _vendor == _AMD_PCI_VENDOR_ID:
             closed.append(path)
         elif _vendor is None and _amd_in_topology:
-            # A container can map the node and hide the sysfs entry that names its vendor.
-            # Dropping it there left a host with a shut node reporting nothing closed, while
-            # _amd_render_node_exists reads the same unknown as PRESENT and withdraws the
-            # missing-node sentence too -- so #10466's own shape got no diagnosis at all.
-            # KFD is the independent evidence, and it is what keeps an NVIDIA-only host
-            # silent: its topology reports vendor 0x10DE, so this arm is never reached.
+            # A container can hide the node's vendor sysfs; KFD keeps NVIDIA-only hosts silent.
             closed.append(path)
     return closed
 
 
 def _has_an_access_acl(path: str) -> bool:
-    """Whether ``path`` carries a POSIX access ACL, so its mode bits are the ACL mask.
-
-    Read through the xattr rather than by shelling out to ``getfacl``, which is not
-    installed everywhere this runs. False on any platform or filesystem that cannot
-    answer, which is the direction that keeps the ordinary node prescribed for.
-
-    os.listxattr returns the names as ``str`` for a ``str`` path, so a bytes literal can
-    never match one and the check would be dead. Both are accepted rather than assumed,
-    because a bytes path yields bytes names and the caller decides the path type.
-    """
+    """Detects a POSIX ACL via the xattr list; the names are str, so a bytes literal would never match."""
     try:
         names = os.listxattr(path)
     except (OSError, AttributeError, UnicodeDecodeError):
@@ -1444,12 +1190,7 @@ def _has_an_access_acl(path: str) -> bool:
     )
 
 
-# Groups whose membership reaches far beyond a device node. Not exhaustive and does not
-# need to be: anything here is reported instead of prescribed, and an unlisted group that
-# turns out to be privileged is the status quo rather than a regression.
-# docker and lxd are here for the same reason as wheel: membership is root by another
-# route, since either can start a container or VM with the host filesystem mounted. A node
-# owned by one is a udev mistake to report rather than a group to join for a GPU.
+# Membership here grants far more than a device node (docker/lxd are root by another route).
 _PRIVILEGED_GROUPS = frozenset(
     {
         "root",
@@ -1466,12 +1207,7 @@ _PRIVILEGED_GROUPS = frozenset(
 )
 
 
-# A name safe to paste into usermod, narrower than one NSS can return: groupadd(8)'s
-# portable set plus the trailing $ of a Samba machine account. Anything else is reported by
-# GID, because two layers below read such a name as STRUCTURE: usermod -G splits on commas
-# inside itself, after the shell has handed it one argument, so "render,sudo" is two groups
-# and _PRIVILEGED_GROUPS never matches; and install.sh's twin parses stat output with
-# awk -F'|'. --group-add takes the GID anyway, so nothing is lost.
+# usermod-safe names only: commas split groups and install.sh parses with awk -F'|'.
 _GROUP_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]*\$?\Z")
 
 
@@ -1481,31 +1217,7 @@ def _group_name_is_prescribable(name: str) -> bool:
 
 
 def _groups_that_own(paths: list) -> tuple:
-    """How to open ``paths``, read from the nodes themselves.
-
-    "render,video" is not always the right pair, and sometimes no group is the answer at
-    all, so the eight buckets returned each carry a different repair:
-
-    ``joinable``   membership WOULD open it, so ``usermod -a -G`` is the fix.
-    ``unnamed``    GIDs with no entry in the group database, the container case
-                   ``docker/run.sh`` documents. usermod refuses a bare GID (shadow 4.13:
-                   ``group '993' does not exist``, exit 6), so these are reported.
-    ``no_group``   the mode denies the group too, e.g. a udev rule leaving one
-                   ``root:render 0600``. Joining render there changes nothing.
-    ``acl``        a POSIX access ACL, where the mode's group bits are the ACL mask and
-                   the real grant is undecidable from a stat.
-    ``owned``      this account owns it, and POSIX stops at the owner class once the uid
-                   matches, so no membership opens it however the group bits read.
-    ``privileged`` the owning group grants far more than the GPU: a udev misconfiguration
-                   to report rather than a membership to prescribe.
-    ``already``    already in the group and still shut, so a container device cgroup or an
-                   LSM denies it and usermod would exit 0 and change nothing.
-    ``external``   this account owns it AND the owner bits already grant read and write,
-                   so the mode is not what is shutting it either: same external denial as
-                   ``already``, reached by owner class rather than by membership.
-
-    Best effort: a node that cannot be stat'd joins no bucket rather than raising.
-    """
+    """Sorts nodes into buckets that each need a different repair; usermod refuses a bare GID."""
     joinable, unnamed, no_group, acl, owned, privileged, already, external = (
         [],
         [],
@@ -1517,8 +1229,7 @@ def _groups_that_own(paths: list) -> tuple:
         [],
     )
     try:
-        # The account's own gids, read once. getgroups() is the supplementary list and does
-        # not always include the primary one, so both are needed.
+        # getgroups() does not always include the primary gid, so both are needed.
         _mine = {os.getgid(), *os.getgroups()}
     except (OSError, AttributeError):
         _mine = set()
@@ -1527,36 +1238,23 @@ def _groups_that_own(paths: list) -> tuple:
             _st = os.stat(path)
         except OSError:
             continue
-        # acl(5): once a node carries an access ACL, the group-class bits in st_mode are
-        # the ACL MASK rather than the owning group's grant, so every reading below is of
-        # an upper bound. The mask can allow rw while the group entry denies it, and a
-        # named-group entry can grant what the mode hides. Neither is decidable without
-        # parsing the ACL, so such a node is reported rather than prescribed for.
+        # With an access ACL the group mode bits are the ACL mask, so report instead of prescribe.
         if _has_an_access_acl(path):
             acl.append(path)
             continue
-        # POSIX resolves the owner class EXCLUSIVELY once the uid matches, so on a node
-        # this account owns the group bits are never consulted and joining the group
-        # cannot open it. os.access() already said it is shut; the repair is the mode.
+        # POSIX uses only the owner class once the uid matches, so joining the group cannot help.
         if _st.st_uid == os.getuid():
-            # Unless the owner bits already grant rw: the node is known shut, so the
-            # mode is not what denies it. Same external denial as `already`, by owner class.
+            # Owner bits without rw mean the node is shut, not the mode; counted external like `already`.
             if _st.st_mode & stat.S_IRUSR and _st.st_mode & stat.S_IWUSR:
                 external.append(path)
             else:
                 owned.append(path)
             continue
-        # Neither owner nor group member puts this account in the OTHER class, which POSIX
-        # also resolves exclusively: bits already granting rw mean the mode is not what
-        # denies a node os.access() just called shut. Same rule as the owner and
-        # already-a-member branches, for the third class. Guarded on membership (a member is
-        # in the GROUP class, where `already` names the group more precisely) and above the
-        # group-bits test, which would otherwise prescribe a chmod that cannot help.
+        # Other class also resolves exclusively: rw other bits mean the mode is not the denial.
         if _st.st_gid not in _mine and (_st.st_mode & stat.S_IROTH and _st.st_mode & stat.S_IWOTH):
             external.append(path)
             continue
-        # Group read AND write: HIP and the Vulkan loader both open the node read-write,
-        # which is the same bar amd_nodes_closed_to_this_user() applied to this account.
+        # HIP and the Vulkan loader both open the node read-write.
         if (_st.st_mode & stat.S_IRGRP) == 0 or (_st.st_mode & stat.S_IWGRP) == 0:
             no_group.append(path)
             continue
@@ -1565,35 +1263,21 @@ def _groups_that_own(paths: list) -> tuple:
             name = grp.getgrgid(_st.st_gid).gr_name
         except Exception:  # noqa: BLE001 -- no group database, or no entry for this gid
             name = ""
-        # A name that cannot be pasted on as one group is treated as no name at all, so the
-        # node is reported by its GID rather than prescribed for. Above every branch that
-        # reads the name, including the privileged one, which compares whole strings and so
-        # is exactly what a name carrying a comma walks through.
+        # A name that cannot be pasted as one group is reported by GID instead.
         if name and not _group_name_is_prescribable(name):
             name = ""
-        # Asked of the GID, and BEFORE the name is required, because the lookup above is
-        # exactly what fails in a minimal container: with no entry for gid 0 it raised, the
-        # node was filed as an ordinary unnamed GID, and the repair became `groupadd -g 0`
-        # plus a usermod into the root group -- the grant this branch exists to refuse.
-        # gid 0 is the root group whether or not the database names it.
+        # gid 0 is the root group even when the lookup fails in a minimal container.
         if _st.st_gid == 0:
             _root = name or "root"
             if _root not in privileged:
                 privileged.append(_root)
             continue
-        # Joining one of these would open the node and hand over a great deal else with
-        # it, so a device node owned by one is a udev misconfiguration to report rather
-        # than a membership to prescribe. An unnamed GID cannot match, so this may sit
-        # above the naming branches and keep the shell half's single ordering.
+        # A node owned by a privileged group is a udev misconfiguration to report.
         if name in _PRIVILEGED_GROUPS:
             if name not in privileged:
                 privileged.append(name)
             continue
-        # os.access already said the node is shut, so if this account is in the owning
-        # group the group bits are not what is denying it: a container device cgroup or an
-        # LSM is. usermod would exit 0 and leave the node exactly as closed. ABOVE the
-        # unnamed branch as well, since `groupadd -g` plus `--group-add` is the same empty
-        # promise for a numeric owner this account already carries.
+        # Already a member: a cgroup or LSM denies it, so usermod would not help.
         if _st.st_gid in _mine:
             _held = name or str(_st.st_gid)
             if _held not in already:
@@ -1612,19 +1296,7 @@ _RENDER_NODE_GLOB = "/dev/dri/renderD*"
 
 
 def _amd_nodes_the_runtime_lacks(*, needs_kfd: bool = True) -> "list[str]":
-    """The AMD device nodes this backend opens that do not exist at all.
-
-    Gated on AMD evidence, so this cannot fire on a host with no AMD card -- the trap a bare
-    "no render node" test would fall into, since every vendor's nodes live under the same
-    glob. The KFD topology is the first source: world-readable sysfs that names the vendor.
-
-    A container given --device /dev/dri and not --device /dev/kfd commonly masks
-    /sys/class/kfd as well, and there the topology proves nothing while DRM still names an
-    AMD render node outright. That host is exactly the one a HIP caller cannot run on, so it
-    falls back to the same confirmed-DRM evidence the closed-node path already trusts.
-    Confirmed, not assumed: _a_confirmed_amd_render_node_exists reads the vendor rather than
-    accepting an unreadable one, or an NVIDIA-only box could claim an AMD node.
-    """
+    """Missing AMD nodes, gated on AMD evidence so an NVIDIA-only host cannot trigger it."""
     if not _kfd_topology_has_an_amd_gpu() and not (
         _kfd_topology_amd_state() is None and _a_confirmed_amd_render_node_exists()
     ):
@@ -1638,24 +1310,9 @@ def _amd_nodes_the_runtime_lacks(*, needs_kfd: bool = True) -> "list[str]":
 
 
 def amd_closed_nodes_block_the_runtime(*, needs_kfd: bool = True) -> bool:
-    """Whether the closed nodes actually leave the runtime with no way in.
-
-    A closed node explains an empty GPU probe only when it is a node the runtime would
-    have used. On a multi-AMD host one render node can be shut while a sibling is open,
-    and ROCm then had /dev/kfd plus a render node and still enumerated nothing, so the
-    closed one is a second finding rather than the cause; a caller returning it as the
-    sole diagnosis sends the user after a repair that leaves the probe just as empty.
-
-    ``needs_kfd`` is the caller's backend: HIP opens /dev/kfd as well as a render node,
-    Vulkan only the render node. /dev/kfd has no sibling, so a closed one blocks outright.
-
-    True on a host this cannot read, which keeps the closed node as the stated reason and
-    is what the callers said before this existed.
-    """
-    # Missing is not open. A node the runtime needs and that does not exist leaves it with
-    # no way in exactly as a shut one does, and amd_node_permission_hint() names the repair
-    # for it -- so answering only about CLOSED nodes suppressed that hint at every caller,
-    # on the two container shapes where it is the whole diagnosis.
+    """A closed node blocks only with no open sibling; /dev/kfd has no sibling, so it blocks HIP
+    outright."""
+    # Missing nodes block like closed ones, so they must not suppress the hint.
     if _amd_nodes_the_runtime_lacks(needs_kfd = needs_kfd):
         return True
     closed = amd_nodes_closed_to_this_user()
@@ -1663,14 +1320,7 @@ def amd_closed_nodes_block_the_runtime(*, needs_kfd: bool = True) -> bool:
         return False
     if needs_kfd and _KFD_NODE in closed:
         return True
-    # The open sibling only answers for a runtime free to use it. A selector narrowing to
-    # particular GPUs may well have selected the CLOSED one, and this cannot tell which,
-    # so the sibling stops being evidence: fail closed, as this already does for a host it
-    # cannot read, rather than suppressing the repair for the node the run will use.
-    # HIP's selectors only, so only for a caller that goes through HIP. Vulkan reads none
-    # of these -- which is the whole reason needs_kfd exists -- so a Vulkan probe is still
-    # free to use the open sibling, and returning the permission hint as its sole cause
-    # would send a Vulkan failure after a group change that cannot empty-probe it.
+    # A HIP selector may pick the closed GPU, so the open sibling stops counting; not for Vulkan.
     if needs_kfd and _a_per_gpu_mask_narrows_the_runtime():
         return True
     return not an_amd_render_node_is_open()
@@ -1682,20 +1332,7 @@ def _selector_exposes_every_gpu(
     *,
     repeat_ends_the_list: bool = False,
 ) -> bool:
-    """Whether every measured GPU survives this selector, so it excludes nothing.
-
-    HIP_VISIBLE_DEVICES=0,1 on a two-GPU host selects the whole host: the open sibling is
-    still reachable, and reading it as a narrowing hands that host the group repair in place
-    of the driver diagnosis it needs.
-
-    ``repeat_ends_the_list`` is ROCr's rule, not clr's: RvdFilter terminates on a token that
-    "maps to a device that has been previously selected", so ROCR_VISIBLE_DEVICES=0,0,1
-    surfaces ONE device, where clr stops only on a token that is not its own index written
-    back out and leaves both. An unmappable token TERMINATES the list rather than discarding
-    what came before it, clr having already pushed every device it accepted, so
-    HIP_VISIBLE_DEVICES=0,1,-1 exposes both. The prefix decides this, and an unreadable
-    count answers False: unmeasured goes on meaning narrowed.
-    """
+    """ROCr ends its list at a repeated token (not clr), so ROCR_VISIBLE_DEVICES=0,0,1 shows one GPU."""
     if not count:
         return False
     seen = set()
@@ -1715,19 +1352,7 @@ def _selector_exposes_every_gpu(
 
 
 def _a_per_gpu_mask_narrows_the_runtime() -> bool:
-    """Whether a selector narrows the runtime away from some of this host's AMD GPUs.
-
-    Read for one purpose only: an OPEN render node is an alternative way in only when the
-    runtime is free to use it. Nothing here maps a render node back to the index a mask
-    selected it by, so under a NARROWING mask the open node may belong to a GPU the mask
-    excludes and stops being evidence.
-
-    Read the way the runtime layers them, which is not "all four at once". ROCr is its own
-    layer. The HIP layer then reads HIP_VISIBLE_DEVICES when it is non-empty and
-    CUDA_VISIBLE_DEVICES otherwise, so a CUDA value under a HIP one is SHADOWED and narrows
-    nothing -- the same precedence _explain_empty_gpu_probe's _hip_layer_var applies.
-    GPU_DEVICE_ORDINAL is OpenCL's, and independent of both.
-    """
+    """A narrowing mask makes an open node no evidence; HIP_VISIBLE_DEVICES shadows CUDA_VISIBLE_DEVICES."""
     count = amd_kfd_gpu_node_count()
     _hip_layer = (
         "HIP_VISIBLE_DEVICES"
@@ -1737,10 +1362,7 @@ def _a_per_gpu_mask_narrows_the_runtime() -> bool:
     for _name in (
         "ROCR_VISIBLE_DEVICES",
         _hip_layer,
-        # ROCm's fourth visibility variable, modelled elsewhere in this tree
-        # (tests/test_amd_smi_inventory_matches_hip.py, llama_cpp.py's own selector
-        # check). Omitting it left one of the four selectors crediting a sibling the
-        # runtime had been narrowed away from.
+        # ROCm's fourth visibility variable; see tests/test_amd_smi_inventory_matches_hip.py.
         "GPU_DEVICE_ORDINAL",
     ):
         _value = os.environ.get(_name, "").strip()
@@ -1767,24 +1389,13 @@ def _shell_word(value: str) -> str:
     unchanged; install.sh's _shell_quote is the same safe set for the same reason.
     """
     if value == "$USER":
-        # The placeholder the no-passwd fallback emits on a platform with no pwd module,
-        # and the one value here that is meant to be expanded rather than named.
+        # The no-pwd placeholder is meant to be expanded, not named.
         return value
     return shlex.quote(value)
 
 
 def _repair_account() -> Optional[str]:
-    """The account the usermod commands must name, or None when there is no such account.
-
-    os.getuid() is who os.access answered for above. USER and LOGNAME are inherited, so a
-    container that changes its numeric user without resetting them names somebody else, and
-    following the hint then modifies an account that is not the one holding the device shut.
-
-    None rather than a guess. A uid with no passwd entry is the ordinary shape of `docker
-    run --user 1234`, and there USER commonly still says root: usermod would then succeed,
-    change an identity nothing is running as, and leave the nodes exactly as shut. The
-    callers print the container-level repair instead, which is the one that works there.
-    """
+    """From getuid, not the inherited USER; None when the uid has no passwd entry (docker --user)."""
     try:
         import pwd
         return pwd.getpwuid(os.getuid()).pw_name
@@ -1796,35 +1407,16 @@ def _repair_account() -> Optional[str]:
 
 
 def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
-    """One sentence naming the closed nodes and the command that opens them, or None.
-
-    Kept beside the probe so the capability message, the llama.cpp log and the
-    installer all say the same thing, and so a caller that only needs the yes/no does
-    not build a string.
-
-    The two nodes do not block the same backends. A closed render node stops every
-    one of them, since HIP and the Vulkan loader both open it. ``/dev/kfd`` stops only
-    HIP: Vulkan never opens it, so ``needs_kfd = False`` is how a Vulkan-only caller
-    says that a closed KFD node is not its problem, and answering otherwise would send
-    a Vulkan failure with some other cause after the wrong repair.
-    """
+    """Names the closed nodes and the command that opens them; needs_kfd=False drops /dev/kfd for Vulkan."""
     closed = amd_nodes_closed_to_this_user()
     if not needs_kfd:
         closed = [path for path in closed if path != _KFD_NODE]
-    # A node the runtime needs and that does not exist blocks exactly as hard as one it
-    # cannot open, and needs saying whether or not anything is closed: a container given
-    # --device /dev/kfd and not --device /dev/dri opens the one node it has and enumerates
-    # nothing, and the mirror image (only /dev/dri) leaves HIP with no /dev/kfd. Both used
-    # to be reachable only after a closed node had already produced a sentence.
+    # A missing node needs reporting even when nothing is closed (partial --device mappings).
     missing = _amd_nodes_the_runtime_lacks(needs_kfd = needs_kfd)
     parts: "list[str]" = []
     trailing_command = ""
     if closed:
-        # Claim only what the closed set actually blocks, and only for the devices it is
-        # about. A render node shut beside an OPEN sibling leaves both runtimes a complete
-        # path to that other GPU, so "no GPU backend can use the AMD card" is false there --
-        # and _explain_empty_gpu_probe reaches exactly that host, appending this sentence
-        # after saying the closed node is not why the probe is empty.
+        # Claim only what the closed set blocks: an open sibling still gives a complete path.
         user = _repair_account()
         joinable, unnamed, no_group, acl, owned, privileged, already, external = _groups_that_own(
             closed
@@ -1839,10 +1431,7 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
         else:
             _claim = "so no GPU backend can use the AMD card even though the driver is loaded"
         parts.append(f"This account cannot open {', '.join(closed)}, {_claim}.")
-        # Prescribed only where joining a group is the repair. A host whose nodes could not
-        # be stat'd at all still gets the documented pair, since some advice beats none; a
-        # host whose nodes were read and offer no joinable group gets the sentences below
-        # instead of a command that would fail.
+        # Prescribe only where joining a group is the repair; unstat-able hosts get the default pair.
         if joinable or not (
             unnamed or no_group or acl or owned or privileged or already or external
         ):
@@ -1857,42 +1446,27 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
                     f"as an account this system knows."
                 )
             else:
-                # Held back to the END of the message rather than appended in place. It
-                # is the one sentence that terminates in a command a user pastes, so
-                # anything joined after it ran straight on, rendering as
-                # "-a -G render ada ROCm needs /dev/kfd ...". Ending the message with it
-                # keeps the command copyable as written, where a full stop would be
-                # selected along with the account name.
+                # Kept at the end so the pasteable command is not run into by later text.
                 trailing_command = (
                     f"Add the account to the {joined} {plural} and then log out and back "
                     f"in: sudo usermod -a -G {_shell_word(joined)} {_shell_word(user)}"
                 )
         if unnamed:
             _gids = ", ".join(str(_g) for _g in unnamed)
-            # One flag per GID: docker's --group-add takes a single value, so naming only
-            # the first leaves every other node shut on a host whose nodes differ in group.
+            # docker --group-add takes one value, so one flag per GID.
             _adds = " ".join(f"--group-add {_g}" for _g in unnamed)
             _noun = "GID" if len(unnamed) == 1 else "GIDs"
             _verb = "which has" if len(unnamed) == 1 else "which have"
-            # Creating the group only gives the numeric owner a name; the account is
-            # still outside it and the node is still shut. Both halves of the bare-host
-            # repair, and one per GID: with two unnamed GIDs a singular instruction repairs
-            # at most one of the nodes.
+            # Creating the group names only the GID; the account and node still need fixing, one per GID.
             _each = "it" if len(unnamed) == 1 else "each of them"
             _pairs = "; ".join(
                 f"sudo groupadd -g {_g} amdgpu{_g} && "
                 f"sudo usermod -a -G amdgpu{_g} {_shell_word(user)}"
                 for _g in unnamed
             )
-            # A pair per GID: one groupadd names one numeric owner, so a host whose nodes
-            # differ in group had every node after the first left shut. The name is
-            # generated, not a <name> placeholder, since angle brackets are redirection
-            # operators and these are commands to paste. The && is load bearing: with an
-            # amdgpu<GID> group already at a different GID, an unchained usermod would
-            # SUCCEED against the wrong group and report success on a still-shut node.
+            # One groupadd/usermod pair per GID; && stops usermod hitting a same-named wrong group.
             if user is None:
-                # The bare-host half needs an account to add and there is none, so the
-                # container half is the whole repair for this shape.
+                # No passwd account to add, so the bare-host half cannot run and the container half is the repair.
                 parts.append(
                     f"Some of those nodes belong to {_noun} {_gids}, {_verb} no group entry "
                     f"on this system, and this uid has no passwd entry either, so neither "
@@ -1926,12 +1500,7 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
                 f"AppArmor."
             )
         if external:
-            # Worded by the class that APPLIES rather than by the owner one. This bucket
-            # holds two shapes: a node this account owns whose owner bits grant rw, and one
-            # it neither owns nor shares a group with whose other bits do. Naming the owner
-            # for both told the second kind it owns a node it does not, which is a claim the
-            # reader can check and find false, in the one sentence whose job is to say the
-            # mode is not the problem.
+            # Worded by the class that applies: owner or other, not always owner.
             parts.append(
                 f"{', '.join(external)} is already granted read and write by the permission "
                 f"bits that apply to this account, so the mode is not what is shutting it: "
@@ -1946,22 +1515,14 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
             )
         if acl:
             parts.append(
-                # Every path, not acl[0]: the sentence lists them all, ROCm needs all of
-                # them, and their ACLs need not agree, so checking only the first can leave
-                # the second blocker undiagnosed. getfacl takes several paths.
+                # Every path: their ACLs need not agree; getfacl takes several paths.
                 f"{', '.join(acl)} carries a POSIX ACL, so the group permissions cannot be "
                 f"read from its mode: check the real grant with getfacl {' '.join(acl)} "
                 f"before changing group membership."
             )
-    # Group membership cannot create a device node, so these stand whether or not anything
-    # above was said. install.sh says the same two things; this is the runtime half.
+    # Group membership cannot create a device node; install.sh says the same.
     if _KFD_NODE in missing:
-        # Two wordings, because only one of the two ways in here proves anything about the
-        # driver. A topology that NAMES an AMD GPU is the amdkfd driver's own sysfs, so the
-        # stack is loaded and reinstalling it changes nothing. Reached instead off a
-        # confirmed DRM render node with the topology masked, that claim is unsupported --
-        # the node may be missing because the stack is not loaded -- so the sentence says
-        # what is true of both: the mapping is what to fix first.
+        # Only a topology naming an AMD GPU proves the driver is loaded, hence two wordings.
         if _kfd_topology_amd_state() is True:
             parts.append(
                 "ROCm needs /dev/kfd, which is not present here, but the KFD topology "
@@ -1978,8 +1539,7 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
                 "No group membership creates it."
             )
     if _RENDER_NODE_GLOB in missing:
-        # The mapping this caller needs, not both nodes always: Vulkan never opens /dev/kfd,
-        # so naming it here hands a container another host device for nothing.
+        # Vulkan never opens /dev/kfd, so only map it when needed.
         _devices = "--device /dev/kfd --device /dev/dri" if needs_kfd else "--device /dev/dri"
         parts.append(
             f"No AMD render node (/dev/dri/renderD*) is present, and ROCm and Vulkan both "

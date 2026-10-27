@@ -180,6 +180,66 @@ def gkd_trainer_mask_prompt(function_name, function):
 RL_FUNCTIONS["gkd_trainer"].append(gkd_trainer_mask_prompt)
 
 
+def gkd_trainer_generate_before_counting(function_name, function):
+    if function_name != "training_step":
+        return function
+    start = re.search(
+        r"^        if (?:self\.seq_kd|random\.random\(\) <= self\.lmbda):", function, re.M
+    )
+    end = function.find("        loss = super().training_step(")
+    if start is None or end < start.start():
+        return function
+    start = start.start()
+    generation = function[start:end]
+    function = (
+        function[:start]
+        + """        pending = getattr(self, "_unsloth_gkd_pending_batches", None)
+        if pending is not None:
+            batches, batch_args, batch_kwargs = pending
+            self._unsloth_gkd_pending_batches = None
+
+            def prepared_batches():
+                for batch in batches:
+                    self._unsloth_prepare_gkd_batch(model, batch)
+                    yield batch
+
+            _, count = super().get_batch_samples(
+                prepared_batches(), len(batches), *batch_args, **batch_kwargs
+            )
+            # TRL 1.7-1.8 mask EOS when it is the pad token, so an all-EOS window counts 0: sum / 0 is NaN.
+            if torch.is_tensor(count):
+                count = count.clamp_min(1)
+            elif count is not None:
+                count = max(count, 1)
+            for batch in batches:
+                batch["_unsloth_gkd_num_items"] = count
+
+        if "_unsloth_gkd_num_items" in inputs:
+            num_items_in_batch = inputs.pop("_unsloth_gkd_num_items")
+        else:
+            self._unsloth_prepare_gkd_batch(model, inputs)
+"""
+        + function[end:]
+    )
+    # Prepare the whole accumulation window before counting its replacement
+    # labels. Keep generation in training_step, after checkpoint RNG restoration.
+    return (
+        function
+        + "\n    def _unsloth_prepare_gkd_batch(self, model, inputs):\n"
+        + generation
+        + """
+    def get_batch_samples(self, epoch_iterator, num_batches, *args, **kwargs):
+        batches, count = super().get_batch_samples(epoch_iterator, num_batches, *args, **kwargs)
+        if self.lmbda > 0 or self.seq_kd:
+            self._unsloth_gkd_pending_batches = (batches, args, kwargs)
+        return batches, count
+"""
+    )
+
+
+RL_FUNCTIONS["gkd_trainer"].append(gkd_trainer_generate_before_counting)
+
+
 def ppo_trainer_free_rollout_logits(function_name, function):
     # TRL keeps the float32 (batch, response_length, vocab) generation logits alive through every PPO
     # epoch, though only the logprobs taken from them are read: 1.2 GB on a T4 for 8 x 256 Qwen3 tokens.
@@ -1269,11 +1329,8 @@ def sft_trainer_compute_loss(function_name, function):
     ):
         # TRL >= 1.15 computes loss_type="dft" only in the compute_loss this replaces (else it trains as NLL):
         # run it on TRL's fused LM head. Older TRL routes DFT through compute_loss_func.
-        if (
-            getattr(self.args, "loss_type", None) == "dft"
-            and self.compute_loss_func is None
-            and getattr(self, "label_smoother", None) is None
-        ):
+        # TRL label smoothing applies only to "nll", so label_smoother must not opt dft out.
+        if getattr(self.args, "loss_type", None) == "dft" and self.compute_loss_func is None:
             import trl.trainer.utils as _trl_utils
             if hasattr(_trl_utils, "add_fused_lm_head"):
                 # TRL's fused head projects with lm_head.weight directly, skipping QAT fake quantization.
@@ -1611,7 +1668,9 @@ def _unsloth_grpo_refuse_unscored_support(self):
     if mismatch:
         import warnings
         warnings.warn(
-            "Unsloth: ignoring UNSLOTH_GRPO_TRUNCATED_SUPPORT=1 because "
+            "Unsloth: not scoring over the rollouts' top_k / top_p / min_p kept set "
+            "(UNSLOTH_GRPO_TRUNCATED_SUPPORT=1, or automatic for truncated vLLM rollouts "
+            "feeding the IS correction or off-policy mask) because "
             f"{', '.join(mismatch)}: the scored policy is not the sampler, so its top_k / top_p / "
             "min_p kept set differs from vLLM's and the PPO ratio would be unnormalised. "
             "Scoring over the full vocabulary instead.",
@@ -1621,7 +1680,7 @@ def _unsloth_grpo_refuse_unscored_support(self):
 
 
 def _unsloth_grpo_support_mismatch(self):
-    """Why UNSLOTH_GRPO_TRUNCATED_SUPPORT=1 cannot score this trainer, or [] when it can.
+    """Why kept-set scoring (UNSLOTH_GRPO_TRUNCATED_SUPPORT) cannot score this trainer, or [] when it can.
 
     Each scoring call rebuilds the top_k / top_p / min_p kept set from its own logits and always keeps the
     scored token. That is the sampler's set only while the scored weights are the rollout's. A reference
@@ -1729,15 +1788,9 @@ def _unsloth_grpo_split_vision_by_sample(batch):
     num_images = _counts(batch.get("num_images", None))
 
     if isinstance(pixel_values, list):
-        # TRL split it. From 1.1.0 split_pixel_values_by_grid splits by SAMPLE, off num_images;
-        # 0.22.x-0.23.x splits by GRID ROW -- "lengths = batch["image_grid_thw"].prod(dim=1)",
-        # one element per image -- and leaves image_grid_thw itself flat. The shuffle right
-        # after takes its length from the first entry of the batch and indexes everything by
-        # sample, so on a row holding two images that list is both permuted wrongly and
-        # truncated to the sample count. Regroup it, and split the grid the way 1.1.0 does.
-        # all-ones, not len(pixel_values) == len(num_images): over two samples num_images = [0, 2]
-        # makes those two numbers agree while the axes still differ, and the early return would
-        # hand both of the second sample's images to the first.
+        # TRL 1.1.0+ splits by sample; 0.22.x-0.23.x splits by grid row and leaves image_grid_thw flat, so
+        # a two-image row is mis-shuffled. Regroup it. Not len(pixel_values) == len(num_images): [0, 2]
+        # makes them agree while the axes differ.
         _prompt_ids = batch.get("prompt_ids", None)
         if (
             image_grid_thw is None
@@ -1802,12 +1855,7 @@ def _unsloth_grpo_split_vision_by_sample(batch):
         # One padded row per sample already (Idefics, SmolVLM): TRL leaves this alone.
         return batch
     if rows == len(num_images) and any(_count != 1 for _count in num_images):
-        # A padded sample axis and a flat image axis are the same length here, and only the
-        # padded reading keeps each row with the sample it came from: num_images = [2, 0]
-        # over two padded rows would hand both of them to the first sample and the second an
-        # empty tensor. Nothing in the batch tells the two apart, so keep TRL's layout, which
-        # is what every version does today. The all-ones case is excluded because the two
-        # readings agree there. Same hazard the list branch above guards against.
+        # Padded-sample and flat-image axes are ambiguous: keep TRL layout, else [2, 0] misassigns images
         return batch
     split["pixel_values"] = list(torch.split(pixel_values, num_images, dim = 0))
     _image_sizes = batch.get("image_sizes", None)
@@ -2055,9 +2103,7 @@ def _unsloth_reject_grpo_image_list(inputs, trainer = None):
             return
         if getattr(trainer, "vllm_mode", None) != "server":
             return
-    # Every row, not just the first: one list cell anywhere in the batch is enough to put the
-    # images and the placeholders out of step, and a dataset that mixes a bare image with a
-    # list is exactly the shape that puts the list somewhere other than row 0.
+    # Every row: one list cell anywhere desyncs the images and the placeholders.
     try:
         rows = list(inputs)
     except Exception:
@@ -2247,19 +2293,9 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         _use_gc = self.model._unsloth_gradient_checkpointing if hasattr(self.model, '_unsloth_gradient_checkpointing') else getattr(self.args, 'gradient_checkpointing', True)
         self.model.for_training(use_gradient_checkpointing=_use_gc)"""
 
-    # TRL 0.22.x-0.23.x has neither `forward_kwargs` nor `num_images`: it hardcoded one image per
-    # example, counted nothing, and saved only four processor keys. The singular `image` column
-    # normalisation below lets a cell hold several, and every consumer of a multi image batch --
-    # the shared chunker, and the per sample split in _prepare_inputs -- reads those counts, so
-    # without them a two image row is sliced as if it were two rows and the images are handed to
-    # the wrong samples. Built at this anchor rather than in the output block, because the no-grad
-    # old/reference logprob calls a few lines below take it too and the output block only runs once
-    # they have already returned. Counted off the same normalised cells the processor was given, so
-    # the two can never disagree; a row with no image counts zero.
-    #
-    # Inserted only for the versions whose call sites it feeds. 0.24.0 and up leave prompt_inputs
-    # unbound here, so the try below would fall straight through, but not emitting it at all is
-    # what keeps their generated source byte for byte what it was.
+    # TRL 0.22.x-0.23.x has no forward_kwargs / num_images, so a multi-image row is sliced as several
+    # rows. Count images off the same normalised cells. Emitted only for those versions so newer
+    # generated source stays byte-identical.
     _legacy_vision_prologue = """
         _unsloth_legacy_vision = {}
         try:
@@ -2315,9 +2351,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
 
     function = function.replace(line_to_replace, replacement_lines)
 
-    # TRL 0.22.x-0.23.x calls the no-grad old/reference logprob pass with four hand named
-    # processor tensors and no counts, so the shared chunker cannot tell one sample's images
-    # from the next and slices an image indexed grid by sample index.
+    # TRL 0.22.x-0.23.x passes four tensors and no counts, so the chunker cannot split images per sample
     _legacy_vision_call = re.compile(
         r"(^[ \t]+)pixel_values=prompt_inputs\.get\(\"pixel_values\"\),\n"
         r"[ \t]+image_grid_thw=prompt_inputs\.get\(\"image_grid_thw\"\),\n"
@@ -2329,8 +2363,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         r"\1**_unsloth_legacy_vision,\n",
         function,
     )
-    # Every TRL from 0.22.2 to 0.23.1 takes all three rewrites, and 0.24.0 and up pass
-    # forward_kwargs instead and need none, so this is a guard against a future drift.
+    # Guard against future drift: 0.22.2-0.23.1 take all three rewrites, 0.24.0+ need none.
     _legacy_vision_unplumbed = (
         _legacy_vision_calls == 0 and 'prompt_inputs.get("pixel_values")' in function
     )
@@ -2375,15 +2408,11 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         if (
             sum(re.match(rf"{spacing}[^\s]", x) is not None for x in splits) == 2
             and len(spacing) >= 8
-            # The regex above also matches trl 0.18.2 and 0.19.1, which the declared window
-            # admits and which have none of the symbols the replacement below emits; TRL's own
-            # call to the helper is the discriminator (0.20.0-0.23.1 have it, those two do not),
-            # and without it TRL's native slicing must stay. tests/version_compat/
-            # test_grpo_protected_tokens_guard.py measures this per version.
+            # The regex also matches trl 0.18.2 / 0.19.1, which lack the emitted symbols; TRL's own helper call
+            # discriminates (tests/version_compat/test_grpo_protected_tokens_guard.py).
             and "truncate_with_protected_tokens" in replace_part
         ):
-            # getattr: the next emitted line drops None, so an id a fork or subclass leaves
-            # unset means "nothing to protect" rather than AttributeError in generated code.
+            # getattr: an unset id means nothing to protect, not AttributeError in generated code.
             new_replacement = f"""\n{spacing}if self.max_prompt_length is not None:
             # If max_prompt_length is set, we trim the prompt to keep only the last `max_prompt_length` tokens.
             # Then we decode those tokens back into text. We manually remove leading pad tokens from the decoded text,
@@ -2422,10 +2451,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
     string_to_find = """        if "image_sizes" in prompt_inputs:
             output["image_sizes"] = prompt_inputs["image_sizes"]"""
 
-    # 0.22.x-0.23.x saves the four keys above and nothing else, so a processor that emits
-    # spatial_shapes, num_tiles or the Gemma position ids loses them between generation and the
-    # gradient forward, and there is no `if images is not None` anchor here to hang the generic
-    # copy on. Same mapping the no-grad calls above were given, so both policies see one batch.
+    # 0.22.x-0.23.x saves only four processor keys; copy the rest so both policies see one batch.
     replacement_string = """        if "image_sizes" in prompt_inputs:
             output["image_sizes"] = prompt_inputs["image_sizes"]
         try:
@@ -2657,12 +2683,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         "                if isinstance(prompt, list):  # i.e., when using conversational data\n"
         "                    prepare_multimodal_messages(prompt, num_images=1)"
     )
-    # An empty cell takes zero placeholders, not one: the prologue already counts it as zero,
-    # and a batch mixing an image bearing row with an empty one otherwise reaches the processor
-    # a placeholder short of its images. An all empty column is a text batch wearing an image
-    # one, which TRL demotes itself from 0.24.0; ported here, because zero placeholders against
-    # `[[], []]` is an IndexError inside the processor rather than a text run. The guard mirrors
-    # TRL's `all(img_list == [] ...)`, so a `None` cell still fails exactly as it does on main.
+    # Empty cells take zero placeholders; all-empty column becomes text (TRL 0.24.0+), else IndexError
     _placeholder_new = (
         '            if kwargs.get("images") and all(\n'
         '                _unsloth_cell == [] for _unsloth_cell in kwargs["images"]\n'
@@ -2675,25 +2696,14 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         "                        prompt, num_images=len(_unsloth_cell) if _unsloth_cell else 0\n"
         "                    )"
     )
-    # TRL 0.24.0 and up size the placeholders themselves, off the cell they were handed, so the
-    # rewrite above is the whole job there. TRL 0.20.0 and 0.21.0 are the gap: they take the
-    # legacy cell spelling but predate `prepare_multimodal_messages` entirely and inline one
-    # `{"type": "image"}` per user message with no count, so a normalised two image cell would
-    # reach the processor with one placeholder. Nothing else in the batch disagrees, because the
-    # prologue counts the same cells, so it surfaces inside the processor.
+    # TRL 0.24.0+ sizes placeholders itself; 0.20.0 / 0.21.0 inline one per message, so not sized.
     _placeholder_sized = not _legacy_image_cell
     if _placeholder_old in function:
         function = function.replace(_placeholder_old, _placeholder_new)
         _placeholder_sized = True
 
-    # Rewriting the cell is only half of a multi image row: on a legacy TRL the reference
-    # logprob call sites have to carry the counts too, or the images are sliced by sample
-    # index and all but the first are dropped. That surfaces as a token/feature mismatch
-    # raised inside the model, naming neither the column nor the fix, so refuse it here
-    # instead. A single image cell is unaffected either way and keeps working.
-    # `self` and not nothing: on a legacy TRL every other path now carries a multi image row,
-    # so the refusal has to narrow to the vLLM server mode that still cannot. Passing the
-    # trainer moves that decision to runtime, where `vllm_mode` is actually known.
+    # On a legacy TRL the reference logprob calls need counts too, else a multi-image row fails deep in
+    # the model; refuse it. `self` narrows the refusal to vLLM server mode at runtime.
     _guard_argument = ""
     if not _image_cell_normalised or _legacy_vision_unplumbed or not _placeholder_sized:
         pass
@@ -3543,8 +3553,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     **kwargs,
                 )
 
-            # Opt-in (UNSLOTH_GRPO_TRUNCATED_SUPPORT=1): score over the rollout's top_k / top_p /
-            # min_p kept set, matching vLLM's processed_logprobs. The zoo loss refuses to mix
+            # UNSLOTH_GRPO_TRUNCATED_SUPPORT (=1 or zoo's automatic gate): score over the rollout's
+            # top_k / top_p / min_p kept set, matching vLLM's processed_logprobs. The zoo loss refuses to mix
             # normalisations unless this marker says the old / ref logps were scored the same way.
             try:
                 from unsloth_zoo.rl_replacements import grpo_truncated_support_kwargs
@@ -3557,7 +3567,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 if not getattr(self, "_unsloth_truncated_support_refused", False):
                     import warnings
                     warnings.warn(
-                        "Unsloth: ignoring UNSLOTH_GRPO_TRUNCATED_SUPPORT=1 because "
+                        "Unsloth: not scoring over the rollouts' top_k / top_p / min_p kept set "
+                        "(UNSLOTH_GRPO_TRUNCATED_SUPPORT=1, or automatic for truncated vLLM "
+                        "rollouts feeding the IS correction or off-policy mask) because "
                         f"{', '.join(_support_mismatch)}: those logprobs come from weights other "
                         "than the rollout's, whose top_k / top_p / min_p kept set differs from the "
                         "sampler's, so per-policy kept sets give unnormalised PPO ratios and KL. "
@@ -4292,8 +4304,7 @@ def _unsloth_resolve_logit_scales(model_config):
 
     Only reached when the installed unsloth_zoo predates that helper. Must stay in step with ``resolve_logit_transforms`` in unsloth/models/llama.py: if the forward applies a transform GRPO does not, the policy log-probabilities come from different logits than the ones generated, which silently shifts every importance ratio.
     """
-    # ``logits_scaling`` is not one knob: Granite divides, HyperCLOVA X multiplies (MuP),
-    # MiniCPM3 scales the hidden states so it is not a logit transform.
+    # Granite divides, HyperCLOVA X multiplies, MiniCPM3 scales hidden states (not a logit transform).
     overrides = {
         ("logits_scaling", "hyperclovax"): "multiply",
         ("logits_scaling", "minicpm3"): None,
@@ -4908,16 +4919,8 @@ def grpo_trainer_compute_loss(function_name, function):
                 num_processes = num_processes,
             )
         else:
-            # The gradient path needs the same zoo the no-grad path checks for, and nothing
-            # has checked it here: with beta = 0 and num_iterations = 1 there are no reference
-            # or old logprobs to compute, so _get_per_token_logps_and_entropies -- where that
-            # gate lives -- never runs at all. An older grpo_accumulated_loss accepts
-            # arbitrary kwargs, ignores the keys it does not know (spatial_shapes, num_tiles,
-            # the position ids) and, for a model that carries no image_grid_thw to slice by,
-            # replaces pixel_values with None outright, so training would compute its gradient
-            # logprobs from the text alone and report nothing. Import-probed rather than
-            # signature-probed, and body-local like the one in the no-grad path: this source is
-            # copied out without this module's imports (#6960).
+            # With beta = 0 and num_iterations = 1 the no-grad path (and its zoo gate) never runs, and an older
+            # grpo_accumulated_loss silently drops pixel_values. Body-local: copied out without imports (#6960).
             if pixel_values is not None and not getattr(
                 self, "_unsloth_grpo_vision_zoo_checked", False
             ):

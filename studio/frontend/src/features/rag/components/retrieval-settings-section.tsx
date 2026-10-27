@@ -72,7 +72,6 @@ function SliderRow({
   );
 }
 
-// Retrieval settings; the source itself is picked from the composer dropdown.
 export function RetrievalSettingsSection() {
   const ragMode = useChatRuntimeStore((s) => s.ragMode);
   const setRagMode = useChatRuntimeStore((s) => s.setRagMode);
@@ -194,7 +193,7 @@ export function RetrievalSettingsSection() {
           checked={ragOcrScanned}
           onCheckedChange={setRagOcrScanned}
           aria-label="OCR scanned pages"
-          className="panel-switch mt-0.5"
+          className="panel-switch mt-[calc(var(--text-ui-13)*0.2615)]"
         />
       </div>
 
@@ -216,7 +215,7 @@ export function RetrievalSettingsSection() {
           checked={ragCaptionFigures}
           onCheckedChange={setRagCaptionFigures}
           aria-label="Describe figures and charts"
-          className="panel-switch mt-0.5"
+          className="panel-switch mt-[calc(var(--text-ui-13)*0.2615)]"
         />
       </div>
     </div>

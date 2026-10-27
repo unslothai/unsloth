@@ -59,9 +59,7 @@ const cellNavPlugin: JupyterFrontEndPlugin<void> = {
         ) {
           return;
         }
-        // `lineCount` counts LOGICAL lines, but JupyterLab wraps markdown and raw
-        // editors by default, so one logical line can own several visual rows and a
-        // logical test makes them unreachable: every arrow leaves the cell.
+        // `lineCount` counts logical lines, but wrapped editors have several visual rows each.
         const view = editor instanceof CodeMirrorEditor ? editor.editor : null;
         if (view) {
           const range = view.state.selection.main;

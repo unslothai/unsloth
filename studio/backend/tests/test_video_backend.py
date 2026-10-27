@@ -660,6 +660,8 @@ def fake_runtime(monkeypatch):
     diffusers.WanTransformer3DModel = _FakeTransformer
     diffusers.HunyuanVideo15Pipeline = _FakeHV15Pipeline
     diffusers.HunyuanVideo15Transformer3DModel = _FakeTransformer
+    diffusers.Cosmos3OmniPipeline = _FakePipeline
+    diffusers.Cosmos3OmniTransformer = _FakeTransformer
     # A CLASS named as diffusers names it: the cache layer matches on type(...).__name__.
     diffusers.FirstBlockCacheConfig = FirstBlockCacheConfig
 
@@ -1776,6 +1778,93 @@ def test_load_wan_ti2v_5b_pipeline(fake_runtime):
     assert status["transformer_quant"] is None
     assert _FakeWanPipelineSingle.last["repo"] == "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
     assert backend._state.pipe.vae.decoder.hooks == []
+
+
+def test_first_clip_seeds_floats_before_the_denoise_and_keeps_them_before_the_decode(
+    fake_runtime, monkeypatch
+):
+    """Seeds go in at denoise entry and are kept at decode entry."""
+    backend = VideoBackend()
+    backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    pipe = backend._state.pipe
+    events: list = []
+
+    class _Seeds:
+        def seed(self):
+            events.append("seed")
+
+        def keep(self):
+            events.append("keep")
+
+    asked: list = []
+    monkeypatch.setattr(
+        VideoBackend, "_inline_float_seeds", lambda self, state: asked.append(state) or _Seeds()
+    )
+    original_call = type(pipe).__call__
+
+    @functools.wraps(original_call)  # keeps the signature generate() gates its kwargs on
+    def _call(self, *args, **kwargs):
+        with self.progress_bar(total = 2):
+            events.append("denoiser")
+        return original_call(self, *args, **kwargs)
+
+    pipe.__class__ = type("_LoopPipe", (type(pipe),), {"__call__": _call})
+    pipe.progress_bar = lambda *a, **k: contextlib.nullcontext()
+    pipe.vae.on_decode = lambda: events.append("decode")
+    backend.generate(prompt = "a fox", steps = 2)
+    assert asked == [backend._state]
+    assert events[:2] == ["seed", "denoiser"]
+    assert events.index("keep") < events.index("decode")
+    assert events.count("keep") == 1
+
+
+def test_first_clip_seeds_floats_at_the_first_dit_forward_without_a_pipe_progress_bar(
+    fake_runtime, monkeypatch
+):
+    """H3 modular's progress bar is its loop wrapper's: the first DiT forward still seeds first."""
+    backend = VideoBackend()
+    backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    pipe = backend._state.pipe
+    events: list = []
+
+    class _Dit:
+        def __init__(self):
+            self.hooks = []
+
+        def register_forward_pre_hook(self, fn):
+            self.hooks.append(fn)
+            return types.SimpleNamespace(remove = lambda: self.hooks.remove(fn))
+
+        def __call__(self):
+            for hook in list(self.hooks):
+                hook(self, ())
+            events.append("denoiser")
+
+    dit = _Dit()
+
+    class _Seeds:
+        modules = [dit]
+
+        def seed(self):
+            if "seed" not in events:
+                events.append("seed")
+
+        def keep(self):
+            events.append("keep")
+
+    monkeypatch.setattr(VideoBackend, "_inline_float_seeds", lambda self, state: _Seeds())
+    original_call = type(pipe).__call__
+
+    @functools.wraps(original_call)
+    def _call(self, *args, **kwargs):
+        dit()
+        dit()
+        return original_call(self, *args, **kwargs)
+
+    pipe.__class__ = type("_ModularLikePipe", (type(pipe),), {"__call__": _call})
+    backend.generate(prompt = "a fox", steps = 2)
+    assert events[:3] == ["seed", "denoiser", "denoiser"]
+    assert dit.hooks == []
 
 
 def _fits_in_memory_snapshot(device):
@@ -9158,6 +9247,7 @@ def test_plan_is_unchanged_when_no_text_encoder_quant_is_requested(fake_runtime,
     from core.inference.video_families import _FAMILIES
 
     _allow_te_prequant(monkeypatch)
+    monkeypatch.setenv("UNSLOTH_COSMOS3_SAFETY_CHECKER", "0")
     calls = _capture_plan(monkeypatch)
     for fam in _FAMILIES:
         if fam.bf16_components_gb is None or fam.name == "wan2.2-t2v-a14b":
@@ -12464,7 +12554,9 @@ def test_ltx23_prequant_source_resolves_the_hosted_fp8_only():
         source
     )  # the artifact the repo actually hosts
     assert resolve_prequant_source(fam, "int8", base_repo = LTX23_PREQUANT_BASE) is None
-    assert resolve_prequant_source(fam, "fp8", base_repo = "Lightricks/LTX-2") is None
+    # LTX-2 (2.0) resolves its own hosted fp8 file, never the 2.3 one.
+    ltx2 = resolve_prequant_source(fam, "fp8", base_repo = "Lightricks/LTX-2")
+    assert ltx2 is not None and ltx2.location == "unsloth/LTX-2-FP8"
 
 
 def _ltx23_fp8_card(monkeypatch, *, fp8 = True):
@@ -13198,6 +13290,7 @@ def test_cudnn_benchmark_opt_out_families():
         fam.vae_force_fp32
         or fam.name in ("ltx-2", "ltx-2.5")
         or fam.name.startswith("hunyuanvideo-1.5")
+        or fam.name.startswith("cosmos3-")
         for fam in _FAMILIES
         if not fam.cudnn_benchmark
     )

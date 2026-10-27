@@ -8,8 +8,8 @@ import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
   ArrowUpRight01Icon,
-  Copy01Icon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import type { ReactElement } from "react";
@@ -235,8 +235,7 @@ export function UpdateStudioInstructions({
   const shell = shellOverride ?? defaultShell;
   const prefersReducedMotion = useReducedMotion();
   const windows = shell === "windows";
-  // null means the desktop app: its bundled backend updates through the
-  // built-in updater, so terminal commands would target the wrong install.
+  // null means the desktop app, which updates through its built-in updater.
   const desktopManaged = installSource === null;
   const localInstallSource = isLocalInstallSource(installSource);
   const checkoutInstallSource =
