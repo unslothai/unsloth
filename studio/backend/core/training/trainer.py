@@ -394,6 +394,12 @@ def grpo_completion_rows(prompts: int, rl_args) -> int:
     return prompts * generations
 
 
+def grpo_global_batch(rl_args) -> int:
+    """Rows per micro-step over every process: grpo_completion_rows counts the whole dataset."""
+    world = int(getattr(rl_args, "world_size", 1) or 1)
+    return int(rl_args.per_device_train_batch_size) * max(world, 1)
+
+
 def _ignored_adapter_settings(
     peft_config,
     lora_r,
@@ -5268,7 +5274,7 @@ class UnslothTrainer:
                     # Unsloth may resize the batch for num_generations: read the trainer's args.
                     rl_args = self.trainer.args
                     num_samples = grpo_completion_rows(num_samples, rl_args)
-                    batch_size = rl_args.per_device_train_batch_size
+                    batch_size = grpo_global_batch(rl_args)
                     grad_accum = rl_args.gradient_accumulation_steps
                 total_steps = self._calculate_total_steps(
                     num_samples,

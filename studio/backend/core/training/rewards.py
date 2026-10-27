@@ -308,6 +308,8 @@ def validate_rule(rule: dict) -> dict:
         out["score"] = _validate_score(rule.get("score", {}), ("match", "miss"))
     elif kind == "length":
         out["max_chars"] = int(_number(rule.get("max_chars"), "max_chars"))
+        if out["max_chars"] < 0:
+            raise RewardError("max_chars can't be negative.")
         out["score"] = _validate_score(rule.get("score", {}), ("over", "under"))
     # Dropped silently, it would score a different text than the rule says.
     for key in ("extract", "reference_extract"):

@@ -110,6 +110,7 @@ def test_rule_types(body, text, reference, expected):
         (_md("t", "type: numeric\nbands: []"), "bands"),
         (_md("t", "type: numeric\nbands: [1, 2]"), "band"),
         (_md("t", "type: numeric\nbands: [{within: -0.1, score: 1}]"), "within can't be negative"),
+        (_md("t", "type: length\nmax_chars: -1"), "max_chars can't be negative"),
         (_md("t", "type: exact_match\ncompare_to: completions"), "TRL reserves"),
         (_md("t", "type: exact_match\ncompare_to: image"), "TRL reserves"),
         (_md("t", "type: exact_match\ncompare_to: tools"), "Studio uses"),
