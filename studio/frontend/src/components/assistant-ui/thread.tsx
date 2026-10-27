@@ -7553,7 +7553,7 @@ const MessageError: FC = () => {
   return (
     <MessagePrimitive.Error>
       <ErrorPrimitive.Root className="aui-message-error-root mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg bg-destructive/10 p-3 text-destructive text-sm dark:bg-destructive/5 dark:text-red-200">
-        <ErrorPrimitive.Message className="aui-message-error-message line-clamp-2 min-w-0 flex-1" />
+        <ErrorPrimitive.Message className="aui-message-error-message min-w-0 flex-1 whitespace-pre-wrap break-words" />
         {!researchRunId && !researchActive && (
           <ActionBarPrimitive.Reload asChild={true}>
             <button
