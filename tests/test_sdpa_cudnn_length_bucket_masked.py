@@ -530,10 +530,17 @@ def test_masked_bucket_additive_mask_saved_once_on_cudnn():
     sum(o.float().sum() for o in outs).backward()
 
 
-def _cpu_bucketed_masks(monkeypatch, mask, q_len, layers = 2):
+def _cpu_bucketed_masks(
+    monkeypatch,
+    mask,
+    q_len,
+    layers = 2,
+):
     seen = []
     monkeypatch.setattr(
-        ad, "scaled_dot_product_attention", lambda Q, K, V, attn_mask = None, **kw: (seen.append(attn_mask), Q)[1]
+        ad,
+        "scaled_dot_product_attention",
+        lambda Q, K, V, attn_mask = None, **kw: (seen.append(attn_mask), Q)[1],
     )
     for _ in range(layers):
         q = torch.randn(2, 4, q_len, 8, requires_grad = True)
