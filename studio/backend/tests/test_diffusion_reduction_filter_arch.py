@@ -186,8 +186,6 @@ def test_klein_filter_kill_switch(monkeypatch):
     "repo", ["Qwen/Qwen-Image-2.1", "unsloth/Qwen-Image-2.1", "Qwen/Qwen-Image-2.1-Turbo"]
 )
 def test_qwen_image_21_pins_the_reduction_filter_on_every_arch(monkeypatch, repo, cap):
-    # Fresh L4 compile homes timed near-tied norm-reduction configs and kept different picks: one seed rendered a
-    # different image per process. The pin must hold on every arch, not only the one measured.
     from core.inference.diffusion_families import detect_family
 
     fam = detect_family(repo)
@@ -203,7 +201,7 @@ def test_qwen_image_21_filter_kill_switch(monkeypatch):
     _on(monkeypatch, (8, 9))
     monkeypatch.setenv(cc.DYNAMIC_SCALE_RBLOCK_ENV, "1")
     assert cc.reduction_config_filter_available() is False
-    # The family still asks, but the compile kwargs stay inductor's own: no pinned option reaches torch.compile.
+    # The family still asks, but no pinned option reaches torch.compile.
     assert cc.family_filters_reductions(detect_family("Qwen/Qwen-Image-2.1")) is True
     kwargs = {"options": {}}
     assert ds.pin_reduction_configs(kwargs) is False
