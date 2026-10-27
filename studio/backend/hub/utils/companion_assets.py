@@ -160,53 +160,216 @@ _DENOISER_DIRS = ("transformer/", "unet/")
 _WEIGHT_SUFFIXES = (".safetensors", ".bin", ".ckpt", ".pt", ".pth", ".gguf")
 
 
-def _modular_video_asset_files() -> dict[str, set[str]]:
-    """Hosted modular-video components, never whole-pipeline installs. Use the loader's tables."""
-    from core.inference.diffusion_prequant import derived_prequant_filenames
-    from core.inference.video_families import _FAMILIES
-    from core.inference.video_minimax_h3_te import H3_TE_QUANT_FILES, H3_TE_QUANT_REPO
+_HOSTED_DENOISER = "denoiser"
+_HOSTED_COMPANION = "companion"
 
-    assets: dict[str, set[str]] = {}
-    for fam in _FAMILIES:
-        if not fam.modular_workflow:
+
+def _hosted_component_table() -> dict[str, dict[str, set[tuple[str, str, str]]]]:
+    """``{repo_id_lower: {filename_lower: {(registry, family, kind), ...}}}`` for every hosted quantized component
+    the image and video loaders fetch by name: ``prequant_repos`` / ``prequant_variant_repos`` denoisers (FP8, INT8,
+    INT8-ConvRot, NVFP4, every MoE / partition row, ComfyUI twins), ``te_prequant_repos`` / variant text encoders and
+    their INT8-ConvRot files, hosted bf16 VAEs, MiniMax-H3's conditioner and LTX-2.5's encoder. Read from the loader's
+    own tables and name resolvers, so a name the loader would not request is not here, and a cached file that is not
+    here counts as unknown. Keyed per FILE because each one is a single ``hf_hub_download`` at that path: one repo can
+    hold several families' files (``unsloth/Qwen-Image-FP8`` serves four families' encoder), and only the families
+    whose files are actually cached depend on it. Repos that are also a curated IMAGE base or mirror are left out:
+    those are pipeline installs the image derivation already accounts for, root checkpoints included."""
+    table: dict[str, dict[str, set[tuple[str, str, str]]]] = {}
+
+    def add(repo_id, names, owner, kind) -> None:
+        key = _normalise(repo_id)
+        if not key:
+            return
+        files = table.setdefault(key, {})
+        for name in names:
+            if name:
+                files.setdefault(str(name).lower(), set()).add((*owner, kind))
+
+    families: list[tuple[str, object]] = []
+    for registry, module in (
+        ("image", "core.inference.diffusion_families"),
+        ("video", "core.inference.video_families"),
+    ):
+        try:
+            families += [
+                (registry, fam) for fam in __import__(module, fromlist = ["_FAMILIES"])._FAMILIES
+            ]
+        except Exception as exc:  # noqa: BLE001 -- one missing registry never hides the other
+            logger.debug("%s family table unavailable: %s", registry, exc)
+    by_name: dict[str, list[tuple[str, str]]] = {}
+    for registry, fam in families:
+        by_name.setdefault(str(fam.name), []).append((registry, str(fam.name)))
+
+    try:
+        from core.inference.diffusion_prequant import derived_prequant_filenames, with_comfy_twins
+        from core.inference.video_denoiser_prequant import denoiser_components
+        for registry, fam in families:
+            owner = (registry, str(fam.name))
+            rows = [*getattr(fam, "prequant_repos", ())]
+            rows += [
+                (scheme, repo) for _b, scheme, repo in getattr(fam, "prequant_variant_repos", ())
+            ]
+            for scheme, repo in rows:
+                names = [
+                    n
+                    for component in denoiser_components(fam)
+                    for n in derived_prequant_filenames(repo, scheme, component = component)
+                ]
+                names += [
+                    row[-1] for row in getattr(fam, "prequant_filenames", ()) if row[0] == scheme
+                ]
+                add(repo, with_comfy_twins(names), owner, _HOSTED_DENOISER)
+    except Exception as exc:  # noqa: BLE001 -- no table: those repos keep the pre-table handling
+        logger.debug("Hosted denoiser table unavailable: %s", exc)
+
+    try:
+        from core.inference.diffusion_te_prequant import (
+            TE_INT8_CONVROT_FILES,
+            TE_INT8_CONVROT_VARIANT_FILES,
+            te_prequant_repo_filenames,
+        )
+
+        for registry, fam in families:
+            owner = (registry, str(fam.name))
+            rows = [
+                (str(r[2]), str(r[3] if len(r) > 3 else r[1]))
+                for r in getattr(fam, "te_prequant_repos", ()) or ()
+                if len(r) >= 3
+            ]
+            rows += [
+                (str(r[3]), str(r[2]))
+                for r in getattr(fam, "te_prequant_variant_repos", ()) or ()
+                if len(r) >= 4
+            ]
+            for repo, component in rows:
+                for scheme in ("fp8", "int8"):
+                    add(
+                        repo,
+                        te_prequant_repo_filenames(repo, component, scheme),
+                        owner,
+                        _HOSTED_COMPANION,
+                    )
+            for row in getattr(fam, "hosted_bf16_vae", ()) or ():
+                if len(row) == 3:
+                    add(row[1], [row[2]], owner, _HOSTED_COMPANION)
+        entries = [(f, e) for f, comps in TE_INT8_CONVROT_FILES.items() for e in comps.values()]
+        entries += [
+            (f, e)
+            for f, bases in TE_INT8_CONVROT_VARIANT_FILES.items()
+            for comps in bases.values()
+            for e in comps.values()
+        ]
+        for fam_name, entry in entries:
+            for owner in by_name.get(str(fam_name), ()):
+                if len(entry) >= 2:
+                    add(entry[0], [entry[1]], owner, _HOSTED_COMPANION)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Hosted text-encoder table unavailable: %s", exc)
+
+    try:
+        from core.inference.video_minimax_h3_te import H3_TE_QUANT_FILES, H3_TE_QUANT_REPO
+
+        # Old released builds kept the identical conditioner outside official/; both locations are this asset.
+        names = [
+            n
+            for name in H3_TE_QUANT_FILES.values()
+            for n in (name, name.replace("/official/", "/"))
+        ]
+        for owner in by_name.get("minimax-h3", ()):
+            add(H3_TE_QUANT_REPO, names, owner, _HOSTED_COMPANION)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("H3 conditioner table unavailable: %s", exc)
+    try:
+        from core.inference.video_ltx25 import LTX25_TE_HOSTED_FILE, LTX25_TE_HOSTED_REPO
+        for owner in by_name.get("ltx-2.5", ()):
+            add(LTX25_TE_HOSTED_REPO, [LTX25_TE_HOSTED_FILE], owner, _HOSTED_COMPANION)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("LTX-2.5 encoder table unavailable: %s", exc)
+
+    image_bases = {_normalise(b) for b in _with_mirrors(_curated_base_ids())}
+    return {repo: files for repo, files in table.items() if repo not in image_bases}
+
+
+def _hosted_names(table, repo_id: str) -> Optional[set[str]]:
+    files = table.get(_normalise(repo_id))
+    return None if files is None else set(files)
+
+
+def _base_families() -> dict[str, set[tuple[str, str]]]:
+    """``{base_id_lower: {(registry, family)}}``: every curated base a hosted component is loaded beside, under every
+    identity it can be cached as (upstream, ungated mirror, repack). A speed load caches that base minus the denoiser
+    and takes the denoiser from the hosted repo, so only these ids can stand in for an installed checkpoint; an
+    arbitrary VAE repo never becomes a dependent by filename."""
+    out: dict[str, set[tuple[str, str]]] = {}
+    for registry, module in (
+        ("image", "core.inference.diffusion_families"),
+        ("video", "core.inference.video_families"),
+    ):
+        try:
+            fams = __import__(module, fromlist = ["_FAMILIES"])._FAMILIES
+        except Exception:  # noqa: BLE001
             continue
-        for scheme, repo_id in fam.prequant_repos:
-            names = assets.setdefault(_normalise(repo_id), set())
-            names.update(n.lower() for n in derived_prequant_filenames(repo_id, scheme))
-            names.update(row[-1].lower() for row in fam.prequant_filenames if row[0] == scheme)
-    # H3's conditioner has a different format from the image encoder table. Old released builds
-    # used the identical file outside official/; both locations are curated companion assets.
-    names = assets.setdefault(_normalise(H3_TE_QUANT_REPO), set())
-    for name in H3_TE_QUANT_FILES.values():
-        names.update((name.lower(), name.lower().replace("/official/", "/")))
-    return assets
+        for fam in fams:
+            bases = {
+                getattr(fam, "base_repo", None),
+                *(getattr(fam, "named_variant_bases", ()) or ()),
+            }
+            bases |= {row[0] for row in getattr(fam, "prequant_variant_repos", ()) or ()}
+            bases |= {row[0] for row in getattr(fam, "te_prequant_variant_repos", ()) or ()}
+            for base in _with_mirrors(b for b in bases if b):
+                out.setdefault(_normalise(base), set()).add((registry, str(fam.name)))
+    return out
 
 
-def _modular_video_companion_bases(repo_id: str, filenames: Iterable[str]) -> set[str]:
-    """A modular pipeline or native checkpoint can reuse the same hosted component files."""
-    from core.inference.video_families import detect_video_family
+def _checkpoint_families(repo_id: str, names: Iterable[Optional[str]]) -> set[tuple[str, str]]:
+    """``(registry, family)`` of every family the image or video loader would resolve for this checkpoint."""
+    found: set[tuple[str, str]] = set()
+    try:
+        from core.inference.video_families import detect_video_family
+    except Exception:  # noqa: BLE001
+        detect_video_family = None
+    for name in dict.fromkeys([None, *(names or ())]):
+        fam = _detect_family(repo_id, name)
+        if fam is not None:
+            found.add(("image", str(fam.name)))
+        if detect_video_family is not None:
+            for probe in (repo_id, name):
+                try:
+                    vfam = detect_video_family(probe) if probe else None
+                except Exception:  # noqa: BLE001
+                    vfam = None
+                if vfam is not None:
+                    found.add(("video", str(vfam.name)))
+    return found
 
-    fam = detect_video_family(repo_id)
-    if fam is None:
-        fam = next((f for name in filenames if (f := detect_video_family(name)) is not None), None)
-    if fam is None or not fam.modular_workflow:
-        return set()
-    return {repo for _scheme, repo in fam.prequant_repos}
+
+def _hosted_repo_owners(table, repo) -> set[tuple[str, str, str]]:
+    """``(registry, family, kind)`` of every curated file actually cached in *repo*."""
+    files = table.get(_normalise(str(getattr(repo, "repo_id", "") or ""))) or {}
+    owners: set[tuple[str, str, str]] = set()
+    for name in _snapshot_relative_names(repo):
+        owners |= files.get(name.lower(), set())
+    return owners
 
 
-def _holds_modular_pipeline_components(repo) -> bool:
-    """A speed load can cache only the VAEs at its selected pipeline id, with the DiT elsewhere.
-
-    Keep sidecars protected until that pipeline is removed from On Device, including on upgraded
-    installs with no recorded links. An arbitrary VAE repo never becomes a dependent by filename.
-    """
-    from core.inference.video_families import _FAMILIES
-
+def _hosted_holds_unknown(table, repo) -> bool:
+    """Whether a hosted component repo holds anything the loaders never fetch there: a weight the table does not
+    name, or, for a repo that is also a base mirror, any file inside a folder. Either may be a model the user
+    installed, so the copy is preserved even when it shares the repo with curated components."""
     key = _normalise(str(getattr(repo, "repo_id", "") or ""))
-    bases = _with_mirrors(fam.base_repo for fam in _FAMILIES if fam.modular_workflow)
-    return key in {_normalise(base) for base in bases} and any(
-        name.lower().endswith(_WEIGHT_SUFFIXES) for name in _snapshot_relative_names(repo)
-    )
+    names = _hosted_names(table, key) or set()
+    try:
+        from core.inference.diffusion_families import canonical_base, mirror_repo
+        dual_role = canonical_base(key).lower() != key or mirror_repo(key) is not None
+    except Exception:  # noqa: BLE001
+        dual_role = True
+    for name in _snapshot_relative_names(repo):
+        lowered = name.lower()
+        if lowered in names:
+            continue
+        if lowered.endswith(_WEIGHT_SUFFIXES) or (dual_role and "/" in lowered):
+            return True
+    return False
 
 
 def repo_holds_denoiser(repo, *, folders: bool = True) -> bool:
@@ -216,14 +379,11 @@ def repo_holds_denoiser(repo, *, folders: bool = True) -> bool:
     if folders and any(holds_denoiser(name) for name in names):
         return True
     repo_id = str(getattr(repo, "repo_id", "") or "")
-    video_assets = _modular_video_asset_files().get(_normalise(repo_id))
-    if video_assets is not None:
-        # Offer only a component-only copy. An unrecognised weight may be a user-installed model;
-        # preserve it even if it shares a repo with the curated sidecars.
-        return any(
-            name.lower().endswith(_WEIGHT_SUFFIXES) and name.lower() not in video_assets
-            for name in names
-        )
+    hosted = _hosted_component_table()
+    if _normalise(repo_id) in hosted:
+        # A hosted component repo is never an install of its own (a pipeline pick of it is refused): only what the
+        # table cannot name keeps it.
+        return _hosted_holds_unknown(hosted, repo)
     if _normalise(repo_id) in _component_only_repo_ids():
         return False
     encoder_casts = _te_prequant_names(repo_id)
@@ -328,9 +488,8 @@ def _family_bases(repo_id: str, gguf_filename: Optional[str] = None) -> set[str]
     except Exception:  # noqa: BLE001
         return set()
     if fam is None:
-        # Modular video has its own family registry and hosted components; it does not resolve
-        # through the image registry.
-        return _modular_video_companion_bases(repo_id, [gguf_filename] if gguf_filename else [])
+        # The loader resolves a base with this same call, so no family means no load and there is no dependent here to protect: the two fail together.
+        return set()
     bases = {resolve_base_repo(fam, None)}
     bases |= _curated_variant_bases(fam, repo_id, gguf_filename)
     # The NATIVE engine never reads the diffusers base: it fetches a single-file VAE and text encoder from their own repos, and those repos are offerable for deletion, so a pre-existing native GGUF with no recorded link would have had its encoder listed as unused and removed underneath it. The recorded links cover a load that has happened since; this covers the install that predates them.
@@ -451,15 +610,17 @@ def _with_mirrors(bases: Iterable[str]) -> set[str]:
 
 
 def known_companion_base_ids() -> set[str]:
-    """Every curated image-base or modular-video companion id (lowercased), including mirrors. Deliberately NOT "anything a link ever named": orphan cleanup offers only repos this set recognises, so a mis-recorded link can never turn an unrelated repo into a delete candidate."""
-    bases = _curated_base_ids() | set(_modular_video_asset_files())
+    """Every curated image-base id (lowercased, including mirrors) and every hosted quantized component repo id. Deliberately NOT "anything a link ever named": orphan cleanup offers only repos this set recognises, so a mis-recorded link can never turn an unrelated repo into a delete candidate."""
+    bases = _curated_base_ids()
     # The native engine's component-only repos ARE the companions for an sd.cpp pick, and the largest half of the footprint; leaving them out made them link-only strangers. Safe against a chat model borrowed as a text encoder, since the orphan listing skips any repo holding a GGUF.
     try:
         from core.inference.diffusion_families import sd_cpp_companion_only_repo_ids
         bases |= set(sd_cpp_companion_only_repo_ids())
     except Exception as exc:  # noqa: BLE001 -- one missing table never hides the rest
         logger.debug("sd.cpp companion table unavailable: %s", exc)
-    return {_normalise(b) for b in _with_mirrors(bases)}
+    # Hosted component repos by their own id only: a video -FP8 repo is also its base's mirror, and expanding it would
+    # make the upstream base itself offerable.
+    return {_normalise(b) for b in _with_mirrors(bases)} | set(_hosted_component_table())
 
 
 def _mirror_pair_ids() -> set[str]:
@@ -512,13 +673,6 @@ def required_companion_bases(
     pick_names = _cached_checkpoint_pick_names(cache_scans)
     # Denoiser-gated, not id-gated: a VAE-only fetch from a prequant repo (unsloth/Qwen-Image-2.1-FP8) cannot load, so it pins nothing (#11825).
     checkpoints = _denoiser_holding_repo_ids(cache_scans)
-    checkpoints |= {
-        _normalise(str(getattr(repo, "repo_id", "") or ""))
-        for scan in cache_scans or ()
-        for repo in getattr(scan, "repos", ()) or ()
-        if str(getattr(repo, "repo_type", "")) == "model"
-        and _holds_modular_pipeline_components(repo)
-    }
     required: dict[str, set[str]] = {}
     for repo_id in _cached_model_repo_ids(cache_scans):
         key = _normalise(repo_id)
@@ -538,7 +692,79 @@ def required_companion_bases(
             if not base_key or base_key in self_keys or _normalise(_canonical(base)) in self_keys:
                 continue
             required.setdefault(base_key, set()).add(repo_id)
+    _add_hosted_dependents(required, cache_scans, checkpoints, pick_names, ignored)
     return required
+
+
+def _add_hosted_dependents(required, cache_scans, checkpoints, pick_names, ignored) -> None:
+    """Hosted quantized components, per cached FILE. A cached hosted repo is needed by an installed model whose loader
+    reads one of the curated files it holds; a repo outside the scan (a single-repo preview) is listed for every
+    family whose table names it, since only cached repos are ever shown. A hosted DENOISER is read only beside a
+    curated base (a GGUF or dense pick brings its own), so only a base identity pins one; encoders and VAEs are read
+    by every install of the family. A curated base holding weights while a hosted denoiser of its family is cached is
+    a speed load: the base minus its denoiser plus the hosted file IS the install, so the base also lists itself and
+    Free up space never offers half of it (the delete guard ignores the repo being deleted, so its own delete stays
+    open)."""
+    table = _hosted_component_table()
+    if not table:
+        return
+    cached: dict[str, set[tuple[str, str, str]]] = {}
+    for scan in cache_scans or ():
+        for repo in getattr(scan, "repos", ()) or ():
+            try:
+                key = _normalise(str(getattr(repo, "repo_id", "") or ""))
+                if str(getattr(repo, "repo_type", "")) != "model" or key not in table:
+                    continue
+                cached.setdefault(key, set()).update(_hosted_repo_owners(table, repo))
+            except Exception:  # noqa: BLE001 -- one unreadable row never hides the rest
+                continue
+    listed = {repo_key: set().union(*files.values()) for repo_key, files in table.items()}
+    in_view = {(r, f) for repo_key in cached for r, f, _k in listed[repo_key]}
+    denoisers = {
+        (r, f) for owners in cached.values() for r, f, k in owners if k == _HOSTED_DENOISER
+    }
+    bases = _base_families()
+    # {checkpoint repo id: (families, whether hosted denoisers count)}
+    dependents: dict[str, tuple[set[tuple[str, str]], bool]] = {}
+    for scan in cache_scans or ():
+        for repo in getattr(scan, "repos", ()) or ():
+            try:
+                if str(getattr(repo, "repo_type", "")) != "model":
+                    continue
+                repo_id = str(getattr(repo, "repo_id", "") or "")
+                key = _normalise(repo_id)
+                if not key or key in ignored or repo_id in dependents:
+                    continue
+                families = bases.get(key) if key not in table else None
+                if key in checkpoints:
+                    found = _checkpoint_families(repo_id, pick_names.get(key, []))
+                    dependents[repo_id] = (found | (families or set()), bool(families))
+                    continue
+                # A hosted repo that is also a base mirror is a companion here, never its own speed load.
+                if not families:
+                    continue
+                if not any(
+                    n.lower().endswith(_WEIGHT_SUFFIXES) for n in _snapshot_relative_names(repo)
+                ):
+                    continue
+                if families & in_view and not families & denoisers:
+                    # This family's hosted repos are cached and none holds its denoiser: a companion-only fetch.
+                    continue
+                dependents[repo_id] = (families, True)
+                if families & denoisers:
+                    required.setdefault(key, set()).add(repo_id)
+            except Exception:  # noqa: BLE001
+                continue
+    for repo_id, (families, reads_denoisers) in dependents.items():
+        own = _normalise(repo_id)
+        for repo_key, owners in listed.items():
+            if repo_key == own:
+                continue
+            if any(
+                (r, f) in families and (reads_denoisers or k != _HOSTED_DENOISER)
+                for r, f, k in (cached[repo_key] if repo_key in cached else owners)
+            ):
+                required.setdefault(repo_key, set()).add(repo_id)
 
 
 def _hosts_artifacts(repo_id: str) -> bool:
