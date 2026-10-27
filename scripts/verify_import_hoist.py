@@ -1057,6 +1057,9 @@ def _git_moved(before_ref: str, after_ref: str, importer: str):
             return False
         if _top_level_binding(show(before_ref, old_path), name) != "def":
             return False
+        # Arrived with this change: a destination that already had its own `name` is a different object.
+        if _top_level_binding(show(before_ref, new_path), name) is not None:
+            return False
         # The old module no longer defines it; at most it re-imports it from the new module.
         left = _top_level_binding(show(after_ref, old_path), name)
         if left is None:
