@@ -179,11 +179,9 @@ def _bind_assistant_locked(
     existing_run_id = (
         existing_metadata.get("researchRunId") if isinstance(existing_metadata, dict) else None
     )
-    # Only bind to an empty placeholder or this run's own message: an untagged reply carries parts
-    # _update_assistant drops on completion, so binding one silently overwrites an existing answer.
+    # Bind only to an empty placeholder or this run's message, or an existing answer is overwritten.
     parts = _loads(message["content_json"], [])
-    # A preamble beside the deep_research call is not a prior answer, so only text WITHOUT the
-    # handoff refuses the bind. Source parts, which only a finished answer carries, still do.
+    # A preamble beside the deep_research call is not a prior answer; only text without the handoff refuses the bind, but source parts still do.
     has_research_handoff = any(
         isinstance(part, dict)
         and part.get("type") == "tool-call"
@@ -346,10 +344,7 @@ def rebind_cancelled(
     assistant_message_id: str | None,
     config: dict[str, Any],
 ) -> dict | None:
-    """Re-point the thread's stopped run at a newer message, or return None. A thread holds one Deep
-    Research run for its lifetime, so a run the user stopped would otherwise refuse every later
-    question in that chat. Stopping kept nothing, so the same run is reset and pointed at the new
-    message instead of a second one being created."""
+    """A thread keeps one Deep Research run; reset a stopped run for the next message, or every later question in the chat is refused."""
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -376,10 +371,8 @@ def rebind_cancelled(
             plan_revision = revision,
             created = now,
         )
-        # retry_count is the attempt epoch every event is stamped with, and a new question is a new attempt: without
-        # the bump its report would carry the stopped question's reasoning, since get_reasoning_text joins every event
-        # at the run's current attempt. The retry BUDGET is counted per question, so spending an epoch here spends no
-        # retry.
+        # retry_count is the event attempt epoch; bump it per question so old reasoning is not joined.
+        # The retry budget is counted per question, so this spends no retry.
         conn.execute(
             "UPDATE research_runs SET user_message_id=?, assistant_message_id=?, "
             "status='planning', cancel_requested=0, plan_json=NULL, plan_hash=NULL, "
@@ -401,8 +394,7 @@ def rebind_cancelled(
         conn.execute("DELETE FROM research_plan_steps WHERE run_id=?", (run_id,))
         conn.execute("DELETE FROM research_sources WHERE run_id=?", (run_id,))
         conn.execute("DELETE FROM research_document_sources WHERE run_id=?", (run_id,))
-        # Events replay into the activity panel, so a kept approval would show "Plan approved" for a
-        # question this run no longer researches.
+        # Events replay into the activity panel, so drop the stale approval or it shows Plan approved for a question this run no longer researches.
         conn.execute(
             "DELETE FROM research_events WHERE run_id=? AND event_type='run.approved'", (run_id,)
         )
@@ -830,9 +822,7 @@ def retry(
             raise KeyError(run_id)
         if row["status"] not in {"failed", "cancelled"}:
             raise ResearchConflictError("Only failed or cancelled runs can be retried")
-        # Counted per question, not per run row: a thread re-points one run at each new question, so a raw
-        # retry_count would hand a fresh question whatever the stopped one left over, and nothing at all once the
-        # budget was spent.
+        # Counted per question, not per run row: a raw retry_count would give a fresh question leftover retries from the stopped one, or none once spent.
         spent = conn.execute(
             "SELECT COUNT(*) FROM research_events WHERE run_id=? AND event_type='run.retried' "
             "AND seq > COALESCE((SELECT MAX(seq) FROM research_events "
@@ -913,10 +903,7 @@ _CLAIMABLE_SQL = """SELECT r.id FROM research_runs r
 
 
 def _has_claimable(now: int) -> bool:
-    """Read-only probe for claimable work, taking no write lock. The supervisor polls twice a second forever and
-    almost every poll finds nothing, so opening BEGIN IMMEDIATE first meant an idle Studio held the writer lock
-    2x/second and any slow writer elsewhere became a stream of "database is locked" here.
-    """
+    """Read-only so the twice-a-second idle poll never takes the writer lock; BEGIN IMMEDIATE here turned slow writers elsewhere into database is locked errors."""
     conn = get_connection()
     try:
         return conn.execute(_CLAIMABLE_SQL, (now,)).fetchone() is not None
@@ -925,8 +912,7 @@ def _has_claimable(now: int) -> bool:
 
 
 def claim_next(worker_id: str, lease_ms: int = 120_000) -> dict | None:
-    # Advisory only: the row can disappear between this probe and the transaction below, which the "row
-    # is None" branch already handles.
+    # Advisory only: the row can vanish before the transaction (handled below).
     if not _has_claimable(now_ms()):
         return None
     conn = get_connection()

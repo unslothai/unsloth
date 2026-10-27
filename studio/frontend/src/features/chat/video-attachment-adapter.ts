@@ -25,8 +25,7 @@ function newAttachmentId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-/** Video shares the "Add photos & files" picker, like audio. llama-server samples the clip into
- *  frames with ffmpeg, so the container is forwarded untouched. */
+/** llama-server samples frames with ffmpeg, so the container is forwarded untouched. */
 export class VideoAttachmentAdapter implements AttachmentAdapter {
   accept = VIDEO_ACCEPT;
   private readonly attachmentIds = new Set<string>();
@@ -43,7 +42,6 @@ export class VideoAttachmentAdapter implements AttachmentAdapter {
         externalModelLabel(checkpoint) ||
         checkpoint ||
         "Current model";
-      // The server does not say which cause applies, so name what each backend needs.
       unavailableReason = `${label} cannot accept video. Video needs a GGUF model whose mmproj supports video, with a llama.cpp build with video enabled and ffmpeg installed on this machine, or an MLX vision model that reads video.`;
     }
     if (unavailableReason) {
@@ -87,8 +85,7 @@ export class VideoAttachmentAdapter implements AttachmentAdapter {
             type: "file",
             filename: attachment.name,
             data,
-            // Normalised at pick time: the extractor keys off this, and a browser that answered "" or
-            // application/octet-stream for an mkv would otherwise cost the clip silently.
+            // Browsers may report "" or octet-stream for mkv, and the extractor keys off this.
             mimeType: attachment.contentType || "video/mp4",
           },
         ],

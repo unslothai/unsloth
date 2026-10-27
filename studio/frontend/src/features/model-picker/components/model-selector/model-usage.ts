@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Tracks when each model was last loaded so the "Recent" sort can order by usage, distinct from
-// "Downloaded", which orders by the file's download date. Kept in localStorage; ids are
-// lowercased to match how the picker compares them.
+// Last-load times for the "Recent" sort; ids lowercased to match the picker's comparisons.
 
 import { useEffect, useState } from "react";
 
@@ -20,7 +18,6 @@ function readLoadTimes(): ModelLoadTimes {
   }
 }
 
-/** Stamp a model as loaded now and return the updated map. */
 export function recordModelLoaded(id: string): ModelLoadTimes {
   const next = { ...readLoadTimes(), [id.toLowerCase()]: Date.now() };
   try {

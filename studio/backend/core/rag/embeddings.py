@@ -41,13 +41,11 @@ logger = logging.getLogger(__name__)
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 _lock = threading.Lock()
-# Serializes encode/tokenize (the HF fast tokenizer is not thread-safe); separate from _lock so a
-# long encode never blocks a reload.
+# HF fast tokenizer is not thread-safe; separate from _lock so encode never blocks reload.
 _compute_lock = threading.Lock()
 _model = None
 _name: str | None = None
-# The process embedder can swap between an encode returning and the caller asking, so the answer
-# must be the backend actually used. See encode_with_identity.
+# Table lookup: a GPU request with no GPU maps to cpu, not to a device string torch cannot open.
 _served_by = threading.local()
 
 
@@ -83,10 +81,7 @@ class TorchDeviceUnusableError(RuntimeError):
 
 
 def _load_device() -> str:
-    """Choose a device after probing for fatal torch driver failures in a child.
-
-    Fall back to CPU to preserve the embedding space. Raise only if CPU also
-    crashes, allowing the caller to select the GGUF backend."""
+    """Falls back to CPU to keep the embedding space; re-raises only if CPU also crashes."""
     device = _device()
     if device == "cpu":
         return device
@@ -137,10 +132,7 @@ _stub_lock = threading.Lock()
 
 
 def _install_torchao_stub_once() -> None:
-    """Neutralize torchao before importing sentence-transformers. On Windows ROCm,
-    torchao (pulled in by transformers.quantizers) imports an absent c10d backend
-    and aborts, dropping the embedder to llama-server. Workers stub it too; the
-    embedder runs in the main process. No-op elsewhere; runs once."""
+    """Stub torchao before sentence-transformers loads: on Windows ROCm its absent c10d backend aborts."""
     global _torchao_stub_done
     with _stub_lock:
         if _torchao_stub_done:
@@ -206,12 +198,7 @@ def _repo_json(name: str, filename: str, token: str | bool | None) -> Any:
 
 
 def _st_module_subdirs(name: str, token: str | None) -> tuple[str, ...]:
-    """The module directories a SentenceTransformer load reads weights from, taken from
-    the repo's ``modules.json`` (each module's non-empty ``path``, e.g. ``0_Transformer``).
-    ST deserializes ``pytorch_model.bin`` from these dirs, so they are load roots for the
-    security scan: a flagged pickle directly under one must block. Returns () on any
-    failure (no modules.json, offline, malformed) so the guard never bricks the embedder.
-    """
+    """Module subdirs from modules.json, the load roots for the security scan; () on any failure."""
     try:
         data = _repo_json(name, "modules.json", token)
         subdirs = []
@@ -229,18 +216,7 @@ def _guard_model_security(
     local_only: bool = False,
     display: str | None = None,
 ) -> None:
-    """Refuse to load a repo HF flagged as unsafe: a poisoned pickle deserializes inside
-    SentenceTransformer regardless of trust_remote_code. Defense in depth behind the /settings gate
-    (a name can also arrive via env/default); local paths and unreachable scans fail open inside
-    evaluate_file_security, and a gate error never bricks the embedder.
-
-    ``local_only`` (offline) inspects the local cache; subdir probes are skipped, since they would
-    hit the network and hang and the offline gate walks the whole snapshot anyway.
-
-    ``display`` names the model in the error. The scan runs on ``name``, already resolved to an
-    absolute snapshot directory, and that path reaches a user through /v1/embeddings; the configured
-    model is what they can act on.
-    """
+    """Refuses repos HF flags unsafe: a poisoned pickle loads regardless of trust_remote_code."""
     try:
         from utils.security import evaluate_file_security, security_load_subdirs
 
@@ -248,8 +224,7 @@ def _guard_model_security(
         if local_only:
             load_subdirs = ()
         else:
-            # Union the load roots so a flagged pickle under a Transformer module dir blocks instead of passing
-            # as an unreferenced nested shard.
+            # Union of load roots, so a flagged pickle under a module dir still blocks.
             load_subdirs = tuple(
                 dict.fromkeys(
                     (*security_load_subdirs(name, token), *_st_module_subdirs(name, token))
@@ -291,8 +266,7 @@ class _CaptureLoadReport(logging.Filter):
     """
 
     _SERIOUS = ("MISSING", "MISMATCH", "CONVERSION")
-    # Only the legacy BERT-era buffer is downgraded, matched on the whole key: any other discarded
-    # weight can genuinely change retrieval quality.
+    # Only this legacy BERT buffer is benign; other discarded weights can change retrieval.
     _KNOWN_BENIGN_UNEXPECTED = "embeddings.position_ids"
 
     def __init__(self) -> None:
@@ -317,8 +291,7 @@ class _CaptureLoadReport(logging.Filter):
         for report in self.reports:
             if any(tag in report for tag in self._SERIOUS):
                 return True
-            # Row by row over the table only: transformers appends a "Notes:" section explaining each status
-            # ("- UNEXPECTED: can be ignored ..."), whose lines would read as serious key rows.
+            # Skip transformers' trailing Notes: section, whose lines look like key rows.
             table = report.split("Notes:", 1)[0]
             for row in table.splitlines():
                 if "UNEXPECTED" not in row:
@@ -342,12 +315,7 @@ _LOAD_REPORT_LOGGERS = (
 
 @contextmanager
 def _quiet_transformers_load():
-    """Keep a transformers weight load from writing raw ANSI/tqdm output to stdout.
-
-    Scoped to the embedder load only, so a user-visible model load keeps its normal
-    progress bar and report. Restores the progress-bar setting exactly as found, so
-    a caller that had already disabled bars stays disabled.
-    """
+    """Keeps transformers load progress and ANSI off stdout; restores the progress-bar setting as found."""
     capture = _CaptureLoadReport()
     attached = []
     for name in _LOAD_REPORT_LOGGERS:
@@ -355,10 +323,7 @@ def _quiet_transformers_load():
         log.addFilter(capture)
         attached.append(log)
 
-    # The "is it enabled" probe is spelled both ways across transformers versions, so accept either and
-    # skip the restore when neither exists.
-    # transformers' enable_progress_bar() also calls the Hub's, so snapshot and restore the Hub state
-    # separately or a Hub-only disable is clobbered.
+    # Progress-bar probe name differs across transformers versions; restore Hub state separately.
     hub_bars_off = None
     try:
         from huggingface_hub.utils import are_progress_bars_disabled
@@ -401,12 +366,7 @@ def _quiet_transformers_load():
 
 
 def _one_line(text: str) -> str:
-    """The report as a single plain-text line.
-
-    This module logs through the stdlib logger, not structlog, so re-emitting the
-    captured table verbatim would put the ANSI escapes and embedded newlines straight
-    back into the server log, which is the thing being fixed.
-    """
+    """Flattens the report to one plain line, since the stdlib logger would echo ANSI and newlines."""
     plain = _ANSI_RE.sub("", text)
     return " | ".join(part.strip() for part in plain.splitlines() if part.strip())
 
@@ -643,14 +603,10 @@ def _get(model_name: str | None = None):
             from utils.paths import is_local_path
             from utils.utils import cached_st_source, hf_cache_snapshot_dir
 
-            # The repo AND the directory that supplied the weights, together: ST weights alone are satisfied by
-            # the first finalized shard of a transfer still in flight.
-            # Repo ids only: a local folder named all-MiniLM-L6-v2 would otherwise load the Hub's weights under
-            # the local path's identity.
+            # Repo ids only: a local folder with a Hub-like name must not load the Hub's weights.
             st_source = None if is_local_path(name) else cached_st_source(name)
             if not local_only and st_source is not None:
-                # Load the snapshot that was called cached: the repo id lets ST reach the Hub for a newer revision
-                # during the first index, changing the vectors without changing their identity.
+                # Load the cached snapshot path, not the repo id, so ST cannot fetch a newer revision.
                 load_target = str(st_source[1])
             if local_only:
                 # ST-specific AND complete: a hybrid repo's cached GGUF, or a transfer that finalized only its first
@@ -664,8 +620,7 @@ def _get(model_name: str | None = None):
                     )
                 snapshot = st_source[1] if st_source else hf_cache_snapshot_dir(name)
                 if snapshot is not None:
-                    # A local path never touches the Hub, so this is offline-safe on ANY sentence-transformers
-                    # version, even ones predating local_files_only.
+                    # Re-emit in finally: MISSING or MISMATCH lines matter most when the load raises.
                     load_target = str(snapshot)
                 elif download_pending:
                     raise EmbeddingModelDownloadRequiredError(
@@ -674,13 +629,10 @@ def _get(model_name: str | None = None):
                     )
                 elif _st_accepts_local_files_only(SentenceTransformer):
                     st_kwargs["local_files_only"] = True
-            # Scan after load_target is settled: on the repo id it checked the Hub's current commit while the
-            # load opened an older cached one. evaluate_file_security recovers the repo and exact commit from
-            # a snapshot path.
+            # Scan only after load_target is settled, so the scanned commit is the loaded one.
             _guard_model_security(load_target, offline, display = name)
             with _quiet_transformers_load() as report:
-                # Re-emit in finally: a load that raises after transformers wrote its report is exactly when a
-                # MISSING or MISMATCH line matters.
+                # Retire only after construction succeeds, or a failed load falls to llama-server with no marker.
                 try:
                     try:
                         _model = SentenceTransformer(load_target, **st_kwargs)
@@ -737,8 +689,7 @@ def _st_encode(
     """ST encode -> (N, dim) float32. Serialized (fast-tokenizer borrow check),
     under inference_mode when torch is present, with rayon enabled for the call."""
     with _compute_lock:
-        # Admission and model lookup are one lease: lookup first would let unload clear the globals while
-        # this call still held a strong reference.
+        # ST encode failed after load: switch to llama-server so later encodes share one vector space.
         model = _get(model_name)
         # Affinity narrowed in Task Manager mid-index must reach this thread's pool (#14313).
         fit_threads_to_affinity()
@@ -781,12 +732,7 @@ def _st_max_tokens(model_name: str | None = None) -> int | None:
 
 
 def _st_token_counter(model_name: str | None = None) -> Callable[[str], int]:
-    """Token counter using the model's tokenizer, under the compute lock (the same fast tokenizer
-    backs encode and is not thread-safe), with rayon enabled for the call. Mirrors
-    ``_st_encode``: admission and model lookup are one lease, so the tokenizer is read per call
-    inside the lock. Chunking holds this callable for a whole document, and a tokenizer captured
-    up front outlives the unload that retired it, counting on with weights nobody can reach while
-    the endpoint reports the model as gone."""
+    """Reads the tokenizer per call under _compute_lock; caching it would outlive an unload."""
 
     def _count(t: str) -> int:
         with _compute_lock:
@@ -835,8 +781,7 @@ class _SentenceTransformersBackend:
         except (UnsafeEmbeddingModelError, EmbeddingModelDownloadRequiredError):
             raise
         except Exception as st_err:  # noqa: BLE001 - runtime ST/CUDA encode failure
-            # ST loaded but this encode failed: swap the process to llama-server so later encodes stay in one
-            # space, then retry.
+            # Directory names prove nothing; only the filesystem shows that a dir holding safetensors is ST.
             fallback = _switch_to_llama_fallback(st_err, model_name)
             if fallback is None:
                 raise
@@ -859,10 +804,7 @@ class _SentenceTransformersBackend:
 _backend_lock = threading.Lock()
 _backend = None
 _backend_key: str | None = None
-# Per model, keyed by model: one (key, model) pair let a second failing model erase the first one's
-# pin and send a running job back to ST.
-# Read WITHOUT _backend_lock: _get_backend holds it across a whole model load; dict.get is atomic
-# and a pin landing mid-probe is answered on the next call.
+# Read without _backend_lock (held across model loads); dict.get is atomic.
 _forced_backends: dict[str, str] = {}
 
 _ST_ALIASES = frozenset({"sentence-transformers", "sentence_transformers", "st"})
@@ -873,15 +815,10 @@ _AUTO_ALIASES = frozenset({"auto", ""})
 
 
 def _resolve_auto() -> str:
-    """Pick a backend for ``auto``: sentence-transformers when a CUDA/ROCm GPU is
-    present (torch fp16 wins bulk indexing), else the torch-free GGUF llama-server
-    -- or ST if its binary is missing. The GPU check goes through an smi tool
-    (nvidia-smi, then amd-smi), so it costs no CUDA/HIP context unless neither
-    is installed."""
+    """Auto picks sentence-transformers on a CUDA/ROCm GPU, else llama-server; GPU detection uses smi."""
     from core.inference.llama_cpp import LlamaCppBackend
 
-    # Unfiltered probe: the winner runs under PyTorch, so the ROCm arch gate for the installed llama.cpp
-    # prebuilt (#7624) must not apply.
+    # Unfiltered probe: the llama.cpp ROCm arch gate (#7624) does not apply to PyTorch.
     if LlamaCppBackend._get_gpu_free_memory():
         return "sentence-transformers"
     if LlamaCppBackend._find_llama_server_binary():
@@ -889,8 +826,7 @@ def _resolve_auto() -> str:
     return "sentence-transformers"
 
 
-# _resolve_auto's answer, kept with the backend it built: every encode, token count and identity
-# check resolves auto, and its GPU probe is a subprocess (#10390).
+# Cached: the auto GPU probe is a subprocess (#10390).
 _resident_hardware: tuple[object, str] | None = None
 _hardware_probe = threading.local()
 
@@ -913,10 +849,7 @@ def _keep_hardware_choice(backend) -> None:
 
 
 def _model_is_local_gguf(model: str | None) -> bool:
-    """Whether ``model`` names a local .gguf file, or a folder holding one.
-
-    Gated on ``is_local_path`` first: a plain repo id costs no filesystem walk on
-    the hot ``_get_backend`` path."""
+    """True for a local .gguf file or folder; the cheap is_local_path check runs first on the hot path."""
     if not model:
         return False
     try:
@@ -932,25 +865,18 @@ def _model_is_local_gguf(model: str | None) -> bool:
 
 
 def _model_names_gguf_repo(model: str | None) -> bool:
-    """Whether ``model`` is a repo id that names GGUF weights.
-
-    The `-GGUF` companion suffix is the convention the resolver derives and the
-    picker's on-device dot follows, so such a repo publishes no safetensors for
-    sentence-transformers to open. A pure name test: the remote counterpart of
-    ``_model_is_local_gguf``, which cannot see a repo that is not on disk yet."""
+    """Name-only test for a -GGUF repo: it has no safetensors for sentence-transformers to open."""
     if not model:
         return False
     try:
         from utils.paths import is_local_path
 
-        # A directory may be named anything, so only the filesystem can say that ~/models/my-gguf holding
-        # safetensors is a sentence-transformers model.
+        # Before the stored record: asks the filesystem, not a guess; RAG_EMBED_BACKEND still overrides.
         if is_local_path(model):
             return False
     except Exception:  # noqa: BLE001 - unparseable path is not a repo id either
         return False
-    # config's predicate, not a second opinion: gguf_repo_candidates already counts "gguf" as a whole
-    # name segment, so owner/GGUF-model is a GGUF repo there and must not be one here.
+    # Must agree with config's predicate used by gguf_repo_candidates.
     return config._names_gguf(model.strip().rstrip("/").rsplit("/", 1)[-1])
 
 
@@ -978,11 +904,7 @@ def _plan_prefers_llama_server(model: str) -> bool:
 
 
 def _resolve_auto_for_model(model_name: str | None = None) -> str:
-    """``auto``, but honouring the backend recorded for the saved model.
-
-    An embedder with no GGUF still runs on sentence-transformers, so the picker
-    records that choice; the hardware default would send it to llama-server,
-    which has nothing to open."""
+    """Auto, but honouring the saved backend: an embedder with no GGUF stays on sentence-transformers."""
     model = model_name or config.effective_embedding_model()
     # Ahead of the stored record, since the filesystem was asked rather than guessed at; only auto
     # consults this, so an explicit RAG_EMBED_BACKEND still wins.
@@ -1005,18 +927,10 @@ def _resolve_auto_for_model(model_name: str | None = None) -> str:
 
 
 def sentence_transformers_runtime_available() -> bool:
-    """Whether the ST backend can reach the model-loading step in this process.
-
-    Deliberately mirrors the environment-dependent prefix of ``_get`` but does not construct a
-    model, which could download the snapshot the picker is still planning. It catches missing/broken
-    torch or sentence-transformers installs and the fatal device mismatch that
-    ``_build_st_backend_or_fallback`` would otherwise discover only after an ST-only plan was
-    persisted.
-    """
+    """Checks torch, sentence-transformers and the device, without building a model that may download."""
     try:
         _load_device()
-        # Not under _lock: _get holds it across an entire SentenceTransformer construction, download
-        # included, so sharing it blocked Settings for the length of a slow first load.
+        # Not under _lock: _get holds it across a whole model download/construction.
         _install_torchao_stub_once()
         from sentence_transformers import SentenceTransformer
 
@@ -1160,14 +1074,7 @@ def _try_make_llama_backend():
 
 
 def _build_st_backend_or_fallback(model_name: str | None = None):
-    """Build the ST backend, probing it by loading the model now. If the probe raises (no torch, CUDA
-    mismatch, bad wheel) and the GGUF llama-server embedder is available, fall back to it; the probe
-    runs before any vector is produced, so this never mixes spaces. Re-raises if no embedder can
-    start.
-
-    ``model_name`` is the model the caller pinned. Warming ``None`` reads the live setting, so a job
-    pinned to A probed B once Settings moved, failing the valid A job before its first encode.
-    """
+    """Warms the pinned model_name, not the live setting; a failed ST probe falls back to llama-server."""
     backend = _SentenceTransformersBackend()
     try:
         backend.warm(model_name = model_name)
@@ -1187,10 +1094,7 @@ def _build_st_backend_or_fallback(model_name: str | None = None):
 
 
 def _switch_to_llama_fallback(err, model_name: str | None = None):
-    """An ST encode failed at runtime even though the model had loaded. Swap the
-    process embedder to llama-server so every later encode stays in one space, and
-    return it (None if no binary). Vectors written before the swap were ST, so any
-    KB already embedded with ST should be reindexed."""
+    """After a runtime ST encode failure, swaps to llama-server; earlier ST vectors need a reindex."""
     global _backend, _backend_key
     failed_model = model_name or config.effective_embedding_model()
     old = None
@@ -1209,8 +1113,7 @@ def _switch_to_llama_fallback(err, model_name: str | None = None):
         old, _backend = _backend, fallback
         _forced_backends[failed_model] = "llama-server"
         _backend_key = _backend_cache_key(_raw_backend(), "llama-server")
-    # The failed ST wrapper is no longer published, but its module-level model would survive even a
-    # later unload of the llama replacement.
+    # ST wrappers share one module-level model; the warmed replacement would lose it if cleared here.
     _dispose_replaced_backend(old, fallback)
     return fallback
 
@@ -1220,12 +1123,7 @@ def _raw_backend() -> str:
 
 
 def sentence_transformers_fallback_allowed(model_name: str | None = None) -> bool:
-    """Whether a resolved ST plan can actually be selected for a new model.
-
-    An explicit llama configuration ignores the per-model stored backend, and
-    a runtime ST failure deliberately pins llama until unload. In either state,
-    offering safetensors would save a model the first index cannot load.
-    """
+    """Under an explicit llama config or a runtime ST failure pin, ST cannot be offered for a new model."""
     raw = _raw_backend()
     model = model_name or config.effective_embedding_model()
     if _forced_backends.get(model) in _LLAMA_ALIASES:
@@ -1269,16 +1167,7 @@ def _dispose_replaced_backend(old, new = None) -> None:
 
 
 def _get_backend(model_name: str | None = None):
-    """The process-wide embedding backend for ``config.EMBED_BACKEND``, built once. Cached by the
-    resolved choice, so ``auto`` detection runs only on a miss and a config or saved-model change
-    rebuilds it.
-
-    ``model_name`` is the model the caller is embedding for, defaulting to the live setting. A job
-    pins its model once and passes it down, and per-model stored backends mean two models can
-    resolve differently: reading the setting here would let a Settings change mid-job build the NEW
-    model's backend while ``encode_with_identity`` goes on labelling the vectors with the pinned
-    one.
-    """
+    """Uses the job's pinned model_name, not the live setting; a Settings change would mislabel vectors."""
     global _backend, _backend_key
     raw = _raw_backend()
     old = None
@@ -1286,8 +1175,7 @@ def _get_backend(model_name: str | None = None):
     with _backend_lock:
         model = model_name or config.effective_embedding_model()
         forced = _forced_backends.get(model)
-        # Load-bearing: the identity and active-backend probes also resolve auto outside this lock,
-        # so without the clear a build that short-circuited the hardware keeps their stale answer.
+        # Load-bearing: other probes resolve auto outside this lock and would keep a stale answer.
         _hardware_probe.choice = None
         key = forced or (_resolve_auto_for_model(model) if raw in _AUTO_ALIASES else raw)
         if _backend is not None and _backend_key == _backend_cache_key(raw, key):
@@ -1328,13 +1216,7 @@ def _reset_backend() -> None:
 
 
 def backend_is_loaded(model_name: str | None = None) -> bool:
-    """Whether ``model_name`` is resident, or any embedder when omitted.
-
-    Deliberately lock-free: ``_backend_lock`` and ``_lock`` are both held across a whole model load,
-    so taking either here made GET, PUT, reset and unload wait it out. Both reads are single
-    attribute loads, and the pre- or post-load value is equally true for "is something resident
-    right now".
-    """
+    """Lock-free on purpose: the load locks are held across whole model loads, which would stall status."""
     backend = _backend
     if backend is None:
         # No published backend does not mean nothing is loaded: answering False stranded module-level
@@ -1354,8 +1236,7 @@ def backend_is_loaded(model_name: str | None = None) -> bool:
         return _model is not None and _name == model_name
     if _is_llama_backend(backend):
         try:
-            # The object keeps _model_repo after the subprocess exits, so a repo match alone would call a dead
-            # server resident.
+            # Unload is a fresh start: clearing _forced_backends lets the saved model pick its backend again.
             if not backend._process_alive():
                 return False
             return backend._model_repo == config.effective_gguf_repo_for_embedding_model(model_name)
@@ -1365,11 +1246,7 @@ def backend_is_loaded(model_name: str | None = None) -> bool:
 
 
 def release_backend() -> bool:
-    """Drop the embedder and stop its llama-server, if one is running. Returns
-    whether anything was released.
-
-    Safe mid-ingestion: the next embed rebuilds, and the llama backend's own POST
-    retry already covers a server that went away under it."""
+    """Drops the embedder, stopping its llama-server; safe mid-ingestion as the next embed rebuilds it."""
     global _backend, _backend_key, _resident_hardware
     with _backend_lock:
         # Unload is an explicit fresh start, so a past runtime fallback stops pinning the choice and the saved
@@ -1378,33 +1255,19 @@ def release_backend() -> bool:
         backend, _backend, _backend_key = _backend, None, None
         _resident_hardware = None
     if backend is None:
-        # Nothing published, but the module-level model can still be there (see backend_is_loaded);
-        # freeing it here is what keeps that leak from being permanent.
+        # Live servers keep spawn-time pooling; a stopped backend re-reads the file, so dedup must match.
         return _release_st_model()
     _dispose_replaced_backend(backend)
     return True
 
 
 def active_backend_is_llama(model_name: str | None = None) -> bool:
-    """True when this process actually embeds via the llama-server (GGUF) backend.
-
-    Reflects the ACTUAL built backend once one exists: an ``auto`` install that resolves to
-    sentence-transformers but then falls back to llama-server at runtime
-    (``_build_st_backend_or_fallback`` on a torch/CUDA load failure, or
-    ``_switch_to_llama_fallback`` on an encode failure) loads only inert GGUF, so callers gating on
-    the ST pickle must see llama here. Before any backend is built, defers to the resolver exactly
-    as a fresh process would.
-
-    ``model_name`` names the model to resolve for, defaulting to the live setting; a caller
-    embedding under a model pinned for a job passes it so the answer cannot drift mid-job. Never
-    raises: a backend probe must not block saving a model.
-    """
+    """True when the built backend is llama-server, including runtime fallbacks; never raises."""
     try:
         with _backend_lock:
             backend = _backend
         if backend is not None:
-            # Report what the backend ACTUALLY is: a concrete sentence-transformers backend must return False
-            # even if the resolver would now pick llama, so its pickle stays gated.
+            # Report the actual backend, so a concrete ST backend's pickle stays gated.
             try:
                 from .embed_llama_server import LlamaServerBackend
             except Exception:  # noqa: BLE001 - llama plumbing import must never block
@@ -1430,10 +1293,7 @@ def _llama_pooling(name: str, served = None) -> str | None:
     else:
         path, repo, captured, alive = None, None, None, False
     if path and repo == desired:
-        # A live server still serves the pooling captured at its spawn even if the file is
-        # replaced. ``served`` means an encode just completed on that same captured value. With a
-        # stopped ambient backend, however, the next spawn will read the file again, so pre-encode
-        # deduplication must do the same.
+        # AppleDouble files keep the extension, so a text parser would embed and cite them as chunks.
         if served is not None or alive:
             pooling = captured or _gguf_pooling(path)
         elif os.path.isfile(path):
@@ -1471,17 +1331,7 @@ def _identity(
 
 
 def _identity_backend_is_llama(name: str) -> bool:
-    """Backend the next encode for ``name`` will use.
-
-    The security-facing active-backend probe deliberately reports a resident backend even when
-    Settings has just selected another one. Identity prediction is different: ``_get_backend`` will
-    replace a resident backend whose cache key no longer matches the stored per-model resolution, so
-    admission/deduplication must predict that replacement before the first encode happens.
-
-    ``name`` is threaded into the probe rather than left to default: it may be a model pinned for
-    the length of one job, and re-reading the live setting per file would let a Settings change
-    mid-job tag two files in one folder with two different identities.
-    """
+    """Predicts the backend the next encode for name uses, including any replacement it will trigger."""
     try:
         raw = _raw_backend()
         with _backend_lock:
@@ -1498,13 +1348,7 @@ def _identity_backend_is_llama(name: str) -> bool:
 
 
 def embedding_identity(model_name: str | None = None) -> str:
-    """Identity of the vectors this process produces right now.
-
-    Recorded on every document, because the model name alone does not name the
-    embedding space: llama-server ignores the name and embeds through the GGUF
-    companion with its own pooling, and this process can switch to it at runtime. Two
-    spaces under one label is an index that answers with the wrong documents and says
-    nothing about it."""
+    """Identity of the vector space, not the model name: llama-server uses the GGUF's own pooling."""
     name = model_name or config.effective_embedding_model()
     return _identity(_identity_backend_is_llama(name), name)
 
@@ -1523,12 +1367,7 @@ def encode_with_identity(
     model_name: str | None = None,
     normalize: bool = True,
 ):
-    """``(vectors, identity)``, the identity taken from the encode that produced them.
-
-    Not from the process embedder read afterwards: a concurrent ST encode failure
-    swaps that between the two, so the vectors would be labelled with a space they
-    were never in, and a query then searches (or a document is stored against) the
-    wrong half of the index."""
+    """Takes identity from the encode that made the vectors; a concurrent ST swap could mislabel them."""
     _served_by.backend = None
     _served_by.llama_identity = None
     vectors = encode(texts, model_name = model_name, normalize = normalize)
@@ -1551,13 +1390,7 @@ def encode(
     model_name: str | None = None,
     normalize: bool = True,
 ):
-    """Embed texts into an (N, dim) float32 numpy array.
-
-    An explicit unload can retire the llama backend between resolving it and using
-    it, so that one lifecycle failure reacquires the newly published backend, the
-    same way ``token_counter`` does for a counter held across chunks. Without it
-    ``release_backend`` fails the in-flight document rather than rebuilding for it.
-    """
+    """An explicit unload retires the backend; reacquire the new one rather than fail the document."""
     backend = _get_backend(model_name)
     _served_by.backend = backend
     _served_by.llama_identity = None
@@ -1606,13 +1439,7 @@ def chunk_tokens(model_name: str | None = None) -> int:
 
 
 def token_counter(model_name: str | None = None) -> Callable[[str], int]:
-    """Callable counting tokens with the embedder's own tokenizer.
-
-    Chunking keeps this callable for the whole document. An explicit unload can
-    retire its llama backend between two calls, so lazily reacquire the newly
-    published backend only for that precise lifecycle failure. Other tokenizer
-    errors still propagate unchanged.
-    """
+    """Reacquires the backend only for an unload's lifecycle failure; other tokenizer errors propagate."""
     backend = _get_backend(model_name)
     state = (backend, backend.token_counter(model_name = model_name))
     counter_lock = threading.Lock()

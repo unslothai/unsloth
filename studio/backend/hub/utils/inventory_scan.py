@@ -410,9 +410,7 @@ def _compute_all_hf_cache_scans() -> list:
                 scan = _with_repos_dropped_by_scan(scan, cache_root)
             scans.append(scan)
         except OSError as exc:
-            # HF catches CorruptedCacheException per repo, but filesystem errors can abort
-            # the entire root (e.g. Windows cannot stat a Linux-created reparse point).
-            # Reuse our read-only recovery walk, including intact repos that HF never reached.
+            # Filesystem errors can abort a whole root (e.g. Windows reparse points); recover read-only.
             logger.warning("Could not scan HF cache %s: %s", cache_root, exc)
             empty_fields = dict(size_on_disk = 0, repos = frozenset(), warnings = [])
             # huggingface_hub 1.x added this required field; older versions lack it.
@@ -466,8 +464,7 @@ def token_fingerprint(hf_token: HfTokenArg) -> str:
         return ANONYMOUS_CACHE_IDENTITY
     if not hf_token:
         return ""
-    # Same token value, different cache authorization: on the bare digest either caller
-    # reads back the other's verdict.
+    # Qualified: the same token value under a different cache authorization must not share verdicts.
     return qualify_cache_identity(hf_token, hashlib.sha256(hf_token.encode()).hexdigest()[:16])
 
 
@@ -1397,12 +1394,7 @@ def is_snapshot_partial(
     snapshot_dir: Optional[Path] = None,
     variant_state = None,
 ) -> bool:
-    """Repo-row partial flag for snapshot-style downloads (full-snapshot models, i.e. safetensors/adapter/checkpoint, and all datasets).
-
-    Composes four signals, cheapest first: the cancel marker (single stat, charged to the newest snapshot); the snapshot-attributed legacy .incomplete blob / broken-symlink check; the manifest walk (stat per expected file under the latest snapshot); and a recovered snapshot short a shard, for the dangling-ref rows the first three cannot judge.
-
-    A manifest without a resolvable snapshot is partial: the worker recorded expectations but left no usable snapshot. *snapshot_dir* pins the legacy and manifest walks to the row's load identity; without it a metadata-only revision beside a complete download flags the row partial. Repo-wide signals are attributed by ``_repo_signal_applies_to_snapshot``.
-    """
+    """Without snapshot_dir, a metadata-only revision beside a complete download flags the row partial."""
     from hub.utils import download_manifest
 
     # A snapshot-style row loads weights, so a quant beside them is another row's payload.
@@ -1527,17 +1519,8 @@ def _denoiser_index_shards(index: Path) -> Optional[set[str]]:
 
 
 def _component_weights_complete(component: Path) -> bool:
-    """Whether *component* holds a denoiser the loader could actually read.
-
-    Presence of ONE weight file is not enough: a sharded denoiser is described by an ``*.index.json`` naming every shard, and a fetch that landed shard 1 of 2 alone satisfies a first-match test while failing at load.
-
-    ``_SELECTED_DENOISER_INDEX`` settles the question whenever it EXISTS: it is the only sharded name diffusers resolves here, its presence alone makes the component sharded, and what follows is unconditional, since ``_get_checkpoint_shard_files`` opens exactly what it maps while the ``except IOError`` branch and the pickle fallback are both gated on ``not is_sharded``. So a short set fails, and so does an index too corrupt to parse.
-
-    Every OTHER index vouches for nothing, because a default load never opens it: ``_fetch_index_file`` builds the safetensors name only, and the non-sharded fallback asks for the UNSHARDED ``diffusion_pytorch_model.bin``, never a ``.bin.index.json`` set beside it. Repos ship exactly that leftover (``stablediffusionapi/sdrealdream``), and our own download plan manufactures it. Nor does a dtype variant, whole or not: ``_add_variant`` inserts the variant before the last part, and a load passing no ``variant`` asks for the plain name with no fallback the other way.
-
-    So with no selected index there are exactly two names left, the pair ``_get_model_file`` is handed.
-    """
-    # iterdir() raises on an unreadable dir, reaching the caller's fail-open guard; glob() would swallow that OSError and read as "no weights".
+    """Only the selected index's shard set counts; any other index is never opened by a default load."""
+    # iterdir(), not glob(): glob would swallow the OSError and read as 'no weights'.
     next(component.iterdir(), None)
     # Existence alone makes the component sharded (is_sharded comes from is_file()), so an index we cannot read IS the failure; is_file() is the loader's own test too.
     selected = component / _SELECTED_DENOISER_INDEX
@@ -1727,14 +1710,7 @@ def is_gguf_repo_partial(
     snapshot_dir: Optional[Path] = None,
     variant_state = None,
 ) -> bool:
-    """Repo-row partial flag for a GGUF repo. The inventory shows ONE row per GGUF repo (requires_variant=True); per-variant detail lives in GET /api/models/gguf-variants and uses is_variant_partial.
-
-    *** DO NOT simplify this to "any variant partial -> repo partial" ***
-
-    Tripwire: a user downloads Q8_0 fully, then starts Q4_K_M and cancels. Both variants share ONE inventory row, so flipping row.partial True flips can_chat=False and the perfectly-good Q8_0 becomes unchattable over an unrelated cancelled Q4_K_M.
-
-    Correct semantics: partial=True only when at least one variant is broken AND no other variant is clean. Composes a cheap legacy fast-path (.incomplete blobs / broken symlinks) with a per-variant manifest + marker enumeration gated on "all broken". *snapshot_dir* pins both to the row's load id; without it an interrupted re-download flips can_chat off for the older complete quant.
-    """
+    """Partial only when every variant is broken, since one clean quant keeps the row chattable."""
     from hub.utils import download_manifest
 
     if snapshot_dir is None:
