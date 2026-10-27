@@ -3,6 +3,7 @@
 
 use std::ffi::{OsStr, OsString};
 use std::os::unix::net::UnixStream;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const APPIMAGE: &str = "APPIMAGE";
 const GLES_V2: &[u8] = b"libGLESv2.so.2\0";
@@ -28,6 +29,9 @@ const APPLIED_WORKAROUND: &str = "UNSLOTH_WEBKIT_RENDERER_WORKAROUND";
 const FORCE_SHARED_MEMORY_MIN_VERSION: (u32, u32) = (2, 44);
 // Proprietary and open nvidia modules publish this; nouveau does not and is unaffected.
 const NVIDIA_DRIVER_VERSION_PATH: &str = "/proc/driver/nvidia/version";
+// Composited WebKit leaked a sync_file per frame on 580.173.02 and 580.178.04 (#10214, #10795),
+// not on 610.43.02 or 615.71.09. Older or unreadable branches keep compositing off everywhere.
+const NVIDIA_PAGE_COMPOSITING_MIN_BRANCH: u32 = 610;
 
 const NVIDIA_REASON: &str = "NVIDIA driver loaded (no Wayland session)";
 const NVIDIA_APPIMAGE_X11_REASON: &str = "NVIDIA driver loaded (AppImage on X11)";
@@ -47,6 +51,10 @@ enum RenderingWorkaround {
     /// selection reaches FORCE_SHM. Unpatched libraries ignore it.
     ForceSharedMemoryOnNvidia,
     DisableCompositingOnNvidiaX11,
+    /// FORCE_SHM for browser pages, compositing off in the main view only. On X11, GTK3 cannot
+    /// import WebKit's buffers, so composited SHM copies the whole surface every frame, while the
+    /// non-composited main view redraws only damage. Pages with CSS filters need the GPU.
+    ForceSharedMemoryForPagesOnNvidiaX11,
     /// Compositing off on top of the NVIDIA Wayland transport, not instead of it: since
     /// WebKitGTK 2.53 non-composited mode still renders over DMA-BUF (#13875).
     DisableCompositingOnNvidiaWayland,
@@ -59,7 +67,9 @@ impl RenderingWorkaround {
     fn variables(self) -> &'static [&'static str] {
         match self {
             Self::ForceSharedMemory => &[FORCE_SHARED_MEMORY],
-            Self::ForceSharedMemoryOnNvidia => &[FORCE_SHARED_MEMORY, FORCE_DMABUF],
+            Self::ForceSharedMemoryOnNvidia | Self::ForceSharedMemoryForPagesOnNvidiaX11 => {
+                &[FORCE_SHARED_MEMORY, FORCE_DMABUF]
+            }
             Self::DisableCompositingOnNvidiaX11 => {
                 &[FORCE_SHARED_MEMORY, FORCE_DMABUF, DISABLE_COMPOSITING]
             }
@@ -67,6 +77,10 @@ impl RenderingWorkaround {
             Self::DisableDmabuf => &[DISABLE_DMABUF],
             Self::DisableCompositing => &[DISABLE_COMPOSITING],
         }
+    }
+
+    fn main_view_compositing_off(self) -> bool {
+        self == Self::ForceSharedMemoryForPagesOnNvidiaX11
     }
 }
 
@@ -124,10 +138,11 @@ fn rendering_plan(
     env: impl Fn(&str) -> Option<OsString>,
     webkit_version: (u32, u32, u32),
     gles_usable: bool,
-    nvidia_driver_loaded: bool,
+    nvidia_driver_branch: Option<u32>,
     wayland_socket: bool,
     x11_open: bool,
 ) -> RenderingPlan {
+    let nvidia_driver_loaded = nvidia_driver_branch.is_some();
     // Either variable is an operator override when present (even `=0` or empty) unless the marker
     // says we wrote it. DISABLE_DMABUF=0 is how a host gets its accelerated path back.
     let applied_by_this_app = env(APPLIED_WORKAROUND).unwrap_or_default();
@@ -223,6 +238,10 @@ fn rendering_plan(
             RenderingWorkaround::DisableDmabuf
         } else if requested(false) {
             RenderingWorkaround::ForceSharedMemoryOnNvidia
+        } else if nvidia_driver_branch
+            .is_some_and(|branch| branch >= NVIDIA_PAGE_COMPOSITING_MIN_BRANCH)
+        {
+            RenderingWorkaround::ForceSharedMemoryForPagesOnNvidiaX11
         } else {
             RenderingWorkaround::DisableCompositingOnNvidiaX11
         };
@@ -310,8 +329,29 @@ fn x11_display_open(display: Option<OsString>, socket_dir: &str) -> bool {
         .is_ok()
 }
 
-fn nvidia_driver_loaded() -> bool {
-    std::path::Path::new(NVIDIA_DRIVER_VERSION_PATH).exists()
+/// None without the module; Some(0) when its version cannot be read, which keeps the fallback.
+fn nvidia_driver_branch() -> Option<u32> {
+    let path = std::path::Path::new(NVIDIA_DRIVER_VERSION_PATH);
+    if !path.exists() {
+        return None;
+    }
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    Some(driver_branch(&text).unwrap_or(0))
+}
+
+/// The major of the first dotted number on the `NVRM version:` line, e.g. 615 from
+/// `NVRM version: NVIDIA UNIX Open Kernel Module for x86_64  615.71.09  Release Build ...`.
+fn driver_branch(text: &str) -> Option<u32> {
+    let line = text
+        .lines()
+        .find(|line| line.starts_with("NVRM version:"))?;
+    line.split_whitespace().find_map(|word| {
+        let (major, rest) = word.split_once('.')?;
+        let digits = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+        (digits(major) && rest.split('.').all(digits))
+            .then(|| major.parse().ok())
+            .flatten()
+    })
 }
 
 fn gles_is_usable() -> bool {
@@ -349,6 +389,8 @@ fn release_claimed(drop: impl Fn(&str) -> bool) {
     std::env::remove_var(APPLIED_WORKAROUND);
 }
 
+static MAIN_VIEW_COMPOSITING_OFF: AtomicBool = AtomicBool::new(false);
+
 /// Must run before GTK initialization.
 pub fn configure_renderer() -> Option<(&'static [&'static str], &'static str)> {
     let gles_usable = std::env::var_os(APPIMAGE).is_none() || gles_is_usable();
@@ -356,12 +398,14 @@ pub fn configure_renderer() -> Option<(&'static [&'static str], &'static str)> {
         |name| std::env::var_os(name),
         runtime_webkit_version(),
         gles_usable,
-        nvidia_driver_loaded(),
+        nvidia_driver_branch(),
         wayland_socket_present(),
         x11_display_open(std::env::var_os(X11_DISPLAY), X11_SOCKET_DIR),
     ) {
         RenderingPlan::Apply(workaround, reason) => {
             let variables = workaround.variables();
+            MAIN_VIEW_COMPOSITING_OFF
+                .store(workaround.main_view_compositing_off(), Ordering::Relaxed);
             release_claimed(|name| !variables.contains(&name));
             for variable in variables {
                 std::env::set_var(variable, "1");
@@ -378,11 +422,26 @@ pub fn configure_renderer() -> Option<(&'static [&'static str], &'static str)> {
     }
 }
 
+/// Whether configure_renderer left compositing on for pages but wants it off in the main view.
+pub fn main_view_compositing_off() -> bool {
+    MAIN_VIEW_COMPOSITING_OFF.load(Ordering::Relaxed)
+}
+
+/// The per-view form of WEBKIT_DISABLE_COMPOSITING_MODE, which would turn pages off as well.
+pub fn turn_off_compositing(view: &webkit2gtk::WebView) {
+    use webkit2gtk::{HardwareAccelerationPolicy, SettingsExt, WebViewExt};
+    if let Some(settings) = view.settings() {
+        settings.set_hardware_acceleration_policy(HardwareAccelerationPolicy::Never);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const MODERN_WEBKIT: (u32, u32, u32) = (2, 44, 0);
+    // The `bool` helpers model a loaded driver on the branch that leaked (#10795).
+    const LEAKING_NVIDIA_BRANCH: u32 = 580;
 
     fn plan_on_host(
         vars: &[(&str, &str)],
@@ -434,7 +493,7 @@ mod tests {
             },
             webkit_version,
             gles_usable,
-            nvidia_driver_loaded,
+            nvidia_driver_loaded.then_some(LEAKING_NVIDIA_BRANCH),
             wayland_socket,
             x11_open,
         )
@@ -450,10 +509,112 @@ mod tests {
             },
             MODERN_WEBKIT,
             true,
-            nvidia_driver_loaded,
+            nvidia_driver_loaded.then_some(LEAKING_NVIDIA_BRANCH),
             live,
             named(vars, X11_DISPLAY),
         )
+    }
+
+    fn plan_on_nvidia_branch(vars: &[(&str, &str)], branch: u32) -> RenderingPlan {
+        rendering_plan(
+            |name| {
+                vars.iter()
+                    .find(|(key, _)| *key == name)
+                    .map(|(_, value)| OsString::from(value))
+            },
+            MODERN_WEBKIT,
+            true,
+            Some(branch),
+            named(vars, WAYLAND_DISPLAY),
+            named(vars, X11_DISPLAY),
+        )
+    }
+
+    #[test]
+    fn nvidia_x11_on_a_fixed_branch_turns_compositing_off_in_the_main_view_only() {
+        let for_pages = RenderingWorkaround::ForceSharedMemoryForPagesOnNvidiaX11;
+        let appimage: &[(&str, &str)] = &[(APPIMAGE, "/tmp/Unsloth.AppImage"), (X11_DISPLAY, ":0")];
+        let native: &[(&str, &str)] = &[(X11_DISPLAY, ":0")];
+        for branch in [610, 615, 700] {
+            assert_eq!(
+                plan_on_nvidia_branch(appimage, branch),
+                RenderingPlan::Apply(for_pages, NVIDIA_APPIMAGE_X11_REASON)
+            );
+            assert_eq!(
+                plan_on_nvidia_branch(native, branch),
+                RenderingPlan::Apply(for_pages, NVIDIA_REASON)
+            );
+        }
+        // Same transport as the opt-out, never the process-wide compositing switch.
+        assert_eq!(for_pages.variables(), &[FORCE_SHARED_MEMORY, FORCE_DMABUF]);
+        assert!(for_pages.main_view_compositing_off());
+        assert!(!RenderingWorkaround::ForceSharedMemoryOnNvidia.main_view_compositing_off());
+        assert!(!RenderingWorkaround::DisableCompositingOnNvidiaX11.main_view_compositing_off());
+    }
+
+    #[test]
+    fn older_or_unreadable_nvidia_branches_keep_compositing_off_everywhere() {
+        let native: &[(&str, &str)] = &[(X11_DISPLAY, ":0")];
+        for branch in [0, 470, 580, 595, 609] {
+            assert_eq!(
+                plan_on_nvidia_branch(native, branch),
+                RenderingPlan::Apply(
+                    RenderingWorkaround::DisableCompositingOnNvidiaX11,
+                    NVIDIA_REASON
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn the_setting_and_operator_overrides_outrank_the_branch_gate() {
+        let forced: &[(&str, &str)] = &[(X11_DISPLAY, ":0"), (DISABLE_COMPOSITING_SETTING, "1")];
+        assert_eq!(
+            plan_on_nvidia_branch(forced, 615),
+            RenderingPlan::Apply(
+                RenderingWorkaround::DisableCompositingOnNvidiaX11,
+                COMPOSITING_FORCED_REASON
+            )
+        );
+        let opted_out: &[(&str, &str)] = &[(X11_DISPLAY, ":0"), (DISABLE_COMPOSITING_SETTING, "0")];
+        assert_eq!(
+            plan_on_nvidia_branch(opted_out, 615),
+            RenderingPlan::Apply(
+                RenderingWorkaround::ForceSharedMemoryOnNvidia,
+                NVIDIA_REASON
+            )
+        );
+        let operator: &[(&str, &str)] = &[(X11_DISPLAY, ":0"), (DISABLE_COMPOSITING, "1")];
+        assert_eq!(
+            plan_on_nvidia_branch(operator, 615),
+            RenderingPlan::PreserveEnvironment
+        );
+    }
+
+    #[test]
+    fn wayland_ignores_the_nvidia_branch() {
+        let wayland: &[(&str, &str)] = &[(WAYLAND_DISPLAY, "wayland-0")];
+        assert_eq!(
+            plan_on_nvidia_branch(wayland, 615),
+            RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_WAYLAND_REASON)
+        );
+    }
+
+    #[test]
+    fn reads_the_branch_from_both_module_flavours() {
+        let open = "NVRM version: NVIDIA UNIX Open Kernel Module for x86_64  615.71.09  \
+                    Release Build  (dvs-builder@U22-I3-F05-2-4)  Fri Sep  4 22:33:33 UTC 2026\n\
+                    GCC version:  gcc version 13.3.0 (Ubuntu 13.3.0-6ubuntu2~24.04.1)\n";
+        assert_eq!(driver_branch(open), Some(615));
+        let proprietary =
+            "NVRM version: NVIDIA UNIX x86_64 Kernel Module  580.173.02  Wed Jul 30 22:51:43 UTC 2026\n";
+        assert_eq!(driver_branch(proprietary), Some(580));
+        assert_eq!(
+            driver_branch("NVRM version: NVIDIA UNIX Kernel Module  470.256\n"),
+            Some(470)
+        );
+        assert_eq!(driver_branch("GCC version:  gcc version 13.3.0\n"), None);
+        assert_eq!(driver_branch(""), None);
     }
 
     fn named(vars: &[(&str, &str)], variable: &str) -> bool {
