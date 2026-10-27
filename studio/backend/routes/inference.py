@@ -1003,10 +1003,15 @@ def _truncate_middle_messages(messages: list, keep_ratio: float):
         return messages, 0
 
     new_messages = head + anchor
-    for grp in middle[first_kept:]:
-        new_messages.extend(grp)
-    for grp in tail:
-        new_messages.extend(grp)
+    kept = [msg for grp in middle[first_kept:] + tail for msg in grp]
+    # Merge the seam: strict templates (e.g. Mistral) reject two user turns in a row.
+    if kept and new_messages[-1].get("role") == kept[0].get("role") == "user":
+        new_messages[-1] = {
+            **new_messages[-1],
+            "content": _merge_user_content(new_messages[-1].get("content"), kept[0].get("content")),
+        }
+        kept = kept[1:]
+    new_messages.extend(kept)
     return new_messages, dropped
 
 
