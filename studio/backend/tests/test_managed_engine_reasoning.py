@@ -259,6 +259,12 @@ def test_sglang_chat_is_fitted_by_estimate_within_the_engine_window():
     assert fitted["messages"][-1]["content"] == "latest"
     truncation = next(e for e in fitted["events"] if e.get("type") == "context_truncated")
     assert truncation["fits"] and truncation["prompt_tokens_after"] <= 2048 * 3 // 4 - 256
+    # SGLang refuses prompt + cap past the window, so a cap above a quarter is reserved whole.
+    fitted = orchestrator.compact_chat_context(
+        messages, context_overflow = "truncate_oldest", max_tokens = 1024
+    )
+    truncation = next(e for e in fitted["events"] if e.get("type") == "context_truncated")
+    assert truncation["fits"] and truncation["prompt_tokens_after"] <= (2048 - 1024) * 3 // 4
 
 
 def test_tool_stream_reasoning_reaches_studio_as_reasoning_content():

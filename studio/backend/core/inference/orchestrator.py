@@ -2787,7 +2787,12 @@ class InferenceOrchestrator:
         managed = getattr(self, "_managed_engine", None)
         estimated = managed is not None and not managed.adapter.exact_token_count
         if estimated:
-            context_length = int(context_length * (1 - _ESTIMATED_FIT_HEADROOM))
+            window = context_length
+            context_length = int(window * (1 - _ESTIMATED_FIT_HEADROOM))
+            # The cap is sent as is and SGLang refuses prompt + cap past the window, while the fit
+            # reserves at most a quarter for the reply: a larger cap shrinks the fit instead.
+            if max_tokens and 0 < max_tokens < window:
+                context_length = min(context_length, window - max_tokens)
 
         conversation = []
         if system_prompt:
