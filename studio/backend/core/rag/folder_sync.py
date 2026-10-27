@@ -1171,7 +1171,6 @@ def _scan(
                         # A file vanishing mid-scan must count as a failure: scans never authorize deletion.
                         pass
                 if st.st_size == 0:
-                    excluded.add(rel)
                     continue
                 if (
                     config.FOLDER_MAX_TEXT_BYTES
@@ -1334,7 +1333,8 @@ def _source_reappeared(root: str, relative_path: str, excluded: set[str]) -> boo
             if not stat.S_ISDIR(current_stat.st_mode):
                 return False
         else:
-            return stat.S_ISREG(current_stat.st_mode)
+            # Empty files are skipped by the scan; one refilled since then has reappeared.
+            return stat.S_ISREG(current_stat.st_mode) and current_stat.st_size > 0
     return False
 
 

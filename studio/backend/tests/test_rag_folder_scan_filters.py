@@ -325,3 +325,28 @@ def test_a_file_the_scan_now_skips_is_removed_from_the_index(
     assert job["deleted"] == 1
     assert _mapped(folder["id"]) - {"package.json"} == {"a-notes.md"}
     assert (source / "build" / "plan.txt").is_file()
+
+
+@requires_sqlite_vec
+def test_a_file_refilled_after_an_empty_scan_keeps_its_index_entry(
+    rag_home, stub_embeddings, monkeypatch
+):
+    source = rag_home / "source"
+    _write(source, "notes.md", "durable words")
+    note = source / "notes.md"
+    folder = folder_sync.create_folder(
+        scope_type = "project", scope_id = "p1", path = str(source), name = "Docs"
+    )
+    assert _run(folder["id"])["status"] == "completed"
+
+    note.write_text("", encoding = "utf-8")
+    real_scan = folder_sync._scan
+
+    def refill_after_scan(*args, **kwargs):
+        result = real_scan(*args, **kwargs)
+        note.write_text("durable words", encoding = "utf-8")
+        return result
+
+    monkeypatch.setattr(folder_sync, "_scan", refill_after_scan)
+    assert _run(folder["id"])["status"] == "failed"
+    assert _mapped(folder["id"]) == {"notes.md"}
