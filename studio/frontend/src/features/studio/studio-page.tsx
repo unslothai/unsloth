@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronLeftStandardIcon } from "@/lib/chevron-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import { usePlatformStore } from "@/config/env";
 import { Button } from "@/components/ui/button";
@@ -19,9 +21,6 @@ import { MediaPageLink } from "@/components/media-page-link";
 import {
   LibrariesIcon,
 } from "@hugeicons/core-free-icons";
-import {
-  ChevronLeftIcon,
-} from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import {
   type ReactElement,
@@ -78,12 +77,10 @@ export function StudioPage(): ReactElement {
       isDatasetImage: s.isDatasetImage,
     })),
   );
-  // Unknown until /api/health reports; see the showTrainingHydrating note below.
   const capabilitiesUnknown = usePlatformStore((s) => s.capabilitiesUnknown());
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const navigate = useNavigate();
-  // Once the verdict lands and it really is chat-only, leave: the guard let this load on the
-  // guess, so without this a chat-only host would sit on a Train page it cannot use.
+  // The guard let this load on a guess; leave once the host is confirmed chat-only.
   useEffect(() => {
     if (capabilitiesUnknown || !chatOnly) return;
     void navigate({ to: "/chat", replace: true });
@@ -114,7 +111,7 @@ export function StudioPage(): ReactElement {
 
   const tourEnabled = hasHydratedRuntime && !isHydratingRuntime;
   const isConfigTour = activeTab === "configure";
-  // Each tab unmounts the others, so each gets the steps whose anchors are actually on screen.
+  // Each tab unmounts the others, so steps must match the anchors on screen.
   const tourSteps =
     activeTab === "current-run"
       ? studioTrainingTourSteps
@@ -151,11 +148,8 @@ export function StudioPage(): ReactElement {
     t,
   });
 
-  // The root guard now lets /studio through while the hardware verdict is out (redirecting on
-  // the browser-platform guess strands a healthy host on /chat), so the page owns the wait:
-  // show the same loading panel as a hydrating runtime rather than a half-built wizard. The
-  // wait ends by itself: AppSidebar (mounted on this route) re-reads /api/health while the
-  // verdict is unknown and writes it to this same store, so no second poll is needed here.
+  // The root guard lets /studio through while the hardware verdict is out, so wait here.
+  // AppSidebar re-reads /api/health into this store, so no second poll is needed.
   const showTrainingHydrating =
     capabilitiesUnknown || (!hasHydratedRuntime && isHydratingRuntime);
   const reloadReadySent = useRef(false);
@@ -171,9 +165,7 @@ export function StudioPage(): ReactElement {
     reloadReadySent.current = true;
     signalReady();
   }, [capabilitiesUnknown, hasHydratedRuntime, isHydratingRuntime, signalReady]);
-  // Two waits share this panel. Hardware detection is a cold `import torch` that can run for
-  // minutes and says so, the way the Video page does; a hydrating runtime is quick and keeps
-  // the runtime wording, which on a machine still being measured just reads as a hang.
+  // Hardware detection is a cold `import torch` that can take minutes, so it gets its own wording.
   const hydratingMessage = capabilitiesUnknown
     ? t("studio.checkingSupport")
     : t("studio.loadingRuntime");
@@ -189,12 +181,10 @@ export function StudioPage(): ReactElement {
         <div className="mx-auto flex w-full max-w-[calc(1180px*var(--ui-space-scale,1))] 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] flex-col gap-7 px-5 pb-20 pt-8 max-sm:px-4 sm:px-9">
           <header className="font-heading flex flex-col gap-5">
             <div className="flex flex-col gap-0.5">
-              <h1 className="page-title-halo text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
+              <h1 className="text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
                 {t("studio.routeTitle")}
               </h1>
-              <p className="page-title-halo text-sm text-muted-foreground">
-                {subtitle}
-              </p>
+              <p className="text-sm text-muted-foreground">{subtitle}</p>
             </div>
             {!showTrainingHydrating && (
               <div className="flex min-w-0 flex-wrap items-center gap-3 border-b border-border/60">
@@ -206,7 +196,7 @@ export function StudioPage(): ReactElement {
                     onClick={clearHistorySelection}
                     aria-label={t("studio.backToHistory")}
                   >
-                    <ChevronLeftIcon className="size-4" />
+                    <HugeiconsIcon icon={ChevronLeftStandardIcon} className="size-4" />
                   </Button>
                 )}
                 <TrainSubNav
@@ -214,7 +204,6 @@ export function StudioPage(): ReactElement {
                   trainingRunActive={trainingRunActive}
                   showTrainingView={showTrainingView}
                 />
-                {/* Finished runs land in the Library's Fine-tunes tab. */}
                 <div className="ml-auto flex items-center gap-2">
                   <MediaPageLink
                     to="/library"

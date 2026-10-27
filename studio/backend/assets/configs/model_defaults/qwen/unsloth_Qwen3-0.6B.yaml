@@ -1,11 +1,7 @@
-# Model defaults for unsloth/Qwen3-0.6B
-# Based on Qwen3_(0_6B)-Phone_Deployment.ipynb
 # Also applies to: unsloth/Qwen3-0.6B-unsloth-bnb-4bit, Qwen/Qwen3-0.6B, unsloth/Qwen3-0.6B-bnb-4bit, Qwen/Qwen3-0.6B-FP8, unsloth/Qwen3-0.6B-FP8
-# added inference parameters from Ollama
 
 training:
   max_seq_length: 1024
-  # num_epochs: 4
   num_epochs: 0
   learning_rate: 5e-5
   batch_size: 2

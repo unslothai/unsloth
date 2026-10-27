@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { Scroll01Icon } from "@hugeicons/core-free-icons";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { Scroll01Icon, Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ChevronDownIcon, XIcon } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -49,7 +49,6 @@ export function SkillsComposerButton({
   const [pending, setPending] = useState<ReadonlySet<string>>(() => new Set());
   const [skillsOn, setSkillsOn] = useSkillsSwitch();
 
-  // Runnable skills only: shadowed or invalid ones stay in Manage skills.
   const usable = skills.filter((skill) => skill.valid && !skill.shadowed);
   const enabledCount = usable.filter((skill) => skill.enabled).length;
 
@@ -115,10 +114,11 @@ export function SkillsComposerButton({
                   className="size-[calc(15px*var(--ui-space-scale,1))]"
                   strokeWidth={2}
                 />
-                <XIcon className="composer-pill-x" />
+                <HugeiconsIcon icon={Cancel01Icon} className="composer-pill-x" />
               </span>
               <span>{t("skills.title")}</span>
-              <ChevronDownIcon
+              <HugeiconsIcon
+                icon={ChevronDownStandardIcon}
                 strokeWidth={1.5}
                 className="composer-pill-caret size-[calc(15px*var(--ui-space-scale,1))]"
               />
@@ -137,7 +137,6 @@ export function SkillsComposerButton({
                 <DropdownMenuItem
                   key={`${skill.source}:${skill.name}`}
                   disabled={pending.has(skill.name)}
-                  // Stays open to toggle several.
                   onSelect={(event) => {
                     event.preventDefault();
                     void toggle(skill.name, !skill.enabled);

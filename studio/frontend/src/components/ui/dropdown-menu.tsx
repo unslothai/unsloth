@@ -58,19 +58,14 @@ function DropdownMenuContent({
         collisionPadding={useWindowChromeCollisionPadding(collisionPadding)}
         align={align}
         className={cn(
-          // Width in whole pixels: Firefox draws a row's hover pill a device pixel off centre in a
-          // menu of fractional width (padding and margin are rounded as it mounts).
-          // The 3px alignment nudge must be margin, not translate: a transform
-          // here makes this scroll container the containing block for nested
-          // position:fixed submenu wrappers, clipping every submenu.
+          // Whole-pixel width (Firefox offsets hover pills otherwise). The 3px nudge must be margin, not
+          // translate: a transform here would clip every position:fixed submenu.
           "data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 bg-popover text-popover-foreground min-w-48 max-w-[calc(100vw-32px)] rounded-lg p-1 duration-100 z-50 max-h-(--radix-dropdown-menu-content-available-height) w-[round(calc(var(--radix-dropdown-menu-trigger-width)_+_6px*var(--ui-space-scale,1)),1px)] data-[align=start]:-ml-[calc(3px*var(--ui-space-scale,1))] data-[align=end]:ml-[calc(3px*var(--ui-space-scale,1))] origin-(--radix-dropdown-menu-content-transform-origin) flex flex-col overflow-hidden",
           className,
         )}
         {...props}
       >
-        {/* Scroll an inner viewport, not the rounded surface: a scrollbar on
-            the surface squares its corners in WebKit. The surface padding
-            insets the scrollbar clear of the curve. */}
+        {/* Scroll an inner viewport: a scrollbar on the rounded surface squares its corners in WebKit. */}
         <div
           data-slot="dropdown-menu-viewport"
           className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto"
@@ -105,7 +100,7 @@ function DropdownMenuItem({
       data-inset={inset}
       data-variant={variant}
       className={cn(
-        "focus:bg-accent focus:text-accent-foreground data-[variant=destructive]:text-destructive data-[variant=destructive]:focus:bg-destructive/10 dark:data-[variant=destructive]:focus:bg-destructive/20 data-[variant=destructive]:focus:text-destructive data-[variant=destructive]:*:[svg]:text-destructive not-data-[variant=destructive]:focus:**:text-accent-foreground gap-2.5 rounded-[11px] px-3 py-2 text-sm [&_svg:not([class*='size-'])]:size-4 group/dropdown-menu-item relative flex cursor-pointer items-center outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 data-[inset]:pl-8 [&_svg]:pointer-events-none [&_svg]:shrink-0",
+        "focus:bg-accent focus:text-accent-foreground data-[variant=destructive]:text-destructive data-[variant=destructive]:focus:bg-destructive/10 dark:data-[variant=destructive]:focus:bg-destructive/20 data-[variant=destructive]:focus:text-destructive data-[variant=destructive]:*:[svg]:text-destructive not-data-[variant=destructive]:focus:**:text-accent-foreground gap-2.5 rounded-md px-3 min-h-menu-row py-2 text-sm [&_svg:not([class*='size-'])]:size-4 group/dropdown-menu-item relative flex cursor-pointer items-center outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 data-[inset]:pl-8 [&_svg]:pointer-events-none [&_svg]:shrink-0",
         className,
       )}
       {...props}
@@ -123,7 +118,7 @@ function DropdownMenuCheckboxItem({
     <DropdownMenuPrimitive.CheckboxItem
       data-slot="dropdown-menu-checkbox-item"
       className={cn(
-        "focus:bg-accent focus:text-accent-foreground focus:**:text-accent-foreground gap-2.5 rounded-[11px] py-2 pr-9 pl-3 text-sm [&_svg:not([class*='size-'])]:size-4 relative flex cursor-pointer items-center outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0",
+        "focus:bg-accent focus:text-accent-foreground focus:**:text-accent-foreground gap-2.5 rounded-md min-h-menu-row py-2 pr-9 pl-3 text-sm [&_svg:not([class*='size-'])]:size-4 relative flex cursor-pointer items-center outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0",
         className,
       )}
       checked={checked}
@@ -162,7 +157,7 @@ function DropdownMenuRadioItem({
     <DropdownMenuPrimitive.RadioItem
       data-slot="dropdown-menu-radio-item"
       className={cn(
-        "focus:bg-accent focus:text-accent-foreground focus:**:text-accent-foreground gap-2.5 rounded-[11px] py-2 pr-9 pl-3 text-sm [&_svg:not([class*='size-'])]:size-4 relative flex cursor-pointer items-center outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0",
+        "focus:bg-accent focus:text-accent-foreground focus:**:text-accent-foreground gap-2.5 rounded-md min-h-menu-row py-2 pr-9 pl-3 text-sm [&_svg:not([class*='size-'])]:size-4 relative flex cursor-pointer items-center outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0",
         className,
       )}
       {...props}
@@ -256,7 +251,7 @@ function DropdownMenuSubTrigger({
       data-slot="dropdown-menu-sub-trigger"
       data-inset={inset}
       className={cn(
-        "focus:bg-accent focus:text-accent-foreground data-open:bg-accent data-open:text-accent-foreground not-data-[variant=destructive]:focus:**:text-accent-foreground gap-2 rounded-[11px] px-3 py-2 text-sm [&_svg:not([class*='size-'])]:size-4 flex cursor-pointer items-center outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 data-[inset]:pl-8 [&_svg]:pointer-events-none [&_svg]:shrink-0",
+        "focus:bg-accent focus:text-accent-foreground data-open:bg-accent data-open:text-accent-foreground not-data-[variant=destructive]:focus:**:text-accent-foreground gap-2 rounded-md px-3 min-h-menu-row py-2 text-sm [&_svg:not([class*='size-'])]:size-4 flex cursor-pointer items-center outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 data-[inset]:pl-8 [&_svg]:pointer-events-none [&_svg]:shrink-0",
         className,
       )}
       {...props}
@@ -287,7 +282,6 @@ function DropdownMenuSubContent({
 }) {
   const isMobile = useIsMobile();
   const [contentWidth, setContentWidth] = React.useState(0);
-  // Offset that brings the bottom edge level with the trigger.
   const [endShift, setEndShift] = React.useState<number | null>(null);
   const resizeObserverRef = React.useRef<ResizeObserver | null>(null);
   const composedRef = React.useCallback(
@@ -339,9 +333,7 @@ function DropdownMenuSubContent({
   // Transparent, not hidden, while measuring: hidden content misses Radix's keyboard autofocus.
   const measuring = endAligned && endShift === null;
   return (
-    // Portaled like DropdownMenuContent: rendered inline, the fixed popper
-    // wrapper is a descendant of the parent menu's scroll container, so any
-    // transform there turns on overflow clipping and hides the submenu.
+    // Portaled: inline, a transform in the parent menu's scroll container clips the submenu.
     <DropdownMenuPrimitive.Portal>
       <DropdownMenuPrimitive.SubContent
         ref={composedRef}

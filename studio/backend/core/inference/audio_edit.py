@@ -106,8 +106,7 @@ def check_instructions(
             "Make fewer changes, or use DotTTS Edit."
         )
     before, after = _collapse(original), _collapse(edited)
-    # Runtime gets the instructions, history gets ``edited``: they must agree as bags of words
-    # (which occurrence of a repeated word is meant is the runtime's call).
+    # Instruction and edited text must match as word bags; the runtime picks which repeated word is meant
     words = Counter(before.split())
     for instruction in items:
         match = INSTRUCTION_RE.match(str(instruction))

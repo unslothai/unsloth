@@ -6,9 +6,8 @@ import { useRecipeStudioStore } from "../stores/recipe-studio";
 import { INFRA_NODE_KINDS, type NodeConfig } from "../types";
 
 type ConnectionStatus = {
-  /** True when the node has zero edges at all. */
   isDisconnected: boolean;
-  /** True when an LLM node has no incoming data edge (only infra). */
+  /** No incoming data edge (infra edges only). */
   missingDataInput: boolean;
 };
 

@@ -19,14 +19,14 @@ import {
   ArrowExpand01Icon,
   ArrowShrink01Icon,
   MoreHorizontalIcon,
-  PauseIcon,
-  PlayIcon,
   VolumeHighIcon,
   VolumeMute02Icon,
 } from "@hugeicons/core-free-icons";
+import { PauseIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import { canCopyVideoFrame, copyVideoFrame, registerTabVideo } from "./video-registry";
+import { PlayIcon } from "lucide-react";
 
 const RATES = [0.5, 0.75, 1, 1.25, 1.5, 2] as const;
 const SEEK_SECONDS = 5;
@@ -191,7 +191,7 @@ export function VideoFile({
             }}
             onRateChange={(event) => setRate(event.currentTarget.playbackRate)}
             onError={onError}
-            className="block max-h-[calc(100cqh-clamp(3rem,12cqh,7rem))] max-w-full cursor-pointer rounded-md bg-black shadow-[0_18px_50px_-12px_rgb(0_0_0/0.35)]"
+            className="block max-h-[calc(100cqh-clamp(3rem,12cqh,7rem))] max-w-full cursor-pointer rounded-lg bg-black shadow-[0_18px_50px_-12px_rgb(0_0_0/0.35)]"
           />
         </div>
       </div>
@@ -205,7 +205,7 @@ export function VideoFile({
           {playing ? (
             <HugeiconsIcon icon={PauseIcon} strokeWidth={1.75} className="size-4.5" />
           ) : (
-            <HugeiconsIcon icon={PlayIcon} strokeWidth={1.75} className="size-4.5" />
+            <PlayIcon strokeWidth={1.75} className="size-4.5" />
           )}
         </button>
         <input
@@ -266,7 +266,7 @@ export function VideoFile({
             side="top"
             align="end"
             sideOffset={8}
-            className="browser-menu min-w-52 rounded-[20px] p-1.5"
+            className="browser-menu min-w-52 rounded-lg p-1"
           >
             <DropdownMenuLabel className="text-ui-12 text-muted-foreground">
               {t("browser.video.speed")}
