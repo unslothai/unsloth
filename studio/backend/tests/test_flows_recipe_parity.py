@@ -352,6 +352,8 @@ def test_sharing_keeps_a_full_hf_seed_path(client):
     imported, _, _ = package.read_package(buffer.getvalue())
     source = imported["groups"][0]["config"]["seed_config"]["source"]
     assert source["path"] == path and "token" not in source
-    exported = client.post("/api/flows/export/recipe", json = {"doc": doc, "group_id": "recipe"}).json()
+    exported = client.post(
+        "/api/flows/export/recipe", json = {"doc": doc, "group_id": "recipe"}
+    ).json()
     assert exported["recipe"]["seed_config"]["source"]["path"] == path
     assert "hf_xxx" not in json.dumps(exported)
