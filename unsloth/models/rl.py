@@ -4184,6 +4184,9 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 + "args.top_k = -1\n"
             )
 
+            # The shared engine is local: a vllm_server would never get the trained weights.
+            if trainer_file == "online_dpo_trainer":
+                vllm_setter += " " * 12 + "args.vllm_mode='colocate'\n"
             if "grpo" in trainer_file and trl_version >= Version("0.18.0"):
                 vllm_setter += " " * 12 + "args.vllm_mode='colocate'\n"
                 if trl_version >= Version("0.23.0"):

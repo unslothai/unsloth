@@ -95,7 +95,8 @@ def _args():
     )
 
 
-def test_trl_owned_vllm_engine_is_built(tmp_path):
+def test_trl_owned_vllm_engine_is_built(tmp_path, monkeypatch):
+    monkeypatch.delenv("RANK", raising = False)
     model = types.SimpleNamespace(name_or_path = "tiny-model")
     trainer = _patched_class(tmp_path)(model, _args())
     assert isinstance(trainer.llm, _LLM)
@@ -105,10 +106,22 @@ def test_trl_owned_vllm_engine_is_built(tmp_path):
     assert trainer._last_loaded_step == -1
 
 
-def test_fast_inference_reuses_the_shared_engine(tmp_path):
+def test_fast_inference_reuses_the_shared_engine(tmp_path, monkeypatch):
+    monkeypatch.delenv("RANK", raising = False)
     engine = types.SimpleNamespace(shared_weights = True)
     model = types.SimpleNamespace(name_or_path = "tiny-model", vllm_engine = engine)
     trainer = _patched_class(tmp_path)(model, _args())
     assert trainer.llm is engine
     assert trainer.generation_config["n"] == 2
     assert trainer._last_loaded_step == 0
+
+
+def test_fast_inference_never_routes_to_a_vllm_server(tmp_path, monkeypatch):
+    monkeypatch.delenv("RANK", raising = False)
+    engine = types.SimpleNamespace(shared_weights = True)
+    model = types.SimpleNamespace(name_or_path = "tiny-model", vllm_engine = engine)
+    args = _args()
+    args.vllm_mode = "server"
+    trainer = _patched_class(tmp_path)(model, args)
+    assert trainer.vllm_mode == "colocate"
+    assert trainer.llm is engine
