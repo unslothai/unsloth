@@ -17216,6 +17216,9 @@ async def load_model_gated(
                 )
             async with nullcontext() if new_slot else inference_lifecycle_gate():
                 _raise_if_sidecar_swap_in_progress()
+                if not new_slot:
+                    # An auto-switch beside checked before this gate: this load replaces a loaded model.
+                    _check_switch_precondition(fastapi_request)
                 # The 409 gate runs inside _load_model_impl, under the lifecycle gate, atomic with teardown.
                 if new_slot:
                     reload_gate = None
@@ -17286,11 +17289,14 @@ async def load_model_gated(
                             raise refusal_for(
                                 await asyncio.to_thread(chat_eviction_reports)
                             ) from exc
+                        # The new slot loads with no gate against chats: recheck before anything is unloaded.
+                        _check_switch_precondition(fastapi_request)
                         # An idle image or video model goes before any chat model, as gpu_residency orders it.
                         if await _free_for_chat(exc, evicted, media_only = True):
                             continue
                         # No chat may start on a victim between its pick and teardown.
                         async with inference_lifecycle_gate() if new_slot else nullcontext():
+                            _check_switch_precondition(fastapi_request)
                             victims = await asyncio.to_thread(
                                 model_slots.eviction_victims,
                                 extra,
@@ -17341,6 +17347,8 @@ async def load_model_gated(
                                     # The drain can outlast a sidecar install or a cancel: never unload for nothing.
                                     _raise_if_sidecar_swap_in_progress()
                                     _raise_if_load_cancelled(attempt, impl_kwargs)
+                                    # A user back during the drain keeps their model.
+                                    _check_switch_precondition(fastapi_request)
                                 else:
                                     _raise_or_cancel_active_generations(
                                         force = request.force_cancel_active,
