@@ -4313,14 +4313,14 @@ export function ModelConfigPage({
         {/* Always rendered so a status change never moves the buttons; the sidebar's name box already does. */}
         <div
           className={cn(
-            "-mt-1.5 -mb-0.5 flex min-h-[calc(1.375em+0.25rem)] min-w-0 items-center gap-2 pl-1.5",
+            "-mt-1.5 -mb-0.5 flex min-h-[calc(1.375em+0.25rem)] min-w-0 items-center gap-2",
             naming && (variant === "sidebar" ? "hidden" : "invisible"),
           )}
         >
           <Checkbox
             id={alwaysLoadId}
             // Stays readable while disabled: on Default settings it is the hint that saving enables pinning.
-            className="border-[color-mix(in_oklab,var(--foreground)_calc(30%*var(--contrast-edge-gain,1)),transparent)] disabled:opacity-70"
+            className="size-3.5 rounded-full border-[color-mix(in_oklab,var(--foreground)_calc(30%*var(--contrast-edge-gain,1)),transparent)] disabled:opacity-70"
             aria-label="Always load with these settings"
             aria-describedby={saveStatusId}
             checked={selectedSet !== null && selectedSet === pinnedSet}
