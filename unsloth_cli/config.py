@@ -4,7 +4,6 @@
 from pathlib import Path
 from typing import Literal, Optional, List
 
-import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 
@@ -13,7 +12,7 @@ def _lower_str(value):
 
 
 class DataConfig(BaseModel):
-    model_config = ConfigDict(extra = "forbid", validate_assignment = True)
+    model_config = ConfigDict(extra = "forbid", validate_assignment = True, defer_build = True)
 
     dataset: Optional[str] = None
     local_dataset: Optional[List[str]] = None
@@ -24,7 +23,7 @@ class DataConfig(BaseModel):
 
 
 class TrainingConfig(BaseModel):
-    model_config = ConfigDict(extra = "forbid", validate_assignment = True)
+    model_config = ConfigDict(extra = "forbid", validate_assignment = True, defer_build = True)
 
     training_type: Literal["lora", "full"] = "lora"
     max_seq_length: int = 2048
@@ -62,7 +61,7 @@ class TrainingConfig(BaseModel):
 
 
 class LoraConfig(BaseModel):
-    model_config = ConfigDict(extra = "forbid", validate_assignment = True)
+    model_config = ConfigDict(extra = "forbid", validate_assignment = True, defer_build = True)
 
     lora_r: int = 64
     lora_alpha: int = 16
@@ -79,7 +78,7 @@ class LoraConfig(BaseModel):
 
 
 class LoggingConfig(BaseModel):
-    model_config = ConfigDict(extra = "forbid", validate_assignment = True)
+    model_config = ConfigDict(extra = "forbid", validate_assignment = True, defer_build = True)
 
     enable_wandb: bool = False
     wandb_project: str = "unsloth-training"
@@ -90,7 +89,7 @@ class LoggingConfig(BaseModel):
 
 
 class Config(BaseModel):
-    model_config = ConfigDict(extra = "forbid", validate_assignment = True)
+    model_config = ConfigDict(extra = "forbid", validate_assignment = True, defer_build = True)
 
     model: Optional[str] = None
     data: DataConfig = Field(default_factory = DataConfig)
@@ -243,6 +242,7 @@ def load_config(path: Optional[Path]) -> Config:
         raise ConfigError(f"Could not read config file: {path}\n  - {error}") from None
 
     if path.suffix.lower() in {".yaml", ".yml"}:
+        import yaml
         try:
             data = yaml.safe_load(text)
         except yaml.YAMLError as error:
