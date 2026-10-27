@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A small job service for diffusion LoRA training.
-
-This is deliberately separate from the LLM ``TrainingBackend``: that backend's
-lifecycle (LLM config build, per-run SQLite rows, and matplotlib plots) is specific
-to text training and would mis-handle a diffusion run. This service does only what a
-diffusion job needs -- spawn the trainer subprocess, pump its
-events (``model_load_*`` / ``progress`` / ``complete`` / ``error``) into an in-memory
-status snapshot, and support stop -- and is polled over JSON by the route layer.
-
-The subprocess context, target, and queues are injectable so the service can be unit
-tested without real multiprocessing or torch: tests pass a fake context whose Process
-runs a scripted target on a thread.
-"""
+"""Diffusion LoRA job service: runs the trainer subprocess, kept apart from the LLM TrainingBackend."""
 
 from __future__ import annotations
 

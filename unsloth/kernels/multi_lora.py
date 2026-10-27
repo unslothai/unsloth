@@ -1,14 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""
-Batched multi-LoRA training: many LoRA adapters on one frozen base model, trained in one batch.
-
-Each token belongs to one adapter (or none, id -1); tokens are stable-sorted by adapter once per batch
-and kernels gather rows through that order (like Punica SGMV, but with dX and per-adapter dA / dB).
-
-``UNSLOTH_MULTI_LORA_TRITON=0`` (or no CUDA / XPU) uses a PyTorch loop. LoRA dropout is unsupported.
-"""
+"""Batched multi-LoRA training on one frozen base: tokens (id -1 = no adapter) are stable-sorted by
+adapter once per batch and kernels gather through that order. UNSLOTH_MULTI_LORA_TRITON=0, or no
+CUDA/XPU, uses a PyTorch loop; LoRA dropout unsupported."""
 
 from __future__ import annotations
 

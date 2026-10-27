@@ -1,14 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Build the fused VAE's Triton kernels in a child process while a first start compiles its denoiser.
-
-The first decode with an empty Triton cache JIT-compiles every fused VAE kernel (~3 s of render 1 on an RTX PRO 6000).
-On a load with no compile bundle, a spawned child rebuilds the VAE from its config without weights, installs the same
-fused passes and decodes zeros at a small latent (same divisibility classes), filling the shared Triton cache. The
-parent never waits; kernels the child has not finished are compiled by the parent as before.
-``UNSLOTH_DIFFUSION_VAE_PREBUILD=0`` disables it.
-"""
+"""Child process warms Triton cache for fused VAE kernels without weights; parent never waits;
+UNSLOTH_DIFFUSION_VAE_PREBUILD=0 disables"""
 
 from __future__ import annotations
 

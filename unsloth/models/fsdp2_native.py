@@ -1,19 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Native FSDP2 for every Unsloth model, built directly on `torch.distributed.fsdp.fully_shard`.
-
-    for unit in find_shard_units(model): fully_shard(unit, mp_policy = mp)
-    fully_shard(model, mp_policy = mp)
-
-with `MixedPrecisionPolicy(param_dtype = compute dtype, reduce_dtype = float32)`. Neither accelerate's
-nor transformers' FSDP code wraps the model: Unsloth shards it before the optimizer exists and the
-Trainer / accelerate only see an already sharded `FSDPModule` (no second wrap, no DDP).
-
-Opt in with `UNSLOTH_FSDP2=1` (or `native`) under torchrun (WORLD_SIZE > 1).
-`UNSLOTH_FSDP2_BACKEND=accelerate` (or an `accelerate launch` FSDP config) keeps the accelerate
-path in `unsloth/models/fsdp2.py`. Nothing changes without the flag.
-"""
+"""Native fully_shard FSDP2 for all Unsloth models, applied before the optimizer exists; opt-in
+UNSLOTH_FSDP2=1 under torchrun; no second wrap, no DDP; UNSLOTH_FSDP2_BACKEND=accelerate keeps
+accelerate path."""
 
 from __future__ import annotations
 

@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Weighted cross entropy for the diffusion objectives without [N, V] fp32 logits.
-
-Rows are processed in fixed-size chunks (the last one padded with ignored rows), so the compiled chunk kernels
-see one shape per vocabulary / chunk size and never recompile as the masked fraction or sequence length moves.
-Backward recomputes each chunk's logits instead of keeping them.
-"""
+"""Diffusion weighted CE in fixed-size chunks, no [N, V] fp32 logits; fixed shapes avoid recompiles."""
 
 import os
 

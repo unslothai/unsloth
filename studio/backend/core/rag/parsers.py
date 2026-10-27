@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Document parsing -> list[Page], one dispatch with lazy optional deps.
-
-PDFs keep per-page boundaries (``page_number``); txt/md/docx/html return a single
-page. ``parse(path, want_images=True)`` also returns embedded images. Heavy imports
-are lazy, so importing this module never fails on a missing dep.
-"""
+"""Document parsing to list[Page]; PDFs keep per-page page_number, txt/md/docx/html give one page;
+deps are lazy so importing never fails on a missing one."""
 
 from __future__ import annotations
 

@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Mark a DiT's prompt-length inputs dynamic (``dynamic_sources``, scoped to its forward) so a new prompt length
-never recompiles; blanket ``dynamic=True`` hits torchao CantSplit.
-
-torch 2.13+ guards symbolic slice bounds on ``s is None`` (Qwen-Image-2.1 ``cache_write_slice``), recompiling per
-prompt length; ``install`` restores 2.12's answer. Probe-gated; kill switch ``UNSLOTH_DIFFUSION_SLICE_IDENTITY_FIX=0``."""
+"""Prompt-length inputs dynamic so new lengths never recompile; blanket dynamic=True hits torchao."""
 
 from __future__ import annotations
 

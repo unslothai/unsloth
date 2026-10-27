@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Host RAM this process can use: psutil / meminfo capped by the tightest enforcing cgroup level.
-
-psutil reads the whole machine, so under a container or systemd MemoryMax it admits work the cgroup
-OOM-kills. Torch-free: the polled /api/system route calls it."""
+"""Usable host RAM, capped by cgroup limits since psutil sees the whole machine; torch-free."""
 
 from __future__ import annotations
 

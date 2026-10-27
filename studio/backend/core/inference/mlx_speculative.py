@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Which drafter an MLX load speculates with: ``speculative_type`` and ``spec_draft_model`` resolved
-against the target's own MTP head and the companion drafters already in the local Hugging Face cache."""
+"""Resolves MLX speculative_type and spec_draft_model to the target's MTP head or cached drafters."""
 
 from __future__ import annotations
 

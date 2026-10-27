@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Chat history API routes backed by studio.db.
-
-SQLite-backed handlers are sync defs unless they also perform asynchronous cleanup; those mixed
-handlers explicitly send their database transaction through Starlette's threadpool.
-"""
+"""Chat history API; sync SQLite handlers, except mixed ones that use Starlette's threadpool."""
 
 import asyncio
 import os

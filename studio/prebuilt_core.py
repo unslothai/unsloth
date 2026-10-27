@@ -2,28 +2,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Component-agnostic machinery shared by the ggml-family prebuilt installers.
-
-``install_llama_prebuilt.py`` and ``install_whisper_prebuilt.py`` both run on
-this module, which owns two layers:
-
-1. Primitives: HTTP fetches with retries and token-safe redirects, verified
-   downloads, safe archive extraction, the install lock, sha256 helpers, and
-   CUDA runtime-line / compute-capability selection. Moved verbatim out of
-   ``install_llama_prebuilt.py``, which re-exports them under their old names.
-
-2. The generic descriptor-driven install flow: release resolution (download
-   host fast path, GitHub API fallback), checksum-index parsing, coverage-aware
-   artifact selection, verified download + extraction + staged atomic
-   activation, marker/fingerprint handling, and the resolve probe. Whisper runs
-   entirely on this flow; a third component plugs in with a ``ComponentDescriptor``.
-
-Seam rule: every function calling a collaborator tests monkeypatch takes an
-``ops`` handle first. ``ops`` resolves names in the calling installer module's
-globals first (so a ``monkeypatch.setattr`` still wins) and falls back to this
-module's defaults, letting a descriptor-only component work with no installer
-module behind it.
-"""
+"""Shared core of the ggml prebuilt installers: verified downloads, safe extraction, install lock,
+and descriptor-driven release resolution and activation. Collaborators take an ops handle that
+resolves names in the caller's module first, so monkeypatches still apply."""
 
 from __future__ import annotations
 

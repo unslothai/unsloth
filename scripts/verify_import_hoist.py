@@ -1,46 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""Deterministic, scope-aware verifier for import-hoisting / alias-rename refactors.
-
-The risk when moving `from a import b as _b` (or `import b as _b`) to module top
-and normalizing `_b` -> `b` is twofold:
-
-  1. DANGLING ALIAS  - a `_b` reference is left un-normalized; it now resolves to
-     nothing (NameError) or, worse, to some *other* module-level `_b`.
-  2. RENAME CLASH    - `_b` was an alias on purpose because `b` already meant
-     something else in that scope; normalizing `_b` -> `b` silently re-points the
-     reference at the wrong object (no NameError, no pyflakes warning).
-
-This tool parses BEFORE (a git ref, default origin/main) and AFTER (default HEAD)
-for each file, builds a real LEGB scope model (functions, classes, lambdas,
-comprehensions, global/nonlocal, args, walrus, star-imports), and resolves every
-Name load to its binding. It then compares, PER SCOPE:
-
-  * UNRESOLVED-NEW   : loads that resolve to nothing in AFTER but did in BEFORE
-                       (or are newly present) -> catches dangling aliases.
-  * TARGET-MISSING   : an import *target* (e.g. module `glob`, or
-                       `importlib.metadata.version`) that a function resolved to
-                       in BEFORE but no longer resolves to in AFTER -> catches a
-                       function that lost access to a module it still uses.
-                       Robust to alias renames because it compares the *target*,
-                       not the local name.
-  * TARGET-CHANGED   : a load whose resolved import target differs BEFORE vs
-                       AFTER -> catches a rename that re-points to a different
-                       module (the clash case).
-  * AMBIGUOUS-BIND   : a name bound by BOTH an import and a non-import in the same
-                       scope in AFTER (and not in BEFORE) -> the "alias was on
-                       purpose / now collides" smell.
-  * MODULE-DUP-IMPORT: a module-level name imported and also defined/assigned at
-                       module level (introduced by the change).
-  * NEW-UNUSED-IMPORT: a module-level import added in AFTER that nothing resolves
-                       to (informational; re-exports are a known false positive).
-
-Usage:
-  verify_import_hoist.py [--before REF] [--after REF] <file>...   # compare
-  verify_import_hoist.py --self-test                              # prove it catches bugs
-Exit code 1 if any non-informational finding.
-"""
+"""Scope-aware check for dangling aliases and silent rename clashes in import hoists (_b -> b)."""
 
 from __future__ import annotations
 
