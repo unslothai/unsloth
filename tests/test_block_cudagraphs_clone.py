@@ -333,3 +333,45 @@ def test_moe_layers_run_without_graphs(monkeypatch, moe):
         assert x.grad is not None
     assert set(seen) == ({"graphs"} if moe is None else {"plain"})
     assert not layer.__dict__.get("_unsloth_block_grad_hooks") or moe is None
+
+
+class BlockMask:
+    """Stand-in for torch.nn.attention.flex_attention.BlockMask (matched by class name)."""
+
+    def __init__(self):
+        self.kv_num_blocks = torch.ones(1, 1, 1, dtype = torch.int32)
+
+
+@pytest.mark.parametrize("mask", [None, "tensor", "block_mask"])
+def test_flex_block_mask_calls_run_without_graphs(monkeypatch, mask):
+    """Gemma3 on flex attention re-recorded its block graphs every step (the BlockMask index tensors
+    are static inputs rebuilt per step) and trained slower than without graphs."""
+    seen = []
+
+    def fake_compile(fn, **kwargs):
+        tag = "graphs" if kwargs.get("options", {}).get("triton.cudagraphs") else "plain"
+
+        def inner(*args, **kw):
+            seen.append(tag)
+            return fn(*args, **kw)
+
+        return inner
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+
+    class FlexDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+
+        def forward(self, hidden_states, attention_mask = None, **kwargs):
+            return self.proj(hidden_states)
+
+    bc._wrap(FlexDecoderLayer, {**bc._COMPILE_OPTIONS, "triton.cudagraphs": True})
+    layer = FlexDecoderLayer().train()
+    value = {None: None, "tensor": torch.ones(2, 1, 16, 16), "block_mask": BlockMask()}[mask]
+    for _ in range(2):
+        x = torch.randn(2, 16, 8, requires_grad = True)
+        layer(x, attention_mask = value).sum().backward()
+        assert x.grad is not None
+    assert set(seen) == ({"plain"} if mask == "block_mask" else {"graphs"})

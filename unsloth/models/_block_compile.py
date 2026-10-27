@@ -102,6 +102,22 @@ def _graphs_unsafe_moe(layer):
 _GRAPHS_MOE_LOGGED = [False]
 
 
+def _flex_block_mask_call(args, kwargs):
+    """A flex BlockMask's index tensors reach the block graph as static inputs and are rebuilt every
+    step, so the graph re-records on each call (torch 2.14 leaves StaticInputIdxMismatch out of the
+    re-record limit). Gemma3 on L4: 4 records per step, 108 ms vs 63 ms without graphs."""
+    for value in (*args, *kwargs.values()):
+        if type(value).__name__ == "BlockMask":
+            if not _GRAPHS_FLEX_LOGGED[0]:
+                _GRAPHS_FLEX_LOGGED[0] = True
+                print("Unsloth: block CUDA graphs skip flex attention blocks; they run compiled without graphs.")
+            return True
+    return False
+
+
+_GRAPHS_FLEX_LOGGED = [False]
+
+
 def _ddp_optimizer_mode():
     # optimize_ddp also takes "python_reducer" / "no_optimization" strings: only "ddp_optimizer"
     # (or True) makes dynamo split graphs (convert_frame.py checks == "ddp_optimizer").
@@ -909,7 +925,10 @@ def _wrap(
                         graph_shapes.add(shape)
                         graphs_off[0] = len(graph_shapes) > _CUDAGRAPH_MAX_SHAPES
                 if graphs and (
-                    graphs_off[0] or _in_nonreentrant_checkpoint() or _graphs_unsafe_moe(self)
+                    graphs_off[0]
+                    or _in_nonreentrant_checkpoint()
+                    or _graphs_unsafe_moe(self)
+                    or _flex_block_mask_call(args, kwargs)
                 ):
                     return plain(self, hidden_states, *args, **kwargs)
                 if graphs:
