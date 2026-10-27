@@ -15,6 +15,7 @@ import {
   forgetSandboxCapability,
   loadSandboxSetup,
   pickSandboxLevel,
+  SANDBOX_DOCS_URL,
   sandboxSwitchState,
   startSandboxSetup,
   useActivePermissionMode,
@@ -348,8 +349,6 @@ function SandboxLevelSection() {
     </SettingsSection>
   );
 }
-
-const SANDBOX_DOCS_URL = "https://unsloth.ai/docs/new/studio/sandboxing-in-unsloth";
 
 export function SandboxTab() {
   const t = useT();
