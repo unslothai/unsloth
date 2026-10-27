@@ -3397,18 +3397,25 @@ def _toml_parses(text: str) -> Optional[bool]:
 
 
 def _with_user_codex_mcp_servers(text: str, home: Path) -> str:
+    manifest = home / "unsloth_mcp_servers.json"
+    try:
+        state = json.loads(manifest.read_text(encoding = "utf-8"))
+        carried = set(state["tables"])
+    except (OSError, ValueError, TypeError, KeyError):
+        state, carried = {}, set()
     source = _codex_source_home()
-    if source.resolve(strict = False) == home.resolve(strict = False):
-        source = _codex_source_home(ignore_configured = True)
+    home_key = home.resolve(strict = False)
+    if source.resolve(strict = False) == home_key:
+        # The printed recipe exports CODEX_HOME=home: keep reading the home it was built from.
+        previous = state.get("source") if isinstance(state, dict) else None
+        if isinstance(previous, str) and Path(previous).resolve(strict = False) != home_key:
+            source = Path(previous)
+        else:
+            source = _codex_source_home(ignore_configured = True)
     try:
         user = (source / "config.toml").read_text(encoding = "utf-8")
     except OSError:
         user = ""
-    manifest = home / "unsloth_mcp_servers.json"
-    try:
-        carried = set(json.loads(manifest.read_text(encoding = "utf-8")))
-    except (OSError, ValueError, TypeError):
-        carried = set()
     split = re.compile(r"(?m)^(?=[ \t]*\[)")
 
     def header(chunk: str) -> str:
@@ -3428,7 +3435,10 @@ def _with_user_codex_mcp_servers(text: str, home: Path) -> str:
         return text
     names = sorted(header(c) for c in tables)
     if names or manifest.exists():
-        manifest.write_text(json.dumps(names) + "\n", encoding = "utf-8")
+        manifest.write_text(
+            json.dumps({"source": str(source.resolve(strict = False)), "tables": names}) + "\n",
+            encoding = "utf-8",
+        )
     return out
 
 

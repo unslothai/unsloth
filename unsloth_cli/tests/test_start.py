@@ -2825,6 +2825,28 @@ def test_codex_keeps_mcp_servers_added_in_the_saved_home(fake_studio, tmp_path, 
     assert config["mcp_servers"] == {"local": {"command": "local-server"}}
 
 
+def test_codex_mcp_servers_follow_a_custom_codex_home_through_the_recipe(
+    fake_studio, tmp_path, monkeypatch
+):
+    tomllib = pytest.importorskip("tomllib")
+    user_home = tmp_path / "user-home"
+    (user_home / ".codex").mkdir(parents = True)
+    monkeypatch.setenv("HOME", str(user_home))
+    monkeypatch.setenv("USERPROFILE", str(user_home))
+    custom = tmp_path / "custom-codex"
+    custom.mkdir()
+    (custom / "config.toml").write_text('[mcp_servers.custom]\nurl = "http://c/mcp"\n')
+    monkeypatch.setenv("CODEX_HOME", str(custom))
+    home = tmp_path / "agents" / "codex"
+
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    result = CliRunner().invoke(start.start_app, ["codex", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    config = tomllib.loads((home / "config.toml").read_text())
+    assert config["mcp_servers"] == {"custom": {"url": "http://c/mcp"}}
+
+
 def test_codex_mcp_servers_never_break_the_session_config(fake_studio, tmp_path, monkeypatch):
     tomllib = pytest.importorskip("tomllib")
     source_home = tmp_path / "user-codex"
