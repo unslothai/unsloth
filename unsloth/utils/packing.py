@@ -217,6 +217,7 @@ def _enable_hf_packed_attention(model = None, trainer = None) -> None:
     # packed rows on the transformers modeling path run varlen instead of SDPA over a dense mask.
     try:
         from .hf_packed_attention import enable_hf_packed_attention
+
         # A whole-model torch.compile (torch_compile=True, or an already compiled model) inlines the
         # blocks, where the varlen wrapper falls back to dense-mask SDPA: those keep flex.
         outer_compile = bool(getattr(getattr(trainer, "args", None), "torch_compile", False)) or (
