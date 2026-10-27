@@ -165,14 +165,16 @@ def test_a_loop_or_a_lost_group_fails_on_the_generate_step():
         compile_flow(doc)
 
 
-def test_seed_tokens_stay_out_and_local_seed_paths_stay_on_this_machine():
+def test_seed_tokens_and_local_seed_paths_stay_on_this_machine():
     payload = copy.deepcopy(SQL)
     payload["recipe"]["seed_config"] = {
         "source": {"seed_type": "github_repo", "repos": ["a/b"], "token": "ghp_live"}
     }
-    doc, notices = flow_from_recipe(payload, name = "SQL")
-    assert "ghp_live" not in json.dumps(doc)
-    assert any("token" in n for n in notices)
+    doc, _ = flow_from_recipe(payload, name = "SQL")
+    assert "ghp_live" in json.dumps(doc)
+    for mode in ("json", "package", "baked"):
+        out, _, _ = asyncio.run(package.export_flow(doc, mode, None))
+        assert b"ghp_live" not in out
 
     payload = copy.deepcopy(SQL)
     payload["recipe"]["seed_config"] = {
