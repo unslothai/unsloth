@@ -123,8 +123,9 @@ class _NoParams(nn.Module):
 
 
 def v_schedules_supported():
-    """torch's PipelineStage handles two adjacent stages on one rank (V placement) from torch 2.13
-    (PipelineStage._is_same_rank); torch 2.10's stage setup fails there (ZBVZeroBubble / DualPipeV)."""
+    """torch's PipelineStage handles two adjacent stages on one rank (V placement) from torch 2.12
+    (PipelineStage._is_same_rank); the stage setup of torch 2.10 / 2.11 fails there (ZBVZeroBubble / DualPipeV,
+    run on torch 2.10: gloo pair errors in the schedule's first exchange)."""
     try:
         from torch.distributed.pipelining import PipelineStage
     except ImportError:
@@ -142,8 +143,9 @@ def validate_schedule(spec, group, pp, stages_per_rank, n_microbatches, rank):
     if spec.style == "v" and not v_schedules_supported():
         raise ValueError(
             f"Unsloth: the {spec.name} pipeline schedule (V placement: two adjacent stages on one rank) needs "
-            f"torch >= 2.13; on torch {torch.__version__} torch's stage setup between them fails. Use "
-            "'interleaved1f1b' or 'interleavedzerobubble'."
+            f"a torch whose PipelineStage handles adjacent stages on one rank (torch >= 2.12); on torch "
+            f"{torch.__version__} torch's stage setup between them fails. Use 'interleaved1f1b' or "
+            "'interleavedzerobubble'."
         )
     num_stages = pp * stages_per_rank
     local = stage_indices(spec, rank, pp, stages_per_rank)

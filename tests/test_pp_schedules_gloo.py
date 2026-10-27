@@ -52,7 +52,7 @@ def _v_supported():
 
 def _skip_v(schedule):
     if schedule in V_SCHEDULES and not _v_supported():
-        pytest.skip(f"V schedules need torch >= 2.13 (refused on {torch.__version__}, see the refusal test)")
+        pytest.skip(f"V schedules need torch >= 2.12 (refused on {torch.__version__}, see the refusal test)")
 
 
 def _stage_map(pp, schedule, v = 2):
@@ -436,7 +436,7 @@ def test_multi_stage_refusals_leave_the_model_uncut():
     assert (
         "DualPipeV requires at least as many microbatches as stages"
         if _v_supported()
-        else "needs torch >= 2.13"
+        else "(torch >= 2.12)"
     ) in res["dualpipev_few_microbatches"]
     assert "multiple of the number of rounds" in res["interleaved_rounds"]
     assert "cannot split 3 decoder layers into 4 pipeline stages" in res["too_many_stages"]
@@ -446,7 +446,7 @@ def test_multi_stage_refusals_leave_the_model_uncut():
     if _v_supported():
         assert res["v_schedule"] is None
     else:
-        assert "needs torch >= 2.13" in res["v_schedule"]
+        assert "(torch >= 2.12)" in res["v_schedule"]
 
 
 def test_multi_stage_on_a_pp_x_dp_mesh_is_refused_before_the_cut():
