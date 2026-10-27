@@ -3488,9 +3488,10 @@ _CODEX_MCP_MANIFEST = "unsloth_mcp_servers.json"
 
 
 def _codex_mcp_server(chunk: str) -> Optional[tuple]:
-    # The server a [mcp_servers.NAME...] table belongs to: owning NAME owns its subtables.
+    # The server a [mcp_servers.NAME...] table belongs to: owning NAME owns its subtables. A bare
+    # [mcp_servers] table can mix servers from two homes, so it is never owned as a whole.
     path = _toml_table_path(chunk)
-    return path[:2] if path and path[0] == "mcp_servers" else None
+    return path[:2] if path and len(path) > 1 and path[0] == "mcp_servers" else None
 
 
 def _codex_mcp_manifest(home: Path) -> tuple:
