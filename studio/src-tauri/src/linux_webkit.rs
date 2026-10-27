@@ -3,7 +3,6 @@
 
 use std::ffi::{OsStr, OsString};
 use std::os::unix::net::UnixStream;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 const APPIMAGE: &str = "APPIMAGE";
 const GLES_V2: &[u8] = b"libGLESv2.so.2\0";
@@ -30,8 +29,8 @@ const FORCE_SHARED_MEMORY_MIN_VERSION: (u32, u32) = (2, 44);
 // Proprietary and open nvidia modules publish this; nouveau does not and is unaffected.
 const NVIDIA_DRIVER_VERSION_PATH: &str = "/proc/driver/nvidia/version";
 // Composited WebKit leaked a sync_file per frame on 580.173.02 and 580.178.04 (#10214, #10795),
-// not on 610.43.02 or 615.71.09. Older or unreadable branches keep compositing off everywhere.
-const NVIDIA_PAGE_COMPOSITING_MIN_BRANCH: u32 = 610;
+// not on 610.43.02 or 615.71.09. Older or unreadable branches keep compositing off.
+const NVIDIA_COMPOSITING_MIN_BRANCH: u32 = 610;
 
 const NVIDIA_REASON: &str = "NVIDIA driver loaded (no Wayland session)";
 const NVIDIA_APPIMAGE_X11_REASON: &str = "NVIDIA driver loaded (AppImage on X11)";
@@ -51,10 +50,6 @@ enum RenderingWorkaround {
     /// selection reaches FORCE_SHM. Unpatched libraries ignore it.
     ForceSharedMemoryOnNvidia,
     DisableCompositingOnNvidiaX11,
-    /// FORCE_SHM for browser pages, compositing off in the main view only. On X11, GTK3 cannot
-    /// import WebKit's buffers, so composited SHM copies the whole surface every frame, while the
-    /// non-composited main view redraws only damage. Pages with CSS filters need the GPU.
-    ForceSharedMemoryForPagesOnNvidiaX11,
     /// Compositing off on top of the NVIDIA Wayland transport, not instead of it: since
     /// WebKitGTK 2.53 non-composited mode still renders over DMA-BUF (#13875).
     DisableCompositingOnNvidiaWayland,
@@ -67,9 +62,7 @@ impl RenderingWorkaround {
     fn variables(self) -> &'static [&'static str] {
         match self {
             Self::ForceSharedMemory => &[FORCE_SHARED_MEMORY],
-            Self::ForceSharedMemoryOnNvidia | Self::ForceSharedMemoryForPagesOnNvidiaX11 => {
-                &[FORCE_SHARED_MEMORY, FORCE_DMABUF]
-            }
+            Self::ForceSharedMemoryOnNvidia => &[FORCE_SHARED_MEMORY, FORCE_DMABUF],
             Self::DisableCompositingOnNvidiaX11 => {
                 &[FORCE_SHARED_MEMORY, FORCE_DMABUF, DISABLE_COMPOSITING]
             }
@@ -77,10 +70,6 @@ impl RenderingWorkaround {
             Self::DisableDmabuf => &[DISABLE_DMABUF],
             Self::DisableCompositing => &[DISABLE_COMPOSITING],
         }
-    }
-
-    fn main_view_compositing_off(self) -> bool {
-        self == Self::ForceSharedMemoryForPagesOnNvidiaX11
     }
 }
 
@@ -217,8 +206,8 @@ fn rendering_plan(
         return RenderingPlan::Apply(workaround, COMPOSITING_FORCED_REASON);
     }
 
-    // Wayland: DISABLE_DMABUF (FORCE_SHM hits bug 315436). X11: SHM plus compositing off;
-    // DISABLE_DMABUF can leave no transport there. PRIME laptops opt out with the =0 variables.
+    // Wayland: DISABLE_DMABUF (FORCE_SHM hits bug 315436). X11: SHM, with compositing off below
+    // the fixed driver branch; DISABLE_DMABUF can leave no transport there.
     if nvidia_driver_loaded && !force_dmabuf {
         let missing_appimage_gles = is_appimage && !gles_usable;
         let reason = if missing_appimage_gles {
@@ -236,12 +225,10 @@ fn rendering_plan(
             || !supports_force_shared_memory(webkit_version)
         {
             RenderingWorkaround::DisableDmabuf
-        } else if requested(false) {
-            RenderingWorkaround::ForceSharedMemoryOnNvidia
-        } else if nvidia_driver_branch
-            .is_some_and(|branch| branch >= NVIDIA_PAGE_COMPOSITING_MIN_BRANCH)
+        } else if requested(false)
+            || nvidia_driver_branch.is_some_and(|branch| branch >= NVIDIA_COMPOSITING_MIN_BRANCH)
         {
-            RenderingWorkaround::ForceSharedMemoryForPagesOnNvidiaX11
+            RenderingWorkaround::ForceSharedMemoryOnNvidia
         } else {
             RenderingWorkaround::DisableCompositingOnNvidiaX11
         };
@@ -389,8 +376,6 @@ fn release_claimed(drop: impl Fn(&str) -> bool) {
     std::env::remove_var(APPLIED_WORKAROUND);
 }
 
-static MAIN_VIEW_COMPOSITING_OFF: AtomicBool = AtomicBool::new(false);
-
 /// Must run before GTK initialization.
 pub fn configure_renderer() -> Option<(&'static [&'static str], &'static str)> {
     let gles_usable = std::env::var_os(APPIMAGE).is_none() || gles_is_usable();
@@ -404,8 +389,6 @@ pub fn configure_renderer() -> Option<(&'static [&'static str], &'static str)> {
     ) {
         RenderingPlan::Apply(workaround, reason) => {
             let variables = workaround.variables();
-            MAIN_VIEW_COMPOSITING_OFF
-                .store(workaround.main_view_compositing_off(), Ordering::Relaxed);
             release_claimed(|name| !variables.contains(&name));
             for variable in variables {
                 std::env::set_var(variable, "1");
@@ -420,41 +403,6 @@ pub fn configure_renderer() -> Option<(&'static [&'static str], &'static str)> {
             None
         }
     }
-}
-
-pub fn main_view_compositing_off() -> bool {
-    MAIN_VIEW_COMPOSITING_OFF.load(Ordering::Relaxed)
-}
-
-/// The per-view form of WEBKIT_DISABLE_COMPOSITING_MODE, which would turn pages off as well.
-pub fn turn_off_compositing(view: &webkit2gtk::WebView) {
-    use std::cell::RefCell;
-    use std::rc::Rc;
-    use webkit2gtk::glib::prelude::ObjectExt;
-    use webkit2gtk::{
-        HardwareAccelerationPolicy, SettingsExt, WebProcessTerminationReason, WebViewExt,
-    };
-    if let Some(settings) = view.settings() {
-        settings.set_hardware_acceleration_policy(HardwareAccelerationPolicy::Never);
-    }
-    // A page created before the switch drops every wheel event afterwards, even across
-    // navigations, and Tauri has no hook before the first load on Linux. Restart the web process
-    // so the page is created again under NEVER, then load it once WebKit reports the restart.
-    let Some(uri) = view.uri().filter(|uri| !uri.is_empty()) else {
-        return;
-    };
-    let handler = Rc::new(RefCell::new(None));
-    let slot = handler.clone();
-    *handler.borrow_mut() = Some(view.connect_web_process_terminated(move |view, reason| {
-        if reason != WebProcessTerminationReason::TerminatedByApi {
-            return;
-        }
-        if let Some(id) = slot.borrow_mut().take() {
-            view.disconnect(id);
-        }
-        view.load_uri(&uri);
-    }));
-    view.terminate_web_process();
 }
 
 #[cfg(test)]
@@ -553,24 +501,21 @@ mod tests {
     }
 
     #[test]
-    fn nvidia_x11_on_a_fixed_branch_turns_compositing_off_in_the_main_view_only() {
-        let for_pages = RenderingWorkaround::ForceSharedMemoryForPagesOnNvidiaX11;
+    fn nvidia_x11_on_a_fixed_branch_keeps_compositing_on() {
+        let composited = RenderingWorkaround::ForceSharedMemoryOnNvidia;
         let appimage: &[(&str, &str)] = &[(APPIMAGE, "/tmp/Unsloth.AppImage"), (X11_DISPLAY, ":0")];
         let native: &[(&str, &str)] = &[(X11_DISPLAY, ":0")];
         for branch in [610, 615, 700] {
             assert_eq!(
                 plan_on_nvidia_branch(appimage, branch),
-                RenderingPlan::Apply(for_pages, NVIDIA_APPIMAGE_X11_REASON)
+                RenderingPlan::Apply(composited, NVIDIA_APPIMAGE_X11_REASON)
             );
             assert_eq!(
                 plan_on_nvidia_branch(native, branch),
-                RenderingPlan::Apply(for_pages, NVIDIA_REASON)
+                RenderingPlan::Apply(composited, NVIDIA_REASON)
             );
         }
-        assert_eq!(for_pages.variables(), &[FORCE_SHARED_MEMORY, FORCE_DMABUF]);
-        assert!(for_pages.main_view_compositing_off());
-        assert!(!RenderingWorkaround::ForceSharedMemoryOnNvidia.main_view_compositing_off());
-        assert!(!RenderingWorkaround::DisableCompositingOnNvidiaX11.main_view_compositing_off());
+        assert!(!composited.variables().contains(&DISABLE_COMPOSITING));
     }
 
     #[test]

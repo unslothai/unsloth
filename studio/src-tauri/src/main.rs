@@ -1031,18 +1031,6 @@ fn setup_linux_media_permissions(app: &tauri::App) -> Result<(), Box<dyn std::er
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
-fn setup_linux_main_view_compositing(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
-    if !linux_webkit::main_view_compositing_off() {
-        return Ok(());
-    }
-    let window = app.get_webview_window("main").ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::NotFound, "main window not found")
-    })?;
-    window.with_webview(|webview| linux_webkit::turn_off_compositing(&webview.inner()))?;
-    Ok(())
-}
-
 // Compile in both Windows profiles so dependency skew fails in CI.
 #[cfg(windows)]
 #[cfg_attr(debug_assertions, allow(dead_code))]
@@ -2221,9 +2209,6 @@ fn main() {
             .collect::<Vec<_>>()
             .join(" ");
         info!("{reason}; set {applied} for WebKitGTK compatibility");
-        if linux_webkit::main_view_compositing_off() {
-            info!("Accelerated compositing off in the main view only; browser pages keep it");
-        }
     }
     windows_job::initialize();
 
@@ -2430,8 +2415,6 @@ fn main() {
             setup_custom_titlebar(app)?;
             #[cfg(target_os = "linux")]
             setup_linux_media_permissions(app)?;
-            #[cfg(target_os = "linux")]
-            setup_linux_main_view_compositing(app)?;
             #[cfg(target_os = "linux")]
             keep_resizable_across_first_configure(app)?;
             #[cfg(all(windows, not(debug_assertions)))]
