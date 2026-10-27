@@ -60,6 +60,10 @@ const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 #[cfg(not(windows))]
 const DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// Most output read after the poll loop stops.
+#[cfg(not(windows))]
+const DRAIN_MAX_BYTES: usize = 1 << 20;
+
 #[cfg(not(windows))]
 #[derive(Debug, PartialEq)]
 struct TimedOut;
@@ -97,8 +101,11 @@ fn run_login_shell(
         let _ = child.wait();
         return Ok(None);
     };
-    let (sender, chunks) = mpsc::channel::<Vec<u8>>();
-    std::thread::spawn(move || {
+    // Bounded: a job writing nonstop waits on the reader instead of queueing without limit, and
+    // once this function returns the reader's send fails, so the pipe closes behind it.
+    let (sender, chunks) = mpsc::sync_channel::<Vec<u8>>(64);
+    // Builder, not thread::spawn: a refused thread leaves PATH as inherited instead of panicking.
+    let reader = std::thread::Builder::new().spawn(move || {
         let mut buffer = [0u8; 8192];
         loop {
             match stdout.read(&mut buffer) {
@@ -113,6 +120,11 @@ fn run_login_shell(
             }
         }
     });
+    if reader.is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Ok(None);
+    }
 
     let deadline = Instant::now() + timeout;
     let mut out = Vec::new();
@@ -148,9 +160,19 @@ fn run_login_shell(
             Err(RecvTimeoutError::Timeout) => {}
         }
     }
-    // Whatever arrived between the last poll and exit.
-    out.extend(chunks.try_iter().flatten());
-    Ok(status.is_some_and(|status| status.success()).then_some(out))
+    // Whatever is already queued, capped: a background job writing nonstop must not hold launch here.
+    let mut drained = 0;
+    while drained < DRAIN_MAX_BYTES {
+        let Ok(chunk) = chunks.try_recv() else { break };
+        drained += chunk.len();
+        out.extend_from_slice(&chunk);
+    }
+    let success = status.is_some_and(|status| status.success());
+    // The grace ran out with the block still open: a cut-off PATH is not a result.
+    if success && !eof && !env_block_complete(&out) {
+        return Err(TimedOut);
+    }
+    Ok(success.then_some(out))
 }
 
 /// Both delimiters are in: the block `env_block_path` reads is whole.
@@ -348,6 +370,38 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(path, None);
         assert_eq!(calls.lines().count(), 2, "{calls:?}");
+        assert!(elapsed < std::time::Duration::from_secs(10), "{elapsed:?}");
+    }
+
+    /// A shell that exits 0 with the block cut off while a job holds stdout: the grace runs out,
+    /// PATH is left alone, and the old command is not given a second wait.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_cut_off_block_after_the_grace_is_not_a_path() {
+        let (dir, shell) = fake_shell(
+            "cutoff",
+            &format!("sleep 30 &\nprintf %s '{DELIMITER}PATH=/cut/off'\nexit 0\n"),
+        );
+        let started = std::time::Instant::now();
+        let path = login_shell_path(&shell, PROBE_TIMEOUT);
+        let elapsed = started.elapsed();
+        let calls = std::fs::read_to_string(format!("{shell}.calls")).unwrap_or_default();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(path, None);
+        assert_eq!(calls.lines().count(), 1, "{calls:?}");
+        assert!(elapsed < std::time::Duration::from_secs(10), "{elapsed:?}");
+    }
+
+    /// A job that writes to the inherited stdout without end cannot hold launch past the grace.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_job_writing_nonstop_does_not_hold_launch() {
+        let (dir, shell) = fake_shell("spew", "yes &\nexit 0\n");
+        let started = std::time::Instant::now();
+        let result = read_login_shell_path(&shell, &probe_command(&shell), PROBE_TIMEOUT);
+        let elapsed = started.elapsed();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(result, Err(TimedOut));
         assert!(elapsed < std::time::Duration::from_secs(10), "{elapsed:?}");
     }
 
