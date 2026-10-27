@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Video loads price their deferred registered pins at page-rounded bytes, and a streamed encoder that does not fit
-whole pins the prefix that fits the host RAM free once the load has returned."""
+"""Page-rounded video pin pricing and the late encoder prefix pin."""
 
 import types
 
@@ -72,14 +71,14 @@ def test_a_tied_embedding_is_priced_once_per_offload_group_that_copies_it():
     class Tied(torch.nn.Module):
         def __init__(self):
             super().__init__()
-            self.shared = torch.nn.Embedding(1024, 1024).to(torch.bfloat16)  # 2 MiB
+            self.shared = torch.nn.Embedding(1024, 1024).to(torch.bfloat16)
             self.embed_tokens = self.shared
             self.encoder = torch.nn.Module()
             self.encoder.embed_tokens = self.shared  # UMT5: one tensor, two owning submodules
-            self.proj = torch.nn.Linear(1024, 1024, bias = False).to(torch.bfloat16)  # 2 MiB
+            self.proj = torch.nn.Linear(1024, 1024, bias = False).to(torch.bfloat16)
 
     m = Tied()
-    assert dm._module_registered_mib(m) == 4  # unique tensors
+    assert dm._module_registered_mib(m) == 4
     assert dm._module_offload_registered_mib(m) == 4  # modules() visits the shared Embedding once
     m.encoder.embed_tokens = torch.nn.Embedding(1024, 1024).to(torch.bfloat16)
     m.encoder.embed_tokens.weight = (
@@ -114,7 +113,7 @@ def test_the_late_cap_reads_the_budget_at_pin_start_less_what_earlier_pinners_ow
     cap = dm._late_encoder_pin_cap(pipe, mine)
     host(0)
     assert cap() == 0
-    host(10)  # read when called, not when made
+    host(10)
     assert cap() == (10 << 20) - (2 << 20)
 
 
@@ -181,7 +180,7 @@ def test_a_video_encoder_too_big_at_the_plan_pins_the_prefix_free_at_pin_start(h
     assert dm.start_background_pins(pipe) == 1
     dm.finish_background_pins(pipe)
     pinned = [t.is_pinned() for t in _host_copies(pipe.text_encoder)]
-    assert pinned == [True] * 4 + [False] * 4  # weight + bias of the first two groups, in order
+    assert pinned == [True] * 4 + [False] * 4
     with torch.no_grad():
         assert torch.equal(pipe.text_encoder(x), ref)
     dm.stop_background_pins(pipe)
@@ -277,7 +276,6 @@ def test_the_streaming_tier_kill_switch_pins_no_encoder(host, monkeypatch):
 
 
 class _Writes:
-    """A cast-cache write of a first load: ``done()`` until its worker finished."""
 
     def __init__(self, finished = False):
         self.finished = finished

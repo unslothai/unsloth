@@ -6090,9 +6090,7 @@ def _module_registered_mib(module: Any) -> int:
 
 
 def _module_offload_registered_mib(module: Any) -> int:
-    """Registered host MiB a group offload of ``module`` pins: each tensor page-rounded and counted once per owning
-    submodule, since every offload group copies its own tensors (UMT5's tied ``shared`` / ``embed_tokens`` embedding
-    pins twice: 14.4 GiB for 12.5 GiB of unique weights)."""
+    """Registered MiB a group offload pins: page-rounded, counted once per owning submodule (UMT5's tied embedding pins twice)."""
     try:
         total = 0
         for sub in module.modules():
@@ -6319,8 +6317,7 @@ ENCODER_BACKGROUND_PIN_ENV = "UNSLOTH_DIFFUSION_ENCODER_BACKGROUND_PIN"
 PARTIAL_ENCODER_PIN_ENV = "UNSLOTH_DIFFUSION_PARTIAL_ENCODER_PIN"
 _ENCODER_PIN_REQUEST_ATTR = "_unsloth_background_encoder_pin_requested"
 _PARTIAL_PIN_MIN_MIB = 256
-# "0": a video load's deferred registered pins are priced per tensor at a power of two (the allocator's pin) and a
-# streamed encoder that does not fit that price whole pins nothing, as before.
+# "0": old behaviour (power-of-two pin price, no partial encoder prefix).
 VIDEO_EXACT_PIN_PLAN_ENV = "UNSLOTH_VIDEO_EXACT_PIN_PLAN"
 _CAST_WRITES_PENDING_ATTR = "_unsloth_cast_writes_pending"
 
@@ -6377,9 +6374,7 @@ def _video_exact_pins(
     device: Any = None,
     logger: Any = None,
 ) -> bool:
-    """A video load whose deferred pins are registered copies (page-rounded bytes, not powers of two). A load still
-    writing its cast cache (the first in its home) keeps the default plan: on a 31 GiB host its extra pins (a 4-7 GiB
-    encoder prefix) beside the write cost the first clip 3-11 s, while a returning load (cast cache read) gains."""
+    """Video load priced at page-rounded bytes; a first load still writing its cast cache keeps the default plan (extra pins cost it 3-11 s)."""
     if not (
         bool(getattr(pipe, _FAST_PIN_REQUEST_ATTR, False))
         and not _env_off(VIDEO_EXACT_PIN_PLAN_ENV)
@@ -6401,9 +6396,7 @@ def _late_encoder_pin_cap(
     module: Any,
     device: Any = None,
 ) -> Callable[[], int]:
-    """Byte cap for a streamed encoder's deferred pin, read when its pinner starts (after the load) rather than at the
-    plan: a Wan fp32 load still holds its source shards when the plan runs (5.6-7.2 GiB pinnable on a 31 GiB Kaggle
-    host, 17 GiB once the load returned). Pins the earlier pinners of ``pipe`` have not placed yet come off the cap."""
+    """Encoder pin cap read when the pinner starts, not at plan time (the load still holds source shards then), minus earlier pinners' unplaced bytes."""
 
     def cap() -> int:
         budget = _streamed_pin_leftover_mib(0, False, device)
@@ -6648,8 +6641,7 @@ class _GroupPinner:
         import threading
 
         self.fast = bool(fast)
-        # Pin whole groups in order while they fit; the rest stay pageable (diffusers pins them per onload). A callable
-        # cap is read when the worker starts (_late_encoder_pin_cap).
+        # Pin whole groups in order while they fit; the rest stay pageable.
         if byte_cap is None or callable(byte_cap):
             self.byte_cap = byte_cap
         else:
@@ -6726,7 +6718,6 @@ class _GroupPinner:
             return src.pin_memory()
 
     def planned_bytes(self) -> int:
-        """Host bytes this pinner still has to place (its cap when it has one)."""
         try:
             need = sum(
                 _page_bytes(src.nbytes)
@@ -7321,8 +7312,7 @@ def _apply_group_offload(
         )
         # an up-front pin packs into slabs (_apply_group_offloading_packed); a deferred one pins per tensor
         pin_mib = _module_host_mib if defer else _module_pin_mib
-        # Video loads defer into registered copies: page-rounded bytes. The power-of-two price read Wan's 12.5 GiB UMT5
-        # as 17 GiB and its 9.1 GiB 5B DiT as 15.3 GiB, so the encoder never pinned on 31-51 GiB hosts.
+        # Power-of-two pricing read Wan's 12.5 GiB UMT5 as 17 GiB, so it never pinned on 31-51 GiB hosts.
         exact_defer = defer and _video_exact_pins(pipe, onload, logger)
         if exact_defer:
             _host_price = pin_mib
@@ -7367,7 +7357,6 @@ def _apply_group_offload(
             pin_streamed = (False, False)
             gkwargs["low_cpu_mem_usage"] = True
         encoder_cap_mib = 0
-        # Video: an encoder that does not fit whole pins the prefix that fits, its cap read once the load has returned
         late_prefix = (
             exact_defer
             and stream_text_encoders
@@ -8105,7 +8094,6 @@ def _apply_streaming_offload(
         )
         # an up-front pin packs into slabs (_apply_group_offloading_packed); a deferred one pins per tensor
         pin_mib = _module_host_mib if defer else _module_pin_mib
-        # Video loads defer into registered copies here too: price them at page-rounded bytes, as the group tier does.
         exact_defer = defer and _video_exact_pins(pipe, onload, logger)
         if exact_defer:
             _host_price = pin_mib
@@ -8139,7 +8127,6 @@ def _apply_streaming_offload(
             pin_dits, pin_encoders = _streamed_pin_plan(
                 dit_pin_mib, leaf_mib, logger, device = onload
             )
-        # Video: an encoder that does not fit whole pins the prefix that fits, its cap read once the load has returned
         late_prefix = (
             exact_defer
             and prefetch
