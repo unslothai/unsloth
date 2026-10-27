@@ -215,6 +215,7 @@ import {
 } from "@/features/chat/stores/research-run-store";
 import { researchReplyOwnsRun } from "@/features/chat/utils/research-run-binding";
 import {
+  isExternalModelId,
   parseExternalModelId,
   providerModelSupportsStudioTools,
 } from "@/features/chat/external-providers";
@@ -230,6 +231,7 @@ import {
 import {
   CONTINUATION_RUN_CONFIG_KEY,
   type ContinuationRequest,
+  carriedThought,
   incompleteLabel,
   incompleteRemedy,
   isContinuableContent,
@@ -7551,7 +7553,7 @@ const MessageError: FC = () => {
   return (
     <MessagePrimitive.Error>
       <ErrorPrimitive.Root className="aui-message-error-root mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg bg-destructive/10 p-3 text-destructive text-sm dark:bg-destructive/5 dark:text-red-200">
-        <ErrorPrimitive.Message className="aui-message-error-message line-clamp-2 min-w-0 flex-1" />
+        <ErrorPrimitive.Message className="aui-message-error-message min-w-0 flex-1 whitespace-pre-wrap break-words" />
         {!researchRunId && !researchActive && (
           <ActionBarPrimitive.Reload asChild={true}>
             <button
@@ -7662,6 +7664,9 @@ function useContinuation() {
       checkpoint: s.params.checkpoint,
     }),
   );
+  const managedEngine = useChatRuntimeStore(
+    (s) => !isExternalModelId(s.params.checkpoint) && s.loadedEngine !== "auto",
+  );
   const partial = useAuiState(
     ({ message }) => readContinuationSource(message.content).partial,
   );
@@ -7727,7 +7732,10 @@ function useContinuation() {
     cancelled && !isProviderReportedReason(stamped?.reason)
       ? ("cancelled" as const)
       : stamped?.reason;
-  const carriedReasoning = thoughtResumable ? reasoning : "";
+  const carriedReasoning = carriedThought(
+    { partial, reasoning },
+    { resumesThought: thoughtResumable, managedEngine },
+  );
 
   const canResume =
     isLast &&

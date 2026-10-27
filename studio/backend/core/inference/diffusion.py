@@ -201,6 +201,7 @@ from .diffusion_memory import (
     estimate_safetensors_dense_mib,
     file_size_mib,
     largest_streamable_companion_mib,
+    mps_plan_tight,
     normalize_memory_mode,
     plan_diffusion_memory,
     plan_fits_total_capacity,
@@ -12445,7 +12446,7 @@ class DiffusionBackend:
 
             fp8_rule = dict(
                 lora = lora,
-                offload = not plan_keeps_transformer_resident(plan),
+                offload = not plan_keeps_transformer_resident(plan) or mps_plan_tight(plan),
                 widened_mib = transformer_resident,
                 host_available_mib = _available_system_memory_mib(),
             )
@@ -13878,7 +13879,7 @@ class DiffusionBackend:
                         total_steps = progress_steps,
                     )
 
-                # Count GPU-finished steps: under CUDA graphs the host enqueues all steps early.
+                # Count GPU-finished steps: under CUDA graphs or on MPS the host enqueues all steps early.
                 from .video import (
                     _BOUNDARY_MARK_ATTEMPTS,
                     _BOUNDARY_MARK_RETRY_SECONDS,
@@ -14141,7 +14142,7 @@ class DiffusionBackend:
                         def _enter_decode_phase() -> None:
                             """The decoder was entered: a HOST position, possibly far ahead of the GPU. Mark the
                             boundary in the stream and let the poller flip once the GPU reaches it; with no event
-                            to wait on (CPU, MPS) there is no queue to be ahead of, so flip now."""
+                            to wait on (CPU) there is no queue to be ahead of, so flip now."""
                             if peak_probe is not None:
                                 peak_probe.mark_decode()
                             _release_whole_denoiser()

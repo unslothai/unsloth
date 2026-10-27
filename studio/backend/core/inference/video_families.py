@@ -595,6 +595,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         bf16_components_gb = (66.3, 66.8, 11.1),
         # Regionally compilable; dynamic=True traces once. Engage only when resident (slower under offload).
         supports_torch_compile = True,
+        # Near-equal inductor norm-reduction configs rendered different clips per fresh process for one seed.
+        filter_reduction_configs = True,
         # CUDA graph declined: no measurable win (GPU-bound) for ~8 GB extra memory and 31 s capture.
         supports_cuda_graph = False,
         # Streamed, H3's prequant groups onload through diffusers' stream path, which waits on the host per group: a
