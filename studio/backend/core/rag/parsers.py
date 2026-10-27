@@ -273,6 +273,8 @@ class _Stripper(HTMLParser):
                 self._lists[-1][2].append(item)
                 self._label = f"\ue000{self.nonce}.{len(self.labels)}\ue001 "
                 self.labels.append("")
+        elif tag == "input" and (dict(attrs).get("type") or "").lower() in ("checkbox", "radio"):
+            self.handle_data(" ☒ " if "checked" in dict(attrs) else " ☐ ")
         elif tag in _HTML_BOX_TAGS and not self._skip and not self._pre:
             self._line.append(" ")
         elif tag == "tspan" and not self._skip and any(k in ("x", "y") for k, _ in attrs):
