@@ -236,28 +236,9 @@ def _cudnn_length_bucketed_sdpa(
     if attn_mask is None:
         out = scaled_dot_product_attention(Q, K, V, is_causal = True, **kwargs)
         return out[..., :q_len, :]
-    if (
-        attn_mask.dtype != torch.bool
-        and torch.is_grad_enabled()
-        and (Q.requires_grad or K.requires_grad or V.requires_grad)
-        and not torch.compiler.is_compiling()
-        # A replay must re-pad an updated static mask, and inference tensors have no version counter.
-        and not torch.is_inference(attn_mask)
-        and not _mask_stream_capturing(attn_mask)
-    ):
-        padded = _shared_padded_mask(attn_mask, pad)
-    else:
-        padded = _padded_bucket_mask(attn_mask, pad)
+    padded = _padded_bucket_mask(attn_mask, pad)
     out = scaled_dot_product_attention(Q, K, V, attn_mask = padded, **kwargs)
     return out[..., :q_len, :]
-
-
-def _mask_stream_capturing(mask):
-    """CUDA graph capture on the mask's own device (the current device can be another one)."""
-    if not mask.is_cuda:
-        return False
-    with torch.cuda.device(mask.device):
-        return torch.cuda.is_current_stream_capturing()
 
 
 def _padded_bucket_mask(attn_mask, pad):
@@ -271,29 +252,6 @@ def _padded_bucket_mask(attn_mask, pad):
         padded = attn_mask.new_zeros(shape)
         padded[..., :rows, k_len:] = torch.finfo(attn_mask.dtype).min
     padded[..., :rows, :k_len] = attn_mask
-    return padded
-
-
-# SDPA saves an additive mask for backward as is (cuDNN converts a bool one per call anyway), so a
-# padded copy per layer held B * Lp^2 elements per layer until backward: every layer of a forward gets
-# the same mask, so its padded copy is built once, dropped with the source mask.
-try:
-    from torch.utils.weak import WeakIdKeyDictionary as _WeakIdKeyDictionary
-    _PADDED_ADDITIVE_MASKS = _WeakIdKeyDictionary()
-except Exception:
-    _PADDED_ADDITIVE_MASKS = None
-
-
-def _shared_padded_mask(attn_mask, pad):
-    if _PADDED_ADDITIVE_MASKS is None:
-        return _padded_bucket_mask(attn_mask, pad)
-    # Only on the stream that built it: another stream would read it before its padding kernels finish.
-    stream = torch.cuda.current_stream(attn_mask.device) if attn_mask.is_cuda else None
-    hit = _PADDED_ADDITIVE_MASKS.get(attn_mask)
-    if hit is not None and hit[:3] == (attn_mask._version, pad, stream):
-        return hit[3]
-    padded = _padded_bucket_mask(attn_mask, pad)
-    _PADDED_ADDITIVE_MASKS[attn_mask] = (attn_mask._version, pad, stream, padded)
     return padded
 
 
