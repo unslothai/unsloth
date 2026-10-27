@@ -736,11 +736,14 @@ def block_varlen_kwargs(layer, hidden_states, kwargs):
         and entry[2] == (hidden_states.device, seq_lengths._version, mask._version)
         # cu_seqlens built under inference_mode cannot be saved for a training step's backward.
         and (not entry[4] or torch.is_inference_mode_enabled())
+        # sdpa_kernel / deterministic mode can change between calls on the same tensors.
+        and (entry[5] is None or _sdpa_policy_requested(*entry[5]) == entry[6])
     ):
         if entry[3] is not None:
             HF_PACKED_ATTENTION_STATS["compiled"] += 1
         return entry[3]
-    result = _block_varlen_prepare(layer, attention, hidden_states, kwargs)
+    policy = []
+    result = _block_varlen_prepare(layer, attention, hidden_states, kwargs, policy)
     if (
         isinstance(seq_lengths, torch.Tensor)
         and isinstance(mask, torch.Tensor)
@@ -755,6 +758,7 @@ def block_varlen_kwargs(layer, hidden_states, kwargs):
             (hidden_states.device, seq_lengths._version, mask._version),
             result,
             torch.is_inference_mode_enabled(),
+            *(policy[0] if policy else (None, None)),
         )
     return result
 
@@ -762,7 +766,13 @@ def block_varlen_kwargs(layer, hidden_states, kwargs):
 _BLOCK_PREP = {}
 
 
-def _block_varlen_prepare(layer, attention, hidden_states, kwargs):
+def _block_varlen_prepare(
+    layer,
+    attention,
+    hidden_states,
+    kwargs,
+    policy = None,
+):
     if (
         _disabled()
         or _ORIG_SDPA[0] is None
@@ -788,9 +798,11 @@ def _block_varlen_prepare(layer, attention, hidden_states, kwargs):
     n_kv_heads = getattr(config, "num_key_value_heads", None) or n_heads
     if not all(isinstance(n, int) for n in (head_dim, n_heads, n_kv_heads)):
         return None
-    if _sdpa_policy_requested(
-        hidden_states.device, hidden_states.dtype, head_dim, n_heads, n_kv_heads
-    ):
+    policy_args = (hidden_states.device, hidden_states.dtype, head_dim, n_heads, n_kv_heads)
+    wants_sdpa = _sdpa_policy_requested(*policy_args)
+    if policy is not None:
+        policy.append((policy_args, wants_sdpa))
+    if wants_sdpa:
         return None
     if not _VARLEN_INT32_GUARD_DISABLED and _varlen_backward_overflows_int32(
         kwargs["packed_seq_lengths"].numel(), total, n_heads, head_dim

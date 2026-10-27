@@ -1052,6 +1052,8 @@ def family_train_infos() -> list[dict[str, Any]]:
                 # sample_every is refused elsewhere, so the panel offers "Sample every" only where it runs.
                 "supports_samples": name in SAMPLE_FAMILIES,
                 "supports_bucketing": name not in UNBUCKETED_FAMILIES,
+                # The images loader refuses video bases, so the panel offers no Deploy to Create for these.
+                "is_video": name in TRAINABLE_VIDEO_FAMILIES,
                 # A batch > 1 is REFUSED for a family whose forward covers one packed sequence, so leaving the control
                 # unrestricted turns a reasonable 2 into a rejected Start with nothing to say why.
                 "max_train_batch_size": 1 if name in SINGLE_SEQUENCE_FAMILIES else None,
@@ -1666,6 +1668,14 @@ def discover_training_pairs(
         caption_column = caption_column,
         verify_images = verify_images,
     )
+
+
+def training_fetch_repo(cfg: Any) -> Optional[str]:
+    """The repository the trainer downloads: DiT families load the resolved mirror, others the base model."""
+    family = (getattr(cfg, "resolved_family", None) or "sdxl").strip().lower()
+    if family in _DIT_TRAIN_FAMILIES:
+        return getattr(cfg, "fetch_base_model", None) or cfg.base_model
+    return cfg.base_model
 
 
 def _emit(on_event: Optional[EventCb], type_: str, **kw: Any) -> None:

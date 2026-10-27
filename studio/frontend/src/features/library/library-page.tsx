@@ -117,6 +117,7 @@ const EMPTY_COPY: Record<LibraryTab, EmptyCopy> = {
 };
 
 const EMPTY_LINKS = {
+  images: ["/images", "library.empty.generateImage"],
   videos: ["/video", "library.empty.generateVideo"],
   audio: ["/audio", "library.empty.generateAudio"],
   models: ["/studio", "library.empty.trainModel"],
@@ -825,11 +826,20 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     }
     if (!(tab in EMPTY_LINKS)) return uploadButton;
     const [to, label] = EMPTY_LINKS[tab as keyof typeof EMPTY_LINKS];
-    return (
+    const generate = (
       <Button variant="muted" className="rounded-full" onClick={() => void navigate({ to })}>
         {t(label)}
       </Button>
     );
+    if (tab === "images" || tab === "videos") {
+      return (
+        <div className="flex flex-wrap items-center justify-center gap-2">
+          {uploadButton}
+          {generate}
+        </div>
+      );
+    }
+    return generate;
   }
 
   function renderFavorites() {
