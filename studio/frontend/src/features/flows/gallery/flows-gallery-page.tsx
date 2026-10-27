@@ -451,6 +451,10 @@ export function FlowsGalleryPage(): ReactElement {
       const kept = result.skipped.length;
       if (made === 0 && kept === 0 && result.failed.length === 0)
         toast.info("No saved Data Recipes yet");
+      else if (made === 0 && kept === 0)
+        toast.error("Could not bring in your Data Recipes", {
+          description: result.failed.map((f) => `${f.name}: ${f.error}`).join("; "),
+        });
       else
         toast.success(
           made
