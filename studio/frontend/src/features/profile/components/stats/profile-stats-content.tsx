@@ -13,13 +13,7 @@ import { TokenActivityCard } from "./token-activity-card";
 import { TrainingHighlightsCard } from "./training-card";
 
 /**
- * Everything below the personalization form on the Profile tab: headline
- * numbers, activity grid, insights and training.
- *
- * All of it comes from `/api/profile/stats`, which reads local history only.
- *
- * Loaded lazily by `profile-stats-panel.tsx` so none of it reaches the main
- * bundle, since the Profile tab is the only place it renders.
+ * Loaded lazily by `profile-stats-panel.tsx` to keep it out of the main bundle.
  */
 export function ProfileStatsContent() {
   const t = useT();
@@ -61,7 +55,12 @@ export function ProfileStatsContent() {
             {t("settings.profile.stats.subtitle")}
           </p>
         </div>
-        {hasUsage ? <ExportUsageButton /> : null}
+        {hasUsage ? (
+          // Top edge on the h2's cap top (text-base at leading 1.5; Hellix: 0.372em).
+          <div className="mt-[calc(var(--text-base)*0.372)] shrink-0">
+            <ExportUsageButton />
+          </div>
+        ) : null}
       </header>
 
       <StatsHighlights stats={stats} />

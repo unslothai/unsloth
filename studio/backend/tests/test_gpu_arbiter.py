@@ -1090,3 +1090,35 @@ def test_a_respawning_chat_server_counts_as_occupied(monkeypatch):
     kept = types.SimpleNamespace(llama = types.SimpleNamespace(is_active = True, is_loaded = False))
     monkeypatch.setattr(model_slots, "slots", [kept])
     assert arb._chat_occupied() is True
+
+
+def test_a_failed_replacement_gives_the_kept_model_back_its_price(cores, monkeypatch):
+    # The new price is written as the load starts; its failure keeps the old model, which must
+    # not stay priced as the smaller model that never loaded.
+    monkeypatch.setattr(arb, "_media_need_rollback", {}, raising = False)
+    old, new = {0: 8000}, {0: 1000}
+    arb.acquire_for(arb.DIFFUSION, lambda: None, policy = "fit", need_mib = old)
+    arb.acquire_for(arb.DIFFUSION, lambda: {"loading": True}, policy = "fit", need_mib = new)
+    assert arb._media_needs[arb.DIFFUSION] == new
+
+    arb.restore_media_need(arb.DIFFUSION)
+    assert arb._media_needs[arb.DIFFUSION] == old
+    # Applied once: a repeated restore changes nothing.
+    arb.restore_media_need(arb.DIFFUSION)
+    assert arb._media_needs[arb.DIFFUSION] == old
+
+
+def test_a_failed_first_load_and_an_unpriced_one_restore_nothing_stale(cores, monkeypatch):
+    monkeypatch.setattr(arb, "_media_need_rollback", {}, raising = False)
+    # A first load had no price before it; its rollback is to none.
+    arb.acquire_for(arb.VIDEO, lambda: None, policy = "fit", need_mib = {0: 4096})
+    arb.restore_media_need(arb.VIDEO)
+    assert arb.VIDEO not in arb._media_needs
+
+    # A load that takes no GPU claim reprices nothing, so its failure must not reach back to an
+    # older load's rollback.
+    arb.acquire_for(arb.VIDEO, lambda: None, policy = "fit", need_mib = {0: 4096})
+    arb.acquire_for(arb.VIDEO, lambda: None, policy = "fit", need_mib = {0: 2048})
+    arb.begin_media_load(arb.VIDEO, "fit", ("org/video",), lambda: None)
+    arb.restore_media_need(arb.VIDEO)
+    assert arb._media_needs[arb.VIDEO] == {0: 2048}

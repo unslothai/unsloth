@@ -11,6 +11,7 @@ from __future__ import annotations
 import functools
 import os
 from typing import Any
+from .rocm_bf16 import is_rocm_torch
 
 QUERY_CHUNK_ENV = "UNSLOTH_QWEN_IMAGE_ROCM_QUERY_CHUNKING"
 QUERY_CHUNK_SIZE = 512
@@ -27,7 +28,7 @@ def _device_supported(target: Any) -> bool:
         return False
     import torch
 
-    if not getattr(torch.version, "hip", None):
+    if not is_rocm_torch(torch):
         return False
     if setting in ("1", "true", "on", "yes"):
         return True

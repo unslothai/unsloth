@@ -224,3 +224,82 @@ def test_transcript_routes_get_rename_and_archive(stub):
         cleared = client.patch(url, json = {"speaker_names": {"S01": None}, "archived": True}).json()
         assert "speaker_names" not in cleared and cleared["archived"] is True
         assert client.get("/api/inference/audio/transcripts/" + "e" * 32).status_code == 404
+
+
+@pytest.fixture
+def connection(monkeypatch):
+    import httpx
+
+    from core.inference import external_provider, providers
+
+    config = {
+        "provider_type": "custom",
+        "display_name": "Whisper Box",
+        "base_url": "http://stt.local:8000/v1",
+        "is_enabled": True,
+    }
+    monkeypatch.setattr(
+        inference.providers_db,
+        "get_provider",
+        lambda pid: dict(config) if pid == "conn-1" else None,
+    )
+    for module in (inference, providers):
+        monkeypatch.setattr(module, "validate_provider_base_url", lambda url: url)
+    monkeypatch.setattr(inference, "resolve_provider_api_key_or_400", lambda *a, **k: "sk-test")
+    calls = []
+    reply = {
+        "task": "transcribe",
+        "language": "english",
+        "duration": 1.0,
+        "text": " Hello there.",
+        "segments": [{"id": 0, "seek": 0, "start": 0.0, "end": 1.0, "text": " Hello there."}],
+        "words": [{"word": " Hello", "start": 0.0, "end": 0.4}],
+    }
+
+    class _Http:
+        async def post(self, url, **kwargs):
+            calls.append({"url": url, **kwargs})
+            return httpx.Response(200, json = reply, request = httpx.Request("POST", url))
+
+    monkeypatch.setattr(external_provider, "_client", lambda: _Http())
+    return calls
+
+
+def test_a_connection_transcribes_the_source_and_saves_it(stub, connection):
+    input_id = _input(ALICE)
+    with _client(ALICE) as client:
+        response, events = _post(
+            client,
+            provider_id = "conn-1",
+            model = "whisper-1",
+            source = {"input_id": input_id},
+            timestamps = True,
+        )
+    assert response.status_code == 200, response.text
+    assert not (stub.paths or stub.bytes or stub.loads)
+    (call,) = connection
+    assert call["url"] == "http://stt.local:8000/v1/audio/transcriptions"
+    name, audio, content_type = call["files"]["file"]
+    assert (name, content_type, audio[:4]) == ("audio.flac", "audio/flac", b"fLaC")
+    assert call["data"]["model"] == "whisper-1"
+    assert call["data"]["response_format"] == "verbose_json"
+    assert call["data"]["timestamp_granularities[]"] == ["segment", "word"]
+    complete = events[-1]
+    assert complete["type"] == "complete" and complete["text"] == "Hello there."
+    assert complete["segments"] == [{"start": 0.0, "end": 1.0, "text": "Hello there."}]
+    assert complete["words"] == [{"start": 0.0, "end": 0.4, "word": "Hello"}]
+    assert complete["timestamps"] is True and complete["duration"] == pytest.approx(1.0, abs = 0.05)
+    record = complete["record"]
+    assert (record["model"], record["language"]) == ("whisper-1", "english")
+    assert record["source"] == {"kind": "input", "id": input_id, "name": "meeting.webm"}
+
+
+def test_a_source_past_the_connection_limit_is_refused_before_upload(stub, connection, monkeypatch):
+    monkeypatch.setattr(inference, "_MAX_AUDIO_RAW_BYTES", 1024)
+    with _client(ALICE) as client:
+        _, events = _post(
+            client, provider_id = "conn-1", model = "whisper-1", source = {"input_id": _input(ALICE)}
+        )
+    assert events[-1]["type"] == "error"
+    assert "a connection takes" in events[-1]["message"]
+    assert not connection and not stub.bytes

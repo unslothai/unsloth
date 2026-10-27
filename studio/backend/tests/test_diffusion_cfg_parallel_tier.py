@@ -254,6 +254,24 @@ def test_zimage_split_runs_its_halves_as_one_parallel_pair(_zs):
     assert status["split"] == 8 and status["batched"] == 0 and status["parallel"] == 4
 
 
+def test_zimage_compiled_only_eager_split_still_runs_the_parallel_pair(_zs):
+    # Studio arms compiled_only; on an eager denoiser the batched fast path must not bypass an active router.
+    model = _zimage()
+    pipe = types.SimpleNamespace(transformer = model)
+    assert _zs.install_zimage_cfg_split(pipe, offload_policy = "none", compiled_only = True) is None
+    reference = _zimage_steps(model, pipe, 4)
+    eager = _zs.zimage_cfg_split_status(pipe)
+    assert eager["split"] == 0 and eager.get("parallel", 0) == 0
+    router, replicas = _router(model)
+    out = _zimage_steps(model, pipe, 4)
+    for a, b in zip(out, reference):
+        assert torch.allclose(a, b, atol = 1e-4, rtol = 1e-4)
+    assert len(replicas) == 1 and router.disabled_reason is None
+    assert router.stats["pairs_parallel"] == 4 and router.stats["replica_calls"] == 4
+    status = _zs.zimage_cfg_split_status(pipe)
+    assert status["parallel"] == 4
+
+
 def test_zimage_pair_falls_back_to_the_source_when_the_replica_fails(_zs):
     model = _zimage()
     pipe = types.SimpleNamespace(transformer = model)

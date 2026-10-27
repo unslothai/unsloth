@@ -479,7 +479,6 @@ test("the remaining chat-page chords stop at a covered surface", async () => {
     "cycleReasoningEffort",
     "increaseReasoningEffort",
     "decreaseReasoningEffort",
-    "toggleFastMode",
   ]) {
     const at = CHAT_PAGE.indexOf(`"${id}",`);
     assert.notEqual(at, -1, `${id} is gone`);

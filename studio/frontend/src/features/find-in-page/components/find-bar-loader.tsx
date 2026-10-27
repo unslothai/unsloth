@@ -3,11 +3,7 @@
 
 import FindBar, { type FindBarProps } from "./find-bar.tsx";
 
-/**
- * A stable lazy entry that keeps the controller independent of the on-demand UI and engine.
- * Keeping the implementation static inside this entry lets Vite fetch every dependency in
- * parallel, rather than making the first Ctrl/Cmd+F wait through a second network waterfall.
- */
+/** Static implementation in a lazy entry lets Vite fetch all deps in parallel. */
 // biome-ignore lint/style/noDefaultExport: React.lazy requires the component as a default export.
 export default function FindBarLoader(props: FindBarProps) {
   return <FindBar {...props} />;

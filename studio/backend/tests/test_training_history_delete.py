@@ -254,7 +254,8 @@ def test_list_training_runs_offloads_summary_batch(monkeypatch):
     )
 
     assert [summary.id for summary in response.runs] == ["b", "a", "c"]
-    assert offloads == [(training_history._summaries_from_rows, (rows, False))]
+    assert offloads[-1] == (training_history._summaries_from_rows, (rows, False))
+    assert len(offloads) == 3
 
 
 def _delete(
@@ -788,3 +789,37 @@ def test_shared_guard_compares_canonical_paths(monkeypatch, tmp_path):
     )
 
     assert training_history._output_dir_shared(str(run_dir), "run-1") is True
+
+
+def test_training_run_detail_reads_the_db_off_the_event_loop(monkeypatch):
+    offloaded: list[object] = []
+    row = _run_row(id = "a", output_dir = "/tmp/a")
+
+    async def record_offload(function, *args):
+        offloaded.append(function)
+        return function(*args)
+
+    def get_run(run_id):
+        return dict(row)
+
+    def get_run_metrics(run_id):
+        return {}
+
+    def sharing():
+        return False
+
+    monkeypatch.setattr(training_history.asyncio, "to_thread", record_offload)
+    monkeypatch.setattr(training_history, "get_run", get_run)
+    monkeypatch.setattr(training_history, "get_run_metrics", get_run_metrics)
+    monkeypatch.setattr(training_history, "get_preview_sharing_enabled", sharing)
+    monkeypatch.setattr(
+        training_history, "can_resume_run", lambda run, *, resource_cache = None: False
+    )
+    monkeypatch.setattr(training_history, "artifacts_present", lambda path: False)
+
+    response = asyncio.run(
+        training_history.get_training_run_detail("a", current_subject = "test-user")
+    )
+
+    assert response.run.id == "a"
+    assert {get_run, get_run_metrics, sharing} <= set(offloaded)

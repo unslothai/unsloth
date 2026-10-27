@@ -1221,8 +1221,8 @@ def test_plan_fits_total_capacity():
         )
 
     assert plan_fits_total_capacity(plan(90_228, 183_359)) is True
-    # 0.85 * (183,359 - 18,335) = 140,270
-    assert plan_fits_total_capacity(plan(150_000, 183_359)) is False
+    # 0.85 * (183,359 - 4,096 capped reserve) = 152,373
+    assert plan_fits_total_capacity(plan(160_000, 183_359)) is False
     assert plan_fits_total_capacity(plan(None, 183_359)) is False
     assert plan_fits_total_capacity(plan(90_228, None)) is False
     assert plan_fits_total_capacity(types.SimpleNamespace()) is False
@@ -1387,6 +1387,8 @@ def test_unified_oversize_decision_matrix_for_the_real_video_families():
         "wan2.1-t2v-14b": {16, 24, 32, 64},
         "hunyuanvideo-1.5": {16, 24, 32},
         "hunyuanvideo-1.5-720p": {16, 24, 32},
+        "cosmos3-nano": {16, 24, 32},
+        "cosmos3-edge": set(),
     }
     assert {f.name for f in _FAMILIES} == set(
         expected_refusals
@@ -3060,4 +3062,6 @@ def test_both_offload_tiers_fall_back_to_the_no_copy_back_top_group():
     for fn in (mem._apply_group_offload, mem._apply_streaming_offload):
         src = ast.unparse(ast.parse(inspect.getsource(fn).lstrip()))
         assert "_skip_top_level_copy_back(module, logger)" in src, fn.__name__
-        assert "not _pin_top_level_group(module, logger, pinned_mib)" in src, fn.__name__
+        assert (
+            "not _pin_top_level_group(module, logger, pinned_mib, device=onload)" in src
+        ), fn.__name__

@@ -17,7 +17,7 @@ import triton
 import triton.language as tl
 import torch
 from typing import Tuple
-from .utils import calculate_settings, long_indexing, torch_gpu_device
+from .utils import calculate_settings, long_indexing, norm_num_warps, torch_gpu_device
 from . import triton_launch
 from .triton_launch import launch
 
@@ -201,7 +201,9 @@ def _rms_layernorm_backward(
         )
 
 
-_rms_layernorm_backward = triton.jit(_rms_layernorm_backward)
+_rms_layernorm_backward = triton.jit(
+    _rms_layernorm_backward, do_not_specialize = ("n_rows", "rows_per_program")
+)
 _rms_layernorm_backward = triton.heuristics(
     {
         "GEMMA": lambda args: bool(args["GEMMA"]),
@@ -313,7 +315,7 @@ def _row_dot_in_row_kernel_order(a, b, ROWS: tl.constexpr, WARPS: tl.constexpr):
     return total
 
 
-@triton.jit
+@triton.jit(do_not_specialize = ("n_rows",))
 def _rms_layernorm_forward_rows(
     Y,
     X,
@@ -415,7 +417,7 @@ def _rms_backward_rows_block(
     return tl.sum(dY_rows * normed, axis = 0)
 
 
-@triton.jit
+@triton.jit(do_not_specialize = ("n_rows", "blocks_per_program"))
 def _rms_layernorm_backward_rows(
     dY,
     dX,
@@ -487,7 +489,7 @@ def _rms_layernorm_backward_rows(
         )
 
 
-@triton.jit
+@triton.jit(do_not_specialize = ("n_programs",))
 def _rms_sum_dw_partials(
     partials, dW, n_programs, n_cols, BLOCK_ROWS: tl.constexpr, BLOCK_COLS: tl.constexpr
 ):
@@ -507,14 +509,48 @@ def _cdiv(a, b):
     return (a + b - 1) // b
 
 
-_cached_settings = functools.lru_cache(maxsize = None)(calculate_settings)
+# num_warps per (compute capability, n_cols), replacing calculate_settings' where a sweep (fp16 + bf16 on
+# sm_80+, fp16 on T4; 2k and 16k rows) found a width faster outside the run's A/A band in some cell and never
+# slower in any, at least 3% on the geometric mean, with max error vs fp64 no worse than the default's; every
+# entry then won again against main on torch 2.14.1 (same GPU tier, interleaved, outside A/A, never slower).
+# _NUM_WARPS: one-row forward + frozen-W backward; _DW_NUM_WARPS: the dW backward.
+_NUM_WARPS = {
+    ((7, 5), 1024): 8,
+    ((7, 5), 2048): 16,
+    ((7, 5), 2560): 16,
+    ((7, 5), 4096): 32,
+    ((7, 5), 5120): 32,
+    ((7, 5), 8192): 32,
+    ((9, 0), 5120): 4,
+}
+_DW_NUM_WARPS = {
+    ((8, 9), 2560): 4,
+    ((8, 9), 4096): 2,
+    ((12, 0), 1024): 8,
+    ((12, 0), 2560): 4,
+    ((12, 0), 5120): 8,
+    ((12, 0), 8192): 4,
+}
 
 
-def _settings(n_cols):
-    # Cached per width for eager calls (host bound at small shapes); tracing calls it directly.
-    if torch.compiler.is_compiling():
-        return calculate_settings(n_cols)
-    return _cached_settings(n_cols)
+def _arch_settings(n_cols, device, dw):
+    BLOCK_SIZE, num_warps = calculate_settings(n_cols)
+    table = _DW_NUM_WARPS if dw else _NUM_WARPS
+    return BLOCK_SIZE, norm_num_warps(table, n_cols, num_warps, device)
+
+
+_cached_arch_settings = functools.lru_cache(maxsize = None)(_arch_settings)
+
+
+def _settings(
+    n_cols,
+    device = None,
+    dw = False,
+):
+    # Cached per (width, device) for eager calls; tracing and symbolic (unhashable) widths skip it.
+    if torch.compiler.is_compiling() or type(n_cols) is not int:
+        return _arch_settings(n_cols, device, dw)
+    return _cached_arch_settings(n_cols, device, dw)
 
 
 def _launch(wrap, kernel, grid, args, n_tensors, constexprs, device, **options):
@@ -706,7 +742,7 @@ def _rms_forward(
             if _multirow_must_raise(error, wrap):
                 raise
             _multirow_disable(f"launch failed: {error!r}")
-    BLOCK_SIZE, num_warps = _settings(n_cols)
+    BLOCK_SIZE, num_warps = _settings(n_cols, device)
     _launch(
         wrap,
         _gemma_rms_layernorm_forward if gemma else _rms_layernorm_forward,
@@ -761,7 +797,7 @@ def _dw_launch(units, device):
 @functools.lru_cache(maxsize = None)
 def _dw_row_config(device, n_cols):
     # Cached (host bound). 64-warp SMs, <= 16 elems/lane: cap registers at 64 so all programs stay resident.
-    BLOCK_SIZE, num_warps = _settings(n_cols)
+    BLOCK_SIZE, num_warps = _settings(n_cols, device, dw = True)
     per_sm, options = _DW_PROGRAMS_PER_SM, {}
     if (
         device.type == "cuda"
@@ -835,7 +871,7 @@ def _rms_backward(
         programs, per_program = _dw_split(n_rows, max_programs)
         partials = torch.empty((programs, n_cols), dtype = torch.float32, device = device)
     else:
-        BLOCK_SIZE, num_warps = _settings(n_cols)
+        BLOCK_SIZE, num_warps = _settings(n_cols, device)
     _launch(
         wrap,
         _rms_layernorm_backward,

@@ -57,6 +57,58 @@ test("nav and Recents spinners land on one trailing column", async () => {
 });
 
 // The kebab overlays the row's right edge, so a spinner row must pad past it.
+// The spinner, the waiting-for-approval dot and the unread dot take turns in one slot; a dot off
+// that centre reads as misaligned next to a spinner or a dot in the row above.
+test("the Recents spinner, the approval mark and the unread dot share one centre", () => {
+  const centre = (anchor: string, box: string) => inset(anchor, "right") + inset(box, "size") / 2;
+  const spinnerAnchor = grab(
+    APP_SIDEBAR,
+    /className=\{cn\(\s*"(pointer-events-none absolute right-[0-9.]+[^"]*)"[\s\S]{0,1200}?data-testid="chat-row-spinner"/,
+    "Recents chat spinner anchor",
+  );
+  const spinner = grab(
+    APP_SIDEBAR,
+    /data-testid="chat-row-spinner"[\s\S]{0,400}?className="([^"]*)"/,
+    "Recents chat spinner",
+  );
+  const approvalBox = grab(
+    APP_SIDEBAR,
+    /<ApprovalMark testId="chat-row-approval" className="([^"]*)"/,
+    "approval mark",
+  );
+  const unreadAnchor = grab(
+    APP_SIDEBAR,
+    /\{hasUnreadActivity \? \([\s\S]{0,200}?className=\{cn\(\s*"([^"]*)"/,
+    "unread dot anchor",
+  );
+
+  const spinnerCentre = centre(spinnerAnchor, spinner);
+  assert.equal(spinnerCentre, 23);
+  assert.equal(centre(spinnerAnchor, approvalBox), spinnerCentre);
+  assert.equal(centre(unreadAnchor, unreadAnchor), spinnerCentre, "the unread dot left the spinner's column");
+});
+
+test("every trailing mark yields to the row actions on hover, an open menu and keyboard focus", () => {
+  const marks: [string, RegExp][] = [
+    ["spinner", /\{showWorkSpinner \? \([\s\S]{0,1600}?\{awaitingApproval \? \(/],
+    ["unread dot", /\{hasUnreadActivity \? \([\s\S]{0,900}?aria-hidden/],
+    ["fork mark", /\{showForkMark \? \([\s\S]{0,1600}?<GitBranchIcon/],
+  ];
+  for (const [name, pattern] of marks) {
+    const block = pattern.exec(APP_SIDEBAR)?.[0] ?? "";
+    assert.ok(block, `could not find the ${name}`);
+    for (const group of ["recent-item", "project-chat-item"]) {
+      for (const fade of [
+        `group-hover/${group}:opacity-0`,
+        `group-has-[.sidebar-row-action[data-state=open]]/${group}:opacity-0`,
+        `group-has-[.sidebar-row-action:focus-visible]/${group}:opacity-0`,
+      ]) {
+        assert.ok(block.includes(fade), `the ${name} lacks ${fade}`);
+      }
+    }
+  }
+});
+
 test("a working Recents row clears the kebab on hover", async () => {
   const [source, css] = await Promise.all([
     atDefaultUiScale(readSrc("components/app-sidebar.tsx")),
@@ -185,7 +237,7 @@ test("the expanded row and the flyout both show a pending tooltip", async () => 
   );
   assert.match(
     appSidebar,
-    /alwaysTooltip=\{rowState\.pending\}/,
+    /alwaysTooltip=\{rowState\.pending \|\| Boolean\(row\.dimmed\)\}/,
     "the inline rows never ask for the exception",
   );
   assert.match(appSidebar, /^\s*title=\{tooltip\}$/m, "MoreMenuItem drops a pending title");

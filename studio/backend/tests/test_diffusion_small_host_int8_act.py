@@ -9,8 +9,14 @@ import types
 
 import pytest
 import torch
+from torch.torch_version import TorchVersion  # noqa: E402
+
 
 import core.inference.diffusion_small_host as sh
+
+# A CUDA build's version tag: Studio reads ROCm from the "+rocm" tag too (AMD SDK / Radeon wheels leave
+# torch.version.hip unset), so a test that fakes NVIDIA clears both.
+_CUDA_TORCH_VERSION = TorchVersion(str(torch.__version__).split("+")[0] + "+cu130")
 
 
 @pytest.fixture(autouse = True)
@@ -71,6 +77,8 @@ def _fake_cuda(
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda idx = None: cap)
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
     monkeypatch.setattr(torch.version, "hip", hip, raising = False)
+    if hip is None:
+        monkeypatch.setattr(torch, "__version__", _CUDA_TORCH_VERSION, raising = False)
     monkeypatch.setattr(torch, "_int_mm", int_mm, raising = False)
     real_to = torch.Tensor.to
 

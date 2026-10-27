@@ -592,6 +592,10 @@ export async function adoptResidentModel(props: any): Promise<void> {
   const nativePathToken = undefined;
   const residentStatus: any = props.residentStatus;
   const readServerWideReloadHints = async (): Promise<boolean> => false;
+  // A user pick, not the chat's automatic adopt-only one: these guards never return here.
+  const adoptOnly = false;
+  const loadInFlight = (): boolean => false;
+  const stillWanted = (): boolean => true;
   // The two conditions the tail sits inside, restated so the braces balance and the
   // entry conditions are visible. Both say the same thing: this pick needs no load.
   if (!forceReload && !nativePathToken) {

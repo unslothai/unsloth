@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronDownStandardIcon, ChevronUpStandardIcon } from "@/lib/chevron-icons";
 import { useLocale, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
-  ArrowDown01Icon,
-  ArrowUp01Icon,
   Cancel01Icon,
   Clock01Icon,
   StarIcon,
@@ -14,8 +13,12 @@ import {
   ViewOffSlashIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { type ReactNode, useMemo, useState } from "react";
+import { type ReactNode, useId, useMemo, useState } from "react";
+import { Switch } from "@/components/ui/switch";
+import { CursorInWindowIcon } from "@/lib/browser-use-icon";
 import { hostOf } from "./address";
+import { useBrowserAgentStore } from "./agent/agent-store";
+import { useBrowserAgentDisabled } from "./agent/composer-toggle";
 import { type HistoryItem, useBrowserHistoryStore } from "./history-store";
 import { LinkContextMenu, MenuRow } from "./link-context-menu";
 import { useNativeBrowser } from "./native-support";
@@ -113,7 +116,7 @@ function SiteIcon({ site }: { site: Site }) {
     <SiteFavicon
       url={site.url}
       icon={site.icon}
-      className="size-9 rounded-lg"
+      className="size-9 rounded-md"
       fallbackClassName="size-9 text-foreground"
     />
   );
@@ -185,7 +188,7 @@ function ToolButton({
     <button
       type="button"
       onClick={onClick}
-      className="flex h-11 min-w-0 cursor-pointer items-center gap-3 rounded-xl bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] px-3.5 text-start text-ui-15 text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="flex h-11 min-w-0 cursor-pointer items-center gap-3 rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] px-3.5 text-start text-ui-15 text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       <HugeiconsIcon
         icon={icon}
@@ -194,6 +197,47 @@ function ToolButton({
       />
       <span className="min-w-0 flex-1 truncate">{label}</span>
     </button>
+  );
+}
+
+/** The composer's Browser use switch: the same store, so its pill shows as soon as this is on. */
+function BrowserUseToggle() {
+  const t = useT();
+  const id = useId();
+  const disabled = useBrowserAgentDisabled();
+  const enabled = useBrowserAgentStore((state) => state.enabled);
+  return (
+    <label
+      htmlFor={id}
+      className={cn(
+        "flex min-w-0 items-center gap-3 rounded-lg bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] px-5 py-3",
+        disabled ? "cursor-default" : "cursor-pointer",
+      )}
+    >
+      <HugeiconsIcon
+        icon={CursorInWindowIcon}
+        strokeWidth={1.75}
+        className="me-1 size-6 shrink-0 text-muted-foreground"
+      />
+      <span className="min-w-0 flex-1">
+        <span className="block text-ui-15 text-foreground">
+          {t("browser.browserUse.label")}
+        </span>
+        <span className="block text-ui-13 text-muted-foreground">
+          {t(
+            disabled
+              ? "browser.browserUse.unavailable"
+              : "browser.browserUse.description",
+          )}
+        </span>
+      </span>
+      <Switch
+        id={id}
+        checked={enabled && !disabled}
+        disabled={disabled}
+        onCheckedChange={(on) => useBrowserAgentStore.getState().setEnabled(on)}
+      />
+    </label>
   );
 }
 
@@ -299,6 +343,7 @@ export function NewTabPage({ tabId }: { tabId: string }) {
             </div>
           </section>
         ) : null}
+        <BrowserUseToggle />
         {showRecents && recents.length > 0 ? (
           <section className="flex flex-col gap-3">
             <SectionTitle
@@ -306,13 +351,13 @@ export function NewTabPage({ tabId }: { tabId: string }) {
                 <div className="flex items-center gap-1">
                   <PageButton
                     label={t("browser.recentNewer")}
-                    icon={ArrowUp01Icon}
+                    icon={ChevronUpStandardIcon}
                     disabled={shownPage === 0}
                     onClick={() => setPage(shownPage - 1)}
                   />
                   <PageButton
                     label={t("browser.recentOlder")}
-                    icon={ArrowDown01Icon}
+                    icon={ChevronDownStandardIcon}
                     disabled={shownPage >= pages - 1}
                     onClick={() => setPage(shownPage + 1)}
                   />
@@ -341,10 +386,10 @@ export function NewTabPage({ tabId }: { tabId: string }) {
                     title={item.url}
                     onClick={() => navigate(tabId, { url: item.url })}
                     className={cn(
-                      "flex min-w-0 cursor-pointer items-center gap-4 rounded-2xl px-3 py-3 text-start transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]",
+                      "flex min-w-0 cursor-pointer items-center gap-4 rounded-md px-3 py-3 text-start transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]",
                     )}
                   >
-                    <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)]">
+                    <span className="flex size-10 shrink-0 items-center justify-center rounded-md bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)]">
                       <SiteFavicon
                         url={item.url}
                         className="size-5 rounded-[4px]"

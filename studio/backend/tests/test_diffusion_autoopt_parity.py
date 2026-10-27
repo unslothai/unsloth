@@ -68,7 +68,13 @@ class _Patch:
 def _real_class(name: str) -> Any:
     try:
         import diffusers
-        return getattr(diffusers, name, None)
+
+        found = getattr(diffusers, name, None)
+        if found is None:
+            # Studio's in-tree pipelines (MOSS-Image) define their own denoiser class.
+            from core.inference.diffusion_moss_image import in_tree_class
+            found = in_tree_class(name)
+        return found
     except Exception:  # noqa: BLE001
         return None
 

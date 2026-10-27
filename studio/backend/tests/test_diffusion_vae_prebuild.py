@@ -15,8 +15,14 @@ from pathlib import Path
 import pytest
 
 torch = pytest.importorskip("torch")
+from torch.torch_version import TorchVersion  # noqa: E402
+
 
 from core.inference import diffusion_vae_prebuild as prebuild  # noqa: E402
+
+# A CUDA build's version tag: Studio reads ROCm from the "+rocm" tag too (AMD SDK / Radeon wheels leave
+# torch.version.hip unset), so a test that fakes NVIDIA clears both.
+_CUDA_TORCH_VERSION = TorchVersion(str(torch.__version__).split("+")[0] + "+cu130")
 
 BACKEND = Path(__file__).resolve().parents[1]
 
@@ -75,6 +81,8 @@ def test_restart_and_kill_switch_never_spawn(monkeypatch):
     monkeypatch.setattr(prebuild, "_spawn", lambda job, logger: spawned.append(job) or True)
     monkeypatch.setattr(prebuild, "plan", lambda pipe: {"device": 0})
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", _CUDA_TORCH_VERSION, raising = False)
     monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device: (64 * 1024**3, 96 * 1024**3))
     pipe = types.SimpleNamespace()
     assert prebuild.maybe_kick(pipe, types.SimpleNamespace(hit = True)) is False

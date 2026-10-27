@@ -34,9 +34,7 @@ from pathlib import Path
 EVIDENCE_PREFIX = "STUDIO_GPU_EVIDENCE_B64 "
 _CHUNK_RE = re.compile(r"^(\d+)/(\d+)\s+(\S+)$")
 
-# A tar member is trusted only as far as its name. Absolute paths and ``..``
-# are refused rather than sanitised, because a bundle that contains one is not
-# a bundle this payload wrote.
+# Members with absolute paths or `..` are refused, not sanitised.
 MAX_MEMBER_BYTES = 20_000_000
 
 
@@ -58,8 +56,7 @@ def iter_text(path: Path):
             nb = json.loads(nb_path.read_text(encoding = "utf-8", errors = "replace"))
         except Exception:  # noqa: BLE001
             continue
-        # Kernels have returned valid JSON that is not a notebook (`[]`, or a
-        # non-object cell); raising here fails the job after the verdict posted.
+        # Valid JSON may not be a notebook; raising here would fail the job after the verdict posted.
         if not isinstance(nb, dict):
             continue
         for cell in nb.get("cells") or []:
@@ -162,8 +159,6 @@ def main() -> int:
 
     missing = [i for i in range(1, total + 1) if i not in chunks]
     if missing:
-        # A bundle reassembled from a truncated log decodes to something, and that something is not the evidence.
-        # Report rather than guess.
         print(
             f"[evidence] {len(missing)} of {total} chunks are missing "
             f"(first: {missing[0]}), so the bundle is incomplete and is not "

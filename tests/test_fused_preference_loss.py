@@ -26,7 +26,28 @@ import torch
 transformers = pytest.importorskip("transformers")
 trl = pytest.importorskip("trl")
 
-from transformers import LlamaConfig, LlamaForCausalLM
+from transformers import LlamaConfig
+
+
+def _pristine_llama_for_causal_lm():
+    """transformers' own LlamaForCausalLM, loaded fresh from its file. Once a GPU test in the same
+    process loads a model through unsloth, unsloth's patches (CUDA rotary caches, fast forwards) sit
+    on the shared Llama classes, and this file's float64 CPU model would run through them."""
+    import importlib.util
+    import sys
+
+    import transformers.models.llama.modeling_llama as installed
+
+    name = "transformers.models.llama._pristine_modeling_llama"
+    if name not in sys.modules:
+        spec = importlib.util.spec_from_file_location(name, installed.__file__)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    return sys.modules[name].LlamaForCausalLM
+
+
+LlamaForCausalLM = _pristine_llama_for_causal_lm()
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -37,6 +58,47 @@ def _load(name, path):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+_TRL_TRAINER_MODULES = {
+    "DPOTrainer": ("trl.trainer.dpo_trainer",),
+    "ORPOTrainer": ("trl.experimental.orpo.orpo_trainer", "trl.trainer.orpo_trainer"),
+    "CPOTrainer": ("trl.experimental.cpo.cpo_trainer", "trl.trainer.cpo_trainer"),
+}
+
+
+def _trl_trainer(name):
+    """TRL's own trainer class, loaded from its file.
+
+    Unsloth's RL patch rebinds ``trl.<name>`` and the defining module's attribute to its generated
+    ``Unsloth<name>``, whose concatenated_forward already takes the fused path, so importing the
+    name hands back the code under test as its own reference once anything has patched TRL.
+    """
+    for module_name in _TRL_TRAINER_MODULES[name]:
+        try:
+            spec = importlib.util.find_spec(module_name)
+        except ModuleNotFoundError:
+            continue
+        if spec is None or spec.origin is None:
+            continue
+        # Same package, so TRL's relative imports resolve; a private name, so nothing patched reuses it.
+        pristine_name = f"{module_name}_trl_reference_under_test"
+        module = sys.modules.get(pristine_name)
+        if module is None:
+            module = importlib.util.module_from_spec(
+                importlib.util.spec_from_file_location(pristine_name, spec.origin)
+            )
+            sys.modules[pristine_name] = module
+            try:
+                module.__spec__.loader.exec_module(module)
+            except BaseException:
+                sys.modules.pop(pristine_name, None)
+                raise
+        trainer = getattr(module, name, None)
+        if trainer is not None:
+            assert not trainer.__name__.startswith("Unsloth"), trainer
+            return trainer
+    pytest.skip(f"this TRL has no {name}")
 
 
 def _zoo_preference_loss():
@@ -176,7 +238,7 @@ def _dpo_batch(seed, n = 3):
 
 
 def _dpo_trainer(module, model, ref_model, fused, **overrides):
-    from trl import DPOTrainer
+    DPOTrainer = _trl_trainer("DPOTrainer")
 
     if not hasattr(DPOTrainer, "concatenated_forward"):
         pytest.skip("TRL >= 0.29 DPOTrainer has no concatenated_forward")
@@ -409,16 +471,7 @@ def _orpo_batch(seed, n = 3):
 
 
 def _orpo_trainer(module, model, method, fused, **overrides):
-    if method == "orpo":
-        try:
-            from trl import ORPOTrainer as Trainer
-        except ImportError:
-            from trl.experimental.orpo import ORPOTrainer as Trainer
-    else:
-        try:
-            from trl import CPOTrainer as Trainer
-        except ImportError:
-            from trl.experimental.cpo import CPOTrainer as Trainer
+    Trainer = _trl_trainer("ORPOTrainer" if method == "orpo" else "CPOTrainer")
 
     class Stub:
         concatenated_inputs = staticmethod(Trainer.concatenated_inputs)
@@ -708,3 +761,83 @@ def test_hooked_or_custom_head_falls_back(dpo_module, monkeypatch, kind):
     loss, metrics, _ = _run(trainer, model, batch)
     assert HiddenStatesLlama.hidden_calls == 0
     torch.testing.assert_close(loss, reference[0])
+
+
+def _zero_head_input_grad(module, grad_input, grad_output):
+    return (torch.zeros_like(grad_input[0]),)
+
+
+@pytest.mark.parametrize(
+    "kind",
+    ["full_backward_hook", "backward_pre_hook", "legacy_backward_hook", "global_backward_hook"],
+)
+def test_backward_hooked_head_falls_back(dpo_module, monkeypatch, kind):
+    """The kernel never calls the head module, so its module backward hooks would never fire."""
+    monkeypatch.setattr(dpo_module, "_logit_transforms", lambda unwrapped: (0.0, 0.0, 0.0))
+    batch = _orpo_batch(seed = 4)
+    model = _model(0)
+    head = model.get_output_embeddings()
+    calls = []
+
+    def count(fn):
+        def hook(*args):
+            calls.append(1)
+            return fn(*args)
+
+        return hook
+
+    with contextlib.ExitStack() as stack:
+        if kind == "full_backward_hook":
+            handle = head.register_full_backward_hook(count(_zero_head_input_grad))
+        elif kind == "backward_pre_hook":
+            handle = head.register_full_backward_pre_hook(
+                count(lambda m, grad_output: (grad_output[0] * 3,))
+            )
+        elif kind == "legacy_backward_hook":
+            handle = head.register_backward_hook(
+                count(lambda m, gi, go: tuple(None if g is None else g * 3 for g in gi))
+            )
+        else:
+            from torch.nn.modules.module import register_module_full_backward_hook
+            def global_hook(module, grad_input, grad_output):
+                if module is head:
+                    return _zero_head_input_grad(module, grad_input, grad_output)
+
+            handle = register_module_full_backward_hook(count(global_hook))
+        stack.callback(handle.remove)
+        trainer = _orpo_trainer(dpo_module, model, "orpo", "auto")
+        assert dpo_module._output_head(trainer, model) == (None, None)
+        reference = _run(_orpo_trainer(dpo_module, model, "orpo", False), model, batch)
+        ref_calls = len(calls)
+        assert ref_calls >= 1
+        HiddenStatesLlama.hidden_calls = 0
+        result = _run(trainer, model, batch)
+        assert HiddenStatesLlama.hidden_calls == 0
+        assert len(calls) == 2 * ref_calls
+    _assert_same(reference, result)
+
+
+def test_weight_tensor_hooks_still_take_fused_path(dpo_module, monkeypatch):
+    """Tensor and AccumulateGrad hooks on the head weight see the kernel's returned dW, so the
+    fused path stays eligible and still gives the stock gradients."""
+    monkeypatch.setattr(dpo_module, "_logit_transforms", lambda unwrapped: (0.0, 0.0, 0.0))
+    batch = _orpo_batch(seed = 4)
+    model = _model(0)
+    weight = model.get_output_embeddings().weight
+    calls = []
+    handles = [
+        weight.register_hook(lambda g: (calls.append("tensor"), g * 2)[1]),
+        weight.register_post_accumulate_grad_hook(lambda p: calls.append("post")),
+    ]
+    try:
+        reference = _run(_orpo_trainer(dpo_module, model, "orpo", False), model, batch)
+        assert calls == ["tensor", "post"]
+        calls.clear()
+        HiddenStatesLlama.hidden_calls = 0
+        result = _run(_orpo_trainer(dpo_module, model, "orpo", True), model, batch)
+        assert HiddenStatesLlama.hidden_calls >= 1
+        assert calls == ["tensor", "post"]
+    finally:
+        for handle in handles:
+            handle.remove()
+    _assert_same(reference, result)

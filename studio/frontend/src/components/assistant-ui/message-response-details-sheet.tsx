@@ -230,7 +230,7 @@ function DetailSection({
   children: ReactNode;
 }) {
   return (
-    <section className="rounded-md bg-muted/45 p-3">
+    <section className="rounded-lg bg-muted/45 p-3">
       <h3 className="mb-2 font-heading text-foreground text-sm">{title}</h3>
       <div className="grid gap-2">{children}</div>
     </section>
@@ -328,10 +328,7 @@ export const MessageResponseModelBadge: FC<{ className?: string }> = ({
 
   return (
     <span
-      // Out of find-in-page's reach: this is a hover affordance, transparent and unclickable until
-      // the message is hovered, so a match here would be counted and walked to under a highlight
-      // nobody can see. The index leaves opacity alone otherwise, so a message still fading in
-      // stays findable.
+      // Hidden from find-in-page: this hover affordance is invisible until the message is hovered.
       {...{ [FIND_SKIP_ATTRIBUTE]: "" }}
       className={cn(
         "aui-response-model-badge pointer-events-none relative inline-flex min-h-5 max-w-full cursor-text select-text items-center text-muted-foreground/80 text-xs font-medium leading-5 opacity-0 transition-opacity duration-150 after:absolute after:inset-x-0 after:top-full after:h-1 after:content-[''] hover:opacity-100 group-hover/assistant-message:pointer-events-auto group-hover/assistant-message:opacity-100 group-focus-within/assistant-message:pointer-events-auto group-focus-within/assistant-message:opacity-100",
@@ -388,7 +385,6 @@ const MessageResponseDetailsSheetContent: FC<{
     (promptTokens != null && completionTokens != null
       ? promptTokens + completionTokens
       : undefined);
-  // Same gate as the timing tooltip: a one-token prompt or a missing rate has no speed to show.
   const promptRate = asNumber(serverTimings?.prompt_per_second);
   const promptSpeed =
     (asNumber(serverTimings?.prompt_n) ?? 0) > 1 && (promptRate ?? 0) > 0
@@ -430,7 +426,7 @@ const MessageResponseDetailsSheetContent: FC<{
         </SheetHeader>
 
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
-          <div className="min-w-0 rounded-md border border-border/70 bg-card p-3">
+          <div className="min-w-0 rounded-lg border border-border/70 bg-card p-3">
             <p className="min-w-0 break-words font-heading text-foreground text-sm">
               {summaryLabel}
             </p>

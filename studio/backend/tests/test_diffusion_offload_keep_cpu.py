@@ -608,3 +608,65 @@ def test_buffers_onloaded_under_inference_mode_do_not_break_the_hook():
     for _ in range(3):
         with torch.inference_mode():
             assert torch.equal(_render(pipe, x), ref)
+
+
+def _int8_pipe(device):
+    """The _pipe layout with torchao Int8Tensor weights (Studio's int8 denoisers under low_vram)."""
+    quant = pytest.importorskip("torchao.quantization")
+    pipe = _pipe(device, "text_encoder", "transformer")
+    lin = torch.nn.Linear(64, 64, dtype = torch.bfloat16)
+    torch.manual_seed(1)
+    torch.nn.init.normal_(lin.weight)
+    try:
+        config = quant.Int8DynamicActivationInt8WeightConfig(version = 2)
+    except TypeError:
+        config = quant.Int8DynamicActivationInt8WeightConfig()
+    quant.quantize_(torch.nn.Sequential(lin), config)
+    if _inner_of(lin.weight.data) is None:
+        pytest.skip("this torchao build stores int8 weights without a traceable wrapper")
+    pipe.components["text_encoder"] = torch.nn.Linear(8, 64, dtype = torch.bfloat16)
+    pipe.components["transformer"] = lin
+    pipe.text_encoder, pipe.transformer = pipe.components["text_encoder"], lin
+    return pipe
+
+
+def _inner_ptrs(module):
+    return [x.data_ptr() for _, x in _inner_of(module.weight.data)]
+
+
+def _inner_of(t):
+    """A torchao wrapper weight's inner tensors, read without the module under test."""
+    from torch.utils._python_dispatch import is_traceable_wrapper_subclass
+
+    if not is_traceable_wrapper_subclass(t):
+        return None
+    names, _ctx = t.__tensor_flatten__()
+    inner = [(n, getattr(t, n)) for n in names]
+    return inner if all(type(x) is torch.Tensor for _, x in inner) else None
+
+
+@cuda
+@pytest.mark.parametrize("pin", ["0", "1"])
+def test_torchao_int8_weights_keep_their_host_storage_and_are_pinned(monkeypatch, pin):
+    """Each offload re-points the int8 weight at its kept host tensors (no device-to-host copy, no new host
+    allocation), the inner tensors are pinned once, and every render matches the stock offload bit for bit."""
+    monkeypatch.setenv(dm.OFFLOAD_PIN_ENV, pin)
+    x = torch.randn(4, 8, dtype = torch.bfloat16)
+    stock = _int8_pipe("cuda")
+    stock.enable_model_cpu_offload()
+    ref = _render(stock, x)
+    pipe = _int8_pipe("cuda")
+    pipe.enable_model_cpu_offload()
+    dm.keep_cpu_weights_on_offload(pipe)
+    assert _wrapped(pipe.transformer)
+    outs, host = [], None
+    for _ in range(3):
+        outs.append(_render(pipe, x))
+        assert pipe.transformer.weight.device.type == "cpu"
+        now = _inner_ptrs(pipe.transformer)
+        assert host is None or now == host  # the same host tensors every render
+        host = now
+    for out in outs:
+        assert torch.equal(out, ref)
+    inner = _inner_of(pipe.transformer.weight.data)
+    assert all(t.is_pinned() for _, t in inner) == (pin == "1")

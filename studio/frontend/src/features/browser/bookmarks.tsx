@@ -260,7 +260,7 @@ export function BookmarkEditPopover({
         <PopoverContent
           align={align}
           sideOffset={8}
-          className="browser-menu w-80 rounded-[16px] p-4"
+          className="browser-menu w-80 rounded-xl p-4"
           onOpenAutoFocus={(event) => {
             const input = (event.currentTarget as HTMLElement | null)?.querySelector<HTMLInputElement>(
               "[data-bookmark-name]",
@@ -337,7 +337,7 @@ export function BookmarkStar({
               aria-expanded={editing !== null}
               onClick={() => (editing ? setEditing(null) : press())}
               className={cn(
-                "flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)]",
+                "flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)]",
                 bookmark && "text-primary hover:text-primary [&_path]:fill-current",
               )}
             >
@@ -412,7 +412,7 @@ function BookmarkItem({
               if (event.button === 1) openBookmark(bookmark.url, tabId, true);
             }}
             className={cn(
-              "flex h-7 min-w-0 max-w-44 shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-2 text-ui-12p5 text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              "flex h-7 min-w-0 max-w-44 shrink-0 cursor-pointer items-center gap-1.5 rounded-full px-2 text-ui-12p5 text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
               HOVER_WASH,
               hidden && "invisible",
             )}
@@ -454,7 +454,7 @@ function BookmarkMenu({
               type="button"
               aria-label={label}
               className={cn(
-                "flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-1.5 text-ui-12p5 text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                "flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded-full px-1.5 text-ui-12p5 text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                 HOVER_WASH,
               )}
             >
@@ -467,7 +467,7 @@ function BookmarkMenu({
           {label}
         </TooltipContent>
       </Tooltip>
-      <DropdownMenuContent align="end" sideOffset={6} className="browser-menu max-h-[min(--spacing(96),var(--radix-dropdown-menu-content-available-height))] overflow-y-auto w-64 rounded-[16px] p-1.5">
+      <DropdownMenuContent align="end" sideOffset={6} className="browser-menu max-h-[min(--spacing(96),var(--radix-dropdown-menu-content-available-height))] overflow-y-auto w-64 rounded-lg p-1">
         {bookmarks.map((bookmark) => (
           <DropdownMenuItem
             key={bookmark.id}

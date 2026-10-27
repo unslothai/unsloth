@@ -13,6 +13,8 @@ from pathlib import Path
 import pytest
 
 torch = pytest.importorskip("torch")
+from torch.torch_version import TorchVersion  # noqa: E402
+
 
 from core.inference import diffusion_eager_patches as ep  # noqa: E402
 from core.inference import diffusion_rocm_fused as rf  # noqa: E402
@@ -20,6 +22,10 @@ from core.inference import diffusion_rocm_fused as rf  # noqa: E402
 fmod = pytest.importorskip("diffusers.models.transformers.transformer_flux")
 from diffusers.models import normalization as nm  # noqa: E402
 from diffusers.models.embeddings import apply_rotary_emb as stock_rope  # noqa: E402
+
+# A CUDA build's version tag: Studio reads ROCm from the "+rocm" tag too (AMD SDK / Radeon wheels leave
+# torch.version.hip unset), so a test that fakes NVIDIA clears both.
+_CUDA_TORCH_VERSION = TorchVersion(str(torch.__version__).split("+")[0] + "+cu130")
 
 # another test file may leave Studio's eager AdaLN patch on the classes: start from stock
 ep.uninstall_patches()
@@ -57,6 +63,7 @@ def fake_kernels(monkeypatch):
 
 def _nvidia(monkeypatch, platform = "linux"):
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", _CUDA_TORCH_VERSION, raising = False)
     monkeypatch.setattr(torch.version, "cuda", "13.0", raising = False)
     monkeypatch.setattr(rf.sys, "platform", platform)
 
@@ -79,6 +86,7 @@ def test_auto_is_inert_on_nvidia_outside_linux(fake_kernels, monkeypatch, platfo
 
 def test_auto_is_inert_without_a_gpu_torch(fake_kernels, monkeypatch):
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", _CUDA_TORCH_VERSION, raising = False)
     monkeypatch.setattr(torch.version, "cuda", None, raising = False)
     monkeypatch.setattr(rf.sys, "platform", "linux")
     assert rf.install_for_pipe(_PipeLike(), torch.bfloat16, "cuda") == {"rope": False, "adaln": 0}
@@ -135,6 +143,7 @@ def test_kill_switches_on_rocm(fake_kernels, monkeypatch, value):
 
 def test_force_on_engages_on_cuda(fake_kernels, monkeypatch):
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", _CUDA_TORCH_VERSION, raising = False)
     monkeypatch.setenv(rf.FUSED_ROPE_ENV, "1")
     monkeypatch.setenv(rf.FUSED_ADALN_ENV, "1")
     assert rf.install_for_pipe(_PipeLike(), torch.float16, "cuda") == {"rope": True, "adaln": 3}

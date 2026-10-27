@@ -124,3 +124,9 @@ test("a connection offers only the models that look like speech models", () => {
     ["gpt-4o-mini-tts", "tts-1", "tts-1-hd"],
   );
 });
+
+test("an owner-shared OpenAI connection offers only the speech models the owner allowed", () => {
+  const shared = { providerType: "openai", models: ["gpt-5.5", "tts-1"], sharedByOwner: true };
+  assert.deepEqual(connectionSpeechModels(shared), ["tts-1"]);
+  assert.deepEqual(connectionSpeechModels({ ...shared, models: ["gpt-5.5"] }), []);
+});
