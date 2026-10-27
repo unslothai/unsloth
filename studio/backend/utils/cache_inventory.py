@@ -932,7 +932,7 @@ def _model_cache_action(root: Path, entry: os.DirEntry) -> dict:
             not entry.name.startswith("models--")
             or entry.is_symlink()
             or _is_junction(entry.path)
-            or not entry.is_dir(follow_symlinks=False)
+            or not entry.is_dir(follow_symlinks = False)
         ):
             return refused
         from hub.utils.paths import is_valid_repo_id
@@ -949,8 +949,10 @@ def _model_cache_action(root: Path, entry: os.DirEntry) -> dict:
         if scoped_delete_root("model", repo_id, str(candidate)) != root:
             return refused
         return {
-            "repo_id": repo_id, "repo_type": "model",
-            "cache_path": str(candidate), "delete_allowed": True,
+            "repo_id": repo_id,
+            "repo_type": "model",
+            "cache_path": str(candidate),
+            "delete_allowed": True,
         }
     except (ImportError, OSError, ValueError, RuntimeError):
         return refused
@@ -979,8 +981,14 @@ def cache_breakdown(key: str) -> dict:
                         )
                         occupancy.add(info, entry.path)
                     size = occupancy.bytes - before
-                    action = _model_cache_action(root, entry) if key == "hf_hub" else {"delete_allowed": False}
-                    rows.append({"name": entry.name, "path": entry.path, "size_bytes": size, **action})
+                    action = (
+                        _model_cache_action(root, entry)
+                        if key == "hf_hub"
+                        else {"delete_allowed": False}
+                    )
+                    rows.append(
+                        {"name": entry.name, "path": entry.path, "size_bytes": size, **action}
+                    )
         except OSError:
             continue
     return {"entries": sorted(rows, key = lambda row: (-row["size_bytes"], row["path"]))}

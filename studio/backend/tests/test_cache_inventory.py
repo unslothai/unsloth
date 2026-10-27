@@ -1908,14 +1908,25 @@ def test_hf_model_breakdown_actions_name_one_exact_known_cache_copy(
         assert row["delete_allowed"] is True
         assert row["repo_type"] == "model"
         assert row["cache_path"] == row["path"]
-        assert scoped_delete_root("model", row["repo_id"], row["cache_path"]) == Path(row["cache_path"]).parent
+        assert (
+            scoped_delete_root("model", row["repo_id"], row["cache_path"])
+            == Path(row["cache_path"]).parent
+        )
 
 
-@pytest.mark.parametrize("name", [
-    ".locks", "datasets--Org--Data", "spaces--Org--Space", "models--",
-    "models----Model", "models--Org--Model--nested", "models--Org--bad..name",
-    "models--Org--Model.git",
-])
+@pytest.mark.parametrize(
+    "name",
+    [
+        ".locks",
+        "datasets--Org--Data",
+        "spaces--Org--Space",
+        "models--",
+        "models----Model",
+        "models--Org--Model--nested",
+        "models--Org--bad..name",
+        "models--Org--Model.git",
+    ],
+)
 def test_hf_breakdown_never_offers_model_actions_for_non_model_or_malformed_rows(
     tmp_path, isolated_caches, name
 ):
@@ -1958,7 +1969,8 @@ def test_model_action_identity_refuses_links_even_to_valid_named_directories(
     directory = root / "models--Org--Model"
     directory.mkdir()
     entry = SimpleNamespace(
-        name = directory.name, path = str(directory),
+        name = directory.name,
+        path = str(directory),
         is_symlink = lambda: link_kind == "symlink",
         is_dir = lambda **_kwargs: True,
     )
