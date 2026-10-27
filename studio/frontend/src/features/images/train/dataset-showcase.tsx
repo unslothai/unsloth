@@ -22,11 +22,8 @@ import {
   listDiffusionDatasetImages,
 } from "../api";
 
-// Rows of 5 in the settings column, so this fills two and a bit before "+N more".
 const MAX_TILES = 12;
 
-// A single thumbnail tile: auth-fetches its object URL and revokes it on unmount. The tile opens
-// the labeling grid; its own corner button removes the image.
 function ShowcaseTile({
   dataset,
   filename,
@@ -45,8 +42,6 @@ function ShowcaseTile({
     let obj: string | null = null;
     let cancelled = false;
     fetchGalleryObjectUrl(diffusionDatasetImageUrl(dataset, filename, 256))
-      // The fetch returns the blob's size alongside the URL for the gallery's byte budget; a single
-      // tile only needs the URL.
       .then(({ url: u }) => {
         if (cancelled) {
           URL.revokeObjectURL(u);
@@ -121,8 +116,6 @@ function ShowcaseTile({
   );
 }
 
-// A compact preview of a dataset's images: up to MAX_TILES sampled thumbnails plus a "+N more"
-// tile that opens the full labeling grid. Refreshes on selection or `refreshKey` change.
 export function DatasetShowcase({
   dataset,
   imageCount,
@@ -134,7 +127,6 @@ export function DatasetShowcase({
   imageCount: number;
   refreshKey?: number;
   onBrowse: () => void;
-  // Fired after a delete so the parent can refresh its dataset counts.
   onChanged?: () => void;
 }) {
   const [names, setNames] = useState<string[] | null>(null);
@@ -145,8 +137,6 @@ export function DatasetShowcase({
     listDiffusionDatasetImages(dataset)
       .then((r) => {
         if (cancelled) return;
-        // Sample up to MAX_TILES evenly across the folder so the strip represents the whole set, not
-        // just the first few files. Clips have no thumbnail endpoint, so the strip shows images only.
         const all = imageRecordsOnly(r.images).map((im) => im.filename);
         if (all.length <= MAX_TILES) {
           setNames(all);
@@ -179,7 +169,6 @@ export function DatasetShowcase({
 
   return (
     <div className="rounded-lg border border-border bg-muted/20 p-1.5">
-      {/* Wraps onto more rows rather than scrolling sideways. */}
       <div className="flex flex-wrap items-center gap-2.5">
         {names === null ? (
           <div className="flex h-14 items-center gap-2 px-2 text-ui-11 text-muted-foreground">

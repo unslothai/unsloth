@@ -1245,14 +1245,10 @@ def test_completions_proxy_non_stream_is_visible_to_the_swap_gate(monkeypatch):
         return httpx.Response(200, json = {"id": "cmpl-x", "choices": [{"text": "33"}]})
 
     transport = httpx.MockTransport(handler)
-    real_async_client = httpx.AsyncClient
     monkeypatch.setattr(
-        inf_mod.httpx,
-        "AsyncClient",
-        lambda *a, **kw: real_async_client(transport = transport, timeout = kw.get("timeout", 600)),
-    )
-    monkeypatch.setattr(
-        inf_mod, "nonstreaming_client", lambda: real_async_client(transport = transport)
+        inf_mod,
+        "_cancelable_nonstreaming_client",
+        lambda: httpx.AsyncClient(transport = transport),
     )
     monkeypatch.setattr(
         inf_mod,
@@ -1316,14 +1312,10 @@ def test_embeddings_proxy_is_visible_to_the_swap_gate(monkeypatch):
         return httpx.Response(200, json = {"data": [{"embedding": [0.1, 0.2]}]})
 
     transport = httpx.MockTransport(handler)
-    real_async_client = httpx.AsyncClient
     monkeypatch.setattr(
-        inf_mod.httpx,
-        "AsyncClient",
-        lambda *a, **kw: real_async_client(transport = transport, timeout = kw.get("timeout", 600)),
-    )
-    monkeypatch.setattr(
-        inf_mod, "nonstreaming_client", lambda: real_async_client(transport = transport)
+        inf_mod,
+        "_cancelable_nonstreaming_client",
+        lambda: httpx.AsyncClient(transport = transport),
     )
     monkeypatch.setattr(
         inf_mod,

@@ -21,8 +21,7 @@ from core.research.redaction import _sanitize_public_query
 _STREAMED_TITLE = re.compile(r'"title"\s*:\s*"((?:[^"\\]|\\.)*)"')
 # One more than the plan-step cap, since the plan's own title matches too.
 _MAX_PREVIEW_LABELS = 31
-# Allow a list-item or block-quote container marker before the fence, else the open is missed and a
-# marker quoted inside is taken for the real boundary.
+# Allow a list or quote container marker before the fence.
 _MARKDOWN_FENCE = re.compile(r"^ {0,3}(?:(?:[-*+]|\d{1,9}[.)])[ \t]+|>[ \t]?)*(`{3,}|~{3,})")
 
 
@@ -149,12 +148,7 @@ def _normalize_synthesis_audit(
 
 
 def _streamed_titles(streamed: str) -> list[str]:
-    """Plan step titles already complete in a partially streamed planner response.
-
-    Only closed JSON strings match, so a title still being written is never published half
-    formed. Escapes are decoded per match; the surrounding object is still incomplete, so the
-    response as a whole cannot be parsed yet.
-    """
+    """Only closed JSON title strings count, so a title still streaming is never published half formed."""
     titles: list[str] = []
     for match in _STREAMED_TITLE.finditer(streamed):
         try:
@@ -300,12 +294,10 @@ def _report_after_boundary(text: str, boundary: str) -> str | None:
             fence_char = token[0]
             fence_length = len(token)
             continue
-        # CommonMark measures indentation in columns with a four-column tab stop, so one tab opens an
-        # indented code block just as four spaces do.
+        # CommonMark: a tab is four columns, so one tab opens an indented code block.
         prefix = content[: len(content) - len(content.lstrip(" \t"))]
         indentation = len(prefix.expandtabs(4))
-        # splitlines breaks on whitespace forms rstrip("\r\n") leaves behind, so strip every one rather than
-        # let a stray one hide the boundary.
+        # splitlines breaks on more whitespace than rstrip does; a stray form would hide the boundary.
         if indentation <= 3 and content[len(prefix) :].strip().strip("`").strip() == boundary:
             boundary_line = index
     if boundary_line is None:

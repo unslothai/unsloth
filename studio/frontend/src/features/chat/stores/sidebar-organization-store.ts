@@ -4,60 +4,42 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-/** How the sidebar arranges chats that belong to a project. */
 export type SidebarOrganizeBy = "project" | "list";
-/** How chat rows are ordered inside whichever list they land in. */
 export type SidebarChatSort = "updated" | "manual";
-/** How project folders are ordered in the Projects section. */
 export type SidebarProjectSort = "updated" | "name" | "created" | "manual";
 
-// Defined in a leaf module and re-exported here so existing importers are unchanged: this
-// store is in an import cycle, so a binding defined here would be readable too late. See
-// sidebar-organization-keys.ts.
+// Re-exported from a leaf module because this store is in an import cycle.
 export { SIDEBAR_ORGANIZATION_STORAGE_KEY } from "./sidebar-organization-keys.ts";
 import { SIDEBAR_ORGANIZATION_STORAGE_KEY } from "./sidebar-organization-keys.ts";
 
-// Manual order is per list: dragging a chat in one project must not move it in another list
-// showing the same chat. Each list gets its own key.
+// Manual order is per list, so each list gets its own key.
 export const RECENTS_ORDER_SCOPE = "recents";
 export const PINNED_ORDER_SCOPE = "pinned";
-// The project folders themselves, which drag regardless of the chat sort.
 export const PROJECT_ORDER_SCOPE = "projects";
-// Pinned folders reorder among themselves: one list's drag must not renumber the other's.
 export const PINNED_PROJECT_ORDER_SCOPE = "pinned-projects";
 
 export function projectOrderScope(projectId: string): string {
   return `project:${projectId}`;
 }
 
-/** A section the user made: a named list holding chats and project folders. */
 export interface SidebarCustomSection {
   id: string;
   name: string;
-  /** How its chats are ordered. Manual by default, like Pinned: it is a list the user built. */
   sort: SidebarChatSort;
-  /** Absent on sections made before these were recorded. */
   createdAt?: number;
-  /** Last rename, or chat or project filed in or out. */
   modifiedAt?: number;
 }
 
-/** The fixed section the "Show" toggles can hide, beside the user's own. Pinned always shows, as
- *  in ChatGPT, and Recents never hides: its header carries the menu that brings the others back. */
 export const PROJECTS_SECTION_KEY = "projects";
-/** Pinned's place in the section order. Only Recents has no place there: it is always last. */
 export const PINNED_SECTION_KEY = "pinned";
 
-// Section ids are generated here, but a hand-edited or restored payload can carry anything, so
-// every scope built from one is prefixed and cannot collide with the fixed scopes above.
+// Prefixed so a hand-edited section id cannot collide with the fixed scopes above.
 const CUSTOM_SECTION_PREFIX = "section:";
 
-/** The manual-order scope of a custom section, which is also its drop-target section key. */
 export function customSectionScope(sectionId: string): `section:${string}` {
   return `${CUSTOM_SECTION_PREFIX}${sectionId}`;
 }
 
-/** The custom section a scope names, or null for every built-in list. */
 export function customSectionIdOf(scope: string): string | null {
   return scope.startsWith(CUSTOM_SECTION_PREFIX)
     ? scope.slice(CUSTOM_SECTION_PREFIX.length)
@@ -66,12 +48,7 @@ export function customSectionIdOf(scope: string): string | null {
 
 export const CUSTOM_SECTION_NAME_MAX = 60;
 
-/**
- * The order the sections above Recents are drawn in: Pinned, Projects and the user's own, by key
- * (a custom section by its id). A saved order is read over what exists now, so a key that went
- * away is dropped and one it never had gets its default place: Pinned first, a custom section
- * just above Projects in the order the list keeps them, Projects last.
- */
+/** Section order above Recents; missing keys are dropped and new ones get a default place. */
 export function resolveSectionOrder(
   saved: readonly string[],
   customSections: readonly SidebarCustomSection[],
@@ -92,8 +69,6 @@ export function resolveSectionOrder(
   return out;
 }
 
-/** The custom sections in the order `order` draws them, so every list of them (the Show
- *  toggles, the Section submenus) reads top to bottom like the sidebar. */
 export function inSectionOrder(
   customSections: SidebarCustomSection[],
   order: readonly string[],
@@ -111,10 +86,7 @@ function newSectionId(): string {
     : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-/** The assignments left once every one `drop` answers true for is gone. */
-/** A row id to section id map with no prototype. Row ids are any string, and on a plain object an
- *  unfiled row named "constructor" or "toString" would read as filed in whatever it inherits, and
- *  drop out of every list. Every map the store holds is made here. */
+/** Prototype-free map so row ids like "constructor" do not read as filed. */
 export function assignmentMap(from?: Record<string, string>): Record<string, string> {
   const map = Object.create(null) as Record<string, string>;
   if (from) for (const [rowId, sectionId] of Object.entries(from)) map[rowId] = sectionId;
@@ -135,52 +107,36 @@ function withoutSection(
 export interface SidebarOrganizationState {
   organizeBy: SidebarOrganizeBy;
   chatSort: SidebarChatSort;
-  // Pinned sorts on its own. Pin order already is a manual order, so it defaults to "manual" and
-  // stays put while the lists below re-sort.
   pinnedSort: SidebarChatSort;
-  // Manual by default: the drag order, falling back to last activity.
   projectSort: SidebarProjectSort;
-  /** Scope key -> row ids, in the order the user dragged them into. */
   manualOrder: Record<string, string[]>;
-  /** User-made sections, in the order they are drawn. */
   customSections: SidebarCustomSection[];
-  /** Chat row id -> the custom section it is filed in. Pinned still wins: a pinned chat shows
-   *  in Pinned and keeps its section for when it is unpinned. */
   sectionByChatId: Record<string, string>;
-  /** Project id -> the custom section its folder is drawn in, on the same terms. */
   sectionByProjectId: Record<string, string>;
   /** Pinned page id -> the custom section it shows in instead of Pinned. */
   sectionByPageId: Record<string, string>;
   /** Section keys the "Show" toggles turned off: Projects or a custom section's id. */
   hiddenSections: string[];
-  /** The order of the sections above Recents, as dragged; read through resolveSectionOrder. */
   sectionOrder: string[];
-  /** A new chat started from a custom section's header, filed there once it has an id. Not
-   *  saved: it is only good for the new chat on screen now. `compare` is set once that chat was
-   *  turned into a compare chat before its first send, which then takes the mark. */
+  /** Not persisted; only applies to the new chat on screen now. */
   pendingNewChatSection: { sectionId: string; nonce: string; compare?: string } | null;
   setOrganizeBy: (value: SidebarOrganizeBy) => void;
   setChatSort: (value: SidebarChatSort) => void;
   setPinnedSort: (value: SidebarChatSort) => void;
   setProjectSort: (value: SidebarProjectSort) => void;
   setManualOrder: (scope: string, ids: string[]) => void;
-  /** Adds a section at the top of the custom ones and returns its id, or null for a blank name. */
   createCustomSection: (name: string) => string | null;
   renameCustomSection: (sectionId: string, name: string) => void;
-  /** Removes the section. Its rows go back to wherever they would be without it. */
   deleteCustomSection: (sectionId: string) => void;
   setCustomSectionSort: (sectionId: string, sort: SidebarChatSort) => void;
-  /** Files chats into a section, or out of every section with null. */
   setChatsSection: (chatIds: string[], sectionId: string | null) => void;
   setProjectsSection: (projectIds: string[], sectionId: string | null) => void;
   setPagesSection: (pageIds: string[], sectionId: string | null) => void;
   setSectionHidden: (key: string, hidden: boolean) => void;
-  /** Drops the section `key` against the `edge` side of `targetKey`, as a row drag lands. */
   moveSection: (key: string, targetKey: string, edge: "top" | "bottom") => void;
   setPendingNewChatSection: (pending: SidebarOrganizationState["pendingNewChatSection"]) => void;
 }
 
-/** Trims and bounds a section name. Empty when there is nothing to name it with. */
 function readTime(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value > 0;
 }
@@ -198,10 +154,7 @@ export function normalizeSectionName(name: string): string {
   return name.replace(/\s+/g, " ").trim().slice(0, CUSTOM_SECTION_NAME_MAX);
 }
 
-/** Drops `draggedId` against the `edge` side of `targetId`, keeping the rest in order. The edge
- *  comes from which half of the target row the pointer is over, so the row lands exactly where
- *  the insertion line was drawn. Returns `ids` itself when a row is missing or the drop changes
- *  nothing, so a stale or pointless drop is a no-op the caller can skip persisting. */
+/** Returns `ids` itself when nothing changes, so callers can skip persisting. */
 export function insertIdAt(
   ids: string[],
   draggedId: string,
@@ -214,8 +167,6 @@ export function insertIdAt(
   return next.every((id, index) => id === ids[index]) ? ids : next;
 }
 
-/** The same landing for a row the list does not hold yet, which is what a chat dropped into
- *  Pinned is. An unknown target puts it last, since there is no slot to aim at. */
 export function placeIdAt(
   ids: string[],
   id: string,
@@ -229,8 +180,6 @@ export function placeIdAt(
   return next;
 }
 
-/** Whether a chat belongs in Recents. With the Projects section on, a project chat lives in its
- *  folder and listing it twice is noise; with it off there are no folders. */
 export function showsInRecents(
   projectId: string | null | undefined,
   organizeBy: SidebarOrganizeBy,
@@ -238,38 +187,23 @@ export function showsInRecents(
   return organizeBy === "list" || !projectId;
 }
 
-/** Where a folder dragged over another folder's chats lands. A folder's rows are the folder row
- *  and the chats under it, and in Pinned those chats separate one folder from the next: without
- *  this the only target is the folder row itself, with a whole block of rows between two of them
- *  that answer nothing. The block is read as one strip: how far down it the pointer is decides
- *  which end of the folder the drop lands on, so the line flips once, in the middle, rather than
- *  at every row. Returns null when the row belongs to the dragged folder or the drop would move
- *  nothing. */
+/** Treats a folder's block of rows as one strip so the drop line flips once, mid-block. */
 export function folderDropTarget(params: {
-  /** The folder being dragged. */
   draggedId: string;
-  /** The folder order it drags within: Projects' or Pinned's. */
   folderIds: string[];
-  /** The folder whose block the pointer is over. */
   folderId: string;
-  /** The hovered chat's place among that folder's chats, and which half of it the pointer is
-   *  over: a folder holding one chat has to answer both ends from that row alone. */
   rowIndex: number;
   rowCount: number;
   pointerEdge: "top" | "bottom";
 }): { edge: "top" | "bottom"; next: string[] } | null {
   const { draggedId, folderIds, folderId, rowIndex, rowCount } = params;
   if (draggedId === folderId || rowIndex < 0) return null;
-  // How many row-halves down the block the pointer is, against its length.
   const at = rowIndex + (params.pointerEdge === "bottom" ? 1 : 0);
   const edge = at * 2 >= rowCount ? "bottom" : ("top" as const);
   const next = insertIdAt(folderIds, draggedId, folderId, edge);
   return next === folderIds ? null : { edge, next };
 }
 
-/** Which half of a row the pointer is over, which is the edge the row being dragged will land
- *  on. Read off the row's own box, so the insertion line follows the cursor rather than the
- *  two rows' index order. */
 export function dropEdgeAt(
   rect: { top: number; height: number },
   pointerY: number,
@@ -277,8 +211,7 @@ export function dropEdgeAt(
   return pointerY >= rect.top + rect.height / 2 ? "bottom" : "top";
 }
 
-/** Moves a row one slot up or down. The keyboard path to the same reorder that dragging does:
- *  a keyboard never sees a `dragstart`, so alt + arrow drives this instead. */
+/** Keyboard path for reorder: keyboards never fire dragstart, so alt+arrow drives this. */
 export function moveIdBy(
   ids: string[],
   id: string,
@@ -294,9 +227,7 @@ export function moveIdBy(
   return next;
 }
 
-/** Applies a saved order to `items`, leaving rows it does not mention in their incoming order
- *  and on top. A row the user never dragged is new to the list, so it stays where the list's
- *  own rule put it rather than sinking. */
+/** Rows the saved order does not mention stay on top in their incoming order. */
 export function applyManualOrder<T>(
   items: T[],
   order: string[] | undefined,
@@ -304,14 +235,11 @@ export function applyManualOrder<T>(
 ): T[] {
   if (!order?.length) return items;
   const rank = new Map(order.map((id, index) => [id, index]));
-  // Sort is stable, so two unranked rows keep their relative order.
   return [...items].sort(
     (a, b) => (rank.get(getId(a)) ?? -1) - (rank.get(getId(b)) ?? -1),
   );
 }
 
-/** Reads a saved payload over the defaults, validated per field: an old, hand-edited or
- *  half-written payload keeps defaults wherever it is wrong. */
 export function mergePersistedOrganization(
   persisted: unknown,
   current: SidebarOrganizationState,
@@ -319,7 +247,6 @@ export function mergePersistedOrganization(
   const saved = persisted as
     | Partial<SidebarOrganizationState>
     | undefined;
-  // Validated per field: an old or half-written payload keeps defaults.
   const organizeBy: SidebarOrganizeBy =
     saved?.organizeBy === "list" ? "list" : "project";
   const readSort = (
@@ -327,11 +254,9 @@ export function mergePersistedOrganization(
     fallback: SidebarChatSort,
   ): SidebarChatSort =>
     value === "updated" || value === "manual" ? value : fallback;
-  // A saved "priority", no longer offered, falls back to each list's default.
   const chatSort = readSort(saved?.chatSort, "updated");
   const pinnedSort = readSort(saved?.pinnedSort, "manual");
-  // Folders keep only the order they are dragged into: a saved automatic sort, no longer offered,
-  // could be neither seen nor changed, so it falls back to Manual.
+  // A saved automatic folder sort is no longer offered, so it falls back to Manual.
   const projectSort: SidebarProjectSort = "manual";
   const manualOrder: Record<string, string[]> = {};
   if (saved?.manualOrder && typeof saved.manualOrder === "object") {
@@ -350,8 +275,7 @@ export function mergePersistedOrganization(
       if (!raw || typeof raw !== "object") continue;
       const entry = raw as Partial<SidebarCustomSection>;
       if (typeof entry.id !== "string" || !entry.id || seen.has(entry.id)) continue;
-      // A section is keyed like Pinned and Projects, so one named after them would be drawn as
-      // them, and the rows filed in it would vanish.
+      // A section keyed like Pinned or Projects would be drawn as them and hide its rows.
       if (entry.id === PINNED_SECTION_KEY || entry.id === PROJECTS_SECTION_KEY) continue;
       const name =
         typeof entry.name === "string" ? normalizeSectionName(entry.name) : "";
@@ -366,7 +290,6 @@ export function mergePersistedOrganization(
       });
     }
   }
-  // An assignment to a section that no longer exists is dropped, so its row comes back.
   const readAssignments = (value: unknown): Record<string, string> => {
     const out = assignmentMap();
     if (!value || typeof value !== "object") return out;
@@ -440,8 +363,6 @@ export const useSidebarOrganizationStore = create<SidebarOrganizationState>()(
         if (!clean) return null;
         const id = newSectionId();
         set((state) => {
-          // Newest first among the user's own, which open under Pinned unless dragged elsewhere:
-          // it is the one about to be filled, so it opens where the eye already is.
           const order = resolveSectionOrder(state.sectionOrder, state.customSections);
           const firstCustom = order.findIndex((key) =>
             state.customSections.some((section) => section.id === key),

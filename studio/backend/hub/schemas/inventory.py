@@ -37,9 +37,7 @@ class GgufVariantDetail(BaseModel):
     cache_path: Optional[str] = Field(
         None, description = "Owning cache repository for this complete variant"
     )
-    # Declared so the host-path boundary's redacted stand-in survives response-model
-    # serialization: without it an API-key caller loses both the path and the reference
-    # that would pin a later delete to this copy.
+    # Declared so the redacted ref survives response-model serialization.
     cache_ref: Optional[str] = Field(
         None, description = "Opaque stand-in for cache_path, stable for the server's life"
     )
@@ -48,6 +46,11 @@ class GgufVariantDetail(BaseModel):
     )
     size_bytes: int = Field(0, description = "File size in bytes")
     download_size_bytes: int = Field(0, description = "Total bytes needed to download this variant")
+    lookup_table_bytes: int = Field(
+        0,
+        description = "Bytes of lazily read lookup tables (per-layer embeddings / Engram) "
+        "llama.cpp streams from disk by default. Part of size_bytes; 0 when none or unknown.",
+    )
     pending_drafter_filename: Optional[str] = Field(
         None,
         description = (
@@ -317,8 +320,7 @@ class CachedRepoBase(BaseModel):
     runtime: ModelRuntime = "unknown"
     format_variant: Optional[str] = None
     capabilities: LocalModelCapabilities = Field(default_factory = LocalModelCapabilities)
-    # The task-scoped pickers filter On Device rows on the inferred task and the chat picker routes a
-    # diffusion pick by it, so a row without one is dropped from those lists.
+    # Pickers drop rows without a task.
     task: Optional[str] = None
     audio_type: Optional[str] = None
     # Audio page workflows the row serves, from the task first: audio.cpp music rows carry no audio_type.
@@ -355,17 +357,12 @@ class CachedModelRepo(CachedRepoBase):
     pipeline_tag: Optional[str] = None
     library_name: Optional[str] = None
     tags: Optional[List[str]] = None
-    # True for a diffusion-tagged repo with NO top-level model_index.json: a single-file checkpoint
-    # needing from_single_file plus a filename. Pickers must not offer it as a pipeline load unless
-    # the catalog carries a curated artifact.
+    # Diffusion repo with no model_index.json is a single-file checkpoint; pickers must not offer it as a pipeline load unless curated.
     single_file: bool = False
-    # An sd.cpp companion mirror is never a pick on any page, but still gets a row, because these run to
-    # tens of GB and the row is how they are seen and deleted.
+    # sd.cpp companion mirror is never picked but keeps a row, as tens of GB must be seen and deleted.
     companion: bool = False
     companion_prefetch: bool = False
-    # An unrecognised pipeline carries no task and no root config for can_chat, so this flag is all
-    # that keeps it out of a chat picker. Declared because response_model drops undeclared keys, which
-    # left the CLI and the frontend disagreeing about the same row.
+    # Only flag keeping unrecognised pipelines out of chat; declared or response_model drops it.
     diffusers: bool = False
 
 

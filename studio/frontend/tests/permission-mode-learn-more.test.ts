@@ -25,23 +25,31 @@ test("the question mark opens the Permissions section of Settings > Sandbox", ()
   assert.doesNotMatch(OLD_GENERAL, /permissionsRef|PermissionModeDropdown|general-permissions/);
 });
 
-test("Settings explains only the selected level and drops the menu's sandbox controls", () => {
-  // The selected level's full explanation stays on the page, not behind a hover.
-  assert.match(SANDBOX_TAB, /label=\{t\("settings\.sandbox\.permissionLabel"\)\}/);
-  // Named, then explained: "Approve for me: Runs routine tool calls…".
-  assert.match(SANDBOX_TAB, /name=\{t\(`settings\.general\.permissions\.names\.\$\{activePermission\.value\}`\)\}\s*detail=\{t\(`settings\.general\.permissions\.details\.\$\{activePermission\.value\}`\)\}/);
-  assert.match(SANDBOX_TAB, /settings\.sandbox\.levelHighDetail/);
-  assert.match(SANDBOX_TAB, /settings\.sandbox\.levelLowDetail/);
-  assert.match(SANDBOX_TAB, /settings\.sandbox\.levelFullAccessNote/);
-  assert.match(SANDBOX_TAB, /<PermissionModeDropdown sandboxControls=\{false\} \/>/);
+test("Settings lists every permission mode as its own row with a switch", () => {
+  const section = SANDBOX_TAB.slice(
+    SANDBOX_TAB.indexOf("function PermissionsSection"),
+    SANDBOX_TAB.indexOf("function SandboxLevelSection"),
+  );
+  assert.match(section, /choice\.options\.map/);
+  assert.match(section, /label=\{t\(`settings\.general\.permissions\.names\.\$\{option\.value\}`\)\}\s*description=\{t\(`settings\.general\.permissions\.details\.\$\{option\.value\}`\)\}/);
+  assert.match(section, /<Switch\b/);
+  assert.match(section, /checked=\{choice\.permissionMode === option\.value\}/);
+  assert.match(section, /<FullAccessConfirmDialog/);
+  assert.match(MENU, /if \(mode === "full"\) setConfirmOpen\(true\);/);
+  assert.doesNotMatch(SANDBOX_TAB, /PermissionModeDropdown/);
   assert.doesNotMatch(SANDBOX_TAB, /permissions\.bypass(Label|Description)/);
 });
 
 test("Settings picks the sandbox level with the Queue/Steer style Low | High toggle", () => {
   const section = SANDBOX_TAB.slice(
-    SANDBOX_TAB.indexOf("function PermissionsSection"),
+    SANDBOX_TAB.indexOf("function SandboxLevelSection"),
     SANDBOX_TAB.indexOf("export function SandboxTab"),
   );
+  assert.match(section, /title=\{t\("settings\.sandbox\.levelLabel"\)\}/);
+  assert.match(SANDBOX_TAB, /<PermissionsSection \/>\s*<SandboxLevelSection \/>/);
+  assert.match(SANDBOX_TAB, /settings\.sandbox\.levelHighDetail/);
+  assert.match(SANDBOX_TAB, /settings\.sandbox\.levelLowDetail/);
+  assert.match(SANDBOX_TAB, /settings\.sandbox\.levelFullAccessNote/);
   assert.match(section, /hub-tab-toggle inline-flex/);
   assert.match(section, /\(\["low", "high"\] as const\)/);
   // Full access adds a Disabled option and locks the others.

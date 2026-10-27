@@ -1,34 +1,19 @@
-# Builds and publishes the Blackwell-compatible Unsloth Docker image.
-#
-# No GPU runner needed: cu128 wheels are fat binaries, the build-time check uses
-# torch._C._cuda_getArchFlags(), and UNSLOTH_COMPILE_DISABLE=1 blocks GPU-keyed JIT.
-#
-# Required secret: DOCKER_API_KEY, a Docker Hub ORGANIZATION access token for the
-# unsloth org. It logs in as REGISTRY_USERNAME below, which is the org name.
-# Optional variable HAS_GPU_RUNNER='true' gates the smoke-test job.
+# No GPU runner needed: cu128 wheels are fat binaries and UNSLOTH_COMPILE_DISABLE=1 blocks GPU JIT.
+# DOCKER_API_KEY is an org access token. HAS_GPU_RUNNER='true' gates the smoke test.
 
 name: Publish Blackwell Docker image
 
 on:
   push:
-    # Deliberately NOT branches: [main]. Publishing on every merge meant 23 runs on
-    # 2026-09-06 and 14 on 2026-09-05 against one scheduled run each day, and since
-    # each is a two-arch build of both images it was the bulk of the repo's Actions
-    # cache and a large share of its runner minutes. The daily cron below is the
-    # release cadence for main now. Tags still publish immediately: a release that
-    # produced no image until the next morning would be worse than the spend.
+    # Not on main merges (too costly); the daily cron publishes main. Tags publish immediately.
     tags: ['v*']
   schedule:
-    # Daily. Actions cron is UTC with no DST handling, so this is 11:17 in San
-    # Francisco under PDT and drifts to 10:17 under PST; no expression holds
-    # 11:00 local all year. Minute is off-the-hour on purpose: runs scheduled on
-    # the hour queue behind the platform-wide peak and can be dropped.
+    # Off the hour: on-the-hour cron runs queue behind the global peak and can be dropped.
     - cron: '17 18 * * *'
   workflow_dispatch:
     inputs:
       unsloth_ref:
-        # The stable-tag gates require this EMPTY, so a non-blank default would make
-        # every UI-default dispatch publish SHA tags only.
+        # Must default EMPTY: the stable-tag gates require it.
         description: 'unsloth git ref override (blank = dispatched branch + stable tags)'
         required: false
         default: ''
@@ -48,24 +33,10 @@ on:
 env:
   REGISTRY: docker.io
   IMAGE_NAME: unsloth/unsloth
-  # DOCKER_API_KEY is an ORGANIZATION access token, and Docker Hub authenticates an
-  # OAT as the ORGANISATION, not as whoever created it. So this is the org name and
-  # must stay that way: putting a person's account here fails every login, which is
-  # why it is spelled out rather than left to look like an arbitrary owner field.
-  # Not a secret, and named once so the four login steps cannot drift apart.
+  # Must be the org name: Docker Hub authenticates an org access token as the organization.
   REGISTRY_USERNAME: unsloth
 
-# Serialise per-ref runs, EXCEPT on main where each run gets its own group: a shared
-# group does not queue a burst, it DISCARDS it (GitHub cancels any PENDING run the
-# moment a newer one is queued), so the earlier one would publish no image at all.
-# Merges no longer trigger this workflow, so the burst it now guards against is a
-# scheduled run overlapping a workflow_dispatch, rather than a merge burst. Keeping
-# the per-sha key costs nothing and still prevents a dispatch being discarded.
-# Each published image is internally coherent either way: the digest handoff and the
-# smoke test resolve this run's own tag, not tags[0], and verify it.
-# Dropping the main push trigger also drops this workflow out of the scan in
-# tests/studio/test_main_runs_survive_merge_bursts.py, which selects on
-# `push.branches` containing main, so no exemption is needed there.
+# On main each run gets its own group so an overlapping schedule/dispatch is not discarded.
 concurrency:
   group: docker-publish-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
   cancel-in-progress: false
@@ -111,9 +82,7 @@ jobs:
         run: |
           TAG="$INPUT_TAG"
           if [ -z "$TAG" ]; then
-              # No explicit `shell:`, so `bash -e` runs WITHOUT pipefail and a failing
-              # curl inside `curl | sed` is lost: the step exits 0 with the MUTABLE
-              # tag=latest, which every consumer then resolves again.
+              # No explicit `shell:`, so no pipefail: a failing curl inside `curl | sed` would yield tag=latest.
               if ! REDIRECT="$(curl -fsSL -o /dev/null -w '%{url_effective}' \
                   https://github.com/unslothai/llama.cpp/releases/latest)"; then
                   echo "::error::unslothai/llama.cpp unreachable; cannot resolve the newest prebuilt tag"
@@ -143,9 +112,7 @@ jobs:
           if printf '%s' "$REF" | grep -Eq '^[0-9a-f]{40}$'; then
               SHA="$REF"
           else
-              # ls-remote exits 0 whether or not a ref matched, so a non-zero exit means
-              # the remote was never reached and the fallback would hand a MUTABLE name
-              # to three builds that each resolve it again.
+              # ls-remote exits 0 even with no match, so non-zero means the remote was unreachable.
               if ! LS_OUT="$(git ls-remote https://github.com/unslothai/unsloth "$REF")"; then
                   echo "::error::unslothai/unsloth unreachable; cannot freeze ref '${REF}' to a sha"
                   exit 1
@@ -162,9 +129,7 @@ jobs:
         run: |
           REF="${{ github.event.inputs.unsloth_zoo_ref }}"
           if [ -z "$REF" ] && [ "${{ startsWith(github.ref, 'refs/tags/') }}" = "true" ]; then
-              # git documents status 2 as "reached the remote, no matching ref"; any
-              # other non-zero means the lookup never happened, so swallowing both
-              # lets a transport blip pair the unsloth tag with zoo main.
+              # Status 2 means no matching ref; any other non-zero is a transport failure, not a fallback.
               _rc=0
               git ls-remote --exit-code --tags https://github.com/unslothai/unsloth-zoo \
                   "refs/tags/${{ github.ref_name }}" >/dev/null 2>&1 || _rc=$?
@@ -265,15 +230,10 @@ jobs:
           file: ./docker/Dockerfile
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
-          # No cache-from / cache-to. The buildcache-core-* refs this used to write
-          # held 21.29GB (amd64) and 20.26GB (arm64) on the image's own Docker Hub
-          # repo, and prepare freezes UNSLOTH_REF / UNSLOTH_ZOO_REF to SHAs that move
-          # most nights, so the install layer they were meant to save is invalidated
-          # anyway. What is left is the base and apt layers, against a build whose
-          # wall time is dominated by exporting and pushing 27GB.
+          # No registry cache: the frozen refs move most nights, so the install layer is invalidated anyway
+          # and the cache cost ~20 GB per arch.
           outputs:    type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
-          # Keep prose OUT of build-args: build-push-action forwards every non-empty
-          # line verbatim, so a #-line becomes a bogus --build-arg.
+          # Keep comments OUT of build-args: every non-empty line becomes a --build-arg.
           build-args: |
             CUDA_VERSION=12.8.1
             UBUNTU_VERSION=24.04
@@ -380,11 +340,8 @@ jobs:
           # Confirm it holds what this run pushed: baking another run's base is silent.
           REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${DIGEST}"
           CHILDREN="$(docker buildx imagetools inspect --raw "$REF" | jq -r '.manifests[]?.digest')"
-          # A build leg does not push a bare image manifest: with provenance and SBOM
-          # on, buildx pushes each arch as an OCI index (image + attestation) and
-          # `imagetools create` flattens THOSE children into the merged index, so the
-          # per-arch index digest itself never appears there. Comparing at the wrong
-          # level failed the first publish runs on main against a correct manifest.
+          # Per-arch pushes are OCI indexes (image + attestation) that the merge flattens, so compare
+          # their children, not the per-arch index digest.
           missing=0
           for d in *; do
               want="$(docker buildx imagetools inspect --raw "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:${d}" \
@@ -458,22 +415,16 @@ jobs:
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
           # No cache-from / cache-to, for the same reason as the core build above.
-          # The buildcache-studio-* refs held 13.90GB (amd64) and 13.48GB (arm64),
-          # and at mode=min they only carried the final layers in the first place.
           outputs:    type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
-          # the same values the base build baked, so Studio matches it even if upstream
-          # moved mid-run (build-args must be KEY=VALUE only)
+          # Same values the base build baked (build-args must be KEY=VALUE only).
           build-args: |
             BASE_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.merge.outputs.digest }}
             UNSLOTH_STUDIO_REF=${{ needs.prepare.outputs.unsloth_ref }}
             UNSLOTH_STUDIO_ZOO_REF=${{ needs.prepare.outputs.zoo_ref }}
             LLAMA_PREBUILT_TAG=${{ needs.prepare.outputs.llama_tag }}
 
-      # A GPU-free check on the artifact the registry serves, not on the Dockerfile
-      # text: an image-wide UNSLOTH_ALLOW_CPU reaches every process and turns off
-      # Unsloth's TRL trainer patches on GPU hosts (#10825), and the smoke-test job
-      # below needs a GPU runner this repo does not have. The image opts in to CPU
-      # hosts through UNSLOTH_IMAGE_ALLOW_CPU=1 instead; entrypoint.sh translates it.
+      # An image-wide UNSLOTH_ALLOW_CPU would disable Unsloth's TRL patches on GPU hosts; check the
+      # pushed image. The image opts in via UNSLOTH_IMAGE_ALLOW_CPU=1, translated by entrypoint.sh.
       - name: Assert the Studio image env cannot disable training
         run: |
           REF='${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}'
@@ -528,8 +479,7 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302  # v6.2.0
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          # latest=false disables the implicit latest=auto, which would emit :latest on
-          # a v* tag push and bypass the default-branch-only gate below
+          # Disables implicit latest=auto, which would tag :latest on a v* push and bypass the gate below.
           flavor: latest=false
           tags: |
             type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.unsloth_zoo_ref == '' || github.event.inputs.unsloth_zoo_ref == 'main') && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '' }}
@@ -598,17 +548,8 @@ jobs:
           echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
           echo "studio manifest: ${TAG} @ ${DIGEST}"
 
-  # The Docker Hub page is not written by any push: it is repository metadata that
-  # only the Hub API changes, so without this it stays whatever was pasted in by
-  # hand. Synced from docker/DOCKERHUB.md whenever :latest moved, i.e. the same
-  # condition as the stable tags above. Verified by reading it back, and a token
-  # that cannot edit the description fails the job rather than warning.
-  #
-  # Uses DOCKER_API_KEY on the namespace-scoped route. The legacy
-  # /v2/repositories/{owner}/{repo}/ path answers every organization access token
-  # with 403 "token issued from organization access token is not allowed" (run
-  # 33943728004), which is what failed this job on each publish before; the token
-  # also needs the repository edit permission.
+  # Syncs docker/DOCKERHUB.md to the Hub page (no push writes it) when :latest moved, read back,
+  # failing on a token that cannot edit. Namespace-scoped route: the legacy one 403s org tokens.
   hub-readme:
     needs: merge-studio
     if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.unsloth_zoo_ref == '' || github.event.inputs.unsloth_zoo_ref == 'main') && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '' }}
@@ -620,23 +561,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Sync docker/DOCKERHUB.md to the Docker Hub page
-        # Key by env, not interpolated into the script: an expanded ${{ secrets.* }}
-        # is written into the step's temporary shell script on the runner and, in a
-        # command line, into the process argv table. Masking covers the log, not the
-        # places the value comes to rest.
+        # Via env, not ${{ secrets.* }} in the script, so the key never lands in the script file or argv.
         env:
           DOCKER_API_KEY: ${{ secrets.DOCKER_API_KEY }}
         run: |
           README=docker/DOCKERHUB.md
           test -s "$README"
-          # The organization token is only accepted on the namespace-scoped routes.
-          # The legacy /v2/repositories/{owner}/{repo}/ path answers every
-          # organization token with 403 "token issued from organization access token
-          # is not allowed", whatever its scopes. The token needs the repository
-          # edit permission on ${IMAGE_NAME}.
+          # Org tokens work only on namespace-scoped routes and need repository edit permission.
           HUB="https://hub.docker.com/v2/namespaces/${IMAGE_NAME%%/*}/repositories/${IMAGE_NAME#*/}"
-          # Body built from the environment and handed to curl on stdin, so the key is
-          # never a command-line argument.
+          # Body built from env and passed on stdin, so the key is never a command-line argument.
           TOKEN="$(python3 -c 'import json,os,sys; sys.stdout.write(json.dumps({"identifier": os.environ["REGISTRY_USERNAME"], "secret": os.environ["DOCKER_API_KEY"]}))' \
             | curl -sS -X POST https://hub.docker.com/v2/auth/token \
               -H 'Content-Type: application/json' --data-binary @- \
@@ -668,9 +601,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      # Both images are pulled by the digest their merge job resolved and verified, so
-      # there is no tag to re-derive here and no `enable=` expression to keep in step
-      # with the merge jobs' gates.
+      # Pulled by the digest the merge job verified, so no tag gates to keep in sync here.
       - name: Pull and smoke-test the base image
         run: |
           # By digest: the handle tag is gone once cleanup ran.
@@ -699,8 +630,7 @@ jobs:
           [ "$ok_jupyter" = 1 ] || { echo "Jupyter /login never responded"; exit 1; }
           echo "Studio + Jupyter healthy"
 
-  # Namespace-scoped route: the legacy /v2/repositories path rejects the organization
-  # token. A dispatch with an overridden input keeps its handles, its only names.
+  # Namespace-scoped route: the legacy one rejects org tokens. Overridden dispatches keep their handles.
   cleanup:
     needs: [merge, merge-studio, hub-readme, smoke-test]
     if: ${{ always() && (github.event_name != 'workflow_dispatch' || (github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.unsloth_zoo_ref == '' || github.event.inputs.unsloth_zoo_ref == 'main') && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '')) }}
@@ -715,8 +645,7 @@ jobs:
           DOCKER_API_KEY: ${{ secrets.DOCKER_API_KEY }}
         run: |
           HUB="https://hub.docker.com/v2/namespaces/${IMAGE_NAME%%/*}/repositories/${IMAGE_NAME#*/}"
-          # Body built from the environment and handed to curl on stdin, so the key is
-          # never a command-line argument.
+          # Body built from env and passed on stdin, so the key is never a command-line argument.
           TOKEN="$(python3 -c 'import json,os,sys; sys.stdout.write(json.dumps({"identifier": os.environ["REGISTRY_USERNAME"], "secret": os.environ["DOCKER_API_KEY"]}))' \
             | curl -sS -X POST https://hub.docker.com/v2/auth/token \
               -H 'Content-Type: application/json' --data-binary @- \
