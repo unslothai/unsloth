@@ -9821,7 +9821,7 @@ class _AutoCheckpointSkip:
     trainable param the optimizer has no state for yet. Sized for the trainer batch at the longest of
     max_length, max_seq_length and the measured length: inputs a collator expands past that (images,
     audio) need max_seq_length set to their bound. Under torchrun (DDP / native FSDP2) every rank
-    plans and the smallest K wins, so all ranks keep the same layers; tensor / pipeline parallel
+    plans and the smallest K wins, so every rank keeps the same number of layers; tensor / pipeline parallel
     models stay fully checkpointed."""
 
     MARGIN = 1 << 30
@@ -10034,7 +10034,7 @@ class _AutoCheckpointSkip:
         return False
 
     def _agree_across_ranks(self, count, device):
-        """torchrun: the smallest count over all ranks, so every rank keeps the same layers (one
+        """torchrun: the smallest count over all ranks, so every rank keeps as many layers (one
         collective, at the planning forward, which every rank reaches at the same step)."""
         try:
             from .loader_utils import is_distributed
