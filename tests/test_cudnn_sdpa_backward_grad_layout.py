@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""torch 2.6 - 2.13 key the cuDNN SDPA backward plan cache without grad_output strides: two
-same-shape backwards whose grad_output layouts differ share one plan, and the second gets wrong
-dQ / dK / dV. The GPU test only `import unsloth` in a fresh interpreter, so it fails on a tree
-without the fix wherever the bug exists; its opt-out arm shows the bug is really there."""
+"""torch 2.6 - 2.13 cuDNN SDPA backward plans ignore grad_output strides, so same-shape backwards
+with different grad layouts give wrong grads. The GPU test's opt-out arm proves the bug exists."""
 
 import json
 import os
@@ -44,8 +42,8 @@ class TestAffectedRange:
             ("2.14.1+cu130", 92400),
             ("2.15.0", 92500),
             ("2.5.1+cu124", 90501),  # always copied grad_output into the output layout
-            ("2.6.0+cu124", 90100),  # cuDNN < 9.5.1: grad_output copied into the output layout
-            ("2.13.0+cpu", None),  # no cuDNN
+            ("2.6.0+cu124", 90100),  # cuDNN < 9.5.1
+            ("2.13.0+cpu", None),
             ("not a version", 92000),
         ],
     )

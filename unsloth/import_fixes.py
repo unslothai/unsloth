@@ -7627,13 +7627,8 @@ _SDPA_GRAD_LAYOUT_FUNCTION = []
 
 
 def _cudnn_sdpa_backward_cache_ignores_grad_layout(torch_version, cudnn_version):
-    """True where torch's cuDNN SDPA backward reuses a cached plan across grad_output layouts.
-
-    torch 2.6 - 2.13 key that plan without grad_output's strides, so two same-shape backwards
-    whose grad_output layouts differ share one plan and the second gets wrong dQ / dK / dV.
-    torch 2.14.0 adds the strides to the key (pytorch/pytorch#191576). Builds on cuDNN < 9.5.1
-    copy grad_output into the output's layout first, so they never vary it.
-    """
+    """torch 2.6 - 2.13 key the cuDNN backward plan without grad_output strides (fixed in
+    pytorch/pytorch#191576); cuDNN < 9.5.1 always copies grad_output to the output layout."""
     try:
         torch_version = TrueVersion(TrueVersion(str(torch_version)).base_version)
     except Exception:
@@ -7644,7 +7639,6 @@ def _cudnn_sdpa_backward_cache_ignores_grad_layout(torch_version, cudnn_version)
 
 
 def _sdpa_grad_layout_function():
-    """Identity on the SDPA output whose backward hands on a gradient laid out like that output."""
     if _SDPA_GRAD_LAYOUT_FUNCTION:
         return _SDPA_GRAD_LAYOUT_FUNCTION[0]
     import torch
@@ -7669,14 +7663,8 @@ def _sdpa_grad_layout_function():
 
 
 def fix_cudnn_sdpa_backward_grad_layout():
-    """Give every CUDA SDPA backward a grad_output in the output's own layout on torch 2.6 - 2.13.
-
-    Their cuDNN backward plan cache ignores grad_output strides, so a training step that backprops
-    one attention output through a transpose (HF modeling code) and another directly (same shape)
-    gets wrong gradients on the second. The output's layout follows the query layout, which is in
-    the key, so fixing grad_output to it makes the key complete. HF modeling code already hands
-    that layout, so no copy runs there. UNSLOTH_SKIP_CUDNN_SDPA_GRAD_LAYOUT_FIX=1 opts out.
-    """
+    """Force SDPA grad_output into the output's layout, which the plan key does cover, so two
+    same-shape backwards with different grad layouts cannot share a stale plan (wrong grads)."""
     if os.environ.get("UNSLOTH_SKIP_CUDNN_SDPA_GRAD_LAYOUT_FIX", "0") == "1":
         return
     try:
@@ -7701,8 +7689,7 @@ def fix_cudnn_sdpa_backward_grad_layout():
     @functools.wraps(original)
     def scaled_dot_product_attention(*args, **kwargs):
         out = original(*args, **kwargs)
-        # Plain tensors only: a DTensor output (torch context_parallel, DTensor TP) gets a DTensor
-        # gradient, which the plain empty_strided buffer in the backward cannot be copied from.
+        # Plain tensors only: a DTensor gradient cannot be copied into a plain empty_strided buffer.
         if type(out) is torch.Tensor and out.requires_grad and out.is_cuda and not out.is_nested:
             return grad_in_output_layout.apply(out)
         return out

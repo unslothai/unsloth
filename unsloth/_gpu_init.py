@@ -451,7 +451,6 @@ fix_vllm_guided_decoding_params()
 fix_trl_vllm_ascend()
 fix_vllm_pdl_blackwell()
 fix_cudnn_sdpa_d256_masked_backward()
-# torch 2.6 - 2.13: cuDNN SDPA backward plans ignore grad_output strides (wrong grads on reuse).
 fix_cudnn_sdpa_backward_grad_layout()
 # Windows ROCm only, probe-gated: fused attention fails on every call there (gfx1151, torch 2.11).
 fix_rocm_windows_fused_sdpa()

@@ -1514,8 +1514,7 @@ def test_block_varlen_runs_inside_the_graph_and_matches_dense_sdpa(monkeypatch, 
         out = fn(q, k, v, mask, torch.tensor(lengths, dtype = torch.int32), (cu, max(lengths)))
         grad = torch.randn_like(out)
         got = torch.autograd.grad(out, (q, k, v), grad)
-        # Math reference: on torch 2.6 - 2.13 a cuDNN dense reference can reuse a backward plan built
-        # for another grad layout earlier in the process and return wrong gradients.
+        # Math reference: cuDNN on torch 2.6 - 2.13 can reuse a stale backward plan (wrong grads).
         with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
             ref_out, _ = sdpa_attention_forward(module, q, k, v, mask, scaling = 0.11)
         ref = torch.autograd.grad(ref_out, (q, k, v), grad)

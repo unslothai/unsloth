@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The cuDNN SDPA grad-layout wrapper must leave DTensor outputs alone: under torch's
-context_parallel the output is a DTensor, its gradient is a DTensor, and copying that into a
-plain empty_strided buffer raises "aten.copy_.default got mixed torch.Tensor and DTensor"."""
+"""The grad-layout wrapper must skip DTensor outputs (context_parallel), else the backward copy
+raises "aten.copy_.default got mixed torch.Tensor and DTensor"."""
 
 import json
 import os
