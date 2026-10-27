@@ -14990,7 +14990,7 @@ def _offload_controlnet_module(cn_model: Any, device: str, logger: Any) -> bool:
             kwargs["record_stream"] = True
         _apply_group_offloading_packed(apply_group_offloading, cn_model, kwargs, logger)
         if prefetch:
-            if not _pin_top_level_group(cn_model, logger):
+            if not _pin_top_level_group(cn_model, logger, device = onload):
                 _skip_top_level_copy_back(cn_model, logger)
             install_group_prefetch(cn_model, onload, logger)
         return True

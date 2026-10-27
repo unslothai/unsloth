@@ -33,7 +33,7 @@ def test_fast_pins_are_requested_per_pipe_and_have_a_kill_switch(monkeypatch):
 
 
 def test_a_pipe_without_the_request_keeps_the_allocator_pin(monkeypatch):
-    monkeypatch.setattr(mem, "_fast_pin_supported", lambda: True)
+    monkeypatch.setattr(mem, "_fast_pin_supported", lambda *_a, **_k: True)
     monkeypatch.setattr(mem, "_offload_groups", lambda module: [types.SimpleNamespace()])
     plain, fast = _Pipe(), _Pipe()
     mem.request_fast_pins(fast)
