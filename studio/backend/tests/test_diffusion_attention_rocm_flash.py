@@ -1964,7 +1964,12 @@ class _CompiledDit(__import__("torch").nn.Module):
         return self._guarded(q, q, q, None)
 
 
-def _compiled_env(monkeypatch, auto, flash_ms, dit_cls = None):
+def _compiled_env(
+    monkeypatch,
+    auto,
+    flash_ms,
+    dit_cls = None,
+):
     torch = pytest.importorskip("torch")
     _rocm(monkeypatch)
     ad = pytest.importorskip("diffusers.models.attention_dispatch")
@@ -2071,7 +2076,8 @@ def _traces_statically_known_true():
 # Cross attention: the key length is its own symbol. Telling self from cross attention must not compare the two
 # lengths with a guard, or a query length equal to the key length recompiles and a marked dynamic range is rejected.
 _needs_skt = pytest.mark.skipif(
-    not _traces_statically_known_true(), reason = "this torch's Dynamo cannot trace statically_known_true"
+    not _traces_statically_known_true(),
+    reason = "this torch's Dynamo cannot trace statically_known_true",
 )
 
 
