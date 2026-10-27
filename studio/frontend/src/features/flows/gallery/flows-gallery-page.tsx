@@ -1,7 +1,24 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog,
   DialogContent,
@@ -11,6 +28,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useNativeFileDrop } from "@/features/native-intents/use-native-file-drop";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import {
@@ -57,29 +75,23 @@ import { templateDocument } from "./templates";
 
 const KIND_STYLE: Record<
   FlowKind,
-  { label: string; className: string; icon: typeof FlowConnectionIcon }
+  { label: string; icon: typeof FlowConnectionIcon; copy: string }
 > = {
   pipeline: {
     label: "Pipeline",
-    className: "bg-sky-500/15 text-sky-600 dark:text-sky-300",
     icon: FlowConnectionIcon,
+    copy: "Chain models together, like text → image → video.",
   },
   story: {
     label: "Story game",
-    className: "bg-violet-500/15 text-violet-600 dark:text-violet-300",
     icon: BookOpen01Icon,
+    copy: "A branching visual novel with generated art.",
   },
   world: {
     label: "World game",
-    className: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-300",
     icon: GameController01Icon,
+    copy: "A little world to walk around and talk to its people.",
   },
-};
-
-const COVER_GRADIENT: Record<FlowKind, string> = {
-  pipeline: "from-sky-500/30 via-indigo-500/20 to-transparent",
-  story: "from-violet-500/35 via-fuchsia-500/20 to-transparent",
-  world: "from-emerald-500/35 via-lime-500/15 to-transparent",
 };
 
 function relativeTime(ms: number): string {
@@ -110,8 +122,8 @@ function FlowCard({
 }) {
   const kind = KIND_STYLE[flow.kind] ?? KIND_STYLE.pipeline;
   return (
-    <div
-      className="group relative flex flex-col overflow-hidden rounded-xl border bg-card transition-shadow hover:shadow-lg"
+    <Card
+      className="group relative gap-0 py-0 transition-transform hover:-translate-y-0.5"
       data-testid="flows-card"
     >
       <button
@@ -119,9 +131,7 @@ function FlowCard({
         onClick={onOpen}
         className="flex flex-col text-left"
       >
-        <div
-          className={`relative flex aspect-[16/9] items-center justify-center overflow-hidden bg-gradient-to-br ${COVER_GRADIENT[flow.kind] ?? ""}`}
-        >
+        <div className="relative flex aspect-[16/9] items-center justify-center overflow-hidden border-border/60 border-b bg-muted/30">
           {flow.cover ? (
             <MediaThumb
               media={{
@@ -132,39 +142,37 @@ function FlowCard({
               className="h-full w-full object-cover"
             />
           ) : (
-            <HugeiconsIcon
-              icon={kind.icon}
-              size={42}
-              strokeWidth={1.2}
-              className="text-foreground/40"
-            />
+            <div className="inline-flex size-10 items-center justify-center rounded-md border border-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)] bg-background/80">
+              <HugeiconsIcon
+                icon={kind.icon}
+                className="size-5 text-foreground/90"
+              />
+            </div>
           )}
         </div>
-        <div className="flex flex-col gap-1 p-3">
+        <div className="flex flex-col gap-1 p-4">
           <div className="flex items-center gap-2">
-            <span className="min-w-0 flex-1 truncate font-medium text-sm">
+            <p className="min-w-0 flex-1 truncate text-sm font-semibold text-foreground">
               {flow.name}
-            </span>
-            <span
-              className={`rounded px-1.5 py-0.5 text-[10.5px] ${kind.className}`}
-            >
+            </p>
+            <Badge variant="outline" className="shrink-0">
               {kind.label}
-            </span>
+            </Badge>
           </div>
           {flow.description && (
-            <p className="line-clamp-2 text-muted-foreground text-xs">
+            <p className="line-clamp-2 text-xs text-muted-foreground">
               {flow.description}
             </p>
           )}
           {flow.example && needsLine(flow.needs) && (
             <p
-              className="text-[11px] text-foreground/70"
+              className="text-xs text-foreground/70"
               data-testid="flows-card-needs"
             >
               {needsLine(flow.needs)}
             </p>
           )}
-          <p className="text-[11px] text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             {flow.nodeCount} nodes
             {flow.updatedAt && !flow.example
               ? ` · ${relativeTime(flow.updatedAt)}`
@@ -173,34 +181,41 @@ function FlowCard({
         </div>
       </button>
       {action && (
-        <span className="pointer-events-none absolute top-2 right-2 rounded-md bg-background/90 px-2 py-1 text-xs font-medium opacity-0 shadow transition-opacity group-hover:opacity-100">
+        <Badge
+          variant="secondary"
+          className="pointer-events-none absolute top-2 right-2 opacity-0 shadow-sm transition-opacity group-hover:opacity-100"
+        >
           {action}
-        </span>
+        </Badge>
       )}
       {onApp && (
-        <button
+        <Button
           type="button"
+          variant="secondary"
+          size="icon-sm"
           aria-label={`Open ${flow.name} as an app`}
           title="Open as app"
           onClick={onApp}
-          className="absolute top-2 right-10 rounded-md bg-background/80 p-1.5 text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100"
+          className="absolute top-2 right-11 opacity-0 transition-opacity group-hover:opacity-100"
           data-testid="flows-card-app"
         >
           <HugeiconsIcon icon={GridViewIcon} size={14} />
-        </button>
+        </Button>
       )}
       {onDelete && (
-        <button
+        <Button
           type="button"
+          variant="secondary"
+          size="icon-sm"
           aria-label={`Delete ${flow.name}`}
           title="Delete"
           onClick={onDelete}
-          className="absolute top-2 right-2 rounded-md bg-background/80 p-1.5 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
+          className="absolute top-2 right-2 opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
         >
           <HugeiconsIcon icon={Delete02Icon} size={14} />
-        </button>
+        </Button>
       )}
-    </div>
+    </Card>
   );
 }
 
@@ -335,17 +350,16 @@ function ImportDialog({
               onClick={() => fileRef.current?.click()}
               ref={dropRef}
               {...dragHandlers}
-              className={`flex flex-col items-center gap-2 rounded-xl border-2 border-dashed px-4 py-8 text-sm transition-colors ${
+              className={`flex flex-col items-center gap-2 rounded-xl border-2 border-dashed px-4 py-8 text-center text-muted-foreground text-sm transition-colors ${
                 dragging
-                  ? "border-primary bg-primary/5"
-                  : "border-border hover:bg-muted/50"
+                  ? "border-ring-strong bg-wash-5"
+                  : "border-muted-foreground/25 hover:border-muted-foreground/50"
               }`}
               disabled={busy}
             >
               <HugeiconsIcon
                 icon={FileImportIcon}
-                size={26}
-                className="text-muted-foreground"
+                className="size-8 text-muted-foreground"
               />
               {busy ? "Importing…" : "Drop a file here or click to choose"}
             </button>
@@ -360,12 +374,13 @@ function ImportDialog({
                 if (file) void submit(file);
               }}
             />
-            <textarea
+            <Textarea
+              fieldSizing="fixed"
               value={text}
               onChange={(e) => setText(e.target.value)}
               placeholder='…or paste JSON: {"format": "unsloth-flow", …}'
               rows={5}
-              className="rounded-md border bg-transparent px-2 py-1.5 font-mono text-xs"
+              className="font-mono text-xs"
             />
           </div>
         )}
@@ -484,90 +499,96 @@ export function FlowsGalleryPage(): ReactElement {
 
   return (
     <div
-      className="mx-auto flex w-full max-w-6xl flex-col gap-8 px-6 py-8"
+      className="mx-auto flex w-full max-w-7xl flex-col gap-8 px-5 py-8 max-sm:px-4 sm:px-9"
       data-testid="flows-gallery"
     >
-      <header className="flex flex-wrap items-end gap-4">
-        <div className="flex-1">
-          <h1 className="font-heading font-semibold text-2xl tracking-tight">
+      <header className="flex flex-wrap items-center justify-between gap-4">
+        <div className="min-w-0 flex-1">
+          <h1 className="text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
             Flows
           </h1>
-          <p className="mt-1 max-w-2xl text-muted-foreground text-sm">
+          <p className="mt-0.5 max-w-2xl text-sm text-muted-foreground">
             Connect blocks for language models, images, video, audio and
             training into pipelines and games. Everything runs on this computer,
             and any flow can be shared as a single file.
           </p>
         </div>
-        <Button
-          variant="outline"
-          disabled={migrating}
-          onClick={() => void bringRecipes()}
-          title="One flow per saved Data Recipe, each an editable recipe group. Safe to run again."
-          data-testid="flows-bring-recipes"
-        >
-          <HugeiconsIcon icon={TestTube01Icon} size={15} />{" "}
-          {migrating ? "Bringing in…" : "Bring in my Data Recipes"}
-        </Button>
-        <Button
-          variant="outline"
-          onClick={() => setImportOpen(true)}
-          data-testid="flows-import"
-        >
-          <HugeiconsIcon icon={FileImportIcon} size={15} /> Import
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            disabled={migrating}
+            onClick={() => void bringRecipes()}
+            title="One flow per saved Data Recipe, each an editable recipe group. Safe to run again."
+            data-testid="flows-bring-recipes"
+          >
+            <HugeiconsIcon icon={TestTube01Icon} className="size-4" />{" "}
+            {migrating ? "Bringing in…" : "Bring in my Data Recipes"}
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => setImportOpen(true)}
+            data-testid="flows-import"
+          >
+            <HugeiconsIcon icon={FileImportIcon} className="size-4" /> Import
+          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild={true}>
+              <Button variant="secondary" type="button" disabled={creating}>
+                <HugeiconsIcon icon={PlusSignIcon} className="size-4" />
+                New flow
+                <HugeiconsIcon
+                  icon={ChevronDownStandardIcon}
+                  className="size-4"
+                />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-72">
+              {(["pipeline", "story", "world"] as const).map((kind) => (
+                <DropdownMenuItem
+                  key={kind}
+                  onSelect={() => void createFrom(kind)}
+                  className="items-start"
+                  data-testid={`flows-new-${kind}`}
+                >
+                  <HugeiconsIcon
+                    icon={KIND_STYLE[kind].icon}
+                    className="mt-0.5 size-4"
+                  />
+                  <span className="flex flex-col">
+                    <span>New {KIND_STYLE[kind].label.toLowerCase()}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {KIND_STYLE[kind].copy}
+                    </span>
+                  </span>
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
       </header>
-
-      <section className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        {(["pipeline", "story", "world"] as const).map((kind) => {
-          const style = KIND_STYLE[kind];
-          const copy = {
-            pipeline: "Chain models together, like text → image → video.",
-            story: "A branching visual novel with generated art.",
-            world: "A little world to walk around and talk to its people.",
-          }[kind];
-          return (
-            <button
-              key={kind}
-              type="button"
-              disabled={creating}
-              onClick={() => void createFrom(kind)}
-              className="flex items-center gap-3 rounded-xl border bg-card px-4 py-3 text-left transition-colors hover:bg-muted/60 disabled:opacity-60"
-              data-testid={`flows-new-${kind}`}
-            >
-              <span
-                className={`flex size-10 shrink-0 items-center justify-center rounded-lg ${style.className}`}
-              >
-                <HugeiconsIcon icon={style.icon} size={20} />
-              </span>
-              <span className="flex flex-col">
-                <span className="flex items-center gap-1 font-medium text-sm">
-                  <HugeiconsIcon icon={PlusSignIcon} size={12} /> New{" "}
-                  {style.label.toLowerCase()}
-                </span>
-                <span className="text-muted-foreground text-xs">{copy}</span>
-              </span>
-            </button>
-          );
-        })}
-      </section>
 
       <section className="flex flex-col gap-3">
         <h2 className="font-semibold text-sm">My flows</h2>
         {flows === null ? (
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
             {[0, 1, 2].map((i) => (
-              <div
-                key={i}
-                className="aspect-[4/3] animate-pulse rounded-xl bg-muted"
-              />
+              <Skeleton key={i} className="aspect-[4/3] rounded-2xl" />
             ))}
           </div>
         ) : flows.length === 0 ? (
-          <p className="rounded-xl border border-dashed px-4 py-8 text-center text-muted-foreground text-sm">
-            No flows yet. Start from a template above or remix an example below.
-          </p>
+          <Empty className="border border-dashed border-border/70 p-8 dark:border-none">
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <HugeiconsIcon icon={FlowConnectionIcon} className="size-5" />
+              </EmptyMedia>
+              <EmptyTitle>No flows yet</EmptyTitle>
+              <EmptyDescription>
+                Start one with New flow or remix an example below.
+              </EmptyDescription>
+            </EmptyHeader>
+          </Empty>
         ) : (
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
             {flows.map((flow) => (
               <FlowCard
                 key={flow.id}
@@ -610,24 +631,22 @@ export function FlowsGalleryPage(): ReactElement {
               { id: null, label: "All", count: examples.length },
               ...visibleCategories(examples),
             ].map((chip) => (
-              <button
+              <Button
                 key={chip.id ?? "all"}
                 type="button"
+                size="xs"
+                variant={category === chip.id ? "secondary" : "ghost"}
                 role="tab"
                 aria-selected={category === chip.id}
                 onClick={() => setCategory(chip.id)}
-                className={`rounded-full border px-3 py-1 text-xs transition-colors ${
-                  category === chip.id
-                    ? "border-foreground/30 bg-foreground text-background"
-                    : "text-muted-foreground hover:bg-muted"
-                }`}
+                className={`rounded-full ${category === chip.id ? "" : "text-muted-foreground"}`}
                 data-testid="flows-category"
               >
                 {chip.label} <span className="opacity-60">{chip.count}</span>
-              </button>
+              </Button>
             ))}
           </div>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
             {examples
               .filter(
                 (example) =>

@@ -1,8 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A recipe column in Flows' node chrome with Recipe Studio's detail, and the model / tool cards beside it.
+// A recipe column's content in the shared node card (`node-looks.ts`), and the model / tool cards beside it.
 
+import { Badge } from "@/components/ui/badge";
+import { InlineCategoryBadges } from "@/features/recipe-studio/components/inline/inline-category-badges";
+import {
+  RECIPE_STUDIO_NODE_TONES,
+  RECIPE_STUDIO_USER_NODE_TONE,
+} from "@/features/recipe-studio/utils/ui-tones";
 import {
   BalanceScaleIcon,
   Clock01Icon,
@@ -21,7 +27,7 @@ import {
   TagsIcon,
   UserAccountIcon,
 } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
+import type { IconSvgElement } from "@hugeicons/react";
 import {
   BaseEdge,
   type EdgeProps,
@@ -30,13 +36,24 @@ import {
   Position,
   getBezierPath,
 } from "@xyflow/react";
-import { memo, useState } from "react";
-import { useCatalogStore } from "../stores/catalog-store";
-import { useDocStore } from "../stores/doc-store";
-import { useUiStore } from "../stores/ui-store";
-import type { FlowNode } from "../types";
+import { memo } from "react";
 import { inHandle, outHandle } from "../editor/connection-rules";
 import type { RfEdge, RfNode } from "../editor/derive-rf";
+import {
+  CollapsedPorts,
+  NodeCard,
+  NodeCardHeader,
+  NodeDisclosure,
+  NodeFieldRows,
+  NodePorts,
+} from "../editor/node-card";
+import type { NodeLook } from "../editor/node-looks";
+import { portInk } from "../editor/theme-colors";
+import { useCatalogStore } from "../stores/catalog-store";
+import { useDocStore } from "../stores/doc-store";
+import { IDLE_RUNTIME } from "../stores/runtime-store";
+import { useUiStore } from "../stores/ui-store";
+import type { FlowNode } from "../types";
 import { columnName, columnOf } from "./recipe-columns";
 import {
   type AuxCard,
@@ -47,10 +64,9 @@ import {
   columnLook,
   columnTakesWires,
 } from "./recipe-look";
+import { useColumnSamples } from "./recipe-panels";
 
-type Icon = typeof CodeIcon;
-
-const BLOCK_ICONS: Record<string, Icon> = {
+const BLOCK_ICONS: Record<string, IconSvgElement> = {
   category: Tag01Icon,
   subcategory: TagsIcon,
   uniform: EqualSignIcon,
@@ -69,239 +85,116 @@ const BLOCK_ICONS: Record<string, Icon> = {
   expression: FunctionIcon,
 };
 
-export function columnIcon(look: ColumnLook): Icon {
+function columnIcon(look: ColumnLook): IconSvgElement {
   if (look.kind === "validator") return Shield02Icon;
   return BLOCK_ICONS[look.block] ?? DiceFaces03Icon;
 }
 
-/** Handle the model / tool cards wire into; not for drawing by hand. */
+function columnTone(look: ColumnLook): string {
+  if (look.block === "person" || look.block === "person_from_faker")
+    return RECIPE_STUDIO_USER_NODE_TONE;
+  return RECIPE_STUDIO_NODE_TONES[look.kind];
+}
+
+/** Handles the model / tool cards wire through; not for drawing by hand. */
 export const AUX_IN = "aux-in";
 export const AUX_OUT = "aux-out";
+const AUX_HANDLE = "!size-1.5 !min-h-0 !min-w-0 !border-0 !opacity-0";
 
-function usePortColor(type: string): string {
-  return (
-    useCatalogStore((s) => s.catalog?.port_colors[type]) ?? "#cbd5e1"
-  );
-}
+const portsKey = (id: string) => (s: { graph: Parameters<typeof columnInputPorts>[0] }) =>
+  columnInputPorts(s.graph, id)
+    .map((p) => `${p.sourceId}\t${p.label}\t${p.type}`)
+    .join("\n");
 
-function PortDot({
-  type,
-  side,
-  id,
-}: { type: string; side: "in" | "out"; id: string }) {
-  const color = usePortColor(type);
-  return (
-    <Handle
-      type={side === "in" ? "target" : "source"}
-      id={id}
-      position={side === "in" ? Position.Left : Position.Right}
-      className="!h-2.5 !w-2.5 !border-2 !border-zinc-900"
-      style={{ background: color, [side === "in" ? "left" : "right"]: -5 }}
-    />
-  );
-}
-
-function inputPortsKey(id: string) {
-  return (s: { graph: Parameters<typeof columnInputPorts>[0] }) =>
-    columnInputPorts(s.graph, id)
-      .map((p) => `${p.sourceId}\t${p.label}\t${p.type}`)
-      .join("\n");
-}
-
-/** One input per column read, labelled with that column's name; the output carries the column's own name. */
-export function RecipeColumnPorts({
-  node,
-  collapsed = false,
-}: { node: FlowNode; collapsed?: boolean }) {
-  const key = useDocStore(inputPortsKey(node.id));
+/** One input per column read, named after it; the output carries the column's own name. */
+function ColumnPorts({ node, collapsed }: { node: FlowNode; collapsed: boolean }) {
+  const key = useDocStore(portsKey(node.id));
+  const colors = useCatalogStore((s) => s.catalog?.port_colors);
   const column = columnOf(node);
   const look = columnLook(column);
-  const inputs = key
+  const color = (type: string) => colors?.[type] ?? "#cbd5e1";
+  const reads = key
     ? key.split("\n").map((line) => {
         const [sourceId, label, type] = line.split("\t");
-        return { sourceId, label, type };
+        return {
+          handleId: inHandle(`in${REF_HANDLE_SEP}${sourceId}`),
+          label,
+          color: color(type),
+          labelClassName: "font-mono text-foreground",
+        };
       })
     : [];
-  const open = columnTakesWires(column);
-  if (collapsed) {
-    // Folded into the header, like Flows' other collapsed nodes: hidden but still wireable.
-    const hidden = { top: -18 };
+  const inputs = columnTakesWires(column)
+    ? [
+        ...reads,
+        {
+          handleId: inHandle("in"),
+          label: "+ column",
+          color: color("text"),
+        },
+      ]
+    : reads;
+  const output = {
+    handleId: outHandle("out"),
+    label: columnName(node),
+    color: color(look.valueType),
+    labelClassName: "font-mono text-foreground",
+  };
+  if (collapsed)
     return (
-      <div className="relative h-0">
-        {[
-          ...inputs.map((p) => `in${REF_HANDLE_SEP}${p.sourceId}`),
-          ...(open ? ["in"] : []),
-        ].map((port) => (
-          <Handle
-            key={port}
-            type="target"
-            id={inHandle(port)}
-            position={Position.Left}
-            className="!opacity-0"
-            style={hidden}
-          />
-        ))}
-        <Handle
-          type="source"
-          id={outHandle("out")}
-          position={Position.Right}
-          className="!opacity-0"
-          style={hidden}
-        />
-      </div>
+      <CollapsedPorts
+        inputs={inputs.map((p) => p.handleId)}
+        outputs={[output.handleId]}
+      />
     );
-  }
+  // Output on its own row so long column names on either side don't squeeze each other.
   return (
-    <div className="flex justify-between gap-2">
-      <div className="flex min-w-0 flex-col gap-1">
-        {inputs.map((port) => (
-          <div
-            key={port.sourceId}
-            className="relative flex h-5 items-center pl-3 pr-1"
-          >
-            <PortDot
-              type={port.type}
-              side="in"
-              id={inHandle(`in${REF_HANDLE_SEP}${port.sourceId}`)}
-            />
-            <span className="flow-detail truncate font-mono text-[11px] text-zinc-300">
-              {port.label}
-            </span>
-          </div>
-        ))}
-        {open && (
-          <div
-            className="relative flex h-5 items-center pl-3 pr-1"
-            title="Wire a column here to add {{ column }} to this one"
-          >
-            <PortDot type="text" side="in" id={inHandle("in")} />
-            <span className="flow-detail truncate text-[11px] text-zinc-500">
-              + column
-            </span>
-          </div>
-        )}
-      </div>
-      <div className="flex min-w-0 flex-col items-end gap-1">
-        <div className="relative flex h-5 items-center pl-1 pr-3">
-          <span className="flow-detail truncate font-mono text-[11px] text-zinc-300">
-            {columnName(node)}
-          </span>
-          <PortDot type={look.valueType} side="out" id={outHandle("out")} />
-        </div>
-      </div>
-    </div>
+    <>
+      <NodePorts inputs={[]} outputs={[output]} />
+      <NodePorts inputs={inputs} outputs={[]} />
+    </>
   );
 }
 
-function Chips({ values, accent }: { values: string[]; accent: string }) {
-  if (!values.length) return null;
-  const shown = values.slice(0, 6);
+/** The value this column got in the first row of its recipe's last run. */
+function ColumnSample({ node }: { node: FlowNode }) {
+  const [sample] = useColumnSamples(node, 1);
+  if (!sample) return null;
   return (
-    <div className="flex flex-wrap gap-1">
-      {shown.map((value) => (
-        <span
-          key={value}
-          className="max-w-full truncate rounded px-1.5 py-0.5 text-[10px] leading-tight"
-          style={{ background: `${accent}1f`, color: `${accent}` }}
-        >
-          {value}
-        </span>
-      ))}
-      {values.length > shown.length && (
-        <span className="px-1 text-[10px] text-zinc-500">
-          +{values.length - shown.length}
-        </span>
-      )}
-    </div>
+    <p className="flow-detail mx-3 line-clamp-3 whitespace-pre-wrap rounded-md border border-emerald-500/25 bg-emerald-500/10 px-2 py-1 text-ui-11 leading-snug text-emerald-800 dark:text-emerald-200">
+      {sample}
+    </p>
   );
 }
 
-/** Subtitle, key fields, chips and the collapsed prompts of a column. */
-export function RecipeColumnDetails({ node }: { node: FlowNode }) {
-  const look = columnLook(columnOf(node));
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="flow-detail flex flex-col gap-1.5 px-3">
-      {(look.fields.length > 0 || look.drop) && (
-        <div className="flex flex-col gap-0.5">
-          {look.fields.map((field) => (
-            <div
-              key={field.label}
-              className="flex min-w-0 items-baseline gap-1.5 text-[11px]"
-            >
-              <span className="shrink-0 text-[9px] uppercase tracking-wide text-zinc-500">
-                {field.label}
-              </span>
-              <span className="truncate font-mono text-zinc-200">
-                {field.value}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
-      <Chips values={look.chips} accent={look.accent} />
-      {look.details.length > 0 && (
-        <div className="flex flex-col gap-1">
-          <button
-            type="button"
-            className="nodrag self-start text-[10px] text-zinc-500 hover:text-zinc-300"
-            onClick={(e) => {
-              e.stopPropagation();
-              setOpen((v) => !v);
-            }}
-          >
-            {open ? "Hide inputs" : "Show inputs"}
-          </button>
-          {open &&
-            look.details.map((detail) => (
-              <div
-                key={detail.label}
-                className="nowheel max-h-40 overflow-auto rounded bg-white/5 px-2 py-1"
-              >
-                <div className="text-[9px] uppercase tracking-wide text-zinc-500">
-                  {detail.label}
-                </div>
-                <p className="whitespace-pre-wrap font-mono text-[10px] leading-snug text-zinc-300">
-                  {detail.text}
-                </p>
-              </div>
-            ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/** Header identity for a column node: its block icon, accent and subtitle. */
-export function RecipeColumnHeader({ node }: { node: FlowNode }) {
+function ColumnBody({ node }: { node: FlowNode }) {
   const look = columnLook(columnOf(node));
   return (
     <>
-      <span
-        className="flex size-6 shrink-0 items-center justify-center rounded-md border"
-        style={{
-          color: look.accent,
-          background: `${look.accent}1a`,
-          borderColor: `${look.accent}40`,
-        }}
-      >
-        <HugeiconsIcon icon={columnIcon(look)} size={13} strokeWidth={1.8} />
-      </span>
-      <span className="flex min-w-0 flex-1 flex-col leading-tight">
-        <span className="truncate font-medium text-[13px]">
-          {columnName(node) || node.label}
-        </span>
-        <span className="flow-detail truncate text-[10px] text-zinc-500">
-          {look.subtitle}
-        </span>
-      </span>
+      <NodeFieldRows rows={look.fields} />
+      {look.chips.length > 0 && (
+        <div className="flow-detail px-3">
+          <InlineCategoryBadges values={look.chips} />
+        </div>
+      )}
+      <NodeDisclosure sections={look.details} />
+      <ColumnSample node={node} />
+    </>
+  );
+}
+
+function ColumnHeaderExtra({ node }: { node: FlowNode }) {
+  const look = columnLook(columnOf(node));
+  return (
+    <>
       {look.drop && (
-        <span
-          className="flow-detail shrink-0 rounded bg-white/5 px-1 text-[9px] text-zinc-400"
+        <Badge
+          variant="outline"
+          className="flow-detail h-5 px-1.5 text-ui-10 text-muted-foreground"
           title="drop=true: used while generating, left out of the dataset"
         >
-          dropped
-        </span>
+          Dropped
+        </Badge>
       )}
       {look.kind === "llm" && (
         <Handle
@@ -309,18 +202,24 @@ export function RecipeColumnHeader({ node }: { node: FlowNode }) {
           id={AUX_IN}
           position={Position.Bottom}
           isConnectable={false}
-          className="!h-1.5 !w-1.5 !min-h-0 !min-w-0 !border-0 !opacity-0"
+          className={AUX_HANDLE}
         />
       )}
     </>
   );
 }
 
-export function columnAccent(node: FlowNode): string {
-  return columnLook(columnOf(node)).accent;
-}
+/** The `recipe.column` entry of `NODE_LOOKS`. */
+export const RECIPE_COLUMN_LOOK: NodeLook = {
+  icon: (node) => columnIcon(columnLook(columnOf(node))),
+  tone: (node) => columnTone(columnLook(columnOf(node))),
+  subtitle: (node) => columnLook(columnOf(node)).subtitle,
+  HeaderExtra: ColumnHeaderExtra,
+  Ports: ColumnPorts,
+  Body: ColumnBody,
+};
 
-const AUX_ICON: Record<AuxCard["kind"], Icon> = {
+const AUX_ICON: Record<AuxCard["kind"], IconSvgElement> = {
   // biome-ignore lint/style/useNamingConvention: api schema
   model_provider: Shield02Icon,
   // biome-ignore lint/style/useNamingConvention: api schema
@@ -333,53 +232,26 @@ export type AuxData = { card: AuxCard };
 
 function RecipeAuxNodeImpl({ data }: NodeProps<RfNode>) {
   const { card } = data as unknown as AuxData;
-  const accent = RECIPE_ACCENT[card.kind];
   return (
-    <div
-      className="w-56 rounded-lg border border-white/10 bg-zinc-900/95 text-zinc-100 shadow-md shadow-black/30"
-      title="Double-click to edit"
-    >
+    <NodeCard runtime={IDLE_RUNTIME} className="w-56" title="Double-click to edit">
       {card.kind === "model_config" && (
         <Handle
           type="target"
           id={AUX_IN}
           position={Position.Top}
           isConnectable={false}
-          className="!h-1.5 !w-1.5 !min-h-0 !min-w-0 !border-0 !opacity-0"
+          className={AUX_HANDLE}
         />
       )}
-      <div
-        className="flex items-center gap-2 rounded-t-lg px-2.5 py-1.5"
-        style={{ background: `linear-gradient(90deg, ${accent}26, transparent 80%)` }}
-      >
-        <span
-          className="flex size-5 shrink-0 items-center justify-center rounded"
-          style={{ color: accent, background: `${accent}1f` }}
-        >
-          <HugeiconsIcon icon={AUX_ICON[card.kind]} size={12} strokeWidth={1.8} />
-        </span>
-        <span className="flex min-w-0 flex-col leading-tight">
-          <span className="truncate font-mono text-[12px]">{card.name}</span>
-          <span className="truncate text-[10px] text-zinc-500">
-            {card.subtitle}
-          </span>
-        </span>
-      </div>
+      <NodeCardHeader
+        icon={AUX_ICON[card.kind]}
+        tone={RECIPE_STUDIO_NODE_TONES[card.kind]}
+        title={card.name}
+        subtitle={card.subtitle}
+      />
       {card.fields.length > 0 && (
-        <div className="flex flex-col gap-0.5 px-2.5 py-1.5">
-          {card.fields.map((field) => (
-            <div
-              key={field.label}
-              className="flex min-w-0 items-baseline gap-1.5 text-[11px]"
-            >
-              <span className="shrink-0 text-[9px] uppercase tracking-wide text-zinc-500">
-                {field.label}
-              </span>
-              <span className="truncate font-mono text-zinc-300">
-                {field.value}
-              </span>
-            </div>
-          ))}
+        <div className="py-2">
+          <NodeFieldRows rows={card.fields} />
         </div>
       )}
       <Handle
@@ -387,9 +259,9 @@ function RecipeAuxNodeImpl({ data }: NodeProps<RfNode>) {
         id={AUX_OUT}
         position={card.kind === "model_provider" ? Position.Bottom : Position.Left}
         isConnectable={false}
-        className="!h-1.5 !w-1.5 !min-h-0 !min-w-0 !border-0 !opacity-0"
+        className={AUX_HANDLE}
       />
-    </div>
+    </NodeCard>
   );
 }
 
@@ -417,10 +289,10 @@ function RecipeAuxEdgeImpl({
       id={id}
       path={path}
       style={{
-        stroke: RECIPE_ACCENT.model_config,
+        stroke: portInk(RECIPE_ACCENT.model_config),
         strokeWidth: 1.25,
         strokeDasharray: "4 4",
-        opacity: 0.55,
+        opacity: 0.6,
       }}
     />
   );

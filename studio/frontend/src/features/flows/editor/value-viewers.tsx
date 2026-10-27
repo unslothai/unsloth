@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-
+import { Badge } from "@/components/ui/badge";
 import { type ReactElement, Suspense, lazy } from "react";
 import {
   type StructuredKind,
@@ -37,7 +37,7 @@ export function StructuredOutput({
   return (
     <Suspense
       fallback={
-        <p className="text-[11px] text-zinc-500">
+        <p className="text-ui-11 text-muted-foreground">
           {structuredSummary(value as StructuredValue)}
         </p>
       }
@@ -52,8 +52,8 @@ export function StructuredBadge({
 }: { value: unknown }): ReactElement | null {
   if (!isStructuredValue(value)) return null;
   return (
-    <span className="rounded bg-white/5 px-1.5 py-0.5 text-[11px] text-zinc-300">
+    <Badge variant="secondary" className="text-ui-11">
       {structuredSummary(value)}
-    </span>
+    </Badge>
   );
 }
