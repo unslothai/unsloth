@@ -5910,7 +5910,7 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 
 .unsloth-files-panel {
 	/* pt-2: the 28px Add files pill sits in the 32px header row, so this keeps it 10px from the top edge. */
-	@apply relative mb-2 flex w-full flex-col gap-5 overflow-hidden rounded-2xl px-4 pt-2 pb-4;
+	@apply relative mb-2 flex w-full flex-col gap-3 overflow-hidden rounded-2xl px-4 pt-2 pb-4;
 	container: files-panel / inline-size;
 	font-family: var(--font-sans);
 	background-color: #ffffff;
