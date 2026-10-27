@@ -69,6 +69,17 @@ def test_mps_fp8_dequant_matches_the_cpu_cast_bitwise(fmt, dtype):
     assert torch.equal(got[~nan].view(bits), want[~nan].view(bits))
 
 
+@pytest.mark.parametrize("fmt", ["float8_e4m3fn", "float8_e5m2"])
+def test_fp8_lookup_table_matches_the_cast_bitwise(fmt):
+    # Runs everywhere: the MPS dispatch test above skips off Apple Silicon.
+    codes = torch.arange(256, dtype = torch.uint8)
+    got = nq.fp8_lookup_table(fmt, "cpu").index_select(0, codes.int())
+    want = codes.view(getattr(torch, fmt)).float()
+    nan = want.isnan()
+    assert torch.equal(got.isnan(), nan)
+    assert torch.equal(got[~nan].view(torch.int32), want[~nan].view(torch.int32))
+
+
 @pytest.mark.parametrize("dtype", ["float16", "float32"])
 def test_mps_without_bf16_is_not_native(dtype):
     target = _mps_target(getattr(torch, dtype))
