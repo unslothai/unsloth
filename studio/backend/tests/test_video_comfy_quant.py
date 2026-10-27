@@ -414,6 +414,7 @@ def test_video_backends_follow_studio_rules(monkeypatch):
         "int8_backend": "torchao",
         "fp8_backend": "torchao",
         "fp8_storage": False,
+        "fp8_widen_chosen": False,
     }
     # either plan offloading the DiT means the hooks move it: int8 takes the torchao-free twin, fp8 has no GEMM
     # and stays stored as fp8, widened per layer
@@ -421,11 +422,13 @@ def test_video_backends_follow_studio_rules(monkeypatch):
         "int8_backend": "native",
         "fp8_backend": None,
         "fp8_storage": True,
+        "fp8_widen_chosen": False,
     }
     assert vid._video_comfy_backends(fam, "b", None, _plan(True), keep = False) == {
         "int8_backend": None,
         "fp8_backend": None,
         "fp8_storage": False,
+        "fp8_widen_chosen": False,
     }
     h3 = types.SimpleNamespace(name = "minimax-h3")
     assert (
@@ -456,7 +459,12 @@ def test_a_smaller_offloaded_price_replans_and_keeps_the_offloaded_backends(monk
     resident = vid._video_comfy_backends(fam, "b", None, _plan(True), _plan(True))
     assert resident["fp8_storage"] is False and resident["int8_backend"] is None
     kept = vid._video_comfy_backends(fam, "b", None, _plan(True), _plan(True), priced_offload = True)
-    assert kept == {"int8_backend": "native", "fp8_backend": None, "fp8_storage": True}
+    assert kept == {
+        "int8_backend": "native",
+        "fp8_backend": None,
+        "fp8_storage": True,
+        "fp8_widen_chosen": False,
+    }
 
 
 def test_video_plan_size_prices_only_what_runs_quantized(monkeypatch, tmp_path):
@@ -1087,13 +1095,21 @@ def test_a_resident_video_dit_that_fits_only_stored_gets_fp8_storage(tmp_path, m
         )
 
     picked = backends(widened_mib = widened)
-    assert picked == {"int8_backend": None, "fp8_backend": None, "fp8_storage": True}
+    assert picked == {
+        "int8_backend": None,
+        "fp8_backend": None,
+        "fp8_storage": True,
+        "fp8_widen_chosen": False,
+    }
     model = load(**picked)
     assert model._unsloth_comfy_quant["fp8_stored"] == 4
     assert model.attn.to_q.weight_q.dtype == torch.uint8
     # room to widen: the faster widened load; H3 keeps its torchao-or-dequantize rule
     monkeypatch.setattr(small_host, "host_ram_mib", lambda: (1 << 40, 4 * widened))
     assert backends(widened_mib = widened)["fp8_storage"] is False
+    # that widen was the rule's choice, so its load refuses against the rule's reserve; no host price, no choice
+    assert backends(widened_mib = widened)["fp8_widen_chosen"] is True
+    assert backends()["fp8_widen_chosen"] is False
     monkeypatch.setattr(small_host, "host_ram_mib", lambda: (1 << 40, available))
     h3 = types.SimpleNamespace(name = "minimax-h3")
     assert (
@@ -1105,6 +1121,6 @@ def test_a_resident_video_dit_that_fits_only_stored_gets_fp8_storage(tmp_path, m
     # the kill switch widens, and the host RAM check refuses that load
     monkeypatch.setenv(cq.FP8_STORAGE_ENV, "0")
     widened_pick = backends(widened_mib = widened)
-    assert widened_pick["fp8_storage"] is False
+    assert widened_pick["fp8_storage"] is False and widened_pick["fp8_widen_chosen"] is False
     with pytest.raises(RuntimeError, match = "Not enough system RAM"):
         load(**widened_pick)

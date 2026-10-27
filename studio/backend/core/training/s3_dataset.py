@@ -77,11 +77,7 @@ def boto3_available() -> bool:
 
 
 def _build_s3_client(s3_config: dict):
-    """Create a boto3 S3 client from the config dict.
-
-    Uses explicit access keys when provided, otherwise falls back to the
-    default credential chain (IAM role / instance profile / env / shared creds).
-    """
+    """Explicit keys win; otherwise the default credential chain (IAM role, env, shared files)."""
     require_explicit_credentials({"s3_dataset": s3_config})
     import boto3
 
@@ -118,9 +114,7 @@ def _list_dataset_keys(client, bucket: str, prefix: Optional[str]) -> list[str]:
                 continue
             if key.lower().endswith(SUPPORTED_EXTENSIONS + _AUDIO_EXTENSIONS):
                 keys.append(key)
-    # A Mac sync uploads Finder metadata under the shard's own extension and
-    # _validate_single_extension_family cannot see it, so a key is dropped only when the object it
-    # would describe is in the same listing.
+    # Drop an AppleDouble key only when the object it describes is in the same listing.
     return drop_shadowed_appledouble_names(keys)
 
 

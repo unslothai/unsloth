@@ -17,3 +17,6 @@ nvidia-cuda-nvcc==13.0.88
 nvidia-nvvm==13.0.88
 nvidia-cuda-cccl==13.0.85
 nvidia-cuda-crt==13.0.88
+
+# CA trust floor, as in no-torch-runtime.txt: certifi 2026.10.19 drops the distrusted emSign ECC Root CA - G3.
+certifi>=2026.10.19

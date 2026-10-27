@@ -358,7 +358,9 @@ class _UNet2DConditionModel(torch.nn.Module):
         ({}, True),
         ({"transformer_quant": "int8"}, False),
         ({"gguf_transformer": True}, False),
-        ({"offload_policy": "group", "_hooked": True}, False),
+        # An offloaded denoiser compiles in the background too, unless UNSLOTH_DIFFUSION_BG_COMPILE_OFFLOADED=0.
+        ({"offload_policy": "group", "_hooked": True}, True),
+        ({"offload_policy": "group", "_hooked": True, "_offloaded_off": True}, False),
         ({"offload_policy": "group"}, True),
         ({"speed_mode": "max"}, False),
         ({"speed_optims": ("cuda_graph",)}, False),
@@ -368,12 +370,15 @@ class _UNet2DConditionModel(torch.nn.Module):
         ({"target": types.SimpleNamespace(device = "mps", backend = "mps")}, False),
     ],
 )
-def test_only_dense_resident_default_tier_cuda_loads_compile_in_the_background(
+def test_only_dense_default_tier_cuda_loads_compile_in_the_background(
     monkeypatch, override, expect
 ):
     from core.inference import diffusion as D
 
     monkeypatch.delenv("UNSLOTH_DIFFUSION_BG_COMPILE", raising = False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_BG_COMPILE_OFFLOADED", raising = False)
+    if override.pop("_offloaded_off", False):
+        monkeypatch.setenv("UNSLOTH_DIFFUSION_BG_COMPILE_OFFLOADED", "0")
     monkeypatch.setattr(
         speed, "_UNET_WHOLE_COMPILE", frozenset({"_UNet2DConditionModel"}), raising = False
     )

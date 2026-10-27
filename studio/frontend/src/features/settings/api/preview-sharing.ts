@@ -48,8 +48,7 @@ export async function updatePreviewSharing(
   return fromApi(await res.json());
 }
 
-// Rotate the server-side signing secret, invalidating every previously shared
-// /p preview link in one step. Newly copied links keep working.
+// Rotating the signing secret invalidates every previously shared /p preview link.
 export async function rotatePreviewLinks(): Promise<void> {
   const res = await authFetch("/api/settings/preview-links/rotate", {
     method: "POST",

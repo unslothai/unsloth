@@ -15,18 +15,8 @@ import { cn } from "@/lib/utils";
 import { type ReactElement, useRef, useState } from "react";
 
 /**
- * Draggable window edge for the desktop sidebar, which collapses to zero width
- * and so has no edge of its own to grab. The same handle the pinned sidebar
- * uses, anchored to the window instead of to an off-screen panel: hover holds
- * the sidebar out, click or Enter pins it, drag resizes it.
- *
- * Hover and the keyboard are what land on macOS. A decorated window keeps its
- * resize border over the first few CSS pixels of the content and takes the
- * press there, so at 2px the click and the drag go to the window instead. Both
- * reach the 12px strip on Windows and Linux.
- *
- * Desktop only. On the web a collapsed sidebar keeps its icon rail, and that
- * rail already carries the handle.
+ * Draggable window edge for the zero-width desktop sidebar. On macOS a decorated window's resize
+ * border takes presses in the first few pixels, so hover and keyboard are what work there.
  */
 export function SidebarEdgeTrigger({
   className,
@@ -67,17 +57,14 @@ export function SidebarEdgeTrigger({
     <div
       ref={ref}
       className="contents"
-      // Only a primary press takes pointer capture, so only a primary press
-      // has a release to wait for. Holding for any other would never clear.
+      // Only a primary press takes pointer capture, so only it has a release to wait for.
       onPointerDownCapture={(event) => {
         if (event.button === 0) setHolding(true);
       }}
       onPointerUp={release}
       onPointerCancel={release}
       onLostPointerCapture={release}
-      // Tab reaches the strip with no pointer to hold the sidebar out, so
-      // focus does it instead. focusin and focusout bubble, which leaves the
-      // strip's own focus handling to the shared handle.
+      // Keyboard users have no pointer to hold the sidebar out, so focus does it.
       onFocus={() => setPeeking(true)}
       onBlur={() => setPeeking(false)}
     >

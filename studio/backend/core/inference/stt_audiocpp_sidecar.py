@@ -203,11 +203,7 @@ def resolve_audio_cpp_stt_model(
     network: bool = False,
     hf_token: Optional[str] = None,
 ) -> AudioCppModel:
-    """The audio.cpp ASR model a repo id, umbrella folder id or legacy key names.
-
-    ``network=False`` (loads and transcriptions) resolves from the HF cache, so dictation works
-    offline once downloaded; downloads resolve against the Hub.
-    """
+    """Resolves a repo id, umbrella id or legacy key; network=False reads the HF cache so dictation works offline, downloads use the Hub."""
     if model is None or not str(model).strip():
         model = DEFAULT_AUDIO_CPP_STT_MODEL
     base, ref_variant = split_variant_ref(str(model).strip())
@@ -624,8 +620,7 @@ class AudioCppSttSidecar:
         self._server: Optional[AudioCppServer] = None
         self._model_id: Optional[str] = None
         self._model: Optional[AudioCppModel] = None
-        # The name the last client used for the loaded model: a legacy key (what Settings and dictation
-        # save) is reported back as that key, so their string comparisons keep matching.
+        # Legacy keys are reported back as-is so client string comparisons keep matching.
         self._loaded_as: Optional[str] = None
         self._forced_cpu = False
         # Where the server actually runs: training also puts it on the CPU, without the user asking.
@@ -668,12 +663,7 @@ class AudioCppSttSidecar:
         return server.backend == "cpu"
 
     def keep_loaded_variant(self, model: Optional[str]) -> Optional[str]:
-        """``model`` pinned to the variant already loaded for that same row when it names none.
-
-        A variantless id means "this row", not "this row's default": Settings and dictation send the
-        bare row id, and resolving it afresh would swap a loaded Moonshine small for the default
-        tiny. An explicit variant, or another row, is left alone.
-        """
+        """A bare row id keeps the variant already loaded for that row, not the row's default."""
         loaded = self._model
         if loaded is None or not self._server_alive() or model is None or not str(model).strip():
             return model
@@ -941,8 +931,8 @@ class AudioCppSttSidecar:
             try:
                 if cancel_event.is_set():
                     raise SttLoadCancelledError("Dictation model loading was cancelled.")
-                # Decided under the loading flag: training admission reads is_loading() without the lock. During training
-                # the model goes to CPU so a dictation cannot reclaim the VRAM training just freed.
+                # Decided under the loading flag: training admission reads is_loading() without the lock.
+                # During training the model goes to CPU so dictation cannot reclaim VRAM training freed.
                 run_on_cpu = _launches_on_cpu(entry, force_cpu)
                 self._release_locked()
                 _notify(on_phase, "loading")
@@ -993,8 +983,7 @@ class AudioCppSttSidecar:
         entry = resolve_audio_cpp_stt_model(self.keep_loaded_variant(model))
         if cancel_event is not None and cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
-        # A missing model fails before decoding so a long clip does not burn CPU only to 409. The
-        # cheap probe first: materialize prunes the link farm, which a warm request does not need.
+        # Fail before decoding so a long clip does not burn CPU only to 409; use the cheap probe first, since materialize prunes the link farm.
         if not audio_cpp_files.is_downloaded(entry):
             self._ensure_model_downloaded(entry)
         decoded_audio = _decode_audio_bounded(audio, cancel_event)
@@ -1131,8 +1120,7 @@ class AudioCppSttSidecar:
                 data = post({k: v for k, v in body.items() if k != "language"})
             payload = json.loads(data.decode("utf-8"))
         except AudioCppRequestCancelledError as exc:
-            # The server keeps decoding the abandoned clip and would queue the next request behind it;
-            # stop it, as speech generation does (the caller holds self._lock).
+            # The server keeps decoding the abandoned clip and would queue the next request; stop it. The caller holds self._lock.
             self._release_locked()
             raise SttTranscriptionCancelledError("Transcription cancelled.") from exc
         except AudioCppRequestError as exc:

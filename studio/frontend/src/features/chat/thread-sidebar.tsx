@@ -213,7 +213,6 @@ export function ThreadSidebar({
           </SidebarGroupContent>
         </SidebarGroup>
         <SidebarGroup className="flex-1 px-4">
-          {/* Recents label with export-all menu */}
           <div className="flex items-center justify-between px-2 py-1.5">
             <span className="text-xs font-medium text-muted-foreground/80">Recents</span>
             <DropdownMenu>
@@ -356,7 +355,6 @@ export function ThreadSidebar({
         </a>
       </SidebarFooter>
 
-      {/* Rename dialog */}
       <Dialog open={renamingItem !== null} onOpenChange={(open) => { if (!open) setRenamingItem(null); }}>
         <DialogContent
           className="corner-squircle dialog-soft-surface sm:max-w-sm"
