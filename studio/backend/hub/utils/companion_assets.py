@@ -396,7 +396,53 @@ def repo_holds_denoiser(repo, *, folders: bool = True) -> bool:
             continue
         if _detect_family(repo_id, name) is not None:
             return True
-    return False
+    return bool(_video_pick_names(repo_id, [n for n in names if n.lower() not in encoder_casts]))
+
+
+# Diffusers / split-release component folders: their weights are companions, never a video pick.
+_VIDEO_COMPONENT_DIRS = frozenset(
+    {
+        "vae",
+        "audio_vae",
+        "vocoder",
+        "connectors",
+        "scheduler",
+        "tokenizer",
+        "tokenizer_2",
+        "text_encoder",
+        "text_encoder_2",
+        "text_encoders",
+        "image_encoder",
+        "feature_extractor",
+        "latent_upsampler",
+        "latent_upscale_models",
+        "transformer",
+        "transformer_2",
+    }
+)
+
+
+def _video_pick_names(repo_id: str, names: Iterable[str]) -> list[str]:
+    """Cached ``.safetensors`` a video ``single_file`` pick can name (any depth, as the loader accepts), resolved the
+    way ``video._resolve_load_family_with_source`` does offline: by the repo id, then ``<repo>/<file>``."""
+    try:
+        from core.inference.video_families import detect_video_family
+    except Exception:  # noqa: BLE001
+        return []
+    picks = []
+    for name in names:
+        lowered = name.lower()
+        if (
+            not lowered.endswith(".safetensors")
+            or lowered.split("/", 1)[0] in _VIDEO_COMPONENT_DIRS
+        ):
+            continue
+        try:
+            if detect_video_family(f"{repo_id}/{name}") is not None:
+                picks.append(name)
+        except Exception:  # noqa: BLE001
+            continue
+    return picks
 
 
 def _te_prequant_names(repo_id: str) -> set[str]:
@@ -759,7 +805,11 @@ def _add_hosted_dependents(required, cache_scans, checkpoints, pick_names, ignor
                     continue
                 families = bases.get(key) if key not in table else None
                 if key in checkpoints:
-                    found = _checkpoint_families(repo_id, pick_names.get(key, []))
+                    names = [
+                        *pick_names.get(key, []),
+                        *_video_pick_names(repo_id, _snapshot_relative_names(repo)),
+                    ]
+                    found = _checkpoint_families(repo_id, names)
                     dependents[repo_id] = (found | (families or set()), bool(families))
                     continue
                 # A hosted repo that is also a base mirror is a companion here, never its own speed load.

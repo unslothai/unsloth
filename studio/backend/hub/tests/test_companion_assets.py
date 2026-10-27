@@ -1361,3 +1361,136 @@ def test_a_config_only_base_missing_a_hosted_component_is_kept(monkeypatch):
     base = "Qwen/Qwen-Image-2.1"
     _install(monkeypatch, _repo(base, _CONFIG_ONLY_21), _repo(_HOSTED_21, _HOSTED_21_FILES[:2]))
     assert _offered() == {}
+
+
+_HV_TE = (
+    "unsloth/HunyuanVideo-1.5-FP8",
+    [("HunyuanVideo-1.5-text_encoder-FP8.safetensors", 7_000_000)],
+)
+_HV_BASE = "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v"
+
+
+@pytest.mark.parametrize(
+    "pick",
+    ["hunyuanvideo1.5_480p_t2v.safetensors", "split_files/hunyuanvideo1.5_480p_t2v.safetensors"],
+)
+def test_a_video_single_file_checkpoint_pins_its_hosted_encoder(monkeypatch, pick):
+    checkpoint = "some-owner/custom-video"
+    _install(
+        monkeypatch,
+        _repo(checkpoint, [(pick, 16_000_000)]),
+        _repo(*_HV_TE),
+        _repo(_HV_BASE, [("model_index.json", 400), *_VAE]),
+    )
+    assert companion_cleanup.companion_dependents(_HV_TE[0]) == [checkpoint]
+    assert _offered() == {}
+
+
+def _sd_cpp_repos(repo_id: str, gguf: str) -> list:
+    from core.inference.diffusion_families import detect_family_for_pick
+
+    fam = detect_family_for_pick(repo_id, gguf)
+    specs = sorted(companion_assets._sd_cpp_component_specs(fam, repo_id, gguf))
+    by_repo: dict[str, list] = {}
+    for repo, filename in specs:
+        by_repo.setdefault(repo, []).append((filename, 1_000))
+    return [_repo(repo, files) for repo, files in by_repo.items()]
+
+
+def _shape(name):
+    """Every cached repo one install reads, by install shape: nothing here may be offered while it is cached."""
+    base_files = [("model_index.json", 400), *_VAE, ("text_encoder/model.safetensors", 800_000)]
+    klein_te = (
+        "unsloth/FLUX.2-klein-4B-FP8",
+        [("FLUX.2-klein-4B-text_encoder-FP8.safetensors", 9)],
+    )
+    wan_mirror = "unsloth/Wan2.2-TI2V-5B-FP8"
+    wan_base = "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
+    wan_te = (wan_mirror, [("Wan2.2-TI2V-5B-text_encoder-FP8.safetensors", 9)])
+    shapes = {
+        "diffusers-base-image": [
+            _repo(BASE_REPO, [*base_files, ("transformer/model.safetensors", 9)]),
+            _repo(*klein_te),
+        ],
+        "diffusers-base-video": [
+            _repo(wan_base, [("model_index.json", 400), *_VAE, ("transformer/m.safetensors", 9)]),
+            _repo(*wan_te),
+        ],
+        "speed-load-image": [
+            _repo("Tongyi-MAI/Z-Image-Turbo", base_files),
+            _repo(
+                "unsloth/Z-Image-Turbo-FP8",
+                [
+                    ("Z-Image-Turbo-FP8.safetensors", 9),
+                    ("Z-Image-Turbo-text_encoder-FP8.safetensors", 9),
+                ],
+            ),
+        ],
+        "speed-load-video": [
+            _repo(wan_base, [("model_index.json", 400), *_VAE]),
+            _repo(wan_mirror, [("Wan2.2-TI2V-5B-FP8.safetensors", 9), *wan_te[1]]),
+        ],
+        "fully-hosted-image": [
+            _repo("Qwen/Qwen-Image-2.1", _CONFIG_ONLY_21),
+            _repo(_HOSTED_21, _HOSTED_21_FILES),
+        ],
+        "single-file-image": [
+            _repo("some-owner/custom", [("flux-2-klein-4b.safetensors", 9)]),
+            _repo(BASE_REPO, base_files),
+            _repo(*klein_te),
+        ],
+        "single-file-video": [
+            _repo("some-owner/custom-video", [("hunyuanvideo1.5_480p_t2v.safetensors", 9)]),
+            _repo(_HV_BASE, [("model_index.json", 400), *_VAE]),
+            _repo(*_HV_TE),
+        ],
+        "gguf-image": [
+            _repo(GGUF_REPO, [("flux-2-klein-4b-Q4_K_M.gguf", 9)]),
+            _repo(BASE_REPO, base_files),
+            _repo(*klein_te),
+        ],
+        "gguf-video": [
+            _repo("unsloth/Wan2.2-TI2V-5B-GGUF", [("Wan2.2-TI2V-5B-Q4_K_M.gguf", 9)]),
+            _repo(wan_base, [("model_index.json", 400), *_VAE]),
+            _repo(*wan_te),
+        ],
+        "sd-cpp-image": [
+            _repo("unsloth/Z-Image-Turbo-GGUF", [("z-image-turbo-Q4_K_M.gguf", 9)]),
+            *_sd_cpp_repos("unsloth/Z-Image-Turbo-GGUF", "z-image-turbo-Q4_K_M.gguf"),
+        ],
+        "modular-h3": [
+            _repo(H3_BASE, [("modular_model_index.json", 400), *_VAE]),
+            _repo(H3_QUANT, H3_ASSETS),
+        ],
+        "modular-h3-gguf": [
+            _repo("unsloth/MiniMax-H3-GGUF", [("MiniMax-H3-Q4_K_M.gguf", 9)]),
+            _repo(H3_QUANT, H3_ASSETS[1:]),
+        ],
+    }
+    return shapes[name]
+
+
+INSTALL_SHAPES = [
+    "diffusers-base-image",
+    "diffusers-base-video",
+    "speed-load-image",
+    "speed-load-video",
+    "fully-hosted-image",
+    "single-file-image",
+    "single-file-video",
+    "gguf-image",
+    "gguf-video",
+    "sd-cpp-image",
+    "modular-h3",
+    "modular-h3-gguf",
+]
+
+
+@pytest.mark.parametrize("shape", INSTALL_SHAPES)
+def test_nothing_an_install_reads_is_offered_while_it_is_cached(monkeypatch, shape):
+    repos = _shape(shape)
+    _install(monkeypatch, *repos)
+    assert _offered() == {}
+    for repo in repos:
+        if repo.repo_id.lower() in companion_assets._hosted_component_table():
+            assert companion_cleanup.companion_dependents(repo.repo_id) != []
