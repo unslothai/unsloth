@@ -170,15 +170,16 @@ _UPLOAD_UI = (
     "unstructured_file_sizes",
     "unstructured_upload_uid",
     "local_file_name",
-    "seed_preview_rows",
 )
 
 
 def _drop_local_seeds(doc: dict) -> None:
-    """A recipe group's uploaded seed lives on this machine: its paths, upload ids and rows stay here."""
+    """A recipe group's seed preview rows, and an uploaded seed's paths and upload ids, stay here."""
     for group in doc.get("groups") or []:
         if not isinstance(group, dict) or group.get("kind") != "recipe":
             continue
+        if isinstance(group.get("ui"), dict):
+            group["ui"].pop("seed_preview_rows", None)
         seed = (group.get("config") or {}).get("seed_config")
         source = seed.get("source") if isinstance(seed, dict) else None
         if not isinstance(source, dict) or source.get("seed_type") not in _LOCAL_SEEDS:
