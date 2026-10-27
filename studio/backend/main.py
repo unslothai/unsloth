@@ -98,10 +98,25 @@ def _process_tree_rss_mb(process: Any) -> int:
     import psutil
 
     total = process.memory_info().rss
-    try:
-        children = process.children(recursive = True)
-    except (psutil.NoSuchProcess, psutil.AccessDenied):
-        children = []
+    children = None
+    pid = getattr(process, "pid", None)
+    if isinstance(pid, int):
+        from utils.process_tree import linux_descendant_pids
+
+        # Linux walks the tree itself; psutil's recursive children() reads every process on the host.
+        descendants = linux_descendant_pids(pid)
+        if descendants is not None:
+            children = []
+            for child_pid in descendants:
+                try:
+                    children.append(psutil.Process(child_pid))
+                except psutil.Error:
+                    continue
+    if children is None:
+        try:
+            children = process.children(recursive = True)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            children = []
     for child in children:
         try:
             total += child.memory_info().rss
