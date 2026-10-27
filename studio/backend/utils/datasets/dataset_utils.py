@@ -18,6 +18,7 @@ from .format_conversion import (
     convert_to_vlm_format,
     convert_llava_to_vlm_format,
     convert_sharegpt_with_images_to_vlm_format,
+    normalize_chatml_roles,
 )
 from .chat_templates import (
     _custom_prompt_template_error,
@@ -554,7 +555,7 @@ def _format_dataset(
 
         elif detected["format"] == "chatml" and detected.get("chat_column"):
             return {
-                "dataset": dataset,
+                "dataset": normalize_chatml_roles(dataset, detected["chat_column"], batch_size),
                 "detected_format": _chatml_detected_format_label(detected["chat_column"]),
                 "final_format": _chatml_final_format(detected["chat_column"]),
                 "chat_column": detected["chat_column"],
@@ -788,7 +789,7 @@ def _format_dataset(
 
         elif detected["format"] == "chatml" and detected.get("chat_column"):
             return {
-                "dataset": dataset,
+                "dataset": normalize_chatml_roles(dataset, detected["chat_column"], batch_size),
                 "detected_format": _chatml_detected_format_label(detected["chat_column"]),
                 "final_format": _chatml_final_format(detected["chat_column"]),
                 "chat_column": detected["chat_column"],
