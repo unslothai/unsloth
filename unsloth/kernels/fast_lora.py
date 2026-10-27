@@ -146,8 +146,9 @@ def _needs_peft_forward(proj, adapter):
 
 
 def _base_weight_requires_grad(proj):
-    base = proj._modules.get("base_layer")
-    W = None if base is None else base._parameters.get("weight")
+    # A plain nn.Linear (after merge_and_unload() / unload()) is its own base layer.
+    base = proj._modules.get("base_layer", proj)
+    W = base._parameters.get("weight")
     return W is not None and W.requires_grad
 
 
