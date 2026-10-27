@@ -831,3 +831,33 @@ test("an unpin that cancels a queued pin sends that pin's ID so a delayed copy i
   assert.deepEqual(validatePinOperation(unpin).cancels, unpin.cancels);
 });
 
+test("trimming an already-committed bulk pin does not repin what another client unpinned", async () => {
+  let value: string[] = [];
+  const seen = new Set<string>();
+  let loseResponse = true;
+  const sync = createPinnedChatsSync({
+    load: async () => value.slice(),
+    compareAndSet: async (expected, next, operation) => {
+      const id = operation && (operation.serverId ?? operation.operationId);
+      if (id && seen.has(id)) return { applied: true, pinnedIds: value.slice() };
+      if (JSON.stringify(expected ?? []) !== JSON.stringify(value)) return { applied: false, pinnedIds: value.slice() };
+      value = next.slice();
+      if (id) seen.add(id);
+      if (loseResponse) {
+        loseResponse = false;
+        throw new TypeError("connection reset");
+      }
+      return { applied: true, pinnedIds: value.slice() };
+    },
+    readLegacy: () => [],
+    publish: () => undefined,
+  });
+  await sync.refresh();
+  await assert.rejects(sync.setPinned(["a", "b"], true));
+  assert.deepEqual(value, ["a", "b"]);
+  value = ["a"]; // Another client unpins "b".
+  await sync.setPinned(["a"], false);
+  await sync.refresh();
+  assert.deepEqual(value, []);
+});
+

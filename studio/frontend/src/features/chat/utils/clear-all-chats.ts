@@ -24,14 +24,15 @@ export async function clearAllChats(options: { deleteFiles?: boolean } = {}) {
     stopChatThread(threadId);
   }
   requestPromptQueueStop();
+  // Snapshot first: a chat another client creates and pins mid-clear survives it.
+  const pinnedBefore = usePinnedChatsStore.getState().pinnedIds;
   const result = await clearStoredChats(options);
   if (result.backend === "cleared") {
     // Unpin what the clear removed, so a queued pin for a never-imported legacy comparison
     // (no row to record its deletion) is cancelled rather than blocking later pin saves.
     const failed = new Set(result.failedThreadIds);
-    const { pinnedIds, setPinned } = usePinnedChatsStore.getState();
-    const removed = pinnedIds.filter((id) => !failed.has(id));
-    if (removed.length > 0) setPinned(removed, false);
+    const removed = pinnedBefore.filter((id) => !failed.has(id));
+    if (removed.length > 0) usePinnedChatsStore.getState().setPinned(removed, false);
   }
   return result;
 }

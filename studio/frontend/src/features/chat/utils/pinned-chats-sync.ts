@@ -10,6 +10,9 @@ export type PinOperation = {
   pinned: boolean;
   /** Queued pins this unpin superseded; the server acknowledges them without applying. */
   cancels?: string[];
+  /** Server replay identity when it differs from the journal's (a trimmed intent keeps its
+   *  original's, so a remainder of an already-committed pin is acknowledged, not reapplied). */
+  serverId?: string;
 };
 
 export interface PinnedChatsSyncOptions {
@@ -75,13 +78,18 @@ export function validatePinOperation(value: unknown): PinOperation {
   if (operation.kind === "pin" && typeof operation.pinned === "boolean") {
     const ids = validatePinnedIds(operation.ids);
     const cancels = validatePinnedIds(operation.cancels);
-    if (ids) {
+    const serverId =
+      operation.serverId === undefined || isValidPinId(operation.serverId)
+        ? operation.serverId
+        : null;
+    if (ids && serverId !== null) {
       return {
         kind: "pin",
         operationId: operation.operationId,
         ids,
         pinned: operation.pinned,
         ...(cancels?.length ? { cancels } : {}),
+        ...(serverId ? { serverId } : {}),
       };
     }
   }
@@ -361,13 +369,14 @@ export function createPinnedChatsSync(options: PinnedChatsSyncOptions) {
         if (!entry.pinned) return [entry];
         const ids = entry.ids.filter((id) => !cancelled.has(id));
         if (ids.length === entry.ids.length) return [entry];
+        const serverId = entry.serverId ?? entry.operationId;
         // Another tab may already have sent it: the unpin fences its ID on the server.
-        superseded.push(entry.operationId);
-        // A changed intent needs a new ID: journal entries are immutable and the server
-        // deduplicates by ID.
+        superseded.push(serverId);
+        // Journal entries are immutable, so the remainder needs a new journal ID; it keeps the
+        // server one, and runs before this unpin, so the fence never swallows it.
         return ids.length === 0
           ? []
-          : [{ ...entry, ids, operationId: createNavigationNonce() }];
+          : [{ ...entry, ids, operationId: createNavigationNonce(), serverId }];
       });
       if (superseded.length > 0) {
         operation = validatePinOperation({ ...operation, cancels: superseded });

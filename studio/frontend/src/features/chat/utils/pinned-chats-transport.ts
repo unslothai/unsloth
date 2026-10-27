@@ -96,11 +96,12 @@ function compactReplay(operations: PinOperation[]): PinOperation[] {
       kept.push(operation);
       continue;
     }
-    unpinFor.get(fenceId)!.cancels.push(operation.operationId);
+    const serverId = operation.serverId ?? operation.operationId;
+    unpinFor.get(fenceId)!.cancels.push(serverId);
     const ids = operation.ids.filter((id) => !unpinFor.has(id));
-    // The fenced ID would acknowledge the remainder unapplied: send it under a derived one,
-    // stable across retries so a replay whose response was lost is still deduplicated.
-    if (ids.length > 0) kept.push({ ...operation, ids, operationId: `${operation.operationId}~rest` });
+    // The remainder keeps the original's server ID (it replays before the fencing unpin), so a
+    // copy that already committed is acknowledged instead of re-pinning what was since unpinned.
+    if (ids.length > 0) kept.push({ ...operation, ids, serverId });
   }
   return kept
     .reverse()
