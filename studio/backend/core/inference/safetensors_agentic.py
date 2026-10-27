@@ -1275,8 +1275,7 @@ def run_safetensors_tool_loop(
             # Strip a leading bare-JSON call from kept content, since _strip_tool_markup_final only knows XML.
             content_text = strip_leading_bare_json_call(content_text, _enabled_tool_names)
 
-        # The Transformers and MLX wrappers report the completed turn here. Auto-Heal
-        # must not turn a token-limited XML argument into an executable partial write.
+        # Transformers/MLX report the finished turn here; never run a healed, token-cut call.
         turn_stats = (generation_stats_holder or {}).get("stats") or {}
         if tool_calls and (
             turn_stats.get("truncated")

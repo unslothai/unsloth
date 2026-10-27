@@ -43794,7 +43794,6 @@ def _anthropic_tool_response_from_events(
                     if _span_guard.claimed and new.startswith("<think>"):
                         _block_wrap[len(content_blocks) - 1] = _span_guard.claimed_wrap
         elif etype == "status" and not event.get("text"):
-            # Match the streaming emitter even when rejection emitted no tool_end.
             prev_text = ""
         elif etype == "tool_start":
             tool_call_id = event["tool_call_id"]

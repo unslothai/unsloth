@@ -38654,9 +38654,8 @@ class LlamaCppBackend:
                             yield _meta
                         return
 
-                # A healed XML tail can be valid JSON while still containing half a shell
-                # rewrite. Judge the generation boundary before preparing or running any call,
-                # including complete siblings and structured deltas from the same cut turn.
+                # A healed XML tail can be valid JSON yet hold half a shell rewrite, so reject
+                # every call of a cut turn, complete siblings included, before approval.
                 if _iter_finish_reason in ("length", "content_filter"):
                     for _pid, _pname in provisional_started_tool_calls.items():
                         if _pid not in resolved_provisional_tool_call_ids:
@@ -38668,8 +38667,7 @@ class LlamaCppBackend:
                                 "result": TRUNCATED_TOOL_TURN_MESSAGE,
                                 "provenance": provisional_tool_provenance(_pname),
                             }
-                    # Empty status starts a new route segment. Keep text already sent
-                    # out of that segment, including when a provisional card reset its cursor.
+                    # Empty status resets the route cursor; send only text not already streamed.
                     display = _strip_tool_markup(cumulative_display, final = True, force = True)
                     notice = display[len(_last_emitted) :] + ("\n\n" if display else "")
                     yield {"type": "status", "text": ""}
