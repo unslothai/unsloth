@@ -117,6 +117,19 @@ def test_second_load_traces_once_into_the_same_graph(tmp_path, restarts):
     assert torch.equal(out_first, out_second)
 
 
+def test_first_forward_hook_seeds_before_the_compile(tmp_path, restarts):
+    x = torch.randn(2, 5, 16)
+    _clip(tmp_path, x)
+    torch._dynamo.reset()
+    restarts["n"] = 0
+    net = _net()
+    seeds = bg.InlineFloatSeeds([net], tmp_path)
+    with video_mod._seed_before_first_forward(seeds), torch.no_grad():
+        net(x)
+    assert seeds.seeded and seeds.float_seeds > 0 and restarts["n"] == 0
+    assert not net._forward_pre_hooks
+
+
 def test_seeded_first_clip_does_not_recompile_on_later_clips(tmp_path):
     from torch._dynamo.utils import counters
 

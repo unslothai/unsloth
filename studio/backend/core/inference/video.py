@@ -1233,6 +1233,25 @@ def _float_seed_dits(pipe: Any) -> list:
         return []
 
 
+@contextlib.contextmanager
+def _seed_before_first_forward(float_seeds: Any):
+    """Also seed at the first DiT forward: H3 modular's progress bar is its loop wrapper's, not the pipe's."""
+    handles = []
+
+    def _pre(*_args: Any) -> None:
+        float_seeds.seed()
+
+    try:
+        for module in list(getattr(float_seeds, "modules", None) or ()):
+            with contextlib.suppress(Exception):
+                handles.append(module.register_forward_pre_hook(_pre))
+        yield
+    finally:
+        for handle in handles:
+            with contextlib.suppress(Exception):
+                handle.remove()
+
+
 def _video_float_seed_dir(
     pipe: Any, *, family: Any, dtype: Any, quant: Any, attention_backend: Any
 ) -> tuple[list, Optional[Path]]:
@@ -12387,6 +12406,8 @@ class VideoBackend:
                             )
                             stack.enter_context(scheduler_step_preview(pipe, previewer))
                         stack.enter_context(_denoise_phase(pipe, _enter_denoise))
+                        if float_seeds is not None:
+                            stack.enter_context(_seed_before_first_forward(float_seeds))
                         # No video family has a denoise-to-decode callback, so the decoder itself reports the decode phase.
                         stack.enter_context(_decode_phase(pipe, _on_decode))
                         # NaN / inf pixels are refused at the decode, before a clamp or PIL / uint8 cast hides them.
