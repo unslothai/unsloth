@@ -4248,6 +4248,7 @@ class _VisionBatchSession:
         if state is None and plan.images:
             backend._release_vlm_snapshots()
         resume = {} if state is None else {"prompt_cache_state": state}
+        admitted_at = time.perf_counter()
         try:
             row_number = self.stream.add(
                 GenerationRequest(
@@ -4262,6 +4263,9 @@ class _VisionBatchSession:
         except BatchRowRefused as refusal:
             raise RowRefused(str(refusal)) from refusal
         row = _VisionBatchRow(handle = handle, plan = plan, row = row_number)
+        if self._speculative is not None:
+            # A speculative batch prefills the row inside add(), so its clock starts before it.
+            row.admitted_at = admitted_at
         self._rows[handle] = row
         self._by_row[row_number] = row
         logger.info(

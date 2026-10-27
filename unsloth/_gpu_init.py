@@ -361,6 +361,7 @@ from .import_fixes import (
     fix_vllm_guided_decoding_params,
     fix_vllm_pdl_blackwell,
     fix_cudnn_sdpa_d256_masked_backward,
+    fix_cudnn_sdpa_backward_grad_layout,
     fix_rocm_windows_fused_sdpa,
     fix_triton_compiled_kernel_missing_attrs,
     fix_dynamo_config_thread_visibility,
@@ -450,6 +451,7 @@ fix_vllm_guided_decoding_params()
 fix_trl_vllm_ascend()
 fix_vllm_pdl_blackwell()
 fix_cudnn_sdpa_d256_masked_backward()
+fix_cudnn_sdpa_backward_grad_layout()
 # Windows ROCm only, probe-gated: fused attention fails on every call there (gfx1151, torch 2.11).
 fix_rocm_windows_fused_sdpa()
 fix_triton_compiled_kernel_missing_attrs()
@@ -517,6 +519,7 @@ del fix_vllm_guided_decoding_params
 del fix_trl_vllm_ascend
 del fix_vllm_pdl_blackwell
 del fix_cudnn_sdpa_d256_masked_backward
+del fix_cudnn_sdpa_backward_grad_layout
 del fix_rocm_windows_fused_sdpa
 del fix_triton_compiled_kernel_missing_attrs
 del fix_dynamo_config_thread_visibility

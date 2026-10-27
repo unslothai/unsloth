@@ -595,11 +595,45 @@ def _fp8_tma_gemm_ok(A, B, C, BLOCK_SIZE_M, block_n, block_k, long_idx):
     return checked
 
 
+# from_tensor re-validates every field per call (~4 us each): validate once per (dtype, block shape).
+_FP8_TMA_DESC_FIELDS = {}
+
+
+def _fp8_tma_descriptor(tensor, rows, cols, block_shape):
+    key = (tensor.dtype, block_shape)
+    fields = _FP8_TMA_DESC_FIELDS.get(key)
+    if fields is None:
+        proto = _TensorDescriptor.from_tensor(tensor.view(rows, cols), list(block_shape))
+        # Tensor-independent fields only: caching `base` would keep the first GEMM's tensor alive.
+        fields = {
+            k: v
+            for k, v in (getattr(proto, "__dict__", None) or {}).items()
+            if k not in ("base", "shape", "strides")
+        }
+        _FP8_TMA_DESC_FIELDS[key] = fields
+    # A sliced weight's row pitch is not its width: keep from_tensor's real strides.
+    if (
+        not fields
+        or rows <= 0
+        or cols <= 0
+        or tensor.numel() != rows * cols
+        or not tensor.is_contiguous()
+    ):
+        return _TensorDescriptor.from_tensor(tensor.view(rows, cols), list(block_shape))
+    desc = _TensorDescriptor.__new__(_TensorDescriptor)
+    desc.__dict__.update(fields)
+    desc.base = tensor
+    desc.shape = [rows, cols]
+    desc.strides = [cols, 1]
+    desc.block_shape = list(block_shape)
+    return desc
+
+
 def _launch_fp8_tma_gemm(A, B, C, As, Bs, M, N, K, block_n, block_k):
     BLOCK_SIZE_M = 128
-    a_desc = _TensorDescriptor.from_tensor(A.view(M, K), [BLOCK_SIZE_M, block_k])
-    b_desc = _TensorDescriptor.from_tensor(B, [block_n, block_k])
-    c_desc = _TensorDescriptor.from_tensor(C.view(M, N), [BLOCK_SIZE_M, block_n])
+    a_desc = _fp8_tma_descriptor(A, M, K, (BLOCK_SIZE_M, block_k))
+    b_desc = _fp8_tma_descriptor(B, N, K, (block_n, block_k))
+    c_desc = _fp8_tma_descriptor(C, M, N, (BLOCK_SIZE_M, block_n))
     grid = (triton.cdiv(M, BLOCK_SIZE_M) * triton.cdiv(N, block_n),)
     _w8a8_block_fp8_matmul_tma[grid](
         a_desc,

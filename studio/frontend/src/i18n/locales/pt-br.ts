@@ -139,6 +139,11 @@ export const ptBR = {
     more: "Mais",
     addressPlaceholder: "Pesquise ou digite um URL",
     local: "Local",
+    browserUse: {
+      label: "Uso do navegador",
+      description: "Permite que os modelos controlem o navegador integrado",
+      unavailable: "Carregue um modelo que chame ferramentas para que ele use o navegador.",
+    },
     suggested: "Sugestões",
     suggestedMenu: {
       open: "Abrir",
@@ -2324,6 +2329,7 @@ export const ptBR = {
       liveMonitor: {
         title: "Monitor ao vivo",
         apiTitle: "Monitor da API",
+        apiDescription: "Veja o que outros apps enviam para a API deste servidor assim que chega.",
         summary: "Solicitações ativas, erros e uso de tokens",
         status: "{active} ativas · {recent} recentes · {model}",
         noModelLoaded: "nenhum modelo carregado",

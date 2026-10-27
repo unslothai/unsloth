@@ -16,6 +16,9 @@ DEFAULT_CHUNK_OVERLAP = 200
 MAX_CHUNK_SIZE = 20000
 _MIN_BREAK_RATIO = 0.6
 _CACHE_DIR = LazyPath(unstructured_seed_cache_root)
+_WHITESPACE = re.compile(r"\s+")
+# Bump when chunk output changes so cached Parquet seeds are rebuilt.
+_CHUNKER_VERSION = 2
 
 _PANDAS = None
 
@@ -238,6 +241,11 @@ def split_text_into_chunks(*, text: str, chunk_size: int, chunk_overlap: int) ->
             break
 
         next_start = end - chunk_overlap
+        if 0 < next_start < end and not text[next_start - 1].isspace():
+            boundary = _WHITESPACE.search(text, next_start, end)
+            # No space in the overlap (CJK, one long token): keep the full overlap.
+            if boundary:
+                next_start = boundary.end()
         if next_start <= start:
             next_start = end
         start = max(0, next_start)
@@ -273,6 +281,7 @@ def _compute_cache_key(*, source_path: Path, chunk_size: int, chunk_overlap: int
             str(stat.st_mtime_ns),
             str(chunk_size),
             str(chunk_overlap),
+            f"v{_CHUNKER_VERSION}",
         ]
     ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
@@ -285,6 +294,6 @@ def _compute_multi_file_cache_key(
     for path, name in sorted(file_entries, key = lambda e: e[1]):
         st = path.stat()
         parts.append(f"{path}|{st.st_size}|{st.st_mtime_ns}|{name}")
-    parts.append(f"cs={chunk_size}|co={chunk_overlap}")
+    parts.append(f"cs={chunk_size}|co={chunk_overlap}|v={_CHUNKER_VERSION}")
     raw = "\n".join(parts)
     return hashlib.sha256(raw.encode()).hexdigest()
