@@ -207,8 +207,10 @@ jobs:
           pip install \
             python-multipart aiofiles sqlalchemy cryptography psutil \
             pyyaml jinja2 mammoth unpdf requests \
-            'numpy<3' pytest pytest-asyncio pytest-xdist pytest-timeout httpx \
+            'numpy<3' 'pytest<9.2' pytest-asyncio pytest-xdist pytest-timeout httpx \
             soundfile librosa
+          # pytest 9.2.0 deletes torch config keys when undoing monkeypatch.setattr (reads the old value
+          # from __dict__, which torch's ConfigModule does not use), breaking every later config read.
           # soundfile + librosa, or the no-torchcodec decode test silently skips.
           pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
             'torch>=2.4,<2.11' 'torchaudio<2.11'
@@ -402,8 +404,8 @@ jobs:
           pip install \
             python-multipart aiofiles sqlalchemy cryptography psutil \
             pyyaml jinja2 mammoth unpdf requests typer \
-            'numpy<3' pytest pytest-asyncio pytest-xdist pytest-timeout httpx
-          # pytest-timeout names a hung test instead of a `cancelled` job.
+            'numpy<3' 'pytest<9.2' pytest-asyncio pytest-xdist pytest-timeout httpx
+          # pytest<9.2: see the first install step. pytest-timeout names a hung test instead of a `cancelled` job.
           # torchvision: unsloth_zoo.vision_utils imports it at module scope.
           pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
             'torch>=2.4,<2.11' 'torchvision<0.26' 'torchaudio<2.11'
