@@ -1494,3 +1494,46 @@ def test_nothing_an_install_reads_is_offered_while_it_is_cached(monkeypatch, sha
     for repo in repos:
         if repo.repo_id.lower() in companion_assets._hosted_component_table():
             assert companion_cleanup.companion_dependents(repo.repo_id) != []
+
+
+def test_each_cache_root_contributes_its_own_nested_video_pick(monkeypatch):
+    checkpoint = "some-owner/custom-video"
+    wan_te = ("unsloth/Wan2.2-TI2V-5B-FP8", [("Wan2.2-TI2V-5B-text_encoder-FP8.safetensors", 9)])
+    _install(
+        monkeypatch,
+        _repo(checkpoint, [("split_files/hunyuanvideo1.5_480p_t2v.safetensors", 9)]),
+        _repo(checkpoint, [("split_files/wan2.2-ti2v-5b.safetensors", 9)], cache = "/other-cache"),
+        _repo(*_HV_TE),
+        _repo(*wan_te),
+    )
+    assert companion_cleanup.companion_dependents(_HV_TE[0]) == [checkpoint]
+    assert companion_cleanup.companion_dependents(wan_te[0]) == [checkpoint]
+    assert _offered() == {}
+
+
+def _split_roots(repos: list) -> list:
+    """Each repo's files split across two cache roots (a repo with one file goes whole to the second root)."""
+    out = []
+    for repo in repos:
+        revision = repo.revisions[0]
+        files = [
+            (Path(f.file_path).relative_to(Path(revision.snapshot_path)).as_posix(), f.size_on_disk)
+            for f in revision.files
+        ]
+        first, second = files[: len(files) // 2], files[len(files) // 2 :]
+        if first:
+            out.append(_repo(repo.repo_id, first))
+        out.append(_repo(repo.repo_id, second, cache = "/other-cache"))
+    return out
+
+
+@pytest.mark.parametrize("shape", INSTALL_SHAPES)
+def test_nothing_an_install_reads_is_offered_across_two_roots(monkeypatch, shape):
+    repos = _split_roots(_shape(shape))
+    _install(monkeypatch, *repos)
+    # A curated base copy with no denoiser in its own root stays a per-root orphan row, as before; hosted files never.
+    hosted = companion_assets._hosted_component_table()
+    assert not {r.lower() for r in _offered()} & set(hosted)
+    for repo in repos:
+        if repo.repo_id.lower() in hosted:
+            assert companion_cleanup.companion_dependents(repo.repo_id) != []

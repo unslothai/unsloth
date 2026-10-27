@@ -793,7 +793,14 @@ def _add_hosted_dependents(required, cache_scans, checkpoints, pick_names, ignor
         (r, f) for owners in cached.values() for r, f, k in owners if k == _HOSTED_DENOISER
     }
     bases = _base_families()
-    dependents: dict[str, tuple[set[tuple[str, str]], bool]] = {}
+    # {key: (display id, families, whether hosted denoisers count)}, merged over every cached copy (each root can hold
+    # a different pick of the same repo).
+    dependents: dict[str, tuple[str, set[tuple[str, str]], bool]] = {}
+
+    def depend(key: str, repo_id: str, families: set, reads_denoisers: bool) -> None:
+        shown, known, reads = dependents.get(key, (repo_id, set(), False))
+        dependents[key] = (shown, known | families, reads or reads_denoisers)
+
     for scan in cache_scans or ():
         for repo in getattr(scan, "repos", ()) or ():
             try:
@@ -801,7 +808,7 @@ def _add_hosted_dependents(required, cache_scans, checkpoints, pick_names, ignor
                     continue
                 repo_id = str(getattr(repo, "repo_id", "") or "")
                 key = _normalise(repo_id)
-                if not key or key in ignored or repo_id in dependents:
+                if not key or key in ignored:
                     continue
                 families = bases.get(key) if key not in table else None
                 if key in checkpoints:
@@ -810,7 +817,7 @@ def _add_hosted_dependents(required, cache_scans, checkpoints, pick_names, ignor
                         *_video_pick_names(repo_id, _snapshot_relative_names(repo)),
                     ]
                     found = _checkpoint_families(repo_id, names)
-                    dependents[repo_id] = (found | (families or set()), bool(families))
+                    depend(key, repo_id, found | (families or set()), bool(families))
                     continue
                 # A hosted repo that is also a base mirror is a companion here, never its own speed load.
                 if not families:
@@ -820,13 +827,12 @@ def _add_hosted_dependents(required, cache_scans, checkpoints, pick_names, ignor
                 if families & in_view and not families & denoisers:
                     # This family's hosted repos are cached and none holds its denoiser: a companion-only fetch.
                     continue
-                dependents[repo_id] = (families, True)
+                depend(key, repo_id, families, True)
                 if families & denoisers:
-                    required.setdefault(key, set()).add(repo_id)
+                    required.setdefault(key, set()).add(dependents[key][0])
             except Exception:  # noqa: BLE001
                 continue
-    for repo_id, (families, reads_denoisers) in dependents.items():
-        own = _normalise(repo_id)
+    for own, (repo_id, families, reads_denoisers) in dependents.items():
         for repo_key, owners in listed.items():
             if repo_key == own:
                 continue
