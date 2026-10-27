@@ -185,16 +185,14 @@ def _right_pad_cat(tensors, value):
 
 
 def _ppo_scores_are_tempered_logits(model, queries, generation_config):
-    """True when ``model.generate`` scores every step as ``logits / generation_config.temperature`` and nothing else,
-    so the rollout log-probs can be recomputed by a forward. Any other logits processor (a repetition penalty, top-k /
-    top-p, min new tokens, bad words, ... including ones inherited from ``model.generation_config``) changes the
-    scores TRL reads its old log-probs from. Built the way ``generate`` builds its list."""
+    """True when generate's scores are only ``logits / temperature`` (incl. processors inherited from
+    ``model.generation_config``), so the old log-probs can be recomputed by a forward."""
     from transformers import LogitsProcessorList, TemperatureLogitsWarper
     from unsloth.models.rl import _caller_sampling_only
 
     kwargs = {"generation_config": generation_config}
     if getattr(getattr(model, "generate", None), "_unsloth_caller_sampling_only", False):
-        # The normalisation Unsloth's patched generate applies (transformers 4.x: TRL's sampling, not the model's).
+        # Match Unsloth's patched generate (transformers 4.x: TRL's sampling, not the model's).
         kwargs = _caller_sampling_only(model, kwargs)
     config, model_kwargs = model._prepare_generation_config(
         kwargs.pop("generation_config"), **kwargs
@@ -230,9 +228,8 @@ def ppo_batch_generation(
     generation_config,
 ):
     """TRL's ``batch_generation`` without ``output_scores``: the rollout log-probs are scored from hidden states, so
-    the stacked float32 [batch, response, vocab] scores are never built. Returns ``(query_responses, None)``. When
-    the generation scores are more than the tempered logits (or that cannot be checked), TRL's ``batch_generation``
-    runs and its scores stay the old log-probs."""
+    the stacked float32 [batch, response, vocab] scores are never built. Falls back to TRL when
+    other logits processors shape the scores."""
     if route is not None:
         try:
             tempered = _ppo_scores_are_tempered_logits(model, queries, generation_config)

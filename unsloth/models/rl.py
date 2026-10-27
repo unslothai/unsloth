@@ -300,7 +300,7 @@ def PatchRL(FastLanguageModel):
                     return out.clone()
                 return out
 
-            # PPO's rollout check (_fused_rl_logprobs) mirrors the sampling normalisation this generate applies.
+            # Read by _ppo_scores_are_tempered_logits.
             generate_with_clone._unsloth_caller_sampling_only = (
                 generating_model is not unwrapped_model
             )

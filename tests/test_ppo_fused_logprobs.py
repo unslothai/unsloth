@@ -341,8 +341,7 @@ def _hidden_gpt2():
     [{}, {"repetition_penalty": 2.0}, {"no_repeat_ngram_size": 2}, {"suppress_tokens": [3, 5]}],
 )
 def test_ppo_rollout_logprobs_match_trl_generation_scores(inherited):
-    # TRL's old log-probs are the generation scores, i.e. after every logits processor generate applies, including
-    # ones inherited from model.generation_config. Only tempered logits may be recomputed by a forward.
+    # Old log-probs include inherited processors; only pure temperature may be recomputed.
     from transformers import GenerationConfig
 
     module = _ppo_module()
@@ -401,8 +400,7 @@ def test_ppo_rollout_logprobs_match_trl_generation_scores(inherited):
 
 
 def test_ppo_rollout_check_follows_the_patched_generate():
-    # PPO generates through Unsloth's generate_with_clone, which on transformers 4.x keeps TRL's sampling
-    # (use_model_defaults=False): an inherited top_p must not count as a processor there.
+    # generate_with_clone keeps TRL's sampling on 4.x, so an inherited top_p must not count.
     from transformers import GenerationConfig
     from unsloth.models.rl import _caller_sampling_only, _generate_accepts_use_model_defaults
 
