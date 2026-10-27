@@ -124,7 +124,7 @@ import { MEDIA_RAIL_ROOT_ATTR, useMediaRailWidth } from "@/hooks/use-media-rail-
 import { StripDropLine } from "@/components/gallery-strip-reorder";
 import { useStripReorder } from "@/hooks/use-strip-reorder";
 import { MediaApiButton } from "@/components/media-api-button";
-import { LibraryPageLink } from "@/components/media-page-link";
+import { LibraryPageLink, SiblingMediaPageLink } from "@/components/media-page-link";
 import { translate, useT } from "@/i18n";
 import {
   chatAboutMedia,
@@ -4693,6 +4693,16 @@ export function ImagesPage({
     },
     [applyImageModelDefaults, busy, handleLoad, pickGuard, pickToast, quant, revertPick, setPageMode],
   );
+  const deployFromVideo = useImageWorkflowStore((s) => s.pendingDeploy);
+  useEffect(() => {
+    if (!active || !deployFromVideo) return;
+    const request = useImageWorkflowStore.getState().takeDeploy();
+    if (request) handleDeployAdapter(request);
+  }, [active, deployFromVideo, handleDeployAdapter]);
+  const trainingCompletions = useImageWorkflowStore((s) => s.trainingCompletions);
+  useEffect(() => {
+    if (trainingCompletions > 0) setLoraRefreshKey((k) => k + 1);
+  }, [trainingCompletions]);
 
   const handleUnload = useCallback(async (): Promise<boolean> => {
     pendingRecalledGeneration.current = null;
@@ -5940,16 +5950,13 @@ export function ImagesPage({
             />
           </div>
           <div className="pointer-events-none col-start-3 flex min-w-0 items-start justify-end pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
-            <div className="pointer-events-auto flex min-w-0 items-center gap-2">
+            <div className="pointer-events-auto flex min-w-0 items-center gap-1">
               <MediaApiButton
                 kind="images"
                 model={status?.loaded ? (status.repo_id ?? null) : null}
               />
-              <LibraryPageLink
-                tab="images"
-                labelClassName="hidden @[50rem]:inline"
-                arrowClassName="hidden @[50rem]:block"
-              />
+              <SiblingMediaPageLink to="/video" />
+              <LibraryPageLink tab="images" iconOnly={true} />
             </div>
           </div>
         </div>

@@ -14,6 +14,7 @@ import {
   FlimSlateIcon,
   ImageCropIcon,
   InformationCircleIcon,
+  SparklesIcon,
 } from "@hugeicons/core-free-icons";
 import { ReloadIcon } from "@/lib/reload-icon";
 import { Volume02Icon } from "@/lib/volume-icons";
@@ -23,13 +24,21 @@ import { AdvancedDisclosure } from "@/components/advanced-disclosure";
 import { GalleryItemMenu, GalleryPinBadge } from "@/components/gallery-item-menu";
 import { MediaRailResizeHandle } from "@/components/media-rail-resize-handle";
 import { MediaViewer } from "@/components/media-viewer";
-import { MessageCircleIcon } from "@/lib/hugeicons-derived";
+import { MessageCircleIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import { MEDIA_RAIL_ROOT_ATTR, useMediaRailWidth } from "@/hooks/use-media-rail-width";
 import { StripDropLine } from "@/components/gallery-strip-reorder";
 import { useStripReorder } from "@/hooks/use-strip-reorder";
 import { ImageDropzone } from "@/components/image-dropzone";
 import { MediaApiButton } from "@/components/media-api-button";
-import { LibraryPageLink } from "@/components/media-page-link";
+import { LibraryPageLink, SiblingMediaPageLink } from "@/components/media-page-link";
+import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
+import { useImageWorkflowStore } from "@/features/images/stores/image-workflow-store";
+// Images' Train page as is: it already trains the video families (LTX-2, H3).
+import { DiffusionTrainPanel } from "@/features/images/train/diffusion-train-panel";
+import {
+  TrainBaseSelector,
+  type TrainFamilyOption,
+} from "@/features/images/train/train-base-selector";
 import { translate, useT } from "@/i18n";
 import {
   chatAboutMedia,
@@ -38,7 +47,7 @@ import {
   useRevealLabel,
 } from "@/features/library";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
-import { videoTourSteps } from "./tour";
+import { buildVideoTourSteps } from "./tour";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import {
   applyPin,
@@ -1145,10 +1154,16 @@ function VideoGenerator({
   const { familyOverride, setFamilyOverride, familySelect, opaqueKind, selectorModelId } = useFamilyOverride(status, status?.supported_families);
   // Controlled so the body-portaled selector force-closes when off-tab.
   const [selectorOpen, setSelectorOpen] = useState(false);
+  const [pageMode, setPageMode] = useState<"create" | "train">("create");
+  const [trainFamilies, setTrainFamilies] = useState<TrainFamilyOption[]>([]);
+  const [trainFamilyName, setTrainFamilyName] = useState("flux.1");
+  const [trainBaseChoice, setTrainBaseChoice] = useState("");
+  const navigateToImages = useNavigate();
+  const tourSteps = useMemo(() => buildVideoTourSteps({ pageMode }), [pageMode]);
   const [pendingH3Load, setPendingH3Load] = useState<PendingH3Load | null>(null);
   const tour = useGuidedTourController({
     id: "video",
-    steps: videoTourSteps,
+    steps: tourSteps,
     enabled: active,
   });
   const {
@@ -3751,6 +3766,17 @@ function VideoGenerator({
         >
           {/* min-w-0: without it a long resident model name pushes the Library link off a phone screen. */}
           <div className="pointer-events-auto flex min-w-0 max-w-full items-center gap-2 overflow-hidden pt-[var(--studio-chat-header-padding-top,11px)]">
+            {pageMode === "train" ? (
+              <TrainBaseSelector
+                families={trainFamilies}
+                familyName={trainFamilyName}
+                base={trainBaseChoice}
+                onSelect={(family, repo) => {
+                  setTrainFamilyName(family);
+                  setTrainBaseChoice(repo);
+                }}
+              />
+            ) : (
             <ModelSelector
               triggerDataTour="video-model"
               models={videoModels}
@@ -3770,10 +3796,11 @@ function VideoGenerator({
               open={active && selectorOpen}
               onOpenChange={(o) => setSelectorOpen(active && o)}
             />
+            )}
             {/* The load's own cancel, beside the selector rather than inside it: the selector's eject needs
                 a resident model, so it is hidden for exactly the span a first load runs. A real button,
                 so it is keyboard reachable. Says "load", never "download": that Cancel stops another job. */}
-            {busy === "loading" && (
+            {pageMode !== "train" && busy === "loading" && (
               <Tooltip>
                 <TooltipTrigger asChild={true}>
                   <Button
@@ -3792,8 +3819,8 @@ function VideoGenerator({
             )}
           </div>
         </div>
-        <div className="grid h-full min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-2">
-          {status?.loaded && (
+        <div className="grid h-full min-w-0 grid-cols-[1fr_auto_auto] gap-2 @[50rem]:grid-cols-[1fr_auto_1fr] @[50rem]:gap-0">
+          {pageMode !== "train" && status?.loaded && (
             <div className="pointer-events-auto col-start-1 mt-[var(--studio-chat-header-padding-top,11px)] flex h-[var(--studio-chat-control-height,34px)] min-w-0 flex-wrap content-start gap-x-3 overflow-hidden pl-4 text-ui-11 leading-[var(--studio-chat-control-height,34px)]">
               {status.family && <StatusChip label="Family" value={status.family} />}
               {status.engine && <StatusChip label="Engine" value={status.engine} />}
@@ -3804,24 +3831,53 @@ function VideoGenerator({
               {status.speed_mode && <StatusChip label="Speed" value={status.speed_mode} />}
             </div>
           )}
-          <div className="pointer-events-none col-start-2 flex min-w-0 items-start justify-end pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
-            <div className="pointer-events-auto flex min-w-0 items-center gap-2">
+          <div className="pointer-events-auto col-start-2 row-start-1 justify-self-center pt-[var(--studio-chat-header-padding-top,11px)]">
+            <PillTabs
+              dataTour="video-mode"
+              ariaLabel="Page mode"
+              value={pageMode}
+              onValueChange={(v) => setPageMode(v as "create" | "train")}
+              fit={true}
+              className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-3 @[68rem]:[&>button]:px-11 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>[data-pill-tab-label]]:sr-only"
+              tabs={[
+                { value: "create", label: "Create", icon: <HugeiconsIcon icon={SparklesIcon} className="size-3.5" /> },
+                { value: "train", label: "Train", icon: <HugeiconsIcon icon={TestTubeOutlineIcon} className="size-3.5" /> },
+              ]}
+            />
+          </div>
+          <div className="pointer-events-none col-start-3 row-start-1 flex min-w-0 items-start justify-end pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
+            <div className="pointer-events-auto flex min-w-0 items-center gap-1">
               <MediaApiButton
                 kind="video"
                 model={status?.loaded ? (status.repo_id ?? null) : null}
               />
-              <LibraryPageLink
-                tab="videos"
-                labelClassName="hidden @[50rem]:inline"
-                arrowClassName="hidden @[50rem]:block"
-              />
+              <SiblingMediaPageLink to="/images" />
+              <LibraryPageLink tab="videos" iconOnly={true} />
             </div>
           </div>
         </div>
       </div>
 
-      {/* overflow-x-hidden: an unset overflow-x computes to auto beside overflow-y-auto, letting a
-          wide row pan the page sideways on a phone. */}
+      {pageMode === "train" ? (
+        <DiffusionTrainPanel
+          active={active && pageMode === "train"}
+          loadedFamily={null}
+          loadedBaseRepo={null}
+          onTrainingComplete={() => useImageWorkflowStore.getState().noteTrainingComplete()}
+          // Video loads no adapters: Images deploys it, as its own Train page does.
+          onDeploy={(args) => {
+            useImageWorkflowStore.getState().requestDeploy(args);
+            void navigateToImages({ to: "/images" });
+          }}
+          familyName={trainFamilyName}
+          onFamilyNameChange={setTrainFamilyName}
+          baseChoice={trainBaseChoice}
+          onBaseChoiceChange={setTrainBaseChoice}
+          onFamiliesChange={setTrainFamilies}
+        />
+      ) : (
+      /* overflow-x-hidden: an unset overflow-x computes to auto beside overflow-y-auto, letting a
+          wide row pan the page sideways on a phone. */
       <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden @[50rem]:flex-row @[50rem]:overflow-hidden">
         <div
           data-tour="video-settings"
@@ -4781,6 +4837,7 @@ function VideoGenerator({
         </div>
 
       </div>
+      )}
       {loadAnywayDialog}
     </div>
   );
