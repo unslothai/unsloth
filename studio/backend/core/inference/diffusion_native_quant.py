@@ -524,13 +524,16 @@ def native_linear_class():
                     out = fn(x2, rot_h, self.weight_q, self.weight_scale, bias)
                 else:
                     # One output filled chunk by chunk: no list of parts plus a torch.cat copy of them.
-                    out = x2.new_empty(rows, self.out_features)
+                    # Allocated from the first chunk so it keeps the compiled dtype (autocast can differ from x2's).
+                    out = None
                     start = 0
                     for part in torch.tensor_split(x2, -(-rows // chunk)):
+                        got = fn(part.detach(), rot_h, self.weight_q, self.weight_scale, bias)
+                        if out is None:
+                            out = got.new_empty(rows, self.out_features)
                         stop = start + part.shape[0]
-                        out[start:stop].copy_(
-                            fn(part.detach(), rot_h, self.weight_q, self.weight_scale, bias)
-                        )
+                        out[start:stop].copy_(got)
+                        del got
                         start = stop
             except torch.cuda.OutOfMemoryError:
                 raise

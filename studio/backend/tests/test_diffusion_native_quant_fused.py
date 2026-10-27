@@ -258,3 +258,14 @@ def test_cuda_compiled_linear_peak_stays_at_or_below_eager(monkeypatch, rot):
     assert nq.fused_w8a8_state()["calls"] == calls + 2
     assert torch.equal(got, ref)
     assert fused_peak <= eager_peak, (fused_peak, eager_peak)
+
+
+def test_chunked_output_keeps_the_compiled_dtype(monkeypatch):
+    # Under autocast the compiled function can return another dtype than the input; chunking must not recast it.
+    layer = _layer()
+    monkeypatch.setattr(nq, "_INT_MM_FUSED_CHUNK_ELEMS", 512 * 40)
+    nq._FUSED_STATE["fn"] = lambda x2, *_a: (x2[:, :128] * 2).to(torch.float16)
+    x = torch.randn(100, 512, dtype = torch.float32)
+    got = layer._forward_fused(x)
+    assert got.dtype == torch.float16
+    assert torch.equal(got, (x[:, :128] * 2).to(torch.float16))
