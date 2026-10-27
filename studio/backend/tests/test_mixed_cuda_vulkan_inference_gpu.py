@@ -16,7 +16,11 @@ import main
 GIB_MIB = 1024
 
 
-def _cuda_device(index, name, total_gb = 7.71):
+def _cuda_device(
+    index,
+    name,
+    total_gb = 7.71,
+):
     return {
         "index": index,
         "index_kind": "physical",
@@ -94,7 +98,6 @@ def mixed_build(monkeypatch):
 
 def _mixed(info = CUDA_INFO):
     from utils.hardware import get_mixed_vulkan_inference_gpu_info
-
     return get_mixed_vulkan_inference_gpu_info(info)
 
 
@@ -173,9 +176,12 @@ def test_cuda_only_build_never_runs_the_vulkan_probe(mixed_build):
     assert mixed_build["probed"] == 0
 
 
-def _torch_backend(monkeypatch, label, smi_devices = ()):
+def _torch_backend(
+    monkeypatch,
+    label,
+    smi_devices = (),
+):
     import utils.hardware.hardware as hw
-
     monkeypatch.setattr(hw, "_backend_label", lambda _device: label)
     monkeypatch.setattr(hw, "_nvidia_inference_devices", lambda: [dict(d) for d in smi_devices])
 
@@ -312,7 +318,6 @@ def _fake_get_props(device_id):
 
 def test_probe_reads_the_pci_id_from_device_props():
     from core.inference._vulkan_probe import _pci_device_id
-
     raw = ctypes.create_string_buffer(b"0000:A1:00.0")
     assert _pci_device_id(_fake_get_props(ctypes.addressof(raw)), 1) == "0000:a1:00.0"
 
@@ -321,12 +326,10 @@ def test_probe_reads_the_pci_id_from_device_props():
 def test_probe_ignores_a_props_slot_an_older_ggml_leaves_blank(device_id):
     """A ggml without device_id writes a caps bool, or nothing, where the pointer would be."""
     from core.inference._vulkan_probe import _pci_device_id
-
     assert _pci_device_id(_fake_get_props(device_id), 1) == ""
 
 
 def test_probe_rejects_a_device_id_that_is_not_a_pci_address():
     from core.inference._vulkan_probe import _pci_device_id
-
     raw = ctypes.create_string_buffer(b"virtual-device-7")
     assert _pci_device_id(_fake_get_props(ctypes.addressof(raw)), 1) == ""
