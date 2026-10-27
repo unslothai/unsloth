@@ -307,17 +307,9 @@ except Exception:  # noqa: BLE001 - a broken shim must never break user code
     pass
 
 
-# Approved host calls keep chat-installed packages importable, including Python started by Terminal.
-# Served by a last-resort finder, not sys.path: a folder on sys.path also exposes its *.dist-info to
-# importlib.metadata, so entry-point plugin autoload (pytest11 and the like) would import chat-planted code
-# the approved command never named. The finder runs after every other one, so it only supplies top-level
-# modules the host lacks (no stdlib or installed-package shadowing, no .pth execution); submodules then
-# resolve through the package's own __path__. Metadata is answered only for an exact distribution name
-# (importlib.metadata.version("pkg")) with no explicit path, never for the name-less scan that plugin
-# discovery uses.
-# A PEP 420 namespace package (google, azure, ...) recomputes its __path__ from sys.path alone, so a
-# submodule the host's portion lacks is looked up in the folder's portion of that namespace, again last.
-# The namespace's __path__ (PEP 420, pkgutil- or pkg_resources-style) then gets that portion appended.
+# Approved host calls import chat-installed packages through a last-resort finder, NOT sys.path: a folder on
+# sys.path exposes its *.dist-info to importlib.metadata, so entry-point autoload (pytest11, ...) would run
+# chat-planted code the command never named. Metadata answers only an exact name with no explicit path.
 class _HostPackagesFinder:
     _skip = frozenset(("sitecustomize", "usercustomize"))
 
@@ -350,10 +342,7 @@ class _HostPackagesFinder:
             return None
         found = importlib.machinery.PathFinder.find_spec(name, [portion])
         if found is not None:
-            # What extend_path / declare_namespace (or PEP 420) would have collected had the folder been
-            # on sys.path: this one portion directory, last, so later lookups, pkgutil.iter_modules and
-            # importlib.resources see it too. A PEP 420 _NamespacePath recomputes from sys.path when
-            # sys.path changes, which drops it again until the next submodule is served from it.
+            # The portion extend_path / PEP 420 would have collected; a _NamespacePath drops it on sys.path changes.
             search = getattr(module, "__path__", None)
             if search is not None and hasattr(search, "append") and portion not in list(search):
                 search.append(portion)
@@ -363,12 +352,8 @@ class _HostPackagesFinder:
 
     @classmethod
     def _extends_path(cls, origin):
-        # A pkgutil-style (extend_path) or pkg_resources-style (declare_namespace) namespace package
-        # collects its portions by scanning sys.path while its __init__ runs, so it never sees this folder.
-        # Only the statements that declare one count: `__path__ = <...>extend_path(__path__, __name__)`
-        # or `<...>declare_namespace(__name__)`, at module level or in a module-level try body / else /
-        # finally (not an except handler, which may not have run). A comment,
-        # a string, an unused import or a call under if/def/class leaves the package regular.
+        # Open only if __init__ declares extend_path / declare_namespace at module level (try body / else /
+        # finally count, an except handler may not have run); text, imports or calls under if/def do not.
         if origin not in cls._extends:
             try:
                 import ast
@@ -385,8 +370,6 @@ class _HostPackagesFinder:
         for node in body:
             yield node
             if isinstance(node, ast.Try):
-                # Only blocks that run when the try body completes: a declaration that sits only in
-                # an except handler may never have run, so it does not open the package.
                 for block in (node.body, node.orelse, node.finalbody):
                     yield from cls._top_level(block)
 
@@ -409,8 +392,7 @@ class _HostPackagesFinder:
 
     def find_distributions(self, context = None):
         name = getattr(context, "name", None)
-        # An explicit path is the caller's search scope: the stock path finder already honours it
-        # (folder included if listed), so only the default sys.path scope gets the folder added.
+        # An explicit path is the caller's scope, already served by the stock path finder.
         if not name or "path" in getattr(context, "__dict__", {}):
             return iter(())
         import importlib.metadata
