@@ -232,7 +232,6 @@ def test_a_delete_during_the_drains_busy_check_keeps_the_video_from_starting(
     real_busy = video_routes._video_engine_busy
 
     def _busy_check_with_a_delete():
-        # Delete during the busy check.
         assert client.delete(f"/v1/videos/{queued['id']}").status_code == 200
         return real_busy()
 

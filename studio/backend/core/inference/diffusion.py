@@ -14449,7 +14449,6 @@ class DiffusionBackend:
                 self._queued_generate_cancels.discard(cancel)
 
     def generation_running(self) -> bool:
-        """Whether generation or a model change holds the generation lock."""
         return self._generate_lock.locked()
 
     def generate_progress(self) -> dict[str, Any]:

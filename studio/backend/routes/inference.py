@@ -50038,7 +50038,6 @@ async def _batched_openai_images(
                 expected_load = expected_load,
             )
 
-    # Group by account, model, and rendering parameters.
     key = (
         current_account_id(),
         expected_load,

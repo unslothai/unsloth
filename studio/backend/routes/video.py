@@ -2376,14 +2376,11 @@ async def _start_openai_video(
     return _job_to_openai(job)
 
 
-# Queue
-
 # In-memory FIFO queue; jobs start as their submitting account.
 # Waiting jobs are lost on restart.
 VIDEO_QUEUE_POLL_S = 2.0
 VIDEO_QUEUE_MAX = 64
 VIDEO_QUEUE_MAX_PER_ACCOUNT = 32
-# Limit model_changed retries.
 VIDEO_QUEUE_IDLE_CONFLICTS = 12
 # Retry these refusals after the current work finishes.
 _VIDEO_WAIT_CODES = ("model_busy", "model_loading", "gpu_busy")
@@ -2566,7 +2563,6 @@ async def _create_or_queue_openai_video(
         except Exception as exc:
             if _video_wait(exc) != "busy":
                 raise
-    # Reject invalid audio before queueing.
     await asyncio.to_thread(_refuse_unreadable_audio, inputs.reference_audios)
     model, size, seconds = await asyncio.to_thread(_queued_job_display, body, inputs)
     # No awaits between the capacity check and append.
@@ -2707,7 +2703,6 @@ async def _drain_video_queue_once() -> None:
         await _start_queued_video(entry)
     except Exception as exc:  # noqa: BLE001 -- the next video must still start
         logger.exception("Could not settle queued video %s", entry.id)
-        # A started job already has its own record.
         if entry in _VIDEO_QUEUE:
             await _settle_failed_queued_video(entry, exc)
         entry.starting = False
@@ -2839,7 +2834,6 @@ async def openai_delete_video(video_id: str, current_subject: str = Depends(get_
             )
         queued = _own_queued_video(video_id)
     if queued is not None:
-        # Still waiting: it leaves the queue and never runs.
         _drop_queued_video(queued)
         return VideoJobDeleteResponse(id = video_id)
     video = await asyncio.to_thread(_lookup_video, video_id)
