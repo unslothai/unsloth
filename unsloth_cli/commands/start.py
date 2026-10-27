@@ -3450,44 +3450,61 @@ def _toml_parses(text: str) -> Optional[bool]:
     return True
 
 
-def _with_user_codex_mcp_servers(text: str, home: Path) -> str:
-    manifest = home / "unsloth_mcp_servers.json"
+_CODEX_MCP_MANIFEST = "unsloth_mcp_servers.json"
+
+
+def _codex_mcp_server(chunk: str) -> Optional[tuple]:
+    # The server a [mcp_servers.NAME...] table belongs to: owning NAME owns its subtables.
+    path = _toml_table_path(chunk)
+    return path[:2] if path and path[0] == "mcp_servers" else None
+
+
+def _codex_mcp_manifest(home: Path) -> tuple:
     try:
-        state = json.loads(manifest.read_text(encoding = "utf-8"))
-        carried = {tuple(path) for path in state["tables"]}
-    except (OSError, ValueError, TypeError, KeyError):
-        state, carried = {}, set()
+        state = json.loads((home / _CODEX_MCP_MANIFEST).read_text(encoding = "utf-8"))
+        return state.get("source"), {tuple(path)[:2] for path in state["tables"]}
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        return None, set()
+
+
+def _codex_mcp_tables(source: Path, seen: frozenset) -> list:
+    """MCP tables in source's config; a home Unsloth built trades its inherited ones for its origin's."""
+    try:
+        text = (source / "config.toml").read_text(encoding = "utf-8")
+    except OSError:
+        return []
+    tables = [c for c in _toml_chunks(text) if _codex_mcp_server(c)]
+    origin, inherited = _codex_mcp_manifest(source)
+    if isinstance(origin, str) and str(Path(origin).resolve(strict = False)) not in seen:
+        tables = [c for c in tables if _codex_mcp_server(c) not in inherited]
+        tables += _codex_mcp_tables(Path(origin), seen | {str(Path(origin).resolve(strict = False))})
+    return tables
+
+
+def _with_user_codex_mcp_servers(text: str, home: Path) -> str:
+    origin, carried = _codex_mcp_manifest(home)
     source = _codex_source_home()
     home_key = home.resolve(strict = False)
     if source.resolve(strict = False) == home_key:
         # The printed recipe exports CODEX_HOME=home: keep reading the home it was built from.
-        previous = state.get("source") if isinstance(state, dict) else None
-        if isinstance(previous, str) and Path(previous).resolve(strict = False) != home_key:
-            source = Path(previous)
+        if isinstance(origin, str) and Path(origin).resolve(strict = False) != home_key:
+            source = Path(origin)
         else:
             source = _codex_source_home(ignore_configured = True)
-    try:
-        user = (source / "config.toml").read_text(encoding = "utf-8")
-    except OSError:
-        user = ""
-
-    def mcp_path(chunk: str) -> Optional[tuple]:
-        path = _toml_table_path(chunk)
-        return path if path and path[0] == "mcp_servers" else None
-
-    tables = [c for c in _toml_chunks(user) if mcp_path(c)]
+    source_key = str(source.resolve(strict = False))
+    tables = _codex_mcp_tables(source, frozenset({str(home_key), source_key}))
     # Only replace what came from the user's config; servers added in this home stay.
-    paths = {mcp_path(c) for c in tables}
-    carried |= paths
-    out = "".join(c for c in _toml_chunks(text) if mcp_path(c) not in carried)
+    servers = {_codex_mcp_server(c) for c in tables}
+    carried |= servers
+    out = "".join(c for c in _toml_chunks(text) if _codex_mcp_server(c) not in carried)
     if tables:
         out = out.rstrip("\n") + "\n\n" + "".join(tables).rstrip("\n") + "\n"
     if _toml_parses(out) is False:
         return text
-    if paths or manifest.exists():
+    manifest = home / _CODEX_MCP_MANIFEST
+    if servers or manifest.exists():
         manifest.write_text(
-            json.dumps({"source": str(source.resolve(strict = False)), "tables": sorted(paths)})
-            + "\n",
+            json.dumps({"source": source_key, "tables": sorted(servers)}) + "\n",
             encoding = "utf-8",
         )
     return out

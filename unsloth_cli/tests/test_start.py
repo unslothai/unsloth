@@ -2847,6 +2847,47 @@ def test_codex_mcp_servers_follow_a_custom_codex_home_through_the_recipe(
     assert config["mcp_servers"] == {"custom": {"url": "http://c/mcp"}}
 
 
+def test_codex_drops_a_removed_server_with_subtables_added_in_the_saved_home(
+    fake_studio, tmp_path, monkeypatch
+):
+    tomllib = pytest.importorskip("tomllib")
+    source_home = tmp_path / "user-codex"
+    source_home.mkdir()
+    (source_home / "config.toml").write_text('[mcp_servers.docs]\nurl = "http://d/mcp"\n')
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    home = tmp_path / "agents" / "codex"
+
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    with (home / "config.toml").open("a") as f:
+        f.write('\n[mcp_servers.docs.env]\nUNITS = "metric"\n')
+    (source_home / "config.toml").write_text('[mcp_servers.keep]\nurl = "http://k/mcp"\n')
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    config = tomllib.loads((home / "config.toml").read_text())
+    assert config["mcp_servers"] == {"keep": {"url": "http://k/mcp"}}
+
+
+def test_codex_session_from_a_saved_home_reads_its_origin(fake_studio, tmp_path, monkeypatch):
+    tomllib = pytest.importorskip("tomllib")
+    source_home = tmp_path / "user-codex"
+    source_home.mkdir()
+    (source_home / "config.toml").write_text('[mcp_servers.docs]\nurl = "http://d/mcp"\n')
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    saved = tmp_path / "agents" / "codex"
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    with (saved / "config.toml").open("a") as f:
+        f.write('\n[mcp_servers.local]\ncommand = "local-server"\n')
+
+    (source_home / "config.toml").write_text('[mcp_servers.fresh]\nurl = "http://f/mcp"\n')
+    monkeypatch.setenv("CODEX_HOME", str(saved))
+    session = tmp_path / "session"
+    start.write_codex_config("http://h", {"id": "m"}, session, keep_mcp_servers = True)
+    config = tomllib.loads((session / "config.toml").read_text())
+    assert config["mcp_servers"] == {
+        "local": {"command": "local-server"},
+        "fresh": {"url": "http://f/mcp"},
+    }
+
+
 def test_codex_carries_mcp_servers_with_multiline_values(fake_studio, tmp_path, monkeypatch):
     tomllib = pytest.importorskip("tomllib")
     source_home = tmp_path / "user-codex"
