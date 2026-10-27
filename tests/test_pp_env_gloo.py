@@ -46,7 +46,10 @@ N_LAYERS = 4
 
 
 def _checkpoint(tmp, arch = "llama"):
-    return _save_checkpoint(arch, os.path.join(tmp, "ckpt"), {"num_hidden_layers": N_LAYERS})
+    overrides = {"num_hidden_layers": N_LAYERS}
+    if arch == "gemma3":  # sliding / full layers on both stages, window shorter than the 9-token rows
+        overrides.update(layer_types = ["sliding_attention", "full_attention"] * (N_LAYERS // 2), sliding_window = 4)
+    return _save_checkpoint(arch, os.path.join(tmp, "ckpt"), overrides)
 
 
 def _case_units(rank, world, tmp):
@@ -619,19 +622,26 @@ def test_pp_env_trainer_matches_one_process(world, env, ref_bs):
 
 @needs_pipelining
 @pytest.mark.parametrize(
-    "ga,bs,mb,schedule",
-    [(1, 4, None, None), (4, 2, None, None), (2, 4, "1", None), (2, 1, None, "1f1b")],
-    ids = ["ga1_bs4", "ga4_bs2", "mb1", "bs1_1f1b_padded"],
+    "ga,bs,mb,schedule,arch",
+    [
+        (1, 4, None, None, "llama"),
+        (4, 2, None, None, "llama"),
+        (2, 4, "1", None, "llama"),
+        (2, 1, None, "1f1b", "llama"),
+        (1, 4, None, None, "gemma3"),
+    ],
+    ids = ["ga1_bs4", "ga4_bs2", "mb1", "bs1_1f1b_padded", "gemma3_ga1_bs4"],
 )
-def test_pp_env_gradient_accumulation_and_microbatches(ga, bs, mb, schedule):
+def test_pp_env_gradient_accumulation_and_microbatches(ga, bs, mb, schedule, arch):
     # bs1_1f1b_padded: 1F1B needs 2 micro-batches, so the 1-row batch gets a fully masked filler row.
-    ref = _ref(bs, ga = ga, evaluate = False, post = False)
+    # gemma3_ga1_bs4: the Gemma3_(270M) notebook's shape (scaled tied embedding, sliding layers).
+    ref = _ref(bs, ga = ga, evaluate = False, post = False, arch = arch)
     env = {"UNSLOTH_PP_SIZE": "2"}
     if mb:
         env["UNSLOTH_PP_MICROBATCHES"] = mb
     if schedule:
         env["UNSLOTH_PP_SCHEDULE"] = schedule
-    for rank, res in enumerate(_spawn("env", 2, env, bs = bs, ga = ga, evaluate = False, post = False)):
+    for rank, res in enumerate(_spawn("env", 2, env, bs = bs, ga = ga, evaluate = False, post = False, arch = arch)):
         _close(res, ref, what = rank)
         _same_tensors(res["adapter"] or ref["adapter"], ref["adapter"])
 
