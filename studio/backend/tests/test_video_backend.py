@@ -11104,6 +11104,60 @@ def test_ticker_follows_mps_events(monkeypatch, has_event, mps_available):
     assert ticker.boundary_reached() is True
 
 
+def test_ticker_tracks_real_mps_work(monkeypatch):
+    # Real Apple Silicon: the host enqueues every step long before the GPU runs them, so the bar
+    # must follow the events. The CUDA-only helper this replaced reports all steps done at once.
+    torch = pytest.importorskip("torch")
+    if not torch.backends.mps.is_available():
+        pytest.skip("needs an MPS device")
+    import core.inference.video as video_mod
+
+    x = torch.randn(2048, 2048, device = "mps")
+    torch.mps.synchronize()
+
+    def _run(ticker, steps):
+        y = x
+        for step in range(1, steps + 1):
+            for _ in range(12):
+                y = (y @ x) * 1e-3
+            ticker.record(step)
+        sentinel = torch.mps.Event()
+        sentinel.record()
+        return y, sentinel
+
+    def _cuda_only_event():
+        if not torch.cuda.is_available():
+            return None
+        event = torch.cuda.Event()
+        event.record()
+        return event
+
+    with monkeypatch.context() as patch:
+        patch.setattr(video_mod, "_record_device_event", _cuda_only_event)
+        base = video_mod._CompletedStepTicker(4)
+        _, sentinel = _run(base, 4)
+        base_done = base.completed()
+        base_behind = not sentinel.query()
+    torch.mps.synchronize()
+
+    head = video_mod._CompletedStepTicker(4)
+    _, sentinel = _run(head, 4)
+    head_done = head.completed()
+    head_marked = head.mark_boundary()
+    head_behind = not sentinel.query()
+    head_boundary = head.boundary_reached()
+    torch.mps.synchronize()
+    if not (base_behind and head_behind):
+        pytest.skip("the GPU caught up with the host before the probe")
+
+    assert base_done == 4 and base.event_backed is False
+    assert head.event_backed is True
+    assert head_done < 4
+    assert head_marked is True and head_boundary is False
+    assert head.completed() == 4
+    assert head.boundary_reached() is True
+
+
 def test_ticker_unmarkable_step_does_not_shift_the_ones_after_it(monkeypatch):
     # A step whose event could not be recorded (a capture was in flight) costs its own tick and
     # nothing more: the step number travels with the event.
