@@ -20,8 +20,12 @@ test("run() records its task and an attached or reset run has none", () => {
   assert.match(store, /const initialState: BenchmarkRuntimeState = \{[\s\S]*?\n  task: null,/);
 });
 
-test("history reads the run list again when a run ends, like the scoreboard", () => {
-  const panel = read("components/benchmark-history-panel.tsx");
-  assert.match(panel, /const phase = useBenchmarkRuntimeStore\(\(s\) => s\.phase\);/);
-  assert.match(panel, /if \(phase === "running" \|\| phase === "starting"\) return;\s*fetchRuns\(\);\s*\}, \[fetchRuns, phase\]\);/);
+test("history and scoreboard load on mount, mid-run included, and again when a run ends", () => {
+  for (const file of ["components/benchmark-history-panel.tsx", "components/eval-scoreboard.tsx"]) {
+    const src = read(file);
+    assert.match(src, /\(s\) => s\.phase === "running" \|\| s\.phase === "starting",/, file);
+    assert.match(src, /\}, \[(fetchRuns, )?running\]\);/, file);
+    // A mid-run mount must still fetch: no early return on the running phase.
+    assert.doesNotMatch(src, /if \(phase === "running" \|\| phase === "starting"\) return;/, file);
+  }
 });

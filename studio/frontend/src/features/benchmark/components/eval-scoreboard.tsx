@@ -94,12 +94,13 @@ function Tile({
 export function EvalScoreboard(): ReactElement | null {
   const { resolved } = useTheme();
   const palette = MODEL_COLORS[resolved === "dark" ? "dark" : "light"];
-  const phase = useBenchmarkRuntimeStore((s) => s.phase);
+  const running = useBenchmarkRuntimeStore(
+    (s) => s.phase === "running" || s.phase === "starting",
+  );
   const [runs, setRuns] = useState<BenchmarkRunSummary[]>([]);
 
-  // A finished run lands in the list, so read it again then.
+  // On mount (even mid-run, e.g. after a reload) and again when a run ends, which lands in the list.
   useEffect(() => {
-    if (phase === "running" || phase === "starting") return;
     let cancelled = false;
     void listBenchmarkRuns()
       .then((d) => {
@@ -109,7 +110,7 @@ export function EvalScoreboard(): ReactElement | null {
     return () => {
       cancelled = true;
     };
-  }, [phase]);
+  }, [running]);
 
   const { groups, models, best } = useMemo(() => {
     const newestFirst = [...runs].sort((a, b) =>

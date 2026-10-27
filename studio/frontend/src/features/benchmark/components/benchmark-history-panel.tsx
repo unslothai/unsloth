@@ -635,12 +635,13 @@ export function BenchmarkHistoryPanel() {
     }
   }, [t]);
 
-  // A finished run lands in the list, so read it again then (the scoreboard does the same).
-  const phase = useBenchmarkRuntimeStore((s) => s.phase);
+  // On mount (even mid-run) and again when a run ends, which lands in the list.
+  const running = useBenchmarkRuntimeStore(
+    (s) => s.phase === "running" || s.phase === "starting",
+  );
   useEffect(() => {
-    if (phase === "running" || phase === "starting") return;
     fetchRuns();
-  }, [fetchRuns, phase]);
+  }, [fetchRuns, running]);
 
   const handleSelect = useCallback(
     async (runId: string) => {
