@@ -497,9 +497,9 @@ def resolve_auto_cuda_ordinal() -> Optional[int]:
 
 def smi_free_total_mib(ordinal: int) -> tuple[Optional[int], Optional[int]]:
     """(free, total) MiB of torch ordinal ``ordinal`` from nvidia-smi, so a card can be sized without a CUDA context
-    on it. (None, None) wherever ``resolve_auto_cuda_ordinal`` would not trust the rows (ROCm, a CUDA order other
-    than nvidia-smi's, a mask naming no card, an integrated or MIG card, missing telemetry). An R570+ MIG instance
-ordinal is sized from that instance's own slice row, or (None, None) when it was not read. Never raises."""
+        on it. (None, None) wherever ``resolve_auto_cuda_ordinal`` would not trust the rows (ROCm, a CUDA order other
+        than nvidia-smi's, a mask naming no card, an integrated or MIG card, missing telemetry). An R570+ MIG instance
+    ordinal is sized from that instance's own slice row, or (None, None) when it was not read. Never raises."""
     try:
         from utils.hardware import hardware as hw
 

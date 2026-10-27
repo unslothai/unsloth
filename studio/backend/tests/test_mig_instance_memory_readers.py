@@ -22,7 +22,6 @@ from core.inference import diffusion_multigpu as multi
 from utils.hardware import gpu_query, nvidia
 
 
-
 def _fixture_module():
     # The MIG host fixture lives beside this file; "tests" also names the repo-root package.
     name = "_studio_mig_multi_instance_fixture"
@@ -48,7 +47,6 @@ SLICE_B = (18000, 19968)  # instance B's own free / total MiB
 @pytest.fixture(autouse = True)
 def _probe_script(monkeypatch):
     import utils.prebuilt.update_flow as update_flow
-
     monkeypatch.setattr(update_flow, "find_installer_script", lambda **k: Path("mock-probe.py"))
 
 
@@ -86,9 +84,13 @@ def mig_host(mig_cards = frozenset({0}), b_row = None):
     with contextlib.ExitStack() as s:
         s.enter_context(patch.object(fx, "LISTING", listing))
         s.enter_context(fx.host(mask = f"{fx.A},{fx.B_UUID}", rows = rows))
-        s.enter_context(patch.object(nvidia, "get_mig_mode_gpu_indices_or_none", lambda: set(mig_cards)))
+        s.enter_context(
+            patch.object(nvidia, "get_mig_mode_gpu_indices_or_none", lambda: set(mig_cards))
+        )
         s.enter_context(patch.object(nvidia, "get_mig_gpu_indices_or_none", lambda: set(mig_cards)))
-        s.enter_context(patch.object(nvidia, "get_compute_capabilities", lambda: {i: (8, 0) for i in range(3)}))
+        s.enter_context(
+            patch.object(nvidia, "get_compute_capabilities", lambda: {i: (8, 0) for i in range(3)})
+        )
         s.enter_context(
             patch.object(
                 nvidia,
@@ -101,7 +103,9 @@ def mig_host(mig_cards = frozenset({0}), b_row = None):
         s.enter_context(patch.object(gpu_query, "run_nvidia_smi", run_smi))
         s.enter_context(patch.object(hw, "_cuda_card_identities", {}))
         s.enter_context(patch.object(hw, "_cuda_card_identities_gen", None))
-        s.enter_context(patch.object(dd, "_PLANNED_ORDINAL", dd.ContextVar("t", default = dd._UNPLANNED)))
+        s.enter_context(
+            patch.object(dd, "_PLANNED_ORDINAL", dd.ContextVar("t", default = dd._UNPLANNED))
+        )
         s.enter_context(patch.object(dd, "_PINNED_AWAY_FROM_ZERO", False))
         assert hw.get_parent_visible_gpu_ids() == [0, 1]
         assert hw._get_parent_visible_gpu_spec()["index_kind"] == "cuda_device"
@@ -168,7 +172,12 @@ def test_context_free_reader_uses_the_slice_row():
 
 def test_a_single_whole_card_keeps_its_nvidia_smi_reading(monkeypatch):
     # No MIG instances: ids stay nvidia-smi rows and the readers behave as before.
-    spec = {"raw": None, "numeric_ids": [0], "supports_explicit_gpu_ids": True, "index_kind": "physical"}
+    spec = {
+        "raw": None,
+        "numeric_ids": [0],
+        "supports_explicit_gpu_ids": True,
+        "index_kind": "physical",
+    }
     monkeypatch.setattr(hw, "IS_ROCM", False)
     monkeypatch.setattr(hw, "_get_parent_visible_gpu_spec", lambda: dict(spec))
     monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: [0])
