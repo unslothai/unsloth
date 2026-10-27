@@ -129,6 +129,7 @@ from .diffusion_multigpu import (
     with_load_selection,
 )
 from .diffusion_memory import (
+    DeviceMemory,
     commit_load_budget_fraction,
     release_load_budget_fraction,
     vram_budget_scope,
@@ -10164,6 +10165,7 @@ class VideoBackend:
         memory_mode: Optional[str],
         scheme: Optional[str],
         te_scheme: Optional[str] = None,
+        device_memory: Optional[DeviceMemory] = None,
     ) -> None:
         """Refuse H3 modular loads that cannot fit unified memory; best-effort, skipped if no table/device."""
         components = getattr(fam, "bf16_components_gb", None)
@@ -10186,7 +10188,9 @@ class VideoBackend:
         mib_per_gb = 1000.0**3 / (1024.0 * 1024.0)
         plan = plan_diffusion_memory(
             target = target,
-            device_memory = settled_snapshot_device_memory(target),
+            device_memory = (
+                device_memory if device_memory is not None else settled_snapshot_device_memory(target)
+            ),
             model_dense_mib = int(
                 (transformer_gb + text_encoder_gb + vae_gb) * dtype_scale * mib_per_gb
             ),
@@ -10361,7 +10365,9 @@ class VideoBackend:
             ):
                 te_scheme = None
                 te_index_declined = True
-        # Unified memory: CPU offload frees nothing, so H3's 144.2 GB set must be refused before any load.
+        # Both checks price the full model, so retain the free pool from before any component is seeded.
+        # Re-reading after a hosted component lands would count its allocation against the model twice.
+        preseed_memory = settled_snapshot_device_memory(umem_target)
         self._raise_on_modular_unified_shortfall(
             fam,
             target = umem_target,
@@ -10370,6 +10376,7 @@ class VideoBackend:
             memory_mode = memory_mode,
             scheme = comfy_scheme or scheme,
             te_scheme = te_scheme,
+            device_memory = preseed_memory,
         )
         if comfy_scan is not None:
             from .video_minimax_h3_comfy import load_h3_comfy_transformer
@@ -10597,6 +10604,7 @@ class VideoBackend:
                 memory_mode = memory_mode,
                 scheme = transformer_quant_engaged,
                 te_scheme = text_encoder_quant_engaged,
+                device_memory = preseed_memory,
             )
         # Without cache_dir components resolve against the import-time HF_HUB_CACHE.
         from .diffusion_offline_source import offline_component_sources

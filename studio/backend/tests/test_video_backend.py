@@ -13751,18 +13751,37 @@ def test_h3_unified_quantized_components_still_refuse_a_spark_sized_pool(fake_ru
     )
 
 
+@pytest.mark.parametrize("total_gib, fallback_fits", [(128, False), (160, True)])
 def test_h3_unified_guard_reruns_before_a_failed_hosted_encoder_goes_dense(
-    fake_runtime, monkeypatch
+    fake_runtime, monkeypatch, total_gib, fallback_fits
 ):
     import core.inference.video as video_mod
     import core.inference.diffusion_prequant as prequant_mod
     import core.inference.video_minimax_h3_te as te_mod
+    from core.inference.diffusion_memory import DeviceMemory
 
     calls = []
+    snapshots = []
+    initial_memory = _unified_snapshot(total_gib)(None)
+    free_mib = initial_memory.free_mib
+
+    def snapshot(_target):
+        memory = DeviceMemory("mps", "mps", "unified_memory", free_mib, initial_memory.total_mib)
+        snapshots.append(memory)
+        return memory
+
+    def seed_transformer(*_a, **_kw):
+        nonlocal free_mib
+        free_mib -= int(20.3 * 1000**3 / 1024**2)
+        return object()
+
+    class ReachedComponents(Exception):
+        pass
+
     real = VideoBackend._raise_on_modular_unified_shortfall
 
     def spy(fam, **kwargs):
-        calls.append((kwargs["scheme"], kwargs["te_scheme"]))
+        calls.append((kwargs["scheme"], kwargs["te_scheme"], kwargs["device_memory"]))
         return real(fam, **kwargs)
 
     class Pipe:
@@ -13774,7 +13793,9 @@ def test_h3_unified_guard_reruns_before_a_failed_hosted_encoder_goes_dense(
                 setattr(self, name, value)
 
         def load_components(self, **kwargs):
-            pytest.fail("dense components must not be opened before the fallback memory check")
+            if not fallback_fits:
+                pytest.fail("dense components must not be opened before the fallback memory check")
+            raise ReachedComponents
 
     diffusers = types.SimpleNamespace(
         ComponentsManager = lambda: object(),
@@ -13782,17 +13803,22 @@ def test_h3_unified_guard_reruns_before_a_failed_hosted_encoder_goes_dense(
         MiniMaxH3Transformer3DModel = object,
     )
     monkeypatch.setattr(VideoBackend, "_raise_on_modular_unified_shortfall", staticmethod(spy))
-    monkeypatch.setattr(video_mod, "settled_snapshot_device_memory", _unified_snapshot(128))
+    monkeypatch.setattr(video_mod, "settled_snapshot_device_memory", snapshot)
     monkeypatch.setattr(video_mod, "precision_fallback_allowed", lambda: True)
     monkeypatch.setattr(
         prequant_mod,
         "resolve_prequant_source",
         lambda *_a, **_kw: types.SimpleNamespace(location = "unsloth/MiniMax-H3-FP8"),
     )
-    monkeypatch.setattr(prequant_mod, "load_prequantized_transformer", lambda *_a, **_kw: object())
+    monkeypatch.setattr(prequant_mod, "load_prequantized_transformer", seed_transformer)
     monkeypatch.setattr(te_mod, "load_h3_quantized_text_encoder", lambda *_a, **_kw: None)
     fam = _detect_load_family("MiniMaxAI/MiniMax-H3", None, "minimax-h3")
-    with pytest.raises(RuntimeError, match = "unified memory"):
+    expected = (
+        pytest.raises(ReachedComponents)
+        if fallback_fits
+        else pytest.raises(RuntimeError, match = "unified memory")
+    )
+    with expected:
         VideoBackend()._load_h3_modular_pipeline(
             diffusers = diffusers,
             torch = sys.modules["torch"],
@@ -13808,4 +13834,7 @@ def test_h3_unified_guard_reruns_before_a_failed_hosted_encoder_goes_dense(
             text_encoder_quant = "int8",
             target = types.SimpleNamespace(device = "mps", supports_model_cpu_offload = True),
         )
-    assert calls == [("fp8", "int8"), ("fp8", None)]
+    # Seeded weights reduce current free RAM, but both checks price the FULL model against the original pool.
+    assert free_mib < initial_memory.free_mib
+    assert snapshots == [initial_memory]
+    assert calls == [("fp8", "int8", initial_memory), ("fp8", None, initial_memory)]
