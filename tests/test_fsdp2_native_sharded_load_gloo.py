@@ -328,6 +328,9 @@ def _worker(rank, world, port, case, tmp, kwargs):
     try:
         res = CASES[case](rank, world, tmp, **kwargs)
         torch.save(res, os.path.join(tmp, f"result_{rank}.pt"))
+        # The refusal cases end without a collective. Rank 0 hosts the TCPStore: let it exit while the other
+        # rank is still setting up a mesh subgroup through that store and the other rank dies on a broken pipe.
+        dist.barrier()
     finally:
         dist.destroy_process_group()
 

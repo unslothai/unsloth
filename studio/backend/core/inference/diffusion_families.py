@@ -965,6 +965,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # ComfyUI QwenImage21: ModelSamplingFlux fixed mu 0.69, no terminal stretch.
         comfy_flow_shift = flux_mu_shift(0.69),
         pipeline_class = "QwenImage21Pipeline",
+        # Every arch: near-tied reduction autotune picks made one seed render differently per process.
+        filter_reduction_configs = True,
         transformer_class = "QwenImage21Transformer2DModel",
         base_repo = "Qwen/Qwen-Image-2.1",
         prequant_repos = (

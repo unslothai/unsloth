@@ -31,6 +31,7 @@ import {
 import { ChevronDownStandardIcon, ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import { ShieldAlertGlyph } from "@/lib/shield-alert-icon";
 import { SparklesGlyph } from "@/lib/sparkles-icon";
+import { openExternalLink } from "@/lib/open-link";
 import { MenuTickIcon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
@@ -44,7 +45,7 @@ import {
   loadSandboxCapability,
   onSandboxCapabilityChange,
 } from "./api/sandbox-capability";
-import { sandboxSwitchState } from "./sandbox-level";
+import { SANDBOX_DOCS_URL, sandboxSwitchState } from "./sandbox-level";
 import {
   pickSandboxLevel,
 } from "./sandbox-pick";
@@ -157,7 +158,6 @@ function SandboxLevelMenuPicker({ onOsSandboxMissing }: { onOsSandboxMissing?: (
   const sandboxLevel = useChatRuntimeStore((s) => s.sandboxLevel);
   const setSandboxLevel = useChatRuntimeStore((s) => s.setSandboxLevel);
   const setSandboxSetupOpen = useSandboxSetupDialogStore((s) => s.setOpen);
-  const openSettings = useSettingsDialogStore((s) => s.openDialog);
   const { permissionMode } = useAccountPermissionMode();
   const capability = useSandboxCapability(sandboxLevel === "high");
   const { checked, disabled } = sandboxSwitchState(sandboxLevel, permissionMode, capability);
@@ -252,13 +252,7 @@ function SandboxLevelMenuPicker({ onOsSandboxMissing }: { onOsSandboxMissing?: (
           <DropdownMenuPrimitive.Item
             // my-0!: drops the menu item margin so it lines up with the question.
             className="my-0! shrink-0 cursor-pointer rounded-sm font-normal text-muted-foreground underline decoration-muted-foreground/50 underline-offset-[3px] outline-hidden transition-colors hover:text-foreground hover:decoration-foreground/60 data-[highlighted]:text-foreground data-[highlighted]:decoration-foreground/60"
-            // Deferred past the menu's focus restore.
-            onSelect={() =>
-              setTimeout(
-                () => openSettings("sandbox", { scrollTarget: "sandbox-permissions" }),
-                0,
-              )
-            }
+            onSelect={() => openExternalLink(SANDBOX_DOCS_URL)}
           >
             {t("settings.sandbox.learnMore")}
           </DropdownMenuPrimitive.Item>
@@ -362,6 +356,7 @@ export function PermissionModeMenuItems({
           className={cn(
             "items-start gap-2 py-2",
             permissionMode === option.value && "font-medium",
+            option.value === "full" && "menu-item-full-access",
           )}
         >
           <option.icon className="mt-0.5 size-4 shrink-0" strokeWidth={2} />
@@ -486,7 +481,7 @@ export function FullAccessConfirmContent({
       <AlertDialogFooter className="mt-1">
         <AlertDialogCancel variant="muted">Cancel</AlertDialogCancel>
         <AlertDialogAction variant="destructive" onClick={onConfirm}>
-          Turn on
+          Confirm
         </AlertDialogAction>
       </AlertDialogFooter>
     </AlertDialogContent>
