@@ -2847,7 +2847,7 @@ def test_codex_mcp_servers_follow_a_custom_codex_home_through_the_recipe(
     assert config["mcp_servers"] == {"custom": {"url": "http://c/mcp"}}
 
 
-def test_codex_mcp_servers_never_break_the_session_config(fake_studio, tmp_path, monkeypatch):
+def test_codex_carries_mcp_servers_with_multiline_values(fake_studio, tmp_path, monkeypatch):
     tomllib = pytest.importorskip("tomllib")
     source_home = tmp_path / "user-codex"
     source_home.mkdir()
@@ -2862,6 +2862,10 @@ def test_codex_mcp_servers_never_break_the_session_config(fake_studio, tmp_path,
     assert result.exit_code == 0, result.output
     config = tomllib.loads((home / "config.toml").read_text())
     assert config["model_providers"]["unsloth_api"]["base_url"].endswith("/v1")
+    assert config["mcp_servers"] == {
+        "notes": {"command": "notes", "args": ["--banner", "[welcome]\nhi"]},
+        "docs": {"url": "http://d/mcp"},
+    }
 
 
 def test_connect_codex_as_subagent_preserves_cloud_parent(fake_studio, tmp_path, monkeypatch):

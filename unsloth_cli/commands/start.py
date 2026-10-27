@@ -3378,7 +3378,61 @@ def _codex_model_catalog(model: dict, visibility: str = "none") -> dict:
     return {"models": [entry]}
 
 
-_CODEX_MCP_TABLE = re.compile(r"[ \t]*\[\s*mcp_servers\s*[\].]")
+_TOML_KEY_PART = re.compile(
+    r"""[ \t]*(?:"((?:[^"\\]|\\.)*)"|'([^']*)'|([A-Za-z0-9_-]+))[ \t]*([.\]])"""
+)
+
+
+_TOML_STRING = re.compile(r'"(?:[^"\\]|\\.)*"|\'[^\']*\'')
+
+
+def _toml_table_path(chunk: str) -> Optional[tuple]:
+    """Key path of the [table] header opening chunk, whatever its quoting, spacing or comment."""
+    line = chunk.lstrip(" \t")
+    if not line.startswith("[") or line.startswith("[["):
+        return None
+    parts, pos = [], 1
+    while True:
+        m = _TOML_KEY_PART.match(line, pos)
+        if m is None:
+            return None
+        parts.append(next(g for g in m.groups()[:3] if g is not None))
+        pos = m.end()
+        if m.group(4) == "]":
+            return tuple(parts)
+
+
+def _toml_chunks(text: str) -> list:
+    """Split before each table header; a "[" line inside a string or an array is not one."""
+    chunks, current, delim, depth = [], "", None, 0
+    for line in text.splitlines(True):
+        if delim is None and depth == 0 and line.lstrip(" \t").startswith("["):
+            chunks.append(current)
+            current = line
+            continue
+        current += line
+        i = 0
+        while i < len(line):
+            if delim is not None:
+                if line.startswith(delim, i):
+                    delim, i = None, i + 3
+                else:
+                    i += 2 if delim == '"""' and line[i] == "\\" else 1
+                continue
+            c = line[i]
+            if c == "#":
+                break
+            if line.startswith(('"""', "'''"), i):
+                delim, i = line[i : i + 3], i + 3
+                continue
+            if c in "\"'":
+                m = _TOML_STRING.match(line, i)
+                i = m.end() if m else len(line)
+                continue
+            depth += (c in "[{") - (c in "]}")
+            i += 1
+    chunks.append(current)
+    return chunks
 
 
 def _toml_parses(text: str) -> Optional[bool]:
@@ -3400,7 +3454,7 @@ def _with_user_codex_mcp_servers(text: str, home: Path) -> str:
     manifest = home / "unsloth_mcp_servers.json"
     try:
         state = json.loads(manifest.read_text(encoding = "utf-8"))
-        carried = set(state["tables"])
+        carried = {tuple(path) for path in state["tables"]}
     except (OSError, ValueError, TypeError, KeyError):
         state, carried = {}, set()
     source = _codex_source_home()
@@ -3416,27 +3470,24 @@ def _with_user_codex_mcp_servers(text: str, home: Path) -> str:
         user = (source / "config.toml").read_text(encoding = "utf-8")
     except OSError:
         user = ""
-    split = re.compile(r"(?m)^(?=[ \t]*\[)")
 
-    def header(chunk: str) -> str:
-        return chunk.split("\n", 1)[0].strip()
+    def mcp_path(chunk: str) -> Optional[tuple]:
+        path = _toml_table_path(chunk)
+        return path if path and path[0] == "mcp_servers" else None
 
-    tables = [c for c in split.split(user) if _CODEX_MCP_TABLE.match(c)]
+    tables = [c for c in _toml_chunks(user) if mcp_path(c)]
     # Only replace what came from the user's config; servers added in this home stay.
-    carried |= {header(c) for c in tables}
-    out = "".join(
-        c for c in split.split(text) if not (_CODEX_MCP_TABLE.match(c) and header(c) in carried)
-    )
+    paths = {mcp_path(c) for c in tables}
+    carried |= paths
+    out = "".join(c for c in _toml_chunks(text) if mcp_path(c) not in carried)
     if tables:
         out = out.rstrip("\n") + "\n\n" + "".join(tables).rstrip("\n") + "\n"
-    # The line split cuts a multi-line string holding a "[" line; Codex then refuses to start.
-    parses = _toml_parses(out)
-    if parses is False or (parses is None and ('"""' in user or "'''" in user)):
+    if _toml_parses(out) is False:
         return text
-    names = sorted(header(c) for c in tables)
-    if names or manifest.exists():
+    if paths or manifest.exists():
         manifest.write_text(
-            json.dumps({"source": str(source.resolve(strict = False)), "tables": names}) + "\n",
+            json.dumps({"source": str(source.resolve(strict = False)), "tables": sorted(paths)})
+            + "\n",
             encoding = "utf-8",
         )
     return out
