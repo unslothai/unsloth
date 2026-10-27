@@ -292,6 +292,15 @@ def test_superseded_previews_are_bounded_and_not_kept_warm(monkeypatch):
     python_rewards._close_preview()
 
 
+def test_resume_scores_with_the_stored_python_reward_code():
+    from routes.training import _stored_reward_specs
+
+    code = "def reward(**kw): ..."
+    py = {"name": "len", "kind": "python", "entry": "reward", "code": code, "rule": None}
+    stored = {"reward_specs": [py, {"name": "half", "kind": "python", "rule": None}]}
+    assert _stored_reward_specs(stored) == {"len": py}
+
+
 def test_reward_funcs_keep_spec_order_and_accept_plain_strings(tmp_path, monkeypatch):
     monkeypatch.setattr(rewards, "_user_root", lambda: tmp_path / "rewards")
     specs = [
