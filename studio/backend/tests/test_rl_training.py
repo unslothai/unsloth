@@ -654,6 +654,19 @@ def test_grpo_step_estimate_counts_every_process():
     assert grpo_global_batch(types.SimpleNamespace(per_device_train_batch_size = 4)) == 4
 
 
+@pytest.mark.parametrize("objective", ["dpo", "orpo", "grpo"])
+def test_rl_objectives_never_pack_or_mask_to_completions(objective):
+    rewards = {"grpo_rewards": [{"name": "exact-answer"}]} if objective == "grpo" else {}
+    req = TrainingStartRequest(**BASE, objective = objective, **rewards)
+    assert not req.packing and not req.train_on_completions
+    asked = TrainingStartRequest(
+        **BASE, objective = objective, packing = True, train_on_completions = True, **rewards
+    )
+    assert not asked.packing and not asked.train_on_completions
+    sft = TrainingStartRequest(**BASE)
+    assert sft.packing and sft.train_on_completions
+
+
 def test_ignored_column_is_not_auto_mapped():
     from core.training.rl import resolve_role_columns
     resolved = resolve_role_columns(["question", "answer", "system"], "grpo", {"system": "ignore"})

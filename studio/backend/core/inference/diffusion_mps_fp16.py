@@ -150,7 +150,9 @@ def _castable(mod: Any) -> bool:
     if mod is None:
         return False
     if _is_native_quant(mod):
-        return getattr(mod, "scheme", "int8") == "int8" and not getattr(mod, "act_int8", False)
+        return getattr(mod, "scheme", "int8") in ("int8", "fp8") and not getattr(
+            mod, "act_int8", False
+        )
     for sub in mod.modules():
         if _is_native_quant(sub) or hasattr(sub, "compute_dtype"):
             return False

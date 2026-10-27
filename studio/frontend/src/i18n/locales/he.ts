@@ -2673,6 +2673,8 @@ export const he = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "זמן פעילות",
         processMemory: "זיכרון תהליך",
         notInstalled: "לא מותקן",
@@ -3438,6 +3440,7 @@ export const he = {
       desktopAppVersionUnavailable: "לא זמין",
       llamaCppVersion: "גרסת llama.cpp",
       audioCppVersion: "גרסת audio.cpp",
+      mlxVersion: "גרסת MLX",
       whisperCppVersion: "גרסת whisper.cpp",
       engines: {
         title: "מנועים",

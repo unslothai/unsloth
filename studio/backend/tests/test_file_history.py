@@ -30,7 +30,7 @@ def chat(tmp_path, monkeypatch):
 
 
 def _walk(workdir):
-    return tools._history_snapshot(tools._snapshot_workdir_files(workdir))
+    return tools._history_walk(workdir)
 
 
 def _rewind(history, turn_ids, **kwargs):
@@ -221,7 +221,7 @@ def test_a_walk_cut_short_by_the_folder_cap_is_not_complete(chat, monkeypatch):
         (workdir / name / "f.txt").write_text(name, encoding = "utf-8")
     assert _walk(str(workdir))[1] is True
     # Fewer files than the file cap, so only the folder cap can say the walk missed some.
-    monkeypatch.setattr(tools, "_MAX_SNAPSHOT_DIRS", 2)
+    monkeypatch.setattr(tools, "_MAX_HISTORY_DIRS", 2)
     assert _walk(str(workdir))[1] is False
 
 
@@ -288,9 +288,7 @@ def test_a_folder_swapped_for_a_link_is_never_written_through(chat, tmp_path):
     (elsewhere / "a.txt").write_text("2\n", encoding = "utf-8")
     workdir.rename(tmp_path / "moved")
     workdir.symlink_to(elsewhere, target_is_directory = True)
-    report = history.rewind(
-        "chat-1", ["u1"], lambda wd: tools._history_snapshot(tools._snapshot_workdir_files(wd))
-    )
+    report = history.rewind("chat-1", ["u1"], _walk)
     assert report.errors and (elsewhere / "a.txt").read_text(encoding = "utf-8") == "2\n"
 
 
@@ -310,7 +308,7 @@ def test_an_edit_missed_by_a_capped_first_walk_restores_the_original(chat, monke
     (workdir / "a").mkdir()
     (workdir / "z").mkdir()
     (workdir / "z" / "keep.txt").write_text("original\n", encoding = "utf-8")
-    monkeypatch.setattr(tools, "_MAX_SNAPSHOT_DIRS", 1)
+    monkeypatch.setattr(tools, "_MAX_HISTORY_DIRS", 1)
     file_history.set_turn("chat-1", "u1")
     _edit("z/keep.txt", "original", "changed")
     report = _rewind(history, ["u1"])
@@ -389,3 +387,111 @@ def test_an_upload_during_a_call_is_never_undone_with_it(chat):
     report = _rewind(history, ["u1"])
     assert "upload.txt" in report.conflicts
     assert (workdir / "upload.txt").read_text(encoding = "utf-8") == "mine\n"
+
+
+def _route_rewind(monkeypatch, turn_ids, **body):
+    from routes import chat_history
+    from state import active_generations
+
+    monkeypatch.setattr(chat_history, "get_chat_thread", lambda thread_id: {"id": thread_id})
+    monkeypatch.setattr(active_generations, "active_thread_ids", lambda scope = None: set())
+    request = chat_history.ChatRewindRequest(turn_ids = turn_ids, **body)
+    return chat_history.rewind_thread_files("chat-1", request, current_subject = "user")
+
+
+@pytest.mark.skipif(os.name != "posix", reason = "uses a POSIX shell")
+def test_files_deep_in_the_folder_are_rewound(chat, monkeypatch):
+    workdir, _history = chat
+    route = workdir / "web" / "src" / "app" / "api" / "route.ts"
+    helpers = workdir / "src" / "app" / "core" / "util" / "helpers.py"
+    for path in (route, helpers):
+        path.parent.mkdir(parents = True)
+        path.write_text("v1\n", encoding = "utf-8")
+    file_history.set_turn("chat-1", "u1")
+    _terminal("printf 'v2\\n' > web/src/app/api/route.ts")
+    _edit("src/app/core/util/helpers.py", "v1", "v2")
+
+    preview = _route_rewind(monkeypatch, ["u1"], dry_run = True)
+    assert preview["restored"] == ["src/app/core/util/helpers.py", "web/src/app/api/route.ts"]
+    assert _route_rewind(monkeypatch, ["u1"])["restored"] == preview["restored"]
+    assert route.read_text(encoding = "utf-8") == helpers.read_text(encoding = "utf-8") == "v1\n"
+
+
+@pytest.mark.skipif(os.name != "posix", reason = "uses a POSIX shell")
+def test_a_file_past_the_download_card_walk_is_rewound(chat, monkeypatch):
+    workdir, _history = chat
+    names = [f"d{d:02}/f{f:03}.txt" for d in range(25) for f in range(100)]
+    for name in names:
+        (workdir / name).parent.mkdir(exist_ok = True)
+        (workdir / name).write_text("v1\n", encoding = "utf-8")
+    listed = tools._snapshot_workdir_files(str(workdir))
+    missed = next(name for name in names if name not in listed)
+    file_history.set_turn("chat-1", "u1")
+    _terminal(f"printf 'v2\\n' > {missed}")
+
+    assert _route_rewind(monkeypatch, ["u1"])["restored"] == [missed]
+    assert (workdir / missed).read_text(encoding = "utf-8") == "v1\n"
+
+
+def test_a_large_scratch_folder_does_not_hide_a_deletion(chat, monkeypatch):
+    workdir, history = chat
+    (workdir / "keep.txt").write_text("v1\n", encoding = "utf-8")
+    cache = workdir / tools._SANDBOX_TEMP_DIRNAME / "torchinductor_user" / "fx" / "ab" / "cd"
+    cache.mkdir(parents = True)
+    for i in range(60):
+        (cache / f"{i}.py").write_text("x\n", encoding = "utf-8")
+    monkeypatch.setattr(tools, "_MAX_HISTORY_FILES", 50)
+    assert _walk(str(workdir))[1] is True
+    file_history.set_turn("chat-1", "u1")
+    execute_tool("python", {"code": "import os; os.remove('keep.txt')"}, session_id = "s")
+
+    assert _rewind(history, ["u1"]).recreated == ["keep.txt"]
+    assert (workdir / "keep.txt").read_text(encoding = "utf-8") == "v1\n"
+
+
+def test_an_upload_during_the_last_walk_is_never_undone_with_it(chat, monkeypatch):
+    workdir, history = chat
+    file_history.set_turn("chat-1", "u1")
+    _edit("seed.txt", "", "s\n")  # the baseline
+    real_walk, walks = tools._snapshot_workdir_files, []
+
+    def walk_with_an_upload(path, history = False):
+        walks.append(history)
+        if history and walks.count(True) == 2:
+            tools.save_sandbox_upload("s", "upload.txt", [b"mine\n"])
+        return real_walk(path, history = history)
+
+    monkeypatch.setattr(tools, "_snapshot_workdir_files", walk_with_an_upload)
+    execute_tool("python", {"code": "open('out.txt', 'w').write('x')"}, session_id = "s")
+    monkeypatch.setattr(tools, "_snapshot_workdir_files", real_walk)
+
+    report = _rewind(history, ["u1"])
+    assert "upload.txt" in report.conflicts
+    assert (workdir / "upload.txt").read_text(encoding = "utf-8") == "mine\n"
+
+
+def test_a_rewind_after_a_capped_walk_keeps_a_later_user_edit(chat):
+    workdir, history = chat
+    (workdir / "src").mkdir()
+    keep = workdir / "src" / "keep.txt"
+    keep.write_text("original\n", encoding = "utf-8")
+    file_history.set_turn("chat-1", "u1")
+    _edit("src/keep.txt", "original", "model")
+    keep.write_text("user later edit\n", encoding = "utf-8")
+
+    def capped(wd):  # a walk whose budget ran out before src/
+        snap, _complete = _walk(wd)
+        return {rel: key for rel, key in snap.items() if not rel.startswith("src/")}, False
+
+    report = history.rewind("chat-1", ["u1"], capped)
+    assert report.conflicts == ["src/keep.txt"]
+    assert keep.read_text(encoding = "utf-8") == "user later edit\n"
+
+
+def test_a_probe_of_a_missed_file_keeps_its_content_digest(chat):
+    workdir, history = chat
+    (workdir / "keep.txt").write_text("same\n", encoding = "utf-8")
+    info = (workdir / "keep.txt").stat()
+    history._walk_sync(str(workdir), lambda wd: ({"keep.txt": (1, info.st_size, "d1")}, True))
+    history._walk_sync(str(workdir), lambda wd: ({}, False))  # capped: keep.txt is probed
+    assert history._load_state(os.path.realpath(str(workdir)))["keep.txt"].digest == "d1"
