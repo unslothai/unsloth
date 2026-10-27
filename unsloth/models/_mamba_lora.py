@@ -11,8 +11,10 @@ modules never runs and gets no gradient.
 When every such adapter is plain LoRA (one active adapter, no dropout, no DoRA / variant, no LoRA
 bias, dense ``nn.Linear`` base) the fused kernel is kept and receives ``W + delta`` instead of ``W``,
 with ``delta`` from PEFT's own ``get_delta_weight`` built inside autograd, so lora_A / lora_B get
-exact gradients at fused-kernel memory and speed. Any other adapter routes that call to the mixer's
-own non-fused path, which calls the modules. Mixers without raw-weight adapters are unchanged.
+exact gradients at fused-kernel memory and speed. Otherwise the call routes to the mixer's own
+non-fused path when that path calls more of the adapted modules (transformers 5's Mamba torch path
+still reads dt_proj.weight raw, so it does not help a dt_proj adapter). An adapter neither path
+applies warns once. Mixers without raw-weight adapters are unchanged.
 """
 
 import functools
@@ -35,9 +37,19 @@ _FUSED_FNS = (
 )
 _MARK = "_unsloth_mamba_fused_lora"
 _force_slow = [0]
-# Stack of {id(base weight): (base weight, merged weight)} for the mixer forward in flight.
+# One _Frame per mixer forward in flight.
 _merged_stack = []
-_warned_dt_proj = [False]
+_warned = set()
+
+
+class _Frame:
+    __slots__ = ("merged", "applied")
+
+    def __init__(self, merged):
+        # {id(base weight): (base weight, W + delta, leaf)} handed to the fused kernel.
+        self.merged = merged
+        # Leaves whose adapter ran: merged into a kernel call that returned, or called as a module.
+        self.applied = set()
 
 
 def _has_active_adapter(module):
@@ -101,22 +113,11 @@ def _merged_weight(module):
     return weight + module.get_delta_weight(name).to(weight.dtype)
 
 
-def _merged_weights(mixer, leaves):
-    merged = {}
-    for leaf in leaves:
-        module = mixer._modules[leaf]
-        weight = _merged_weight(module)
-        if weight is None:
-            return None
-        base = module.get_base_layer().weight
-        merged[id(base)] = (base, weight)
-    return merged
-
-
-def _swap(value, merged):
+def _swap(value, merged, used):
     if isinstance(value, torch.Tensor):
         entry = merged.get(id(value))
         if entry is not None and entry[0] is value:
+            used.append(entry[2])
             return entry[1]
     return value
 
@@ -129,11 +130,15 @@ def _gate(fn):
     def gated(*args, **kwargs):
         if _force_slow[0]:
             return None
-        if _merged_stack:
-            merged = _merged_stack[-1]
-            args = tuple(_swap(value, merged) for value in args)
-            kwargs = {key: _swap(value, merged) for key, value in kwargs.items()}
-        return fn(*args, **kwargs)
+        if not _merged_stack or not _merged_stack[-1].merged:
+            return fn(*args, **kwargs)
+        frame, used = _merged_stack[-1], []
+        args = tuple(_swap(value, frame.merged, used) for value in args)
+        kwargs = {key: _swap(value, frame.merged, used) for key, value in kwargs.items()}
+        out = fn(*args, **kwargs)
+        if out is not None:
+            frame.applied.update(used)
+        return out
 
     setattr(gated, _MARK, True)
     return gated
@@ -149,6 +154,39 @@ def _is_mamba_mixer(module):
 def _calls_fused(fn):
     code = getattr(inspect.unwrap(fn), "__code__", None)
     return code is not None and any(name in code.co_names for name in _FUSED_FNS)
+
+
+def _leaves_called(fn):
+    """Raw-weight leaves the non-fused path calls as modules, so an adapter on them runs there.
+
+    transformers 5's MambaMixer torch path computes ``self.dt_proj.weight @ time_step``, so routing a
+    dt_proj adapter there would trade the fused kernel for nothing. Unknown source: assume all.
+    """
+    try:
+        source = inspect.getsource(inspect.unwrap(fn))
+    except (OSError, TypeError):
+        return frozenset(_RAW_WEIGHT_LEAVES)
+    return frozenset(leaf for leaf in _RAW_WEIGHT_LEAVES if f"self.{leaf}(" in source)
+
+
+def _mark_applied(applied, leaf, module, args):
+    applied.add(leaf)
+
+
+def _warn_not_applied(cls, leaves):
+    leaves = [leaf for leaf in leaves if (cls, leaf) not in _warned]
+    if not leaves:
+        return
+    _warned.update((cls, leaf) for leaf in leaves)
+    names = ", ".join(f"{cls.__name__}.{leaf}" for leaf in leaves)
+    warnings.warn(
+        f"Unsloth: the LoRA adapter on {names} is not applied in this Mamba training forward and "
+        "will not train. The fused kernel reads that weight raw and only plain LoRA (one active "
+        "adapter, lora_dropout = 0, no DoRA, no LoRA bias, dense base) can be merged into it, and "
+        "the non-fused path does not call it either. Use lora_dropout = 0 or remove it from "
+        "target_modules.",
+        stacklevel = 3,
+    )
 
 
 def _patch_class(cls):
@@ -182,19 +220,11 @@ def _patch_class(cls):
         return False
     for name in names:
         module_globals[name] = _gate(module_globals[name])
+    called = _leaves_called(slow if legacy else forward)
 
     def non_fused(self, hidden_states, *args, **kwargs):
         if legacy:
             return slow(self, hidden_states, *args, **kwargs)
-        if "dt_proj" in mamba_raw_weight_adapters(self) and not _warned_dt_proj[0]:
-            # transformers 5's torch path reads dt_proj.weight raw as well.
-            _warned_dt_proj[0] = True
-            warnings.warn(
-                "Unsloth: a dt_proj LoRA adapter that uses dropout, DoRA, several active adapters "
-                "or a quantized base is not applied by transformers' Mamba torch path; use "
-                "lora_dropout = 0 or leave dt_proj out of target_modules.",
-                stacklevel = 3,
-            )
         _force_slow[0] += 1
         try:
             return forward(self, hidden_states, *args, **kwargs)
@@ -210,15 +240,36 @@ def _patch_class(cls):
                 cache_params = args[cache_index] if 0 <= cache_index < len(args) else None
             leaves = mamba_raw_weight_adapters(self) if cache_params is None else None
             if leaves:
-                merged = _merged_weights(self, leaves) if names else None
-                if merged is None:
-                    return non_fused(self, hidden_states, *args, **kwargs)
-                # Fused kernel kept; it receives W + delta in place of each adapted W.
-                _merged_stack.append(merged)
+                modules = {leaf: self._modules[leaf] for leaf in leaves}
+                weights = {leaf: _merged_weight(modules[leaf]) for leaf in leaves} if names else {}
+                fused_cover = [leaf for leaf in leaves if weights.get(leaf) is not None]
+                # Leave the fused kernel only when the non-fused path applies more adapters.
+                use_slow = sum(leaf in called for leaf in leaves) > len(fused_cover)
+                merged = {}
+                if not use_slow:
+                    for leaf in fused_cover:
+                        base = modules[leaf].get_base_layer().weight
+                        merged[id(base)] = (base, weights[leaf], leaf)
+                frame = _Frame(merged)
+                hooks = [
+                    module.register_forward_pre_hook(
+                        functools.partial(_mark_applied, frame.applied, leaf)
+                    )
+                    for leaf, module in modules.items()
+                ]
+                _merged_stack.append(frame)
                 try:
-                    return forward(self, hidden_states, *args, **kwargs)
+                    if use_slow:
+                        out = non_fused(self, hidden_states, *args, **kwargs)
+                    else:
+                        # Fused kernel kept; it receives W + delta in place of each adapted W.
+                        out = forward(self, hidden_states, *args, **kwargs)
                 finally:
                     _merged_stack.pop()
+                    for hook in hooks:
+                        hook.remove()
+                _warn_not_applied(cls, [leaf for leaf in leaves if leaf not in frame.applied])
+                return out
         return forward(self, hidden_states, *args, **kwargs)
 
     setattr(forward_keep_adapters, _MARK, True)

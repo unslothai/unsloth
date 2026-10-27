@@ -12,7 +12,9 @@ call and hand it `W + delta`; other adapters must route the mixer to its non-fus
 import ast
 import importlib
 import importlib.util
+import inspect
 import pathlib
+import warnings
 
 import pytest
 import torch
@@ -276,15 +278,66 @@ def test_dropout_routes_to_non_fused_path(monkeypatch, arch):
         assert grads and all(g is not None and g.abs().sum() > 0 for g in grads), kind
 
 
-def test_dt_proj_adapter_on_transformers_5_torch_path_warns(monkeypatch):
-    # transformers 5's torch path computes dt_proj.weight @ time_step, so a dt_proj adapter that
-    # cannot be merged into the fused call is not applied there; say so instead of training silently.
+def _slow_calls(arch, leaf):
+    modeling = importlib.import_module(f"transformers.models.{arch}.modeling_{arch}")
+    mixer_cls = getattr(modeling, ARCHS[arch][2])
+    slow = mixer_cls.slow_forward if _legacy(arch) else mixer_cls.forward
+    return f"self.{leaf}(" in inspect.getsource(inspect.unwrap(slow))
+
+
+@pytest.mark.parametrize("arch", list(ARCHS))
+def test_dt_proj_lora_trains_on_fused_kernel(monkeypatch, arch):
+    model, calls = _build(monkeypatch, arch, ["in_proj", "dt_proj"])
+    ids = torch.randint(0, 64, (2, 8))
+    with warnings.catch_warnings(record = True) as caught:
+        warnings.simplefilter("always")
+        loss = _loss(model, ids)
+    assert not any("not applied" in str(w.message) for w in caught)
+    assert len(calls) == 2
+    for mixer, seen in zip(_mixers(model), calls):
+        expected = mixer.dt_proj.get_base_layer().weight + mixer.dt_proj.get_delta_weight("default")
+        torch.testing.assert_close(seen["dt_proj"], expected)
+        assert seen["x_proj"] is mixer.x_proj.weight
+    loss.backward()
+    for kind in ("A", "B"):
+        grads = [p.grad for p in _lora_param(model, "dt_proj", kind)]
+        assert grads and all(g is not None and g.abs().sum() > 0 for g in grads), kind
+
+
+@pytest.mark.parametrize("arch", list(ARCHS))
+def test_unmergeable_dt_proj_routes_only_where_the_slow_path_calls_it(monkeypatch, arch):
+    # transformers 5's MambaMixer torch path computes dt_proj.weight @ time_step, so leaving the
+    # fused kernel for a dt_proj adapter with dropout would cost speed and still train nothing:
+    # stay fused and warn. 4.x's slow_forward calls self.dt_proj(...), so there it routes and trains.
+    model, calls = _build(monkeypatch, arch, ["in_proj", "dt_proj"], lora_dropout = 0.1)
+    with warnings.catch_warnings(record = True) as caught:
+        warnings.simplefilter("always")
+        _loss(model, torch.randint(0, 64, (2, 8))).backward()
+    warned = any("dt_proj" in str(w.message) for w in caught)
+    grads = [p.grad for p in _lora_param(model, "dt_proj", "B")]
+    trained = bool(grads) and all(g is not None and g.abs().sum() > 0 for g in grads)
+    if _slow_calls(arch, "dt_proj"):
+        assert calls == []
+    else:
+        assert len(calls) == 2, "left the fused kernel for an adapter the slow path ignores"
+    if _legacy(arch):
+        assert trained and not warned
+    # Never silent: either the adapter trains or the user is told it does not.
+    assert trained != warned, (trained, warned)
+
+
+def test_dt_proj_lora_without_kernel_on_transformers_5_warns(monkeypatch):
+    # No fused kernel (the entry point returns None): transformers 5 falls through to its torch path,
+    # which reads dt_proj.weight raw, so even plain LoRA there cannot train.
     if _legacy("mamba"):
         pytest.skip("transformers 4.x slow_forward calls dt_proj as a module")
-    model, calls = _build(monkeypatch, "mamba", ["in_proj", "dt_proj"], lora_dropout = 0.1)
-    with pytest.warns(UserWarning, match = "dt_proj"):
-        _loss(model, torch.randint(0, 64, (2, 8)))
-    assert calls == []
+    model, calls = _build(monkeypatch, "mamba", ["in_proj", "x_proj", "dt_proj"], fused = False)
+    with pytest.warns(UserWarning, match = r"MambaMixer\.dt_proj") as caught:
+        _loss(model, torch.randint(0, 64, (2, 8))).backward()
+    assert not any("x_proj" in str(w.message) for w in caught)
+    assert len(calls) == 2
+    grads = [p.grad for p in _lora_param(model, "x_proj", "B")]
+    assert grads and all(g is not None and g.abs().sum() > 0 for g in grads)
 
 
 @pytest.mark.parametrize("arch", list(ARCHS))
