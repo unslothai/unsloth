@@ -93,7 +93,11 @@ SMALLER_GEOMETRY_OK: dict[str, Floor] = {
 }
 
 # family -> open seam bug below the floor. Strict xfail, so the fix landing forces the entry out.
-KNOWN_SEAMS: dict[str, str] = {}
+KNOWN_SEAMS: dict[str, str] = {
+    # Stock strides only: generate sets per-canvas ones (test_video_cosmos3 checks them against this floor).
+    "cosmos3-nano": "stock AutoencoderKLWan@16x fallback tiles: 4-latent edge tile at 480 / 832 px",
+    "cosmos3-edge": "stock AutoencoderKLWan@16x fallback tiles: 4-latent edge tile at 480 / 640 / 832 px",
+}
 
 GEOMETRY_PRESERVING = {
     "diffusion_vae_fused": "batched stock tiled_decode: the stock attributes' tiles, decoded as one batch",

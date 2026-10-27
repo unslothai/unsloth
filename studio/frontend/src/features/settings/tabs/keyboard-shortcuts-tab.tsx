@@ -74,7 +74,6 @@ export function KeyboardShortcutsTab() {
   const resetAll = useKeyboardShortcutsStore((s) => s.resetAll);
 
   const [recording, setRecording] = useState<RecordingTarget | null>(null);
-  // Shown under the row being recorded when the pressed chord is rejected.
   const [recordingError, setRecordingError] = useState<string | null>(null);
   const [justRecorded, setJustRecorded] = useState<RecordingTarget | null>(
     null,
@@ -164,21 +163,16 @@ export function KeyboardShortcutsTab() {
       window.removeEventListener("keydown", onKeyDown, { capture: true });
   }, [recording, setBinding, clearBinding, t]);
 
-  // Capture phase, as the recorder is: the chord has to arrive before the shortcut
-  // it names fires, and before Radix's Escape closes the dialog. The recorder owns
-  // the keyboard while it runs, so this stands down for it.
+  // Capture phase like the recorder; stands down while recording, which owns the keyboard.
   useEffect(() => {
     if (!byKeystroke || recording) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      // Only while the box has focus: the rest of the tab keeps its own keys.
       if (document.activeElement !== searchRef.current) return;
-      // Read the key through the binding, not event.code, so the fallback for an
-      // engine that reports no code covers Tab and Escape here too.
+      // Through the binding so the no-code fallback covers Tab and Escape.
       const binding = bindingFromEvent(event);
-      // Modifier on its own: the chord is still being assembled.
       if (!binding) return;
       const bare = !binding.mod && !binding.ctrl && !binding.alt;
-      // Tab still moves focus: a mode that swallowed it would trap the keyboard here.
+      // Tab still moves focus, or the keyboard would be trapped here.
       if (binding.code === "Tab" && bare) return;
       event.preventDefault();
       event.stopPropagation();
@@ -196,7 +190,7 @@ export function KeyboardShortcutsTab() {
   }, [byKeystroke, recording, keystroke]);
 
   const toggleByKeystroke = () => {
-    // The two searches filter the same list, so leaving one arms the other empty.
+    // Both searches filter the same list, so switching clears the other.
     setByKeystroke((on) => !on);
     setQuery("");
     setKeystroke(null);
@@ -206,7 +200,6 @@ export function KeyboardShortcutsTab() {
   // Matched on assigned chords, so a switched-off row is still found by its keys.
   const matches = useMemo(() => {
     if (byKeystroke) {
-      // Nothing pressed yet: the whole list, not an empty one.
       if (!keystroke) return null;
       return new Set(
         SHORTCUT_DEFS.filter((def) =>
@@ -324,7 +317,7 @@ export function KeyboardShortcutsTab() {
     const enabled = isShortcutEnabled(overrides, def.id);
     const isRecording = recording?.id === def.id;
     const conflicted = conflicts.has(def.id) && !isRecording;
-    // Say which side of a clash this row is on, since only the owner runs.
+    // Only the owner of a clash runs.
     const shadowed =
       conflicted &&
       SHORTCUT_SLOTS.every((slot) => {
@@ -470,8 +463,7 @@ export function KeyboardShortcutsTab() {
         />
         <Input
           ref={searchRef}
-          // Chord mode shows the press, not text: the field is read-only there and
-          // the capture listener above is what fills it.
+          // Read-only in chord mode; the capture listener fills it.
           value={
             byKeystroke
               ? keystroke

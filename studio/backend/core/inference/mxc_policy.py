@@ -218,12 +218,7 @@ def _trusted_terminal_path_dirs(plan) -> list[str]:
 
 
 def _runtime_read_roots(executable: str, extra: list[str] = ()) -> list[str]:
-    # Preserve the lexical executable for launch. Grants may use canonical roots,
-    # but never broaden to the user profile or a drive root.
-    # uv's managed Python base_prefix can be a version-independent junction.
-    # Resolve this interpreter-owned root before validation so the grant names
-    # the concrete runtime, not a redirect uv can retarget on upgrade. Keep
-    # strict reparse rejection for executables, workdirs and other grant inputs.
+    # Resolve base_prefix first: uv junction can be retargeted on upgrade. Never broaden grants to the profile or drive root; reject reparse points in inputs
     base_prefix = os.path.realpath(sys.base_prefix)
     roots = [os.path.dirname(os.path.abspath(executable)), sys.prefix, base_prefix, *extra]
     roots.extend(site.getsitepackages())
@@ -298,11 +293,7 @@ def is_cmd_argv(argv) -> bool:
 
 
 def cmd_command_line(cmd_path: str, payload: str) -> str:
-    """cmd's own quoting: /s strips exactly the outer pair, so embedded quotes arrive as written.
-
-    list2cmdline escapes them as \\", which cmd does not understand: a quoted path then names a file
-    that cannot exist, and a denied read looks the same as a command that never ran.
-    """
+    """Quotes for cmd: /s strips only the outer pair, and list2cmdline escapes break paths, so a denied read looks like a command that never ran"""
     if "\0" in payload:
         raise MxcPolicyError("the Terminal command contains a NUL character")
     if "\n" in payload or "\r" in payload:
@@ -455,8 +446,7 @@ def build_launch_request(
     runtime_roots = _runtime_read_roots(selected_runtime, _trusted_terminal_path_dirs(plan))
     readonly = _without_nested(runtime_roots + _model_read_roots(workdir, runtime_roots))
     _reject_grants_over_dacl_journal([workdir, *readonly])
-    # Tier 3 walks every readonly tree per launch; a one-time grant on the runtime folders skips it.
-    # Read fresh: a grant made on a stale cached "on" would outlive another process's opt-out.
+    # Tier 3 walks every readonly tree per launch, so a one-time grant skips it. Read fresh: a grant on a stale cached on would outlive another process opt-out
     mxc_read_grants.refresh_saved_switches()
     if dacl_fallback_enabled():
         mxc_read_grants.ensure(runtime_roots)
@@ -473,8 +463,7 @@ def build_launch_request(
         cwd_alias = _checked_cwd_alias(cwd_alias, workdir_identity)
     run_id = run_id or uuid.uuid4().hex
     workload_env = _with_session_packages(dict(plan.env), workdir)
-    # MXC's Windows ProcessContainer validator requires LOCALAPPDATA to be
-    # present. Point it inside the session instead of exposing the real profile.
+    # MXC ProcessContainer validator requires LOCALAPPDATA; point it inside the session, not at the real profile
     workload_env.setdefault("LOCALAPPDATA", workdir)
     ui_policy = _studio_ui_policy()
     config = {

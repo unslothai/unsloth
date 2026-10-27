@@ -85,7 +85,8 @@ def test_family_records():
     for fam in (distilled, base):
         # One text-to-image call takes up to 10 reference images (the BFL reference's MAX_REFERENCES).
         assert fam.reference and fam.max_condition_images == 10
-        assert not fam.edit and not fam.unified_edit
+        # Edit is that same call (BFL's i2i / mi2i), not Qwen-Image-2.1's localized unified edit.
+        assert fam.reference_edit and not fam.edit and not fam.unified_edit
         assert fam.dimension_multiple == 16
         # A single file / GGUF denoiser assembles around the base's modular companions.
         assert not fam.pipeline_only

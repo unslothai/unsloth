@@ -890,7 +890,7 @@ def test_rope_parameters_build_the_trained_rope_on_every_transformers(tmp_path):
     assert not torch.allclose(outputs[0], outputs[2], atol = 1e-2)
 
 
-TINY_QWEN3_5 = "trl-internal-testing/tiny-Qwen3_5ForConditionalGeneration"
+TINY_QWEN3_5 = "trl-internal-testing/tiny-Qwen3_5ForConditionalGeneration-NoThink"
 CLEF_HEAD = {
     "hidden_size": 16,
     "width": 32,

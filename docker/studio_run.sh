@@ -32,10 +32,8 @@ PY
 }
 
 password_stored() {
-    # The admin row with must_change_password=0. A bare auth.db from an interrupted
-    # first launch, or a seeded row nobody changed, still accepts an initial password.
-    # A row from before that column existed counts as stored: the CLI migrates it
-    # with default 0 and then rejects an initial password.
+    # Stored = admin row with must_change_password=0; a row predating that column counts as
+    # stored (the CLI migrates it with default 0).
     python3 - "${STUDIO_HOME}/auth/auth.db" <<'PY'
 import sqlite3, sys
 from urllib.parse import quote
@@ -69,22 +67,10 @@ if [[ -s "$INITIAL" ]] && ! password_stored; then
     IFS= read -r -d '' UNSLOTH_STUDIO_PASSWORD < "$INITIAL" || true
     export UNSLOTH_STUDIO_PASSWORD
 fi
-# Exposure. The default stays -H 0.0.0.0 because that is what makes a published
-# -p 8000:8000 reachable at all; the container is the boundary, the host's -p
-# decides who sees it.
-#
-#   UNSLOTH_STUDIO_SECURE=1      --secure: a Cloudflare HTTPS link and nothing
-#                                else. Studio forces a loopback bind itself, so
-#                                -p 8000:8000 would publish a port nothing is
-#                                listening on. Fails closed if the tunnel does
-#                                not come up.
-#   UNSLOTH_STUDIO_CLOUDFLARE=1  --cloudflare: the same public HTTPS link, with
-#                                the local port still served, for a laptop that
-#                                wants both.
-#
-# Mirrors UNSLOTH_JUPYTER_CLOUDFLARE, which JupyterLab has had all along. The two
-# are mutually exclusive in the CLI, so refuse the pair here rather than let
-# supervisord restart Studio forever on an argument error.
+# Default -H 0.0.0.0 so a published -p is reachable; the container is the boundary.
+# UNSLOTH_STUDIO_SECURE=1: --secure (Cloudflare only, loopback bind, fails closed).
+# UNSLOTH_STUDIO_CLOUDFLARE=1: --cloudflare (link plus local port). Mutually exclusive;
+# refused here so supervisord does not restart Studio forever.
 STUDIO_ARGS=(-H 0.0.0.0 -p "${UNSLOTH_STUDIO_PORT:-8000}")
 if [[ "${UNSLOTH_STUDIO_SECURE:-0}" == "1" && "${UNSLOTH_STUDIO_CLOUDFLARE:-0}" == "1" ]]; then
     echo "ERROR: set UNSLOTH_STUDIO_SECURE=1 or UNSLOTH_STUDIO_CLOUDFLARE=1, not both:" >&2

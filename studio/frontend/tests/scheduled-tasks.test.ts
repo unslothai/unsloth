@@ -23,6 +23,7 @@ import {
   readSeenRuns,
   runErrorText,
   runsToAnnounce,
+  runsAskingToLoad,
   runsToNotify,
   readInRecents,
   unseenChatChanges,
@@ -297,6 +298,7 @@ function finished(id: string, finishedAt: number): ScheduledTasksApi.FinishedSch
     error: null,
     taskTitle: "Morning brief",
     taskNotify: "all",
+    taskModel: null,
   };
 }
 
@@ -725,4 +727,26 @@ test("a task left unnamed is named after its instructions' first line", () => {
   const emoji = titleFromPrompt(`Describe ${"\u{1F600}".repeat(70)}`);
   assert.ok(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(emoji), "no lone surrogate");
   assert.equal(Array.from(emoji).length, 61);
+});
+
+test("a run whose model was not loaded asks once per task, whatever its notifications say", () => {
+  const run = (id: string, taskId: string, errorCode: string | null, taskModel: string | null) => ({
+    ...finished(id, 1_000),
+    status: "failed" as const,
+    taskId,
+    errorCode,
+    taskModel,
+    taskNotify: "none" as const,
+  });
+  const asks = runsAskingToLoad([
+    run("a", "task-1", "model_not_loaded", "unsloth/Qwen3-1.7B-GGUF"),
+    run("b", "task-1", "model_not_loaded", "unsloth/Qwen3-1.7B-GGUF"),
+    run("c", "task-2", "no_model", null),
+    run("e", "task-4", "model_busy", "unsloth/gemma-3-GGUF"),
+    run("d", "task-3", "model_not_loaded", null),
+  ]);
+  assert.deepEqual(
+    asks.map((ask) => ask.id),
+    ["b"],
+  );
 });

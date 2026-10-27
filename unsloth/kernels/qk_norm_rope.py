@@ -454,7 +454,7 @@ def fast_qk_norm_rope(
             position_ids = position_ids.reshape(1, seq_len).expand(batch, seq_len)
         if position_ids.numel() != batch * seq_len:
             return _unfused(q_norm, k_norm, Q, K, cos, sin, position_ids)
-        rope_indices = position_ids.reshape(-1).to(dtype = torch.int32, device = Q.device)
+        rope_indices = position_ids.reshape(-1).to(dtype = torch.int32, device = Q.device).contiguous()
     else:
         if seq_len > cos2.shape[0]:
             return _unfused(q_norm, k_norm, Q, K, cos, sin, position_ids)

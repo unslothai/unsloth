@@ -6646,6 +6646,9 @@ def test_repeated_note_on_an_mcp_image_keeps_the_base64_out_of_the_tool_text(mon
     ]
     payloads: list[dict] = []
     backend = _vision_backend(monkeypatch, streams, payloads, vision = True)
+    # Images are charged in the fit (#14968): with no projector each one costs the ~4.2k
+    # admission ceiling, more than this 4096 window, so price the 6 px screenshot by size.
+    backend._mmproj_projector_type = "qwen3vl_merger"
     monkeypatch.setattr(
         "core.inference.tools.execute_tool", lambda name, arguments, **_kwargs: fitted
     )
