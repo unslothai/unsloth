@@ -777,10 +777,8 @@ del patch_bitsandbytes_optimizer_step_sync
 
 
 def _define_kernels_against_triton_stub():
-    """Unsloth's kernel modules define @triton.jit kernels at import. With no Triton package, a triton import made
-    by an unsloth.* module resolves to unsloth_zoo's triton stub (calling a kernel raises); every other importer,
-    including other threads importing meanwhile, still sees no Triton: the stub modules are handed to unsloth.*
-    importers directly and never enter sys.modules or sys.meta_path. Returns the undo callable."""
+    """With no Triton, triton imports from unsloth.* modules get unsloth_zoo's stub; every other importer (any thread)
+    still sees no Triton, so the stub never enters sys.modules or sys.meta_path. Returns the undo callable."""
     try:
         from unsloth_zoo.stubs import triton_stub
     except ImportError:
@@ -793,8 +791,7 @@ def _define_kernels_against_triton_stub():
     lock = threading.Lock()
 
     def _stub_module(name):
-        # triton.a.b: the seeded stub submodule, else a permissive one made once and set on its parent like
-        # zoo's finder does (unknown attributes of a stub module are no-ops, not submodules).
+        # Unknown attributes of a stub module are no-ops, not submodules, so create missing ones explicitly.
         module = triton_stub
         with lock:
             for i, part in enumerate(name.split(".")[1:], start = 2):
@@ -819,7 +816,6 @@ def _define_kernels_against_triton_stub():
             or importer.split(".")[0] != "unsloth"
         ):
             return real_import(name, globals, locals, fromlist, level)
-        # __import__ returns the named module for `from x.y import z`, else the top-level package.
         module = _stub_module(name)
         return module if fromlist else triton_stub
 

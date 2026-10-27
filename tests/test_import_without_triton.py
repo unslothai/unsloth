@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""On a host without Triton (for example a Windows install without triton-windows) `import unsloth` must still work.
-Unsloth's own kernel modules see unsloth_zoo's triton stub while they are defined; no other module, in this thread or
-another, may see it."""
+"""Without Triton `import unsloth` must still work; only unsloth.* modules may see unsloth_zoo's triton stub."""
 
 import os
 import subprocess
@@ -72,9 +70,7 @@ def test_unsloth_imports_without_triton():
     )
 
 
-# The hook lifted from unsloth/_gpu_init.py, run while another thread imports triton. The other thread imports at the
-# point where the unsloth.* import is inside the hook's call to the real __import__ (if it makes one), else right after
-# it returned: either way it must see no Triton, and nothing may be left in sys.modules / sys.meta_path.
+# The _gpu_init.py hook, with another thread importing triton mid unsloth.* import: it must see no Triton.
 _CONCURRENT = textwrap.dedent("""
     import ast, builtins, importlib.util, os, sys, textwrap, threading
     from unsloth_zoo.stubs import triton_stub
