@@ -307,9 +307,7 @@ function FlowNodeViewImpl({ id, selected }: NodeProps<RfNode>) {
       </div>
 
       {collapsed && isColumn ? (
-        <div className="relative h-0 overflow-hidden opacity-0">
-          <RecipeColumnPorts node={node} />
-        </div>
+        <RecipeColumnPorts node={node} collapsed={true} />
       ) : collapsed ? (
         <div className="relative h-0">
           {spec.inputs.map((port) => (

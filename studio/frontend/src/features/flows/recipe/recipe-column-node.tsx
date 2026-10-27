@@ -109,7 +109,10 @@ function inputPortsKey(id: string) {
 }
 
 /** One input per column read, labelled with that column's name; the output carries the column's own name. */
-export function RecipeColumnPorts({ node }: { node: FlowNode }) {
+export function RecipeColumnPorts({
+  node,
+  collapsed = false,
+}: { node: FlowNode; collapsed?: boolean }) {
   const key = useDocStore(inputPortsKey(node.id));
   const column = columnOf(node);
   const look = columnLook(column);
@@ -120,6 +123,34 @@ export function RecipeColumnPorts({ node }: { node: FlowNode }) {
       })
     : [];
   const open = columnTakesWires(column);
+  if (collapsed) {
+    // Folded into the header, like Flows' other collapsed nodes: hidden but still wireable.
+    const hidden = { top: -18 };
+    return (
+      <div className="relative h-0">
+        {[
+          ...inputs.map((p) => `in${REF_HANDLE_SEP}${p.sourceId}`),
+          ...(open ? ["in"] : []),
+        ].map((port) => (
+          <Handle
+            key={port}
+            type="target"
+            id={inHandle(port)}
+            position={Position.Left}
+            className="!opacity-0"
+            style={hidden}
+          />
+        ))}
+        <Handle
+          type="source"
+          id={outHandle("out")}
+          position={Position.Right}
+          className="!opacity-0"
+          style={hidden}
+        />
+      </div>
+    );
+  }
   return (
     <div className="flex justify-between gap-2">
       <div className="flex min-w-0 flex-col gap-1">
