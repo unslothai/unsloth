@@ -20275,7 +20275,7 @@ class LlamaCppBackend:
             return None
         # Adapters can declare a chat architecture but contain only weight deltas.
         # Check metadata rather than filenames: merged LoRA models are complete models.
-        if self._gguf_type == "adapter":
+        if getattr(self, "_gguf_type", None) == "adapter":
             return (
                 "This GGUF is a LoRA adapter and needs a matching base model. "
                 "Select a full model GGUF for chat, or use this adapter with its base model."
