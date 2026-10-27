@@ -228,4 +228,21 @@ test("Try it joins an Alpaca input onto the instruction, as training does", () =
     "Add these.",
   );
   assert.equal(alpacaPromptCell(row, { input: "prompt" }, "input"), "2 and 2");
+  // A role GRPO doesn't read, left over from DPO: the backend still joins the input.
+  assert.equal(
+    alpacaPromptCell(
+      row,
+      { instruction: "prompt", input: "chosen" },
+      "instruction",
+    ),
+    "Add these.\n\n2 and 2",
+  );
+  assert.equal(
+    alpacaPromptCell(
+      row,
+      { instruction: "prompt", input: "answer" },
+      "instruction",
+    ),
+    "Add these.",
+  );
 });
