@@ -1453,12 +1453,10 @@ _TEAMS = {f"team_{i}": "tickets and questions about this product area " * 2 for 
     [
         (_ESCALATE, dict(list(_TEAMS.items())[:4]), None),
         (_ESCALATE, _TEAMS, "instructions would be cut short"),
-        ("Which queue?", {"billing": "word " * 47, "outage": None}, None),
-        ("Which queue?", {"billing": "word " * 48, "outage": None}, "48-token option limit"),
-        ("Which queue?", {"billing": "word " * 60, "outage": None}, "48-token option limit"),
+        ("Which queue?", {"billing": "word " * 60, "outage": None}, None),
     ],
 )
-def test_choice_instructions_or_options_laya_would_cut_are_refused(
+def test_choice_instructions_laya_would_cut_are_refused(
     client, word_laya, instructions, criteria, refusal
 ):
     question = {"type": "choice", "instructions": instructions, "criteria": criteria}

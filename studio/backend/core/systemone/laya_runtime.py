@@ -1700,9 +1700,7 @@ def _head(agent, question: dict[str, Any], max_len: int, head_max_len: int):
         internal = agent._to_internal(question)
         tok = agent.tok
         options = [" " + o.replace(tok.mask_token, " ") for o in render_options(internal)]
-        sizes = [1 + len(tok(o, add_special_tokens = False)["input_ids"]) for o in options]
-        if max(sizes) > 1 + 48:
-            raise ValueError("has an option longer than Laya's 48-token option limit")
+        sizes = [1 + min(48, len(tok(o, add_special_tokens = False)["input_ids"])) for o in options]
         # build_sequence's rule: past this budget, each option keeps only its share of it.
         budget = head_max_len - 16
         share = max(4, budget // len(sizes))
