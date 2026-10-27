@@ -9,11 +9,19 @@ import {
   AUTH_TOKEN_KEY,
   hasAuthToken,
 } from "@/features/auth";
-import { PIN_JOURNAL_PREFIX } from "../stores/pinned-chats-store";
+import {
+  PIN_JOURNAL_PREFIX,
+  discardUnboundPinEdits,
+} from "../stores/pinned-chats-store";
 
 // Loaded on mount, not at startup: the sync runtime would push the eager bundle over budget.
 let runtime: Promise<typeof import("../sync-pinned-chats")> | undefined;
-const loadRuntime = () => (runtime ??= import("../sync-pinned-chats"));
+const loadRuntime = () =>
+  (runtime ??= import("../sync-pinned-chats").catch((error: unknown) => {
+    // Browsers refetch a failed dynamic import, so the next focus/online/poll retries it.
+    runtime = undefined;
+    throw error;
+  }));
 
 /** Keep pins current across clients, and discard in-flight work at session boundaries. */
 export function usePinnedChatsSync(): void {
@@ -33,9 +41,11 @@ export function usePinnedChatsSync(): void {
       }
     };
     const reconcileSession = () => {
-      void loadRuntime().then((sync) =>
-        sync.resetPinnedChats({ clearPending: true }),
-      );
+      // Synchronous, so a runtime that fails to load cannot carry edits into the next session.
+      discardUnboundPinEdits();
+      void loadRuntime()
+        .then((sync) => sync.resetPinnedChats({ clearPending: true }))
+        .catch(() => undefined);
       sessionMark = localStorage.getItem(AUTH_SESSION_MARK_KEY);
       refresh();
     };
@@ -69,9 +79,10 @@ export function usePinnedChatsSync(): void {
       const clearPending =
         !hasAuthToken() ||
         localStorage.getItem(AUTH_SESSION_MARK_KEY) !== sessionMark;
-      void loadRuntime().then((sync) =>
-        sync.resetPinnedChats({ clearPending }),
-      );
+      if (clearPending) discardUnboundPinEdits();
+      void loadRuntime()
+        .then((sync) => sync.resetPinnedChats({ clearPending }))
+        .catch(() => undefined);
     };
   }, []);
 }
