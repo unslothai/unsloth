@@ -73,7 +73,7 @@ def _mig_rows(gpu_ids: list[int]):
         return None
 
 
-_CA_BUNDLE_VARIABLES = ("SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE")
+_CA_BUNDLE_VARIABLES = ("SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE")
 
 
 def _point_tls_at_studio_ca_bundle(child_env: dict[str, str]) -> None:

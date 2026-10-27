@@ -23,7 +23,9 @@ def test_an_engine_without_a_chosen_bundle_gets_studios_certifi():
     assert env == before
 
 
-@pytest.mark.parametrize("name", ["SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE"])
+@pytest.mark.parametrize(
+    "name", ["SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"]
+)
 def test_a_bundle_the_user_chose_is_left_alone(name):
     env = {name: "/etc/corp/ca.pem"}
     managed_engine._point_tls_at_studio_ca_bundle(env)
