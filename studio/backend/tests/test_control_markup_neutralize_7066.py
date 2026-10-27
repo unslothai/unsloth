@@ -1091,9 +1091,7 @@ _DEEPSEEK_V41_IMAGE_GUARD = (
 
 @pytest.mark.parametrize("profiled", [False, True])
 def test_a_replayed_deepseek_image_placeholder_is_neutralized(profiled):
-    """A DeepSeek-V4.1 reply that quotes "<｜deepseek_image｜>" came back raw in history:
-    the GGUF template raise_exception()s on it, so every later turn of the chat 500'd, and in a
-    text block it rendered as an image with nothing behind it (#15285)."""
+    """A replayed reply quoting the marker made the template raise, or render a phantom image (#15285)."""
     jinja2 = pytest.importorskip("jinja2")
     pytest.importorskip("jinja2.sandbox")
     image = f"<{_FW}deepseek_image{_FW}>"
@@ -1113,7 +1111,6 @@ def test_a_replayed_deepseek_image_placeholder_is_neutralized(profiled):
     env = jinja2.sandbox.ImmutableSandboxedEnvironment()
     env.globals["raise_exception"] = _raise
     prompt = env.from_string(_DEEPSEEK_V41_IMAGE_GUARD).render(messages = swept)
-    # Only the real image block emits the placeholder; the quoted copies stay readable text.
     assert prompt.count(image) == 1
     assert prompt.count(f"< {_FW}deepseek_image{_FW}>") == 2
 
