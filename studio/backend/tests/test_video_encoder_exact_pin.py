@@ -91,7 +91,7 @@ def test_a_tied_embedding_is_priced_once_per_offload_group_that_copies_it():
 
 def test_the_kill_switch_and_an_unsupported_registered_pin_turn_the_exact_plan_off(monkeypatch):
     monkeypatch.delenv(_EXACT_ENV, raising = False)
-    monkeypatch.setattr(dm, "_fast_pin_supported", lambda: True)
+    monkeypatch.setattr(dm, "_fast_pin_supported", lambda *a, **k: True)
     pipe = types.SimpleNamespace()
     assert not dm._video_exact_pins(pipe)
     dm.request_fast_pins(pipe)
@@ -99,7 +99,7 @@ def test_the_kill_switch_and_an_unsupported_registered_pin_turn_the_exact_plan_o
     monkeypatch.setenv(_EXACT_ENV, "0")
     assert not dm._video_exact_pins(pipe)
     monkeypatch.delenv(_EXACT_ENV)
-    monkeypatch.setattr(dm, "_fast_pin_supported", lambda: False)
+    monkeypatch.setattr(dm, "_fast_pin_supported", lambda *a, **k: False)
     assert not dm._video_exact_pins(pipe)
 
 
@@ -274,3 +274,136 @@ def test_the_streaming_tier_kill_switch_pins_no_encoder(host, monkeypatch):
     dm.finish_background_pins(pipe)
     assert not any(t.is_pinned() for t in _host_copies(pipe.text_encoder))
     dm.stop_background_pins(pipe)
+
+
+class _Writes:
+    """A cast-cache write of a first load: ``done()`` until its worker finished."""
+
+    def __init__(self, finished = False):
+        self.finished = finished
+
+    def done(self):
+        return self.finished
+
+
+def _plan_only(monkeypatch, mib):
+    """CPU: run the pin plan of a video load with every device-side step stubbed; returns the deferred pins."""
+    pytest.importorskip("diffusers.hooks")
+    import sys
+
+    deferred = []
+
+    def apply_group_offloading(
+        module,
+        onload_device = None,
+        offload_device = None,
+        offload_type = None,
+        num_blocks_per_group = None,
+        use_stream = False,
+        non_blocking = False,
+        record_stream = False,
+        low_cpu_mem_usage = False,
+    ):
+        return None
+
+    monkeypatch.setattr(
+        sys.modules["diffusers.hooks"], "apply_group_offloading", apply_group_offloading
+    )
+    for name in (
+        _EXACT_ENV,
+        dm.PARTIAL_ENCODER_PIN_ENV,
+        dm.GROUP_OFFLOAD_PIN_ENV,
+        dm.BACKGROUND_PIN_ENV,
+    ):
+        monkeypatch.delenv(name, raising = False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_STREAMING_PREFETCH", raising = False)
+    for name, value in (
+        ("host_pinning_allowed", True),
+        ("_fast_pin_supported", True),
+        ("_background_pin_enabled", True),
+        ("_streaming_prefetch_enabled", True),
+        ("_pinned_memory_capped", False),
+        ("_pin_top_level_group", True),
+    ):
+        monkeypatch.setattr(dm, name, lambda *a, _v = value, **k: _v)
+    for name in (
+        "install_group_offload_buffer_restore",
+        "install_group_offload_hooks_eager",
+        "install_group_pin_wait",
+        "install_group_prefetch",
+        "_skip_top_level_copy_back",
+        "_pin_vision_embedding_device",
+    ):
+        monkeypatch.setattr(dm, name, lambda *a, **k: None)
+    monkeypatch.setattr(
+        dm,
+        "_apply_group_offloading_packed",
+        lambda apply, module, kwargs, logger: apply(module, **kwargs),
+    )
+    monkeypatch.setattr(dm, "_pin_budget_mib", lambda: mib)
+    monkeypatch.setattr(
+        dm,
+        "_defer_pinning",
+        lambda pipe, module, device, logger, *, fast = None, byte_cap = None: deferred.append(
+            (module, byte_cap)
+        ),
+    )
+    return deferred
+
+
+def _te_deferrals(pipe, deferred):
+    return [cap for module, cap in deferred if module is pipe.text_encoder]
+
+
+@pytest.mark.parametrize("tier", ["group", "streaming"])
+def test_a_first_load_writing_its_cast_cache_pins_no_encoder_prefix(monkeypatch, tier):
+    deferred = _plan_only(
+        monkeypatch, 10
+    )  # 18 MiB registered, 32 MiB power-of-two: neither fits whole
+    pipe = _streaming_video_pipe()
+    dm.note_cast_cache_writes(pipe, _Writes(finished = False))
+    if tier == "group":
+        dm._apply_group_offload(
+            pipe, "cuda", None, stream_text_encoders = True, stream_transformer = True
+        )
+    else:
+        dm._apply_streaming_offload(pipe, "cuda", None)
+    assert _te_deferrals(pipe, deferred) == []  # what main does: the encoder streams unpinned
+
+
+@pytest.mark.parametrize("tier", ["group", "streaming"])
+@pytest.mark.parametrize("writes", [None, "finished"])
+def test_a_returning_load_pins_the_encoder_prefix(monkeypatch, tier, writes):
+    deferred = _plan_only(monkeypatch, 10)
+    pipe = _streaming_video_pipe()
+    if writes:
+        dm.note_cast_cache_writes(pipe, _Writes(finished = True))
+    if tier == "group":
+        dm._apply_group_offload(
+            pipe, "cuda", None, stream_text_encoders = True, stream_transformer = True
+        )
+    else:
+        dm._apply_streaming_offload(pipe, "cuda", None)
+    caps = _te_deferrals(pipe, deferred)
+    assert len(caps) == 1 and callable(caps[0])  # the late prefix cap
+
+
+def test_the_pending_write_gate_reads_done_and_survives_a_broken_record():
+    pipe = types.SimpleNamespace()
+    assert not dm._cast_cache_write_pending(pipe)
+    dm.note_cast_cache_writes(pipe, _Writes(finished = False))
+    assert dm._cast_cache_write_pending(pipe)
+    dm.note_cast_cache_writes(pipe, _Writes(finished = True))
+    assert not dm._cast_cache_write_pending(pipe)
+    dm.note_cast_cache_writes(pipe, object())  # no done(): treated as still writing
+    assert dm._cast_cache_write_pending(pipe)
+
+
+def test_the_video_load_records_its_cast_writes_before_the_pin_plan():
+    from pathlib import Path
+
+    src = (Path(dm.__file__).parent / "video.py").read_text()
+    deferred = src.index("cast_writes = defer_writes(pipe, cast_missed")
+    noted = src.index("note_cast_cache_writes(pipe, cast_writes)")
+    planned = src.index("offload_policy, vae_tiling = apply_memory_plan(")
+    assert deferred < noted < planned
