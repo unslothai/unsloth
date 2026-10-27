@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MiniMax-H3 pins inductor's reduction-config filter on every arch, like LTX-2 / LTX-2.5: fresh Studio processes
-compiled its blocks' norm reductions with different near-equal configs and rendered different clips for one seed
-(A100, 3 variants over 8 fresh processes). ``UNSLOTH_DIFFUSION_DYNAMIC_SCALE_RBLOCK=1`` is the existing kill switch."""
+"""MiniMax-H3 pins inductor's reduction-config filter on every arch (kill switch ``UNSLOTH_DIFFUSION_DYNAMIC_SCALE_RBLOCK=1``)."""
 
 from __future__ import annotations
 

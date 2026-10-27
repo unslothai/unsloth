@@ -595,8 +595,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         bf16_components_gb = (66.3, 66.8, 11.1),
         # Regionally compilable; dynamic=True traces once. Engage only when resident (slower under offload).
         supports_torch_compile = True,
-        # Its compiled blocks' norm reductions have near-equal inductor configs: fresh processes on an A100 rendered 3
-        # different clips for one seed (LPIPS 0.19-0.31 between them). Pinning the filter keeps one pick per shape.
+        # Near-equal inductor norm-reduction configs rendered different clips per fresh process for one seed.
         filter_reduction_configs = True,
         # CUDA graph declined: no measurable win (GPU-bound) for ~8 GB extra memory and 31 s capture.
         supports_cuda_graph = False,
