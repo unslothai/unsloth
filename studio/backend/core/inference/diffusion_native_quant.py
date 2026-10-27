@@ -31,8 +31,7 @@ _INT8PACK_PROBED: dict = {}
 # torch._int_mm needs M > 16 and K, N multiples of 8.
 _INT_MM_MIN_ROWS = 17
 _INT_MM_CHUNK_ELEMS = 1 << 25
-# The compiled linear holds the int32 accumulator and its output chunk together (6 bytes per element) and fills a
-# preallocated output, so the eager chunk keeps its peak at or below eager's (#15183 used 4x and peaked higher).
+# Compiled linear holds int32 acc + output chunk (6 B/elem); eager's row budget keeps its peak <= eager's (#15183 used 4x).
 _INT_MM_FUSED_CHUNK_ELEMS = _INT_MM_CHUNK_ELEMS
 # ``0`` keeps eager CUDA W8A8 kernels instead of one compiled function per linear.
 NATIVE_INT8_FUSED_ENV = "UNSLOTH_NATIVE_INT8_FUSED"
@@ -523,8 +522,7 @@ def native_linear_class():
                 if rows <= chunk or chunk < 2 * _INT_MM_MIN_ROWS:
                     out = fn(x2, rot_h, self.weight_q, self.weight_scale, bias)
                 else:
-                    # One output filled chunk by chunk: no list of parts plus a torch.cat copy of them.
-                    # Allocated from the first chunk so it keeps the compiled dtype (autocast can differ from x2's).
+                    # Allocated from the first chunk to keep the compiled dtype (autocast can differ from x2's).
                     out = None
                     start = 0
                     for part in torch.tensor_split(x2, -(-rows // chunk)):

@@ -154,8 +154,7 @@ def test_chunks_fill_one_output_in_row_order(monkeypatch):
 
 @pytest.mark.parametrize("in_f, out_f", [(3072, 14336), (14336, 3072), (512, 1536), (5120, 5120)])
 def test_fused_chunk_never_outgrows_the_eager_chunk(in_f, out_f):
-    # Accumulator (int32) + output chunk (bf16) per element vs eager's int32 + two fp32 temporaries:
-    # the same row budget keeps the compiled linear at or below eager's peak (#15183 used 4x and OOMed).
+    # Same row budget as eager keeps the compiled peak <= eager's (#15183 used 4x and OOMed).
     wide = max(in_f, out_f)
     fused_rows = nq._INT_MM_FUSED_CHUNK_ELEMS // wide
     eager_rows = nq._INT_MM_CHUNK_ELEMS // wide
