@@ -222,3 +222,22 @@ def test_cuda_storage_is_reclaimed_while_the_write_is_in_flight(monkeypatch, bas
     got = _entry_tensors(path)
     for k, v in expected.items():
         assert torch.equal(got[k], v), k
+
+
+def test_a_hook_built_view_of_a_weight_keeps_its_captured_tensor(monkeypatch, base_dir, cache_root):
+    _as_if_on_the_accelerator(monkeypatch)
+    model = _native(base_dir)
+    key = next(k for k, v in model.state_dict().items() if v.dim() == 2 and v.shape[0] == v.shape[1] > 1)
+
+    def hook(module, state, prefix, local_metadata):
+        state[key] = state[key].t()  # same storage, same shape, different view
+        return state
+
+    model._register_state_dict_hook(hook)
+    want = {k: v.detach().clone() for k, v in model.state_dict().items()}
+    fam = detect_video_family("Wan-AI/Wan2.1-T2V-1.3B-Diffusers", override = FAMILY)
+    spec = NC.native_spec("int8", FAMILY, act_int8 = True)
+    path = NC.save(model, fam, spec, base_repo = base_dir, component = "transformer")
+    assert path is not None
+    got = _entry_tensors(path)
+    assert torch.equal(got[key], want[key])

@@ -199,21 +199,17 @@ def _live_refs(transformer: Any, state: dict) -> dict:
     back to host, so a background write would block that VRAM from being reclaimed until the whole file is written.
     Anything else (a hook-built tensor) keeps the captured tensor. A live tensor that changed shape / dtype fails the
     write (the temp file is dropped), never a corrupt entry."""
-    live: dict = {}
-    try:
-        for named in (transformer.named_parameters, transformer.named_buffers):
-            for name, value in named(remove_duplicate = False):
-                if value is not None:
-                    live[name] = value
-    except Exception:  # noqa: BLE001 - no live view: write the captured tensors, as before
-        return state
+    import torch
+
+    def resolve(name: str) -> Any:
+        # The attribute the state_dict key names; a hook-built key resolves to nothing and keeps its captured tensor.
+        prefix, _, attr = name.rpartition(".")
+        owner = transformer.get_submodule(prefix) if prefix else transformer
+        return getattr(owner, attr)
 
     def getter(name: str, dtype: Any, shape: tuple) -> Any:
-        prefix, _, attr = name.rpartition(".")
-
         def get() -> Any:
-            owner = transformer.get_submodule(prefix) if prefix else transformer
-            value = getattr(owner, attr)
+            value = resolve(name)
             if value is None or value.dtype != dtype or tuple(value.shape) != shape:
                 raise RuntimeError(f"native cache write: {name} changed during the write")
             _wait_for_transfers(value)
@@ -223,16 +219,19 @@ def _live_refs(transformer: Any, state: dict) -> dict:
 
     out: dict = {}
     for name, tensor in state.items():
-        value = live.get(name)
+        value = None
         try:
+            if _moves_with_offload(tensor):
+                value = resolve(name)
+            # Same storage AND same view: a hook that hands back e.g. a transposed view keeps its captured tensor.
             same = (
-                value is not None
-                and _moves_with_offload(tensor)
+                isinstance(value, torch.Tensor)
                 and value.dtype == tensor.dtype
                 and tuple(value.shape) == tuple(tensor.shape)
                 and value.data_ptr() == tensor.data_ptr()
+                and tuple(value.stride()) == tuple(tensor.stride())
             )
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - not a module attribute (hook-built): keep the captured tensor
             same = False
         if same:
             out[name] = _cache._FlatRef(getter(name, tensor.dtype, tuple(tensor.shape)), tensor)
