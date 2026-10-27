@@ -2256,6 +2256,18 @@ function VideoGenerator({
     setQuant(null);
   }, [refreshStatus, dropResidentState]);
 
+  // Starting a training run unloads the video model, so re-read it on the way back to Create.
+  const leftForTrain = useRef(false);
+  useEffect(() => {
+    if (pageMode === "train") {
+      leftForTrain.current = true;
+      return;
+    }
+    if (!active || !leftForTrain.current) return;
+    leftForTrain.current = false;
+    void resyncAfterGenerateRefusal();
+  }, [active, pageMode, resyncAfterGenerateRefusal]);
+
   // Track mount so a long generate stops issuing GPU work when the page is truly unmounted.
   useEffect(() => {
     isMounted.current = true;

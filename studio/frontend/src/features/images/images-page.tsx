@@ -3195,6 +3195,18 @@ export function ImagesPage({
     }
   }, [setStatusIfNewest]);
 
+  // Starting a training run unloads the image model, so re-read it on the way back to Create.
+  const leftForTrain = useRef(false);
+  useEffect(() => {
+    if (pageMode === "train") {
+      leftForTrain.current = true;
+      return;
+    }
+    if (!active || !leftForTrain.current) return;
+    leftForTrain.current = false;
+    void refreshStatus();
+  }, [active, pageMode, refreshStatus]);
+
   useEffect(() => {
     isMounted.current = true;
     return () => {
