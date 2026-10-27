@@ -985,6 +985,32 @@ def online_dpo_trainer__forward(function_name, function):
 RL_FUNCTIONS["online_dpo_trainer"].append(online_dpo_trainer__forward)
 
 
+def online_dpo_trainer__move_model_to_vllm(function_name, function):
+    if function_name != "_move_model_to_vllm":
+        return function
+    match = re.search(
+        r"^[ \t]*def _move_model_to_vllm\(self\):[ \t]*\n(?P<indent>[ \t]+)\S",
+        function,
+        re.MULTILINE,
+    )
+    if match is None:
+
+        def _move_model_to_vllm(self, *args, **kwargs):
+            return None
+
+        return inspect.getsource(_move_model_to_vllm)
+    indent = match.group("indent")
+    start = match.start("indent")
+    guard = (
+        f"{indent}if getattr(getattr(self, 'llm', None), 'shared_weights', False):\n"
+        f"{indent}    return None\n"
+    )
+    return function[:start] + guard + function[start:]
+
+
+RL_FUNCTIONS["online_dpo_trainer"].append(online_dpo_trainer__move_model_to_vllm)
+
+
 _WRAPPED_PACKING_SETUP = (
     "    import inspect as _inspect\n"
     "    try:\n"
