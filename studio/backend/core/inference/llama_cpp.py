@@ -29131,7 +29131,10 @@ class LlamaCppBackend:
                     _emit_extra_args = translate_ngram_mod_args(
                         _emit_extra_args,
                         _caps.get("ngram_mod_flavor"),
-                        chain_with_mtp = self._speculative_type == "draft-mtp",
+                        chain_with_mtp = self._speculative_type == "draft-mtp"
+                        or _extra_args_requests_mtp(
+                            _emit_extra_args, env = _child_spec_env(_emit_extra_args)
+                        ),
                     )
                     cmd.extend(str(a) for a in _emit_extra_args)
                     logger.info(

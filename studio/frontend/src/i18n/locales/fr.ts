@@ -2708,6 +2708,8 @@ export const fr = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "Temps de fonctionnement",
         processMemory: "Mémoire du processus",
         notInstalled: "Non installé",
@@ -3474,6 +3476,7 @@ export const fr = {
       desktopAppVersionUnavailable: "Indisponible",
       llamaCppVersion: "Version de llama.cpp",
       audioCppVersion: "Version d'audio.cpp",
+      mlxVersion: "Version de MLX",
       whisperCppVersion: "Version de whisper.cpp",
       engines: {
         title: "Moteurs",

@@ -1905,20 +1905,15 @@ def translate_ngram_mod_args(
     *,
     chain_with_mtp: bool = False,
 ) -> list[str]:
-    """Respell ``--spec-ngram-mod-n-*`` extras for a pre-rename build (``flavor == "legacy"``).
-
-    Legacy llama.cpp names the same knobs ``--spec-ngram-size-n`` / ``--draft-min`` / ``--draft-max``,
-    as ``_build_ngram_mod_flags`` emits them; passed verbatim the server refuses to start. With MTP
-    in play the draft range is MTP's, so the min/max pair is dropped rather than inverting it.
-    """
+    """Respell ``--spec-ngram-mod-n-*`` for a legacy build (else it refuses to start); with MTP drop min/max (MTP owns the range)."""
     args = [str(a) for a in args]
     if flavor != "legacy":
         return args
     out: list[str] = []
     i = 0
     while i < len(args):
-        flag, eq, value = args[i].partition("=")
-        legacy = _NGRAM_MOD_LEGACY_FLAGS.get(flag)
+        _flag, eq, value = args[i].partition("=")
+        legacy = _NGRAM_MOD_LEGACY_FLAGS.get(_flag_name(args[i]) or "")
         if legacy is None or (not eq and i + 1 >= len(args)):
             out.append(args[i])
             i += 1

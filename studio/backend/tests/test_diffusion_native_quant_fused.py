@@ -268,3 +268,80 @@ def test_chunked_output_keeps_the_compiled_dtype(monkeypatch):
     got = layer._forward_fused(x)
     assert got.dtype == torch.float16
     assert torch.equal(got, (x[:, :128] * 2).to(torch.float16))
+
+
+def test_chunks_are_stored_once_into_their_output_rows(monkeypatch):
+    # Each chunk is written in place into its rows of the one output: no chunk result, no second copy.
+    layer = _layer()
+    monkeypatch.setattr(nq, "_INT_MM_FUSED_CHUNK_ELEMS", 512 * 40)
+    writes = []
+
+    def into(x2, rot_h, wq, ws, bias, out):
+        writes.append((out.data_ptr(), out.shape[0], out.untyped_storage().data_ptr()))
+        out.copy_(x2[:, :128] * 2)
+
+    def fn(*_a):
+        raise AssertionError("the chunked path must not build a chunk result")
+
+    nq._FUSED_STATE.update(fn = fn, into = into)
+    x = torch.randn(100, 512, dtype = torch.bfloat16)
+    got = layer._forward_fused(x)
+    assert torch.equal(got, x[:, :128] * 2)
+    base = got.untyped_storage().data_ptr()
+    assert [w[2] for w in writes] == [base] * len(writes) and len(writes) == 3
+    step = got.element_size() * 128
+    assert [w[0] for w in writes] == [got.data_ptr() + step * r for r in (0, 34, 67)]
+    assert sum(w[1] for w in writes) == 100
+
+
+def test_rotation_under_autocast_keeps_the_returning_path(monkeypatch):
+    layer = _layer()
+    monkeypatch.setattr(nq, "_INT_MM_FUSED_CHUNK_ELEMS", 512 * 40)
+
+    def into(*_a):
+        raise AssertionError(
+            "autocast may change the rotated dtype; the output dtype must come from a chunk"
+        )
+
+    nq._FUSED_STATE.update(fn = lambda x2, *_a: (x2[:, :128] * 2).to(torch.float16), into = into)
+    x = torch.randn(100, 512, dtype = torch.float32)
+    with torch.autocast("cpu", dtype = torch.bfloat16):
+        got = layer._forward_fused(x)
+    assert got.dtype == torch.float16
+    assert torch.equal(got, (x[:, :128] * 2).to(torch.float16))
+
+
+@pytest.mark.skipif(not _int_mm_on_cpu(), reason = "torch._int_mm unavailable on CPU")
+@pytest.mark.parametrize("rot", [0, 256])
+def test_compiled_into_slice_is_one_graph_and_bit_identical(monkeypatch, rot):
+    from torch._dynamo.testing import CompileCounterWithBackend
+
+    torch._dynamo.reset()
+    counters = torch._dynamo.utils.counters
+    counters.clear()
+    layer = _layer(rot = rot)
+    cnt = CompileCounterWithBackend("aot_eager")
+    nq._FUSED_STATE["row_major"] = nq._row_major_op()
+    fn = torch.compile(nq._w8a8_rows, dynamic = True, fullgraph = True, backend = "aot_eager")
+    into = torch.compile(nq._w8a8_rows_into, dynamic = True, fullgraph = True, backend = cnt)
+    nq._FUSED_STATE.update(fn = fn, into = into, calls = 0)  # as _fused_w8a8 leaves it
+    monkeypatch.setattr(nq, "_INT_MM_FUSED_CHUNK_ELEMS", 512 * 40)
+    with torch.no_grad():
+        for rows in (100, 130, 77):
+            x = torch.randn(rows, 512, dtype = torch.bfloat16)
+            rot_h = layer.rot_h if layer.rot_group else None
+            ref = nq._w8a8_rows(x, rot_h, layer.weight_q, layer.weight_scale, layer.bias.detach())
+            assert torch.equal(layer._forward_fused(x), ref)
+    # Every slice offset and chunk height reuses one graph: no recompile, no graph break.
+    assert cnt.frame_count == 1
+    assert not counters["graph_break"]
+    torch._dynamo.reset()
+
+
+def test_factory_creates_every_state_key_before_the_first_trace(monkeypatch):
+    # torch <= 2.6 dynamo guards on len(_FUSED_STATE): a key added after the first call recompiles.
+    import core.inference.diffusion_speed as sp
+
+    monkeypatch.setattr(sp, "torch_compile_runtime_available", lambda: True)
+    assert nq._fused_w8a8() is not None
+    assert {"fn", "into", "row_major", "calls", "failed"} <= set(nq._FUSED_STATE)
