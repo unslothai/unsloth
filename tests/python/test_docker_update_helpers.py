@@ -1127,6 +1127,7 @@ def _managed_node(
     tmp_path: Path,
     env,
     installer_exit: int = 0,
+    kept: bool = False,
 ) -> None:
     """The image's managed Node (installer metadata) and a recording installer in the package."""
     (Path(env["UNSLOTH_STUDIO_HOME"]) / "node" / "UNSLOTH_NODE_PREBUILT_INFO.json").write_text("{}")
@@ -1134,7 +1135,8 @@ def _managed_node(
         "import os, sys\n"
         "with open(os.environ['STUB_LOG'], 'a') as f:\n"
         "    f.write('STUB-NODE ' + ' '.join(sys.argv[1:]) + '\\n')\n"
-        f"sys.exit({installer_exit})\n"
+        + ("print('Node download failed (x); keeping existing isolated Node')\n" if kept else "")
+        + f"sys.exit({installer_exit})\n"
     )
 
 
@@ -1148,12 +1150,16 @@ def test_studio_update_moves_the_managed_node_to_the_new_pin(tmp_path: Path):
     assert "STUB-SUPERVISORCTL restart studio" in _calls(env), _calls(env)
 
 
-def test_studio_update_keeps_the_current_node_when_the_new_pin_cannot_install(tmp_path: Path):
+@pytest.mark.parametrize("installer_exit, kept", [(1, False), (0, True)])
+def test_studio_update_keeps_the_current_node_when_the_new_pin_cannot_install(
+    tmp_path: Path, installer_exit: int, kept: bool
+):
     env = _studio_env(tmp_path)
-    _managed_node(tmp_path, env, installer_exit = 1)
+    _managed_node(tmp_path, env, installer_exit = installer_exit, kept = kept)
     res = _run(STUDIO_UPDATE, [], env)
     assert res.returncode == 0, res.stderr + res.stdout
     assert "keeping the current one" in res.stdout, res.stdout
+    assert "matches the new pin" not in res.stdout, res.stdout
     assert "STUB-SUPERVISORCTL restart studio" in _calls(env), _calls(env)
 
 
