@@ -10421,17 +10421,17 @@ async def _require_named_model_access(
     named_model: str, fastapi_request: Optional[Request] = None
 ) -> None:
     """Authorize a named model via the account catalog, or an uncached Hub ref via caller token."""
+    trained = await asyncio.to_thread(_trained_run_dir, named_model)
+    if trained is not None:
+        # a run name is no Hub id: the Hub allowlist would refuse it, so authorize the folder
+        await asyncio.to_thread(account_access.require_model_access, trained)
+        return
     try:
         await asyncio.to_thread(account_access.require_model_access, named_model)
         return
     except HTTPException as refusal:
         if refusal.status_code != 404:
             raise
-    trained = await asyncio.to_thread(_trained_run_dir, named_model)
-    if trained is not None:
-        # the account catalog lists no training outputs; authorize the run folder itself
-        await asyncio.to_thread(account_access.require_model_access, trained)
-        return
     from core.inference.openai_auto_download import split_model_ref
 
     alias = (split_model_ref(named_model)[0] or "").strip().lower()
@@ -16901,6 +16901,8 @@ def _cancel_scoped_load_attempt(
     if request_id is None:
         return None, False
     key = (current_subject, request_id)
+    # /load records a run name as its folder, so cancel by the same spelling
+    model_path = _trained_run_dir(request.model_path) or request.model_path
     with _scoped_load_attempts_lock:
         now = time.monotonic()
         _prune_scoped_load_cancel_tombstones(now)
@@ -16918,11 +16920,11 @@ def _cancel_scoped_load_attempt(
                 )
                 _scoped_load_cancel_tombstones.pop(oldest, None)
             _scoped_load_cancel_tombstones[key] = (
-                request.model_path,
+                model_path,
                 now + _SCOPED_LOAD_CANCEL_TOMBSTONE_TTL_S,
             )
             return None, False
-        if attempt.model_path.strip().casefold() != request.model_path.strip().casefold():
+        if attempt.model_path.strip().casefold() != model_path.strip().casefold():
             return None, False
         attempt.cancel_event.set()
         is_running = _running_load_attempt is attempt

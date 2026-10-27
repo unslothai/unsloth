@@ -171,23 +171,26 @@ def test_a_managed_account_may_name_its_own_run(monkeypatch):
     checked = []
 
     def _require(model):
+        # an allowlist such as unsloth/* refuses a bare run name as a Hub id
         checked.append(model)
         if model != str(run_dir):
-            raise HTTPException(status_code = 404, detail = "Model not found")
-
-    async def _no_catalog():
-        return None
-
-    async def _no_token(*_args):
-        return False
+            raise HTTPException(status_code = 403, detail = "Model not allowed")
 
     monkeypatch.setattr(inference_route.account_access, "require_model_access", _require)
-    monkeypatch.setattr(inference_route, "_cached_local_catalog", _no_catalog)
-    monkeypatch.setattr(inference_route, "_own_local_model_for_alias", lambda _alias: None)
-    monkeypatch.setattr(inference_route, "_caller_token_authorizes_download", _no_token)
 
     asyncio.run(inference_route._require_named_model_access(RUN))
-    assert checked == [RUN, str(run_dir)]
+    assert checked == [str(run_dir)]
     with pytest.raises(HTTPException) as excinfo:
         asyncio.run(inference_route._require_named_model_access("someone-elses-run"))
-    assert excinfo.value.status_code == 404
+    assert excinfo.value.status_code == 403
+
+
+def test_cancelling_a_load_by_run_name_matches_the_folder_it_loads(monkeypatch):
+    from models.inference import UnloadRequest
+
+    run_dir = _run_dir()
+    monkeypatch.setattr(inference_route, "_scoped_load_cancel_tombstones", {})
+    request = UnloadRequest(model_path = RUN, cancel_load_request_id = "attempt-1")
+    assert inference_route._cancel_scoped_load_attempt(request, "test") == (None, False)
+    [(path, _expires)] = inference_route._scoped_load_cancel_tombstones.values()
+    assert path == str(run_dir)
