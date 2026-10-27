@@ -428,6 +428,8 @@ def test_messages_are_routed_to_the_loaded_model_with_the_unsloth_key(gateway):
     assert headers["Authorization"] == f"Bearer {UPSTREAM_KEY}"
     assert "Cookie" not in headers
     assert headers["Anthropic-Version"] == "2023-06-01"
+    # Studio scopes the Desktop-only prompt handling to requests carrying this marker.
+    assert headers[cda.GATEWAY_CLIENT_HEADER] == cda.GATEWAY_CLIENT_VALUE
 
 
 def test_count_tokens_goes_to_unsloth(gateway):

@@ -175,6 +175,7 @@ def anthropic_messages_to_openai(
     system: Optional[Union[str, list]] = None,
     preserve_thinking: bool = False,
     tool_result_images: bool = True,
+    strip_billing_header: bool = False,
 ) -> list[dict]:
     """Convert Anthropic messages + system to OpenAI-format message dicts.
 
@@ -195,7 +196,8 @@ def anthropic_messages_to_openai(
 
     if system:
         if isinstance(system, str):
-            system = _without_billing_header(system)
+            if strip_billing_header:
+                system = _without_billing_header(system)
             if system:
                 result.append({"role": "system", "content": system})
         elif isinstance(system, list):
@@ -205,7 +207,8 @@ def anthropic_messages_to_openai(
                     parts.append(block["text"])
                 elif isinstance(block, str):
                     parts.append(block)
-            parts = [text for text in map(_without_billing_header, parts) if text]
+            if strip_billing_header:
+                parts = [text for text in map(_without_billing_header, parts) if text]
             if parts:
                 result.append({"role": "system", "content": "\n".join(parts)})
 

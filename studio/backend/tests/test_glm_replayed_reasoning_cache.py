@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import jinja2
 
 from core.inference.anthropic_compat import anthropic_messages_to_openai
-from core.inference.llama_cpp import detect_reasoning_flags
+from core.inference.llama_cpp import detect_reasoning_flags, template_replays_reasoning_by_default
 
 # The reasoning-replay core of GLM-5.3-Flash's template, verbatim.
 GLM_TEMPLATE = """{%- set clear_thinking = clear_thinking if clear_thinking is defined else false -%}
@@ -43,16 +43,19 @@ def _render(messages, generation = True):
     return jinja2.Template(GLM_TEMPLATE).render(messages = messages, add_generation_prompt = generation)
 
 
-def test_glm_templates_keep_replayed_reasoning_by_default():
-    flags = detect_reasoning_flags(GLM_TEMPLATE, "unsloth/GLM-5.3-Flash-GGUF")
-    assert flags["preserve_thinking_default"] is True
-    assert flags["supports_preserve_thinking"] is False  # nothing new is sent to the template
-
-
-def test_other_templates_keep_their_defaults():
+def test_glm_templates_are_detected_as_replaying_reasoning():
+    assert template_replays_reasoning_by_default(GLM_TEMPLATE) is True
     flipped = GLM_TEMPLATE.replace("else false", "else true")
-    assert detect_reasoning_flags(flipped, "x")["preserve_thinking_default"] is False
-    assert detect_reasoning_flags("{{ messages }}", "x")["preserve_thinking_default"] is False
+    assert template_replays_reasoning_by_default(flipped) is False
+    assert template_replays_reasoning_by_default("{{ messages }}") is False
+    assert template_replays_reasoning_by_default(None) is False
+
+
+def test_the_global_reasoning_flags_stay_as_upstream():
+    """Only the Claude Desktop gateway acts on the GLM detection; load/status flags are unchanged."""
+    flags = detect_reasoning_flags(GLM_TEMPLATE, "unsloth/GLM-5.3-Flash-GGUF")
+    assert flags["preserve_thinking_default"] is False
+    assert flags["supports_preserve_thinking"] is False
 
 
 def _claude_turns():
@@ -84,7 +87,7 @@ def _claude_turns():
 
 def test_the_next_message_extends_the_prompt_the_last_one_was_built_on():
     system, answered, second = _claude_turns()
-    preserve = detect_reasoning_flags(GLM_TEMPLATE, "glm")["preserve_thinking_default"]
+    preserve = template_replays_reasoning_by_default(GLM_TEMPLATE)  # what the gateway path uses
     # What the model read at the end of turn one (tool loop in progress: thinking kept)...
     before = _render(anthropic_messages_to_openai(answered[:3], system, preserve_thinking = preserve))
     # ...must be a prefix of what turn two sends, so llama-server reuses the cache.
@@ -99,7 +102,7 @@ def test_without_preservation_the_prompt_breaks_after_the_first_query():
     assert not after.startswith(before)  # the regression this file guards against
 
 
-def test_claude_codes_per_request_billing_header_is_not_part_of_the_prompt():
+def test_claude_desktops_per_request_billing_header_is_not_part_of_the_prompt():
     def system(cch):
         return [
             {
@@ -110,17 +113,65 @@ def test_claude_codes_per_request_billing_header_is_not_part_of_the_prompt():
         ]
 
     msgs = [{"role": "user", "content": "hi"}]
-    first = anthropic_messages_to_openai(msgs, system("1a2b3"))
-    second = anthropic_messages_to_openai(msgs, system("9f8e7"))
+    strip = {"strip_billing_header": True}
+    first = anthropic_messages_to_openai(msgs, system("1a2b3"), **strip)
+    second = anthropic_messages_to_openai(msgs, system("9f8e7"), **strip)
     assert first == second
     assert first[0] == {"role": "system", "content": "You are Claude Code."}
-    assert anthropic_messages_to_openai(msgs, "x-anthropic-billing-header: cch=1;\nBe brief.")[
-        0
-    ] == {
-        "role": "system",
-        "content": "Be brief.",
-    }
+    assert anthropic_messages_to_openai(
+        msgs, "x-anthropic-billing-header: cch=1;\nBe brief.", **strip
+    )[0] == {"role": "system", "content": "Be brief."}
     assert (
-        anthropic_messages_to_openai(msgs, "x-anthropic-billing-header: cch=1;")[0]["role"]
+        anthropic_messages_to_openai(msgs, "x-anthropic-billing-header: cch=1;", **strip)[0]["role"]
         == "user"
     )
+
+
+def test_other_clients_keep_the_billing_header_as_upstream():
+    msgs = [{"role": "user", "content": "hi"}]
+    text = "x-anthropic-billing-header: cc_version=1; cch=abc;\nYou are helpful"
+    assert anthropic_messages_to_openai(msgs, text)[0] == {"role": "system", "content": text}
+    blocks = [{"type": "text", "text": "x-anthropic-billing-header: cch=1;"}, {"type": "text", "text": "Hi"}]
+    assert anthropic_messages_to_openai(msgs, blocks)[0]["content"] == (
+        "x-anthropic-billing-header: cch=1;\nHi"
+    )
+
+
+class _Headers(dict):
+    def get(self, key, default = None):
+        return {k.lower(): v for k, v in self.items()}.get(key.lower(), default)
+
+
+class _Request:
+    def __init__(self, headers):
+        self.headers = _Headers(headers)
+
+
+class _Backend:
+    preserve_thinking_default = False
+    replays_reasoning_by_default = True
+
+
+class _Payload:
+    preserve_thinking = None
+
+
+def test_only_the_claude_desktop_gateway_keeps_glm_reasoning_by_default():
+    from routes.inference import _anthropic_preserve_thinking, _from_claude_desktop_gateway
+    from utils.claude_desktop import GATEWAY_CLIENT_HEADER, GATEWAY_CLIENT_VALUE
+
+    gateway = _Request({GATEWAY_CLIENT_HEADER: GATEWAY_CLIENT_VALUE})
+    assert _from_claude_desktop_gateway(gateway) is True
+    assert _from_claude_desktop_gateway(_Request({})) is False
+    assert _from_claude_desktop_gateway(None) is False
+    assert _anthropic_preserve_thinking(_Backend(), _Payload(), gateway) is True
+    # Claude Code and every other client: upstream's launch default.
+    assert _anthropic_preserve_thinking(_Backend(), _Payload(), _Request({})) is False
+    assert _anthropic_preserve_thinking(_Backend(), _Payload()) is False
+    # An explicit request still wins either way.
+    explicit = _Payload()
+    explicit.preserve_thinking = False
+    assert _anthropic_preserve_thinking(_Backend(), explicit, gateway) is False
+    non_glm = _Backend()
+    non_glm.replays_reasoning_by_default = False
+    assert _anthropic_preserve_thinking(non_glm, _Payload(), gateway) is False

@@ -4871,11 +4871,26 @@ def _anthropic_reasoning_args(payload) -> dict:
     return args
 
 
-def _anthropic_preserve_thinking(llama_backend, payload) -> bool:
+def _from_claude_desktop_gateway(request) -> bool:
+    """The request came through Unsloth's Claude Desktop gateway (its own forwarding header)."""
+    from utils.claude_desktop import GATEWAY_CLIENT_HEADER, GATEWAY_CLIENT_VALUE
+
+    headers = getattr(request, "headers", None)
+    return bool(headers is not None and headers.get(GATEWAY_CLIENT_HEADER) == GATEWAY_CLIENT_VALUE)
+
+
+def _anthropic_preserve_thinking(llama_backend, payload, request = None) -> bool:
     """None means unset: keep the launch preserve mode; coercing to False would strip replayed reasoning."""
     if payload.preserve_thinking is not None:
         return bool(payload.preserve_thinking)
-    return bool(getattr(llama_backend, "preserve_thinking_default", False))
+    if getattr(llama_backend, "preserve_thinking_default", False):
+        return True
+    # Claude Desktop only: a GLM-5.x template replays every turn's reasoning, so keeping it in history
+    # lets llama-server reuse its prompt cache instead of re-prefilling the conversation each message.
+    return bool(
+        _from_claude_desktop_gateway(request)
+        and getattr(llama_backend, "replays_reasoning_by_default", False)
+    )
 
 
 def _resolved_kwargs_think(llama_backend, resolved) -> bool:
@@ -41434,6 +41449,7 @@ def _anthropic_chat_fields(
     *,
     reads_images: bool,
     server_tools = (),
+    strip_billing_header: bool = False,
 ) -> dict:
     """The chat request fields a /v1/messages request becomes on an in-process model.
 
@@ -41449,6 +41465,7 @@ def _anthropic_chat_fields(
             # Kept for the template to decide, as for a chat caller replaying reasoning_content.
             preserve_thinking = payload.preserve_thinking is not False,
             tool_result_images = reads_images,
+            strip_billing_header = strip_billing_header,
         )
     )
     studio_tools = _anthropic_requested_studio_tools(payload.tools)
@@ -41532,7 +41549,10 @@ async def _anthropic_in_process_count(
     if not active or not entry.get("is_mlx"):
         return None
     fields = _anthropic_chat_fields(
-        payload, reads_images = bool(entry.get("is_vision")), server_tools = server_tools
+        payload,
+        reads_images = bool(entry.get("is_vision")),
+        server_tools = server_tools,
+        strip_billing_header = _from_claude_desktop_gateway(request),
     )
     return JSONResponse(
         content = {"input_tokens": await _anthropic_chat_count(fields, request, current_subject)}
@@ -42012,8 +42032,9 @@ async def anthropic_count_tokens(
     openai_messages = anthropic_messages_to_openai(
         [m.model_dump() for m in payload.messages],
         payload.system,
-        preserve_thinking = _anthropic_preserve_thinking(llama_backend, payload),
+        preserve_thinking = _anthropic_preserve_thinking(llama_backend, payload, request),
         tool_result_images = llama_backend.is_vision,
+        strip_billing_header = _from_claude_desktop_gateway(request),
     )
     # Named and judged BEFORE the sanitizer, in /v1/messages order: it folds role='tool' into user
     # on templates without tool-role support.
@@ -42460,7 +42481,10 @@ async def _anthropic_in_process_messages(
             detail = f"{image_location}: Image provided but current model does not support vision.",
         )
     fields = _anthropic_chat_fields(
-        payload, reads_images = bool(entry.get("is_vision")), server_tools = server_tools
+        payload,
+        reads_images = bool(entry.get("is_vision")),
+        server_tools = server_tools,
+        strip_billing_header = _from_claude_desktop_gateway(request),
     )
     refusal = server_tools and _anthropic_server_tool_refusal(
         payload, fields["tool_choice"], server_tools
@@ -42786,8 +42810,9 @@ async def anthropic_messages(
     openai_messages = anthropic_messages_to_openai(
         [m.model_dump() for m in payload.messages],
         payload.system,
-        preserve_thinking = _anthropic_preserve_thinking(llama_backend, payload),
+        preserve_thinking = _anthropic_preserve_thinking(llama_backend, payload, request),
         tool_result_images = llama_backend.is_vision,
+        strip_billing_header = _from_claude_desktop_gateway(request),
     )
     # Strip synthetic tool history or fake calls reach llama-server; name results before the sanitizer.
     openai_messages = _named_anthropic_tool_results(openai_messages)

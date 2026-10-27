@@ -3056,6 +3056,13 @@ _KEEPS_REPLAYED_REASONING_RE = re.compile(
 )
 
 
+def template_replays_reasoning_by_default(chat_template: Optional[str]) -> bool:
+    """GLM-5.x: ``clear_thinking`` defaults to false, so the template renders every replayed turn's
+    reasoning. Only the Claude Desktop gateway acts on this (it keeps that reasoning in history so
+    llama-server can reuse its prompt cache); other clients keep the upstream default."""
+    return bool(chat_template and _KEEPS_REPLAYED_REASONING_RE.search(chat_template))
+
+
 def detect_reasoning_flags(
     chat_template: Optional[str],
     model_identifier: Optional[str] = None,
@@ -3141,14 +3148,6 @@ def detect_reasoning_flags(
         # Qwen3.8 deliberately defaults preserve_thinking on; keep it family-scoped.
         flags["preserve_thinking_default"] = bool(_QWEN38_MODEL_RE.search(model_identifier or ""))
         _log(f"{prefix}model supports preserve_thinking")
-    elif _KEEPS_REPLAYED_REASONING_RE.search(tpl):
-        # GLM-5.x: ``clear_thinking`` defaults to false, so the template renders every replayed
-        # assistant turn's reasoning (llama-server logs "preserve_reasoning kwarg: true"). Stripping
-        # that reasoning from history once a new user turn arrives would change the prompt right
-        # after the first answered query, so llama-server could not reuse its prompt cache and an
-        # agent like Claude Desktop re-prefilled its whole conversation on every message.
-        flags["preserve_thinking_default"] = True
-        _log(f"{prefix}model keeps replayed reasoning (clear_thinking defaults to false)")
 
     from core.inference.template_capabilities import template_supports_tools
 
@@ -8911,6 +8910,11 @@ class LlamaCppBackend:
     @property
     def preserve_thinking_default(self) -> bool:
         return self._preserve_thinking_default
+
+    @property
+    def replays_reasoning_by_default(self) -> bool:
+        """The loaded template renders replayed reasoning unless told not to (GLM-5.x)."""
+        return template_replays_reasoning_by_default(getattr(self, "_chat_template", None))
 
     @property
     def reasoning_default(self) -> bool:
