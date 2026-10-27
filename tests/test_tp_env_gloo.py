@@ -604,8 +604,8 @@ def test_env_layout_parsing_and_refusals():
     assert (
         "WORLD_SIZE=1" in res["no_torchrun"] and "torchrun --nproc-per-node 2" in res["no_torchrun"]
     )
-    for key in ("pp", "pp_with_tp"):
-        assert "UNSLOTH_PP_SIZE=2" in res[key] and "Python API" in res[key], res[key]
+    # UNSLOTH_PP_SIZE is env-driven too now (models/pp_env.py, tests/test_pp_env_gloo.py).
+    assert res["pp"] == (1, 2, 4, False) and res["pp_with_tp"] == (2, 1, 4, False), (res["pp"], res["pp_with_tp"])
     assert res["pp_one"] == (2, 2, 4, False)
     assert res["tp_world"] == (4, 1, 4, False)
     assert res["ddp"] == (2, 2, 4, False)
