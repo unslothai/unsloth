@@ -54,11 +54,9 @@ def test_explicit_dotted_module_target_does_not_discover_moe_parameters():
 @pytest.mark.parametrize(
     "target_modules",
     [
-        # Attention-only auto-regex lists every projection leaf (incl. gate/up/down)
-        # but its path segment is attention-only, so experts must NOT be targeted.
+        # Leaves include gate/up/down but the path segment is attention-only: experts NOT targeted.
         r"(?:\bmodel\.layers\.[\d]{1,}\.(?:self_attn|attention|attn|mixer)\.(?:q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj))",
         ".*self_attn.*proj",
-        # An mlp path alternative with attention-only leaves is still attention-only.
         r"model\.layers\.\d+\.(?:mlp|self_attn)\.(?:q_proj|k_proj|v_proj|o_proj)",
     ],
 )
@@ -78,8 +76,7 @@ def test_single_leaf_regex_targets_only_that_projection():
 
 
 def test_auto_regex_mlp_tag_block_discovers_moe_on_fused_models():
-    # get_peft_regex on a fused-expert model lists only attention Linears as leaves; the mlp tag block is the remaining
-    # signal of MLP finetune intent.
+    # On fused-expert models the leaves are attention-only; the mlp tag block signals MLP intent.
     from unsloth.models._utils import get_moe_target_parameters
     both_auto = (
         r"(?:\bmodel\.layers\.[\d]{1,}\."
@@ -93,18 +90,14 @@ def test_auto_regex_mlp_tag_block_discovers_moe_on_fused_models():
 
 
 def test_explicit_attention_only_list_does_not_discover_moe_parameters():
-    # An explicit attention-only leaf list names no MLP projection, so experts must never be targeted.
-    # get_peft_model routes this ORIGINAL list (not the scoped regex) into detection precisely because family scoping
-    # makes get_peft_regex emit its full "mlp|feed_forward|ffn|dense" component block even for an attention-only request
+    # Detection uses the ORIGINAL list: family scoping makes get_peft_regex emit the mlp block
+    # even for an attention-only request.
     from unsloth.models._utils import get_moe_target_parameters
 
     attn_only_list = ["q_proj", "k_proj", "v_proj", "o_proj"]
     assert get_moe_target_parameters(_FakeMoeModel(), attn_only_list) is None
     assert get_moe_target_parameters(_FakeMoeModel(), tuple(attn_only_list)) is None
 
-    # The regex get_peft_regex emits for that same attention-only list under a
-    # vision-off family scope carries the mlp component block, so the string
-    # path would wrongly enable experts -- hence detection must use the list.
     scoped_regex = (
         r"(?:.*?(?:language|text).*?"
         r"(?:self_attn|attention|attn|mixer|mlp|feed_forward|ffn|dense|mixer).*?"
@@ -117,11 +110,8 @@ def test_explicit_attention_only_list_does_not_discover_moe_parameters():
 
 
 def test_frozen_mlp_full_list_does_not_discover_moe_parameters():
-    # Regression: an explicit list that names MLP leaves together with finetune_mlp_modules=False must NOT train
-    # experts.
-    # get_peft_regex scopes the MLP leaves out (its emitted regex carries no mlp tag block), so detection has to key on
-    # that SCOPED regex -- keying on the original list would let its gate/up/down leaves silently re-enable the frozen
-    # experts.
+    # finetune_mlp_modules=False must NOT train experts: detection keys on the SCOPED regex,
+    # since the original list's gate/up/down leaves would re-enable them.
     from unsloth.models._utils import (
         _select_moe_detection_targets,
         get_moe_target_parameters,
@@ -136,8 +126,6 @@ def test_frozen_mlp_full_list_does_not_discover_moe_parameters():
         "up_proj",
         "down_proj",
     ]
-    # Representative of what get_peft_regex emits for that list under finetune_mlp_modules=False: attention-only
-    # path, no mlp component block.
     scoped_regex = (
         r"(?:.*?(?:language|text).*?"
         r"(?:self_attn|attention|attn|mixer).*?"
@@ -154,8 +142,6 @@ def test_frozen_mlp_full_list_does_not_discover_moe_parameters():
 
 
 def test_frozen_language_full_list_does_not_discover_moe_parameters():
-    # Vision-only request (finetune_language_layers=False) with a full leaf list must not reach the language-model
-    # experts either.
     from unsloth.models._utils import (
         _select_moe_detection_targets,
         get_moe_target_parameters,
@@ -178,9 +164,7 @@ def test_frozen_language_full_list_does_not_discover_moe_parameters():
 
 
 def test_in_scope_mlp_full_list_still_discovers_moe_parameters():
-    # With MLP and language both in scope, an explicit list that names MLP
-    # leaves SHOULD enable the experts (unchanged behavior): the original list
-    # is preferred and carries the gate/up/down intent.
+    # With MLP and language in scope the original list is preferred and enables the experts.
     from unsloth.models._utils import (
         _select_moe_detection_targets,
         get_moe_target_parameters,
@@ -210,9 +194,6 @@ def test_in_scope_mlp_full_list_still_discovers_moe_parameters():
 
 
 def test_attention_only_list_prefers_original_when_in_scope():
-    # The case the PR originally fixed: an attention-only list routed through get_peft_regex under a family scope (e.g.
-    # vision-off) still keeps experts off, because with MLP+language in scope detection uses the original attention-only
-    # list rather than the regex's spurious mlp component block.
     from unsloth.models._utils import (
         _select_moe_detection_targets,
         get_moe_target_parameters,
@@ -260,17 +241,8 @@ def test_unfused_expert_parameters_resolve_both_leaves():
     assert got == ["experts.up_proj", "experts.down_proj"], got
 
 
-# ---------------------------------------------------------------------------------------
-# Unfused expert layouts and the no-experts-resolved warning (unsloth#4476).
-#
-# Four expert layouts are in the wild and only the first two were covered before:
-#   fused 3D Parameter        experts.gate_up_proj / experts.down_proj (transformers 5.x)
-#   per-expert Linear list    experts.gate_up_projs.<i> (gpt-oss bnb-4bit)
-#   unfused 3D Parameter      experts.gate_proj / up_proj / down_proj (NemotronH)
-#   per-expert submodule      experts.<i>.gate_proj (Qwen3-MoE on transformers 4.x)
-# The third resolved only down_proj, silently. The fourth needs no help from us, so it
-# must not trip the warning added for the third.
-# ---------------------------------------------------------------------------------------
+# Expert layouts: fused 3D Parameter, per-expert Linear list (gpt-oss bnb-4bit), unfused 3D
+# (NemotronH, only down_proj resolved before), per-expert submodule (needs no help, no warning).
 
 ALL_MLP_LEAVES = ["gate_proj", "up_proj", "down_proj"]
 

@@ -20,7 +20,6 @@ import weakref
 from transformers.models.llama.modeling_llama import logger
 from peft import PeftModelForCausalLM
 import torch
-import itertools
 import collections
 import numpy as np
 import gc
@@ -65,9 +64,8 @@ IGNORED_TOKENIZER_NAMES = frozenset(
 )
 os.environ["UNSLOTH_IGNORED_TOKENIZER_NAMES"] = "\n".join(IGNORED_TOKENIZER_NAMES)
 
-# gemma-4 base mirrors do not prepend <bos> (post_processor.single = [A], google's is [<bos>, A]).
-# Not keyed on add_bos_token (google omits it on E4B/31B/26B-A4B and still prepends) nor on repo
-# name. -it is skipped: its chat_template emits BOS. unslothai/unsloth#7903
+# gemma-4 base mirrors do not prepend <bos>. Not keyed on add_bos_token or repo name; -it is
+# skipped since its chat_template emits BOS. unslothai/unsloth#7903
 _GEMMA4_INSTRUCT_EOS = "<turn|>"
 
 # Anchored: a future gemma-4.5 / gemma_45 has its own BOS policy, and DiffusionGemma4... is not gemma 4.
@@ -143,6 +141,56 @@ def _tokenizer_auto_adds_bos(tokenizer):
     ):
         input_ids = input_ids[0]
     return bool(input_ids) and input_ids[0] == bos_token_id
+
+
+def _special_ids_added_on_encode(tokenizer):
+    """Ids the tokenizer itself adds to plain text (post-processor BOS / EOS); empty if it cannot be asked."""
+    tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+    try:
+        with_special = tokenizer("A")["input_ids"]
+        without_special = tokenizer("A", add_special_tokens = False)["input_ids"]
+    except Exception:
+        return frozenset()
+
+    def flat(ids):
+        while isinstance(ids, (list, tuple)) and ids and isinstance(ids[0], (list, tuple)):
+            ids = ids[0]
+        return ids if isinstance(ids, (list, tuple)) else []
+
+    return frozenset(flat(with_special)) - frozenset(flat(without_special))
+
+
+def _as_id_set(ids):
+    if ids is None:
+        return set()
+    if isinstance(ids, int):
+        return {ids}
+    return {i for i in ids if isinstance(i, int)}
+
+
+def zero_pad_embedding_rows(model, tokenizer):
+    """Zero the tokenizer's pad row, except for an EOS id (stopping), an id the tokenizer adds to every
+    input (#4984, harrier pools it) or an lm_head-tied embedding (pad logit 0 beats Gemma's negatives)."""
+    pad_token_id = getattr(tokenizer, "pad_token_id", None) if tokenizer is not None else None
+    if not isinstance(pad_token_id, int):
+        return
+    eos_ids = _as_id_set(getattr(tokenizer, "eos_token_id", None))
+    for config in (getattr(model, "config", None), getattr(model, "generation_config", None)):
+        eos_ids |= _as_id_set(getattr(config, "eos_token_id", None))
+    if pad_token_id in eos_ids or pad_token_id in _special_ids_added_on_encode(tokenizer):
+        return
+    lm_head_weight = getattr(getattr(model, "lm_head", None), "weight", None)
+    with torch.no_grad():
+        for module in model.modules():
+            if (
+                type(module) is torch.nn.Embedding
+                and module.padding_idx == pad_token_id
+                and pad_token_id < module.weight.shape[0]
+                and (
+                    lm_head_weight is None or module.weight.data_ptr() != lm_head_weight.data_ptr()
+                )
+            ):
+                module.weight[pad_token_id] = 0
 
 
 def _strip_bos_from_chat_template_text(chat_template):
@@ -346,6 +394,100 @@ def _repair_tokenizer_backend_from_json(
     return tokenizer
 
 
+def _literal_regex(text):
+    return r"\s*".join(re.escape(part) for part in text.split())
+
+
+# Unsloth's 2025 Mistral Small 3.2 template emitted [AVAILABLE_TOOLS] only when the last message was a
+# user or tool turn, so training rows ending in an assistant reply lost the tool list. mistral_common
+# (serving and finetuning) puts it before the last user message; rewrite to that (unslothai/unsloth#3096).
+_MISTRAL_TOOLS_REWRITES = (
+    (
+        re.compile(
+            _literal_regex(
+                "{#- Tool description appended ONLY to last user message. Edits made by Unsloth #}"
+            )
+            + r".*?(?="
+            + _literal_regex(
+                "{%- for message in loop_messages %} {%- if message['role'] == 'user' %}"
+            )
+            + r")",
+            re.S,
+        ),
+        '{%- set tools_description = "" %}\n'
+        "{%- set has_tools = false %}\n"
+        "{%- set ns = namespace(last_user_index=-1) %}\n"
+        "{%- if tools is defined and tools is not none and tools|length > 0 %}\n"
+        "    {%- set has_tools = true %}\n"
+        '    {%- set tools_description = "[AVAILABLE_TOOLS]" + (tools | tojson) + "[/AVAILABLE_TOOLS]" %}\n'
+        "    {%- for message in loop_messages %}\n"
+        "        {%- if message['role'] == 'user' %}\n"
+        "            {%- set ns.last_user_index = loop.index0 %}\n"
+        "        {%- endif %}\n"
+        "    {%- endfor %}\n"
+        "{%- endif %}\n\n",
+    ),
+    (
+        re.compile(
+            _literal_regex(
+                "{%- if has_tools and loop.last %} {{- tools_description }} {%- endif %} "
+                "{#- If directly called tools in first turn, prepend to user #} "
+                "{%- if ns.append_tools and ns.append_tools_index == 0 %} {{- tools_description }} {%- endif %}"
+            )
+        ),
+        "{%- if has_tools and loop.index0 == ns.last_user_index %}\n"
+        "            {{- tools_description }}\n"
+        "        {%- endif %}",
+    ),
+    (
+        re.compile(
+            _literal_regex(
+                "{#- If User,Assistant,Tool,Tool we also need to append tools_description. Edits made by Unsloth #} "
+                "{%- if has_tools and (loop.index0 == ns.append_tools_index) %} {{- eos_token }} {{- tools_description }} {%- endif %}"
+            )
+            + r"\s*"
+        ),
+        "",
+    ),
+    (
+        re.compile(
+            _literal_regex(
+                "{#- Must not add EOS if added tools_description. Unsloth edits. #} "
+                "{%- if (loop.index0 != ns.append_tools_index) %} {{- eos_token }} {%- endif %}"
+            )
+        ),
+        "{{- eos_token }}",
+    ),
+)
+
+
+def _rewrite_mistral_tools_chat_template(template):
+    if not isinstance(template, str) or "ns.append_tools_index" not in template:
+        return template
+    new = template
+    for pattern, replacement in _MISTRAL_TOOLS_REWRITES:
+        new, n = pattern.subn(lambda _: replacement, new)
+        if n != 1:
+            return template
+    if "append_tools" in new:
+        return template
+    try:
+        import jinja2
+        jinja2.Environment(extensions = ["jinja2.ext.loopcontrols"]).parse(new)
+    except Exception:
+        return template
+    return new
+
+
+def _fix_mistral_tools_chat_template(tokenizer):
+    for obj in _tokenizer_objects(tokenizer):
+        template = getattr(obj, "chat_template", None)
+        new = _rewrite_mistral_tools_chat_template(template)
+        if new is not template:
+            obj.chat_template = new
+    return tokenizer
+
+
 def _apply_post_load_tokenizer_fixes(
     tokenizer,
     fix_tokenizer = True,
@@ -361,6 +503,7 @@ def _apply_post_load_tokenizer_fixes(
     if not fix_tokenizer:
         return tokenizer
     tokenizer = _fix_gemma4_base_bos_token(tokenizer, config = config)
+    tokenizer = _fix_mistral_tools_chat_template(tokenizer)
     return _fix_post_load_chat_template(tokenizer)
 
 
@@ -998,6 +1141,8 @@ def load_correct_tokenizer(
             )
         pass
 
+    if fix_tokenizer:
+        chat_template = _rewrite_mistral_tools_chat_template(chat_template)
     tokenizer.chat_template = chat_template
     # Saving restores sentencepiece assets from the repo name alone, which carries no branch, so stamp it for the save path. Imported late to break a circular import.
     from .models.loader_utils import _mark_loaded_revision
@@ -1205,8 +1350,8 @@ def _fix_chat_template(chat_template, is_sharegpt = False):
     dash_r = "-" if end["dash_right"] else ""
     open_tag = lambda body: "{%" + dash_l + " " + body + " " + dash_r + "%}"
 
-    # Case 1: the template ends with a single trailing {{ expr }} that is the generation prefix, so wrap it in an {% if add_generation_prompt %} block.
-    # Surrounding whitespace allowed (ERNIE-4.5: `{%- endfor %}\n {{- "..." }}`); it moves inside the block.
+    # Case 1: a single trailing {{ expr }} is the generation prefix; wrap it in an agp block.
+    # Surrounding whitespace allowed (ERNIE-4.5).
     trailing = after_endfor.strip()
     if (
         "{%" + dash_l + " if" not in after_endfor
@@ -1573,17 +1718,11 @@ def check_tokenizer(
             bad_tokens = list(added_tokens_fast.values())[j:]
             if not _reload:
                 added_tokens = [str(x) for x in tokenizer.added_tokens_decoder.values()]
-                special_tokens = tokenizer.special_tokens_map
-                import itertools
-
-                special_tokens = frozenset(
-                    itertools.chain.from_iterable(
-                        [x] if type(x) is str else x for x in special_tokens.values()
-                    )
-                )
+                # special_tokens_map drops the extra special tokens on transformers 5.x
+                special_tokens = frozenset(str(x) for x in tokenizer.all_special_tokens)
                 can_be_removed1 = [x for x in bad_tokens if x not in special_tokens]
                 can_be_removed2 = [
-                    x for x in can_be_removed1 if x in tokenizer._added_tokens_encoder.keys()
+                    x for x in can_be_removed1 if x in tokenizer.added_tokens_encoder.keys()
                 ]
 
                 can_be_removed = (len(can_be_removed1) == len(bad_tokens)) and (
@@ -1593,9 +1732,10 @@ def check_tokenizer(
                 remove_generic = False
                 try_mapper = []
                 if not can_be_removed:
-                    names = dir(tokenizer)
-                    names = (x for x in names if x.endswith("_token") and x.count("_") == 1)
-                    generic_tokens = [(x, getattr(tokenizer, x, None)) for x in names]
+                    # dir(tokenizer) misses the *_token attributes on transformers 5.x
+                    generic_tokens = [
+                        (x, y) for x, y in tokenizer.special_tokens_map.items() if type(y) is str
+                    ]
 
                     try_removal = []
                     for token in bad_tokens:
@@ -1610,15 +1750,32 @@ def check_tokenizer(
                     can_be_removed1 = bad_tokens
 
                 if can_be_removed:
-                    for j, bad_token in enumerate(can_be_removed1):
-                        remove_id = tokenizer._added_tokens_encoder[bad_token]
-                        del tokenizer._added_tokens_decoder[remove_id]
-                        del tokenizer._added_tokens_encoder[bad_token]
+                    if getattr(tokenizer, "is_fast", False):
+                        # Fast tokenizers read added tokens from the Rust backend, so drop them there.
+                        import json
 
+                        state = json.loads(tokenizer._tokenizer.to_str())
+                        state["added_tokens"] = [
+                            x for x in state["added_tokens"] if x["content"] not in can_be_removed1
+                        ]
+                        tokenizer._tokenizer = tokenizer._tokenizer.from_str(json.dumps(state))
+                    else:
+                        for bad_token in can_be_removed1:
+                            remove_id = tokenizer._added_tokens_encoder[bad_token]
+                            del tokenizer._added_tokens_decoder[remove_id]
+                            del tokenizer._added_tokens_encoder[bad_token]
+                    for j, bad_token in enumerate(can_be_removed1):
                         if remove_generic and (try_removal[j] == bad_token):
                             setattr(tokenizer, try_mapper[j], None)
                             setattr(tokenizer, try_mapper[j] + "_id", None)
-                    if max(tokenizer.added_tokens_decoder.keys()) < max_embedding_size:
+                    # Ids left in the base vocab or emitted by a post-processor template must fit too.
+                    probe_ids = [max(tokenizer.get_vocab().values(), default = -1)]
+                    probe_ids += tokenizer("a").input_ids
+                    try:
+                        probe_ids += tokenizer("a", "a").input_ids
+                    except Exception:
+                        pass
+                    if max(probe_ids, default = -1) < max_embedding_size:
                         logger.warning_once(
                             f"Unsloth loaded a broken tokenizer `{model_name}`, but managed to repair it!\n"
                             f"Tokens {bad_tokens} with ids {bad_indices} exceeds the max vocab size of {max_embedding_size}.\n"
@@ -1650,24 +1807,20 @@ def check_tokenizer(
                     from_slow = True,
                     cache_dir = reload_cache_dir,
                 )
-                return check_tokenizer(
-                    model = model,
-                    tokenizer = tokenizer,
-                    model_name = model_name,
-                    model_max_length = model_max_length,
-                    padding_side = padding_side,
-                    token = token,
-                    _reload = False,
-                    cache_dir = cache_dir,
-                )
-                break
-            except:
-                logger.warning_once(
-                    "Unsloth: Tokenizer is most likely buggy, and Unsloth failed to repair it.\n"
-                    "It will still work, but beware of out of bounds memory accesses.\n"
-                    "Please file an issue on the model owner's repo about this issue."
-                )
-                return tokenizer
+            except Exception:
+                # No usable slow tokenizer (fast-only repos on transformers 4.x): repair the one we have.
+                pass
+            # Outside the try: an unrepairable tokenizer must raise, not come back with a warning.
+            return check_tokenizer(
+                model = model,
+                tokenizer = tokenizer,
+                model_name = model_name,
+                model_max_length = model_max_length,
+                padding_side = padding_side,
+                token = token,
+                _reload = False,
+                cache_dir = cache_dir,
+            )
     return convert_to_fast_tokenizer(tokenizer)
 
 

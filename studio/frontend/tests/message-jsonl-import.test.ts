@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import vm from "node:vm";
 import { after, before, test } from "node:test";
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 import { type ViteDevServer, createServer } from "vite";
 import { toolCallReplayArguments } from "../src/features/chat/tool-call-arguments.ts";
 import { codexLocalToolRoundId, startsNewCodexToolRound } from "../src/features/chat/codex-reasoning.ts";

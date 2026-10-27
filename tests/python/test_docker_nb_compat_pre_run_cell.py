@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
 
-"""Regression tests for the IPython pre_run_cell hook in docker/unsloth_nb_compat.py.
-
-The hook only read the pip shim's marker file, which is a record of a PREVIOUS cell.
-The notebooks pin a new model by installing and importing in ONE cell, and the shim
-writes that marker from a child process partway through it, so the hook had already
-returned: the cell ran the base transformers and every later cell was answered with
-"already imported; cannot switch". The hook had no test coverage at all.
-"""
+"""The pre_run_cell hook must honour a pin installed in the cell about to run, not only the marker."""
 
 from __future__ import annotations
 
@@ -39,18 +32,12 @@ def sidecar_root(tmp_path):
 
 @pytest.fixture()
 def compat(sidecar_root, tmp_path, monkeypatch):
-    """Fresh compat over fake sidecars, with sys.path and PYTHONPATH restored.
-
-    activate() mutates both, so without the teardown one test's sidecar leaks into the
-    next and a later assertion passes for the wrong reason.
-    """
+    """Fresh compat per test; activate() mutates sys.path and PYTHONPATH, so they must be restored after."""
     monkeypatch.setenv("UNSLOTH_TF_SIDECAR_ROOT", str(sidecar_root))
     monkeypatch.delenv("UNSLOTH_TF_SIDECAR_MIN", raising = False)
     monkeypatch.setenv("UNSLOTH_NB_TF_MARKER", str(tmp_path / "marker" / "requested"))
     monkeypatch.setenv("PYTHONPATH", "")
-    # activate() is a no-op once transformers is imported, and the session may well
-    # have imported it before this file runs, which made the first test in the file
-    # fail while the rest passed on the teardown of the one before it
+    # activate() is a no-op once transformers is imported, so drop it from sys.modules.
     monkeypatch.delitem(sys.modules, "transformers", raising = False)
     path_before = list(sys.path)
 
@@ -97,15 +84,11 @@ def test_the_marker_is_used_when_the_cell_pins_nothing_itself(compat, tmp_path):
     marker = Path(os.environ["UNSLOTH_NB_TF_MARKER"])
     marker.parent.mkdir(parents = True, exist_ok = True)
     marker.write_text(PIN, encoding = "utf-8")
-    # a cell with no install at all, i.e. the shape the hook always handled
     assert _fire(compat, "import transformers\n") == compat._sidecar_dir
 
 
 def test_the_cell_pin_outranks_a_stale_marker(compat, sidecar_root, tmp_path):
-    """The marker records an install that has ALREADY run. An earlier cell in the same
-    notebook can have pinned something else, and the marker path falls back to
-    pid-<pid> when the connection file cannot be read, so a recycled pid inherits a
-    stranger's pin. The cell about to run is the better authority either way."""
+    """The cell about to run outranks the marker, which may belong to an earlier cell or a recycled pid."""
     marker = Path(os.environ["UNSLOTH_NB_TF_MARKER"])
     marker.parent.mkdir(parents = True, exist_ok = True)
     marker.write_text("5.5.0", encoding = "utf-8")
@@ -153,7 +136,7 @@ def test_nothing_happens_once_transformers_is_imported(compat, capsys, monkeypat
     monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace(__version__ = "4.57.6"))
     compat._pre_run_cell(SimpleNamespace(raw_cell = COMBINED_CELL))
     assert compat._sidecar_dir not in sys.path
-    # the hook fires on EVERY cell, so it must not narrate on each one
+    # The hook fires on every cell, so it must stay silent.
     assert capsys.readouterr().err == ""
 
 
@@ -186,7 +169,7 @@ def test_the_hook_is_registered_under_pre_run_cell(compat):
     shell = _Shell()
     compat.get_ipython = lambda: shell
     compat.register_ipython()
-    compat.register_ipython()  # idempotent
+    compat.register_ipython()
     assert shell.events.registered == [("pre_run_cell", compat._pre_run_cell)]
 
 
@@ -217,10 +200,7 @@ def test_unsloth_run_scans_with_the_very_same_functions(compat, monkeypatch):
     assert run._pin_from is compat.pin_from
 
 
-# pip accepts every PEP 503 spelling of a requirement name, and unsloth_pip_shim
-# canonicalises before it decides what to drop. A scanner that only knew the canonical
-# form therefore left the pin unseen while the install was still suppressed, and the
-# import in that same cell froze the base transformers for the life of the kernel.
+# pip accepts every PEP 503 spelling, so the scanner must canonicalise like the shim.
 
 
 @pytest.mark.parametrize(
@@ -250,8 +230,7 @@ def test_the_shim_and_the_scanner_agree_on_the_name(compat):
     for spelling in ("transformers", "Transformers", "TRANSFORMERS", "transformers[torch]"):
         assert shim._canon(spelling + "==" + PIN) == "transformers", spelling
         assert compat.pin_in_cell("!pip install " + spelling + "==" + PIN) == PIN, spelling
-    # and where the shim says a spelling is somebody else, so does the scanner: PEP 503
-    # collapses a run of `-_.` to one `-`, it does not delete it
+    # PEP 503 collapses a run of -_. to one -, it does not delete it.
     for other in ("trans_formers", "trans.formers", "sentence-transformers"):
         assert shim._canon(other + "==" + PIN) != "transformers", other
         assert compat._norm_req(other) == shim._canon(other + "==" + PIN), other
@@ -277,11 +256,7 @@ def test_a_pin_still_has_to_come_from_an_install_line(compat):
     assert compat.pin_in_cell('doc = """\n%pip install Transformers==' + PIN + '\n"""\n') is None
 
 
-# A requirement whose PEP 508 marker is false is skipped outright by both real tools
-# ("Ignoring transformers: markers ... don't match your environment"), so it installs
-# nothing. Treating it as a pin activated a sidecar for a version the cell never got,
-# and activate() prepends that directory to sys.path AND to PYTHONPATH, so every child
-# process inherits it too.
+# A false PEP 508 marker installs nothing, so it must not activate a sidecar.
 @pytest.mark.parametrize(
     "cell, expected",
     [
@@ -291,8 +266,7 @@ def test_a_pin_still_has_to_come_from_an_install_line(compat):
         ("!pip install \"transformers==5.5.0; python_version >= '3.0'\"", "5.5.0"),
         ("!pip install \"transformers==5.5.0; platform_system == 'Linux'\"", "5.5.0"),
         ("!uv pip install \"transformers==5.5.0; implementation_name == 'pypy'\"", None),
-        # unquoted: the shell cuts the line at the `;`, so pip only ever sees the
-        # bare pin and it really is unconditional
+        # Unquoted: the shell cuts at `;`, so pip sees an unconditional pin.
         ('!pip install transformers==5.5.0; python_version < "3.0"', "5.5.0"),
     ],
     ids = [

@@ -1,22 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The contract between `knobs.py` and `knobs.js`, pinned so it cannot drift silently.
-
-Every arm's manifest names two strings that live on the other side of a language boundary: a
-potency counter and, for an EQUIVALENT arm, the diff keys it is allowed to produce. Neither is
-checked by any compiler, and both fail in the worst possible direction.
-
-A misspelled potency counter reads as `NOT RUN` for an arm that fired perfectly. A mismatched diff
-key reads as `VOIDED` for an arm whose output never changed. Both are conservative, so neither
-produces a wrong NUMBER, and that is exactly why they can survive for weeks: the report simply
-says less than it could, forever, and nobody can tell the difference between a knob that is
-broken and a mechanism that is not there.
-
-This was not hypothetical. Arm B declared its allowed diff as `style` while the browser side
-emits `attr:style` (namespaced so that an attribute called `text` cannot collide with the
-structural text key). B would have been voided on every run of every batch.
-"""
+"""Pins strings shared with knobs.js: a misspelled counter or diff key reads as NOT RUN or VOIDED."""
 
 from __future__ import annotations
 

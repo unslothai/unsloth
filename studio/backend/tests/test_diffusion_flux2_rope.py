@@ -14,8 +14,14 @@ import pytest
 from core.inference import diffusion_flux2_rope as fr
 
 torch = pytest.importorskip("torch")
+from torch.torch_version import TorchVersion  # noqa: E402
+
 fmod = pytest.importorskip("diffusers.models.transformers.transformer_flux2")
 from diffusers.models.embeddings import apply_rotary_emb as stock_rope  # noqa: E402
+
+# A CUDA build's version tag: Studio reads ROCm from the "+rocm" tag too (AMD SDK / Radeon wheels leave
+# torch.version.hip unset), so a test that fakes NVIDIA clears both.
+_CUDA_TORCH_VERSION = TorchVersion(str(torch.__version__).split("+")[0] + "+cu130")
 
 needs_cuda = pytest.mark.skipif(
     not torch.cuda.is_available()
@@ -46,6 +52,7 @@ def fake_kernel(monkeypatch):
     """Gate tests run without a GPU: pretend Triton built the kernel on a CUDA (non-ROCm) torch."""
     monkeypatch.setattr(fr, "_kernel", lambda: (lambda x, cos, sin: None))
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", _CUDA_TORCH_VERSION, raising = False)
 
 
 def test_stock_symbol_is_the_one_flux2_calls():
@@ -135,11 +142,35 @@ def test_teardown_and_load_wiring():
         for n in ast.walk(tree)
         if isinstance(n, ast.FunctionDef) and n.name == "_uninstall_fused_dit_patches"
     )
-    assert "uninstall_flux2_rope()" in ast.unparse(teardown)
+    # The teardown restores the registry's fused-DiT group, which carries the FLUX.2 RoPE spec ...
+    assert "uninstall_group(GROUP_FUSED_DIT)" in ast.unparse(teardown)
+    from core.inference.diffusion_autoopt import patches as ap
+
+    spec = next(s for s in ap.specs(group = ap.GROUP_FUSED_DIT) if s.name == "flux2_rope")
+    assert spec.stage == ap.STAGE_LOAD and spec.backends == ("image",)
+    # ... and the load runs that stage for the pipe with its dtype / device / logger.
     load = next(
         n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "load_pipeline"
     )
-    assert "install_flux2_rope(pipe, dtype, device, logger)" in ast.unparse(load)
+    assert "autoopt.STAGE_LOAD," in ast.unparse(load)
+    import types as _types
+
+    seen = []
+    orig_install, orig_uninstall = fr.install_for_pipe, fr.uninstall
+    try:
+        fr.install_for_pipe = lambda *a: seen.append(("install", a)) or False
+        fr.uninstall = lambda: seen.append(("uninstall",))
+        pipe = _types.SimpleNamespace(transformer = None)
+        ap.install_stage(
+            ap.STAGE_LOAD,
+            ap.PatchContext(pipe = pipe, dtype = "fp16", device = "cuda", logger = "log", speed_mode = "off"),
+        )
+        from core.inference import diffusion
+
+        diffusion._uninstall_fused_dit_patches()
+    finally:
+        fr.install_for_pipe, fr.uninstall = orig_install, orig_uninstall
+    assert ("install", (pipe, "fp16", "cuda", "log")) in seen and ("uninstall",) in seen
 
 
 def _case(shape, layout, freq_dtype):
@@ -219,3 +250,32 @@ def test_call_after_uninstall_reaches_stock(fake_kernel):
     x = torch.randn(1, 4, 2, 8)
     freqs = (torch.ones(4, 8), torch.zeros(4, 8))
     assert torch.equal(patched(x, freqs, sequence_dim = 1), x)
+
+
+def test_a_failed_launch_disables_the_fused_path_for_the_load(monkeypatch):
+    calls = []
+
+    def failing_launch(x, cos, sin):
+        calls.append(1)
+        raise RuntimeError("PTX JIT compilation failed")
+
+    monkeypatch.setattr(fr, "_kernel", lambda: failing_launch)
+    monkeypatch.setattr(fr, "_eligible", lambda *a, **k: True)
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", _CUDA_TORCH_VERSION, raising = False)
+    assert fr.install_for_pipe(_Flux2Like(), torch.float16, "cuda")
+    x = torch.randn(1, 6, 2, 8)
+    pos = torch.randn(6, 4, dtype = torch.float64)
+    freqs = (pos.cos().repeat_interleave(2, -1).float(), pos.sin().repeat_interleave(2, -1).float())
+    want = stock_rope(x, freqs, sequence_dim = 1)
+    for _ in range(4):
+        assert torch.equal(fmod.apply_rotary_emb(x, freqs, sequence_dim = 1), want)
+    assert len(calls) == 1
+    # The next load re-arms, whether or not the previous one was torn down first.
+    assert fr.install_for_pipe(_Flux2Like(), torch.float16, "cuda")
+    fmod.apply_rotary_emb(x, freqs, sequence_dim = 1)
+    assert len(calls) == 2
+    fr.uninstall()
+    fr.install_for_pipe(_Flux2Like(), torch.float16, "cuda")
+    fmod.apply_rotary_emb(x, freqs, sequence_dim = 1)
+    assert len(calls) == 3

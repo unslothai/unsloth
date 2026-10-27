@@ -17,7 +17,7 @@ PYPROJECT = REPO_ROOT / "pyproject.toml"
 NO_TORCH_RUNTIME = REPO_ROOT / "studio" / "backend" / "requirements" / "no-torch-runtime.txt"
 CLI_ROOT = REPO_ROOT / "unsloth_cli"
 
-# typing.Literal support landed in typer 0.19.0 (fastapi/typer#429).
+# typing.Literal support landed in typer 0.19.0.
 LITERAL_SUPPORTED_FROM = (0, 19, 0)
 
 

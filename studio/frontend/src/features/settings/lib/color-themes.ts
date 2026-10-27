@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Color themes (the `palette` preference). Tokens live in index.css under
-// html[data-palette]. Keep ids in sync with public/theme-boot.js and the
-// backend `palette` Literal in routes/settings.py.
+// Tokens live in index.css under html[data-palette]. Keep ids in sync with public/theme-boot.js and
+// the backend `palette` Literal in routes/settings.py.
 
 export const UNSLOTH_THEME_IDS = ["standard", "classic", "minimal"] as const;
 
@@ -43,12 +42,10 @@ export type ThemeModeColors = {
   accent: string;
   background: string;
   foreground: string;
-  /** Flavor themes only: card and menu color. */
   surface?: string;
 };
 
 type ColorThemeMeta = {
-  /** Flavor themes only; Unsloth themes use i18n keys. */
   name?: string;
   light: ThemeModeColors;
   dark: ThemeModeColors;
@@ -56,16 +53,16 @@ type ColorThemeMeta = {
 
 export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
   standard: {
-    light: { accent: "#17b88b", background: "#fefefd", foreground: "#262626" },
-    dark: { accent: "#17b88b", background: "#181818", foreground: "#dfdfdf" },
+    light: { accent: "#17b88b", background: "#fefefd", foreground: "#0f1114" },
+    dark: { accent: "#17b88b", background: "#181818", foreground: "#fcfcfc" },
   },
   classic: {
     light: { accent: "#339cff", background: "#ffffff", foreground: "#1a1c1f" },
-    dark: { accent: "#4dabff", background: "#181818", foreground: "#dfdfdf" },
+    dark: { accent: "#4dabff", background: "#181818", foreground: "#fcfcfc" },
   },
   minimal: {
     light: { accent: "#171717", background: "#ffffff", foreground: "#171717" },
-    dark: { accent: "#ededed", background: "#181818", foreground: "#dfdfdf" },
+    dark: { accent: "#ededed", background: "#181818", foreground: "#fcfcfc" },
   },
   matcha: {
     name: "Matcha",

@@ -89,7 +89,6 @@ def clear_all_lru_caches(verbose = True):
     """Clear all LRU caches in loaded modules."""
     cleared_caches = []
 
-    # Skip these to avoid warnings.
     skip_modules = {
         "torch.distributed",
         "torchaudio",
@@ -98,7 +97,6 @@ def clear_all_lru_caches(verbose = True):
         "torchaudio.backend",
     }
 
-    # Static list to avoid RuntimeError during iteration.
     modules = list(sys.modules.items())
 
     for module_name, module in modules:
@@ -111,7 +109,6 @@ def clear_all_lru_caches(verbose = True):
         try:
             for attr_name in dir(module):
                 try:
-                    # Suppress warnings when checking attributes.
                     with warnings.catch_warnings():
                         warnings.simplefilter("ignore", FutureWarning)
                         warnings.simplefilter("ignore", UserWarning)

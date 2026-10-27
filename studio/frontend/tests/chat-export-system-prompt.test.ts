@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import vm from "node:vm";
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 
 import {
   codexLocalToolRoundId,
@@ -21,6 +21,7 @@ import {
 } from "../src/features/chat/utils/conversation-markdown.ts";
 import {
   buildNamedConversationsMarkdown,
+  conversationExportBasename,
   createConversationMarkdownBuilder,
   createConversationMarkdownExporter,
 } from "../src/features/chat/utils/conversation-markdown-export.ts";
@@ -33,6 +34,7 @@ import {
   ndjsonBody,
 } from "../src/features/chat/utils/ndjson.ts";
 import { unwrapPastedTextContent } from "../src/features/chat/utils/pasted-text.ts";
+import { composeChatInstructions } from "../src/features/chat/utils/agents-md.ts";
 import { readSrc } from "./helpers/kit.ts";
 
 type Exporters = {
@@ -153,6 +155,7 @@ function loadExporters(
     getStoredChatThread: async (id: string) =>
       THREADS.find((thread) => thread.id === id),
     getStoredChatProject: async (id: string) => PROJECTS[id] ?? null,
+    composeChatInstructions,
     useChatRuntimeStore: { getState: () => ({ activeProjectId: "openInComposer" }) },
     isThreadIncognito: () => false,
     settleThreadScopedSettingsForCopy: async () => {},
@@ -170,6 +173,7 @@ function loadExporters(
     renderConversationBlocks,
     buildConversationMarkdown,
     buildNamedConversationsMarkdown,
+    conversationExportBasename,
     createConversationMarkdownBuilder,
     createConversationMarkdownExporter,
     CONVERSATION_MARKDOWN_MIME_TYPE,

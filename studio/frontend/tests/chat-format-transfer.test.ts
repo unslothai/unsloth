@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The chat/model-load/training-overlay formatters. The 24h ETA clamp mirrors
-// the hub formatter's, which has had one since #7679 (see hub-format.test.ts).
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -25,7 +22,6 @@ test("formatEta renders the usual units", () => {
 test("formatEta clamps at 24h", () => {
   assert.equal(formatEta(DAY), "> 24h");
   assert.equal(formatEta(DAY * 40), "> 24h");
-  // #7667's "753d 5h left" must be unreachable through this formatter.
   assert.equal(formatEta(753 * DAY), "> 24h");
 });
 

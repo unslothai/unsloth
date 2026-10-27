@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Platform guards for the reveal-in-file-manager endpoint.
-
-A stock WSL distro has no Linux desktop, so the generic Linux branch
-(``xdg-open``) fails there. Under WSL the reveal must route through Windows
-interop (``wslpath -w`` + ``explorer.exe``), fall back to ``xdg-open`` when
-interop is unavailable, and leave native Linux behavior unchanged.
-"""
+"""WSL reveals go through wslpath -w and explorer.exe; stock WSL has no desktop for xdg-open."""
 
 from __future__ import annotations
 

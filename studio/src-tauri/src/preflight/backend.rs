@@ -160,22 +160,15 @@ fn backend_capability_stale_reason(health: &BackendHealth) -> Option<String> {
     if health.supports_desktop_backend_ownership != Some(true) {
         return Some("desktop_backend_ownership_unsupported".to_string());
     }
-    // Unauthenticated /api/health gates `version` behind a bearer, and the bits
-    // above predate the floor, so no version means "auth-gated", not "old".
+    // Unauthenticated /api/health hides `version`, so no version means auth-gated, not old.
     match health.version.as_deref() {
         Some(version) if !version.is_empty() => backend_version_stale_reason(Some(version)),
         _ => None,
     }
 }
 
-/// Deliberately NOT part of `backend_capability_stale_reason`.
-///
-/// Only the desktop spawn sets the lease secret (`process.rs`), so this does not
-/// mean "too old to talk to", it means "this app did not start it" -- permanently
-/// true of a terminal-started backend. Folded in with the protocol bits it would
-/// make every one of those an ExternalConflict and the app would refuse to start,
-/// to fix a picker `use-linked-folders.ts` already greys out. Apply it only where
-/// a restart is ours to perform.
+/// Deliberately NOT part of `backend_capability_stale_reason`: only the desktop spawn sets
+/// the secret, so this is always true of a terminal-started backend. Apply only where we restart.
 fn backend_native_lease_stale_reason(health: &BackendHealth) -> Option<String> {
     if health.native_path_leases_supported != Some(true) {
         return Some("native_path_leases_unsupported".to_string());
@@ -199,7 +192,6 @@ pub(super) async fn probe_ownerless_spawned_backend(port: u16) -> BackendProbe {
     if let Some(reason) = backend_capability_stale_reason(&health) {
         return BackendProbe::Old { port, reason };
     }
-    // One WE spawned: a missing secret is a defect in our own start, so restart.
     if let Some(reason) = backend_native_lease_stale_reason(&health) {
         return BackendProbe::Old { port, reason };
     }
@@ -237,9 +229,7 @@ pub(super) async fn backend_desktop_auth_status(
 
     match root_status {
         BackendRootStatus::AmbiguousRoot | BackendRootStatus::ExpectedUnavailable => {
-            // Not adoptable, and not proof that our own install is serving: an
-            // id-less backend is just as likely a remote Unsloth reached through
-            // a port forward. Starting is fine, the port simply is not free.
+            // Not adoptable, and possibly a remote Unsloth over a port forward; the port is just not free.
             return BackendProbe::Unrelated {
                 port,
                 reason: "ambiguous_root_external_backend_active".to_string(),
@@ -274,9 +264,7 @@ pub(super) async fn backend_desktop_auth_status(
             BackendProbe::Old { port, reason }
         };
     }
-    // Owned only: ours to restart, and the restart re-injects the secret. An
-    // ownerless same-root backend is terminal-started, so blocking on it would
-    // make the app unstartable. See backend_native_lease_stale_reason.
+    // Owned only: an ownerless same-root backend is terminal-started, so blocking would stop the app.
     if !same_root_external {
         if let Some(reason) = backend_native_lease_stale_reason(health) {
             return BackendProbe::Old { port, reason };
@@ -324,17 +312,14 @@ pub(super) async fn backend_desktop_auth_status(
     }
 }
 
-/// Classify every candidate port. Callers pick from the result, because launch
-/// and mutation weigh the outcomes differently: launch may step over a backend
-/// it cannot adopt, a venv rewrite may not.
+/// Callers pick from the result: launch may step over an unadoptable backend, a venv rewrite may not.
 pub(super) async fn probe_backend_ports(ignored_ports: &[u16]) -> Vec<BackendProbe> {
     let client = match crate::loopback_http::client(Duration::from_secs(2)) {
         Ok(client) => client,
         Err(_) => return Vec::new(),
     };
 
-    // Fan out health probes concurrently. The desktop-auth probe is still
-    // sequential per candidate because it has auth-log side effects.
+    // The desktop-auth probe stays sequential per candidate because it has auth-log side effects.
     let ports: Vec<u16> = crate::desktop_backend_owner::desktop_candidate_ports().collect();
     let mut health_futs = Vec::with_capacity(ports.len());
     for port in ports {
@@ -365,8 +350,7 @@ pub(super) async fn probe_backend_ports(ignored_ports: &[u16]) -> Vec<BackendPro
     probes
 }
 
-/// Pick the outcome that decides a launch. An `Unrelated` backend is not a
-/// verdict at all: the port is taken, the backend picks the next one.
+/// An `Unrelated` backend is not a verdict: the port is taken, the backend picks the next one.
 fn select_launch_probe(probes: Vec<BackendProbe>) -> BackendProbe {
     let mut first_conflict = None;
     let mut first_ready = None;
@@ -425,8 +409,6 @@ mod tests {
         }
     }
 
-    /// A tunnelled or id-less Unsloth anywhere in 8888..=8908 used to poison the
-    /// whole launch, even with every other port free.
     #[test]
     fn unrelated_backends_never_decide_a_launch() {
         assert_eq!(
@@ -455,8 +437,6 @@ mod tests {
         );
     }
 
-    /// Minting an id at startup must not reclassify a backend that predates
-    /// ownership: it reports no id, or an empty one, and stays unadoptable.
     #[test]
     fn ownerless_backends_stay_ambiguous_once_a_local_id_exists() {
         for reported in [None, Some(""), Some("not-hex"), Some("AAAA")] {

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -11,55 +12,54 @@ import { ejectLoadedModel, readLoadedModels } from "./loaded-models-api";
 import {
   type LoadedModelEntry,
   type LoadedModelSource,
+  loadedModelLabel,
+  sameLoadedModels,
   shortModelLabel,
   withPendingLoads,
 } from "./loaded-models-sources";
 
-// Free next to chat's own status poll, still current on a tab switch.
 const POLL_INTERVAL_MS = 5000;
 
 const NO_ENTRIES: LoadedModelEntry[] = [];
 
-const ALL_SOURCES: LoadedModelSource[] = ["chat", "image", "video", "stt"];
+const ALL_SOURCES: LoadedModelSource[] = [
+  "chat",
+  "image",
+  "video",
+  "stt",
+  "embedding",
+];
 
-// A TTS load takes the chat slot and the chat unload releases it, so it folds into that
-// row rather than adding one.
+// A TTS load takes the chat slot and the chat unload releases it.
 function sourceForRuntime(runtime: ModelRuntime): LoadedModelSource {
   return runtime === "tts" ? "chat" : runtime;
 }
 
 export type UseLoadedModels = {
   entries: LoadedModelEntry[];
-  /** What the polls actually found, whether or not the card is showing it. The
-   *  card is closed, not deaf: this is how it notices a load it was not told
-   *  about and honours "Back on the next model load". */
+  /** Polled rows even while the card is closed, so it can reopen on a load it was not told about. */
   polledEntries: LoadedModelEntry[];
-  /** Row ids with an eject in flight. */
   ejecting: ReadonlySet<string>;
+  heldByOther: boolean;
   eject: (entry: LoadedModelEntry) => Promise<void>;
   refresh: () => void;
 };
 
 /**
- * Poll every runtime for what it holds. Paused while disabled or hidden.
- *
- * `track` is the narrower of the two: it says whether to RECORD the loads the
- * API calls announce, where `enabled` says whether to show anything. They come
- * apart for a card the user closed, which must still hear the load that reopens
- * it, and for a route the card is hidden on. Only the Settings toggle turns
- * recording off, since that is the one that means "stop telling me".
+ * `enabled` controls showing; `track` controls recording announced loads. A closed card still
+ * tracks; only the Settings toggle turns tracking off.
  */
 export function useLoadedModels(
   enabled: boolean,
   track: boolean = enabled,
 ): UseLoadedModels {
+  const t = useT();
   const [polled, setEntries] = useState<LoadedModelEntry[]>([]);
+  const [heldByOther, setHeldByOther] = useState(false);
   // Mirrored for the read below, which needs the last rows without taking a
   // dependency that would rebuild `refresh` on every poll.
   const polledRef = useRef<LoadedModelEntry[]>(NO_ENTRIES);
-  // Reported empty rather than cleared: clearing would be a setState in an effect, and the last
-  // read is right again the moment the pref returns. Loads announced by the API call itself, so a
-  // row appears with the toast rather than up to one poll later.
+  // Reported empty rather than cleared, avoiding a setState in an effect.
   const [pending, setPending] = useState<Map<LoadedModelSource, string | null>>(
     () => new Map(),
   );
@@ -67,14 +67,11 @@ export function useLoadedModels(
   const [ejecting, setEjecting] = useState<ReadonlySet<string>>(
     () => new Set<string>(),
   );
-  // One read at a time, and none applied after unmount.
   const inFlightRef = useRef(false);
   const mountedRef = useRef(true);
-  // Bumped whenever an eject changes the list. A read issued before that lands
-  // after it and would otherwise put the ejected row straight back.
+  // Bumped on eject so an older in-flight read cannot restore the ejected row.
   const generationRef = useRef(0);
-  // A refresh asked for while one was in flight, so the trailing refresh after
-  // an eject is not swallowed by the very read it needs to supersede.
+  // Remember a refresh requested mid-read so an eject's trailing refresh is not swallowed.
   const pendingRef = useRef(false);
 
   useEffect(() => {
@@ -84,17 +81,9 @@ export function useLoadedModels(
     };
   }, []);
 
-  // Runtimes whose load has settled but whose row is still the optimistic one.
-  // Retired only once a read has landed, so the row never blinks out in the gap
-  // between the load finishing and the status that replaces it arriving.
+  // Retired only after a read lands, so the row never blinks out in the gap.
   const settledRef = useRef<Set<LoadedModelSource>>(new Set());
-  /**
-   * Drop the optimistic rows for loads that have finished, now that a read has
-   * replaced them. `unreadable` names the sources that read could say nothing
-   * about: retiring those would take away the row for a model that has just
-   * finished loading, on the strength of a request that failed. They stay
-   * settled, so the next readable poll retires them instead.
-   */
+  /** Unreadable sources stay settled; a failed request must not drop a just-loaded row. */
   const retireSettled = useCallback((unreadable: LoadedModelSource[] = []) => {
     if (settledRef.current.size === 0) return;
     const done = [...settledRef.current].filter(
@@ -113,29 +102,27 @@ export function useLoadedModels(
 
   const refreshRef = useRef<() => void>(() => {});
   const refresh = useCallback(() => {
-    // Keyed on recording, not showing: a closed card keeps polling so a load started outside this
-    // tab, which raises no lifecycle event at all, still brings it back.
+    // Keyed on recording, not showing: API loads raise no event, so a closed card keeps polling.
     if (!track) return;
     if (inFlightRef.current) {
-      // Remember the ask instead of dropping it: the refresh an eject queues
-      // collides with the poll it has to correct more often than not.
       pendingRef.current = true;
       return;
     }
     inFlightRef.current = true;
     const generation = generationRef.current;
-    // What the card shows now, so a source that fails to answer keeps its rows
-    // rather than being read as empty.
+    // A source that fails to answer keeps its rows rather than reading as empty.
     let unreadable: LoadedModelSource[] = [];
     void readLoadedModels(polledRef.current)
       .then((next) => {
         unreadable = next.unreadable;
         if (mountedRef.current && generation === generationRef.current) {
-          setEntries(next.entries);
+          setEntries((prev) =>
+            sameLoadedModels(prev, next.entries) ? prev : next.entries,
+          );
+          setHeldByOther(next.heldByOther);
         }
       })
       .catch(() => {
-        // The whole read failed, so it is evidence about nothing at all.
         unreadable = ALL_SOURCES;
       })
       .finally(() => {
@@ -145,8 +132,6 @@ export function useLoadedModels(
           refreshRef.current();
           return;
         }
-        // This read is the one that supersedes them, so retire only once no further read is already
-        // queued, and only for the sources it could actually see.
         if (mountedRef.current) retireSettled(unreadable);
       });
   }, [track, retireSettled]);
@@ -157,14 +142,8 @@ export function useLoadedModels(
     refreshRef.current = refresh;
   }, [refresh]);
 
-  // Nothing is listening once recording stops, so the terminal event for a load in flight is missed
-  // and its optimistic row would come back as one no poll can retire: `withPendingLoads` only
-  // yields to a status row for the same runtime, and a failed or since-unloaded load has none. Drop
-  // them and let the poll say what is really resident. Keyed on `track`, not `enabled`: a closed
-  // card is still recording, and clearing there would throw away the very load that is about to
-  // reopen it. Adjusted during render rather than in an effect: React re-runs this render before
-  // committing, so the stale rows never reach the DOM, and the guard makes it run once per
-  // transition.
+  // Once recording stops, terminal events are missed and optimistic rows could never retire, so
+  // drop them. Adjusted during render so stale rows never reach the DOM.
   const [wasTracking, setWasTracking] = useState(track);
   if (wasTracking !== track) {
     setWasTracking(track);
@@ -182,9 +161,7 @@ export function useLoadedModels(
         setPending((prev) => new Map(prev).set(source, model));
         return;
       }
-      // Kept, not dropped: clearing here and waiting for the read to answer
-      // left the card with one row fewer for that gap, and with nothing at all
-      // when it was the only one, which read as the row randomly vanishing.
+      // Kept until a read answers, or the row blinks out in the gap.
       settledRef.current.add(source);
       refresh();
     });
@@ -197,7 +174,6 @@ export function useLoadedModels(
       if (document.hidden) return;
       refresh();
     }, POLL_INTERVAL_MS);
-    // Pick up a load or unload done in another tab.
     const onWake = () => {
       if (!document.hidden) refresh();
     };
@@ -213,35 +189,41 @@ export function useLoadedModels(
   const eject = useCallback(
     async (entry: LoadedModelEntry) => {
       setEjecting((prev) => new Set(prev).add(entry.id));
-      const label = shortModelLabel(entry.name);
+      const label = loadedModelLabel(entry);
       try {
         const outcome = await ejectLoadedModel(entry);
+        if (outcome.status === "declined") return;
         if (outcome.status === "stillResident") {
           toast.warning(
-            `"${shortModelLabel(outcome.model)}" was loaded while ejecting, so it is still using memory. Eject again to release it.`,
+            t("floatingPanels.loadedModels.toastStillResident", {
+              model: shortModelLabel(outcome.model),
+            }),
           );
         } else if (outcome.status === "unverified") {
-          // Neither success nor failure: say so, and leave the row for the poll
-          // to settle rather than claiming work that was not confirmed.
           toast.warning(
-            `${label} was asked to unload, but its runtime did not confirm. Check the card in a moment.`,
+            t("floatingPanels.loadedModels.toastUnverified", { model: label }),
           );
         } else if (outcome.status === "alreadyFree") {
           // The row was stale and nothing was unloaded, so say that rather than
           // report an eject. The row still goes: its memory is free either way.
-          toast.info(`${label} was no longer loaded.`);
+          toast.info(
+            t("floatingPanels.loadedModels.toastAlreadyFree", { model: label }),
+          );
           generationRef.current += 1;
           if (mountedRef.current) {
             setEntries((prev) => prev.filter((row) => row.id !== entry.id));
           }
         } else if (outcome.status === "replaced") {
-          // Nothing was unloaded: this runtime holds something else now, and
-          // releasing that is not what the click asked for.
           toast.info(
-            `${label} is no longer loaded. "${shortModelLabel(outcome.resident)}" took its place and was left alone.`,
+            t("floatingPanels.loadedModels.toastReplaced", {
+              model: label,
+              resident: shortModelLabel(outcome.resident),
+            }),
           );
         } else {
-          toast.success(`Ejected ${label}`);
+          toast.success(
+            t("floatingPanels.loadedModels.toastEjected", { model: label }),
+          );
           // Drop the row now, rather than offering to eject it again until the next poll. Any read
           // already in flight predates this and would put the row back, so retire it.
           generationRef.current += 1;
@@ -251,7 +233,9 @@ export function useLoadedModels(
         }
       } catch (error: unknown) {
         toast.error(
-          error instanceof Error ? error.message : `Failed to eject ${label}`,
+          error instanceof Error
+            ? error.message
+            : t("floatingPanels.loadedModels.toastFailed", { model: label }),
         );
       } finally {
         if (mountedRef.current) {
@@ -264,8 +248,15 @@ export function useLoadedModels(
         refresh();
       }
     },
-    [refresh],
+    [refresh, t],
   );
 
-  return { entries, polledEntries: polled, ejecting, eject, refresh };
+  return {
+    entries,
+    polledEntries: polled,
+    ejecting,
+    heldByOther: enabled && heldByOther,
+    eject,
+    refresh,
+  };
 }

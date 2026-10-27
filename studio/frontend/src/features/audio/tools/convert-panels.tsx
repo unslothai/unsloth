@@ -180,7 +180,7 @@ export const seedVcPanel: AudioToolPanel<SeedVcValue> = {
             max={SEED_VC_LENGTH_RANGE.max}
             step={0.05}
             disabled={disabled}
-            displayValue={`${value.length.toFixed(2)}×`}
+            format={(v) => `${v.toFixed(2)}×`}
             info="Below 1 speeds the result up, above 1 slows it down."
             onChange={(length) => onChange({ ...value, length })}
           />
@@ -293,7 +293,6 @@ export const chatterboxConvertPanel: AudioToolPanel<ChatterboxConvertValue> = {
 };
 
 // ---- Vevo2 -----------------------------------------------------------------------------------
-
 const VEVO2_HINTS = {
   singing: "Singing keeps the recording's own style.",
   target:

@@ -9,9 +9,11 @@ import {
   MINIMAX_MUSIC_FRAMES_PER_SECOND,
   MINIMAX_MUSIC_MAX_FRAMES,
   MINIMAX_MUSIC_MAX_SECONDS,
+  audioEjectAvailable,
   audioGenerationPresentation,
-  audioRuntimeNoticeMode,
+  audioModelToReplace,
   canTransitionAudioMode,
+  describeAudioSlot,
   exactGgufLoadSelector,
   expectedGgufDownloadBytes,
   fetchGalleryWindow,
@@ -26,9 +28,20 @@ import {
   resolveSttLoadedModel,
   resolveSttResidency,
   selectAutoGgufVariant,
+  settledDeleteMarkers,
   stagedTtsLoadIsOwned,
+  sttEjectSucceeded,
   sttSelectionReady,
+  audioLoadedSelection,
+  deleteCoversRememberedModel,
+  rememberedModelIsGone,
+  rememberedModelUnavailable,
 } from "../src/features/audio/audio-page-policy.ts";
+import {
+  sttEngineForRepoId,
+  sttRepoIdForSidecarKey,
+  sttSidecarKeyFor,
+} from "../src/features/audio/stt-artifacts.ts";
 
 import { readSrc } from "./helpers/kit.ts";
 import { readAudioWorkspaceSource } from "./helpers/audio-workspace.ts";
@@ -147,7 +160,6 @@ test("Audio sends model-specific duration and instruction payloads", () => {
     audioPageSource,
     /musicGeneration\s*\? minimaxMusicFramesForSeconds\(musicSeconds\)/,
   );
-  // The range is per model: MiniMax Music 3 up to 360 s, audio.cpp up to its backend clamp.
   assert.match(audioPageSource, /max=\{musicRange\.max\}/);
   assert.match(
     audioPageSource,
@@ -383,7 +395,6 @@ test("a refresh that overlaps a pin or move is dropped and rerun after it", () =
     audioPageSource,
     /writes\.inFlight === 0 && writes\.deferred\) \{\s*writes\.deferred = false;\s*void refreshGallery\(/,
   );
-  // A successful unpin with more pages unloaded resyncs the window.
   assert.match(
     audioPageSource,
     /setAudioClipFlags\(id, \{ pinned \}\)\);\s*\/\/[^\n]*\n\s*if \(!pinned && galleryCache\.hasMore\) orderWrites\.current\.deferred = true;/,
@@ -417,9 +428,7 @@ test("leaving Audio cancels an owned TTS load without touching a pre-request pro
   );
   assert.match(
     audioPageSource,
-    // Cancels under the target the request actually sent. The display id only maps back
-    // to the load for a standard HF cache snapshot; a pinned directory elsewhere does not,
-    // and the backend then refuses the cancellation and keeps loading.
+    // Cancel under the target actually sent: a pinned directory does not map back from the display id.
     /const pending = pendingTtsLoad\.current;[\s\S]*pending\.controller\.abort\(\);[\s\S]*if \(pending\.requestStarted\)[\s\S]*unloadModel\(\{[\s\S]*model_path: pending\.loadTarget,[\s\S]*cancel_load_request_id: pending\.loadRequestId/,
   );
   assert.match(
@@ -431,7 +440,7 @@ test("leaving Audio cancels an owned TTS load without touching a pre-request pro
 test("history-only downloads save the fetched blob without caching a URL", () => {
   assert.match(
     audioPageSource,
-    /handleDownloadClipById[\s\S]*galleryCache\.srcById\.get\(clip\.id\) \?\? null,\s*\(\) => fetchClipBlob\(clip\.url\),/,
+    /handleDownloadClipById[\s\S]*saveAudio\(\s*clipFileName\(clip\),\s*null,\s*\(\) => fetchClipBlob\(clip\.url\),/,
   );
   assert.doesNotMatch(
     audioPageSource,
@@ -448,7 +457,6 @@ test("a gallery refresh keeps the loaded scrollback instead of collapsing it", (
     { id: "a" },
   ];
 
-  // Newest page first, then the pages the user scrolled to.
   assert.deepEqual(mergeGalleryPage(page, cached), {
     clips: [{ id: "e" }, { id: "d" }, { id: "c" }, { id: "b" }, { id: "a" }],
     stitched: true,
@@ -469,7 +477,6 @@ test("the selection only moves when its clip left the merged gallery", () => {
     audioPageSource,
     /const \{ clips: merged, stitched \} =[\s\S]*mergeGalleryPage\([\s\S]*!merged\.some\(\(c\) => c\.id === galleryCache\.selectedId\)/,
   );
-  // Play an older clip, delete another, and the player must not jump to the newest.
   assert.doesNotMatch(
     audioPageSource,
     /galleryCache\.clips = page\.audio/,
@@ -477,7 +484,6 @@ test("the selection only moves when its clip left the merged gallery", () => {
 });
 
 test("a superseded refresh still reports the clips its own fetch saw", () => {
-  // Otherwise a generation whose clip really persisted was told it was not saved.
   assert.match(
     audioPageSource,
     /if \(generation !== galleryRefreshGeneration\.current\) return page\.audio;/,
@@ -489,7 +495,6 @@ test("a superseded refresh still reports the clips its own fetch saw", () => {
 });
 
 test("keeping the scrollback keeps the deeper pagination cursor", () => {
-  // A clip carries no mtime, so adopting the page-0 cursor made loadMore re-walk loaded pages.
   assert.match(
     audioPageSource,
     /if \(!stitched\) \{[\s\S]*galleryCache\.hasMore = page\.has_more;[\s\S]*galleryCache\.nextCursor =/,
@@ -498,8 +503,6 @@ test("keeping the scrollback keeps the deeper pagination cursor", () => {
 });
 
 test("a cache with nothing in common with the page is dropped, not stitched", () => {
-  // Another client can write a full page between two refreshes; stitching would render the
-  // gap as contiguous and the preserved cursor could never fetch it.
   const merged = mergeGalleryPage(
     [{ id: "z" }, { id: "y" }],
     [{ id: "c" }, { id: "b" }],
@@ -517,7 +520,7 @@ test("a refresh resets when an external archive moves the page boundary", () => 
 });
 
 test("Record is offered only where the browser can capture audio", () => {
-  // Safari ships no MediaRecorder, and an http LAN origin (-H 0.0.0.0) has no navigator.mediaDevices.
+  // Safari has no MediaRecorder, and an http LAN origin has no navigator.mediaDevices.
   assert.match(
     audioSourceCard,
     /typeof navigator\.mediaDevices\?\.getUserMedia === "function"/,
@@ -530,8 +533,7 @@ test("Record is offered only where the browser can capture audio", () => {
 });
 
 test("a Transcribe recording is stopped at the 30 minute limit the inputs route accepts", () => {
-  // Without a cap the page buffered an over-long recording in memory and uploaded it only
-  // for the backend to refuse it. 30 minutes of 16 kHz PCM is ~58 MB, under the 200 MB cap.
+  // 30 minutes of 16 kHz PCM is ~58 MB, under the 200 MB backend cap.
   assert.match(audioPageSource, /const RECORDING_MAX_SECONDS = 30 \* 60;/);
   assert.match(audioPageSource, /maxRecordSeconds=\{RECORDING_MAX_SECONDS\}/);
   assert.match(
@@ -554,9 +556,6 @@ test("the transcript download revokes its URL only after the click is consumed",
 });
 
 test("a complete first page drops cached rows the server no longer holds", () => {
-  // has_more=false means the page IS everything on the server, so a cached clip below it
-  // was deleted by another client or pruned by the size cap. Stitching it back rendered a
-  // row that stayed on screen across every refresh and failed to play.
   const merged = mergeGalleryPage(
     [{ id: "c" }, { id: "b" }],
     [{ id: "c" }, { id: "b" }, { id: "a" }],
@@ -565,7 +564,6 @@ test("a complete first page drops cached rows the server no longer holds", () =>
   );
   assert.deepEqual(merged, { clips: [{ id: "c" }, { id: "b" }], stitched: false });
 
-  // With more on the server the scrollback is still real and is kept.
   const stitched = mergeGalleryPage(
     [{ id: "c" }, { id: "b" }],
     [{ id: "c" }, { id: "b" }, { id: "a" }],
@@ -584,9 +582,6 @@ test("the refresh passes the page's completeness into the merge", () => {
 });
 
 test("generating waits for the transcribe release the mode switch started", () => {
-  // Switching straight from Transcribe to Speak with a speech model already resident needs
-  // no load, so the load path's gate never runs and Generate could allocate beside the
-  // dictation model, which OOMs a device that fits either one alone.
   assert.match(
     audioPageSource,
     /const handleGenerate = useCallback\(async \(\) => \{[\s\S]{0,1100}?const releaseInFlight = pendingTranscribeRelease\.current;[\s\S]{0,240}?if \(releaseInFlight && !\(await releaseInFlight\)\) \{[\s\S]{0,160}?setMode\("transcribe"\);/,
@@ -594,8 +589,6 @@ test("generating waits for the transcribe release the mode switch started", () =
 });
 
 test("a failed transcribe release puts the page back in Transcribe", () => {
-  // Otherwise the pill reads Speak while the sidecar still holds its model, and nothing
-  // on screen offers the Eject that would retry the unload.
   assert.match(
     audioPageSource,
     /void release\.then\(\(released\) => \{[\s\S]{0,600}?if \(!released && modeRef\.current === "speak"\) setMode\("transcribe"\);/,
@@ -603,10 +596,7 @@ test("a failed transcribe release puts the page back in Transcribe", () => {
 });
 
 test("a gguf selection served by Transformers still reads as resident", () => {
-  // Without whisper-server the backend serves and loads the equivalent Transformers
-  // model, so residency for the pick lives in that block. Reading only the gguf block
-  // returned nothing on the refresh that completes the load (preserveSelected is true
-  // there) and the Transcribe controls stayed disabled until the page was revisited.
+  // Without whisper-server the backend loads the Transformers model, so residency is in that block.
   const status = {
     transformers: { loaded_model: "small", available: true },
     gguf: { loaded_model: null, available: false },
@@ -617,7 +607,6 @@ test("a gguf selection served by Transformers still reads as resident", () => {
   });
   assert.equal(resolveSttLoadedModel(status, "gguf", true), "small");
 
-  // whisper.cpp present: its own block still answers, and an empty one is still empty.
   const live = {
     transformers: { loaded_model: "small", available: true },
     gguf: { loaded_model: "base", available: true },
@@ -630,13 +619,10 @@ test("a gguf selection served by Transformers still reads as resident", () => {
 });
 
 test("generation is claimed before the transcribe release is awaited", () => {
-  // The button only disables on `busy`, so awaiting first let several clicks through and
-  // each resumed into its own generateAudio while generateAbort tracked only the last.
   assert.match(
     audioPageSource,
     /if \(busyRef\.current\) return;\s*busyRef\.current = "generating";\s*setBusy\("generating"\);\s*updateGenerationPhase\("preparing"\);\s*const releaseInFlight = pendingTranscribeRelease\.current;\s*if \(releaseInFlight/,
   );
-  // And a release that failed hands the slot back rather than wedging the button.
   assert.match(
     audioPageSource,
     /if \(releaseInFlight && !\(await releaseInFlight\)\) \{\s*updateGenerationPhase\(null\);\s*busyRef\.current = null;\s*setBusy\(null\);\s*setMode\("transcribe"\);/,
@@ -644,9 +630,6 @@ test("generation is claimed before the transcribe release is awaited", () => {
 });
 
 test("a restore refreshes the loaded window, not just the first page", () => {
-  // A restored clip re-enters History at its own age, so past the first page it lands below it.
-  // Refreshing only that page left it out of the strip AND unreachable, since the kept cursor
-  // starts below the loaded window.
   const shelf = Array.from({ length: 120 }, (_, i) => ({ id: `c${i}` }));
   const loaded = shelf.slice(0, 100);
   const restored = { id: "restored" };
@@ -668,7 +651,6 @@ test("a restore refreshes the loaded window, not just the first page", () => {
     wholeWindow.clips.some((clip) => clip.id === "restored"),
     true,
   );
-  // Still contiguous: the row the longer page pushed out is stitched back on, not dropped.
   assert.deepEqual(wholeWindow.clips, [...afterRestore.slice(0, 100), shelf[99]]);
 });
 
@@ -717,13 +699,10 @@ function windowShelf(size: number) {
 }
 
 test("a window past the route cap is fetched in capped pages, not cut to the first one", async () => {
-  // A history topped up past 200 clips was refreshed with only the first 200 on focus, which
-  // dropped the selected clip below them and jumped the selection to the newest clip.
   const { shelf, calls, fetchPage } = windowShelf(303);
   const page = await fetchGalleryWindow(fetchPage, (p) => p.next, 250, 200);
   assert.deepEqual(calls, [{ limit: 200, cursor: null }, { limit: 50, cursor: 200 }]);
   assert.deepEqual(page.audio.map((c) => c.id), shelf.slice(0, 250).map((c) => c.id));
-  // The cursor and has_more come from the last page, so scrolling continues below the window.
   assert.equal(page.has_more, true);
   assert.equal(page.next, 250);
 });
@@ -762,8 +741,6 @@ test("a capped restore refresh invalidates a page fetched from the older cursor"
 });
 
 test("a direct .gguf pick is a GGUF target even without a variant filename", () => {
-  // Local direct rows supply neither ggufFilename nor ggufVariant, so a check on the
-  // selector alone left them on GPU offload.
   assert.equal(
     isGgufTtsTarget({ repoId: "/models/orpheus-3b-Q4_K_M.gguf" }),
     true,
@@ -780,7 +757,6 @@ test("a direct .gguf pick is a GGUF target even without a variant filename", () 
 });
 
 test("the catalog's own answer outranks the name heuristics", () => {
-  // Invisible to every test below; only the catalog knows. Losing it dropped offload.
   assert.equal(
     isGgufTtsTarget({ repoId: "acme/voicebox", isGguf: true }),
     true,
@@ -798,13 +774,11 @@ test("the catalog's own answer outranks the name heuristics", () => {
 test("a safetensors pick is not a GGUF target", () => {
   assert.equal(isGgufTtsTarget({ repoId: "unsloth/orpheus-3b-0.1-ft" }), false);
   assert.equal(isGgufTtsTarget({ repoId: "bosonai/higgs-tts-2-3b-base" }), false);
-  // "gguf" only as a bare path segment, so a name merely containing it does not match.
   assert.equal(isGgufTtsTarget({ repoId: "acme/ggufology" }), false);
 });
 
 test("a CPU GGUF audio load declares speculation off", () => {
-  // An absent speculative_type resolves to "auto", which can attach a GPU drafter;
-  // zero_vram_chat_load then takes the arbiter and cancels an image or video job.
+  // An absent speculative_type resolves to "auto", which can attach a GPU drafter.
   assert.match(
     audioPageSource,
     /gpu_memory_mode: "manual" as const,\s*gpu_layers: 0,\s*speculative_type: "off" as const,/,
@@ -812,7 +786,6 @@ test("a CPU GGUF audio load declares speculation off", () => {
 });
 
 test("selecting CPU never ejects a resident MiniMax, which cannot load on CPU", () => {
-  // The backend's refusal cannot help once ejected: recovery needs the refused load.
   const handler = audioPageSource.slice(
     audioPageSource.indexOf('const next = value === "cpu" ? "cpu" : "auto";'),
   );
@@ -824,8 +797,6 @@ test("selecting CPU never ejects a resident MiniMax, which cannot load on CPU", 
 });
 
 test("history scrolling loads until the page gains a row, not one gallery page", () => {
-  // A gallery page holding only the other page's clips added no visible row, so the list kept its
-  // height and no later scroll event could ask for more.
   assert.match(audioPageSource, /loadMore: loadMoreVisible,/);
   assert.match(
     audioPageSource,
@@ -849,33 +820,492 @@ test("trained speech checkpoints are offered only on Speak and Music", () => {
   );
 });
 
-test("the outdated-runtime notice offers the in-app update only to the owner", () => {
-  const mode = (isOwner: boolean, offered: boolean, applying = false, checked = true) =>
-    audioRuntimeNoticeMode({ isOwner, offered, applying, checked });
-  assert.equal(mode(true, true), "update");
-  // A running job, started here or from the update card.
-  assert.equal(mode(true, true, true), "updating");
-  assert.equal(mode(true, false, true), "updating");
-  // A skipped offer (checks disabled, no bundle, no installer) or an older backend.
-  assert.equal(mode(true, false), "cli");
-  // Before the status loads the offer is unknown: no CLI instruction yet.
-  assert.equal(mode(true, false, false, false), "checking");
-  assert.equal(mode(false, false, false, false), "ask_owner");
-  // POST /api/llama/update is owner-only.
-  assert.equal(mode(false, true), "ask_owner");
-  assert.equal(mode(false, false, true), "ask_owner");
+test("the audio picker marks the main slot's loaded model and quant, not the chat model", () => {
+  assert.deepEqual(
+    audioLoadedSelection({
+      active_model: "audio-cpp/audio.cpp-gguf/Qwen3-TTS-12Hz-0.6B-Base-GGUF",
+      model_identifier: "audio-cpp/audio.cpp-gguf/Qwen3-TTS-12Hz-0.6B-Base-GGUF",
+      gguf_variant: "Q8_0",
+    }),
+    { id: "audio-cpp/audio.cpp-gguf/Qwen3-TTS-12Hz-0.6B-Base-GGUF", variant: "Q8_0" },
+  );
+  // llama-server names a custom-folder GGUF by its file stem; the picker row uses the path.
+  assert.deepEqual(
+    audioLoadedSelection({
+      active_model: "orpheus-3b-q4_k_m",
+      model_identifier: "/models/orpheus/orpheus-3b-q4_k_m.gguf",
+      gguf_variant: "Q4_K_M",
+    }),
+    { id: "/models/orpheus/orpheus-3b-q4_k_m.gguf", variant: "Q4_K_M" },
+  );
+  // A Hub model loaded from a cache snapshot keeps the repo id its row uses.
+  assert.deepEqual(
+    audioLoadedSelection({
+      active_model: "unsloth/orpheus-3b-0.1-ft-GGUF",
+      model_identifier:
+        "/data/hf/hub/models--unsloth--orpheus-3b-0.1-ft-GGUF/snapshots/abc123",
+      gguf_variant: "Q4_K_M",
+    }),
+    { id: "unsloth/orpheus-3b-0.1-ft-GGUF", variant: "Q4_K_M" },
+  );
+  assert.deepEqual(audioLoadedSelection({ active_model: null, gguf_variant: "Q8_0" }), {
+    id: null,
+    variant: null,
+  });
+  assert.deepEqual(audioLoadedSelection(null), { id: null, variant: null });
+  assert.match(audioPageSource, /const speakLoaded = audioLoadedSelection\(status, ggufQuantLabel\)/);
+  assert.match(audioPageSource, /mode === "speak"\s*\? \(speakLoaded\.id \?\? ""\)/);
+  assert.match(
+    audioPageSource,
+    /loadedGgufVariantOverride=\{\s*mode === "speak" \? speakLoaded\.variant : undefined\s*\}/,
+  );
+  assert.match(audioPageSource, /: \(speakLoaded\.id \?\? undefined\)/);
 });
 
-// The card, or another tab, can run the update without this notice's own click,
-// so the page refreshes from the followed job or from the offer disappearing,
-// and stays on "updating" until that refresh has re-read the runtime.
-test("the outdated-runtime notice refreshes the page however the update ran", () => {
-  const notice = readSrc("features/audio/components/audio-runtime-update-notice.tsx");
-  assert.match(notice, /const offerWithdrawn = wasOffered\.current && !offered;/);
-  assert.match(
-    notice,
-    /if \(followedJob\.current \|\| offerWithdrawn\) \{\s*followedJob\.current = false;\s*setRefreshing\(true\);\s*void onUpdated\(\)\.finally\(\(\) => setRefreshing\(false\)\);/,
+test("a deleted model is forgotten only once the settled inventory lacks it", () => {
+  const available = new Set(["hexgrad/kokoro-82m", "audio-cpp/audio.cpp-gguf"]);
+  const settled = { settled: true, error: false, available };
+  assert.equal(rememberedModelIsGone("hexgrad/Kokoro-82M", settled), false);
+  assert.equal(rememberedModelIsGone("unsloth/orpheus-3b-0.1-ft", settled), true);
+  assert.equal(
+    rememberedModelIsGone("unsloth/orpheus-3b-0.1-ft", { ...settled, settled: false }),
+    false,
   );
-  assert.match(notice, /applying: applying \|\| refreshing,/);
-  assert.doesNotMatch(notice, /toast\.success\([^;]*;\s*onUpdated\(\)/);
+  assert.equal(
+    rememberedModelIsGone("unsloth/orpheus-3b-0.1-ft", { ...settled, error: true }),
+    false,
+  );
+  // An inventory without folder rows cannot tell an audio.cpp folder is gone.
+  const qwenTts = "audio-cpp/audio.cpp-gguf/Qwen3-TTS-12Hz-0.6B-Base-GGUF";
+  assert.equal(rememberedModelIsGone(qwenTts, settled), false);
+  const withFolders = new Set([...available, "audio-cpp/audio.cpp-gguf/kokoro-82m-gguf"]);
+  assert.equal(rememberedModelIsGone(qwenTts, { ...settled, available: withFolders }), true);
+  assert.equal(
+    rememberedModelIsGone(qwenTts, {
+      ...settled,
+      available: new Set([...withFolders, qwenTts.toLowerCase()]),
+    }),
+    false,
+  );
+  // Only a delete puts a model up for forgetting, so a load racing the inventory keeps it.
+  assert.match(
+    audioPageSource,
+    /subscribeModelDeleted\(\(repoId\) => \{\s*deletedModelsRef\.current\.set\(repoId\.toLowerCase\(\), Date\.now\(\)\);/,
+  );
+  assert.match(audioPageSource, /if \(rememberedModelIsGone\(id, inventory\)\) forgetModel\(id\);/);
+});
+
+test("a delete marker is spent once a settled listing fetched after the delete was judged", () => {
+  // A kept package marker forgot a folder downloaded again later, before its listing arrived.
+  const deletedAt = 1_000;
+  const markers = new Map([["audio-cpp/audio.cpp-gguf", deletedAt]]);
+  const settled = { settled: true, error: false };
+  assert.deepEqual(settledDeleteMarkers(markers, { ...settled, refreshStartedAt: deletedAt - 1 }), []);
+  assert.deepEqual(settledDeleteMarkers(markers, { ...settled, refreshStartedAt: null }), []);
+  assert.deepEqual(
+    settledDeleteMarkers(markers, { settled: false, error: false, refreshStartedAt: deletedAt + 1 }),
+    [],
+  );
+  assert.deepEqual(
+    settledDeleteMarkers(markers, { settled: true, error: true, refreshStartedAt: deletedAt + 1 }),
+    [],
+  );
+  // A fetch sent in the delete's own millisecond may still have read the old cache.
+  assert.deepEqual(settledDeleteMarkers(markers, { ...settled, refreshStartedAt: deletedAt }), []);
+  assert.deepEqual(settledDeleteMarkers(markers, { ...settled, refreshStartedAt: deletedAt + 1 }), [
+    "audio-cpp/audio.cpp-gguf",
+  ]);
+  assert.match(
+    audioPageSource,
+    /for \(const repoId of settledDeleteMarkers\(deleted, inventory\)\) \{\s*deleted\.delete\(repoId\);/,
+  );
+  assert.match(audioPageSource, /refreshStartedAt: modelInventory\.hubCacheRefreshStartedAt,/);
+  assert.match(
+    audioPageSource,
+    /useHubInventory\(\{\s*kind: "models",\s*includeUmbrellaFolders: true,\s*\}\)/,
+  );
+});
+
+function deleteForgetReplay(remembered: Record<string, string>, available: Set<string>) {
+  const markers = new Map<string, number>();
+  const forgotten: string[] = [];
+  let now = 1_000;
+  let listing = { available, refreshStartedAt: 0 as number | null };
+  const effect = () => {
+    const inventory = { settled: true, error: false, ...listing };
+    for (const id of new Set(Object.values(remembered))) {
+      if (![...markers.keys()].some((repoId) => deleteCoversRememberedModel(repoId, id))) continue;
+      if (!rememberedModelIsGone(id, inventory)) continue;
+      forgotten.push(id);
+      for (const [workflow, value] of Object.entries(remembered)) {
+        if (value === id) delete remembered[workflow];
+      }
+    }
+    for (const repoId of settledDeleteMarkers(markers, inventory)) markers.delete(repoId);
+  };
+  return {
+    forgotten,
+    markers,
+    remembered,
+    deleteModel(repoId: string) {
+      now += 10;
+      markers.set(repoId.toLowerCase(), now);
+      effect();
+    },
+    render(next: Set<string>, refresh: "local" | "hub-cache" | "stale-hub-cache") {
+      now += 10;
+      listing = {
+        available: next,
+        refreshStartedAt:
+          refresh === "hub-cache"
+            ? now
+            : refresh === "stale-hub-cache"
+              ? now - 100
+              : listing.refreshStartedAt,
+      };
+      effect();
+    },
+  };
+}
+
+test("the local listing landing first keeps a delete marker until the Hub cache fetch lands", () => {
+  const gguf = "unsloth/orpheus-3b-0.1-ft-GGUF";
+  const local = "/models/other";
+  const replay = deleteForgetReplay({ speak: gguf }, new Set([gguf.toLowerCase(), local]));
+  replay.deleteModel(gguf);
+  // localModels is not debounced, so its fresh rows land beside the old Hub cache rows.
+  replay.render(new Set([gguf.toLowerCase(), local]), "local");
+  assert.equal(replay.markers.size, 1);
+  replay.render(new Set([local]), "hub-cache");
+  assert.deepEqual(replay.forgotten, [gguf]);
+  assert.equal(replay.markers.size, 0);
+});
+
+test("a Hub cache fetch sent before the delete does not spend its marker", () => {
+  const pkg = "audio-cpp/audio.cpp-gguf";
+  const folder = `${pkg}/Kokoro-82M-GGUF`;
+  const replay = deleteForgetReplay({ speak: folder }, new Set([pkg, folder.toLowerCase()]));
+  replay.deleteModel(pkg);
+  replay.render(new Set([pkg, folder.toLowerCase()]), "stale-hub-cache");
+  assert.equal(replay.markers.size, 1);
+  replay.render(new Set(), "hub-cache");
+  assert.deepEqual(replay.forgotten, [folder]);
+});
+
+test("deleting one audio.cpp folder forgets it while its package keeps other folders", () => {
+  const pkg = "audio-cpp/audio.cpp-gguf";
+  const kokoro = `${pkg}/Kokoro-82M-GGUF`;
+  const qwen = `${pkg}/Qwen3-TTS-12Hz-0.6B-Base-GGUF`;
+  const replay = deleteForgetReplay(
+    { speak: kokoro, clone: qwen },
+    new Set([pkg, kokoro.toLowerCase(), qwen.toLowerCase()]),
+  );
+  replay.deleteModel(kokoro);
+  replay.render(new Set([pkg, qwen.toLowerCase()]), "hub-cache");
+  assert.deepEqual(replay.forgotten, [kokoro]);
+  assert.deepEqual(replay.remembered, { clone: qwen });
+});
+
+test("pages a loaded model cannot run point at the page it does run, not always Speak", () => {
+  assert.doesNotMatch(audioPageSource, /label: "open Speak"/);
+  assert.match(
+    audioPageSource,
+    /const loadedModelHome = workflowForLoadedModel\(\{\s*current: "speak",\s*audioWorkflows: status\?\.audio_workflows,/,
+  );
+  assert.equal(audioPageSource.match(/openLoadedModelHome,/g)?.length, 3);
+});
+
+test("a remembered Hub repo the inventory no longer lists is not offered, but kept", () => {
+  const settled = { settled: true, error: false, available: new Set(["hexgrad/kokoro-82m"]) };
+  assert.equal(rememberedModelUnavailable("hexgrad/Kokoro-82M", settled), false);
+  // Deleted from the Hub while the Audio page was closed.
+  assert.equal(rememberedModelUnavailable("unsloth/orpheus-3b-0.1-ft", settled), true);
+  assert.equal(
+    rememberedModelUnavailable("unsloth/orpheus-3b-0.1-ft", { ...settled, settled: false }),
+    false,
+  );
+  // Trained checkpoints and local folders are not listed by repo id.
+  assert.equal(rememberedModelUnavailable("/home/me/outputs/tts-checkpoint", settled), false);
+  assert.equal(
+    rememberedModelUnavailable("audio-cpp/audio.cpp-gguf/Qwen3-TTS-12Hz-0.6B-Base-GGUF", settled),
+    false,
+  );
+  assert.match(
+    audioPageSource,
+    /rememberedPageModel &&\s*!rememberedModelUnavailable\(rememberedPageModel, \{/,
+  );
+});
+
+test("deleting the audio.cpp package forgets the folders remembered from it", () => {
+  const qwenTts = "audio-cpp/audio.cpp-gguf/Qwen3-TTS-12Hz-0.6B-Base-GGUF";
+  assert.equal(deleteCoversRememberedModel("audio-cpp/audio.cpp-gguf", qwenTts), true);
+  assert.equal(deleteCoversRememberedModel(qwenTts, qwenTts.toUpperCase()), true);
+  assert.equal(deleteCoversRememberedModel("hexgrad/Kokoro-82M", "hexgrad/Kokoro-82M"), true);
+  assert.equal(deleteCoversRememberedModel("hexgrad/Kokoro", "hexgrad/Kokoro-82M"), false);
+  assert.equal(deleteCoversRememberedModel("audio-cpp/audio.cpp-gguf", "unsloth/orpheus"), false);
+  const settled = { settled: true, error: false };
+  // The package repo is gone, so is every folder in it.
+  assert.equal(
+    rememberedModelIsGone(qwenTts, { ...settled, available: new Set(["hexgrad/kokoro-82m"]) }),
+    true,
+  );
+  assert.equal(
+    rememberedModelIsGone(qwenTts, {
+      ...settled,
+      available: new Set(["audio-cpp/audio.cpp-gguf"]),
+    }),
+    false,
+  );
+  assert.match(
+    audioPageSource,
+    /\[\.\.\.deleted\.keys\(\)\]\.some\(\(repoId\) =>\s*deleteCoversRememberedModel\(repoId, id\),?\s*\)/,
+  );
+});
+
+
+test("Eject is offered only for a resident Transcribe model, and never while busy", () => {
+  const idle = { busy: null, hasValue: true, showLastPageModel: false } as const;
+  assert.equal(audioEjectAvailable({ ...idle, mode: "transcribe", sttReady: true }), true);
+  // After an unload the selector still shows the last model; Eject there released nothing.
+  assert.equal(audioEjectAvailable({ ...idle, mode: "transcribe", sttReady: false }), false);
+  assert.equal(audioEjectAvailable({ ...idle, mode: "speak", sttReady: false }), true);
+  assert.equal(
+    audioEjectAvailable({ ...idle, mode: "speak", sttReady: false, busy: "loading" }),
+    false,
+  );
+  assert.equal(
+    audioEjectAvailable({ ...idle, mode: "transcribe", sttReady: true, busy: "unloading" }),
+    false,
+  );
+  assert.equal(
+    audioEjectAvailable({ ...idle, mode: "speak", sttReady: false, hasValue: false }),
+    false,
+  );
+  assert.equal(
+    audioEjectAvailable({ ...idle, mode: "speak", sttReady: false, showLastPageModel: true }),
+    false,
+  );
+});
+
+test("a legacy dictation key or other casing still marks the Transcribe row ready", () => {
+  const row = "audio-cpp/audio.cpp-gguf/Qwen3-ASR-0.6B-GGUF";
+  const ready = (loaded: string, selected = row) =>
+    sttSelectionReady(
+      selected,
+      loaded,
+      sttSidecarKeyFor,
+      "audiocpp",
+      "audiocpp",
+      sttRepoIdForSidecarKey,
+    );
+  assert.equal(ready("audiocpp-qwen3-asr-0.6b"), true);
+  assert.equal(ready(row.toLowerCase()), true);
+  assert.equal(ready(row), true);
+  assert.equal(ready("audio-cpp/audio.cpp-gguf/Qwen3-ASR-1.7B-GGUF"), false);
+  assert.equal(ready("audiocpp-qwen3-asr-1.7b"), false);
+  // Without the mapping (older callers) only the exact key matches.
+  assert.equal(
+    sttSelectionReady(row, "audiocpp-qwen3-asr-0.6b", sttSidecarKeyFor, "audiocpp", "audiocpp"),
+    false,
+  );
+  // An engine mismatch is still not ready.
+  assert.equal(
+    sttSelectionReady(
+      row,
+      "audiocpp-qwen3-asr-0.6b",
+      sttSidecarKeyFor,
+      "transformers",
+      "audiocpp",
+      sttRepoIdForSidecarKey,
+    ),
+    false,
+  );
+  // Reconcile keeps the picked row instead of swapping it for the legacy key's id.
+  assert.equal(
+    reconcileSttSelection({
+      selectedRepo: row,
+      loadedModel: "audiocpp-qwen3-asr-0.6b",
+      loadedEngine: "audiocpp",
+      preservePending: false,
+      sidecarKeyFor: sttSidecarKeyFor,
+      repoIdForSidecarKey: sttRepoIdForSidecarKey,
+      engineForRepo: sttEngineForRepoId,
+    }),
+    row,
+  );
+});
+
+test("a GGUF repo without a -GGUF suffix keeps the engine it was picked with", () => {
+  const repo = "someorg/whisper-quant";
+  // Re-derived from the id alone it resolves to Transformers, so it never showed ready.
+  assert.equal(sttEngineForRepoId(repo), "transformers");
+  const engines = new Map([[repo, sttEngineForRepoId(repo, true)]]);
+  const engineFor = (id: string) => engines.get(id) ?? sttEngineForRepoId(id);
+  assert.equal(engineFor(repo), "audiocpp");
+  assert.equal(
+    sttSelectionReady(repo, repo, sttSidecarKeyFor, engineFor(repo), "audiocpp"),
+    true,
+  );
+  assert.equal(
+    reconcileSttSelection({
+      selectedRepo: repo,
+      loadedModel: repo,
+      loadedEngine: "audiocpp",
+      preservePending: false,
+      sidecarKeyFor: sttSidecarKeyFor,
+      repoIdForSidecarKey: sttRepoIdForSidecarKey,
+      engineForRepo: engineFor,
+    }),
+    repo,
+  );
+});
+
+test("an eject counts as done unless the backend says it kept the model", () => {
+  assert.equal(sttEjectSucceeded(true), true);
+  assert.equal(sttEjectSucceeded(undefined), true);
+  assert.equal(sttEjectSucceeded(false), false);
+});
+
+test("reconcile keeps the same repo id when only the resident engine changed", () => {
+  // The hook therefore has to adopt the engine without waiting for the id to change.
+  const repo = "someorg/whisper-quant";
+  assert.equal(
+    reconcileSttSelection({
+      selectedRepo: repo,
+      loadedModel: repo,
+      loadedEngine: "audiocpp",
+      preservePending: false,
+      sidecarKeyFor: sttSidecarKeyFor,
+      repoIdForSidecarKey: sttRepoIdForSidecarKey,
+      engineForRepo: () => "transformers",
+    }),
+    repo,
+  );
+});
+
+// The Audio page with a speech model loaded beside the chat model: it shows, generates with and
+// ejects the speech model, never the chat model.
+const chatPrimary = {
+  active_model: "unsloth/Qwen3-1.7B-GGUF",
+  model_identifier: "unsloth/Qwen3-1.7B-GGUF",
+  gguf_variant: "UD-Q4_K_XL",
+  is_audio: false,
+  loading: [],
+  loaded: ["unsloth/Qwen3-1.7B-GGUF"],
+  serving: ["unsloth/Qwen3-1.7B-GGUF", "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF"],
+  serving_checkpoints: ["unsloth/Qwen3-1.7B-GGUF", ""],
+} as unknown as import("../src/features/chat/types/api.ts").InferenceStatusResponse;
+const kokoroSlot = {
+  ...chatPrimary,
+  active_model: "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF",
+  model_identifier: "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF",
+  is_audio: true,
+  audio_type: "audiocpp_tts",
+};
+
+test("the Audio page finds its speech model beside the chat model", async () => {
+  const probed: string[] = [];
+  const view = await describeAudioSlot(chatPrimary, async (id) => {
+    probed.push(id);
+    return kokoroSlot;
+  });
+  assert.deepEqual(probed, ["audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF"]);
+  assert.equal(view.status.active_model, "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF");
+  assert.equal(view.slotModel, "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF");
+});
+
+test("a primary speech model is used as is, without probing", async () => {
+  const view = await describeAudioSlot(kokoroSlot, async () => {
+    throw new Error("must not probe");
+  });
+  assert.equal(view.status, kokoroSlot);
+  assert.equal(view.slotModel, null);
+});
+
+test("with only the chat model loaded, the Audio page shows no model to eject", async () => {
+  // An id not in a slot answers with the primary; a failed probe counts as nothing.
+  for (const probe of [async () => chatPrimary, async () => Promise.reject(new Error("x"))]) {
+    const view = await describeAudioSlot(chatPrimary, probe);
+    assert.equal(view.status.active_model, null);
+    assert.equal(view.status.is_audio, false);
+    assert.equal(view.status.gguf_variant, null);
+    assert.equal(view.slotModel, null);
+    // The rest of the status (memory mode, serving list) stays.
+    assert.deepEqual(view.status.serving, chatPrimary.serving);
+  }
+});
+
+test("a new speech load replaces only another speech model", () => {
+  assert.equal(audioModelToReplace(kokoroSlot, "pocket"), kokoroSlot.active_model);
+  assert.equal(audioModelToReplace(kokoroSlot, kokoroSlot.active_model as string), null);
+  assert.equal(audioModelToReplace(chatPrimary, "pocket"), null);
+  assert.equal(audioModelToReplace(null, "pocket"), null);
+});
+
+test("a speech model kept after the chat model was ejected is still found", async () => {
+  // A kept model is never promoted, so the primary is empty and only the slot serves.
+  const emptyPrimary = {
+    ...chatPrimary,
+    active_model: null,
+    model_identifier: null,
+    gguf_variant: null,
+    loaded: [],
+    serving: ["audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF"],
+    serving_checkpoints: [""],
+  };
+  const probed: string[] = [];
+  const view = await describeAudioSlot(emptyPrimary, async (id) => {
+    probed.push(id);
+    return kokoroSlot;
+  });
+  assert.deepEqual(probed, ["audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF"]);
+  assert.equal(view.slotModel, "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF");
+  assert.equal(audioModelToReplace(view.status, "pocket"), kokoroSlot.active_model);
+});
+
+test("a kept local speech model is routed by its path, not its short name", async () => {
+  // The status names a custom-folder GGUF by its file stem; serving_checkpoints has the path.
+  const primary = {
+    ...chatPrimary,
+    serving: ["unsloth/Qwen3-1.7B-GGUF", "MyVoice"],
+    serving_checkpoints: ["unsloth/Qwen3-1.7B-GGUF", "/models/custom/MyVoice.gguf"],
+  };
+  const view = await describeAudioSlot(primary, async () => ({
+    ...kokoroSlot,
+    active_model: "MyVoice",
+  }));
+  assert.equal(view.slotModel, "/models/custom/MyVoice.gguf");
+  assert.equal(view.slotLabel, "MyVoice");
+  assert.equal(view.status.active_model, "MyVoice");
+});
+
+test("a local speech model is replaced by its path, not its short name", () => {
+  // Loaded first with the chat model kept beside it, it is the active model: its status shows the
+  // file stem and model_identifier holds the path the unload needs.
+  const local = {
+    ...kokoroSlot,
+    active_model: "MyVoice",
+    model_identifier: "/models/custom/MyVoice.gguf",
+  };
+  assert.equal(audioModelToReplace(local, "pocket"), "/models/custom/MyVoice.gguf");
+  assert.equal(audioModelToReplace(local, "/models/custom/MyVoice.gguf"), null);
+  assert.equal(audioModelToReplace(local, "MyVoice"), null);
+});
+
+test("a kept speech model sharing the chat model's short name is still found", async () => {
+  // Two local GGUFs with one file stem: the server keeps them apart by checkpoint.
+  const primary = {
+    ...chatPrimary,
+    active_model: "Voice",
+    model_identifier: "/models/chat/Voice.gguf",
+    serving: ["Voice", "Voice"],
+    serving_checkpoints: ["/models/chat/Voice.gguf", "/models/tts/Voice.gguf"],
+  };
+  const probed: string[] = [];
+  const view = await describeAudioSlot(primary, async (id) => {
+    probed.push(id);
+    return { ...kokoroSlot, active_model: "Voice", model_identifier: id };
+  });
+  assert.deepEqual(probed, ["/models/tts/Voice.gguf"]);
+  assert.equal(view.slotModel, "/models/tts/Voice.gguf");
 });

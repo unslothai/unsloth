@@ -1,4 +1,4 @@
-# tests/saving scripts run their whole body at import, so plain pytest collection would download checkpoints and train.
+# tests/saving scripts run their whole body at import, so skip collection unless opted in.
 import sys as _sys
 from pathlib import Path as _Path
 
@@ -49,7 +49,7 @@ inputs = merged_tokenizer.apply_chat_template(
     add_generation_prompt = True,
     return_tensors = "pt",
     return_dict = True,
-    reasoning_effort = "low",  # low, medium or high
+    reasoning_effort = "low",
 ).to(merged_model.device)
 
 _ = merged_model.generate(**inputs, max_new_tokens = 512, streamer = TextStreamer(merged_tokenizer))
@@ -61,5 +61,5 @@ torch.cuda.empty_cache()
 gc.collect()
 
 safe_remove_directory("./gpt-oss-finetuned-merged")
-safe_remove_directory("./unsloth_compiled_cache")  # Clean up cache created by this process
+safe_remove_directory("./unsloth_compiled_cache")
 print("✅ Final cleanup complete. Exiting inference script.")

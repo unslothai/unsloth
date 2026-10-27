@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Exercise NPU lifecycle and API calls against a fake lemond child process.
-
-POSIX only: the stub executable is a shell script.
-"""
+"""Fake lemond child is a shell script, so these NPU lifecycle tests run on POSIX only."""
 
 from __future__ import annotations
 
@@ -118,7 +115,6 @@ def test_config_is_private_and_quiet(npu):
     assert config["broadcast"] is False
     assert config["auto_check_model_updates"] is False
     assert config["host"] == "127.0.0.1"
-    # Not "auto", which scans the user's Hugging Face cache for GGUFs.
     assert config["models_dir"] == str(npu.root / "cache" / "models")
     assert config["flm"]["prefer_system"] is False
 
@@ -146,10 +142,29 @@ def test_unsupported_npu_is_refused_before_any_download(tmp_path, monkeypatch):
     assert installer.installs == 0
 
 
+@pytest.mark.parametrize("call", ["enable", "catalog"])
+def test_an_npu_left_off_is_refused_with_the_flag_named(tmp_path, monkeypatch, call):
+    # catalog: a runtime enabled before the flag went off must not start again.
+    installer = _Installer(_binary(tmp_path))
+    monkeypatch.setattr(nb, "_installer_module", lambda: installer)
+    monkeypatch.setattr(
+        nb,
+        "detect_amd_npu",
+        lambda: {"present": True, "enabled": False, "supported": False, "family": "XDNA2"},
+    )
+    backend = nb.LemonadeNpuBackend(root = tmp_path / "lemonade")
+    with pytest.raises(nb.NpuError, match = "UNSLOTH_STUDIO_ENABLE_NPU. Unset it"):
+        getattr(backend, call)()
+    assert installer.installs == 0
+    assert backend.status()["supported"] is False
+
+
 def test_catalog_keeps_flm_chat_models_only(npu):
     npu.enable()
     ids = [model.id for model in npu.catalog()]
-    assert ids == sorted(["gemma3-4b-FLM", "qwen3-0.6b-FLM", "qwen3-it-4b-FLM"])
+    assert ids == sorted(
+        ["gemma3-4b-FLM", "qwen3-0.6b-FLM", "qwen3-it-4b-FLM", "qwen3.8-mtp-27b-FLM"]
+    )
     by_id = {model.id: model for model in npu.catalog()}
     assert by_id["gemma3-4b-FLM"].vision and not by_id["gemma3-4b-FLM"].tools
     assert by_id["qwen3-it-4b-FLM"].tools
@@ -158,7 +173,6 @@ def test_catalog_keeps_flm_chat_models_only(npu):
 
 
 def test_download_relays_progress_then_completes(npu):
-    # No FastFlowLM file list to read, so lemond downloads the model and its events are relayed.
     npu.enable()
     events = list(npu.download("qwen3-0.6b-FLM"))
     assert events[0]["percent"] == 40
@@ -237,7 +251,6 @@ def test_studio_downloads_the_files_and_lemond_only_registers_them(npu, flm_mani
     folder = npu.root / "flm" / "models" / "Qwen3-0.6B-NPU2"
     assert (folder / "model.q4nx").read_bytes() == WEIGHTS
     percents = [event["percent"] for event in events]
-    # lemond's own percent (40, for one file) never reaches the stream.
     assert percents == sorted(percents) and percents[-1] == 100
     assert events[-1] == {"event": "complete", "model": "qwen3-0.6b-FLM", "percent": 100}
     pulls = [r for r in _requests(npu) if r["path"] in ("/v1/delete", "/v1/pull")]
@@ -295,7 +308,6 @@ def test_load_reports_the_context_lemond_started_with(npu, monkeypatch):
     list(npu.download("qwen3-0.6b-FLM"))
     npu.load("qwen3-0.6b-FLM")
     assert npu.is_loaded
-    # Not the model's 40960 maximum: an unset length loads at the default.
     assert npu.loaded_context_length == nb.DEFAULT_CONTEXT_LENGTH
     load = [r["body"] for r in _requests(npu) if r["path"] == "/v1/load"][-1]
     assert load == {"model_name": "qwen3-0.6b-FLM", "ctx_size": 8192, "save_options": False}
@@ -307,6 +319,29 @@ def test_load_reports_the_context_lemond_started_with(npu, monkeypatch):
     assert upstream.public_model == "lemonade:qwen3-0.6b-FLM"
     assert upstream.base_url.startswith("http://127.0.0.1:")
     assert upstream.api_key
+
+
+def test_qwen38_is_held_to_its_engine_limit_not_its_checkpoint_metadata(npu, monkeypatch):
+    # Above 8192 FastFlowLM fails to load Qwen3.8, yet lemond reports ready and the first reply fails.
+    monkeypatch.setenv("FAKE_LEMOND_DOWNLOADED", '["qwen3.8-mtp-27b-FLM"]')
+    npu.enable()
+    by_id = {model.id: model for model in npu.catalog()}
+    assert by_id["qwen3.8-mtp-27b-FLM"].max_context_length == 8192
+    assert by_id["qwen3-0.6b-FLM"].max_context_length == 40960
+
+    npu.load("qwen3.8-mtp-27b-FLM", 16384)
+    load = [r["body"] for r in _requests(npu) if r["path"] == "/v1/load"][-1]
+    assert load["ctx_size"] == 8192
+    assert npu.loaded_context_length == 8192
+    assert npu.resident().requested_context_length == 16384
+
+
+@pytest.mark.parametrize(
+    "reported, expected", [(262144, 8192), (4096, 4096), (None, 8192), (0, 8192)]
+)
+def test_a_runtime_limit_caps_whatever_lemond_reports(reported, expected):
+    assert nb._max_context_length("qwen3.8-mtp:27b", reported) == expected
+    assert nb._max_context_length("qwen3:0.6b", reported) == (reported or None)
 
 
 def test_the_resident_reports_what_its_load_asked_for(npu):
@@ -327,7 +362,6 @@ def test_a_reader_racing_an_unload_does_not_crash(npu):
     alive = server.is_alive
 
     def _unloaded_meanwhile():
-        # unload() clears the record between a reader's liveness check and its read.
         npu._loaded = None
         return alive()
 
@@ -361,7 +395,6 @@ def test_unload_then_delete(npu):
 
 @pytest.mark.parametrize("failure", ["1", "200"])
 def test_a_rejected_unload_stops_lemond(npu, monkeypatch, failure):
-    # "200": lemond's HTTP 200 answer with an error body.
     monkeypatch.setenv("FAKE_LEMOND_UNLOAD_FAILS", failure)
     monkeypatch.setenv("FAKE_LEMOND_DOWNLOADED", '["qwen3-0.6b-FLM"]')
     npu.enable()
@@ -507,6 +540,100 @@ def test_an_enabled_npu_upgrades_on_first_use_after_the_pins_move(npu, monkeypat
     assert again.status()["ready"] is True
 
 
+def test_the_status_names_the_installed_runtime_versions(npu, monkeypatch):
+    monkeypatch.setenv("FAKE_FLM_VERSION", "v1.0.7")
+    npu.installer.installed_version = lambda lemond: "2026.41.1"
+    real, runs = npu._flm_version, []
+    monkeypatch.setattr(npu, "_flm_version", lambda *args: runs.append(1) or real(*args))
+    npu.enable()
+    assert npu.status()["versions"] == {"lemonade": "2026.41.1", "fastflowlm": "1.0.7"}
+    npu.status()
+    # The post-install check, then one status read: an unchanged flm binary is not rerun.
+    assert len(runs) == 2
+
+
+def test_a_pending_upgrade_reports_the_versions_it_replaces_until_first_use(npu, monkeypatch):
+    monkeypatch.setenv("FAKE_FLM_VERSION", "1.0.3")
+    restarted = _move_the_pins(npu, monkeypatch)
+    restarted.installer.installed_version = lambda lemond: (
+        "2026.41.1" if restarted.installer.current else "11.9.0"
+    )
+    try:
+        assert restarted.status()["versions"] == {"lemonade": "11.9.0", "fastflowlm": "1.0.3"}
+        monkeypatch.setenv("FAKE_FLM_VERSION", "1.0.7")
+        restarted.catalog()
+        assert restarted.status()["versions"] == {"lemonade": "2026.41.1", "fastflowlm": "1.0.7"}
+    finally:
+        restarted.shutdown()
+
+
+def _enable_in_background(npu):
+    import threading
+
+    thread = threading.Thread(target = npu.enable, daemon = True)
+    thread.start()
+    return thread
+
+
+def test_enable_waits_for_a_version_probe_already_running(npu, monkeypatch):
+    import threading
+
+    monkeypatch.setenv("FAKE_LEMOND_INSTALL_SECONDS", "3")
+    npu.enable()
+    npu._flm_version_cache = None
+    probing, release, state_at_probe_end = threading.Event(), threading.Event(), []
+    real = npu._flm_version
+
+    def slow_probe(*args):
+        if threading.current_thread().name == "status-reader":
+            probing.set()
+            release.wait(30)
+            state_at_probe_end.append(npu._state)
+        return real(*args)
+
+    monkeypatch.setattr(npu, "_flm_version", slow_probe)
+    reader = threading.Thread(target = npu.status, name = "status-reader", daemon = True)
+    reader.start()
+    assert probing.wait(30)
+    enabling = _enable_in_background(npu)
+    # Without the lock, Enable reaches the FastFlowLM install within these polls.
+    for _ in range(40):
+        if npu._state != "ready":
+            break
+        time.sleep(0.05)
+    release.set()
+    reader.join(30)
+    enabling.join(60)
+    assert state_at_probe_end == ["ready"]
+    assert npu.status()["state"] == "ready"
+
+
+def test_a_status_read_during_enable_runs_no_probe_and_keeps_the_last_versions(npu, monkeypatch):
+    import threading
+
+    monkeypatch.setenv("FAKE_FLM_VERSION", "1.0.7")
+    monkeypatch.setenv("FAKE_LEMOND_INSTALL_SECONDS", "3")
+    npu.installer.installed_version = lambda lemond: "11.9.0"
+    npu.enable()
+    assert npu.status()["versions"] == {"lemonade": "11.9.0", "fastflowlm": "1.0.7"}
+    npu._flm_version_cache = None
+    real, probes = npu._flm_version, []
+
+    def counted(*args):
+        probes.append(threading.current_thread().name)
+        return real(*args)
+
+    monkeypatch.setattr(npu, "_flm_version", counted)
+    enabling = _enable_in_background(npu)
+    _wait_until(lambda: npu._state == "installing_flm")
+    status = npu.status()
+    assert status["state"] == "installing_flm"
+    assert status["versions"] == {"lemonade": "11.9.0", "fastflowlm": "1.0.7"}
+    assert threading.current_thread().name not in probes
+    enabling.join(60)
+    assert npu.status()["state"] == "ready"
+
+
 def test_an_upgrade_that_fails_validation_asks_to_try_again(npu, monkeypatch):
     restarted = _move_the_pins(npu, monkeypatch)
     try:
@@ -581,7 +708,6 @@ def test_a_load_refused_before_touching_the_npu_keeps_the_resident(npu):
 
 
 def test_a_cancel_during_the_final_health_check_wins(npu, monkeypatch):
-    # The cancel stops lemond; the download must outlive the restart, as files on disk do.
     monkeypatch.setenv("FAKE_LEMOND_DOWNLOADED", '["qwen3-0.6b-FLM"]')
     npu.enable()
     resident_context = npu._resident_context
@@ -612,7 +738,6 @@ def test_a_cancel_landing_as_the_load_starts_is_kept(npu, monkeypatch):
 
     class _CancelledAsTheLoadStarts:
         def clear(self):
-            # A cancel from another thread lands while the load is publishing itself.
             thread = threading.Thread(
                 target = lambda: results.append(npu.cancel_load("qwen3-0.6b-FLM"))
             )

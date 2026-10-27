@@ -35,7 +35,7 @@ class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
 http.server.ThreadingHTTPServer.request_queue_size = 64; s = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H); print(s.server_port, flush=True); s.serve_forever()
 '@
-# Windows' python3 is often the Microsoft Store stub, which prints an install hint instead of running.
+# Windows' python3 is often the Microsoft Store stub.
 $python = if ($env:OS -ne 'Windows_NT' -and (Get-Command python3 -ErrorAction SilentlyContinue)) { 'python3' } else { 'python' }
 $psi = New-Object System.Diagnostics.ProcessStartInfo $python, "-c `"exec(__import__('sys').stdin.read())`""
 $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.UseShellExecute = $false
@@ -49,7 +49,7 @@ try {
     $r = Wait-MirrorProbe ($state = Start-MirrorProbe -Urls @("$base/ok", "$base/slow", "$base/whole", "$base/late", "$base/404", "http://127.0.0.1:9/") -Seconds 1.5 -LastByte 1023)
     Check "probe: gives up at its deadline, cancelling what has not answered" ($clock.Elapsed.TotalSeconds -lt 3 -and $r["$base/late"][0] -eq 0 -and [System.Threading.Tasks.Task]::WaitAny(@($state.Heads["$base/late"]), 200) -eq 0)
     Check "probe: a ranged 1 KiB answer is 206 with its speed" ($r["$base/ok"][0] -eq 206 -and $r["$base/ok"][1] -gt 1024)
-    Check "probe: redirects are followed" ((Wait-MirrorProbe (Start-MirrorProbe -Urls @("$base/redirect") -Seconds 1.5 -LastByte 1023))["$base/redirect"][0] -eq 206)  # alone: pwsh 7 gets resets from this server on side-by-side redirects (real mirrors measured clean)
+    Check "probe: redirects are followed" ((Wait-MirrorProbe (Start-MirrorProbe -Urls @("$base/redirect") -Seconds 1.5 -LastByte 1023))["$base/redirect"][0] -eq 206)  # alone: pwsh 7 gets resets from this server on side-by-side redirects
     Check "probe: a stalled body reports the speed so far" ($r["$base/slow"][0] -eq 206 -and $r["$base/slow"][1] -gt 200 -and $r["$base/slow"][1] -lt 600)
     Check "probe: an answer that ignores Range is capped, not buffered whole" ($r["$base/whole"][0] -eq 200 -and $state.Buffers["$base/whole"].Position -in 1024..(1024 + 65536))
     Check "probe: an HTTP error keeps its code" ($r["$base/404"][0] -eq 404 -and $r["$base/404"][1] -eq 0)
@@ -58,7 +58,7 @@ try {
 
 $names = '_UNSLOTH_MIRROR_PROBED', 'UNSLOTH_MIRROR_FALLBACK', 'UV_INDEX', 'UV_DEFAULT_INDEX', 'UV_INDEX_URL', 'UV_INDEX_STRATEGY', 'PIP_INDEX_URL',
     'PIP_EXTRA_INDEX_URL', 'UNSLOTH_PYTORCH_MIRROR', 'UNSLOTH_NODE_MIRROR', 'UNSLOTH_NPM_REGISTRY', 'NPM_CONFIG_REGISTRY', 'UV_OFFLINE', 'UV_CONFIG_FILE', 'PIP_CONFIG_FILE',
-    'UNSLOTH_UV_WHEEL_MIRROR', 'UV_INSTALLER_GITHUB_BASE_URL', 'UV_INSTALL_DIR', 'UV_NO_MODIFY_PATH', '_UNSLOTH_MIRROR_SPARE', 'UNSLOTH_INSTALL_RETRIES', 'UNSLOTH_INSTALL_RETRY_DELAY'
+    'UNSLOTH_UV_WHEEL_MIRROR', 'UV_INSTALLER_GITHUB_BASE_URL', 'UV_INSTALL_DIR', 'UV_NO_MODIFY_PATH', '_UNSLOTH_MIRROR_SPARE', 'UNSLOTH_INSTALL_RETRIES', 'UNSLOTH_INSTALL_RETRY_DELAY', 'UV_PYTHON_INSTALL_MIRROR', 'UV_NO_CONFIG', 'UV_ASTRAL_MIRROR_URL', 'UV_NO_SYSTEM_CONFIG', 'UV_PROJECT', 'UV_WORKING_DIR', 'UV_WORKING_DIRECTORY', 'UV_PYTHON_DOWNLOADS_JSON_URL'
 $saved = @{}; foreach ($n in $names + 'APPDATA', 'USERPROFILE', 'ProgramData', 'PATH') { $saved[$n] = [Environment]::GetEnvironmentVariable($n) }
 $home_ = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-mirror-" + [guid]::NewGuid())
 $pipIni = Join-Path $home_ 'AppData/pip/pip.ini'
@@ -113,6 +113,7 @@ function Run($mock, $envs = @{}, [switch]$SpareOnly, [switch]$Abroad) {
     Invoke-MirrorFallback -SpareOnly:$SpareOnly
 }
 $pypiMirror = "$M/pypi/web/simple"
+$pythonMirror = 'https://registry.npmmirror.com/-/binary/python-build-standalone'
 try {
     Run @{}; Check "fast hosts export and print nothing" (-not $env:UV_DEFAULT_INDEX -and -not $env:UNSLOTH_NPM_REGISTRY -and $script:lines.Count -eq 0)
     Run @{ pypi = 'blocked'; torch = 'blocked'; npm = 'blocked' } -Abroad
@@ -127,7 +128,7 @@ try {
     Check "fast hosts never touch a mirror" (-not ($script:probed -match 'cernet|npmmirror'))
     Run @{ pypi = 'slow'; torch = 'slow'; node = 'slow'; npm = 'slow'; astral = 'slow' }; Check "defaults are timed one at a time, on 1 MiB within 1.5 s or 4 s; indexes on 1 KiB within 4 s" (-not $script:overlap -and -not $script:badRange)
     Run @{ torch = 'blocked' }
-    Check "hosts left on their defaults keep their mirror, blocked-mode, as a spare" ($env:_UNSLOTH_MIRROR_SPARE -eq "pypi|UV_DEFAULT_INDEX=$pypiMirror|PIP_INDEX_URL=$pypiMirror node|UNSLOTH_NODE_MIRROR=https://registry.npmmirror.com/-/binary/node npm|UNSLOTH_NPM_REGISTRY=https://registry.npmmirror.com uvbin|UNSLOTH_UV_WHEEL_MIRROR=$M/pypi/web")
+    Check "hosts left on their defaults keep their mirror, blocked-mode, as a spare" ($env:_UNSLOTH_MIRROR_SPARE -eq "pypi|UV_DEFAULT_INDEX=$pypiMirror|PIP_INDEX_URL=$pypiMirror node|UNSLOTH_NODE_MIRROR=https://registry.npmmirror.com/-/binary/node npm|UNSLOTH_NPM_REGISTRY=https://registry.npmmirror.com python|UV_PYTHON_INSTALL_MIRROR=$pythonMirror uvbin|UNSLOTH_UV_WHEEL_MIRROR=$M/pypi/web")
     Run @{ pypi = 'blocked' }
     Check "blocked pypi: mirror is the only uv/pip index" ($env:UV_DEFAULT_INDEX -eq $pypiMirror -and $env:PIP_INDEX_URL -eq $pypiMirror -and -not $env:UV_INDEX -and -not $env:UV_INDEX_STRATEGY -and -not $env:PIP_EXTRA_INDEX_URL)
     Check "blocked pypi: says so with both speeds and names the opt-out" ($script:lines -contains "STEP PyPI is blocked (0 KB/s, mirror 3906 KB/s); using $pypiMirror" -and $script:lines[-1] -like 'SUBSTEP Set UNSLOTH_MIRROR_FALLBACK=0*')
@@ -186,15 +187,58 @@ try {
     Run @{ npm = 'blocked' } @{ UNSLOTH_NPM_REGISTRY = 'https://corp.example/npm/' }; Check "a user npm registry is kept and not probed" ($env:UNSLOTH_NPM_REGISTRY -eq 'https://corp.example/npm/' -and -not ($script:probed -like '*npm*'))
     Run @{ pypi = 'blocked' } @{ UNSLOTH_MIRROR_FALLBACK = 'Off' }; Check "UNSLOTH_MIRROR_FALLBACK=Off probes nothing" ($script:probed.Count -eq 0)
     Run @{ pypi = 'blocked' } @{ _UNSLOTH_MIRROR_PROBED = '1' }; Check "a parent installer's probe is not repeated" ($script:probed.Count -eq 0)
-    Run @{ astral = 'blocked' }; Check "blocked uv releases: the pinned wheel comes from the PyPI mirror" ($env:UNSLOTH_UV_WHEEL_MIRROR -eq "$M/pypi/web"); foreach ($src in 'UV_INSTALLER_GITHUB_BASE_URL', 'UNSLOTH_UV_WHEEL_MIRROR') { Run @{ astral = 'blocked' } @{ $src = 'https://corp.example/uv' }; Check "a user $src skips the uv probe" (-not ($script:probed -like '*releases.astral.sh*')) }
+    Run @{ astral = 'blocked' }; Check "blocked uv releases: the pinned wheel comes from the PyPI mirror" ($env:UNSLOTH_UV_WHEEL_MIRROR -eq "$M/pypi/web"); foreach ($src in 'UV_INSTALLER_GITHUB_BASE_URL', 'UNSLOTH_UV_WHEEL_MIRROR') {
+        Run @{ astral = 'blocked' } @{ $src = 'https://corp.example/uv'; UV_PYTHON_INSTALL_MIRROR = 'https://corp.example/pbs' }; Check "a user $src (and Python mirror) skips the releases.astral.sh probe" (-not ($script:probed -like '*releases.astral.sh*'))
+        Run @{ astral = 'blocked' } @{ $src = 'https://corp.example/uv' }; Check "a user $src keeps uv's source while Python builds still fall back" ($env:_UNSLOTH_MIRROR_SPARE -notmatch 'uvbin' -and $env:UNSLOTH_UV_WHEEL_MIRROR -ne "$M/pypi/web" -and $env:UV_PYTHON_INSTALL_MIRROR -eq $pythonMirror)
+    }
+    Run @{ astral = 'blocked' }; Check "blocked releases.astral.sh: uv's Python builds come from npmmirror, said by name" ($env:UV_PYTHON_INSTALL_MIRROR -eq $pythonMirror -and $script:lines -contains "STEP releases.astral.sh (Python builds) is blocked (0 KB/s, mirror 3906 KB/s); using $pythonMirror" -and $env:_UNSLOTH_MIRROR_SPARE -notmatch '(^| )python\|')
+    Check "python and uv share the releases.astral.sh probe, raced once" (@($script:probed -like 'https://releases.astral.sh/*').Count -eq 2)
+    Run @{ astral = 'blocked'; npmmirror = 'blocked' }; Check "a dead npmmirror keeps uv's Python builds on the default, spared" (-not $env:UV_PYTHON_INSTALL_MIRROR -and $env:_UNSLOTH_MIRROR_SPARE -like "*python|UV_PYTHON_INSTALL_MIRROR=$pythonMirror*")
+    Run @{ astral = 'blocked' } @{ UV_PYTHON_INSTALL_MIRROR = 'https://corp.example/pbs' }; Check "a user UV_PYTHON_INSTALL_MIRROR is kept, and not spared" ($env:UV_PYTHON_INSTALL_MIRROR -eq 'https://corp.example/pbs' -and $env:_UNSLOTH_MIRROR_SPARE -notmatch 'UV_PYTHON_INSTALL_MIRROR' -and $env:UNSLOTH_UV_WHEEL_MIRROR -eq "$M/pypi/web")
+    Run @{ astral = 'blocked' } @{ UV_ASTRAL_MIRROR_URL = 'https://corp.example/astral' }; Check "a user UV_ASTRAL_MIRROR_URL serves Python builds: no npmmirror override" (-not $env:UV_PYTHON_INSTALL_MIRROR -and $env:_UNSLOTH_MIRROR_SPARE -notmatch 'UV_PYTHON_INSTALL_MIRROR')
+    New-Item -ItemType Directory -Force -Path (Join-Path $env:APPDATA 'uv') | Out-Null
+    Set-Content -Path (Join-Path $env:APPDATA 'uv/uv.toml') -Value 'python-install-mirror = "https://corp.example/pbs"'
+    Run @{ astral = 'blocked'; pypi = 'blocked' }; Check "uv.toml python-install-mirror is kept, the index fallback still on" (-not $env:UV_PYTHON_INSTALL_MIRROR -and $env:_UNSLOTH_MIRROR_SPARE -notmatch 'UV_PYTHON_INSTALL_MIRROR' -and $env:UV_DEFAULT_INDEX -eq $pypiMirror)
+    $customUv = Join-Path $home_ 'custom-uv.toml'; Set-Content -Path $customUv -Value '# no mirror here'
+    Run @{ astral = 'blocked' } @{ UV_CONFIG_FILE = $customUv }; Check "UV_CONFIG_FILE replaces the discovered uv.toml, so its Python mirror does not count" ($env:UV_PYTHON_INSTALL_MIRROR -eq $pythonMirror)
+    Run @{ astral = 'blocked' } @{ UV_NO_CONFIG = '1' }; Check "UV_NO_CONFIG ignores the uv.toml Python mirror" ($env:UV_PYTHON_INSTALL_MIRROR -eq $pythonMirror)
+    Run @{ astral = 'blocked' } @{ UV_NO_CONFIG = 'f' }; Check "UV_NO_CONFIG=f is false to uv, so the uv.toml Python mirror still counts" (-not $env:UV_PYTHON_INSTALL_MIRROR)
+    New-Item -ItemType Directory -Force -Path (Join-Path $env:ProgramData 'uv') | Out-Null
+    Set-Content -Path (Join-Path $env:ProgramData 'uv/uv.toml') -Value 'python-install-mirror = "https://corp.example/pbs"'
+    Remove-Item -LiteralPath (Join-Path $env:APPDATA 'uv/uv.toml')
+    Run @{ astral = 'blocked' }; Check "a system uv.toml Python mirror counts" (-not $env:UV_PYTHON_INSTALL_MIRROR)
+    Run @{ astral = 'blocked' } @{ UV_NO_SYSTEM_CONFIG = '1' }; Check "UV_NO_SYSTEM_CONFIG ignores the system uv.toml Python mirror" ($env:UV_PYTHON_INSTALL_MIRROR -eq $pythonMirror)
+    Remove-Item -LiteralPath (Join-Path $env:ProgramData 'uv/uv.toml')
+    $proj = Join-Path $home_ 'proj'; New-Item -ItemType Directory -Force -Path $proj | Out-Null
+    Set-Content -Path (Join-Path $proj 'uv.toml') -Value 'python-install-mirror = "https://corp.example/pbs"'
+    foreach ($v in 'UV_PROJECT', 'UV_WORKING_DIR', 'UV_WORKING_DIRECTORY') {
+        Run @{ astral = 'blocked' } @{ $v = $proj }; Check "$v points discovery at a project whose uv.toml has a Python mirror" (-not $env:UV_PYTHON_INSTALL_MIRROR)
+    }
+    $other = Join-Path $home_ 'other'; New-Item -ItemType Directory -Force -Path $other | Out-Null
+    Push-Location $home_
+    try {
+        # uv 0.10.7 / 0.12.1 `python install --show-settings`: --directory first, then relative paths from it.
+        Run @{ astral = 'blocked' } @{ UV_PROJECT = 'proj'; UV_WORKING_DIR = $other }; Check "a relative UV_PROJECT resolves from UV_WORKING_DIR, where uv runs" ($env:UV_PYTHON_INSTALL_MIRROR -eq $pythonMirror)
+        Run @{ astral = 'blocked' } @{ UV_PROJECT = 'proj'; UV_WORKING_DIR = $home_ }; Check "UV_WORKING_DIR then UV_PROJECT reaches that project's Python mirror" (-not $env:UV_PYTHON_INSTALL_MIRROR)
+        Set-Content -Path (Join-Path $other 'custom.toml') -Value 'python-install-mirror = "https://corp.example/pbs"'
+        Run @{ astral = 'blocked' } @{ UV_CONFIG_FILE = 'custom.toml'; UV_WORKING_DIR = $other }; Check "a relative UV_CONFIG_FILE resolves from UV_WORKING_DIR" (-not $env:UV_PYTHON_INSTALL_MIRROR)
+        Run @{ astral = 'blocked' } @{ UV_PYTHON_DOWNLOADS_JSON_URL = 'https://corp.example/downloads.json' }; Check "a custom Python downloads manifest is left alone" (-not $env:UV_PYTHON_INSTALL_MIRROR)
+    } finally { Pop-Location }
+    Run @{ astral = 'blocked' }; Check "without it, that project's uv.toml is not in scope" ($env:UV_PYTHON_INSTALL_MIRROR -eq $pythonMirror)
+    Set-Content -Path (Join-Path $env:APPDATA 'uv/uv.toml') -Value 'python-install-mirror = "https://corp.example/pbs"'
+    Set-Content -Path $customUv -Value 'python-install-mirror = "https://corp.example/pbs"'
+    Run @{ astral = 'blocked' } @{ UV_CONFIG_FILE = $customUv }; Check "a Python mirror in UV_CONFIG_FILE is kept" (-not $env:UV_PYTHON_INSTALL_MIRROR)
+    Run @{ astral = 'blocked' } @{ UV_CONFIG_FILE = $customUv; UV_NO_CONFIG = '1' }; Check "UV_CONFIG_FILE is still read with UV_NO_CONFIG" (-not $env:UV_PYTHON_INSTALL_MIRROR)
+    Remove-Item -LiteralPath (Join-Path $env:APPDATA 'uv/uv.toml')
     $uvDown = "error: Failed to fetch: ``https://pypi.org/simple/numpy/```n  Caused by: error sending request for url (https://pypi.org/simple/numpy/)"
     $torchDown = "error: Failed to fetch: ``https://download.pytorch.org/whl/cu128/torch/```n  Caused by: operation timed out"
     $npmDown = "npm error network request to https://registry.npmjs.org/react failed, reason: read ECONNRESET"
     $stall = "error: Failed to download distribution`n  Caused by: Failed to download: network timeout"
     $pipDown = "WARNING: Retrying (Retry(total=0)) after connection broken by 'ReadTimeoutError(`"HTTPSConnectionPool(host='pypi.org', port=443): Read timed out.`")': /simple/numpy/"
+    $pythonDown = "error: Failed to install cpython-3.12.12-windows-x86_64-none`n  Caused by: Failed to download https://releases.astral.sh/github/python-build-standalone/releases/download/20260910/cpython-3.12.12.tar.gz`n  Caused by: error decoding response body"
     $lag = "  cause: Because only unsloth<=2026.9.9 is available and you require unsloth>=2026.9.10, we can conclude that your requirements are unsatisfiable."
     $noVersion = "error: No solution found when resolving dependencies: Because nothing==9 was not found in the package registry (https://pypi.org/simple)"
-    foreach ($case in @($uvDown, '', 'pypi'), @($torchDown, 'pypi', 'torch'), @($npmDown, '', 'npm'), @($pipDown, '', 'pypi'), @('npm error code ERESOLVE', 'npm', $null), @($stall, 'pypi', 'pypi'), @($stall, '', $null), @($noVersion, 'pypi', 'unsynced'), @($lag, '', 'unsynced'), @('ERROR: No matching distribution found for unsloth>=2026.9.10', '', 'unsynced'), @("$stall (see https://example.com/)", 'pypi', $null)) {
+    foreach ($case in @($uvDown, '', 'pypi'), @($torchDown, 'pypi', 'torch'), @($npmDown, '', 'npm'), @($pipDown, '', 'pypi'), @('npm error code ERESOLVE', 'npm', $null), @($stall, 'pypi', 'pypi'), @($stall, '', $null), @($pythonDown, '', 'python'), @($stall, 'python', 'python'), @($noVersion, 'pypi', 'unsynced'), @($lag, '', 'unsynced'), @('ERROR: No matching distribution found for unsloth>=2026.9.10', '', 'unsynced'), @("$stall (see https://example.com/)", 'pypi', $null)) {
         Check "failed host: $($case[1]) ran, output '$($case[0].Split("`n")[-1])' -> $($case[2])" ((Get-MirrorFailedHost -Output $case[0] -Ran $case[1]) -eq $case[2])
     }
     function Write-TauriLog {}; function Clear-TauriInstallError {}; function Write-UvDownloadMarker {}; function Write-StudioLine {}
@@ -222,6 +266,19 @@ try {
     function uv { $script:calls += , "$args"; Write-Error $script:fail; $global:LASTEXITCODE = 1 }
     $rc = Retry $uvDown { uv pip install numpy } -Once
     Check "a failed mirror rerun restores the default and spends the spare" ($rc -eq 1 -and $script:calls.Count -eq 2 -and -not $env:UV_DEFAULT_INDEX -and -not $env:PIP_INDEX_URL -and $env:_UNSLOTH_MIRROR_SPARE -notlike 'pypi|*')
+    function uv { $script:calls += , "$args"; if ($env:UV_PYTHON_INSTALL_MIRROR -eq $pythonMirror) { $global:LASTEXITCODE = 0 } else { Write-Error $script:fail; $global:LASTEXITCODE = 1 } }
+    $rc = Retry $pythonDown { uv python install --no-bin --no-registry cpython-3.12.12-windows-x86_64-none } -Once
+    Check "python transport: uv python install reruns once through npmmirror, kept for later installs" ($rc -eq 0 -and $script:calls.Count -eq 2 -and $env:UV_PYTHON_INSTALL_MIRROR -eq $pythonMirror -and $script:lines -contains "STEP releases.astral.sh (Python builds) failed; retrying through $pythonMirror" -and $env:_UNSLOTH_MIRROR_SPARE -notmatch '(^| )python\|' -and $env:_UNSLOTH_MIRROR_SPARE -like 'pypi|*')
+    $rc = Retry $stall { uv python install --no-bin --no-registry cpython-3.12.12-windows-x86_64-none } -Once
+    Check "python transport: a stall naming no host retries on the Python mirror" ($rc -eq 0 -and $script:calls.Count -eq 2 -and $env:UV_PYTHON_INSTALL_MIRROR -eq $pythonMirror)
+    function uv { $script:calls += , "$args"; Write-Error $script:fail; $global:LASTEXITCODE = 1 }
+    $rc = Retry $pythonDown { uv python install cpython-3.12.12-windows-x86_64-none } -Once; $rc2 = Invoke-InstallCommand -Label t -Command { uv python install cpython-3.12.13-windows-x86_64-none }
+    Check "python transport: a failed mirror rerun restores the default and is not repeated" ($rc -eq 1 -and $rc2 -eq 1 -and $script:calls.Count -eq 3 -and -not $env:UV_PYTHON_INSTALL_MIRROR)
+    Run @{} -Abroad; $script:fail = $pythonDown; $script:calls = @()
+    $rc = Invoke-InstallCommand -Label t -Command { uv python install cpython-3.12.12-windows-x86_64-none }
+    Check "python transport: with the fallback off, one attempt and no mirror" ($rc -eq 1 -and $script:calls.Count -eq 1 -and -not $env:UV_PYTHON_INSTALL_MIRROR)
+    $resolve = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Resolve-UvManagedPython' }, $true)[0].Extent.Text
+    Check "the uv-managed Python install may use the mirror spare" ($resolve -match 'Invoke-InstallCommand -Label "install uv-managed Python' -and $resolve -notmatch '-NoMirror')
     function uv { $script:calls += , "$args"; if ("$args" -match 'download\.pytorch') { Write-Error $script:fail; $global:LASTEXITCODE = 1 } else { $global:LASTEXITCODE = 0 } }
     $TorchIndexUrl = 'https://download.pytorch.org/whl/cu128'; $specs = @('torch', 'https://download.pytorch.org/whl/cu128/xformers.whl')
     $env:_UNSLOTH_MIRROR_SPARE = "pypi|UV_DEFAULT_INDEX=$pypiMirror torch|UNSLOTH_PYTORCH_MIRROR=$M/pytorch/whl"; $script:fail = $torchDown; $script:calls = @()

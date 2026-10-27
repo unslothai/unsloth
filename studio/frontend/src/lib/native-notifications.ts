@@ -61,9 +61,25 @@ function rememberSentKey(key: string): void {
   }
 }
 
+// The plugin's webview shim reports "denied" on Windows although the desktop backend grants
+// (tauri-apps/plugins-workspace#3512), so the backend answers before a shim "denied" is trusted.
+async function backendGrantsPermission(): Promise<boolean> {
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return (await invoke("plugin:notification|is_permission_granted")) === true;
+  } catch {
+    return false;
+  }
+}
+
 async function checkNativePermission(allowRequest: boolean): Promise<boolean> {
   const notification = getBrowserNotificationApi();
   if (notification?.permission === "granted") {
+    permissionState = "granted";
+    return true;
+  }
+
+  if (await backendGrantsPermission()) {
     permissionState = "granted";
     return true;
   }
@@ -119,9 +135,12 @@ async function ensurePermission(allowRequest: boolean): Promise<boolean> {
   return checkNativePermission(allowRequest);
 }
 
-export async function primeNativeNotificationPermission(): Promise<void> {
-  if (!isTauri || permissionState !== "unknown") {
-    return;
+export async function primeNativeNotificationPermission(): Promise<boolean> {
+  if (!isTauri) {
+    return false;
+  }
+  if (permissionState !== "unknown") {
+    return hasGrantedPermission();
   }
 
   if (!permissionPrimeInFlight) {
@@ -133,6 +152,7 @@ export async function primeNativeNotificationPermission(): Promise<void> {
   }
 
   await permissionPrimeInFlight;
+  return hasGrantedPermission();
 }
 
 export async function notifyNative(

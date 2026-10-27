@@ -27,7 +27,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { MessageCircleIcon, StarPointedIcon } from "@/lib/hugeicons-derived";
 import { useMemo, useState } from "react";
 import type { LibraryFolder } from "../api";
-import { isDeletable, isFileItem, isModelItem } from "../file-kind";
+import { hasImagePreview, isDeletable, isFileItem, isModelItem } from "../file-kind";
 import { type LibraryTarget, useLibraryActions } from "../actions-context";
 import { useLibraryOrigin } from "../origin";
 import { canReveal, revealInFolder, useRevealLabel } from "../reveal";
@@ -35,8 +35,6 @@ import { OVERLAY_CONTROL } from "../surface";
 
 const ICON = "size-icon";
 
-/** Folders a target can move into, depth-first with their nesting depth. A folder is never offered
- *  itself or anything under it. */
 function moveDestinations(
   folders: LibraryFolder[],
   target: LibraryTarget,
@@ -120,6 +118,12 @@ export function LibraryActionsMenu({
           <HugeiconsIcon icon={MessageCircleIcon} strokeWidth={1.75} className={ICON} />
           {t(item && isModelItem(item) ? "library.menu.chatWithModel" : "library.menu.chatAboutThis")}
         </DropdownMenuItem>
+        {item && hasImagePreview(item) && (
+          <DropdownMenuItem onSelect={() => actions.editImage(item)}>
+            <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className={ICON} />
+            {t("library.menu.editImage")}
+          </DropdownMenuItem>
+        )}
         {origin && (
           <DropdownMenuItem onSelect={origin.open}>
             <HugeiconsIcon icon={ArrowTurnBackwardIcon} strokeWidth={1.75} className={ICON} />

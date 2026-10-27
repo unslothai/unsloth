@@ -7,11 +7,7 @@ import { openStreamResponse } from "@/lib/open-stream-response";
 
 const readError = (r: Response): Promise<string> => readFastApiError(r);
 
-/**
- * Error from an export request that preserves the HTTP status, so callers can
- * tell an authoritative backend rejection (4xx) from a transport timeout that
- * the long export may survive (e.g. Cloudflare's 524 over a quick tunnel).
- */
+/** Keeps the HTTP status so callers can tell a 4xx rejection from a tunnel timeout. */
 export class ExportRequestError extends Error {
   status: number | null;
   constructor(message: string, status: number | null) {
@@ -28,21 +24,12 @@ async function parseJson<T>(response: Response): Promise<T> {
   return (await response.json()) as T;
 }
 
-/**
- * Whether an error from an export POST is a recoverable transport failure (the
- * backend op may still be running and may still succeed) rather than an
- * authoritative rejection. A Cloudflare quick tunnel returns 524 (and friends
- * 520/522/523) when a request runs past ~100s; a dropped connection surfaces as
- * a status-less network error from authFetch. Real 4xx (400/404/409/422) are
- * the backend saying no and must fail immediately.
- */
+/** Gateway/tunnel timeouts (502+, 52x) and network drops are recoverable; real 4xx are not. */
 export function isRecoverableTransportError(err: unknown): boolean {
   if (err instanceof ExportRequestError) {
-    // 502/503/504 gateway + 520/522/523/524 Cloudflare timeouts are recoverable.
     return typeof err.status === "number" ? err.status >= 502 : true;
   }
-  // No HTTP status at all (authFetch threw on a fetch TypeError = network drop /
-  // backend unreachable): indeterminate, so recover by polling status.
+  // No status means a network drop: indeterminate, so recover by polling status.
   return err instanceof Error;
 }
 
@@ -73,7 +60,6 @@ export interface CheckpointListResponse {
 }
 
 export interface ExportSizeEstimate {
-  /** Estimated FP16/BF16-equivalent on-disk size, or null when unknown. */
   fp16_bytes: number | null;
   total_params: number | null;
   source: string;
@@ -82,11 +68,16 @@ export interface ExportSizeEstimate {
 export interface ExportOperationResponse {
   success: boolean;
   message: string;
-  /**
-   * Optional backend extras. Local saves set `details.output_path` to the
-   * saved model's on-disk directory; hub-only pushes leave it undefined.
-   */
+  /** Local saves set `details.output_path`; hub-only pushes leave it undefined. */
   details?: { output_path?: string | null } & Record<string, unknown>;
+}
+
+/** The trained speculative-decoding drafter an export carried (backend `details.drafter`). */
+export interface ExportDrafterInfo {
+  strategy: "mtp" | "eagle3";
+  files?: string[];
+  vllm_command?: string | null;
+  llama_cpp_args?: string[] | string | null;
 }
 
 /** GGUF export options for a decision model (Clef / Laya) checkpoint folder. */
@@ -106,19 +97,91 @@ export interface DecisionExportInfo {
   existing_export: ({ quantizations?: string[] } & Record<string, unknown>) | null;
 }
 
+/** Export limits of a text-diffusion LM checkpoint (LLaDA, Dream, DiffusionGemma, ...). */
+export interface DiffusionLmExportInfo {
+  profile: string;
+  disabled_methods: ("merged" | "lora" | "gguf")[];
+  reason: string | null;
+}
+
+export interface CheckpointExportProbe {
+  decision: DecisionExportInfo | null;
+  diffusionLm: DiffusionLmExportInfo | null;
+}
+
+/** Decision and text-diffusion export info for a local checkpoint folder; nulls for any other model. */
+export async function fetchCheckpointExportProbe(
+  checkpointPath: string,
+  signal?: AbortSignal,
+): Promise<CheckpointExportProbe> {
+  const response = await authFetch(
+    `/api/export/decision-info?checkpoint_path=${encodeURIComponent(checkpointPath)}`,
+    { signal },
+  );
+  const body = await parseJson<{
+    decision: DecisionExportInfo | null;
+    diffusion_lm?: DiffusionLmExportInfo | null;
+  }>(response);
+  return {
+    decision: body.decision ?? null,
+    diffusionLm: body.diffusion_lm ?? null,
+  };
+}
+
 /** Decision export info for a local checkpoint folder; null for any other model. */
 export async function fetchDecisionExportInfo(
   checkpointPath: string,
   signal?: AbortSignal,
 ): Promise<DecisionExportInfo | null> {
+  return (await fetchCheckpointExportProbe(checkpointPath, signal)).decision;
+}
+
+/** Opt-in REAP expert pruning applied to an MoE model before it is exported. */
+export interface ReapOptions {
+  /** Fraction of the routed experts removed in every MoE layer, e.g. 0.25. */
+  sparsity: number;
+  num_calibration_samples: number;
+  /** Hugging Face dataset id for calibration; the backend default when null. */
+  dataset?: string | null;
+}
+
+export interface MoeInfo {
+  num_experts: number;
+  top_k: number;
+  /** Group-limited routers (DeepSeek style): Core prunes the same number from every group. */
+  n_group?: number | null;
+  topk_group?: number | null;
+}
+
+/** Routed-expert counts for a local folder or Hub id; null for a dense model or when unknown. */
+export async function fetchMoeInfo(
+  model: string,
+  hfToken?: string | null,
+  signal?: AbortSignal,
+): Promise<MoeInfo | null> {
+  // Token in a header (not the query string) so it never lands in URLs/logs.
+  const headers: Record<string, string> = {};
+  if (hfToken) {
+    headers["X-HF-Token"] = hfToken;
+  }
   const response = await authFetch(
-    `/api/export/decision-info?checkpoint_path=${encodeURIComponent(checkpointPath)}`,
-    { signal },
+    `/api/export/moe-info?model=${encodeURIComponent(model)}`,
+    { signal, headers },
   );
-  const body = await parseJson<{ decision: DecisionExportInfo | null }>(
-    response,
-  );
-  return body.decision ?? null;
+  const body = await parseJson<{
+    num_experts: number | null;
+    top_k: number | null;
+    n_group?: number | null;
+    topk_group?: number | null;
+  }>(response);
+  return body.num_experts && body.top_k
+    ? {
+        num_experts: body.num_experts,
+        top_k: body.top_k,
+        n_group: body.n_group ?? null,
+        topk_group: body.topk_group ?? null,
+      }
+    : null;
 }
 
 export async function fetchCheckpoints(): Promise<CheckpointListResponse> {
@@ -126,13 +189,12 @@ export async function fetchCheckpoints(): Promise<CheckpointListResponse> {
   return parseJson<CheckpointListResponse>(response);
 }
 
-/** Estimate a model's fp16-equivalent size to scale the GGUF quant labels; nulls (not error) when unknown. */
 export async function fetchExportSize(
   modelId: string,
   hfToken?: string | null,
   signal?: AbortSignal,
 ): Promise<ExportSizeEstimate> {
-  // Token in a header (not the query string) so it never lands in URLs/logs.
+  // Token in a header, not the query string, so it never lands in URLs or logs.
   const headers: Record<string, string> = {};
   if (hfToken) {
     headers["X-HF-Token"] = hfToken;
@@ -148,11 +210,11 @@ export async function loadCheckpoint(params: {
   checkpoint_path: string;
   max_seq_length?: number;
   load_in_4bit?: boolean;
+  /** Decoder layers in host RAM for low-VRAM export; "auto" (default) or a fixed count. */
+  offload_layers?: number | "auto";
   /** Allow loading models with custom code. Only enable for checkpoints you trust. */
   trust_remote_code?: boolean;
-  /** sha256 fingerprint pinning user approval of this exact custom-code version. */
   approved_remote_code_fingerprint?: string | null;
-  /** HF token so the worker scans/loads gated checkpoints and base models with the same auth as preflight. */
   hf_token?: string | null;
 }): Promise<ExportOperationResponse> {
   const response = await authFetch("/api/export/load-checkpoint", {
@@ -173,6 +235,7 @@ export async function exportMerged(params: {
   hf_token?: string | null;
   private?: boolean;
   install_missing_dependencies?: boolean;
+  reap?: ReapOptions | null;
 }): Promise<ExportOperationResponse> {
   const response = await authFetch("/api/export/export/merged", {
     method: "POST",
@@ -189,6 +252,7 @@ export async function exportBase(params: {
   hf_token?: string | null;
   private?: boolean;
   base_model_id?: string | null;
+  reap?: ReapOptions | null;
 }): Promise<ExportOperationResponse> {
   const response = await authFetch("/api/export/export/base", {
     method: "POST",
@@ -200,7 +264,6 @@ export async function exportBase(params: {
 
 export async function exportGGUF(params: {
   save_directory: string;
-  /** A single GGUF quant method or a list (list produces multiple GGUFs from one model load). */
   quantization_method: string | string[];
   push_to_hub?: boolean;
   repo_id?: string | null;
@@ -210,6 +273,7 @@ export async function exportGGUF(params: {
   private?: boolean;
   /** Also convert a Q4_0/Q4_1/Q4_K_M GGUF to Q4NX for the AMD NPU, into <save_directory>/npu-q4nx. */
   npu_q4nx?: boolean;
+  reap?: ReapOptions | null;
 }): Promise<ExportOperationResponse> {
   const response = await authFetch("/api/export/export/gguf", {
     method: "POST",
@@ -219,7 +283,6 @@ export async function exportGGUF(params: {
   return parseJson<ExportOperationResponse>(response);
 }
 
-/** Convert a GGUF that already exists (local file or Hub repo) to Q4NX for the AMD NPU. */
 export async function convertGgufToQ4nx(params: {
   save_directory: string;
   gguf_path?: string | null;
@@ -237,17 +300,27 @@ export async function convertGgufToQ4nx(params: {
   return parseJson<ExportOperationResponse>(response);
 }
 
+/** Copy an image-generation LoRA from the Images catalog (weights plus its .json sidecar) to a folder. */
+export async function exportDiffusionLora(params: {
+  lora_id: string;
+  save_directory: string;
+}): Promise<ExportOperationResponse> {
+  const response = await authFetch("/api/export/export/diffusion-lora", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+  return parseJson<ExportOperationResponse>(response);
+}
+
 export async function exportLoRA(params: {
   save_directory: string;
   push_to_hub?: boolean;
   repo_id?: string | null;
   hf_token?: string | null;
   private?: boolean;
-  /** Also convert the adapter to a GGUF LoRA file (llama.cpp `--lora`). */
   gguf?: boolean;
-  /** GGUF LoRA output float type (f32/f16/bf16/q8_0/auto); only used when gguf=true. */
   gguf_outtype?: string;
-  /** On-disk adapter format; omitted resolves to the platform's native format. */
   adapter_format?: "mlx" | "peft";
 }): Promise<ExportOperationResponse> {
   const response = await authFetch("/api/export/export/lora", {
@@ -263,11 +336,7 @@ export async function cleanupExport(): Promise<ExportOperationResponse> {
   return parseJson<ExportOperationResponse>(response);
 }
 
-/**
- * Cancel the in-flight export by terminating its worker subprocess. Training
- * and inference are left running. Always resolves (best-effort) so callers can
- * fire it without guarding for a missing active run.
- */
+/** Terminates the export worker only; always resolves so callers need no guard. */
 export async function cancelExport(): Promise<ExportOperationResponse> {
   const response = await authFetch("/api/export/cancel", { method: "POST" });
   return parseJson<ExportOperationResponse>(response);
@@ -277,14 +346,11 @@ export interface ExportStatus {
   current_checkpoint: string | null;
   is_vision: boolean;
   is_peft: boolean;
-  /** True while a load / export / cleanup operation is running on the backend. */
   is_export_active: boolean;
-  /** Kind of the currently running op (load_checkpoint / export_* / cleanup). */
   active_op_kind?: string | null;
   /** Monotonic counter of finished ops; baseline to detect "my op finished". */
   last_op_seq?: number;
   last_op_kind?: string | null;
-  /** Outcome of the most recently finished op. */
   last_op_status?: "success" | "error" | "cancelled" | null;
   last_op_output_path?: string | null;
   last_op_error?: string | null;
@@ -292,18 +358,12 @@ export interface ExportStatus {
   decision?: { layout: "clef" | "laya"; adapter_only: boolean } | null;
 }
 
-/**
- * Snapshot of the export backend, used to hydrate the runtime store on mount /
- * page reload so a still-running export (started in another tab, or before a
- * refresh) is reflected even though the in-memory store reset.
- */
+/** Used on mount to show an export started in another tab or before a reload. */
 export async function getExportStatus(): Promise<ExportStatus> {
   const response = await authFetch("/api/export/status");
   return parseJson<ExportStatus>(response);
 }
-
 // ───────────────────────────────────────────────────────────────────── Live export log stream
-// (Server-Sent Events) ─────────────────────────────────────────────────────────────────────
 
 export type ExportLogStream = "stdout" | "stderr" | "status";
 
@@ -313,24 +373,18 @@ export interface ExportLogEntry {
   ts: number | null;
 }
 
-/** A log line from the JSON poll endpoint, carrying its ring-buffer seq. */
 export interface ExportLogPollEntry extends ExportLogEntry {
   seq: number;
 }
 
 export interface ExportLogsResponse {
   entries: ExportLogPollEntry[];
-  /** Highest seq returned; pass back as `since` on the next poll. */
+  /** Pass back as `since` on the next poll. */
   cursor: number;
-  /** True while a load / export / cleanup op is running on the backend. */
   active: boolean;
 }
 
-/**
- * Short-response fallback for {@link streamExportLogs}, carrying the same
- * ring-buffer lines when a proxy drops or stalls the stream. Poll it while a run
- * is active and merge entries into the store, de-duped by seq.
- */
+/** Polling fallback for when a proxy drops or stalls the SSE stream; dedupe by seq. */
 export async function fetchExportLogs(
   since: number | null,
 ): Promise<ExportLogsResponse> {
@@ -347,9 +401,7 @@ export type ExportLogEventName = "log" | "heartbeat" | "complete" | "error";
 export interface ExportLogEvent {
   event: ExportLogEventName;
   id: number | null;
-  /** Present on `log` events. */
   entry?: ExportLogEntry;
-  /** Present on `error` events. */
   error?: string;
 }
 
@@ -380,7 +432,6 @@ function parseSseMessage(raw: string): ParsedSseMessage | null {
       dataLines.push(line.slice(5).trimStart());
       continue;
     }
-    // Comment lines (":heartbeat" etc.) are ignored per SSE spec.
   }
 
   if (dataLines.length === 0) return null;
@@ -486,7 +537,6 @@ export async function streamExportLogs(options: {
           }
         } catch (err) {
           if (isAbortError(err)) return;
-          // Ignore malformed events, keep reading.
         }
 
         separatorIndex = buffer.search(/\r?\n\r?\n/);

@@ -1,31 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A STREAM-COVERAGE SHORTFALL IS NOT MEASURED; A PINNING FAILURE IS STILL FATAL.
-
-`attached_fraction_of_stream` is set by the SCENE SCHEDULE, not by the build under test. The
-shipped film scrolls away twice inside an ~18s opening stream and the app then correctly declines
-to yank the reader back, so roughly half the streaming time is detached BY CONSTRUCTION. Measured
-over 32 cells: 0.481 +/- 0.009, range 0.4625 to 0.5063 -- which put `FOLLOW_MIN_STREAM_COVERAGE`
-of 0.50 above the mean of the quantity it was gating and turned the verdict into a coin flip.
-
-The observed result was 32 of 32 pairs refused with `cell r100K.base.rep0 FAILED its stream-follow
-gate`, exit 3, TOO LITTLE COMPARED -- and the NULL CONTROL, the same commit on both arms, refused
-identically. A gate that fails its own null is not measuring the thing it names. The prose in
-`scene/selftest/test_studiobench_follow_coverage_live.py` had already recorded the same shape at
-the earlier 0.07-0.15 coverage ("failed every 100K cell of every run -- two copies of the shipped
-build included") without the gate itself being changed.
-
-Both arms run the same film, so the shortfall is symmetric and cancels in any comparison drawn
-from these cells. It can only void a run, never discriminate between builds. Raising the constant
-was the other option and is the same trap one turn later: it would need re-deriving every time the
-film's scroll schedule moves.
-
-So coverage is carved out of the two admission lists the way an absent instrument already is, and
-BOTH REMAINING CONJUNCTS STAY FATAL. `pinned_fraction` and `ever_fell_behind` describe how the arm
-behaved while it WAS attached and can genuinely differ between builds. This test exists because a
-relaxation that cannot be shown to still bite is worthless.
-"""
+"""A stream-coverage shortfall is set by the schedule, not measured; pinning failures stay fatal."""
 
 from __future__ import annotations
 
@@ -43,7 +19,6 @@ from studiobench.runtime.session import (  # noqa: E402
 )
 from studiobench.sweep.ui_parity import incomplete_cells  # noqa: E402
 
-#:The coverage actually observed on the run this carve-out was derived from, not a round number.
 OBSERVED_COVERAGE = 0.481
 
 
@@ -94,15 +69,7 @@ def test_coverage_only_shortfall_is_carved_out(tmp_path) -> None:
 
 
 def test_a_sliver_is_also_not_measured_rather_than_failed(tmp_path) -> None:
-    """The 0.13 sampler-stranding case that motivated the original conjunct.
-
-    It reaches the same destination by design. A verdict resting on 13% of the stream is NOT a
-    reading, and "we have no reading" is what NOT MEASURED means -- so the cell is admitted to a
-    comparison whose confounds are common to both arms, while the gate row stays `passed: False`
-    so nobody can quote the follow verdict itself. The protection the conjunct was added for is
-    that the gate refuses to CLAIM a pass, and that is still true; what it may no longer do is
-    delete the cell's other, correctly measured columns.
-    """
+    """A 13% sliver is also not measured: the cell is admitted while its gate row still reads failed."""
 
     dropped, refused = _refuses(tmp_path, _coverage_short(0.13))
     assert not dropped
@@ -144,14 +111,7 @@ def test_falling_behind_still_bites(tmp_path) -> None:
 
 
 def test_low_coverage_does_not_launder_a_real_pinning_failure(tmp_path) -> None:
-    """The regression that would make the carve-out worthless.
-
-    A cell that failed BOTH must not ride out on the coverage allowance. `session.py` only sets
-    `stream_coverage_unmeasured` when coverage was the sole shortfall, and this pins that: were it
-    set whenever coverage was low, every genuine follow failure on a large rung -- where coverage
-    is low by construction -- would be waived, which is the defect this whole carve-out exists to
-    avoid re-introducing in the opposite direction.
-    """
+    """The waiver is set only when coverage is the sole shortfall, never over a pinning failure."""
 
     detail = {
         "follow_attempted": True,
@@ -167,10 +127,7 @@ def test_low_coverage_does_not_launder_a_real_pinning_failure(tmp_path) -> None:
     assert refused
 
 
-#: Every shape a failed `follows_the_stream` row can take, and whether it must still be fatal. The
-#: two admission lists have to agree on all of them: `INVALIDATING_CELL_GATES` was centralised so
-#: the scorers could not disagree about what invalidates a cell, and a predicate copied into both
-#: consumers reintroduces that drift one level down, where each copy reads correctly on its own.
+# Both admission lists must agree on every case, or the scorers drift on what invalidates a cell.
 _AGREEMENT_CASES: list[tuple[str, dict, bool]] = [
     ("coverage-only shortfall", _coverage_short(OBSERVED_COVERAGE), False),
     ("sliver", _coverage_short(0.13), False),
@@ -235,9 +192,7 @@ _AGREEMENT_CASES: list[tuple[str, dict, bool]] = [
         True,
     ),
     ("absent instrument", {"follow_attempted": False, "reason": "sampler is not installed"}, False),
-    # The narrowing that must survive the refactor: `probe_attempted: False` has two producers and only
-    # one is an absent instrument. A missing thread viewport is the ARM missing the surface under
-    # test, and waiving it once let a real failure ride the instrument allowance.
+    # A missing thread viewport is the arm's failure, not an absent instrument, so it stays fatal.
     ("no thread viewport", {"probe_attempted": False, "reason": "no thread viewport"}, True),
 ]
 
@@ -257,13 +212,7 @@ def test_both_admission_lists_agree_on_every_shape(tmp_path) -> None:
     assert not wrong, "wrong verdict: " + "; ".join(wrong)
 
 
-# the WRITER. Everything above drives the two consumers with a hand-built gate detail, which cannot
-# see a defect in the thing that PRODUCES that detail: a `follow_verdict` that set
-# `stream_coverage_unmeasured` on every low reading would waive real follow failures and every
-# consumer test would still pass.
-
-
-# ---------------------------------------------------------------------------------------
+# Tests the writer: consumer tests cannot catch a follow_verdict that waives every low reading.
 
 
 def _sampled(
@@ -272,12 +221,7 @@ def _sampled(
     fell_behind = False,
     reattachments = 2,
 ) -> dict:
-    """What `scene/dom.js::read()` returns. `reattachments` defaults to the film's own two.
-
-    It is not decoration: the waiver's premise is that the detachment was the SCHEDULE's, and the
-    sampler's proof of that is the arm coming back. A cell with 0 of them was detached for the rest
-    of the film because the BUILD would not re-pin.
-    """
+    """Mirrors scene/dom.js read(); zero reattachments means the build never re-pinned."""
 
     return {
         "follow_attempted": True,
@@ -289,40 +233,24 @@ def _sampled(
 
 
 def test_writer_waives_only_a_lone_coverage_shortfall() -> None:
-    """`stream_coverage_unmeasured` requires that NOTHING ELSE fell short.
-
-    This is the conjunction that stops the carve-out laundering a real failure, and it is only
-    visible here: a consumer test supplies the flag rather than deriving it.
-    """
+    """The waiver is derived by the writer, and requires that nothing else fell short."""
 
     passed, rec = follow_verdict(_sampled(1.0, OBSERVED_COVERAGE))
     assert passed is False, "the gate row must still read as failed"
     assert rec["stream_coverage_unmeasured"] is True
 
-    # a bad pinned fraction alongside the same shortfall must NOT be waived
     _, rec = follow_verdict(_sampled(0.30, 0.20))
     assert rec["stream_coverage_unmeasured"] is False
 
-    # nor may falling behind
     _, rec = follow_verdict(_sampled(1.0, 0.20, fell_behind = True))
     assert rec["stream_coverage_unmeasured"] is False
 
-    # nor an absent pinned reading while the sampler was present
     _, rec = follow_verdict(_sampled(None, 0.20))
     assert rec["stream_coverage_unmeasured"] is False
 
 
 def test_an_arm_that_never_reattached_is_not_waived(tmp_path) -> None:
-    """The half of the shortfall that IS the build, and the shape it wears.
-
-    `scene/dom.js` clears `detached` only when a run that began after the harness's gesture is
-    observed at the bottom, so an arm that stops re-pinning on a new turn stays detached for the
-    rest of the film. The detached branch returns before the pinned and fell-behind accounting, so
-    the opening stream's perfect `pinned_fraction` and `ever_fell_behind: False` survive while
-    coverage collapses -- the exact shape of a lone coverage shortfall, produced by the one failure
-    the gate exists to catch. Waived, the cell keeps its artificially cheap timings (an unmounted
-    reply costs nothing to paint) and is compared against a healthy partner.
-    """
+    """An arm that never re-pins stays detached, so its coverage shortfall is the build's and not waived."""
 
     _, rec = follow_verdict(_sampled(1.0, 0.10, reattachments = 0))
     assert rec["stream_coverage_unmeasured"] is False
@@ -342,10 +270,7 @@ def test_the_schedules_own_shortfall_is_still_waived(tmp_path) -> None:
 
 
 def test_writer_records_the_coverage_as_a_number_either_way() -> None:
-    """The quantity has to be legible as a quantity, whatever the verdict.
-
-    It sat undetected precisely because it was only ever visible as a pass or a fail.
-    """
+    """Coverage must be recorded as a number whatever the verdict, not only as a pass or a fail."""
 
     for coverage in (OBSERVED_COVERAGE, 0.13, 0.99):
         _, rec = follow_verdict(_sampled(1.0, coverage))
@@ -372,13 +297,7 @@ def test_writer_treats_an_absent_coverage_reading_as_short() -> None:
 
 
 def test_not_measured_stays_distinguishable_from_a_pass(tmp_path) -> None:
-    """Carving the cell out of the admission lists must not rewrite the gate row.
-
-    "Not measured" and "compared and equal" are different claims and the payload has to keep them
-    apart: the gate row still reads `passed: False`, and the coverage is still there AS A NUMBER
-    rather than as the pass/fail it used to be visible only as. That is the whole reason 0.481 sat
-    undetected long enough to void a campaign.
-    """
+    """Not measured stays distinct from a pass: the gate row reads passed: False, coverage is a number."""
 
     detail = _coverage_short(OBSERVED_COVERAGE)
     records = _records(detail)

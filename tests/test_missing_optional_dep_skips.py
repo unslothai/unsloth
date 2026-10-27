@@ -73,7 +73,7 @@ def test_the_call_at_module_scope_does_not_kill_the_session(tmp_path, helper, ar
 
 
 def test_the_standalone_script_path_still_exits():
-    # A subprocess, so pytest is genuinely absent from sys.modules, not faked.
+    # A subprocess, so pytest is genuinely absent from sys.modules.
     script = textwrap.dedent(f"""
         import sys
         sys.path.insert(0, {str(_repo_root())!r})

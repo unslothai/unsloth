@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""`trust_remote_code = True` on a native architecture must not switch the compiler off.
-
-The compiler pass (fast LoRA forward, fused linear cross entropy, compiled norms and
-attention) was skipped whenever the flag was set, on the grounds that remote code
-cannot be traced. That is only true when the checkpoint actually ships its own
-modeling files. Gemma-4 loaded with the flag lost all of it: PEFT's own Linear4bit
-forward ran, casting every activation to the float32 LoRA dtype and running both
-LoRA matmuls as fp32 SIMT GEMMs, and the 262k-vocab logits were materialised in
-full instead of going through the fused loss.
-"""
+"""Remote code blocks the compiler only when the checkpoint ships its own modeling files."""
 
 import os
 from types import SimpleNamespace
@@ -46,7 +37,7 @@ def test_sub_config_auto_map_counts():
 def test_transformers_modules_config_class_counts():
     f = _helper()
 
-    class RemoteConfig:  # what a dynamically loaded config looks like
+    class RemoteConfig:
         auto_map = None
 
     RemoteConfig.__module__ = "transformers_modules.some_repo.configuration_x"
@@ -106,8 +97,7 @@ def test_dict_shaped_configs_are_handled():
 
 
 def _cuda_is_available():
-    # Importing torch in the decorator itself turns this skip into a collection error on
-    # a runner that does not ship torch, taking the whole module with it.
+    # Importing torch in the decorator makes this a collection error on torch-less runners.
     try:
         import torch
     except ImportError:

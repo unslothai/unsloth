@@ -66,7 +66,6 @@ test("shared views count once and zero is a known reading", () => {
 
 test("missing or invalid shared free readings never fall back to capacity", () => {
   for (const free of [undefined, null, NaN, Infinity, -1]) {
-    // null is also possible on the wire despite the optional-number API type.
     const device = { ...integrated, vram_free_gb: free } as GpuDevice;
     assert.equal(gpuMemoryDisplay(gpu([device])).sharedAvailableGb, null);
     assert.equal(
@@ -104,4 +103,48 @@ test("other backends retain their shared-pool usage reporting", () => {
     assert.equal(resolveGpuVramUsedGb(display.usageGpu), 2);
   }
   assert.deepEqual(gpuMemoryDisplay(undefined).usageDevices, []);
+});
+
+test("Apple unified memory reports headroom without moving its usage bar", () => {
+  // M3 Max live reading: 64 GiB pool, 7.03 GiB GPU-allocated, min(free RAM, Metal working set) free.
+  const mlx: GpuDevice = {
+    index_kind: "relative",
+    shared_memory: true,
+    shared_memory_host_backed_gb: 64,
+    memory_total_gb: 64,
+    vram_used_gb: 7.03,
+    vram_free_gb: 21.93,
+  };
+  const display = gpuMemoryDisplay(gpu([mlx]));
+  assert.equal(display.unifiedAvailableGb, 21.93);
+  assert.equal(display.sharedDevices.length, 0);
+  assert.equal(resolveGpuVramUsedGb(display.usageGpu), 7.03);
+  assert.deepEqual(gpuMemoryTotalsGb(display.usageDevices), {
+    dedicated: 0,
+    shared: 64,
+    total: 64,
+  });
+  const noFree = { ...mlx, vram_free_gb: undefined };
+  assert.equal(gpuMemoryDisplay(gpu([noFree])).unifiedAvailableGb, null);
+});
+
+test("unified headroom leaves Vulkan iGPUs, ROCm APUs and carve-outs alone", () => {
+  assert.equal(gpuMemoryDisplay(gpu([integrated])).unifiedAvailableGb, null);
+  const linuxApu: GpuDevice = {
+    index_kind: "physical",
+    unified_memory: true,
+    memory_total_gb: 96,
+    vram_used_gb: 4,
+    vram_free_gb: 92,
+  };
+  assert.equal(gpuMemoryDisplay(gpu([linuxApu])).unifiedAvailableGb, null);
+  const carveOut: GpuDevice = {
+    index_kind: "physical",
+    shared_memory: true,
+    shared_memory_host_backed_gb: 12,
+    memory_total_gb: 16,
+    vram_used_gb: 1,
+    vram_free_gb: 15,
+  };
+  assert.equal(gpuMemoryDisplay(gpu([carveOut])).unifiedAvailableGb, null);
 });

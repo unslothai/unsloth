@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -16,17 +15,8 @@ const tabUrl = new URL(
   import.meta.url,
 );
 
-// Every update-banner preference the tab can import, read off the module itself: #12893 added
-// the audio.cpp banner to the tab after this test pinned three names, and every case failed on
-// the missing export. Setters are no-ops and readers say the banner is hidden.
-const updateBannerPrefStub = Object.fromEntries(
-  [
-    ...readFileSync(
-      new URL("../src/hooks/use-llama-update-pref.ts", import.meta.url),
-      "utf8",
-    ).matchAll(/^export function (\w+)/gm),
-  ].map(([, name]) => [name, name.startsWith("set") ? () => undefined : () => false]),
-);
+// The tab only reads the key list for its reset; the rows are a stubbed component.
+const notificationPrefStub = { NOTIFICATION_PREF_KEYS: [] };
 
 type EffectSlot = {
   cleanup?: () => void;
@@ -145,7 +135,8 @@ function generalTab(initialToken: string) {
       emitTrainingRunsChanged: noop,
       TRAINING_UI_PREFERENCE_KEYS: [],
     },
-    "@/hooks/use-llama-update-pref": updateBannerPrefStub,
+    "@/hooks/floating-panel-position": { FLOATING_PANEL_POSITION_KEYS: {} },
+    "@/hooks/use-notification-frequency": notificationPrefStub,
     "@/hooks": {
       useHfTokenValidation: () => ({
         isValid: false,
@@ -165,6 +156,9 @@ function generalTab(initialToken: string) {
       cn: (...values: unknown[]) => values.filter(Boolean).join(" "),
     },
     "lucide-react": componentStub,
+    "@/lib/tick-icon": { Tick02Icon: {} },
+    "@hugeicons/react": { HugeiconsIcon: "HugeiconsIcon" },
+    "@hugeicons/core-free-icons": new Proxy({}, { get: () => ({}) }),
     "../api/helper-precache": {
       loadHelperPrecacheSettings: never,
       updateHelperPrecacheSettings: never,
@@ -183,6 +177,10 @@ function generalTab(initialToken: string) {
       loadCloseToTray: noop,
       updateCloseToTray: noop,
     },
+    "../api/tray-icon": {
+      loadTrayIconVisible: noop,
+      updateTrayIconVisible: noop,
+    },
     "../api/launch-at-login": {
       loadLaunchAtLogin: noop,
       updateLaunchAtLogin: noop,
@@ -193,13 +191,17 @@ function generalTab(initialToken: string) {
       LIBRARY_SETTINGS_STORAGE_KEY: "library-settings",
       LIBRARY_VIEW_STORAGE_KEY: "library-view",
     },
+    "../components/full-install-dialog": componentStub,
     "../components/change-password-dialog": componentStub,
     "../components/desktop-repair-control": componentStub,
     "../components/desktop-update-control": componentStub,
     "../components/documents-rag-section": componentStub,
     "../components/language-select": componentStub,
     "../components/download-transport-row": componentStub,
+    "../components/developer-mode-section": componentStub,
+    "../components/engine-versions-section": componentStub,
     "../components/hub-settings-section": componentStub,
+    "../components/notification-frequency-select": componentStub,
     "../components/settings-row": componentStub,
     "../components/settings-section": componentStub,
     "../components/studio-version-section": componentStub,

@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Video prompts in GRPO reach the old, reference and policy logprob forwards.
-
-TRL builds those forward kwargs from `image` / `images` only, so a `{"type": "video"}` prompt
-was generated against its video and then scored as text. unslothai/unsloth#3357."""
+"""TRL builds forward kwargs from image / images only, so video prompts were scored as text."""
 
 import inspect
 import types

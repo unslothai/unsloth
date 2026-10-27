@@ -29,23 +29,19 @@ def _download_block() -> str:
 
 
 def test_the_download_is_verified_as_microsoft_signed_before_it_runs():
-    # No pwsh needed: Get-AuthenticodeSignature is Windows-only, so the ordering of the three steps in the real block is
-    # the thing to hold still. A verification placed after Start-Process, or one that only checks Status, would still
-    # "pass" on a swapped binary.
+    # Get-AuthenticodeSignature is Windows-only, so this pins step ordering: a check after Start-Process,
+    # or one that only checks Status, would still pass on a swapped binary.
     block = _download_block()
     download = block.index("Invoke-WebRequest")
     verify = block.index("Get-AuthenticodeSignature", download)
     execute = block.index("Start-Process", verify)
     assert download < verify < execute
     assert "SignatureStatus]::Valid" in block
-    # Loose on the quoting, since an RDN value may arrive quoted, strict on the publisher.
     assert "Microsoft Corporation" in block
 
 
 def _script(starting_protocol: str) -> str:
-    # Start from a non-zero set that lacks Tls12.
-    # Tls13 is the only such value modern .NET accepts, and it stands in for the legacy Ssl3/Tls default of Windows
-    # PowerShell 5.1.
+    # Tls13 is the only non-zero, Tls12-free value modern .NET accepts; it stands in for PS 5.1's default.
     return f"""
 function substep {{ param($a, $b) }}
 function Refresh-Environment {{ }}
@@ -61,8 +57,7 @@ Write-Output "AFTER=$([System.Net.ServicePointManager]::SecurityProtocol)"
 
 
 def _run(starting_protocol: str) -> dict[str, str]:
-    # The TLS assertions read the BEFORE/DURING/AFTER lines this script prints, so an interpreter that never got as far
-    # as running the download block would look like setup.ps1 failing to negotiate TLS 1.2 at all.
+    # run_pwsh: an interpreter that never reached the download block would look like a TLS failure.
     result = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", _script(starting_protocol)],
         check = True,
@@ -91,8 +86,7 @@ def test_tls12_is_added_for_the_download_and_restored_after():
 
 @pwsh_only
 def test_system_default_is_left_alone():
-    # SystemDefault means "let the OS choose" and already covers TLS 1.2+;
-    # pinning it to Tls12 would strip TLS 1.3 from every later request in the process.
+    # SystemDefault already covers TLS 1.2+; pinning Tls12 would strip TLS 1.3 process-wide.
     seen = _run("SystemDefault")
     assert seen["DURING"] == "SystemDefault"
     assert seen["AFTER"] == "SystemDefault"

@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The shared pwsh runner must blame the interpreter for a crash and nothing else.
-
-Backend CI run 32341628757 reported one runner-level pwsh failure mode as 284 independent
-Windows-installer regressions across 19 files. tests/_shared/unsloth_pwsh_runner.py exists
-to stop that, and its value is entirely in which of these two it does to a given run:
-
-  * a shell killed by a signal produced no verdict  -> retry, then blame the interpreter;
-  * a shell that exited normally produced a verdict -> hand it back untouched, right or wrong.
-
-Getting the second one wrong would turn this helper into a way to retry real regressions
-into green, which is strictly worse than the bug it fixes. So both directions are executed
-here against a real SIGABRT rather than reviewed.
-"""
+"""A signal-killed shell is retried, then blamed on the interpreter; a normal exit is never touched."""
 
 import json
 import os
@@ -24,14 +12,8 @@ import pytest
 
 from unsloth_pwsh_runner import PWSH, PwshInterpreterCrash, run_pwsh
 
-# A SIGABRT is forged with Python rather than pwsh: the real trigger is a .NET startup stack overflow we cannot summon
-# on demand, and the helper keys on the signal, not on who sent it, so `os.abort()` reproduces exactly the condition CI
-# hit.
-# PR_SET_DUMPABLE = 0 first, per tests/test_deliberate_crashes_suppress_cores.py. The child still dies of SIGABRT, so
-# every verdict below is unchanged; what goes away is apport reading a multi-MB core before the child is reaped, on
-# each of the several aborts these tests spend.
-# Linux-only, and deliberately not fatal elsewhere: Windows has no CDLL(None) and pipes no core anywhere, so failing to
-# arm it there would turn a no-op into a lost test.
+# os.abort() reproduces the CI condition: the helper keys on the signal. PR_SET_DUMPABLE=0
+# first avoids apport cores; Linux-only and non-fatal elsewhere.
 _ABORT = [
     sys.executable,
     "-c",
@@ -58,8 +40,7 @@ def test_a_clean_run_with_the_wrong_answer_still_fails_with_its_own_message():
     assert proc.returncode == 3
     assert proc.stdout.strip() == "WRONG"
 
-    # ...and `check` still raises the ordinary CalledProcessError a caller expects, so migrating a `subprocess.run(...,
-    # check = True)` call site changes no failure text.
+    # `check` still raises the ordinary CalledProcessError.
     with pytest.raises(subprocess.CalledProcessError):
         run_pwsh(_CLEAN_WRONG_ANSWER, check = True, capture_output = True, text = True)
 
@@ -80,15 +61,7 @@ def test_a_clean_run_is_not_retried():
 
 
 def test_the_startup_cache_is_redirected_without_disturbing_the_callers_env():
-    """The mechanism fix, asserted from the child's own view of its environment.
-
-    Four xdist workers sharing one $HOME share one 83 KB StartupProfileData-NonInteractive,
-    and a startup that reads a half-written one dies. Measured at 7/4000 shared against
-    0/4000 private, reproducing both crash shapes this repo has seen. The redirect must
-    therefore actually reach the child, and must add exactly one variable: a hermetic env
-    dict is how several of these tests keep a developer's exported settings from deciding
-    an inference assertion, and quietly widening it would break that silently.
-    """
+    """The redirect must reach the child and add exactly one variable, keeping hermetic envs hermetic."""
     dump = [sys.executable, "-c", "import json,os; print(json.dumps(dict(os.environ)))"]
 
     marker = "UNSLOTH_PWSH_RUNNER_LEAK_PROBE"
@@ -103,12 +76,10 @@ def test_the_startup_cache_is_redirected_without_disturbing_the_callers_env():
     assert "XDG_CACHE_HOME" in child, sorted(child)
     assert child["HOME"] == "/nonexistent", "the caller's hermetic HOME was overwritten"
     assert child["PATH"] == "/usr/bin:/bin"
-    # The whole point of a hermetic dict: nothing ambient may reach the child.
-    # (CPython's own PEP 538 locale coercion can add LC_CTYPE, which is why this probes for a named leak rather than
-    # asserting an exact key set.)
+    # PEP 538 locale coercion can add LC_CTYPE, so probe for a named leak, not an exact key set.
     assert marker not in child, "the ambient environment leaked past a hermetic env dict"
 
-    # env = None must still mean inherit, or every call site that relies on the ambient PATH silently loses it.
+    # env = None must still mean inherit.
     inherited = json.loads(run_pwsh(dump, capture_output = True, text = True).stdout)
     assert inherited["XDG_CACHE_HOME"] == child["XDG_CACHE_HOME"]
     assert inherited.get("PATH") == os.environ.get("PATH")

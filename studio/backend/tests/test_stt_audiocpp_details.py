@@ -24,12 +24,14 @@ from test_audio_inputs import wav_bytes  # noqa: E402
 QWEN3 = f"{AUDIO_CPP_REPO}/Qwen3-ASR-0.6B-GGUF"
 MOSS = f"{AUDIO_CPP_REPO}/MOSS-Transcribe-Diarize-GGUF"
 NIAGARA = f"{AUDIO_CPP_REPO}/Niagara-ASR-GGUF"
+NEMOTRON = f"{AUDIO_CPP_REPO}/Nemotron-3.5-ASR-Streaming-0.6B-GGUF"
+PARAKEET = f"{AUDIO_CPP_REPO}/Parakeet-TDT-0.6B-v3-GGUF"
 ALIGNER_FILE = "Qwen3-ForcedAligner-0.6B-GGUF/qwen3-forced-aligner-0.6b-q8_0.gguf"
 ALIGNER_KEY = "qwen3_asr.forced_aligner_model_path"
 
 FAKE_SERVER = textwrap.dedent(
     r"""
-    import json, os, sys, time
+    import json, os, socketserver, sys, time
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     here = os.path.dirname(os.path.abspath(__file__))
@@ -72,6 +74,8 @@ FAKE_SERVER = textwrap.dedent(
             if entry["family"] == "moss_transcribe_diarize":
                 return self.reply(200, MOSS)
             payload = {"text": "Concord returned.", "language": "English"}
+            if entry["family"] == "owsm_ctc":
+                payload["language"] = language  # it echoes the language it was sent, "auto" included
             if (req.get("options") or {}).get("return_timestamps") == "true":
                 payload["words"] = [
                     {"word": "Concord", "start_sample": 9088, "end_sample": 19328},
@@ -79,7 +83,13 @@ FAKE_SERVER = textwrap.dedent(
                 ]
             self.reply(200, payload)
 
-    ThreadingHTTPServer(("127.0.0.1", cfg["port"]), H).serve_forever()
+    class S(ThreadingHTTPServer):
+        # HTTPServer.server_bind reverse-resolves the host via getfqdn, ~35 s per start on macOS runners.
+        def server_bind(self):
+            socketserver.TCPServer.server_bind(self)
+            self.server_name, self.server_port = "127.0.0.1", self.server_address[1]
+
+    S(("127.0.0.1", cfg["port"]), H).serve_forever()
     """
 )
 
@@ -108,6 +118,12 @@ def fake(tmp_path, monkeypatch, hub):
     _add(hub, "Qwen3-ASR-0.6B-GGUF/qwen3-asr-0.6b-q8_0.gguf", "qwen3_asr")
     _add(hub, "MOSS-Transcribe-Diarize-GGUF/moss-q8_0.gguf", "moss_transcribe_diarize")
     _add(hub, "Niagara-ASR-GGUF/niagara-19m-batch.en-f32.gguf", "niagara_asr")
+    _add(
+        hub,
+        "Nemotron-3.5-ASR-Streaming-0.6B-GGUF/nemotron-3.5-asr-streaming-0.6b-q8_0.gguf",
+        "nemotron_asr",
+    )
+    _add(hub, "Parakeet-TDT-0.6B-v3-GGUF/parakeet-tdt-0.6b-v3-q8_0.gguf", "parakeet_tdt")
     root = tmp_path / "fake"
     root.mkdir()
     for log in ("starts.jsonl", "requests.jsonl"):
@@ -158,28 +174,117 @@ def test_bytes_go_as_json_naming_a_temp_file_removed_after_success_or_error(fake
     assert record["path"] == "/v1/audio/transcriptions/details"
     assert audio.is_absolute() and audio.parent == stt._stt_tmp_dir() and audio.suffix == ".wav"
     assert record["audio_existed"] and not list(audio.parent.glob("*.wav"))
-    assert (body["language"], body["model"]) == ("en", fake.starts[0]["entry"]["id"])
+    # Qwen3-ASR prompts with the language's name; the result keeps the code the caller gave.
+    assert (body["language"], body["model"]) == ("English", fake.starts[0]["entry"]["id"])
     assert "options" not in body
     with pytest.raises(stt.SttEngineUnavailableError):
-        side.transcribe(wav_bytes(), QWEN3, "boom")
+        side.transcribe(wav_bytes(), NIAGARA, "boom")
     assert not list(audio.parent.glob("*.wav"))
     # A family that rejects the language is asked again without it.
-    assert side.transcribe(wav_bytes(), QWEN3, "xx")["text"] == "Concord returned."
+    assert side.transcribe(wav_bytes(), NIAGARA, "xx")["text"] == "Concord returned."
     assert fake.bodies[-2]["language"] == "xx" and "language" not in fake.bodies[-1]
+
+
+ABSENT = object()
+
+
+@pytest.mark.parametrize(
+    ("language", "sent"),
+    [
+        ("en", "English"),
+        ("en-US", "English"),
+        ("EN_us", "English"),
+        ("fr-FR", "French"),
+        ("yue", "Cantonese"),
+        ("fil", "Filipino"),
+        ("cmn", "Chinese"),
+        # Not in Qwen3-ASR's list: the model detects it rather than reading a stray code.
+        ("sw", ABSENT),
+        ("he", ABSENT),
+        ("auto", ABSENT),
+        (None, ABSENT),
+    ],
+)
+def test_qwen3_gets_the_language_name_it_prompts_with(fake, side, source, language, sent):
+    result = side.transcribe_path(source, QWEN3, language)
+    (body,) = fake.bodies
+    assert body.get("language", ABSENT) == sent
+    assert result["language"] == (stt.normalize_whisper_language(language) or "English")
+
+
+@pytest.mark.parametrize(
+    ("language", "sent"),
+    [
+        # The prompt dictionary has no bare key for these; the spec locale is the only one.
+        ("ja", "ja-JP"),
+        ("zh", "zh-CN"),
+        ("zh-TW", "zh-CN"),
+        ("he", "he-IL"),
+        ("iw", "he-IL"),
+        ("vi", "vi-VN"),
+        ("th", "th-TH"),
+        ("mt", "mt-MT"),
+        ("de", "de-DE"),
+        # A locale the model lists goes as it is.
+        ("en-GB", "en-GB"),
+        ("EN_us", "en-US"),
+        ("pt-BR", "pt-BR"),
+        ("nb", "nb-NO"),
+        ("nn-NO", "nn-NO"),
+        # Several locales and none chosen: the model keys the bare code itself.
+        ("en", "en"),
+        ("en-AU", "en"),
+        ("es", "es"),
+        ("fr", "fr"),
+        ("pt", "pt"),
+        ("no", "no"),
+        ("no-NO", "no"),
+        # Outside the model's locales: its default prompt (auto) rather than a refused request.
+        ("sw", ABSENT),
+        ("id", ABSENT),
+        ("auto", ABSENT),
+        (None, ABSENT),
+    ],
+)
+def test_nemotron_gets_a_locale_its_prompt_dictionary_keys(fake, side, source, language, sent):
+    result = side.transcribe_path(source, NEMOTRON, language)
+    (body,) = fake.bodies
+    assert body.get("language", ABSENT) == sent
+    if language not in (None, "auto"):
+        assert result["language"] == stt.normalize_whisper_language(language)
+
+
+def test_other_families_keep_the_bare_code(fake, side, source):
+    side.transcribe_path(source, NIAGARA, "ja-JP")
+    side.transcribe_path(source, NIAGARA, "en")
+    side.transcribe_path(source, PARAKEET, "en-US")
+    assert [body["language"] for body in fake.bodies] == ["ja", "en", "en"]
+
+
+def test_parakeet_switches_to_bounded_windows_on_long_audio(fake, side, source):
+    side.transcribe_path(source, PARAKEET, None)
+    (start,) = fake.starts
+    # Full context below the encoder ceiling: the windows lose words on clips it can encode whole.
+    assert start["entry"]["session_options"] == {
+        "parakeet_tdt.offline_mode": "auto",
+        "parakeet_tdt.audio_chunk_threshold_sec": "390",
+    }
+    side.unload()
+    side.transcribe_path(source, NEMOTRON, None)
+    assert "session_options" not in fake.starts[-1]["entry"]
 
 
 def test_moss_reads_the_source_in_place_with_speakers_and_no_options(fake, side, source):
     result = side.transcribe_path(source, MOSS, None, timestamps = True)
     (body,) = fake.bodies
     assert body["audio"] == str(source) and "options" not in body
-    assert source.exists()  # the caller's file is not ours to remove
+    assert source.exists()
     assert result["text"] == "Hello there. General Kenobi." and result["duration"] == 2.0
     assert result["speakers"] == ["S01", "S02"]
     assert [(s["start"], s["end"], s["speaker"]) for s in result["segments"]] == [
         (0.12, 1.0, "S01"),
         (1.1, 2.0, "S02"),
     ]
-    # MOSS loads without the aligner whatever the request asked.
     assert ALIGNER_KEY not in json.dumps(fake.starts[0]["entry"])
     assert side.transcribe(wav_bytes(), MOSS, None)["text"] == "Hello there. General Kenobi."
 
@@ -196,7 +301,6 @@ def test_qwen3_aligner_is_downloaded_loaded_once_and_kept(fake, side, source, hu
         network = True,
     ):
         if network:
-            # Stands in for the Hub listing: the files arrive with the download below.
             _add(hub, ALIGNER_FILE, "qwen3_forced_aligner")
         return real_resolve(model, companion, hf_token, network = False)
 
@@ -457,3 +561,22 @@ def test_an_unreadable_source_is_a_decode_error(fake, side, tmp_path):
     with pytest.raises(SttAudioDecodeError):
         side.transcribe_path(bad, QWEN3, None)
     assert fake.starts == []
+
+
+@pytest.mark.parametrize("gpu_visible", [False, True])
+def test_training_moves_the_server_only_when_its_placement_changes(
+    fake, side, monkeypatch, gpu_visible
+):
+    """A GPU build with no visible GPU already runs on the CPU, so training starting or ending keeps it."""
+    monkeypatch.setattr(
+        srv,
+        "select_backend",
+        lambda binary, force_cpu: "cpu" if force_cpu or not gpu_visible else "cuda",
+    )
+    monkeypatch.setattr(stt, "runtime_runs_on_cpu", lambda: not gpu_visible)
+    training = [False]
+    monkeypatch.setattr(stt, "_training_active", lambda: training[0])
+    for active in (False, True, False):
+        training[0] = active
+        side.transcribe(wav_bytes(), QWEN3, "en")
+    assert len(fake.starts) == (3 if gpu_visible else 1)

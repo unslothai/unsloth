@@ -1,13 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import {
+  DEFAULT_ENGINE_LAUNCH_FIELDS,
+  engineLaunchFieldsFrom,
+  engineLaunchFieldsFromParams,
+} from "./lib/engine-launch-fields";
 import { useChatArtifactsStore } from "./artifacts/store";
 import { mlxRuntimeStateFrom } from "./lib/mlx-runtime-state";
 import { offloadCountsFrom, offloadWarning } from "./lib/partial-offload";
+import { llamaServerLoadFields } from "./lib/load-request";
 import {
   clearedServerTuningState,
   committedServerTuningState,
-  serverTuningLoadPayload,
 } from "./lib/server-tuning-fields";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { useTextareaSkillMentions } from "@/components/assistant-ui/skill-mentions";
@@ -26,9 +32,12 @@ import {
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { BulbIcon } from "@/lib/bulb-icon";
+import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { InternetGlyph } from "@/lib/internet-icon";
 import { MicIcon } from "@/lib/mic-icon";
 import { MenuTickIcon, Tick02Icon } from "@/lib/tick-icon";
+import { BrowserAgentMenuItem, BrowserAgentPill } from "@/features/browser/agent/lazy-composer-toggle";
+import { markComposerScrollEdges } from "@/lib/composer-scroll-fade";
 import { cn } from "@/lib/utils";
 import {
   DropdownMenu,
@@ -72,16 +81,24 @@ import { isTauri } from "@/lib/api-base";
 import { classifiedAttachmentFiles, isVideoFile } from "@/lib/video-utils";
 import { newAttachmentId } from "./audio-attachment-adapter";
 import { isDownloadCancelled } from "@/lib/native-files";
-import { isMultimodalResponse } from "./types/api";
+import { isMultimodalResponse, type LoadModelRequest } from "./types/api";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import {
   CHAT_IMAGE_ACCEPT,
+  getChatImageSizeError,
   isChatImageFile,
   normalizeChatImage,
 } from "./image-normalize";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { CONVERSATION_MARKDOWN_LABEL } from "./utils/conversation-markdown";
 import { pasteClipboardFiles } from "./utils/clipboard-files";
+import {
+  composerDraftKey,
+  latestDraft,
+  publishDraft,
+  subscribeDraft,
+  writeComposerDraft,
+} from "./utils/composer-draft";
 import { confirmStopRunningChatsIfNeeded } from "./utils/confirm-stop-running-chats";
 import { requestLocalPromptQueueStop } from "./utils/prompt-queue-boundary";
 import {
@@ -93,14 +110,7 @@ import type { ModelLifecycleLease } from "./utils/model-lifecycle-gate";
 import { useAui } from "@assistant-ui/react";
 import {
   ArrowUpIcon,
-  ChevronDownIcon,
   Columns2Icon,
-  HeadphonesIcon,
-  MoreHorizontalIcon,
-  PlusIcon,
-  SquareIcon,
-  SlidersHorizontalIcon,
-  XIcon,
 } from "lucide-react";
 import {
   AttachmentIcon,
@@ -113,7 +123,12 @@ import {
   Image03Icon,
   McpServerIcon,
   Scroll01Icon,
+  MoreHorizontalIcon,
+  PlusSignIcon,
+  SlidersHorizontalIcon,
+  Cancel01Icon,
 } from "@hugeicons/core-free-icons";
+import { StopIcon } from "@/lib/media-control-icons";
 import { useNavigate } from "@tanstack/react-router";
 import { useChatActive } from "./runtime-provider";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -134,13 +149,12 @@ import {
 } from "./api/prompts-api";
 import { PromptCountBadge } from "./prompt-storage/prompt-count-badge";
 import { McpComposerButton } from "./mcp-composer-button";
-import { SkillsComposerButton } from "./skills-composer-button";
+import { SkillsComposerButton, useSkillsSwitch } from "./skills-composer-button";
 import { PermissionModeComposerPill } from "./permission-mode-select";
 import { reasoningCapsFromLoad } from "./lib/apply-inference-status-to-store";
 import { resyncInferenceStatusAfterServerModelChange } from "./hooks/use-chat-model-runtime";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { NewProjectDialog } from "./components/new-project-dialog";
-import { ChatSkillsDialog } from "./components/chat-skills-dialog";
 import { ChatAudioUploadMount } from "./components/chat-audio-upload-mount";
 import { useChatProjects } from "./hooks/use-chat-projects";
 import { useChatAudioUpload } from "./hooks/use-chat-audio-upload";
@@ -149,6 +163,7 @@ import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import {
   DEFAULT_MAX_SEQ_LENGTH,
   DEFAULT_PER_MODEL_CONFIG,
+  confirmManagedEngineIfNeeded,
   isServedByMlx,
   savedContextPin,
   resolveResidentInitialConfig,
@@ -194,10 +209,11 @@ import {
 import { compareModelDisplayName } from "./lib/external-model-label";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { useComposerPillFit } from "@/hooks/use-composer-pill-fit";
+import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useT } from "@/i18n";
 import {
-  PLUS_MENU_ORDER,
+  splitPlusMenuItems,
   type PlusMenuItemId,
   usePlusMenuPrefsStore,
 } from "./stores/plus-menu-prefs-store";
@@ -211,15 +227,19 @@ import {
   reconcilePersistedGpuIds,
   resolveLoadedSpeculativeSettings,
   resolvePreserveThinkingOnLoad,
+  resolveToolsEnabledOnLoad,
   persistGpuMemoryModeOnLoad,
   resolveSpeculativeSettingsForLoad,
   saveSpeculativeType,
   codeToolsOn,
+  localImagePillCount,
+  localImageTool,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import {
   clampReasoningEffortToLevels,
   getExternalReasoningCapabilities,
+  kimiSearchExcludesThinking,
   providerHostsCodeExecution,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
@@ -232,6 +252,7 @@ import {
   type ClipboardEvent,
   type DragEvent as ReactDragEvent,
   type KeyboardEvent,
+  type CSSProperties,
   type MutableRefObject,
   type ReactElement,
   type ReactNode,
@@ -253,26 +274,20 @@ export type CompareMessagePart =
 
 export interface CompareHandle {
   append: (content: CompareMessagePart[]) => void;
-  /** Append a user message without triggering generation. */
   appendMessage: (content: CompareMessagePart[]) => void;
-  /** Trigger generation on the current thread (after appendMessage). */
   startRun: () => void;
   cancel: () => void;
   isRunning: () => boolean;
   threadIds: () => string[];
-  /** Returns a promise that resolves when the current or next run finishes. */
   waitForRunEnd: () => Promise<void>;
 }
-
-const MAX_IMAGE_SIZE = 20 * 1024 * 1024;
 
 // Inlined to avoid a new icon dep. Kept in sync with the main composer.
 function isNativeComposing(event: Event) {
   return "isComposing" in event && (event as InputEvent).isComposing === true;
 }
 
-// Mirrors the threshold in thread.tsx. Chrome on Windows-over-WSL (#5546) never fires
-// `compositionend` after IME commit, so the compose flag would otherwise stay true forever.
+// Mirrors thread.tsx: Chrome on WSL may never fire compositionend after IME commit.
 const IME_STUCK_TIMEOUT_MS = 2500;
 
 function fileToBase64DataURL(file: File): Promise<string> {
@@ -308,7 +323,6 @@ function formatReasoningDisabledLabel(
   modelId?: string,
 ): string {
   const normalized = modelId?.trim().toLowerCase() ?? "";
-  // Magistral keeps the "none" wire value, but UX presents this floor as "Medium" rather than a disabled-state label.
   if (normalized.includes("magistral-medium-latest")) return "Medium";
   return supportsReasoningOff && isExternalOpenAIReasoning ? "None" : "Off";
 }
@@ -316,11 +330,8 @@ function formatReasoningDisabledLabel(
 function useDictation(
   setText: (value: string | ((prev: string) => string)) => void,
 ) {
-  // Re-render support state when the user switches recognition engines.
   const dictationEngine = useVoiceSettingsStore((s) => s.dictationEngine);
   const [isDictating, setIsDictating] = useState(false);
-  // True while a stopped recording's final audio is still transcribing; a second click then cancels
-  // the pending transcription instead of re-stopping.
   const [isFinalizing, setIsFinalizing] = useState(false);
   const sessionRef = useRef<StudioDictationSession | null>(null);
   const startingRef = useRef(false);
@@ -328,7 +339,6 @@ function useDictation(
 
   const start = useCallback(async () => {
     if (startingRef.current || sessionRef.current) return;
-    // Unsupported engine (e.g. Firefox): explain and steer to the local model.
     if (!isStudioDictationAvailable()) {
       notifyStudioDictationUnavailable();
       return;
@@ -337,9 +347,7 @@ function useDictation(
 
     let session: StudioDictationSession;
     try {
-      // Routes to the engine chosen in Voice settings, honoring the selected microphone, language and
-      // dictionary. Compare feeds two panes, so recent dictations must not link the unrelated
-      // single-chat active thread.
+      // Compare feeds two panes, so dictations must not link the single-chat active thread.
       session = new StudioDictationAdapter({ chatId: null }).listen();
     } catch {
       startingRef.current = false;
@@ -349,7 +357,6 @@ function useDictation(
     sessionRef.current = session;
     setIsDictating(true);
 
-    // Append final transcripts; the adapter has already applied the dictionary and recorded the session.
     session.onSpeech((result) => {
       if (!result.isFinal) return;
       const transcript = result.transcript?.trim() ?? "";
@@ -369,8 +376,6 @@ function useDictation(
   const stop = useCallback(() => {
     const session = sessionRef.current;
     if (!session) return;
-    // A second click while the final segment is transcribing discards the pending transcription
-    // instead of leaving the pane stuck until timeout.
     if (finalizingRef.current) {
       session.cancel();
       if (sessionRef.current === session) sessionRef.current = null;
@@ -381,8 +386,7 @@ function useDictation(
     }
     finalizingRef.current = true;
     setIsFinalizing(true);
-    // Keep the session and dictation state alive while its final audio segment is transcribed; onEnd
-    // clears both after the transcript callbacks run.
+    // Keep the session alive while the final segment transcribes; onEnd clears it.
     void session.stop().catch((error) => {
       console.error("Could not stop dictation:", error);
       session.cancel();
@@ -447,7 +451,6 @@ export function RegisterCompareHandle({
       );
     };
     currentHandles[name] = {
-      // fixes occasional reorder on reload.
       append: (content) =>
         aui
           .thread()
@@ -523,12 +526,12 @@ function PendingImageThumb({
     return () => URL.revokeObjectURL(url);
   }, [file]);
   if (!src)
-    return <div className="size-14 animate-pulse rounded-[14px] bg-muted" />;
+    return <div className="size-14 animate-pulse rounded-lg bg-muted" />;
   return (
     <div
       data-reload-snapshot-sensitive
       data-composer-attachment="image"
-      className="relative size-14 shrink-0 overflow-hidden rounded-[14px] border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted"
+      className="relative size-14 shrink-0 overflow-hidden rounded-lg border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted"
     >
       <img src={src} alt={file.name} className="h-full w-full object-cover" />
       <button
@@ -537,7 +540,7 @@ function PendingImageThumb({
         className="absolute top-1 right-1 flex size-5 items-center justify-center rounded-full bg-white text-muted-foreground shadow-sm hover:bg-destructive hover:text-destructive-foreground"
         aria-label="Remove attachment"
       >
-        <XIcon className="size-3" />
+        <HugeiconsIcon icon={Cancel01Icon} className="size-3" />
       </button>
     </div>
   );
@@ -566,27 +569,25 @@ function resolveCompareSpecDraftNMax(
     : null;
 }
 
-// Tool icon plus an X overlay CSS reveals on hover when the pill is active.
 function PillGlyph({ children }: { children: ReactNode }) {
   return (
     <span className="composer-pill-glyph">
       {children}
-      <XIcon className="composer-pill-x" />
+      <HugeiconsIcon icon={Cancel01Icon} className="composer-pill-x" />
     </span>
   );
 }
 
-/** True when a drop reached this composer from a portaled child, such as a dialog and its
- *  overlay, which React routes through here but which owns it. */
+/** A drop from a portaled child (dialog) that React routes through here but it owns. */
 function isPortaledDrop(event: ReactDragEvent): boolean {
   const target = event.target as Element | null;
-  return !target?.closest?.(".chat-composer-surface");
+  return !target?.closest?.(".unsloth-composer-surface");
 }
 
 const LOAD_SETTLE_POLL_MS = 1000;
 const LOAD_SETTLE_TIMEOUT_MS = 15 * 60_000;
 
-/** Waits for every load, not the target by name: the backend tracks a local GGUF under a path-free id. */
+/** Waits for every load: the backend tracks a local GGUF under a path-free id. */
 async function waitForBackendLoadToSettle(): Promise<void> {
   const deadline = Date.now() + LOAD_SETTLE_TIMEOUT_MS;
   while (Date.now() < deadline) {
@@ -594,7 +595,7 @@ async function waitForBackendLoadToSettle(): Promise<void> {
       const status = await getInferenceStatus();
       if (status.loading.length === 0) return;
     } catch {
-      // Keep polling: an unreachable backend has not proven the load ended.
+      // An unreachable backend has not proven the load ended.
     }
     await new Promise((resolve) => setTimeout(resolve, LOAD_SETTLE_POLL_MS));
   }
@@ -624,7 +625,6 @@ export function SharedComposer({
   const t = useT();
   const sendShortcut = useChatPreferencesStore((s) => s.sendShortcut);
   const navigate = useNavigate();
-  // Exit compare: parent's restore handler, or fresh chat if opened by URL.
   const handleExitCompare = useCallback(() => {
     if (onExitCompare) {
       onExitCompare();
@@ -632,7 +632,50 @@ export function SharedComposer({
     }
     navigate({ to: "/chat" });
   }, [navigate, onExitCompare]);
-  const [text, setText] = useState("");
+  const incognito = useChatRuntimeStore((s) => s.incognito);
+  const [text, setText] = useState(() =>
+    useChatRuntimeStore.getState().incognito ? "" : latestDraft(),
+  );
+  const [draftSource] = useState(() => Symbol("compare composer"));
+  // Text that came from the chat composer or another tab, so it isn't published back.
+  const remoteDraftRef = useRef<string | null>(null);
+  const unsavedDraftRef = useRef<string | null>(null);
+  const incognitoBeforeRef = useRef(incognito);
+  useEffect(() => {
+    // Leaving a temporary chat (Compare can mount just before it resets) restores the saved draft.
+    if (incognitoBeforeRef.current !== incognito) {
+      incognitoBeforeRef.current = incognito;
+      if (!incognito) {
+        remoteDraftRef.current = latestDraft();
+        setText(remoteDraftRef.current);
+      }
+      return;
+    }
+    if (incognito || text === remoteDraftRef.current) return;
+    remoteDraftRef.current = null;
+    publishDraft(text, draftSource);
+    // Emptied (a send, or cleared by hand): gone at once, so a reload can't bring back a sent prompt.
+    if (text === "") {
+      writeComposerDraft(composerDraftKey(), "");
+      unsavedDraftRef.current = null;
+      return;
+    }
+    unsavedDraftRef.current = text;
+    const timer = setTimeout(() => {
+      writeComposerDraft(composerDraftKey(), text);
+      unsavedDraftRef.current = null;
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [text, incognito, draftSource]);
+  // Leaving Compare inside the debounce still saves what was typed.
+  useEffect(
+    () => () => {
+      if (unsavedDraftRef.current !== null) {
+        writeComposerDraft(composerDraftKey(), unsavedDraftRef.current);
+      }
+    },
+    [],
+  );
   const shortcutLabels = composerShortcutLabels(sendShortcut, isMacPlatform(), text);
   const [running, setRunning] = useState(false);
   const [comparing, setComparing] = useState(false);
@@ -660,6 +703,13 @@ export function SharedComposer({
     },
     [],
   );
+  useEffect(() => {
+    if (incognito) return;
+    return subscribeDraft(draftSource, (next) => {
+      remoteDraftRef.current = next;
+      setCurrentText(next);
+    });
+  }, [incognito, draftSource, setCurrentText]);
   // Attachments still classifying or converting; a ref so runPromptList reads it synchronously.
   const attachingRef = useRef(0);
   useEffect(() => {
@@ -670,7 +720,7 @@ export function SharedComposer({
   const [dragging, setDragging] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
-  const [skillsOpen, setSkillsOpen] = useState(false);
+  const [skillsOn, setSkillsOn] = useSkillsSwitch();
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
   const [recentPrompts, setRecentPrompts] = useState<PromptEntry[]>([]);
   const [recentLists, setRecentLists] = useState<PromptListEntry[]>([]);
@@ -682,7 +732,6 @@ export function SharedComposer({
       const rows = await listPromptEntries();
       if (seq !== recentSeqRef.current) return;
       const byRecent = [...rows].sort((a, b) => b.updatedAt - a.updatedAt);
-      // Pinned prompts take over the submenu; fall back to the 3 most recent.
       const pinnedIds = usePlusMenuPrefsStore.getState().pinnedPromptIds;
       const pinned = byRecent.filter((p) => pinnedIds.includes(p.id));
       setRecentPrompts(pinned.length > 0 ? pinned : byRecent.slice(0, 3));
@@ -700,6 +749,7 @@ export function SharedComposer({
     }
   }, []);
   const plusPins = usePlusMenuPrefsStore((s) => s.pins);
+  const plusOrder = usePlusMenuPrefsStore((s) => s.order);
   const [isQueueRunning, setIsQueueRunning] = useState(false);
   const [queueProgress, setQueueProgress] = useState({ current: 0, total: 0 });
   const queueRef = useRef<string[]>([]);
@@ -724,7 +774,7 @@ export function SharedComposer({
         ? `${current}\n\n${pendingFixPrompt}`
         : pendingFixPrompt,
     );
-    // Not the selector: a single chat's composer stays mounted, hidden, ahead of this one.
+    // Not the selector: a hidden single-chat composer stays mounted ahead of this one.
     window.setTimeout(() => textareaRef.current?.focus(), 0);
   }, [pendingFixPrompt, setCurrentText]);
   const composingRef = useRef(false);
@@ -774,14 +824,17 @@ export function SharedComposer({
   const preserveThinking = useChatRuntimeStore((s) => s.preserveThinking);
   const setPreserveThinking = useChatRuntimeStore((s) => s.setPreserveThinking);
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
+  const [skillsSwitchOn] = useSkillsSwitch();
 
+  const mentionOpenRef = useRef(false);
   const skillMentions = useTextareaSkillMentions({
     text,
     setText: setCurrentText,
     inputRef: textareaRef,
     composingRef,
-    enabled: supportsTools,
+    enabled: supportsTools && skillsSwitchOn,
   });
+  mentionOpenRef.current = skillMentions.inputProps["aria-expanded"];
   const supportsBuiltinWebSearch = useChatRuntimeStore(
     (s) => s.supportsBuiltinWebSearch,
   );
@@ -814,7 +867,6 @@ export function SharedComposer({
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
   const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
-  // Empty until a compare run; gates Export chat off.
   const exportThreadIds = [model1ThreadId, model2ThreadId, activeThreadId].filter(
     (id): id is string => Boolean(id),
   );
@@ -843,8 +895,7 @@ export function SharedComposer({
     mmprojFallbackReason,
   });
   const isCompareMode = Boolean(model1?.id || model2?.id);
-  // Attach-time gate. Compare defers to send: the catalog can lag a model's real capabilities and
-  // models[] only syncs after ensureModelLoaded. Single mode uses the loaded model's capability.
+  // Compare defers the image check to send: the catalog can lag real capabilities.
   const attachUnavailableReason = isCompareMode ? null : imageUnavailableReason;
   const effectiveExternalModelId =
     selectedExternalProvider?.providerType === "openrouter" &&
@@ -856,7 +907,6 @@ export function SharedComposer({
     externalSelection != null
       ? getExternalReasoningCapabilities(
           selectedExternalProvider?.providerType,
-          // The adapter resolves reasoning for the selected id; openrouter/free can route each turn elsewhere.
           externalSelection?.modelId,
           {
             isReasoningProvider:
@@ -886,10 +936,12 @@ export function SharedComposer({
   // Kimi's $web_search builtin mandates thinking=disabled
   // (https://platform.kimi.ai/docs/guide/use-web-search). Both pills stay clickable, but turning
   // one on flips the other off, so the visible state matches what the backend sends.
-  const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
+  const isKimiExternal = kimiSearchExcludesThinking(
+    selectedExternalProvider?.providerType,
+    externalSelection?.modelId,
+  );
   const effectiveReasoningEnabled = reasoningLockedOn ? true : reasoningEnabled;
-  // What the adapter sends: the stored effort clamped to the current ladder, so a catalog refresh that
-  // drops the stored level is shown truthfully without overwriting the choice.
+  // Show the stored effort clamped to the current ladder without overwriting the choice.
   const displayedEffort =
     effectiveReasoningEffortLevels.length > 0
       ? clampReasoningEffortToLevels(reasoningEffort, effectiveReasoningEffortLevels)
@@ -902,13 +954,9 @@ export function SharedComposer({
     effectiveSupportsReasoning ||
     effectiveReasoningAlwaysOn ||
     supportsPreserveThinking;
-  // enable_thinking_effort (GLM-5.2: high|max + disable) reuses the effort dropdown; it just also
-  // carries an Off row via supportsReasoningOff.
   const isEffort =
     effectiveReasoningStyle === "reasoning_effort" ||
     effectiveReasoningStyle === "enable_thinking_effort";
-  // GLM-5.2's effort menu has short rows, so it can sit skinnier. Skip the narrower floor when a
-  // Preserve thinking row is present, since that label needs the wider width.
   const narrowEffortMenu =
     effectiveReasoningStyle === "enable_thinking_effort" &&
     !supportsPreserveThinking;
@@ -917,9 +965,7 @@ export function SharedComposer({
     : isEffort
       ? reasoningLockedOn || (effectiveReasoningVisualEnabled && !reasoningDisabled)
       : reasoningLockedOn || (effectiveReasoningEnabled && !reasoningDisabled);
-  // Search can use Unsloth tools or provider web search independently of Code.
-  // Code follows the provider's sandbox placement and never falls back to local
-  // execution when a hosted model lacks code support.
+  // Code never falls back to local execution when a hosted model lacks code support.
   const supportsBuiltinCodeExecution = providerSupportsBuiltinCodeExecution(
     selectedExternalProvider?.providerType,
     effectiveExternalModelId,
@@ -935,19 +981,27 @@ export function SharedComposer({
   const supportsBuiltinWebFetch = providerSupportsBuiltinWebFetch(
     selectedExternalProvider?.providerType,
   );
-  // Gemini rejects codeExecution alongside image modalities. Search is blocked on older Gemini image
-  // ids but allowed on Gemini 3 image models, so only Code is disabled unconditionally there.
+  // Gemini rejects codeExecution alongside image modalities.
   const isExternalGemini = selectedExternalProvider?.providerType === "gemini";
-  const imageDisabled = !modelLoaded || !supportsBuiltinImageGeneration;
+  // The image or video model loaded in Unsloth, reached through generate_image / generate_video.
+  const localImageToolHere = useChatRuntimeStore((s) =>
+    localImageTool({ ...s, supportsBuiltinImageGeneration }),
+  );
+  const localImagePills = useChatRuntimeStore((s) =>
+    localImagePillCount({ ...s, supportsBuiltinImageGeneration }),
+  );
+  const imageDisabled =
+    !modelLoaded || !(supportsBuiltinImageGeneration || localImageToolHere);
   const imageModeDisablesCode =
-    isExternalGemini && imageToolsEnabled && !imageDisabled;
+    isExternalGemini &&
+    imageToolsEnabled &&
+    modelLoaded &&
+    supportsBuiltinImageGeneration;
   // Image-tier Gemini models always reject codeExecution and reject web_search on older ids, so gate
   // strictly on provider builtin support: local `supportsTools` must not re-enable a pill the
   // Gemini backend silently drops.
   const isGeminiImageTier =
     isExternalGemini && supportsBuiltinImageGeneration;
-  // Disable only when a loaded model lacks the capability; with no model the tool can still be
-  // pre-selected, matching the + menu.
   const searchDisabled =
     modelLoaded &&
     (isGeminiImageTier
@@ -972,36 +1026,34 @@ export function SharedComposer({
   const codeDisabled =
     (modelLoaded && (isGeminiImageTier || !canRunCode)) ||
     imageModeDisablesCode;
-  // Images pill lights only on OpenAI cloud Responses-API models and the Gemini Nano Banana
-  // family. No local tool runtime fallback.
-  const showImagePill = supportsBuiltinImageGeneration;
+  // Images pill: the provider's own image generation on OpenAI cloud Responses-API models and the
+  // Gemini Nano Banana family, else the image or video model loaded in Unsloth when the chat
+  // model calls Unsloth tools.
+  const showImagePill = supportsBuiltinImageGeneration || localImageToolHere;
   // Fetch pill: Anthropic-only (web_fetch_20250910 / web_fetch_20260209).
   const webFetchDisabled = !modelLoaded || !supportsBuiltinWebFetch;
   const showWebFetchPill = supportsBuiltinWebFetch;
   const ragDisabled =
     modelLoaded && ((!externalUsesStudioTools && isExternalModel) || !supportsTools);
   const showRagPill = !isExternalModel || externalUsesStudioTools;
-  // Above 4 pills, collapse to icons only. Compare, Search, Code and permissions always show.
+  // Above 4 pills, collapse to icons only. Compare, Search, Tools and permissions always show.
   // Narrow viewports collapse too: the labelled row is wider than a phone-width composer.
   const isMobile = useIsMobile();
   const pillCount =
     4 +
-    (showImagePill ? 1 : 0) +
+    (supportsBuiltinImageGeneration ? 1 : 0) +
+    localImagePills +
     (showRagPill && ragEnabled ? 1 : 0) +
     (showWebFetchPill ? 1 : 0) +
     (mcpEnabledForChat ? 1 : 0);
-  // Under the count threshold the row still overflows on long labels, wrapping onto a second line
-  // inside the action bar, so measuring collapses just enough to keep it beside send.
   const { pillRowRef, pillCompact } = useComposerPillFit(
     isMobile || pillCount > 4,
   );
-  // Backwards-compatible alias for call sites still referencing `toolsDisabled`.
   const toolsDisabled = codeDisabled;
   const setPendingAudioStore = useChatRuntimeStore((s) => s.setPendingAudio);
   const clearPendingAudioStore = useChatRuntimeStore(
     (s) => s.clearPendingAudio,
   );
-  // Mirror the first clip into the store's single-clip slot.
   const mirroredAudioRef = useRef(false);
   useEffect(() => {
     const [first] = pendingAudio;
@@ -1085,8 +1137,7 @@ export function SharedComposer({
     setTimeout(() => { sendRef.current?.(); }, 100);
   }
 
-  // Compare mode: advance the queue on cycle end, but stop on a failed step so prompts are not
-  // burned on incomplete results.
+  // Stop on a failed step so queued prompts are not burned on incomplete results.
   useEffect(() => {
     const wasComparing = prevComparingRef.current;
     prevComparingRef.current = comparing;
@@ -1109,28 +1160,74 @@ export function SharedComposer({
     advanceQueue();
   }, [running, comparing]);
 
-  // Auto-expand textarea up to 6 rows, then scroll (matches regular chat composer).
-  useEffect(() => {
+  // The single composer's editor frame (12 rows, animated height), measured by hand: no autosize here.
+  const inputId = useId();
+  const oneRowHeight = Math.round(40 * useUiSpaceScale());
+  const [editorHeight, setEditorHeight] = useState(40);
+  const [editorRows, setEditorRows] = useState(1);
+  const [isWritingExpanded, setIsWritingExpanded] = useState(false);
+  const editorRef = useRef<HTMLDivElement>(null);
+  const measureEditor = useCallback(() => {
     const ta = textareaRef.current;
     if (!ta) return;
+    // The frame clamps the textarea; lift that while measuring its content.
+    ta.style.setProperty("max-height", "none", "important");
+    ta.style.setProperty("min-height", "0", "important");
     ta.style.height = "auto";
     const styles = window.getComputedStyle(ta);
-    const lineHeight = parseFloat(styles.lineHeight) || 20;
+    const lineHeight = parseFloat(styles.lineHeight) || 24;
     const paddingY =
       parseFloat(styles.paddingTop) + parseFloat(styles.paddingBottom);
-    const borderY =
-      parseFloat(styles.borderTopWidth) + parseFloat(styles.borderBottomWidth);
-    const maxHeight = lineHeight * 6 + paddingY + borderY;
-    const next = Math.min(ta.scrollHeight, maxHeight);
-    ta.style.height = `${next}px`;
-    ta.style.overflowY = ta.scrollHeight > maxHeight ? "auto" : "hidden";
-  }, [text]);
+    const maxHeight = lineHeight * 12 + paddingY;
+    const content = ta.scrollHeight;
+    const next = Math.min(content, maxHeight);
+    ta.style.height = "";
+    ta.style.removeProperty("max-height");
+    ta.style.removeProperty("min-height");
+    ta.style.overflowY = content > maxHeight ? "auto" : "hidden";
+    setEditorHeight(next);
+    setEditorRows(Math.round((next - paddingY) / lineHeight));
+  }, []);
+  useEffect(measureEditor, [text]);
+  // Width only: wrapping follows it, while the height is the frame's own animation.
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    let width = editor.clientWidth;
+    const observer = new ResizeObserver(() => {
+      if (editor.clientWidth === width) return;
+      width = editor.clientWidth;
+      measureEditor();
+    });
+    observer.observe(editor);
+    return () => observer.disconnect();
+  }, [measureEditor]);
+  // Window capture: runs before the mention popover's own Escape closes it.
+  useEffect(() => {
+    const collapseOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (
+        event.key === "Escape" &&
+        !event.isComposing &&
+        !mentionOpenRef.current &&
+        event.target instanceof Node &&
+        editorRef.current?.contains(event.target)
+      ) {
+        setIsWritingExpanded(false);
+      }
+    };
+    window.addEventListener("keydown", collapseOnEscape, true);
+    return () => window.removeEventListener("keydown", collapseOnEscape, true);
+  }, []);
+  const showWritingToggle = text.includes("\n") || editorRows > 3;
+  const toggleWritingExpanded = () => {
+    setIsWritingExpanded((expanded) => !expanded);
+    textareaRef.current?.focus({ preventScroll: true });
+  };
 
   const addFilesUntracked = useCallback(
     async (input: FileList | readonly File[] | null) => {
       if (!input?.length) return;
-      // Compare takes audio, so an audio-only 3GP must not be read off its
-      // extension as a clip and refused with the video message.
+      // Classify first so an audio-only 3GP is not refused as video by extension.
       const files = await classifiedAttachmentFiles(input);
       const next: PendingImage[] = [];
       let droppedImageForUnavailable = false;
@@ -1141,7 +1238,6 @@ export function SharedComposer({
         const file = files[i];
         if (!file) continue;
         if (isAudioAttachmentFile(file)) {
-          // Caps count staged clips and ones still being read by any batch.
           const counted = [
             ...pendingAudioRef.current.map((clip) => clip.size),
             ...readingAudioRef.current.values(),
@@ -1176,16 +1272,19 @@ export function SharedComposer({
           setPendingAudio((prev) => [...prev, clip]);
           continue;
         }
-        // video_base64 targets the single loaded GGUF, so at most one side of a compare could answer. Say
-        // that rather than drop the file.
+        // video_base64 targets one loaded GGUF, so only one compare side could answer.
         if (isVideoFile(file)) {
           videoUnsupported = true;
           continue;
         }
         if (!isChatImageFile(file)) continue;
-        if (file.size > MAX_IMAGE_SIZE) continue;
         if (attachUnavailableReason) {
           droppedImageForUnavailable = true;
+          continue;
+        }
+        const sizeError = getChatImageSizeError(file);
+        if (sizeError) {
+          toast.error(sizeError);
           continue;
         }
         let image: File;
@@ -1220,7 +1319,6 @@ export function SharedComposer({
     [attachUnavailableReason],
   );
 
-  // State mirror of attachingRef: holds sends until a whole batch is read.
   const [addingFiles, setAddingFiles] = useState(0);
   const trackAttaching = useCallback(async (work: () => Promise<void>) => {
     attachingRef.current += 1;
@@ -1245,14 +1343,11 @@ export function SharedComposer({
         event,
         (pasted) =>
           trackAttaching(async () => {
-            // Classify before the check, so a pasted audio-only 3GP is not read
-            // as unsupported on its extension alone.
+            // Classify first so a pasted audio-only 3GP is not rejected by extension.
             const files = await classifiedAttachmentFiles(pasted);
-            // Let addFiles report audio size errors.
+            // Let addFiles report audio and image size errors.
             const supported = files.some(
-              (file) =>
-                isAudioAttachmentFile(file) ||
-                (isChatImageFile(file) && file.size <= MAX_IMAGE_SIZE),
+              (file) => isAudioAttachmentFile(file) || isChatImageFile(file),
             );
             if (!supported) throw new Error("Unsupported compare attachment");
             await addFilesUntracked(files);
@@ -1334,9 +1429,7 @@ export function SharedComposer({
       ? useChatRuntimeStore.getState().params.checkpoint
       : undefined;
 
-    // Generalized compare requires both panes to have a model: a half-selected send either races to an
-    // empty bubble with bogus tok/s (#5569) or leaves the empty pane with a dangling prompt.
-    // hasCompareHandles is true only in GeneralCompareContent.
+    // Both panes need a model: a half-selected send races to an empty bubble.
     if (hasCompareHandles && !isGeneralizedCompare) {
       toast.error("Pick a model in each pane to compare", {
         description:
@@ -1351,8 +1444,6 @@ export function SharedComposer({
       !isGeneralizedCompare &&
       imageUnavailableReason
     ) {
-      // Single mode knows the loaded model's capability here. Compare defers: each ensureModelLoaded
-      // sets loadedIsMultimodal for its side, and the adapter's pre-stream gate runs per side.
       toast.error(imageUnavailableReason);
       resetPromptQueue();
       return;
@@ -1425,6 +1516,7 @@ export function SharedComposer({
     };
     const clearSubmittedDraft = () => {
       setCurrentText("");
+      setIsWritingExpanded(false);
       setPendingImages([]);
       setPendingAudio([]);
       clearPendingAudioStore();
@@ -1468,8 +1560,7 @@ export function SharedComposer({
       });
       let loadedFromConfig = false;
 
-      // Warm the device cache before the snapshot below reconciles the GPU pick: on a cold cache the
-      // reconcile passes a stale pick through.
+      // Warm the device cache first: on a cold cache the reconcile passes a stale GPU pick.
       try {
         if (store.selectedGpuIds != null) {
           await ensureGpuDeviceCache();
@@ -1482,10 +1573,7 @@ export function SharedComposer({
         });
         return;
       }
-      // The GPU/offload knobs both compare loads must use, snapshotted at Send: ensureModelLoaded runs
-      // sequentially and the first load's echo (loadedGpuMemoryFields) rewrites the live store,
-      // resetting gpuLayers/nCpuMoe/split/pick to defaults on a non-GGUF or Auto first model, so
-      // reading the store per load would hand model 2 the first model's echoed defaults.
+      // Snapshot at Send: the first load's echo rewrites the live store before model 2 loads.
       const compareLoadKnobs = {
         gpuMemoryMode: store.gpuMemoryMode,
         gpuLayers: store.gpuLayers,
@@ -1502,8 +1590,6 @@ export function SharedComposer({
       clearSubmittedDraft();
       const run = compareRunsRef.current.begin();
       const compareSignal = run.controller.signal;
-      // Set when an accepted transformers install unloaded the active model server-side; a later
-      // failure must then clear the stale checkpoint.
       let upgradeUnloadedActive = false;
       const compareSelectionNeedsLoad = (sel: CompareModelSelection) => {
         const currentStore = useChatRuntimeStore.getState();
@@ -1525,8 +1611,7 @@ export function SharedComposer({
         throwIfCompareCancelled(compareSignal);
         const currentStore = useChatRuntimeStore.getState();
         const config = sel.config ?? null;
-        // This pane's effective config: an explicit selection config, else the remembered store config
-        // for this model/quant, never the other pane's. No saved config means all-null defaults.
+        // Never the other pane's config; no saved config means all-null defaults.
         const resolved = config
           ? { config, remembered: true }
           : resolveResidentInitialConfig(sel.id, sel.ggufVariant ?? null);
@@ -1545,8 +1630,6 @@ export function SharedComposer({
           sel.id.toLowerCase().endsWith(".gguf");
         const platform = usePlatformStore.getState();
         let resolvedIsDiffusion = sel.isDiffusion;
-        // Set when the preflight could not classify the GGUF, so a false resolvedIsDiffusion below must
-        // not be read as "ordinary".
         let diffusionUnknown = false;
         if (targetIsGguf && resolvedIsDiffusion === undefined) {
           const preparedToken = await prepareHfTokenForUse(
@@ -1563,19 +1646,13 @@ export function SharedComposer({
           resolvedIsDiffusion = staged.isDiffusion;
           diffusionUnknown = staged.diffusionUnknown;
         }
-        // Pass-through arguments can live only in the server's override map while this config comes from
-        // local storage, and /load's omission path inherits them from a RESIDENT instance, which a cold
-        // compare pane does not have, so the experiment would run a different command.
+        // /load inherits pass-through args from a resident instance, which a cold pane lacks.
         if (
           targetIsGguf &&
-          // Not for the diffusion runner, which appends none of them.
           resolvedIsDiffusion !== true
         ) {
           try {
-            // Sanitised for the same reason the panel sanitises what it hydrates: either list becomes an
-            // EXPLICIT /load argument, validated strictly rather than going through the carry-over paths
-            // that drop a newly denied flag quietly, so a pane on an install upgraded across a denylist
-            // change would otherwise answer 400 on a comparison that ran the day before.
+            // Sanitised because explicit /load args are validated strictly; denied flags would 400.
             const managed = await loadManagedLlamaFlags();
             const clean = (tokens: readonly string[]) =>
               sanitizeStoredExtraArgs(
@@ -1597,8 +1674,7 @@ export function SharedComposer({
               if (cleaned.length > 0) {
                 ownConfig.llamaExtraArgs = cleaned;
               } else if (resolvedArgs.explicit) {
-                // An explicit empty row is a cleared box, and this pane has to send it as one: left undefined the
-                // field is omitted and /load carries the resident model's arguments into the comparison.
+                // Send an explicit empty list, or /load carries the resident model's args over.
                 ownConfig.llamaExtraArgs = [];
               }
             } else if (local !== null && local.length > 0) {
@@ -1611,10 +1687,7 @@ export function SharedComposer({
             // The load still works; a real overrides outage surfaces there.
           }
         }
-        // Mirror single-view resolveLoadMaxSeqLength: a pane with no explicit context hands sizing to
-        // whichever local backend serves it, not the session maxSeqLength, which would silently shrink
-        // the shown context. With no local backend it falls back to the app default rather than the
-        // active model's runtime snapshot, else an unconfigured model loads at a saved 128K and OOMs.
+        // Without explicit context, let the local backend size it; else the app default, not 128K.
         const effectiveMaxSeqLength =
           savedContextPin(ownConfig) ??
           unpinnedLoadContext(
@@ -1646,9 +1719,7 @@ export function SharedComposer({
           : ownRemembered
             ? ownConfig.tensorParallel
             : fallbackTensorParallel;
-        // The diffusion runner has no projector to skip, so the toggle is inert there. A pane with no saved
-        // config gets the per-model DEFAULT, not the store's current value: unlike tensorParallel, an
-        // unconfigured model is one with vision on.
+        // Unconfigured panes get the per-model default (vision on), not the store's value.
         const effectiveDisableVision = resolvedIsDiffusion
           ? false
           : ownRemembered
@@ -1657,9 +1728,7 @@ export function SharedComposer({
         if (ownConfig.selectedGpuIds != null) {
           await ensureGpuDeviceCache();
         }
-        // A pane's OWN saved split is sent instead of being forced to Auto (#7574); the shared Send-time
-        // snapshot is not, since its layer count is bounded by another GGUF. Knobs the runner has no
-        // equivalent for (MoE offload, tensor parallel) stay hard-forced, as does an UNCLASSIFIED GGUF.
+        // A pane's own split is sent; the shared snapshot is not, as it is bounded by another GGUF.
         const {
           gpuMemoryMode: effectiveGpuMemoryMode,
           gpuLayers: effectiveGpuLayers,
@@ -1688,16 +1757,15 @@ export function SharedComposer({
                 compareLoadKnobs.selectedGpuIndexKind,
                 resolvedIsDiffusion === true,
               );
-        // A pane's context comes from its own config only: a saved pin, or null. It must not inherit the
-        // active model's shared snapshot, which resolveFitMaxSeqLength would treat as a pin. A GGUF pane
-        // with no explicit context loads at native (0 -> n_ctx_train), not the session maxSeqLength.
+        // Own config only: inheriting the shared snapshot would be treated as a pin.
         const effectiveCustomContextLength = ownConfig.customContextLength;
         const paneEngine = targetIsGguf ? "auto" : (ownConfig.engine ?? "auto");
-        const paneEngineFields = {
+        let paneEngineFields = {
           engine: paneEngine,
           engine_precision: ownConfig.enginePrecision ?? "auto",
           engine_parallelism: ownConfig.engineParallelism ?? "tensor",
-          load_in_4bit: paneEngine === "auto",
+          ...engineLaunchFieldsFromParams(ownConfig),
+          load_in_4bit: paneEngine === "auto" && ownConfig.loadIn4bit !== false,
           ...(paneEngine !== "auto" && ownConfig.selectedGpuIds !== undefined
             ? {
                 gpu_ids:
@@ -1711,18 +1779,15 @@ export function SharedComposer({
         };
         let loadTrustRemoteCode = trustRemoteCode;
         let approvedRemoteCodeFingerprint: string | null = null;
-        // Size validation exactly as the load below, so the training-guard preflight checks the footprint
-        // that actually loads.
         const compareMaxSeqLength = resolveFitMaxSeqLength(
           targetIsGguf,
           effectiveGpuMemoryMode,
           effectiveGpuLayers,
-          // Prefer this pane's own saved context pin over the shared snapshot, falling back to its per-pane
-          // effective context.
           effectiveCustomContextLength,
           effectiveMaxSeqLength,
         );
-        const validation = await validateModel({
+        // Build lazily: the engine offer can replace paneEngineFields before revalidation.
+        const panePayload = (): LoadModelRequest => ({
           model_path: sel.id,
           hf_token: currentStore.hfToken || null,
           max_seq_length: compareMaxSeqLength,
@@ -1732,55 +1797,84 @@ export function SharedComposer({
           trust_remote_code: loadTrustRemoteCode,
           chat_template_override: effectiveChatTemplateOverride,
           cache_type_kv: ownConfig.kvCacheDtype ?? null,
+          mlx_kv_quant: ownConfig.mlxKvQuant ?? null,
+          mlx_int8_prefill: ownConfig.mlxInt8Prefill ?? false,
+          mlx_ple_offload: ownConfig.mlxPleOffload ?? null,
+          mlx_expert_offload: ownConfig.mlxExpertOffload ?? null,
+          speculative_type: effectiveSpeculativeType,
+          spec_draft_n_max: effectiveSpecDraftNMax,
+          ...(targetIsMlx ? { spec_draft_model: ownConfig.specDraftModel ?? null } : {}),
           tensor_parallel: effectiveTensorParallel,
           disable_vision: effectiveDisableVision,
-          // Scope the validate to the picked GPUs. GGUF-only, like the load below: a non-GGUF target must
-          // not inherit a hidden GGUF GPU pick.
+          n_parallel: ownConfig.nParallel ?? null,
+          ...llamaServerLoadFields(ownConfig, {
+            isGguf: targetIsGguf,
+            isDiffusion: resolvedIsDiffusion === true,
+          }),
+          // GGUF-only: a non-GGUF target must not inherit a hidden GGUF GPU pick. A manual DiffusionGemma
+          // split keeps its layer count, or it is judged a full-GGUF occupant.
           ...(targetIsGguf
             ? {
-                gpu_ids: effectiveSelectedGpuIds ?? undefined,
                 gpu_memory_mode: effectiveGpuMemoryMode,
-                // Sized like the load below: a manual DiffusionGemma split must not be validated as a full-GGUF
-                // occupant.
                 gpu_layers: effectiveGpuLayers,
-                // Slots scale the KV estimate; keep validate sized like the load.
-                n_parallel: ownConfig.nParallel ?? null,
-                reasoning_budget: resolvedIsDiffusion
-                  ? -1
-                  : ownConfig.reasoningBudget,
-                reasoning_budget_message: resolvedIsDiffusion
-                  ? ""
-                  : ownConfig.reasoningBudgetMessage,
-                // Only when this panel has read the stored value: omitted, the load inherits it, which is what
-                // keeps CLI-set flags working.
-                ...(ownConfig.llamaExtraArgs !== undefined
-                  ? // biome-ignore lint/style/useNamingConvention: API schema
-                    { llama_extra_args: ownConfig.llamaExtraArgs ?? [] }
-                  : {}),
-                // omitted when blank: a null counts as set and strips inherited -b / -ub
-                ...(ownConfig.nBatch != null
-                  ? { n_batch: ownConfig.nBatch }
-                  : {}),
-                ...(ownConfig.nUbatch != null
-                  ? { n_ubatch: ownConfig.nUbatch }
-                  : {}),
-                ...serverTuningLoadPayload(ownConfig),
+                n_cpu_moe: effectiveNCpuMoe,
+                tensor_split: compareLoadKnobs.splitRatio ?? undefined,
+                gpu_ids: effectiveSelectedGpuIds ?? undefined,
               }
             : {}),
-        }, { signal: compareSignal });
+        });
+        const validation = await validateModel(panePayload(), {
+          signal: compareSignal,
+        });
         throwIfCompareCancelled(compareSignal);
+        // Same offer as the primary picker: the default engine cannot run it (#8861).
+        const engineOffer =
+          paneEngine === "auto" ? validation.managed_engine_offer : null;
+        if (engineOffer) {
+          const engine = await confirmManagedEngineIfNeeded(
+            sel.id,
+            engineOffer,
+            compareSignal,
+          );
+          throwIfCompareCancelled(compareSignal);
+          if (!engine) {
+            throw new Error(
+              `${compareModelDisplayName(sel.id)} is quantized with ${engineOffer.quantization}, which the default engine cannot run. Set Inference engine to ${engineOffer.engines[0] === "sglang" ? "SGLang" : "vLLM"} in its run settings to load it.`,
+            );
+          }
+          paneEngineFields = {
+            engine,
+            engine_precision: "auto",
+            engine_parallelism: "tensor",
+            ...DEFAULT_ENGINE_LAUNCH_FIELDS,
+            load_in_4bit: false,
+            ...(ownConfig.selectedGpuIds !== undefined
+              ? {
+                  gpu_ids:
+                    reconcilePersistedGpuIds(
+                      ownConfig.selectedGpuIds,
+                      ownConfig.selectedGpuIndexKind,
+                      false,
+                    ) ?? undefined,
+                }
+              : {}),
+          };
+          Object.assign(
+            validation,
+            await validateModel(panePayload(), { signal: compareSignal }),
+          );
+          throwIfCompareCancelled(compareSignal);
+        }
         // Upgrade dialog first (mirrors the primary load path).
         if (validation.requires_transformers_upgrade) {
           const upgraded = await confirmTransformersUpgradeIfNeeded({
             modelName: sel.id,
             upgrade: validation.transformers_upgrade,
-            // No installable release: custom-code models may fall back to the trust_remote_code gate below.
             trustRemoteCodeFallback: validation.requires_trust_remote_code,
             forceCancelActive:
               compareStopDecision?.forceCancelActive ?? false,
           });
-          // The install unloads the active model before the swap even when the swap fails, so if a later
-          // gate cancels the UI must stop pointing at that unloaded model.
+          // Unloads the active model even if the swap fails; a later cancel must stop the UI pointing at it.
           if (
             useTransformersUpgradeDialogStore
               .getState()
@@ -1818,56 +1912,13 @@ export function SharedComposer({
         applyCompareStopDecision();
         const loadRequestId = crypto.randomUUID();
         const resp = await loadModel({
-          model_path: sel.id,
+          ...panePayload(),
+          hf_token: useChatRuntimeStore.getState().hfToken || null,
           alongside: useChatRuntimeStore.getState().keepModelsLoaded,
           load_request_id: loadRequestId,
-          hf_token: useChatRuntimeStore.getState().hfToken || null,
-          max_seq_length: compareMaxSeqLength,
-          ...paneEngineFields,
-          is_lora: sel.isLora,
-          gguf_variant: sel.ggufVariant ?? null,
-          trust_remote_code: loadTrustRemoteCode,
           approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
-          chat_template_override: effectiveChatTemplateOverride,
-          cache_type_kv: ownConfig.kvCacheDtype ?? null,
-          mlx_kv_quant: ownConfig.mlxKvQuant ?? null,
-          mlx_int8_prefill: ownConfig.mlxInt8Prefill ?? false,
-          speculative_type: effectiveSpeculativeType,
-          spec_draft_n_max: effectiveSpecDraftNMax,
-          ...(targetIsMlx ? { spec_draft_model: ownConfig.specDraftModel ?? null } : {}),
-          reasoning_budget:
-            targetIsGguf && !resolvedIsDiffusion
-              ? ownConfig.reasoningBudget
-              : -1,
-          reasoning_budget_message:
-            targetIsGguf && !resolvedIsDiffusion
-              ? ownConfig.reasoningBudgetMessage
-              : "",
-          tensor_parallel: effectiveTensorParallel,
-          disable_vision: effectiveDisableVision,
-          n_parallel: ownConfig.nParallel ?? null,
           force_cancel_active:
             compareStopDecision?.forceCancelActive ?? false,
-          ...(targetIsGguf
-            ? {
-                gpu_memory_mode: effectiveGpuMemoryMode,
-                gpu_layers: effectiveGpuLayers,
-                n_cpu_moe: effectiveNCpuMoe,
-                tensor_split: compareLoadKnobs.splitRatio ?? undefined,
-                gpu_ids: effectiveSelectedGpuIds ?? undefined,
-                ...(ownConfig.llamaExtraArgs !== undefined
-                  ? // biome-ignore lint/style/useNamingConvention: API schema
-                    { llama_extra_args: ownConfig.llamaExtraArgs ?? [] }
-                  : {}),
-                ...(ownConfig.nBatch != null
-                  ? { n_batch: ownConfig.nBatch }
-                  : {}),
-                ...(ownConfig.nUbatch != null
-                  ? { n_ubatch: ownConfig.nUbatch }
-                  : {}),
-                ...serverTuningLoadPayload(ownConfig),
-              }
-            : {}),
         }, {
           signal: compareSignal,
           onRequestStart: () => {
@@ -1884,8 +1935,6 @@ export function SharedComposer({
         if (ownConfig.speculativeType == null && !targetIsMlx) {
           saveSpeculativeType(effectiveSpeculativeType);
         }
-        // Persist the GPU Memory mode on a non-diffusion GGUF compare-load too, so an applied manual
-        // choice survives a restart.
         persistGpuMemoryModeOnLoad(resp, effectiveGpuMemoryMode);
         const compareOffload = offloadWarning(offloadCountsFrom(resp));
         if (compareOffload) {
@@ -1899,12 +1948,7 @@ export function SharedComposer({
         store.setCheckpoint(
           resp.model,
           resp.is_gguf ? (sel.ggufVariant ?? undefined) : null,
-          // Same cap as the interactive load: this replays the model's remembered settings, and a budget
-          // kept from a larger context does not fit the one it just loaded with.
           {
-            // The reported window leads and the request stands in only for a backend that sizes nothing, as on
-            // the interactive load: an unpinned pane sends the auto-size sentinel, and capping a budget at 0
-            // asks for no output.
             maxTokensCap: replayMaxTokensCap(
               loadedContextFields(resp).loadedContextLength ??
                 (!resp.is_gguf && effectiveMaxSeqLength > 0
@@ -1916,9 +1960,7 @@ export function SharedComposer({
         store.setModelRequiresTrustRemoteCode(
           resp.requires_trust_remote_code ?? false,
         );
-        // This pane's own saved Context Length, not compareMaxSeqLength: the wire value is Auto-resolved
-        // for a same-model reload, so pinning it would convert Auto into a number the user never set
-        // (see resolveExplicitCtxPin). A non-GGUF pane keeps an MLX pin instead of clearing its baseline.
+        // Own saved Context Length: the wire value is Auto-resolved, pinning it would freeze Auto.
         const keepCustomCtx = targetIsGguf
           ? resolveExplicitCtxPin(effectiveCustomContextLength)
           : retainedContextPin({
@@ -1929,13 +1971,11 @@ export function SharedComposer({
               ),
               requestedContextLength: compareMaxSeqLength,
             });
-        // Slots this compare load committed. Diffusion ignores --parallel, so a
-        // count there would mint a phantom override a preset carries onto a GGUF.
+        // Diffusion ignores --parallel, so a count there would mint a phantom override.
         const committedSlots =
           ((resp.is_gguf ?? false) && !(resp.is_diffusion ?? false)) || (resp.is_mlx ?? false)
             ? (ownConfig.nParallel ?? null)
             : null;
-        // same rule for the batch sizes
         const committedNBatch =
           targetIsGguf && !(resp.is_diffusion ?? false)
             ? (ownConfig.nBatch ?? null)
@@ -1951,10 +1991,12 @@ export function SharedComposer({
           supportsPreserveThinking: resp.supports_preserve_thinking ?? false,
           preserveThinking: resolvePreserveThinkingOnLoad(resp),
           supportsTools: resp.supports_tools ?? false,
+          deepResearchEnabled: resolveToolsEnabledOnLoad(
+            resp.supports_tools ?? false,
+          ).deepResearchEnabled,
           kvCacheDtype: resp.cache_type_kv ?? null,
           loadedKvCacheDtype: resp.cache_type_kv ?? null,
           ...mlxRuntimeStateFrom(resp),
-          // Click-time value, not the resolved echo (see the single-model load).
           nParallel: committedSlots,
           loadedNParallel: committedSlots,
           reasoningBudget:
@@ -1988,8 +2030,7 @@ export function SharedComposer({
           ...(targetIsGguf && !(resp.is_diffusion ?? false)
             ? committedServerTuningState(ownConfig)
             : clearedServerTuningState()),
-          // What this pane's launch is running, for a later rollback: the status applier is held off for
-          // the whole load, so a switch straight after would snapshot the other model's list.
+          // The status applier is held off during the load, so record this pane's args now.
           loadedLlamaExtraArgs:
             resp.requested_llama_extra_args !== undefined
               ? (resp.requested_llama_extra_args ?? [])
@@ -1999,39 +2040,27 @@ export function SharedComposer({
           loadedEngine: resp.engine ?? "auto",
           loadedEnginePrecision: resp.engine_precision ?? "auto",
           loadedEngineParallelism: resp.engine_parallelism ?? "tensor",
+          loadedEngineLaunch: engineLaunchFieldsFrom(resp),
           loadedDisableVision: resp.disable_vision ?? false,
-          // Adopted from the echo like the knob above: this pane loaded its own model, so the editable
-          // value must follow it or Advanced Settings shows the other pane's Vision state.
           disableVision: resp.disable_vision ?? false,
           defaultChatTemplate: resp.chat_template ?? null,
           chatTemplateOverride: effectiveChatTemplateOverride,
           loadedChatTemplateOverride: effectiveChatTemplateOverride,
-          // The context baseline this pane loaded with (see keepCustomCtx above), so a
-          // later Apply/Reset can't silently revert the pin it was serving.
           loadedCustomContextLength: keepCustomCtx,
-          // Adopt the load response's GPU-memory fields (mode/layers/MoE/split/pick plus loaded baselines)
-          // so the GPU controls round-trip. The context group and native-path token/expiry clear below.
           ...loadedGpuMemoryFields(resp),
-          // Drives the GPU Memory controls' diffusion gate; set alongside the GPU fields on every load path
-          // so the gate cannot read stale.
           loadedIsDiffusion: resp.is_diffusion ?? false,
           loadedIsMultimodal: isMultimodalResponse(resp),
-          // Set alongside loadedIsMultimodal so the composer can say WHY images are unavailable in compare mode too.
           loadedVisionDisabledByUser: resp.vision_disabled_by_user ?? false,
           mmprojFallbackReason: resp.mmproj_fallback_reason ?? null,
           activeModelIsLocal: resp.is_local_model ?? false,
-          // Same value as the baseline above, so when this pane becomes the active model the UI and a later
-          // reload use the context it actually loaded with.
           customContextLength: keepCustomCtx,
           ...loadedContextFields(resp),
-          // Compare selections load by repo/variant, never from the file picker, so they carry no native
-          // lease. Clear any prior picked file's token/expiry so the reload path never sends a stale one.
+          // Compare loads carry no native lease; clear any stale token/expiry.
           activeNativePathToken: null,
           activeNativePathExpiresAtMs: null,
           ...resolveLoadedSpeculativeSettings(resp),
         });
         if (!targetIsGguf) {
-          // Non-GGUF panes carry their context in params.maxSeqLength.
           const paneParams = useChatRuntimeStore.getState().params;
           store.setParams({
             ...paneParams,
@@ -2043,8 +2072,7 @@ export function SharedComposer({
           });
         }
         loadedFromConfig = config != null;
-        // Sync the models[] entry with the load response so attach/send gates read fresh capabilities:
-        // /api/models/list can lag a model's actual state.
+        // /api/models/list can lag the model's actual state.
         const currentModels = useChatRuntimeStore.getState().models;
         const idx = currentModels.findIndex((m) => m.id === sel.id);
         const synced = {
@@ -2153,16 +2181,12 @@ export function SharedComposer({
             () => null,
             (error: unknown) => error ?? new Error("Model unload failed"),
           );
-          // The load keeps running when its cancel failed; resyncing before it settles would pin the
-          // outgoing model while the replacement becomes resident.
+          // A load whose cancel failed keeps running; resyncing now would pin the outgoing model.
           if (cleanupError) {
             await waitForBackendLoadToSettle();
           }
-          // A stopped load may have finished or evicted the previous model: adopt the backend's state.
           await resyncInferenceStatusAfterServerModelChange();
         }
-        // The install already unloaded the previously active model; drop the checkpoint so the UI does
-        // not keep pointing at it.
         if (upgradeUnloadedActive) {
           useChatRuntimeStore.getState().clearCheckpoint();
         }
@@ -2237,11 +2261,11 @@ export function SharedComposer({
   function stop() {
     if (isDictating) stopDictation();
     const run = compareRunsRef.current.cancelCurrent();
-    // Aborting the fetch frees only the browser; /unload is what stops the backend load.
+    // Aborting the fetch frees only the browser; /unload stops the backend load.
     if (run?.loadingModel && !run.cleanup) {
       compareRunsRef.current.setCleanup(
         run,
-        // Scoped to this attempt: never evicts a resident model or another tab's same-named load.
+        // Scoped to this attempt: never evicts a resident model or another tab's load.
         unloadModel({
           model_path: run.loadingModel.modelPath,
           cancel_load_request_id: run.loadingModel.requestId,
@@ -2258,9 +2282,7 @@ export function SharedComposer({
   function onKeyDown(e: KeyboardEvent) {
     const msSinceCompositionEnd = e.timeStamp - compositionEndedAtRef.current;
     compositionEndedAtRef.current = -Infinity;
-    // IME composition (JP/CN/KR): Enter commits the candidate, so do not hijack it (#5318). Re-pin
-    // composingRef in case the stuck watchdog (#5546) cleared it during a long candidate-window pause,
-    // and re-arm the watchdog on the same path, or the WSL+Chrome no-compositionend case pins it forever.
+    // IME: Enter commits the candidate (#5318); re-pin composingRef and re-arm the watchdog (#5546).
     const imeKey = e.nativeEvent.isComposing || e.keyCode === 229;
     if (imeKey) {
       if (
@@ -2276,8 +2298,7 @@ export function SharedComposer({
       }
       setCompositionState(false);
     }
-    // Non-IME key while composingRef is stuck; mirrors the fix in thread.tsx. On macOS, switching
-    // input methods without composing can leave composingRef pinned.
+    // Non-IME key while composingRef is stuck; mirrors the fix in thread.tsx.
     if (composingRef.current) {
       // Candidate-confirming Enter can arrive as non-composing; keep it gated.
       if (e.key === "Enter") {
@@ -2314,14 +2335,10 @@ export function SharedComposer({
     addingFiles === 0 &&
     !sendUnavailableReason;
 
-  // Compare mode swaps this composer in for the single-chat one and only one is ever on screen, so the
-  // chords register in both. Both gate on the chat tab being visible: off-route the pane is hidden.
   useShortcut(
     "startDictation",
     () => {
-      // As in the single-chat composer: a dialog over Chat leaves this registered, and a microphone opened
-      // behind one is neither visible nor stoppable. Stopping first and ungated, so a recording stays
-      // stoppable wherever the gate would say no.
+      // Stop dictation first and ungated, so a recording stays stoppable behind a dialog.
       if (isDictating) {
         stopDictation();
         return;
@@ -2331,25 +2348,19 @@ export function SharedComposer({
     },
     { enabled: chatActive },
   );
-  // Through the existing sendRef: `send` is render-scoped, which the React compiler will not let a hook outlive.
+  // Through sendRef: `send` is render-scoped and cannot outlive the render.
   useShortcut(
     "sendMessage",
     () => {
-      // As in the single-chat composer: the draft behind a dialog is not what the user is typing.
       if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
       sendRef.current?.();
     },
     {
       enabled: chatActive && canSend,
-      // As in the single-chat composer: a non-modal popover's search box is a text field the composer
-      // is still the foreground behind.
       skipInTextFields: true,
       textFieldException: COMPOSER_INPUT_SELECTOR,
     },
   );
-  // Compare has no follow-up behaviour of its own: a send waits for the run to
-  // finish, so there is nothing to queue behind or steer. Both chords still
-  // register here, or they would be dead on the only composer on screen.
   const sendFollowUp = () => {
     if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
     sendRef.current?.();
@@ -2364,25 +2375,43 @@ export function SharedComposer({
   useShortcut(
     "attachFiles",
     () => {
-      // As in the single-chat composer, which would otherwise raise the file chooser from behind a dialog.
       if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
       fileInputRef.current?.click();
     },
     { enabled: chatActive },
   );
+  const [plusOpen, setPlusOpen] = useState(false);
+  const setPlusMenuOpen = (open: boolean) => {
+    setPlusOpen(open);
+    if (open) void refreshRecentPrompts();
+  };
+  useShortcut(
+    "openComposerMenu",
+    () => {
+      // The open menu inerts the composer, so closing skips the gate.
+      if (plusOpen) return setPlusMenuOpen(false);
+      if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
+      setPlusMenuOpen(true);
+    },
+    { enabled: chatActive },
+  );
+  useShortcut("stopGeneration", stop, {
+    enabled: chatActive && busy,
+    claims: () => isSurfaceInForeground(COMPOSER_INPUT_SELECTOR),
+  });
 
   const runPromptList = useCallback(
     (items: string[]) => {
       const filtered = items.filter((p) => p.trim());
       if (!filtered.length) return;
-      // `running` lags the 200ms poll, so ask the handles directly like the poll does.
+      // `running` lags the 200ms poll, so ask the handles directly.
       const liveRunning =
         busy || Object.values(handlesRef.current).some((h) => h.isRunning());
       if (liveRunning || isQueueRunningRef.current) {
         toast.error("Wait for the current response to finish");
         return;
       }
-      // A compare send holds the loading lease while it prepares, before `comparing` is set.
+      // A compare send holds the loading lease before `comparing` is set.
       if (useChatRuntimeStore.getState().modelLoading) {
         toast.info("A model is loading", {
           description: "Wait for it to finish or cancel it first.",
@@ -2398,7 +2427,6 @@ export function SharedComposer({
         toast.error("Wait for the transcription to finish before running a list");
         return;
       }
-      // Only the first send would carry staged attachments; refuse rather than clear.
       if (
         pendingImagesRef.current.length > 0 ||
         pendingAudioRef.current.length > 0 ||
@@ -2439,16 +2467,25 @@ export function SharedComposer({
     [busy, isDictating, audioUpload.busy, handlesRef, model1?.id, model2?.id, setCurrentText],
   );
 
-  // Adjustable "+" menu items, keyed by id. Pinned ones render at the top level; the rest fall into
-  // the "More" overflow submenu. Core items and "More" itself live outside this map.
   const plusMenuNodes: Record<PlusMenuItemId, ReactNode> = {
+    // Compare runs no research, so the item has nothing to offer here.
+    deepResearch: null,
+    browserUse: <BrowserAgentMenuItem />,
     chatWithFiles: (
       <DropdownMenuItem
         disabled={ragDisabled}
         className={
           ragEnabled && !ragDisabled ? "text-primary font-medium" : undefined
         }
-        onSelect={() => setRagEnabled(!ragEnabled)}
+        onSelect={() => {
+          // As in the main composer: a hidden files panel comes back rather than RAG turning off.
+          const { ragPanelHidden, setRagPanelHidden } = useChatRuntimeStore.getState();
+          if (ragEnabled && ragPanelHidden) {
+            setRagPanelHidden(false);
+            return;
+          }
+          setRagEnabled(!ragEnabled);
+        }}
       >
         <HugeiconsIcon icon={FileDatabaseIcon} strokeWidth={2} />
         Chat with files
@@ -2471,9 +2508,15 @@ export function SharedComposer({
       </DropdownMenuItem>
     ),
     skills: (
-      <DropdownMenuItem onSelect={() => setSkillsOpen(true)}>
+      <DropdownMenuItem
+        className={skillsOn ? "text-primary font-medium" : undefined}
+        onSelect={() => setSkillsOn(!skillsOn)}
+      >
         <HugeiconsIcon icon={Scroll01Icon} strokeWidth={2} />
         Skills
+        {skillsOn ? (
+          <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
+        ) : null}
       </DropdownMenuItem>
     ),
     savedPrompts: (
@@ -2513,7 +2556,6 @@ export function SharedComposer({
       </DropdownMenuSub>
     ),
     compareChat: (
-      // Always active: this menu only renders in compare mode. Click exits.
       <DropdownMenuItem
         className="text-primary font-medium"
         onSelect={handleExitCompare}
@@ -2597,31 +2639,17 @@ export function SharedComposer({
       </DropdownMenuSub>
     ),
   };
-  const pinnedPlusItems = PLUS_MENU_ORDER.filter((id) => plusPins[id]);
-  const overflowPlusItems = PLUS_MENU_ORDER.filter((id) => !plusPins[id]);
+  const { pinned: pinnedPlusItems, overflow: overflowPlusItems } =
+    splitPlusMenuItems(plusOrder, plusPins);
 
   return (
     <div
-      className="chat-composer-surface"
+      className="relative flex w-full flex-col"
       // Compare mode's composer, same as the thread's: find searches the conversation, not the
       // chrome around it. This one is rendered from `chat-page.tsx`, outside the marked one.
       {...{ [FIND_SKIP_ATTRIBUTE]: "" }}
-      onDragOver={(e) => {
-        if (isTauri || isPortaledDrop(e)) return;
-        e.preventDefault();
-        setDragging(true);
-      }}
-      onDragLeave={() => setDragging(false)}
-      onDrop={(e) => {
-        // Phase 1 native model drops own Tauri local-path drops. Restore browser attachment drops in
-        // Tauri once Phase 1d adds token bridging.
-        if (isTauri || isPortaledDrop(e)) return;
-        e.preventDefault();
-        setDragging(false);
-        void addFiles(e.dataTransfer.files);
-      }}
+      data-writing-expanded={isWritingExpanded ? "true" : undefined}
     >
-      <ChatSkillsDialog open={skillsOpen} onOpenChange={setSkillsOpen} />
       <ChatAudioUploadMount audioUpload={audioUpload} />
 
       <PromptStorageDialog
@@ -2633,251 +2661,166 @@ export function SharedComposer({
         }}
         onRunList={runPromptList}
       />
-      {/* Gemini-style drop affordance, mirrored from the single composer. */}
       <div
-        className={`pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-1 overflow-hidden rounded-[32px] bg-background/90 backdrop-blur-sm transition-opacity duration-150 dark:bg-card/90 ${dragging ? "opacity-100" : "opacity-0"}`}
+        className="aui-composer-attachment-dropzone unsloth-composer-surface relative z-10"
+        onDragOver={(e) => {
+          if (isTauri || isPortaledDrop(e)) return;
+          e.preventDefault();
+          setDragging(true);
+        }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={(e) => {
+          // Phase 1 native model drops own Tauri local-path drops. Restore browser attachment drops in
+          // Tauri once Phase 1d adds token bridging.
+          if (isTauri || isPortaledDrop(e)) return;
+          e.preventDefault();
+          setDragging(false);
+          void addFiles(e.dataTransfer.files);
+        }}
       >
-        <HugeiconsIcon
-          icon={AttachmentIcon}
-          strokeWidth={2}
-          className="size-6 text-primary"
-        />
-        <span className="text-sm font-medium text-primary">Drop files here</span>
-      </div>
-      {/* Always mounted and hidden while empty, the way the assistant-ui composer's own
-          attachment strip is, so "no attachments" and "this markup moved" are different
-          observations rather than the same absent node. `empty:hidden` keeps the rendered
-          result identical to the previous conditional. */}
-      <div
-        data-composer-attachments=""
-        className="mb-2 flex w-full flex-row flex-wrap items-center gap-2 px-1.5 pt-0.5 pb-1 empty:hidden"
-      >
-        {pendingImages.map(({ id, file }) => (
-          <PendingImageThumb
-            key={id}
-            file={file}
-            onRemove={() => removePendingImage(id)}
-          />
-        ))}
-        {pendingAudio.map((clip) => (
-          <div
-            key={clip.id}
-            data-composer-attachment="audio"
-            className="flex items-center gap-2 rounded-lg border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted px-3 py-1.5 text-xs"
-          >
-            <HeadphonesIcon className="size-3.5 text-muted-foreground" />
-            <span data-reload-snapshot-sensitive className="max-w-48 truncate">
-              {clip.name}
-            </span>
-            <button
-              type="button"
-              onClick={() => {
-                setPendingAudio((prev) =>
-                  prev.filter((other) => other.id !== clip.id),
-                );
-              }}
-              className="flex size-4 items-center justify-center rounded-full hover:bg-destructive hover:text-destructive-foreground"
-              aria-label="Remove audio"
-            >
-              <XIcon className="size-3" />
-            </button>
-          </div>
-        ))}
-      </div>
-      {skillMentions.popover}
-      <ComposerDraftPreview text={text} />
-
-      <textarea
-        {...skillMentions.inputProps}
-        ref={textareaRef}
-        data-type-to-activate="composer"
-        value={text}
-        onChange={(e) => {
-          // ALWAYS mirror the DOM value into React state, even during IME composition: the controlled `value`
-          // must match the DOM at all times, else an unrelated parent re-render reconciles the textarea back
-          // to the stored value mid-composition, wiping the preedit (#5318).
-          setCompositionState(isNativeComposing(e.nativeEvent));
-          setCurrentText(e.target.value);
-          skillMentions.update(
-            e.target.value,
-            e.target.selectionStart ?? e.target.value.length,
-          );
-        }}
-
-        onSelect={(event) => {
-          skillMentions.update(
-            event.currentTarget.value,
-            event.currentTarget.selectionStart ??
-              event.currentTarget.value.length,
-          );
-        }}
-        onCompositionStart={() => {
-          imeSessionOpenRef.current = true;
-          setCompositionState(true);
-        }}
-        onCompositionUpdate={() => {
-          refreshStuckImeTimer();
-        }}
-        onCompositionEnd={(e: CompositionEvent<HTMLTextAreaElement>) => {
-          imeSessionOpenRef.current = false;
-          compositionEndedAtRef.current = e.timeStamp;
-          setCompositionState(false);
-          setCurrentText(e.currentTarget.value);
-        }}
-        onKeyDown={(event) => {
-          if (!skillMentions.onKeyDown(event)) onKeyDown(event);
-        }}
-        onPaste={handleFilePaste}
-        onBlur={() => {
-          // Mac: switching input methods can fire compositionstart without a matching compositionend,
-          // leaving composingRef pinned. The OS always commits or cancels before focus is lost.
-          imeSessionOpenRef.current = false;
-          setCompositionState(false);
-
-          skillMentions.close();
-        }}
-        placeholder="Send to both models..."
-        // dir="auto" detects RTL from the first strong character; no effect on LTR scripts. Kept next to
-        // the placeholder: the IME smoke reads this pair out of the source.
-        dir="auto"
-        // aui-composer-input carries no styling anywhere; it is the name both composers answer to, so one
-        // selector can mean "the composer" whichever is on screen. Escape's decline exception and the
-        // dictation foreground check rely on it.
-        className="composer-input aui-composer-input"
-        rows={1}
-      />
-      <div className="composer-action-wrapper">
+        {/* Gemini-style drop affordance, mirrored from the single composer. */}
         <div
-          ref={pillRowRef}
-          className="flex min-w-0 flex-wrap items-center gap-0.5"
-          data-pill-compact={pillCompact}
+          className={`pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-1 overflow-hidden rounded-[inherit] bg-background/90 backdrop-blur-sm transition-opacity duration-150 dark:bg-card/90 ${dragging ? "opacity-100" : "opacity-0"}`}
         >
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept={CHAT_IMAGE_ACCEPT}
-            multiple
-            className="hidden"
-            onChange={(e) => {
-              void addFiles(e.target.files);
-              e.target.value = "";
-            }}
+          <HugeiconsIcon
+            icon={AttachmentIcon}
+            strokeWidth={2}
+            className="size-6 text-primary"
           />
-          <input
-            ref={audioInputRef}
-            type="file"
-            accept={AUDIO_PICKER_ACCEPT}
-            multiple
-            className="hidden"
-            onChange={(e) => {
-              void addFiles(e.target.files);
-              e.target.value = "";
-            }}
-          />
-          <NewProjectDialog
-            open={newProjectOpen}
-            onOpenChange={setNewProjectOpen}
-          />
-          {/* Same + menu as single-chat (ComposerToolsMenu), wired to the compare composer's own file/audio
-              inputs and tools. */}
-          <DropdownMenu
-            onOpenChange={(open) => {
-              if (open) void refreshRecentPrompts();
-            }}
-          >
-            <DropdownMenuTrigger asChild={true}>
+          <span className="text-sm font-medium text-primary">Drop files here</span>
+        </div>
+        {/* Always mounted and hidden while empty, the way the assistant-ui composer's own
+            attachment strip is, so "no attachments" and "this markup moved" are different
+            observations rather than the same absent node. `empty:hidden` keeps the rendered
+            result identical to the previous conditional. */}
+        <div
+          data-composer-attachments=""
+          className="mb-2 flex w-full flex-row flex-wrap items-center gap-2 px-1.5 pt-0.5 pb-1 empty:hidden"
+        >
+          {pendingImages.map(({ id, file }) => (
+            <PendingImageThumb
+              key={id}
+              file={file}
+              onRemove={() => removePendingImage(id)}
+            />
+          ))}
+          {pendingAudio.map((clip) => (
+            <div
+              key={clip.id}
+              data-composer-attachment="audio"
+              className="flex items-center gap-2 rounded-full border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted px-3 py-1.5 text-xs"
+            >
+              <HugeiconsIcon icon={AiSpeechIcon} className="size-3.5 text-muted-foreground" />
+              <span data-reload-snapshot-sensitive className="max-w-48 truncate">
+                {clip.name}
+              </span>
               <button
                 type="button"
-                aria-label="Tools and attachments"
-                className="unsloth-composer-plus"
-              >
-                <PlusIcon className="size-[calc(22px*var(--ui-space-scale,1))] stroke-[1.75px]" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent
-              side="top"
-              align="start"
-              sideOffset={0}
-              avoidCollisions={true}
-              className="unsloth-plus-menu w-[calc(244px*var(--ui-space-scale,1))]"
-              onCloseAutoFocus={(event) => event.preventDefault()}
-            >
-              <DropdownMenuItem onSelect={() => fileInputRef.current?.click()}>
-                <HugeiconsIcon icon={AttachmentIcon} strokeWidth={2} />
-                Add photos &amp; files
-              </DropdownMenuItem>
-              {activeModel?.hasAudioInput && (
-                <DropdownMenuItem
-                  onSelect={() => audioInputRef.current?.click()}
-                >
-                  <HeadphonesIcon />
-                  Upload audio
-                </DropdownMenuItem>
-              )}
-              <DropdownMenuItem
-                disabled={searchDisabled}
-                className={
-                  toolsEnabled && !searchDisabled
-                    ? "text-primary font-medium"
-                    : undefined
-                }
-                onSelect={() => {
-                  const next = !toolsEnabled;
-                  setToolsEnabled(next);
-                  // Mirror the Search pill: Kimi forbids search + thinking together.
-                  if (isKimiExternal) {
-                    setReasoningEnabled(!next, { persist: false });
-                    applyQwenThinkingParams(!next);
-                  }
+                onClick={() => {
+                  setPendingAudio((prev) =>
+                    prev.filter((other) => other.id !== clip.id),
+                  );
                 }}
+                className="flex size-4 items-center justify-center rounded-full hover:bg-destructive hover:text-destructive-foreground"
+                aria-label="Remove audio"
               >
-                <InternetGlyph />
-                Web search
-                {toolsEnabled && !searchDisabled ? (
-                  <HugeiconsIcon
-                    icon={MenuTickIcon}
-                    strokeWidth={2}
-                    className="ml-auto"
-                  />
-                ) : null}
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                disabled={codeDisabled}
-                className={
-                  codeToolsEnabled && !codeDisabled
-                    ? "text-primary font-medium"
-                    : undefined
-                }
-                onSelect={() => setCodeToolsEnabled(!codeToolsEnabled)}
+                <HugeiconsIcon icon={Cancel01Icon} className="size-3" />
+              </button>
+            </div>
+          ))}
+        </div>
+        {skillMentions.popover}
+        <ComposerDraftPreview text={text} />
+
+        <div
+          className="unsloth-composer-line"
+          // Always two rows: dictation types into the textarea, it never swaps in a bar.
+          data-expanded="true"
+        >
+          <div
+            ref={pillRowRef}
+            className="unsloth-composer-left"
+            data-pill-compact={pillCompact}
+          >
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept={CHAT_IMAGE_ACCEPT}
+              multiple
+              className="hidden"
+              onChange={(e) => {
+                void addFiles(e.target.files);
+                e.target.value = "";
+              }}
+            />
+            <input
+              ref={audioInputRef}
+              type="file"
+              accept={AUDIO_PICKER_ACCEPT}
+              multiple
+              className="hidden"
+              onChange={(e) => {
+                void addFiles(e.target.files);
+                e.target.value = "";
+              }}
+            />
+            <NewProjectDialog
+              open={newProjectOpen}
+              onOpenChange={setNewProjectOpen}
+            />
+            {/* Same + menu as single-chat (ComposerToolsMenu), wired to the compare composer's own file/audio
+                inputs and tools. */}
+            <DropdownMenu open={plusOpen} onOpenChange={setPlusMenuOpen}>
+              <DropdownMenuTrigger asChild={true}>
+                <button
+                  type="button"
+                  aria-label="Tools and attachments"
+                  data-pill-label="Add files and more"
+                  className="unsloth-composer-plus"
+                >
+                  <HugeiconsIcon icon={PlusSignIcon} className="size-[calc(22px*var(--ui-space-scale,1))] stroke-[1.75px]" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                side="top"
+                align="start"
+                sideOffset={0}
+                avoidCollisions={true}
+                className="unsloth-plus-menu w-[calc(244px*var(--ui-space-scale,1))]"
+                onCloseAutoFocus={(event) => event.preventDefault()}
               >
-                {/* Scale, not width: an oversized box pushed the label out of line. */}
-                <HugeiconsIcon
-                  icon={CodeIcon}
-                  strokeWidth={2}
-                  className="scale-[1.12]"
-                />
-                Code
-                {codeToolsEnabled && !codeDisabled ? (
-                  <HugeiconsIcon
-                    icon={MenuTickIcon}
-                    strokeWidth={2}
-                    className="ml-auto"
-                  />
-                ) : null}
-              </DropdownMenuItem>
-              {showImagePill && (
+                <DropdownMenuItem onSelect={() => fileInputRef.current?.click()}>
+                  <HugeiconsIcon icon={AttachmentIcon} strokeWidth={2} />
+                  Add photos &amp; files
+                </DropdownMenuItem>
+                {activeModel?.hasAudioInput && (
+                  <DropdownMenuItem
+                    onSelect={() => audioInputRef.current?.click()}
+                  >
+                    <HugeiconsIcon icon={AiSpeechIcon} strokeWidth={2} />
+                    Upload audio
+                  </DropdownMenuItem>
+                )}
                 <DropdownMenuItem
-                  disabled={imageDisabled}
+                  disabled={searchDisabled}
                   className={
-                    imageToolsEnabled && !imageDisabled
+                    toolsEnabled && !searchDisabled
                       ? "text-primary font-medium"
                       : undefined
                   }
-                  onSelect={() => setImageToolsEnabled(!imageToolsEnabled)}
+                  onSelect={() => {
+                    const next = !toolsEnabled;
+                    setToolsEnabled(next);
+                    // Mirror the Search pill: Kimi forbids search + thinking together.
+                    if (isKimiExternal) {
+                      setReasoningEnabled(!next, { persist: false });
+                      applyQwenThinkingParams(!next);
+                    }
+                  }}
                 >
-                  <HugeiconsIcon icon={Image03Icon} strokeWidth={2} />
-                  Images
-                  {imageToolsEnabled && !imageDisabled ? (
+                  <InternetGlyph />
+                  Web search
+                  {toolsEnabled && !searchDisabled ? (
                     <HugeiconsIcon
                       icon={MenuTickIcon}
                       strokeWidth={2}
@@ -2885,437 +2828,593 @@ export function SharedComposer({
                     />
                   ) : null}
                 </DropdownMenuItem>
-              )}
-              <DropdownMenuSeparator />
-              {pinnedPlusItems.map((id) => (
-                <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
-              ))}
-              <DropdownMenuSub>
-                <DropdownMenuSubTrigger>
-                  <MoreHorizontalIcon className="size-4" />
-                  More
-                </DropdownMenuSubTrigger>
-                <DropdownMenuSubContent className="unsloth-plus-menu w-[calc(248px*var(--ui-space-scale,1))]">
-                  {overflowPlusItems.map((id) => (
-                    <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
-                  ))}
-                  {overflowPlusItems.length > 0 && <DropdownMenuSeparator />}
+                <DropdownMenuItem
+                  disabled={codeDisabled}
+                  className={
+                    codeToolsEnabled && !codeDisabled
+                      ? "text-primary font-medium"
+                      : undefined
+                  }
+                  onSelect={() => setCodeToolsEnabled(!codeToolsEnabled)}
+                >
+                  {/* Scale, not width: an oversized box pushed the label out of line. */}
+                  <HugeiconsIcon
+                    icon={CodeIcon}
+                    strokeWidth={2}
+                    className="scale-[1.12]"
+                  />
+                  Tools
+                  {codeToolsEnabled && !codeDisabled ? (
+                    <HugeiconsIcon
+                      icon={MenuTickIcon}
+                      strokeWidth={2}
+                      className="ml-auto"
+                    />
+                  ) : null}
+                </DropdownMenuItem>
+                {showImagePill && (
                   <DropdownMenuItem
-                    onSelect={() => useSettingsDialogStore.getState().openDialog("chat", {
-                      scrollTarget: "chat-composer",
-                    })}
+                    disabled={imageDisabled}
+                    className={
+                      imageToolsEnabled && !imageDisabled
+                        ? "text-primary font-medium"
+                        : undefined
+                    }
+                    onSelect={() => setImageToolsEnabled(!imageToolsEnabled)}
                   >
-                    <SlidersHorizontalIcon className="size-4" />
-                    {t("composerSettings.settings")}
+                    <HugeiconsIcon icon={Image03Icon} strokeWidth={2} />
+                    Images
+                    {imageToolsEnabled && !imageDisabled ? (
+                      <HugeiconsIcon
+                        icon={MenuTickIcon}
+                        strokeWidth={2}
+                        className="ml-auto"
+                      />
+                    ) : null}
                   </DropdownMenuItem>
-                </DropdownMenuSubContent>
-              </DropdownMenuSub>
-            </DropdownMenuContent>
-          </DropdownMenu>
-          {/* Active in compare mode; sits first. Click to exit back to single chat. */}
-          <button
-            type="button"
-            onClick={handleExitCompare}
-            className="composer-pill-btn"
-            data-active="true"
-            data-keep-label="true"
-            aria-label="Exit compare chat"
-          >
-            <PillGlyph>
-              <Columns2Icon className="size-[calc(14px*var(--ui-space-scale,1))]" />
-            </PillGlyph>
-            <span>Compare</span>
-          </button>
-          {/* Permission-level pill sits immediately after Compare and ahead of every other tool pill so the
-              Full access danger state reads first. */}
-          <PermissionModeComposerPill side="top" />
-          <button
-            type="button"
-            disabled={searchDisabled}
-            onClick={() => {
-              const next = !toolsEnabled;
-              setToolsEnabled(next);
-              // Kimi's $web_search builtin requires thinking=disabled, so toggle the Think pill off when Search is
-              // on, mirroring the backend. Per https://platform.kimi.ai/docs/guide/use-web-search.
-              if (isKimiExternal) {
-                setReasoningEnabled(!next, { persist: false });
-                applyQwenThinkingParams(!next);
-              }
-            }}
-            className="composer-pill-btn"
-            data-pill-label="Search"
-            data-active={toolsEnabled && !searchDisabled ? "true" : "false"}
-            aria-label={
-              toolsEnabled ? "Disable web search" : "Enable web search"
-            }
-          >
-            <PillGlyph>
-              <InternetGlyph className="size-[calc(15px*var(--ui-space-scale,1))]" />
-            </PillGlyph>
-            <span>Search</span>
-          </button>
-          <button
-            type="button"
-            disabled={codeDisabled}
-            onClick={() => setCodeToolsEnabled(!codeToolsEnabled)}
-            className="composer-pill-btn"
-            data-pill-label="Code"
-            data-active={codeToolsEnabled && !codeDisabled ? "true" : "false"}
-            aria-label={
-              codeToolsEnabled
-                ? "Disable code execution"
-                : "Enable code execution"
-            }
-          >
-            <PillGlyph>
-              <HugeiconsIcon
-                icon={CodeIcon}
-                className="size-[calc(18.5px*var(--ui-space-scale,1))]"
-                strokeWidth={2}
-              />
-            </PillGlyph>
-            <span>Code</span>
-          </button>
-          {showImagePill && (
+                )}
+                <DropdownMenuSeparator />
+                {/* Browser use sits right under Chat with files, or leads this section without it. */}
+                {pinnedPlusItems.map((id) => (
+                  <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
+                ))}
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>
+                    <HugeiconsIcon icon={MoreHorizontalIcon} className="size-4" />
+                    More
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent className="unsloth-plus-menu w-[calc(248px*var(--ui-space-scale,1))]">
+                    {overflowPlusItems.map((id) => (
+                      <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
+                    ))}
+                    {overflowPlusItems.length > 0 && <DropdownMenuSeparator />}
+                    <DropdownMenuItem
+                      onSelect={() => useSettingsDialogStore.getState().openDialog("chat", {
+                        scrollTarget: "chat-composer",
+                      })}
+                    >
+                      <HugeiconsIcon icon={SlidersHorizontalIcon} className="size-4" />
+                      {t("composerSettings.settings")}
+                    </DropdownMenuItem>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            {/* Active in compare mode; sits first. Click to exit back to single chat. */}
             <button
               type="button"
-              disabled={imageDisabled}
-              onClick={() => setImageToolsEnabled(!imageToolsEnabled)}
+              onClick={handleExitCompare}
               className="composer-pill-btn"
-              data-pill-label="Images"
-              data-active={
-                imageToolsEnabled && !imageDisabled ? "true" : "false"
-              }
+              data-active="true"
+              data-keep-label="true"
+              aria-label="Exit compare chat"
+            >
+              <PillGlyph>
+                <Columns2Icon className="size-[calc(14px*var(--ui-space-scale,1))]" />
+              </PillGlyph>
+              <span>Compare</span>
+            </button>
+            {/* Permission-level pill sits immediately after Compare and ahead of every other tool pill so the
+                Full access danger state reads first. */}
+            <PermissionModeComposerPill side="top" />
+            <button
+              type="button"
+              disabled={searchDisabled}
+              onClick={() => {
+                const next = !toolsEnabled;
+                setToolsEnabled(next);
+                // Kimi's $web_search builtin requires thinking=disabled, so toggle the Think pill off when Search is
+                // on, mirroring the backend. Per https://platform.kimi.ai/docs/guide/use-web-search.
+                if (isKimiExternal) {
+                  setReasoningEnabled(!next, { persist: false });
+                  applyQwenThinkingParams(!next);
+                }
+              }}
+              className="composer-pill-btn"
+              data-pill-label="Search"
+              data-active={toolsEnabled && !searchDisabled ? "true" : "false"}
               aria-label={
-                imageToolsEnabled
-                  ? "Disable image generation"
-                  : "Enable image generation"
+                toolsEnabled ? "Disable web search" : "Enable web search"
+              }
+            >
+              <PillGlyph>
+                <InternetGlyph className="size-[calc(15px*var(--ui-space-scale,1))]" />
+              </PillGlyph>
+              <span>Search</span>
+            </button>
+            <button
+              type="button"
+              disabled={codeDisabled}
+              onClick={() => setCodeToolsEnabled(!codeToolsEnabled)}
+              className="composer-pill-btn"
+              data-pill-label="Tools"
+              data-active={codeToolsEnabled && !codeDisabled ? "true" : "false"}
+              aria-label={
+                codeToolsEnabled
+                  ? "Disable tools"
+                  : "Enable tools"
               }
             >
               <PillGlyph>
                 <HugeiconsIcon
-                  icon={Image03Icon}
-                  className="size-3.5"
+                  icon={CodeIcon}
+                  className="size-[calc(18.5px*var(--ui-space-scale,1))]"
                   strokeWidth={2}
                 />
               </PillGlyph>
-              <span>Images</span>
+              <span>Tools</span>
             </button>
-          )}
-          {showRagPill && <KnowledgeBaseComposerButton side="top" />}
-          {showWebFetchPill && (
-            <button
-              type="button"
-              disabled={webFetchDisabled}
-              onClick={() => setWebFetchToolsEnabled(!webFetchToolsEnabled)}
-              className="composer-pill-btn"
-              data-pill-label="Fetch"
-              data-active={
-                webFetchToolsEnabled && !webFetchDisabled ? "true" : "false"
-              }
-              aria-label={
-                webFetchToolsEnabled ? "Disable URL fetch" : "Enable URL fetch"
-              }
-            >
-              <PillGlyph>
-                <HugeiconsIcon icon={Download01Icon} className="size-3.5" />
-              </PillGlyph>
-              <span>Fetch</span>
-            </button>
-          )}
-          {mcpEnabledForChat ? <McpComposerButton side="top" /> : null}
-          <SkillsComposerButton side="top" />
-        </div>
-        {/* mr-0.5 matches the send button inset from the edge in normal chat; gap-1.5 matches its control spacing. */}
-        <div className="ml-auto mr-0.5 flex items-center gap-1.5">
-          {showReasoningControl ? (
-            isEffort || supportsPreserveThinking ? (
-              <NonModalDropdownMenu
-                side="top"
-                align="end"
-                className={cn(
-                  "unsloth-plus-menu",
-                  narrowEffortMenu ? "min-w-40" : "min-w-44",
-                )}
-                trigger={(triggerRef) => (
-                  <button
-                    ref={triggerRef}
-                    type="button"
-                    disabled={reasoningDisabled}
-                    className="unsloth-thinking-pill"
-                    data-pill-label="Thinking settings"
-                    data-active={thinkingActiveLook ? "true" : "false"}
-                    aria-label={thinkEffortAriaLabel({
-                      modelLoaded,
-                      reasoningDisabled,
-                      reasoningEffort: displayedEffort,
-                    })}
-                  >
-                    <BulbIcon className="size-[calc(15.5px*var(--ui-space-scale,1))]" />
-                    {thinkingActiveLook ? (
-                      <span className="unsloth-thinking-label">
-                        {isEffort
-                          ? `Thinking · ${formatReasoningEffortLabel(
-                              displayedEffort,
-                              externalSelection?.modelId,
-                            )}`
-                          : "Thinking"}
-                      </span>
-                    ) : null}
-                    <ChevronDownIcon strokeWidth={1.5} className="unsloth-thinking-caret size-[calc(15px*var(--ui-space-scale,1))]" />
-                  </button>
-                )}
+            <BrowserAgentPill glyph={(icon) => <PillGlyph>{icon}</PillGlyph>} />
+            {showImagePill && (
+              <button
+                type="button"
+                disabled={imageDisabled}
+                onClick={() => setImageToolsEnabled(!imageToolsEnabled)}
+                className="composer-pill-btn"
+                data-pill-label="Images"
+                data-active={
+                  imageToolsEnabled && !imageDisabled ? "true" : "false"
+                }
+                aria-label={
+                  imageToolsEnabled
+                    ? "Disable image generation"
+                    : "Enable image generation"
+                }
               >
-                {isEffort ? (
-                  <>
-                    {effectiveSupportsReasoningOff && (
-                      <DropdownMenuItem
-                        onSelect={() => {
-                          setReasoningEnabled(false);
-                          applyQwenThinkingParams(false);
-                          // Preserve thinking needs thinking on, so turn it off too.
-                          setPreserveThinking(false);
-                        }}
-                      >
-                        {formatReasoningDisabledLabel(
-                          effectiveSupportsReasoningOff,
-                          isExternalOpenAIReasoning,
-                          checkpoint,
-                        )}
-                        <HugeiconsIcon
-                  icon={Tick02Icon}
-                  strokeWidth={2}
-                          className={cn(
-                            "unsloth-tick ms-auto size-4",
-                            effectiveReasoningVisualEnabled && "opacity-0",
-                          )}
-                        />
-                      </DropdownMenuItem>
-                    )}
-                    {effectiveReasoningEffortLevels
-                      .filter((level) => level !== "none")
-                      .map((level) => (
+                <PillGlyph>
+                  <HugeiconsIcon
+                    icon={Image03Icon}
+                    className="size-3.5"
+                    strokeWidth={2}
+                  />
+                </PillGlyph>
+                <span>Images</span>
+              </button>
+            )}
+            {showRagPill && <KnowledgeBaseComposerButton side="top" hasFilesPanel={false} />}
+            {showWebFetchPill && (
+              <button
+                type="button"
+                disabled={webFetchDisabled}
+                onClick={() => setWebFetchToolsEnabled(!webFetchToolsEnabled)}
+                className="composer-pill-btn"
+                data-pill-label="Fetch"
+                data-active={
+                  webFetchToolsEnabled && !webFetchDisabled ? "true" : "false"
+                }
+                aria-label={
+                  webFetchToolsEnabled ? "Disable URL fetch" : "Enable URL fetch"
+                }
+              >
+                <PillGlyph>
+                  <HugeiconsIcon icon={Download01Icon} className="size-3.5" />
+                </PillGlyph>
+                <span>Fetch</span>
+              </button>
+            )}
+            {mcpEnabledForChat ? <McpComposerButton side="top" /> : null}
+            <SkillsComposerButton side="top" />
+          </div>
+          <div
+            ref={editorRef}
+            className="unsloth-composer-editor"
+            style={
+              {
+                "--composer-editor-height": `${text.length === 0 ? oneRowHeight : Math.max(oneRowHeight, editorHeight)}px`,
+              } as CSSProperties
+            }
+          >
+              <textarea
+                {...skillMentions.inputProps}
+                id={inputId}
+                ref={textareaRef}
+                data-type-to-activate="composer"
+                value={text}
+                onChange={(e) => {
+                  // ALWAYS mirror the DOM value into React state, even during IME composition: the controlled `value`
+                  // must match the DOM at all times, else an unrelated parent re-render reconciles the textarea back
+                  // to the stored value mid-composition, wiping the preedit (#5318).
+                  setCompositionState(isNativeComposing(e.nativeEvent));
+                  setCurrentText(e.target.value);
+                  skillMentions.update(
+                    e.target.value,
+                    e.target.selectionStart ?? e.target.value.length,
+                  );
+                }}
+
+                onSelect={(event) => {
+                  skillMentions.update(
+                    event.currentTarget.value,
+                    event.currentTarget.selectionStart ??
+                      event.currentTarget.value.length,
+                  );
+                }}
+                onScroll={(event) =>
+                  markComposerScrollEdges(event.currentTarget)
+                }
+                onInputCapture={(event) =>
+                  markComposerScrollEdges(event.currentTarget)
+                }
+                onCompositionStart={() => {
+                  imeSessionOpenRef.current = true;
+                  setCompositionState(true);
+                }}
+                onCompositionUpdate={() => {
+                  refreshStuckImeTimer();
+                }}
+                onCompositionEnd={(e: CompositionEvent<HTMLTextAreaElement>) => {
+                  imeSessionOpenRef.current = false;
+                  compositionEndedAtRef.current = e.timeStamp;
+                  setCompositionState(false);
+                  setCurrentText(e.currentTarget.value);
+                }}
+                onKeyDown={(event) => {
+                  if (!skillMentions.onKeyDown(event)) onKeyDown(event);
+                }}
+                onPaste={handleFilePaste}
+                onBlur={() => {
+                  // Mac: switching input methods can fire compositionstart without a matching compositionend,
+                  // leaving composingRef pinned. The OS always commits or cancels before focus is lost.
+                  imeSessionOpenRef.current = false;
+                  setCompositionState(false);
+
+                  skillMentions.close();
+                }}
+                placeholder="Send to both models..."
+                // dir="auto" detects RTL from the first strong character; no effect on LTR scripts. Kept next to
+                // the placeholder: the IME smoke reads this pair out of the source.
+                dir="auto"
+                // aui-composer-input carries no styling anywhere; it is the name both composers answer to, so one
+                // selector can mean "the composer" whichever is on screen. Escape's decline exception and the
+                // dictation foreground check rely on it.
+                className="aui-composer-input unsloth-composer-input"
+                rows={1}
+              />
+            {(showWritingToggle || isWritingExpanded) && (
+              <TooltipIconButton
+                type="button"
+                tooltip={
+                  isWritingExpanded ? "Collapse composer" : "Expand composer"
+                }
+                aria-expanded={isWritingExpanded}
+                aria-controls={inputId}
+                className="unsloth-composer-expand absolute -right-1 top-0 size-8 rounded-full bg-transparent text-muted-foreground hover:bg-transparent hover:text-muted-foreground dark:hover:bg-transparent aria-expanded:bg-transparent aria-expanded:text-muted-foreground"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={toggleWritingExpanded}
+              >
+                <svg
+                  viewBox="0 0 20 20"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={2.25}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="size-4"
+                  aria-hidden={true}
+                >
+                  <path
+                    d={
+                      isWritingExpanded
+                        ? "M13 2v5h5M2 13h5v5"
+                        : "M11 4h5v5M4 11v5h5"
+                    }
+                  />
+                </svg>
+              </TooltipIconButton>
+            )}
+          </div>
+          <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">
+            {showReasoningControl ? (
+              isEffort || supportsPreserveThinking ? (
+                <NonModalDropdownMenu
+                  side="top"
+                  align="end"
+                  className={cn(
+                    "unsloth-plus-menu",
+                    narrowEffortMenu ? "min-w-40" : "min-w-44",
+                  )}
+                  trigger={(triggerRef) => (
+                    <button
+                      ref={triggerRef}
+                      type="button"
+                      disabled={reasoningDisabled}
+                      className="unsloth-thinking-pill"
+                      data-pill-label="Thinking settings"
+                      data-active={thinkingActiveLook ? "true" : "false"}
+                      aria-label={thinkEffortAriaLabel({
+                        modelLoaded,
+                        reasoningDisabled,
+                        reasoningEffort: displayedEffort,
+                      })}
+                    >
+                      <BulbIcon className="size-[calc(15.5px*var(--ui-space-scale,1))]" />
+                      {thinkingActiveLook ? (
+                        <span className="unsloth-thinking-label">
+                          {isEffort
+                            ? `Thinking · ${formatReasoningEffortLabel(
+                                displayedEffort,
+                                externalSelection?.modelId,
+                              )}`
+                            : "Thinking"}
+                        </span>
+                      ) : null}
+                      <HugeiconsIcon icon={ChevronDownStandardIcon} strokeWidth={1.5} className="unsloth-thinking-caret size-[calc(15px*var(--ui-space-scale,1))]" />
+                    </button>
+                  )}
+                >
+                  {isEffort ? (
+                    <>
+                      {effectiveSupportsReasoningOff && (
                         <DropdownMenuItem
-                          key={level}
                           onSelect={() => {
-                            setReasoningEffort(level);
-                            setReasoningEnabled(true);
-                            applyQwenThinkingParams(true);
-                            // Mutual exclusion: turning thinking on for a Kimi model forces its
-                            // web_search builtin off.
-                            if (isKimiExternal && toolsEnabled) {
-                              setToolsEnabled(false, { persist: false });
-                            }
+                            setReasoningEnabled(false);
+                            applyQwenThinkingParams(false);
+                            // Preserve thinking needs thinking on, so turn it off too.
+                            setPreserveThinking(false);
                           }}
                         >
-                          {formatReasoningEffortLabel(
-                            level,
-                            externalSelection?.modelId,
+                          {formatReasoningDisabledLabel(
+                            effectiveSupportsReasoningOff,
+                            isExternalOpenAIReasoning,
+                            checkpoint,
                           )}
                           <HugeiconsIcon
-                  icon={Tick02Icon}
-                  strokeWidth={2}
+                    icon={Tick02Icon}
+                    strokeWidth={2}
                             className={cn(
                               "unsloth-tick ms-auto size-4",
-                              !(
-                                effectiveReasoningVisualEnabled &&
-                                displayedEffort === level
-                              ) && "opacity-0",
+                              effectiveReasoningVisualEnabled && "opacity-0",
                             )}
                           />
                         </DropdownMenuItem>
-                      ))}
-                  </>
-                ) : (
-                  effectiveSupportsReasoning &&
-                  effectiveSupportsReasoningOff &&
-                  !reasoningLockedOn && (
+                      )}
+                      {effectiveReasoningEffortLevels
+                        .filter((level) => level !== "none")
+                        .map((level) => (
+                          <DropdownMenuItem
+                            key={level}
+                            onSelect={() => {
+                              setReasoningEffort(level);
+                              setReasoningEnabled(true);
+                              applyQwenThinkingParams(true);
+                              // Mutual exclusion: turning thinking on for a Kimi model forces its
+                              // web_search builtin off.
+                              if (isKimiExternal && toolsEnabled) {
+                                setToolsEnabled(false, { persist: false });
+                              }
+                            }}
+                          >
+                            {formatReasoningEffortLabel(
+                              level,
+                              externalSelection?.modelId,
+                            )}
+                            <HugeiconsIcon
+                    icon={Tick02Icon}
+                    strokeWidth={2}
+                              className={cn(
+                                "unsloth-tick ms-auto size-4",
+                                !(
+                                  effectiveReasoningVisualEnabled &&
+                                  displayedEffort === level
+                                ) && "opacity-0",
+                              )}
+                            />
+                          </DropdownMenuItem>
+                        ))}
+                    </>
+                  ) : (
+                    effectiveSupportsReasoning &&
+                    effectiveSupportsReasoningOff &&
+                    !reasoningLockedOn && (
+                      <DropdownMenuItem
+                        onSelect={() => {
+                          const next = !reasoningEnabled;
+                          setReasoningEnabled(next);
+                          applyQwenThinkingParams(next);
+                          // Preserve thinking cannot run without thinking.
+                          if (!next) setPreserveThinking(false);
+                          if (isKimiExternal && next && toolsEnabled) {
+                            setToolsEnabled(false, { persist: false });
+                          }
+                        }}
+                      >
+                        Thinking
+                        <HugeiconsIcon
+                    icon={Tick02Icon}
+                    strokeWidth={2}
+                          className={cn(
+                            "unsloth-tick ms-auto size-4",
+                            !effectiveReasoningEnabled && "opacity-0",
+                          )}
+                        />
+                      </DropdownMenuItem>
+                    )
+                  )}
+                  {supportsPreserveThinking && (
                     <DropdownMenuItem
-                      onSelect={() => {
-                        const next = !reasoningEnabled;
-                        setReasoningEnabled(next);
-                        applyQwenThinkingParams(next);
-                        // Preserve thinking cannot run without thinking.
-                        if (!next) setPreserveThinking(false);
-                        if (isKimiExternal && next && toolsEnabled) {
-                          setToolsEnabled(false, { persist: false });
+                      disabled={!modelLoaded}
+                      onSelect={(e) => {
+                        e.preventDefault();
+                        const next = !preserveThinking;
+                        setPreserveThinking(next);
+                        // Only local models couple this setting to generation controls.
+                        if (next && !isExternalModel) {
+                          setReasoningEnabled(true);
+                          applyQwenThinkingParams(true);
                         }
                       }}
                     >
-                      Thinking
+                      Preserve thinking
                       <HugeiconsIcon
-                  icon={Tick02Icon}
-                  strokeWidth={2}
+                    icon={Tick02Icon}
+                    strokeWidth={2}
                         className={cn(
                           "unsloth-tick ms-auto size-4",
-                          !effectiveReasoningEnabled && "opacity-0",
+                          !preserveThinking && "opacity-0",
                         )}
                       />
                     </DropdownMenuItem>
-                  )
-                )}
-                {supportsPreserveThinking && (
-                  <DropdownMenuItem
-                    disabled={!modelLoaded}
-                    onSelect={(e) => {
-                      e.preventDefault();
-                      const next = !preserveThinking;
-                      setPreserveThinking(next);
-                      // Only local models couple this setting to generation controls.
-                      if (next && !isExternalModel) {
-                        setReasoningEnabled(true);
-                        applyQwenThinkingParams(true);
-                      }
-                    }}
-                  >
-                    Preserve thinking
-                    <HugeiconsIcon
-                  icon={Tick02Icon}
-                  strokeWidth={2}
-                      className={cn(
-                        "unsloth-tick ms-auto size-4",
-                        !preserveThinking && "opacity-0",
-                      )}
-                    />
-                  </DropdownMenuItem>
-                )}
-              </NonModalDropdownMenu>
-            ) : (
-              <button
-                type="button"
-                disabled={reasoningDisabled || reasoningLockedOn}
-                aria-disabled={reasoningDisabled || reasoningLockedOn}
-                title={
-                  reasoningLockedOn
-                    ? "This model requires reasoning to stay on."
-                    : undefined
-                }
-                onClick={() => {
-                  if (reasoningLockedOn) return;
-                  const next = !reasoningEnabled;
-                  setReasoningEnabled(next);
-                  applyQwenThinkingParams(next);
-                  // Mutual exclusion: Kimi's $web_search builtin requires thinking off, so turning thinking on
-                  // flips Search off.
-                  if (isKimiExternal && next && toolsEnabled) {
-                    setToolsEnabled(false, { persist: false });
+                  )}
+                </NonModalDropdownMenu>
+              ) : (
+                <button
+                  type="button"
+                  disabled={reasoningDisabled || reasoningLockedOn}
+                  aria-disabled={reasoningDisabled || reasoningLockedOn}
+                  title={
+                    reasoningLockedOn
+                      ? "This model requires reasoning to stay on."
+                      : undefined
                   }
-                }}
-                className="unsloth-thinking-pill"
-                data-pill-label="Thinking"
-                data-active={thinkingActiveLook ? "true" : "false"}
-                aria-label={thinkToggleAriaLabel({
-                  reasoningLockedOn,
-                  modelLoaded,
-                  reasoningDisabled,
-                  effectiveReasoningEnabled,
-                })}
-              >
-                <PillGlyph>
-                  <BulbIcon className="size-[calc(15.5px*var(--ui-space-scale,1))]" />
-                </PillGlyph>
-                {thinkingActiveLook ? (
-                  <span className="unsloth-thinking-label">Thinking</span>
-                ) : null}
-              </button>
-            )
-          ) : null}
-          {
-            <>
-              {!isDictating ? (
-                audioUpload.busy ? (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="h-8 gap-1.5 rounded-full px-2 text-muted-foreground"
-                    aria-label={t("settings.voice.dictation.audioUploadCancel")}
-                    title={t("settings.voice.dictation.audioUploadCancel")}
-                    onClick={audioUpload.cancel}
-                  >
-                    <Spinner className="size-3.5" />
-                    <span>{t("settings.voice.dictation.audioUploadTranscribing")}</span>
-                    <XIcon className="size-3" aria-hidden="true" />
-                  </Button>
+                  onClick={() => {
+                    if (reasoningLockedOn) return;
+                    const next = !reasoningEnabled;
+                    setReasoningEnabled(next);
+                    applyQwenThinkingParams(next);
+                    // Mutual exclusion: Kimi's $web_search builtin requires thinking off, so turning thinking on
+                    // flips Search off.
+                    if (isKimiExternal && next && toolsEnabled) {
+                      setToolsEnabled(false, { persist: false });
+                    }
+                  }}
+                  className="unsloth-thinking-pill"
+                  data-pill-label="Thinking"
+                  data-active={thinkingActiveLook ? "true" : "false"}
+                  aria-label={thinkToggleAriaLabel({
+                    reasoningLockedOn,
+                    modelLoaded,
+                    reasoningDisabled,
+                    effectiveReasoningEnabled,
+                  })}
+                >
+                  <PillGlyph>
+                    <BulbIcon className="size-[calc(15.5px*var(--ui-space-scale,1))]" />
+                  </PillGlyph>
+                  {thinkingActiveLook ? (
+                    <span className="unsloth-thinking-label">Thinking</span>
+                  ) : null}
+                </button>
+              )
+            ) : null}
+            {
+              <>
+                {!isDictating ? (
+                  audioUpload.busy ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-9 gap-1.5 rounded-full px-2.5 text-muted-foreground"
+                      aria-label={t("settings.voice.dictation.audioUploadCancel")}
+                      title={t("settings.voice.dictation.audioUploadCancel")}
+                      onClick={audioUpload.cancel}
+                    >
+                      <Spinner className="size-4" />
+                      <span>{t("settings.voice.dictation.audioUploadTranscribing")}</span>
+                      <HugeiconsIcon icon={Cancel01Icon} className="size-3.5" aria-hidden="true" />
+                    </Button>
+                  ) : (
+                    <TooltipIconButton
+                      tooltip="Dictate"
+                      type="button"
+                      variant="ghost"
+                      className="size-9 rounded-full text-foreground"
+                      disabled={!chatActive}
+                      onClick={startDictation}
+                      aria-label="Dictate"
+                    >
+                      <MicIcon className="unsloth-dictate-icon size-6" />
+                    </TooltipIconButton>
+                  )
                 ) : (
                   <TooltipIconButton
-                    tooltip="Dictate"
-                    side="bottom"
+                    tooltip={
+                      isDictationFinalizing
+                        ? "Cancel transcription"
+                        : "Stop dictation"
+                    }
+                    type="button"
                     variant="ghost"
-                    size="icon"
-                    className="size-8 rounded-full text-muted-foreground"
-                    disabled={!chatActive}
-                    onClick={startDictation}
-                    aria-label="Dictate"
+                    className="size-9 rounded-full text-destructive"
+                    onClick={stopDictation}
+                    aria-label={
+                      isDictationFinalizing
+                        ? "Cancel transcription"
+                        : "Stop dictation"
+                    }
                   >
-                    <MicIcon className="unsloth-dictate-icon size-4" />
+                    <HugeiconsIcon icon={StopIcon} className="composer-glyph-snap size-3.5 animate-pulse fill-current" />
                   </TooltipIconButton>
-                )
-              ) : (
-                <TooltipIconButton
-                  tooltip={
-                    isDictationFinalizing
-                      ? "Cancel transcription"
-                      : "Stop dictation"
-                  }
-                  side="bottom"
-                  variant="ghost"
-                  size="icon"
-                  className="size-8 rounded-full text-destructive"
-                  onClick={stopDictation}
-                  aria-label={
-                    isDictationFinalizing
-                      ? "Cancel transcription"
-                      : "Stop dictation"
-                  }
+                )}
+              </>
+            }
+            {isQueueRunning ? (
+              // Wrapped: the narrow layout squares every direct button of this group, and this one has a label.
+              <div className="ml-1.5 flex">
+                <button
+                  type="button"
+                  onClick={() => {
+                    resetPromptQueue();
+                    stop();
+                  }}
+                  aria-label="Stop prompt queue"
+                  className="btn-fill flex items-center gap-1.5 rounded-full border border-transparent px-2.5 py-1 text-xs font-semibold text-muted-foreground transition-colors hover:text-foreground "
                 >
-                  <SquareIcon className="size-3 animate-pulse fill-current" />
-                </TooltipIconButton>
-              )}
-            </>
-          }
-          {isQueueRunning ? (
-            <button
-              type="button"
-              onClick={() => {
-                resetPromptQueue();
-                stop();
-              }}
-              aria-label="Stop prompt queue"
-              className="ml-1.5 flex items-center gap-1.5 rounded-full border border-border/60 bg-muted/60 px-2.5 py-1 text-xs font-semibold text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            >
-              <SquareIcon className="size-2.5 shrink-0 fill-current" />
-              <span className="tabular-nums">
-                Stop queue {queueProgress.current}/{queueProgress.total}
-              </span>
-            </button>
-          ) : busy ? (
-            <Button
-              type="button"
-              variant="default"
-              size="icon"
-              className="ml-1.5 size-9 rounded-full"
-              onClick={stop}
-            >
-              <SquareIcon className="size-3 fill-current" />
-            </Button>
-          ) : (
-            <TooltipIconButton
-              tooltip={
-                sendUnavailableReason ??
-                t("promptQueue.sendTooltip", { shortcut: shortcutLabels.send })
-              }
-              side="bottom"
-              variant="default"
-              size="icon"
-              className="ml-1.5 size-9 rounded-full"
-              onClick={send}
-              disabled={!canSend}
-              aria-label={t("promptQueue.sendLabel")}
-            >
-              <ArrowUpIcon className="unsloth-send-icon size-[calc(22px*var(--ui-space-scale,1))] stroke-2" />
-            </TooltipIconButton>
-          )}
+                  <HugeiconsIcon icon={StopIcon} className="size-2.5 shrink-0 fill-current" />
+                  <span className="tabular-nums">
+                    Stop queue {queueProgress.current}/{queueProgress.total}
+                  </span>
+                </button>
+              </div>
+            ) : busy ? (
+              <Button
+                type="button"
+                variant="primary"
+                size="icon"
+                className="aui-composer-cancel ml-1.5 size-9 rounded-full"
+                aria-label="Stop generating"
+                onClick={stop}
+              >
+                <HugeiconsIcon icon={StopIcon} className="composer-glyph-snap size-3.5 fill-current" />
+              </Button>
+            ) : (
+              <TooltipIconButton
+                tooltip={
+                  sendUnavailableReason ??
+                  t("promptQueue.sendTooltip", { shortcut: shortcutLabels.send })
+                }
+                side="bottom"
+                variant="primary"
+                size="icon"
+                className="aui-composer-send ml-1.5 size-9 rounded-full"
+                onClick={send}
+                disabled={!canSend}
+                aria-label={t("promptQueue.sendLabel")}
+              >
+                <ArrowUpIcon className="unsloth-send-icon aui-composer-send-icon size-[calc(21px*var(--ui-space-scale,1))] stroke-2" />
+              </TooltipIconButton>
+            )}
+          </div>
         </div>
       </div>
     </div>

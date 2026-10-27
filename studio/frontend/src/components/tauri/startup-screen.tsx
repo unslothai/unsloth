@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { DiagnosticsCopyActions } from "@/components/tauri/diagnostics-copy-actions";
+import InstallLocation from "@/components/tauri/install-location";
 import { LogDetails } from "@/components/tauri/log-details";
 import {
   installProgressMessage,
@@ -10,12 +11,19 @@ import {
   type StartupMessage,
 } from "@/components/tauri/startup-messages";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/ui/spinner";
 import type { BackendStatus } from "@/hooks/use-tauri-backend";
+import { useDocumentFlag } from "@/lib/document-flag";
 import type { CopySupportDiagnosticsResult } from "@/lib/tauri-diagnostics";
+import {
+  enableWindowsLongPaths,
+  windowsLongPathsNeedPrompt,
+} from "@/lib/windows-long-paths";
 
 import { AnimatePresence, motion } from "motion/react";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 
 interface StartupScreenProps {
   status: BackendStatus;
@@ -26,7 +34,8 @@ interface StartupScreenProps {
   progressDetail: string | null;
   startupMessage: StartupMessage;
   elevationPackages: string[];
-  onInstall: () => void;
+  upgradingToFull?: boolean;
+  onInstall: (options?: InstallOptions) => void;
   onRetry: () => void;
   onRetryInstall: () => void;
   onApproveElevation: () => void;
@@ -37,9 +46,7 @@ interface StartupScreenProps {
 const EASE_OUT_QUART: [number, number, number, number] = [0.165, 0.84, 0.44, 1];
 
 // ---------------------------------------------------------------------------
-// Sub-components
 // ---------------------------------------------------------------------------
-
 function Logo() {
   return (
     <div className="flex items-center justify-center gap-3">
@@ -58,9 +65,7 @@ function Logo() {
     </div>
   );
 }
-
 // ---------------------------------------------------------------------------
-// Per-status renderers
 // ---------------------------------------------------------------------------
 
 function CheckingContent() {
@@ -77,7 +82,64 @@ function CheckingContent() {
   );
 }
 
-function NotInstalledContent({ onInstall }: { onInstall: () => void }) {
+type InstallOptions = { skipLongPaths?: boolean; chatOnly?: boolean };
+
+function NotInstalledContent({
+  onInstall,
+}: {
+  onInstall: (options?: InstallOptions) => void;
+}) {
+  const [phase, setPhase] = useState<
+    "idle" | "checking" | "explain" | "elevating"
+  >("idle");
+  const [chatOnly, setChatOnly] = useState(false);
+
+  // Synchronous: a double click lands before the re-render that disables the buttons.
+  const busy = useRef(false);
+
+  async function getStarted() {
+    if (busy.current) {
+      return;
+    }
+    busy.current = true;
+    setPhase("checking");
+    if (await windowsLongPathsNeedPrompt()) {
+      busy.current = false;
+      setPhase("explain");
+    } else {
+      onInstall({ chatOnly });
+    }
+  }
+
+  async function allowLongPaths() {
+    if (busy.current) {
+      return;
+    }
+    busy.current = true;
+    setPhase("elevating");
+    const outcome = await enableWindowsLongPaths();
+    // "failed" leaves setup.ps1's own UAC as the fallback.
+    onInstall({ skipLongPaths: outcome === "declined", chatOnly });
+  }
+
+  function skipLongPaths() {
+    if (busy.current) {
+      return;
+    }
+    busy.current = true;
+    onInstall({ skipLongPaths: true, chatOnly });
+  }
+
+  if (phase === "explain" || phase === "elevating") {
+    return (
+      <LongPathsExplainer
+        waiting={phase === "elevating"}
+        onContinue={allowLongPaths}
+        onSkip={skipLongPaths}
+      />
+    );
+  }
+
   return (
     <div className="flex h-full flex-col items-center">
       <div className="flex flex-1 flex-col items-center justify-center">
@@ -90,11 +152,76 @@ function NotInstalledContent({ onInstall }: { onInstall: () => void }) {
         >
           To install Unsloth, click Get Started.
         </p>
-        <Button size="hero" onClick={onInstall}>
+        <Button
+          variant="dark"
+          size="hero"
+          onClick={getStarted}
+          disabled={phase === "checking"}
+        >
           Get Started
         </Button>
+        <div className="flex items-center gap-2">
+          <Checkbox
+            id="install-chat-only"
+            checked={chatOnly}
+            disabled={phase !== "idle"}
+            onCheckedChange={(checked) => setChatOnly(checked === true)}
+          />
+          <Label
+            htmlFor="install-chat-only"
+            className="text-ui-12 font-normal text-muted-foreground"
+          >
+            Chat only (GGUF): smaller install, no training
+          </Label>
+        </div>
+        <InstallLocation disabled={phase !== "idle"} />
       </div>
     </div>
+  );
+}
+
+function LongPathsExplainer({
+  waiting,
+  onContinue,
+  onSkip,
+}: {
+  waiting: boolean;
+  onContinue: () => void;
+  onSkip: () => void;
+}) {
+  return (
+    <>
+      <Logo />
+      <div className="mt-8 flex max-w-md flex-col items-center gap-2">
+        <p className="text-sm font-medium text-foreground">
+          Windows will ask for permission
+        </p>
+        <p className="text-xs text-muted-foreground">
+          Approve{" "}
+          <span className="font-medium text-foreground">
+            Registry Console Tool
+          </span>{" "}
+          once to turn on long file paths for compiled kernels.
+        </p>
+        {waiting ? (
+          <div className="mt-4 flex items-center gap-2">
+            <Spinner className="size-4 text-primary" />
+            <p className="text-xs text-muted-foreground" aria-live="polite">
+              Waiting for Windows permission...
+            </p>
+          </div>
+        ) : (
+          <div className="mt-4 flex gap-3">
+            <Button variant="muted" size="hero" onClick={onSkip}>
+              Skip
+            </Button>
+            <Button variant="dark" size="hero" onClick={onContinue}>
+              Continue
+            </Button>
+          </div>
+        )}
+      </div>
+    </>
   );
 }
 
@@ -147,9 +274,11 @@ function InstallingContent({
 function RepairingContent({
   logs,
   progressDetail,
+  upgradingToFull,
 }: {
   logs: string[];
   progressDetail: string | null;
+  upgradingToFull: boolean;
 }) {
   const detailLines = progressDetail
     ? [...logs, progressDetail]
@@ -162,8 +291,14 @@ function RepairingContent({
       </div>
       <div className="mb-10 flex w-full flex-col items-center gap-2">
         <Spinner className="size-6 text-primary" />
-        <p className="text-sm font-bold text-foreground">Getting things ready...</p>
-        <p className="text-sm text-muted-foreground">This won’t take long.</p>
+        <p className="text-sm font-bold text-foreground">
+          {upgradingToFull ? "Upgrading to the full install..." : "Getting things ready..."}
+        </p>
+        <p className="text-sm text-muted-foreground">
+          {upgradingToFull
+            ? "Downloading PyTorch and its libraries for this machine's GPU. This can take several minutes."
+            : "This won’t take long."}
+        </p>
         <LogDetails label="setup details" lines={detailLines} />
       </div>
     </div>
@@ -209,7 +344,9 @@ function InstallErrorContent({
           <p className="max-w-xs text-center text-xs text-muted-foreground">{error}</p>
         )}
         <DiagnosticsCopyActions onCopyDiagnostics={onCopyDiagnostics}>
-          <Button size="hero" onClick={onRetryInstall}>Try Again</Button>
+          <Button variant="dark" size="hero" onClick={onRetryInstall}>
+            Try Again
+          </Button>
         </DiagnosticsCopyActions>
       </div>
     </>
@@ -218,10 +355,12 @@ function InstallErrorContent({
 
 function RepairErrorContent({
   error,
+  upgradingToFull,
   onRetry,
   onCopyDiagnostics,
 }: {
   error: string | null;
+  upgradingToFull: boolean;
   onRetry: () => void;
   onCopyDiagnostics: () => Promise<CopySupportDiagnosticsResult>;
 }) {
@@ -229,12 +368,16 @@ function RepairErrorContent({
     <>
       <Logo />
       <div className="mt-8 flex flex-col items-center gap-2">
-        <p className="text-sm font-medium text-destructive">Update failed</p>
+        <p className="text-sm font-medium text-destructive">
+          {upgradingToFull ? "Could not upgrade to the full install" : "Update failed"}
+        </p>
         {error && (
           <p className="max-w-md text-center text-xs text-muted-foreground">{error}</p>
         )}
         <DiagnosticsCopyActions onCopyDiagnostics={onCopyDiagnostics}>
-          <Button size="hero" onClick={onRetry}>Retry</Button>
+          <Button variant="dark" size="hero" onClick={onRetry}>
+            Retry
+          </Button>
         </DiagnosticsCopyActions>
       </div>
     </>
@@ -265,7 +408,7 @@ function NeedsElevationContent({
         </div>
         <div className="mt-4 flex gap-3">
           <Button variant="muted" size="hero" onClick={onRetryInstall}>Cancel</Button>
-          <Button size="hero" onClick={onApproveElevation}>Allow</Button>
+          <Button variant="dark" size="hero" onClick={onApproveElevation}>Allow</Button>
         </div>
       </div>
     </>
@@ -296,7 +439,9 @@ function StoppedContent({ onStartServer }: { onStartServer: () => void }) {
       <div className="mt-8 flex flex-col items-center gap-2">
         <p className="text-sm font-medium text-foreground">Server stopped</p>
         <div className="mt-4">
-          <Button size="hero" onClick={onStartServer}>Start Server</Button>
+          <Button variant="dark" size="hero" onClick={onStartServer}>
+            Start Server
+          </Button>
         </div>
       </div>
     </>
@@ -321,7 +466,9 @@ function ErrorContent({
           <p className="max-w-md text-center text-xs text-muted-foreground">{error}</p>
         )}
         <DiagnosticsCopyActions onCopyDiagnostics={onCopyDiagnostics}>
-          <Button size="hero" onClick={onRetry}>Retry</Button>
+          <Button variant="dark" size="hero" onClick={onRetry}>
+            Retry
+          </Button>
         </DiagnosticsCopyActions>
       </div>
     </>
@@ -329,9 +476,7 @@ function ErrorContent({
 }
 
 // ---------------------------------------------------------------------------
-// Main component
 // ---------------------------------------------------------------------------
-
 export function StartupScreen({
   status,
   logs,
@@ -341,6 +486,7 @@ export function StartupScreen({
   progressDetail,
   startupMessage,
   elevationPackages,
+  upgradingToFull = false,
   onInstall,
   onRetry,
   onRetryInstall,
@@ -372,11 +518,18 @@ export function StartupScreen({
           />
         );
       case "repairing":
-        return <RepairingContent logs={logs} progressDetail={progressDetail} />;
+        return (
+          <RepairingContent
+            logs={logs}
+            progressDetail={progressDetail}
+            upgradingToFull={upgradingToFull}
+          />
+        );
       case "repair-error":
         return (
           <RepairErrorContent
             error={error}
+            upgradingToFull={upgradingToFull}
             onRetry={onRetry}
             onCopyDiagnostics={onCopyDiagnostics}
           />
@@ -436,22 +589,14 @@ function StartupSurface({ children }: { children: ReactNode }) {
 }
 
 /**
- * Shown from the moment a quit is requested until the process is gone. Separate from
- * StartupScreen because a quit can come from the running app, where no backend status
- * applies, and unanimated because it has to be on screen for the very next paint.
- *
- * A layer over the app rather than a replacement for it: a declined quit has to hand the
- * user back the tree they had, in-flight generations and unsaved drafts included. The
- * z-index clears the titlebar, the download stack and the floating panels above it:
- * it is Z_LAYER.STARTUP_SCREEN, which lib/z-layers puts over both.
+ * Shown from quit request until exit. An overlay, not a replacement, so a declined quit returns
+ * the live tree; Z_LAYER.STARTUP_SCREEN clears the titlebar and floating panels.
  */
 export function ClosingScreen() {
+  useDocumentFlag("data-blocking-screen-open", true);
   return (
-    // pointer-events-auto, not the inherited default: Radix parks pointer-events:none on
-    // <body> while any modal layer is open, and a quit raised from the window controls,
-    // the tray or Alt+F4 never closes that layer. Inheriting it would make the overlay
-    // click-through onto the dialog it is hiding, so clicks meant for a screen that says
-    // the app is closing would land on buttons the user can no longer see.
+    // pointer-events-auto: Radix parks pointer-events:none on <body> while a modal is open, which
+    // would make this overlay click-through onto the hidden dialog.
     <div
       data-blocking-screen=""
       className="pointer-events-auto fixed inset-0 z-[9999]"

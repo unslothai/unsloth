@@ -86,8 +86,7 @@ impl AuthError {
 }
 
 fn auth_secret_path(home: &Path, filename: &str) -> PathBuf {
-    home.join(".unsloth")
-        .join("studio")
+    crate::studio_home::studio_root_for_home(home)
         .join("auth")
         .join(filename)
 }
@@ -269,10 +268,13 @@ async fn provision_desktop_auth() -> Result<(), String> {
     #[cfg(target_os = "linux")]
     crate::process::scrub_appimage_python_env_tokio(&mut cmd);
 
-    // Tauri uses the legacy root regardless of UNSLOTH_STUDIO_HOME / STUDIO_HOME.
-    // Scrub so provisioning writes match what the Rust auth code reads.
+    // Inherited roots are dropped and the desktop's own root passed, so provisioning writes
+    // match what the Rust auth code reads.
     cmd.env_remove("UNSLOTH_STUDIO_HOME");
     cmd.env_remove("STUDIO_HOME");
+    if let Some(root) = crate::studio_home::chosen_root() {
+        cmd.env(crate::studio_home::STUDIO_HOME_ENV, root);
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -333,10 +335,7 @@ async fn authenticate_with_stale_port_retry(
     match exchange_desktop_secret(client, backend.port, secret).await {
         Ok(Some(tokens)) => Ok((Some(tokens), backend)),
         Ok(None) => {
-            // 401 means the backend is reachable but the cached secret is stale.
-            // Keep using the same backend so the next desktop_auth_inner attempt
-            // provisions a new secret for the server we are retrying instead of
-            // switching to an unrelated discovered/attached backend.
+            // 401: the secret is stale. Keep this backend so the retry provisions a secret for it.
             Ok((None, backend))
         }
         Err(error) if should_retry_with_discovered_port(backend.source, &error) => {

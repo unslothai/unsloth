@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Pre-Volta NVIDIA GPUs (sm < 7.0) train with torch.compile off (#1998).
-
-Inductor raises GPUTooOldForTriton on the first compiled call there, which killed GRPO,
-vision and MoE training mid-run on GTX 10xx / P100 / Maxwell cards. Decision-table checks, no GPU.
-"""
+"""Inductor raises GPUTooOldForTriton on pre-Volta GPUs, so torch.compile must be disabled there."""
 
 from types import SimpleNamespace
 
@@ -64,11 +60,7 @@ def test_other_compile_switches_the_user_set_are_kept():
 
 
 def test_worker_threads_see_the_disable_too():
-    """torch >= 2.12 config writes are ContextVar-local; autograd's backward threads must see it.
-
-    A fresh interpreter running only the helper (sliced with `ast`): importing unsloth needs a GPU,
-    and _gpu_init's later config-mirroring patch would make this pass without the fix.
-    """
+    """torch 2.12+ config writes are ContextVar-local, so autograd worker threads need the disable too."""
     import ast
     import subprocess
     import sys

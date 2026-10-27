@@ -16,9 +16,13 @@ import { scheduleIdleTask } from "@/lib/schedule-idle-task";
 import { cn } from "@/lib/utils";
 import { confirmExternalLink } from "../stores/external-link-confirm";
 import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
+import {
+  MARKDOWN_TABLE_ICONS,
+  MarkdownTable,
+} from "@/components/assistant-ui/markdown-table";
 import { codePlugin } from "@/components/assistant-ui/shared-code-plugin";
 import { math as streamdownMath } from "@streamdown/math";
-import { mermaid as streamdownMermaid } from "@streamdown/mermaid";
+import { mermaid as streamdownMermaid } from "@/components/assistant-ui/mermaid-plugin";
 import {
   createContext,
   startTransition,
@@ -36,6 +40,7 @@ import {
   stripChromeHeadings,
   stripFrontmatter,
 } from "../lib/hf-readme";
+import { rehypeReadmeUrls } from "../lib/rehype-readme-urls";
 
 type ReadmePlugins = NonNullable<ComponentProps<typeof Streamdown>["plugins"]>;
 
@@ -69,7 +74,6 @@ const README_ALLOWED_TAGS: NonNullable<
   source: ["src", "type", "media"],
   track: ["src", "kind", "srclang", "label", "default"],
 };
-const README_REHYPE_PLUGINS = withLiteralUnknownTags(README_ALLOWED_TAGS);
 
 const README_RENDER_CHAR_LIMIT = 120_000;
 const README_CACHE_TTL_MS = 60_000;
@@ -139,15 +143,13 @@ const PROSE = cn(
   "[&_p]:my-2.5 [&_ul]:my-2 [&_ol]:my-2 [&_li]:my-0.5",
   "[&_a]:text-primary [&_a:hover]:underline",
   "[&_code]:rounded-md [&_code]:bg-muted/60 [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-ui-12 [&_code]:font-mono",
-  "[&_pre]:rounded-[12px] [&_pre]:border [&_pre]:border-border/60 [&_pre]:bg-muted/40 [&_pre]:p-3 [&_pre]:text-ui-12 [&_pre]:overflow-x-auto",
+  "[&_pre]:rounded-lg [&_pre]:border [&_pre]:border-border/60 [&_pre]:bg-muted/40 [&_pre]:p-3 [&_pre]:text-ui-12 [&_pre]:overflow-x-auto",
   "[&_pre_code]:bg-transparent [&_pre_code]:p-0",
   "[&_blockquote]:border-l-2 [&_blockquote]:border-border/60 [&_blockquote]:pl-3 [&_blockquote]:text-muted-foreground",
-  "[&_table]:my-3 [&_table]:text-ui-12p5",
-  "[&_th]:px-2 [&_th]:py-1.5 [&_th]:text-left [&_th]:font-semibold [&_th]:border-b [&_th]:border-border/60",
-  "[&_td]:px-2 [&_td]:py-1.5 [&_td]:border-b [&_td]:border-border/40",
-  "[&_img]:rounded-[10px] [&_img]:my-2 [&_img]:max-w-full",
+  "[&_table]:text-ui-12p5",
+  "[&_img]:rounded-lg [&_img]:my-2 [&_img]:max-w-full",
   "[&_audio]:my-1 [&_audio]:max-w-full [&_audio]:h-9 [&_audio]:align-middle",
-  "[&_video]:my-2 [&_video]:max-w-full [&_video]:rounded-[10px]",
+  "[&_video]:my-2 [&_video]:max-w-full [&_video]:rounded-lg",
   "[&_hr]:my-4 [&_hr]:border-border/40",
 );
 
@@ -220,6 +222,7 @@ function ReadmeImage({
 const README_COMPONENTS: Components = {
   a: ReadmeLink,
   img: ReadmeImage,
+  table: MarkdownTable,
 };
 
 function readmeLoadingMessage(subject: ReadmeSubject): string {
@@ -407,6 +410,16 @@ export function ModelReadme({
       current.baseUrl ? createReadmeUrlTransform(current.baseUrl) : undefined,
     [current.baseUrl],
   );
+  const rehypePlugins = useMemo(
+    () =>
+      withLiteralUnknownTags(
+        README_ALLOWED_TAGS,
+        current.baseUrl
+          ? [[rehypeReadmeUrls, { baseUrl: current.baseUrl }]]
+          : [],
+      ),
+    [current.baseUrl],
+  );
 
   useEffect(() => {
     let canceled = false;
@@ -450,8 +463,7 @@ export function ModelReadme({
   }, [repoId, kind, hfToken, stateKey, online]);
 
   useEffect(() => {
-    // Plugin assembly is synchronous, so it runs regardless of connectivity: a
-    // body served from the README cache while offline still clears the preparing gate.
+    // Runs offline too: a cached README body must still clear the preparing gate.
     if (!current.body || current.loading || current.error || current.plugins) {
       return;
     }
@@ -537,8 +549,9 @@ export function ModelReadme({
           plugins={current.plugins}
           controls={false}
           components={README_COMPONENTS}
+          icons={MARKDOWN_TABLE_ICONS}
           allowedTags={README_ALLOWED_TAGS}
-          rehypePlugins={README_REHYPE_PLUGINS}
+          rehypePlugins={rehypePlugins}
           urlTransform={urlTransform}
         >
           {current.body}

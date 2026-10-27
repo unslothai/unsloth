@@ -2,6 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useHfEndpoint } from "@/lib/hf-endpoint";
+import { revealCachedModel } from "@/features/chat";
+import { useRevealLabel } from "@/features/library/reveal";
+import { toast } from "@/lib/toast";
 import { ModelMemoryBarFor } from "@/components/model-memory-bar";
 import {
   Popover,
@@ -16,7 +19,12 @@ import {
 import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
-import { Alert02Icon, CubeIcon, Share05Icon } from "@hugeicons/core-free-icons";
+import {
+  Alert02Icon,
+  Folder01Icon,
+  LayerIcon,
+  LinkSquare02Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useMemo, useState } from "react";
 import {
@@ -30,7 +38,10 @@ import {
   type BaseModelSource,
   type LocalModelInfo,
   type ModelInventoryFormat,
+  DELETABLE_LOCAL_SOURCES,
   deleteCachedModel,
+  deleteLocalModel,
+  revealLocalModel,
 } from "../inventory";
 import { formatBytes } from "../lib/format";
 import type { HubModelRunSelection } from "../lib/model-run-selection";
@@ -41,6 +52,7 @@ import {
 } from "../lib/gguf-filename";
 import {
   ggufVariantDisplayLabel,
+  localGgufMemoryBarVariant,
   resolveLocalGgufVariant,
   sortLocalGgufVariants,
 } from "../lib/gguf-variant-sort";
@@ -51,7 +63,6 @@ import { DeleteImpactSummary, useDeleteImpact } from "./delete-impact";
 import { DotTag } from "./dot-tag";
 import {
   CardDeleteButton,
-  CardDivider,
   CardUpdateButton,
   DeleteConfirmDialog,
   ModelRunActionButton,
@@ -61,6 +72,7 @@ import { PathInfoButton } from "./path-info-button";
 import { TransportConflictDialog } from "./transport-conflict-dialog";
 import { useCardDelete } from "./use-card-delete";
 import { useGgufVariantFetchState } from "./use-gguf-variant-fetch-state";
+import { ggufVariantLookupTableBytes } from "@/lib/gguf-fit";
 
 interface LocalOnDeviceCardProps {
   modelId: string;
@@ -69,10 +81,7 @@ interface LocalOnDeviceCardProps {
   sourceLabel: string;
   source: LocalModelInfo["source"];
   path: string;
-  /** False for a local diffusion / audio / video GGUF: it runs through the media
-   *  planner rather than llama.cpp, so the KV estimator describes the wrong
-   *  runtime -- and it still falls back to the file size, so it draws a
-   *  confident weights-only verdict rather than nothing. */
+  /** False for media GGUFs: they run through the media planner, so the KV estimate is wrong. */
   showMemoryBar?: boolean;
   isGguf: boolean;
   requiresVariant?: boolean;
@@ -90,7 +99,6 @@ interface LocalOnDeviceCardProps {
   preferredFileIntent?: number;
 
   gpuGb?: number;
-  /** GPUs gpuGb sums, for the loader's per-card VRAM reserve. */
   gpuCount?: number;
   systemRamGb?: number;
   unsupportedReason?: string | null;
@@ -131,10 +139,10 @@ function BaseModelReference({
   const hfEndpoint = useHfEndpoint();
   const hubUrl = `${hfEndpoint}/${baseModelHubId}`;
   return (
-    <div className="flex min-w-0 items-center gap-2 rounded-[10px] border border-border/55 bg-muted/35 px-3 py-2">
-      <div className="flex size-7 shrink-0 items-center justify-center rounded-[8px] bg-background/70 text-muted-foreground">
+    <div className="flex min-w-0 items-center gap-2 rounded-lg border border-border/55 bg-muted/35 px-3 py-2">
+      <div className="flex size-7 shrink-0 items-center justify-center rounded-sm bg-background/70 text-muted-foreground">
         <HugeiconsIcon
-          icon={CubeIcon}
+          icon={LayerIcon}
           strokeWidth={1.75}
           className="size-3.5"
         />
@@ -171,7 +179,7 @@ function BaseModelReference({
               }}
             >
               <HugeiconsIcon
-                icon={Share05Icon}
+                icon={LinkSquare02Icon}
                 strokeWidth={1.75}
                 className="size-3.5"
               />
@@ -183,6 +191,36 @@ function BaseModelReference({
         </Tooltip>
       )}
     </div>
+  );
+}
+
+/** Null unless this is the owner on the backend's own machine with a file manager. */
+function CardRevealButton({ onReveal }: { onReveal: () => Promise<unknown> }) {
+  const revealLabel = useRevealLabel();
+  if (!revealLabel) return null;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild={true}>
+        <button
+          type="button"
+          aria-label={revealLabel}
+          onClick={(e) => {
+            e.stopPropagation();
+            onReveal().catch((err) => {
+              toast.error(
+                err instanceof Error ? err.message : "Failed to open file manager",
+              );
+            });
+          }}
+          className="inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground opacity-0 transition-[opacity,background-color,color] duration-150 hover:bg-muted hover:text-foreground focus-visible:opacity-100 group-hover/dl:opacity-100"
+        >
+          <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-4" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" className="tooltip-compact">
+        {revealLabel}
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -243,23 +281,24 @@ export function LocalOnDeviceCard({
     setUpdateConflictKey(null);
   }, [updateConflictKey]);
   const hfToken = useHfTokenStore((s) => s.token);
-  // Update availability is derived from the GGUF variant metadata; offline rows
-  // keep the button hidden because there is no remote revision to fetch.
   const online = useOnlineStatus();
+  const isCacheRow = source === "hf_cache";
   const deleteImpact = useDeleteImpact(
-    deleteOpen && Boolean(repoId),
+    deleteOpen && isCacheRow && Boolean(repoId),
     repoId ?? "",
   );
   const { deleting, runDelete } = useCardDelete({
     action: async () => {
+      if (!isCacheRow) {
+        await deleteLocalModel(path, modelId);
+        return;
+      }
       if (!repoId) return;
-      // Delete is only offered for hf_cache rows (see canDelete), so `path` is
-      // the cache snapshot path: pass it so the delete targets the cache this
-      // card shows instead of falling back to the active cache.
+      // Pass the cache snapshot path so delete targets this card's cache, not the active one.
       await deleteCachedModel(repoId, undefined, hfToken || undefined, path);
     },
     resourceName: "model",
-    successMessage: () => `Deleted ${repoId}`,
+    successMessage: () => `Deleted ${isCacheRow ? repoId : displayName}`,
     onSuccess: () => {
       setDeleteOpen(false);
       onChange?.();
@@ -295,8 +334,7 @@ export function LocalOnDeviceCard({
   }));
 
   const canDelete =
-    source === "hf_cache" &&
-    !!repoId &&
+    (isCacheRow ? !!repoId : DELETABLE_LOCAL_SOURCES.has(source) && !!path) &&
     !isActive &&
     !isLoading &&
     !runPending;
@@ -313,8 +351,11 @@ export function LocalOnDeviceCard({
         ...variant,
         download_size_bytes:
           remoteVariant.download_size_bytes || variant.download_size_bytes,
-        // Both sides measure the same cache; keep the local reading and let the
-        // remote one cover a row the local listing could not price.
+        // An update's reading wins, even 0: the local header is the old revision.
+        lookup_table_bytes: remoteVariant.update_available
+          ? (remoteVariant.lookup_table_bytes ?? 0)
+          : variant.lookup_table_bytes || remoteVariant.lookup_table_bytes,
+        // Both sides measure the same cache; prefer local, fall back to remote.
         download_remaining_bytes:
           variant.download_remaining_bytes ??
           remoteVariant.download_remaining_bytes,
@@ -322,9 +363,7 @@ export function LocalOnDeviceCard({
       };
     });
   }, [currentVariantState.variants, remoteVariantState.variants]);
-  // The same live VRAM Budget the memory bar on this card reads. Without it the quant menu ranked
-  // against the 0.97 default while the bar beside it used the saved fraction, so an over-budget
-  // variant could sit above a smaller one that actually fits.
+  // Same live VRAM budget the memory bar reads, so the quant menu ranks consistently.
   const budgetFraction = useVramBudgetFraction() ?? undefined;
   const sortedVariants = useMemo(
     () =>
@@ -367,7 +406,10 @@ export function LocalOnDeviceCard({
     defaultVariant: currentVariantState.defaultVariant,
   });
   const selectedQuant = selectedVariant?.quant ?? null;
-  // True while a managed download/update for this repo+variant is in flight.
+  const memoryBarVariant = localGgufMemoryBarVariant(
+    selectedVariant,
+    currentVariantState.variants,
+  );
   const updateJobActive = useDownloadManagerStore((s) =>
     repoId
       ? Boolean(
@@ -396,9 +438,7 @@ export function LocalOnDeviceCard({
     !runPending &&
     !updateJobActive &&
     updateAvailable;
-  // Update runs as a MANAGED download (same path as a normal download) so it shows in the Downloads
-  // panel with manifest-based progress and a working Cancel. The worker re-resolves `main` and
-  // pulls changed blobs while the old cached copy stays runnable until the new revision verifies.
+  // Update runs as a managed download so it gets Downloads-panel progress and Cancel.
   const handleConfirmUpdate = () => {
     if (!repoId || !updateTargetVariant) return;
     setUpdateOpen(false);
@@ -439,7 +479,7 @@ export function LocalOnDeviceCard({
   return (
     <div className="flex w-full flex-col gap-2">
       {showOldCacheHint && (
-        <div className="flex items-start gap-2 rounded-[12px] border border-amber-500/20 bg-amber-500/8 px-3 py-2 text-ui-12 leading-5 text-amber-700 dark:text-amber-300">
+        <div className="flex items-start gap-2 rounded-lg border border-amber-500/20 bg-amber-500/8 px-3 py-2 text-ui-12 leading-5 text-amber-700 dark:text-amber-300">
           <HugeiconsIcon
             icon={Alert02Icon}
             strokeWidth={1.75}
@@ -469,7 +509,7 @@ export function LocalOnDeviceCard({
                     <button
                       type="button"
                       disabled={currentVariantState.loading || runPending}
-                      className="inline-flex h-6 max-w-[calc(170px*var(--ui-space-scale,1))] shrink-0 cursor-pointer items-center gap-1.5 rounded-[8px] border border-format-gguf/35 px-2 font-mono text-ui-10p5 leading-none text-format-gguf transition-colors hover:bg-format-gguf/8 disabled:cursor-not-allowed disabled:opacity-60"
+                      className="inline-flex h-6 max-w-[calc(170px*var(--ui-space-scale,1))] shrink-0 cursor-pointer items-center gap-1.5 rounded-full border border-format-gguf/35 px-2 font-mono text-ui-10p5 leading-none text-format-gguf transition-colors hover:bg-format-gguf/8 disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       <span className="truncate">
                         {currentVariantState.loading
@@ -520,7 +560,7 @@ export function LocalOnDeviceCard({
                               setVariantOpen(false);
                             }}
                             className={cn(
-                              "mx-2 flex w-[calc(100%-1rem*var(--ui-space-scale,1))] min-w-0 cursor-pointer items-center gap-2 rounded-[10px] px-2.5 py-2 text-left transition-colors",
+                              "mx-2 flex w-[calc(100%-1rem*var(--ui-space-scale,1))] min-w-0 cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-left transition-colors",
                               isSelected
                                 ? "bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] dark:bg-[color-mix(in_oklab,var(--foreground)_calc(12%*var(--contrast-wash-gain,1)),transparent)]"
                                 : "hover:bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)] dark:hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)]",
@@ -569,36 +609,42 @@ export function LocalOnDeviceCard({
               )}
               {canDelete && (
                 <CardDeleteButton
-                  label={`Delete ${repoId}`}
+                  label={`Delete ${isCacheRow ? repoId : displayName}`}
                   onClick={() => setDeleteOpen(true)}
+                />
+              )}
+              {(isCacheRow ? repoId : path) && (
+                <CardRevealButton
+                  onReveal={() =>
+                    isCacheRow && repoId
+                      ? revealCachedModel(repoId)
+                      : revealLocalModel(path, modelId)
+                  }
                 />
               )}
               <PathInfoButton path={path} />
             </div>
           </div>
           {showRunAction && onRun && (
-            <>
-              <CardDivider />
-              <ModelRunActionButton
-                label={`Configure and run ${displayName.trim() || "this model"}`}
-                loading={runPending}
-                onClick={() =>
-                  onRun(
-                    needsVariantSelection && selectedVariant
-                      ? {
-                          ggufVariant: selectedVariant.quant,
-                          ggufFilename: selectedVariant.filename,
-                          expectedBytes:
-                            selectedVariant.download_size_bytes &&
-                            selectedVariant.download_size_bytes > 0
-                              ? selectedVariant.download_size_bytes
-                              : selectedVariant.size_bytes,
-                        }
-                      : {},
-                  )
-                }
-              />
-            </>
+            <ModelRunActionButton
+              label={`Configure and run ${displayName.trim() || "this model"}`}
+              loading={runPending}
+              onClick={() =>
+                onRun(
+                  needsVariantSelection && selectedVariant
+                    ? {
+                        ggufVariant: selectedVariant.quant,
+                        ggufFilename: selectedVariant.filename,
+                        expectedBytes:
+                          selectedVariant.download_size_bytes &&
+                          selectedVariant.download_size_bytes > 0
+                            ? selectedVariant.download_size_bytes
+                            : selectedVariant.size_bytes,
+                      }
+                    : {},
+                )
+              }
+            />
           )}
         </div>
         {/* Render the full-width memory bar below the horizontal card row so it
@@ -609,13 +655,16 @@ export function LocalOnDeviceCard({
         (repoId || localGgufPath) &&
         (selectedQuant || localGgufPath.toLowerCase().endsWith(".gguf")) ? (
           <ModelMemoryBarFor
-            // The card's exact path identifies the downloaded artifact across
-            // cache roots and revisions. It is also the only identity available
-            // for a custom or local GGUF when repoId is null.
+            // The exact path identifies the artifact across caches; it is the only id for local GGUFs.
             repoId={repoId || localGgufPath}
             loadId={localGgufPath}
             quant={selectedQuant ?? ""}
-            sizeBytes={selectedVariant?.size_bytes}
+            sizeBytes={memoryBarVariant?.size_bytes}
+            lookupTableBytes={
+              memoryBarVariant
+                ? ggufVariantLookupTableBytes(memoryBarVariant)
+                : 0
+            }
             gpuGb={gpuGb}
             className="px-3 pb-2"
           />
@@ -634,19 +683,27 @@ export function LocalOnDeviceCard({
         onOpenChange={(o) => {
           if (!o && !deleting) setDeleteOpen(false);
         }}
-        title="Delete cached model?"
+        title={isCacheRow ? "Delete cached model?" : "Delete local model?"}
         deleting={deleting}
-        // Same gate the model row menu applies: when an installed image model still needs these
-        // assets the summary says so, and leaving Delete enabled only bought the user a 400.
+        // Same gate as the row menu: blocked deletes would otherwise just return a 400.
         blocked={(deleteImpact?.blocked_by.length ?? 0) > 0}
         onConfirm={() => void runDelete()}
         description={
-          <>
-            This will remove{" "}
-            <span className="font-medium text-foreground">{repoId}</span> and
-            its downloaded files from disk. You can re-download it later.
-            <DeleteImpactSummary impact={deleteImpact} />
-          </>
+          isCacheRow ? (
+            <>
+              This will remove{" "}
+              <span className="font-medium text-foreground">{repoId}</span> and
+              its downloaded files from disk. You can re-download it later.
+              <DeleteImpactSummary impact={deleteImpact} />
+            </>
+          ) : (
+            <>
+              This will permanently remove{" "}
+              <span className="font-medium text-foreground">{displayName}</span>{" "}
+              from{" "}
+              <span className="break-all font-mono text-xs">{path}</span>.
+            </>
+          )
         }
       />
       <UpdateConfirmDialog

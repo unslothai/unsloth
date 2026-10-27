@@ -23,6 +23,14 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const engine = useChatRuntimeStore((s) => s.params.engine ?? "auto");
   const engineParallelism = useChatRuntimeStore((s) => s.params.engineParallelism ?? "tensor");
   const enginePrecision = useChatRuntimeStore((s) => s.params.enginePrecision ?? "auto");
+  const engineKvCacheDtype = useChatRuntimeStore(
+    (s) => s.params.engineKvCacheDtype ?? "auto",
+  );
+  const engineSeed = useChatRuntimeStore((s) => s.params.engineSeed ?? null);
+  const engineGpuMemoryUtilization = useChatRuntimeStore(
+    (s) => s.params.engineGpuMemoryUtilization ?? null,
+  );
+  const loadIn4bit = useChatRuntimeStore((s) => s.params.loadIn4bit !== false);
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const loadedIsGguf = useChatRuntimeStore((s) => s.loadedIsGguf);
   const loadedIsMlx = useChatRuntimeStore((s) => s.loadedIsMlx);
@@ -33,6 +41,8 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const kvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
   const mlxKvQuant = useChatRuntimeStore((s) => s.mlxKvQuant);
   const mlxInt8Prefill = useChatRuntimeStore((s) => s.mlxInt8Prefill);
+  const mlxPleOffload = useChatRuntimeStore((s) => s.mlxPleOffload);
+  const mlxExpertOffload = useChatRuntimeStore((s) => s.mlxExpertOffload);
   const speculativeType = useChatRuntimeStore((s) => s.speculativeType);
   const specDraftNMax = useChatRuntimeStore((s) => s.specDraftNMax);
   const nParallel = useChatRuntimeStore((s) => s.nParallel);
@@ -79,18 +89,20 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     activeNativePathToken,
     checkpoint,
   });
-  const platform = usePlatformStore();
+  const deviceType = usePlatformStore((s) => s.deviceType);
+  const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
   const isMlx = residentIsServedByMlx(
     isGguf,
-    platform.deviceType,
-    platform.chatOnlyReason,
+    deviceType,
+    chatOnlyReason,
     loadedIsMlx,
   );
 
-  // Off-backend this stays null, or the model compares unequal to its own defaults
-  // over a field it cannot show.
+  // Null off MLX, or the model compares unequal to its own defaults.
   const effectiveMlxKvQuant = isMlx ? (mlxKvQuant ?? null) : null;
   const effectiveMlxInt8Prefill = isMlx && mlxInt8Prefill;
+  const effectiveMlxPleOffload = isMlx ? (mlxPleOffload ?? null) : null;
+  const effectiveMlxExpertOffload = isMlx ? (mlxExpertOffload ?? null) : null;
 
   const config = useMemo<PerModelConfig | null>(() => {
     if (!checkpoint || isExternalModelId(checkpoint)) {
@@ -101,13 +113,13 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       enginePrecision,
       engineParallelism,
       customContextLength: customContextLength ?? null,
-      // A self-sizing backend carries no pin here, exactly as the GGUF path does: this
-      // is the runtime's resolved length, and reading it back as the user's choice would
-      // pin every reload to whatever the first load happened to get.
+      // Self-sizing backends carry no pin: this is the resolved length, not the user's choice.
       maxSeqLength: isGguf || isMlx || isNpuModelId(checkpoint) ? null : maxSeqLength,
       kvCacheDtype: kvCacheDtype ?? null,
       mlxKvQuant: effectiveMlxKvQuant,
       mlxInt8Prefill: effectiveMlxInt8Prefill,
+      mlxPleOffload: effectiveMlxPleOffload,
+      mlxExpertOffload: effectiveMlxExpertOffload,
       speculativeType: speculativeType ?? "auto",
       specDraftNMax: specDraftNMax ?? null,
       nParallel: nParallel ?? null,
@@ -122,10 +134,18 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       tensorParallel: tensorParallel ?? false,
       disableVision: disableVision ?? false,
       chatTemplateOverride: chatTemplateOverride ?? null,
+      ...(isGguf || isMlx ? {} : { loadIn4bit }),
     };
     if (!isGguf) {
       return engine === "vllm" || engine === "sglang"
-        ? { ...base, selectedGpuIds, selectedGpuIndexKind }
+        ? {
+            ...base,
+            engineKvCacheDtype,
+            engineSeed,
+            engineGpuMemoryUtilization,
+            selectedGpuIds,
+            selectedGpuIndexKind,
+          }
         : base;
     }
     return {
@@ -136,7 +156,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       selectedGpuIds,
       selectedGpuIndexKind,
       tensorSplit: splitRatio,
-      // Absent until the runtime reports a list: undefined is what lets the editor hydrate the stored row.
+      // Undefined until the runtime reports a list, so the editor can hydrate the stored row.
       ...(loadedLlamaExtraArgs != null
         ? { llamaExtraArgs: [...loadedLlamaExtraArgs] }
         : {}),
@@ -149,10 +169,16 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     engine,
     enginePrecision,
     engineParallelism,
+    engineKvCacheDtype,
+    engineSeed,
+    engineGpuMemoryUtilization,
+    loadIn4bit,
     customContextLength,
     kvCacheDtype,
     effectiveMlxKvQuant,
     effectiveMlxInt8Prefill,
+    effectiveMlxPleOffload,
+    effectiveMlxExpertOffload,
     speculativeType,
     specDraftNMax,
     nParallel,

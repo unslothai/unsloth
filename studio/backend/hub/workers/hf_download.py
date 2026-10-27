@@ -36,9 +36,8 @@ from hub.utils.snapshot_filters import (
 )
 from hub.utils.gguf_plan import (
     GgufVariantPlan,
-    build_gguf_variant_plans,
-    plan_for_variant,
     plan_from_expected_files,
+    resolve_variant_plan,
     sibling_sha256,
 )
 from hub.utils.state_dir import RepoType
@@ -89,12 +88,7 @@ def _protected_blob_hashes() -> frozenset[str]:
 
 
 def _parent_is_alive(parent_pid: int) -> bool:
-    """Whether the recorded parent (the backend) is still running.
-
-    Liveness ONLY: ``os.kill(pid, 0)`` on POSIX, an ``OpenProcess`` handle on Windows, against the *recorded* PID (never os.getppid(), so POSIX reparenting to init after the backend dies still resolves as dead). Probe ambiguity is treated as alive so a transient error never kills a healthy download.
-
-    Deliberately does NOT compare psutil ``create_time()`` for PID-reuse detection: it is not stable across reads on some platforms, so an exact match can spuriously kill a live download. PID-reuse after parent death is covered by the boot-time orphan reaper.
-    """
+    """Probes the recorded parent PID, never getppid(), so reparenting to init still reads as dead."""
     if sys.platform == "win32":
         import ctypes
         from ctypes import wintypes
@@ -713,8 +707,8 @@ def _gguf_variant_target_plan(
         raise RuntimeError(
             f"Metadata unavailable while resolving GGUF variant '{variant}' " f"for {repo_id}"
         ) from e
-    # plan_for_variant, not .get: a repo filing every variant under one shared container qualifies every key, so a stored pin or an explicit repo:Q4_K_M missed the map and the worker exited with "No GGUF shards matching variant".
-    return plan_for_variant(build_gguf_variant_plans(list(info.siblings)), variant)
+    # plan_for_variant (inside resolve_variant_plan), not .get: a repo filing every variant under one shared container qualifies every key, so a stored pin or an explicit repo:Q4_K_M missed the map and the worker exited with "No GGUF shards matching variant".
+    return resolve_variant_plan(info.siblings, variant)
 
 
 def _download_gguf_variant(

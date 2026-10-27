@@ -161,6 +161,23 @@ def test_replies_a_command_asked_for_together_are_addressed_and_counted_by_row()
     assert resp.sent[-1]["stats"] is None
 
 
+def test_raw_completion_rows_join_the_batch_and_decode_alone_through_the_completion_path():
+    batch, _ = _batch()
+    cmd = _cmd(
+        rows = [{"prompt_ids": [5], "seed": 1}, {"prompt_ids": [6], "seed": 2}],
+        penalty_window = 3,
+        parallel_slots = 2,
+    )
+    assert batch.unavailable_reason(cmd) is None and batch.admit(cmd, None)
+    assert [(r["prompt_ids"], r["penalty_window"]) for _, r in batch.session.admitted] == [
+        ([5], 3),
+        ([6], 3),
+    ]
+    backend = SimpleNamespace(generate_completion = lambda ids, **kw: iter([f"{ids} {kw['seed']}"]))
+    apart = worker._rows_apart(backend, [{"prompt_ids": [5], "seed": 1}], threading.Event(), [None])
+    assert list(apart) == [(0, "[5] 1"), (0, None)]
+
+
 IDLE = object()
 
 

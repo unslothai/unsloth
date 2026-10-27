@@ -20,7 +20,7 @@ export type SandboxToolStatus = {
 
 export type TerminalShell = "bash" | "cmd_isolated" | "cmd_fallback";
 
-// "arch": not x64 Windows; "build": older than Windows 11 build 26100. MXC cannot run on either.
+// MXC needs x64 Windows 11 build 26100 or newer.
 export type RuntimeUnsupported = "arch" | "build";
 
 export type WindowsSandboxStatus = {
@@ -37,6 +37,9 @@ export type WindowsSandboxStatus = {
   prepareRepeatsAfterRestart: boolean;
   // true: MXC runs in Windows' built-in container; false: this Windows has none; null: unknown.
   builtinContainer: boolean | null;
+  // Set only when a Windows update adds the built-in container: this PC's build and the first with it.
+  windowsBuild: string | null;
+  builtinContainerBuild: string | null;
 };
 
 export type SandboxSetupPlan = {
@@ -136,6 +139,10 @@ type ApiWindowsStatus = {
   prepare_repeats_after_restart?: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
   builtin_container?: boolean | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  windows_build?: string | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  builtin_container_build?: string | null;
 };
 
 type ApiMemoryStatus = {
@@ -231,6 +238,8 @@ function windowsFromApi(
         : windows.host_prep_missing,
     prepareRepeatsAfterRestart: windows.prepare_repeats_after_restart ?? true,
     builtinContainer: windows.builtin_container ?? null,
+    windowsBuild: windows.windows_build ?? null,
+    builtinContainerBuild: windows.builtin_container_build ?? null,
   };
 }
 
@@ -275,7 +284,7 @@ export function jobFromApi(job: ApiHostPrepJob): HostPrepJob {
   };
 }
 
-// Older backends lack these routes: reported apart from a failure so the tab can say so.
+// Older backends lack these routes; report that apart from a failure.
 async function checked(
   res: Response,
   route: string,

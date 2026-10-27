@@ -3,6 +3,16 @@
 
 import { ATTACHMENT_PAGE_SCALES } from "@/components/assistant-ui/attachment-viewer-meta";
 import { ScaleMenu } from "@/components/media-viewer";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   ContextMenu,
@@ -25,6 +35,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Spinner } from "@/components/ui/spinner";
+import { AgentBar } from "./agent/agent-bar";
 import {
   Tooltip,
   TooltipContent,
@@ -36,7 +47,6 @@ import {
   attachmentFileKind,
   useChatRuntimeStore,
 } from "@/features/chat";
-import { formatBytes } from "@/features/hub";
 import { startLibraryChat } from "@/features/library";
 import {
   useSettingsDialogStore,
@@ -47,11 +57,12 @@ import { FIND_SKIP_ATTRIBUTE, requestFind } from "@/features/find-in-page";
 import { registerZoomScope } from "@/features/interface-zoom";
 import { useLocale, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
-import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
-import { copyToClipboard, copyToClipboardFrom } from "@/lib/copy-to-clipboard";
+import { ChevronDownStandardIcon, ChevronRightStandardIcon } from "@/lib/chevron-icons";
+import { asPng, copyToClipboard, copyToClipboardFrom } from "@/lib/copy-to-clipboard";
 import { openExternalLink } from "@/lib/open-link";
 import { RefreshGlyph } from "@/lib/refresh-icon";
 import { ShieldAlertGlyph } from "@/lib/shield-alert-icon";
+import { SquareDashedMousePointerIcon } from "@/lib/annotate-icon";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -65,8 +76,8 @@ import {
   Cancel01Icon,
   Clock01Icon,
   ComputerTerminal01Icon,
-  Copy01Icon,
-  CursorRectangleSelection02Icon,
+  Folder01Icon,
+  Link01Icon,
   Download01Icon,
   InternetIcon,
   MinusSignIcon,
@@ -80,14 +91,13 @@ import {
   ViewIcon,
   VolumeMute02Icon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
+import { ReloadIcon } from "@/lib/reload-icon";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import {
   ArrowLeft,
   ArrowRight,
-  ChevronRight,
-  RotateCw,
   ShieldCheck,
-  XIcon,
 } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import {
@@ -100,11 +110,21 @@ import {
   useRef,
   useState,
 } from "react";
-import { fileNameFromUrl, hostOf, resolveAddress } from "./address";
+import { fileNameFromUrl, hostOf, isLoopbackUrl, resolveAddress } from "./address";
 import { OtherSurfaceError, canPrintFrames, printPage, screenshotPage } from "./capture";
 import { canScreenshot } from "./screenshot-support";
 import { stageEditsPrompt } from "./stage-edits";
+import { revealLabelKey } from "./download-format";
+import { isDangerousDownload } from "./download-safety";
 import { type BrowserDownload, saveBrowserDownload, saveNeedsClick } from "./downloads";
+import {
+  type OpenWithApp,
+  localCopyPath,
+  openLocalCopy,
+  openWithApps,
+  revealLocalCopy,
+  withLocalCopy,
+} from "./open-with";
 import { DownloadsButton } from "./downloads-button";
 import { BROWSER_FIND_TARGET, registerBrowserFind } from "./find";
 import { ClearBrowsingDataDialog } from "./clear-data-dialog";
@@ -112,7 +132,7 @@ import { SiteFavicon } from "./site-favicon";
 import { AnnotateLayer, WebAnnotateLayer } from "./annotate-layer";
 import { BookmarkStar, BookmarksBar } from "./bookmarks";
 import { useBookmarkFor } from "./bookmarks-store";
-import { browserTabType, mediaKind, textFileKind } from "./file-kind";
+import { browserTabType, fileBarKind, mediaKind } from "./file-kind";
 import { canCopyVideoFrame, copyVideoFrame, tabVideo } from "./video-registry";
 import { CONTEXT_MENU } from "./link-context-menu";
 import { CONTEXT_TAB_MENU, TabMenuItems, focusRenameField, renameTabTo, setTabMuted } from "./tab-menu";
@@ -126,10 +146,12 @@ import {
 import {
   hasNativeView,
   nativeAction,
+  nativePageHasKeys,
   returnToNativePage,
   startNativeViews,
   useNativeBrowser,
 } from "./native-view";
+import { grantLocalOrigin, localOriginGranted } from "./native-support";
 import { type BookmarksToolbarMode, useBrowserPrefsStore } from "./prefs-store";
 import {
   type BrowserEntry,
@@ -140,13 +162,16 @@ import {
   type FileViewState,
   browserFile,
   cachedPage,
+  chatTabs,
   currentEntry,
   entryKey,
   pageDownload,
   useBrowserStore,
 } from "./store";
+import { sendFrameCommand, useFrameAvailable } from "./page-frame";
 import { TabView } from "./tab-view";
 import { ZOOM_STEPS, canZoom, homeZoom, stepZoom, zoomTab } from "./zoom";
+import { useShallow } from "zustand/shallow";
 
 function tabAddress(tab: BrowserTab | undefined): string {
   if (!tab) return "";
@@ -207,12 +232,16 @@ const PILL = cn(
 const TOOLBAR_BUTTON =
   "size-8 text-foreground disabled:hover:text-foreground disabled:opacity-30";
 
+/** IconButton's own look, for toolbar buttons rendered elsewhere (DownloadsButton). */
+const TOOLBAR_ICON_BUTTON =
+  "flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:opacity-35 disabled:hover:bg-transparent disabled:hover:text-muted-foreground";
 const NAV_BUTTON =
-  "size-8 rounded-md text-foreground disabled:hover:text-foreground disabled:opacity-30";
+  "size-8 rounded-full text-foreground disabled:hover:text-foreground disabled:opacity-30";
 const NAV_ICON = "size-4.5";
 const ANNOTATE_BUTTON = "size-8 shrink-0 rounded-full p-0 text-foreground";
-// The dashed box sits up-left of the glyph's centre, so nudge it to look centred.
-const ANNOTATE_GLYPH = "size-4.5 translate-x-[4%] translate-y-[4%]";
+// Half a pixel right and down: the frame's whole top-left corner and the pointer aimed back at it
+// read as up and left of centre, though the strokes are centred.
+const ANNOTATE_GLYPH = "size-4.5 translate-x-[0.5px] translate-y-[0.5px]";
 const NAV_STROKE = 2;
 const URLBAR =
   "bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] focus-within:bg-[color-mix(in_oklab,var(--foreground)_calc(9%*var(--contrast-wash-gain,1)),transparent)]";
@@ -245,7 +274,7 @@ function IconButton({
           onClick={onClick}
           disabled={disabled}
           className={cn(
-            "flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:opacity-35 disabled:hover:bg-transparent disabled:hover:text-muted-foreground",
+            TOOLBAR_ICON_BUTTON,
             className,
           )}
         >
@@ -264,7 +293,7 @@ function IconButton({
         {shortcut ? (
           <span className="flex items-center gap-1.5">
             {label}
-            <kbd className="rounded bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] px-1 py-px text-ui-10 font-medium leading-none dark:bg-[rgb(255_255_255_/_calc(0.15*var(--contrast-wash-gain,1)))]">
+            <kbd className="rounded-full bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] px-1 py-px text-ui-10 font-medium leading-none dark:bg-[rgb(255_255_255_/_calc(0.15*var(--contrast-wash-gain,1)))]">
               {shortcut}
             </kbd>
           </span>
@@ -433,7 +462,7 @@ function TabRenameInput({ tab, title }: { tab: BrowserTab; title: string }) {
       onPointerDown={(event) => event.stopPropagation()}
       onClick={(event) => event.stopPropagation()}
       onDoubleClick={(event) => event.stopPropagation()}
-      className="min-w-0 flex-1 rounded-[5px] bg-background px-1 text-ui-13 text-foreground outline-none ring-1 ring-ring"
+      className="min-w-0 flex-1 rounded-full bg-background px-1 text-ui-13 text-foreground outline-none ring-1 ring-ring"
     />
   );
 }
@@ -441,8 +470,7 @@ function TabRenameInput({ tab, title }: { tab: BrowserTab; title: string }) {
 const TAB_DRAG_THRESHOLD_PX = 5;
 const TAB_SHIFT_TRANSITION = "transform 160ms cubic-bezier(0.2, 0, 0, 1)";
 
-/** Which way the tab at `position` slides while the one from `slot` is held over `target`: the
- *  tabs it has passed move one place toward where it came from. */
+/** Which way a tab slides while another is dragged from slot over target; passed tabs shift one place. */
 function tabShift(position: number, slot: number, target: number): -1 | 0 | 1 {
   if (slot < target && position > slot && position <= target) return -1;
   if (target < slot && position >= target && position < slot) return 1;
@@ -618,7 +646,7 @@ function TabStrip({
     // Above the desktop titlebar's drag strip (z-40), which would swallow tab clicks.
     <div
       data-tauri-drag-region={true}
-      className="browser-chrome relative z-40 flex h-[var(--studio-chat-header-height,48px)] min-w-0 shrink-0 items-center gap-1 pl-1.5 pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-window-control-inset,0px))]"
+      className="browser-chrome relative z-40 flex h-[var(--studio-chat-header-height,48px)] min-w-0 shrink-0 items-center gap-1 pl-1.5 pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]"
     >
       <div
         ref={listRef}
@@ -633,7 +661,9 @@ function TabStrip({
       >
         {tabs.map((tab) => {
           const active = tab.id === activeTabId;
-          const title = tabTitle(tab, currentEntry(tab));
+          const entry = currentEntry(tab);
+          const title = tabTitle(tab, entry);
+          const local = entry.kind === "web" && !tab.nativeError && localOriginGranted(tab.id, entry.url);
           return (
             <TabContextMenu key={tab.id} tab={tab}>
               <div
@@ -654,7 +684,7 @@ function TabStrip({
                     activateTab(tab.id);
                 }}
                 className={cn(
-                  "group/tab relative flex h-[calc(34px*var(--ui-space-scale,1))] min-w-[calc(88px*var(--ui-space-scale,1))] max-w-60 flex-1 basis-0 cursor-pointer touch-none select-none items-center gap-1.5 rounded-[10px] pl-2 pr-1.5 text-ui-13 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                  "group/tab relative flex h-[calc(34px*var(--ui-space-scale,1))] min-w-[calc(88px*var(--ui-space-scale,1))] max-w-60 flex-1 basis-0 cursor-pointer touch-none select-none items-center gap-1.5 rounded-full pl-2 pr-1.5 text-ui-13 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
                   active
                     ? "bg-card text-foreground dark:bg-accent"
                     : "text-muted-foreground hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground",
@@ -668,6 +698,11 @@ function TabStrip({
                     {title}
                   </span>
                 )}
+                {local ? (
+                  <span className="shrink-0 rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] px-1.5 text-ui-10 font-medium leading-4 text-muted-foreground">
+                    {t("browser.local")}
+                  </span>
+                ) : null}
                 {tab.muted ? (
                   <button
                     type="button"
@@ -677,7 +712,7 @@ function TabStrip({
                       event.stopPropagation();
                       setTabMuted(tab, false);
                     }}
-                    className="flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground"
+                    className="flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground"
                   >
                     <HugeiconsIcon icon={VolumeMute02Icon} strokeWidth={1.75} className="size-3.5" />
                   </button>
@@ -690,7 +725,7 @@ function TabStrip({
                     closeTab(tab.id);
                   }}
                   className={cn(
-                    "flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground",
+                    "flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground",
                     !active &&
                       "hidden group-hover/tab:flex group-focus-visible/tab:flex focus-visible:flex",
                   )}
@@ -769,12 +804,15 @@ function AddressBar({
         event.preventDefault();
         const url = resolveAddress(value, engine);
         if (!url || !tab) return;
-        useBrowserStore.getState().navigate(tab.id, { url });
+        const open = () => useBrowserStore.getState().navigate(tab.id, { url });
+        // Typing a local address is what lets it open: never a link, a redirect or the agent.
+        if (useNativeBrowser.getState().enabled && isLoopbackUrl(url)) void grantLocalOrigin(tab.id, url).then(open, open);
+        else open();
         setEditing(false);
         inputRef.current?.blur();
       }}
     >
-      <div className={cn("flex h-9 items-center gap-0.5 rounded-lg pl-1 pr-1 transition-colors", URLBAR)}>
+      <div className={cn("flex h-9 items-center gap-0.5 rounded-full pl-1 pr-1 transition-colors", URLBAR)}>
         {/* Icons step aside while typing and come back after. */}
         {editing ? null : (leading ?? <SiteIdentity address={address} tab={tab} />)}
         <div className="relative min-w-0 flex-1">
@@ -824,8 +862,7 @@ function AddressBar({
   );
 }
 
-/** Whether `tab` shows its page as fetched: over https, Studio's fetch checks the certificate and
- *  host name, so a page that loaded had a valid one. A native view checks it itself. */
+/** Over https Studio's fetch checks the certificate, so a page that loaded had a valid one. */
 function pageVerified(tab: BrowserTab | undefined): boolean {
   if (!tab) return false;
   const entry = currentEntry(tab);
@@ -836,7 +873,6 @@ function pageVerified(tab: BrowserTab | undefined): boolean {
 
 const LEARN_MORE_URL = "https://support.mozilla.org/kb/how-do-i-tell-if-my-connection-is-secure";
 
-/** The shield at the bar's start: the site panel (connection, Security view, data, settings); a magnifier when there is no site. */
 function SiteIdentity({ address, tab }: { address: string; tab: BrowserTab | undefined }) {
   const t = useT();
   const [clearOpen, setClearOpen] = useState(false);
@@ -859,9 +895,9 @@ function SiteIdentity({ address, tab }: { address: string; tab: BrowserTab | und
   const verified = secure && pageVerified(tab);
   const label = t("browser.siteInfo.label");
   const row =
-    "flex w-full cursor-pointer items-center gap-2.5 rounded-[11px] px-3 py-2 text-start text-sm transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none";
+    "flex w-full cursor-pointer items-center gap-2.5 rounded-md px-3 py-2 text-start text-sm transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none";
   const iconButton =
-    "flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+    "flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
   const padlock = secure ? PadlockIcon : PadlockOpenIcon;
   return (
     <>
@@ -878,7 +914,7 @@ function SiteIdentity({ address, tab }: { address: string; tab: BrowserTab | und
               <button
                 type="button"
                 aria-label={label}
-                className="flex h-7 w-[calc(26px*var(--ui-space-scale,1))] shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] aria-expanded:text-foreground"
+                className="flex h-7 w-[calc(26px*var(--ui-space-scale,1))] shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] aria-expanded:text-foreground"
               >
                 {secure ? (
                   <ShieldCheck strokeWidth={2} className="size-4" />
@@ -892,7 +928,7 @@ function SiteIdentity({ address, tab }: { address: string; tab: BrowserTab | und
             {label}
           </TooltipContent>
         </Tooltip>
-        <PopoverContent align="start" sideOffset={8} className="browser-menu w-80 gap-0 rounded-[14px] p-1.5">
+        <PopoverContent align="start" sideOffset={8} className="browser-menu w-80 gap-0 rounded-lg p-1">
           {view === "site" ? (
             <>
               <div className="flex min-w-0 items-center gap-2.5 px-3 py-2">
@@ -908,7 +944,7 @@ function SiteIdentity({ address, tab }: { address: string; tab: BrowserTab | und
                 <span className="flex-1">
                   {t(secure ? "browser.siteInfo.secure" : "browser.siteInfo.insecure")}
                 </span>
-                <ChevronRight strokeWidth={2} className="size-4 shrink-0 text-muted-foreground rtl:-scale-x-100" />
+                <HugeiconsIcon icon={ChevronRightStandardIcon} strokeWidth={2} className="size-4 shrink-0 text-muted-foreground rtl:-scale-x-100" />
               </button>
               <button
                 type="button"
@@ -954,7 +990,7 @@ function SiteIdentity({ address, tab }: { address: string; tab: BrowserTab | und
                   className={iconButton}
                   onClick={() => setOpen(false)}
                 >
-                  <XIcon strokeWidth={2} className="size-4" />
+                  <HugeiconsIcon icon={Cancel01Icon} strokeWidth={2} className="size-4" />
                 </button>
               </div>
               <div className="mx-3 h-px bg-border" />
@@ -1060,7 +1096,7 @@ function WebActions({ tab, visible }: { tab: BrowserTab | undefined; visible: bo
     <>
       <AnnotatePageButton tab={tab} />
       {/* Recent downloads and the one in flight; saving the page itself is in the menu. */}
-      <DownloadsButton className={NAV_BUTTON} visible={visible} />
+      <DownloadsButton className={cn(TOOLBAR_ICON_BUTTON, NAV_BUTTON)} visible={visible} />
     </>
   );
 }
@@ -1092,7 +1128,7 @@ function ZoomControl({ tab }: { tab: BrowserTab | undefined }) {
   return (
     <div className="flex items-center gap-2 py-1 pl-3 pr-1 text-sm">
       <span className="flex-1">{t("browser.menu.zoom")}</span>
-      <div className="flex h-8 items-center rounded-[10px] border border-border">
+      <div className="flex h-8 items-center rounded-full border border-border">
         <button
           type="button"
           aria-label={t("browser.menu.zoomOut")}
@@ -1128,7 +1164,7 @@ function ZoomControl({ tab }: { tab: BrowserTab | undefined }) {
         aria-label={t("browser.menu.zoomReset")}
         disabled={!zoomable || zoom === resetZoom}
         onClick={() => setZoom(resetZoom)}
-        className={cn(step, "rounded-md")}
+        className={cn(step, "rounded-full")}
       >
         <RefreshGlyph strokeWidth={1.75} className="size-3.5" />
       </button>
@@ -1207,7 +1243,7 @@ function PanelMenu({ tab, children }: { tab: BrowserTab | undefined; children?: 
                 ref={triggerRef}
                 type="button"
                 aria-label={t("browser.more")}
-                className="flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-md text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)]"
+                className="flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)]"
               >
                 <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-5" />
               </button>
@@ -1220,7 +1256,7 @@ function PanelMenu({ tab, children }: { tab: BrowserTab | undefined; children?: 
         <DropdownMenuContent
           align="end"
           sideOffset={6}
-          className="browser-menu min-w-72 rounded-[20px] p-1.5 [&_[data-slot=dropdown-menu-separator]]:mx-3 [&_[data-slot=dropdown-menu-separator]]:my-1.5"
+          className="browser-menu min-w-72 rounded-lg p-1 [&_[data-slot=dropdown-menu-separator]]:mx-3 [&_[data-slot=dropdown-menu-separator]]:my-1.5"
           onCloseAutoFocus={(event) => {
             if (!keepFocus.current) return;
             keepFocus.current = false;
@@ -1312,7 +1348,7 @@ function PanelMenu({ tab, children }: { tab: BrowserTab | undefined; children?: 
           <DropdownMenuSeparator />
           <DropdownMenuSub>
             <DropdownMenuSubTrigger>{t("browser.pages.bookmarks")}</DropdownMenuSubTrigger>
-            <DropdownMenuSubContent className="browser-menu min-w-60 rounded-[20px] p-1.5 [&_[data-slot=dropdown-menu-separator]]:mx-3 [&_[data-slot=dropdown-menu-separator]]:my-1.5">
+            <DropdownMenuSubContent className="browser-menu min-w-60 rounded-lg p-1 [&_[data-slot=dropdown-menu-separator]]:mx-3 [&_[data-slot=dropdown-menu-separator]]:my-1.5">
               <DropdownMenuItem
                 disabled={!webUrl}
                 onSelect={() => {
@@ -1393,10 +1429,10 @@ function AnnotatePageButton({ tab }: { tab: BrowserTab | undefined }) {
       className={cn(
         ANNOTATE_BUTTON,
         annotating &&
-          "bg-primary/12 text-primary hover:bg-primary/18 hover:text-primary dark:bg-primary/20 dark:hover:bg-primary/25",
+          "bg-wash-12 text-foreground hover:bg-wash-18 hover:text-foreground dark:bg-wash-20 dark:hover:bg-wash-25",
       )}
     >
-      <HugeiconsIcon icon={CursorRectangleSelection02Icon} strokeWidth={1.75} className={ANNOTATE_GLYPH} />
+      <HugeiconsIcon icon={SquareDashedMousePointerIcon} strokeWidth={1.75} className={ANNOTATE_GLYPH} />
     </IconButton>
   );
 }
@@ -1407,21 +1443,21 @@ function WebToolbar({ tab, visible }: { tab: BrowserTab | undefined; visible: bo
   const { goBack, goForward, reload } = useBrowserStore.getState();
   const native = nativePage(tab);
   const canGoBack = Boolean(
-    tab && (tab.index > 0 || (native && (tab.nativeError || tab.nativeHistory?.back))),
+    tab && (tab.index > 0 || tab.pageHistory?.back || (native && (tab.nativeError || tab.nativeHistory?.back))),
   );
   const canGoForward = Boolean(
-    tab && (tab.index < tab.history.length - 1 || (native && tab.nativeHistory?.forward)),
+    tab && (tab.index < tab.history.length - 1 || tab.pageHistory?.forward || (native && tab.nativeHistory?.forward)),
   );
   const back = () => {
     if (!tab) return;
     if (native && tab.nativeError && returnToNativePage(tab.id)) return;
     if (native && tab.nativeHistory?.back) nativeAction(tab.id, "back");
-    else goBack(tab.id);
+    else if (!tab.pageHistory?.back || !sendFrameCommand(tab.id, { command: "go", delta: -1 })) goBack(tab.id);
   };
   const forward = () => {
     if (!tab) return;
     if (native && tab.nativeHistory?.forward) nativeAction(tab.id, "forward");
-    else goForward(tab.id);
+    else if (!tab.pageHistory?.forward || !sendFrameCommand(tab.id, { command: "go", delta: 1 })) goForward(tab.id);
   };
   return (
     <>
@@ -1447,7 +1483,7 @@ function WebToolbar({ tab, visible }: { tab: BrowserTab | undefined; visible: bo
           }}
           className={NAV_BUTTON}
         >
-          <RotateCw strokeWidth={NAV_STROKE} className={cn(NAV_ICON, "scale-[0.94]")} />
+          <HugeiconsIcon icon={ReloadIcon} strokeWidth={NAV_STROKE} className={NAV_ICON} />
         </IconButton>
       </div>
       <AddressBar
@@ -1470,12 +1506,8 @@ function WebToolbar({ tab, visible }: { tab: BrowserTab | undefined; visible: bo
 
 /** HTML and code use the browser chrome; other files keep the floating controls. */
 function usesBrowserChrome(entry: Extract<BrowserEntry, { kind: "file" }>): boolean {
-  const kind = textFileKind(entry.name, entry.contentType, entry.plainText);
-  return kind === "html" || kind === "code" || isVideoEntry(entry);
-}
-
-function isVideoEntry(entry: Extract<BrowserEntry, { kind: "file" }>): boolean {
-  return !entry.plainText && mediaKind(entry.name, entry.contentType) === "video";
+  const kind = fileBarKind(entry.name, entry.contentType, entry.plainText);
+  return kind === "html" || kind === "code";
 }
 
 function BrowserFileToolbar({
@@ -1493,19 +1525,13 @@ function BrowserFileToolbar({
   const { goBack, goForward } = useBrowserStore.getState();
   const download = tabDownload(tab);
   const blob = download?.blob;
-  const kind = textFileKind(entry.name, entry.contentType, entry.plainText);
+  const kind = fileBarKind(entry.name, entry.contentType, entry.plainText);
   const hasSource = kind === "html" || kind === "markdown";
   const showsSource = kind === "code" || kind === "text" || (hasSource && view.mode === "source");
   const htmlPreview = kind === "html" && view.mode === "preview";
   const setView = (patch: Partial<FileViewState>) => useBrowserStore.getState().setFileView(tab.id, patch);
-  // The preview is a frame the annotation layer can't select in, so marks go on the source.
-  useEffect(() => {
-    if (annotating && htmlPreview) useBrowserStore.getState().setAnnotating(null);
-  }, [annotating, htmlPreview]);
-  const toggleAnnotating = () => {
-    if (!annotating && htmlPreview) setView({ mode: "source" });
+  const toggleAnnotating = () =>
     useBrowserStore.getState().setAnnotating(annotating ? null : tab.id);
-  };
   const copyContents = () => {
     if (!blob) return;
     void copyToClipboardFrom(() => blob.text()).then((ok) => {
@@ -1572,7 +1598,7 @@ function BrowserFileToolbar({
           onClick={runAgain}
           className={NAV_BUTTON}
         >
-          <RotateCw strokeWidth={NAV_STROKE} className={cn(NAV_ICON, "scale-[0.94]")} />
+          <HugeiconsIcon icon={ReloadIcon} strokeWidth={NAV_STROKE} className={NAV_ICON} />
         </IconButton>
       </div>
       <AddressBar
@@ -1594,7 +1620,7 @@ function BrowserFileToolbar({
                         aria-label={t(`browser.file.${mode}`)}
                         onClick={() => setView({ mode })}
                         className={cn(
-                          "flex size-7 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                          "flex size-7 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                           view.mode === mode
                             ? "bg-background text-foreground shadow-sm dark:bg-card"
                             : "hover:text-foreground",
@@ -1629,11 +1655,11 @@ function BrowserFileToolbar({
           className={cn(
             ANNOTATE_BUTTON,
             annotating &&
-              "bg-primary/12 text-primary hover:bg-primary/18 hover:text-primary dark:bg-primary/20 dark:hover:bg-primary/25",
+              "bg-wash-12 text-foreground hover:bg-wash-18 hover:text-foreground dark:bg-wash-20 dark:hover:bg-wash-25",
           )}
         >
           <HugeiconsIcon
-            icon={CursorRectangleSelection02Icon}
+            icon={SquareDashedMousePointerIcon}
             strokeWidth={1.75}
             className={ANNOTATE_GLYPH}
           />
@@ -1647,7 +1673,7 @@ function BrowserFileToolbar({
                 aria-pressed={htmlPreview && view.consoleOpen}
                 onClick={toggleConsole}
                 className={cn(
-                  "flex h-8 min-w-8 shrink-0 cursor-pointer items-center justify-center gap-1 rounded-md px-1.5 text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  "flex h-8 min-w-8 shrink-0 cursor-pointer items-center justify-center gap-1 rounded-full px-1.5 text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                   htmlPreview &&
                     view.consoleOpen &&
                     "bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)]",
@@ -1680,45 +1706,37 @@ function BrowserFileToolbar({
         >
           <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-4.5" />
         </IconButton>
-        <DownloadsButton className={NAV_BUTTON} visible={visible} idleHidden={true} />
+        <DownloadsButton className={cn(TOOLBAR_ICON_BUTTON, NAV_BUTTON)} visible={visible} idleHidden={true} />
         <PanelMenu tab={tab}>
           <div className="flex items-start gap-3 px-3 py-2 text-sm">
             <KindIcon name={entry.name} contentType={entry.contentType} className="mt-0.5 size-4.5" mono={true} />
             <span className="min-w-0 break-words">{entry.name}</span>
           </div>
           <DropdownMenuSeparator />
-          <DropdownMenuSub>
-            <DropdownMenuSubTrigger disabled={!blob}>
-              <HugeiconsIcon icon={ArrowUpRight01Icon} strokeWidth={1.75} className="size-4" />
-              {t("browser.file.openIn")}
-            </DropdownMenuSubTrigger>
-            <DropdownMenuSubContent className="browser-menu min-w-52 rounded-[20px] p-1.5">
-              <DropdownMenuItem onSelect={openInNewChat}>
-                <HugeiconsIcon icon={BubbleChatAddIcon} strokeWidth={1.75} className="size-4.5" />
-                {t("browser.file.newChat")}
-              </DropdownMenuItem>
-              {/* A blob URL can't be handed to another app from the desktop app. */}
-              {isTauri || !tabType ? null : (
+          {/* A blob URL can't be handed to another app from the desktop app. */}
+          {isTauri || !tabType ? (
+            <DropdownMenuItem disabled={!blob} onSelect={openInNewChat}>
+              <HugeiconsIcon icon={BubbleChatAddIcon} strokeWidth={1.75} className="size-4" />
+              {t("browser.file.newChat")}
+            </DropdownMenuItem>
+          ) : (
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger disabled={!blob}>
+                <HugeiconsIcon icon={ArrowUpRight01Icon} strokeWidth={1.75} className="size-4" />
+                {t("browser.file.openIn")}
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent className="browser-menu min-w-52 rounded-lg p-1">
+                <DropdownMenuItem onSelect={openInNewChat}>
+                  <HugeiconsIcon icon={BubbleChatAddIcon} strokeWidth={1.75} className="size-4.5" />
+                  {t("browser.file.newChat")}
+                </DropdownMenuItem>
                 <DropdownMenuItem onSelect={openInBrowser}>
                   <HugeiconsIcon icon={InternetIcon} strokeWidth={1.75} className="size-4.5" />
                   {t("browser.file.newBrowserTab")}
                 </DropdownMenuItem>
-              )}
-            </DropdownMenuSubContent>
-          </DropdownMenuSub>
-          {kind === "html" ? (
-            <>
-              <DropdownMenuItem onSelect={runAgain}>
-                <RefreshGlyph strokeWidth={1.75} className="size-4" />
-                {t("browser.file.runAgain")}
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={toggleConsole}>
-                <HugeiconsIcon icon={ComputerTerminal01Icon} strokeWidth={1.75} className="size-4" />
-                {consoleLabel}
-                {errorBadge ? <span className="ml-auto">{errorBadge}</span> : null}
-              </DropdownMenuItem>
-            </>
-          ) : null}
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+          )}
           {kind ? (
             <DropdownMenuItem disabled={!blob} onSelect={copyContents}>
               <HugeiconsIcon icon={Copy01Icon} strokeWidth={1.75} className="size-4" />
@@ -1748,7 +1766,6 @@ function FloatingFileToolbar({
   visible,
 }: { tab: BrowserTab; entry: Extract<BrowserEntry, { kind: "file" }>; visible: boolean }) {
   const t = useT();
-  const navigate = useNavigate();
   const requestEdits = useBrowserStore((state) => state.requestEdits);
   const canAnnotate = useBrowserStore((state) => state.sendAnnotations !== null);
   const annotating = useBrowserStore((state) => state.annotateTabId === tab.id);
@@ -1756,19 +1773,15 @@ function FloatingFileToolbar({
   const [copied, setCopied] = useState(false);
   const download = tabDownload(tab);
   const blob = download?.blob;
-  const kind = textFileKind(entry.name, entry.contentType, entry.plainText);
-  const hasSource = kind === "html" || kind === "markdown";
-  const showsSource = kind === "code" || kind === "text" || (hasSource && view.mode === "source");
-  const htmlPreview = kind === "html" && view.mode === "preview";
+  // HTML and code take BrowserFileToolbar.
+  const kind = fileBarKind(entry.name, entry.contentType, entry.plainText);
+  const hasSource = kind === "markdown";
+  const media = entry.plainText ? null : mediaKind(entry.name, entry.contentType);
+  const timed = media === "video" || media === "audio";
+  const showsSource = kind === "text" || (hasSource && view.mode === "source");
   const setView = (patch: Partial<FileViewState>) => useBrowserStore.getState().setFileView(tab.id, patch);
-  // The preview is a frame the annotation layer can't select in, so marks go on the source.
-  useEffect(() => {
-    if (annotating && htmlPreview) useBrowserStore.getState().setAnnotating(null);
-  }, [annotating, htmlPreview]);
-  const toggleAnnotating = () => {
-    if (!annotating && htmlPreview) setView({ mode: "source" });
+  const toggleAnnotating = () =>
     useBrowserStore.getState().setAnnotating(annotating ? null : tab.id);
-  };
   const copyContents = () => {
     if (!blob) return;
     void copyToClipboardFrom(() => blob.text()).then((ok) => {
@@ -1780,32 +1793,20 @@ function FloatingFileToolbar({
       window.setTimeout(() => setCopied(false), 2000);
     });
   };
-  const runAgain = () => {
-    setView({ mode: "preview" });
-    useBrowserStore.getState().reload(tab.id);
-  };
-  const toggleConsole = () =>
-    htmlPreview
-      ? setView({ consoleOpen: !view.consoleOpen })
-      : setView({ mode: "preview", consoleOpen: true });
-  const openInNewChat = () => {
-    if (!blob) return;
-    startLibraryChat(navigate, {
-      files: [
-        new File([blob], entry.name, { type: entry.contentType || blob.type }),
-      ],
-    });
-  };
-  // Null for HTML and SVG, which would run on Studio's origin from a blob URL.
-  const tabType = browserTabType(entry.name, entry.contentType || blob?.type || "");
-  const openInBrowser = () => {
-    if (!blob || !tabType) return;
-    const url = URL.createObjectURL(new Blob([blob], { type: tabType }));
-    window.open(url, "_blank", "noopener,noreferrer");
-    window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
-  };
+  const fileLabel = (
+    <>
+      <KindIcon
+        name={entry.name}
+        contentType={entry.contentType}
+        className="size-4.5"
+        mono={true}
+      />
+      <span className="min-w-0 truncate">{fileTitle(entry.name)}</span>
+    </>
+  );
   return (
     <>
+      {kind ? (
       <DropdownMenu>
         <DropdownMenuTrigger asChild={true}>
           <button
@@ -1815,13 +1816,7 @@ function FloatingFileToolbar({
               "flex h-9 min-w-24 max-w-[55%] shrink cursor-pointer items-center gap-2 rounded-full pl-3.5 pr-2.5 text-ui-13p5 text-foreground outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring",
             )}
           >
-            <KindIcon
-              name={entry.name}
-              contentType={entry.contentType}
-              className="size-4.5"
-              mono={true}
-            />
-            <span className="min-w-0 truncate">{fileTitle(entry.name)}</span>
+            {fileLabel}
             <HugeiconsIcon
               icon={ChevronDownStandardIcon}
               strokeWidth={1.75}
@@ -1832,7 +1827,7 @@ function FloatingFileToolbar({
         <DropdownMenuContent
           align="start"
           sideOffset={6}
-          className="browser-menu w-80 max-w-[calc(100vw-2rem)] rounded-[20px] p-1.5 [&_[data-slot=dropdown-menu-separator]]:mx-3 [&_[data-slot=dropdown-menu-separator]]:my-1.5"
+          className="browser-menu w-80 max-w-[calc(100vw-2rem)] rounded-lg p-1 [&_[data-slot=dropdown-menu-separator]]:mx-3 [&_[data-slot=dropdown-menu-separator]]:my-1.5"
         >
           <div className="flex items-start gap-3 px-3 py-2 text-sm">
             <KindIcon
@@ -1844,78 +1839,13 @@ function FloatingFileToolbar({
             <span className="min-w-0 break-words">{entry.name}</span>
           </div>
           <DropdownMenuSeparator />
-          <DropdownMenuSub>
-            <DropdownMenuSubTrigger disabled={!blob}>
-              <HugeiconsIcon
-                icon={ArrowUpRight01Icon}
-                strokeWidth={1.75}
-                className="size-4"
-              />
-              {t("browser.file.openIn")}
-            </DropdownMenuSubTrigger>
-            <DropdownMenuSubContent className="browser-menu min-w-52 rounded-[20px] p-1.5">
-              <DropdownMenuItem onSelect={openInNewChat}>
-                <HugeiconsIcon
-                  icon={BubbleChatAddIcon}
-                  strokeWidth={1.75}
-                  className="size-4.5"
-                />
-                {t("browser.file.newChat")}
-              </DropdownMenuItem>
-              {/* A blob URL can't be handed to another app from the desktop app. */}
-              {isTauri || !tabType ? null : (
-                <DropdownMenuItem onSelect={openInBrowser}>
-                  <HugeiconsIcon
-                    icon={InternetIcon}
-                    strokeWidth={1.75}
-                    className="size-4.5"
-                  />
-                  {t("browser.file.newBrowserTab")}
-                </DropdownMenuItem>
-              )}
-            </DropdownMenuSubContent>
-          </DropdownMenuSub>
-          {kind === "html" ? (
-            <>
-              <DropdownMenuItem onSelect={runAgain}>
-                <RefreshGlyph strokeWidth={1.75} className="size-4" />
-                {t("browser.file.runAgain")}
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={toggleConsole}>
-                <HugeiconsIcon
-                  icon={ComputerTerminal01Icon}
-                  strokeWidth={1.75}
-                  className="size-4"
-                />
-                {t("browser.file.console")}
-                {view.errorCount > 0 ? (
-                  <span className="ml-auto rounded-full bg-destructive px-1.5 text-ui-10 font-medium leading-4 text-destructive-foreground">
-                    {view.errorCount}
-                  </span>
-                ) : null}
-              </DropdownMenuItem>
-            </>
-          ) : null}
-          {kind ? (
-            <DropdownMenuItem disabled={!blob} onSelect={copyContents}>
-              <HugeiconsIcon
-                icon={Copy01Icon}
-                strokeWidth={1.75}
-                className="size-4"
-              />
-              {t("browser.file.copy")}
-            </DropdownMenuItem>
-          ) : null}
-          <DropdownMenuItem
-            disabled={!download}
-            onSelect={() => download && void saveBrowserDownload(download)}
-          >
+          <DropdownMenuItem disabled={!blob} onSelect={copyContents}>
             <HugeiconsIcon
-              icon={Download01Icon}
+              icon={Copy01Icon}
               strokeWidth={1.75}
               className="size-4"
             />
-            {t("browser.download")}
+            {t("browser.file.copy")}
           </DropdownMenuItem>
           {showsSource ? (
             <>
@@ -1937,29 +1867,42 @@ function FloatingFileToolbar({
           ) : null}
         </DropdownMenuContent>
       </DropdownMenu>
-      {/* A true circle, glyph centred; the label is its tooltip. */}
-      <IconButton
-        label={t("browser.file.requestEdits")}
-        // Without a chat to send marks to, stages a prompt naming the file.
-        onClick={() =>
-          canAnnotate
-            ? toggleAnnotating()
-            : (requestEdits ?? stageEditsPrompt)(
-                t("browser.file.requestEditsPrompt", { name: entry.name }),
-              )
-        }
-        className={cn(
-          PILL,
-          "size-9 rounded-full p-0 text-foreground",
-          annotating && "text-primary hover:text-primary",
-        )}
-      >
-        <HugeiconsIcon
-          icon={CursorRectangleSelection02Icon}
-          strokeWidth={1.75}
-          className={ANNOTATE_GLYPH}
-        />
-      </IconButton>
+      ) : (
+        <div
+          title={entry.name}
+          className={cn(
+            PILL_SURFACE,
+            "flex h-9 min-w-24 max-w-[55%] shrink items-center gap-2 rounded-full px-3.5 text-ui-13p5 text-foreground",
+          )}
+        >
+          {fileLabel}
+        </div>
+      )}
+      {/* A true circle, glyph centred; the label is its tooltip. A clip or a track has nothing to mark. */}
+      {timed ? null : (
+        <IconButton
+          label={t("browser.file.requestEdits")}
+          // Without a chat to send marks to, stages a prompt naming the file.
+          onClick={() =>
+            canAnnotate
+              ? toggleAnnotating()
+              : (requestEdits ?? stageEditsPrompt)(
+                  t("browser.file.requestEditsPrompt", { name: entry.name }),
+                )
+          }
+          className={cn(
+            PILL,
+            "size-9 rounded-full p-0 text-foreground",
+            annotating && "text-primary hover:text-primary",
+          )}
+        >
+          <HugeiconsIcon
+            icon={SquareDashedMousePointerIcon}
+            strokeWidth={1.75}
+            className={ANNOTATE_GLYPH}
+          />
+        </IconButton>
+      )}
       <span
         aria-hidden={true}
         className="min-w-0 flex-1 pointer-events-none!"
@@ -2000,56 +1943,9 @@ function FloatingFileToolbar({
           ))}
         </div>
       ) : null}
-      {kind === "html" ? (
-        <>
-          <CircleButton
-            label={t("browser.file.runAgain")}
-            onClick={runAgain}
-            className="hidden size-9 @[40rem]:flex"
-          >
-            <RefreshGlyph strokeWidth={1.75} className="size-4" />
-          </CircleButton>
-          <Tooltip>
-            <TooltipTrigger asChild={true}>
-              <button
-                type="button"
-                aria-label={t("browser.file.console")}
-                aria-pressed={htmlPreview && view.consoleOpen}
-                onClick={toggleConsole}
-                className={cn(
-                  PILL,
-                  "hidden h-9 min-w-9 @[40rem]:flex shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-full px-2.5 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                  htmlPreview && view.consoleOpen && "text-foreground",
-                )}
-              >
-                <HugeiconsIcon
-                  icon={ComputerTerminal01Icon}
-                  strokeWidth={1.75}
-                  className="size-4"
-                />
-                {view.errorCount > 0 ? (
-                  <span className="rounded-full bg-destructive px-1.5 text-ui-10 font-medium leading-4 text-destructive-foreground">
-                    {view.errorCount}
-                  </span>
-                ) : null}
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" className="tooltip-compact">
-              {t("browser.file.console")}
-            </TooltipContent>
-          </Tooltip>
-        </>
-      ) : null}
-      {kind ? (
-        <CircleButton
-          label={copied ? t("browser.file.copied") : t("browser.file.copy")}
-          icon={copied ? Tick02Icon : Copy01Icon}
-          disabled={!blob}
-          onClick={copyContents}
-          className="hidden size-9 @[40rem]:flex"
-        />
-      ) : null}
-      <ScaleMenu
+      <CopySplit tab={tab} entry={entry} blob={blob} copied={copied} onCopyContents={copyContents} />
+      {timed ? null : (
+        <ScaleMenu
         value={tab.zoom}
         scales={ATTACHMENT_PAGE_SCALES}
         contentClassName="browser-menu"
@@ -2059,7 +1955,9 @@ function FloatingFileToolbar({
             .setZoom(tab.id, value === "fit" ? 1 : value)
         }
         className={cn(PILL, "mr-0 hidden h-9 pr-2.5 @[28rem]:flex")}
-      />
+        />
+      )}
+      <OpenSplit key={entry.fileId} entry={entry} blob={blob} />
       <CircleButton
         label={t("browser.download")}
         icon={Download01Icon}
@@ -2072,9 +1970,13 @@ function FloatingFileToolbar({
   );
 }
 
-const SPLIT_PILL = cn(PILL, "flex h-9 shrink-0 items-center rounded-full");
+const SPLIT_PILL = cn(
+  PILL,
+  "flex h-9 shrink-0 items-center rounded-full",
+  "has-[[data-state=open]]:bg-[color-mix(in_oklab,var(--pill-bg),var(--foreground)_var(--pill-hover))]",
+);
 const SPLIT_PART =
-  "flex h-full cursor-pointer items-center rounded-full text-ui-13p5 text-foreground outline-none transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_6%,transparent)] focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_8%,transparent)]";
+  "flex h-full cursor-pointer items-center rounded-full text-ui-13p5 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50";
 
 function SplitChevron() {
   return (
@@ -2086,34 +1988,34 @@ function SplitChevron() {
   );
 }
 
-/** Video file bar: the name, then Copy and Open, each with its options. */
-function VideoFileToolbar({
+type FileEntry = Extract<BrowserEntry, { kind: "file" }>;
+
+function CopySplit({
   tab,
   entry,
-  visible,
-}: { tab: BrowserTab; entry: Extract<BrowserEntry, { kind: "file" }>; visible: boolean }) {
+  blob,
+  copied,
+  onCopyContents,
+}: {
+  tab: BrowserTab;
+  entry: FileEntry;
+  blob: Blob | undefined;
+  copied: boolean;
+  onCopyContents: () => void;
+}) {
   const t = useT();
-  const navigate = useNavigate();
-  const download = tabDownload(tab);
-  const blob = download?.blob;
-  const { goBack, goForward } = useBrowserStore.getState();
-  // A blob URL can't be handed to another app from the desktop app.
-  const tabType = isTauri ? null : browserTabType(entry.name, entry.contentType || blob?.type || "");
-  const canOpenTab = tabType !== null;
-  const frameCopies = canCopyVideoFrame();
-  const openInBrowser = () => {
-    if (!blob || !tabType) return;
-    const url = URL.createObjectURL(new Blob([blob], { type: tabType }));
-    window.open(url, "_blank", "noopener,noreferrer");
-    window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
-  };
-  const openInNewChat = () => {
+  const kind = fileBarKind(entry.name, entry.contentType, entry.plainText);
+  const media = entry.plainText ? null : mediaKind(entry.name, entry.contentType);
+  // The desktop app's clipboard takes no images (video-registry.ts), so it copies the path instead.
+  const images = canCopyVideoFrame();
+  const copyImage = () => {
     if (!blob) return;
-    startLibraryChat(navigate, {
-      files: [new File([blob], entry.name, { type: entry.contentType || blob.type })],
-    });
+    // The item is made now, inside the click, and resolves later: Safari refuses a write made after.
+    navigator.clipboard.write([new ClipboardItem({ "image/png": asPng(blob) })]).then(
+      () => toast.success(t("imageViewer.copied")),
+      () => toast.error(t("imageViewer.copyFailed")),
+    );
   };
-  const save = () => download && void saveBrowserDownload(download);
   const copyFrame = () => {
     const video = tabVideo(tab.id);
     if (!video) return;
@@ -2121,126 +2023,193 @@ function VideoFileToolbar({
       ok ? toast.success(t("browser.video.frameCopied")) : toast.error(t("browser.video.copyFrameFailed")),
     );
   };
-  const copyName = () =>
-    void copyToClipboard(entry.name).then((ok) => ok && toast.success(t("browser.video.nameCopied")));
-  const extension = /\.([a-z0-9]+)$/i.exec(entry.name)?.[1]?.toUpperCase();
-  const meta = [extension, blob ? formatBytes(blob.size) : null].filter(Boolean).join(" · ");
+  const copyPath = () => {
+    if (!blob) return;
+    void copyToClipboardFrom(() => withLocalCopy(blob, entry.name, (copy) => localCopyPath(copy.id))).then((ok) =>
+      ok ? toast.success(t("browser.file.pathCopied")) : toast.error(t("browser.file.copyFailed")),
+    );
+  };
+  const options: { label: string; icon: IconSvgElement; run: () => void }[] = [];
+  if (kind) options.push({ label: t("browser.file.copy"), icon: Copy01Icon, run: onCopyContents });
+  if (media === "image" && images) options.push({ label: t("imageViewer.copy"), icon: Copy01Icon, run: copyImage });
+  if (media === "video" && images) {
+    options.push({ label: t("browser.video.copyFrame"), icon: Copy01Icon, run: copyFrame });
+  }
+  if (isTauri) options.push({ label: t("browser.file.copyPath"), icon: Link01Icon, run: copyPath });
+  const [first, ...rest] = options;
+  if (!first) return null;
   return (
-    <>
-      {/* As the panel narrows, back/forward and then Copy hide before the name does. */}
-      <div className="hidden shrink-0 items-center gap-0.5 @[34rem]:flex">
-        <IconButton
-          label={t("browser.back")}
-          disabled={tab.index === 0}
-          onClick={() => goBack(tab.id)}
-          className={NAV_BUTTON}
-        >
-          <ArrowLeft strokeWidth={NAV_STROKE} className={NAV_ICON} />
-        </IconButton>
-        <IconButton
-          label={t("browser.forward")}
-          disabled={tab.index >= tab.history.length - 1}
-          onClick={() => goForward(tab.id)}
-          className={NAV_BUTTON}
-        >
-          <ArrowRight strokeWidth={NAV_STROKE} className={NAV_ICON} />
-        </IconButton>
-      </div>
-      <div
-        title={entry.name}
-        className={cn(PILL_SURFACE, "flex h-9 min-w-24 flex-1 items-center gap-2 rounded-full px-3.5")}
-      >
-        <KindIcon name={entry.name} contentType={entry.contentType} className="size-4.5" />
-        <span className="min-w-0 truncate text-ui-13p5 text-foreground">{entry.name}</span>
-        {meta ? (
-          <span className="hidden shrink-0 text-ui-12 text-muted-foreground @[30rem]:inline">{meta}</span>
-        ) : null}
-      </div>
-      {/* Without Copy frame (desktop app) the name is all there is to copy. */}
-      <div className={cn(SPLIT_PILL, "hidden @[26rem]:flex")}>
-        <Tooltip>
-          <TooltipTrigger asChild={true}>
-            <button
-              type="button"
-              aria-label={frameCopies ? t("browser.video.copyFrame") : t("browser.video.copyName")}
-              onClick={frameCopies ? copyFrame : copyName}
-              className={cn(SPLIT_PART, frameCopies ? "pl-2.5 pr-1" : "px-2.5")}
-            >
-              <HugeiconsIcon icon={Copy01Icon} strokeWidth={1.75} className="size-4.5" />
-            </button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom" className="tooltip-compact">
-            {frameCopies ? t("browser.video.copyFrame") : t("browser.video.copyName")}
-          </TooltipContent>
-        </Tooltip>
-        {frameCopies ? (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild={true}>
-              <button type="button" aria-label={t("browser.video.copyOptions")} className={cn(SPLIT_PART, "pr-2 pl-1")}>
-                <SplitChevron />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" sideOffset={6} className="browser-menu min-w-52 rounded-[20px] p-1.5">
-              <DropdownMenuItem onSelect={copyFrame}>
-                <HugeiconsIcon icon={Copy01Icon} strokeWidth={1.75} className="size-4" />
-                {t("browser.video.copyFrame")}
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={copyName}>
-                <HugeiconsIcon icon={TextWrapIcon} strokeWidth={1.75} className="size-4" />
-                {t("browser.video.copyName")}
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        ) : null}
-      </div>
-      <div className={SPLIT_PILL}>
-        <button
-          type="button"
-          disabled={!blob}
-          onClick={canOpenTab ? openInBrowser : save}
-          title={canOpenTab ? t("browser.file.newBrowserTab") : t("browser.video.saveAs")}
-          className={cn(SPLIT_PART, "gap-1.5 pr-1.5 pl-3")}
-        >
-          <HugeiconsIcon
-            icon={canOpenTab ? ArrowUpRight01Icon : Download01Icon}
-            strokeWidth={1.75}
-            className="size-4.5"
-          />
-          {canOpenTab ? t("browser.video.open") : t("browser.video.saveAs")}
-        </button>
+    <div className={cn(SPLIT_PILL, "hidden @[40rem]:flex")}>
+      <Tooltip>
+        <TooltipTrigger asChild={true}>
+          <button
+            type="button"
+            aria-label={first.label}
+            disabled={!blob}
+            onClick={first.run}
+            className={cn(SPLIT_PART, rest.length > 0 ? "pl-2.5 pr-1" : "px-2.5")}
+          >
+            <HugeiconsIcon icon={copied ? Tick02Icon : first.icon} strokeWidth={1.75} className="size-4.5" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" className="tooltip-compact">
+          {first.label}
+        </TooltipContent>
+      </Tooltip>
+      {rest.length > 0 ? (
         <DropdownMenu>
           <DropdownMenuTrigger asChild={true}>
             <button
               type="button"
               disabled={!blob}
-              aria-label={t("browser.video.openOptions")}
-              className={cn(SPLIT_PART, "pr-2.5 pl-1")}
+              aria-label={t("browser.video.copyOptions")}
+              className={cn(SPLIT_PART, "pr-2 pl-1")}
             >
               <SplitChevron />
             </button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" sideOffset={6} className="browser-menu min-w-56 rounded-[20px] p-1.5">
-            {canOpenTab ? (
-              <DropdownMenuItem onSelect={openInBrowser}>
-                <HugeiconsIcon icon={InternetIcon} strokeWidth={1.75} className="size-4.5" />
-                {t("browser.file.newBrowserTab")}
+          <DropdownMenuContent align="end" sideOffset={6} className="browser-menu min-w-52 rounded-lg p-1">
+            {options.map((option) => (
+              <DropdownMenuItem key={option.label} onSelect={option.run}>
+                <HugeiconsIcon icon={option.icon} strokeWidth={1.75} className="size-4" />
+                {option.label}
               </DropdownMenuItem>
-            ) : null}
-            <DropdownMenuItem onSelect={openInNewChat}>
-              <HugeiconsIcon icon={BubbleChatAddIcon} strokeWidth={1.75} className="size-4.5" />
-              {t("browser.file.newChat")}
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onSelect={save}>
-              <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-4.5" />
-              {t("browser.video.saveAs")}
-            </DropdownMenuItem>
+            ))}
           </DropdownMenuContent>
         </DropdownMenu>
-      </div>
-      <DownloadsButton className={NAV_BUTTON} visible={visible} idleHidden={true} />
-      <PanelMenu tab={tab} />
-    </>
+      ) : null}
+    </div>
+  );
+}
+
+function AppIcon({ app }: { app: OpenWithApp }) {
+  return app.icon ? (
+    <img src={app.icon} alt="" aria-hidden={true} className="size-4.5 shrink-0" />
+  ) : (
+    <HugeiconsIcon icon={ArrowUpRight01Icon} strokeWidth={1.75} className="size-4.5" />
+  );
+}
+
+function OpenSplit({ entry, blob }: { entry: FileEntry; blob: Blob | undefined }) {
+  const t = useT();
+  const navigate = useNavigate();
+  const [apps, setApps] = useState<OpenWithApp[] | null>(null);
+  const listing = useRef(false);
+  // Programs and scripts never open from here (browser_open_with.rs); their folder still does.
+  const runsCode = isDangerousDownload(entry.name);
+  const tabType = isTauri ? null : browserTabType(entry.name, entry.contentType || blob?.type || "");
+  const failed = () => toast.error(t("browser.file.openFailed", { name: entry.name }));
+  const listApps = () => {
+    if (!isTauri || !blob || runsCode || listing.current) return;
+    listing.current = true;
+    withLocalCopy(blob, entry.name, (copy) => openWithApps(copy.id)).then(setApps, () => setApps([]));
+  };
+  const openWith = (app?: string) => {
+    if (!blob) return;
+    void withLocalCopy(blob, entry.name, (copy) => openLocalCopy(copy.id, app)).catch(failed);
+  };
+  const reveal = () => {
+    if (!blob) return;
+    void withLocalCopy(blob, entry.name, (copy) => revealLocalCopy(copy.id)).catch(failed);
+  };
+  const openInNewChat = () => {
+    if (!blob) return;
+    startLibraryChat(navigate, {
+      files: [new File([blob], entry.name, { type: entry.contentType || blob.type })],
+    });
+  };
+  const openInBrowser = () => {
+    if (!blob || !tabType) return;
+    const url = URL.createObjectURL(new Blob([blob], { type: tabType }));
+    window.open(url, "_blank", "noopener,noreferrer");
+    window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  };
+  const defaultApp = apps?.find((app) => app.default) ?? null;
+  const primary = isTauri
+    ? runsCode
+      ? { label: t(revealLabelKey()), run: reveal }
+      : { label: t("browser.video.open"), run: () => openWith() }
+    : tabType
+      ? { label: t("browser.video.open"), run: openInBrowser }
+      : { label: t("browser.file.newChat"), run: openInNewChat };
+  // Else the menu would only repeat New chat.
+  const hasMenu = isTauri || tabType !== null;
+  return (
+    <div className={SPLIT_PILL} onPointerEnter={listApps} onFocus={listApps}>
+      <button
+        type="button"
+        disabled={!blob}
+        onClick={primary.run}
+        title={defaultApp ? defaultApp.name : undefined}
+        className={cn(SPLIT_PART, hasMenu ? "gap-2 pr-1.5 pl-3" : "gap-2 px-3")}
+      >
+        {defaultApp && !runsCode ? (
+          <AppIcon app={defaultApp} />
+        ) : (
+          <HugeiconsIcon
+            icon={isTauri && runsCode ? Folder01Icon : ArrowUpRight01Icon}
+            strokeWidth={1.75}
+            className="size-4.5"
+          />
+        )}
+        {primary.label}
+      </button>
+      {hasMenu ? (
+      <DropdownMenu onOpenChange={(open) => open && listApps()}>
+        <DropdownMenuTrigger asChild={true}>
+          <button
+            type="button"
+            disabled={!blob}
+            aria-label={t("browser.video.openOptions")}
+            className={cn(SPLIT_PART, "pr-2.5 pl-1")}
+          >
+            <SplitChevron />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" sideOffset={6} className="browser-menu min-w-56 rounded-lg p-1">
+          {isTauri && !runsCode ? (
+            <>
+              {apps === null ? (
+                <div className="flex h-8 items-center px-2.5">
+                  <Spinner className="size-4" />
+                </div>
+              ) : (
+                apps.map((app) => (
+                  <DropdownMenuItem key={app.path} onSelect={() => openWith(app.path)}>
+                    <AppIcon app={app} />
+                    {app.name}
+                  </DropdownMenuItem>
+                ))
+              )}
+              {apps?.length === 0 ? (
+                <DropdownMenuItem onSelect={() => openWith()}>
+                  <HugeiconsIcon icon={ArrowUpRight01Icon} strokeWidth={1.75} className="size-4.5" />
+                  {t("browser.video.open")}
+                </DropdownMenuItem>
+              ) : null}
+              <DropdownMenuSeparator />
+            </>
+          ) : null}
+          {isTauri ? (
+            <DropdownMenuItem onSelect={reveal}>
+              <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-4.5" />
+              {t(revealLabelKey())}
+            </DropdownMenuItem>
+          ) : null}
+          {tabType ? (
+            <DropdownMenuItem onSelect={openInBrowser}>
+              <HugeiconsIcon icon={InternetIcon} strokeWidth={1.75} className="size-4.5" />
+              {t("browser.file.newBrowserTab")}
+            </DropdownMenuItem>
+          ) : null}
+          <DropdownMenuItem onSelect={openInNewChat}>
+            <HugeiconsIcon icon={BubbleChatAddIcon} strokeWidth={1.75} className="size-4.5" />
+            {t("browser.file.newChat")}
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      ) : null}
+    </div>
   );
 }
 
@@ -2291,17 +2260,31 @@ function DeviceBar() {
 }
 
 const MAX_MOUNTED_TABS = 4;
-// Hidden web pages run scripts on the chat's thread, so only the newest stays live.
+// Hidden pages share the chat's thread; keep only one ordinary page and three drafts.
 const MAX_HIDDEN_WEB_PAGES = 1;
+const MAX_TYPED_PAGES = 3;
+
+function typedTabIds(tabs: BrowserTab[], activeTabId: string | null): Set<string> {
+  const typed = tabs.filter((tab) => tab.typedAt !== undefined && tab.id !== activeTabId).sort((a, b) => (b.typedAt ?? 0) - (a.typedAt ?? 0));
+  return new Set(typed.slice(0, MAX_TYPED_PAGES).map((tab) => tab.id));
+}
+
+function mountedTabIds(mounted: readonly string[], tabs: BrowserTab[], activeTabId: string): string[] {
+  const open = new Set(tabs.map((tab) => tab.id));
+  const typed = new Set(tabs.filter((tab) => tab.typedAt !== undefined).map((tab) => tab.id));
+  const recent = [...mounted.filter((id) => id !== activeTabId && open.has(id)), activeTabId];
+  return recent.filter((id, index) => index >= recent.length - MAX_MOUNTED_TABS || typed.has(id));
+}
 
 function liveTabIds(mounted: readonly string[], tabs: BrowserTab[], activeTabId: string | null): Set<string> {
   const byId = new Map(tabs.map((tab) => [tab.id, tab]));
+  const typed = typedTabIds(tabs, activeTabId);
   const live = new Set<string>();
   let hiddenWeb = 0;
   for (const id of [...mounted].reverse()) {
     const tab = byId.get(id);
     if (!tab) continue;
-    if (id !== activeTabId && currentEntry(tab).kind === "web") {
+    if (id !== activeTabId && currentEntry(tab).kind === "web" && !typed.has(id)) {
       if (hiddenWeb >= MAX_HIDDEN_WEB_PAGES) continue;
       hiddenWeb += 1;
     }
@@ -2310,13 +2293,30 @@ function liveTabIds(mounted: readonly string[], tabs: BrowserTab[], activeTabId:
   return live;
 }
 
+function retainedTabs(mounted: readonly string[], tabs: BrowserTab[], activeTabId: string | null) {
+  const live = liveTabIds(mounted, tabs, activeTabId);
+  const pendingDrafts = tabs.filter((tab) => tab.typedAt !== undefined && mounted.includes(tab.id) && !live.has(tab.id));
+  if (pendingDrafts.length) {
+    // The pending draft takes the ordinary hidden page's slot while the reader decides.
+    for (const tab of tabs) {
+      if (tab.id !== activeTabId && tab.typedAt === undefined && currentEntry(tab).kind === "web") live.delete(tab.id);
+    }
+    for (const tab of pendingDrafts) live.add(tab.id);
+    if (tabs.filter((tab) => live.has(tab.id) && currentEntry(tab).kind === "web").length > MAX_TYPED_PAGES + MAX_HIDDEN_WEB_PAGES + 1 && activeTabId) {
+      live.delete(activeTabId);
+    }
+  }
+  return { live, pendingDrafts };
+}
+
 /** The chat's in-app browser, memoized so chat renders skip it. `active`: its chat is shown. */
 export const BrowserPanel = memo(function BrowserPanel({ active = true }: { active?: boolean }) {
   const t = useT();
-  const tabs = useBrowserStore((state) => state.tabs);
+  const tabs = useBrowserStore(useShallow(chatTabs));
   const activeTabId = useBrowserStore((state) => state.activeTabId);
   const device = useBrowserStore((state) => state.device);
   const annotateTabId = useBrowserStore((state) => state.annotateTabId);
+  const fileMode = useBrowserStore((state) => state.fileViews[state.activeTabId ?? ""]?.mode) ?? DEFAULT_FILE_VIEW.mode;
   const tabTitle = useTabTitle();
   const [pageElement, setPageElement] = useState<HTMLDivElement | null>(null);
   const sectionRef = useRef<HTMLElement>(null);
@@ -2329,6 +2329,7 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
         const tabId = useBrowserStore.getState().activeTabId;
         if (tabId) zoomTab(tabId, direction);
       },
+      holdsKeys: nativePageHasKeys,
     });
   }, [active]);
   // Studio's find bar searches the page while focus is in here, or when switched to it.
@@ -2343,16 +2344,19 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
   const [mounted, setMounted] = useState<readonly string[]>(() =>
     activeTabId ? [activeTabId] : [],
   );
+  const [selection, setSelection] = useState({ id: activeTabId, previous: activeTabId, mounted });
+  if (selection.id !== activeTabId) setSelection({ id: activeTabId, previous: selection.id, mounted });
   if (activeTabId && mounted[mounted.length - 1] !== activeTabId) {
-    const open = new Set(tabs.map((tab) => tab.id));
-    setMounted(
-      [
-        ...mounted.filter((id) => id !== activeTabId && open.has(id)),
-        activeTabId,
-      ].slice(-MAX_MOUNTED_TABS),
-    );
+    setMounted(mountedTabIds(mounted, tabs, activeTabId));
   }
-  const live = liveTabIds(mounted, tabs, activeTabId);
+  const { live, pendingDrafts } = retainedTabs(mounted, tabs, activeTabId);
+  const cancelEviction = () => {
+    const previous = tabs.find((tab) => tab.id === selection.previous) ?? pendingDrafts[0];
+    if (previous) {
+      setMounted(selection.mounted);
+      useBrowserStore.getState().activateTab(previous.id);
+    }
+  };
   const fileTab = activeEntry?.kind === "file";
   const floatingFileControls = activeEntry?.kind === "file" && !usesBrowserChrome(activeEntry);
   const documentShown = fileTab || Boolean(activeTab?.documentType);
@@ -2360,6 +2364,9 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
     device !== "off" && activeEntry?.kind === "web"
       ? DEVICE_WIDTHS[device]
       : null;
+  const frameAvailable = useFrameAvailable(activeTabId);
+  const htmlAnnotating = frameAvailable && activeEntry?.kind === "file" &&
+    fileBarKind(activeEntry.name, activeEntry.contentType, activeEntry.plainText) === "html" && fileMode === "preview";
   const pageAnnotating = activeTab && annotateTabId === activeTab.id ? annotateMode(activeTab, native) : null;
 
   return (
@@ -2386,11 +2393,32 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
           : "[--browser-surface:var(--card)]",
       )}
     >
+      <AlertDialog open={active && pendingDrafts.length > 0} onOpenChange={(open) => { if (!open) cancelEviction(); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("browser.drafts.title")}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("browser.drafts.description", { pages: pendingDrafts.map((tab) => tabTitle(tab, currentEntry(tab))).join(", ") })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("browser.clearData.cancel")}</AlertDialogCancel>
+            <AlertDialogAction onClick={(event) => {
+              event.preventDefault();
+              for (const tab of pendingDrafts) useBrowserStore.getState().updateTab(tab.id, { typedAt: undefined });
+            }}>
+              {t("browser.drafts.confirm")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <TabStrip tabs={tabs} activeTabId={activeTabId} active={active} />
-      <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-[var(--browser-surface)]">
+      {/* Not on the section: before Safari 18.5 container-type makes a stacking context, sinking the strip under the macOS drag strip. */}
+      <div className="browser-panel-body @container/browser relative flex min-h-0 flex-1 flex-col overflow-hidden bg-[var(--browser-surface)]">
         <div
           className={cn(
             "browser-chrome @container flex shrink-0 items-center gap-2 px-2.5",
+            (!activeEntry || activeEntry.kind !== "file") && "browser-web-toolbar flex-wrap",
             floatingFileControls
               ? "browser-file-toolbar pointer-events-none absolute inset-x-0 top-0 z-20 py-2 *:pointer-events-auto"
               : // 1px less at the bottom for the page's top border.
@@ -2400,8 +2428,6 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
           {activeTab && activeEntry?.kind === "file" ? (
             floatingFileControls ? (
               <FloatingFileToolbar tab={activeTab} entry={activeEntry} visible={active} />
-            ) : isVideoEntry(activeEntry) ? (
-              <VideoFileToolbar tab={activeTab} entry={activeEntry} visible={active} />
             ) : (
               <BrowserFileToolbar tab={activeTab} entry={activeEntry} visible={active} />
             )
@@ -2409,10 +2435,11 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
             <WebToolbar tab={activeTab} visible={active} />
           )}
         </div>
-        {floatingFileControls || (activeEntry?.kind === "file" && isVideoEntry(activeEntry)) ? null : (
+        {floatingFileControls ? null : (
           <BookmarksBar tab={activeTab} />
         )}
         {deviceWidth ? <DeviceBar /> : null}
+        <AgentBar activeTabId={activeTabId} />
         <div
           ref={setPageElement}
           data-browser-page=""
@@ -2457,12 +2484,21 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
           annotateTabId === activeTab.id &&
           pageElement ? (
             // Refreshed bytes are a new document: the marks were on the old one.
-            <AnnotateLayer
-              key={`${activeTab.id}:${activeEntry.fileId}`}
-              page={pageElement}
-              fileName={activeEntry.name}
-              zoom={activeTab.zoom}
-            />
+            htmlAnnotating ? (
+              <WebAnnotateLayer
+                key={`${activeTab.id}:${activeEntry.fileId}:${activeTab.reloadKey}`}
+                tabId={activeTab.id}
+                title={activeEntry.name}
+                page={pageElement}
+              />
+            ) : (
+              <AnnotateLayer
+                key={`${activeTab.id}:${activeEntry.fileId}`}
+                page={pageElement}
+                fileName={activeEntry.name}
+                zoom={activeTab.zoom}
+              />
+            )
           ) : null}
           {activeTab && activeEntry && (pageAnnotating === "frame" || pageAnnotating === "native") ? (
             // A new page, a reload or a replacement starts over: its marks were the last page's.

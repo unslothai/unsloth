@@ -1,20 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Derived HugeIcons shared between the sidebar and page tabs, so the same visual language appears everywhere.
-
 import type { IconSvgElement } from "@hugeicons/react";
 import { BubbleChatIcon, TestTube01Icon } from "@hugeicons/core-free-icons";
 
-// TestTube01Icon's last 2 paths are interior bubbles; slice to the first 3 (outline + cap + liquid line). Original export untouched.
+// Drop the last 2 paths (interior bubbles).
 export const TestTubeOutlineIcon = TestTube01Icon.slice(
   0,
   3,
 ) as typeof TestTube01Icon;
 
-// HugeIcons' own message-circle, which this icon set does not ship: BubbleChatIcon is that same
-// round bubble with a second path drawing the three dots inside it, so the first path alone is it.
-// This is the glyph for a chat anywhere in the app. Original export untouched.
+// BubbleChatIcon's first path alone is HugeIcons' message-circle, which this set lacks.
 export const MessageCircleIcon = BubbleChatIcon.slice(
   0,
   1,
@@ -36,8 +32,7 @@ export const SheetIcon: IconSvgElement = [
   ],
 ];
 
-// HugeIcons' folder-plus (stroke rounded), from @hugeicons/core-free-icons 4.3.5; the 4.1 installed
-// here predates it. The glyph for a project's sources.
+// From @hugeicons/core-free-icons 4.3.5; the installed 4.1 predates it.
 export const FolderPlusIcon: IconSvgElement = [
   [
     "path",
@@ -75,3 +70,59 @@ export const StarPointedIcon: IconSvgElement = [
     },
   ],
 ];
+
+// Hugeicons "ai-speech" and "text-to-speach" (MIT), only in core-free-icons 4.3+, newer than the pinned 4.1.1.
+const speechStroke = {
+  stroke: "currentColor",
+  strokeLinecap: "round",
+  strokeLinejoin: "round",
+  strokeWidth: "1.5",
+} as const;
+
+// Audio everywhere: ai-speech without its sparkle, the last two bars filled out (5-21, 11-15) into the space it left.
+export const AiSpeechIcon: IconSvgElement = [
+  ["path", { d: "M12 7V17", ...speechStroke, key: "0" }],
+  ["path", { d: "M16 5L16 21", ...speechStroke, key: "1" }],
+  ["path", { d: "M20 11L20 15", ...speechStroke, key: "2" }],
+  ["path", { d: "M8 3V21", ...speechStroke, key: "3" }],
+  ["path", { d: "M4 9V15", ...speechStroke, key: "4" }],
+];
+
+// Text to Speech: hugeicons' ai-speech as drawn, sparkle included.
+export const TextToSpeechIcon: IconSvgElement = [
+  ["path", { d: "M12 7V17", ...speechStroke, key: "0" }],
+  ["path", { d: "M16 11L16 19", ...speechStroke, key: "1" }],
+  ["path", { d: "M20 11L20 14", ...speechStroke, key: "2" }],
+  ["path", { d: "M8 3V21", ...speechStroke, key: "3" }],
+  ["path", { d: "M4 9V15", ...speechStroke, key: "4" }],
+  [
+    "path",
+    {
+      d: "M18.5 3.9375V5.5M18.5 5.5V7.0625M18.5 5.5H17.25M18.5 5.5H19.75M21 5.5L19.9156 5.13852C19.4179 4.97263 19.0274 4.58211 18.8615 4.08443L18.5 3L18.1385 4.08443C17.9726 4.58211 17.5821 4.97263 17.0844 5.13852L16 5.5L17.0844 5.86148C17.5821 6.02737 17.9726 6.41789 18.1385 6.91557L18.5 8L18.8615 6.91557C19.0274 6.41789 19.4179 6.02737 19.9156 5.86148L21 5.5Z",
+      ...speechStroke,
+      key: "5",
+    },
+  ],
+];
+
+/** `icon` with an accent dot; colours go in `style` because HugeiconsIcon overwrites child stroke attributes. */
+export function withNoticeDot(icon: IconSvgElement): IconSvgElement {
+  return [
+    ...icon,
+    [
+      "circle",
+      {
+        cx: "19",
+        cy: "5",
+        r: "3.75",
+        key: "notice-dot",
+        style: {
+          fill: "var(--primary)",
+          stroke: "var(--icon-dot-ring, var(--sidebar))",
+          strokeWidth: 2.5,
+          paintOrder: "stroke",
+        },
+      },
+    ],
+  ] as unknown as IconSvgElement;
+}

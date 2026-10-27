@@ -62,6 +62,17 @@ def preview_wanted(requested: Optional[bool]) -> bool:
     return True if requested is None else bool(requested)
 
 
+def preview_available(family: Optional[str], device: Any) -> bool:
+    """Mirrors ``LatentPreviewer.create``: kill switch off, a fitted map, and CUDA (no event to poll elsewhere)."""
+    if not env_enabled() or factors_for(family) is None:
+        return False
+    try:
+        import torch
+        return torch.device(device).type == "cuda" and torch.cuda.is_available()
+    except Exception:  # noqa: BLE001 - a status read must never fail on this
+        return False
+
+
 @functools.lru_cache(maxsize = 64)
 def factors_for(family: Optional[str]) -> Optional[LatentRGB]:
     """Cached so a family keeps one object, and its device copy is uploaded once per process."""
@@ -86,6 +97,9 @@ def latent_grid(latents: Any, spec: LatentRGB, height: int, width: int) -> Any:
     """First image / frame as a (gh, gw, D) view, or None. Packed tokens take their grid from the render
     size, which must tile the sequence exactly."""
     if spec.layout == "tokens":
+        if latents.ndim == 4 and latents.shape[1] == spec.channels:
+            # The same packed channels kept spatial (MOSS-Image runs FLUX.2 latents as [B, 128, h, w]).
+            return latents[0].permute(1, 2, 0)
         gh, gw = int(height) // spec.down, int(width) // spec.down
         if latents.ndim != 3 or latents.shape[-1] != spec.channels or gh <= 0 or gw <= 0:
             return None
@@ -228,6 +242,7 @@ class LatentPreviewer:
 
         self.spec = spec
         self.height, self.width = int(height), int(width)
+        self._alloc_size = (self.height, self.width)
         self.device = torch.device(device)
         self.max_side = int(max_side)
         self.min_interval_s = float(min_interval_s)
@@ -243,6 +258,7 @@ class LatentPreviewer:
         # One slot per planned snapshot: with the host far ahead every one can be in flight at once.
         self.stride = max(1, math.ceil(total / max(1, int(max_snapshots))))
         n_slots = total // self.stride + 2
+        # Pinned even on an integrated GPU: a few MB, and an unpinned copy would make the denoise thread wait each snapshot.
         pinned = torch.empty(n_slots * cap, dtype = torch.uint8, pin_memory = True)
         self._slots = [
             {
@@ -314,6 +330,20 @@ class LatentPreviewer:
         except Exception as exc:  # noqa: BLE001 - a preview must never fail a render
             self.failed = True
             logger.debug("diffusion.preview: stopped after an error (%s)", exc)
+
+    def set_render_size(self, height: int, width: int) -> None:
+        """The size the NEXT steps denoise at, for a multi-stage render (LTX-2.5 runs its first stage at half size):
+        packed tokens take their grid from it. Never above the size the slots were sized for; a new stage also drops
+        the previous step, whose grid no longer matches."""
+        height, width = int(height), int(width)
+        if height <= 0 or width <= 0:
+            return
+        alloc_h, alloc_w = getattr(self, "_alloc_size", (self.height, self.width))
+        if height > alloc_h or width > alloc_w:
+            return
+        self.height, self.width = height, width
+        self._prev = None
+        self._prev_index = None
 
     def _on_step(self, latents: Any, scheduler: Any, final: bool) -> None:
         import torch

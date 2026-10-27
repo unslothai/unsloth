@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Production settings/preview and assistant-ui input smoke test; no inference required.
-Run: python tests/studio/playwright_composer_settings.py
-PW_ENGINE=webkit selects WebKit. PW_OUTPUT optionally saves screenshots.
-"""
+"""Settings and preview smoke test with no inference; PW_ENGINE picks the browser engine."""
 
 import json
 import os
@@ -125,7 +122,7 @@ def check_settings(page):
         dest.mkdir(parents = True, exist_ok = True)
         page.screenshot(path = str(dest / "composer-settings-light.png"), full_page = True)
         page.evaluate("document.documentElement.classList.add('dark')")
-        page.wait_for_timeout(250)  # Let the existing theme color transitions settle.
+        page.wait_for_timeout(250)
         page.screenshot(path = str(dest / "composer-settings-dark.png"), full_page = True)
     page.set_viewport_size({"width": 320, "height": 812})
     expect(plain).to_be_visible()

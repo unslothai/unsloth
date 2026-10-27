@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { BrushCleaningIcon } from "@/lib/brush-cleaning-icon";
 import { useIsAccountOwner } from "@/features/auth";
 import { resolveSettingsTab, settingsTabVisible } from "./settings-tab-visibility";
 import { Button } from "@/components/ui/button";
+import { DropdownGlowContext } from "@/components/ui/dropdown-glow";
 import {
   Dialog,
   DialogContent,
@@ -14,6 +16,7 @@ import { type TranslationKey, useT } from "@/i18n";
 import { useHubSource } from "@/lib/hf-endpoint";
 import { MicIcon } from "@/lib/mic-icon";
 import { cn } from "@/lib/utils";
+import { useFullInstallUpgrade } from "@/hooks/use-full-install-upgrade";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { scheduleIdleTask } from "@/lib/schedule-idle-task";
@@ -30,7 +33,6 @@ import {
   HelpCircleIcon,
   HomeWifiIcon,
   LibrariesIcon,
-  PaintBrush02Icon,
   Search01Icon,
   Settings02Icon,
   UserCircleIcon,
@@ -48,6 +50,7 @@ import {
   lazy,
   useDeferredValue,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -64,8 +67,7 @@ interface SettingsPanelProps {
   searchEntry?: string;
 }
 
-// Statically imported, every panel ran before first paint even though the dialog
-// starts closed. Load each on first view instead; this map also drives the prefetch.
+// Loaded on first view so panels do not run before first paint; also drives the prefetch.
 const TAB_LOADERS = {
   accounts: () =>
     import("./tabs/accounts-tab").then((m) => ({ default: m.AccountsTab })),
@@ -134,13 +136,8 @@ interface PanelBoundaryState {
 }
 
 /**
- * A panel fetch can fail (offline, or an entry bundle naming chunks a `dist/` rewrite
- * replaced). Nothing above this root-mounted dialog catches, so unguarded that unmounts
- * all of Unsloth rather than one panel.
- *
- * Reload rather than retry: React and the browser's module map both cache the failed
- * import, so re-importing rethrows with no new request (whatwg/html#6768), while
- * index.html is no-store and a reload does pick up the current chunk names.
+ * Nothing above this root dialog catches a failed panel import. Reload rather than retry: the
+ * module map caches the failure (whatwg/html#6768), while no-store index.html gets new chunk names.
  */
 class SettingsPanelBoundary extends Component<
   PanelBoundaryProps,
@@ -152,7 +149,7 @@ class SettingsPanelBoundary extends Component<
     return { failed: true };
   }
 
-  // A different tab is a different chunk, so one panel's failure must not hold the rest.
+  // One panel's failure must not hold the other tabs.
   static getDerivedStateFromProps(
     props: PanelBoundaryProps,
     state: PanelBoundaryState,
@@ -185,7 +182,6 @@ interface TabDef {
   id: SettingsTab;
   labelKey: TranslationKey;
   icon?: typeof Settings02Icon;
-  /** Plain component icon, for icons shared with chat (not hugeicons). */
   iconComponent?: FC<{ className?: string }>;
   badgeKey?: TranslationKey;
 }
@@ -200,7 +196,7 @@ const TABS: TabDef[] = [
   {
     id: "appearance",
     labelKey: "settings.tabs.appearance",
-    icon: PaintBrush02Icon,
+    icon: BrushCleaningIcon,
   },
   {
     id: "resources",
@@ -251,7 +247,6 @@ const TABS: TabDef[] = [
     id: "browser",
     labelKey: "browser.settingsTitle",
     icon: InternetIcon,
-    badgeKey: "common.new",
   },
   {
     id: "keyboard-shortcuts",
@@ -277,11 +272,7 @@ const TABS: TabDef[] = [
 ];
 
 
-/**
- * Stack the tab rail over the pane when the dialog is narrower than it is at
- * sm (608px, 640px less its 2rem margin) scaled by the UI. At 100% that is
- * max-sm exactly; at 200% the 960px cap is always too narrow.
- */
+/** Stack below sm (608px: 640px less the 2rem margin) scaled by the UI. */
 function useStackedLayout(): boolean {
   const width = 608 * useUiSpaceScale();
   const query = `(width < ${width + 32}px)`;
@@ -302,6 +293,7 @@ export function SettingsDialog() {
   const isOwner = useIsAccountOwner();
   const stacked = useStackedLayout();
   const hubSource = useHubSource();
+  const canUpgradeToFullInstall = useFullInstallUpgrade() !== null;
   const { attach: attachRail, onScroll: onRailScroll, className: railFadeClass } = useScrollFades();
   const visibleTabs = useMemo(() => TABS.filter((tab) => settingsTabVisible(tab.id, isOwner)), [isOwner]);
   const open = useSettingsDialogStore((s) => s.open);
@@ -312,23 +304,19 @@ export function SettingsDialog() {
   const opener = useSettingsDialogStore((s) => s.opener);
   const openerFallback = useSettingsDialogStore((s) => s.openerFallback);
   const reduced = useReducedMotion();
-  // Mounting a heavy tab panel (System, Connections) in the same commit as the nav highlight makes
-  // the highlight lag the click. Render the panel from a deferred value so the nav updates first.
+  // Deferred so the nav highlight updates before a heavy panel mounts.
   const deferredTab = useDeferredValue(activeTab);
   const panelTab = resolveSettingsTab(deferredTab, isOwner);
   const Tab = LAZY_TABS[panelTab];
   const [query, setQuery] = useState("");
 
-  // Once opened, pull the other panels in on idle so a tab click never waits on the
-  // network. Nothing runs while closed, which is its state for the whole launch.
+  // Prefetch other panels on idle once opened; nothing runs while closed.
   useEffect(() => {
     if (!open) {
       return;
     }
     return scheduleIdleTask(() => {
       for (const load of Object.values(TAB_LOADERS)) {
-        // Warming a panel nobody asked for must not surface as an unhandled rejection;
-        // the boundary above speaks for the panel the user does open.
         void load().catch(() => undefined);
       }
     });
@@ -341,7 +329,13 @@ export function SettingsDialog() {
     }
     return visibleTabs.map((tab) => {
       const tabLabel = t(tab.labelKey);
-      const entries = renderedSearchEntries(SETTINGS_SEARCH_INDEX, tab.id, hubSource, isOwner)
+      const entries = renderedSearchEntries(
+        SETTINGS_SEARCH_INDEX,
+        tab.id,
+        hubSource,
+        isOwner,
+        canUpgradeToFullInstall,
+      )
         .filter((key) => {
           if (t(key).toLowerCase().includes(q)) {
             return true;
@@ -358,7 +352,7 @@ export function SettingsDialog() {
         tabMatches: tabLabel.toLowerCase().includes(q),
       };
     }).filter((r) => r.tabMatches || r.entries.length > 0);
-  }, [query, t, visibleTabs, hubSource, isOwner]);
+  }, [query, t, visibleTabs, hubSource, isOwner, canUpgradeToFullInstall]);
 
   const [pendingScroll, setPendingScroll] = useState<{
     tab: SettingsTab;
@@ -366,22 +360,24 @@ export function SettingsDialog() {
   } | null>(null);
   const mainScrollRef = useRef<HTMLDivElement | null>(null);
 
+  // Shared scroller: reset per tab. panelTab, not activeTab, so the old panel does not jump mid-defer.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: panelTab is the trigger, not an input.
+  useLayoutEffect(() => {
+    mainScrollRef.current?.scrollTo({ top: 0, behavior: "instant" });
+  }, [panelTab]);
+
   const openResult = (tab: SettingsTab, entry?: string) => {
     setActiveTab(tab);
     setQuery("");
     setPendingScroll(entry ? { tab, entry } : null);
   };
 
-  // Scroll to the row/section a search result points at once the tab has
-  // rendered, and flash it so the eye lands on the right place. The tab panel
-  // renders deferred and some sections load their data lazily, so observe the
-  // panel until the requested row exists instead of imposing a render deadline.
+  // Panels render deferred and load lazily, so observe until the target row exists.
   useEffect(() => {
     if (!pendingScroll) {
       return;
     }
-    // Wait until the destination tab is mounted before matching, so a same-named
-    // row in the previous tab (for example "Storage") is not scrolled to instead.
+    // Wait for the destination tab, or a same-named row in the previous tab could match.
     if (panelTab !== pendingScroll.tab) {
       return;
     }
@@ -460,9 +456,7 @@ export function SettingsDialog() {
     const frame = window.requestAnimationFrame(() => {
       const button = tabButtonRefs.current[activeTab];
       button?.focus({ preventScroll: true });
-      // The tab list scrolls once it outgrows the sidebar, so a deep-opened tab
-      // can start outside it. preventScroll above keeps focus from revealing it,
-      // and "nearest" moves only the list, never the panel beside it.
+      // "nearest" moves only the list, never the panel beside it.
       button?.scrollIntoView({ block: "nearest", inline: "nearest" });
     });
     return () => window.cancelAnimationFrame(frame);
@@ -474,9 +468,10 @@ export function SettingsDialog() {
         <DialogContent
           data-settings-dialog
           showCloseButton={false}
-          overlayClassName="bg-black/30 supports-backdrop-filter:backdrop-blur-[2px]"
+          overlayClassName="bg-black/40"
+          overlayTone="strong"
           onCloseAutoFocus={(e) => {
-            // radix loses its previous-focus reference when the tab focus runs in requestAnimationFrame.
+            // radix loses its previous-focus reference when tab focus runs in requestAnimationFrame.
             const focusTarget = [opener, openerFallback].find(
               (element) =>
                 element?.isConnected && !element.closest("[inert], [hidden]"),
@@ -487,18 +482,13 @@ export function SettingsDialog() {
             }
           }}
           className={cn(
-            // Cap at 960px but shrink to the viewport so it doesn't clip on
-            // iPad-portrait widths where a fixed width overflows. Height caps
-            // the same way so short viewports don't get a clipped dialog.
             "settings-surface !max-w-[min(960px,calc(100vw-2rem))] h-[min(820px,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))] w-[min(960px,calc(100vw-2rem))] p-0 overflow-hidden",
-            // Soft shadow, no outline ring. Pin --radius to the light value so
-            // corner rounding matches in dark mode.
-            "shadow-border rounded-xl ring-0 [--radius:1.1rem]",
+            // Soft shadow, no outline ring.
+            "shadow-border rounded-3xl ring-0",
             // Same chrome-subtracted height the shared DialogContent uses at this
             // breakpoint: a plain h-dvh wins tailwind-merge and would hang the surface
             // (and its overflow-hidden bottom edge) below the window. 0px on web.
             "max-sm:h-[calc(100dvh-var(--studio-window-chrome-top,0px))] max-sm:w-dvw max-sm:!max-w-none max-sm:rounded-none",
-            // Larger surface on 4K / ultrawide.
             "4xl:w-[min(1120px,calc(100vw-2rem))] 4xl:!max-w-[min(1120px,calc(100vw-2rem))] 4xl:h-[min(940px,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))]",
           )}
         >
@@ -508,7 +498,6 @@ export function SettingsDialog() {
           <DialogDescription className="sr-only">
             {t("settings.dialog.description")}
           </DialogDescription>
-          {/* Keep tab content from expanding the dialog grid. */}
           <div
             data-stacked={stacked || undefined}
             className="group/settings flex h-full min-h-0 min-w-0 w-full data-stacked:flex-col"
@@ -518,15 +507,21 @@ export function SettingsDialog() {
             <aside
               className={cn(
                 "font-heading flex w-[min(calc(248px*var(--ui-space-scale,1)),50%)] shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground p-2 dark:border-r-0 group-data-stacked/settings:w-full group-data-stacked/settings:border-r-0 group-data-stacked/settings:border-b group-data-stacked/settings:border-sidebar-border",
-                // Narrower rail on tablets, unless the scale has stacked it.
                 !stacked && "md:max-lg:w-[min(calc(208px*var(--ui-space-scale,1)),50%)]",
               )}
             >
-              <div className="relative mx-1 mt-3 mb-2 shrink-0 group-data-stacked/settings:hidden">
+              {/* Visual only: the dialog's sr-only DialogTitle already names it. */}
+              <p
+                aria-hidden={true}
+                className="shrink-0 px-3 pt-3 pb-3 text-lg font-semibold text-sidebar-foreground group-data-stacked/settings:hidden"
+              >
+                {t("settings.dialog.title")}
+              </p>
+              <div className="relative mx-1 mb-3 shrink-0 group-data-stacked/settings:hidden">
                 <HugeiconsIcon
                   icon={Search01Icon}
                   strokeWidth={2}
-                  className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
+                  className="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-muted-foreground"
                 />
                 <input
                   value={query}
@@ -538,9 +533,9 @@ export function SettingsDialog() {
                     }
                   }}
                   data-type-to-activate="settings-search"
-                  placeholder={t("settings.dialog.searchPlaceholder")}
+                  placeholder={t("common.search")}
                   aria-label={t("settings.dialog.searchPlaceholder")}
-                  className="h-8 w-full rounded-full border border-border bg-background pr-8 pl-8 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring dark:focus-visible:border-transparent dark:focus-visible:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))] dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]"
+                  className="h-[calc(36px*var(--ui-space-scale,1))] w-full rounded-full border-0 bg-accent pr-8 pl-10 text-ui-14p5 text-foreground outline-none transition-colors placeholder:text-muted-foreground dark:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:focus-visible:bg-[rgb(255_255_255_/_calc(0.14*var(--contrast-wash-gain,1)))]"
                 />
                 {query && (
                   <button
@@ -593,21 +588,11 @@ export function SettingsDialog() {
                   )}
                 </div>
               ) : null}
-              <p
-                className={cn(
-                  "shrink-0 pl-4 pt-3 pb-2.5 text-ui-13 font-medium text-muted-foreground group-data-stacked/settings:hidden",
-                  results !== null && "hidden",
-                )}
-              >
-                {t("settings.dialog.title")}
-              </p>
               <nav
                 ref={attachRail}
                 onScroll={onRailScroll}
                 className={cn(
-                  // The tab list is the sidebar's flexible row: a short window
-                  // leaves it taller than the sidebar, and the dialog clips its
-                  // overflow, so scroll it rather than losing the last tabs.
+                  // A short window leaves the list taller than the clipped sidebar, so scroll it.
                   "hover-scrollbar settings-rail-fade flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-1 py-1",
                   railFadeClass,
                   "group-data-stacked/settings:flex-none group-data-stacked/settings:flex-row group-data-stacked/settings:overflow-x-auto group-data-stacked/settings:py-0",
@@ -628,12 +613,9 @@ export function SettingsDialog() {
                       onClick={() => setActiveTab(tab.id)}
                       className={cn(
                         "relative flex h-[calc(32px*var(--ui-space-scale,1))] items-center gap-2.5 rounded-full pl-3 pr-2.5 text-ui-14p5 leading-ui-19 tracking-nav font-medium transition-colors",
-                        // Keep the row height when the list scrolls: a flex item
-                        // shrinks past h-[calc(32px*var(--ui-space-scale,1))] down to its text otherwise.
+                        // Otherwise the flex item shrinks to its text when the list scrolls.
                         "shrink-0",
                         "focus-visible:outline-none",
-                        // The active pill already marks the current tab, so
-                        // only unselected items get a keyboard focus ring.
                         active
                           ? "text-accent-foreground"
                           : "text-[#383835] dark:text-foreground hover:bg-accent hover:text-accent-foreground focus-visible:ring-1 focus-visible:ring-ring",
@@ -679,42 +661,45 @@ export function SettingsDialog() {
             </aside>
 
             <main className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-background">
-              <button
-                type="button"
-                onClick={closeDialog}
-                className="absolute top-3 end-3 z-10 flex size-[calc(30px*var(--ui-space-scale,1))] items-center justify-center rounded-full text-[#383835] dark:text-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                aria-label={t("settings.dialog.closeAriaLabel")}
-              >
-                <HugeiconsIcon icon={Cancel01Icon} className="size-4" />
-              </button>
-              <div
-                ref={mainScrollRef}
-                className="hover-scrollbar flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto p-6 [scrollbar-gutter:stable]"
-              >
-                {/* Only a panel's first view waits, so the fallback is delayed and a
-                    promptly arriving panel never flashes it. */}
-                <SettingsPanelBoundary
-                  tab={panelTab}
-                  message={t("settings.dialog.panelFailed")}
-                  reloadLabel={t("settings.dialog.panelReload")}
+              {/* The pane is the page colour, not the dialog's card, so its dropdowns glow in --background. */}
+              <DropdownGlowContext.Provider value={null}>
+                <button
+                  type="button"
+                  onClick={closeDialog}
+                  className="absolute top-3 end-3 z-10 flex size-[calc(30px*var(--ui-space-scale,1))] items-center justify-center rounded-full text-[#383835] dark:text-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  aria-label={t("settings.dialog.closeAriaLabel")}
                 >
-                  <Suspense
-                    fallback={
-                      <div className="fade-in fill-mode-both flex flex-1 animate-in items-center justify-center text-muted-foreground text-sm delay-300 duration-150">
-                        {t("common.loading")}
-                      </div>
-                    }
+                  <HugeiconsIcon icon={Cancel01Icon} className="size-4" />
+                </button>
+                <div
+                  ref={mainScrollRef}
+                  className="hover-scrollbar flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto p-6 [scrollbar-gutter:stable]"
+                >
+                  {/* Only a panel's first view waits, so the fallback is delayed and a
+                      promptly arriving panel never flashes it. */}
+                  <SettingsPanelBoundary
+                    tab={panelTab}
+                    message={t("settings.dialog.panelFailed")}
+                    reloadLabel={t("settings.dialog.panelReload")}
                   >
-                    <Tab
-                      searchEntry={
-                        pendingScroll?.tab === panelTab
-                          ? pendingScroll.entry
-                          : undefined
+                    <Suspense
+                      fallback={
+                        <div className="fade-in fill-mode-both flex flex-1 animate-in items-center justify-center text-muted-foreground text-sm delay-300 duration-150">
+                          {t("common.loading")}
+                        </div>
                       }
-                    />
-                  </Suspense>
-                </SettingsPanelBoundary>
-              </div>
+                    >
+                      <Tab
+                        searchEntry={
+                          pendingScroll?.tab === panelTab
+                            ? pendingScroll.entry
+                            : undefined
+                        }
+                      />
+                    </Suspense>
+                  </SettingsPanelBoundary>
+                </div>
+              </DropdownGlowContext.Provider>
             </main>
           </div>
         </DialogContent>

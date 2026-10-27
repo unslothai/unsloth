@@ -35,22 +35,17 @@ function SandboxFileRow({
 }) {
   const [busy, setBusy] = useState(false);
 
-  // Streamed to the chosen path rather than buffered: a tool can write a
-  // multi-gigabyte artifact, and a Blob plus its IPC copy would be two more of
-  // it in the renderer. The bearer goes in the query: no headers are sent.
+  // Streamed to disk rather than buffered: artifacts can be gigabytes. The bearer goes in the query.
   const save = useCallback(async () => {
     setBusy(true);
     try {
       const path = sandboxFilePath(sessionId, file.name);
-      // The bearer rides in the URL, so nothing refreshes it: an expired
-      // access token would save a 401 body under the file's name. authFetch
-      // refreshes and retries, and the HEAD settles that the file is there.
+      // The URL bearer is never refreshed, so authFetch refreshes first; the HEAD confirms the file.
       const probe = await authFetch(apiUrl(path), { method: "HEAD" });
       if (!probe.ok) throw new Error(`Download refused (${probe.status})`);
       const token = getAuthToken();
       const separator = path.includes("?") ? "&" : "?";
-      // Absolute: the native command parses this and rejects a relative URL,
-      // so a bare /api path failed before the request was made.
+      // Absolute: the native command rejects a relative URL.
       const url = apiUrl(
         token ? `${path}${separator}token=${encodeURIComponent(token)}` : path,
       );
@@ -78,7 +73,7 @@ function SandboxFileRow({
         onClick={save}
         disabled={busy}
         title={`Save ${file.name}`}
-        className="flex items-center gap-2 rounded border border-border px-2 py-1 text-xs text-foreground hover:bg-muted disabled:opacity-60"
+        className="btn-fill flex items-center gap-2 rounded-full px-2 py-1 text-xs text-foreground disabled:opacity-60"
       >
         <HugeiconsIcon icon={FileEmpty02Icon} className="size-3.5 shrink-0" />
         <span className="truncate font-mono">{file.name}</span>
@@ -91,11 +86,7 @@ function SandboxFileRow({
   );
 }
 
-/**
- * The row's heading, doubling as the way into the folder itself on desktop.
- * The backend opens the file manager, so in a browser it stays plain text and
- * says why.
- */
+/** Opens the folder on desktop only: the backend opens the file manager. */
 function SandboxFolderLabel({
   sessionId,
   label,
@@ -132,10 +123,6 @@ function SandboxFolderLabel({
   );
 }
 
-/**
- * "Files created" row under a tool card. Without it the only trace of a written
- * file was the model mentioning it in prose.
- */
 export function SandboxFiles({
   sessionId,
   files,
@@ -147,7 +134,9 @@ export function SandboxFiles({
 }) {
   if (!sessionId || files.length === 0) return null;
   return (
-    <div className={cn("mt-2 border-t border-dashed pt-2", className)}>
+    // No divider: the row sits outside the collapsible content, so on a collapsed card a rule
+    // would separate the header from nothing.
+    <div className={cn("mt-2", className)}>
       <SandboxFolderLabel
         sessionId={sessionId}
         label={files.length === 1 ? "file created" : "files created"}

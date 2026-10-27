@@ -67,10 +67,7 @@ def _rocm_clang_cl_present() -> bool:
 
 
 def _cc_needs_msvc_headers(cc: str) -> bool:
-    """Triton's own predicates decide, so this cannot disagree with what it does. They are imported
-    apart from `get_cc` because `is_clang_cl` only arrived in triton-windows 3.5.1.post23: importing
-    all three together failed on every earlier release and threw away a usable `get_cc` with it.
-    The fallback is what both predicates do, a case-insensitive basename match."""
+    """Imported apart from get_cc: is_clang_cl only exists in triton-windows 3.5.1.post23 and later."""
     try:
         from triton.runtime.build import is_clang_cl, is_msvc  # noqa: PLC0415
         return bool(is_msvc(cc) or is_clang_cl(cc))
@@ -80,10 +77,7 @@ def _cc_needs_msvc_headers(cc: str) -> bool:
 
 
 def _triton_cc() -> str:
-    """triton-windows 3.8.0.post28, what a bare `pip install triton-windows` gives you today, has no
-    `get_cc` at all: it was renamed `_find_compiler(language)`, whose "c" branch is the old body.
-    Without this the newest release never reaches the compiler question and answers from the wheel
-    layout instead."""
+    """Newest triton-windows renamed get_cc to _find_compiler(language); else the wheel layout decides."""
     try:
         from triton.runtime.build import get_cc  # noqa: PLC0415
     except ImportError:
@@ -130,12 +124,7 @@ def _toolchain_summary() -> str:
 
 
 def _compiles_a_trivial_translation_unit(cc: str, inc_dirs) -> bool | None:
-    """Ask the compiler instead of predicting it. None means the probe could not be run.
-
-    Header discovery is an inference and it is wrong in the expensive direction: clang-cl
-    locates MSVC through its own search, so on a measured R9700 it compiled with INCLUDE,
-    VCINSTALLDIR and WindowsSdkDir all cleared, injecting an -internal-isystem we can see
-    no trace of. Predicting from directories alone would disable torch.compile there."""
+    """Predicting from directories wrongly disables torch.compile; clang-cl finds MSVC itself."""
     import subprocess  # noqa: PLC0415
     import tempfile  # noqa: PLC0415
 
@@ -144,8 +133,7 @@ def _compiles_a_trivial_translation_unit(cc: str, inc_dirs) -> bool | None:
             src = os.path.join(tmp, "probe.c")
             with open(src, "w", encoding = "utf-8") as fh:
                 fh.write("#include <stdlib.h>\nint main(void){return 0;}\n")
-            # Syntax-only: no link, so a missing lib path cannot masquerade as a missing
-            # header, and nothing is written outside the temporary directory.
+            # Syntax-only: no link, so a missing lib cannot pass as a missing header.
             argv = [cc, "/Zs", src] + [f"/I{d}" for d in inc_dirs if d]
             done = subprocess.run(
                 argv,
@@ -161,19 +149,71 @@ def _compiles_a_trivial_translation_unit(cc: str, inc_dirs) -> bool | None:
     return done.returncode == 0
 
 
+def _bundled_tcc() -> str | None:
+    import sysconfig  # noqa: PLC0415
+    path = os.path.join(sysconfig.get_path("platlib"), "triton", "runtime", "tcc", "tcc.exe")
+    return path if os.path.isfile(path) else None
+
+
+def _clear_compiler_cache() -> None:
+    """`_find_compiler` is lru_cached in triton-windows 3.8, so a CC set after its first call is otherwise ignored."""
+    try:
+        from triton.runtime import build  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        return
+    for name in ("_find_compiler", "get_cc"):
+        clear = getattr(getattr(build, name, None), "cache_clear", None)
+        if callable(clear):
+            clear()
+
+
+def _triton_driver_builds() -> bool:
+    """Creating the active driver compiles its C helper (`hip_utils.c` on AMD) with the selected compiler."""
+    try:
+        _clear_compiler_cache()
+        from triton.runtime import driver  # noqa: PLC0415
+
+        driver.active.get_current_target()
+        return True
+    except Exception:  # noqa: BLE001
+        logger.debug("Triton's driver did not build with the bundled TinyCC", exc_info = True)
+        return False
+
+
+def _switch_to_bundled_tcc() -> bool:
+    """clang-cl without the CRT headers (#9897): build with the TinyCC triton-windows bundles, which carries its own
+    and is what it already picks when no ROCm wheel is installed. Kept only if Triton's driver then builds; an
+    explicit CC is the user's choice."""
+    if os.environ.get("CC"):
+        return False
+    tcc = _bundled_tcc()
+    if tcc is None:
+        return False
+    os.environ["CC"] = tcc
+    if _triton_driver_builds():
+        logger.info(
+            "Triton's C toolchain has no CRT headers; building with its bundled TinyCC (%s)", tcc
+        )
+        return True
+    os.environ.pop("CC", None)
+    _clear_compiler_cache()
+    return False
+
+
 def crt_headers_reachable() -> bool:
+    """Whether Triton's JIT can build its C helpers here, switching to the bundled TinyCC when clang-cl cannot."""
+    return _crt_headers_reachable() or _switch_to_bundled_tcc()
+
+
+def _crt_headers_reachable() -> bool:
     if sys.platform != "win32":
         return True
     if not _needs_msvc_headers():
         return True
     triton_dirs = _triton_include_dirs()
 
-    # The compiler is asked FIRST, because every check below it is inference and inference is
-    # wrong in both directions. It over-gates when clang-cl locates MSVC through its own search,
-    # which the directory listing cannot see. It under-gates on a partial or mismatched SDK: the
-    # two markers are only the entry points, and `vcruntime.h` includes `sal.h`, which lives in
-    # the SDK's `shared` directory rather than beside either marker, so a dir set can carry both
-    # markers and still fail to compile. Only a compile answers the question the JIT will ask.
+    # Ask the compiler first: directory inference over-gates (clang-cl's own MSVC search) and
+    # under-gates (vcruntime.h needs sal.h from the SDK shared dir).
     if triton_dirs is not None:
         try:
             verdict = _compiles_a_trivial_translation_unit(_triton_cc(), triton_dirs)
@@ -182,33 +222,81 @@ def crt_headers_reachable() -> bool:
         if verdict is not None:
             return verdict
 
-    # Fallback, for a host where the probe could not be run at all. Unknown is not evidence of
-    # a broken toolchain, so these keep their fail-open shape.
+    # Fallback when the probe could not run; unknown is not evidence, so fail open.
     env_dirs = os.environ.get("INCLUDE", "").split(os.pathsep)
     if _headers_complete(env_dirs):
         return True
-    # INCLUDE is a positive signal only: unset is the normal case (Studio is not launched from a
-    # Developer Command Prompt), so only Triton's own search coming back empty may gate.
+    # INCLUDE is unset outside a Developer Command Prompt; only Triton's empty search may gate.
     if triton_dirs is None:
         return True
-    # Judged over the UNION, because that is what the compile sees: clang-cl reads INCLUDE as
-    # system include paths and Triton passes its own dirs as /I. Judging each alone rejects a
-    # split toolchain (VC toolset on INCLUDE, SDK discovered by Triton) that compiles fine.
+    # Judge the union: clang-cl reads INCLUDE and Triton passes its dirs as /I.
     return _headers_complete(triton_dirs + env_dirs)
+
+
+def _triton_windows_spec() -> str:
+    """The triton-windows range for the resident torch, as studio/setup.ps1 installs it.
+
+    Read from package metadata, not `import torch`: this runs before torch is imported. torch 2.12 and
+    2.13 pin triton 3.7 (2.12.0 exactly 3.7.0) and 2.14 pins 3.8; anything older (or unreadable)
+    keeps the long-standing <3.7.
+    A native ARM64 interpreter gets setup.ps1's Windows-on-ARM floor: no win_arm64 wheel predates it.
+    """
+    import platform  # noqa: PLC0415
+
+    if platform.machine().lower() == "arm64":
+        return "triton-windows>=3.8.0.post28"
+    try:
+        import re  # noqa: PLC0415
+        from importlib.metadata import version  # noqa: PLC0415
+
+        # A dev build's patch ("2.13.0a0+git...") still has the major and minor.
+        match = re.match(r"(\d+)\.(\d+)(?:\.(\d+))?", version("torch"))
+        major, minor = int(match.group(1)), int(match.group(2))
+        patch = int(match.group(3)) if match.group(3) is not None else None
+    except Exception:  # noqa: BLE001 -- a hint must never raise
+        return "triton-windows<3.7"
+    if (major, minor, patch) == (2, 12, 0):
+        return "triton-windows>=3.7,<3.7.1"
+    if (major, minor) in ((2, 12), (2, 13)):
+        return "triton-windows>=3.7,<3.8"
+    if (major, minor) == (2, 14):
+        return "triton-windows>=3.8,<3.9"
+    return "triton-windows<3.7"
+
+
+def _torch_is_rocm_build() -> bool:
+    # Off disk, no torch import: AMD's untagged Windows wheel (2.8.0a0+git...) is only told by version.py's hip field.
+    try:
+        from core._torchao_stub import _installed_torch_is_rocm  # noqa: PLC0415
+        return _installed_torch_is_rocm() is True
+    except Exception:  # noqa: BLE001
+        logger.debug("Could not read the installed torch's ROCm signals", exc_info = True)
+        return False
 
 
 def gate_torch_compile_on_windows(log: logging.Logger) -> None:
     if sys.platform != "win32":
         return
+    if _torch_is_rocm_build():
+        try:
+            # triton-windows >= 3.8 imported first loads System32 amdhip64_7.dll, then torch_hip.dll fails with WinError 126.
+            import torch  # noqa: F401, PLC0415
+        except Exception:  # noqa: BLE001
+            logger.debug("The torch preload failed; probing triton anyway", exc_info = True)
     try:
         import triton  # noqa: F401, PLC0415
     except ImportError:
         os.environ["TORCHDYNAMO_DISABLE"] = "1"
         log.warning(
             "Triton not found on Windows — torch.compile disabled. "
-            'Install for better performance: pip install "triton-windows<3.7"'
+            f'Install for better performance: pip install "{_triton_windows_spec()}"'
         )
         return
+
+    # Intel's XPU Triton picks its compiler differently from triton-windows and needs cl set up for it (#14807).
+    from ._xpu_triton_toolchain import prepare_xpu_triton_compiler  # noqa: PLC0415
+
+    prepare_xpu_triton_compiler(log)
 
     try:
         reachable = crt_headers_reachable()

@@ -129,16 +129,18 @@ def _infer_base_model_from_history(checkpoint_dir: Path) -> Optional[str]:
 
 
 def _read_checkpoint_loss(checkpoint_path: Path) -> Optional[float]:
-    """Read loss from the last log_history entry of trainer_state.json, or None."""
+    """Read the latest training loss from trainer_state.json's log_history, or None."""
     trainer_state = checkpoint_path / "trainer_state.json"
     if not own_entry(trainer_state):
         return None
     try:
         with open(trainer_state, encoding = "utf-8-sig") as f:
             state = json.load(f)
-        log_history = state.get("log_history", [])
-        if log_history:
-            return log_history[-1].get("loss")
+        # Not just the last entry: on a step that also evaluates, the Trainer logs the
+        # eval metrics after the training loss and before it saves the checkpoint.
+        for entry in reversed(state.get("log_history") or []):
+            if isinstance(entry, dict) and "loss" in entry:
+                return entry["loss"]
     except Exception as e:
         logger.debug(f"Could not read loss from {trainer_state}: {e}")
     return None
@@ -147,11 +149,7 @@ def _read_checkpoint_loss(checkpoint_path: Path) -> Optional[float]:
 def parse_adapter_features(
     adapter_path: str, probe_weights: bool = True
 ) -> Optional[Dict[str, Optional[bool]]]:
-    """Adapter feature flags (PEFT or MLX config) for the export UI; None without a config.
-
-    ``full_state`` is tri-state: no config marker proves absence (PEFT saves embedding state only
-    as weight keys), so a negative needs the weight-header probe and stays None without it.
-    """
+    """full_state is tri-state: no config marker proves absence (PEFT stores embedding state only as weight keys), so a weight-header probe is needed; else None."""
     cfg_path = os.path.join(adapter_path, "adapter_config.json")
     try:
         with open(cfg_path, "r", encoding = "utf-8") as f:
@@ -319,8 +317,7 @@ def scan_checkpoints(
             except Exception:
                 pass
 
-            # Fallback: extract base model name from the folder name, e.g.
-            # "unsloth_Llama-3.2-3B-Instruct_1771227800" → "unsloth/Llama-3.2-3B-Instruct"
+            # Fallback: "unsloth_Llama-3.2-3B-Instruct_1771227800" -> "unsloth/Llama-3.2-3B-Instruct".
             if not metadata.get("base_model"):
                 metadata["base_model"] = _infer_base_model_from_history(item)
 
@@ -401,8 +398,7 @@ def is_full_finetune_output(path: Optional[str]) -> bool:
     if not path:
         return False
     try:
-        # Below 3.13 a symlink loop comes back as RuntimeError, not OSError, whatever
-        # `strict` says, and both callers run this outside any handler.
+        # Below 3.13 a symlink loop raises RuntimeError, not OSError.
         Path(path).resolve().relative_to(outputs_root().resolve())
     except (OSError, RuntimeError, ValueError):
         return False
@@ -419,12 +415,7 @@ def has_preview_model(output_dir: Optional[str]) -> bool:
 
 
 def preview_ref(output_dir: Optional[str]) -> Optional[str]:
-    """``/p`` ref (``run`` or ``run/checkpoint``) relative to outputs_root, or None.
-
-    Posix-joined so a nested output dir keeps a working link instead of collapsing
-    to its basename. None when not previewable, outside outputs_root, or deeper than
-    the two path segments the ``/p`` route matches (so the UI omits a dead link).
-    """
+    """Posix-joined ref (run or run/checkpoint) under outputs_root, so nested dirs keep a working link; None if unpreviewable, outside the root, or too deep for /p."""
     if not has_preview_model(output_dir):
         return None
     try:

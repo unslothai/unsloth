@@ -26,12 +26,8 @@ ROOT_ID = "a" * 64
 DESKTOP_SECRET = "appimage-portability-secret"
 
 
-# The dispositions that mean the app gave up on the fixture and went to repair.
-# Without this the run just times out after 45s on "never completed desktop authentication", which says nothing
-# about why; the reason is in tauri.log and nobody reads it, so the nightly sat red for weeks looking like a
-# webview fault. ExternalConflict is here for the same reason though it is not a repair: another backend already
-# owns the port, so the fixture is never contacted and the wait can only expire. It is what a developer box with
-# a Studio already running produces.
+# Dispositions where the app gave up on the fixture; without them the run just times out.
+# ExternalConflict means another backend owns the port.
 _GAVE_UP_MARKERS = (
     "start_managed_repair command called",
     "disposition=ManagedStale",
@@ -40,13 +36,7 @@ _GAVE_UP_MARKERS = (
 
 
 def _abandoned_reason(tauri_log: Path) -> str | None:
-    """The preflight verdict, when it means desktop auth will never be attempted.
-
-    Quotes the `disposition=` line, which names the outcome, plus the `Stale {...}`
-    line when there is one, since that is what carries the reason. Reporting the
-    first interesting line instead is worse than useless: on a box where preflight
-    read the install as Ready and then hit a port conflict, it quoted the Ready.
-    """
+    """Quotes disposition= and any Stale line; the first interesting line may contradict the verdict."""
     try:
         text = tauri_log.read_text(encoding = "utf-8", errors = "replace")
     except OSError:

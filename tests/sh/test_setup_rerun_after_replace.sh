@@ -58,6 +58,7 @@ make_variant() {
         echo 'step()    { printf "STEP %s: %s\n" "$1" "$2"; }'
         echo 'substep() { printf "SUB %s\n" "$1"; }'
         echo 'C_WARN='
+        echo '_frontend_bg_join() { :; }'
         cat "$WORK/func_blk.sh"
         cat <<EOF
 echo "START $_v pid=\$\$ pwd=\$PWD guard=\${UNSLOTH_SETUP_RERUN:-}"
@@ -93,7 +94,7 @@ run_setup() {
     OUT=$(cd "$WORK/launch dir" && env "$@" "$_interp" "$WORK/pkg/setup.sh" --local "a b" 2>&1) || RC=$?
 }
 count() { printf '%s\n' "$OUT" | grep -cF -- "$1" || true; }
-HANDOFF="STEP setup: the update replaced this setup script; finishing with the new version"
+HANDOFF="STEP setup: the update changed setup or its Node pin; finishing with the new version"
 
 INTERPRETERS=(bash)
 if [ "$(uname -s)" = Darwin ] && [ -x /bin/bash ]; then

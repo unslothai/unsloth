@@ -21,9 +21,7 @@ const {
   "../src/features/model-picker/model-config/per-model-config.ts"
 );
 
-// What /api/inference/status reports as model_identifier after an API auto-switch: the concrete
-// snapshot path the resolver index handed the loader. The repo id is what the Hub keys this
-// model's settings by (modelConfigIdentity) and what status.active_model reports.
+// model_identifier after an API auto-switch is the snapshot path; settings are keyed by repo id.
 const SNAPSHOT_PATH =
   "/home/u/.cache/huggingface/hub/models--unsloth--Repo-GGUF/snapshots/2f1c9ab";
 const REPO_ID = "unsloth/Repo-GGUF";
@@ -50,13 +48,11 @@ test("the resident model's repo-keyed slots are found through its snapshot path"
   store.clear();
   savePerModelConfig(REPO_ID, "Q4_K_M", config(4));
 
-  // The plain lookup is what status adoption used to do, and it misses.
   assert.equal(resolveInitialConfig(SNAPSHOT_PATH, "Q4_K_M").remembered, false);
 
   const resolved = resolveResidentInitialConfig(SNAPSHOT_PATH, "Q4_K_M");
   assert.equal(resolved.remembered, true);
-  // Without this the control blanks on the model change and the next save writes the
-  // blank back over the saved record (locally and through the server mirror).
+  // Without this the control blanks and the next save writes the blank over the saved record.
   assert.equal(resolved.config.nParallel, 4);
 });
 
@@ -77,7 +73,6 @@ test("a cached repo loaded without a quant moves its snapshot-path record to the
   const repo = "mlx-community/Model-4bit";
   savePerModelConfig(snapshot, null, config(2));
 
-  // The settings panel reads the repo id alone, so both readers must settle on one record.
   assert.equal(
     resolveResidentInitialConfig(snapshot, null).config.nParallel,
     2,
@@ -85,7 +80,6 @@ test("a cached repo loaded without a quant moves its snapshot-path record to the
   assert.equal(resolveInitialConfig(repo, null).config.nParallel, 2);
   assert.equal(resolveInitialConfig(snapshot, null).remembered, false);
 
-  // What the panel saved under the repo id outranks the stale path record, as on a Hub handoff.
   savePerModelConfig(snapshot, null, config(6));
   savePerModelConfig(repo, null, config(8));
   assert.equal(
@@ -132,12 +126,10 @@ for (const modelId of [
     store.clear();
     savePerModelConfig(modelId, "Q4_K_M", config(5));
 
-    // Only the label is on disk, so the fallback is what answers.
     const resolved = resolveResidentInitialConfig(modelId, "Q4_K_M");
     assert.equal(resolved.remembered, true);
     assert.equal(resolved.config.nParallel, 5);
 
-    // A record under the path still wins over the older labelled one.
     savePerModelConfig(modelId, null, config(6));
     assert.equal(
       resolveResidentInitialConfig(modelId, "Q4_K_M").config.nParallel,
@@ -164,8 +156,7 @@ for (const modelId of [
 
 test("a stem two models can share is never read as an alias", () => {
   store.clear();
-  // A standalone GGUF is keyed by its own path; "Repo-Q4_K_M" is the stem both of these
-  // files collapse onto, so adopting it would apply one file's settings to the other.
+  // "Repo-Q4_K_M" is the stem both files collapse onto, so adopting it would cross settings.
   savePerModelConfig("Repo-Q4_K_M", null, config(4));
 
   assert.equal(

@@ -6,6 +6,7 @@
 //
 //   mode "ok"      -> invoke resolves
 //   mode "rejects" -> invoke rejects, as an older WebView2 runtime would
+//   result         -> what invoke resolves to in mode "ok"
 
 const control = (globalThis.__TAURI_CORE_STUB__ ??= { calls: [], mode: "ok" });
 
@@ -14,4 +15,5 @@ export async function invoke(command, args) {
   if (control.mode === "rejects") {
     throw new Error("command reset_microphone_permission not found");
   }
+  return control.result;
 }

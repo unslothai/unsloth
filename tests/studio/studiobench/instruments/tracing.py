@@ -1,34 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Capture a Chrome trace without contaminating the window being measured.
-
-`transferMode: "ReturnAsStream"`, never `ReportEvents`. `ReportEvents` pushes
-the trace back over the devtools pipe as `Tracing.dataCollected` notifications
-WHILE THE WINDOW IS OPEN. Every one of those is renderer-visible work, and its
-volume scales with how much the page is doing, which is to say it is correlated
-with the treatment. `ReturnAsStream` writes to a temp file in the browser
-process and hands back a stream handle at the end, so the drain happens after
-the measurement is over. (Confirmed in `content/browser/devtools/protocol/
-tracing_handler.cc`: `ReturnAsStream` builds a `DevToolsStreamFile` endpoint,
-while `OnTraceDataCollected` splices events into a notification per chunk.)
-
-A trace that hit its buffer is a FAILED CELL, not a short trace. A truncated
-trace reads exactly like "the expensive thing did not happen", which is the most
-dangerous possible failure for a tool whose whole job is to find an expensive
-thing. `Tracing.tracingComplete.dataLossOccurred` is the authoritative signal;
-it is a sticky OR over perfetto's `chunks_overwritten`, `chunks_discarded`,
-`abi_violations` and `trace_writer_packet_loss`, and it is valid even if buffer
-usage polling is off. `Tracing.bufferUsage.percentFull` is subscribed as an
-early warning; its `eventCount` is hardcoded to 0 on modern Chrome and its
-`value` is a legacy duplicate of `percentFull`, so neither is used.
-
-TRACING OVERHEAD IS MEASURED, NEVER ASSUMED. `OverheadLedger` records the same
-cell at L0 and at each higher level and reports `overhead_L1_vs_L0` and
-`overhead_L2_vs_L0` per rung. A level whose overhead GROWS WITH LENGTH is
-disqualified from exponent claims at that rung. Constant overhead is harmless
-to a slope; overhead correlated with the treatment manufactures one.
-"""
+"""Use ReturnAsStream, not ReportEvents: ReportEvents streams trace data during the measured window."""
 
 from __future__ import annotations
 
@@ -43,18 +16,11 @@ from typing import Any, Callable, Sequence
 from ..analysis import CellFailure
 
 
-# --------------------------------------------------------------------- ladder
-
-# L0 is the only level headline numbers may come from: nothing is attached to the renderer beyond
-# the metrics counters it already maintains for itself.
+# L0 is the only level headline numbers may come from.
 L0 = "L0"
-# L1 adds the timeline trace (task boundaries, frames, layout, user timing). No CPU profiler,
-# so no stacks and no naming, but the cheapest level giving a real task tree.
 L1 = "L1"
-# L2 adds the V8 CPU profiler. This is the level that NAMES A FRAME.
 L2 = "L2"
-# L3 adds precise coverage and heap sampling. Every timing from L3 is discarded by
-# construction; only integers cross the boundary.
+# Every timing from L3 is discarded; only integers cross the boundary.
 L3 = "L3"
 
 LEVELS = (L0, L1, L2, L3)
@@ -64,29 +30,17 @@ _TIMELINE_CATEGORIES: tuple[str, ...] = (
     "disabled-by-default-devtools.timeline",
     "disabled-by-default-devtools.timeline.frame",
     "blink.user_timing",
-    # `toplevel` carries `ThreadControllerImpl::RunTask` with `src_file` / `src_func`, the C++ that
-    # POSTED each task; `RunTask` itself says nothing about origin.
     "toplevel",
     "toplevel.flow",
-    # `scheduler` matters most and is easy to miss: it adds no events, only TYPED ARGS to the
-    # `toplevel` slice (task_type, queue_name), which turn task origin from an inference into a
-    # read value. A React scheduler callback arrives labelled `TASK_TYPE_*POSTED_MESSAGE` on
-    # `FRAME_PAUSABLE_TQ`, a timer as `TASK_TYPE_JAVASCRIPT_TIMER_*`.
-    # Spelled `args.renderer_main_thread_task_execution.task_type` and
-    # `args.sequence_manager_task.queue_name`.
+    # scheduler adds no events, only typed args (task_type, queue_name) on toplevel slices.
     "scheduler",
-    # `sequence_manager` adds the DoWork / SelectNextTask / DoIdleWork scoping slices. It does NOT
-    # carry queue names, contrary to a natural reading.
+    # sequence_manager does NOT carry queue names.
     "sequence_manager",
     "latencyInfo",
     "benchmark",
     "input",
 )
 
-# `...timeline.stack` attaches call-site information to timeline events;
-# `disabled-by-default-v8.cpu_profiler` is what produces `Profile` / `ProfileChunk`, and
-# without it every microsecond stays a bucket with no stack.
-# In full, `disabled-by-default-devtools.timeline.stack`.
 _STACK_CATEGORIES: tuple[str, ...] = (
     "disabled-by-default-devtools.timeline.stack",
     "disabled-by-default-v8.cpu_profiler",
@@ -94,15 +48,7 @@ _STACK_CATEGORIES: tuple[str, ...] = (
     "disabled-by-default-v8.gc",
 )
 
-# There is NO knob for the tracing CPU profiler's sampling interval:
-# `v8/src/profiler/tracing-cpu-profiler.cc` hard-codes 100 us, and the `...cpu_profiler.hires`
-# category that used to lower it is no longer registered in V8's category list, so DevTools
-# still sends it and it does nothing. Measured spacing on a real capture is ~150 us.
-# That category is `disabled-by-default-v8.cpu_profiler.hires`.
-# The consequence is structural: a set of 40 us scheduler tasks yields at most one sample each,
-# so leaf rankings over short task windows are underpowered.
-# `analysis.cpuprofile.self_time_in_windows` reports `underpowered` rather than relying on a
-# category flag that does not work.
+# V8 hard-codes a 100 us tracing profiler interval; the .hires category no longer works.
 TRACING_PROFILER_INTERVAL_US = 100
 
 CATEGORIES_BY_LEVEL: dict[str, tuple[str, ...]] = {
@@ -112,18 +58,12 @@ CATEGORIES_BY_LEVEL: dict[str, tuple[str, ...]] = {
     L3: _TIMELINE_CATEGORIES + _STACK_CATEGORIES,
 }
 
-# The default perfetto buffer is 200 MB. A long rung at L2 produces many ProfileChunks, so the
-# buffer is set explicitly and large: an overflow costs a whole cell, and memory is cheaper
-# than a re-run.
+# Larger than the 200 MB default: an overflow costs a whole cell.
 DEFAULT_BUFFER_KB = 640 * 1024
 
-# `bufferUsageReportingInterval` is clamped to a 250 ms floor in `tracing_handler.cc`, so asking
-# for less is silently ignored. 500 ms is what the DevTools frontend uses.
-# `kMinimumReportingInterval`.
+# tracing_handler.cc clamps this to a 250 ms floor; 500 ms matches DevTools.
 BUFFER_POLL_MS = 500
 
-# A trace this close to full did not lose data but was about to, and the next rung will.
-# Surfaced as a warning so a rung ladder does not walk off a cliff.
 BUFFER_WARN_FRACTION = 0.80
 
 
@@ -152,15 +92,8 @@ class TraceResult:
         return len(self.text)
 
     def integrity(self) -> dict[str, Any]:
-        """Integrity facts, under the no-bare-zero rule.
-
-        `max_percent_full` is the interesting case. A reading of 0.0 with buffer
-        usage events received means the buffer really was empty; a reading of
-        0.0 with NO events received means we never heard from the buffer at all,
-        and those two must not look the same. The second is precisely the state
-        in which an overflow would go unnoticed, so it is reported as unmeasured
-        with a reason rather than as a reassuring zero.
-        """
+        """No buffer events means max_percent_full is unmeasured, not zero, so overflow cannot pass
+        as empty."""
         from ..analysis import measured, merge, unmeasured
 
         if self.buffer_polls > 0:
@@ -204,13 +137,7 @@ class TraceResult:
 
 
 class TraceCapture:
-    """Drive `Tracing` over one CDP session.
-
-    Only one tracing session may exist per browser: a second `Tracing.start`
-    fails with "Tracing has already been started (possibly in another tab)". The
-    class refuses to double-start rather than letting that surface later as an
-    unrelated protocol error.
-    """
+    """Only one tracing session may exist per browser, so a second Tracing.start is refused here."""
 
     def __init__(
         self,
@@ -229,7 +156,6 @@ class TraceCapture:
         self.buffer_kb = int(buffer_kb)
         self.record_mode = record_mode
         cats = list(CATEGORIES_BY_LEVEL[level]) + [c for c in extra_categories if c]
-        # Order-stable de-duplication so the recorded category list is reproducible between runs.
         self.categories: tuple[str, ...] = tuple(dict.fromkeys(cats))
         self._wait = wait or (lambda ms: time.sleep(ms / 1000.0))
         self._usage: list[float] = []
@@ -238,13 +164,10 @@ class TraceCapture:
         self._t_start = 0.0
         self._subscribed = False
 
-    # ------------------------------------------------------------------ driving
-
     def _subscribe(self) -> None:
         if self._subscribed:
             return
-        # Playwright delivers the event's `params` object as the single positional argument, and it is
-        # `None` for a param-less event.
+        # Playwright passes params as the single positional argument, None for a param-less event.
         self.cdp.on("Tracing.bufferUsage", self._on_buffer_usage)
         self.cdp.on("Tracing.tracingComplete", self._on_complete)
         self._subscribed = True
@@ -259,8 +182,7 @@ class TraceCapture:
 
     def start(self) -> None:
         if self.level == L0:
-            # L0 attaches nothing. A no-op rather than an error is what lets one code path run every level,
-            # including the one whose definition is 'do not instrument'.
+            # L0 is a no-op rather than an error so one code path runs every level.
             self._running = True
             self._t_start = time.perf_counter()
             return
@@ -330,8 +252,7 @@ class TraceCapture:
                     f"Tracing.tracingComplete did not arrive within {timeout_s:.0f}s",
                 )
             self._wait(50)
-        # `dataLossOccurred` can arrive first on a very small trace; give the stream handle a moment
-        # before deciding there is not one.
+        # dataLossOccurred can arrive before the stream handle on a very small trace.
         grace = time.time() + 5.0
         while "stream" not in self._complete and time.time() < grace:
             self._wait(50)
@@ -374,14 +295,8 @@ class TraceCapture:
         )
 
     def _drain(self, handle: str, compression: str) -> tuple[str, int]:
-        """Read the stream to EOF, then close it.
-
-        `IO.read` returns `base64Encoded: true` only for gzip or proto payloads,
-        and its `offset`/`size` are raw pre-base64 byte counts, so the offset is
-        never derived from `len(data)`; sequential reads with no offset are the
-        only safe form. The read that reaches EOF returns an empty `data`, so
-        the chunk is appended BEFORE the eof check.
-        """
+        """Never read by offset (it counts pre-base64 bytes); append the final chunk before the EOF
+        check."""
         parts: list[str] = []
         binary = False
         chunks = 0
@@ -395,8 +310,7 @@ class TraceCapture:
         try:
             self.cdp.send("IO.close", {"handle": handle})
         except Exception:
-            # The stream is temp storage in the browser process; failing to close it leaks a file, it does
-            # not invalidate the trace we hold.
+            # Failing to close the stream leaks a browser temp file but does not invalidate the trace.
             pass
         blob = "".join(parts)
         raw = base64.b64decode(blob) if binary else blob.encode("utf-8")
@@ -407,28 +321,9 @@ class TraceCapture:
 
 @dataclass
 class OverheadLedger:
-    """Per-rung measured cost of instrumentation, and the disqualification gate.
+    """The gate is that overhead does not grow with length; constant overhead only shifts the intercept."""
 
-    The danger is not overhead. Constant overhead shifts an intercept and leaves
-    an exponent alone. The danger is overhead CORRELATED WITH THE TREATMENT,
-    because that manufactures exactly the slope the tool is looking for. So the
-    gate is not "overhead is small", it is "overhead does not grow with length".
-
-    HOW THIS RELATES TO THE HARNESS PATH, since there are two and they are not
-    competitors. Under Layer 1, each instrument reports its own measured
-    `overhead_ms` from `end_cell`, and the report layer assembles those across
-    rungs into its `overhead_growth_with_length` gate. That is the production
-    route and it needs nothing from this class. This ledger is the OFFLINE route:
-    it takes the same cell run at L0 and at a higher level and produces the
-    ratio and the disqualification verdict directly, which is what you want when
-    calibrating a machine or investigating a suspicious slope outside a full
-    run. Same rule, same tolerance, two entry points.
-    """
-
-    # rung label -> level -> observed cost of the identical cell (ms, or any single consistent
-    # scalar such as median frame time)
     cells: dict[str, dict[str, float]] = field(default_factory = dict)
-    # A level whose overhead ratio rises by more than this across the ladder is disqualified from exponent claims.
     growth_tolerance: float = 0.15
 
     def record(self, rung: str, level: str, cost: float) -> None:
@@ -456,12 +351,8 @@ class OverheadLedger:
         return out
 
     def disqualified_levels(self, rung_order: Sequence[str]) -> dict[str, str]:
-        """Levels whose overhead grows with length, with the reason.
-
-        `rung_order` must be smallest-first. Only rungs that actually recorded
-        both L0 and the level are considered, so a partial ladder narrows the
-        claim instead of inventing one.
-        """
+        """rung_order must run smallest first; rungs lacking L0 or the level are skipped, narrowing
+        the claim."""
         out: dict[str, str] = {}
         for level in (L1, L2, L3):
             series = [
@@ -495,12 +386,7 @@ def cross_check_with_metrics(
     metrics: dict[str, float],
     tolerance: float = 0.05,
 ) -> dict[str, Any]:
-    """Summed trace `RunTask` vs `Performance.getMetrics` `TaskDuration`.
-
-    Two independent accountings of the same physical quantity, produced by
-    different subsystems. Agreement is weak evidence that the trace is complete;
-    disagreement is strong evidence that it is not, and the cell fails.
-    """
+    """Disagreement with Performance.getMetrics TaskDuration is strong evidence the trace is incomplete."""
     task_duration_s = metrics.get("TaskDuration")
     if task_duration_s is None:
         raise CellFailure(
@@ -527,20 +413,8 @@ def cross_check_with_metrics(
 
 
 class MetricsWindow:
-    """Bracket `Performance.getMetrics` INSIDE the trace window.
-
-    `TaskDuration` is a monotonic renderer-wide counter, so a window is the
-    difference of two readings. The readings must be taken just AFTER
-    `Tracing.start` and just BEFORE `Tracing.end`, never outside, or the metrics
-    window is wider than the trace window and the cross-check reports a
-    disagreement that is entirely an artefact of how it was taken. A 5.7% false
-    failure was produced exactly this way while building this module, which is
-    why the ordering lives in a class instead of in a comment.
-
-    Taking the metrics strictly inside also makes the residual one-sided: the
-    trace should account for at least as much task time as the metrics do, so a
-    trace total BELOW the metrics total means missing events.
-    """
+    """Take getMetrics strictly inside the trace window; a wider metrics window causes false
+    disagreement."""
 
     def __init__(self, cdp: Any) -> None:
         self.cdp = cdp
@@ -566,24 +440,14 @@ class MetricsWindow:
 
 
 def read_metrics(cdp: Any) -> dict[str, float]:
-    """`Performance.getMetrics` flattened to a plain mapping.
-
-    The Performance domain must be enabled first; calling `getMetrics` on a
-    disabled domain returns an error rather than an empty result, and swallowing
-    that is how a cross-check silently stops checking.
-    """
+    """getMetrics on a disabled Performance domain errors; swallowing that error silently skips the
+    check."""
     res = cdp.send("Performance.getMetrics")
     return {m["name"]: m["value"] for m in res.get("metrics", [])}
 
 
 def enable_metrics(cdp: Any, *, time_domain: str = "timeTicks") -> None:
-    """Enable the Performance domain on the WALL clock.
-
-    `timeTicks` is the default and it is the right one here: trace `RunTask.dur`
-    is wall duration, so cross-checking it against a `TaskDuration` accumulated
-    in `threadTicks` would compare CPU time to elapsed time and read as a real
-    disagreement whenever the thread was descheduled.
-    """
+    """Use timeTicks, not threadTicks: RunTask.dur is wall time, so CPU time would read as disagreement."""
     cdp.send("Performance.enable", {"timeDomain": time_domain})
 
 
@@ -598,17 +462,7 @@ def load_trace_json(result: TraceResult) -> dict[str, Any]:
     return json.loads(result.text)
 
 
-# Harness adapter (INTERFACES.md section 3)
-# ONE TRACE PER WINDOW, not one per cell. The alternative, a cell-long trace plus
-# `performance.mark` bracketing, was rejected because a mark is a `Runtime.evaluate` round trip
-# inside the measured interval; because a cell-long L2 trace accumulates ProfileChunks so
-# overflow risk grows with cell length; and above all because per-window numbers must exist at
-# `close()` time, since the harness emits `window.row()` right after and a trace drained at
-# `end_cell` would leave every window row null.
-# `Tracing.end` and the drain happen inside `close()`, which the harness calls AFTER stamping
-# `t_close_ms`, so the window duration is already fixed and the drain cannot inflate it. The
-# `Tracing.start` in `open()` does land inside the window, so it is timed and reported as
-# `overhead_ms`.
+# One trace per window so per-window numbers exist at close(); Tracing.start is timed as overhead.
 
 from ..analysis import assert_no_bare_zero, measured, merge, unmeasured  # noqa: E402
 from . import register_instrument  # noqa: E402
@@ -632,29 +486,24 @@ class TracingInstrument:
         self._failed_windows: list[str] = []
         self._save_traces = True
 
-    # ---------------------------------------------------------------- lifecycle
-
     def attach(self, ctx: Any) -> None:
         self.ctx = ctx
 
     def start_cell(self, cell: Any) -> None:
-        # `ctx.page` and `ctx.cdp` may be REPLACED between cells when a crashed renderer is recovered,
-        # so they are re-read here and never cached in `attach`. INTERFACES.md section 7.
+        # ctx.page and ctx.cdp may be replaced after crash recovery, so never cache them in attach.
         self.cell = cell
         self.cdp = getattr(self.ctx, "cdp", None)
         self._overhead_ms = 0.0
         self._windows = 0
         self._failed_windows = []
         lvl = int(getattr(cell, "instrument_level", 1) or 1)
-        # The instrument ladder is expressed HERE. L0 never reaches this method because the registry
-        # filters on `level`, and L3 uses the same category set as L2 (its coverage and heap sampling
-        # are other instruments, not more categories).
+        # L3 reuses L2's categories; its extras are other instruments.
         self.trace_level = L1 if lvl <= 1 else (L2 if lvl == 2 else L3)
         if self.cdp is not None:
             try:
                 enable_metrics(self.cdp)
             except Exception:
-                # Metrics are a cross-check, not the measurement. Losing them costs the cross-check and nothing else.
+                # Metrics are only a cross-check; losing them costs nothing else.
                 pass
 
     def open(self, window: Any) -> None:
@@ -669,18 +518,10 @@ class TracingInstrument:
         try:
             self.capture.start()
         except Exception:
-            # Nothing was started, so there is nothing to end.
             self.capture = None
             self.metrics = None
         else:
-            # THE METRICS PROBE MAY NOT TAKE THE TRACE WITH IT. Dropping a STARTED capture here cost the
-            # whole run: tracing is per-browser, so with `self.capture` cleared `close()` returns early and
-            # never sends `Tracing.end`, `detach()` has nothing to stop, and the next window's
-            # `Tracing.start` fails with 'Tracing has already been started', so every remaining window
-            # reports `tracing did not start` while the abandoned session keeps recording underneath. One
-            # failed `Performance.getMetrics` was enough. `close()` and `_analyse` already guard every use
-            # of `self.metrics`, so only the cross-check goes.
-            # `start_cell` says what losing the metrics probe costs, and it can be off.
+            # Keep a started capture: dropping it leaves the per-browser tracing session running.
             try:
                 self.metrics = MetricsWindow(self.cdp)
                 self.metrics.open()
@@ -722,9 +563,7 @@ class TracingInstrument:
         return payload
 
     def end_cell(self, cell: Any) -> dict | None:
-        # `overhead_ms` is required from every instrument at level >= 1 (INTERFACES.md section 3) and
-        # feeds the report layer's `overhead_growth_with_length` gate. It is a MEASURED wall cost of
-        # this instrument's own calls, not an estimate from a table.
+        # overhead_ms is measured wall cost, required at level >= 1 for the growth gate.
         out = merge(
             measured("overhead_ms", round(self._overhead_ms, 3)),
             measured("windows_traced", self._windows),
@@ -744,8 +583,6 @@ class TracingInstrument:
             except Exception:
                 pass
             self.capture = None
-
-    # ------------------------------------------------------------------ helpers
 
     def _wait(self, ms: float) -> None:
         page = getattr(self.ctx, "page", None)
@@ -789,8 +626,7 @@ class TracingInstrument:
             },
         )
 
-        # Cross-check against the renderer's own accounting. A disagreement means the trace is missing
-        # tasks, so it is reported rather than silently tolerated, but it does not void the window.
+        # A disagreement means the trace is missing tasks; reported but does not void the window.
         try:
             if self.metrics is not None:
                 payload.update(
@@ -810,8 +646,7 @@ class TracingInstrument:
                 unmeasured("task_duration_crosscheck_drift", f"{type(exc).__name__}: {exc}")
             )
 
-        # Named frames need the V8 profiler, which only L2+ turns on. At L1 this is an honest null with
-        # a reason, never an empty list that reads as 'nothing was hot'.
+        # Named frames need L2+; at L1 return null with a reason, never an empty list.
         if self.trace_level == L1:
             payload.update(
                 unmeasured(

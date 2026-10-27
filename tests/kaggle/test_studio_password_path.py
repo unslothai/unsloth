@@ -1,24 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Starting Studio headless with --password, and the way that check goes vacuous.
-
-`unsloth studio --password X` sets the INITIAL admin password when none is set
-yet, which is exactly the state a scripted server is in. Without it the only way
-in is the bootstrap password Studio seeds into a file and prints to its own log,
-and a deployment that has to read a log to log in is not one anybody scripts
-twice.
-
-**The vacuity to avoid is a fallback.** If logging in with the passed password
-failed and the payload then tried the bootstrap, the run would go green while
-proving `--password` does nothing at all. There is deliberately no fallback, and
-that is asserted from the source here.
-
-**The second risk is a leaked credential.** The password reaches a process
-command line, Studio's startup banner, `studio.log`, and the evidence bundle
-that travels home. It is generated per run and registered as a secret before
-anything can log it, so every log leaving the machine is scrubbed.
-"""
+"""A --password login must not fall back to the bootstrap password, or the flag proves nothing."""
 
 from __future__ import annotations
 
@@ -48,18 +31,12 @@ def test_there_is_no_fallback_to_the_bootstrap_password():
         for node in ast.walk(tree)
         if isinstance(node, ast.FunctionDef) and node.name == "authenticate"
     )
-    # Find the `if self.args.studio_password:` branch and assert it RETURNS
-    # rather than falling through into the bootstrap path below it.
     branch = next(
         node
         for node in func.body
         if isinstance(node, ast.If) and "studio_password" in ast.dump(node.test)
     )
-    # The LAST statement of the branch, unconditionally, and not merely "a
-    # Return somewhere inside". `if not failures: return ...` contains a Return
-    # and still falls through on the failure path -- which is the single case
-    # this guard exists for. That mutation survived the first version of this
-    # assertion, so the rule is now about the branch always returning.
+    # The branch must end in a Return: `if not failures: return` still falls through on failure.
     assert isinstance(branch.body[-1], ast.Return), (
         "the --password branch must END in an unconditional return; a "
         "conditional one falls through to the bootstrap path on failure and "

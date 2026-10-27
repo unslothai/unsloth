@@ -4,7 +4,6 @@
 export { ChatPage, validateChatSearch, type ChatSearch } from "./chat-page";
 export { isRenderableRenderHtmlToolPart } from "./artifacts/html-fences";
 export {
-  addScanFolder,
   browseFolders,
   ChatThreadDeletedError,
   deleteChatAttachment,
@@ -21,12 +20,11 @@ export {
   listLoras,
   listModels,
   listRecommendedFolders,
-  listScanFolders,
   loadModel,
   unloadModel,
   notifyChatHistoryUpdated,
   notifyChatProjectsUpdated,
-  removeScanFolder,
+  subscribeChatHistoryUpdated,
   revealCachedModel,
   revealFineTunedModel,
   validateModel,
@@ -37,7 +35,8 @@ export {
   type ChatAttachmentRecord,
   type KvCacheEstimate,
   type LocalModelInfo,
-  type ScanFolderInfo,
+  CHAT_HISTORY_UPDATED_EVENT,
+  fetchSidebarThreadRows,
 } from "./api/chat-api";
 export type {
   ApiMonitorEntry,
@@ -58,14 +57,21 @@ export {
   type InferenceParams,
   type Preset,
 } from "./chat-settings-sheet";
-export { useChatRuntimeStore } from "./stores/chat-runtime-store";
+export {
+  syncKeepModelsLoaded,
+  useChatRuntimeStore,
+} from "./stores/chat-runtime-store";
 export { openFolderAsProject, useOpeningFolder } from "./utils/open-folder-as-project";
+export { requestReplyFinishedPermission } from "./utils/reply-finished-notification";
+export { forgetAgentsMd } from "./utils/agents-md";
+export { refreshContextUsage } from "./utils/refresh-context-usage";
 export {
   hydrateModelDisclaimerPreference,
   refreshModelDisclaimerPreference,
   saveModelDisclaimerPreference,
 } from "./sync-model-disclaimer-preference";
 export {
+  ChatComposerFocusableContext,
   pythonToolRunsInStudio,
   useChatActive,
   useInComparePane,
@@ -84,7 +90,14 @@ export {
   GPU_LAYERS_AUTO,
 } from "./stores/chat-runtime-store";
 export { resolveStagedDiffusionClassification } from "./lib/gpu-placement";
-export { offloadCountsFrom, offloadWarning } from "./lib/partial-offload";
+export { describePlacement, offloadCountsFrom, offloadWarning } from "./lib/partial-offload";
+export {
+  formatLiveDecode,
+  formatPrefillDetails,
+  formatPrefillTimeLeft,
+  prefillPercent,
+} from "./lib/generation-progress";
+export type { LiveDecodeProgress } from "./stores/chat-runtime-store";
 export {
   preferFullToolOutput,
   preferSanitizedFullToolOutput,
@@ -97,11 +110,13 @@ export {
 } from "./tool-output-scope";
 export { useToolAwaitingApproval } from "./tool-approval";
 export {
+  FullAccessConfirmDialog,
   PermissionModeDropdown,
   useActivePermissionMode,
+  usePermissionModeChoice,
   useSandboxCapability,
 } from "./permission-mode-select";
-export { sandboxSwitchState } from "./sandbox-level";
+export { SANDBOX_DOCS_URL, sandboxSwitchState } from "./sandbox-level";
 export { pickSandboxLevel } from "./sandbox-pick";
 export { SandboxSetupDialog } from "./sandbox-setup-dialog";
 export {
@@ -140,6 +155,28 @@ export {
   useForkBoundaryStore,
   type ForkBoundaryState,
 } from "./stores/fork-boundary-store";
+export { rewindChatThread } from "./api/rewind-api";
+export {
+  type RewindDialogRequest,
+  useRewindDialogStore,
+} from "./stores/rewind-dialog-store";
+export {
+  collectRewindTurnIds,
+  defaultRewindMode,
+  isRewindCommand,
+  type RewindMode,
+  type RewindResult,
+  rewindChangedCount,
+  rewindPickerEntries,
+  rewindSkippedCount,
+  rewindTouchesConversation,
+  rewindTouchesFiles,
+} from "./utils/rewind";
+export {
+  isCompactCommand,
+  requestThreadCompaction,
+  useCompactRequestStore,
+} from "./stores/compact-request-store";
 export {
   folderRingKey,
   planKey,
@@ -211,6 +248,10 @@ export type {
   SidebarOrganizeBy,
 } from "./stores/sidebar-organization-store";
 export { useChatPreferencesStore } from "./stores/chat-preferences-store";
+export {
+  type ContextTruncation,
+  promptWasShortened,
+} from "./utils/context-truncation";
 export { SectionNameDialog } from "./components/section-name-dialog";
 export { removeCustomSectionWithUndo } from "./stores/remove-custom-section";
 export {
@@ -225,6 +266,7 @@ export {
   PROMPT_QUEUE_RUN_FAILED_EVENT,
   PROMPT_QUEUE_STOP_EVENT,
   requestLocalPromptQueueStop,
+  requestScopedLocalPromptQueueStop,
   type PromptQueueRunFailedEventDetail,
   type PromptQueueStopEventDetail,
 } from "./utils/prompt-queue-boundary";
@@ -243,7 +285,6 @@ export {
 } from "./utils/pre-stream-run-reservation";
 export { claimThreadCreation } from "./utils/chat-thread-creation-claim";
 export { useChatProjectScope } from "./chat-project-scope";
-// Audio swaps the same llama-server Chat decodes on, so it needs the same confirmation.
 export {
   confirmStopRunningChatsIfNeeded,
   type StopRunningChatsDecision,
@@ -283,11 +324,15 @@ export {
 } from "./utils/queued-chat-run-settings";
 export {
   PLUS_MENU_ORDER,
+  normalizePlusMenuOrder,
+  keepSavedSlot,
+  splitPlusMenuItems,
   usePlusMenuPrefsStore,
   type PlusMenuItemId,
 } from "./stores/plus-menu-prefs-store";
 export {
   useChatModelRuntime,
+  resyncInferenceStatusAfterKeptModelsUnload,
   resyncInferenceStatusAfterServerModelChange,
 } from "./hooks/use-chat-model-runtime";
 export { compareModelDisplayName } from "./lib/external-model-label";
@@ -295,15 +340,20 @@ export { ModelLoadDescription } from "./components/model-load-status";
 export { chatModelLoaded } from "./lib/chat-model-loaded";
 export type { ChatModelLoadedInput } from "./lib/chat-model-loaded";
 export {
+  buildExternalModelId,
   customProviderDisplayName,
   isCustomProviderType,
   isDecisionConnection,
   isExternalModelId,
   parseExternalModelId,
 } from "./external-providers";
+export type { ExternalProviderConfig } from "./external-providers";
+export {
+  externalReasoningTakesEffort,
+  getExternalReasoningCapabilities,
+} from "./provider-capabilities";
 // A provider catalogue lands async, so capability reads need to re-run when it does.
 export { modelCatalogVersion, subscribeModelCatalog } from "./model-catalog";
-// What a per-model reasoning pin displaced in the live runtime, so clearing it can put it back.
 export {
   noteEffortDisplacedByPin,
   reconcilePinnedReasoningEffort,
@@ -355,6 +405,8 @@ export {
   forkChatRow,
   getSidebarItemThreadIds,
   recordedSandboxSessionIds,
+  regenerateChatTitle,
+  regenerateChatTitleWithToast,
   sandboxSessionIdsHolding,
   type ConversationExportFormat,
 } from "./components/chat-row-menu";
@@ -367,9 +419,10 @@ export { BulkExportItems, exportThreads } from "./components/bulk-export-items";
 export { useFileProjectInSection } from "./hooks/use-file-project-in-section";
 export { pickAndImportChats } from "./utils/import-chats";
 export { useForkInFlight } from "./utils/fork-in-flight";
-export { showForkCreatedToast } from "./utils/fork-toast";
+export { showForkCreatedToast, showForkFailedToast } from "./utils/fork-toast";
 export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
 export { stopRecoveredRun } from "./utils/chat-generation-recovery";
+export { readIncompleteInfo } from "./utils/continuation";
 export { offerToDeleteKeptSandboxes } from "./utils/offer-kept-sandbox-files";
 export { pasteClipboardFiles } from "./utils/clipboard-files";
 export {
@@ -428,6 +481,7 @@ export {
 export { allRecordedSandboxSessionIds } from "./utils/recorded-sandbox-session";
 export {
   markChatThreadDeleted,
+  onChatThreadsDeleted,
   removeChatThreadTombstones,
 } from "./utils/chat-thread-tombstones";
 export { emitChatAttachmentDeleted } from "./utils/chat-attachment-events";
@@ -435,6 +489,8 @@ export { forkCountFor, subscribeForkCounts } from "./utils/fork-count-store";
 export { resolveReasoningGroupDuration } from "./utils/reasoning-duration";
 export {
   reasoningFollowsPreference,
+  reasoningTailCapped,
+  reasoningTailFlexBox,
   resolveReasoningOpen,
   startsNewReasoningRound,
 } from "./utils/reasoning-visibility";
@@ -450,6 +506,7 @@ export {
   resolveOpen,
 } from "./utils/display-visibility";
 export { ArtifactCard } from "./artifacts/artifact-card";
+export { ReactPreview } from "./artifacts/react-preview/react-preview";
 export { ArtifactHtmlFrame } from "./artifacts/html-frame";
 export { ResearchMessage } from "./components/research-message";
 export {
@@ -462,7 +519,10 @@ export {
   downloadChatExport,
 } from "./utils/export-chat-history";
 export {
-  clearNewChatDraft,
+  adoptLegacyDraft,
+  latestDraft,
+  publishDraft,
+  subscribeDraft,
   composerDraftKey,
   composerPasteDraftKey,
   readComposerDraft,
@@ -506,10 +566,28 @@ export {
   type SidebarItem,
 } from "./hooks/use-chat-sidebar-items";
 export {
+  fetchSidebarRowPage,
+  readAllSidebarRowIds,
+  readAllSidebarRows,
+  useSidebarRowPages,
+  type SidebarRowPages,
+  type SidebarRowSlot,
+} from "./hooks/use-sidebar-row-pages";
+export {
+  SIDEBAR_PAGE_SIZE,
+  holdRowsPastLoadedChats,
+  mergeManualOrderTail,
+  settledManualOrder,
+  sidebarRowQuery,
+  type SidebarRowQuery,
+} from "./utils/sidebar-row-query";
+export {
   createChatProject,
   deleteChatProject,
   moveChatItemToProject,
+  projectActivityAt,
   renameChatProject,
+  sortProjectsByActivity,
   updateChatProjectInstructions,
   useChatProjects,
 } from "./hooks/use-chat-projects";
@@ -582,4 +660,5 @@ export type { ChatModelSummary, ChatLoraSummary } from "./types/runtime";
 export { startLlamaCppAutoReload } from "./llama-cpp-auto-reload";
 export { chatLocalModelOptions } from "./local-model-options";
 export { readLastLocalModelLoad } from "./utils/last-local-model-load";
+export { decideAutoRead } from "./utils/auto-read-aloud";
 export { wantsDownloadManagerStaging } from "./utils/model-download-staging";

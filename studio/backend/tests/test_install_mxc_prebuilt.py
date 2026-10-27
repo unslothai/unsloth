@@ -113,6 +113,37 @@ def test_installs_only_the_official_wxc_member(tmp_path, official_release):
     )
 
 
+def test_arm64_pc_installs_the_arm64_members(tmp_path, monkeypatch):
+    x64, arm64, arm64_prep = b"official-wxc", b"official-wxc-arm64", b"official-host-prep-arm64"
+    archive = _archive(
+        [
+            (installer.mxc_runtime.RELEASE_MEMBER, x64, stat.S_IFREG | 0o644),
+            (installer.mxc_runtime.RELEASE_HOST_PREP_MEMBER, _HOST_PREP, stat.S_IFREG | 0o644),
+            (installer.mxc_runtime.ARM64_RELEASE_MEMBER, arm64, stat.S_IFREG | 0o644),
+            (
+                installer.mxc_runtime.ARM64_RELEASE_HOST_PREP_MEMBER,
+                arm64_prep,
+                stat.S_IFREG | 0o644,
+            ),
+        ]
+    )
+    monkeypatch.setattr(installer.sys, "platform", "win32")
+    monkeypatch.setattr(installer.mxc_runtime.sys, "platform", "win32")
+    monkeypatch.setattr(installer.mxc_runtime, "_expected_architecture", lambda: "arm64")
+    for name, payload in (("WXC_EXEC", arm64), ("WXC_HOST_PREP", arm64_prep)):
+        monkeypatch.setattr(installer.mxc_runtime, f"ARM64_{name}_SIZE", len(payload))
+        monkeypatch.setattr(
+            installer.mxc_runtime, f"ARM64_{name}_SHA256", hashlib.sha256(payload).hexdigest()
+        )
+    _serve(monkeypatch, archive)
+    install_dir = tmp_path / "installed" / "windows-arm64"
+    assert installer.install_mxc_release(install_dir) is True
+    assert (install_dir / "wxc-exec.exe").read_bytes() == arm64
+    assert (install_dir / "wxc-host-prep.exe").read_bytes() == arm64_prep
+    assert installer.mxc_runtime.selected_runtime(package_root = install_dir).architecture == "arm64"
+    assert installer.install_mxc_release(install_dir) is False
+
+
 def test_matching_install_is_reused_without_download(tmp_path, monkeypatch, official_release):
     install_dir = tmp_path / "installed" / "windows-x86_64"
     assert installer.install_mxc_release(install_dir) is True
@@ -133,7 +164,6 @@ def test_corrupt_wxc_is_replaced_safely(tmp_path, official_release):
 
 
 def test_install_without_host_prep_is_refreshed(tmp_path, official_release):
-    # Installs from before host-prep was pinned must pick it up, not count as current.
     payload, _archive_bytes = official_release
     install_dir = tmp_path / "installed" / "windows-x86_64"
     install_dir.mkdir(parents = True)
@@ -305,7 +335,6 @@ def _windows_split(command_line: str) -> list[str]:
 
 
 def _decoded_script(argv):
-    # What powershell.exe receives: the argv after the exe, serialised and split the Windows way.
     received = _windows_split(installer.subprocess.list2cmdline(argv[1:]))
     assert received == argv[1:]
     assert received.index("-Command") == len(received) - 2
@@ -390,7 +419,7 @@ def test_host_prep_runs_elevated_only_from_an_admin_only_copy(tmp_path):
         script.index("icacls.exe"),
         script.index("GetFileSystemEntries"),
         script.index("[IO.File]::Copy"),
-        script.index(installer.mxc_runtime.WXC_HOST_PREP_SHA256.upper()),
+        script.index(installer.mxc_runtime.artifact("prep")[2].upper()),
         script.index("& $exe"),
     )
     assert lock < empty < copy < hashed < run

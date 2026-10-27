@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Why a tunnel on a wildcard bind closes loopback but not the LAN listener.
-
-The managed tunnel targets loopback on a wildcard bind, so tunnelled traffic is
-indistinguishable from a real local client there and never presents a LAN address.
-Closing LAN too would cost legitimate LAN clients their access and still miss the case
-it looks like it covers: an externally run cloudflared or ngrok sets neither
-``app_state.cloudflare_url`` nor ``_remote_connector_active``, so Studio never sees it.
-An explicit interface bind can be the tunnel origin instead; these tests cover the
-wildcard bind and its separate private LAN listener.
-"""
+"""A tunnel on a wildcard bind looks local, so loopback closes but the LAN listener stays open."""
 
 from __future__ import annotations
 
@@ -102,7 +93,7 @@ def test_a_published_tunnel_closes_loopback_and_leaves_the_lan_listener_alone(mo
             loopback, lan = request_for(LOOPBACK), request_for(LAN)
         # loopback is ambiguous while a tunnel terminates on it
         assert keyless_request_allowed(loopback) is False, signal
-        # on a wildcard bind the managed tunnel does not arrive with a LAN address
+        # on a wildcard bind the managed tunnel never arrives with a LAN address
         assert keyless_request_allowed(lan) is True, signal
         monkeypatch.setattr(host_policy, "_remote_connector_active", False, raising = False)
 

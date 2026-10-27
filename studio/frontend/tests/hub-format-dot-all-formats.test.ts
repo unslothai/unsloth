@@ -28,7 +28,6 @@ test("a single format filter admits one dot color, so the dot says nothing", () 
   ] as const;
   for (const filter of ["gguf", "checkpoint", "mlx"] as const) {
     const admitted = formats.filter((f) => matchesFormat(f, filter));
-    // safetensors and checkpoint share one dot.
     const dots = new Set(
       admitted.map((f) => (f === "safetensors" ? "checkpoint" : f)),
     );
@@ -36,26 +35,24 @@ test("a single format filter admits one dot color, so the dot says nothing", () 
   }
 });
 
-test("format dots show only under All formats", () => {
-  assert.ok(
-    HUB_PAGE.includes(
-      'showFormatDots: isDatasetMode || deferredFormatFilter === "all"',
-    ),
+test("format dots show only under the mixed filters, All formats and Recommended", () => {
+  assert.match(
+    HUB_PAGE,
+    /showFormatDots:\s*isDatasetMode \|\|\s*deferredFormatFilter === "all" \|\|\s*deferredFormatFilter === "recommended",/,
   );
   assert.ok(CATALOG.includes("showFormatDots={showFormatDots}"));
-  assert.equal(LISTS.match(/showFormatDot=\{showFormatDots\}/g)?.length, 4);
+  assert.equal(LISTS.match(/showFormatDot=\{showFormatDots\}/g)?.length, 3);
 });
 
 test("every row drops its format dot when told to", () => {
   assert.equal(
     TABLE.match(/isDataset \|\| !showFormatDot\n\s*\? null/g)?.length,
-    3,
+    2,
   );
   assert.ok(ROWS.includes("{showFormatDot && row.isGguf && ("));
   assert.ok(
     ROWS.includes('{showFormatDot && row.modelFormat === "adapter" && ('),
   );
-  // The tooltip legend describes the dots, so it drops them too.
   assert.ok(ROWS.includes("isGguf: showFormatDot && row.isGguf,"));
 });
 

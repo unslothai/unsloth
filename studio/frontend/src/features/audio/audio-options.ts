@@ -1,11 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Per-model generation options a GGUF audio model declares in its embedded spec. The backend
-// reports the schema as `audio_options` on the loaded-model status and takes the chosen values
-// back as `audio_options` on a speech or music request, validating them again. Values the user
-// set are kept per model id in this browser. Free of app imports so the node test runner can
-// load it directly.
+// Per-model options a GGUF audio model declares (`audio_options`); the backend re-validates.
+// Free of app imports so the node test runner can load it.
 
 export type AudioOptionType = "bool" | "int" | "float" | "string" | "enum";
 export type AudioOptionValue = boolean | number | string;
@@ -47,7 +44,6 @@ export function parseAudioOptions(raw: unknown): AudioOptionSpec[] {
     const values = Array.isArray(item.values)
       ? item.values.filter((value): value is string => typeof value === "string")
       : null;
-    // An enum without choices has nothing to offer.
     if (type === "enum" && !values?.length) continue;
     seen.add(name);
     const spec: AudioOptionSpec = {
@@ -63,6 +59,35 @@ export function parseAudioOptions(raw: unknown): AudioOptionSpec[] {
     specs.push(spec);
   }
   return specs;
+}
+
+/** The options one workflow of the loaded model takes: its own list where the status gives one
+ *  (`audio_options_by_workflow`), else the primary list (`audio_options`). */
+export function audioOptionSpecsFor(
+  status:
+    | {
+        audio_options?: unknown;
+        audio_options_by_workflow?: Record<string, unknown> | null;
+      }
+    | null
+    | undefined,
+  workflow: string,
+): AudioOptionSpec[] {
+  return parseAudioOptions(
+    status?.audio_options_by_workflow?.[workflow] ?? status?.audio_options,
+  );
+}
+
+/** A slider needs a range and a value to sit on: without a default it would rest at the
+ *  minimum and look like a setting, so such an option gets a number box instead. */
+export function audioOptionUsesSlider(spec: AudioOptionSpec): boolean {
+  return (
+    (spec.type === "int" || spec.type === "float") &&
+    spec.min != null &&
+    spec.max != null &&
+    spec.max > spec.min &&
+    spec.default != null
+  );
 }
 
 /** `value` as this option accepts it, or undefined when it cannot be: numbers are clamped to the
@@ -91,7 +116,6 @@ export function coerceAudioOptionValue(
   }
 }
 
-/** What a control shows: the stored value, else the declared default, else a neutral blank. */
 export function audioOptionDisplayValue(
   spec: AudioOptionSpec,
   values: AudioOptionValues,
@@ -101,8 +125,8 @@ export function audioOptionDisplayValue(
   return spec.default ?? undefined;
 }
 
-/** The values to send: only ones the user set and the schema still accepts. Everything else is
- *  left to the model's own defaults on the server. */
+/** The values to send: only ones the user set and the schema still accepts. The server fills
+ *  every other option with the same recommended default the controls show. */
 export function audioOptionsForRequest(
   specs: readonly AudioOptionSpec[],
   values: AudioOptionValues,
@@ -134,6 +158,20 @@ export function audioOptionLabel(name: string): string {
   const leaf = name.split(".").pop() ?? name;
   const words = leaf.replace(/[_-]+/g, " ").trim();
   return words ? words[0].toUpperCase() + words.slice(1) : name;
+}
+
+/** The toast after a run whose options the model doesn't take; null when it took them all. */
+export function ignoredOptionsWarning(
+  names: readonly string[],
+  modelLabel: string,
+): string | null {
+  const labels = names.map(audioOptionLabel);
+  if (labels.length === 0) return null;
+  const list =
+    labels.length === 1
+      ? labels[0]
+      : `${labels.slice(0, -1).join(", ")} or ${labels[labels.length - 1]}`;
+  return `${modelLabel} doesn't take ${list}, so ${labels.length === 1 ? "it wasn't" : "they weren't"} sent.`;
 }
 
 // Kokoro voice ids lead with a language letter and a gender letter (hexgrad/Kokoro-82M VOICES.md).
@@ -169,7 +207,6 @@ export function audioVoiceLabel(voice: string, family?: string | null): string {
   return /^[a-z0-9]+(?:[_-][a-z0-9]+)*$/.test(voice) ? titleWords(voice) : voice;
 }
 
-/** A slider step for a float range: about a hundred steps, on a round number. */
 export function audioOptionFloatStep(min: number, max: number): number {
   const span = max - min;
   if (!(span > 0)) return 0.01;
@@ -198,8 +235,7 @@ function readAll(): StoredAudioOptions {
   }
 }
 
-/** The values saved for one model, unvalidated: the schema can change between loads, so
- *  callers read them through the helpers above. */
+/** Unvalidated saved values; the schema can change, so read via the helpers above. */
 export function readAudioOptionValues(modelId: string | null | undefined): AudioOptionValues {
   if (!modelId?.trim()) return {};
   const entry = readAll()[storageKey(modelId)];
@@ -213,7 +249,6 @@ export function readAudioOptionValues(modelId: string | null | undefined): Audio
   return values;
 }
 
-/** Remember one model's values; an empty set forgets the model. */
 export function saveAudioOptionValues(
   modelId: string | null | undefined,
   values: AudioOptionValues,

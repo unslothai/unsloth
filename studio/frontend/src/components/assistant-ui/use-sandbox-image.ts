@@ -20,14 +20,18 @@ const IDLE: SandboxImageState = { status: "idle" };
  * `<img src>` hitting it straight gets a 401 and the renderer's "Image not available" placeholder.
  * Pass the URL from `sandboxFilePath()`/`markdownSandboxImageSrc()` and render what comes back.
  *
+ * Any element can hold the ref (a `<video>` for a generated clip); it only marks where the file shows.
+ *
  * Keyed by url: an element that moves to another file reads idle rather than showing the previous
  * file's blob, and a stale response can never write state for a url it was not fetched for.
  */
-export function useSandboxImage(url: string | null): {
-  ref: RefObject<HTMLImageElement | null>;
+export function useSandboxImage<T extends Element = HTMLImageElement>(
+  url: string | null,
+): {
+  ref: RefObject<T | null>;
   state: SandboxImageState;
 } {
-  const ref = useRef<HTMLImageElement>(null);
+  const ref = useRef<T>(null);
   const [state, setState] = useState<{
     url: string | null;
     load: SandboxImageState;
@@ -94,8 +98,7 @@ export function useSandboxImage(url: string | null): {
 
     return () => {
       controller.abort();
-      // The URL is ours to give up: an aborted fetch that had already made one would otherwise
-      // pin the bytes for the rest of the session.
+      // Revoke even if aborted, or the bytes stay pinned for the session.
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
   }, [url, nearViewport]);

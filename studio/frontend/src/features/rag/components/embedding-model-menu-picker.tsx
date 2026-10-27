@@ -29,6 +29,7 @@ import { MenuTickIcon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { embeddingMenuModels } from "../lib/embedding-menu-models";
+import { toastEmbeddingModelSaved } from "./reembed-store";
 
 const HEADING_LINK_CLASS =
   "my-0! shrink-0 cursor-pointer rounded-sm font-normal text-muted-foreground underline decoration-muted-foreground/50 underline-offset-[3px] outline-hidden transition-colors hover:text-foreground hover:decoration-foreground/60 data-[highlighted]:text-foreground data-[highlighted]:decoration-foreground/60";
@@ -149,9 +150,7 @@ export function EmbeddingModelMenuList({ onBack }: { onBack: () => void }) {
           },
         });
       } else if (result.status === "saved") {
-        toast.success(t("settings.general.rag.switched", { model: name }), {
-          description: t("settings.general.rag.reindexWarning"),
-        });
+        void toastEmbeddingModelSaved(t("settings.general.rag.switched", { model: name }));
       }
       if (mountedRef.current) onBack();
     } finally {

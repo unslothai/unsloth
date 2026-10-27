@@ -4,8 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-// The page .tsx pulls in the router, motion and hugeicons, so it cannot be imported here.
-// Its Unload sequence lives in a plain module, which this drives directly.
+// The page .tsx cannot be imported here, so its Unload sequence is tested via its plain module.
 import {
   type ResidentModel,
   type UnloadResidentDeps,
@@ -19,13 +18,10 @@ function resident(checkpoint: string, advertised?: string): ResidentModel {
   };
 }
 
-/** A backend whose resident model follows `timeline`, one entry consumed per status read,
- * so an entry after the first is a model an API auto-switch put there under the click.
- *
- * `unload` lands after the status read that preceded it, on whatever the switch left
- * behind, and frees VRAM only when the id it names is that model: the route treats an id
- * a concurrent load already replaced as a successful no-op (routes/inference.py:7153 ->
- * orchestrator.py:1386-1391), so a stale name returns 200 and evicts nothing. */
+/**
+ * A backend whose resident model follows `timeline`, one entry per status read. Unloading an id
+ * that a concurrent load already replaced returns 200 and evicts nothing.
+ */
 function backend(timeline: (ResidentModel | null)[]): UnloadResidentDeps & {
   readonly sent: string[];
   readonly reads: number;
@@ -44,7 +40,6 @@ function backend(timeline: (ResidentModel | null)[]): UnloadResidentDeps & {
       sent.push(checkpoint);
       const landsOn = at(index);
       if (landsOn && landsOn.checkpoint === checkpoint) {
-        // A real eviction: nothing is resident from here on.
         timeline.splice(index, timeline.length - index, null);
       }
     },
@@ -54,7 +49,6 @@ function backend(timeline: (ResidentModel | null)[]): UnloadResidentDeps & {
     get reads() {
       return reads;
     },
-    // What is still occupying VRAM once the run ends.
     peek: () => at(index)?.checkpoint ?? null,
   };
 }
@@ -77,9 +71,7 @@ test("nothing loaded: no unload is sent", async () => {
 });
 
 test("an API auto-switch under the click does not leave the new model resident", async () => {
-  // The switch replaces A with B between the status read and the unload reaching the
-  // lifecycle gate, so the /unload naming A is a 200 no-op. Without a recheck the button
-  // reports success while B keeps the VRAM.
+  // A switch between the status read and /unload makes the unload a 200 no-op, so it must recheck.
   const b = backend([resident("/models/a.gguf"), resident("/models/b.gguf")]);
   const result = await unloadResident(b);
   assert.equal(b.peek(), null, "B must not stay resident");
@@ -92,8 +84,6 @@ test("an API auto-switch under the click does not leave the new model resident",
 });
 
 test("a switch the recheck cannot catch is reported, not swallowed", async () => {
-  // Bounded: a model that arrives after the recheck is a fresh load, not this click's
-  // target, so the run names it instead of claiming a free backend.
   const b = backend([
     resident("/models/a.gguf"),
     resident("/models/b.gguf"),

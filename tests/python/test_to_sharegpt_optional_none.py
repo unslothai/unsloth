@@ -6,8 +6,6 @@ import pytest
 
 
 def _load_formatter_builders():
-    # Extract _parse_combined_prompt and _create_formatter without importing unsloth (importing unsloth needs
-    # unsloth_zoo / a GPU).
     source = Path(__file__).parents[2] / "unsloth" / "chat_templates.py"
     tree = ast.parse(source.read_text(encoding = "utf-8"))
     wanted = {
@@ -43,8 +41,7 @@ def _render(merged_prompt, columns, batch):
 
 
 def test_optional_block_missing_second_column_does_not_render_none():
-    # A [[...]] block may reference several columns; only the first gates the
-    # block. A later column that is None must not render as the literal "None".
+    # Only the first column gates a [[...]] block; a later None must not render as "None".
     merged_prompt = "Location: [[{city}, {country}]] end"
     out = _render(
         merged_prompt,
@@ -66,8 +63,6 @@ def test_optional_block_all_columns_present_unchanged():
 
 
 def test_optional_block_gating_column_empty_is_dropped():
-    # When the gating (first) column is empty the whole block is omitted; this behaviour is unchanged by the None
-    # coercion.
     merged_prompt = "Location: [[{city}, {country}]] end"
     out = _render(
         merged_prompt,
@@ -84,8 +79,6 @@ def test_single_column_optional_block_gated_out_on_none():
 
 
 def test_required_column_none_does_not_render_none():
-    # A required (non-[[...]]) column that is None must not render as the literal "None" either; coercion happens at the
-    # row source, so both the required and optional branches are covered.
     merged_prompt = "Location: {city}, {country} end"
     out = _render(
         merged_prompt,
@@ -97,15 +90,13 @@ def test_required_column_none_does_not_render_none():
 
 
 def test_optional_block_falsy_but_present_gating_value_still_renders():
-    # The gate keeps a block whenever the first column is not "". A falsy but
-    # real value (0) must not be treated as absent, so the block still renders.
+    # A falsy real value like 0 is not absent.
     merged_prompt = "Count: [[{n}]]!"
     out = _render(merged_prompt, ["n"], {"n": [0]})
     assert out[0] == "Count: 0!"
 
 
 def _load_to_sharegpt():
-    # Same trick as above: pull to_sharegpt and the two helpers it calls out of the source without importing unsloth.
     source = Path(__file__).parents[2] / "unsloth" / "chat_templates.py"
     tree = ast.parse(source.read_text(encoding = "utf-8"))
     wanted = {
@@ -149,7 +140,6 @@ def test_default_merged_prompt_keeps_the_input_column():
 def test_default_merged_prompt_with_renamed_columns():
     from datasets import Dataset
 
-    # merged_prompt is optional: without one, merged_column_name names a column that is already there.
     to_sharegpt = _load_to_sharegpt()
     dataset = Dataset.from_dict({"Query": ["123?"], "Answer": ["456"]})
     converted = to_sharegpt(

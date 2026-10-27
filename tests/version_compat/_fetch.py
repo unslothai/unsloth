@@ -164,7 +164,6 @@ def function_params(
     tree = _parse(src)
     if tree is None:
         if cls is not None:
-            # Regex fallback scopes to text after `class cls`: first matching def there.
             m = re.search(rf"^\s*class\s+{re.escape(cls)}\b", src, re.MULTILINE)
             if m is None:
                 return None

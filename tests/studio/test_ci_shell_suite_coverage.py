@@ -115,10 +115,7 @@ class TestRunAllMatchesCi:
         assert 'for _t in "$TESTS_DIR"/sh/test_*.sh; do' in source
 
     def test_run_all_invokes_the_tests_with_bash(self):
-        """Both runners must use the interpreter the tests declare. Every file
-        under tests/sh/ has a bash shebang, and on Debian/Ubuntu /bin/sh is
-        dash, under which three of them fail on bashisms. Running them with sh
-        would fail the suite locally for reasons CI never reproduces."""
+        """tests/sh must run under bash: /bin/sh is dash on Debian/Ubuntu, where bashisms fail the suite."""
         source = _RUN_ALL.read_text(encoding = "utf-8")
         assert 'bash "$_t"' in source, "tests/run_all.sh must run tests/sh/ with bash"
         assert 'sh "$_t"' not in source.replace(
@@ -240,10 +237,7 @@ class TestGithubPathMatcher:
 
 
 class TestPowerShellTestsRunOnAPr:
-    """tests/sh had this exact hole (see the module docstring) and so did the
-    Windows side: studio-windows-inference-smoke.yml ran six PowerShell tests
-    while its path filter matched none of them, so a PR fixing one of those
-    tests never ran it."""
+    """A workflow's path filter must match the tests it runs, or a PR touching one never runs them."""
 
     def test_some_workflow_runs_powershell_tests(self):
         assert (
@@ -254,7 +248,7 @@ class TestPowerShellTestsRunOnAPr:
         unguarded = []
         for name, (invoked, paths) in _workflows_running_powershell_tests().items():
             if paths is None:
-                continue  # no filter at all means it always runs
+                continue
             matchers = [_github_path_matcher(p) for p in paths]
             for test in invoked:
                 if not any(m.match(test) for m in matchers):
@@ -265,10 +259,7 @@ class TestPowerShellTestsRunOnAPr:
         )
 
     def test_multi_test_steps_propagate_each_exit_code(self):
-        """A `shell: pwsh` step inherits only the LAST command's exit code, so a
-        step running several tests must check $LASTEXITCODE after each one.
-        Without it, test_resolve_cuda_toolkit.ps1 failed two checks on every
-        Windows run for as long as anyone can tell, and CI stayed green."""
+        """pwsh keeps only the last command's exit code, so check $LASTEXITCODE after each test."""
         offenders = []
         for workflow in sorted(_WORKFLOWS.glob("*.yml")):
             for block in re.findall(
@@ -282,7 +273,7 @@ class TestPowerShellTestsRunOnAPr:
                     re.S,
                 )
                 if len(invocations) < 2:
-                    continue  # a single invocation's exit code is the step's
+                    continue
                 for test, following in invocations:
                     if "$LASTEXITCODE" not in following:
                         offenders.append(f"{workflow.name}: {test} runs without an exit-code check")
@@ -302,17 +293,7 @@ class TestPowerShellTestsRunOnAPr:
 
 
 class TestWindowsPowerShellStepsAreGated:
-    """A step that runs powershell.exe on a multi-OS job must say so.
-
-    Windows PowerShell 5.1 is the host the Desktop app launches the installer in, so the .ps1
-    suites here have a second leg that runs it. `powershell` does not exist on a hosted Linux or
-    macOS runner, and a step without the guard fails the whole job for a reason that has nothing
-    to do with the change under test. Observed exactly that way: a merge dropped the `if:` line
-    from one such step because an identical line already appeared above it.
-
-    A job pinned to windows-latest needs no guard, so the rule is about jobs whose runner is not
-    provably Windows: a matrix expression, or anything else that is not a windows-* literal.
-    """
+    """Steps that run powershell on a multi-OS job need an if: guard, as it is absent on Linux runners."""
 
     @staticmethod
     def _multi_os_jobs(doc):

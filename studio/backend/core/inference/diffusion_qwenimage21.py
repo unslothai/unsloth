@@ -7,18 +7,15 @@ Kill switch: ``UNSLOTH_DIFFUSION_Q21_FAST_STEP=0``."""
 
 from __future__ import annotations
 
-import ast
 import functools
-import hashlib
 import inspect
-import io
 import math
 import os
-import textwrap
 import threading
-import tokenize
 import weakref
 from typing import Any, Optional
+
+from .diffusion_autoopt.patches import source_digest
 
 FAST_STEP_ENV = "UNSLOTH_DIFFUSION_Q21_FAST_STEP"
 COMPACT_KV_ENV = "UNSLOTH_DIFFUSION_Q21_COMPACT_KV"
@@ -26,10 +23,13 @@ COMPACT_KV_ENV = "UNSLOTH_DIFFUSION_Q21_COMPACT_KV"
 _MODULE = "diffusers.models.transformers.transformer_qwenimage21"
 _CLASS = "QwenImage21Transformer2DModel"
 
-# Stock diffusers sources the fast forward relies on; any drift keeps the stock forward.
+# Stock diffusers sources the fast forward relies on; any drift keeps the stock forward. Each set lists every
+# known-equivalent source, oldest first.
 _FINGERPRINTS: dict[str, frozenset] = {
     "forward": frozenset({"7c1fd48f75efbe41"}),
-    "build_token_metadata": frozenset({"51818c1674e0d406"}),
+    # 0.41.0; main d42ebf9c builds the same int64 block ids from a Python list instead of a tensor-repeats
+    # repeat_interleave (Neuron lowering), so the ids are equal element for element.
+    "build_token_metadata": frozenset({"51818c1674e0d406", "9282e4c4803957f8"}),
     "rope_forward": frozenset({"f9e064940341e3ee"}),
     "prefix_segments": frozenset({"27729cffc22b0aa5"}),
 }
@@ -45,34 +45,8 @@ def fast_step_disabled() -> bool:
     return (os.environ.get(FAST_STEP_ENV) or "").strip().lower() in ("0", "off", "false", "no")
 
 
-def _digest(fn: Any) -> Optional[str]:
-    """Source text, not ``ast.dump``, whose output changes between Python versions."""
-    try:
-        src = textwrap.dedent(inspect.getsource(inspect.unwrap(fn)))
-        tree = ast.parse(src)
-        comments = [
-            tok.start
-            for tok in tokenize.generate_tokens(io.StringIO(src).readline)
-            if tok.type == tokenize.COMMENT
-        ]
-    except (OSError, TypeError, SyntaxError, ValueError, tokenize.TokenError):
-        return None
-    lines = src.splitlines()
-    for row, col in comments:
-        lines[row - 1] = lines[row - 1][:col]
-    for node in ast.walk(tree):
-        body = getattr(node, "body", None)
-        if (
-            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-            and body
-            and isinstance(body[0], ast.Expr)
-            and isinstance(getattr(body[0], "value", None), ast.Constant)
-            and isinstance(body[0].value.value, str)
-        ):
-            for row in range(body[0].lineno, body[0].end_lineno + 1):
-                lines[row - 1] = ""
-    text = "\n".join(line.rstrip() for line in lines if line.strip())
-    return hashlib.sha256(text.encode()).hexdigest()[:16]
+# One fingerprint util for every patch module (diffusion_autoopt.patches); kept under this name for importers.
+_digest = source_digest
 
 
 def stock_digests(module: Any) -> dict[str, Optional[str]]:
@@ -292,20 +266,12 @@ def _cached_step(
 
 
 # ---------------------------------------------------------------------------------------------- CUDA graph step
-#
-# ``diffusion_cuda_graph.GraphedForward`` records one call into static buffers keyed by every input's shape. The
-# stock call cannot be recorded: the pipeline hands the prefix K/V over as a ``QwenImage21KVCache`` object (an opaque
-# leaf to the graph layer) and step 0 fills that cache from Python. ``graph_plan`` turns a decode step into a call
-# whose every input is a tensor or a constant: the per-layer K/V, the layout's index and RoPE tensors, latents,
-# timestep and text mask. Step 0 (the prefill) stays eager.
-#
-# The K/V, RoPE and index inputs only change when a new render (or a new layout) starts, so they are "sticky": the
-# replay copies one into its static buffer only when the caller passes a different tensor object than last time.
+# CUDA graph step: graph_plan makes a decode step all-tensor inputs; step 0 stays eager.
+# K/V, RoPE and index inputs are sticky: copied only when a different tensor is passed.
 
 GRAPH_STICKY = ("text_positions", "vlm_text", "rotary_emb", "modulation_mask", "kv")
 
-# A graph keeps its own copy of the prefix K/V (one per graph, up to the per-module cap). Text-only prefixes stay far
-# below this; a 1 MP condition image is ~2.2 GiB at 32 blocks, and those steps run eager rather than pin that twice.
+# Each graph copies the prefix K/V; large image prefixes run eager to avoid pinning it twice.
 GRAPH_KV_MAX_BYTES = 1 << 30
 
 
@@ -348,9 +314,7 @@ def _graph_step(
     return (output,)
 
 
-# Under block offload the graph wrapper sits in the forward slot under the offload hooks, which onload the top-level
-# weights: a planned step enters through the hooked forward as ``kv_cache_mode = GRAPH_STEP_MODE`` with the plan as
-# ``kv_cache`` (the forward's signature stays the pipeline's).
+# Under block offload a planned step enters via the hooked forward with GRAPH_STEP_MODE.
 GRAPH_STEP_MODE = "unsloth_graph_step"
 
 

@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""A split that truncates its own rows may say so instead of being scanned.
-
-`pretokenized_within_cap` checks `max_length` by reading every row. On a
-lazily-tokenizing `with_transform` view -- what Unsloth's online tokenization
-produces -- reading a row is tokenizing it, so the scan runs the whole eager pass
-the view exists to avoid, inside `__init__` where nothing overlaps it.
-
-`_unsloth_truncated_to = N` is the escape: every row is already cut at N. Both
-copies of the scan (this module's and the one `rl.py` inlines into every
-generated trainer) must agree, so both run here; the inlined one is extracted
-from the codegen string and executed, the only way to test source that only
-exists as a string.
-"""
+"""A split may set _unsloth_truncated_to instead of a scan, since reading lazy rows tokenizes them."""
 
 from __future__ import annotations
 
@@ -160,21 +148,12 @@ def test_splits_within_cap_honours_the_attestation_per_split():
     assert rl.splits_within_cap({"a": good, "b": bad}, 2048) is False
 
 
-# ------------------------------------------------- the copy rl.py inlines
-
-
 def _inlined_within_cap(cap):
-    """Build `_unsloth_within_cap` out of the codegen string and return it.
-
-    The generated trainer cannot import from `rl.py`, so the scan exists twice;
-    extracting and executing the literals is the only way to hold both copies to
-    the same verdict.
-    """
+    """Builds _unsloth_within_cap from rl.py's codegen literals; generated trainers cannot import rl.py."""
     source = RL_PATH.read_text(encoding = "utf-8")
     start = source.index('"    def _unsloth_within_cap(_ds):\\n"')
     end = source.index('"    def _unsloth_splits_within_cap(_ev):\\n"')
     body = "".join(re.findall(r'^\s*"((?:[^"\\]|\\.)*)"\s*$', source[start:end], re.MULTILINE))
-    # Strip the indentation the literals carry for the generated `__init__`.
     body = textwrap.dedent(body.encode().decode("unicode_escape"))
     namespace = {"_unsloth_cap": cap}
     exec(body, namespace)
@@ -225,15 +204,8 @@ if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
 
 
-# ------------------------------------------- the generated block must still parse
-
-
 def test_the_generated_max_length_block_is_valid_python():
-    """The block only exists as string literals, so a stray indent or unclosed
-    bracket stays invisible until a user gets a `SyntaxError` from a generated
-    trainer. Assemble and parse it, reading the literals off the source rather
-    than running the generator, which needs a TRL this install may not have.
-    """
+    """Parses the codegen block from source literals; a stray indent would surface only in user trainers."""
     import ast
 
     source = RL_PATH.read_text(encoding = "utf-8")
@@ -241,7 +213,7 @@ def test_the_generated_max_length_block_is_valid_python():
     end = source.index("            extra_args += max_length_check")
     literals = re.findall(r'^\s*"((?:[^"\\]|\\.)*)"\s*$', source[start:end], re.MULTILINE)
     block = "".join(literals).encode().decode("unicode_escape")
-    # The generator emits this at one indent level inside the trainer's __init__.
+    # The generator emits this one indent level inside __init__.
     ast.parse(textwrap.dedent(block))
 
 

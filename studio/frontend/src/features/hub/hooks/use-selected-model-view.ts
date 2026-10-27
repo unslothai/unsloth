@@ -180,9 +180,7 @@ export function useSelectedModelView({
         capabilities: selectedDiscoverRow.capabilities,
         license: detectLicense(selectedDiscoverRow.result.tags),
         pipelineTag: selectedDiscoverRow.result.pipelineTag,
-        // From the matched on-device row, like every field above: its inventory task is the
-        // only record of the modality when the Hub metadata has no pipeline tag or only the
-        // generic text-generation one.
+        // Inventory task is the only modality record when Hub metadata lacks a specific pipeline tag.
         task: selectedCachedRow?.task ?? selectedLocalRow?.task ?? null,
         audioType: selectedCachedRow?.audioType ?? selectedLocalRow?.audioType ?? null,
         libraryName: selectedDiscoverRow.result.libraryName,

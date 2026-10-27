@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An API-initiated IMAGE load downloads NOTHING.
-
-The video twin of this suite lives in ``test_video_offline_load.py``; this is the same promise on
-the diffusers image path, where ``local_files_only`` reached ``load_pipeline`` and nothing in the
-``_run_load`` staging phase that runs before it -- so the byte estimate and the base preflight still
-asked the Hub, and ``_prefetch_files`` (the one call on that path that moves multi-GB weights)
-fetched without the flag. Every network-capable helper the staging phase reaches is replaced with a
-sentinel that RAISES when it is asked to fetch, so a load that regains the network is a failing test
-rather than a multi-GB surprise on a user's connection. The mirror test proves the user-initiated
-(UI) path still calls exactly those helpers, which is the pre-PR behaviour nothing here changes.
-"""
+"""API-initiated image loads download nothing; sentinels raise on any network fetch in staging."""
 
 from __future__ import annotations
 
@@ -25,8 +15,7 @@ from core.inference import diffusion as diffusion_mod
 from core.inference.diffusion import DiffusionBackend
 from core.inference.diffusion_families import detect_family_for_pick
 
-# A plain FLUX.1 GGUF pick: it walks the shared staging path every image pick walks, and its family
-# name keeps the FLUX.2 pairing preflight out of the way (that guard is a header read, not a fetch).
+# FLUX.1 walks the shared staging path and avoids the FLUX.2 pairing preflight.
 FLUX_GGUF = "unsloth/FLUX.1-dev-GGUF"
 FLUX_BASE = "black-forest-labs/FLUX.1-dev"
 FLUX_FILE = "flux1-dev-Q4_K_M.gguf"
@@ -41,13 +30,7 @@ class _Calls:
 
 
 def _install_sentinels(monkeypatch, calls, tmp_path, *, offline):
-    """Replace every network helper the staging phase can reach.
-
-    ``offline`` is the assertion: a metadata probe is refused outright (there is no offline form of
-    ``model_info``), and a download is refused unless it carries ``local_files_only=True``, which is
-    what makes it a cache lookup rather than a fetch. Online they only record, so the same fake
-    serves both directions and the two tests differ by one flag.
-    """
+    """Replace each staging network helper: offline it raises on any fetch, online it only records."""
     import huggingface_hub
 
     def _model_info(self, repo_id, **_kwargs):
@@ -75,7 +58,7 @@ def _install_sentinels(monkeypatch, calls, tmp_path, *, offline):
 
     monkeypatch.setattr(huggingface_hub.HfApi, "model_info", _model_info, raising = False)
     monkeypatch.setattr(xet, "hf_hub_download_with_xet_fallback", _download)
-    # The wrapper's own offline branch calls this directly; a sentinel here catches a bypass.
+    # The wrapper's offline branch calls this directly; a sentinel catches a bypass.
     monkeypatch.setattr(
         huggingface_hub,
         "hf_hub_download",
@@ -84,8 +67,7 @@ def _install_sentinels(monkeypatch, calls, tmp_path, *, offline):
         ),
         raising = False,
     )
-    # Deterministic fetch target: the mirror swap is a pure local-cache test, and which side it
-    # picks depends on the developer's own HF cache. Pinning it keeps both directions readable.
+    # Mirror choice depends on the developer's HF cache, so pin it for determinism.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
 
 
@@ -112,24 +94,18 @@ def test_an_api_initiated_image_load_opens_the_cache_and_downloads_nothing(monke
     backend._run_load(
         repo_id = FLUX_GGUF,
         gguf_filename = FLUX_FILE,
-        # Carried by the request the way a saved image config carries it, so the card-tag lookup in
-        # _resolve_base_repo is out of the picture: that read is metadata that FAILS OPEN, and
-        # dropping it offline would resolve a DIFFERENT base than the load that cached the weights.
+        # Pass base_repo explicitly: the card-tag lookup fails open and offline would resolve a different base.
         base_repo = FLUX_BASE,
         local_files_only = True,
         _load_token = 1,
     )
 
-    # _run_load swallows failures onto load_progress rather than raising, so the state IS the
-    # result: cleared means the load ran through, an error string means a sentinel fired.
+    # _run_load records failures on load_progress instead of raising, so the state is the result.
     assert backend._loading is None, getattr(backend._loading, "error", None)
     assert seen.get("local_files_only") is True
-    # Not one metadata probe: the byte estimate, the pre-cast plan and the base preflight all stand
-    # down offline.
     assert calls.model_info == []
-    # The checkpoint is still resolved -- as a cache lookup. THIS is the multi-GB call.
+    # Still resolved, but as a cache lookup: this is the multi-GB call.
     assert calls.downloads == [(FLUX_GGUF, FLUX_FILE, True)]
-    # And nothing was staged for from_pretrained, which resolves the cached snapshot itself.
     assert seen.get("_base_local_dir") is None
 
 
@@ -149,9 +125,7 @@ def test_a_user_initiated_image_load_still_calls_every_one_of_them(monkeypatch, 
 
     assert backend._loading is None, getattr(backend._loading, "error", None)
     assert seen.get("local_files_only") in (False, None)
-    # The byte estimate probes the checkpoint repo and the base; the preflight probes the base too.
     assert FLUX_GGUF in calls.model_info and FLUX_BASE in calls.model_info
-    # And the checkpoint is FETCHED, not looked up.
     assert calls.downloads == [(FLUX_GGUF, FLUX_FILE, False)]
 
 
@@ -177,10 +151,7 @@ def test_the_estimate_and_the_pre_cast_plan_stand_down_offline(monkeypatch):
 
 
 def test_the_base_preflight_reads_the_cache_and_never_the_hub_offline(monkeypatch):
-    """The preflight exists to name the repo a DOWNLOAD is about to 401 on. Offline there is no
-    such download, so the Hub half stands down -- but the other-root escape it computes is a pure
-    cache read and still runs, since that is what lets a base staged under huggingface_hub's
-    import-time root load off disk."""
+    """Offline, the base preflight skips the Hub but still reads the cache for other-root snapshots."""
     import huggingface_hub
 
     def _boom(*_a, **_k):
@@ -188,10 +159,7 @@ def test_the_base_preflight_reads_the_cache_and_never_the_hub_offline(monkeypatc
 
     monkeypatch.setattr(huggingface_hub.HfApi, "model_info", _boom, raising = False)
     monkeypatch.setattr(huggingface_hub, "get_hf_file_metadata", _boom, raising = False)
-    # Cached only under the import-time root: the live root misses, the fallback hits.
-    # Built with os.path.join rather than a "/" literal: the function strips the file's own
-    # relative path with os.path, so a POSIX spelling here would compare against a
-    # backslash-separated answer on Windows and fail for the separator alone.
+    # os.path.join, not "/": the function strips with os.path, so a POSIX literal fails on Windows.
     snapshot = os.path.join(os.sep + "snap", *FLUX_BASE.split("/"))
     monkeypatch.setattr(
         huggingface_hub,

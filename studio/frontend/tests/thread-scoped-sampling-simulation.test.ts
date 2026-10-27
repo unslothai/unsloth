@@ -1,23 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The eight sampling keys became per-chat, and unlike every other thread-scoped setting
-// they live under `params` rather than as store fields of their own. That difference is
-// enough to lose an edit or leak it, and neither shows until a chat is reopened, so this
-// drives the real store through every ordering of the ops that touch them, checking after
-// EVERY step that:
-//
-//   I1  a value the user set in a chat is still what that chat shows when it is reopened
-//   I2  it reaches neither another chat nor the installation-wide settings
-//   I3  an edit made with NO chat open does reach the installation-wide settings
-//   I4  a model's own recommendation reaches the installation and the model's memory,
-//       and is never pinned onto the open chat
-//   I5  a chat's pinned values never reach paramsByModel
-//   I6  the Qwen Think toggle does land on a chat that pins sampling
-//   I7  no operation leaves a sampling param unusable or outside the range the row stores
-//
-// The orderings are generated, not hand-written: the failures this is for are all
-// "these three things in the other order".
+// Sampling keys live under `params`, unlike other thread-scoped settings. Drive the real
+// store through generated orderings and check invariants I1-I7 after every step.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";
@@ -54,7 +39,6 @@ const STORE_URL = new URL(
   import.meta.url,
 ).href;
 
-/** Every ordering of `items`. */
 function permutations<T>(items: readonly T[]): T[][] {
   if (items.length <= 1) return [[...items]];
   const out: T[][] = [];
@@ -65,7 +49,6 @@ function permutations<T>(items: readonly T[]): T[][] {
   return out;
 }
 
-/** Every ordered selection of `size` distinct items from `items`. */
 function arrangements<T>(items: readonly T[], size: number): T[][] {
   if (size === 0) return [[]];
   const out: T[][] = [];
@@ -77,7 +60,6 @@ function arrangements<T>(items: readonly T[], size: number): T[][] {
   return out;
 }
 
-/** Run a batch of orderings and fail with the first broken invariant of each. */
 async function sweep(
   label: string,
   orderings: readonly Op[][],
@@ -99,10 +81,6 @@ async function sweep(
     `${label}: ${failures.length} violation(s) across ${orderings.length} orderings`,
   );
 }
-
-// ---------------------------------------------------------------------------
-// A. the ordering matrix
-// ---------------------------------------------------------------------------
 
 test("A1: every ordering of edit / load / Think / model switch / reopen", async (t) => {
   enableCountedTimers(t);
@@ -168,9 +146,7 @@ test("A4: every four-step interleaving over the wider alphabet", async (t) => {
 
 test("A5: hydration interleaved -- nothing leaks, whatever the order", async (t) => {
   enableCountedTimers(t);
-  // Without the shadow model: a chat opened before the server answered follows this
-  // browser's cache, so what it is "owed" is not yet decided. The leak and usability
-  // invariants still hold, and they are the ones that matter here.
+  // A chat opened before the server answered follows the browser cache, so I1 is not checked.
   const orderings = permutations<Op>([
     "hydrate",
     "openA",
@@ -185,7 +161,6 @@ test("A5: hydration interleaved -- nothing leaks, whatever the order", async (t)
 test("A6: hand-picked long sequences", async (t) => {
   enableCountedTimers(t);
   const long: Op[][] = [
-    // the reported gap: two chats, a model in between, back to the first
     [
       "hydrate",
       "openA",
@@ -199,7 +174,6 @@ test("A6: hand-picked long sequences", async (t) => {
       "openB",
       "reopenA",
     ],
-    // a mode toggled either side of a model switch
     [
       "hydrate",
       "loadQwen",
@@ -211,7 +185,6 @@ test("A6: hand-picked long sequences", async (t) => {
       "switchExternal",
       "reopenA",
     ],
-    // an unload in the middle of a pinned chat
     [
       "hydrate",
       "loadQwen",
@@ -222,7 +195,6 @@ test("A6: hand-picked long sequences", async (t) => {
       "loadQwen",
       "reopenA",
     ],
-    // every model transition there is, with a pinned chat open throughout
     [
       "hydrate",
       "openA",
@@ -235,7 +207,6 @@ test("A6: hand-picked long sequences", async (t) => {
       "loadQwen",
       "reopenA",
     ],
-    // the installation edited first, then a chat that must not inherit the next one
     [
       "hydrate",
       "editTemp",
@@ -246,7 +217,6 @@ test("A6: hand-picked long sequences", async (t) => {
       "reopenA",
       "openB",
     ],
-    // post-load defaults arriving repeatedly, as a status poll does
     [
       "hydrate",
       "loadQwen",
@@ -257,7 +227,6 @@ test("A6: hand-picked long sequences", async (t) => {
       "qwenPostLoad",
       "reopenA",
     ],
-    // a chat opened, left, and returned to twice over
     [
       "hydrate",
       "openA",
@@ -269,7 +238,6 @@ test("A6: hand-picked long sequences", async (t) => {
       "openB",
       "reopenA",
     ],
-    // Think toggled in one chat must not follow the user into the other
     [
       "hydrate",
       "loadQwen",
@@ -284,10 +252,7 @@ test("A6: hand-picked long sequences", async (t) => {
   await sweep("A6", long, (ms) => t.mock.timers.tick(ms));
 });
 
-// ---------------------------------------------------------------------------
-// The three facts the matrix asserts negatively, asserted positively once each.
-// A sweep that leaks nothing because nothing is ever stored would pass otherwise.
-// ---------------------------------------------------------------------------
+// Positive checks, so the matrix cannot pass by storing nothing.
 
 test("the pinned values really are stored on the chat's own row", async (t) => {
   enableCountedTimers(t);
@@ -298,7 +263,6 @@ test("the pinned values really are stored on the chat's own row", async (t) => {
   const row = threadRows.rows.get("A") as Record<string, unknown>;
   assert.equal(row.temperature, 1.37);
   assert.equal(row.systemPrompt, "CHAT A ONLY 5f3a");
-  // and the whole set, so a later default change cannot rewrite what it runs with
   for (const key of SAMPLING_KEYS) {
     assert.notEqual(row[key], undefined, `${key} is not on the row`);
   }
@@ -321,10 +285,8 @@ test("I4: a model's recommendation reaches the installation and the model's memo
     (ms) => t.mock.timers.tick(ms),
   );
   const sent = JSON.stringify(settingsHttp.puts);
-  // the installation copy, even though the chat that was open kept its own values
   assert.match(sent, /"temperature":0\.31/);
   assert.match(sent, /"topP":0\.41/);
-  // and the model's own memory, taken when the model was left
   const remembered = JSON.parse(
     JSON.stringify(
       (settingsHttp.puts.find((put) => "inferenceParamsByModel" in put)
@@ -332,17 +294,11 @@ test("I4: a model's recommendation reaches the installation and the model's memo
     ),
   ) as Record<string, Record<string, unknown>>;
   assert.equal(remembered[QWEN]?.temperature, MODEL_DEFAULTS.temperature);
-  // ...carrying the installation's prompt, never the open chat's
   assert.equal(remembered[QWEN]?.systemPrompt, INSTALLATION.systemPrompt);
 });
 
-// ---------------------------------------------------------------------------
-// B. races
-// ---------------------------------------------------------------------------
-
 let raceScenario = 0;
 
-/** A store, a Qwen module bound to it, and the two sinks, all freshly wired. */
 async function raceWorld() {
   raceScenario += 1;
   settingsHttp.settings = { inferenceParams: { ...INSTALLATION } };
@@ -358,12 +314,10 @@ async function raceWorld() {
   return {
     mod,
     store,
-    /** setActiveThreadId, open the pairing window, but do NOT answer the read yet. */
     beginOpen(threadId: string) {
       store().setActiveThreadId(threadId);
       mod.beginThreadScopedPairing(threadId);
     },
-    /** The chat's read comes back. */
     finishOpen(threadId: string, settings?: Record<string, unknown> | null) {
       const row =
         settings === undefined ? threadRows.rows.get(threadId) : settings;
@@ -379,11 +333,7 @@ async function raceWorld() {
   };
 }
 
-// Wait out the debounced write each race test asserts on. The wait is on the store's own
-// outstanding timers and on the module loader, not on a round count, so a slower runtime
-// takes more rounds instead of silently returning short and turning a stale read into a
-// wrong-value failure; see tests/helpers/mock-timer-drain.ts for why a count was never the
-// right bound.
+// Drain the store's own timers, not a fixed round count; see tests/helpers/mock-timer-drain.ts.
 async function settle(
   mod: { awaitStartedThreadScopedSettingsWrites: () => Promise<void> },
   tick: (ms: number) => void,
@@ -410,7 +360,6 @@ test("B1: a slider moved while /api/chat/settings is still in flight survives it
     1.42,
     "the edit was hydrated over",
   );
-  // and a key the user did not touch still takes the server's value
   assert.equal(w.store().params.systemPrompt, INSTALLATION.systemPrompt);
 });
 
@@ -422,7 +371,6 @@ test("B2: an edit made while the chat's own read is out is stored on that chat",
   settingsHttp.puts.length = 0;
 
   w.beginOpen("A");
-  // the user moves a slider and types a prompt before A's snapshot lands
   w.store().setParams({
     ...w.store().params,
     temperature: 1.37,
@@ -431,12 +379,9 @@ test("B2: an edit made while the chat's own read is out is stored on that chat",
   w.finishOpen("A", { temperature: 0.22, topP: 0.33, systemPrompt: "STORED" });
   await settle(w.mod, (ms) => t.mock.timers.tick(ms));
 
-  // the held edit wins over what the read brought back
   assert.equal(w.store().params.temperature, 1.37);
   assert.equal(w.store().params.systemPrompt, "HELD EDIT 5f3a");
-  // a key the user did not touch takes the stored value
   assert.equal(w.store().params.topP, 0.33);
-  // and it reached A's row, not the installation
   const row = threadRows.rows.get("A") as Record<string, unknown>;
   assert.equal(row.temperature, 1.37);
   assert.equal(row.systemPrompt, "HELD EDIT 5f3a");
@@ -457,12 +402,10 @@ test("B3: leaving mid-read sends the held edit to its own chat, not the next one
     temperature: 1.37,
     systemPrompt: "HELD EDIT 5f3a",
   });
-  // the user gives up on A and opens B before A's read lands
   await w.mod.commitHeldThreadScopedEditsToTheirThread();
   w.open("B");
   await settle(w.mod, (ms) => t.mock.timers.tick(ms));
 
-  // A's row carries the edit as a merge, leaving the rest of its snapshot alone
   const merged = threadRows
     .writesFor("A")
     .filter((write) => write.settingsPatch !== undefined);
@@ -471,14 +414,10 @@ test("B3: leaving mid-read sends the held edit to its own chat, not the next one
     temperature: 1.37,
     systemPrompt: "HELD EDIT 5f3a",
   });
-  // and it is A's alone as far as the installation is concerned
   assert.doesNotMatch(JSON.stringify(settingsHttp.puts), /HELD EDIT/);
   assert.doesNotMatch(JSON.stringify(settingsHttp.puts), /1\.37/);
 
-  // What B shows is NOT asserted here. Leaving a chat mid-read leaves the store holding its
-  // edits, and B's applyThreadScopedSettings captures the store as the in-memory defaults,
-  // so B opens on A's values and pins them. Long-standing behaviour of the held-edit path,
-  // not new: `ragTopK` leaks through the same line. Asserting it would freeze it in place.
+  // B's view is deliberately not asserted: the held-edit path leaks A's values into B today.
 });
 
 test("B4: a model load landing during the pairing window does not take the chat's edit", async (t) => {
@@ -490,7 +429,6 @@ test("B4: a model load landing during the pairing window does not take the chat'
 
   w.beginOpen("A");
   w.store().setParams({ ...w.store().params, temperature: 1.37 });
-  // the load finishes while A's read is still out
   w.store().setParams(
     { ...w.store().params, ...MODEL_DEFAULTS, checkpoint: QWEN },
     { fromModelDefaults: true },
@@ -499,18 +437,14 @@ test("B4: a model load landing during the pairing window does not take the chat'
   await settle(w.mod, (ms) => t.mock.timers.tick(ms));
 
   assert.equal(w.store().params.temperature, 1.37, "the load took the edit");
-  // and the chat was pinned with the user's value, not the one the load published
   const row = threadRows.rows.get("A") as Record<string, unknown>;
   assert.equal(
     row.temperature,
     1.37,
     "the model's value was pinned onto the chat",
   );
-  // a key the user did not touch still follows the model
   assert.equal(w.store().params.topP, MODEL_DEFAULTS.topP);
-  // the model's own recommendation still reached the installation
   assert.match(JSON.stringify(settingsHttp.puts), /"topP":0\.41/);
-  // but the chat's temperature did not
   assert.doesNotMatch(JSON.stringify(settingsHttp.puts), /1\.37/);
 });
 
@@ -521,7 +455,6 @@ test("B4b: the held sampling edit that survives a load is the LAST one made", as
   await settle(w.mod, (ms) => t.mock.timers.tick(ms));
 
   w.beginOpen("A");
-  // a slider dragged twice, then the load, then the read
   w.store().setParams({ ...w.store().params, temperature: 1.2 });
   w.store().setParams({ ...w.store().params, temperature: 1.37 });
   w.store().setParams(
@@ -540,7 +473,6 @@ test("B4c: a falsy held edit is not treated as no edit at all", async (t) => {
   await settle(w.mod, (ms) => t.mock.timers.tick(ms));
 
   w.beginOpen("A");
-  // 0, "" and -1 are all deliberate choices, and all falsy or negative
   w.store().setParams({
     ...w.store().params,
     temperature: 0,
@@ -581,7 +513,6 @@ test("B5: two rapid model switches with a pinned chat open", async (t) => {
   await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   settingsHttp.puts.length = 0;
 
-  // no settle between them: the second switch lands while the first is still writing
   w.store().setCheckpoint(LLAMA, null);
   w.store().setCheckpoint(EXTERNAL, null);
   await settle(w.mod, (ms) => t.mock.timers.tick(ms));
@@ -611,7 +542,6 @@ test("B6: a thread switch while a load is in flight keeps each chat's own values
   w.store().setParams({ ...w.store().params, temperature: 1.37 });
   await settle(w.mod, (ms) => t.mock.timers.tick(ms));
 
-  // the user opens B, and the load that was started in A finishes into B
   w.beginOpen("B");
   w.store().setParams(
     { ...w.store().params, ...MODEL_DEFAULTS, checkpoint: QWEN },
@@ -643,13 +573,11 @@ test("B7: a tab closing with a held edit beacons it to the chat it was made in",
     temperature: 1.37,
     systemPrompt: "HELD EDIT 5f3a",
   });
-  // pagehide, which is what the store listens on; the read never landed
   const delivered = fireWindowEvent("pagehide", {});
   assert.ok(delivered > 0, "the store is not listening for the terminal event");
   await settle(w.mod, (ms) => t.mock.timers.tick(ms));
 
-  // The beacon is a PATCH, so it is not in `puts`; what it queued for replay is the
-  // durable record of what the closing tab tried to save, and for which chat.
+  // The beacon is a PATCH, so check the queued replay record instead of `puts`.
   const beaconed = JSON.parse(
     localStorageFake.get("unsloth_chat_thread_settings_replay") ?? "{}",
   ) as Record<string, { settingsPatch?: Record<string, unknown> }>;
@@ -657,6 +585,5 @@ test("B7: a tab closing with a held edit beacons it to the chat it was made in",
     temperature: 1.37,
     systemPrompt: "HELD EDIT 5f3a",
   });
-  // the tab-close flush of the installation settings must not carry it
   assert.doesNotMatch(JSON.stringify(settingsHttp.puts), /HELD EDIT 5f3a/);
 });

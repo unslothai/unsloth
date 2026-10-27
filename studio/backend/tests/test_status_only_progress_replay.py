@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A status-only update must not replay the previous step's metrics.
-
-UnslothTrainer keeps metrics and status on one TrainingProgress and notifies its
-callbacks on every change, so publishing an evaluation status carries the last
-logged step's loss, learning rate, grad norm and eval loss along with it. The
-parent appends every progress event to loss_history / grad_norm_history /
-eval_loss_history and to the metric buffer it persists, without deduplicating the
-step, so a long evaluation would plot the same point once per status line.
-"""
+"""A status-only update must not replay the last step's metrics, which the parent appends again."""
 
 from __future__ import annotations
 
@@ -99,7 +91,6 @@ def test_the_same_step_with_a_new_measurement_is_still_published():
 
 
 def test_a_warning_mid_run_does_not_replot_either():
-    # _record_warning notifies the same callbacks with the metrics untouched.
     on_progress, published = _emitter()
     progress = _Progress(step = 12, total_steps = 100, loss = 1.5, grad_norm = 0.9)
     on_progress(progress)

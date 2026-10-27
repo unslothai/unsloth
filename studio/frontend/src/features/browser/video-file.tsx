@@ -16,15 +16,17 @@ import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
-  Maximize2Icon,
+  ArrowExpand01Icon,
+  ArrowShrink01Icon,
   MoreHorizontalIcon,
-  PauseIcon,
-  PlayIcon,
-  Volume2Icon,
-  VolumeXIcon,
-} from "lucide-react";
+  VolumeHighIcon,
+  VolumeMute02Icon,
+} from "@hugeicons/core-free-icons";
+import { PauseIcon } from "@/lib/media-control-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import { canCopyVideoFrame, copyVideoFrame, registerTabVideo } from "./video-registry";
+import { PlayIcon } from "lucide-react";
 
 const RATES = [0.5, 0.75, 1, 1.25, 1.5, 2] as const;
 const SEEK_SECONDS = 5;
@@ -63,12 +65,20 @@ export function VideoFile({
   const [volume, setVolume] = useState(1);
   const [rate, setRate] = useState(1);
   const [loop, setLoop] = useState(false);
+  const [fullscreened, setFullscreened] = useState(false);
 
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !tabId) return;
     return registerTabVideo(tabId, video);
   }, [tabId]);
+
+  // Esc and the browser's own controls leave fullscreen too, so follow the document, not the button.
+  useEffect(() => {
+    const sync = () => setFullscreened(document.fullscreenElement === rootRef.current);
+    document.addEventListener("fullscreenchange", sync);
+    return () => document.removeEventListener("fullscreenchange", sync);
+  }, []);
 
   const video = () => videoRef.current;
   const togglePlay = () => {
@@ -131,7 +141,7 @@ export function VideoFile({
     handler();
   };
 
-  const progress = duration > 0 ? Math.min(100, (time / duration) * 100) : 0;
+  const progress = duration > 0 ? Math.min(1, time / duration) : 0;
   const level = muted ? 0 : volume;
   const pipSupported = typeof document !== "undefined" && document.pictureInPictureEnabled;
 
@@ -181,7 +191,7 @@ export function VideoFile({
             }}
             onRateChange={(event) => setRate(event.currentTarget.playbackRate)}
             onError={onError}
-            className="block max-h-[calc(100cqh-clamp(3rem,12cqh,7rem))] max-w-full cursor-pointer rounded-md bg-black shadow-[0_18px_50px_-12px_rgb(0_0_0/0.35)]"
+            className="block max-h-[calc(100cqh-clamp(3rem,12cqh,7rem))] max-w-full cursor-pointer rounded-lg bg-black shadow-[0_18px_50px_-12px_rgb(0_0_0/0.35)]"
           />
         </div>
       </div>
@@ -193,9 +203,9 @@ export function VideoFile({
           className={CONTROL}
         >
           {playing ? (
-            <PauseIcon className="size-4.5" strokeWidth={1.75} />
+            <HugeiconsIcon icon={PauseIcon} strokeWidth={1.75} className="size-4.5" />
           ) : (
-            <PlayIcon className="size-4.5" strokeWidth={1.75} />
+            <PlayIcon strokeWidth={1.75} className="size-4.5" />
           )}
         </button>
         <input
@@ -210,8 +220,8 @@ export function VideoFile({
             const el = video();
             if (el) el.currentTime = Number(event.currentTarget.value);
           }}
-          className="browser-video-range mx-1 min-w-0 flex-1"
-          style={{ ["--range-fill" as string]: `${progress}%` }}
+          className="native-range mx-1 min-w-0 flex-1"
+          style={{ ["--range-ratio" as string]: progress }}
         />
         <span className="shrink-0 px-1 text-ui-13 text-muted-foreground tabular-nums">
           {clock(time)} / {clock(duration)}
@@ -230,8 +240,8 @@ export function VideoFile({
               el.volume = Number(event.currentTarget.value);
               el.muted = el.volume === 0;
             }}
-            className="browser-video-range w-0 opacity-0 transition-[width,opacity] duration-150 group-focus-within/volume:mr-1 group-focus-within/volume:w-16 group-focus-within/volume:opacity-100 group-hover/volume:mr-1 group-hover/volume:w-16 group-hover/volume:opacity-100"
-            style={{ ["--range-fill" as string]: `${level * 100}%` }}
+            className="native-range w-0 opacity-0 transition-[width,opacity] duration-150 group-focus-within/volume:mr-1 group-focus-within/volume:w-20 group-focus-within/volume:opacity-100 group-hover/volume:mr-1 group-hover/volume:w-20 group-hover/volume:opacity-100"
+            style={{ ["--range-ratio" as string]: level }}
           />
           <button
             type="button"
@@ -240,23 +250,23 @@ export function VideoFile({
             className={CONTROL}
           >
             {muted || volume === 0 ? (
-              <VolumeXIcon className="size-4.5" strokeWidth={1.75} />
+              <HugeiconsIcon icon={VolumeMute02Icon} strokeWidth={1.75} className="size-4.5" />
             ) : (
-              <Volume2Icon className="size-4.5" strokeWidth={1.75} />
+              <HugeiconsIcon icon={VolumeHighIcon} strokeWidth={1.75} className="size-4.5" />
             )}
           </button>
         </div>
         <DropdownMenu>
           <DropdownMenuTrigger asChild={true}>
             <button type="button" aria-label={t("browser.video.more")} className={cn(CONTROL, "aria-expanded:bg-[color-mix(in_oklab,var(--foreground)_8%,transparent)]")}>
-              <MoreHorizontalIcon className="size-4.5" strokeWidth={1.75} />
+              <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-4.5" />
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent
             side="top"
             align="end"
             sideOffset={8}
-            className="browser-menu min-w-52 rounded-[20px] p-1.5"
+            className="browser-menu min-w-52 rounded-lg p-1"
           >
             <DropdownMenuLabel className="text-ui-12 text-muted-foreground">
               {t("browser.video.speed")}
@@ -286,8 +296,17 @@ export function VideoFile({
             ) : null}
           </DropdownMenuContent>
         </DropdownMenu>
-        <button type="button" aria-label={t("browser.video.fullscreen")} onClick={fullscreen} className={CONTROL}>
-          <Maximize2Icon className="size-4" strokeWidth={1.75} />
+        <button
+          type="button"
+          aria-label={fullscreened ? t("browser.video.exitFullscreen") : t("browser.video.fullscreen")}
+          onClick={fullscreen}
+          className={CONTROL}
+        >
+          <HugeiconsIcon
+            icon={fullscreened ? ArrowShrink01Icon : ArrowExpand01Icon}
+            strokeWidth={1.75}
+            className="size-4.5"
+          />
         </button>
       </div>
     </div>

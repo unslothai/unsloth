@@ -1,18 +1,4 @@
-"""construct_chat_template accepts a multimodal processor.
-
-A multimodal checkpoint loads as a processor, which carries the text tokenizer in
-`.tokenizer`. construct_chat_template is tokenizer-shaped throughout -- `get_vocab()`,
-`name_or_path`, `bos_token`, and calling the object on a string -- and a processor has
-none of that, so `apply_chat_template(dataset, tokenizer = processor, ...)`, which
-reaches it, died on `vocab = tokenizer.get_vocab()`.
-
-It now unwraps once at the top. Unlike get_chat_template there is nothing to re-attach:
-this returns a template tuple, never the tokenizer. The unwrap therefore only has to
-happen before the first tokenizer-shaped use, which is what the ordering test pins.
-
-Importing unsloth needs a GPU, so the statement is pulled out of the source with ast and
-run over stand-ins, as tests/test_map_eos_token.py does.
-"""
+"""construct_chat_template unwraps a multimodal processor to .tokenizer before any tokenizer-only use."""
 
 import ast
 import os
@@ -84,7 +70,6 @@ def test_processor_is_unwrapped_to_its_inner_tokenizer():
     tokenizer = _FakeTokenizer()
     unwrapped = _run(_FakeProcessor(tokenizer))
     assert unwrapped is tokenizer
-    # The get_vocab() call that used to raise now lands on the tokenizer.
     assert unwrapped.get_vocab() == {"<eos>": 0}
 
 
@@ -99,8 +84,7 @@ def test_a_tokenizer_backend_with_a_tokenizer_attribute_is_left_alone():
 
 
 def test_the_unwrap_precedes_every_tokenizer_shaped_use():
-    # get_vocab() is the first of them and the one that raised. If the unwrap ever drifts
-    # below it, the processor reaches get_vocab again and the AttributeError is back.
+    # get_vocab() is the call that raised, so the unwrap must stay above it.
     unwrap = _unwrap_branch()
     uses = [
         node.lineno

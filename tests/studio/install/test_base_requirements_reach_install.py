@@ -108,11 +108,7 @@ class TestSharedBaseSelection:
 
     @pytest.mark.parametrize("mode", ["missing", "unreadable"])
     def test_an_unusable_file_does_not_take_down_the_install(self, tmp_path, monkeypatch, mode):
-        """This runs before the manifest is dropped, so raising here aborts with a traceback.
-
-        The unreadable case raises from a patched read rather than chmod(0o000):
-        root ignores the mode bits and Windows does not implement them at all.
-        """
+        """An unusable base.txt must not abort the install; the read is patched, as root ignores chmod."""
         if mode == "unreadable":
             (tmp_path / "base.txt").write_text(_EXTRA_PIN, encoding = "utf-8")
 
@@ -152,7 +148,6 @@ class TestSharedBasePhase:
             "_step": lambda *_args, **_kwargs: None,
             "_LABEL": "python",
             "pip_install": record_install,
-            # The skip gate, stubbed: this class pins that the shared file reaches BOTH core paths.
             "_requirements_satisfied": lambda *_args, **_kwargs: satisfied,
             "_record_step": lambda *_args, **_kwargs: None,
         }

@@ -11,7 +11,7 @@ import {
 } from "@/features/chat/stores/chat-runtime-store";
 import { reconcileTensorSplit } from "@/hooks/gpu-tensor-split";
 import { defaultInferenceParams } from "@/features/chat/presets/preset-policy";
-// Its own module so hosts needing only the signature skip the chat runtime store.
+// Separate module so hosts needing only the signature skip the chat runtime store.
 import { gpuFieldsSignature } from "./config-signature";
 import {
   DEFAULT_PER_MODEL_CONFIG,
@@ -29,9 +29,7 @@ export function applyPerModelConfigToRuntime(
   config: PerModelConfig,
   options: { isDiffusion?: boolean } = {},
 ): void {
-  // Fall back to the standing default when the model has no saved maxSeqLength. It is the only
-  // per-model field carried on params, so without this a model with no remembered config would
-  // inherit the previously loaded model's value.
+  // Without the standing default, a model with no saved config inherits the previous model's value.
   const maxSeqLength =
     normalizeMaxSeqLength(config.maxSeqLength) ??
     defaultInferenceParams.maxSeqLength;
@@ -39,13 +37,32 @@ export function applyPerModelConfigToRuntime(
   const engine = config.engine ?? "auto";
   const engineParallelism = config.engineParallelism ?? "tensor";
   const enginePrecision = config.enginePrecision ?? "auto";
+  const engineKvCacheDtype = config.engineKvCacheDtype ?? "auto";
+  const engineSeed = config.engineSeed ?? null;
+  const engineGpuMemoryUtilization = config.engineGpuMemoryUtilization ?? null;
+  const loadIn4bit = config.loadIn4bit !== false;
   if (
     maxSeqLength !== store.params.maxSeqLength ||
     engine !== (store.params.engine ?? "auto") ||
     enginePrecision !== (store.params.enginePrecision ?? "auto") ||
-    engineParallelism !== (store.params.engineParallelism ?? "tensor")
+    engineParallelism !== (store.params.engineParallelism ?? "tensor") ||
+    engineKvCacheDtype !== (store.params.engineKvCacheDtype ?? "auto") ||
+    engineSeed !== (store.params.engineSeed ?? null) ||
+    engineGpuMemoryUtilization !==
+      (store.params.engineGpuMemoryUtilization ?? null) ||
+    loadIn4bit !== (store.params.loadIn4bit !== false)
   ) {
-    store.setParams({ ...store.params, maxSeqLength, engine, enginePrecision, engineParallelism });
+    store.setParams({
+      ...store.params,
+      maxSeqLength,
+      engine,
+      enginePrecision,
+      engineParallelism,
+      engineKvCacheDtype,
+      engineSeed,
+      engineGpuMemoryUtilization,
+      loadIn4bit,
+    });
   }
   const gpuSelection =
     config.selectedGpuIds !== undefined
@@ -59,6 +76,8 @@ export function applyPerModelConfigToRuntime(
     customContextLength: config.customContextLength ?? null,
     mlxKvQuant: config.mlxKvQuant ?? null,
     mlxInt8Prefill: config.mlxInt8Prefill ?? false,
+    mlxPleOffload: config.mlxPleOffload ?? null,
+    mlxExpertOffload: config.mlxExpertOffload ?? null,
     kvCacheDtype: config.kvCacheDtype ?? null,
     speculativeType:
       normalizeSpeculativeType(config.speculativeType) ??
@@ -71,18 +90,15 @@ export function applyPerModelConfigToRuntime(
     reasoningBudgetMessage: options.isDiffusion
       ? ""
       : config.reasoningBudgetMessage,
-    // the diffusion runner ignores the llama-server batch flags
+    // The diffusion runner ignores the llama-server batch flags.
     nBatch: options.isDiffusion ? null : (config.nBatch ?? null),
     nUbatch: options.isDiffusion ? null : (config.nUbatch ?? null),
-    // Same reason as the batch flags: these are llama-server's own, and the diffusion runner never launches one.
     loadMode: options.isDiffusion ? null : (config.loadMode ?? null),
     ctxCheckpoints: options.isDiffusion ? null : (config.ctxCheckpoints ?? null),
     cacheRam: options.isDiffusion ? null : (config.cacheRam ?? null),
     tensorParallel: options.isDiffusion
       ? false
       : (config.tensorParallel ?? false),
-    // The diffusion runner has no projector to skip, so the toggle is inert there for the same
-    // reason tensorParallel is.
     disableVision: options.isDiffusion
       ? false
       : (config.disableVision ?? false),
@@ -124,6 +140,10 @@ export function currentRuntimePerModelConfig(
     engine: s.params.engine ?? "auto",
     enginePrecision: s.params.enginePrecision ?? "auto",
     engineParallelism: s.params.engineParallelism ?? "tensor",
+    engineKvCacheDtype: s.params.engineKvCacheDtype ?? "auto",
+    engineSeed: s.params.engineSeed ?? null,
+    engineGpuMemoryUtilization: s.params.engineGpuMemoryUtilization ?? null,
+    loadIn4bit: s.params.loadIn4bit !== false,
     customContextLength: s.customContextLength ?? null,
     maxSeqLength: options.includeMaxSeqLength
       ? normalizeMaxSeqLength(s.params.maxSeqLength)
@@ -131,6 +151,8 @@ export function currentRuntimePerModelConfig(
     kvCacheDtype: s.kvCacheDtype ?? null,
     mlxKvQuant: s.mlxKvQuant ?? null,
     mlxInt8Prefill: s.mlxInt8Prefill ?? false,
+    mlxPleOffload: s.mlxPleOffload ?? null,
+    mlxExpertOffload: s.mlxExpertOffload ?? null,
     speculativeType: normalizeSpeculativeType(s.speculativeType),
     specDraftNMax: s.specDraftNMax ?? null,
     specDraftCacheDtype: s.specDraftCacheDtype ?? null,
@@ -163,32 +185,32 @@ export function currentRuntimePerModelConfig(
   };
 }
 
-/** `followGlobal`: only against the running config, which holds the mode a null one resolved to.
- *  Stored configs and presets keep null distinct from an explicit mode equal to today's global.
- *  `unsetIsAuto`: a draft against its saved record, where null and "auto" both follow the global. */
+/** `followGlobal` only for the running config; stored configs keep null distinct from explicit. */
 export function perModelConfigsEqual(
   a: PerModelConfig,
   b: PerModelConfig,
-  {
-    followGlobal = false,
-    unsetIsAuto = false,
-  }: { followGlobal?: boolean; unsetIsAuto?: boolean } = {},
+  { followGlobal = false }: { followGlobal?: boolean } = {},
 ): boolean {
   const speculative = followGlobal
     ? resolvedSpeculativeType
-    : unsetIsAuto
-      ? (v: string | null | undefined) => normalizeSpeculativeType(v) ?? "auto"
-      : normalizeSpeculativeType;
+    : normalizeSpeculativeType;
   return (
     (a.engine ?? "auto") === (b.engine ?? "auto") &&
     (a.enginePrecision ?? "auto") === (b.enginePrecision ?? "auto") &&
     (a.engineParallelism ?? "tensor") === (b.engineParallelism ?? "tensor") &&
+    (a.engineKvCacheDtype ?? "auto") === (b.engineKvCacheDtype ?? "auto") &&
+    (a.engineSeed ?? null) === (b.engineSeed ?? null) &&
+    (a.engineGpuMemoryUtilization ?? null) ===
+      (b.engineGpuMemoryUtilization ?? null) &&
+    (a.loadIn4bit !== false) === (b.loadIn4bit !== false) &&
     (a.customContextLength ?? null) === (b.customContextLength ?? null) &&
     normalizeMaxSeqLength(a.maxSeqLength) ===
       normalizeMaxSeqLength(b.maxSeqLength) &&
     (a.kvCacheDtype ?? null) === (b.kvCacheDtype ?? null) &&
     (a.mlxKvQuant ?? null) === (b.mlxKvQuant ?? null) &&
     Boolean(a.mlxInt8Prefill) === Boolean(b.mlxInt8Prefill) &&
+    (a.mlxPleOffload ?? null) === (b.mlxPleOffload ?? null) &&
+    (a.mlxExpertOffload ?? null) === (b.mlxExpertOffload ?? null) &&
     speculative(a.speculativeType) === speculative(b.speculativeType) &&
     (a.specDraftNMax ?? null) === (b.specDraftNMax ?? null) &&
     (a.specDraftCacheDtype ?? null) === (b.specDraftCacheDtype ?? null) &&
@@ -214,9 +236,7 @@ function resolvedSpeculativeType(value: string | null | undefined): string {
   return normalizeSpeculativeType(value) ?? readPersistedSpeculativeType();
 }
 
-/** Compare on the launched command, so "not loaded" and "cleared" are equal here. They differ
- *  only in what a SAVE does, and treating them as different would make the row read as an
- *  unsaved change the moment it finished reading the server. */
+/** Compare on the launched command, so "not loaded" and "cleared" are equal. */
 function extraArgsSignature(value: string[] | null | undefined): string {
   return (value ?? []).join("\u0000");
 }

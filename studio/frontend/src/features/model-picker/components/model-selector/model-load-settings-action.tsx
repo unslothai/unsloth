@@ -9,7 +9,7 @@ import {
 import { cn } from "@/lib/utils";
 import { Settings02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useHasSavedRunSettings } from "../../model-config/saved-run-settings";
+import { useHasRememberedRunSettings } from "../../model-config/remembered-run-settings";
 import type { ModelPickTarget } from "./types";
 
 export function ModelLoadSettingsAction({
@@ -26,7 +26,7 @@ export function ModelLoadSettingsAction({
   tooltip?: string;
   savedFor?: ModelPickTarget;
 }) {
-  const saved = useHasSavedRunSettings(savedFor ?? null);
+  const saved = useHasRememberedRunSettings(savedFor ?? null);
   return (
     <Tooltip delayDuration={0}>
       <TooltipTrigger asChild={true}>
@@ -39,25 +39,16 @@ export function ModelLoadSettingsAction({
           aria-label={ariaLabel}
           data-run-settings-saved={saved || undefined}
           className={cn(
-            "relative",
-            // Fixed box, not padding around the glyph, so this and the dots menu hover as one size. Callers
-            // can still size it up.
+            // Fixed box so this and the dots menu hover at one size.
             "flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/80 transition-colors hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]",
             className,
           )}
         >
-          {/* A size down from the dots: the gear fills its whole box. */}
           <HugeiconsIcon
             icon={Settings02Icon}
             strokeWidth={1.75}
             className="size-3"
           />
-          {saved && (
-            <span
-              aria-hidden={true}
-              className="absolute top-0.5 right-0.5 size-1.5 rounded-full bg-primary"
-            />
-          )}
         </button>
       </TooltipTrigger>
       <TooltipContent side="top" className="tooltip-compact">

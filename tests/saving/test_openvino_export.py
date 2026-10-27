@@ -59,7 +59,7 @@ def test_exports_the_merge_in_a_child_process(run, tmp_path, quantization_type):
     assert cmd[:5] == [sys.executable, "-m", "optimum.commands.optimum_cli", "export", "openvino"]
     assert cmd[5:9] == ["--model", merge["save_directory"], "--weight-format", fmt]
     assert ("--sym" in cmd, "--group-size" in cmd) == (fmt != "fp16", fmt == "int4")
-    assert "--trust-remote-code" not in cmd  # only for models loaded through remote code
+    assert "--trust-remote-code" not in cmd
     assert cmd[-3:] == ["--task", "text-generation-with-past", str(tmp_path / "out")]
     assert os.path.dirname(os.path.dirname(cmd[6])) == str(tmp_path) and not run.left()
 
@@ -69,16 +69,16 @@ def test_options_vlm_task_remote_code_token_and_missing_tokenizer(run, monkeypat
     monkeypatch.setattr(save_mod, "_loaded_via_remote_code", lambda obj: obj is vlm)
     monkeypatch.setattr(save_mod.logger, "warning_once", (warnings := []).append)
     monkeypatch.setattr(save_mod, "_openvino_transformers_mismatch", _REAL_BOUNDS)
-    monkeypatch.setattr(save_mod, "_OPENVINO_BOUNDS_PROBE", "raise SystemExit(3)")  # defers
+    monkeypatch.setattr(save_mod, "_OPENVINO_BOUNDS_PROBE", "raise SystemExit(3)")
     monkeypatch.setenv("HF_TOKEN", "hf_parent")
     run(vlm, quantization_type = "int4", sym = False, group_size = 64, token = "hf_explicit")
     (cmd,), (env,) = run.seen.cmds, run.seen.envs
     assert "--sym" not in cmd and cmd[cmd.index("--group-size") + 1] == "64"
     assert cmd[cmd.index("--task") + 1] == "image-text-to-text" and "--trust-remote-code" in cmd
-    assert not {"hf_parent", "hf_explicit"} & {*env.values()}  # the child reads a local checkpoint
+    assert not {"hf_parent", "hf_explicit"} & {*env.values()}
     t5 = SimpleNamespace(config = SimpleNamespace(model_type = "t5", is_encoder_decoder = True))
     with pytest.raises(ValueError, match = "encoder-decoder"):
-        run(t5)  # its task cannot be assumed, so the caller must name it
+        run(t5)
     run(t5, task = "text2text-generation-with-past")
     assert run(is_main_process = False) is None and len(run.seen.merges) == 2 and not warnings
     monkeypatch.setattr(save_mod.subprocess, "check_call", lambda c, env: _write(c, env, _OUT[0]))
@@ -87,8 +87,7 @@ def test_options_vlm_task_remote_code_token_and_missing_tokenizer(run, monkeypat
 
 
 def test_a_custom_tokenizer_alone_does_not_trust_the_model(run, monkeypatch):
-    # optimum-cli has one --trust-remote-code for both loads, so it follows the model: granting it
-    # for an approved custom tokenizer would let the reload run a built-in model's unvetted auto_map.
+    # optimum-cli has one --trust-remote-code for both loads, so it follows the model, not the tokenizer.
     tokenizer = SimpleNamespace()
     monkeypatch.setattr(save_mod, "_loaded_via_remote_code", lambda obj: obj is tokenizer)
     monkeypatch.setattr(save_mod.logger, "warning_once", (warnings := []).append)
@@ -100,7 +99,7 @@ def test_a_custom_tokenizer_alone_does_not_trust_the_model(run, monkeypatch):
 
 @pytest.mark.parametrize("case", [*_CASES, *_BOUNDS, "no optimum", "child fails", "no model"])
 def test_failures_come_before_the_merge_or_clean_up(run, monkeypatch, case):
-    if case in _BOUNDS:  # optimum-intel's transformers bounds for this architecture
+    if case in _BOUNDS:
         monkeypatch.setattr(save_mod, "_openvino_transformers_mismatch", _REAL_BOUNDS)
         monkeypatch.setattr(save_mod, "_OPENVINO_BOUNDS_PROBE", f"print({case!r})")
     if case == "no optimum":

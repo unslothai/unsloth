@@ -43,7 +43,6 @@ if __package__ in (None, ""):  # pragma: no cover
 from tests.studio.studiobench.analysis import parity as P  # noqa: E402
 from tests.studio.studiobench.sweep.ui_parity import collect, shards_of  # noqa: E402
 
-#:How much context to print either side of a differing run of characters.
 CONTEXT = 90
 
 
@@ -85,8 +84,7 @@ def first_divergence(base: str, treat: str) -> dict | None:
     }
 
 
-#: Patterns that name a differing region, so a hunt over hundreds of pairs reports a handful of
-#: MECHANISMS rather than hundreds of substrings. Order matters: first match wins.
+#: Name the mechanism behind a differing region. First match wins.
 SHAPES = (
     ("a bare integer", re.compile(r"^\d+$")),
     ("an integer inside a longer token", re.compile(r"^[\w:.\-/]*\d+[\w:.\-/]*$")),

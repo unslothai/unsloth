@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Every conversation runs its tools in its own sandbox directory.
-
-Parallel chats lean on this: two conversations can be mid tool call at the same
-time, so a shared working directory would let one overwrite the other's files.
-The session id is the chat's thread id (or project-<id> for project chats), and
-the dir is derived from it here.
-
-UNSLOTH_STUDIO_HOME is redirected per test, so nothing touches the real install.
-"""
+"""Each conversation runs tools in its own sandbox directory, so parallel chats cannot collide."""
 
 import os
 import sys
@@ -50,7 +42,6 @@ def test_two_conversations_get_two_directories(workdir, tmp_path):
 
 
 def test_the_same_conversation_keeps_its_directory(workdir):
-    # A later turn, or a tool continuation, must land back in the same place.
     assert workdir("thread-alpha") == workdir("thread-alpha")
 
 
@@ -61,12 +52,10 @@ def test_a_directory_is_private_to_its_conversation(workdir):
     b = workdir("thread-beta")
     with open(os.path.join(a, "secret.txt"), "w", encoding = "utf-8") as f:
         f.write("alpha")
-    # Our own ownership marker aside, nothing of alpha's is visible here.
     assert os.listdir(b) == [tools._SANDBOX_MARKER]
 
 
 def test_project_chats_deliberately_share_one_workspace(workdir, monkeypatch, tmp_path):
-    # Chats in a project are meant to see each other's files.
     from core.inference import tools
 
     project_workspace = str(tmp_path / "project-ws")
@@ -82,8 +71,7 @@ def test_a_session_id_cannot_escape_the_sandbox_root(workdir, tmp_path, session_
     resolved = workdir(session_id) if session_id else workdir(None)
     root = os.path.realpath(str(tmp_path / "sandbox"))
     assert os.path.realpath(resolved).startswith(root + os.sep)
-    # A name the filesystem can hold, derived from the id rather than the id
-    # itself, so nothing in it can traverse and no two ids share it.
+    # Derived from the id so nothing can traverse and no two ids collide.
     name = os.path.basename(resolved)
     assert name == "_default" if not session_id else name.startswith("_id-")
 
