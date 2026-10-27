@@ -2627,8 +2627,33 @@ def _pin_fingerprint() -> dict:
     return {"bundle": want, **_host_fingerprint()}
 
 
+def _skip_unloadable_rocm(accelerator: str) -> str:
+    """The fallback rung in place of a ROCm build whose host runtime the loader cannot find. Checked
+    before any fetch: the ROCm bundle is ~300 MB, and a fetch that stalls or is cut short records
+    no strike, so without this every load would start the same download again."""
+    klass = _accelerator_class_of(accelerator)
+    nxt = fallback_accelerator_for(klass) if klass == "rocm" else None
+    if not nxt:
+        return accelerator
+    try:
+        if rocm_runtime_resolvable() is not False:
+            return accelerator
+        if not accelerator_runtime_failed(klass):
+            logger.warning(
+                "sd_cpp.rocm_runtime_absent: %s; installing the %s build instead",
+                accelerator_fallback_reason(klass),
+                nxt,
+            )
+            note_accelerator_runtime_failure(klass, proven = True)
+    except Exception as exc:  # noqa: BLE001 - a failed preflight leaves the request as it was
+        logger.debug("ROCm runtime preflight failed: %s", exc)
+        return accelerator
+    return nxt
+
+
 def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu") -> Optional[str]:
     """Never raises: None means no usable binary and tells the router to fall back to diffusers."""
+    accelerator = _skip_unloadable_rocm(accelerator)
     found = find_sd_cpp_binary()
     usable = bool(found) and _usable_or_discard_managed(found)
     if usable and not _needs_reinstall(found, accelerator):
@@ -2671,6 +2696,7 @@ def ensure_sd_server_binary(
     *, allow_install: bool = True, accelerator: str = "cpu"
 ) -> Optional[str]:
     """Installs sd-server even when an older sd-cli exists, since the archive ships both binaries."""
+    accelerator = _skip_unloadable_rocm(accelerator)
     found = find_sd_server_binary()
     usable = bool(found) and _usable_or_discard_managed(found)
     # Before _accelerator_changed, which says unchanged while the tree is in use.

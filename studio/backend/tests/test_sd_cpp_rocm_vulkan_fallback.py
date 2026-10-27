@@ -3073,3 +3073,39 @@ def test_the_rocm_runtime_is_probed_in_a_fresh_process(monkeypatch):
     assert sd_cpp_backend.rocm_runtime_missing_sonames() == ["libhipblas.so.3", "librocblas.so.5"]
     assert sd_cpp_backend.rocm_runtime_resolvable() is False
     assert len(calls) == 1 and "-I" in calls[0], "one isolated probe, memoised"
+
+
+@pytest.mark.parametrize("ensure", ["ensure_sd_cpp_binary", "ensure_sd_server_binary"])
+def test_an_unloadable_rocm_runtime_installs_vulkan_without_fetching_rocm(
+    fake_settings, monkeypatch, ensure
+):
+    """A ROCm fetch that stalls or is cut short records nothing, so the runtime is checked before it starts."""
+    from core.inference import sd_cpp_backend
+
+    monkeypatch.setattr(sd_cpp_backend, "rocm_runtime_resolvable", lambda: False)
+    monkeypatch.setattr(sd_cpp_backend, "find_sd_cpp_binary", lambda: None)
+    monkeypatch.setattr(sd_cpp_backend, "find_sd_server_binary", lambda: None)
+    installed = []
+
+    class _Installer:
+        @staticmethod
+        def install(**kw):
+            installed.append(kw["accelerator"])
+            return Path("/opt/sd/vulkan/sd-cli")
+
+    monkeypatch.setattr(sd_cpp_backend, "_installer_module", lambda: _Installer)
+    monkeypatch.setattr(sd_cpp_backend, "_install_kwargs", lambda accel: {"accelerator": accel})
+    getattr(sd_cpp_backend, ensure)(allow_install = True, accelerator = "rocm")
+    assert installed == ["vulkan"]
+    assert _noted_accelerators(fake_settings) == ["rocm"]
+
+
+def test_a_loadable_rocm_runtime_still_installs_rocm(fake_settings, monkeypatch):
+    from core.inference import sd_cpp_backend
+
+    for verdict in (True, None):
+        monkeypatch.setattr(sd_cpp_backend, "rocm_runtime_resolvable", lambda v = verdict: v)
+        assert sd_cpp_backend._skip_unloadable_rocm("rocm") == "rocm"
+    monkeypatch.setattr(sd_cpp_backend, "rocm_runtime_resolvable", lambda: False)
+    assert sd_cpp_backend._skip_unloadable_rocm("vulkan") == "vulkan"
+    assert _noted_accelerators(fake_settings) == []
