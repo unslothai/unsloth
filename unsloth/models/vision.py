@@ -4520,7 +4520,7 @@ class FastBaseModel:
         for _ in range(3):
             collected = gc.collect()
             clean_gpu_cache()
-            if collected == 0:
+            if collected == 0 and not gc.callbacks:
                 break
 
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
@@ -4902,7 +4902,7 @@ class FastBaseModel:
         for _ in range(3):
             collected = gc.collect()
             clean_gpu_cache()
-            if collected == 0:
+            if collected == 0 and not gc.callbacks:
                 break
         # Saving restores sentencepiece assets from the repo name alone, which carries no branch. Stamped here, not per processor branch, so a fallback cannot lose it.
         _mark_loaded_revision(tokenizer, _tokenizer_revision)
@@ -5209,7 +5209,7 @@ class FastBaseModel:
         for _ in range(3):
             collected = gc.collect()
             clean_gpu_cache()
-            if collected == 0:
+            if collected == 0 and not gc.callbacks:
                 break
         max_seq_length = model.max_seq_length
         # Passing loftq_config = None gives an error.
@@ -5436,7 +5436,7 @@ class FastBaseModel:
         for _ in range(3):
             collected = gc.collect()
             clean_gpu_cache()
-            if collected == 0:
+            if collected == 0 and not gc.callbacks:
                 break
         patch_saving_functions(model, vision = True)
         patch_peft_fast_inference(model)
@@ -5617,7 +5617,7 @@ class FastBaseModel:
         for _ in range(3):
             collected = gc.collect()
             clean_gpu_cache()
-            if collected == 0:
+            if collected == 0 and not gc.callbacks:
                 break
         model.for_training = functools.partial(FastBaseModel.for_training, model)
         model.for_inference = functools.partial(FastBaseModel.for_inference, model)

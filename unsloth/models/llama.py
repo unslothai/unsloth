@@ -5086,7 +5086,7 @@ class FastLlamaModel:
             for _ in range(3):
                 collected = gc.collect()
                 clean_gpu_cache()
-                if collected == 0:
+                if collected == 0 and not gc.callbacks:
                     break
 
             if train_lm_head:
@@ -5096,7 +5096,7 @@ class FastLlamaModel:
             for _ in range(3):
                 collected = gc.collect()
                 clean_gpu_cache()
-                if collected == 0:
+                if collected == 0 and not gc.callbacks:
                     break
 
         from .lora_init import fast_lora_init, record_fast_pissa
@@ -5217,7 +5217,7 @@ class FastLlamaModel:
         for _ in range(3):
             collected = gc.collect()
             clean_gpu_cache()
-            if collected == 0:
+            if collected == 0 and not gc.callbacks:
                 break
 
         patch_peft_fast_inference(model)
@@ -5466,7 +5466,7 @@ class FastLlamaModel:
         for _ in range(3):
             collected = gc.collect()
             clean_gpu_cache()
-            if collected == 0:
+            if collected == 0 and not gc.callbacks:
                 break
 
         patch_peft_fast_inference(model)

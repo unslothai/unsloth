@@ -705,6 +705,6 @@ class FastGemma2Model(FastLlamaModel):
         for _ in range(3):
             collected = gc.collect()
             clean_gpu_cache()
-            if collected == 0:
+            if collected == 0 and not gc.callbacks:
                 break
         return model, tokenizer
