@@ -44,7 +44,6 @@ _MAX_DATASET_SLICE_INDEX = 1_000_000_000
 class S3Config(BaseModel):
     """S3 bucket configuration for loading datasets from AWS S3"""
 
-    # Accept both snake_case and the frontend's camelCase field names.
     model_config = ConfigDict(populate_by_name = True)
 
     bucket: str = Field(..., description = "S3 bucket name")
@@ -79,7 +78,7 @@ class S3Config(BaseModel):
 
 def _parse_lr(v: Any) -> float:
     """Parse learning_rate as a positive float strictly below _MAX_LR_VALUE."""
-    # mode="before" sees True/False as bool (not 1/0) for a precise error.
+    # mode="before" sees bools (not 1/0) for a precise error.
     if v is None:
         raise ValueError("learning_rate is required")
     if isinstance(v, bool):
@@ -282,8 +281,7 @@ class TrainingStartRequest(BaseModel):
         # float is not strict, so `"eval_steps": true` would arrive as 1.0, a cadence of every step.
         if isinstance(value, bool):
             raise ValueError("eval_steps must be a number, not a boolean")
-        # `1e309` is a plain JSON number that coerces to inf, which every gate reads as disabled.
-        # Store it as that, so config_json never gets an `Infinity` literal Starlette then 500s on.
+        # JSON 1e309 coerces to inf; store as disabled so config_json has no `Infinity`.
         try:
             if not math.isfinite(float(value)):
                 return 0.0
@@ -294,8 +292,7 @@ class TrainingStartRequest(BaseModel):
             pass
         return value
 
-    # pydantic runs all mode="after" validators in definition order and _check_steps_or_epochs is lower
-    # in this class, so keep these checks order-independent.
+    # After-validators run in definition order; keep these order-independent.
     @model_validator(mode = "after")
     def _validate_dataset_slice(self) -> "TrainingStartRequest":
         # start == end is intentionally allowed (a deliberate single-row slice); the trainer warns.
@@ -349,8 +346,7 @@ class TrainingStartRequest(BaseModel):
     def _check_cache_local_path(cls, v: Optional[str]) -> Optional[str]:
         if v is None:
             return v
-        # Resolved FIRST, so the checks below run on the path rather than on its handle: the
-        # snapshot pins come back referenced, and Resume replays this payload verbatim.
+        # Resolve the handle first so checks below run on the path.
         v = _resolve_inventory_handle(v.strip())
         if not v:
             return None
@@ -555,7 +551,8 @@ class TrainingStartRequest(BaseModel):
     warmup_ratio: Optional[float] = Field(None, description = "Warmup ratio")
     max_steps: Optional[int] = Field(None, description = "Maximum training steps")
     save_steps: int = Field(100, description = "Steps between checkpoints")
-    weight_decay: float = Field(0.001, description = "Weight decay")
+    # NaN clears _check_weight_decay's 0..10 range check (every comparison with it is False), so it is refused here.
+    weight_decay: float = Field(0.001, allow_inf_nan = False, description = "Weight decay")
     # Finite as well as non-negative: JSON 1e309 floats to inf, which clears ge=0 but never binds, so
     # the run would train unclipped while reporting a threshold.
     max_grad_norm: Optional[float] = Field(
@@ -596,14 +593,17 @@ class TrainingStartRequest(BaseModel):
             "back to the incoming activation dtype."
         ),
     )
+    # numpy's range (transformers.set_seed): out of it, the run only fails after the model loads.
     random_seed: int = Field(
         3407,
+        ge = 0,
+        le = 2**32 - 1,
         description = (
             "Random seed; matches the Unsloth backend / MLX worker default "
             "and unsloth's historical recommended value."
         ),
     )
-    packing: bool = Field(False, description = "Enable sequence packing")
+    packing: bool = Field(True, description = "Enable sequence packing where supported")
     optim: str = Field("adamw_8bit", description = "Optimizer")
     lr_scheduler_type: str = Field("linear", description = "Learning rate scheduler type")
     embedding_learning_rate: Optional[float] = Field(
@@ -646,7 +646,9 @@ class TrainingStartRequest(BaseModel):
     use_rslora: bool = Field(False, description = "Use RSLoRA")
     use_loftq: bool = Field(False, description = "Use LoftQ")
     use_dora: bool = Field(False, description = "Use DoRA")
-    train_on_completions: bool = Field(False, description = "Train on completions only")
+    train_on_completions: bool = Field(
+        True, description = "Train on assistant completions where supported"
+    )
 
     finetune_vision_layers: bool = Field(False, description = "Finetune vision layers")
     finetune_language_layers: bool = Field(True, description = "Finetune language layers")
@@ -707,9 +709,23 @@ class TrainingStartRequest(BaseModel):
         return [] if value is None else value
 
     @model_validator(mode = "after")
+    def _default_training_objective_toggles(self) -> "TrainingStartRequest":
+        # getattr: validate_assignment on a model_construct() instance lacks required fields.
+        non_chat = getattr(self, "is_embedding", False) or getattr(self, "is_decision", False)
+        if "packing" not in self.model_fields_set and non_chat:
+            self.packing = False
+        if "train_on_completions" not in self.model_fields_set and (
+            non_chat
+            or getattr(self, "dataset_streaming", False)
+            or getattr(self, "training_type", None) == "Continued Pretraining"
+            or getattr(self, "format_type", None) in ("raw", "raw_text")
+        ):
+            self.train_on_completions = False
+        return self
+
+    @model_validator(mode = "after")
     def _validate_streaming_splits(self) -> "TrainingStartRequest":
-        # Streaming load_dataset does not accept HF slice syntax (probe-confirmed "Bad split"), so reject
-        # early with a clear message.
+        # Streaming load_dataset rejects HF slice syntax ("Bad split").
         if self.dataset_streaming:
             for field_name, split_val in (
                 ("train_split", self.train_split),
@@ -745,8 +761,7 @@ class TrainingStartRequest(BaseModel):
 
     @model_validator(mode = "after")
     def _validate_lora_variant_flags(self) -> "TrainingStartRequest":
-        # A direct API, YAML or CLI caller can bypass the frontend; nothing downstream breaks, but reject
-        # early instead of silently ignoring the flag.
+        # Direct API, YAML or CLI callers bypass the frontend, so reject variant flag conflicts early.
         active = [
             name
             for name, enabled in (
@@ -761,8 +776,7 @@ class TrainingStartRequest(BaseModel):
                 f"Only one LoRA variant may be enabled at a time; got {active}. "
                 "use_rslora, use_loftq, and use_dora are mutually exclusive."
             )
-        # getattr, not self.training_type: model_construct() leaves required fields unset and this
-        # mode="after" validator still runs on that partial instance.
+        # getattr: model_construct() leaves required fields unset and this still runs.
         if getattr(self, "training_type", None) == "Full Finetuning" and active:
             raise ValueError(
                 f"{active[0]} requires an adapter method (LoRA/QLoRA or "
@@ -806,7 +820,7 @@ class TokenPreviewRequest(BaseModel):
     dataset_known_cached: bool = False
     format_type: str = "auto"
     custom_format_mapping: Optional[Dict[str, Any]] = None
-    train_on_completions: bool = False
+    train_on_completions: bool = True
     is_cpt: bool = False
     max_seq_length: int = Field(2048, ge = 1, le = 1_048_576)
     num_samples: int = Field(3, ge = 1, le = 8)
@@ -1011,36 +1025,30 @@ class DiffusionTrainingStartRequest(BaseModel):
             "ceil(N / (batch x grad_accum)) optimizer steps over the N-image dataset"
         ),
     )
-    # Upper bound as well as positive: JSON 1e309 floats to inf and satisfies a gt-only constraint, so
-    # the route would evict residents and start AdamW at an infinite rate; values >= 1.0 diverge.
+    # Upper bound too: JSON 1e309 becomes inf and passes gt-only; values >= 1.0 diverge, and an inf rate would evict residents.
     learning_rate: float = Field(1e-4, gt = 0, lt = 1.0)
     train_batch_size: int = Field(1, ge = 1, le = 64)
     gradient_accumulation_steps: int = Field(1, ge = 1, le = 256)
     lora_rank: int = Field(16, ge = 1, le = 320)
     lora_alpha: Optional[int] = Field(None, ge = 1, le = 640, description = "Defaults to lora_rank")
-    # Strictly below 1: PEFT turns lora_dropout into nn.Dropout(p=...), so 1.0 zeroes the LoRA branch
-    # and the run saves an untrained adapter while reporting normal progress.
+    # lt 1: dropout p=1.0 zeroes the LoRA branch and saves an untrained adapter.
     lora_dropout: float = Field(0.0, ge = 0.0, lt = 1.0)
-    # Mirror the remaining training-affecting knobs of DiffusionLoraConfig so a client that sets them is
-    # not silently trained with defaults. Defaults to the SDXL projections.
+    # Mirrors DiffusionLoraConfig knobs so set values are not silently dropped; defaults are SDXL's.
     lora_target_modules: List[str] = Field(
         default_factory = lambda: ["to_k", "to_q", "to_v", "to_out.0"],
         description = "U-Net modules to attach LoRA to",
     )
-    # Finite as well as non-negative: an inf max_grad_norm makes clip_grad_norm_ clamp its coefficient
-    # to 1.0, so the run trains completely unclipped while the config reports clipping.
+    # Finite: inf max_grad_norm means unclipped training.
     max_grad_norm: float = Field(
         1.0,
         ge = 0,
         allow_inf_nan = False,
         description = "Gradient clipping max-norm; 0 disables clipping",
     )
-    # Bounded to what torch.manual_seed unpacks: an out-of-range value otherwise passes every preflight,
-    # evicts the resident models, spawns the trainer, and only then dies unpacking long long.
+    # Bounded to what torch.manual_seed accepts: an out-of-range value passes preflight, evicts residents, then dies in the trainer.
     seed: int = Field(42, ge = -(2**63), le = 2**64 - 1)
     mixed_precision: Literal["bf16", "fp16", "no"] = Field("bf16")
-    # Finite for the same reason as max_grad_norm: an inf gamma collapses every min-SNR weight to 1.0,
-    # silently training on plain unweighted MSE.
+    # Finite: inf gamma collapses min-SNR weights to 1.0.
     snr_gamma: Optional[float] = Field(
         5.0,
         gt = 0,
@@ -1104,8 +1112,7 @@ class DiffusionTrainingStartRequest(BaseModel):
             "or auto (pick by free VRAM + GPU class). Dense modes need a non-prequant base."
         ),
     )
-    # DiT-only levers the trainer implements. Undeclared, they were silently dropped by model_dump();
-    # the defaults match DiffusionLoraConfig.
+    # DiT-only lever: undeclared, model_dump() silently dropped it. Defaults match DiffusionLoraConfig.
     ema_decay: float = Field(
         0.0, ge = 0.0, lt = 1.0, description = "EMA of the LoRA weights; 0 disables it"
     )
@@ -1201,8 +1208,7 @@ class DiffusionMetricHistory(BaseModel):
     loss: List[float] = Field(default_factory = list)
     lr: List[Optional[float]] = Field(default_factory = list)
     grad_norm: List[Optional[float]] = Field(default_factory = list)
-    # All-null on every family but MiniMax-H3, which is what lets the chart decide whether to draw the
-    # split curves at all.
+    # Null for all families but MiniMax-H3; the chart uses that to decide whether to draw split curves.
     video_loss: List[Optional[float]] = Field(default_factory = list)
     audio_loss: List[Optional[float]] = Field(default_factory = list)
 
@@ -1214,6 +1220,19 @@ class DiffusionSampleImage(BaseModel):
     path: str
     prompt: str = ""
     seed: Optional[int] = None
+
+
+class DiffusionTrainingPreparation(BaseModel):
+    stage: Optional[str] = None
+    done: Optional[int] = None
+    total: Optional[int] = None
+
+
+class DiffusionTrainingDownloadProgress(BaseModel):
+    bytes_done: int = Field(default = 0, ge = 0)
+    bytes_total: int = Field(default = 0, ge = 0)
+    label: str = "Model files"
+    scope: str = "active_files"
 
 
 class DiffusionTrainingStatusResponse(BaseModel):
@@ -1235,20 +1254,20 @@ class DiffusionTrainingStatusResponse(BaseModel):
     audio_loss: Optional[float] = None
     num_images: Optional[int] = None
     in_model_load: bool = False
+    preparation: Optional[DiffusionTrainingPreparation] = None
+    download_progress: Optional[DiffusionTrainingDownloadProgress] = None
     output_dir: Optional[str] = None
     lora_path: Optional[str] = None
     # The second, EMA-averaged adapter written in the run's ema subdir when ema_decay was enabled.
     ema_path: Optional[str] = None
-    # Where the adapter was mirrored into the Unsloth LoRA catalog, and what family / base it trained
-    # from, so the UI can deploy it.
+    # Catalog mirror path plus the family and base model, so the UI can deploy the adapter.
     catalog_path: Optional[str] = None
     family: Optional[str] = None
     base_model: Optional[str] = None
     # Live throughput + peak VRAM (from the trainer's progress events).
     samples_per_second: Optional[float] = None
     peak_memory_gb: Optional[float] = None
-    # The newest checkpoint bundle written, the step it holds, why one could not be written (the Resume
-    # action's disabled tooltip), and where a resumed run started.
+    # Newest bundle and step, why it could not be written (Resume tooltip), and where a resume started.
     checkpoint_path: Optional[str] = None
     checkpoint_step: Optional[int] = None
     resume_blocked_reason: Optional[str] = None
@@ -1281,13 +1300,10 @@ class DiffusionTrainingRunSummary(BaseModel):
     ended_at: Optional[float] = None
     # The run's adapter directory, which is also what a Resume replays as resume_from_checkpoint.
     output_dir: Optional[str] = None
-    # Re-derived from the checkpoints on disk at read time, not the value frozen when the run ended,
-    # so deleting them takes the action away. When it cannot resume, resume_blocked_reason says why
-    # and the UI shows it as the disabled action's tooltip.
+    # Re-derived from disk at read time, so deleting checkpoints removes the action.
     can_resume: bool = False
     checkpoint_step: Optional[int] = None
-    # The exact bundle a resume would continue, sent back so clients get the one they were shown rather
-    # than whatever is newest in a folder two runs may share.
+    # The exact bundle a resume would continue, not whatever is newest in a folder two runs share.
     checkpoint_path: Optional[str] = None
     resume_blocked_reason: Optional[str] = None
     # Lineage: the run this one continued, and the step it picked up from.
@@ -1319,8 +1335,7 @@ class DiffusionDatasetSummary(BaseModel):
     name: str
     path: str
     image_count: int
-    # Clips, for the families that train from video. Defaults to 0 so an older backend's payload, and every
-    # image-only caller, stays valid.
+    # Clips for video-trained families; default 0 keeps older payloads and image-only callers valid.
     clip_count: int = 0
     caption_count: int
 
@@ -1339,22 +1354,19 @@ class DiffusionTrainableFamily(BaseModel):
     qlora_vram_gb: Optional[int] = None
     gated: bool = False
     note: str = ""
-    # base_precision modes this machine supports for the family (empty = no selector, e.g. SDXL), the recommended
-    # pick, and whether regional torch.compile applies. Defaults keep older backends' payloads valid.
+    # base_precision modes this machine supports; empty means no selector, e.g. SDXL.
     precision_modes: List[str] = Field(default_factory = list)
     recommended_precision: str = "nf4"
     supports_compile: bool = False
-    # Whether this family's loop writes checkpoint bundles. False makes the panel drop the "Checkpoint every"
-    # control: save_steps is refused, not ignored, for a checkpointless family, so offering the control means
-    # offering a value that rejects Start; defaults True so an older backend's payload keeps it.
+    # save_steps is refused for checkpointless families; True keeps old payloads.
     supports_checkpoints: bool = True
     supports_samples: bool = False
     supports_bucketing: bool = True
+    is_video: bool = False
     # 1 for a family whose forward covers one packed sequence: a value above the cap is refused rather
     # than clamped, and declaring it here is what stops Pydantic dropping it from the response.
     max_train_batch_size: Optional[int] = None
-    # When set, a LoRA trained on this family previews on this repo instead of the training base (Krea
-    # trains on Raw, runs on Turbo).
+    # LoRA previews on this repo, not the training base (Krea trains on Raw, runs on Turbo).
     deploy_base: Optional[str] = None
     # maps each training base, including public mirrors, to its inference base.
     deploy_bases: Dict[str, str] = Field(default_factory = dict)
@@ -1395,8 +1407,7 @@ class DiffusionDatasetImageRecord(BaseModel):
     filename: str
     caption: Optional[str] = None
     caption_source: Literal["sidecar", "metadata", "none"] = "none"
-    # Clips are listed so a caller can see everything the folder holds under a stem, but they carry no
-    # pixel dimensions and the labeling grid skips them; defaults to "image" for older payloads.
+    # Clips are listed but have no pixel dimensions and the labeling grid skips them; default is image.
     kind: Literal["image", "clip"] = "image"
     width: int
     height: int

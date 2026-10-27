@@ -104,7 +104,7 @@ export function OpenAICodexConnect({
       const url = next.authorization_url || next.verification_url;
       if (url) {
         if (!isTrustedCodexAuthUrl(url)) throw new Error("The authorization URL was not trusted.");
-        // Sign-in needs the provider's cookies, which the browser panel does not keep.
+        // Sign-in needs provider cookies, which the browser panel does not keep.
         openExternalLink(url);
       }
     } catch (cause) {
@@ -218,7 +218,7 @@ export function OpenAICodexConnect({
       <div className="flex flex-wrap gap-2">
         {!connected ? (
           <>
-            <Button type="button" size="sm" disabled={busy} onClick={() => void start("browser")}>
+            <Button variant="dark" type="button" size="sm" disabled={busy} onClick={() => void start("browser")}>
               {authStatus === "reauthorization_required" ? "Reconnect in browser" : "Connect in browser"}
             </Button>
             <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => void start("device")}>Use device code</Button>

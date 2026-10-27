@@ -94,7 +94,6 @@ function pdfLine(span: Element): Range[] {
     });
 }
 
-/** A block's own content: an image whole, a list item up to the lists nested in it. */
 function blockRange(block: Element): Range {
   const range = document.createRange();
   if (block.tagName === "IMG") {
@@ -685,7 +684,7 @@ export function AnnotateLayer({
       {shownHover ? (
         <div
           className={cn(
-            "absolute rounded-md border-[1.5px] border-primary/70 transition-[left,top,width,height,opacity] duration-150 ease-out group-data-[scrolling]/annotate:transition-none motion-reduce:transition-none",
+            "absolute rounded-md border-[1.5px] border-wash-70 transition-[left,top,width,height,opacity] duration-150 ease-out group-data-[scrolling]/annotate:transition-none motion-reduce:transition-none",
             hoverBox && !area ? "opacity-100" : "opacity-0",
           )}
           style={shownHover}
@@ -693,7 +692,7 @@ export function AnnotateLayer({
       ) : null}
       {area ? (
         <div
-          className="absolute rounded-md border-[1.5px] border-dashed border-primary/70 bg-primary/5"
+          className="absolute rounded-md border-[1.5px] border-dashed border-wash-70 bg-wash-5"
           style={area}
         />
       ) : null}
@@ -755,7 +754,7 @@ function Mark({
   return (
     <>
       <div
-        className="absolute animate-in rounded-md border-[1.5px] border-dashed border-primary/60 bg-primary/5 fade-in-0 duration-150"
+        className="absolute animate-in rounded-md border-[1.5px] border-dashed border-wash-60 bg-wash-5 fade-in-0 duration-150"
         style={box}
       />
       <button
@@ -786,7 +785,6 @@ function markNumber<Item extends { id: number }>(items: Item[], id: number | nul
 const SURFACE =
   "border border-border bg-background text-foreground shadow-[0_8px_28px_-6px_rgba(0,0,0,0.18)] dark:border-white/10 dark:bg-neutral-800 dark:text-white dark:shadow-[0_12px_40px_-4px_rgba(0,0,0,0.85),0_4px_12px_-2px_rgba(0,0,0,0.6)]";
 
-/** Voice typing into a comment, as the composer's microphone does. */
 function useCommentDictation(draft: string, onDraft: (value: string) => void) {
   const t = useT();
   const session = useRef<ReturnType<StudioDictationAdapter["listen"]> | null>(null);
@@ -885,7 +883,7 @@ function CommentForm({
           type="submit"
           aria-label={t("browser.annotate.save")}
           title={t("browser.annotate.save")}
-          className="flex size-9 shrink-0 animate-in cursor-pointer items-center justify-center rounded-full bg-primary text-primary-foreground transition-opacity fade-in-0 zoom-in-75 duration-150 hover:opacity-90"
+          className="flex size-9 shrink-0 animate-in cursor-pointer items-center justify-center rounded-full bg-action text-background transition-opacity fade-in-0 zoom-in-75 duration-150 hover:opacity-90"
         >
           <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-4.5" />
         </button>
@@ -997,7 +995,7 @@ function AnnotateBar({
           type="button"
           onClick={onSend}
           disabled={sendDisabled}
-          className="h-9 cursor-pointer whitespace-nowrap rounded-full bg-primary px-4 font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-default disabled:opacity-50"
+          className="cursor-pointer whitespace-nowrap rounded-full bg-action px-3 py-2 font-medium text-background transition-opacity hover:opacity-90 disabled:cursor-default disabled:opacity-50"
         >
           {t("browser.annotate.send")}
         </button>
@@ -1093,7 +1091,6 @@ export function WebAnnotateLayer({
   const send = async () => {
     const outgoing = committed();
     if (outgoing.length === 0 || !sendAnnotations || sending) return;
-    // One at a time: a second click while staging would add the annotations twice.
     setSending(true);
     // Keep the open comment and close its form, so a native view shows again for the screenshot.
     setItems(outgoing);

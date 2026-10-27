@@ -14,10 +14,10 @@ import { openExternalLink } from "@/lib/open-link";
 import { toast } from "@/lib/toast";
 import {
   ArrowUpRight01Icon,
-  Copy01Icon,
   LinkSquare02Icon,
   PlusSignIcon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import type { ReactElement, ReactNode } from "react";
 import { useBrowserStore } from "./store";
@@ -47,7 +47,6 @@ export function MenuRow({
   );
 }
 
-/** The right-click menu of anything that stands for a page; with no `url` (a file from chat), only `extra`. */
 export function LinkContextMenu({
   url,
   tabId,
@@ -58,7 +57,6 @@ export function LinkContextMenu({
   url: string | null;
   tabId?: string;
   extra?: ReactNode;
-  /** Lets a row that opens something keep focus there as the menu closes. */
   onCloseAutoFocus?: (event: Event) => void;
   children: ReactElement;
 }) {

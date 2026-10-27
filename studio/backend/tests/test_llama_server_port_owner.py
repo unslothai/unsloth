@@ -111,6 +111,8 @@ def test_foreign_listener_on_our_port_is_not_healthy(probe, foreign_listener, id
 def test_hidden_owner_with_our_child_not_listening_is_not_healthy(
     probe, foreign_listener, idle_child, monkeypatch
 ):
+    # The Linux/macOS case: another user's socket shows no pid.
+    monkeypatch.setattr(llama_cpp, "_socket_owner_is_always_named", lambda: False)
     real = psutil.net_connections
 
     def hidden(kind = "inet"):
@@ -198,3 +200,94 @@ def test_a_foreign_listener_listed_before_ours_does_not_refuse_us(monkeypatch):
     finally:
         p.kill()
         p.wait()
+
+
+# ── Windows: psutil can misdescribe our own live listener (#15022) ──
+
+
+def _row(
+    port,
+    *,
+    pid,
+    status,
+    ip = "127.0.0.1",
+    raddr = (),
+):
+    return SimpleNamespace(
+        laddr = SimpleNamespace(ip = ip, port = port),
+        raddr = raddr,
+        status = status,
+        pid = pid,
+        type = llama_cpp.socket.SOCK_STREAM,
+    )
+
+
+def _tables(
+    monkeypatch,
+    *,
+    own,
+    everyone,
+    windows = True,
+):
+    monkeypatch.setattr(llama_cpp, "_socket_owner_is_always_named", lambda: windows)
+    monkeypatch.setattr(
+        psutil.Process, "net_connections", lambda self, kind = "inet": own, raising = False
+    )
+    monkeypatch.setattr(psutil, "net_connections", lambda kind = "inet": everyone)
+
+
+@pytest.mark.parametrize("windows", [True, False])
+def test_our_child_reported_with_status_none_is_ours_on_windows(idle_child, monkeypatch, windows):
+    port = 50855
+    none = _row(port, pid = idle_child.pid, status = psutil.CONN_NONE)
+    _tables(monkeypatch, own = [none], everyone = [none], windows = windows)
+
+    assert _backend(port, idle_child)._health_listener_is_ours(idle_child) is windows
+
+
+@pytest.mark.parametrize("windows", [True, False])
+def test_a_listener_owned_by_pid_0_is_unknown_on_windows(idle_child, monkeypatch, windows):
+    port = 54185
+    _tables(
+        monkeypatch,
+        own = [],
+        everyone = [_row(port, pid = 0, status = psutil.CONN_LISTEN)],
+        windows = windows,
+    )
+
+    assert _backend(port, idle_child)._health_listener_is_ours(idle_child) is windows
+
+
+def test_a_connected_socket_on_our_port_is_not_a_listener(idle_child, monkeypatch):
+    port = 57043
+    peer = SimpleNamespace(ip = "127.0.0.1", port = 60000)
+    accepted = _row(port, pid = idle_child.pid, status = psutil.CONN_NONE, raddr = peer)
+    _tables(monkeypatch, own = [accepted], everyone = [_row(port, pid = 4242, status = "LISTEN")])
+
+    assert _backend(port, idle_child)._health_listener_is_ours(idle_child) is False
+
+
+def test_a_named_foreign_listener_still_refuses_on_windows(idle_child, monkeypatch):
+    port = 52792
+    _tables(
+        monkeypatch,
+        own = [],
+        everyone = [
+            _row(port, pid = 0, status = psutil.CONN_LISTEN),
+            _row(port, pid = 4242, status = psutil.CONN_LISTEN),
+        ],
+    )
+
+    assert _backend(port, idle_child)._health_listener_is_ours(idle_child) is False
+
+
+def test_a_refused_listener_is_not_reported_as_a_bad_gguf(probe, foreign_listener, idle_child):
+    b = _backend(foreign_listener, idle_child)
+    assert b._wait_for_health(timeout = 3.0, interval = 0.05) is False
+
+    message = LlamaCppBackend._classify_llama_start_failure(
+        "\n".join(b._stdout_lines), "model.gguf", None
+    )
+
+    assert "could not confirm that the listener" in message
+    assert "enough memory" not in message

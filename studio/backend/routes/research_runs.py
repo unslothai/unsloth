@@ -343,8 +343,7 @@ def _sanitize_config(
         value is not None for value in (provider_type, provider_id, external_model)
     )
     if external_requested:
-        # A saved connection is still mandatory: the run is durable, so an inline key would have to be persisted, and
-        # _is_sensitive_key exists to stop exactly that. Only the provider-type allowlist is widened.
+        # Saved connection required: an inline key would be persisted with the durable run.
         if (
             not provider_runs_local_tools(provider_type)
             or not isinstance(provider_id, str)
@@ -375,9 +374,7 @@ def _sanitize_config(
             )
         request["providerType"] = saved_provider_type
 
-    # Mirrors the ragScope guard below. Every allowed field is a scalar, but "model" is stringified, so
-    # {"auth": "sk-..."} would slip past the sensitive-key scan (inner key unlisted) into the durable config as the
-    # model id.
+    # "model" is stringified, so a nested dict would evade the sensitive-key scan.
     if any(isinstance(value, (dict, list, tuple)) for value in request.values()):
         raise HTTPException(status_code = 400, detail = "Invalid inferenceRequest value")
     model = str(request.get("model") or thread.get("modelId") or "").strip()
@@ -398,8 +395,7 @@ def _sanitize_config(
             if not 1 <= request["maxTokens"] <= 8192:
                 raise ValueError
         if "maxOutputTokens" in request:
-            # Strict like the saved-connection schema: bool is an int subclass, and int()
-            # would truncate a float or raise OverflowError, turning a 400 into a 500.
+            # Strict: bool is an int subclass and int() can truncate or raise OverflowError.
             budget = request["maxOutputTokens"]
             if isinstance(budget, bool) or not isinstance(budget, int):
                 raise ValueError
@@ -528,9 +524,7 @@ def create_research_run(
         raise HTTPException(
             status_code = 400, detail = "userMessageId must identify a user message in the thread"
         )
-    # A handed-off question counts as the text. The worker researches config.question, so a multimodal turn that
-    # reads an image and calls deep_research passes the question it wrote, and refusing on the message's own empty
-    # text ends a complete handoff in a toast.
+    # A handed-off question counts as the text (multimodal turns may have empty text).
     if not message_text_with_pastes(user_message).strip() and not (payload.question or "").strip():
         raise HTTPException(
             status_code = 400,
@@ -539,8 +533,7 @@ def create_research_run(
     config = _sanitize_config(payload, thread, request)
     try:
         if db.has_thread_claim(payload.threadId):
-            # The thread's one run was stopped, so it is re-pointed at this question rather
-            # than refusing every later one in the chat.
+            # A stopped run is re-pointed at this question instead of refusing every later message in the chat.
             run = db.rebind_cancelled(
                 thread_id = payload.threadId,
                 user_message_id = payload.userMessageId,
@@ -564,8 +557,7 @@ def create_research_run(
     except db.ResearchConflictError as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
     except sqlite3.IntegrityError as exc:
-        # The thread can be deleted between the check above and this insert, and the foreign key
-        # then fails. Report it gone rather than as a server fault.
+        # Thread may be deleted after the check, so the FK insert fails; report 404, not a server fault.
         raise HTTPException(status_code = 404, detail = "Thread not found") from exc
     if run is None:
         raise HTTPException(status_code = 404, detail = "Thread not found")
@@ -729,8 +721,7 @@ async def research_events(
                 cursor,
                 15,
             )
-            # Not the wait executor: this read is short, and queueing it behind parked waits
-            # would delay every follower once the pool is full.
+            # Not the wait executor: a short read must not queue behind parked waits.
             snapshot = await asyncio.to_thread(db.get_run, run_id)
             if snapshot is None:
                 return

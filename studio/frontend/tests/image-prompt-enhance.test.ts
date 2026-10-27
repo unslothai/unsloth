@@ -26,6 +26,7 @@ import {
   WARM_RETRY_OUTCOMES,
   upsamplerDownloadFraction,
   upsamplerNeedsDownload,
+  upsamplerServesEarlierQuant,
   upsamplerVariantFor,
   withEnhanceChoice,
 } from "../src/features/images/lib/prompt-enhance.ts";
@@ -167,8 +168,46 @@ test("status parsing tolerates missing and malformed fields", () => {
   const noProjector = { ...full, downloaded: true };
   assert.equal(upsamplerNeedsDownload(noProjector), true);
   assert.equal(upsamplerDownloadBytes(noProjector), 900_000_000);
-  assert.equal(upsamplerNeedsDownload({ ...noProjector, mmproj_downloaded: true }), false);
+  assert.equal(upsamplerNeedsDownload({ ...noProjector, mmproj_downloaded: true, current_downloaded: true }), false);
   assert.equal(upsamplerNeedsDownload({ ...full, supported: false }), false);
+
+  // An earlier quant serving keeps the control offered, sized at the current default.
+  const earlier = parsePromptUpsamplerStatus({
+    supported: true,
+    downloaded: true,
+    mmproj_downloaded: true,
+    filename: "upsampler-Q4_K_M.gguf",
+    size_bytes: 5_600_000_000,
+    mmproj_size_bytes: 900_000_000,
+    current_downloaded: false,
+    current_missing_bytes: 5_900_000_000,
+  });
+  assert.equal(upsamplerServesEarlierQuant(earlier), true);
+  assert.equal(upsamplerNeedsDownload(earlier), true);
+  assert.equal(upsamplerDownloadBytes(earlier), 5_900_000_000);
+  assert.equal(upsamplerNeedsDownload({ ...earlier, override: true }), false);
+  const current = parsePromptUpsamplerStatus({ ...earlier, current_downloaded: true, current_missing_bytes: 0 });
+  assert.equal(upsamplerNeedsDownload(current), false);
+  assert.equal(upsamplerServesEarlierQuant(current), false);
+  // Model-only earlier quant: the Download fetches the default AND the projector.
+  const modelOnly = parsePromptUpsamplerStatus({
+    ...earlier,
+    mmproj_downloaded: false,
+    current_filename: "upsampler-UD-Q4_K_XL.gguf",
+    current_missing_bytes: 6_888_000_000,
+  });
+  assert.equal(upsamplerServesEarlierQuant(modelOnly), true);
+  assert.equal(upsamplerNeedsDownload(modelOnly), true);
+  assert.equal(upsamplerDownloadBytes(modelOnly), 6_888_000_000);
+  // The current default itself with its projector missing is the projector-only case.
+  const currentNoProjector = { ...modelOnly, filename: "upsampler-UD-Q4_K_XL.gguf", current_missing_bytes: 900_000_000 };
+  assert.equal(upsamplerServesEarlierQuant(currentNoProjector), false);
+  assert.equal(upsamplerDownloadBytes(currentNoProjector), 900_000_000);
+  // Without current_filename (not reported) a model with no projector stays the projector-only case.
+  assert.equal(upsamplerServesEarlierQuant({ ...modelOnly, current_filename: "" }), false);
+  const olderBackend = parsePromptUpsamplerStatus({ supported: true, downloaded: true, mmproj_downloaded: true });
+  assert.equal(olderBackend.current_downloaded, true);
+  assert.equal(upsamplerNeedsDownload(olderBackend), false);
 
   const empty = parsePromptUpsamplerStatus(null);
   assert.deepEqual(
@@ -197,7 +236,7 @@ test("routes live in one place; variant and notices", () => {
   assert.equal(upsamplerVariantFor("flux.3-klein-base"), "base");
   assert.equal(upsamplerVariantFor("flux.3-klein"), "distilled");
   assert.equal(upsamplerVariantFor(null), "distilled");
-  assert.ok(enhancementNotice("unavailable"));
+  assert.equal(enhancementNotice("unavailable"), null);
   assert.ok(enhancementNotice("failed"));
   assert.equal(enhancementNotice("applied"), null);
   assert.equal(enhancementNotice("off"), null);
@@ -225,8 +264,7 @@ test("a preview caption goes stale when the prompt, the variant or a reference i
   );
 });
 
-test("an unavailable outcome does not claim the weights are missing, and overrides offer no download", () => {
-  assert.match(enhancementNotice("unavailable")!.description, /llama\.cpp is unavailable/);
+test("overrides offer no download", () => {
   const status = parsePromptUpsamplerStatus({ supported: true, downloaded: true, mmproj_downloaded: false, override: true });
   assert.equal(status.override, true);
   assert.equal(upsamplerNeedsDownload(status), false);

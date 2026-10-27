@@ -29,42 +29,34 @@ from PIL import Image, ImageDraw
 REPO = Path(__file__).resolve().parents[1]
 OUTPUT = REPO / "studio/src-tauri/dmg/background.tiff"
 
-# window geometry in points, mirroring tauri.macos.conf.json
+# Window geometry in points, mirroring tauri.macos.conf.json.
 WIN_W, WIN_H = 660, 400
 APP_X, APP_Y = 180, 170
 APPS_X, APPS_Y = 480, 170
 
-# the base page renders at 1pt per pixel, the hidpi page at SCALE
 SCALE = 2
 W, H = WIN_W * SCALE, WIN_H * SCALE
 
-# Finder's title bar and bottom path bar eat the rest of the window, so only about this much of the image is ever on
-# screen. measured, not derived.
+# Finder's title bar and path bar hide the rest; measured, not derived.
 VISIBLE_H = 340
 
 TOP_COLOR = "#FFFFFF"
 BOTTOM_COLOR = "#F5F8F7"
 
-# One brand green fading to a lighter green further out.
 GLOW_CORE = "#17B88B"
 GLOW_EDGE = "#7BE8A6"
 GLOW_EDGE_MIX = 0.45
 GLOW_MIX_RADIUS = 110.0
 
-# strength is the peak tint, sigma sets how far the halo reaches.
 GLOW_STRENGTH = 1.48
 GLOW_SIGMA = 50.0
 
-# the icon label sits just below the icon, so the halo is eased off down there.
-# the taper waits until START, which is inside the icon's own lower half, so the
-# disc still reads round and the transition is hidden behind the artwork rather
-# than eating the visible bottom edge. left, right and top keep the full falloff.
+# Ease the halo off below the icon, where the label sits; the taper starts inside the icon.
 GLOW_BOTTOM_FLOOR = 0.25
 GLOW_BOTTOM_START = 50.0
 GLOW_BOTTOM_SPAN = 30.0
 
-# chevron between the two icons, sized to match the macOS installers this mirrors:
-# a light 16x27pt mark in neutral grey, not a heavy arrow.
+# Sized like the light 16x27pt chevron in other macOS installers.
 CHEVRON_HALF_W, CHEVRON_HALF_H = 8.0, 13.5
 CHEVRON_STROKE = 6.0
 CHEVRON_COLOR = (87, 87, 87, 255)
@@ -96,12 +88,10 @@ def render_glow(canvas: np.ndarray) -> np.ndarray:
     radius = np.sqrt((xs - cx) ** 2 + (ys - cy) ** 2)
     weight = GLOW_STRENGTH * np.exp(-(radius**2) / (2.0 * sigma**2))
 
-    # smoothstep, so the taper eases in and out with no seam at either end
     taper = smoothstep((ys - cy - GLOW_BOTTOM_START * SCALE) / (GLOW_BOTTOM_SPAN * SCALE))
     weight = weight * (1.0 - (1.0 - GLOW_BOTTOM_FLOOR) * taper)
 
-    # a peak strength above 1 saturates the core rather than extrapolating past
-    # the glow colour. that core sits under the app icon either way.
+    # A peak strength above 1 saturates the core rather than extrapolating past the glow colour.
     weight = np.clip(weight, 0.0, 1.0)[..., None]
 
     mix = (GLOW_EDGE_MIX * smoothstep(radius / (GLOW_MIX_RADIUS * SCALE)))[..., None]
@@ -143,11 +133,9 @@ def build() -> Image.Image:
 def report() -> None:
     """Print how the halo sits relative to the icon and its label."""
     base = base_canvas()
-    # the halo on its own, with the base gradient taken back out so the vertical ramp does not read as part of it
     halo = np.clip(base - render_glow(base), 0.0, None).max(axis = 2)
     cx, cy = APP_X * SCALE, APP_Y * SCALE
 
-    # 60pt is the disc a viewer reads as round, 90pt is out in the label's row
     for distance in (60, 90):
         for name, sample in (
             ("left", halo[cy, cx - distance * SCALE]),

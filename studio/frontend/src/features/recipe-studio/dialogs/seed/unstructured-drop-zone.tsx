@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef } from "react";
 import { consumeNativePathToken, useNativeFileDrop } from "@/features/native-intents";
 import {
-  CloudUploadIcon,
+  Alert02Icon,
   Cancel01Icon,
   CheckmarkCircle02Icon,
-  Alert02Icon,
+  PlusSignIcon,
 } from "@hugeicons/core-free-icons";
 import { Spinner } from "@/components/ui/spinner";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -26,7 +26,6 @@ const ACCEPTED_EXTENSIONS = [
   ".eml", ".msg", ".mht", ".mhtml",
 ];
 
-/** One queued upload: browser bytes, or a desktop drop the backend redeems. */
 type UploadCandidate = {
   name: string;
   size: number;
@@ -186,10 +185,8 @@ export function UnstructuredDropZone({
       if (!needsServerRemove) return;
       deletedIdsRef.current.add(entry.id);
       removeUnstructuredFile(blockId, entry.id).catch(() => {
-        // Skip if the drop zone unmounted or its block changed: the id no
-        // longer belongs here and restoring would leak it into another block.
+        // The id would leak into another block if the zone unmounted or its block changed.
         if (!mountedRef.current || blockIdRef.current !== blockId) return;
-        // Still exists server-side (counts toward quota); restore it at its original position.
         deletedIdsRef.current.delete(entry.id);
         onFilesChange((prev) => {
           const next = [...prev];
@@ -207,12 +204,10 @@ export function UnstructuredDropZone({
     [blockId, onFilesChange],
   );
 
-  // Tauri suppresses webview drop events, so the plain `onDrop` this zone
-  // carried was dead on desktop (#9036).
+  // Tauri suppresses webview drop events, so a plain onDrop is dead on desktop.
   const { ref: dropRef, dragging: isDragOver, dragHandlers } = useNativeFileDrop({
     onFiles: handleFiles,
-    // A seed corpus can run to hundreds of MB, so the backend redeems the
-    // signed path itself rather than routing bytes through the webview.
+    // A seed corpus can be hundreds of MB, so the backend redeems the signed path itself.
     onNativeIntents: (intents) =>
       uploadCandidates(
         intents.map((intent) => ({
@@ -249,7 +244,7 @@ export function UnstructuredDropZone({
         // through to the window instead of saying the block is busy.
         className={`nodrag flex flex-col items-center justify-center rounded-xl border-2 border-dashed px-4 py-6 text-center transition-colors ${
           isDragOver
-            ? "border-ring-strong bg-primary/5"
+            ? "border-ring-strong bg-wash-5"
             : "border-muted-foreground/25 hover:border-muted-foreground/50"
         } ${disabled ? "cursor-default opacity-50" : "cursor-pointer"}`}
         ref={dropRef}
@@ -257,7 +252,7 @@ export function UnstructuredDropZone({
         onClick={handleClick}
       >
         <HugeiconsIcon
-          icon={CloudUploadIcon}
+          icon={PlusSignIcon}
           className="text-muted-foreground mb-2 size-8"
         />
         <p className="text-muted-foreground text-sm">
@@ -300,7 +295,6 @@ export function UnstructuredDropZone({
                   className="size-4 text-red-500"
                 />
               )}
-              {/* Queued local upload, so keep the name out of the snapshot. */}
               <span data-reload-snapshot-sensitive className="flex-1 truncate">
                 {entry.name}
               </span>

@@ -25,7 +25,6 @@ import {
   LIBRARY_TABS,
   type LibraryLocation,
   type LibrarySearch,
-  LibraryStorageBar,
   type LibrarySettings,
   type LibraryTab as LibraryTabId,
   type LibraryTabVisibility,
@@ -47,14 +46,18 @@ import {
 import { useIsAccountOwner } from "@/features/auth";
 import { FolderBrowser } from "@/features/model-picker";
 import { type TranslationKey, useLocale, useT } from "@/i18n";
-import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import { notifyGalleryChanged } from "@/lib/gallery-flags";
 import { toast } from "@/lib/toast";
-import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
+import {
+  STORAGE_COLORS,
+  SettingsCard,
+  SettingsCardRow,
+  StorageOverview,
+} from "../components/storage-overview";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
 type ToggleKey = {
@@ -132,6 +135,14 @@ function ChoiceSelect({
   );
 }
 
+const CATEGORY_COLORS: Record<string, string> = {
+  files: STORAGE_COLORS.yellow,
+  images: STORAGE_COLORS.purple,
+  videos: STORAGE_COLORS.orange,
+  audio: STORAGE_COLORS.green,
+  fineTunes: STORAGE_COLORS.blue,
+};
+
 function StorageSection() {
   const t = useT();
   const locale = useLocale();
@@ -157,7 +168,7 @@ function StorageSection() {
   const open = (link: LibrarySearch) => {
     closeDialog();
     setView("list");
-    // Already on that tab, the view would keep its search and filters and show less than counted.
+    // Already on that tab, the view would keep its filters and show less than counted.
     restartLibrary();
     void navigate({ to: "/library", search: link });
   };
@@ -174,43 +185,66 @@ function StorageSection() {
         <p className="py-3 text-sm text-muted-foreground">{t("settings.library.storageError")}</p>
       ) : (
         <>
-          <div className="flex flex-col gap-2 py-3">
-            <p className="text-sm font-medium text-foreground">
-              {t("settings.library.storageUsed", { size: size(storage.totalBytes) })}
-            </p>
-            <LibraryStorageBar libraryBytes={storage.diskBytes} disk={storage.disk} />
-          </div>
+          <StorageOverview
+            heading={t("settings.library.storageUsed", { size: size(storage.totalBytes) })}
+            action={
+              <Button variant="outline" size="sm" onClick={refreshLibraryStorage}>
+                {t("settings.library.storageRefresh")}
+              </Button>
+            }
+            segments={[
+              ...storage.categories.map((entry) => ({
+                key: entry.category,
+                label: t(STORAGE_LABELS[entry.category]),
+                bytes: entry.bytes,
+                value: size(entry.bytes),
+                color: CATEGORY_COLORS[entry.category],
+              })),
+              ...(storage.hiddenBytes > 0
+                ? [
+                    {
+                      key: "hidden",
+                      label: t("settings.library.storageHiddenLabel"),
+                      bytes: storage.hiddenBytes,
+                      value: size(storage.hiddenBytes),
+                      color: STORAGE_COLORS.other,
+                    },
+                  ]
+                : []),
+            ]}
+            footer={
+              storage.disk && storage.disk.totalBytes > 0
+                ? t("settings.library.storageDisk", {
+                    free: size(storage.disk.freeBytes),
+                    total: size(storage.disk.totalBytes),
+                  })
+                : null
+            }
+          />
           {storage.categories.length === 0 && storage.hiddenBytes === 0 && (
             <p className="pb-3 text-sm text-muted-foreground">{t("settings.library.storageEmpty")}</p>
           )}
           {storage.categories.length > 0 && (
-            <div className="mb-3 flex flex-col overflow-hidden rounded-lg border border-border/60">
+            <SettingsCard>
               {storage.categories.map((entry) => (
-                <button
+                <SettingsCardRow
                   key={entry.category}
-                  type="button"
-                  onClick={() => open(entry.link)}
-                  className="flex items-center gap-3 border-border/60 px-4 py-3 text-left transition-colors not-first:border-t hover:bg-muted/60"
+                  label={t(STORAGE_LABELS[entry.category])}
+                  description={`${size(entry.bytes)} · ${
+                    entry.count === 1
+                      ? t("settings.library.itemCountOne")
+                      : t("settings.library.itemCount", { count: entry.count.toLocaleString() })
+                  }`}
                 >
-                  <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                    <span className="text-sm font-medium text-foreground">
-                      {t(STORAGE_LABELS[entry.category])}
-                    </span>
-                    <span className="text-xs text-muted-foreground">
-                      {size(entry.bytes)}
-                      {" · "}
-                      {entry.count === 1
-                        ? t("settings.library.itemCountOne")
-                        : t("settings.library.itemCount", { count: entry.count.toLocaleString() })}
-                    </span>
-                  </span>
-                  <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-4 shrink-0 text-muted-foreground" />
-                </button>
+                  <Button variant="outline" size="sm" onClick={() => open(entry.link)}>
+                    {t("settings.library.storageOpen")}
+                  </Button>
+                </SettingsCardRow>
               ))}
-            </div>
+            </SettingsCard>
           )}
           {storage.hiddenBytes > 0 && (
-            <p className="pb-3 text-xs text-muted-foreground">
+            <p className="py-2 text-xs text-muted-foreground">
               {t("settings.library.storageHidden", { size: size(storage.hiddenBytes) })}
             </p>
           )}

@@ -246,6 +246,7 @@ def test_non_stream_route_reports_local_context_truncation(monkeypatch, server_c
         _payload,
         *,
         tools = None,
+        **_kwargs,
     ):
         assert tools is None
         return messages[-1:], truncation, 128

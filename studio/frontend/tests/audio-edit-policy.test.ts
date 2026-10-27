@@ -71,7 +71,11 @@ test("Edit's blockers come in rail order, each with its action", () => {
     [picked, P.EDIT_SOURCE_TOO_LONG, ["choose-recording"]],
     [fits, P.EDIT_TRANSCRIBING],
     [transcribed, P.EDIT_TRANSCRIPT_EMPTY, ["transcribe", "type-transcript"]],
-    [typed, P.EDIT_NO_CHANGES, [{ id: "focus-changes", label: "Go to ②" }]],
+    [
+      typed,
+      P.EDIT_NO_CHANGES,
+      [{ id: "focus-changes", label: "Go to step 2" }],
+    ],
     [{ ...typed, edited: "  " }, P.EDIT_CHANGES_EMPTY],
     [changed, "no"],
     [

@@ -344,7 +344,9 @@ def _single_file_loadable(image_fam, video_fam, filename: str) -> bool:
         return not (
             image_fam.pipeline_only or getattr(image_fam, "native_transformer_files_only", False)
         )
-    if video_fam is None or video_fam.is_moe:
+    from core.inference.video_families import PIPELINE_ONLY_VIDEO_FAMILIES
+
+    if video_fam is None or video_fam.is_moe or video_fam.name in PIPELINE_ONLY_VIDEO_FAMILIES:
         return False
     if not getattr(video_fam, "modular_workflow", None):
         return True

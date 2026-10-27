@@ -130,7 +130,52 @@ def test_edit_only_and_reference_families_keep_their_contracts():
     from core.inference.diffusion import _family_workflows
 
     assert _family_workflows(kontext) == ["edit"]
-    assert "edit" not in _family_workflows(flux2)
+    assert "edit" not in _family_workflows(flux2) and not flux2.reference_edit
+    for repo in (
+        "black-forest-labs/flux-3-image-klein",
+        "black-forest-labs/flux-3-image-klein-base",
+    ):
+        flux3 = detect_family(repo)
+        assert _family_workflows(flux3) == ["txt2img", "reference", "edit"]
+        c = cond.conditioning_capabilities(flux3, _family_workflows(flux3))
+        assert c["unified_edit"] is True and c["localized_edit_modes"] == []
+        assert c["multi_image_edit"] is False and c["max_condition_images"] == 10
+
+
+def test_reference_edit_runs_the_reference_call_at_the_requested_size(fake_runtime, tmp_path):
+    import dataclasses
+
+    backend = _flux2(fake_runtime, tmp_path)
+    backend._state = dataclasses.replace(
+        backend._state, family = dataclasses.replace(backend._state.family, reference_edit = True)
+    )
+    assert backend.status()["workflows"] == ["txt2img", "reference", "edit", "inpaint"]
+    calls = {}
+    for workflow in ("reference", "edit"):
+        out = backend.generate(
+            prompt = "make it night",
+            steps = 2,
+            seed = 1,
+            width = 768,
+            height = 512,
+            workflow = workflow,
+            init_image = _png(size = (96, 64), mode = "RGB"),
+            reference_images = [_png(size = (64, 64), mode = "RGB")],
+        )
+        assert out["workflow"] == workflow
+        call = backend._state.pipe.last_kwargs
+        calls[workflow] = ([im.size for im in _images(call)], call["width"], call["height"])
+    assert calls["edit"] == calls["reference"] and calls["edit"][1:] == (768, 512)
+    with pytest.raises(ValueError, match = "localized_edit"):
+        backend.generate(
+            prompt = "p",
+            steps = 2,
+            width = 512,
+            height = 512,
+            workflow = "edit",
+            init_image = _png(mode = "RGB"),
+            localized_edit = cond.LocalizedEdit("paint", _png(mode = "L", color = (255,))),
+        )
 
 
 def test_sampling_defaults_resolve_for_every_21_artifact_name():

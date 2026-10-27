@@ -258,6 +258,7 @@ class LatentPreviewer:
         # One slot per planned snapshot: with the host far ahead every one can be in flight at once.
         self.stride = max(1, math.ceil(total / max(1, int(max_snapshots))))
         n_slots = total // self.stride + 2
+        # Pinned even on an integrated GPU: a few MB, and an unpinned copy would make the denoise thread wait each snapshot.
         pinned = torch.empty(n_slots * cap, dtype = torch.uint8, pin_memory = True)
         self._slots = [
             {

@@ -340,8 +340,7 @@ async def _decide(
 async def _connection_decide(
     connection: catalog.Connection, state: JSONContent, questions: dict[str, dict[str, Any]]
 ) -> dict:
-    # The connection and its key are the owner's; the URL check and the request run as the caller,
-    # so a managed account keeps its egress policy.
+    # Connection and key are the owner's; the URL check and request run as the caller (egress policy).
     provider_id = connection.provider_id
     config = await asyncio.to_thread(run_as, OWNER, providers_db.get_provider, provider_id)
     if config is None or catalog.decision_models(config) is None:
