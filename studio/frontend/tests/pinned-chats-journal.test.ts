@@ -14,6 +14,7 @@ import {
 import {
   type PinOperation,
   applyPinOperation,
+  createPinnedChatsSync,
 } from "../src/features/chat/utils/pinned-chats-sync.ts";
 
 class MemoryStorage implements Storage {
@@ -281,5 +282,40 @@ test("sign-out keeps an older backend's local saves for the next session's basel
   assert.deepEqual(readLegacyPinnedChatIds(storage), ["new"]);
   const after = createPinnedChatsJournal(storage, "server|session-2");
   assert.equal(after.readFallback(), undefined);
+});
+
+test("a tab holding a pin another tab's unpin cancelled does not replay it", async () => {
+  const storage = new MemoryStorage();
+  let server: string[] = [];
+  const save = async (expected: string[] | undefined, next: string[]) => {
+    if (JSON.stringify(expected ?? []) !== JSON.stringify(server)) return { applied: false, pinnedIds: server.slice() };
+    server = next.slice();
+    return { applied: true, pinnedIds: server.slice() };
+  };
+  function tab(online: () => boolean) {
+    const disk = createPinnedChatsJournal(storage, "server|session");
+    return createPinnedChatsSync({
+      load: async () => server.slice(),
+      compareAndSet: async (expected, next) => {
+        if (!online()) throw new Error("offline");
+        return save(expected, next);
+      },
+      readLegacy: () => [],
+      readPending: disk.readPending,
+      writePending: disk.writePending,
+      publish: () => undefined,
+    });
+  }
+  let aOnline = false;
+  const a = tab(() => aOnline);
+  await a.refresh();
+  await assert.rejects(a.setPinned(["chat"], true));
+  const b = tab(() => true);
+  await b.refresh().catch(() => undefined);
+  await b.setPinned(["chat"], false);
+  assert.deepEqual(server, []);
+  aOnline = true;
+  await a.refresh();
+  assert.deepEqual(server, []);
 });
 

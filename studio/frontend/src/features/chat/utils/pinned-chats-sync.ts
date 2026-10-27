@@ -125,17 +125,15 @@ export function createPinnedChatsSync(options: PinnedChatsSyncOptions) {
     if (!Array.isArray(saved) || saved.length > 10_000) {
       throw new PinnedChatsValidationError("Invalid pending pin operations");
     }
-    const known = new Set(pending.map((entry) => entry.operationId));
-    const additions: PinOperation[] = [];
-    for (const entry of saved) {
-      const operation = validatePinOperation(entry);
-      if (!known.has(operation.operationId)) {
-        known.add(operation.operationId);
-        additions.push(operation);
-      }
-    }
-    if (additions.length > 0) {
-      pending = [...pending, ...additions];
+    const operations = saved.map(validatePinOperation);
+    const durable = new Set(operations.map((entry) => entry.operationId));
+    // Every intent is journaled before it is queued, so one missing from the journal was
+    // acknowledged or cancelled (an unpin) by another tab: replaying it would undo that.
+    const kept = pending.filter((entry) => durable.has(entry.operationId));
+    const known = new Set(kept.map((entry) => entry.operationId));
+    const additions = operations.filter((entry) => !known.has(entry.operationId));
+    if (kept.length !== pending.length || additions.length > 0) {
+      pending = [...kept, ...new Map(additions.map((entry) => [entry.operationId, entry])).values()];
       publish();
     }
   }
