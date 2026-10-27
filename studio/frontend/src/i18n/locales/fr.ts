@@ -139,6 +139,11 @@ export const fr = {
     more: "Plus",
     addressPlaceholder: "Rechercher ou saisir une URL",
     local: "Local",
+    browserUse: {
+      label: "Utilisation du navigateur",
+      description: "Laisser les modèles contrôler le navigateur intégré",
+      unavailable: "Chargez un modèle capable d'appeler des outils pour qu'il utilise le navigateur.",
+    },
     suggested: "Suggestions",
     suggestedMenu: {
       open: "Ouvrir",
@@ -2339,6 +2344,7 @@ export const fr = {
       liveMonitor: {
         title: "Moniteur en direct",
         apiTitle: "Moniteur d’API",
+        apiDescription: "Voyez ce que les autres applications envoient à l'API de ce serveur dès son arrivée.",
         summary: "Requêtes en cours, erreurs et utilisation des jetons",
         status: "{active} actives · {recent} récentes · {model}",
         noModelLoaded: "aucun modèle chargé",
@@ -2579,6 +2585,8 @@ export const fr = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "Temps de fonctionnement",
         processMemory: "Mémoire du processus",
         notInstalled: "Non installé",
@@ -3345,6 +3353,7 @@ export const fr = {
       desktopAppVersionUnavailable: "Indisponible",
       llamaCppVersion: "Version de llama.cpp",
       audioCppVersion: "Version d'audio.cpp",
+      mlxVersion: "Version de MLX",
       whisperCppVersion: "Version de whisper.cpp",
       engines: {
         title: "Moteurs",
@@ -4634,6 +4643,7 @@ export const fr = {
       modelsTitle: "Aucun modèle affiné pour l'instant",
       modelsDescription: "Les modèles que vous entraînez ou exportez dans Unsloth apparaissent ici.",
       createFolder: "Créer un dossier",
+      generateImage: "Générer une image",
       generateVideo: "Générer une vidéo",
       generateAudio: "Générer de l'audio",
       trainModel: "Entraîner un modèle",

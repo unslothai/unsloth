@@ -1640,6 +1640,11 @@ _MEASURED_IMAGE_ACTIVATION_MIB: dict[
 _RESIDENT_ONLY_CALIBRATED = frozenset({"sdxl"})
 
 
+def _resident_only_hint(family: Optional[str]) -> bool:
+    parts = str(family or "").split()
+    return bool(parts) and parts[0] in _RESIDENT_ONLY_CALIBRATED
+
+
 def calibrated_image_activation(
     family: Optional[str], *, max_speed: bool = True
 ) -> Optional[CalibratedImageActivation]:
@@ -2393,6 +2398,21 @@ def plan_fits_total_capacity(plan: Any) -> bool:
     if required is None or budget is None:
         return False
     return int(required) <= budget
+
+
+def mps_plan_tight(plan: Any) -> bool:
+    """Whether an Apple MPS plan, which stays resident whatever it needs (unified memory), needs more than the 0.85
+    share of its budget a discrete plan stays resident in. False on every other device or when a size is unknown."""
+    try:
+        if plan.device_memory.device != "mps":
+            return False
+        required = plan.estimates.get("resident_required_mib")
+        budget = plan.estimates.get("safe_device_budget_mib")
+    except Exception:  # noqa: BLE001 - malformed plan: not tight
+        return False
+    if required is None or budget is None:
+        return False
+    return int(required) > int(int(budget) * 0.85)
 
 
 def total_capacity_budget_mib(memory: DeviceMemory) -> Optional[int]:
@@ -3286,12 +3306,16 @@ PARTIAL_RESIDENT_ENV = "UNSLOTH_DIFFUSION_PARTIAL_RESIDENT"
 # int8 / fp8 denoisers on the compiled tiers (Qwen-Image-2.1: encoder 1849 streamed, denoise 1442, decode 1730).
 # FLUX.1 / Z-Image: their worst phase is the untiled 16-channel VAE decode (_MEASURED_IMAGE_ACTIVATION_MIB).
 # MOSS-Image: 2905 MiB worst-phase peak fully streamed (B200 capped at 16 GiB).
+# Qwen-Image-Edit-2511: 6046 MiB whole render (1024^2, one 1024^2 source, 40 steps, true CFG 3), int8 DiT + encoder.
 _MEASURED_IMAGE_PEAK_MIB: dict[str, int] = {
     "qwen-image-2.1": 1849,
     "flux.1": 2666,
     "z-image": 2666,
     "moss-image": 2976,
+    "qwen-image-edit": 6046,
 }
+# "0": Qwen-Image-Edit places from its learned peak only.
+MEASURED_ACTIVATION_QWEN_EDIT_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_QWEN_EDIT"
 _MEASURED_PEAK_SPEED_MODES = ("default", "max")
 _MEASURED_PEAK_MARGIN = 1.15
 _MEASURED_PEAK_ROUND_MIB = 256
@@ -3458,6 +3482,10 @@ def measured_image_runtime_mib(
         )
     elif static_seed and str(speed_mode or "") in _MEASURED_PEAK_SPEED_MODES:
         seed = _MEASURED_IMAGE_PEAK_MIB.get(str(family or "").lower())
+        if str(family or "").lower() == "qwen-image-edit" and _env_off(
+            MEASURED_ACTIVATION_QWEN_EDIT_ENV
+        ):
+            seed = None
         if seed is None and phase_seeds:
             phases = _MEASURED_IMAGE_ACTIVATION_MIB.get(str(family or "").lower())
             if phases is not None:
@@ -4515,6 +4543,15 @@ def _refine_plan_from_loaded_weights(
             measured_dense_bf16 = dense_bf16,
             measured_small_host_int8 = small_host_int8,
             measured_learned_cfg_off = bool(cfg_off_only and learned),
+            # tier / phase seed measured on text-to-image: unpriced references size flat (measured_request_extra_mib)
+            measured_omits_references = bool(
+                getattr(pipe, "_unsloth_unpriced_references", False)
+                and str(speed_mode or "") in _MEASURED_PEAK_SPEED_MODES
+                and (
+                    (dense_mib is not None and getattr(pipe, "_unsloth_dense_tier_seeds", False))
+                    or (dense_mib is None and getattr(pipe, "_unsloth_phase_seeds", False))
+                )
+            ),
             loaded_transformer_mib = dit,
             loaded_text_encoder_mib = encoders,
             loaded_other_mib = other,
@@ -6453,6 +6490,30 @@ class _RegisteredHostBuffer:
             pass
 
 
+# "0" restores torch's pinned allocator for up-front pinned slabs.
+REGISTERED_SLAB_ENV = "UNSLOTH_DIFFUSION_REGISTERED_SLABS"
+
+
+def registered_pinned_empty(nbytes: int) -> Optional[Any]:
+    """Page-locked uint8 host tensor in registered memory, or None (use torch's pinned allocator).
+    Torch's allocator faults pages on one thread (~18 s for MiniMax-H3); ``zero_`` here faults them in parallel."""
+    if (os.environ.get(REGISTERED_SLAB_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
+        return None
+    if int(nbytes) <= 0 or not _fast_pin_supported():
+        return None
+    import numpy as np
+    import torch
+
+    try:
+        holder = _RegisteredHostBuffer(int(nbytes))
+        buf = torch.from_numpy(np.asarray(holder))
+        buf.zero_()
+        holder.register()
+    except Exception:  # noqa: BLE001
+        return None
+    return buf
+
+
 def registered_host_copy(src: Any) -> Any:
     """A contiguous copy of host tensor ``src`` in CUDA-registered (pinned) memory."""
     import numpy as np
@@ -7645,6 +7706,9 @@ def image_activation_verdict(
         if budget is None:
             return ImageActivationVerdict(ACTIVATION_RUN)
         # Calibrated tiers measured only the unconditioned denoise; a ControlNet counts as one output-sized image.
+        # Not on a U-Net: its ControlNet adds no tokens and stays under the measured decode peak.
+        if controlnet and _resident_only_hint(family):
+            controlnet = False
         input_pixels = max(0, int(condition_pixels or 0))
         conditioned = bool(calibrated_placement) and (input_pixels > 0 or bool(controlnet))
         if calibrated_placement and controlnet:

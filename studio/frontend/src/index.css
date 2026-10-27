@@ -2943,6 +2943,13 @@ html[data-chat-font] .aui-root {
 	.sidebar-more-menu :is([data-slot="dropdown-menu-item"], [data-slot="dropdown-menu-sub-trigger"]) {
 		border-radius: 9999px;
 	}
+	/* Gutter inside the viewport: snapping the w-max width shaved the pill's round end. */
+	.sidebar-more-menu[data-slot] {
+		padding-inline: 0 !important;
+	}
+	.sidebar-more-menu > [data-slot="dropdown-menu-viewport"] {
+		padding-inline: var(--spacing);
+	}
 
 	/* On <html> so --accent can be reassigned without a cycle. */
 	.dark {
@@ -4947,11 +4954,11 @@ html.force-reduced-motion .sidebar-section-drop-line {
 }
 
 /* Scales the container query's em with the UI size; children reset to the inherited 1rem. */
-.browser-panel {
+.browser-panel-body {
 	font-size: calc(1rem * var(--ui-space-scale, 1));
 }
 
-.browser-panel > * {
+.browser-panel-body > * {
 	font-size: 1rem;
 }
 
@@ -5909,8 +5916,8 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 }
 
 .unsloth-files-panel {
-	/* pt-2: the 28px Add files pill sits in the 32px header row, so this keeps it 10px from the top edge. */
-	@apply relative mb-2 flex w-full flex-col gap-5 overflow-hidden rounded-2xl px-4 pt-2 pb-4;
+	/* The 28px Add files pill sits in the 32px header row: pt-2 and gap-2 leave it 10px from the top edge and from the cards. */
+	@apply relative mb-2 flex w-full flex-col gap-2 overflow-hidden rounded-2xl px-4 pt-2 pb-4;
 	container: files-panel / inline-size;
 	font-family: var(--font-sans);
 	background-color: #ffffff;

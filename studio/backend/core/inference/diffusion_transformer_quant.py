@@ -989,7 +989,7 @@ def native_quant_scheme(
         offload and scheme in NATIVE_OFFLOAD_SCHEMES and native_offload_host(target)
     ):
         return None
-    # MPS has no float8 storage.
+    # MPS cannot cast to fp8 before torch 2.15; checkpoint fp8 codes take ``comfy_fp8_storage`` instead.
     if _mps_bf16(target) and scheme != TQ_INT8:
         return None
     if _family_denied(family, scheme):
