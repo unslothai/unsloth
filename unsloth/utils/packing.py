@@ -213,6 +213,15 @@ def _longest_document(model, trainer) -> Optional[int]:
     return None
 
 
+def _packed_row_tokens(model, trainer) -> Optional[int]:
+    """Tokens in one flattened row: the padding-free collator joins a whole device batch."""
+    longest = _longest_document(model, trainer)
+    batch = getattr(getattr(trainer, "args", None), "per_device_train_batch_size", None)
+    if longest is None:
+        return None
+    return longest * batch if isinstance(batch, int) and not isinstance(batch, bool) and batch > 0 else longest
+
+
 def _enable_hf_packed_attention(model = None, trainer = None) -> None:
     # packed rows on the transformers modeling path run varlen instead of SDPA over a dense mask.
     try:
@@ -225,7 +234,9 @@ def _enable_hf_packed_attention(model = None, trainer = None) -> None:
         )
         if enable_hf_packed_attention() and model is not None and not outer_compile:
             from ..models._utils import use_sdpa_for_packed_head_dim_flex
-            use_sdpa_for_packed_head_dim_flex(model, _longest_document(model, trainer))
+            use_sdpa_for_packed_head_dim_flex(
+                model, _longest_document(model, trainer), _packed_row_tokens(model, trainer)
+            )
     except Exception as exc:
         logging.getLogger(__name__).info(f"Unsloth: packed varlen attention not enabled ({exc})")
 

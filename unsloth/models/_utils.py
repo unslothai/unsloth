@@ -773,14 +773,20 @@ def _packed_varlen_takes_model(model, config, target, head_dim, device_count):
     )
 
 
-def use_sdpa_for_packed_head_dim_flex(model, max_length = None):
+# Longest flattened packed row moved to SDPA: its dense bool mask is T^2 bytes (16384 tokens: 256 MiB).
+_PACKED_SDPA_MAX_ROW_TOKENS = 16384
+
+
+def use_sdpa_for_packed_head_dim_flex(model, max_length = None, row_tokens = None):
     """Packed / padding-free rows: a decoder on flex only for its head dim (<= 256) moves to "sdpa",
     whose packed varlen wrapper runs them through torch's varlen flash kernel exactly (B200 head_dim
     256: 6-10% faster at a fixed packed length, 15-24% with varying lengths, and no flex compile).
     True when switched. Not the gemma3 family, not head_dim 512, not a forced
     UNSLOTH_FLEX_ATTENTION_FOR_LARGE_HEAD_DIM, not an explicit flex_attention request, only where
     torch's varlen kernel runs and only when the wrapper would take the rows (else dense-mask SDPA).
-    max_length: the longest document; one past flash's int32 varlen backward limit stays on flex."""
+    max_length: the longest document; one past flash's int32 varlen backward limit stays on flex.
+    row_tokens: tokens in one flattened packed row; SDPA builds a dense [T, T] mask before the varlen
+    wrapper runs (flex keeps a block mask), so rows past _PACKED_SDPA_MAX_ROW_TOKENS stay on flex."""
     if os.environ.get(_PACKED_VARLEN_OVER_FLEX_ENV_VAR, "1").strip().lower() in (
         "0",
         "false",
@@ -820,6 +826,8 @@ def use_sdpa_for_packed_head_dim_flex(model, max_length = None):
             _varlen_backward_overflows_int32,
         )
 
+        if isinstance(row_tokens, int) and row_tokens > _PACKED_SDPA_MAX_ROW_TOKENS:
+            return False
         # The wrapper splits many documents under the limit, but not one document alone.
         n_heads = _config_get(target, "num_attention_heads", None)
         if (

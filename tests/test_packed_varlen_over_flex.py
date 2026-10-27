@@ -199,6 +199,20 @@ def test_whole_model_compile_keeps_flex(routed, monkeypatch, compiled):
     assert config._attn_implementation == "flex_attention"
 
 
+@pytest.mark.parametrize("batch,max_length,switched", [(2, 4096, True), (8, 4096, False), (1, 32768, False)])
+def test_long_flattened_rows_keep_flex(routed, monkeypatch, batch, max_length, switched):
+    # SDPA builds a dense [T, T] mask for the whole flattened row before the varlen wrapper runs.
+    from unsloth.utils import packing
+
+    monkeypatch.setattr(hpa, "enable_hf_packed_attention", lambda: True)
+    config = _gemma()
+    args = types.SimpleNamespace(max_length = max_length, per_device_train_batch_size = batch)
+    collator = types.SimpleNamespace(padding_free = True, torch_call = lambda examples: {})
+    trainer = types.SimpleNamespace(data_collator = collator, args = args)
+    packing.enable_padding_free_metadata(types.SimpleNamespace(config = config), trainer)
+    assert config._attn_implementation == ("sdpa" if switched else "flex_attention")
+
+
 def test_padding_free_metadata_makes_the_switch(routed, monkeypatch):
     from unsloth.utils import packing
 
@@ -224,7 +238,7 @@ def test_a_document_too_long_to_split_under_int32_stays_on_flex(routed):
 def test_packing_passes_the_trainer_max_length(routed, monkeypatch):
     from unsloth.utils import packing
     monkeypatch.setattr(hpa, "enable_hf_packed_attention", lambda: True)
-    for max_length, impl in ((2**22, "flex_attention"), (131072, "sdpa")):
+    for max_length, impl in ((2**22, "flex_attention"), (8192, "sdpa")):
         config = _gemma()
         collator = types.SimpleNamespace(padding_free = True, torch_call = lambda examples: {})
         trainer = types.SimpleNamespace(
