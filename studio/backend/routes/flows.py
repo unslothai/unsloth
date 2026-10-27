@@ -742,6 +742,16 @@ def recipe_runs(
     return {"executions": flows_db.recipe_runs(flow_id, node_id, limit)}
 
 
+@router.get("/{flow_id}/nodes/{node_id}/recipe-runs/{run_id}")
+def recipe_run(flow_id: str, node_id: str, run_id: str) -> dict:
+    """One run with its rows."""
+    _flow_or_404(flow_id)
+    record = flows_db.recipe_run(flow_id, node_id, run_id)
+    if record is None:
+        raise HTTPException(status_code = 404, detail = "Run not found")
+    return record
+
+
 @router.get("/{flow_id}/latest-outputs")
 def latest_outputs(flow_id: str) -> dict:
     _flow_or_404(flow_id)

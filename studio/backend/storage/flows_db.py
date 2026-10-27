@@ -509,12 +509,25 @@ def recipe_runs(
 ) -> list[dict]:
     conn = get_connection()
     try:
+        # A preview keeps every row; the list leaves them out and one run is read whole.
         rows = conn.execute(
-            "SELECT record_json FROM flow_recipe_runs WHERE flow_id = ? AND node_id = ?"
-            " ORDER BY created_at DESC LIMIT ?",
+            "SELECT json_remove(record_json, '$.dataset') AS record_json FROM flow_recipe_runs"
+            " WHERE flow_id = ? AND node_id = ? ORDER BY created_at DESC LIMIT ?",
             (flow_id, node_id, limit),
         ).fetchall()
         return [json.loads(r["record_json"]) for r in rows]
+    finally:
+        conn.close()
+
+
+def recipe_run(flow_id: str, node_id: str, run_id: str) -> Optional[dict]:
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT record_json FROM flow_recipe_runs WHERE id = ? AND flow_id = ? AND node_id = ?",
+            (run_id, flow_id, node_id),
+        ).fetchone()
+        return json.loads(row["record_json"]) if row else None
     finally:
         conn.close()
 

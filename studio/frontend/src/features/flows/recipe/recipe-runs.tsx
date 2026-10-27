@@ -23,7 +23,7 @@ import {
 } from "@/features/recipe-studio/executions/execution-helpers";
 import { toastError } from "@/shared/toast";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { recipeRuns } from "../api";
+import { recipeRun, recipeRuns } from "../api";
 import { runFlow } from "../editor/run-controller";
 import { useDocStore } from "../stores/doc-store";
 import { useRuntimeStore } from "../stores/runtime-store";
@@ -44,8 +44,16 @@ type Page = Pick<
   "dataset" | "datasetPage" | "datasetTotal"
 >;
 
-function useRecipeRuns(flowId: string | null, nodeId: string | undefined) {
+function useRecipeRuns(
+  flowId: string | null,
+  nodeId: string | undefined,
+  view: RecipeRunsTarget["view"],
+  picked: string | null,
+) {
   const [records, setRecords] = useState<RecipeExecutionRecord[] | null>(null);
+  const [rows, setRows] = useState<Record<string, { key: string; page: Page }>>(
+    {},
+  );
   const [pages, setPages] = useState<Record<string, Page>>({});
   const flowRunning = useRuntimeStore(
     (s) => s.runStatus === "running" || s.runStatus === "queued",
@@ -73,11 +81,48 @@ function useRecipeRuns(flowId: string | null, nodeId: string | undefined) {
   }, [load, live]);
   const merged = useMemo(
     () =>
-      (records ?? []).map((record) =>
-        pages[record.id] ? { ...record, ...pages[record.id] } : record,
-      ),
-    [records, pages],
+      (records ?? []).map((record) => ({
+        ...record,
+        ...rows[record.id]?.page,
+        ...pages[record.id],
+      })),
+    [records, rows, pages],
   );
+  const shown = useMemo(() => visibleRuns(merged, view), [merged, view]);
+  const selectedId = selectedRun(shown, picked);
+  const selected = shown.find((r) => r.id === selectedId);
+  // The list carries no rows; the selected run is read whole, again once it finishes.
+  const rowsKey = selected
+    ? `${selected.id}:${selected.status}:${selected.finishedAt ?? ""}`
+    : null;
+  const haveRows = selected ? rows[selected.id]?.key === rowsKey : true;
+  useEffect(() => {
+    if (!flowId || !nodeId || !selectedId || !rowsKey || haveRows) return;
+    let gone = false;
+    recipeRun(flowId, nodeId, selectedId)
+      .then((full) => {
+        if (gone) return;
+        const dataset = normalizeDatasetRows(full.dataset);
+        setRows((current) => ({
+          ...current,
+          [selectedId]: {
+            key: rowsKey,
+            page: {
+              dataset,
+              datasetPage: 1,
+              datasetTotal:
+                typeof full.datasetTotal === "number"
+                  ? full.datasetTotal
+                  : dataset.length,
+            },
+          },
+        }));
+      })
+      .catch(() => {});
+    return () => {
+      gone = true;
+    };
+  }, [flowId, nodeId, selectedId, rowsKey, haveRows]);
   const loadPage = useCallback(
     async (id: string, page: number) => {
       const record = merged.find((r) => r.id === id);
@@ -124,7 +169,13 @@ function useRecipeRuns(flowId: string | null, nodeId: string | undefined) {
     },
     [merged, load],
   );
-  return { records: records === null ? null : merged, loadPage, cancel };
+  return {
+    records: records === null ? null : merged,
+    shown,
+    selectedId,
+    loadPage,
+    cancel,
+  };
 }
 
 function RecipeRunsOpen({ target }: { target: RecipeRunsTarget }) {
@@ -137,14 +188,14 @@ function RecipeRunsOpen({ target }: { target: RecipeRunsTarget }) {
       s.runStatus === "queued" ||
       s.runStatus === "cancelling",
   );
-  const { records, loadPage, cancel } = useRecipeRuns(flowId, step?.id);
   const [selected, setSelected] = useState<string | null>(null);
-  const preview = target.view === "preview";
-  const shown = useMemo(
-    () => visibleRuns(records ?? [], target.view),
-    [records, target.view],
+  const { records, shown, selectedId, loadPage, cancel } = useRecipeRuns(
+    flowId,
+    step?.id,
+    target.view,
+    selected,
   );
-  const selectedId = selectedRun(shown, selected);
+  const preview = target.view === "preview";
   const close = () => useUiStore.getState().setRecipeRuns(null);
   const runAgain = () => {
     if (!step) return;

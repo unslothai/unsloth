@@ -196,6 +196,11 @@ export const recipeRuns = (flowId: string, nodeId: string, limit: number) =>
     `/${encodeURIComponent(flowId)}/nodes/${encodeURIComponent(nodeId)}/recipe-runs?limit=${limit}`,
   );
 
+export const recipeRun = (flowId: string, nodeId: string, runId: string) =>
+  request<Record<string, unknown> & { dataset?: unknown; datasetTotal?: unknown }>(
+    `/${encodeURIComponent(flowId)}/nodes/${encodeURIComponent(nodeId)}/recipe-runs/${encodeURIComponent(runId)}`,
+  );
+
 export interface ImportReport {
   missing_models: PlanModel[];
   warnings: string[];

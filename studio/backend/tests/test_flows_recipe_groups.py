@@ -373,8 +373,13 @@ def test_recipe_runs_are_listed_per_step_and_go_with_the_flow(client):
         record = {"id": f"e{i}", "recipeId": f"flow:{flow_id}:gen", "createdAt": created}
         flows_db.save_recipe_run(flow_id, "gen", record)
     flows_db.save_recipe_run(flow_id, "other", {"id": "e9", "createdAt": 1})
+    rows = [{"sql": "SELECT 1"}] * 3
+    flows_db.save_recipe_run(flow_id, "gen", {"id": "e1", "createdAt": 9, "dataset": rows})
     listed = client.get(f"/api/flows/{flow_id}/nodes/gen/recipe-runs").json()["executions"]
-    assert [e["id"] for e in listed] == ["e1", "e0"]
+    assert [e["id"] for e in listed] == ["e1", "e0"] and "dataset" not in listed[0]
+    whole = client.get(f"/api/flows/{flow_id}/nodes/gen/recipe-runs/e1").json()
+    assert whole["dataset"] == rows
+    assert client.get(f"/api/flows/{flow_id}/nodes/other/recipe-runs/e1").status_code == 404
     flows_db.save_recipe_run(flow_id, "gen", {"id": "e0", "createdAt": 5, "status": "completed"})
     listed = client.get(f"/api/flows/{flow_id}/nodes/gen/recipe-runs").json()["executions"]
     assert listed[1]["status"] == "completed"
