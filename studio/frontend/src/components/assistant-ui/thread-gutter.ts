@@ -7,7 +7,6 @@ export const THREAD_GUTTER_SHIFT_PROPERTY = "--thread-gutter-shift";
 /** Fired on the viewport when the shift changes: the column moves without resizing, which no ResizeObserver sees. */
 export const THREAD_GUTTER_CHANGE_EVENT = "unsloth:thread-gutter-change";
 
-/** Extra left padding that recentres the column; 0 when the engine already reserves the left gutter. */
 export function threadGutterShift(
   scrollbar: number,
   misplaced: boolean,
