@@ -9,8 +9,11 @@ import {
   AUTH_TOKEN_KEY,
   hasAuthToken,
 } from "@/features/auth";
-import { refreshPinnedChats, resetPinnedChats } from "../sync-pinned-chats";
-import { PIN_JOURNAL_PREFIX } from "../utils/pinned-chats-journal";
+import { PIN_JOURNAL_PREFIX } from "../stores/pinned-chats-store";
+
+// Loaded on mount, not at startup: the sync runtime would push the eager bundle over budget.
+let runtime: Promise<typeof import("../sync-pinned-chats")> | undefined;
+const loadRuntime = () => (runtime ??= import("../sync-pinned-chats"));
 
 /** Keep pins current across clients, and discard in-flight work at session boundaries. */
 export function usePinnedChatsSync(): void {
@@ -18,12 +21,16 @@ export function usePinnedChatsSync(): void {
     let sessionMark = localStorage.getItem(AUTH_SESSION_MARK_KEY);
     const refresh = () => {
       if (hasAuthToken() && document.visibilityState === "visible") {
-        void refreshPinnedChats().catch(() => undefined);
+        void loadRuntime()
+          .then((sync) => sync.refreshPinnedChats())
+          .catch(() => undefined);
         sessionMark = localStorage.getItem(AUTH_SESSION_MARK_KEY);
       }
     };
     const reconcileSession = () => {
-      resetPinnedChats({ clearPending: true });
+      void loadRuntime().then((sync) =>
+        sync.resetPinnedChats({ clearPending: true }),
+      );
       sessionMark = localStorage.getItem(AUTH_SESSION_MARK_KEY);
       refresh();
     };
@@ -54,11 +61,12 @@ export function usePinnedChatsSync(): void {
       window.removeEventListener("focus", refresh);
       window.removeEventListener("online", refresh);
       document.removeEventListener("visibilitychange", refresh);
-      resetPinnedChats({
-        clearPending:
-          !hasAuthToken() ||
-          localStorage.getItem(AUTH_SESSION_MARK_KEY) !== sessionMark,
-      });
+      const clearPending =
+        !hasAuthToken() ||
+        localStorage.getItem(AUTH_SESSION_MARK_KEY) !== sessionMark;
+      void loadRuntime().then((sync) =>
+        sync.resetPinnedChats({ clearPending }),
+      );
     };
   }, []);
 }

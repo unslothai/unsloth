@@ -3,6 +3,9 @@
 
 import { create } from "zustand";
 
+// Here, not in the journal, so the startup hook can read it without loading the sync runtime.
+export const PIN_JOURNAL_PREFIX = "unsloth_chat_pin_journal:";
+
 export interface PinnedChatsActions {
   setPinned: (ids: string[], pinned: boolean) => void;
 }

@@ -8,8 +8,9 @@ import {
   validatePinnedIds,
 } from "./pinned-chats-sync.ts";
 import type { PinnedChatsFallbackState } from "./pinned-chats-transport.ts";
+import { PIN_JOURNAL_PREFIX } from "../stores/pinned-chats-store.ts";
 
-export const PIN_JOURNAL_PREFIX = "unsloth_chat_pin_journal:";
+export { PIN_JOURNAL_PREFIX };
 
 interface Entry {
   operation?: PinOperation;
