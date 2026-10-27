@@ -189,6 +189,22 @@ def _warn_not_applied(cls, leaves):
     )
 
 
+def _named_params(fn):
+    return [
+        name
+        for name, p in inspect.signature(fn).parameters.items()
+        if p.kind not in (p.VAR_POSITIONAL, p.VAR_KEYWORD)
+    ]
+
+
+def _keywords_taken(fn):
+    """Keyword names ``fn`` accepts, or None when it takes **kwargs."""
+    params = inspect.signature(fn).parameters.values()
+    if any(p.kind is p.VAR_KEYWORD for p in params):
+        return None
+    return {p.name for p in params if p.kind is not p.VAR_POSITIONAL}
+
+
 def _patch_class(cls):
     forward = cls.forward
     if getattr(forward, _MARK, False):
@@ -200,13 +216,16 @@ def _patch_class(cls):
     cache_index = params.index("cache_params") - 2
 
     # transformers 4.x: forward picks cuda_kernels_forward or a same-signature torch path.
+    slow_takes = None
     slow = getattr(cls, "slow_forward", None) or getattr(cls, "torch_forward", None)
     cuda_forward = getattr(cls, "cuda_kernels_forward", None)
     if callable(cuda_forward) and callable(slow):
         if not _calls_fused(cuda_forward):
             return False
-        if list(inspect.signature(slow).parameters)[2:] != params[2:]:
+        # transformers 5.5 / 5.10 forward adds **kwargs that it drops before calling slow_forward.
+        if _named_params(slow)[2:] != _named_params(forward)[2:]:
             return False
+        slow_takes = _keywords_taken(slow)
         legacy = True
     else:
         # transformers 5: one forward whose fused branch short-circuits unless the kernel returns None.
@@ -224,6 +243,8 @@ def _patch_class(cls):
 
     def non_fused(self, hidden_states, *args, **kwargs):
         if legacy:
+            if slow_takes is not None:
+                kwargs = {k: v for k, v in kwargs.items() if k in slow_takes}
             return slow(self, hidden_states, *args, **kwargs)
         _force_slow[0] += 1
         try:

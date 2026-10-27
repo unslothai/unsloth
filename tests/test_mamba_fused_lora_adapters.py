@@ -108,6 +108,7 @@ def _build(
     lora_dropout = 0.0,
     fused = True,
     patch = True,
+    forward_kwargs = False,
 ):
     import transformers
 
@@ -155,6 +156,19 @@ def _build(
         ):
             impl = self.cuda_kernels_forward if fused else self.slow_forward
             return impl(hidden_states, cache_params, cache_position, attention_mask)
+
+        if forward_kwargs:
+            # transformers 5.5 / 5.10: the dispatching forward also takes **kwargs, slow_forward does not.
+            def forward(
+                self,
+                hidden_states,
+                cache_params = None,
+                cache_position = None,
+                attention_mask = None,
+                **kwargs,
+            ):
+                impl = self.cuda_kernels_forward if fused else self.slow_forward
+                return impl(hidden_states, cache_params, cache_position, attention_mask)
 
         monkeypatch.setattr(mixer_cls, "forward", forward)
 
@@ -234,6 +248,25 @@ def test_plain_lora_keeps_fused_kernel_with_merged_weights(monkeypatch, arch):
                 p.mul_(2.0)
             after = model(input_ids = ids, use_cache = False).logits
         assert (after - before).abs().max() > 1e-5, leaf
+
+
+@pytest.mark.parametrize("arch", list(ARCHS))
+@pytest.mark.parametrize("dropout", [0.0, 0.1])
+def test_dispatching_forward_with_trailing_kwargs_is_patched(monkeypatch, arch, dropout):
+    # transformers 5.5 / 5.10: forward(..., **kwargs) over slow_forward / cuda_kernels_forward without it.
+    if not _legacy(arch):
+        pytest.skip("this transformers has no slow_forward / cuda_kernels_forward split")
+    model, calls = _build(
+        monkeypatch, arch, ["in_proj", "x_proj"], lora_dropout = dropout, forward_kwargs = True
+    )
+    ids = torch.randint(0, 64, (2, 8))
+    _loss(model, ids).backward()
+    assert len(calls) == (0 if dropout else 2)
+    for mixer in _mixers(model):
+        assert mixer(torch.randn(2, 8, 16), unused_by_slow_forward = 1).shape == (2, 8, 16)
+    for kind in ("A", "B"):
+        grads = [p.grad for p in _lora_param(model, "x_proj", kind)]
+        assert grads and all(g is not None and g.abs().sum() > 0 for g in grads), kind
 
 
 def test_merged_weight_grads_match_non_fused_path(monkeypatch):
