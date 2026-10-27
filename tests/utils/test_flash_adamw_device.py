@@ -79,9 +79,7 @@ def test_adamw_flash_uncompressed_state_dict_round_trip_noncurrent_device(dtype)
     torch.cuda.set_device(0)
     optimizer_cls = _get_flash_adamw_class()
     kwargs = dict(quantize = True, compress_state_dict = False, lr = 0.001)
-    params = [
-        torch.nn.Parameter(torch.ones(65, device = f"cuda:{i}", dtype = dtype)) for i in (0, 1)
-    ]
+    params = [torch.nn.Parameter(torch.ones(65, device = f"cuda:{i}", dtype = dtype)) for i in (0, 1)]
     optimizer = optimizer_cls(params, **kwargs)
     for grad in (0.125, -0.25):
         for p in params:
@@ -90,7 +88,9 @@ def test_adamw_flash_uncompressed_state_dict_round_trip_noncurrent_device(dtype)
     expected = {}
     for i, p in enumerate(params):
         with torch.cuda.device(p.device):
-            expected[i] = {k: optimizer.state[p][k].materialize() for k in ("exp_avg", "exp_avg_sq")}
+            expected[i] = {
+                k: optimizer.state[p][k].materialize() for k in ("exp_avg", "exp_avg_sq")
+            }
 
     saved = optimizer.state_dict()
     assert torch.cuda.current_device() == 0, "the caller's device must be restored"
