@@ -2919,6 +2919,21 @@ def test_codex_carries_mcp_servers_written_as_root_keys(fake_studio, tmp_path, m
     )
 
 
+def test_codex_reads_mcp_servers_from_a_config_with_a_bom(fake_studio, tmp_path, monkeypatch):
+    tomllib = pytest.importorskip("tomllib")
+    source_home = tmp_path / "user-codex"
+    source_home.mkdir()
+    (source_home / "config.toml").write_bytes(
+        b'\xef\xbb\xbf[mcp_servers.docs]\nurl = "http://d/mcp"\n'
+    )
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    home = tmp_path / "agents" / "codex"
+
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    config = tomllib.loads((home / "config.toml").read_text())
+    assert config["mcp_servers"] == {"docs": {"url": "http://d/mcp"}}
+
+
 def test_codex_remembers_an_empty_custom_codex_home(fake_studio, tmp_path, monkeypatch):
     tomllib = pytest.importorskip("tomllib")
     user_home = tmp_path / "user-home"

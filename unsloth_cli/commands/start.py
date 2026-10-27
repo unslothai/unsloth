@@ -3502,7 +3502,7 @@ def _codex_mcp_manifest(home: Path) -> tuple:
 def _codex_mcp_tables(source: Path, seen: frozenset) -> list:
     """MCP tables in source's config; a home Unsloth built trades its inherited ones for its origin's."""
     try:
-        text = (source / "config.toml").read_text(encoding = "utf-8")
+        text = (source / "config.toml").read_text(encoding = "utf-8-sig")
     except OSError:
         return []
     loads = _toml_loads()
