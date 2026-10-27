@@ -185,12 +185,26 @@ def test_a_managed_account_may_name_its_own_run(monkeypatch):
     assert excinfo.value.status_code == 403
 
 
-def test_cancelling_a_load_by_run_name_matches_the_folder_it_loads(monkeypatch):
-    from models.inference import UnloadRequest
+def test_unloading_by_checkpoint_name_targets_the_folder_it_loads(monkeypatch):
+    from models.inference import UnloadRequest, UnloadResponse
 
-    run_dir = _run_dir()
-    monkeypatch.setattr(inference_route, "_scoped_load_cancel_tombstones", {})
-    request = UnloadRequest(model_path = RUN, cancel_load_request_id = "attempt-1")
-    assert inference_route._cancel_scoped_load_attempt(request, "test") == (None, False)
-    [(path, _expires)] = inference_route._scoped_load_cancel_tombstones.values()
-    assert path == str(run_dir)
+    checkpoint_dir = _run_dir() / "checkpoint-5"
+    checkpoint_dir.mkdir()
+    seen = []
+
+    async def _impl(request, _subject):
+        seen.append((request.model_path, request.cancel_load_request_id))
+        return UnloadResponse(status = "unloaded", model = request.model_path)
+
+    monkeypatch.setattr(inference_route, "_unload_model_impl", _impl)
+    answers = [
+        asyncio.run(
+            inference_route.unload_model(
+                UnloadRequest(model_path = CHECKPOINT, cancel_load_request_id = request_id), "test"
+            )
+        )
+        for request_id in (None, "attempt-1")
+    ]
+
+    assert seen == [(str(checkpoint_dir), None), (str(checkpoint_dir), "attempt-1")]
+    assert [answer["model"] for answer in answers] == [CHECKPOINT, CHECKPOINT]

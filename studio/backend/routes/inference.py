@@ -10024,6 +10024,18 @@ def _trained_run_dir(model: Optional[str]) -> Optional[str]:
         return None
 
 
+def _resolve_trained_run_request(request) -> bool:
+    """Rewrites a run or checkpoint name on a load / unload request to its folder."""
+    trained = _trained_run_dir(request.model_path)
+    if not trained:
+        return False
+    from hub.utils.host_paths import note_resolved_handle
+
+    note_resolved_handle(request.model_path, trained)
+    request.model_path = trained
+    return True
+
+
 def _trained_run_is_resident(run_dir: str) -> bool:
     active = getattr(get_inference_backend(), "active_model_name", None)
     return bool(active) and _norm_path(active) == _norm_path(run_dir)
@@ -16901,8 +16913,6 @@ def _cancel_scoped_load_attempt(
     if request_id is None:
         return None, False
     key = (current_subject, request_id)
-    # /load records a run name as its folder, so cancel by the same spelling
-    model_path = _trained_run_dir(request.model_path) or request.model_path
     with _scoped_load_attempts_lock:
         now = time.monotonic()
         _prune_scoped_load_cancel_tombstones(now)
@@ -16920,11 +16930,11 @@ def _cancel_scoped_load_attempt(
                 )
                 _scoped_load_cancel_tombstones.pop(oldest, None)
             _scoped_load_cancel_tombstones[key] = (
-                model_path,
+                request.model_path,
                 now + _SCOPED_LOAD_CANCEL_TOMBSTONE_TTL_S,
             )
             return None, False
-        if attempt.model_path.strip().casefold() != model_path.strip().casefold():
+        if attempt.model_path.strip().casefold() != request.model_path.strip().casefold():
             return None, False
         attempt.cancel_event.set()
         is_running = _running_load_attempt is attempt
@@ -17073,14 +17083,10 @@ async def load_model(
 
     GGUF models load via llama-server (llama.cpp) instead of Unsloth.
     """
-    trained = _trained_run_dir(request.model_path)
-    if trained:
-        from hub.utils.host_paths import note_resolved_handle
-
-        note_resolved_handle(request.model_path, trained)
+    named = request.model_path
+    if _resolve_trained_run_request(request):
         # keeps the job's name as the served id, so chat and /v1/models answer to it
-        request._advertised_id = request._advertised_id or request.model_path
-        request.model_path = trained
+        request._advertised_id = request._advertised_id or named
     return await _tunnel_safe_json(
         load_model_gated(request, fastapi_request, current_subject, user_initiated = True),
         label = "Model load",
@@ -20735,6 +20741,8 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
     ``_unload_model_impl`` (as preview awaits ``load_model_gated``), since the padded
     path returns a StreamingResponse, not the payload.
     """
+    # /load records a run name as its folder, so unload and cancel by the same spelling
+    _resolve_trained_run_request(request)
     return await _tunnel_safe_json(
         _unload_model_impl(request, current_subject), label = "Model unload"
     )
