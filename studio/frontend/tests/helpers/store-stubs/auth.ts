@@ -27,6 +27,13 @@ export function useIsAccountOwner(): boolean {
   return true;
 }
 
+let authSessionEpoch = 0;
+export function getAuthSessionEpoch(): number {
+  return authSessionEpoch;
+}
+export function bumpAuthSessionEpoch(): void {
+  authSessionEpoch += 1;
+}
 export function isAccountOwner(): boolean {
   return true;
 }
