@@ -21032,7 +21032,6 @@ def _snapshot_workdir_files(workdir: str | None, history: bool = False) -> "dict
         # depth 0 is the workdir itself, whose files are one segment.
         folder = base[len(workdir) :].strip(os.sep)
         depth = len(_user_path_parts(folder.split(os.sep) if folder else []))
-        # os.path.relpath per file was a third of a 20,000-file walk.
         prefix = folder.replace(os.sep, "/") + "/" if folder else ""
         # skip noisy dot directories except attachments; dot files like .gitignore remain valid artifacts.
         dirs[:] = (
