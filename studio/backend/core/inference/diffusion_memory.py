@@ -6442,16 +6442,13 @@ class _RegisteredHostBuffer:
             pass
 
 
-# "0" restores torch's pinned allocator for the up-front pinned slabs (group-offload arena, H3 conditioner / VAE).
+# "0" restores torch's pinned allocator for up-front pinned slabs.
 REGISTERED_SLAB_ENV = "UNSLOTH_DIFFUSION_REGISTERED_SLABS"
 
 
 def registered_pinned_empty(nbytes: int) -> Optional[Any]:
-    """A page-locked uint8 host tensor of ``nbytes`` in registered memory, or None (use torch's pinned allocator).
-
-    Torch's allocator faults and locks every page on one thread (MiniMax-H3's 20.4 GB denoiser slabs plus its
-    27 GB conditioner arenas: about 13 + 5 s of a load). Here the pages are first touched by ``zero_`` on torch's
-    intra-op threads and then registered, which only locks them. The memory and its contents are the same."""
+    """Page-locked uint8 host tensor in registered memory, or None (use torch's pinned allocator).
+    Torch's allocator faults pages on one thread (~18 s for MiniMax-H3); ``zero_`` here faults them in parallel."""
     if (os.environ.get(REGISTERED_SLAB_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
         return None
     if int(nbytes) <= 0 or not _fast_pin_supported():
@@ -6464,7 +6461,7 @@ def registered_pinned_empty(nbytes: int) -> Optional[Any]:
         buf = torch.from_numpy(np.asarray(holder))
         buf.zero_()
         holder.register()
-    except Exception:  # noqa: BLE001 - mapping or registration refused: the pinned allocator instead
+    except Exception:  # noqa: BLE001
         return None
     return buf
 

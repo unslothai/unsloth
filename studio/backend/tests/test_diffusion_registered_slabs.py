@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Up-front pinned slabs (group-offload arena, H3 conditioner / VAE arenas) come from registered host memory.
-
-Torch's pinned allocator faults and locks each page on one thread; ``registered_pinned_empty`` touches the pages on
-torch's intra-op threads (``zero_``) and only then registers them. Same bytes, same layout: only the allocator
-changes, and ``UNSLOTH_DIFFUSION_REGISTERED_SLABS=0`` restores torch's."""
+"""Up-front pinned slabs come from registered host memory; ``UNSLOTH_DIFFUSION_REGISTERED_SLABS=0`` restores torch's."""
 
 import numpy as np
 import pytest
@@ -16,7 +12,7 @@ from core.inference import diffusion_pinned_arena as arena_mod
 
 
 class _FakeHolder:
-    """Stands in for ``_RegisteredHostBuffer`` on a CPU-only host: a numpy buffer, registration recorded."""
+    """CPU-only stand-in for ``_RegisteredHostBuffer``."""
 
     made: list = []
 
@@ -77,7 +73,7 @@ def test_arena_slabs_come_from_registered_memory(fake_registered):
     assert len(fake_registered) == len(arena._slabs) >= 1
     slab_ptrs = {s.untyped_storage().data_ptr() for s, _ in arena._slabs}
     for w, c in zip(weights, copies):
-        assert torch.equal(w, c)  # the same bytes
+        assert torch.equal(w, c)
         assert c.untyped_storage().data_ptr() in slab_ptrs
 
 

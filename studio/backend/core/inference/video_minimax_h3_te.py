@@ -465,7 +465,6 @@ def _round_up(value: int, multiple: int) -> int:
 
 
 def _pinned_arena(size: int) -> Any:
-    """Registered host memory where supported (see ``registered_pinned_empty``), else torch's pinned allocator."""
     import torch
 
     from .diffusion_memory import registered_pinned_empty
