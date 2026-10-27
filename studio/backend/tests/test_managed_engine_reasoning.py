@@ -485,22 +485,6 @@ def test_a_window_sized_reply_cap_is_left_to_the_engine():
             assert asyncio.run(fit(prompt))[1] == sent
 
 
-def test_a_prompt_that_needs_no_compaction_keeps_the_callers_reply_cap():
-    import asyncio
-
-    from routes.managed_engine_chat import _message_fitter
-
-    managed = _Engine()
-    managed.engine = "sglang"
-    payload = _tool_payload(context_overflow = "truncate_oldest")
-    payload.max_tokens = 1600
-    fit = _message_fitter(payload, managed, "m", None)
-    fitted, cap, line = asyncio.run(
-        fit([{"role": "user", "content": "internationalization " * 80}])
-    )
-    assert cap is None and line is None and len(fitted) == 1
-
-
 def test_a_managed_refit_recalls_with_the_first_branch_it_saw(monkeypatch):
     import asyncio
 

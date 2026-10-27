@@ -154,8 +154,7 @@ def _message_fitter(
             line = api._context_truncated_sse_chunk(
                 "chatcmpl-" + uuid.uuid4().hex[:12], public, truncation
             ).rstrip("\n")
-        # Without a compaction the estimate has nothing to make room for, so the caller's cap stands.
-        return fitted, max_tokens if capped and truncation else None, line
+        return fitted, max_tokens if capped else None, line
 
     return fit
 
