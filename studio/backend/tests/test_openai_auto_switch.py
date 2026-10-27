@@ -9259,12 +9259,26 @@ class _FakeMlxOrchestrator:
         *,
         entry = None,
         user_loaded = False,
+        root = None,
     ):
         self.active_model_name = name
         self.models = {name: entry or {"is_mlx": True}}
         self._openai_advertised_id = "org/Qwen-MLX-Alias"
         self._loaded_by_user_action = user_loaded
-        self.unloads = []
+        self.root, self.unloads, self.restores = root, [], []
+
+    def save_prompt_cache_for_resume(self, should_abort):
+        if self.root is None:
+            return None
+        directory = self.root / "resume-mlx"
+        directory.mkdir()
+        (directory / "text-0.safetensors").write_bytes(b"kv")
+        slot = {"filename": "text-0.safetensors", "store": "text"}
+        return {"engine": "mlx", "dir": str(directory), "fingerprint": (), "slots": [slot]}
+
+    def restore_prompt_cache_for_resume(self, manifest):
+        self.restores.append(manifest)
+        return 1
 
     def unload_model(self, name):
         self.unloads.append(name)
@@ -9286,9 +9300,11 @@ def _idle_mlx(monkeypatch, **kwargs):
     return llama, orch, saves
 
 
-def test_idle_unload_frees_an_api_loaded_mlx_primary_and_the_next_request_reloads_it(monkeypatch):
+def test_idle_unload_frees_an_api_loaded_mlx_primary_and_the_next_request_reloads_it(
+    monkeypatch, tmp_path
+):
     monkeypatch.setattr(settings, "get_auto_unload_api_only", lambda: True)
-    llama, orch, saves = _idle_mlx(monkeypatch)
+    llama, orch, saves = _idle_mlx(monkeypatch, root = tmp_path)
 
     kw._inflight = 1
     _drive_idle_loop(kw)
@@ -9297,8 +9313,11 @@ def test_idle_unload_frees_an_api_loaded_mlx_primary_and_the_next_request_reload
     kw._inflight = 0
     _drive_idle_loop(kw, until = lambda: orch.unloads)
     assert orch.unloads == ["/models/Qwen-MLX"]
-    assert saves == [], "slot KV save is llama-server only"
+    assert saves == [], "the MLX prompt cache was saved through llama-server"
     assert kw.get_last_unloaded_model() == ("/models/Qwen-MLX", None, "org/Qwen-MLX-Alias")
+    saved = kw._kv_resume
+    assert saved["engine"] == "mlx" and saved["origin"] == "idle"
+    assert saved["identity"] == ("/models/Qwen-MLX", None, "org/Qwen-MLX-Alias")
 
     # The reload is an auto-switch load, so the restored model stays idle-unloadable.
     orch._loaded_by_user_action = True
@@ -9308,6 +9327,8 @@ def test_idle_unload_frees_an_api_loaded_mlx_primary_and_the_next_request_reload
         calls.append(request)
         orch.active_model_name = request.model_path
         orch.models = {request.model_path: {"is_mlx": True}}
+        # The load route's orchestrator branch, which restores a kept chat context.
+        kw.note_model_loaded(orch)
 
     _wire_on(monkeypatch, resolves_to = None, backend = llama, recorder = _load)
     monkeypatch.setattr(inference_route, "get_inference_backend", lambda: orch)
@@ -9319,6 +9340,19 @@ def test_idle_unload_frees_an_api_loaded_mlx_primary_and_the_next_request_reload
     assert [c.model_path for c in calls] == ["/models/Qwen-MLX"]
     assert orch._openai_advertised_id == "org/Qwen-MLX-Alias"
     assert orch._loaded_by_user_action is False
+    assert orch.restores == [saved]
+    assert kw._kv_resume is None and not Path(saved["dir"]).exists()
+
+
+def test_an_mlx_save_dropped_after_the_save_leaves_no_files(monkeypatch, tmp_path):
+    _llama, orch, _saves = _idle_mlx(monkeypatch, root = tmp_path)
+    reads = iter([True, False])
+    monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: next(reads, False))
+
+    _drive_idle_loop(kw, until = lambda: orch.unloads)
+    assert orch.unloads == ["/models/Qwen-MLX"]
+    assert kw._kv_resume is None
+    assert not (tmp_path / "resume-mlx").exists()
 
 
 def test_the_stash_format_belongs_to_that_stash_only():

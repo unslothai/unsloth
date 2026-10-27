@@ -901,15 +901,16 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                 if resident is not None and _is_idle(ttl):
                     freed = current
                     manifest = None
-                    # Slot KV is a llama-server feature; the MLX prompt cache dies with its worker.
-                    if mlx is None and await asyncio.to_thread(get_auto_unload_keep_kv):
+                    if await asyncio.to_thread(get_auto_unload_keep_kv):
+                        save = (
+                            backend.save_slots_for_resume
+                            if mlx is None
+                            else mlx.save_prompt_cache_for_resume
+                        )
                         try:
-                            manifest = await asyncio.to_thread(
-                                backend.save_slots_for_resume,
-                                lambda: not _is_idle(ttl),
-                            )
+                            manifest = await asyncio.to_thread(save, lambda: not _is_idle(ttl))
                         except Exception as exc:
-                            logger.debug("slot save before idle unload failed: %s", exc)
+                            logger.debug("chat KV save before idle unload failed: %s", exc)
                     ttl = await asyncio.to_thread(get_auto_unload_idle_seconds)
                     if (
                         ttl <= 0
@@ -939,7 +940,7 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                     _set_last_unloaded(freed, mlx = mlx is not None)  # let an alias request reload it
                     if manifest and freed:
                         _set_kv_resume({"identity": freed, "origin": "idle", **manifest})
-                        logger.info("Idle auto-unload: saved slot KV for restore on reload")
+                        logger.info("Idle auto-unload: saved chat KV for restore on reload")
                     elif manifest:
                         _delete_resume_files(manifest)
                     # After the stash, so a failed release never loses the reload identity.
