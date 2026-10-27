@@ -19,6 +19,7 @@ key: encrypting the secret under RSA directly would cap it at 190 bytes.
 import base64
 import hashlib
 import logging
+import threading
 
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -40,9 +41,41 @@ def _compute_fingerprint(pem: str) -> str:
     return hashlib.sha256(pem.encode("utf-8")).hexdigest()[:16]
 
 
-def init_key_pair() -> None:
-    """Generate an RSA-2048 key pair. Called once at server startup."""
+def _generate_private_key() -> rsa.RSAPrivateKey:
+    return rsa.generate_private_key(
+        public_exponent = 65537,
+        key_size = 2048,
+    )
+
+
+def start_key_pair():
+    """Generate the key pair on a thread and return the step that installs it, which waits for it and
+    raises what generation raised. Key generation releases the GIL, so startup work can overlap it."""
+    result = {}
+
+    def _generate():
+        try:
+            result["key"] = _generate_private_key()
+        except BaseException as exc:  # noqa: BLE001 -- re-raised by the install step
+            result["error"] = exc
+
+    thread = threading.Thread(target = _generate, name = "rsa-keygen", daemon = True)
+    thread.start()
+
+    def install() -> None:
+        thread.join()
+        if "error" in result:
+            raise result["error"]
+        init_key_pair(result["key"])
+
+    return install
+
+
+def init_key_pair(private_key: rsa.RSAPrivateKey | None = None) -> None:
+    """Install an RSA-2048 key pair, generated here unless given. Called once at server startup."""
     global _private_key, _public_key_pem, _public_key_fingerprint
+    if private_key is None:
+        private_key = _generate_private_key()
     if _private_key is not None:
         logger.warning(
             "init_key_pair called again — replacing existing RSA keypair "
@@ -50,10 +83,7 @@ def init_key_pair() -> None:
             "public key will start hitting decryption failures.",
             _public_key_fingerprint,
         )
-    _private_key = rsa.generate_private_key(
-        public_exponent = 65537,
-        key_size = 2048,
-    )
+    _private_key = private_key
     _public_key_pem = (
         _private_key.public_key()
         .public_bytes(

@@ -777,6 +777,10 @@ async def lifespan(app: FastAPI):
     import structlog as _structlog
 
     _lifespan_log = _structlog.get_logger(__name__)
+    # RSA key pair for API key encryption (external providers): generated alongside the steps below, installed in place.
+    from core.inference.key_exchange import start_key_pair
+
+    _install_key_pair = start_key_pair()
     clear_compiled_cache_unless_shared(app)
 
     # Without a catch-all the engine paths answer 405, read as 'exists'.
@@ -953,10 +957,7 @@ async def lifespan(app: FastAPI):
     sweep_slot_save_dir()
     app.state.idle_unload_task = asyncio.create_task(idle_unload_loop())
 
-    # Initialize RSA key pair for API key encryption (external providers).
-    from core.inference.key_exchange import init_key_pair
-
-    init_key_pair()
+    _install_key_pair()
 
     # Stall thread-dump watchdog (#9712), only with UNSLOTH_STUDIO_STALL_WATCHDOG=1.
     from utils.stall_watchdog import stand_down_for_the_warm, start_stall_watchdog
