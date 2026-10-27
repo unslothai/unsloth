@@ -188,7 +188,6 @@ def _wait_for_transfers(value: Any) -> None:
     """Group offload onloads on its own stream with non_blocking copies: finish them before the writer reads."""
     if value.device.type == "cuda":
         import torch
-
         torch.cuda.synchronize(value.device)
 
 
