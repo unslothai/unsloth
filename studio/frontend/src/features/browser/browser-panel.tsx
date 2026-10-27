@@ -2387,7 +2387,7 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
         }
       }}
       className={cn(
-        "browser-panel @container/browser relative flex h-full min-h-0 flex-col overflow-hidden bg-muted pt-[var(--studio-content-top-inset,0px)]",
+        "relative flex h-full min-h-0 flex-col overflow-hidden bg-muted pt-[var(--studio-content-top-inset,0px)]",
         documentShown
           ? "[--browser-surface:color-mix(in_oklab,var(--muted)_55%,var(--card))]"
           : "[--browser-surface:var(--card)]",
@@ -2413,7 +2413,8 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
         </AlertDialogContent>
       </AlertDialog>
       <TabStrip tabs={tabs} activeTabId={activeTabId} active={active} />
-      <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-[var(--browser-surface)]">
+      {/* Not on the section: before Safari 18.5 container-type makes a stacking context, sinking the strip under the macOS drag strip. */}
+      <div className="browser-panel-body @container/browser relative flex min-h-0 flex-1 flex-col overflow-hidden bg-[var(--browser-surface)]">
         <div
           className={cn(
             "browser-chrome @container flex shrink-0 items-center gap-2 px-2.5",
