@@ -18374,10 +18374,7 @@ class LlamaCppBackend:
             return None
 
     def _read_gguf_metadata(self, gguf_path: str) -> None:
-        """Populate per-model metadata from ``gguf_path``, resetting prior values first.
-
-        Metadata lives in shard 1 of split GGUFs; its type distinguishes adapters from full models.
-        """
+        """Metadata lives in shard 1 of split GGUFs; per-model flags are reset first so none carry over."""
         # Reset so stale flags do not carry over when switching models.
         self._context_length = None
         self._chat_template = None
@@ -20261,10 +20258,8 @@ class LlamaCppBackend:
             return True
 
     def _non_chat_gguf_refusal(self, gguf_path: str) -> Optional[str]:
-        """Return an explanation for adapter/media headers that cannot load as a chat model.
-
-        Read metadata from ``gguf_path`` first; unreadable headers yield no verdict.
-        """
+        """Header-only refusal of adapter and media GGUFs: an adapter, a media architecture, or none
+        at all once the header parsed."""
         arch = (self._architecture or "").strip().lower()
         # A media arch is KV 0 so a partial remote prefix can carry it; the walk still gates the no-arch fallback, since an incomplete read looks like none.
         if (
@@ -20274,8 +20269,7 @@ class LlamaCppBackend:
             and not getattr(self, "_gguf_header_parsed", False)
         ):
             return None
-        # Adapters can declare a chat architecture but contain only weight deltas.
-        # Check metadata rather than filenames: merged LoRA models are complete models.
+        # Metadata, not filenames: an adapter may declare a chat arch; a merged LoRA is a full model.
         if getattr(self, "_gguf_type", None) == "adapter":
             return (
                 "This GGUF is a LoRA adapter and needs a matching base model. "

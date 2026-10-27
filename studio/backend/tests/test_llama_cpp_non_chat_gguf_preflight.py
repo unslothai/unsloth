@@ -22,7 +22,8 @@ def _write_gguf(
     tensor_count: int = 1,
     general_type: str | None = None,
 ) -> Path:
-    """Write a parser fixture with optional architecture/type strings, without model tensor data."""
+    """Minimal GGUF header: magic, version, counts, then optional ``general.architecture`` and
+    ``general.type`` string KVs. The parser never reads the tensor data."""
     body = b""
     kv_count = 0
     for key, value in ((b"general.architecture", arch), (b"general.type", general_type)):
@@ -60,7 +61,6 @@ def test_chat_arch_is_not_refused(tmp_path):
 
 
 def test_adapter_gguf_requires_its_base_model(tmp_path):
-    """An adapter declaring a chat architecture still cannot be loaded as a complete model."""
     path = _write_gguf(tmp_path / "weights.gguf", arch = "deepseek41", general_type = "adapter")
     message = LlamaCppBackend._non_chat_gguf_refusal_for_path(str(path), None)
     assert message is not None
@@ -70,13 +70,11 @@ def test_adapter_gguf_requires_its_base_model(tmp_path):
 
 @pytest.mark.parametrize("general_type", [None, "model"])
 def test_merged_lora_model_is_allowed(tmp_path, general_type):
-    """A full model mentioning LoRA in its filename remains loadable, including older GGUFs."""
     path = _write_gguf(tmp_path / "merged-LoRA.gguf", arch = "llama", general_type = general_type)
     assert LlamaCppBackend._non_chat_gguf_refusal_for_path(str(path), None) is None
 
 
 def test_reading_a_model_clears_the_previous_adapter_type(tmp_path):
-    """Reusing a backend for a normal model must not retain an earlier adapter's refusal."""
     adapter = _write_gguf(tmp_path / "adapter.gguf", arch = "llama", general_type = "adapter")
     model = _write_gguf(tmp_path / "model.gguf", arch = "llama")
     backend = LlamaCppBackend()

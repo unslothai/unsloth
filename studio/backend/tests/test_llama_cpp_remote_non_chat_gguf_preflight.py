@@ -27,11 +27,9 @@ def _gguf_bytes(
     declared_kv: int | None = None,
     general_type: str | None = None,
 ) -> bytes:
-    """Encode optional architecture/type strings in a GGUF header.
-
-    ``declared_kv`` overstates the KV count without writing the pairs, matching a
-    byte-range prefix whose metadata walk ends before all declared fields arrive.
-    """
+    """A GGUF header as BYTES. ``declared_kv`` overstates the KV count without writing the
+    pairs -- the shape a byte-range prefix of a chat model has: the counts say more is
+    coming and the buffer ends first."""
     body = b""
     kv_count = 0
     for key, value in ((b"general.architecture", arch), (b"general.type", general_type)):
@@ -95,7 +93,6 @@ def test_a_media_repo_gguf_is_refused_from_its_header_alone(monkeypatch, arch, p
 
 
 def test_adapter_repo_gguf_is_refused_from_its_header_alone(monkeypatch):
-    """A remote adapter is identified from metadata before its weights are downloaded."""
     message, requests = _probe(
         monkeypatch,
         header = _gguf_bytes(arch = "deepseek41", general_type = "adapter"),
@@ -259,7 +256,6 @@ def _repo_load(monkeypatch, backend, order):
 def test_a_non_chat_repo_load_keeps_the_resident_model_and_never_downloads(
     monkeypatch, arch, general_type, repo, message_match
 ):
-    """Exercise actual load preflight, recording process teardown and weight-download boundaries."""
     backend = LlamaCppBackend()
     order: list[str] = []
     _repo_load(monkeypatch, backend, order)
