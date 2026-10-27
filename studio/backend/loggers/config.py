@@ -307,6 +307,16 @@ def keep_progress_bars_countable() -> None:
         return
     _redirect_every_bar_output()
     allow_progress_bars()
+    # A spawned worker may import Hub through its bootstrap before this call.
+    # Undo the cached copy of OUR default too, never an operator's explicit opt-out.
+    for name in ("huggingface_hub.constants", "huggingface_hub.utils.tqdm"):
+        module = sys.modules.get(name)
+        if module is not None and getattr(module, "HF_HUB_DISABLE_PROGRESS_BARS", None) is True:
+            module.HF_HUB_DISABLE_PROGRESS_BARS = None
+    bars = sys.modules.get("huggingface_hub.utils.tqdm")
+    enable = getattr(bars, "enable_progress_bars", None)
+    if callable(enable):
+        enable()
 
 
 def quiet_bar_kwargs() -> dict:

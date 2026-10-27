@@ -956,7 +956,10 @@ def run_diffusion_training_process(*, event_queue: Any, stop_queue: Any, config:
         # normalized() validates the family; the registry sends DiT families to their own trainer.
         cfg = _config_from_dict(config).normalized()
         trainer = get_trainer(cfg.resolved_family)
-        trainer(cfg, on_event = on_event, should_stop = should_stop)
+        from .diffusion_download_progress import TrainingDownloadProgress
+
+        with TrainingDownloadProgress(on_event) as report:
+            trainer(cfg, on_event = report, should_stop = should_stop)
     except Exception as exc:  # noqa: BLE001 -- surfaced to the parent as an error event
         # Emit both keys: the diffusion service reads ``message``, the generic worker reads ``error``.
         event_queue.put(

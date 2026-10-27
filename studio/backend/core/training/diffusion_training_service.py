@@ -69,15 +69,17 @@ def _run_diffusion_child(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     activate_native_tls()
     activate_happy_eyeballs()
 
-    # Imported lazily so this module (and the route layer) stays torch-free at import.
-    from .diffusion_lora_trainer import run_diffusion_training_process
-
-    # Skips LogConfig.setup_logging, so this installs the Hub default; diffusers setup is in the trainer.
+    # Restore only Unsloth's own quiet default before Hub caches it at import.
     try:
-        from loggers.config import quiet_third_party_progress_bars
+        from loggers.config import keep_progress_bars_countable, quiet_third_party_progress_bars
+
         quiet_third_party_progress_bars()
-    except Exception:  # noqa: BLE001 - never let log tidying stop a training run
+        keep_progress_bars_countable()
+    except Exception:  # noqa: BLE001 -- progress setup must never stop training
         pass
+
+    # Imported lazily so the route layer stays torch-free.
+    from .diffusion_lora_trainer import run_diffusion_training_process
 
     run_diffusion_training_process(event_queue = event_queue, stop_queue = stop_queue, config = config)
 
@@ -330,6 +332,7 @@ def _idle_state() -> dict[str, Any]:
         "num_images": None,
         "in_model_load": False,
         "preparation": None,
+        "download_progress": None,
         "output_dir": None,
         "lora_path": None,
         # The optional second (EMA-averaged) adapter, when ema_decay was enabled.
@@ -814,6 +817,7 @@ class DiffusionTrainingService:
                                 # A worker killed mid-load / mid-preparation sends no terminal event to clear these.
                                 in_model_load = False,
                                 preparation = None,
+                                download_progress = None,
                                 message = self._unexpected_exit_message(proc),
                                 updated_at = time.time(),
                             )
@@ -972,13 +976,35 @@ class DiffusionTrainingService:
                 s.update(
                     in_model_load = True,
                     preparation = None,
+                    download_progress = None,
                     status = "running",
                     message = "Loading base model...",
                 )
                 if ev.get("num_images") is not None:
                     s["num_images"] = ev.get("num_images")
+            elif etype == "model_download_progress":
+                if s.get("in_model_load") and s.get("preparation") is None:
+                    progress = ev.get("download_progress")
+                    progress = progress if isinstance(progress, dict) else {}
+                    done = _finite_or_none(progress.get("bytes_done"))
+                    total = _finite_or_none(progress.get("bytes_total"))
+                    s["download_progress"] = (
+                        {
+                            "bytes_done": int(min(done, total)),
+                            "bytes_total": int(total),
+                            "label": str(progress.get("label", "Model files"))[:200],
+                            "scope": "active_files",
+                        }
+                        if done is not None and done >= 0 and total is not None and total > 0
+                        else None
+                    )
             elif etype == "model_load_completed":
-                s.update(in_model_load = False, preparation = None, message = "Training...")
+                s.update(
+                    in_model_load = False,
+                    preparation = None,
+                    download_progress = None,
+                    message = "Training...",
+                )
             elif etype == "preparing":
                 # Long precompute such as the VAE latent cache, surfaced so the UI does not look stalled.
                 done, total = ev.get("done"), ev.get("total")
@@ -987,6 +1013,7 @@ class DiffusionTrainingService:
                     status = "running",
                     in_model_load = True,
                     preparation = {"stage": ev.get("stage"), "done": done, "total": total},
+                    download_progress = None,
                     message = (
                         f"Preparing ({stage} {done}/{total})..."
                         if done is not None and total is not None
@@ -1049,6 +1076,7 @@ class DiffusionTrainingService:
                     status = "running",
                     step = ev.get("step", s["step"]),
                     preparation = None,
+                    download_progress = None,
                     in_model_load = False,
                     total_steps = ev.get("total_steps", s["total_steps"]),
                     loss = loss,
@@ -1088,6 +1116,7 @@ class DiffusionTrainingService:
                     in_model_load = False,
                     status = "stopped" if ev.get("stopped") else "completed",
                     preparation = None,
+                    download_progress = None,
                     output_dir = ev.get("output_dir"),
                     lora_path = ev.get("lora_path"),
                     ema_path = ev.get("ema_path"),
@@ -1122,6 +1151,7 @@ class DiffusionTrainingService:
                     in_model_load = False,
                     status = "error",
                     preparation = None,
+                    download_progress = None,
                     message = str(ev.get("message", "error")),
                 )
 
