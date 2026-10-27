@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 //! Startup supervisor for GPU rendering on NVIDIA Wayland.
 //!
 //! WebKitGTK's GPU path can die at launch on NVIDIA Wayland: GTK3 logs
@@ -10,8 +13,8 @@
 //! The parent never builds Tauri or GTK, so it never holds the single-instance D-Bus name.
 //! Parent and child talk over an inherited `AF_UNIX` socket whose fd is named by
 //! [`SUPERVISOR_FD_ENV`]:
-//! - child to parent: `R` (a window has been on screen for [`READY_GRACE`]), `E` (GDK logged a
-//!   Wayland protocol error);
+//! - child to parent: `S` (a window was shown), `R` (a window has been on screen for
+//!   [`READY_GRACE`]), `E` (GDK logged a Wayland protocol error);
 //! - parent to child: `T` (the parent got SIGTERM; please shut down cleanly).
 
 use std::convert::Infallible;
@@ -33,6 +36,7 @@ pub const FALLBACK_ENV: &str = "UNSLOTH_GPU_FALLBACK";
 #[cfg(debug_assertions)]
 pub const TEST_ERROR71_ENV: &str = "UNSLOTH_TEST_GPU_ERROR71";
 
+const MSG_SHOWN: u8 = b'S';
 const MSG_READY: u8 = b'R';
 const MSG_ERROR71: u8 = b'E';
 const MSG_TERMINATE: u8 = b'T';
@@ -186,6 +190,8 @@ pub fn note_window_shown() {
     if CHANNEL.get().is_none() || ARMED.swap(true, Ordering::SeqCst) {
         return;
     }
+    // A CPU relaunch after this must not come back hidden: the user has seen the window.
+    send(MSG_SHOWN);
     let spawned = std::thread::Builder::new()
         .name("gpu-supervisor-ready".to_string())
         .spawn(|| {
@@ -285,6 +291,10 @@ struct Current {
 struct Shared {
     current: Mutex<Current>,
     terminations: AtomicUsize,
+    /// Any SIGTERM, or a SIGINT/SIGQUIT/SIGHUP while no child runs: start no further child.
+    /// Read under `current`'s lock by [`run_attempt`], so a request cannot slip between the
+    /// check and the spawn.
+    stopping: AtomicBool,
 }
 
 impl Shared {
@@ -292,12 +302,24 @@ impl Shared {
         Arc::new(Self {
             current: Mutex::new(Current::default()),
             terminations: AtomicUsize::new(0),
+            stopping: AtomicBool::new(false),
         })
+    }
+
+    /// SIGINT, SIGQUIT and SIGHUP reach a running child through the shared process group, so
+    /// they are only remembered when no child exists (before the first spawn, or between the
+    /// crashed GPU child and the CPU relaunch).
+    fn on_interrupt(&self) {
+        let current = self.current.lock().unwrap_or_else(|e| e.into_inner());
+        if current.pid.is_none() {
+            self.stopping.store(true, Ordering::SeqCst);
+        }
     }
 
     fn on_sigterm(&self) {
         let count = self.terminations.fetch_add(1, Ordering::SeqCst) + 1;
         let current = self.current.lock().unwrap_or_else(|e| e.into_inner());
+        self.stopping.store(true, Ordering::SeqCst);
         let Some(pid) = current.pid else {
             return;
         };
@@ -327,13 +349,13 @@ fn app_program(resolved: std::io::Result<std::path::PathBuf>) -> std::path::Path
 
 /// The real app, re-executed with the same argv[0] and arguments, so single-instance and
 /// deep-link hand-off see identical argv.
-fn app_command(fallback: bool) -> Command {
+fn app_command(fallback: bool, shown: bool) -> Command {
     let mut args = std::env::args_os();
     let arg0 = args
         .next()
         .unwrap_or_else(|| OsString::from("unsloth-studio"));
     let mut command = Command::new(app_program(std::env::current_exe()));
-    command.arg0(arg0).args(args);
+    command.arg0(arg0).args(relaunch_args(args, shown));
     if fallback {
         command.env(FALLBACK_ENV, FALLBACK_REASON);
         #[cfg(debug_assertions)]
@@ -342,69 +364,96 @@ fn app_command(fallback: bool) -> Command {
     command
 }
 
+/// A login start's `--hidden` is dropped once its window was shown, so the CPU relaunch shows
+/// the window the user had just opened instead of going back to the tray.
+fn relaunch_args(args: impl Iterator<Item = OsString>, shown: bool) -> Vec<OsString> {
+    args.filter(|arg| !(shown && arg == "--hidden")).collect()
+}
+
 /// Run the app as a supervised child and never return on success: the process exits with the
 /// child's status (or re-raises its signal).
 ///
 /// Returns `Err` only when the first child cannot be spawned. The caller should then log it and
-/// carry on running the app in-process, unsupervised; no signal disposition has been changed.
+/// carry on running the app in-process, unsupervised; the parent's signal watcher is closed.
 /// `on_fallback` runs once, before the CPU relaunch (persist the "GPU unsafe" flag there).
 pub fn run_parent(on_fallback: impl FnOnce(), log: impl Fn(&str)) -> Result<Infallible, io::Error> {
     let shared = Shared::new();
-    let status = supervise(
-        app_command,
-        &shared,
-        || install_parent_signals(&shared),
-        on_fallback,
-        &log,
-    )?;
-    propagate(status)
+    // Watch signals before the first spawn, so a request in that window is not lost.
+    let watcher = install_parent_signals(&shared);
+    match supervise(app_command, &shared, on_fallback, &log) {
+        Ok(status) => propagate(status),
+        Err(error) => {
+            if let Some(handle) = watcher {
+                handle.close();
+            }
+            Err(error)
+        }
+    }
 }
 
-fn install_parent_signals(shared: &Arc<Shared>) {
-    // The terminal or session already delivers these to the child through the shared process
-    // group; forwarding them would make the child see a repeat and skip backend cleanup.
-    // SAFETY: setting a disposition to SIG_IGN.
-    unsafe {
-        libc::signal(libc::SIGINT, libc::SIG_IGN);
-        libc::signal(libc::SIGQUIT, libc::SIG_IGN);
-        libc::signal(libc::SIGHUP, libc::SIG_IGN);
-    }
-    match signal_hook::iterator::Signals::new([libc::SIGTERM]) {
+/// SIGINT, SIGQUIT and SIGHUP are caught rather than forwarded: the terminal or session already
+/// delivers them to the child through the shared process group, and a second copy would make
+/// the child see a repeat and skip backend cleanup.
+fn install_parent_signals(shared: &Arc<Shared>) -> Option<signal_hook::iterator::Handle> {
+    match signal_hook::iterator::Signals::new([
+        libc::SIGTERM,
+        libc::SIGINT,
+        libc::SIGQUIT,
+        libc::SIGHUP,
+    ]) {
         Ok(mut signals) => {
+            let handle = signals.handle();
             let shared = Arc::clone(shared);
             let _ = std::thread::Builder::new()
                 .name("gpu-supervisor-signals".to_string())
                 .spawn(move || {
-                    for _ in signals.forever() {
-                        shared.on_sigterm();
+                    for signal in signals.forever() {
+                        if signal == libc::SIGTERM {
+                            shared.on_sigterm();
+                        } else {
+                            shared.on_interrupt();
+                        }
                     }
                 });
+            Some(handle)
         }
-        Err(error) => eprintln!("GPU supervisor: could not watch SIGTERM: {error}"),
+        Err(error) => {
+            eprintln!("GPU supervisor: could not watch termination signals: {error}");
+            None
+        }
     }
 }
 
 struct Attempt {
     status: ExitStatus,
+    saw_shown: bool,
     saw_ready: bool,
     saw_error71: bool,
 }
 
-/// Spawns `make_command(false)`, and on [`Outcome::FallbackToCpu`] exactly one
-/// `make_command(true)`. Returns the status to propagate.
+/// What a supervised process exits with when it was asked to stop before a child ran.
+fn terminated_status() -> ExitStatus {
+    ExitStatus::from_raw((128 + libc::SIGTERM) << 8)
+}
+
+/// Spawns `make_command(false, false)`, and on [`Outcome::FallbackToCpu`] exactly one
+/// `make_command(true, shown)`. Returns the status to propagate. A termination request before
+/// a spawn means that child is never started.
 fn supervise(
-    mut make_command: impl FnMut(bool) -> Command,
+    mut make_command: impl FnMut(bool, bool) -> Command,
     shared: &Shared,
-    on_first_spawn: impl FnOnce(),
     on_fallback: impl FnOnce(),
     log: &dyn Fn(&str),
 ) -> io::Result<ExitStatus> {
-    let first = run_attempt(make_command(false), shared, on_first_spawn)?;
+    let Some(first) = run_attempt(make_command(false, false), shared)? else {
+        log("GPU supervisor: asked to stop before the app started");
+        return Ok(terminated_status());
+    };
     let decision = outcome(&first.status, first.saw_ready, first.saw_error71);
     if decision == Outcome::Propagate {
         return Ok(first.status);
     }
-    if shared.terminations.load(Ordering::SeqCst) > 0 {
+    if shared.stopping.load(Ordering::SeqCst) {
         log("GPU supervisor: child hit Wayland Error 71 while terminating; not relaunching");
         return Ok(first.status);
     }
@@ -412,8 +461,12 @@ fn supervise(
     on_fallback();
     log("GPU supervisor: the app exited with Wayland Error 71 before its window was ready");
     log("GPU supervisor: GPU rendering marked unsafe on this host; relaunching with CPU rendering");
-    match run_attempt(make_command(true), shared, || {}) {
-        Ok(second) => {
+    match run_attempt(make_command(true, first.saw_shown), shared) {
+        Ok(None) => {
+            log("GPU supervisor: asked to stop before the CPU relaunch; not relaunching");
+            Ok(first.status)
+        }
+        Ok(Some(second)) => {
             log(&format!(
                 "GPU supervisor: CPU relaunch exited with {}",
                 describe(&second.status)
@@ -429,11 +482,8 @@ fn supervise(
     }
 }
 
-fn run_attempt(
-    mut command: Command,
-    shared: &Shared,
-    on_spawn: impl FnOnce(),
-) -> io::Result<Attempt> {
+/// `Ok(None)` when a termination request arrived before the spawn.
+fn run_attempt(mut command: Command, shared: &Shared) -> io::Result<Option<Attempt>> {
     // std creates both ends close-on-exec; only the child's copy is made inheritable.
     let (mut parent_end, child_end) = UnixStream::pair()?;
     let child_fd = child_end.as_raw_fd();
@@ -454,13 +504,15 @@ fn run_attempt(
     let mut child = {
         // Hold the lock across spawn so SIGTERM cannot miss a child that is just starting.
         let mut current = shared.current.lock().unwrap_or_else(|e| e.into_inner());
+        if shared.stopping.load(Ordering::SeqCst) {
+            return Ok(None);
+        }
         let child = command.spawn()?;
         current.pid = Some(child.id() as libc::pid_t);
         current.control = parent_end.try_clone().ok();
         child
     };
     drop(child_end);
-    on_spawn();
 
     let status = loop {
         match child.wait() {
@@ -476,6 +528,7 @@ fn run_attempt(
 
     // The child writes before it exits, so everything it sent is already queued. Draining
     // after the wait cannot race the exit, and cannot block on a descendant holding the fd.
+    let mut saw_shown = false;
     let mut saw_ready = false;
     let mut saw_error71 = false;
     parent_end.set_nonblocking(true)?;
@@ -484,6 +537,7 @@ fn run_attempt(
         match parent_end.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
+                saw_shown |= buf[..n].contains(&MSG_SHOWN);
                 saw_ready |= buf[..n].contains(&MSG_READY);
                 saw_error71 |= buf[..n].contains(&MSG_ERROR71);
             }
@@ -491,11 +545,12 @@ fn run_attempt(
             Err(_) => break,
         }
     }
-    Ok(Attempt {
+    Ok(Some(Attempt {
         status,
+        saw_shown,
         saw_ready,
         saw_error71,
-    })
+    }))
 }
 
 fn describe(status: &ExitStatus) -> String {
@@ -649,7 +704,7 @@ mod tests {
         let logs = RefCell::new(Vec::new());
         let shared = Shared::new();
         let status = supervise(
-            |fallback| {
+            |fallback, _shown| {
                 let index = spawns.borrow().len().min(scripts.len() - 1);
                 spawns.borrow_mut().push(fallback);
                 let mut command = Command::new("sh");
@@ -660,7 +715,6 @@ mod tests {
                 command
             },
             &shared,
-            || {},
             || fallbacks.set(fallbacks.get() + 1),
             &|line| logs.borrow_mut().push(line.to_string()),
         )
@@ -760,7 +814,7 @@ mod tests {
         let spawns = RefCell::new(Vec::new());
         let fallbacks = Cell::new(0);
         let status = supervise(
-            |fallback| {
+            |fallback, _shown| {
                 spawns.borrow_mut().push(fallback);
                 let mut command = Command::new(&exe);
                 command
@@ -776,7 +830,6 @@ mod tests {
                 command
             },
             &Shared::new(),
-            || {},
             || fallbacks.set(fallbacks.get() + 1),
             &|_| {},
         )
@@ -804,7 +857,7 @@ mod tests {
         });
         // The child exits 143 once it reads T, like the real app.exit(143).
         let status = supervise(
-            |_| {
+            |_, _| {
                 let mut command = Command::new("sh");
                 command.arg("-c").arg(
                     "c=$(dd bs=1 count=1 <&$UNSLOTH_GPU_SUPERVISOR_FD 2>/dev/null); \
@@ -813,7 +866,6 @@ mod tests {
                 command
             },
             &shared,
-            || {},
             || panic!("no fallback"),
             &|line| logs.borrow_mut().push(line.to_string()),
         )
@@ -836,13 +888,12 @@ mod tests {
             shared_for_thread.on_sigterm();
         });
         let status = supervise(
-            |_| {
+            |_, _| {
                 let mut command = Command::new("sh");
                 command.arg("-c").arg("exec sleep 30");
                 command
             },
             &shared,
-            || {},
             || panic!("no fallback"),
             &|_| {},
         )
@@ -864,7 +915,7 @@ mod tests {
 
     #[test]
     fn app_command_strips_test_hook_on_fallback() {
-        let command = app_command(true);
+        let command = app_command(true, false);
         assert_eq!(
             std::path::Path::new(command.get_program()),
             std::env::current_exe().unwrap()
@@ -876,9 +927,9 @@ mod tests {
         )));
         #[cfg(debug_assertions)]
         assert!(envs.contains(&(std::ffi::OsStr::new(TEST_ERROR71_ENV), None)));
-        assert!(app_command(false).get_envs().next().is_none());
+        assert!(app_command(false, false).get_envs().next().is_none());
         assert_eq!(
-            app_command(false).get_args().count(),
+            app_command(false, false).get_args().count(),
             std::env::args_os().count() - 1
         );
     }
@@ -893,5 +944,89 @@ mod tests {
             app_program(Err(std::io::Error::other("no exe"))),
             std::path::PathBuf::from("/proc/self/exe")
         );
+    }
+
+    #[test]
+    fn a_shown_window_drops_hidden_from_the_cpu_relaunch() {
+        let args = || ["--hidden", "unsloth://open"].map(OsString::from).into_iter();
+        assert_eq!(relaunch_args(args(), false), args().collect::<Vec<_>>());
+        assert_eq!(relaunch_args(args(), true), vec![OsString::from("unsloth://open")]);
+
+        // The parent learns about the shown window from the crashed child's S.
+        let shown = RefCell::new(Vec::new());
+        let status = supervise(
+            |fallback, was_shown| {
+                shown.borrow_mut().push(was_shown);
+                let mut command = Command::new("sh");
+                let script = if fallback {
+                    "exit 0"
+                } else {
+                    "printf SE >&$UNSLOTH_GPU_SUPERVISOR_FD; exit 1"
+                };
+                command.arg("-c").arg(script);
+                command
+            },
+            &Shared::new(),
+            || {},
+            &|_| {},
+        )
+        .unwrap();
+        assert_eq!(status.code(), Some(0));
+        assert_eq!(shown.into_inner(), vec![false, true]);
+    }
+
+    #[test]
+    fn a_termination_before_the_first_spawn_starts_nothing() {
+        let shared = Shared::new();
+        shared.on_sigterm();
+        let spawns = Cell::new(0);
+        let status = supervise(
+            |_, _| {
+                spawns.set(spawns.get() + 1);
+                Command::new("true")
+            },
+            &shared,
+            || panic!("no fallback"),
+            &|_| {},
+        )
+        .unwrap();
+        assert_eq!(spawns.get(), 1, "the command is built, never spawned");
+        assert_eq!(status.code(), Some(128 + libc::SIGTERM));
+    }
+
+    #[test]
+    fn a_termination_between_the_crash_and_the_cpu_relaunch_stops_the_relaunch() {
+        // SIGTERM lands while on_fallback runs: no child is registered at that moment.
+        let shared = Shared::new();
+        let spawned = RefCell::new(Vec::new());
+        let logs = RefCell::new(Vec::new());
+        let status = supervise(
+            |fallback, _| {
+                let mut command = Command::new("sh");
+                // A CPU child that did start would exit 7.
+                let script = if fallback { "exit 7" } else { "printf E >&$UNSLOTH_GPU_SUPERVISOR_FD; exit 1" };
+                command.arg("-c").arg(script);
+                spawned.borrow_mut().push(fallback);
+                command
+            },
+            &shared,
+            || shared.on_sigterm(),
+            &|line| logs.borrow_mut().push(line.to_string()),
+        )
+        .unwrap();
+        assert_eq!(status.code(), Some(1));
+        assert!(logs.borrow().iter().any(|line| line.contains("not relaunching")));
+        assert_eq!(shared.current.lock().unwrap().pid, None);
+    }
+
+    #[test]
+    fn interrupts_only_count_while_no_child_runs() {
+        let shared = Shared::new();
+        shared.current.lock().unwrap().pid = Some(1);
+        shared.on_interrupt();
+        assert!(!shared.stopping.load(Ordering::SeqCst));
+        shared.current.lock().unwrap().pid = None;
+        shared.on_interrupt();
+        assert!(shared.stopping.load(Ordering::SeqCst));
     }
 }

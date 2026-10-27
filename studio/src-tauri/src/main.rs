@@ -2287,6 +2287,10 @@ fn main() {
             };
             let log_path = tauri_log_path();
             let log = |line: &str| append_supervisor_log(log_path.as_deref(), line);
+            // The child re-plans and sees no flag, so a flag this parent dropped is logged here.
+            for note in &gpu_notes {
+                log(note);
+            }
             let started = linux_gpu_supervisor::run_parent(
                 || {
                     if let Err(error) = gpu_rendering::write_unsafe_flag(&dir, &key) {

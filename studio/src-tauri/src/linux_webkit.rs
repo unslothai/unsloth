@@ -45,6 +45,7 @@ const GPU_OFF_REASON: &str = "GPU rendering off (setting)";
 const GPU_ON_REASON: &str = "GPU rendering on (setting)";
 const GPU_UNSAFE_REASON: &str = "GPU rendering crashed at launch on this host before";
 const NVIDIA_WAYLAND_GPU_REASON: &str = "NVIDIA driver loaded (Wayland session, WebKitGTK 2.54+)";
+const FORCE_DMABUF_REASON: &str = "DMA-BUF renderer requested by the environment (Wayland session)";
 // WebKit bug 280210 still crashes some of these hosts at launch, so this path is supervised.
 const NVIDIA_WAYLAND_GPU_MIN_VERSION: (u32, u32) = (2, 54);
 
@@ -221,7 +222,8 @@ fn rendering_plan(
     }
     let operator_compositing_off = operator_compositing.is_some();
 
-    // Stands the NVIDIA branch down only, not the missing-GLES fallback below.
+    // The operator asked for WebKit's DMA-BUF renderer: only a missing GLES library or a crash
+    // at an earlier launch outranks it (see the force_dmabuf branch below).
     let force_dmabuf = !ours(FORCE_DMABUF)
         && env(FORCE_DMABUF)
             .as_deref()
@@ -264,11 +266,22 @@ fn rendering_plan(
     // libepoxy loads GLES at runtime; without it no setting can keep DMA-BUF.
     let missing_appimage_gles = is_appimage && !gles_usable;
     // The operator asked for WebKit's DMA-BUF renderer; only a missing GLES library outranks it.
+    // On Wayland that is the path WebKit bug 280210 can crash at launch, so it is supervised
+    // like the setting's GPU path, and a crash recorded for this host sends it to the CPU path.
     if force_dmabuf {
         if missing_appimage_gles {
             return RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, APPIMAGE_GLES_REASON);
         }
-        return RenderingPlan::PreserveEnvironment;
+        if !wayland_session {
+            return RenderingPlan::PreserveEnvironment;
+        }
+        if gpu.unsafe_flag {
+            return RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, GPU_UNSAFE_REASON);
+        }
+        return RenderingPlan::Gpu {
+            force_dmabuf: false,
+            reason: FORCE_DMABUF_REASON,
+        };
     }
 
     // The GPU rendering setting, only while no operator variable has decided already.
@@ -788,8 +801,9 @@ mod tests {
     }
 
     #[test]
-    fn force_dmabuf_on_wayland_preserves_the_environment() {
-        // Vendor and packaging do not matter: the operator asked for the DMA-BUF renderer.
+    fn force_dmabuf_on_wayland_keeps_the_gpu_path_under_supervision() {
+        // Vendor, packaging and setting do not matter: the operator asked for the DMA-BUF
+        // renderer. It stays unclaimed (the operator's value), and a recorded crash wins.
         for nvidia in [true, false] {
             for appimage in [false, true] {
                 let mut vars = vec![(FORCE_DMABUF, "1"), (WAYLAND_DISPLAY, "wayland-0")];
@@ -797,18 +811,29 @@ mod tests {
                     vars.push((APPIMAGE, "/tmp/Unsloth.AppImage"));
                 }
                 for setting in [GpuRendering::Auto, GpuRendering::On, GpuRendering::Off] {
-                    let gpu = GpuInputs {
-                        setting,
-                        unsafe_flag: true,
-                    };
+                    let label = format!("nvidia={nvidia} appimage={appimage} setting={setting:?}");
                     assert_eq!(
-                        plan_with_setting(&vars, MODERN_WEBKIT, true, nvidia, gpu),
-                        RenderingPlan::PreserveEnvironment,
-                        "nvidia={nvidia} appimage={appimage} setting={setting:?}"
+                        plan_with_setting(&vars, MODERN_WEBKIT, true, nvidia, gpu(setting, false)),
+                        RenderingPlan::Gpu {
+                            force_dmabuf: false,
+                            reason: FORCE_DMABUF_REASON
+                        },
+                        "{label}"
+                    );
+                    assert_eq!(
+                        plan_with_setting(&vars, MODERN_WEBKIT, true, nvidia, gpu(setting, true)),
+                        RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, GPU_UNSAFE_REASON),
+                        "{label}"
                     );
                 }
             }
         }
+        // X11 keeps the operator's environment as before.
+        let x11 = [(FORCE_DMABUF, "1"), (X11_DISPLAY, ":0")];
+        assert_eq!(
+            plan_with_setting(&x11, MODERN_WEBKIT, true, true, gpu(GpuRendering::Off, true)),
+            RenderingPlan::PreserveEnvironment
+        );
     }
 
     #[test]
@@ -1843,9 +1868,11 @@ mod tests {
         for &(name, value) in overrides {
             let vars = [(WAYLAND_DISPLAY, "wayland-0"), (name, value)];
             let expected = plan_on_host(&vars, WEBKIT_BUNDLED, true, true);
+            // A recorded crash does count for FORCE_DMABUF on Wayland (tested above).
+            let flag = name != FORCE_DMABUF;
             for setting in [GpuRendering::Auto, GpuRendering::On, GpuRendering::Off] {
                 assert_eq!(
-                    plan_with_setting(&vars, WEBKIT_BUNDLED, true, true, gpu(setting, true)),
+                    plan_with_setting(&vars, WEBKIT_BUNDLED, true, true, gpu(setting, flag)),
                     expected,
                     "{name}={value} {setting:?}"
                 );
