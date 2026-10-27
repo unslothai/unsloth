@@ -241,7 +241,9 @@ def split_text_into_chunks(*, text: str, chunk_size: int, chunk_overlap: int) ->
         next_start = end - chunk_overlap
         if 0 < next_start < end and not text[next_start - 1].isspace():
             boundary = _WHITESPACE.search(text, next_start, end)
-            next_start = boundary.end() if boundary else end
+            # No space in the overlap (CJK, one long token): keep the full overlap.
+            if boundary:
+                next_start = boundary.end()
         if next_start <= start:
             next_start = end
         start = max(0, next_start)

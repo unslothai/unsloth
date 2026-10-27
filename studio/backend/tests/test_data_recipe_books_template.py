@@ -57,3 +57,15 @@ def test_books_template_rows_start_on_a_word_boundary(tmp_path):
     for text in rows["text"]:
         start = book.index(text)
         assert start == 0 or book[start - 1].isspace(), text[:30]
+
+
+def test_overlap_is_kept_when_text_has_no_spaces():
+    pytest.importorskip("data_designer")
+    chunking = pytest.importorskip("data_designer_unstructured_seed.chunking")
+
+    text = "".join(chr(0x4E00 + (i * 7919) % 20000) for i in range(20000))
+    chunks = chunking.split_text_into_chunks(text = text, chunk_size = 6000, chunk_overlap = 600)
+
+    assert len(chunks) > 1
+    for previous, current in zip(chunks, chunks[1:]):
+        assert previous.endswith(current[:600])
