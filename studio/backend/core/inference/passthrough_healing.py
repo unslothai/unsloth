@@ -289,9 +289,9 @@ _STRICT_CLOSE_TOKENS = ("</tool_call>", "<|end_message|>", "<tool_call|>", "</fu
 _CALLS_TAG = "[TOOL_CALLS]"
 _ARGS_TAG = "[ARGS]"
 _WS_RE = re.compile(r"\s*")
-_SPAN_SKIP_RE = re.compile(r'[^"{}\\]*+')
-_STRING_SKIP_RE = re.compile(r'[^"\\]*+')
-_BRACKET_SKIP_RE = re.compile(r'[^"\[\]{}]*+')
+_SPAN_SKIP_RE = re.compile(r'[^"{}\\]*')
+_STRING_SKIP_RE = re.compile(r'[^"\\]*')
+_BRACKET_SKIP_RE = re.compile(r'[^"\[\]{}]*')
 
 
 def _resume_json_span(text: str, state: list) -> Optional[int]:
