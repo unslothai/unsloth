@@ -3310,6 +3310,18 @@ def _gated_method(cls, name, fast, original):
     return gated
 
 
+def runs_fast_forward(module, fast, name = "forward"):
+    """True when `module` runs Unsloth's `fast` as its class `name`: directly, or through the gate that
+    pre_patch installs (which runs `fast` only on modules marked by mark_unsloth_fast_path)."""
+    method = getattr(type(module), name, None)
+    method = getattr(method, "__func__", method)
+    if method is fast:
+        return True
+    if getattr(method, "_unsloth_gated", False) and getattr(method, "__wrapped__", None) is fast:
+        return bool(getattr(module, "_unsloth_fast_path", False))
+    return False
+
+
 def mark_unsloth_fast_path(model):
     """Opt every module of an Unsloth-loaded model into the patched forwards."""
     for module in model.modules():
