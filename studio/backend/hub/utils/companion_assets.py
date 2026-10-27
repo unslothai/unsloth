@@ -160,6 +160,55 @@ _DENOISER_DIRS = ("transformer/", "unet/")
 _WEIGHT_SUFFIXES = (".safetensors", ".bin", ".ckpt", ".pt", ".pth", ".gguf")
 
 
+def _modular_video_asset_files() -> dict[str, set[str]]:
+    """Hosted modular-video components, never whole-pipeline installs. Use the loader's tables."""
+    from core.inference.diffusion_prequant import derived_prequant_filenames
+    from core.inference.video_families import _FAMILIES
+    from core.inference.video_minimax_h3_te import H3_TE_QUANT_FILES, H3_TE_QUANT_REPO
+
+    assets: dict[str, set[str]] = {}
+    for fam in _FAMILIES:
+        if not fam.modular_workflow:
+            continue
+        for scheme, repo_id in fam.prequant_repos:
+            names = assets.setdefault(_normalise(repo_id), set())
+            names.update(n.lower() for n in derived_prequant_filenames(repo_id, scheme))
+            names.update(row[-1].lower() for row in fam.prequant_filenames if row[0] == scheme)
+    # H3's conditioner has a different format from the image encoder table. Old released builds
+    # used the identical file outside official/; both locations are curated companion assets.
+    names = assets.setdefault(_normalise(H3_TE_QUANT_REPO), set())
+    for name in H3_TE_QUANT_FILES.values():
+        names.update((name.lower(), name.lower().replace("/official/", "/")))
+    return assets
+
+
+def _modular_video_companion_bases(repo_id: str, filenames: Iterable[str]) -> set[str]:
+    """A modular pipeline or native checkpoint can reuse the same hosted component files."""
+    from core.inference.video_families import detect_video_family
+
+    fam = detect_video_family(repo_id)
+    if fam is None:
+        fam = next((f for name in filenames if (f := detect_video_family(name)) is not None), None)
+    if fam is None or not fam.modular_workflow:
+        return set()
+    return {repo for _scheme, repo in fam.prequant_repos}
+
+
+def _holds_modular_pipeline_components(repo) -> bool:
+    """A speed load can cache only the VAEs at its selected pipeline id, with the DiT elsewhere.
+
+    Keep sidecars protected until that pipeline is removed from On Device, including on upgraded
+    installs with no recorded links. An arbitrary VAE repo never becomes a dependent by filename.
+    """
+    from core.inference.video_families import _FAMILIES
+
+    key = _normalise(str(getattr(repo, "repo_id", "") or ""))
+    bases = _with_mirrors(fam.base_repo for fam in _FAMILIES if fam.modular_workflow)
+    return key in {_normalise(base) for base in bases} and any(
+        name.lower().endswith(_WEIGHT_SUFFIXES) for name in _snapshot_relative_names(repo)
+    )
+
+
 def repo_holds_denoiser(repo, *, folders: bool = True) -> bool:
     """Whether *repo* holds a runnable checkpoint, i.e. is a model the user installed. Beyond the name-only test: a single_file pick caches its checkpoint as ONE top-level file, ``sd_xl_base_1.0.safetensors`` for a whole-pipeline family and ``flux2-dev-fp8.safetensors`` for a transformer-only one, with no denoiser folder to recognise. Those repos are curated companion bases whose self-dependency is dropped, so without this the orphan listing called an installed checkpoint an unused leftover and Free up space deleted it. A companion-only fetch never lands a weight at the snapshot root, and the two ways to be wrong are not symmetric: an orphan we decline to offer costs disk, a checkpoint we offer costs the model. The one root weight that is NOT a checkpoint is the curated component repos' own asset, which is why they are excluded by id: a single-file VAE or text encoder is the companion, and reading it as an installed model is what kept an orphaned pair pinned to disk."""
     names = list(_snapshot_relative_names(repo))
@@ -167,6 +216,14 @@ def repo_holds_denoiser(repo, *, folders: bool = True) -> bool:
     if folders and any(holds_denoiser(name) for name in names):
         return True
     repo_id = str(getattr(repo, "repo_id", "") or "")
+    video_assets = _modular_video_asset_files().get(_normalise(repo_id))
+    if video_assets is not None:
+        # Offer only a component-only copy. An unrecognised weight may be a user-installed model;
+        # preserve it even if it shares a repo with the curated sidecars.
+        return any(
+            name.lower().endswith(_WEIGHT_SUFFIXES) and name.lower() not in video_assets
+            for name in names
+        )
     if _normalise(repo_id) in _component_only_repo_ids():
         return False
     encoder_casts = _te_prequant_names(repo_id)
@@ -271,8 +328,9 @@ def _family_bases(repo_id: str, gguf_filename: Optional[str] = None) -> set[str]
     except Exception:  # noqa: BLE001
         return set()
     if fam is None:
-        # The loader resolves a base with this same call, so no family means no load and there is no dependent here to protect: the two fail together.
-        return set()
+        # Modular video has its own family registry and hosted components; it does not resolve
+        # through the image registry.
+        return _modular_video_companion_bases(repo_id, [gguf_filename] if gguf_filename else [])
     bases = {resolve_base_repo(fam, None)}
     bases |= _curated_variant_bases(fam, repo_id, gguf_filename)
     # The NATIVE engine never reads the diffusers base: it fetches a single-file VAE and text encoder from their own repos, and those repos are offerable for deletion, so a pre-existing native GGUF with no recorded link would have had its encoder listed as unused and removed underneath it. The recorded links cover a load that has happened since; this covers the install that predates them.
@@ -393,8 +451,8 @@ def _with_mirrors(bases: Iterable[str]) -> set[str]:
 
 
 def known_companion_base_ids() -> set[str]:
-    """Every id (lowercased) that is a curated image-family companion base, or its mirror. Deliberately NOT "anything a link ever named": orphan cleanup offers only repos this set recognises, so a mis-recorded link can never turn an unrelated repo into a delete candidate."""
-    bases = _curated_base_ids()
+    """Every curated image-base or modular-video companion id (lowercased), including mirrors. Deliberately NOT "anything a link ever named": orphan cleanup offers only repos this set recognises, so a mis-recorded link can never turn an unrelated repo into a delete candidate."""
+    bases = _curated_base_ids() | set(_modular_video_asset_files())
     # The native engine's component-only repos ARE the companions for an sd.cpp pick, and the largest half of the footprint; leaving them out made them link-only strangers. Safe against a chat model borrowed as a text encoder, since the orphan listing skips any repo holding a GGUF.
     try:
         from core.inference.diffusion_families import sd_cpp_companion_only_repo_ids
@@ -454,6 +512,12 @@ def required_companion_bases(
     pick_names = _cached_checkpoint_pick_names(cache_scans)
     # Denoiser-gated, not id-gated: a VAE-only fetch from a prequant repo (unsloth/Qwen-Image-2.1-FP8) cannot load, so it pins nothing (#11825).
     checkpoints = _denoiser_holding_repo_ids(cache_scans)
+    checkpoints |= {
+        _normalise(str(getattr(repo, "repo_id", "") or ""))
+        for scan in cache_scans or ()
+        for repo in getattr(scan, "repos", ()) or ()
+        if str(getattr(repo, "repo_type", "")) == "model" and _holds_modular_pipeline_components(repo)
+    }
     required: dict[str, set[str]] = {}
     for repo_id in _cached_model_repo_ids(cache_scans):
         key = _normalise(repo_id)
