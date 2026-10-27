@@ -361,3 +361,73 @@ test("a tab finishing an earlier intent does not recreate one another tab cancel
   assert.deepEqual(server, ["a"]);
 });
 
+test("a conflicting pin is not retried once another tab cancelled it", async () => {
+  const storage = new MemoryStorage();
+  let server: string[] = [];
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let firstA = true;
+  const pins: string[][] = [];
+  function tab(name: "a" | "b") {
+    const disk = createPinnedChatsJournal(storage, "server|session");
+    return createPinnedChatsSync({
+      load: async () => server.slice(),
+      compareAndSet: async (expected, next) => {
+        if (name === "a" && firstA) {
+          firstA = false;
+          await held;
+        }
+        if (next.includes("x")) pins.push(next.slice());
+        if (JSON.stringify(expected ?? []) !== JSON.stringify(server)) return { applied: false, pinnedIds: server.slice() };
+        server = next.slice();
+        return { applied: true, pinnedIds: server.slice() };
+      },
+      readLegacy: () => [],
+      readPending: disk.readPending,
+      writePending: disk.writePending,
+      publish: () => undefined,
+    });
+  }
+  const a = tab("a");
+  await a.refresh();
+  const pinning = a.setPinned(["x"], true).catch(() => undefined);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  server = ["other"];
+  const b = tab("b");
+  await b.setPinned(["x"], false).catch(() => undefined);
+  await b.refresh().catch(() => undefined);
+  release();
+  await pinning;
+  assert.deepEqual(server, ["other"]);
+  assert.equal(pins.length, 1);
+});
+
+test("unpinning one chat of a queued bulk pin keeps the rest and unblocks the queue", async () => {
+  const storage = new MemoryStorage();
+  let server: string[] = [];
+  const disk = createPinnedChatsJournal(storage, "server|session");
+  const sync = createPinnedChatsSync({
+    load: async () => server.slice(),
+    compareAndSet: async (expected, next) => {
+      // A legacy comparison still awaiting import: the server cannot place it yet.
+      if (next.includes("unimported") || JSON.stringify(expected ?? []) !== JSON.stringify(server)) {
+        return { applied: false, pinnedIds: server.slice() };
+      }
+      server = next.slice();
+      return { applied: true, pinnedIds: server.slice() };
+    },
+    readLegacy: () => [],
+    readPending: disk.readPending,
+    writePending: disk.writePending,
+    publish: () => undefined,
+  });
+  await sync.refresh();
+  const bulk = sync.setPinned(["unimported", "existing"], true).catch(() => undefined);
+  await sync.setPinned(["unimported"], false);
+  await sync.setPinned(["later"], true);
+  await bulk;
+  await sync.refresh();
+  assert.deepEqual(server, ["later", "existing"]);
+  assert.deepEqual(disk.readPending(), []);
+});
+

@@ -222,6 +222,15 @@ export function createPinnedChatsSync(options: PinnedChatsSyncOptions) {
       if (epoch !== generation) {
         return;
       }
+      try {
+        // A rebase must not resend an intent another tab cancelled during the last attempt.
+        restore();
+      } catch {
+        // An unreadable journal keeps the in-memory queue.
+      }
+      if (!pending.some((entry) => entry.operationId === operation.operationId)) {
+        return;
+      }
       const next =
         validatePinnedIds(applyPinOperation(confirmed ?? [], operation)) ?? [];
       const result = await options.compareAndSet(
@@ -338,14 +347,20 @@ export function createPinnedChatsSync(options: PinnedChatsSyncOptions) {
         ...intent,
         operationId: createNavigationNonce(),
       });
-      // An unpin cancels earlier queued pins of only those chats, so a pin the server can never
+      // An unpin removes those chats from earlier queued pins, so a pin the server can never
       // place (a comparison deleted before import) cannot block the queue. The unpin still goes.
       const cancelled = new Set(operation.pinned ? [] : operation.ids);
       const next = [
-        ...pending.filter(
-          (entry) =>
-            !(entry.pinned && entry.ids.every((id) => cancelled.has(id))),
-        ),
+        ...pending.flatMap((entry) => {
+          if (!entry.pinned) return [entry];
+          const ids = entry.ids.filter((id) => !cancelled.has(id));
+          if (ids.length === entry.ids.length) return [entry];
+          // A changed intent needs a new ID: journal entries are immutable and the server
+          // deduplicates by ID.
+          return ids.length === 0
+            ? []
+            : [{ ...entry, ids, operationId: createNavigationNonce() }];
+        }),
         operation,
       ];
       if (next.length > 10_000) {
