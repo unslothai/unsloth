@@ -10163,6 +10163,7 @@ class VideoBackend:
         device: str,
         memory_mode: Optional[str],
         scheme: Optional[str],
+        te_scheme: Optional[str] = None,
     ) -> None:
         """Refuse H3 modular loads that cannot fit unified memory; best-effort, skipped if no table/device."""
         components = getattr(fam, "bf16_components_gb", None)
@@ -10180,6 +10181,8 @@ class VideoBackend:
             transformer_gb = float(measured)
         elif factor is not None:
             transformer_gb *= factor
+        # The hosted conditioner stays INT8 in memory; price the same artifact the loader seeds.
+        text_encoder_gb = h3_te_resident_gb(te_scheme, bf16_gb = text_encoder_gb)
         mib_per_gb = 1000.0**3 / (1024.0 * 1024.0)
         plan = plan_diffusion_memory(
             target = target,
@@ -10348,6 +10351,16 @@ class VideoBackend:
                 f"no hosted pre-quantized {scheme} checkpoint for {fam.name} {workflow}"
             )
             scheme = None
+        # Resolve both precision and provenance before pricing the unified-memory load.
+        te_scheme = self._h3_te_quant_scheme(fam, text_encoder_quant, base, umem_target)
+        te_index_source = self._h3_te_index_source(pipe) if te_scheme is not None else None
+        te_index_declined = False
+        if te_scheme is not None:
+            if te_index_source is None or _h3_te_canonical(te_index_source) != _h3_te_canonical(
+                fam.base_repo
+            ):
+                te_scheme = None
+                te_index_declined = True
         # Unified memory: CPU offload frees nothing, so H3's 144.2 GB set must be refused before any load.
         self._raise_on_modular_unified_shortfall(
             fam,
@@ -10356,6 +10369,7 @@ class VideoBackend:
             device = device,
             memory_mode = memory_mode,
             scheme = comfy_scheme or scheme,
+            te_scheme = te_scheme,
         )
         if comfy_scan is not None:
             from .video_minimax_h3_comfy import load_h3_comfy_transformer
@@ -10489,24 +10503,12 @@ class VideoBackend:
         # Seed the hosted conditioner: a runtime cast peaks at bf16 and would download 62 GB dense.
         text_encoder_quant_engaged: Optional[str] = None
         text_encoder_quant_reason = "released bfloat16 components"
-        # Base-gated by the plan's resolver: a derivative base with its own conditioner never gets this one.
-        te_scheme = self._h3_te_quant_scheme(fam, text_encoder_quant, base, umem_target)
-        # From here the request is the NORMALISED scheme (None once "none" pins dense); reasons assume it.
+        # From here the request is normalized; None is the explicit dense pin.
         text_encoder_quant = (
             None if text_encoder_quant_is_auto else normalize_te_quant(text_encoder_quant)
         )
         if text_encoder_quant_is_auto and te_scheme is not None:
             text_encoder_quant_reason = f"auto: hosted quantized {te_scheme} conditioner"
-        # Second gate: the modular index names the conditioner's true source; unanswerable is a refusal.
-        te_index_source = self._h3_te_index_source(pipe) if te_scheme is not None else None
-        te_index_declined = False
-        if te_scheme is not None:
-            # Exact match: the tolerant _same_base_model would accept someone/MiniMax-H3.
-            if te_index_source is None or _h3_te_canonical(te_index_source) != _h3_te_canonical(
-                fam.base_repo
-            ):
-                te_scheme = None
-                te_index_declined = True
         if text_encoder_quant is not None and te_scheme is None:
             # Valid request, no hosted artifact for this workflow or conditioner: say which; keep the request.
             if te_index_declined:
@@ -10583,15 +10585,18 @@ class VideoBackend:
                 )
             )
         # Pass the token again or gated components load anonymously; workflow= narrows names, not blocks.
-        if scheme is not None and transformer_quant_engaged is None:
-            # Seeding may fall back to the dense 66.3 GB denoiser: re-check unified memory first or the OS kills.
+        if (scheme is not None and transformer_quant_engaged is None) or (
+            te_scheme is not None and text_encoder_quant_engaged is None
+        ):
+            # Either hosted component can fall back to dense; re-check the components that actually landed.
             self._raise_on_modular_unified_shortfall(
                 fam,
                 target = umem_target,
                 dtype = dtype,
                 device = device,
                 memory_mode = memory_mode,
-                scheme = None,
+                scheme = transformer_quant_engaged,
+                te_scheme = text_encoder_quant_engaged,
             )
         # Without cache_dir components resolve against the import-time HF_HUB_CACHE.
         from .diffusion_offline_source import offline_component_sources
