@@ -29,8 +29,10 @@ import {
   type ModelConfigHandoffRequest,
   createModelConfigHandoffRequestId,
 } from "@/features/model-picker";
+import { useIsAccountOwner } from "@/features/auth";
 import {
   loadLanAccess,
+  loadMultiModelEnabled,
   publishLanUrls,
   useSettingsDialogStore,
 } from "@/features/settings";
@@ -308,6 +310,56 @@ function servedModels(
 
 function openApiSettings(): void {
   useSettingsDialogStore.getState().openDialog("api-keys");
+}
+
+/** Keeping several models loaded is off by default, so say where to turn it on. Resources is an owner tab. */
+function MultiModelHint({
+  servedCount,
+}: {
+  servedCount: number;
+}): ReactElement | null {
+  const keepLoaded = useChatRuntimeStore((s) => s.keepModelsLoaded);
+  const isOwner = useIsAccountOwner();
+  // The store defaults to off: wait for the read, or the hint flashes for everyone who has it on.
+  const [known, setKnown] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    loadMultiModelEnabled("Failed to read the multiple models setting").then(
+      (enabled) => {
+        if (cancelled) return;
+        useChatRuntimeStore.getState().setKeepModelsLoaded(enabled);
+        setKnown(true);
+      },
+      () => undefined,
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  if (!known || keepLoaded || servedCount > 1) return null;
+  return (
+    <>
+      {" · "}
+      {isOwner ? (
+        <>
+          You can enable loading multiple models in{" "}
+          <button
+            type="button"
+            className="font-medium text-foreground underline underline-offset-2 hover:text-primary"
+            onClick={() =>
+              useSettingsDialogStore.getState().openDialog("resources", {
+                scrollTarget: "resources-model-memory",
+              })
+            }
+          >
+            Settings
+          </button>
+        </>
+      ) : (
+        "One model at a time"
+      )}
+    </>
+  );
 }
 
 function Stat({
@@ -1371,7 +1423,9 @@ export function ApiMonitorPage(): ReactElement {
                 pinOnClick={true}
                 hoverClassName="rounded-full transition-colors group-hover:bg-muted dark:group-hover:bg-chat-icon-bg-hover"
                 padX={2}
-                className="-my-1 -ml-2 h-6 min-w-(--full) [--icon-size:--spacing(3.5)] [&>button]:rounded-full"
+                fitContent={true}
+                // The row's other facts are sans at text-ui-12; the chip defaults to mono.
+                className="-mx-2 -my-1 h-6 font-sans text-ui-12 tabular-nums [--icon-size:--spacing(3.5)] [&>button]:rounded-full"
                 used={used}
                 total={windowSize}
                 promptTokens={last?.prompt_tokens ?? undefined}
@@ -1604,6 +1658,7 @@ export function ApiMonitorPage(): ReactElement {
             {served.length === 0 ? (
               <p className="text-ui-12 text-muted-foreground">
                 No models loaded
+                <MultiModelHint servedCount={0} />
               </p>
             ) : (
               <div className="@container/served flex flex-col gap-2">
@@ -1611,14 +1666,15 @@ export function ApiMonitorPage(): ReactElement {
                   {served.length === 1
                     ? "1 model answering requests"
                     : `${served.length} models answering requests`}
+                  <MultiModelHint servedCount={served.length} />
                 </p>
                 {/* Fact columns hug their content: a fixed width left a short value's slack before the next. */}
-                <div className="flex flex-col gap-3 @3xl/served:grid @3xl/served:grid-cols-[minmax(0,max-content)_auto_auto_auto_auto_1fr] @3xl/served:items-center @3xl/served:gap-x-8 @3xl/served:gap-y-1.5">
+                <div className="flex flex-col gap-3 @3xl/served:grid @3xl/served:grid-cols-[minmax(0,max-content)_auto_auto_auto_auto_1fr] @3xl/served:items-center @3xl/served:gap-x-10 @3xl/served:gap-y-1.5">
                   {served.map((model) => (
                     // A subgrid, not `contents`: the row needs a box (gaps included) to hover.
                     <div
                       key={model.checkpoint}
-                      className="group/row flex flex-wrap items-center gap-x-3 gap-y-1 @md/served:gap-x-4 @3xl/served:col-span-full @3xl/served:grid @3xl/served:grid-cols-subgrid @3xl/served:gap-x-8"
+                      className="group/row flex flex-wrap items-center gap-x-3 gap-y-1 @md/served:gap-x-4 @3xl/served:col-span-full @3xl/served:grid @3xl/served:grid-cols-subgrid @3xl/served:gap-x-10"
                     >
                       <span className="order-1 flex min-w-0 flex-1 items-center gap-1 text-ui-12 @max-3xl/served:basis-full @max-3xl/served:items-start @3xl/served:order-none">
                         <span

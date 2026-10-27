@@ -30,9 +30,9 @@ test("served-model facts hug their content with one gap, icons sized from their 
   const page = readSrc("features/api-monitor/api-monitor-page.tsx");
   assert.match(
     page,
-    /@3xl\/served:grid-cols-\[minmax\(0,max-content\)_auto_auto_auto_auto_1fr\][^"]*@3xl\/served:gap-x-8/,
+    /@3xl\/served:grid-cols-\[minmax\(0,max-content\)_auto_auto_auto_auto_1fr\][^"]*@3xl\/served:gap-x-10/,
   );
-  assert.match(page, /@3xl\/served:grid-cols-subgrid @3xl\/served:gap-x-8/);
+  assert.match(page, /@3xl\/served:grid-cols-subgrid @3xl\/served:gap-x-10/);
   assert.match(page, /className="size-\[1em\] shrink-0 text-muted-foreground"/);
   // Total time uses the scheduled clock, in the rows and the log.
   assert.match(
@@ -40,4 +40,36 @@ test("served-model facts hug their content with one gap, icons sized from their 
     /<Fact label="Total time, average per request" icon=\{Clock01Icon\}>/,
   );
   assert.doesNotMatch(page, /Timer01Icon/);
+  // Context reads in the same sans text-ui-12 as the rest, sized to its text, padding cancelled both sides.
+  assert.match(
+    page,
+    /fitContent=\{true\}[\s\S]{0,140}className="-mx-2 -my-1 h-6 font-sans text-ui-12 tabular-nums/,
+  );
+  const chip = readSrc("features/chat/components/context-usage-bar.tsx");
+  assert.match(
+    chip,
+    /fitContent \? "flex items-center" : "grid shrink! items-center"/,
+  );
+  assert.match(chip, /fitContent \? "gap-1\.5" : "w-\(--full\) gap-2"/);
+});
+
+test("the served-models line points to Model memory while one model at a time", () => {
+  const page = readSrc("features/api-monitor/api-monitor-page.tsx");
+  // Gone once it is on, or once several models are loaded anyway.
+  assert.match(
+    page,
+    /if \(!known \|\| keepLoaded \|\| servedCount > 1\) return null;/,
+  );
+  assert.match(page, /You can enable loading multiple models in\{" "\}/);
+  assert.match(
+    page,
+    /openDialog\("resources", \{\s*scrollTarget: "resources-model-memory",\s*\}\)/,
+  );
+  // Resources is an owner tab: a managed account gets the fact, not a link it cannot follow.
+  assert.match(
+    page,
+    /isOwner \? \([\s\S]{0,700}\) : \(\s*"One model at a time"\s*\)/,
+  );
+  assert.match(page, /<MultiModelHint servedCount=\{0\} \/>/);
+  assert.match(page, /<MultiModelHint servedCount=\{served\.length\} \/>/);
 });
