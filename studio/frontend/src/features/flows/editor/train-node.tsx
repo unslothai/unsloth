@@ -64,14 +64,14 @@ export function TrainNodeBody({
   });
   return (
     <div className="flow-detail flex flex-col gap-1 px-3" data-train-state={view.state}>
-      <div className="flex min-w-0 items-center gap-1.5">
+      <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5">
         <span
           className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${TONE[view.state]}`}
         >
           {TRAIN_STATE_LABEL[view.state]}
         </span>
         {view.detail && view.state !== "failed" && (
-          <span className="truncate text-[11px] text-zinc-400">
+          <span className="text-[11px] leading-snug text-zinc-400">
             {view.detail}
           </span>
         )}
