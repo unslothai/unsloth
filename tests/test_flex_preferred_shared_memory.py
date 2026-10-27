@@ -113,3 +113,27 @@ def test_rocm_cpu_and_a_failing_probe_keep_flex(cards, monkeypatch):
         _utils.torch.cuda, "get_device_properties", side_effect = RuntimeError("probe")
     ):
         assert _resolve(_gemma3()) == "flex_attention"
+
+
+def test_l4_float32_stays_off_flex(cards, monkeypatch):
+    # The small tiles fit bf16 / fp16 only: a float32 forward needs 147456 B, over 101376 (#15271).
+    monkeypatch.setattr(_utils.torch, "__version__", "2.10.0+cu130")
+    monkeypatch.delenv("UNSLOTH_FLEX_SMALL_SMEM_TILES", raising = False)
+    monkeypatch.delenv("UNSLOTH_FORCE_FLOAT32", raising = False)
+    cards(L4)
+
+    def resolve(dtype):
+        return _utils.resolve_attention_implementation(
+            SupportsFlex, _gemma3(), supports_sdpa = False, dtype = dtype
+        )
+
+    assert resolve(_utils.torch.float32) == "eager"
+    assert resolve(_utils.torch.bfloat16) == "flex_attention"
+    assert resolve(_utils.torch.float16) == "flex_attention"
+    # Forced float32 loads bf16 but runs Gemma 3 attention in float32.
+    monkeypatch.setenv("UNSLOTH_FORCE_FLOAT32", "1")
+    assert resolve(_utils.torch.bfloat16) == "eager"
+    # Cards where the default template fits keep flex in float32, as before.
+    monkeypatch.delenv("UNSLOTH_FORCE_FLOAT32")
+    cards(A100)
+    assert resolve(_utils.torch.float32) == "flex_attention"

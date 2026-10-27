@@ -884,6 +884,14 @@ def _flex_call_needs_backward(query, key, value):
         return False
 
 
+def _flex_main_kernel_forced(kwargs):
+    """True when the caller's kernel_options force the main flex kernel over flex_decoding."""
+    requested = kwargs.get("kernel_options") or {}
+    if not isinstance(requested, dict):
+        return False
+    return requested.get("FORCE_USE_FLEX_ATTENTION") is True or requested.get("BACKEND") == "TRITON"
+
+
 # unsloth_zoo drops the causal mask of unpadded, cache-free batches; route that None to SDPA is_causal.
 # Kill switch: UNSLOTH_FLEX_MASKLESS_SDPA=0.
 _FLEX_MASKLESS_SDPA_ENABLED = os.environ.get("UNSLOTH_FLEX_MASKLESS_SDPA", "1") != "0"
@@ -1036,8 +1044,14 @@ def _wrap_flex_attention_forward(flex_attention_forward):
             and small_smem_device_ok
             and hasattr(query, "dim")
             and query.dim() == 4
-            # Short no-grad queries go to flex_decoding, whose own tiles are left alone.
-            and (query.shape[2] >= 128 or _flex_call_needs_backward(query, key, value))
+            # Short no-grad queries go to flex_decoding, whose own tiles are left alone, unless the
+            # caller (the block compile hook, also for no-grad checkpoint forwards) forces the main
+            # kernel. Shape last, so training calls add no seq >= 128 guard.
+            and (
+                _flex_call_needs_backward(query, key, value)
+                or _flex_main_kernel_forced(kwargs)
+                or query.shape[2] >= 128
+            )
             and _flex_tuned_bwd_fits(
                 args, kwargs, _FLEX_SMALL_SMEM_KERNEL_OPTIONS, ("fwd_", "bwd_", "BLOCK_", "num_")
             )
@@ -1468,7 +1482,12 @@ def _enable_flex_attention_support(model_class, model_type = ""):
 _FLEX_TEMPLATE_HEAD_DIM_256_SHARED_MEMORY = 151552
 
 
-def _flex_preferred_fits(config):
+def _flex_attention_runs_float32(dtype):
+    """Attention runs in float32: a float32 load, or Gemma 3 / 4 under UNSLOTH_FORCE_FLOAT32."""
+    return dtype is torch.float32 or os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1"
+
+
+def _flex_preferred_fits(config, dtype = None):
     """False when a visible CUDA card lacks that shared memory; fails open on ROCm / no CUDA."""
     head_dim = _text_attention_head_dim(config)
     if head_dim is None or not (
@@ -1478,8 +1497,9 @@ def _flex_preferred_fits(config):
     try:
         if getattr(torch.version, "hip", None) or not torch.cuda.is_available():
             return True
-        # sm86 / sm89 with torch >= 2.10: the flex wrapper passes tiles that fit.
-        if _flex_small_smem_device_ok():
+        # sm86 / sm89 with torch >= 2.10: the flex wrapper passes tiles that fit. Not in float32
+        # (or forced float32 attention), whose forward needs 147456 B even with them: stays eager.
+        if _flex_small_smem_device_ok() and not _flex_attention_runs_float32(dtype):
             return True
         return all(
             torch.cuda.get_device_properties(index).shared_memory_per_block_optin
@@ -1490,7 +1510,7 @@ def _flex_preferred_fits(config):
         return True
 
 
-def _supports_flex_attention(model_class, config, model_type):
+def _supports_flex_attention(model_class, config, model_type, dtype = None):
     if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "1") == "0":
         return False
     if not getattr(model_class, "_supports_flex_attn", False):
@@ -1499,7 +1519,7 @@ def _supports_flex_attention(model_class, config, model_type):
         return False
     if not _flex_attention_gpu_is_supported():
         return False
-    if _config_prefers_flex_attention(config) and not _flex_preferred_fits(config):
+    if _config_prefers_flex_attention(config) and not _flex_preferred_fits(config, dtype):
         return False
     for attention_config in _iter_attention_configs(config):
         attention_dropout = _config_get(attention_config, "attention_dropout", 0) or 0
@@ -2983,12 +3003,12 @@ def resolve_attention_implementation(
     supports_flash_attention = _model_class_supports_flash_attention(
         model_class
     ) and not _is_flash_excluded(model_type)
-    supports_flex_attention = _supports_flex_attention(model_class, config, model_type)
+    supports_flex_attention = _supports_flex_attention(model_class, config, model_type, dtype)
     # Before the ladder, since every branch below reads supports_flex_attention.
     prefers_flex_for_head_dim = _prefers_flex_for_head_dim(config)
     if prefers_flex_for_head_dim and not supports_flex_attention:
         if _enable_flex_attention_support(model_class, model_type):
-            supports_flex_attention = _supports_flex_attention(model_class, config, model_type)
+            supports_flex_attention = _supports_flex_attention(model_class, config, model_type, dtype)
     # An explicit 1 forces flex over flash_attention_2 too, but only when flex can be scoped to the decoder
     flex_forced_for_head_dim = (
         _flex_large_head_dim_override() is True
