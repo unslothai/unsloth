@@ -728,7 +728,12 @@ def _get_heuristic_configs(
     # output tile starves the kernel; a 128-wide N tile at 3 stages is faster at the same error. Other K, or an
     # N that 128 does not divide, keep the fitted tile. The SMEM fit below still shrinks it on small cards.
     config_bwd_dw = configs[2]
-    if config_bwd_dw.BLOCK_SIZE_K == 64 and k_dim is not None and n_dim is not None and n_dim % 128 == 0:
+    if (
+        config_bwd_dw.BLOCK_SIZE_K == 64
+        and k_dim is not None
+        and n_dim is not None
+        and n_dim % 128 == 0
+    ):
         config_bwd_dw.BLOCK_SIZE_N = 128
         config_bwd_dw.num_stages = 3
     return _fit_configs_to_smem(configs, dtype, weight_dtype, **_device_kwargs(device))

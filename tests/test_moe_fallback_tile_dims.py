@@ -98,7 +98,13 @@ def test_fallback_tiles_divide_each_gemm(ac, no_smem_fit, hidden, inter, which):
             m, bn, bk, warps, stages = tile
             assert n % bn == 0 and k % bk == 0, (which, hidden, inter, n, k, tile)
             if which == "heuristic" and kind == "dW" and bk == 64 and n % 128 == 0:
-                assert tile == WIDE_DW, (hidden, inter, n, k, tile)   # K left BLOCK_SIZE_K 64: wider N tile
+                assert tile == WIDE_DW, (
+                    hidden,
+                    inter,
+                    n,
+                    k,
+                    tile,
+                )  # K left BLOCK_SIZE_K 64: wider N tile
                 continue
             assert bn >= 16 and bk >= 16
             assert bn <= old_tile[1] and bk <= old_tile[2]
