@@ -244,10 +244,10 @@ def _filter_reaching_compile(monkeypatch, family):
 
 
 def test_only_ltx_opts_into_the_reduction_filter(monkeypatch):
-    # off sm120, where the image families' arch-scoped opt-in is inert
+    # B200: of the video families only LTX-2 opts in
     monkeypatch.setattr(cc, "_device_capability", lambda: (10, 0))
     assert _filter_reaching_compile(monkeypatch, _family("ltx-2")) is True
-    for name in ("hunyuanvideo-1.5", "wan2.2-ti2v-5b", "flux.1"):
+    for name in ("hunyuanvideo-1.5", "wan2.2-ti2v-5b"):
         assert _filter_reaching_compile(monkeypatch, _family(name)) is False, name
 
 

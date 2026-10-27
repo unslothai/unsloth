@@ -64,6 +64,7 @@ const { ExportRunPanel } = loadWithStubs<typeof ExportRunPanelModule>(
     },
     "@/features/model-picker": { FolderBrowser: none },
     "@hugeicons/core-free-icons": {},
+    "@/lib/chevron-icons": {},
     "@hugeicons/react": { HugeiconsIcon: none },
     "lucide-react": { ChevronRightIcon: none },
     "zustand/react/shallow": { useShallow: (fn: unknown) => fn },

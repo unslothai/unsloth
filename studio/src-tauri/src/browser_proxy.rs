@@ -19,7 +19,7 @@ use url::{Host, Position, Url};
 
 const MAX_HEAD: usize = 16 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(30);
-// One address's share of it, so a dead first answer leaves time for the next.
+// Per-address share, so a dead first answer leaves time for the next.
 const ADDRESS_TIMEOUT: Duration = Duration::from_secs(10);
 const ESTABLISHED: &[u8] = b"HTTP/1.1 200 Connection Established\r\n\r\n";
 

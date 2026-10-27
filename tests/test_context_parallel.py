@@ -673,6 +673,28 @@ def test_transformers_cp_size_is_refused(monkeypatch):
         Trainer()
 
 
+@pytest.mark.parametrize("cp_size", [1, 2])
+def test_accelerate_config_cp_size_is_refused(monkeypatch, cp_size):
+    # `accelerate launch` with parallelism_config_cp_size: the Accelerator builds its
+    # ParallelismConfig from the environment and TrainingArguments.parallelism_config stays None.
+    import types
+
+    accelerator = types.SimpleNamespace(
+        parallelism_config = types.SimpleNamespace(cp_size = cp_size),
+        state = types.SimpleNamespace(device_mesh = None),
+    )
+    Trainer = _patched_trainer(
+        monkeypatch,
+        args = types.SimpleNamespace(context_parallel_size = 1, parallelism_config = None),
+        accelerator = accelerator,
+    )
+    if cp_size == 1:
+        Trainer()
+        return
+    with pytest.raises(NotImplementedError, match = "accelerate config"):
+        Trainer()
+
+
 def test_cp_state_is_reinstalled_at_train_after_another_trainer(monkeypatch):
     import types
 

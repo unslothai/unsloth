@@ -31,7 +31,6 @@ import {
 } from "@/lib/llama-job-lifecycle";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { Download, X } from "lucide-react";
 import {
   type CSSProperties,
   type MouseEvent,
@@ -41,6 +40,8 @@ import {
   useRef,
   useState,
 } from "react";
+import { Download01Icon, Cancel01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 // cap for interpolation between coarse backend progress updates.
 const RUNNING_CAP = 0.95;
 
@@ -61,7 +62,6 @@ function backendLabel(backend: string | null | undefined): string {
   return BACKEND_LABELS[backend] ?? backend;
 }
 
-// Smooth coarse backend progress without freezing between milestones.
 function useSmoothedProgress(
   active: boolean,
   progress: number | null,
@@ -89,15 +89,15 @@ function useSmoothedProgress(
       const current = displayRef.current;
       const real = progressRef.current ?? 0;
       let target: number;
-      let speed: number; // approach rate (fraction of remaining gap per second)
+      let speed: number;
       if (doneRef.current) {
         target = 1;
         speed = 5;
       } else if (real > current) {
-        target = real; // catch up to a freshly observed milestone
+        target = real;
         speed = 4;
       } else {
-        target = RUNNING_CAP; // no signal: creep toward the cap, never frozen
+        target = RUNNING_CAP;
         speed = 0.3;
       }
       const cap = doneRef.current ? 1 : RUNNING_CAP;
@@ -483,7 +483,7 @@ export function LlamaUpdateBanner({
       data-testid="llama-update-banner"
     >
       {/* fill the height floor even when the changelog content is short. */}
-      <div className="relative flex max-h-[calc(100dvh_-_2rem_-_var(--studio-window-chrome-top,0px))] min-h-0 grow flex-col overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
+      <div className="relative flex max-h-[calc(100dvh_-_2rem_-_var(--studio-window-chrome-top,0px))] min-h-0 grow flex-col overflow-hidden rounded-2xl bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
         {/* Hides the card until the app is reopened, the same skip What's new offers. */}
         {applying ? null : (
           <button
@@ -493,11 +493,11 @@ export function LlamaUpdateBanner({
             className="absolute right-3 top-3 flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             data-testid="llama-update-close-button"
           >
-            <X aria-hidden="true" className="size-4" strokeWidth={2} />
+            <HugeiconsIcon icon={Cancel01Icon} aria-hidden="true" className="size-4" strokeWidth={2} />
           </button>
         )}
         <div className="flex min-w-0 shrink-0 items-start gap-4 pr-6">
-          <Download
+          <HugeiconsIcon icon={Download01Icon}
             aria-hidden="true"
             className="mt-1 size-5 shrink-0 text-foreground"
             strokeWidth={1.75}
@@ -515,7 +515,7 @@ export function LlamaUpdateBanner({
             {applying ? null : (
               <button
                 type="button"
-                className="-mx-1 mt-1 block rounded px-1 text-xs font-medium text-foreground underline decoration-foreground/30 underline-offset-2 hover:decoration-foreground/70"
+                className="-mx-1 mt-1 block rounded-full px-1 text-xs font-medium text-foreground underline decoration-foreground/30 underline-offset-2 hover:decoration-foreground/70"
                 onClick={() =>
                   setDetailsVersion(detailsOpen ? null : detailsKey)
                 }
@@ -591,6 +591,7 @@ export function LlamaUpdateBanner({
             </Button>
             <Button
               size="sm"
+              variant="dark"
               // align the pill edge with the card padding.
               className="-mr-1 h-auto whitespace-nowrap rounded-full px-3 py-2 text-ui-13"
               onClick={handleUpdate}
@@ -656,7 +657,7 @@ function SkippedNotice({
       }}
       data-testid="llama-update-skipped"
     >
-      <div className="flex items-center gap-3 rounded-[24px] bg-white py-2.5 pl-5 pr-3 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
+      <div className="flex items-center gap-3 rounded-full bg-white py-2.5 pl-5 pr-3 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
         {/* <output> carries the implicit status role, so screen readers announce the skip. */}
         <output
           className="block min-w-0 grow truncate text-ui-13 text-foreground"

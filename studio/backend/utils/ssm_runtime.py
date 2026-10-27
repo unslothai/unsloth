@@ -631,6 +631,14 @@ def resolve_ssm_kernels(
         required = model_requires_mamba_ssm(probe)
     if wants is None:
         wants = model_wants_causal_conv1d(probe)
+    # zoo replaces causal_conv1d only in the native modeling modules; remote code may import it.
+    if (
+        not wants
+        and remote_code
+        and trust_remote_code is not False
+        and any(_is_zoo_gdn_model_type(model_type) for model_type in model_types)
+    ):
+        wants = True
     ssm_types = {t for t in model_types if t in SSM_MODEL_TYPES}
     remote_code_used = bool(remote_code) and (
         bool(trust_remote_code)

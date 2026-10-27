@@ -35,6 +35,11 @@ export type SkillDraft = {
 
 export type SkillManifest = SkillRecord & { instructions: string };
 
+export type SkillImportResult = {
+  imported: SkillRecord[];
+  failed: { name: string; error: string }[];
+};
+
 type SkillsSnapshot = {
   skills: readonly SkillRecord[];
   loading: boolean;
@@ -248,6 +253,27 @@ export async function deleteSkill(name: string): Promise<void> {
   });
   await parseResponse<unknown>(response);
   await skillsMutated();
+}
+
+export async function importSkills(file: File): Promise<SkillImportResult> {
+  const form = new FormData();
+  form.append("file", file);
+  // No Content-Type: the browser sets the multipart boundary.
+  const response = await authFetch("/api/skills/import", {
+    method: "POST",
+    body: form,
+  });
+  const result = await parseResponse<SkillImportResult>(response);
+  await skillsMutated();
+  return result;
+}
+
+export async function exportSkill(name: string): Promise<Blob> {
+  const response = await authFetch(
+    `/api/skills/${encodeURIComponent(name)}/export`,
+  );
+  if (!response.ok) await parseResponse<unknown>(response);
+  return response.blob();
 }
 
 // authFetch has no deadline, so a hung /api/skills must not stall the send.

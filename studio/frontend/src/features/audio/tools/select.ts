@@ -29,8 +29,7 @@ export function instructionsKindFor(
     : nativeAudioInstructionsKind(ctx.audioType);
 }
 
-/** The Music studio has its own description field, preview included; only a loaded music model
- *  without studio modes (native MiniMax) keeps the old one. */
+/** Only a loaded music model without studio modes (native MiniMax) keeps the old description. */
 export function legacyMusicDescription(ctx: AudioModelContext): boolean {
   return ctx.audioMusic !== true && isMusicGenerationModel(null, ctx.audioType);
 }

@@ -22,9 +22,13 @@ export function connectionSpeechModels(connection: {
   providerType: string;
   baseUrl?: string;
   models: readonly string[];
+  sharedByOwner?: boolean;
 }): string[] {
   if (connection.providerType === "openai" && isOpenAIApi(connection.baseUrl)) {
-    return OPENAI_SPEECH_MODELS;
+    // An owner-shared connection refuses any model outside the list the owner allowed (403).
+    return connection.sharedByOwner
+      ? OPENAI_SPEECH_MODELS.filter((id) => connection.models.includes(id))
+      : OPENAI_SPEECH_MODELS;
   }
   // Azure and other OpenAI-typed endpoints name models by deployment.
   return connection.providerType === "openai" ||

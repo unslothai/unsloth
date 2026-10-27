@@ -470,9 +470,7 @@ def detect_custom_format_heuristic(dataset):
             user_candidates.append((col, score))
 
     if not user_candidates and not any(col != assistant_col for col in user_potential):
-        # has_keyword drops "context" from user_potential because "text" only matches
-        # inside it. When nothing else can hold the user turn, that column is a better
-        # user turn than an assistant-worded leftover.
+        # "text" only matches inside "context", so it is still the best user column if nothing else fits.
         shadowed_potential = [
             col
             for col in content_columns
@@ -967,21 +965,45 @@ def detect_vlm_dataset_structure(dataset):
         return 0
 
     def _probe_image_candidate(col, sample_value):
-        """Probe whether an image candidate is reachable (True unless definitely broken)."""
+        """Probe whether an image candidate is reachable (True unless definitely broken).
+        Row URLs are untrusted, so they go through the web tool's SSRF guard."""
         import os
 
         if not isinstance(sample_value, str):
             return True
 
+        from .remote_images import (
+            guard_url,
+            is_network_share,
+            open_opted_in_url,
+            private_sources_allowed,
+        )
+
         if not sample_value.startswith(("http://", "https://")):
+            if is_network_share(sample_value) and not private_sources_allowed():
+                return False
             return os.path.exists(sample_value)
+        if private_sources_allowed():
+            # Still probe, so a broken column loses to a working one.
+            try:
+                with open_opted_in_url(sample_value, method = "HEAD", timeout = 3) as response:
+                    return response.status < 400
+            except Exception:
+                return False
 
         try:
-            import urllib.request
+            import time
 
-            req = urllib.request.Request(sample_value, method = "HEAD")
-            resp = urllib.request.urlopen(req, timeout = 3)
-            return resp.status < 400
+            from core.inference.tools import _fetch_url_raw
+
+            error, _, _ = _fetch_url_raw(
+                guard_url(sample_value),
+                timeout = 3,
+                deadline = time.monotonic() + 3,
+                method = "HEAD",
+                raw_bytes_max = 0,
+            )
+            return error is None
         except Exception:
             return False
 

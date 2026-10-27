@@ -178,10 +178,8 @@ export async function reconcileTrainingStartTransportFailure(
     return { kind: "recovered" };
   }
   if (pending && isTrainingStartLeaseActive(lease)) {
-    // The backend reserves the request id and job id before the heavy preflight, so a start still
-    // pending when the reconciliation window closes may yet be rejected. Adopting pending.jobId here
-    // reported success for an unconfirmed start and pinned a job id that never became current_job_id,
-    // leaving the rejected state unclearable. Keep it unconfirmed so the outcome can be acknowledged.
+    // The backend reserves ids before preflight, so a still-pending start may yet be rejected; do not
+    // adopt its job id.
     settleUnconfirmedTrainingStart(lease, pending.message);
     return { kind: "unknown" };
   }

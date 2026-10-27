@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import ipaddress
+import os
 import socket
 
 import threading
@@ -389,16 +390,59 @@ def configure_lan_access(
     app_state.lan_access_ready = False
 
 
+_CONTAINER_NETWORKS = (ipaddress.ip_network("172.16.0.0/12"), ipaddress.ip_network("10.88.0.0/16"))
+
+
+def _container_network_address(address: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        return False
+    return any(ip in network for network in _CONTAINER_NETWORKS if ip.version == network.version)
+
+
+def _veth_addresses(sysfs: str = "/sys/class/net") -> set[str]:
+    """Addresses on a link whose peer (iflink) is outside this namespace: a bridged container's veth. A NIC or VLAN
+    links to an index visible here, so host networking keeps a 172.16/12 LAN (kernel ABI sysfs-class-net)."""
+
+    def read(name: str, attr: str) -> str:
+        with open(f"{sysfs}/{name}/{attr}", encoding = "utf-8") as handle:
+            return handle.read().strip()
+
+    try:
+        import psutil
+        interfaces = psutil.net_if_addrs()
+        indexes = {read(name, "ifindex") for name in os.listdir(sysfs)}
+    except Exception:
+        return set()
+    addresses = set()
+    for name, entries in interfaces.items():
+        try:
+            if read(name, "iflink") in indexes:
+                continue
+        except OSError:
+            continue
+        addresses.update(entry.address.split("%", 1)[0] for entry in entries)
+    return addresses
+
+
 def _launch_urls(app_state) -> list[str]:
     """Where a launch-managed bind answers on this network. A wildcard launch cannot rely only on ``server_url``: run.py gives that direct base one LAN-reachable address, while Settings must show every currently reachable address in each family the launch serves."""
     if getattr(app_state, "lan_access_wildcard_bind", False):
         from lan_access import detect_lan_addresses
+        from utils.paths.file_manager import _in_container
 
         addresses = []
         for ip_version in getattr(app_state, "lan_access_wildcard_ip_versions", ()) or (4,):
             for address in detect_lan_addresses(ip_version):
                 if address not in addresses:
                     addresses.append(address)
+        if _in_container():
+            # A bridged container's own IP reaches nothing outside it; host networking's addresses stay.
+            bridged = _veth_addresses()
+            addresses = [
+                a for a in addresses if not (a in bridged and _container_network_address(a))
+            ]
         return _listener_urls(
             addresses,
             getattr(app_state, "lan_access_port", None),
@@ -455,12 +499,7 @@ def _public_urls(urls: list[str], resolved_addresses: tuple[str, ...] = ()) -> l
 
 
 def _has_keyless_lan_url(urls: list[str]) -> bool:
-    """Whether any of these URLs is one a keyless caller can actually reach.
-
-    Resolution alone is not enough: `keyless_api_access._host_authority_is_direct` refuses a `Host` that names anything, so a hostname bind yields a URL that resolves to a private address and is still refused. Reporting it eligible is what made the LAN panel advertise `Bearer not-needed` against a URL that answers 401, so the literal is required here too.
-
-    Admission decides, through the shared `keyless_api_access.keyless_authority_address_allowed`. A second copy of the test is what let an IPv4-mapped literal like `::ffff:192.168.1.24` be advertised while admission refused it: `_normalized_ip` un-maps, which is exactly what that form is refused for.
-    """
+    """Shares admission's check, so a hostname bind or an IPv4-mapped literal is never advertised."""
     import ipaddress
     from urllib.parse import urlparse
 
@@ -528,7 +567,13 @@ def lan_access_status(app) -> dict:
     controllable = block_reason is None
     try:
         from utils.keyless_api_access import get_keyless_api_access_settings
+
         keyless_scope, keyless_tools = get_keyless_api_access_settings()
+        from auth.policy import installation_has_managed_accounts
+
+        # Effective, not saved: one managed account turns keyless admission off install-wide.
+        if installation_has_managed_accounts():
+            keyless_scope, keyless_tools = "off", False
     except Exception:
         keyless_scope, keyless_tools = "off", False
     return {

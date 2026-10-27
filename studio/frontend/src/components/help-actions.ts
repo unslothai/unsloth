@@ -14,8 +14,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
 
-/** The Help menu: the sidebar's account menu and the desktop app's Help menu list the same items
- *  (src-tauri/src/app_menu.rs, HELP_ROWS), grouped the same way. */
+/** Must match the desktop Help menu (src-tauri/src/app_menu.rs, HELP_ROWS). */
 export type HelpAction =
   | "help-documentation"
   | "help-keyboard-shortcuts"
@@ -29,7 +28,6 @@ export const HELP_GROUPS: HelpAction[][] = [
   ["help-troubleshooting", "help-system-status", "help-send-feedback"],
 ];
 
-/** Icons match where each item leads: its Settings tab, or the About page's link. */
 export const HELP_ITEMS: Record<HelpAction, { label: TranslationKey; icon: IconSvgElement }> = {
   "help-documentation": { label: "shell.helpMenu.documentation", icon: Book03Icon },
   "help-keyboard-shortcuts": { label: "shell.helpMenu.keyboardShortcuts", icon: EnergyRectangleIcon },
@@ -39,12 +37,9 @@ export const HELP_ITEMS: Record<HelpAction, { label: TranslationKey; icon: IconS
   "help-send-feedback": { label: "shell.helpMenu.sendFeedback", icon: MessageNotification01Icon },
 };
 
-/** The Settings page an action opens. */
 const HELP_SETTINGS_TABS: Partial<Record<HelpAction, SettingsTab>> = {
   "help-keyboard-shortcuts": "keyboard-shortcuts",
-  // The server log, where a failed load or generation usually says why.
   "help-troubleshooting": "debugging",
-  // Live hardware, memory and storage for this server.
   "help-system-status": "resources",
 };
 

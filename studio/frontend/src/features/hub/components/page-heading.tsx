@@ -22,14 +22,14 @@ export function PageHeading({
   onTitleClick,
 }: PageHeadingProps) {
   return (
-    <div className={cn("page-title-halo min-w-0", className)}>
+    <div className={cn("min-w-0", className)}>
       {onTitleClick ? (
         <button
           type="button"
           onClick={onTitleClick}
           className={cn(
             TITLE_CLASS,
-            "cursor-pointer rounded-md text-left outline-none transition-opacity hover:opacity-80 focus-visible:ring-1 focus-visible:ring-ring",
+            "cursor-pointer rounded-full text-left outline-none transition-opacity hover:opacity-80 focus-visible:ring-1 focus-visible:ring-ring",
           )}
         >
           {title}

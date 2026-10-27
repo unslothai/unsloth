@@ -137,9 +137,9 @@ export function StartTrainingCta() {
       <Button
         size="lg"
         className={cn(
-          "h-11 w-full justify-center rounded-xl text-ui-13p5 font-semibold tracking-tight",
-          "bg-primary text-primary-foreground shadow-sm",
-          "hover:bg-primary/90",
+          "w-full justify-center rounded-full text-ui-13p5 font-semibold tracking-tight",
+          "bg-action text-background shadow-sm",
+          "hover:opacity-90",
           "disabled:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] disabled:text-muted-foreground disabled:shadow-none dark:disabled:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]",
           "transition-colors duration-200",
         )}
@@ -172,7 +172,7 @@ export function StartTrainingCta() {
             <button
               type="button"
               onClick={ensureModelDefaultsLoaded}
-              className="inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 font-medium text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+              className="inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 font-medium text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
             >
               <HugeiconsIcon
                 icon={Refresh01Icon}
