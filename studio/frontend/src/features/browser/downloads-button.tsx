@@ -18,13 +18,13 @@ import { cn } from "@/lib/utils";
 import {
   Alert02Icon,
   CheckmarkCircle02Icon,
-  Copy01Icon,
   Delete02Icon,
   Download01Icon,
   Folder01Icon,
   MoreHorizontalIcon,
   ArrowUpRight01Icon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
 import { type FinishedDownload, mountDownloadsButton, useDownloadActivity } from "./download-activity";

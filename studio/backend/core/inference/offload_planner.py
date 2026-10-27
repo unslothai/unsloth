@@ -97,6 +97,7 @@ class PlanOptions:
     kv_quant_type: str = "q8_0"
     # -nkvo (or LLAMA_ARG_KV_OFFLOAD false) puts the whole KV cache on host (llama-kv-cache.cpp), so it is not charged to VRAM
     kv_on_host: bool = False
+    lazy_read_bytes: int = 0
 
 
 @dataclass(frozen = True)
@@ -792,8 +793,8 @@ def _finish(
     spilled_bytes = sum(b.spillable_bytes for b in chosen) + (
         layout.lm_head_bytes if spill_lm_head else 0
     )
-    # token_embd is host-resident on every launch, so it is host RAM this plan must pay for even when nothing is spilled
-    host_bytes = layout.token_embd_bytes + spilled_bytes
+    lazy = min(max(0, int(opts.lazy_read_bytes or 0)), layout.per_layer_embd_bytes)
+    host_bytes = layout.token_embd_bytes + layout.per_layer_embd_bytes - lazy + spilled_bytes
     if opts.kv_on_host:
         # -nkvo cache lives in host RAM; the mmap decision must count it.
         host_bytes += (

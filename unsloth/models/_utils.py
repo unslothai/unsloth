@@ -1468,7 +1468,7 @@ def _enable_flex_attention_support(model_class, model_type = ""):
 _FLEX_TEMPLATE_HEAD_DIM_256_SHARED_MEMORY = 151552
 
 
-def _flex_preferred_fits(config):
+def _flex_preferred_fits(config, dtype = None):
     """False when a visible CUDA card lacks that shared memory; fails open on ROCm / no CUDA."""
     head_dim = _text_attention_head_dim(config)
     if head_dim is None or not (
@@ -1478,9 +1478,9 @@ def _flex_preferred_fits(config):
     try:
         if getattr(torch.version, "hip", None) or not torch.cuda.is_available():
             return True
-        # sm86 / sm89 with torch >= 2.10: the flex wrapper passes tiles that fit.
+        # sm86 / sm89, torch >= 2.10: small tiles fit 2-byte dtypes only; fp32 overflows smem.
         if _flex_small_smem_device_ok():
-            return True
+            return dtype is not torch.float32
         return all(
             torch.cuda.get_device_properties(index).shared_memory_per_block_optin
             >= _FLEX_TEMPLATE_HEAD_DIM_256_SHARED_MEMORY
@@ -1490,7 +1490,12 @@ def _flex_preferred_fits(config):
         return True
 
 
-def _supports_flex_attention(model_class, config, model_type):
+def _supports_flex_attention(
+    model_class,
+    config,
+    model_type,
+    dtype = None,
+):
     if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "1") == "0":
         return False
     if not getattr(model_class, "_supports_flex_attn", False):
@@ -1499,7 +1504,7 @@ def _supports_flex_attention(model_class, config, model_type):
         return False
     if not _flex_attention_gpu_is_supported():
         return False
-    if _config_prefers_flex_attention(config) and not _flex_preferred_fits(config):
+    if _config_prefers_flex_attention(config) and not _flex_preferred_fits(config, dtype):
         return False
     for attention_config in _iter_attention_configs(config):
         attention_dropout = _config_get(attention_config, "attention_dropout", 0) or 0
@@ -2983,12 +2988,14 @@ def resolve_attention_implementation(
     supports_flash_attention = _model_class_supports_flash_attention(
         model_class
     ) and not _is_flash_excluded(model_type)
-    supports_flex_attention = _supports_flex_attention(model_class, config, model_type)
+    supports_flex_attention = _supports_flex_attention(model_class, config, model_type, dtype)
     # Before the ladder, since every branch below reads supports_flex_attention.
     prefers_flex_for_head_dim = _prefers_flex_for_head_dim(config)
     if prefers_flex_for_head_dim and not supports_flex_attention:
         if _enable_flex_attention_support(model_class, model_type):
-            supports_flex_attention = _supports_flex_attention(model_class, config, model_type)
+            supports_flex_attention = _supports_flex_attention(
+                model_class, config, model_type, dtype
+            )
     # An explicit 1 forces flex over flash_attention_2 too, but only when flex can be scoped to the decoder
     flex_forced_for_head_dim = (
         _flex_large_head_dim_override() is True
@@ -6220,13 +6227,22 @@ def _refuse_model_parallel_export(model, method):
         )
 
 
-def _refuse_tensor_parallel_for_inference(model):
+def _tensor_parallel_for_inference(model):
+    """for_inference on a tensor parallel model gathers a whole replica on every rank (tp_replica.py)."""
     if _is_unsloth_tensor_parallel(model):
-        raise RuntimeError(
-            "Unsloth: for_inference is not supported on a tensor parallel model in v1 (the fast decode "
-            "paths run outside the tensor parallel regions); use model.eval() for forward evaluation, or "
-            "save the adapter (save_tp_adapter) and generate on one GPU."
-        )
+        from .tp_replica import tp_for_inference
+        return tp_for_inference(model)
+    _refuse_tensor_parallel_for_inference(model)
+
+
+def _tensor_parallel_for_training(model):
+    """for_training puts the sharded parameters back after a for_inference replica."""
+    if _is_unsloth_tensor_parallel(model):
+        from .tp_replica import tp_for_training
+        tp_for_training(model)
+
+
+def _refuse_tensor_parallel_for_inference(model):
     if _is_unsloth_pipeline_parallel(model):
         raise RuntimeError(
             "Unsloth: for_inference is not supported on a pipeline parallel model in v1 (each rank holds "
@@ -8218,15 +8234,27 @@ def _copy_embedding_subclass_state(dst: torch.nn.Module, src: torch.nn.Module) -
 def _call_with_fake_quantized_weight(module: torch.nn.Module, fn, *args, **kwargs):
     """Run fn with module.weight swapped for its fake quantized value, so a class forward that reads self.weight
     directly (unsloth_zoo's float32 Gemma forward) trains against the quantized weight.
-    Re-entrant: inside the scope weight is a plain tensor, not the Parameter, so it is quantized once."""
+    Re-entrant via a flag, not the weight's type: FSDP1 / functional_call install plain tensors that still need quantizing."""
     fake_quantizer = getattr(module, "weight_fake_quantizer", None)
-    weight = module.weight
-    if fake_quantizer is None or not isinstance(weight, torch.nn.Parameter):
+    if fake_quantizer is None or vars(module).get("_unsloth_weight_fake_quantized", False):
         return fn(*args, **kwargs)
     from torch.nn.utils.stateless import _reparametrize_module
 
-    with _reparametrize_module(module, {"weight": fake_quantizer(weight)}):
-        return fn(*args, **kwargs)
+    weight = module.weight
+    fake_quantized = fake_quantizer(weight)
+    module._unsloth_weight_fake_quantized = True
+    try:
+        if "weight" in vars(module):
+            # FSDP1's view in the instance dict shadows the registered Parameter; swap the view itself.
+            vars(module)["weight"] = fake_quantized
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                vars(module)["weight"] = weight
+        with _reparametrize_module(module, {"weight": fake_quantized}):
+            return fn(*args, **kwargs)
+    finally:
+        del module._unsloth_weight_fake_quantized
 
 
 def _is_accelerate_forward(module: torch.nn.Module, forward) -> bool:
@@ -8731,6 +8759,72 @@ def _merged_torchao_config_for_peft_qat(model):
     return TorchAoConfig(quant_type = ModuleFqnToConfig(module_to_fqn_dict), **kwargs)
 
 
+# Set by an FSDP2 export whose gathered weights sit on the CPU (fsdp2_save._torchao_convert_device).
+_TORCHAO_CONVERT_DEVICE = []
+
+
+def _convert_module_by_module(model, base_config, filter_fn, device):
+    """`_convert_torchao_model`'s two quantize_ calls, one selected module at a time on `device`, each
+    converted module moved back to where its weights were. One GPU converts on the GPU, and CUDA and
+    CPU round torchao's scales differently for fp32 weights."""
+    from torchao.quantization import quantize_
+    from torchao.quantization.qat import QATConfig
+    from torchao.quantization.quant_api import _is_linear
+    import itertools
+
+    select = filter_fn or _is_linear
+    unquantized = _unquantized_filter(filter_fn)
+    targets = []
+    for fqn, module in model.named_modules():
+        if fqn and select(module, fqn):
+            home = next(itertools.chain(module.parameters(), module.buffers()), None)
+            # Per tensor: a bias FSDP2 replicates (ignored_params) stays on the GPU while the
+            # gathered weight sits on the CPU, and each must go back where it was.
+            homes = {
+                name: t.device
+                for name, t in itertools.chain(module.named_parameters(), module.named_buffers())
+            }
+            targets.append((fqn, module, home.device if home is not None else None, homes))
+    for fqn, module, home, homes in targets:
+        parent_fqn, _, child = fqn.rpartition(".")
+        parent = model.get_submodule(parent_fqn)
+        if getattr(parent, child, None) is not module:
+            continue
+        module.to(device)
+        quantize_(
+            parent,
+            QATConfig(base_config, step = "convert"),
+            filter_fn = lambda m, _, old = module: m is old and select(m, fqn),
+        )
+        new = getattr(parent, child)
+        quantize_(parent, base_config, filter_fn = lambda m, _, n = new: m is n and unquantized(m, fqn))
+        if home is not None:
+            _restore_tensor_devices(getattr(parent, child), homes, home)
+            # The replaced module may still be referenced (a kept module tree, a tied weight).
+            _restore_tensor_devices(module, homes, home)
+
+
+def _restore_tensor_devices(module, homes, default):
+    """Move each parameter / buffer of `module` to `homes[name]` (else `default`), keeping
+    Parameter objects (optimizer state and FSDP2 hold them)."""
+    for prefix, sub in module.named_modules():
+        for store in (sub._parameters, sub._buffers):
+            for key, tensor in list(store.items()):
+                if tensor is None:
+                    continue
+                target = homes.get(f"{prefix}.{key}" if prefix else key, default)
+                if tensor.device == target:
+                    continue
+                if not isinstance(tensor, torch.nn.Parameter):
+                    store[key] = tensor.to(target)
+                    continue
+                moved = tensor.data.to(target)
+                try:
+                    tensor.data = moved
+                except RuntimeError:  # a tensor subclass that refuses .data swaps
+                    store[key] = torch.nn.Parameter(moved, requires_grad = tensor.requires_grad)
+
+
 def _convert_torchao_model(model):
     from transformers import TorchAoConfig
     from torchao.quantization import quantize_, ModuleFqnToConfig
@@ -8739,10 +8833,14 @@ def _convert_torchao_model(model):
 
     _materialize_offloaded_fake_quantized_embeddings(model)
     module_to_fqn_dict = {}
+    device = _TORCHAO_CONVERT_DEVICE[-1] if _TORCHAO_CONVERT_DEVICE else None
     for base_config, filter_fn in model._torchao_config.base_config_and_filter_fns:
-        quantize_(model, QATConfig(base_config, step = "convert"), filter_fn = filter_fn)
-        # The QAT notebook's manual QATConfig(step = "convert") leaves plain, unquantized modules.
-        quantize_(model, base_config, filter_fn = _unquantized_filter(filter_fn))
+        if device is not None:
+            _convert_module_by_module(model, base_config, filter_fn, device)
+        else:
+            quantize_(model, QATConfig(base_config, step = "convert"), filter_fn = filter_fn)
+            # The QAT notebook's manual QATConfig(step = "convert") leaves plain, unquantized modules.
+            quantize_(model, base_config, filter_fn = _unquantized_filter(filter_fn))
 
         if filter_fn is None:
             if "_default" in module_to_fqn_dict:
@@ -8989,11 +9087,196 @@ def _mx_autocast_forward(self, x):
     return MXFakeQuantizedLinear.forward(self, x)
 
 
+_NVFP4_QAT_LINEAR = []
+
+
+def _nvfp4_qat_linear_op():
+    """torchao's NVFP4 QAT linear (_NVFP4QuantizedForwardFakeQuantizedBackward) as two opaque custom ops.
+
+    Inductor miscompiles the traced fake quantization (torch 2.13 / 2.14, torchao 0.18): the backward's
+    dequantized activation comes out scaled by 2**-126 for every normal fp4 code, so compiled weight grads
+    are ~100% off while eager and aot_eager match. As custom ops with fake impls and an autograd formula,
+    torch.compile keeps them whole (fullgraph = True, no graph break) and runs torchao's eager numerics."""
+    if _NVFP4_QAT_LINEAR:
+        return _NVFP4_QAT_LINEAR[0]
+    from torchao.prototype.mx_formats.nvfp4_tensor import (
+        NVFP4Tensor,
+        _addmm_nvfp4_dispatch,
+        per_tensor_amax_to_scale,
+    )
+    from torchao.prototype.mx_formats.utils import hp_data_dims_to_swizzled_scale_dims_nvfp4
+
+    def quantize(t, per_tensor, swizzled):
+        scale = per_tensor_amax_to_scale(torch.max(torch.abs(t))) if per_tensor else None
+        return NVFP4Tensor.to_nvfp4(t, per_tensor_scale = scale, is_swizzled_scales = swizzled)
+
+    def quantize_weight(weight, per_tensor, swizzled, triton):
+        weight = quantize(weight, per_tensor, swizzled)
+        weight.use_triton_kernel = triton
+        return weight
+
+    name = "unsloth::nvfp4_qat_linear"
+    forward_schema = (
+        "(Tensor x, Tensor weight, Tensor? bias, bool act_per_tensor, bool w_per_tensor, "
+        "bool w_swizzled, bool w_triton, ScalarType? mm_dtype) "
+        "-> (Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor)"
+    )
+    backward_schema = (
+        "(Tensor grad, Tensor x_qdata, Tensor x_scale, Tensor x_per_tensor_scale, Tensor w_qdata, "
+        "Tensor w_scale, Tensor w_per_tensor_scale, ScalarType x_dtype, ScalarType w_dtype, "
+        "bool act_per_tensor, bool w_per_tensor, bool w_swizzled, ScalarType? mm_dtype) -> (Tensor, Tensor)"
+    )
+
+    def per_tensor(t, like):
+        scale = t.per_tensor_scale
+        return like.new_ones((), dtype = torch.float32) if scale is None else scale.float()
+
+    @torch.library.custom_op(name, mutates_args = (), schema = forward_schema)
+    def forward(x, weight, bias, act_per_tensor, w_per_tensor, w_swizzled, w_triton, mm_dtype):
+        # Activations: torchao's QAT config always uses unswizzled scales and the plain quantizer.
+        x_q = quantize(x, act_per_tensor, False)
+        w_q = quantize_weight(weight, w_per_tensor, w_swizzled, w_triton)
+        out = _addmm_nvfp4_dispatch(x_q, w_q.t(), None, bias)
+        if (
+            out.dtype != x.dtype
+        ):  # older torchao adds a float32 bias without casting; the fake impl says x.dtype
+            out = out.to(x.dtype)
+        return (
+            out,
+            x_q.qdata,
+            x_q.scale,
+            per_tensor(x_q, x),
+            w_q.qdata,
+            w_q.scale,
+            per_tensor(w_q, x),
+        )
+
+    @forward.register_fake
+    def _(x, weight, bias, act_per_tensor, w_per_tensor, w_swizzled, w_triton, mm_dtype):
+        M, K = x.shape
+        N = weight.shape[0]
+        w_scale = hp_data_dims_to_swizzled_scale_dims_nvfp4(N, K) if w_swizzled else (N, K // 16)
+        return (
+            x.new_empty((M, N)),
+            x.new_empty((M, K // 2), dtype = torch.uint8),
+            x.new_empty((M, K // 16), dtype = torch.float8_e4m3fn),
+            x.new_empty((), dtype = torch.float32),
+            x.new_empty((N, K // 2), dtype = torch.uint8),
+            x.new_empty(w_scale, dtype = torch.float8_e4m3fn),
+            x.new_empty((), dtype = torch.float32),
+        )
+
+    @torch.library.custom_op(name + "_backward", mutates_args = (), schema = backward_schema)
+    def backward_op(
+        grad,
+        x_qdata,
+        x_scale,
+        x_per_tensor_scale,
+        w_qdata,
+        w_scale,
+        w_per_tensor_scale,
+        x_dtype,
+        w_dtype,
+        act_per_tensor,
+        w_per_tensor,
+        w_swizzled,
+        mm_dtype,
+    ):
+        x_q = NVFP4Tensor(
+            x_qdata,
+            x_scale,
+            16,
+            x_dtype,
+            per_tensor_scale = x_per_tensor_scale if act_per_tensor else None,
+        )
+        x_dq = x_q.dequantize(x_dtype)
+        # Positional: the swizzle flag is `_is_swizzled_scales` in torchao 0.15, `is_swizzled_scales` later.
+        w_q = NVFP4Tensor(
+            w_qdata,
+            w_scale,
+            16,
+            w_dtype,
+            w_per_tensor_scale if w_per_tensor else None,
+            None,
+            w_swizzled,
+        )
+        w_dq = w_q.dequantize(w_dtype)
+        if (
+            mm_dtype is not None
+        ):  # torchao's backward runs under the forward's autocast (custom_bwd)
+            grad, x_dq, w_dq = grad.to(mm_dtype), x_dq.to(mm_dtype), w_dq.to(mm_dtype)
+        return torch.mm(grad, w_dq), torch.mm(grad.t(), x_dq)
+
+    @backward_op.register_fake
+    def _(
+        grad,
+        x_qdata,
+        x_scale,
+        x_per_tensor_scale,
+        w_qdata,
+        w_scale,
+        w_per_tensor_scale,
+        x_dtype,
+        w_dtype,
+        act_per_tensor,
+        w_per_tensor,
+        w_swizzled,
+        mm_dtype,
+    ):
+        dtype = grad.dtype if mm_dtype is None else mm_dtype
+        N, K = w_qdata.shape[0], w_qdata.shape[1] * 2
+        return (
+            grad.new_empty((grad.shape[0], K), dtype = dtype),
+            grad.new_empty((N, K), dtype = dtype),
+        )
+
+    def setup_context(ctx, inputs, output):
+        x, weight, bias, act_per_tensor, w_per_tensor, w_swizzled, _, mm_dtype = inputs
+        saved = output[1:]
+        ctx.save_for_backward(*saved)
+        ctx.mark_non_differentiable(*saved)
+        ctx.args = (x.dtype, weight.dtype, act_per_tensor, w_per_tensor, w_swizzled, mm_dtype)
+
+    def backward(ctx, grad, *_):
+        grad_x, grad_w = backward_op(grad, *ctx.saved_tensors, *ctx.args)
+        grad_bias = grad.sum(0) if ctx.needs_input_grad[2] else None
+        return grad_x, grad_w, grad_bias, None, None, None, None, None
+
+    forward.register_autograd(backward, setup_context = setup_context)
+    _NVFP4_QAT_LINEAR.append(forward)
+    return forward
+
+
+def _nvfp4_qat_linear(self, x):
+    from torchao.prototype.qat import NVFP4FakeQuantizedLinear
+
+    act, weight = self.activation_config, self.weight_config
+    op = None
+    # The custom op covers torchao's CUDA kernel path with its QAT config (unswizzled, plain activation
+    # quantizer); anything else, or a torchao without these internals, keeps torchao's own forward.
+    if x.is_cuda and not act.use_swizzled_scales and not act.use_triton_kernel:
+        try:
+            op = _nvfp4_qat_linear_op()
+        except Exception:
+            op = None
+    if op is None:
+        return NVFP4FakeQuantizedLinear.forward(self, x)
+    mm_dtype = torch.get_autocast_dtype("cuda") if torch.is_autocast_enabled("cuda") else None
+    return op(
+        x,
+        self.weight,
+        self.bias,
+        act.use_per_tensor_scale,
+        weight.use_per_tensor_scale,
+        weight.use_swizzled_scales,
+        weight.use_triton_kernel,
+        mm_dtype,
+    )[0]
+
+
 def _nvfp4_any_rank_forward(self, x):
     # torchao's NVFP4FakeQuantizedLinear flattens only rank-3 inputs (vision layers see rank 4+), and
     # its quantizer asserts contiguous bfloat16 / float32 activations (nvfp4_quantize).
-    from torchao.prototype.qat import NVFP4FakeQuantizedLinear
-
     out_dtype = None
     # float16 autocast hands over float16 activations (an earlier Linear / SDPA); prepare only
     # admits bfloat16 / float32 weights, so quantize from the weight dtype and return what an
@@ -9004,7 +9287,7 @@ def _nvfp4_any_rank_forward(self, x):
     x2 = x if x.dim() == 2 else x.reshape(-1, x.shape[-1])
     if not x2.is_contiguous():
         x2 = x2.contiguous()
-    out = NVFP4FakeQuantizedLinear.forward(self, x2)
+    out = _nvfp4_qat_linear(self, x2)
     if x.dim() != 2:
         out = out.view(*x.shape[:-1], out.shape[-1])
     return out if out_dtype is None or out.dtype == out_dtype else out.to(out_dtype)
@@ -9025,10 +9308,16 @@ def _patch_microscaling_qat_forwards(model) -> None:
         )
     ]
     forwards = [(cls, forward) for cls, forward in forwards if isinstance(cls, type)]
+    nvfp4 = forwards[0][0] if forwards and forwards[0][1] is _nvfp4_any_rank_forward else None
     for module in model.modules():
         for cls, forward in forwards:
             if isinstance(module, cls):
                 module.forward = types.MethodType(forward, module)
+                if cls is nvfp4:
+                    try:
+                        _nvfp4_qat_linear_op()  # register the ops now, not inside a compile trace
+                    except Exception:
+                        pass
 
 
 def _is_lora_adapter_name(fqn: str) -> bool:

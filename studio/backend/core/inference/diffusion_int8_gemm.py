@@ -42,6 +42,9 @@ A fully swapped Qwen-Image-2.1 SwiGLU MLP takes its down projection's codes stra
 A block-streamed denoiser installs against its onload device (``install(..., device = ...)``): group offload's
 ``swap_tensors`` keeps each Parameter's identity and the forward reads the payload off the live Parameter, so every
 call sees the onloaded copy. Kill switch ``UNSLOTH_DIFFUSION_INT8_GEMM_STREAMED=0``.
+
+It also patches host-resident SwiGLU MLPs (the group hook onloads the block first; off-device weights fall back to
+stock). Kill switch ``UNSLOTH_DIFFUSION_INT8_SWIGLU_STREAMED=0``.
 """
 
 from __future__ import annotations
@@ -57,6 +60,7 @@ INT8_GEMM_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM"
 INT8_GEMM_CONVROT_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_CONVROT"
 INT8_GEMM_STREAMED_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_STREAMED"
 INT8_GEMM_TILES_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_TILES"
+INT8_SWIGLU_STREAMED_ENV = "UNSLOTH_DIFFUSION_INT8_SWIGLU_STREAMED"
 _MIN_TRITON = (3, 2)
 # torch._int_mm needs M > 16; below that the stock path (safe_int_mm padding) stays in charge.
 _MIN_ROWS = 17
@@ -121,6 +125,11 @@ def convrot_enabled() -> bool:
 
 def streamed_enabled() -> bool:
     raw = (os.environ.get(INT8_GEMM_STREAMED_ENV) or "").strip().lower()
+    return raw not in ("0", "off", "false", "no")
+
+
+def swiglu_streamed_enabled() -> bool:
+    raw = (os.environ.get(INT8_SWIGLU_STREAMED_ENV) or "").strip().lower()
     return raw not in ("0", "off", "false", "no")
 
 
@@ -774,14 +783,21 @@ def _swiglu_ff_eligible(module: Any) -> bool:
     return bool(parts[2].__dict__[_REC][2])
 
 
-def _install_swiglu_ff(transformer: Any, index: int) -> int:
-    """Patch the eligible SwiGLU MLPs on card ``index``."""
+def _install_swiglu_ff(
+    transformer: Any,
+    index: int,
+    streamed: bool = False,
+) -> int:
+    """Patch the eligible SwiGLU MLPs on card ``index`` (``streamed``: also host-resident ones)."""
     count = 0
     for module in transformer.modules():
         if _FF_MARK in module.__dict__:
             count += 1
             continue
-        if not _swiglu_ff_eligible(module) or _weight_card(module.out) != index:
+        if not _swiglu_ff_eligible(module):
+            continue
+        card = _weight_card(module.out)
+        if card != index and not (streamed and card is None):
             continue
         module.__dict__[_FF_MARK] = True
         module.forward = types.MethodType(_swiglu_ff_forward, module)
@@ -951,7 +967,7 @@ def _swap(
         return 0
 
     index = dev.index if dev.index is not None else torch.cuda.current_device()
-    return _swap_on(transformer, logger, index)
+    return _swap_on(transformer, logger, index, streamed = device is not None)
 
 
 def _split_cards(transformer: Any) -> tuple:
@@ -977,7 +993,12 @@ def _weight_card(module: Any) -> Optional[int]:
     return dev.index if dev is not None and dev.type == "cuda" else None
 
 
-def _swap_on(transformer: Any, logger: Any, index: int) -> int:
+def _swap_on(
+    transformer: Any,
+    logger: Any,
+    index: int,
+    streamed: bool = False,
+) -> int:
     """Swap the eligible int8 Linears of ``transformer`` against card ``index``'s probed kernels. On a layer split
     (several cards) only the Linears whose weight sits on ``index``."""
     global _OP_HANDLE
@@ -1028,7 +1049,15 @@ def _swap_on(transformer: Any, logger: Any, index: int) -> int:
             module.__dict__[_MARK] = module.__dict__.get("forward", _NO_PREV)
             module.forward = types.MethodType(_linear_forward, module)
             count += 1
-        ff = _install_swiglu_ff(transformer, index) if rotq else 0
+        ff = (
+            _install_swiglu_ff(
+                transformer,
+                index,
+                streamed = streamed and not multi and swiglu_streamed_enabled(),
+            )
+            if rotq
+            else 0
+        )
     if logger is not None and count:
         from .diffusion_convrot_quant import _H16_DEVICE
         logger.info(

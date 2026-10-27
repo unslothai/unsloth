@@ -1444,7 +1444,7 @@ class MaskSegmenter:
         from .host_pinning import host_pinning_allowed
 
         host = self._host or _HostWeights(
-            pin = (os.environ.get(ENV_PARK_PIN) or "").strip() == "1" and host_pinning_allowed()
+            pin = (os.environ.get(ENV_PARK_PIN) or "").strip() == "1" and host_pinning_allowed(device)
         )
         try:
             host.park(model)

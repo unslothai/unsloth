@@ -258,7 +258,7 @@ def tensor_parallel_env_load(fn):
         mesh = layout.tp_mesh
         _DEPTH["load"] += 1
         try:
-            if _four_bit(values, fn) or not layout.sharded_loading:
+            if _four_bit(values, fn) or not layout.sharded_loading or _is_adapter(values):
                 return fn(
                     *args, **kwargs
                 )  # full load; get_peft_model shards it (Params4bit included)
@@ -283,7 +283,43 @@ def tensor_parallel_env_load(fn):
             _DEPTH["load"] -= 1
 
     from_pretrained._unsloth_tp_env = True
-    return from_pretrained
+    return _marks_world_save(from_pretrained)
+
+
+def _marks_world_save(from_pretrained):
+    @functools.wraps(from_pretrained)
+    def wrapper(*args, **kwargs):
+        out = from_pretrained(*args, **kwargs)
+        return out if env_layout() is None else _mark_world_save(out)
+
+    return wrapper
+
+
+def _mark_world_save(out):
+    """The tokenizer / processor of a tensor parallel run saves once per world (rank 0 writes, save.py)."""
+    if isinstance(out, (tuple, list)) and len(out) > 1 and hasattr(out[1], "__dict__"):
+        from .tp_replica import mark_world_save
+        try:
+            mark_world_save(out[1])
+        except Exception:
+            pass
+    return out
+
+
+def _is_adapter(values):
+    """A LoRA adapter directory / repo (a reload cell): loaded in full on every rank, nothing to shard."""
+    name = values.get("model_name", values.get("pretrained_model_name_or_path"))
+    if not isinstance(name, str):
+        return False
+    if os.path.isdir(name):
+        return os.path.isfile(os.path.join(name, "adapter_config.json"))
+    if os.path.exists(name) or name.count("/") != 1:
+        return False
+    try:
+        from huggingface_hub import file_exists
+        return bool(file_exists(name, "adapter_config.json", token = values.get("token")))
+    except Exception:
+        return False
 
 
 def _model_of(out):

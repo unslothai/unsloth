@@ -10680,7 +10680,13 @@ class DiffusionBackend:
                         )
                     )
                     load_bg_compile = (
-                        bg_compile.arm(bg_module, logger = logger) if bg_module is not None else None
+                        bg_compile.arm(
+                            bg_module,
+                            logger = logger,
+                            seed_dir = getattr(compile_ctx, "dir", None),
+                        )
+                        if bg_module is not None
+                        else None
                     )
                     # After every forward wrapper of the speed / graph layers, so the replica sees the final module.
                     install_cfg_parallel(pipe, offload_policy = effective_policy, logger = logger)
@@ -13069,7 +13075,15 @@ class DiffusionBackend:
             target = target,
         )
         if bg_module is not None:
-            object.__setattr__(state, "bg_compile", bg_compile.arm(bg_module, logger = logger))
+            object.__setattr__(
+                state,
+                "bg_compile",
+                bg_compile.arm(
+                    bg_module,
+                    logger = logger,
+                    seed_dir = getattr(state.compile_cache_ctx, "dir", None),
+                ),
+            )
         logger.info(
             "diffusion.speed: deferred profile engaged on generation 3 (optims=%s, attention=%s%s)",
             ",".join(state.speed_optims) or "none",
@@ -14976,7 +14990,7 @@ def _offload_controlnet_module(cn_model: Any, device: str, logger: Any) -> bool:
             kwargs["record_stream"] = True
         _apply_group_offloading_packed(apply_group_offloading, cn_model, kwargs, logger)
         if prefetch:
-            if not _pin_top_level_group(cn_model, logger):
+            if not _pin_top_level_group(cn_model, logger, device = onload):
                 _skip_top_level_copy_back(cn_model, logger)
             install_group_prefetch(cn_model, onload, logger)
         return True

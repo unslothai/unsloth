@@ -890,6 +890,7 @@ def _adopt_top_group(
     module: Any,
     stream: Any,
     logger: Any = None,
+    device: Any = None,
 ) -> Optional[Any]:
     """Give a torchao top-level group (no stream in diffusers: synchronous upload, copy-back every forward) pinned host
     copies and the module's copy stream, so the prefetcher drives it like a block. None if left as it was."""
@@ -910,7 +911,8 @@ def _adopt_top_group(
         return None
     from .host_pinning import host_pinning_allowed
 
-    if not host_pinning_allowed():
+    # ``device``: the module's onload target (None: the current device)
+    if not host_pinning_allowed(device):
         return None
     go = _go()
     registry = getattr(module, "_diffusers_hook", None)
@@ -1034,7 +1036,7 @@ def install_group_prefetch(
         streams = {id(g.stream) for g in groups}
         if len(streams) != 1:
             return 0
-        top = _adopt_top_group(module, groups[0].stream, logger)
+        top = _adopt_top_group(module, groups[0].stream, logger, device = device)
         if top is not None:
             groups = [top] + groups
         pf = GroupPrefetcher(module, groups, device, prefetch_depth() if depth is None else depth)

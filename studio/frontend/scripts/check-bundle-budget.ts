@@ -424,8 +424,10 @@ export const BUDGET = {
   // model picker (6,960,469 -> 6,960,551 B raw, 2,100,277 -> 2,100,453 B transfer against c9ddc5ab5e, one machine and
   // build, Node 26, 105 chunks). Raised by that growth.
   // Cosmos3 video families (#14554): +466 B raw / +218 B transfer. Raised by that.
-  transferBytes: 2_100_715,
-  rawBytes: 6_972_038,
+  // Lookup-table pricing (#14465): +1,517 B raw / +470 B transfer on top of the lines above (measured merged with
+  // 4db3eaeb55, Node 24, 99 chunks).
+  transferBytes: 2_101_185,
+  rawBytes: 6_973_555,
 };
 
 // Chunk count is not budgeted: splitting a page out raises it while lowering bytes.

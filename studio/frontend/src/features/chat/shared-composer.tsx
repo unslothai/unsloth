@@ -10,10 +10,10 @@ import {
 import { useChatArtifactsStore } from "./artifacts/store";
 import { mlxRuntimeStateFrom } from "./lib/mlx-runtime-state";
 import { offloadCountsFrom, offloadWarning } from "./lib/partial-offload";
+import { llamaServerLoadFields } from "./lib/load-request";
 import {
   clearedServerTuningState,
   committedServerTuningState,
-  serverTuningLoadPayload,
 } from "./lib/server-tuning-fields";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { useTextareaSkillMentions } from "@/components/assistant-ui/skill-mentions";
@@ -81,7 +81,7 @@ import { isTauri } from "@/lib/api-base";
 import { classifiedAttachmentFiles, isVideoFile } from "@/lib/video-utils";
 import { newAttachmentId } from "./audio-attachment-adapter";
 import { isDownloadCancelled } from "@/lib/native-files";
-import { isMultimodalResponse } from "./types/api";
+import { isMultimodalResponse, type LoadModelRequest } from "./types/api";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import {
   CHAT_IMAGE_ACCEPT,
@@ -125,10 +125,10 @@ import {
   Scroll01Icon,
   MoreHorizontalIcon,
   PlusSignIcon,
-  StopIcon,
   SlidersHorizontalIcon,
   Cancel01Icon,
 } from "@hugeicons/core-free-icons";
+import { StopIcon } from "@/lib/media-control-icons";
 import { useNavigate } from "@tanstack/react-router";
 import { useChatActive } from "./runtime-provider";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -1786,8 +1786,8 @@ export function SharedComposer({
           effectiveCustomContextLength,
           effectiveMaxSeqLength,
         );
-        // Re-run as the engine the offer dialog picks, so its settings are checked before /load.
-        const panePayload = () => ({
+        // Build lazily: the engine offer can replace paneEngineFields before revalidation.
+        const panePayload = (): LoadModelRequest => ({
           model_path: sel.id,
           hf_token: currentStore.hfToken || null,
           max_seq_length: compareMaxSeqLength,
@@ -1797,34 +1797,29 @@ export function SharedComposer({
           trust_remote_code: loadTrustRemoteCode,
           chat_template_override: effectiveChatTemplateOverride,
           cache_type_kv: ownConfig.kvCacheDtype ?? null,
+          mlx_kv_quant: ownConfig.mlxKvQuant ?? null,
+          mlx_int8_prefill: ownConfig.mlxInt8Prefill ?? false,
+          mlx_ple_offload: ownConfig.mlxPleOffload ?? null,
+          mlx_expert_offload: ownConfig.mlxExpertOffload ?? null,
+          speculative_type: effectiveSpeculativeType,
+          spec_draft_n_max: effectiveSpecDraftNMax,
+          ...(targetIsMlx ? { spec_draft_model: ownConfig.specDraftModel ?? null } : {}),
           tensor_parallel: effectiveTensorParallel,
           disable_vision: effectiveDisableVision,
-          // GGUF-only, like the load: a non-GGUF target must not inherit a hidden GPU pick.
+          n_parallel: ownConfig.nParallel ?? null,
+          ...llamaServerLoadFields(ownConfig, {
+            isGguf: targetIsGguf,
+            isDiffusion: resolvedIsDiffusion === true,
+          }),
+          // GGUF-only: a non-GGUF target must not inherit a hidden GGUF GPU pick. A manual DiffusionGemma
+          // split keeps its layer count, or it is judged a full-GGUF occupant.
           ...(targetIsGguf
             ? {
-                gpu_ids: effectiveSelectedGpuIds ?? undefined,
                 gpu_memory_mode: effectiveGpuMemoryMode,
                 gpu_layers: effectiveGpuLayers,
-                n_parallel: ownConfig.nParallel ?? null,
-                reasoning_budget: resolvedIsDiffusion
-                  ? -1
-                  : ownConfig.reasoningBudget,
-                reasoning_budget_message: resolvedIsDiffusion
-                  ? ""
-                  : ownConfig.reasoningBudgetMessage,
-                // Omitted when unread so the load inherits it, which keeps CLI-set flags working.
-                ...(ownConfig.llamaExtraArgs !== undefined
-                  ? // biome-ignore lint/style/useNamingConvention: API schema
-                    { llama_extra_args: ownConfig.llamaExtraArgs ?? [] }
-                  : {}),
-                // Omitted when blank: a null counts as set and strips inherited -b / -ub.
-                ...(ownConfig.nBatch != null
-                  ? { n_batch: ownConfig.nBatch }
-                  : {}),
-                ...(ownConfig.nUbatch != null
-                  ? { n_ubatch: ownConfig.nUbatch }
-                  : {}),
-                ...serverTuningLoadPayload(ownConfig),
+                n_cpu_moe: effectiveNCpuMoe,
+                tensor_split: compareLoadKnobs.splitRatio ?? undefined,
+                gpu_ids: effectiveSelectedGpuIds ?? undefined,
               }
             : {}),
         });
@@ -1917,58 +1912,13 @@ export function SharedComposer({
         applyCompareStopDecision();
         const loadRequestId = crypto.randomUUID();
         const resp = await loadModel({
-          model_path: sel.id,
+          ...panePayload(),
+          hf_token: useChatRuntimeStore.getState().hfToken || null,
           alongside: useChatRuntimeStore.getState().keepModelsLoaded,
           load_request_id: loadRequestId,
-          hf_token: useChatRuntimeStore.getState().hfToken || null,
-          max_seq_length: compareMaxSeqLength,
-          ...paneEngineFields,
-          is_lora: sel.isLora,
-          gguf_variant: sel.ggufVariant ?? null,
-          trust_remote_code: loadTrustRemoteCode,
           approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
-          chat_template_override: effectiveChatTemplateOverride,
-          cache_type_kv: ownConfig.kvCacheDtype ?? null,
-          mlx_kv_quant: ownConfig.mlxKvQuant ?? null,
-          mlx_int8_prefill: ownConfig.mlxInt8Prefill ?? false,
-          mlx_ple_offload: ownConfig.mlxPleOffload ?? null,
-          mlx_expert_offload: ownConfig.mlxExpertOffload ?? null,
-          speculative_type: effectiveSpeculativeType,
-          spec_draft_n_max: effectiveSpecDraftNMax,
-          ...(targetIsMlx ? { spec_draft_model: ownConfig.specDraftModel ?? null } : {}),
-          reasoning_budget:
-            targetIsGguf && !resolvedIsDiffusion
-              ? ownConfig.reasoningBudget
-              : -1,
-          reasoning_budget_message:
-            targetIsGguf && !resolvedIsDiffusion
-              ? ownConfig.reasoningBudgetMessage
-              : "",
-          tensor_parallel: effectiveTensorParallel,
-          disable_vision: effectiveDisableVision,
-          n_parallel: ownConfig.nParallel ?? null,
           force_cancel_active:
             compareStopDecision?.forceCancelActive ?? false,
-          ...(targetIsGguf
-            ? {
-                gpu_memory_mode: effectiveGpuMemoryMode,
-                gpu_layers: effectiveGpuLayers,
-                n_cpu_moe: effectiveNCpuMoe,
-                tensor_split: compareLoadKnobs.splitRatio ?? undefined,
-                gpu_ids: effectiveSelectedGpuIds ?? undefined,
-                ...(ownConfig.llamaExtraArgs !== undefined
-                  ? // biome-ignore lint/style/useNamingConvention: API schema
-                    { llama_extra_args: ownConfig.llamaExtraArgs ?? [] }
-                  : {}),
-                ...(ownConfig.nBatch != null
-                  ? { n_batch: ownConfig.nBatch }
-                  : {}),
-                ...(ownConfig.nUbatch != null
-                  ? { n_ubatch: ownConfig.nUbatch }
-                  : {}),
-                ...serverTuningLoadPayload(ownConfig),
-              }
-            : {}),
         }, {
           signal: compareSignal,
           onRequestStart: () => {

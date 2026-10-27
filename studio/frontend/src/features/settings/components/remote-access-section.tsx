@@ -325,7 +325,7 @@ export function RemoteAccessSection() {
       data-settings-label="Remote access"
       className="overflow-hidden rounded-xl border border-border/70"
     >
-      <div className="flex items-center justify-between gap-4 bg-muted/30 p-4">
+      <div className="flex items-start justify-between gap-4 bg-muted/30 p-4">
         <div className="flex min-w-0 items-start gap-3">
           <div className="flex size-8 shrink-0 items-center justify-center icon-disc">
             <HugeiconsIcon
@@ -350,7 +350,8 @@ export function RemoteAccessSection() {
           type="button"
           size="sm"
           variant={stopAction ? "outline" : "dark"}
-          className="shrink-0"
+          // Top edge on the h2's cap top (text-base at leading 1.5; Hellix: 0.372em).
+          className="mt-[calc(var(--text-base)*0.372)] shrink-0"
           onClick={stopAction ? stop : start}
           disabled={actionDisabled}
         >

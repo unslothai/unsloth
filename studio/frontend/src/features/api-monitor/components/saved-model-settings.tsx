@@ -11,7 +11,7 @@ import {
   fetchModelOverrides,
   putModelOverride,
 } from "@/features/model-picker/api/model-overrides";
-import { deletePerModelConfigsForOverrideKeys } from "@/features/model-picker/model-config/per-model-config";
+import { forgetPerModelConfigsForOverrideKeys } from "@/features/model-picker/model-config/saved-run-settings";
 import { Delete02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -169,7 +169,7 @@ export function SavedModelSettingsPanel(): ReactElement {
           listedKeys: Object.keys(overrides ?? {}),
           removeRemote: (modelId, ggufVariant) =>
             putModelOverride(modelId, ggufVariant, null),
-          removeLocal: deletePerModelConfigsForOverrideKeys,
+          removeLocal: forgetPerModelConfigsForOverrideKeys,
           reload: load,
           onError: (message) => {
             toast.error(message);
@@ -195,9 +195,8 @@ export function SavedModelSettingsPanel(): ReactElement {
           Saved load settings
         </h2>
         <p className="text-sm text-muted-foreground">
-          A request that names one of these models loads it with the settings
-          saved in its Run settings. Other models load with app defaults.
-          Forgetting an entry also clears it from the picker.
+          Requests naming these models load them with their saved Run settings.
+          Forgetting one also removes it from the picker.
         </p>
       </div>
 

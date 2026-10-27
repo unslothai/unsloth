@@ -92,6 +92,7 @@ import { CardGrid } from "../components/library-cards";
 import { LIST_ROW_GAP } from "../components/library-list";
 import type { LibraryView } from "../settings-store";
 import {
+  CHAT_CARD_ROW_MIN,
   ChatCard,
   ChatListHeader,
   type ChatDestination,
@@ -1051,6 +1052,7 @@ export function ChatsLibrary({
           showSection={showSection}
           locationColumn={locationColumn}
           times={{ bucket }}
+          showTile={shownEntries !== null}
         />
       ) : (
         <ChatCard
@@ -1060,6 +1062,8 @@ export function ChatsLibrary({
           showProject={showProject}
           showSection={showSection}
           times={{ bucket }}
+          // Only All mixes chats with projects and sections; elsewhere the tab names the kind.
+          showTile={shownEntries !== null}
         />
       );
     const entryRow = (entry: NonNullable<typeof shownEntries>[number]) => {
@@ -1106,7 +1110,7 @@ export function ChatsLibrary({
           list ? (
             <div className={cn("mt-1 flex flex-col", LIST_ROW_GAP)}>{shownEntries.map(entryRow)}</div>
           ) : (
-            <CardGrid equalRows>{shownEntries.map(entryRow)}</CardGrid>
+            <CardGrid minRowHeight={CHAT_CARD_ROW_MIN}>{shownEntries.map(entryRow)}</CardGrid>
           )
         ) : (
           groups.map((group) => (
@@ -1121,7 +1125,7 @@ export function ChatsLibrary({
                   {group.items.map((chat) => chatRow(chat, group.bucket?.kind))}
                 </div>
               ) : (
-                <CardGrid equalRows>{group.items.map((chat) => chatRow(chat, group.bucket?.kind))}</CardGrid>
+                <CardGrid minRowHeight={CHAT_CARD_ROW_MIN}>{group.items.map((chat) => chatRow(chat, group.bucket?.kind))}</CardGrid>
               )}
             </section>
           ))
@@ -1177,24 +1181,24 @@ export function ChatsLibrary({
           <SectionListHeader date={sectionDateColumn} />
           <div className={cn("mt-1 flex flex-col", LIST_ROW_GAP)}>
             {visibleSections.map((entry) => (
-              <SectionRow key={entry.id} section={entry} stats={sectionStatsById.get(entry.id)} />
+              <SectionRow key={entry.id} section={entry} stats={sectionStatsById.get(entry.id)} showTile={false} />
             ))}
           </div>
         </div>
       );
     }
     return (
-      <CardGrid equalRows>
+      <CardGrid minRowHeight={CHAT_CARD_ROW_MIN}>
         <button
           type="button"
           onClick={() => setMovingIntoNew({ kind: "section", chats: [] })}
-          className="flex aspect-[8/7] flex-col self-stretch items-center justify-center gap-2 rounded-2xl border border-dashed border-border text-ui-14 text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+          className="flex min-h-0 flex-col self-stretch items-center justify-center gap-2 rounded-2xl border border-dashed border-border text-ui-14 text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
         >
           <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.5} className="size-6" />
           {t("shell.sections.newSection")}
         </button>
         {visibleSections.map((entry) => (
-          <SectionCard key={entry.id} section={entry} stats={sectionStatsById.get(entry.id)} />
+          <SectionCard key={entry.id} section={entry} stats={sectionStatsById.get(entry.id)} showTile={false} />
         ))}
       </CardGrid>
     );
@@ -1226,13 +1230,13 @@ export function ChatsLibrary({
         {view === "list" ? (
           <div className={cn("flex flex-col", LIST_ROW_GAP)}>
             {sectionProjects.map((project) => (
-              <ProjectRow key={project.id} project={project} stats={stats.get(project.id)} />
+              <ProjectRow key={project.id} project={project} stats={stats.get(project.id)} showTile={false} />
             ))}
           </div>
         ) : (
-          <CardGrid equalRows>
+          <CardGrid minRowHeight={CHAT_CARD_ROW_MIN}>
             {sectionProjects.map((project) => (
-              <ProjectCard key={project.id} project={project} stats={stats.get(project.id)} />
+              <ProjectCard key={project.id} project={project} stats={stats.get(project.id)} showTile={false} />
             ))}
           </CardGrid>
         )}
@@ -1272,26 +1276,26 @@ export function ChatsLibrary({
           <ProjectListHeader date={projectDateColumn} />
           <div className={cn("mt-1 flex flex-col", LIST_ROW_GAP)}>
             {visibleProjects.map((project) => (
-              <ProjectRow key={project.id} project={project} stats={stats.get(project.id)} />
+              <ProjectRow key={project.id} project={project} stats={stats.get(project.id)} showTile={false} />
             ))}
           </div>
         </div>
       );
     }
     return (
-      <CardGrid equalRows>
+      <CardGrid minRowHeight={CHAT_CARD_ROW_MIN}>
         {!embedded && (
           <button
             type="button"
             onClick={() => setCreatingProject(true)}
-            className="flex aspect-[8/7] flex-col self-stretch items-center justify-center gap-2 rounded-2xl border border-dashed border-border text-ui-14 text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+            className="flex min-h-0 flex-col self-stretch items-center justify-center gap-2 rounded-2xl border border-dashed border-border text-ui-14 text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
           >
             <HugeiconsIcon icon={FolderAddIcon} strokeWidth={1.5} className="size-6" />
             {t("library.chats.toolbar.newProject")}
           </button>
         )}
         {visibleProjects.map((project) => (
-          <ProjectCard key={project.id} project={project} stats={stats.get(project.id)} />
+          <ProjectCard key={project.id} project={project} stats={stats.get(project.id)} showTile={false} />
         ))}
       </CardGrid>
     );

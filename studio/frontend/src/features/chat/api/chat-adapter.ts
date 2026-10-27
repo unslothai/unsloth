@@ -16,10 +16,10 @@ import {
   modelVisibleMessage,
   toolOnlyImages,
 } from "./mcp-image";
+import { llamaServerLoadFields } from "../lib/load-request";
 import {
   clearedServerTuningState,
   committedServerTuningState,
-  serverTuningLoadPayload,
 } from "../lib/server-tuning-fields";
 import { authFetch, getAuthToken } from "@/features/auth";
 import { withSandboxAttachmentPaths } from "../sandbox-attachments";
@@ -303,6 +303,7 @@ import {
   retainedContextPin,
   replayMaxTokensCap,
 } from "../presets/preset-policy";
+import { reconcileTensorSplit } from "@/hooks/gpu-tensor-split";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
 import { takeThreadCompactionRequest } from "../stores/compact-request-store";
@@ -319,6 +320,7 @@ import type {
   MmprojFallbackReason,
   GgufVariantDetail,
   InferenceStatusResponse,
+  LoadModelRequest,
   OpenAIChatChunk,
   OpenAIChatCompletionsRequest,
   OpenAIChatMessage,
@@ -3469,34 +3471,10 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     };
   }
 
-  async function canAutoLoad(payload: {
-    model_path: string;
-    max_seq_length: number;
-    is_lora: boolean;
-    gguf_variant?: string | null;
-    // GGUF-only: the guard needs /load's placement policy. Layer/MoE/split are not sent.
-    gpu_ids?: number[];
-    gpu_memory_mode?: "auto" | "manual";
-    cache_type_kv?: string | null;
-    tensor_parallel?: boolean | null;
-    reasoning_budget?: number;
-    reasoning_budget_message?: string;
-    // The projector is part of what the guard sizes: a skipped one needs ~1 GB less.
-    disable_vision?: boolean | null;
-    // The drafter's estimated size differs by mode (a DSpark sidecar is ~11 GB).
-    speculative_type?: string | null;
-    spec_draft_n_max?: number | null;
-    n_parallel?: number | null;
-    load_in_4bit?: boolean;
-  }): Promise<boolean> {
+  async function canAutoLoad(request: LoadModelRequest): Promise<boolean> {
     // Before the POST, so an abort costs nothing: no request was sent.
     options?.abortSignal?.throwIfAborted();
-    const validation = await validateModel({
-      ...payload,
-      hf_token: hfToken,
-      load_in_4bit: payload.load_in_4bit ?? true,
-      trust_remote_code: trustRemoteCode,
-    }).catch((error: unknown) => {
+    const validation = await validateModel(request).catch((error: unknown) => {
       // A rejected /validate never reaches loadAttempts, so count it here or a dead backend POSTs
       // once per cached repo.
       validateFailures += 1;
@@ -3539,10 +3517,10 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
 
   async function canAutoLoadRecordingFailures(
     label: string,
-    payload: Parameters<typeof canAutoLoad>[0],
+    request: LoadModelRequest,
   ): Promise<boolean> {
     try {
-      return await canAutoLoad(payload);
+      return await canAutoLoad(request);
     } catch (error) {
       recordCandidateFailure(label, error);
       throw error;
@@ -3671,6 +3649,12 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
             isDiffusion,
           )
         : null;
+    // Reconciled against the raw pick: a ratio only applies to the GPU set it was saved with.
+    const effectiveTensorSplit = reconcileTensorSplit(
+      config.tensorSplit,
+      config.selectedGpuIds,
+      effectiveGpuIds,
+    );
     // Manual memory with Auto layers lets llama.cpp --fit size context; send 0 or the pin (GGUF).
     const fitMaxSeqLength = resolveFitMaxSeqLength(
       candidate.kind === "gguf",
@@ -3701,42 +3685,44 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     const effectiveChatTemplateOverride = config.chatTemplateOverride?.trim()
       ? config.chatTemplateOverride
       : null;
-    if (
-      !(await canAutoLoadRecordingFailures(failureLabel, {
-        model_path: modelPath,
-        max_seq_length: fitMaxSeqLength,
-        is_lora: false,
-        gguf_variant: candidate.ggufVariant,
-        load_in_4bit: config.loadIn4bit !== false,
-        cache_type_kv: config.kvCacheDtype,
-        tensor_parallel: effectiveTensorParallel,
-        disable_vision: effectiveDisableVision,
-        n_parallel: config.nParallel ?? null,
-        speculative_type: effectiveSpeculativeType,
-        spec_draft_n_max: effectiveSpecDraftNMax,
-        ...(candidate.kind === "gguf"
-          ? {
-              gpu_ids: effectiveGpuIds ?? undefined,
-              gpu_memory_mode: effectiveGpuMemoryMode,
-              // A remembered manual DiffusionGemma split (0 especially) must not be refused as a full-GGUF occupant.
-              gpu_layers: effectiveGpuLayers,
-              reasoning_budget: isDiffusion ? -1 : config.reasoningBudget,
-              reasoning_budget_message: isDiffusion
-                ? ""
-                : config.reasoningBudgetMessage,
-              // omitted when blank: a null counts as set and strips inherited -b / -ub
-              ...(config.nBatch != null ? { n_batch: config.nBatch } : {}),
-              ...(config.nUbatch != null ? { n_ubatch: config.nUbatch } : {}),
-              // Draft cache dtype changes the estimate, so preflight must match the launch.
-              ...serverTuningLoadPayload(config),
-              // Checked with the same arguments the load sends, or a list the backend refuses would pass this gate.
-              ...(resolvedExtraArgs !== undefined
-                ? { llama_extra_args: resolvedExtraArgs ?? [] }
-                : {}),
-            }
-          : {}),
-      }))
-    ) {
+    const request: LoadModelRequest = {
+      model_path: modelPath,
+      hf_token: hfToken,
+      max_seq_length: fitMaxSeqLength,
+      load_in_4bit: config.loadIn4bit !== false,
+      is_lora: false,
+      gguf_variant: candidate.ggufVariant,
+      trust_remote_code: trustRemoteCode,
+      chat_template_override: effectiveChatTemplateOverride,
+      cache_type_kv: config.kvCacheDtype,
+      mlx_kv_quant: config.mlxKvQuant ?? null,
+      mlx_int8_prefill: config.mlxInt8Prefill ?? false,
+      mlx_ple_offload: config.mlxPleOffload ?? null,
+      mlx_expert_offload: config.mlxExpertOffload ?? null,
+      speculative_type: effectiveSpeculativeType,
+      spec_draft_n_max: effectiveSpecDraftNMax,
+      ...mlxDrafter,
+      tensor_parallel: effectiveTensorParallel,
+      disable_vision: effectiveDisableVision,
+      n_parallel: config.nParallel ?? null,
+      // Remembered pass-through args: nothing is resident at startup to inherit them from.
+      ...llamaServerLoadFields(
+        { ...config, llamaExtraArgs: resolvedExtraArgs },
+        { isGguf: candidate.kind === "gguf", isDiffusion },
+      ),
+      // GGUF-only. A remembered manual DiffusionGemma split (0 especially) must not be refused as a
+      // full-GGUF occupant.
+      ...(candidate.kind === "gguf"
+        ? {
+            gpu_memory_mode: effectiveGpuMemoryMode,
+            gpu_layers: effectiveGpuLayers,
+            n_cpu_moe: effectiveNCpuMoe,
+            tensor_split: effectiveTensorSplit ?? undefined,
+            gpu_ids: effectiveGpuIds ?? undefined,
+          }
+        : {}),
+    };
+    if (!(await canAutoLoadRecordingFailures(failureLabel, request))) {
       skippedAutoLoadCandidates.add(
         autoLoadCandidateKey(
           candidate.kind,
@@ -3758,52 +3744,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     });
     loadAttempts += 1;
     options?.abortSignal?.throwIfAborted();
-    const loadResp = await loadModel({
-      model_path: modelPath,
-      // Keep a speech model loaded for read aloud when Keep multiple models loaded allows it.
-      alongside: true,
-      hf_token: hfToken,
-      max_seq_length: fitMaxSeqLength,
-      load_in_4bit: config.loadIn4bit !== false,
-      is_lora: false,
-      gguf_variant: candidate.ggufVariant,
-      trust_remote_code: trustRemoteCode,
-      chat_template_override: effectiveChatTemplateOverride,
-      cache_type_kv: config.kvCacheDtype,
-      mlx_kv_quant: config.mlxKvQuant ?? null,
-      mlx_int8_prefill: config.mlxInt8Prefill ?? false,
-      mlx_ple_offload: config.mlxPleOffload ?? null,
-      mlx_expert_offload: config.mlxExpertOffload ?? null,
-      speculative_type: effectiveSpeculativeType,
-      spec_draft_n_max: effectiveSpecDraftNMax,
-      ...mlxDrafter,
-      reasoning_budget:
-        candidate.kind === "gguf" && !isDiffusion ? config.reasoningBudget : -1,
-      reasoning_budget_message:
-        candidate.kind === "gguf" && !isDiffusion
-          ? config.reasoningBudgetMessage
-          : "",
-      tensor_parallel: effectiveTensorParallel,
-      disable_vision: effectiveDisableVision,
-      n_parallel: config.nParallel ?? null,
-      // Split ratio is never remembered (tied to an exact GPU set), so llama.cpp's default applies.
-      ...(candidate.kind === "gguf"
-        ? {
-            gpu_memory_mode: effectiveGpuMemoryMode,
-            gpu_layers: effectiveGpuLayers,
-            n_cpu_moe: effectiveNCpuMoe,
-            gpu_ids: effectiveGpuIds ?? undefined,
-            ...(config.nBatch != null ? { n_batch: config.nBatch } : {}),
-            ...(config.nUbatch != null ? { n_ubatch: config.nUbatch } : {}),
-            // Remembered like the rest of this block, or the auto-load reverts the override.
-            ...serverTuningLoadPayload(config),
-            // Undefined predates the field; an empty list is an explicit none.
-            ...(resolvedExtraArgs !== undefined
-              ? { llama_extra_args: resolvedExtraArgs ?? [] }
-              : {}),
-          }
-        : {}),
-    }).catch((error: unknown) => {
+    // Keep a speech model loaded for read aloud when Keep multiple models loaded allows it.
+    const loadResp = await loadModel({ ...request, alongside: true }).catch((error: unknown) => {
       // The sweep's parameterless catches discard this error, so record it before rethrowing.
       noteLoadFailure(failureLabel, error);
       throw error;
@@ -4166,20 +4108,29 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         rt.selectedGpuIds,
         rt.selectedGpuIndexKind,
       );
-      // Preflight before downloading gigabytes; the load reuses this snapshot.
-      if (
-        !(await canAutoLoad({
-          model_path: DEFAULT_CHAT_MODEL_REPO,
-          max_seq_length: 0,
-          is_lora: false,
-          gguf_variant: DEFAULT_CHAT_MODEL_VARIANT,
-          // The same live-store GPU pick the load below sends.
-          gpu_ids: defaultGpuIds ?? undefined,
-          gpu_memory_mode: rt.gpuMemoryMode,
-          speculative_type: specSettings.speculativeType,
-          spec_draft_n_max: specSettings.specDraftNMax,
-        }))
-      ) {
+      const request: LoadModelRequest = {
+        model_path: DEFAULT_CHAT_MODEL_REPO,
+        hf_token: hfToken,
+        // Model default under both modes: Auto layers + no pin means resolveFitMaxSeqLength returns 0.
+        max_seq_length: 0,
+        load_in_4bit: true,
+        is_lora: false,
+        gguf_variant: DEFAULT_CHAT_MODEL_VARIANT,
+        trust_remote_code: trustRemoteCode,
+        speculative_type: specSettings.speculativeType,
+        spec_draft_n_max: specSettings.specDraftNMax,
+        reasoning_budget: -1,
+        reasoning_budget_message: "",
+        // GPU Memory mode is a standing preference and the GPU pick is the on-screen one; the
+        // per-model layer/MoE/split knobs and context pin stay at their defaults.
+        gpu_memory_mode: rt.gpuMemoryMode,
+        gpu_layers: GPU_LAYERS_AUTO,
+        n_cpu_moe: 0,
+        gpu_ids: defaultGpuIds ?? undefined,
+      };
+      // Preflight BEFORE the transfer: training or the placement guard can refuse this model, and
+      // learning that after gigabytes costs a long wait. The load sends this same request.
+      if (!(await canAutoLoad(request))) {
         toast.dismiss(toastId);
         return { loaded: false, blockedByTrustRemoteCode };
       }
@@ -4211,27 +4162,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       );
       loadAttempts += 1;
       options?.abortSignal?.throwIfAborted();
-      const loadResp = await loadModel({
-        model_path: DEFAULT_CHAT_MODEL_REPO,
-        alongside: true,
-        hf_token: hfToken,
-        // Model default under both modes: Auto layers + no pin means resolveFitMaxSeqLength returns 0.
-        max_seq_length: 0,
-        load_in_4bit: true,
-        is_lora: false,
-        gguf_variant: DEFAULT_CHAT_MODEL_VARIANT,
-        trust_remote_code: trustRemoteCode,
-        speculative_type: specSettings.speculativeType,
-        spec_draft_n_max: specSettings.specDraftNMax,
-        reasoning_budget: -1,
-        reasoning_budget_message: "",
-        // GPU Memory mode is a standing preference; per-model knobs stay default and the GPU pick is
-        // the on-screen one the preflight used.
-        gpu_memory_mode: rt.gpuMemoryMode,
-        gpu_layers: GPU_LAYERS_AUTO,
-        n_cpu_moe: 0,
-        gpu_ids: defaultGpuIds ?? undefined,
-      });
+      const loadResp = await loadModel({ ...request, alongside: true });
       reportEvicted(loadResp);
       options?.abortSignal?.throwIfAborted();
       applyAutoLoadRuntimeState(options, () => {

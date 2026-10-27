@@ -30,6 +30,13 @@ from test_tp_native_gloo import (  # noqa: E402
     _trainer_args,
 )
 
+# These arms start the adapters at init_lora_weights = False and compare 3 whole Trainer steps. At AdamW's
+# default eps 1e-8, m / (sqrt(v) + eps) turns the fp32 reduction-order noise between tp = 2 and one process
+# into 1e-5 grad-norm and 1e-4 weight drift by step 3 while the losses still match exactly; at 1e-4 it stays
+# below 1e-6, and a real tp error (a missed all-reduce) still lands at 3.5e-4. Only these runs take it: the
+# native Trainer tests (B = 0 adapters) pass at the default eps on the CI runners and fail at 1e-4 there.
+_ADAM_EPS = 1e-4
+
 _ENV_KEYS = (
     "UNSLOTH_TP_SIZE",
     "UNSLOTH_PP_SIZE",
@@ -208,7 +215,9 @@ def _case_env(
 
     def run(out_dir, **overrides):
         model, sharded = fresh()
-        args = _trainer_args(out_dir, bs, optim = optim, max_steps = steps, **overrides)
+        args = _trainer_args(
+            out_dir, bs, optim = optim, max_steps = steps, adam_epsilon = _ADAM_EPS, **overrides
+        )
         trainer = SequentialTrainer(model = model, args = args, train_dataset = data)
         return trainer, sharded
 
@@ -314,7 +323,9 @@ def _case_env(
                 train_dataset = data,
             )
         )
-        res["generate"] = _raised(lambda: model.generate(input_ids = ids[:1, :3]))
+        res["generate"] = _raised(
+            lambda: model.generate(input_ids = ids[:1, :3], max_new_tokens = 2, pad_token_id = 0)
+        )
     if dist.is_initialized():
         dist.barrier()
     return res
@@ -344,6 +355,39 @@ def _case_dp_average(rank, world, tmp):
         "none": none.grad,
         "frozen": frozen.grad,
     }
+
+
+def _case_dp_average_dtypes(rank, world, tmp):
+    """fp16 grads whose sum overflows but mean does not; bf16 / fp32 match own-dtype all-reduce."""
+    error = _import_checkout_unsloth()
+    if error is not None:
+        return {"skip": error}
+    import torch.distributed as dist
+    from torch.distributed.device_mesh import init_device_mesh
+
+    from unsloth.models import tp_native
+
+    dist.init_process_group("gloo")
+    mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("dp",))
+    torch.manual_seed(rank)
+    out, params = {}, {}
+    for dtype in (torch.float16, torch.bfloat16, torch.float32):
+        big = torch.nn.Parameter(torch.zeros(4, dtype = dtype))
+        big.grad = torch.tensor([40000.0, 40000.0 if rank else 30000.0, 1e-3, -6e4], dtype = dtype)
+        noise = torch.nn.Parameter(torch.zeros(64, dtype = dtype))
+        noise.grad = (torch.randn(64) * 10.0 ** torch.randint(-6, 4, (64,))).to(dtype)
+        params[dtype] = (big, noise)
+        reference = []
+        for p in (big, noise):
+            g = p.grad.clone()
+            dist.all_reduce(g)
+            reference.append(g.div_(world))
+        out[str(dtype)] = {"reference": reference}
+    tp_native._dp_average([p for pair in params.values() for p in pair], mesh["dp"])
+    for dtype, pair in params.items():
+        out[str(dtype)]["got"] = [p.grad.clone() for p in pair]
+        out[str(dtype)]["dtype"] = [p.grad.dtype for p in pair]
+    return out
 
 
 def _case_accelerate_fsdp(rank, world, tmp, ckpt):
@@ -379,6 +423,7 @@ CASES = {
     "units": _case_units,
     "env": _case_env,
     "dp_average": _case_dp_average,
+    "dp_average_dtypes": _case_dp_average_dtypes,
     "accelerate_fsdp": _case_accelerate_fsdp,
 }
 
@@ -507,9 +552,7 @@ def test_env_tp2_trainer_matches_one_process(four_bit):
         assert "evaluation during training" in res["eval"] and hint in res["eval"], res["eval"]
         assert "Trainer.evaluate is not supported" in res["evaluate"] and hint in res["evaluate"]
         assert "lion_8bit" in res["lion"], res["lion"]
-        assert "generation is not supported" in res["generate"], res[
-            "generate"
-        ]  # A3: still refused
+        assert res["generate"] is None, res["generate"]  # a whole replica per rank (tp_replica.py)
     assert results[0]["seen"] == results[1]["seen"]  # both tp ranks read the same batches
 
 
@@ -614,6 +657,24 @@ def test_dp_average_matches_ddp_for_gradients_on_some_replicas():
     for res in _spawn("dp_average", 2):
         assert res["one"] == [2.0] * 3 and res["both"] == [1.5] * 3, res
         assert res["none"] is None and res["frozen"] is None, res
+
+
+def test_dp_average_keeps_fp16_finite_and_bf16_fp32_unchanged():
+    results = _spawn("dp_average_dtypes", 2)
+    for res in results:
+        fp16 = res[str(torch.float16)]
+        big, noise = fp16["got"]
+        assert fp16["dtype"] == [torch.float16] * 2
+        assert torch.isfinite(big).all() and torch.isfinite(noise).all(), big
+        assert big.tolist() == [40000.0, 35008.0, 0.0010004043579101562, -6e4], big.tolist()
+        assert not torch.isfinite(fp16["reference"][0]).all()
+        for dtype in (torch.bfloat16, torch.float32):
+            entry = res[str(dtype)]
+            assert entry["dtype"] == [dtype] * 2
+            for got, want in zip(entry["got"], entry["reference"]):
+                assert torch.equal(got, want), (dtype, got, want)
+    for a, b in zip(results[0][str(torch.float16)]["got"], results[1][str(torch.float16)]["got"]):
+        assert torch.equal(a, b)
 
 
 def test_env_tp_x_accelerate_fsdp_is_refused():

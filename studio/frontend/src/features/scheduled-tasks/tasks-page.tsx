@@ -9,8 +9,8 @@ import {
   PencilEdit02Icon,
   Search01Icon,
   Clock01Icon,
-  PauseIcon,
 } from "@hugeicons/core-free-icons";
+import { PauseIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { PlayIcon } from "lucide-react";

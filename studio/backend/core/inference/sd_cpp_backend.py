@@ -2087,13 +2087,75 @@ def output_shows_decisive_accelerator_failure(text: Optional[str]) -> bool:
     return any(marker in lowered for marker in _ACCELERATOR_DECISIVE_FAILURE_MARKERS)
 
 
+# Imported by the Windows ROCm bundle but not shipped in it; only the AMD HIP SDK provides it.
+_WINDOWS_ROCM_HOST_DLLS: tuple[str, ...] = ("hipblas.dll",)
+_windows_rocm_skip_logged = False
+
+
+def _on_windows() -> bool:
+    return os.name == "nt"
+
+
+def windows_rocm_build_mode() -> str:
+    """``UNSLOTH_SD_CPP_WINDOWS_ROCM``: ``auto`` (ROCm only if the HIP SDK is on PATH), ``1`` always, ``0`` never."""
+    raw = (os.environ.get("UNSLOTH_SD_CPP_WINDOWS_ROCM", "auto") or "").strip().lower()
+    if raw in ("1", "on", "true", "yes", "force"):
+        return "force"
+    if raw in ("0", "off", "false", "no", "never"):
+        return "off"
+    return "auto"
+
+
+def _windows_dll_search_dirs() -> list[str]:
+    dirs: list[str] = []
+    system_root = os.environ.get("SystemRoot") or os.environ.get("windir") or r"C:\Windows"
+    dirs.append(os.path.join(system_root, "System32"))
+    dirs.append(system_root)
+    dirs.extend(d.strip().strip('"') for d in os.environ.get("PATH", "").split(os.pathsep))
+    return [d for d in dirs if d]
+
+
+def windows_hip_runtime_missing_dlls() -> Optional[list[str]]:
+    """Missing HIP SDK DLLs, or None off Windows. File search only: loading hipblas.dll here would clash with torch's rocBLAS."""
+    if not _on_windows():
+        return None
+    dirs = _windows_dll_search_dirs()
+    missing = []
+    for dll in _WINDOWS_ROCM_HOST_DLLS:
+        if not any(os.path.isfile(os.path.join(d, dll)) for d in dirs):
+            missing.append(dll)
+    return missing
+
+
+def windows_rocm_build_skipped() -> bool:
+    """Whether a Windows ROCm request goes to Vulkan (HIP SDK missing would fail with 0xC0000135)."""
+    if not _on_windows() or not sd_cpp_vulkan_fallback_enabled():
+        return False
+    mode = windows_rocm_build_mode()
+    if mode == "force":
+        return False
+    if mode == "off":
+        return True
+    return bool(windows_hip_runtime_missing_dlls())
+
+
 def preferred_accelerator(accelerator: Optional[str], card: Optional[str] = None) -> str:
     """``accelerator``, or its fallback once shown unrunnable here. Applied at the TOP of an ensure ladder, so a crashed build is not installed and probed again.
 
-    A function of the stored record only, never of the live host: the loader preflight is applied
-    where the runtime verdict is interpreted, so this stays reproducible."""
+    On Windows a ROCm request starts at Vulkan when ``windows_rocm_build_skipped``."""
+    global _windows_rocm_skip_logged
     chosen = accelerator or "auto"
     klass = _accelerator_class_of(accelerator) or chosen
+    if klass == "rocm" and windows_rocm_build_skipped():
+        if not _windows_rocm_skip_logged:
+            _windows_rocm_skip_logged = True
+            logger.info(
+                "sd_cpp.windows_rocm_skipped: using the Vulkan stable-diffusion.cpp build; the ROCm "
+                "build needs the AMD HIP SDK runtime (%s) on PATH (UNSLOTH_SD_CPP_WINDOWS_ROCM=1 "
+                "to use it anyway)",
+                ", ".join(windows_hip_runtime_missing_dlls() or _WINDOWS_ROCM_HOST_DLLS),
+            )
+        chosen = klass = "vulkan"
     seen: set[str] = set()
     # Walk the ladder (rocm -> vulkan -> cpu) past every rung already shown unrunnable.
     while klass not in seen:
@@ -2491,6 +2553,60 @@ def _install_kwargs(accelerator: str) -> dict[str, Any]:
     return kwargs
 
 
+def _unrunnable_build(exc: BaseException) -> bool:
+    try:
+        return isinstance(exc, _installer_module().UnrunnableBuildError)
+    except Exception:  # noqa: BLE001 -- an installer without the probe raises nothing of the kind
+        return False
+
+
+def _install_down_the_ladder(_install: Callable[..., Any], accelerator: str) -> tuple[Any, str]:
+    """Install ``accelerator``, stepping down (rocm -> vulkan -> cpu) while the loader refuses the bundle.
+    Returns ``(path, accelerator installed)``."""
+    current = accelerator
+    tried: set[str] = set()
+    refused: list[str] = []
+
+    def _note_refused(fingerprint: dict) -> None:
+        for klass in refused:
+            note_accelerator_runtime_failure(klass, proven = True, fingerprint = fingerprint)
+
+    while True:
+        try:
+            path = _install(**_install_kwargs(current))
+        except Exception as exc:  # noqa: BLE001
+            if not _unrunnable_build(exc):
+                if refused:
+                    _note_refused(_pin_fingerprint())
+                raise
+            klass = _accelerator_class_of(current)
+            tried.add(klass)
+            refused.append(klass)
+            nxt = fallback_accelerator_for(klass)
+            logger.warning(
+                "sd_cpp.unrunnable_build: %s; %s",
+                exc,
+                f"installing the {nxt} build instead" if nxt else "no fallback build to try",
+            )
+            if not nxt or _accelerator_class_of(nxt) in tried:
+                _note_refused(_pin_fingerprint())
+                raise
+            current = nxt
+            continue
+        # Keyed on the installed build: a fallback may carry a tag other than the pin.
+        if refused:
+            _note_refused(_accelerator_fingerprint(path) if path else _pin_fingerprint())
+        return path, current
+
+
+def _pin_fingerprint() -> dict:
+    try:
+        want = _installer_module()._pinned_tag()
+    except Exception:  # noqa: BLE001
+        want = None
+    return {"bundle": want, **_host_fingerprint()}
+
+
 def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu") -> Optional[str]:
     """Never raises: None means no usable binary and tells the router to fall back to diffusers."""
     found = find_sd_cpp_binary()
@@ -2516,7 +2632,7 @@ def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu"
             if not claimed:
                 return fallback  # something is running in there; retry on a later load
             try:
-                path = _install(**_install_kwargs(accelerator))
+                path, _used = _install_down_the_ladder(_install, accelerator)
                 logger.info("sd-cli installed at %s", path)
                 return str(path)
             except Exception as exc:  # noqa: BLE001 -- download/extract failure -> fall back
@@ -2562,7 +2678,7 @@ def ensure_sd_server_binary(
             if not claimed:
                 return fallback  # something is running in there; retry on a later load
             try:
-                _install(**_install_kwargs(accelerator))  # extracts sd-cli AND sd-server
+                _path, accelerator = _install_down_the_ladder(_install, accelerator)
             except Exception as exc:  # noqa: BLE001 -- download/extract failure -> fall back
                 logger.warning("sd-server auto-install failed: %s", exc)
                 # Also when only the CLI survives: the following ensure_sd_cpp_binary probe would re-download.

@@ -14,10 +14,10 @@ import { openExternalLink } from "@/lib/open-link";
 import { toast } from "@/lib/toast";
 import {
   ArrowUpRight01Icon,
-  Copy01Icon,
   LinkSquare02Icon,
   PlusSignIcon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import type { ReactElement, ReactNode } from "react";
 import { useBrowserStore } from "./store";

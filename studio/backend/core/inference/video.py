@@ -129,6 +129,7 @@ from .diffusion_multigpu import (
     with_load_selection,
 )
 from .diffusion_memory import (
+    DeviceMemory,
     commit_load_budget_fraction,
     release_load_budget_fraction,
     vram_budget_scope,
@@ -278,7 +279,14 @@ from .video_families import (
     video_family_uses_i2v_pipeline,
     video_i2v_call_kwargs,
 )
-from .video_frames import uint8_video_frames
+from .video_frames import (
+    NON_FINITE_FRAMES_MSG,
+    NonFiniteFramesError,
+    finite_video_decode,
+    nonfinite_check_enabled,
+    require_finite_frames,
+    uint8_video_frames,
+)
 from .video_minimax_h3 import (
     H3_ANCHOR_FIRST,
     H3_ANCHOR_LAST,
@@ -1211,6 +1219,69 @@ def _settle_bg_compile(bg: Any, *, i2v: bool) -> None:
         bg.abandon("an image-to-video render records no compile sample")
 
 
+def _float_seed_dits(pipe: Any) -> list:
+    """DiTs compiled with ``dynamic=True`` (SymFloat restarts); static and torchao compiles never restart."""
+    try:
+        from .diffusion_speed import _guarded_dits
+
+        dits = []
+        for dit in _guarded_dits(pipe):
+            kwargs = getattr(dit, "_unsloth_regional_compile_kwargs", None)
+            if isinstance(kwargs, dict) and kwargs.get("dynamic") is True:
+                dits.append(dit)
+        return dits
+    except Exception:  # noqa: BLE001 - no seeds, main's compile
+        return []
+
+
+@contextlib.contextmanager
+def _seed_before_first_forward(float_seeds: Any):
+    """Also seed at the first DiT forward: H3 modular's progress bar is its loop wrapper's, not the pipe's."""
+    handles = []
+
+    def _pre(*_args: Any) -> None:
+        float_seeds.seed()
+
+    try:
+        for module in list(getattr(float_seeds, "modules", None) or ()):
+            with contextlib.suppress(Exception):
+                handles.append(module.register_forward_pre_hook(_pre))
+        yield
+    finally:
+        for handle in handles:
+            with contextlib.suppress(Exception):
+                handle.remove()
+
+
+def _video_float_seed_dir(
+    pipe: Any, *, family: Any, dtype: Any, quant: Any, attention_backend: Any
+) -> tuple[list, Optional[Path]]:
+    """(DiTs, per-key seed dir keyed like the image compile cache), or ([], None). Video has no compile-cache ctx."""
+    from . import diffusion_bg_compile
+
+    if not diffusion_bg_compile.float_seeds_enabled():
+        return [], None
+    dits = _float_seed_dits(pipe)
+    if not dits:
+        return [], None
+    try:
+        from . import diffusion_compile_cache as cc
+
+        model_fp = cc.model_fingerprint(
+            family = family,
+            transformer = dits[0],
+            dtype = str(dtype).replace("torch.", ""),
+            quant = quant,
+            attention_backend = attention_backend,
+            compile_kwargs = dict(dits[0]._unsloth_regional_compile_kwargs),
+        )
+        model_fp["video_dits"] = [type(d).__name__ for d in dits]
+        key = cc.cache_key(cc.environment_fingerprint(), model_fp)
+        return dits, cc.cache_root() / "video_float_seeds" / key
+    except Exception:  # noqa: BLE001 - no seeds, main's compile
+        return [], None
+
+
 def assert_first_frame_pipeline_available(fam: VideoFamily) -> None:
     if video_family_uses_i2v_pipeline(fam) and not _i2v_pipeline_available(fam.i2v_pipeline_class):
         raise ValueError(
@@ -1959,6 +2030,26 @@ def _h3_restart_for_retry(slot: Any, reason: str) -> bool:
         return False
     slot.stop(reason)
     return True
+
+
+def _refuse_h3_native_nan_render(path: Any) -> None:
+    """Raise ``NonFiniteFramesError`` for an sd.cpp H3 clip that is a NaN render (``h3_native_clip_is_nan_render``):
+    sd.cpp writes it and exits 0. Off with UNSLOTH_VIDEO_NONFINITE_CHECK=0; a clip the probe cannot read is kept."""
+    if not nonfinite_check_enabled():
+        return
+    from .video_minimax_h3 import h3_native_clip_is_nan_render
+
+    try:
+        broken = h3_native_clip_is_nan_render(Path(path))
+    except Exception as exc:  # noqa: BLE001 - the probe never fails a render on its own
+        logger.debug("video.h3_native_nonfinite_probe_failed: %s", exc)
+        return
+    if broken:
+        logger.warning(
+            "video.h3_native_nonfinite: sd.cpp returned a clip whose every frame is flat black / white and whose "
+            "soundtrack is one full-scale level, the output of a NaN render; refusing to save it"
+        )
+        raise NonFiniteFramesError(NON_FINITE_FRAMES_MSG)
 
 
 def _h3_retry_vram_cap(launched: "Optional[Sequence[str]]", error: str) -> Any:
@@ -4347,6 +4438,8 @@ def video_failure_detail(exc: BaseException, request_shape: Optional[dict[str, A
 
         if isinstance(exc, H3NativeMemoryRefusal):
             return f"{VIDEO_GENERATION_FAILED_MSG} {exc}"
+        if isinstance(exc, NonFiniteFramesError):
+            return f"{VIDEO_GENERATION_FAILED_MSG} {NON_FINITE_FRAMES_MSG}"
         native_memory = _native_memory_failure(exc)
         if native_memory:
             return f"{VIDEO_GENERATION_FAILED_MSG} {native_memory}"
@@ -4485,6 +4578,7 @@ class VideoBackend:
         # (load token, client) of an LTX-2.5 Gemma 4 encoder worker whose load has not committed yet; a failed load stops
         # it.
         self._ltx25_pending_encoder: Optional[tuple[Optional[int], Any]] = None
+        self._float_seeds: Optional[tuple[Any, Any]] = None
         # How many unloads / superseding loads are waiting on _generate_lock to free this pipeline. A generation queued
         # behind the active one holds no cancel event yet, so without this fence it could win the lock after an eject
         # and denoise a whole new clip against a pipeline being freed. A count, so concurrent teardowns each own their
@@ -4509,6 +4603,29 @@ class VideoBackend:
         target = resolve_diffusion_device_target(ordinal = ordinal)
         apply_diffusion_device_ordinal(target)
         return target
+
+    def _inline_float_seeds(self, state: Any) -> Any:
+        """This load's ``InlineFloatSeeds`` until its first compiled clip kept its names, else None."""
+        held = self._float_seeds
+        if held is not None and held[0] is state:
+            return None if held[1] is None or held[1].done() else held[1]
+        seeds = None
+        try:
+            if getattr(state, "bg_compile", None) is None:
+                from . import diffusion_bg_compile
+                dits, seed_dir = _video_float_seed_dir(
+                    state.pipe,
+                    family = getattr(state.family, "name", None),
+                    dtype = state.dtype,
+                    quant = state.transformer_quant,
+                    attention_backend = state.attention_backend,
+                )
+                if seed_dir is not None:
+                    seeds = diffusion_bg_compile.InlineFloatSeeds(dits, seed_dir, logger = logger)
+        except Exception:  # noqa: BLE001 - no seeds, main's compile
+            seeds = None
+        self._float_seeds = (state, seeds)
+        return seeds
 
     def _state_device_target(self, state: _VideoLoadState) -> DiffusionDeviceTarget:
         """The resident pipeline's target, pinned onto the calling thread. Every worker that
@@ -5489,6 +5606,7 @@ class VideoBackend:
             H3_GGUF_REPO,
             h3_component_metadata_repo,
             h3_download_error,
+            h3_offline_miss_error,
             h3_text_encoder_filename,
         )
         from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
@@ -5678,6 +5796,9 @@ class VideoBackend:
                         )
                     )
                 except Exception as exc:  # noqa: BLE001 -- re-raised below, narrowed by name
+                    # Cache-only miss: huggingface_hub's LocalEntryNotFoundError does not say how to recover.
+                    if local_files_only and VideoBackend._te_fetch_miss(exc, local_files_only = True):
+                        raise h3_offline_miss_error(repo, wanted) from exc
                     raise h3_download_error(repo, wanted, exc) from exc
             resolved.append(local)
 
@@ -9617,6 +9738,7 @@ class VideoBackend:
                 is_gguf = gguf_transformer,
                 offload_active = speed_offload,
                 audit = load_audit,
+                logger = logger,
                 apply = lambda family, log, view = view: apply_speed_optims(
                     view,
                     target,
@@ -9937,7 +10059,19 @@ class VideoBackend:
                 )
             )
             load_bg_compile = (
-                bg_compile.arm(bg_module, logger = logger) if bg_module is not None else None
+                bg_compile.arm(
+                    bg_module,
+                    logger = logger,
+                    seed_dir = _video_float_seed_dir(
+                        pipe,
+                        family = fam.name,
+                        dtype = dtype,
+                        quant = transformer_quant_engaged,
+                        attention_backend = attention_engaged,
+                    )[1],
+                )
+                if bg_module is not None
+                else None
             )
             with self._lock:
                 if _load_token is not None and _load_token != self._load_token:
@@ -10034,6 +10168,8 @@ class VideoBackend:
         device: str,
         memory_mode: Optional[str],
         scheme: Optional[str],
+        te_scheme: Optional[str] = None,
+        device_memory: Optional[DeviceMemory] = None,
     ) -> None:
         """Refuse H3 modular loads that cannot fit unified memory; best-effort, skipped if no table/device."""
         components = getattr(fam, "bf16_components_gb", None)
@@ -10051,10 +10187,16 @@ class VideoBackend:
             transformer_gb = float(measured)
         elif factor is not None:
             transformer_gb *= factor
+        # The hosted conditioner stays INT8 in memory; price the same artifact the loader seeds.
+        text_encoder_gb = h3_te_resident_gb(te_scheme, bf16_gb = text_encoder_gb)
         mib_per_gb = 1000.0**3 / (1024.0 * 1024.0)
         plan = plan_diffusion_memory(
             target = target,
-            device_memory = settled_snapshot_device_memory(target),
+            device_memory = (
+                device_memory
+                if device_memory is not None
+                else settled_snapshot_device_memory(target)
+            ),
             model_dense_mib = int(
                 (transformer_gb + text_encoder_gb + vae_gb) * dtype_scale * mib_per_gb
             ),
@@ -10219,7 +10361,17 @@ class VideoBackend:
                 f"no hosted pre-quantized {scheme} checkpoint for {fam.name} {workflow}"
             )
             scheme = None
-        # Unified memory: CPU offload frees nothing, so H3's 144.2 GB set must be refused before any load.
+        te_scheme = self._h3_te_quant_scheme(fam, text_encoder_quant, base, umem_target)
+        te_index_source = self._h3_te_index_source(pipe) if te_scheme is not None else None
+        te_index_declined = False
+        if te_scheme is not None:
+            if te_index_source is None or _h3_te_canonical(te_index_source) != _h3_te_canonical(
+                fam.base_repo
+            ):
+                te_scheme = None
+                te_index_declined = True
+        # Keep the pre-seed free pool: re-reading after seeding double-counts hosted components.
+        preseed_memory = settled_snapshot_device_memory(umem_target)
         self._raise_on_modular_unified_shortfall(
             fam,
             target = umem_target,
@@ -10227,6 +10379,8 @@ class VideoBackend:
             device = device,
             memory_mode = memory_mode,
             scheme = comfy_scheme or scheme,
+            te_scheme = te_scheme,
+            device_memory = preseed_memory,
         )
         if comfy_scan is not None:
             from .video_minimax_h3_comfy import load_h3_comfy_transformer
@@ -10360,24 +10514,11 @@ class VideoBackend:
         # Seed the hosted conditioner: a runtime cast peaks at bf16 and would download 62 GB dense.
         text_encoder_quant_engaged: Optional[str] = None
         text_encoder_quant_reason = "released bfloat16 components"
-        # Base-gated by the plan's resolver: a derivative base with its own conditioner never gets this one.
-        te_scheme = self._h3_te_quant_scheme(fam, text_encoder_quant, base, umem_target)
-        # From here the request is the NORMALISED scheme (None once "none" pins dense); reasons assume it.
         text_encoder_quant = (
             None if text_encoder_quant_is_auto else normalize_te_quant(text_encoder_quant)
         )
         if text_encoder_quant_is_auto and te_scheme is not None:
             text_encoder_quant_reason = f"auto: hosted quantized {te_scheme} conditioner"
-        # Second gate: the modular index names the conditioner's true source; unanswerable is a refusal.
-        te_index_source = self._h3_te_index_source(pipe) if te_scheme is not None else None
-        te_index_declined = False
-        if te_scheme is not None:
-            # Exact match: the tolerant _same_base_model would accept someone/MiniMax-H3.
-            if te_index_source is None or _h3_te_canonical(te_index_source) != _h3_te_canonical(
-                fam.base_repo
-            ):
-                te_scheme = None
-                te_index_declined = True
         if text_encoder_quant is not None and te_scheme is None:
             # Valid request, no hosted artifact for this workflow or conditioner: say which; keep the request.
             if te_index_declined:
@@ -10454,15 +10595,19 @@ class VideoBackend:
                 )
             )
         # Pass the token again or gated components load anonymously; workflow= narrows names, not blocks.
-        if scheme is not None and transformer_quant_engaged is None:
-            # Seeding may fall back to the dense 66.3 GB denoiser: re-check unified memory first or the OS kills.
+        if (scheme is not None and transformer_quant_engaged is None) or (
+            te_scheme is not None and text_encoder_quant_engaged is None
+        ):
+            # Either hosted component can fall back to dense; re-check the components that actually landed.
             self._raise_on_modular_unified_shortfall(
                 fam,
                 target = umem_target,
                 dtype = dtype,
                 device = device,
                 memory_mode = memory_mode,
-                scheme = None,
+                scheme = transformer_quant_engaged,
+                te_scheme = text_encoder_quant_engaged,
+                device_memory = preseed_memory,
             )
         # Without cache_dir components resolve against the import-time HF_HUB_CACHE.
         from .diffusion_offline_source import offline_component_sources
@@ -11660,6 +11805,7 @@ class VideoBackend:
             bg = getattr(state, "bg_compile", None)
             bg_eager = bg is not None and bg.pending()
             bg_token = bg_compile._FORCE_EAGER.set(True) if bg_eager else None
+            float_seeds = None if bg_eager else self._inline_float_seeds(state)
             # Closed in the finally so the pipeline is text-to-video again on return, cancel or failure.
             i2v_swap = contextlib.ExitStack()
             # Encodes Wan chunks while the VAE decodes; closed in the finally on cancel or failure.
@@ -12165,6 +12311,9 @@ class VideoBackend:
                 previewer = None
 
                 def _enter_denoise() -> None:
+                    if float_seeds is not None:
+                        # Before the first (compiling) denoiser forward.
+                        float_seeds.seed()
                     if self._gen.get("phase") == "encode":
                         self._gen.update(phase = "denoise")
 
@@ -12207,6 +12356,9 @@ class VideoBackend:
                 def _on_decode() -> None:
                     """Mark the decode boundary in the stream, retrying under contention; flip when
                     the GPU reaches it."""
+                    if float_seeds is not None:
+                        # Before the VAE decode's compile adds its own names.
+                        float_seeds.keep()
                     marked = False
                     for _ in range(_BOUNDARY_MARK_ATTEMPTS):
                         with _hold_off_cuda_graph_capture() as clear:
@@ -12270,8 +12422,12 @@ class VideoBackend:
                             )
                             stack.enter_context(scheduler_step_preview(pipe, previewer))
                         stack.enter_context(_denoise_phase(pipe, _enter_denoise))
+                        if float_seeds is not None:
+                            stack.enter_context(_seed_before_first_forward(float_seeds))
                         # No video family has a denoise-to-decode callback, so the decoder itself reports the decode phase.
                         stack.enter_context(_decode_phase(pipe, _on_decode))
+                        # NaN / inf pixels are refused at the decode, before a clamp or PIL / uint8 cast hides them.
+                        stack.enter_context(finite_video_decode(pipe))
                         # The decoded clip becomes uint8 on the GPU, bit-identical to the np / pil export (video_frames).
                         stack.enter_context(uint8_video_frames(pipe))
                         if stream_session is not None:
@@ -13077,6 +13233,7 @@ class VideoBackend:
                 if cudnn is not None:
                     cudnn.end_render()
                 self._gen.update(phase = "export", eta_seconds = None)
+                _refuse_h3_native_nan_render(generated)
                 actual_width, actual_height, actual_frames, has_audio = inspect_video(generated)
                 mp4_bytes = transcode_video_to_mp4(generated, fps = fps)
                 if cancel.is_set():
@@ -13132,6 +13289,7 @@ class VideoBackend:
             streamed = claim_stream(video_frames, fps, audio, int(audio_sample_rate))
             if streamed is not None:
                 return streamed
+        require_finite_frames(video_frames)
         from diffusers.utils.export_utils import encode_video
 
         tmp = tempfile.NamedTemporaryFile(suffix = ".mp4", delete = False)
@@ -13241,6 +13399,7 @@ class VideoBackend:
         cannot observe a half-torn-down backend."""
         release_load_budget_fraction("video")
         state, self._state = self._state, None
+        self._float_seeds = None
         if state is not None:
             server_slot = getattr(getattr(state, "pipe", None), "server_slot", None)
             if server_slot is not None:

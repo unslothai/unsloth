@@ -12,11 +12,11 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   Archive02Icon,
-  Copy01Icon,
   Delete02Icon,
   Download01Icon,
   MoreVerticalIcon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,

@@ -1101,6 +1101,25 @@ def validate_h3_transformer_filename(filename: str) -> None:
         )
 
 
+def _h3_role(filename: str) -> str:
+    return {
+        H3_VIDEO_VAE: "video VAE",
+        H3_AUDIO_VAE: "audio VAE",
+        H3_QWEN_Q2: "text encoder",
+        H3_QWEN_Q4: "text encoder",
+    }.get(filename, "denoiser")
+
+
+def h3_offline_miss_error(repo_id: str, filename: str) -> RuntimeError:
+    """A cache-only load (offline, or an auto-switch) missing an H3 file, e.g. VAEs cached before the vae/official/ move."""
+    return RuntimeError(
+        f"MiniMax-H3 needs its {_h3_role(filename)} ({filename}) from {repo_id}, and it is not in the local "
+        "Hugging Face cache. This load may only use cached files (offline, or a load Studio started on its own), "
+        "so it could not download it. Load MiniMax-H3 once while online (or reconnect) so Studio can fetch it; "
+        "after that it loads offline."
+    )
+
+
 def h3_download_error(repo_id: str, filename: str, exc: Exception) -> Exception:
     """Returns (never raises) an H3 access error naming repo and component, since private/gated look like not-found; other errors pass through unchanged."""
     from huggingface_hub.errors import GatedRepoError, RepositoryNotFoundError
@@ -1108,12 +1127,7 @@ def h3_download_error(repo_id: str, filename: str, exc: Exception) -> Exception:
     if not isinstance(exc, (RepositoryNotFoundError, GatedRepoError)):
         return exc
 
-    role = {
-        H3_VIDEO_VAE: "video VAE",
-        H3_AUDIO_VAE: "audio VAE",
-        H3_QWEN_Q2: "text encoder",
-        H3_QWEN_Q4: "text encoder",
-    }.get(filename, "denoiser")
+    role = _h3_role(filename)
     gated = isinstance(exc, GatedRepoError)
     detail = (
         "accept its licence on the Hub, then set a token in Settings"
@@ -2101,3 +2115,52 @@ def inspect_video(path: Path) -> tuple[int, int, int, bool]:
         if frames <= 0:
             frames = sum(1 for _ in container.decode(video = 0))
     return width, height, frames, has_audio
+
+
+def _full_scale_constant(samples: Any) -> Optional[float]:
+    """The one value every sample of ``samples`` holds when it is a full-scale (+-1) DC level, else None."""
+    import numpy as np
+
+    if samples.size == 0:
+        return None
+    lo, hi = samples.min(), samples.max()
+    if lo != hi:
+        return None
+    level = float(lo)
+    if np.issubdtype(samples.dtype, np.integer):
+        level /= float(np.iinfo(samples.dtype).max)
+    return level if abs(level) >= 0.999 else None
+
+
+def h3_native_clip_is_nan_render(path: Path) -> bool:
+    """True when a clip is an sd.cpp NaN render: every frame one flat 0 or 255 AND a constant full-scale PCM soundtrack.
+
+    ggml's clamp maps NaN to 0 on CUDA and to the max on CPU. A flat frame alone is not enough (lossy encode flattens
+    near-black clips). A clip without audio, or one that cannot be read, is never flagged."""
+    import av
+
+    with av.open(str(path)) as container:
+        if not container.streams.audio:
+            return False
+        level = None
+        for frame in container.decode(audio = 0):
+            value = _full_scale_constant(frame.to_ndarray())
+            if value is None or (level is not None and value != level):
+                return False
+            level = value
+        if level is None:
+            return False
+    seen = False
+    with av.open(str(path)) as container:
+        if not container.streams.video:
+            return False
+        for frame in container.decode(video = 0):
+            pixels = frame.to_ndarray(format = "rgb24")
+            if pixels.size == 0:
+                return False
+            lo, hi = int(pixels.min()), int(pixels.max())
+            # Black must be exact: a near-black scene decodes to 1-2. A white JPEG can come back at 253-255.
+            if not (hi == 0 or lo >= 250):
+                return False
+            seen = True
+    return seen

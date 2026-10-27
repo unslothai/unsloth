@@ -76,7 +76,6 @@ import {
   Cancel01Icon,
   Clock01Icon,
   ComputerTerminal01Icon,
-  Copy01Icon,
   Folder01Icon,
   Link01Icon,
   Download01Icon,
@@ -92,6 +91,7 @@ import {
   ViewIcon,
   VolumeMute02Icon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { ReloadIcon } from "@/lib/reload-icon";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import {

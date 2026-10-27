@@ -9,10 +9,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# The single source of truth for this package's version.
-# Keep it a plain literal in a module with no imports. pyproject reads it through
-# `attr:`, which setuptools resolves by static AST parse, so a build never imports torch;
-# and the torch-free MLX path in __init__.py imports it directly, which it cannot do for
-# models/_utils.py (torch, transformers, trl, peft, Triton). That is why the MLX branch
-# used to borrow unsloth_zoo's version, reporting a different package's number.
-__version__ = "2026.10.8"
+__version__ = "2026.10.9"

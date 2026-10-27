@@ -4,7 +4,6 @@
 import { useEffect, useRef, useState, type SyntheticEvent } from "react";
 import {
   Add01Icon,
-  Copy01Icon,
   CubeIcon,
   Delete02Icon,
   Key01Icon,
@@ -14,6 +13,7 @@ import {
   UserBlock01Icon,
   UserCheck01Icon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
