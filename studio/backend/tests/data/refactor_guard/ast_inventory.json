@@ -1845,6 +1845,11 @@
         "kind": "def",
         "signature": "text: str, first: int"
       },
+      "_search_from_literal": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "pattern: re.Pattern, literal: str, text: str, pos: int"
+      },
       "_signal_inside_leading_wrapperless_gemma": {
         "decorators": [],
         "kind": "def",

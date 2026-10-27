@@ -174,7 +174,9 @@ def test_scan_is_amortized_not_quadratic():
     reference_growth = elapsed(_reference_strip, long) / max(elapsed(_reference_strip, short), 1e-9)
     incremental_growth = incremental(long) / max(incremental(short), 1e-9)
 
-    assert incremental_growth < reference_growth / 2, (
+    # The reference's scans got cheaper, so its growth now sits nearer linear; 8x still splits
+    # the incremental stripper's ~4x from a rescan's ~16x.
+    assert incremental_growth < max(reference_growth / 2, 8.0), (
         f"incremental cost grew {incremental_growth:.1f}x vs the reference's "
         f"{reference_growth:.1f}x; expected roughly linear against its quadratic"
     )
