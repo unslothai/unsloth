@@ -968,7 +968,8 @@ def _training_mirror_access_specs(repo: str, note: str = "") -> dict[str, dict[s
         gated = upstream_is_gated(fetched)
         explanation = (
             f"Downloads from {fetched}. The original model license still applies."
-            if not gated else ""
+            if not gated
+            else ""
         )
         facts[shown] = {
             "gated": gated,
@@ -1016,7 +1017,9 @@ def family_train_infos() -> list[dict[str, Any]]:
             if repo_mirror:
                 base_specs[repo_mirror] = dict(base_spec)
         for repo in repos:
-            for shown, access in _training_mirror_access_specs(repo, str(spec.get("note", ""))).items():
+            for shown, access in _training_mirror_access_specs(
+                repo, str(spec.get("note", ""))
+            ).items():
                 base_specs[shown] = {**base_specs.get(shown, {}), **access}
         default_facts = base_specs.get(repos[0], {})
         for training_repo, inference_repo in getattr(fam, "deploy_base_repos", ()):
@@ -1036,7 +1039,9 @@ def family_train_infos() -> list[dict[str, Any]]:
                 # Dropped on a dit_block, since vram_note then carries the reason.
                 "params": "" if dit_block else spec.get("params", ""),
                 "qlora_vram_gb": None if dit_block else spec.get("qlora_vram_gb"),
-                "gated": False if dit_block else bool(default_facts.get("gated", spec.get("gated", False))),
+                "gated": False
+                if dit_block
+                else bool(default_facts.get("gated", spec.get("gated", False))),
                 "note": "" if dit_block else default_facts.get("note", spec.get("note", "")),
                 "precision_modes": fam_modes,
                 "recommended_precision": "nf4" if (not is_dit or dit_block) else dit_recommended,

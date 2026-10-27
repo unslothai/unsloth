@@ -578,13 +578,16 @@ def test_compile_engagement_reads_real_dynamo_counters():
     torch._dynamo.reset()
 
 
-@pytest.mark.parametrize("family, vendor", [
-    ("flux.1", "black-forest-labs/FLUX.1-dev"),
-    ("flux.2-dev", "black-forest-labs/FLUX.2-dev"),
-    ("flux.2-klein", "black-forest-labs/FLUX.2-klein-base-9B"),
-])
+@pytest.mark.parametrize(
+    "family, vendor",
+    [
+        ("flux.1", "black-forest-labs/FLUX.1-dev"),
+        ("flux.2-dev", "black-forest-labs/FLUX.2-dev"),
+        ("flux.2-klein", "black-forest-labs/FLUX.2-klein-base-9B"),
+    ],
+)
 def test_training_mirror_access_names_the_download_without_a_token_requirement(
-    dit_train_host, monkeypatch, family, vendor,
+    dit_train_host, monkeypatch, family, vendor
 ):
     monkeypatch.delenv("UNSLOTH_DIFFUSION_NO_MIRROR", raising = False)
     info = next(row for row in family_train_infos() if row["name"] == family)
