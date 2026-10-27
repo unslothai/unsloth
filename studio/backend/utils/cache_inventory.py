@@ -731,12 +731,44 @@ class LinkLedger:
         return self._single + sum(size for size, links, met in self._multi.values() if met >= links)
 
 
-def _record_entry(entry: os.DirEntry, ledger: LinkLedger) -> None:
+class _OccupancyLedger:
+    """Disk occupancy includes shared files even when clearing cannot free them."""
+
+    def __init__(self) -> None:
+        self._seen: set[tuple] = set()
+        self.bytes = 0
+        self.by_device: dict[int, int] = {}
+        self.device_paths: dict[int, Path] = {}
+
+    def add(self, info, path: Path | str) -> None:
+        # Some network filesystems do not provide inode numbers; do not merge
+        # every file on such a device into inode zero.
+        identity = (info.st_dev, info.st_ino) if info.st_ino else (info.st_dev, str(path))
+        if identity in self._seen:
+            return
+        self._seen.add(identity)
+        size = int(info.st_size)
+        self.bytes += size
+        self.by_device[info.st_dev] = self.by_device.get(info.st_dev, 0) + size
+        self.device_paths.setdefault(info.st_dev, Path(path).parent)
+
+
+def _record_entry(
+    entry: os.DirEntry, ledger: LinkLedger, occupancy: Optional[_OccupancyLedger] = None
+) -> None:
     try:
-        stat = entry.stat(follow_symlinks = False)
+        # Windows DirEntry.stat leaves volume/inode/link-count at zero. HF
+        # occupancy needs full identity for shared files and volume attribution.
+        stat = (
+            os.stat(entry.path, follow_symlinks = False)
+            if occupancy is not None and os.name == "nt"
+            else entry.stat(follow_symlinks = False)
+        )
     except OSError:
         return
     ledger.add(stat)
+    if occupancy is not None:
+        occupancy.add(stat, entry.path)
 
 
 def _descendable(entry: os.DirEntry) -> bool:
@@ -744,7 +776,9 @@ def _descendable(entry: os.DirEntry) -> bool:
     return not _is_junction(entry.path)
 
 
-def _measure_tree(path: Path, ledger: LinkLedger) -> int:
+def _measure_tree(
+    path: Path, ledger: LinkLedger, occupancy: Optional[_OccupancyLedger] = None
+) -> int:
     """Size is left to the ledger: a multi-link inode's cost is only known after every root is walked."""
     count = 0
     stack = [path]
@@ -760,14 +794,17 @@ def _measure_tree(path: Path, ledger: LinkLedger) -> int:
                         if _descendable(entry):
                             stack.append(Path(entry.path))
                         continue
-                    _record_entry(entry, ledger)
+                    _record_entry(entry, ledger, occupancy)
         except OSError:
             continue
     return count
 
 
-def _measure_root(root: Path, *, patterns: Optional[Iterable[str]] = None) -> tuple[int, int]:
-    ledger = LinkLedger()
+def _measure_root(
+    root: Path, *, patterns: Optional[Iterable[str]] = None,
+    ledger: Optional[LinkLedger] = None, occupancy: Optional[_OccupancyLedger] = None,
+) -> tuple[int, int]:
+    ledger = LinkLedger() if ledger is None else ledger
     entries = 0
     try:
         if Path(root).is_symlink() or _is_junction(root) or not Path(root).is_dir():
@@ -784,9 +821,9 @@ def _measure_root(root: Path, *, patterns: Optional[Iterable[str]] = None) -> tu
                     continue
                 if entry.is_dir(follow_symlinks = False):
                     if _descendable(entry):
-                        _measure_tree(Path(entry.path), ledger)
+                        _measure_tree(Path(entry.path), ledger, occupancy)
                     continue
-                _record_entry(entry, ledger)
+                _record_entry(entry, ledger, occupancy)
     except OSError as exc:
         logger.debug(f"Could not size {root}: {exc}")
     return ledger.freeable_bytes(), entries
@@ -816,6 +853,97 @@ def _resolve_roots(definition: CacheDefinition) -> list[Path]:
         seen.add(key)
         roots.append(path)
     return roots
+
+
+def _measurement_roots(definition: CacheDefinition) -> list[Path]:
+    """Remembered HF locations count towards storage, but never widen a purge."""
+    roots = _resolve_roots(definition)
+    if definition.key == "hf_hub":
+        from utils.hf_cache_settings import known_hf_hub_caches
+
+        roots.extend(known_hf_hub_caches())
+    elif definition.key in {"hf_datasets", "hf_xet", "hf_assets"}:
+        child = definition.key.removeprefix("hf_")
+        roots.extend(home / child for home in _hf_homes())
+    unique: list[Path] = []
+    protected = protected_paths()
+    for root in roots:
+        resolved = _safe_resolve(root)
+        if resolved is None or resolved in unique:
+            continue
+        # Reading a protected tree's cache is fine; reading the protected root
+        # itself, or following a link into it, is not a bounded cache measurement.
+        try:
+            assert_purgeable_root(root, protected=protected, trees=set(), keep={})
+        except CachePurgeRefused:
+            continue
+        if any(_is_within(resolved, previous) for previous in unique):
+            continue
+        unique = [previous for previous in unique if not _is_within(previous, resolved)]
+        unique.append(resolved)
+    return unique
+
+
+def _system_disk_device():
+    # /api/system and models_disk_usage measure this volume, even if Studio
+    # itself was moved to another disk.
+    try:
+        return Path(os.path.abspath(os.sep)).stat().st_dev
+    except OSError:
+        return None
+
+
+def _system_disk_occupancy(occupancy: _OccupancyLedger) -> int:
+    from utils.system_disk import _SAME_POOL_SLACK
+
+    device = _system_disk_device()
+    total = occupancy.by_device.get(device, 0)
+    if device is None:
+        return 0
+    try:
+        system = shutil.disk_usage(os.path.abspath(os.sep))
+    except (OSError, ValueError):
+        return total
+    for other, size in occupancy.by_device.items():
+        if other == device:
+            continue
+        # Match models_disk_usage: APFS Data and btrfs subvolumes can have
+        # distinct device IDs while sharing the system volume's storage pool.
+        try:
+            usage = shutil.disk_usage(occupancy.device_paths[other])
+        except (OSError, ValueError):
+            continue
+        if usage.total == system.total and abs(usage.free - system.free) < _SAME_POOL_SLACK:
+            total += size
+    return total
+
+
+def cache_breakdown(key: str) -> dict:
+    """Read-only, on-demand HF directory breakdown; never accepts a browser path."""
+    if key not in {"hf_hub", "hf_datasets", "hf_xet", "hf_assets"}:
+        raise ValueError("Only Hugging Face caches have a directory breakdown.")
+    rows = []
+    occupancy = _OccupancyLedger()
+    for root in _measurement_roots(definition_for(key)):
+        try:
+            with os.scandir(root) as scan:
+                for entry in scan:
+                    if entry.is_symlink() or _is_junction(entry.path):
+                        continue
+                    before = occupancy.bytes
+                    if entry.is_dir(follow_symlinks=False):
+                        _measure_root(Path(entry.path), occupancy=occupancy)
+                    else:
+                        info = (
+                            os.stat(entry.path, follow_symlinks=False)
+                            if os.name == "nt" else entry.stat(follow_symlinks=False)
+                        )
+                        occupancy.add(info, entry.path)
+                    size = occupancy.bytes - before
+                    rows.append({"name": entry.name, "path": entry.path, "size_bytes": size})
+        except OSError:
+            continue
+    return {"entries": sorted(rows, key=lambda row: (-row["size_bytes"], row["path"]))}
 
 
 def describe_cache(definition: CacheDefinition) -> dict:
@@ -849,23 +977,52 @@ def describe_cache(definition: CacheDefinition) -> dict:
         blocked_reason = _link_mode_refusal(definition.key)
         if blocked_reason is not None:
             purgeable = False
-    if definition.custom_measure is not None:
-        total, entries = (0, 0) if blocked_reason is not None else definition.custom_measure()
-    else:
-        total = 0
+    measured_paths = roots
+    system_disk_bytes = None
+    if definition.key in {"hf_hub", "hf_datasets", "hf_xet", "hf_assets"}:
+        # Delete permission and disk occupancy are separate facts. A cache under
+        # Documents still occupies space even when bulk clearing is forbidden.
+        measured_paths = _measurement_roots(definition)
         entries = 0
-        for root in measurable:
-            size, count = _measure_root(root, patterns = patterns)
-            total += size
+        clear_entries = 0
+        occupancy = _OccupancyLedger()
+        clear_ledger = LinkLedger()
+        clear_roots = {_safe_resolve(root) for root in measurable} if purgeable else set()
+        for root in measured_paths:
+            clearable = _safe_resolve(root) in clear_roots
+            _, count = _measure_root(
+                root, patterns=patterns, occupancy=occupancy,
+                ledger=clear_ledger if clearable else None,
+            )
             entries += count
+            if clearable:
+                clear_entries += count
+        total = occupancy.bytes
+        clear_size = clear_ledger.freeable_bytes()
+        system_disk_bytes = _system_disk_occupancy(occupancy)
+    else:
+        if definition.custom_measure is not None:
+            total, entries = (0, 0) if blocked_reason is not None else definition.custom_measure()
+        else:
+            total = entries = 0
+            for root in measurable:
+                size, count = _measure_root(root, patterns = patterns)
+                total += size
+                entries += count
+        clear_size = total
+        clear_entries = entries
     return {
         "key": definition.key,
         "group": definition.group,
         "opt_in": definition.opt_in,
         "paths": [str(root) for root in roots],
+        "measured_paths": [str(root) for root in measured_paths],
+        "clear_size_bytes": clear_size,
+        "clear_entry_count": clear_entries,
+        "system_disk_bytes": system_disk_bytes,
         "size_bytes": total,
         "entry_count": entries,
-        "present": bool(roots),
+        "present": bool(roots or measured_paths),
         "purgeable": bool(roots) and purgeable,
         "blocked_reason": blocked_reason,
     }
@@ -933,7 +1090,7 @@ def cache_inventory(*, refresh: bool = False) -> dict:
     entries = [_described(definition, refresh = refresh) for definition in CACHE_DEFINITIONS]
     total = sum(entry["size_bytes"] for entry in entries if entry["present"])
     reclaimable = sum(
-        entry["size_bytes"]
+        entry.get("clear_size_bytes", entry["size_bytes"])
         for entry in entries
         if entry["present"] and entry["purgeable"] and not entry["opt_in"]
     )

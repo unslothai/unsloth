@@ -12,8 +12,10 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Progress } from "@/components/ui/progress";
 import { Switch } from "@/components/ui/switch";
+import { useIsAccountOwner } from "@/features/auth";
 import { formatBytes } from "@/features/hub";
 import { FolderBrowser } from "@/features/model-picker";
+import { InferenceEnginesSection } from "@/features/model-picker/components/inference-engines";
 import {
   openModelsDir,
   pickHuggingFaceCacheDir,
@@ -30,27 +32,27 @@ import {
   resolveGpuVramUsedGb,
 } from "@/hooks/gpu-vram";
 import {
+  type GpuDevice,
+  type SystemGpuInfo,
+  type SystemInfoResponse,
   aggregateGpuMemoryTotalGb,
   useSystemInfo,
-  type GpuDevice,
-  type SystemInfoResponse,
-  type SystemGpuInfo,
 } from "@/hooks/use-system";
+import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { openLink } from "@/lib/open-link";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { useT } from "@/i18n";
+import { ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { LayersIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   type HuggingFaceCacheSettings,
   loadHuggingFaceCacheSettings,
   updateHuggingFaceCacheSettings,
 } from "../api/hugging-face-cache";
-import { InferenceEnginesSection } from "@/features/model-picker/components/inference-engines";
-import { useSettingsDialogStore } from "../stores/settings-dialog-store";
-import { useIsAccountOwner } from "@/features/auth";
 import {
   CacheStorageRows,
   useCacheStorage,
@@ -65,14 +67,12 @@ import {
   STORAGE_COLORS,
   SettingsCard,
   SettingsCardRow,
-  type StorageSegment,
   StorageOverview,
+  type StorageSegment,
 } from "../components/storage-overview";
 import { useMonitorOverlayStore } from "../stores/monitor-overlay-store";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
-import { ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
-import { LayersIcon } from "lucide-react";
 
 const POLL_MS = 3000;
 
@@ -543,13 +543,17 @@ export function ResourcesTab() {
       !(metrics.modelsDisk && entry.key === "hf_hub") &&
       onSystemDisk(entry.paths),
   );
+  const diskBytes = (entry: (typeof cache.entries)[number]) =>
+    entry.systemDiskBytes ??
+    (systemEntries.includes(entry) ? entry.sizeBytes : 0);
   const modelsDiskGb =
-    (systemEntries.find((entry) => entry.key === "hf_hub")?.sizeBytes ?? 0) /
-    1e9;
+    cache.entries
+      .filter((entry) => entry.key === "hf_hub")
+      .reduce((sum, entry) => sum + diskBytes(entry), 0) / 1e9;
   const cachesDiskGb =
-    systemEntries
+    cache.entries
       .filter((entry) => entry.key !== "hf_hub")
-      .reduce((sum, entry) => sum + entry.sizeBytes, 0) / 1e9;
+      .reduce((sum, entry) => sum + diskBytes(entry), 0) / 1e9;
   const otherDiskGb = Math.max(
     0,
     metrics.diskUsed - modelsDiskGb - cachesDiskGb,
@@ -557,7 +561,7 @@ export function ResourcesTab() {
   const cacheValue = (diskGb: number) =>
     cache.inventory ? formatGb(diskGb) : t("common.loading");
   const storageSegments: StorageSegment[] = [
-    ...(metrics.modelsDisk
+    ...(metrics.modelsDisk && modelsDiskGb === 0
       ? []
       : [
           {
@@ -1075,14 +1079,14 @@ export function ResourcesTab() {
                         {t("settings.resources.gpu.used", { value: usedText })}
                       </span>
                       <span
-                        aria-hidden
+                        aria-hidden={true}
                         className="h-3 w-px shrink-0 bg-border"
                       />
                       <span className="min-w-0 truncate">
                         {t("settings.resources.gpu.free", { value: freeText })}
                       </span>
                       <span
-                        aria-hidden
+                        aria-hidden={true}
                         className="h-3 w-px shrink-0 bg-border"
                       />
                       <span className="min-w-0 truncate">

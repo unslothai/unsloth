@@ -21,10 +21,12 @@ import { Delete02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  type CacheBreakdownEntry,
   type CacheEntry,
   type CacheInventory,
   type CacheKey,
   bulkPurgeKeys,
+  loadCacheBreakdown,
   loadCacheInventory,
   purgeCaches,
 } from "../api/caches";
@@ -193,6 +195,86 @@ export function useCacheStorage() {
 
 export type CacheStorage = ReturnType<typeof useCacheStorage>;
 
+const HF_REPO_PREFIX = /^(models|datasets|spaces)--/;
+
+export function HuggingFaceCacheFolders({
+  entry,
+  version,
+}: { entry: CacheEntry; version: CacheInventory | null }) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const [rows, setRows] = useState<CacheBreakdownEntry[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    let current = true;
+    setRows(null);
+    setError(null);
+    void loadCacheBreakdown(entry.key).then(
+      (next) => {
+        if (current) {
+          setRows(next);
+        }
+      },
+      (reason) => {
+        if (current) {
+          setError(reason instanceof Error ? reason.message : String(reason));
+        }
+      },
+    );
+    return () => {
+      current = false;
+    };
+  }, [open, entry.key, version]);
+  return (
+    <div className="mt-1 min-w-0">
+      <Button
+        variant="ghost"
+        size="xs"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
+        {t(
+          open
+            ? "settings.resources.storage.caches.hideFolders"
+            : "settings.resources.storage.caches.showFolders",
+        )}
+      </Button>
+      {open ? (
+        <div
+          className="mt-1 flex flex-col gap-1 text-xs text-muted-foreground"
+          aria-live="polite"
+        >
+          {error ? (
+            <span role="alert">{error}</span>
+          ) : rows === null ? (
+            t("settings.resources.storage.caches.measuring")
+          ) : rows.length === 0 ? (
+            t("settings.resources.storage.caches.empty")
+          ) : (
+            rows.map((row) => (
+              <div
+                key={row.path}
+                title={row.path}
+                className="flex min-w-0 justify-between gap-4"
+              >
+                <span className="truncate font-mono">
+                  {row.name.replace(HF_REPO_PREFIX, "").replaceAll("--", "/")}
+                </span>
+                <span className="shrink-0 tabular-nums">
+                  {formatCacheSize(row.sizeBytes)}
+                </span>
+              </div>
+            ))
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function CacheStorageRows({ cache }: { cache: CacheStorage }) {
   const t = useT();
   const {
@@ -281,10 +363,10 @@ export function CacheStorageRows({ cache }: { cache: CacheStorage }) {
                     {t(CACHE_NAME_KEYS[entry.key])}
                   </span>
                   <span
-                    title={entry.paths.join("\n")}
+                    title={(entry.measuredPaths ?? entry.paths).join("\n")}
                     className="max-w-lg truncate font-mono text-ui-11 text-muted-foreground"
                   >
-                    {entry.paths[0] ?? ""}
+                    {(entry.measuredPaths ?? entry.paths)[0] ?? ""}
                   </span>
                   {entry.optIn && OPT_IN_COST_KEYS[entry.key] ? (
                     <span className="text-xs text-amber-600 dark:text-amber-400">
@@ -297,6 +379,19 @@ export function CacheStorageRows({ cache }: { cache: CacheStorage }) {
                         reason: entry.blockedReason,
                       })}
                     </span>
+                  ) : null}
+                  {entry.measuredPaths?.some(
+                    (path) => !entry.paths.includes(path),
+                  ) ? (
+                    <span className="text-xs text-muted-foreground">
+                      {t("settings.resources.storage.caches.previousLocations")}
+                    </span>
+                  ) : null}
+                  {entry.key === "hf_hub" || entry.key === "hf_datasets" ? (
+                    <HuggingFaceCacheFolders
+                      entry={entry}
+                      version={inventory}
+                    />
                   ) : null}
                 </div>
                 <div data-title-line-control={true} className="flex gap-3">
@@ -311,7 +406,7 @@ export function CacheStorageRows({ cache }: { cache: CacheStorage }) {
                       clearing ||
                       loadError !== null ||
                       !entry.purgeable ||
-                      entry.entryCount === 0
+                      (entry.clearEntryCount ?? entry.entryCount) === 0
                     }
                     onClick={() =>
                       entry.optIn
