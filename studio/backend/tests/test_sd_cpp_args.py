@@ -806,6 +806,32 @@ def test_img_gen_request_flux_uses_distilled_guidance():
     assert req["sample_params"]["flow_shift"] == 3.0
 
 
+@pytest.mark.parametrize("scheduler", ["discrete", "karras", "exponential"])
+def test_img_gen_schedule_choice_reaches_both_native_transports(scheduler):
+    """A resolved native schedule must reach the actual CLI argv and sd-server JSON builders."""
+    cmd = build_sd_cpp_command(
+        "/bin/sd-cli",
+        SdCppModelFiles(diffusion_model = "/m/model.gguf"),
+        SdCppGenParams(prompt = "a fox", sampling_method = "euler_a", scheduler = scheduler),
+        output_path = "/out.png",
+    )
+    assert _pair(cmd, "--sampling-method") == "euler_a"
+    assert _pair(cmd, "--scheduler") == scheduler
+
+    request = build_img_gen_request(prompt = "a fox", sample_method = "euler_a", scheduler = scheduler)
+    assert request["sample_params"]["sample_method"] == "euler_a"
+    assert request["sample_params"]["scheduler"] == scheduler
+
+    default_cmd = build_sd_cpp_command(
+        "/bin/sd-cli",
+        SdCppModelFiles(diffusion_model = "/m/model.gguf"),
+        SdCppGenParams(prompt = "a fox"),
+        output_path = "/out.png",
+    )
+    assert "--scheduler" not in default_cmd
+    assert "sample_params" not in build_img_gen_request(prompt = "a fox")
+
+
 def test_img_gen_request_requires_prompt():
     with pytest.raises(ValueError):
         build_img_gen_request(prompt = "   ", steps = 4)
