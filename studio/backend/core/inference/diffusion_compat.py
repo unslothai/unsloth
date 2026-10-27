@@ -46,9 +46,7 @@ from core.inference.diffusion_families import (
     resolve_local_gguf_child,
 )
 
-# The FLUX.2 tensor table sits in the first ~15 KiB (149 tensors for klein-4B, 201 for 9B). This
-# is the ceiling on what the range request may buffer, not an expectation: a prefix that stops
-# mid-table makes the parse raise, which reads as "no opinion".
+# FLUX.2 tensor table sits in the first ~15 KiB; this is only a buffer ceiling.
 _GGUF_HEADER_BYTES = 256 * 1024
 # One short read. A pick is blocked on this in the UI, and a slow Hub must not stall the picker;
 # a timeout is just another fail-open.
@@ -56,25 +54,14 @@ _HEADER_TIMEOUT_SECONDS = 15
 # How long to wait for an interrupted read to notice before leaving it to the GC.
 _ABANDON_GRACE_SECONDS = 0.5
 
-# (repo_id, gguf_filename, token fingerprint, local file identity) -> inner_dim or None. Bounded and process-local. It
-# memoises the MISS too, since the three checks on one pick would otherwise re-probe an unreachable Hub three times,
-# which is exactly why the last two key parts exist: a sticky None must not outlive its cause. The TOKEN is
-# fingerprinted rather than stored, because keying on mere presence made every non-empty token one key, so a first
-# probe with an expired credential poisoned the valid one that replaced it. The local file's IDENTITY (path, size,
-# mtime) is keyed because a checkpoint swapped in place keeps its path, so keying on the name alone answers the new
-# file with the old file's dim; it also makes the file ARRIVING a new key, so a miss taken before a download finished
-# re-probes off disk for free.
+# Memoises misses too; token fingerprint and file identity keep a stale None from sticking.
 _INNER_DIM_CACHE: dict[tuple[str, str, str, Optional[tuple]], Optional[int]] = {}
 _INNER_DIM_CACHE_MAX = 256
 _CACHE_LOCK = threading.Lock()
 
 
 def _token_fingerprint(token: HfTokenArg) -> str:
-    """A stable, non-reversible tag for a token, or "" for none. Never the token itself: this
-    lands in a process-global dict that a traceback or a heap dump would render.
-
-    A caller forced anonymous tags apart from one that may still use the ambient token,
-    so neither reads back the other's verdict."""
+    """Non-reversible tag for a token, never the token itself; anonymous and ambient tokens differ."""
     if is_anonymous(token):
         return ANONYMOUS_CACHE_IDENTITY
     if not token:
@@ -85,11 +72,7 @@ def _token_fingerprint(token: HfTokenArg) -> str:
 
 
 def _file_identity(path: Optional[str]) -> Optional[tuple]:
-    """(path, size, mtime_ns) for a local checkpoint, or None when the pick is remote.
-
-    A file replaced under the same name is a different checkpoint, and stat is the cheapest thing
-    that says so. An unreadable stat returns a unique object rather than a constant, so a file we
-    cannot identify is never memoised as equal to anything else."""
+    """Path, size and mtime_ns, so a replaced file is a new checkpoint; an unreadable stat never matches."""
     if path is None:
         return None
     try:
@@ -100,18 +83,7 @@ def _file_identity(path: Optional[str]) -> Optional[tuple]:
 
 
 def _local_gguf_path(repo_id: str, gguf_filename: str) -> Optional[str]:
-    """The on-disk checkpoint for this pick, or None when it has to come off the Hub.
-
-    Covers a local On Device directory, a pick that NAMES the checkpoint outright, and a Hub file
-    already in either cache root: reading a file we hold beats a range request, and it is the same
-    file ``_resolve_gguf_path`` will open.
-
-    The file case is resolved the way the loader resolves it:
-    ``VideoBackend._resolve_checkpoint_path`` answers a file-valued ``repo_id`` with that file,
-    ignoring ``gguf_filename``, and ``validate_load_request`` admits exactly that pick, so
-    ``/video/load`` really can be handed one. Appending the filename under a file instead raises
-    ``FileNotFoundError``, an ``OSError``, swallowed below as "remote id" -- and failing open on
-    the pick the loader is about to open directly is the one hole this exists to close."""
+    """On-disk GGUF path for a local or cached pick; a file-valued repo_id is used as-is."""
     try:
         local_root = Path(repo_id).expanduser()
         if local_root.is_file():
@@ -125,9 +97,7 @@ def _local_gguf_path(repo_id: str, gguf_filename: str) -> Optional[str]:
         from huggingface_hub import try_to_load_from_cache
         from utils.hf_cache_settings import active_hf_hub_cache
 
-        # The live root first, then huggingface_hub's import-time constant, the same pair the
-        # loader resolves a staged file through. Read directly rather than through
-        # ``diffusion.hub_cache_dir``: that module imports this one.
+        # Not via diffusion.hub_cache_dir: that module imports this one.
         for root in (active_hf_hub_cache(), None):
             hit = try_to_load_from_cache(repo_id, gguf_filename, cache_dir = root)
             if isinstance(hit, str) and Path(hit).is_file():
@@ -138,10 +108,7 @@ def _local_gguf_path(repo_id: str, gguf_filename: str) -> Optional[str]:
 
 
 def _snapshot_revision(path: Optional[str]) -> Optional[str]:
-    """The commit a cached Hub file was downloaded at, read off its ``snapshots/<sha>/`` parent.
-
-    None for anything that is not an HF cache entry -- an On Device checkpoint is the file the
-    loader opens, so there is no revision to be behind."""
+    """Commit read from a cached file's snapshots/sha parent; None outside the HF cache."""
     if not path:
         return None
     parts = Path(path).parts
@@ -186,20 +153,9 @@ def _read_local_header(path: str) -> bytes:
 
 
 def _ranged_stream(session: Any, url: str, headers: dict) -> Any:
-    """A context manager over a ranged GET, on either HTTP client huggingface_hub ships.
-
-    ``huggingface_hub`` 1.0 replaced requests with httpx, and ``get_session`` returns whichever
-    the installed version builds. The two streaming APIs do not overlap: httpx has no
-    ``stream = True`` keyword (it streams via ``Client.stream``), so asking for one on 1.x raises
-    ``TypeError`` inside the worker's blanket except and every remote probe silently reads nothing
-    -- a preflight that refuses nothing. studio.txt floors 1.23 on python >= 3.10 and pins 0.36
-    below it, so BOTH are shipped and both have to work.
-
-    ``Client.stream`` is a method; ``requests.Session.stream`` is a plain bool attribute, so the
-    branch tests for a callable rather than for the name."""
+    """Ranged GET on either httpx or requests; branch on callable stream, since the two APIs differ."""
     if callable(getattr(session, "stream", None)):
-        # httpx does not follow redirects by default and the Hub answers a resolve URL with a
-        # 302 to the CDN, so an unfollowed hop would read as "not 206" and fail open.
+        # The Hub answers resolve URLs with a 302 to the CDN; httpx does not follow by default.
         return session.stream(
             "GET",
             url,
@@ -222,17 +178,7 @@ def _iter_body(response: Any, chunk_size: int):
 
 
 def _interrupt_read(response: Any) -> None:
-    """Make a read parked on ``response`` return, so the whole-body deadline can be enforced.
-
-    ``urllib3.HTTPResponse.shutdown`` half-closes the socket, which is the only thing that wakes a
-    thread blocked inside ``iter_content``: ``Response.close`` drops the file object while the
-    socket stays readable, so the read sits there regardless. Best effort -- and on a urllib3
-    older than 2.3, which is where ``shutdown`` first appears, there is nothing here that can wake
-    it. An httpx response has no ``raw`` at all, so it takes the ``close`` branch. The caller does
-    not depend on this working; it reads on a worker it can abandon.
-
-    ``None`` means the worker has not got a response yet -- it is still inside connect or the
-    header wait -- so there is nothing to half-close and abandoning it is the whole bound."""
+    """Half-closes the socket to wake a blocked read; best effort, as the caller abandons its worker."""
     if response is None:
         return
     try:
@@ -253,11 +199,7 @@ def _read_gguf_header(
     max_bytes: Optional[int] = None,
     timeout_seconds: Optional[float] = None,
 ) -> bytes:
-    """A bounded prefix of a Hub-hosted GGUF, or b"" when it cannot be read.
-
-    One wall-clock bound over the WHOLE operation: requests' own timeout is per-byte, so a
-    trickled response would block this fail-open path past any deadline armed after ``get()``.
-    Request and drain therefore run on a worker this call can abandon."""
+    """Wall-clock bound over the whole read, since a per-byte timeout would let a trickle outlast it."""
     try:
         from huggingface_hub import hf_hub_url
         from huggingface_hub.utils import build_hf_headers, get_session
@@ -278,33 +220,20 @@ def _read_gguf_header(
                 get_session(), hf_hub_url(repo_id, gguf_filename, revision = revision), headers
             ) as response:
                 holder[0] = response
-                # 206 or nothing. A server (or a proxy) that ignored the Range header answers 200
-                # with the WHOLE checkpoint, and streaming that into memory is the multi-GB
-                # download this preflight exists to prevent.
+                # A server ignoring Range answers 200 with the whole multi-GB checkpoint.
                 if response.status_code != 206:
                     return
                 deadline = time.monotonic() + timeout_seconds
                 for chunk in _iter_body(response, 65536):
-                    # extend, not `+=`: augmented assignment to a closed-over name would rebind
-                    # it as a local of _fetch and lose every byte.
+                    # extend, not +=: augmented assignment would rebind a local.
                     buffer.extend(chunk)
                     if len(buffer) >= max_bytes or time.monotonic() > deadline:
                         break
-        # Keep what arrived rather than discarding it: the deadline firing on a merely SLOW link
-        # still leaves the tensor table (the first ~15 KiB) in hand, and the parser is
-        # truncation-safe -- swept over every prefix length of five header layouts, no cut ever
-        # produces a wrong dim, so a short prefix is answered or ignored. TRUNCATION only: a
-        # header with flipped bytes can still parse to a wrong dim (~0.6% under a 1-4 byte flip),
-        # which the loader's own full-file backstop shares. TLS makes that unlikely on this path.
+        # Keep partial bytes: the parser is truncation-safe.
         except Exception:  # noqa: BLE001 — offline, deadline fired, or the peer went away
             pass
 
-    # The watchdog exists as well as the join because iter_content blocks inside urllib3 until a
-    # whole 64 KiB chunk has arrived and every dribbled byte resets the socket timeout, so the
-    # worker cannot notice its own deadline. Half-closing the socket is what makes that read
-    # return -- on urllib3 >= 2.3, where HTTPResponse.shutdown exists. requirements/studio.txt
-    # floors it, but an install predating that floor keeps whatever it resolved, so the bound
-    # here cannot depend on the version underneath us: the worker is abandonable either way.
+    # iter_content blocks until a full chunk arrives, so the worker cannot see its deadline.
     watchdog = threading.Timer(timeout_seconds, lambda: _interrupt_read(holder[0]))
     watchdog.daemon = True
     watchdog.start()
@@ -315,8 +244,7 @@ def _read_gguf_header(
         _interrupt_read(holder[0])
         worker.join(_ABANDON_GRACE_SECONDS)
     watchdog.cancel()
-    # bytes() snapshots under the GIL, so an abandoned worker still appending cannot tear the
-    # copy; it can only lose a chunk that arrived too late to matter.
+    # Same prefix parse as remote; the full loader memory-maps every tensor, so use it only when the prefix says nothing, e.g. a header past the cap
     return bytes(buffer[:max_bytes])
 
 
@@ -327,30 +255,14 @@ def flux2_inner_dim_for_pick(
     *,
     allow_network: bool = True,
 ) -> Optional[int]:
-    """``inner_dim`` of the GGUF this pick names, WITHOUT downloading it, or None.
-
-    Reads the file when it is already on disk, otherwise range-reads its header off the Hub.
-    Memoised per (repo, filename) so the plan, the pre-eviction preflight and the native asset
-    resolver share one probe.
-
-    ``allow_network = False`` answers from the memo or from disk and gives up rather than making
-    the range request, for a caller that must not block: the range read is bounded but the bound
-    is seconds, and a request thread that only wants a hint should not wear them. Nothing is
-    memoised in that case, so the next caller that CAN wait still gets a real answer."""
-    # A ".gguf" name only: a single_file load names a .safetensors, which has no GGUF header, and
-    # spending a range request to learn that on every such load is pure waste.
+    """inner_dim from disk or a header range read, memoised; allow_network=False never waits on the Hub."""
     if not repo_id or not gguf_filename or not gguf_filename.lower().endswith(".gguf"):
         return None
     token = normalize_token(hf_token)
-    # Resolved BEFORE the memo is consulted, because the file's identity is part of the key. Two
-    # stats, against a probe that is otherwise an HTTP round trip.
+    # File identity is part of the memo key.
     local = _local_gguf_path(repo_id, gguf_filename)
     key = (repo_id, gguf_filename, _token_fingerprint(token), _file_identity(local))
-    # The memo FIRST, before the offline bail below. A plan-time probe has usually already
-    # answered for this exact pick, and returning None here anyway made the caller that cannot
-    # wait (begin_load, allow_network = False) fall back to the filename heuristic -- publishing
-    # the 4B encoder repos for a renamed 9B checkpoint, so the delete-cached guard did not cover
-    # its real companion repo until the worker re-probed.
+    # Memo before the offline bail, so begin_load reuses a plan-time answer.
     with _CACHE_LOCK:
         if key in _INNER_DIM_CACHE:
             return _INNER_DIM_CACHE[key]
@@ -380,12 +292,7 @@ def flux2_inner_dim_for_pick(
 def _revalidated_inner_dim(
     repo_id: str, gguf_filename: str, hf_token: Optional[str], got: int
 ) -> Optional[int]:
-    """``got`` again, re-read off the Hub when it came from a cached copy the Hub has moved past.
-
-    ``try_to_load_from_cache`` resolves the LOCAL ``refs/main``, so a checkpoint republished at the
-    same filename would otherwise refuse a pick that the loader's own ``hf_hub_download`` refreshes
-    and loads. Runs only on a would-be refusal; an unknown revision keeps ``got``, and a live
-    header we cannot read is no opinion."""
+    """Re-checks a stale cached copy on the Hub, only on a would-be refusal; unknown revisions keep got."""
     cached = _snapshot_revision(_local_gguf_path(repo_id, gguf_filename))
     if cached is None:
         return got
@@ -403,10 +310,7 @@ def flux2_pick_mismatch(
     base_repo: Optional[str],
     hf_token: Optional[str] = None,
 ) -> Optional[str]:
-    """Why this GGUF cannot load against this base, or None when nothing is known to be wrong.
-
-    ``base_repo`` must be the RESOLVED upstream id (``_resolve_base_repo``), the same one the
-    loader's own guard is handed, so all the checks on this pairing agree."""
+    """Why this GGUF cannot load on this base, or None; pass the resolved upstream base_repo."""
     if not gguf_filename or not str(getattr(fam, "name", "")).startswith("flux.2"):
         return None
     want = flux2_base_inner_dim(base_repo)
@@ -425,9 +329,7 @@ def flux2_pick_mismatch(
     )
 
 
-# GGUF ``general.architecture`` values nothing in Unsloth can decode. Beside the FLUX.2 check
-# because both ask whether the pick is loadable, off the same prefix. The set itself lives in a
-# leaf module, shared with the chat gate and the listing classifier so they cannot drift.
+# Shared with the chat gate and listing classifier so they cannot drift.
 from utils.gguf_archs import (  # noqa: E402 -- beside the cache it keys
     SPEECH_GGUF_ARCHS as _SPEECH_GGUF_ARCHS,
     is_speech_gguf_architecture,
@@ -437,20 +339,10 @@ _SPEECH_ARCH_CACHE: dict[
     tuple[str, str, str, Optional[tuple]], tuple[Optional[str], Optional[float]]
 ] = {}
 _SPEECH_ARCH_CACHE_MAX = 256
-# Every remote-backed verdict ages out. An UNCACHED one keys on a local identity of None, so a
-# republish under the same filename changes nothing about the key. A SNAPSHOT-backed one keys on
-# the file's identity, which a republish does change -- but only once the new bytes are down, and
-# the entry memoises a revision check that ran only the first time, so holding it forever means
-# never asking the Hub again for the life of the process. Only a true On Device checkpoint is
-# permanent: it is the file the loader opens, so there is no revision to be behind. Matches the
-# variant listing's own freshness window for moved revisions.
+# Only a true On Device checkpoint is permanent; Hub-backed verdicts age out.
 _SPEECH_REMOTE_TTL_SECONDS = 60.0
 
-# (repo_id, gguf_filename, token fingerprint, local file identity) -> the header prefix. The inner-dim probe and the
-# speech probe read the SAME first _GGUF_HEADER_BYTES of the SAME file, and a flux.2 pick that is not a size mismatch
-# runs both: two range requests, each with its own _HEADER_TIMEOUT_SECONDS, so a picker the user waits on could wear
-# twice its documented bound. They share the read now, keyed and aged exactly like the speech memo beside it.
-# Deliberately NOT consulted by the revalidation paths: their whole job is to re-read a file the Hub has republished.
+# Shared header read for the inner-dim and speech probes; revalidation bypasses it.
 _HEADER_PREFIX_CACHE: dict[tuple[str, str, str, Optional[tuple]], tuple[bytes, float]] = {}
 _HEADER_PREFIX_CACHE_MAX = 32
 
@@ -481,8 +373,7 @@ def _shared_gguf_header(
 
 
 def _arch_from_prefix(prefix: bytes, gguf_filename: str) -> Optional[str]:
-    """``general.architecture`` out of a header prefix, or None when it says nothing."""
-    # Magic, version and the two counts: anything shorter is not a GGUF at all.
+    """Magic, version and the two counts: anything shorter is not a GGUF at all."""
     if len(prefix) < 24:
         return None
     try:
@@ -490,8 +381,7 @@ def _arch_from_prefix(prefix: bytes, gguf_filename: str) -> Optional[str]:
 
         from utils.models.gguf_metadata import read_gguf_architecture
         with tempfile.TemporaryDirectory(prefix = "unsloth-speech-probe-") as probe_dir:
-            # Named after the real file, like the chat-side probe: a GGUF declaring no
-            # architecture is judged by its name, which a temp name would lose.
+            # Named after the real file: a GGUF without architecture is judged by name.
             probe_path = os.path.join(probe_dir, os.path.basename(gguf_filename))
             with open(probe_path, "wb") as handle:
                 handle.write(prefix)
@@ -508,15 +398,7 @@ def _revalidated_speech_arch(
     arch: Optional[str],
     allow_network: bool = True,
 ) -> Optional[str]:
-    """*arch* again, re-read off the Hub when the cached copy it came from is behind.
-
-    ``try_to_load_from_cache`` resolves the LOCAL ``refs/main``, so a republished checkpoint is
-    judged off bytes ``hf_hub_download`` is about to replace. BOTH directions, unlike the size
-    pairing (refusals only): a stale allow hands csm bytes to a media loader after the download
-    and the teardown, the very outcome this preflight exists to prevent. An unknown revision or
-    an unreadable live header keeps *arch*, so an offline host never flips a verdict, and no
-    CACHED copy means no revision to be behind -- an uncached remote pick and an On Device file
-    both skip the HEAD. Memoised by the caller: one HEAD per cached copy per token per session."""
+    """Re-checks arch on the Hub both ways; a stale allow would admit speech bytes. Offline keeps arch."""
     cached = _snapshot_revision(local)
     if cached is None:
         return arch
@@ -528,9 +410,7 @@ def _revalidated_speech_arch(
     if live is None or live == cached:
         return arch
     refreshed = _arch_from_prefix(_read_gguf_header(repo_id, gguf_filename, token), gguf_filename)
-    # A re-read that said nothing -- failed range request, or an unparseable new header -- keeps
-    # the verdict we had rather than replacing it with silence. Failing open on an UNKNOWN pick is
-    # the contract; throwing away a known one let a csm file through on a dropped connection.
+    # Keep the old verdict on a failed re-read; failing open is only for unknown picks.
     return refreshed if refreshed is not None else arch
 
 
@@ -540,12 +420,7 @@ def _speech_probe_architecture(
     hf_token: Optional[str],
     allow_network: bool = True,
 ) -> Optional[str]:
-    """``general.architecture`` of a pick, from a cached copy or one range request.
-
-    Keyed like the inner-dim memo beside it, for the same two reasons: the token fingerprint,
-    because a probe that failed on an expired credential caches "no verdict" and the retry with a
-    working one would read that back and let the speech file through to the download; the file
-    identity, because a checkpoint replaced under the same name is a different checkpoint."""
+    """Memo keyed on token fingerprint and file identity, so a failed probe is not reused across tokens."""
     token = normalize_token(hf_token)
     # Resolved BEFORE the memo is consulted, because the file's identity is part of the key.
     local = _local_gguf_path(repo_id, gguf_filename)
@@ -567,19 +442,15 @@ def _speech_probe_architecture(
         else _shared_gguf_header(repo_id, gguf_filename, token, local)
     )
     arch = _arch_from_prefix(prefix, gguf_filename)
-    # Inside the memo, so a republished checkpoint is caught in either direction and the HEAD is
-    # spent once per cached copy rather than on every pick.
+    # Permanent only for a true on-device file (no revision to fall behind); a cached Hub snapshot must age out or it asks the Hub once per file per process
     arch = _revalidated_speech_arch(repo_id, gguf_filename, token, local, arch, allow_network)
-    # A cached copy whose revision check was skipped is only HALF an answer, so it must not be
-    # memoised: the network-allowed caller behind it would read this back and never revalidate.
+    # Skipped revision check is half an answer: do not memoise.
     if not allow_network and _snapshot_revision(local) is not None:
         return arch
     with _CACHE_LOCK:
         if len(_SPEECH_ARCH_CACHE) >= _SPEECH_ARCH_CACHE_MAX:
             _SPEECH_ARCH_CACHE.clear()
-        # Permanent only for a true On Device file, which has no revision to be behind. A cached
-        # Hub snapshot ages out like an uncached pick: its entry memoises a revision check, and
-        # holding that forever would ask the Hub exactly once per file per process.
+        # auto saves by default (without a saved bundle no user gets a warm restart); the SAVE env var overrides: "0" load-only, "1" on
         permanent = local is not None and _snapshot_revision(local) is None
         _SPEECH_ARCH_CACHE[key] = (
             arch,
@@ -611,8 +482,7 @@ def speech_pick_refusal(
         return None
     arch = _speech_probe_architecture(repo_id, gguf_filename, hf_token, allow_network)
     if is_speech_gguf_architecture(arch):
-        # Named only when the header carried an identifier: the Mimi vocoder puts a whole
-        # sentence in general.architecture, and quoting that back reads as gibberish.
+        # The Mimi vocoder puts a whole sentence in general.architecture.
         named = f"{arch} " if arch in _SPEECH_GGUF_ARCHS else ""
         return (
             f"'{os.path.basename(gguf_filename)}' is a {named}speech checkpoint, which no image "
@@ -637,10 +507,7 @@ def assert_pick_is_not_speech(
     hf_token: Optional[str] = None,
     allow_network: bool = True,
 ) -> None:
-    """Refuse a speech GGUF pick before anything is downloaded or unloaded.
-
-    ``ValueError`` like the FLUX.2 assert: /images/load maps it to 400 and the download-plan
-    catches it, whereas a RuntimeError escapes the plan as a bare 500."""
+    """Raises ValueError, not RuntimeError, so the route returns 400 rather than a bare 500."""
     reason = speech_pick_refusal(repo_id, gguf_filename, hf_token, allow_network)
     if reason is not None:
         raise ValueError(reason)
@@ -653,10 +520,7 @@ def assert_flux2_pick_compatible(
     base_repo: Optional[str],
     hf_token: Optional[str] = None,
 ) -> None:
-    """Refuse an incompatible FLUX.2 pick before anything is downloaded or unloaded.
-
-    ``ValueError``, like every other unloadable-pick refusal: /images/load maps it to 400 and
-    ``/images/download-plan`` catches it, whereas a RuntimeError escapes the plan as a bare 500."""
+    """Raises ValueError, not RuntimeError, so the route returns 400 rather than a bare 500."""
     reason = flux2_pick_mismatch(fam, repo_id, gguf_filename, base_repo, hf_token)
     if reason is not None:
         raise ValueError(reason)

@@ -14,7 +14,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ParamSlider } from "@/features/chat";
 import type { ModelOption } from "@/features/model-picker/components/model-selector/types";
 import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
-import { SpeechToTextIcon } from "@hugeicons/core-free-icons";
+import { ClosedCaptionIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ComponentProps, useEffect, useState } from "react";
 import { type AudioGalleryClip, fetchAudioBlob } from "../api";
@@ -225,7 +225,7 @@ function SourceTextField({
           disabled={!sourceUsable || transcriber.transcribing || disabled}
           onClick={() => void transcriber.transcribe(source)}
         >
-          <HugeiconsIcon icon={SpeechToTextIcon} className="size-3.5" />
+          <HugeiconsIcon icon={ClosedCaptionIcon} className="size-[1em]" />
           {transcriber.transcribing ? "Transcribing…" : "Transcribe"}
         </Button>
       </div>
@@ -344,7 +344,6 @@ function useSourceSide(clip: AudioGalleryClip | null): {
   src?: string;
   unavailable?: string;
 } {
-  // The saved copy outlives the upload it was made from.
   const savedUrl = clip?.source_saved
     ? `/api/inference/audio/gallery/${encodeURIComponent(clip.id)}/source/file`
     : null;
@@ -410,7 +409,6 @@ export function ConvertOutput({
   return (
     <TtsOutput
       {...props}
-      // The selected clip's line already names the model.
       clipBadge={(clip, place) =>
         place === "history" ? audioModelLabel(clip.model) : null
       }

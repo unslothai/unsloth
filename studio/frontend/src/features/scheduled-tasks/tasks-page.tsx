@@ -10,9 +10,10 @@ import {
   Search01Icon,
   Clock01Icon,
 } from "@hugeicons/core-free-icons";
+import { PauseIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
-import { PauseIcon, PlayIcon } from "lucide-react";
+import { PlayIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import {
@@ -296,7 +297,7 @@ function TaskRow({
                 }
               >
                 {task.enabled ? (
-                  <PauseIcon strokeWidth={1.75} className="size-icon" />
+                  <HugeiconsIcon icon={PauseIcon} strokeWidth={1.75} className="size-icon" />
                 ) : (
                   <PlayIcon strokeWidth={1.75} className="size-icon" />
                 )}

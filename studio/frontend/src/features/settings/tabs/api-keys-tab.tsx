@@ -10,6 +10,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { usePlatformStore } from "@/config/env";
 import { useIsAccountOwner } from "@/features/auth";
 import { cn } from "@/lib/utils";
 import { translate, useT } from "@/i18n";
@@ -21,9 +22,10 @@ import {
   fetchApiKeys,
   revokeApiKey,
 } from "../api/api-keys";
-import type {
-  KeylessApiAccessExposure,
-  KeylessApiAccessScope,
+import {
+  type KeylessApiAccessExposure,
+  type KeylessApiAccessScope,
+  loadKeylessApiAccess,
 } from "../api/keyless-api-access";
 import { apiKeyActionMessage } from "../components/api-key-action-message";
 import {
@@ -31,18 +33,17 @@ import {
   ApiKeyTableHeader,
   TOKEN_TABLE,
 } from "../components/api-key-row";
-import { AudioApiExamples } from "../components/audio-api-examples";
-import { MediaApiExamples } from "../components/media-api-examples";
 import { CreateKeyForm } from "../components/create-key-form";
-import { DecisionApiSection } from "../components/decision-api-section";
 import { KeyRevealCard } from "../components/key-reveal-card";
-import { KeylessApiAccessSection } from "../components/keyless-api-access-section";
+import { KeylessApiAccessLink } from "../components/keyless-api-access-link";
 import { McpAccessSection } from "../components/mcp-access-section";
 import { ModelAliasesSection } from "../components/model-aliases-section";
 import { ModelAutoSwitchSection } from "../components/model-auto-switch-section";
 import { ModelMemorySection } from "../components/model-memory-section";
 import { MonitorLink } from "../components/monitor-link";
-import { UsageExamples, useApiTunnelPref } from "../components/usage-examples";
+import { SettingsSection } from "../components/settings-section";
+import { ApiExamplesPanel } from "../components/api-example-tabs";
+import { useApiTunnelPref } from "../components/usage-examples";
 import { usePublishAccessUrls } from "../hooks/use-publish-access-urls";
 
 function expiryDays(key: ApiKey): number | null {
@@ -71,13 +72,35 @@ export function ApiKeysTab() {
     tools: boolean;
     exposure: KeylessApiAccessExposure | null;
   }>({ scope: "off", tools: false, exposure: null });
+  // Read for the examples' placeholder key; a tunnel coming or going changes exposure.
+  const cloudflareUrl = usePlatformStore((state) => state.cloudflareUrl);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: cloudflareUrl is a trigger, not an input
+  useEffect(() => {
+    if (!isOwner) {
+      return;
+    }
+    let cancelled = false;
+    loadKeylessApiAccess()
+      .then((next) => {
+        if (!cancelled) {
+          setKeyless({
+            scope: next.suspendedByAccounts ? "off" : next.scope,
+            tools: next.tools,
+            exposure: next.exposure,
+          });
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [isOwner, cloudflareUrl]);
   const reduced = useReducedMotion();
   const transition = reduced
     ? { duration: 0 }
     : { duration: 0.18, ease: [0.165, 0.84, 0.44, 1] as const };
 
-  // ../api/api-keys.ts throws generic English errors; use the translated
-  // message so zh-CN users don't see English strings bleed through.
+  // api-keys.ts throws generic English errors; show the translated message.
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -167,87 +190,92 @@ export function ApiKeysTab() {
         </p>
       </header>
 
-      <AnimatePresence mode="wait" initial={false}>
-        {revealed !== null ? (
-          <motion.div
-            key="reveal"
-            initial={{ opacity: 0, y: -4 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -4 }}
-            transition={transition}
-          >
-            <KeyRevealCard rawKey={revealed} onDone={() => setRevealed(null)} />
-          </motion.div>
-        ) : (
-          <motion.div
-            key="form"
-            initial={{ opacity: 0, y: 4 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 4 }}
-            transition={transition}
-          >
-            <CreateKeyForm
-              onCreated={(raw) => {
-                setRevealed(raw);
-                void load();
-              }}
-              onError={setActionError}
-              existingNames={keys.map((k) => k.name)}
-            />
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      <section className="flex min-w-0 flex-col">
-        <h2 className="settings-heading mb-2 text-sm font-semibold">
+      <section className="flex min-w-0 flex-col gap-4">
+        <h2 className="settings-heading text-base font-semibold font-heading">
           {t("settings.apiKeys.accessTokens")}
         </h2>
-        {actionError ? (
-          <div className="mb-2 rounded-lg border border-destructive/20 bg-destructive/5 p-3 text-xs text-destructive">
-            {actionError}
-          </div>
-        ) : null}
-        {error ? (
-          <div className="rounded-lg border border-destructive/20 bg-destructive/5 p-3 text-xs text-destructive">
-            {error}
-          </div>
-        ) : loading ? (
-          <div className="flex flex-col gap-2 py-2">
-            {[0, 1].map((i) => (
-              <div
-                key={i}
-                className="h-12 animate-pulse rounded-md bg-muted/40"
+        <AnimatePresence mode="wait" initial={false}>
+          {revealed !== null ? (
+            <motion.div
+              key="reveal"
+              initial={{ opacity: 0, y: -4 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -4 }}
+              transition={transition}
+            >
+              <KeyRevealCard
+                rawKey={revealed}
+                onDone={() => setRevealed(null)}
               />
-            ))}
-          </div>
-        ) : keys.length === 0 ? (
-          <p className="py-6 text-center text-xs text-muted-foreground">
-            {t("settings.apiKeys.noAccess")}
-          </p>
-        ) : (
-          <div className="hover-scrollbar flex max-h-72 min-w-0 flex-col overflow-y-auto pr-1 [scrollbar-gutter:stable]">
-            <div className={cn("overlay-scrollbar-gutter", TOKEN_TABLE)}>
-              <ApiKeyTableHeader />
-              {keys.map((k) => (
-                <ApiKeyRow
-                  key={k.id}
-                  apiKey={k}
-                  onRevoke={(key) => {
-                    setRegenerate(false);
-                    setRevokeTarget(key);
-                  }}
-                  onRegenerate={(key) => {
-                    setRegenerate(true);
-                    setRevokeTarget(key);
-                  }}
+            </motion.div>
+          ) : (
+            <motion.div
+              key="form"
+              initial={{ opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 4 }}
+              transition={transition}
+            >
+              <CreateKeyForm
+                onCreated={(raw) => {
+                  setRevealed(raw);
+                  void load();
+                }}
+                onError={setActionError}
+                existingNames={keys.map((k) => k.name)}
+              />
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <div className="flex min-w-0 flex-col">
+          {actionError ? (
+            <div className="mb-2 rounded-lg border border-destructive/20 bg-destructive/5 p-3 text-xs text-destructive">
+              {actionError}
+            </div>
+          ) : null}
+          {error ? (
+            <div className="rounded-lg border border-destructive/20 bg-destructive/5 p-3 text-xs text-destructive">
+              {error}
+            </div>
+          ) : loading ? (
+            <div className="flex flex-col gap-2 py-2">
+              {[0, 1].map((i) => (
+                <div
+                  key={i}
+                  className="h-12 animate-pulse rounded-md bg-muted/40"
                 />
               ))}
             </div>
-          </div>
-        )}
+          ) : keys.length === 0 ? (
+            <p className="py-6 text-center text-xs text-muted-foreground">
+              {t("settings.apiKeys.noAccess")}
+            </p>
+          ) : (
+            <div className="hover-scrollbar flex max-h-72 min-w-0 flex-col overflow-y-auto pr-1 [scrollbar-gutter:stable]">
+              <div className={cn("overlay-scrollbar-gutter", TOKEN_TABLE)}>
+                <ApiKeyTableHeader />
+                {keys.map((k) => (
+                  <ApiKeyRow
+                    key={k.id}
+                    apiKey={k}
+                    onRevoke={(key) => {
+                      setRegenerate(false);
+                      setRevokeTarget(key);
+                    }}
+                    onRegenerate={(key) => {
+                      setRegenerate(true);
+                      setRevokeTarget(key);
+                    }}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
       </section>
 
-      <UsageExamples
+      <ApiExamplesPanel
         apiKey={revealed}
         useTunnel={useTunnel}
         onUseTunnelChange={setUseTunnel}
@@ -256,16 +284,12 @@ export function ApiKeysTab() {
         keylessExposure={keyless.exposure}
       />
 
-      {/* Installation-wide controls: owner-only routes. */}
-      {isOwner ? (
-        <>
-          <KeylessApiAccessSection onSettingsChange={setKeyless} />
-
-          <McpAccessSection apiKey={revealed} />
-        </>
-      ) : null}
-
-      <MonitorLink />
+      {/* Installation-wide, so owner-only routes. */}
+      <SettingsSection title="Access & monitoring">
+        {isOwner ? <McpAccessSection apiKey={revealed} /> : null}
+        {isOwner ? <KeylessApiAccessLink /> : null}
+        <MonitorLink hideHeading={true} />
+      </SettingsSection>
 
       {isOwner ? (
         <>
@@ -276,22 +300,6 @@ export function ApiKeysTab() {
           <ModelAliasesSection />
         </>
       ) : null}
-
-      <AudioApiExamples
-        apiKey={revealed}
-        useTunnel={useTunnel}
-        keylessScope={keyless.scope}
-        keylessExposure={keyless.exposure}
-      />
-
-      <MediaApiExamples
-        apiKey={revealed}
-        useTunnel={useTunnel}
-        keylessScope={keyless.scope}
-        keylessExposure={keyless.exposure}
-      />
-
-      {isOwner ? <DecisionApiSection /> : null}
 
       <Dialog
         open={revokeTarget !== null}

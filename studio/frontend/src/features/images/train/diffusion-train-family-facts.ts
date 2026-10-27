@@ -12,7 +12,6 @@ type FamilyWithBaseFacts = DiffusionTrainingFacts & {
   base_specs?: Record<string, DiffusionTrainingFacts>;
 };
 
-/** Resolve the chips for the selected checkpoint, falling back to its family facts. */
 export function resolveDiffusionTrainingFacts(
   family: FamilyWithBaseFacts,
   baseModel?: string | null,

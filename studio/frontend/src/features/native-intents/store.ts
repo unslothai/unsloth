@@ -27,30 +27,22 @@ function moveQueuedAttachments(
 
 interface NativeIntentState {
   pendingModelIntent: NativeIntent | null;
-  // Key each batch to the chat that received the OS drop. Registration crosses an
-  // async Rust boundary, so the active chat may change before these arrive.
+  // Keyed by chat: registration is async, so the active chat may change before these arrive.
   pendingAttachments: PendingNativeAttachments;
   pendingImageAttachments: PendingNativeAttachments;
   pendingOpenDocumentAttachments: PendingNativeAttachments;
   pendingAudioAttachments: PendingNativeAttachments;
   pendingVideoAttachments: PendingNativeAttachments;
-  // Image drops registering with Rust, before they have a queue to sit in. Not
-  // keyed: until the intents land there is no settled target, and the OS drop
-  // went to the window, which has one composer to send from.
+  // Covers the registration window so a fast submit waits for the attachment.
   registeringImageDrops: number;
-  // Same for audio: cover the register-and-read window or a fast submit goes out without the clip.
   registeringAudioDrops: number;
-  // Same for video: one clip is a long read, and a submit in that window would go out without it.
   registeringVideoDrops: number;
-  // Bumped, per chat, when a drop fails before it reaches a queue. The composer
-  // watches its own key so a failure elsewhere cannot cancel its parked send.
+  // Per chat, so a failure elsewhere cannot cancel this composer's parked send.
   imageDropFailures: Record<string, number>;
   audioDropFailures: Record<string, number>;
   videoDropFailures: Record<string, number>;
-  // Owner of queued composer-file batches, by composer identity. A remount means
-  // the outgoing instance cannot hand the batches over itself, so it leaves a note.
+  // A remounted composer cannot hand its batches over itself, so it leaves a note.
   imageDropOwners: Record<string, string>;
-  // Same for audio: a new chat re-keys mid-read, so the clip needs a note to follow the composer.
   audioDropOwners: Record<string, string>;
   videoDropOwners: Record<string, string>;
   addIntent: (intent: NativeIntent) => void;

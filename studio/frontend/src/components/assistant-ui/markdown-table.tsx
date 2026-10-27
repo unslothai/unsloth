@@ -10,10 +10,10 @@ import {
 import { useT } from "@/i18n";
 import {
   Cancel01Icon,
-  Copy01Icon,
   Download01Icon,
   ExpandIcon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type ComponentProps,

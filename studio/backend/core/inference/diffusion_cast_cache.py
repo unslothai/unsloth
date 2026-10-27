@@ -1,11 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Local float16 cache of components loaded from fp32 shards (e.g. Wan), written from the live tensors after publish.
+"""Local float16 / bfloat16 cache of components loaded from fp32 shards (Wan, Z-Image, SDXL, Lumina, ...), written
+from the live tensors after publish.
 
 Later loads read the half-size file at the same dtype (a no-op cast, bit-identical); a sampled source comparison
 refuses a module changed in place. Shares ``diffusion_prequant_cache``'s root, locks, manifest and LRU.
-Kill switch: ``UNSLOTH_DIFFUSION_CAST_CACHE=0`` (``UNSLOTH_DIFFUSION_PREQUANT_CACHE=0`` disables it too).
+Kill switch: ``UNSLOTH_DIFFUSION_CAST_CACHE=0`` (``UNSLOTH_DIFFUSION_PREQUANT_CACHE=0`` disables it too);
+``UNSLOTH_DIFFUSION_CAST_CACHE=fp16`` / ``=bf16`` keeps one target dtype only; ``UNSLOTH_DIFFUSION_CAST_CACHE_IMAGE=0``
+turns the image pipeline path off.
 """
 
 from __future__ import annotations
@@ -25,7 +28,11 @@ from typing import Any, Iterable, Optional
 from . import diffusion_prequant_cache as _cache
 
 CAST_CACHE_ENV = "UNSLOTH_DIFFUSION_CAST_CACHE"
-CAST_LAYOUT_VERSION = 1
+CAST_CACHE_IMAGE_ENV = "UNSLOTH_DIFFUSION_CAST_CACHE_IMAGE"
+_OFF = ("0", "off", "false", "no", "none")
+_HALF = {"float16": "float16", "fp16": "float16", "bfloat16": "bfloat16", "bf16": "bfloat16"}
+# 2: layout-1 entries written under block streaming may hold tensors read before their upload landed.
+CAST_LAYOUT_VERSION = 2
 CAST_META_KEY = "unsloth_cast_component"
 _LIBRARIES = ("diffusers", "transformers")
 _STEMS = {"diffusers": "diffusion_pytorch_model", "transformers": "model"}
@@ -40,11 +47,21 @@ _ONLOAD_WAIT_SECONDS = 10.0
 
 def enabled() -> bool:
     raw = (os.environ.get(CAST_CACHE_ENV) or "").strip().lower()
-    return raw not in ("0", "off", "false", "no", "none") and _cache.enabled()
+    return raw not in _OFF and _cache.enabled()
 
 
-def _is_fp16(dtype: Any) -> bool:
-    return str(dtype) in ("torch.float16", "float16")
+def image_enabled() -> bool:
+    raw = (os.environ.get(CAST_CACHE_IMAGE_ENV) or "").strip().lower()
+    return raw not in _OFF and enabled()
+
+
+def _target_dtypes() -> tuple:
+    raw = (os.environ.get(CAST_CACHE_ENV) or "").strip().lower()
+    return (_HALF[raw],) if raw in _HALF else ("float16", "bfloat16")
+
+
+def _is_half(dtype: Any) -> bool:
+    return str(dtype).replace("torch.", "") in _target_dtypes()
 
 
 def _component_dtype(torch_dtype: Any, component: str) -> Any:
@@ -74,6 +91,7 @@ class CastCandidate:
     key: str
     parts: dict
     names: list = field(default_factory = list)
+    nbytes: int = 0
 
 
 def _read_json(path: Optional[str]) -> Optional[dict]:
@@ -119,20 +137,54 @@ def _shard_header(path: str) -> Optional[dict]:
     return header
 
 
-def _all_wide(shards: list) -> bool:
-    """Every floating tensor of every shard is wider than float16 (the only case the cast halves)."""
+def _cast_bytes(shards: list) -> Optional[int]:
+    """16-bit bytes if every floating tensor is fp32 / fp64, else None. An estimate: fp32-kept modules count at 16 bits."""
     seen = False
+    total = 0
     for shard in shards:
         header = _shard_header(shard)
         if header is None:
-            return False
+            return None
         for entry in header.values():
-            tag = entry.get("dtype") if isinstance(entry, dict) else None
+            if not isinstance(entry, dict):
+                continue
+            tag = entry.get("dtype")
+            try:
+                begin, end = (int(v) for v in entry.get("data_offsets") or (0, 0))
+            except (TypeError, ValueError):
+                return None
             if tag in _FLOAT_TAGS:
                 if tag not in _WIDE_TAGS:
-                    return False
+                    return None
                 seen = True
-    return seen
+                total += (end - begin) // (4 if tag == "F32" else 8) * 2
+            else:
+                total += end - begin
+    return total if seen else None
+
+
+def _all_wide(shards: list) -> bool:
+    return _cast_bytes(shards) is not None
+
+
+def _fit_budget(cands: list, logger: Any = None) -> list:
+    """A set over the LRU budget would evict its own entries every load. Greedy largest-first, so it is deterministic."""
+    budget = _cache.max_cache_bytes()
+    if budget is None:
+        return cands
+    keep, used = set(), 0
+    for cand in sorted(cands, key = lambda c: (-c.nbytes, c.component)):
+        if used + cand.nbytes > budget:
+            _log(
+                logger,
+                "info",
+                f"{cand.component}: not cached ({cand.nbytes / 2**30:.1f} GiB would not fit the "
+                f"{budget / 2**30:.0f} GiB cache budget beside this load's other components)",
+            )
+            continue
+        used += cand.nbytes
+        keep.add(cand.component)
+    return [c for c in cands if c.component in keep]
 
 
 def _load_class(library: str, class_name: str) -> Any:
@@ -156,7 +208,8 @@ def candidates(
     base_repo: Optional[str] = None,
     logger: Any = None,
 ) -> list:
-    """Components at ``source`` that load fp32 shards at float16, with cache keys. Local reads only; never raises."""
+    """Components at ``source`` that load fp32 shards at float16 / bfloat16, with cache keys. Local reads only; never
+    raises."""
     if not enabled() or not source:
         return []
     out: list = []
@@ -177,13 +230,14 @@ def candidates(
             if library not in _LIBRARIES or not isinstance(class_name, str):
                 continue
             dtype = _component_dtype(torch_dtype, component)
-            if not _is_fp16(dtype):
+            if not _is_half(dtype):
                 continue
             cls = _load_class(library, class_name)
             if cls is None or not isinstance(cls, type) or not issubclass(cls, torch.nn.Module):
                 continue
             shards = _shards_of(source, component, _STEMS[library], cache_dir, revision)
-            if not shards or not _all_wide(shards):
+            nbytes = _cast_bytes(shards) if shards else None
+            if nbytes is None:
                 continue
             config_path = _cache._local_file(
                 source, f"{component}/config.json", cache_dir, revision
@@ -222,12 +276,48 @@ def candidates(
                     config_path = str(config_path),
                     key = _cache.cache_key(parts),
                     parts = parts,
+                    nbytes = nbytes,
                 )
             )
     except Exception as exc:  # noqa: BLE001
         _log(logger, "warning", f"candidates skipped ({type(exc).__name__}: {str(exc)[:200]})")
         return []
-    return out
+    return _fit_budget(out, logger)
+
+
+def cached_components(cands: list) -> list:
+    try:
+        root = _cache.cache_root()
+        return [c.component for c in cands or () if (root / c.key / _cache.MANIFEST_NAME).is_file()]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def inject(
+    pipe_kwargs: dict,
+    cands: list,
+    *,
+    logger: Any = None,
+    cancel_check: Optional[Any] = None,
+    label: str = "diffusion",
+) -> list:
+    """Returns the misses. Never raises, except a cancel from ``cancel_check``."""
+    try:
+        cands = [c for c in cands or () if c.component not in pipe_kwargs]
+        if not cands:
+            return []
+        hits = read_all(cands, logger = logger, cancel_check = cancel_check)
+        pipe_kwargs.update(hits)
+        if hits and logger is not None:
+            logger.info(
+                "%s.cast_cache: read %s from the local cast cache", label, ", ".join(sorted(hits))
+            )
+        return [c for c in cands if c.component not in hits]
+    except Exception as exc:  # noqa: BLE001 - a cache problem is a miss
+        if cancel_check is not None:
+            cancel_check()
+        _log(logger, "warning", f"inject skipped ({type(exc).__name__}: {str(exc)[:200]})")
+        return []
 
 
 def _log(logger: Any, level: str, msg: str) -> None:
@@ -376,7 +466,8 @@ def _tied_keys(module: Any) -> set:
     return keys
 
 
-def _resolve(module: Any, name: str) -> Any:
+def _resolve_ref(module: Any, name: str) -> Any:
+    """The Parameter / buffer itself (offload groups key host copies by it)."""
     parent_name, _, leaf = name.rpartition(".")
     parent = module.get_submodule(parent_name) if parent_name else module
     tensor = (
@@ -384,7 +475,29 @@ def _resolve(module: Any, name: str) -> Any:
     )
     if tensor is None:
         raise KeyError(name)
+    return tensor
+
+
+def _resolve(module: Any, name: str) -> Any:
+    tensor = _resolve_ref(module, name)
     return tensor.data if hasattr(tensor, "data") else tensor
+
+
+def _offload_groups(module: Any) -> list:
+    out: list = []
+    seen: set = set()
+    for m in module.modules():
+        hooks = getattr(getattr(m, "_diffusers_hook", None), "hooks", None)
+        if not isinstance(hooks, dict):
+            continue
+        for hook in list(hooks.values()):
+            group = getattr(hook, "group", None)
+            if group is None or id(group) in seen:
+                continue
+            seen.add(id(group))
+            if isinstance(getattr(group, "cpu_param_dict", None), dict):
+                out.append(group)
+    return out
 
 
 def _state_names(module: Any) -> Optional[list]:
@@ -436,19 +549,40 @@ def _hooked(module: Any) -> bool:
 
 
 class _Reader:
-    """Host copies of one component's live tensors; device copies are read on a side stream after one device
-    synchronise (an upload may be queued on another stream), never behind the render on the default stream."""
+    """Host copies of one component's live tensors, read while the pipeline may be rendering.
+
+    Streamed tensors come from their offload group's host copy: device ``.data`` is re-pointed before the prefetch
+    lands, so reading it races the copy stream (NaN entries). Other device tensors are read on a side stream after
+    a per-read device synchronise, never behind the render on the default stream."""
 
     def __init__(self, module: Any, check: Any) -> None:
         self.module = module
         self.check = check
+        self.groups = _offload_groups(module)
         self.wait = _ONLOAD_WAIT_SECONDS if _hooked(module) else 0.0
-        self.synced = False
         self.stream = None
+
+    def _host_copy(self, ref: Any) -> Any:
+        for group in self.groups:
+            try:
+                src = group.cpu_param_dict.get(ref)
+            except Exception:  # noqa: BLE001
+                src = None
+            if (
+                src is not None
+                and getattr(src, "device", None) is not None
+                and src.device.type == "cpu"
+            ):
+                return src
+        return None
 
     def tensor(self, name: str) -> Any:
         while True:
-            tensor = _resolve(self.module, name)
+            ref = _resolve_ref(self.module, name)
+            host = self._host_copy(ref)
+            if host is not None:
+                return host.data if hasattr(host, "data") else host
+            tensor = ref.data if hasattr(ref, "data") else ref
             if tensor.device.type == "cpu":
                 return tensor
             if self.wait <= 0:
@@ -460,9 +594,8 @@ class _Reader:
 
         if tensor.device.type != "cuda":
             return tensor.to("cpu")
-        if not self.synced:
-            torch.cuda.synchronize(tensor.device)
-            self.synced = True
+        torch.cuda.synchronize(tensor.device)
+        if self.stream is None:
             self.stream = torch.cuda.Stream(device = tensor.device)
         with torch.cuda.stream(self.stream):
             host = tensor.to("cpu", non_blocking = False)
@@ -588,18 +721,22 @@ def save(
     root = _cache.cache_root()
     try:
         names = _state_names(module)
-        if names is None or [n for n, _d, _s in names] != [n for n, _d, _s in cand.names]:
+        live = {n: (d, s) for n, d, s in names or ()}
+        # Tensors added after the load (fuse_qkv's to_qkv) are left out: the next load re-adds them from the same
+        # weights. A renamed / removed / re-typed one (LoRA wrap, quantize, layerwise fp8 storage) refuses the write.
+        if names is None or any(n not in live for n, _d, _s in cand.names):
             _log(
                 logger, "info", f"{cand.component}: not cached (its tensors changed after the load)"
             )
             return None
-        if any(d != dt or s != st for (_n, d, s), (_m, dt, st) in zip(names, cand.names)):
+        if any(live[n] != (d, s) for n, d, s in cand.names):
             _log(
                 logger,
                 "info",
                 f"{cand.component}: not cached (a tensor changed dtype or shape after the load)",
             )
             return None
+        names = list(cand.names)
         reader = _Reader(module, check)
         why = _matches_source(cand, reader)
         if why is not None:
@@ -751,6 +888,8 @@ class CastWrites:
                 pipe = self._pipe()
                 module = getattr(pipe, cand.component, None) if pipe is not None else None
                 pipe = None
+                # torch.compile(module) wraps it; the weights (and their names) are the original's.
+                module = getattr(module, "_orig_mod", module)
                 if module is None:
                     continue
                 self.results[cand.component] = save(
