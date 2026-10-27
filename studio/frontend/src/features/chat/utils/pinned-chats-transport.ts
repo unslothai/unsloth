@@ -107,7 +107,9 @@ function compactReplay(operations: PinOperation[]): PinOperation[] {
   }
   return kept
     .reverse()
-    .map(({ cancels, ...operation }) => (cancels?.length ? { ...operation, cancels } : operation));
+    .map(({ cancels, ...operation }) =>
+      cancels?.length ? { ...operation, cancels: [...new Set(cancels)] } : operation,
+    );
 }
 
 function sameIds(left: string[] | undefined, right: string[]): boolean {
@@ -210,6 +212,10 @@ export function createPinnedChatsTransport(options: PinnedChatsTransportOptions)
   function localCompareAndSet(expected: string[] | undefined, next: string[], operation?: PinOperation) {
     const state = readFallback();
     if (!state) throw new Error("Local pinned chats are unavailable");
+    // A pin another tab's unpin already fenced arrived late: acknowledge it, never apply it.
+    const replayId = operation && (operation.serverId ?? operation.operationId);
+    if (replayId && state.operations.some((entry) => entry.cancels?.includes(replayId)))
+      return { pinnedIds: state.pinnedIds, applied: true };
     const existing = operation && state.operations.some((entry) => entry.operationId === operation.operationId);
     if (!existing && !sameIds(expected, state.pinnedIds))
       return { pinnedIds: state.pinnedIds, applied: false };

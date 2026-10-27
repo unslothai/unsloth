@@ -476,3 +476,39 @@ test("a replay the server keeps refusing still lets a later unpin cancel that pi
   assert.equal(fallback, undefined);
 });
 
+test("local fallback acknowledges a late pin an earlier unpin already fenced", async () => {
+  const f = fixture();
+  await f.sync.refresh();
+  const unpin: PinOperation = { ...pin("u", ["chat"], false), cancels: ["late"] };
+  await f.transport.compareAndSet(["legacy"], ["legacy"], unpin);
+  const result = await f.transport.compareAndSet(["legacy"], ["chat", "legacy"], pin("late", ["chat"]));
+  assert.deepEqual(result, { applied: true, pinnedIds: ["legacy"] });
+  assert.equal(f.fallback?.operations.length, 1);
+});
+
+test("upgrade replay sends each fenced ID once", async () => {
+  let remote: string[] = [];
+  const sent: PinOperation[] = [];
+  let fallback: PinnedChatsFallbackState | undefined = {
+    baseIds: [],
+    pinnedIds: [],
+    operations: [pin("p", ["chat"]), { ...pin("u", ["chat"], false), cancels: ["p"] }],
+  };
+  const transport = createPinnedChatsTransport({
+    load: async () => remote.slice(),
+    compareAndSet: async (expected, next, operation) => {
+      if (operation) sent.push(operation);
+      if (JSON.stringify(expected) !== JSON.stringify(remote)) return { pinnedIds: remote.slice(), applied: false };
+      remote = next.slice();
+      return { pinnedIds: remote.slice(), applied: true };
+    },
+    migrateLegacy: async () => remote.slice(),
+    readLegacy: () => [],
+    readFallback: () => fallback && structuredClone(fallback),
+    writeFallback: (value) => { fallback = value && structuredClone(value); },
+  });
+  await transport.load();
+  assert.deepEqual(sent.find((op) => !op.pinned)?.cancels, ["p"]);
+  assert.equal(fallback, undefined);
+});
+
