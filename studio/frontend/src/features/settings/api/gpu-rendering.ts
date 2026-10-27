@@ -16,6 +16,8 @@ export interface GpuRenderingStatus {
   envOverride: string | null;
   /** Runtime WebKitGTK version; set on Linux Wayland below 2.54 only. */
   oldWebkitWarning: string | null;
+  /** This launch's web view paints on the CPU (Linux). Missing from older shells. */
+  cpuPainting?: boolean;
 }
 
 export async function loadGpuRendering(): Promise<GpuRenderingStatus> {

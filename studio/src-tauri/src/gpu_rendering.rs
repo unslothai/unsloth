@@ -230,6 +230,9 @@ pub struct LaunchState {
     pub fallback_active: bool,
     pub env_override: Option<&'static str>,
     pub old_webkit_warning: Option<String>,
+    /// Whether this launch's web view paints on the CPU (Linux only). Fixed for the launch:
+    /// "Try GPU again" only takes effect after a restart.
+    pub cpu_painting: bool,
     flag_cleared: AtomicBool,
 }
 
@@ -239,12 +242,14 @@ impl LaunchState {
         fallback_active: bool,
         env_override: Option<&'static str>,
         old_webkit_warning: Option<String>,
+        cpu_painting: bool,
     ) -> Self {
         Self {
             setting,
             fallback_active,
             env_override,
             old_webkit_warning,
+            cpu_painting,
             flag_cleared: AtomicBool::new(false),
         }
     }
@@ -259,6 +264,7 @@ pub struct GpuRenderingStatus {
     pub fallback_active: bool,
     pub env_override: Option<String>,
     pub old_webkit_warning: Option<String>,
+    pub cpu_painting: bool,
 }
 
 fn status(launch: &LaunchState, stored: GpuRendering) -> GpuRenderingStatus {
@@ -270,6 +276,7 @@ fn status(launch: &LaunchState, stored: GpuRendering) -> GpuRenderingStatus {
             fallback_active: false,
             env_override: None,
             old_webkit_warning: None,
+            cpu_painting: false,
         };
     }
     let flag_cleared = launch.flag_cleared.load(Ordering::SeqCst);
@@ -280,6 +287,7 @@ fn status(launch: &LaunchState, stored: GpuRendering) -> GpuRenderingStatus {
         fallback_active: launch.fallback_active && !flag_cleared,
         env_override: launch.env_override.map(str::to_string),
         old_webkit_warning: launch.old_webkit_warning.clone(),
+        cpu_painting: launch.cpu_painting,
     }
 }
 
@@ -448,20 +456,28 @@ mod tests {
     #[cfg(any(target_os = "windows", target_os = "linux"))]
     #[test]
     fn status_reports_a_pending_change_and_a_retried_fallback() {
-        let launch = LaunchState::new(GpuRendering::Auto, true, None, Some("2.50.4".into()));
+        let launch = LaunchState::new(GpuRendering::Auto, true, None, Some("2.50.4".into()), true);
         let before = status(&launch, GpuRendering::Auto);
         assert!(before.fallback_active && !before.restart_required);
         // "Try GPU again" re-selects Auto and clears the flag.
         launch.flag_cleared.store(true, Ordering::SeqCst);
         let after = status(&launch, GpuRendering::Auto);
         assert!(!after.fallback_active && after.restart_required);
+        // This launch still paints on the CPU until the restart.
+        assert!(after.cpu_painting);
+        assert_eq!(
+            serde_json::to_value(&after).unwrap()["cpuPainting"],
+            serde_json::Value::Bool(true)
+        );
         let quiet = LaunchState::new(
             GpuRendering::Auto,
             false,
             Some("WEBKIT_DISABLE_DMABUF_RENDERER"),
             None,
+            false,
         );
         let changed = status(&quiet, GpuRendering::Off);
+        assert!(!changed.cpu_painting);
         assert!(changed.restart_required && changed.configurable);
         assert_eq!(
             changed.env_override.as_deref(),
@@ -479,9 +495,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_setting(dir.path(), GpuRendering::Off).unwrap();
         assert_eq!(launch_setting(Some(dir.path())), GpuRendering::Auto);
-        let launch = LaunchState::new(GpuRendering::Auto, false, None, None);
+        let launch = LaunchState::new(GpuRendering::Auto, false, None, None, false);
         let reported = status(&launch, GpuRendering::Off);
         assert_eq!(reported.setting, GpuRendering::On);
-        assert!(!reported.configurable && !reported.restart_required);
+        assert!(!reported.configurable && !reported.restart_required && !reported.cpu_painting);
     }
 }

@@ -20,12 +20,18 @@ import {
 } from "./components/assistant-ui/reasoning-row-containment";
 import { fetchDeviceType } from "./config/env";
 import { refreshSession } from "./features/auth/api";
+import { loadGpuRendering } from "./features/settings/api/gpu-rendering";
+import {
+  getAppliedInterfaceZoom,
+  subscribeAppliedInterfaceZoom,
+} from "./features/settings/lib/interface-scale-runtime";
 import {
   applyInterfaceScaleBeforeFirstPaint,
   useInterfaceScaleStore,
 } from "./features/settings/stores/interface-scale-store";
 import { initializeLocale } from "./i18n";
 import { isTauri } from "./lib/api-base";
+import { armCpuPaintShadows } from "./lib/cpu-paint-shadows";
 import { setHubSessionRefresh } from "./lib/hf-endpoint";
 import { watchInputModality } from "./lib/input-modality";
 import { watchMacStrayKeyText } from "./lib/mac-stray-key-text";
@@ -50,6 +56,13 @@ const uaLower = navigator.userAgent.toLowerCase();
 if (uaLower.includes("linux") && !uaLower.includes("android")) {
   document.documentElement.classList.add("render-linux");
 }
+
+// WebKitGTK's CPU painter re-blurs CSS shadows on every repaint; large ones become images.
+armCpuPaintShadows({
+  interfaceZoom: getAppliedInterfaceZoom,
+  subscribeInterfaceZoom: subscribeAppliedInterfaceZoom,
+  cpuPainting: () => loadGpuRendering().then((status) => status.cpuPainting),
+});
 
 // index.css keys off this to restore ::-webkit-scrollbar styling on Windows.
 if (uaLower.includes("windows")) {
