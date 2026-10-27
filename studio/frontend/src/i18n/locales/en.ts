@@ -4242,6 +4242,8 @@ export const en = {
       previewLinkCopyFailed: "Couldn't copy the link",
     },
     charts: {
+      expandChart: "Expand chart",
+      expandNamedChart: "Expand {title} chart",
       settings: "Chart Settings",
       settingsDescription:
         "Tune chart presentation while training keeps running.",

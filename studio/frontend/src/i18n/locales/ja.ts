@@ -4141,6 +4141,8 @@ export const ja = {
       previewLinkCopyFailed: "リンクをコピーできませんでした",
     },
     charts: {
+      expandChart: "グラフを拡大",
+      expandNamedChart: "{title} のグラフを拡大",
       settings: "チャート設定",
       settingsDescription: "トレーニングを実行したまま、チャートの表示を微調整します。",
       openSettings: "チャート設定を開く",

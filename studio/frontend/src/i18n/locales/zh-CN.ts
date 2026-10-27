@@ -4093,6 +4093,8 @@ export const zhCN = {
       previewLinkCopyFailed: "无法复制链接",
     },
     charts: {
+      expandChart: "展开图表",
+      expandNamedChart: "展开{title}图表",
       settings: "图表设置",
       settingsDescription: "训练运行时调整图表显示。",
       openSettings: "打开图表设置",

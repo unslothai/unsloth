@@ -4189,6 +4189,8 @@ export const ar = {
       previewLinkCopyFailed: "تعذّر نسخ الرابط",
     },
     charts: {
+      expandChart: "توسيع المخطط",
+      expandNamedChart: "توسيع مخطط {title}",
       settings: "إعدادات الرسم البياني",
       settingsDescription:
         "اضبط عرض الرسم البياني بينما يستمر التدريب.",

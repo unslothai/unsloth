@@ -4438,6 +4438,8 @@ export const sv = {
       previewLinkCopyFailed: "Det gick inte att kopiera länken",
     },
     charts: {
+      expandChart: "Förstora diagrammet",
+      expandNamedChart: "Förstora diagrammet {title}",
       settings: "Diagraminställningar",
       settingsDescription:
         "Justera diagrammets presentation medan träningen pågår.",

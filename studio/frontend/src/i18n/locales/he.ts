@@ -4309,6 +4309,8 @@ export const he = {
       previewLinkCopyFailed: "לא ניתן להעתיק את הקישור",
     },
     charts: {
+      expandChart: "הגדלת התרשים",
+      expandNamedChart: "הגדלת התרשים {title}",
       settings: "הגדרות תרשים",
       settingsDescription: "כוונן את תצוגת התרשים בזמן שהאימון ממשיך לפעול.",
       openSettings: "פתח הגדרות תרשים",

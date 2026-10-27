@@ -4221,6 +4221,8 @@ export const ru = {
       previewLinkCopyFailed: "Не удалось скопировать ссылку",
     },
     charts: {
+      expandChart: "Развернуть график",
+      expandNamedChart: "Развернуть график «{title}»",
       settings: "Настройки графика",
       settingsDescription:
         "Настройте отображение графика, пока обучение продолжается.",

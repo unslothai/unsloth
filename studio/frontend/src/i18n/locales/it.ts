@@ -4258,6 +4258,8 @@ export const it = {
       previewLinkCopyFailed: "Impossibile copiare il link",
     },
     charts: {
+      expandChart: "Espandi grafico",
+      expandNamedChart: "Espandi il grafico {title}",
       settings: "Impostazioni dei grafici",
       settingsDescription:
         "Regola la visualizzazione dei grafici mentre l'addestramento continua.",

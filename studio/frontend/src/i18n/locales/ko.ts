@@ -4180,6 +4180,8 @@ export const ko = {
       previewLinkCopyFailed: "링크를 복사하지 못했습니다",
     },
     charts: {
+      expandChart: "차트 확대",
+      expandNamedChart: "{title} 차트 확대",
       settings: "차트 설정",
       settingsDescription:
         "학습이 계속 실행되는 동안 차트 표시를 조정합니다.",

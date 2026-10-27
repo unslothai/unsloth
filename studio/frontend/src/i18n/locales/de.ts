@@ -4258,6 +4258,8 @@ export const de = {
       previewLinkCopyFailed: "Der Link konnte nicht kopiert werden",
     },
     charts: {
+      expandChart: "Diagramm vergrößern",
+      expandNamedChart: "Diagramm {title} vergrößern",
       settings: "Diagramm-Einstellungen",
       settingsDescription:
         "Passen Sie die Diagrammdarstellung an, während das Training weiterläuft.",

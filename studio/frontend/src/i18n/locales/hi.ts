@@ -4200,6 +4200,8 @@ export const hi = {
       previewLinkCopyFailed: "लिंक कॉपी नहीं किया जा सका",
     },
     charts: {
+      expandChart: "चार्ट बड़ा करें",
+      expandNamedChart: "{title} चार्ट बड़ा करें",
       settings: "चार्ट सेटिंग्स",
       settingsDescription:
         "ट्रेनिंग चलते रहने के दौरान चार्ट प्रस्तुति को समायोजित करें।",

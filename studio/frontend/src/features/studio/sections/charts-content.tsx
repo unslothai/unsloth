@@ -27,6 +27,7 @@ import {
 } from "@/components/ui/dialog";
 import { ArrowExpandDiagonal01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { useT } from "@/i18n";
 
 // ── Expandable chart wrapper ────────────────────────────────────────────────
 // Shows the chart normally; a hover-reveal button opens it full-width in a
@@ -39,6 +40,7 @@ function ExpandableChartCard({
   title: string;
   chart: () => ReactElement;
 }): ReactElement {
+  const t = useT();
   const [open, setOpen] = useState(false);
   return (
     <div className="relative h-full">
@@ -48,8 +50,8 @@ function ExpandableChartCard({
         type="button"
         onClick={() => setOpen(true)}
         className="absolute right-2 top-2 z-10 rounded p-1 text-muted-foreground opacity-40 transition-opacity hover:opacity-100 hover:bg-muted/60 hover:text-foreground focus:opacity-100"
-        title="Expand chart"
-        aria-label={`Expand ${title} chart`}
+        title={t("studio.charts.expandChart")}
+        aria-label={t("studio.charts.expandNamedChart", { title })}
       >
         <HugeiconsIcon icon={ArrowExpandDiagonal01Icon} className="size-3.5" />
       </button>
@@ -108,6 +110,7 @@ export function ChartsContent({
   isTraining: boolean;
   evalEnabled: boolean;
 }): ReactElement {
+  const t = useT();
   const {
     windowSize,
     smoothing,
@@ -327,7 +330,7 @@ export function ChartsContent({
   return (
     <div className="grid grid-cols-2 grid-rows-2 gap-4 h-full">
       <ExpandableChartCard
-        title="Training Loss"
+        title={t("studio.charts.trainingLoss")}
         chart={() => (
           <TrainingLossChartCard
             data={displayLossData}
@@ -344,7 +347,7 @@ export function ChartsContent({
         )}
       />
       <ExpandableChartCard
-        title="Gradient Norm"
+        title={t("studio.charts.gradientNorm")}
         chart={() => (
           <GradNormChartCard
             data={displayGradData}
@@ -356,7 +359,7 @@ export function ChartsContent({
         )}
       />
       <ExpandableChartCard
-        title="Learning Rate"
+        title={t("studio.charts.learningRate")}
         chart={() => (
           <LearningRateChartCard
             data={displayLrData}
@@ -368,7 +371,7 @@ export function ChartsContent({
         )}
       />
       <ExpandableChartCard
-        title="Eval Loss"
+        title={t("studio.charts.evalLoss")}
         chart={() => (
           <EvalLossChartCard
             data={reducedEvalLossData}
