@@ -611,7 +611,9 @@ jobs:
           if-no-files-found: error
 
 
-  # These images deliberately omit host GTK, WebKitGTK, and AppIndicator.
+  # The plain images deliberately omit host GTK, WebKitGTK, and AppIndicator. host_webkit lanes
+  # install a host WebKitGTK and check which runtime AppRun picks; second_* relaunches the
+  # same AppImage with an override or a removed package to cover the other runtime.
   appimage-portability:
     needs: appimage-pr-build
     if: >-
@@ -628,11 +630,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {label: ubuntu-22.04, image: 'ubuntu:22.04', display_backend: x11, install_gles: true}
-          - {label: ubuntu-22.04-no-gles, image: 'ubuntu:22.04', display_backend: x11, install_gles: false}
-          - {label: ubuntu-24.04-wayland, image: 'ubuntu:24.04', display_backend: wayland, install_gles: true}
-          - {label: debian-12, image: 'debian:12', display_backend: x11, install_gles: true}
-          - {label: fedora-44, image: 'fedora:44', display_backend: x11, install_gles: true}
+          - {label: ubuntu-22.04, image: 'ubuntu:22.04', display_backend: x11, install_gles: true, host_webkit: false, expect_mode: bundled}
+          - {label: ubuntu-22.04-no-gles, image: 'ubuntu:22.04', display_backend: x11, install_gles: false, host_webkit: false, expect_mode: bundled}
+          - {label: ubuntu-24.04-wayland, image: 'ubuntu:24.04', display_backend: wayland, install_gles: true, host_webkit: false, expect_mode: bundled}
+          - {label: debian-12, image: 'debian:12', display_backend: x11, install_gles: true, host_webkit: false, expect_mode: bundled}
+          - {label: fedora-44, image: 'fedora:44', display_backend: x11, install_gles: true, host_webkit: false, expect_mode: bundled}
+          - {label: fedora-44-host-webkit, image: 'fedora:44', display_backend: x11, install_gles: true, host_webkit: true, webkit_min: '2.54', expect_mode: host,
+             second_override: bundled, second_remove: '', second_expect_mode: bundled}
+          # trixie-security carries 2.54; trixie itself is still 2.52.
+          - {label: debian-13-host-webkit, image: 'debian:13', display_backend: x11, install_gles: true, host_webkit: true, webkit_min: '2.54', expect_mode: host,
+             second_override: '', second_remove: libayatana-appindicator3-1, second_expect_mode: bundled}
+          - {label: ubuntu-24.04-host-webkit-old, image: 'ubuntu:24.04', display_backend: x11, install_gles: true, host_webkit: true, webkit_min: '2.52', expect_mode: bundled,
+             second_override: host, second_remove: '', second_expect_mode: host}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -665,9 +674,14 @@ jobs:
                 if [[ "${{ matrix.display_backend }}" == "wayland" ]]; then
                   DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends weston
                 fi
+                if [[ "${{ matrix.host_webkit }}" == "true" ]]; then
+                  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+                    libwebkit2gtk-4.1-0 libayatana-appindicator3-1 glib-networking
+                fi
               '
             forbidden="$(dpkg-query -W -f='${binary:Package}\n' 2>/dev/null | \
               grep -Ei 'webkit|javascriptcore|appindicator|libgtk-3' || true)"
+            host_webkit_version="$(dpkg-query -W -f='${Version}' libwebkit2gtk-4.1-0 2>/dev/null || true)"
           else
             dnf install -y -q ca-certificates python3 binutils xorg-x11-server-Xvfb xorg-x11-xauth \
               mesa-libEGL mesa-libgbm mesa-dri-drivers mesa-libGL \
@@ -678,7 +692,11 @@ jobs:
             if [[ "${{ matrix.install_gles }}" == "true" ]]; then
               dnf install -y -q mesa-libGLES
             fi
+            if [[ "${{ matrix.host_webkit }}" == "true" ]]; then
+              dnf install -y -q webkit2gtk4.1 libayatana-appindicator-gtk3 glib-networking
+            fi
             forbidden="$(rpm -qa | grep -Ei 'webkit|javascriptcore|appindicator|gtk3' || true)"
+            host_webkit_version="$(rpm -q --qf '%{VERSION}' webkit2gtk4.1 2>/dev/null || true)"
           fi
           if [[ "${{ matrix.install_gles }}" == "false" ]] && \
              ldconfig -p | grep -q 'libGLESv2\.so\.2'; then
@@ -686,7 +704,16 @@ jobs:
             exit 1
           fi
 
-          if [ -n "$forbidden" ]; then
+          if [[ "${{ matrix.host_webkit }}" == "true" ]]; then
+            # A silently older host would turn a host-mode lane into a second bundled lane.
+            host_webkit_version="${host_webkit_version#*:}"
+            echo "Host WebKitGTK ${host_webkit_version:-missing}; lane needs >= ${{ matrix.webkit_min }}"
+            if [[ ! "$host_webkit_version" =~ ^[0-9]+\.[0-9]+ ]] || \
+               ! printf '%s\n' "${{ matrix.webkit_min }}" "$host_webkit_version" | sort -V -C; then
+              echo "::error::host WebKitGTK ${host_webkit_version:-missing} is older than ${{ matrix.webkit_min }}"
+              exit 1
+            fi
+          elif [ -n "$forbidden" ]; then
             echo "::error::portability image unexpectedly contains a host desktop runtime"
             printf '%s\n' "$forbidden"
             exit 1
@@ -767,11 +794,39 @@ jobs:
           APPIMAGE_SMOKE_ART_DIR: ${{ github.workspace }}/logs/appimage-portability
 
           APPIMAGE_DISPLAY_BACKEND: ${{ matrix.display_backend }}
+          # The shipped release has no host copy, so only the PR build is held to a mode.
+          APPIMAGE_EXPECTED_WEBKIT_MODE: ${{ github.event_name == 'pull_request' && matrix.expect_mode || '' }}
           GALLIUM_DRIVER: llvmpipe
         run: |
           set -euo pipefail
           studio/src-tauri/linux/verify-complete-appimage.sh "$APPIMAGE_PATH"
           python3 tests/studio/appimage_media_pipeline_probe.py
+          python3 tests/studio/appimage_portability_smoke.py
+
+      - name: Relaunch with the other WebKitGTK runtime
+        if: github.event_name == 'pull_request' && matrix.host_webkit
+        env:
+          APPIMAGE_PATH: ${{ github.workspace }}/dl/Unsloth.AppImage
+          APPIMAGE_SMOKE_ART_DIR: ${{ github.workspace }}/logs/appimage-portability/second-run
+          APPIMAGE_DISPLAY_BACKEND: ${{ matrix.display_backend }}
+          APPIMAGE_EXPECTED_WEBKIT_MODE: ${{ github.event_name == 'pull_request' && matrix.second_expect_mode || '' }}
+          GALLIUM_DRIVER: llvmpipe
+          SECOND_OVERRIDE: ${{ matrix.second_override }}
+          SECOND_REMOVE: ${{ matrix.second_remove }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$SECOND_REMOVE" ]]; then
+            # Without AppIndicator the probe exits 3, so auto must fall back to bundled.
+            DEBIAN_FRONTEND=noninteractive apt-get remove -y -qq "$SECOND_REMOVE"
+            if ldconfig -p | grep -Eq 'lib(ayatana-)?appindicator3\.so\.1'; then
+              echo "::error::an AppIndicator library is still installed after removing $SECOND_REMOVE"
+              exit 1
+            fi
+          fi
+          if [[ -n "$SECOND_OVERRIDE" ]]; then
+            export UNSLOTH_APPIMAGE_WEBKIT="$SECOND_OVERRIDE"
+          fi
+          echo "UNSLOTH_APPIMAGE_WEBKIT=${UNSLOTH_APPIMAGE_WEBKIT:-auto}; expecting $APPIMAGE_EXPECTED_WEBKIT_MODE"
           python3 tests/studio/appimage_portability_smoke.py
 
       - name: Upload portability evidence

@@ -2,6 +2,7 @@
 
 mod app_layout;
 mod app_menu;
+mod appimage_webkit;
 mod browser_capture;
 #[cfg(target_os = "macos")]
 mod browser_context_downloads;
@@ -2173,6 +2174,11 @@ fn extend_csp_with_hf_endpoints<R: tauri::Runtime>(context: &mut tauri::Context<
 }
 
 fn main() {
+    // AppRun's host-stack probe: answer and exit before anything else loads or logs.
+    #[cfg(target_os = "linux")]
+    if let Some(code) = appimage_webkit::run_probe() {
+        std::process::exit(code);
+    }
     #[cfg(target_os = "linux")]
     if let Some(result) = debian_update::run_installer() {
         match result {
@@ -2198,6 +2204,14 @@ fn main() {
     setup_logging();
     log_panics();
     info!("Unsloth desktop app starting");
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("APPIMAGE").is_some() {
+        let (major, minor, micro) = appimage_webkit::linked_webkit_version();
+        info!(
+            "AppImage WebKitGTK runtime: {}; WebKitGTK {major}.{minor}.{micro}",
+            appimage_webkit::mode_label(|name| std::env::var_os(name))
+        );
+    }
     #[cfg(target_os = "macos")]
     macos_event_guard::install();
 

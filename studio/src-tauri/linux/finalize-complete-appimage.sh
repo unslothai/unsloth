@@ -55,7 +55,9 @@ for pattern in "${host_patterns[@]}"; do
   done < <(find "$appdir" \( -type f -o -type l \) -name "$pattern" -print0)
 done
 
-# $ORIGIN RUNPATHs so host objects do not inherit bundled libraries.
+# $ORIGIN RUNPATHs so host objects do not inherit bundled libraries. The host-mode copy keeps
+# the main executable's $ORIGIN/../lib, which from usr/bin/host reaches no bundled library.
+host_copy="$appdir/usr/bin/host/unsloth-studio"
 patched=0
 while IFS= read -r -d '' object; do
   [[ "$(head -c 4 "$object" 2>/dev/null || true)" == $'\177ELF' ]] || continue
@@ -68,7 +70,18 @@ while IFS= read -r -d '' object; do
   fi
   patchelf --set-rpath "$runpath" "$object"
   ((patched += 1))
-done < <(find "$appdir" -type f -print0)
+done < <(find "$appdir" -path "$appdir/usr/bin/host" -prune -o -type f -print0)
 
 ((patched > 0)) || { echo "AppDir contains no dynamic ELF objects" >&2; exit 1; }
+
+# AppRun runs this copy when the host has a complete WebKitGTK >= 2.54 stack.
+[[ ! -e "$appdir/usr/bin/lib" ]] || {
+  echo "AppDir has usr/bin/lib, which the host-mode executable's RUNPATH reaches" >&2
+  exit 1
+}
+[[ -f "$appdir/usr/bin/unsloth-studio" ]] || {
+  echo "AppDir has no usr/bin/unsloth-studio to copy for host mode" >&2
+  exit 1
+}
+install -D -m 755 "$appdir/usr/bin/unsloth-studio" "$host_copy"
 printf 'Finalized AppImage runtime with %d $ORIGIN RUNPATHs: %s\n' "$patched" "$appdir"
