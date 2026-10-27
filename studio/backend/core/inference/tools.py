@@ -12363,7 +12363,8 @@ _MCP_TOOL_LOAD_SHARE = 0.5
 _MCP_TOOL_SEARCH_SUMMARY_CHARS = 80
 _MCP_TOOL_SEARCH_MAX_LIMIT = 10
 _MCP_TOOL_SEARCH_MAX_NAMES = 200
-# Tools a thread ran stay listed on its later turns, so the prompt prefix (and llama-server's cache) holds.
+# Tools a thread ran stay listed on its later turns, so the prompt prefix (and llama-server's cache) holds. Its
+# ranked tools hold too, until a message's best match is not among them.
 _MCP_LOADED_PER_THREAD = 8
 _MCP_LOADED_THREADS_MAX = 512
 MCP_TOOL_SEARCH_NAME = "mcp_tool_search"
@@ -12374,6 +12375,7 @@ _MCP_LISTING_FORCED: ContextVar = ContextVar("mcp_listing_forced", default = Non
 _MCP_LISTING_IMAGE: ContextVar = ContextVar("mcp_listing_image", default = False)
 # (account, thread) -> MCP tools the thread ran while they were deferred, oldest first.
 _MCP_LOADED_THREADS: "OrderedDict[tuple, list[str]]" = OrderedDict()
+_MCP_RANKED_THREADS: "OrderedDict[tuple, list[str]]" = OrderedDict()
 _MCP_LOADED_LOCK = threading.Lock()
 # Digest of the catalog's searchable text -> its in-memory FTS5 index, rebuilt only when that text changes.
 _MCP_SEARCH_INDEXES: "OrderedDict[str, sqlite3.Connection]" = OrderedDict()
@@ -12600,6 +12602,25 @@ def mcp_record_loaded_tools(thread_id, names) -> None:
             _MCP_LOADED_THREADS.popitem(last = False)
 
 
+def _mcp_held_ranking(by_name: dict) -> list[str]:
+    key = _mcp_thread_key()
+    if key is None:
+        return []
+    with _MCP_LOADED_LOCK:
+        return [n for n in _MCP_RANKED_THREADS.get(key, ()) if n in by_name]
+
+
+def _mcp_hold_ranking(names: list[str]) -> None:
+    key = _mcp_thread_key()
+    if key is None:
+        return
+    with _MCP_LOADED_LOCK:
+        _MCP_RANKED_THREADS.pop(key, None)
+        _MCP_RANKED_THREADS[key] = names
+        while len(_MCP_RANKED_THREADS) > _MCP_LOADED_THREADS_MAX:
+            _MCP_RANKED_THREADS.popitem(last = False)
+
+
 def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict]:
     specs = [spec for _, _, server_specs in listed for spec in server_specs]
     ctx = _MCP_LISTING_CONTEXT_TOKENS.get()
@@ -12653,14 +12674,27 @@ def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict
     )
     ran = [name for name in reversed(_mcp_loaded_names()) if name in by_name]
     ranked = [specs[i]["function"]["name"] for i in _mcp_ranked(specs, _MCP_LISTING_QUERY.get())[0]]
-    for name in dict.fromkeys(ran + ranked[:_MCP_TOOL_PRELOAD]):
-        if by_name[name] in listing:
-            continue
-        cost = _text_token_cost(json.dumps(by_name[name], separators = (",", ":")), ctx)
-        if cost <= room:
-            listing.append(by_name[name])
-            room -= cost
-    return listing
+    ranked = ranked[:_MCP_TOOL_PRELOAD]
+
+    def filled(names: list[str]) -> list[dict]:
+        chosen = list(listing)
+        left = room
+        for name in dict.fromkeys(ran + names):
+            if by_name[name] in chosen:
+                continue
+            cost = _text_token_cost(json.dumps(by_name[name], separators = (",", ":")), ctx)
+            if cost <= left:
+                chosen.append(by_name[name])
+                left -= cost
+        return chosen
+
+    held = _mcp_held_ranking(by_name)
+    chosen = filled(held)
+    if ranked and (not held or by_name[ranked[0]] not in chosen):
+        held = ranked
+        chosen = filled(held)
+    _mcp_hold_ranking([name for name in held if by_name[name] in chosen])
+    return chosen
 
 
 def _cached_mcp_catalog() -> list[dict]:
