@@ -216,8 +216,6 @@ def test_nonfloat_guard_restores_parameter_new():
 
 
 class _Py39StaticMethod(staticmethod):
-    """A staticmethod object as Python 3.9 has it: works through the class, not called directly."""
-
     def __call__(self, *args, **kwargs):
         raise TypeError("'staticmethod' object is not callable")
 
