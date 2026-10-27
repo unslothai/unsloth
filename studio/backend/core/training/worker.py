@@ -255,8 +255,11 @@ def _training_weight_prefetch(config, trainer, hf_token, event_queue):
         )
         if repo is not None:
             return ModelWeightPrefetch(
-                repo, token = hf_token, cache_dir = get_hf_cache_paths().hub_cache,
-                emit = event_queue.put, should_stop = lambda: trainer.should_stop,
+                repo,
+                token = hf_token,
+                cache_dir = get_hf_cache_paths().hub_cache,
+                emit = event_queue.put,
+                should_stop = lambda: trainer.should_stop,
             )
     except Exception as error:  # noqa: BLE001 -- prefetch is never required for training
         logger.info("Skipping model checkpoint prefetch: %s", error)

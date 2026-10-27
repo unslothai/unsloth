@@ -20,21 +20,43 @@ logger = get_logger(__name__)
 _SHARD = re.compile(r"model-[0-9]+-of-[0-9]+\.safetensors\Z")
 
 
-def prefetch_repo(config, trainer, *, load_in_4bit, capabilities, offline = False, formatting_can_fork = False):
+def prefetch_repo(
+    config,
+    trainer,
+    *,
+    load_in_4bit,
+    capabilities,
+    offline = False,
+    formatting_can_fork = False,
+):
     """Only routes whose ordinary root checkpoint can be resolved without loading model code."""
     name = config.get("model_name", "")
     if (
-        offline or formatting_can_fork or trainer.should_stop or not isinstance(name, str)
+        offline
+        or formatting_can_fork
+        or trainer.should_stop
+        or not isinstance(name, str)
         or not re.fullmatch(r"[\w.-]+/[\w.-]+", name)
         or Path(name).expanduser().exists()
         or config.get("training_type", "LoRA/QLoRA") != "LoRA/QLoRA"
-        or any(config.get(key) for key in (
-            "model_snapshot_path", "model_revision", "resume_from_checkpoint",
-            "require_exact_resume_resources", "require_exact_model_resource", "trust_remote_code",
-            "is_embedding", "is_decision", "is_dataset_audio",
-        ))
-        or getattr(trainer, "is_audio", False) or getattr(trainer, "is_audio_vlm", False)
-        or getattr(trainer, "_audio_type", None) or getattr(trainer, "diffusion_lm_profile", None)
+        or any(
+            config.get(key)
+            for key in (
+                "model_snapshot_path",
+                "model_revision",
+                "resume_from_checkpoint",
+                "require_exact_resume_resources",
+                "require_exact_model_resource",
+                "trust_remote_code",
+                "is_embedding",
+                "is_decision",
+                "is_dataset_audio",
+            )
+        )
+        or getattr(trainer, "is_audio", False)
+        or getattr(trainer, "is_audio_vlm", False)
+        or getattr(trainer, "_audio_type", None)
+        or getattr(trainer, "diffusion_lm_profile", None)
         or not getattr(trainer, "_audio_type_known", False)
         or capabilities is None
     ):
@@ -58,7 +80,11 @@ def checkpoint_files(files, read_json):
     if "adapter_config.json" in files or "config.json" not in files:
         return []
     config = read_json("config.json")
-    if not isinstance(config, dict) or config.get("auto_map") or config.get("base_model_name_or_path"):
+    if (
+        not isinstance(config, dict)
+        or config.get("auto_map")
+        or config.get("base_model_name_or_path")
+    ):
         return []
     if "model.safetensors" in files:
         return ["model.safetensors"]
@@ -119,14 +145,19 @@ class ModelWeightPrefetch:
             if self._stopped():
                 raise InterruptedError("Training model prefetch cancelled")
             return hf_hub_download(
-                repo_id = self.repo, filename = filename, revision = commit,
-                token = self.token, cache_dir = self.cache_dir,
+                repo_id = self.repo,
+                filename = filename,
+                revision = commit,
+                token = self.token,
+                cache_dir = self.cache_dir,
             )
 
         def read_json(filename):
             path = Path(fetch(filename))
             if path.stat().st_size > 5 * 1024**2:
-                raise ValueError("Unfamiliar checkpoint metadata; leave selection to the model loader")
+                raise ValueError(
+                    "Unfamiliar checkpoint metadata; leave selection to the model loader"
+                )
             return json.loads(path.read_text(encoding = "utf-8"))
 
         files = checkpoint_files([sibling.rfilename for sibling in info.siblings or ()], read_json)
