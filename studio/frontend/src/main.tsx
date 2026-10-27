@@ -31,7 +31,6 @@ import {
 } from "./features/settings/stores/interface-scale-store";
 import { initializeLocale } from "./i18n";
 import { isTauri } from "./lib/api-base";
-import { armCpuPaintShadows } from "./lib/cpu-paint-shadows";
 import { setHubSessionRefresh } from "./lib/hf-endpoint";
 import { watchInputModality } from "./lib/input-modality";
 import { watchMacStrayKeyText } from "./lib/mac-stray-key-text";
@@ -58,11 +57,17 @@ if (uaLower.includes("linux") && !uaLower.includes("android")) {
 }
 
 // WebKitGTK's CPU painter re-blurs CSS shadows on every repaint; large ones become images.
-armCpuPaintShadows({
-  interfaceZoom: getAppliedInterfaceZoom,
-  subscribeInterfaceZoom: subscribeAppliedInterfaceZoom,
-  cpuPainting: () => loadGpuRendering().then((status) => status.cpuPainting),
-});
+// Loaded on use: only the Linux desktop app needs it.
+if (isTauri && document.documentElement.classList.contains("render-linux")) {
+  void import("./lib/cpu-paint-shadows").then(({ armCpuPaintShadows }) =>
+    armCpuPaintShadows({
+      interfaceZoom: getAppliedInterfaceZoom,
+      subscribeInterfaceZoom: subscribeAppliedInterfaceZoom,
+      cpuPainting: () =>
+        loadGpuRendering().then((status) => status.cpuPainting),
+    }),
+  );
+}
 
 // index.css keys off this to restore ::-webkit-scrollbar styling on Windows.
 if (uaLower.includes("windows")) {

@@ -266,15 +266,18 @@ test("Neon Cyberpunk's focus glow is a variable with the same layers, so it gets
   }
 });
 
-test("main.tsx arms the images after the Linux classes and asks the shell first", () => {
+test("main.tsx loads and arms the images after the Linux classes and asks the shell first", () => {
   const main = readSrc("main.tsx");
   const linux = main.indexOf('classList.add("render-linux")');
   const arm = main.indexOf("armCpuPaintShadows(");
   assert.ok(linux > 0 && arm > linux);
   assert.match(
     main,
-    /cpuPainting: \(\) => loadGpuRendering\(\)\.then\(\(status\) => status\.cpuPainting\)/,
+    /cpuPainting: \(\) =>\s*loadGpuRendering\(\)\.then\(\(status\) => status\.cpuPainting\)/,
   );
+  // Loaded on use, so the startup bundle does not carry it.
+  assert.doesNotMatch(main, /^import .*cpu-paint-shadows/m);
+  assert.match(main, /import\("\.\/lib\/cpu-paint-shadows"\)/);
   // Only an explicit false skips the images; an older shell or a failed call keeps them.
   assert.match(
     RUNTIME,
