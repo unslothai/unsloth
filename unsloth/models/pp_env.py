@@ -714,6 +714,18 @@ def _dp_gather(accelerator, stage):
     return gather
 
 
+def _unwrap_optimizer(opt):
+    try:
+        from accelerate.optimizer import AcceleratedOptimizer
+    except Exception:
+        AcceleratedOptimizer = ()
+    seen = 0
+    while isinstance(opt, AcceleratedOptimizer) and seen < 8:
+        opt = opt.optimizer
+        seen += 1
+    return opt
+
+
 def _pp_clip(accelerator, stage):
     from .tp_native import _DP_SYNC, _dp_average
 
@@ -730,8 +742,9 @@ def _pp_clip(accelerator, stage):
             from torch.amp.grad_scaler import OptState
 
             for opt in getattr(accelerator, "_optimizers", []):
-                while hasattr(opt, "optimizer") and not isinstance(opt, torch.optim.Optimizer):
-                    opt = opt.optimizer
+                # The torch optimizer AcceleratedOptimizer.step hands the scaler: the scaler keys its
+                # unscaled state by optimizer, so unscaling the wrapper would divide the gradients again there.
+                opt = _unwrap_optimizer(opt)
                 state = scaler._per_optimizer_states[id(opt)]
                 if state["stage"] is OptState.READY:
                     stage.unscale_(scaler, opt)

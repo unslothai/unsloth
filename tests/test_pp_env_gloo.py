@@ -363,7 +363,51 @@ def _case_resume(rank, world, tmp, ckpt, bs = 2):
     return {"a": summary(a), "b": summary(b), "files": files, "same": all(torch.equal(state_a[k], state_b[k]) for k in state_a)}
 
 
-CASES = {"units": _case_units, "env": _case_env, "resume": _case_resume}
+def _case_scaler_clip(rank, world, tmp, wrapper_unscale = False):
+    """float16: the Trainer clip under pp unscales the gradients once, for the torch optimizer the
+    AcceleratedOptimizer hands the GradScaler (a second unscale inside scaler.step would shrink the update)."""
+    error = _import_checkout_unsloth()
+    if error is not None:
+        return {"skip": error}
+    import types
+
+    from accelerate.optimizer import AcceleratedOptimizer
+    from torch.distributed.device_mesh import init_device_mesh
+    from test_pp_fsdp2_gloo import LLAMA, build, global_batch
+
+    from unsloth.models import pp_env, pp_native
+
+    import torch.distributed as dist
+
+    if wrapper_unscale:  # the old lookup: unscale the AcceleratedOptimizer itself
+        pp_env._unwrap_optimizer = lambda opt: opt
+
+    dist.init_process_group("gloo")
+    mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("pp",))
+    model = build(LLAMA)
+    stage = pp_native.apply_pipeline_parallel(model, mesh["pp"], n_microbatches = 2)
+    ids, labels = global_batch(model, 4)
+    from accelerate import Accelerator
+
+    Accelerator(cpu = True)  # the state AcceleratedOptimizer reads
+    scaler = torch.amp.GradScaler("cpu", init_scale = 1024.0)
+    inner = torch.optim.SGD(stage.parameters(), lr = 1.0)
+    optimizer = AcceleratedOptimizer(inner, device_placement = False, scaler = scaler)
+    accelerator = types.SimpleNamespace(scaler = scaler, _optimizers = [optimizer])
+    stage.step(ids, labels, scaler = scaler)
+    norm = pp_env._pp_clip(accelerator, stage)(model.parameters(), 1e9)
+    grads = [p.grad.detach().clone() for p in stage.parameters()]
+    before = [p.detach().clone() for p in stage.parameters()]
+    optimizer.step()
+    deltas = [(b - p.detach()) for b, p in zip(before, stage.parameters())]
+    return {
+        "norm": float(norm),
+        "max_rel": max(float((d - g).abs().max() / g.abs().max().clamp_min(1e-30)) for d, g in zip(deltas, grads)),
+        "scale": scaler.get_scale(),
+    }
+
+
+CASES = {"units": _case_units, "env": _case_env, "resume": _case_resume, "scaler_clip": _case_scaler_clip}
 
 
 def _worker(rank, world, port, case, tmp, env, kwargs):
@@ -567,3 +611,11 @@ def test_pp_env_checkpoint_resume_equals_uninterrupted(world):
         assert "adapter_model.safetensors" in res["files"] and f"rank{rank:05d}.pt" in res["files"], res["files"]
         assert b["losses"][2:] == a["losses"][2:] and b["norms"][2:] == a["norms"][2:], (rank, a, b)
         assert res["same"], rank
+
+
+@needs_pipelining
+def test_pp_env_fp16_scaler_unscales_once():
+    for res in _spawn("scaler_clip", 2):
+        assert res["norm"] > 0 and res["max_rel"] < 1e-3, res  # update == -lr x the unscaled gradient
+    for res in _spawn("scaler_clip", 2, wrapper_unscale = True):
+        assert res["max_rel"] > 0.9, res  # unscaled twice: the update is 1 / 1024 of it (the bug this pins)
