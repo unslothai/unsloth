@@ -53,8 +53,8 @@ def __getattr__(name: str):
 
 logger = get_logger(__name__)
 
-# Matches routes.inference._EXTERNAL_COMPACTION_HEADROOM.
-_ESTIMATED_FIT_HEADROOM = 0.25
+# dense_ascii charges two characters a token and a token spans at least one, so half the window bounds the real count.
+_ESTIMATED_FIT_HEADROOM = 0.5
 
 # Delimited, not a whitelist: a whitelist stopped at the apostrophe in `/home/o'connor/`.
 _PATH_COMPONENT = r"[^\s\\/](?:(?:(?![A-Za-z]:[\\/])[^\\/\n\",;])*[^\s\\/])?"
@@ -2848,7 +2848,7 @@ class InferenceOrchestrator:
                     raise RuntimeError("Context compaction cancelled")
                 if estimated:
                     return estimate_messages_tokens_conservative(
-                        messages_without_unpriced_media(fitted)
+                        messages_without_unpriced_media(fitted), dense_ascii = True
                     )
                 return self.count_chat_tokens(fitted, "", **count_kwargs)[0]
 

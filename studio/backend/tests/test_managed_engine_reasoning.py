@@ -295,7 +295,7 @@ def test_a_failed_sglang_count_falls_back_to_an_estimated_fit():
     )
     assert fitted["messages"][-1]["content"] == "latest"
     truncation = next(e for e in fitted["events"] if e.get("type") == "context_truncated")
-    assert truncation["fits"] and truncation["prompt_tokens_after"] <= 2048 * 3 // 4 - 256
+    assert truncation["fits"] and truncation["prompt_tokens_after"] <= 2048 // 2 - 256
 
 
 @pytest.mark.parametrize("engine", ["vllm", "sglang"])
