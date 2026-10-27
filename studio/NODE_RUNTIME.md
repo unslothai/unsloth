@@ -21,9 +21,10 @@ replaced.
 
 A compatible external Node/npm remains user-managed and is used read-only.
 `UNSLOTH_SKIP_NODE_INSTALL=1` disables automatic Node installation and updates.
-The Docker `unsloth-studio-update` helper updates Python packages and optional
-frontend assets, not helper runtimes. Refresh the Docker image to receive its
-managed Node update; image builds run Studio setup.
+The Docker `unsloth-studio-update` helper also moves the image's managed Node
+(`$STUDIO_HOME/node`) to the new package's pin once the updated Studio passes its
+checks; an unchanged pin downloads nothing, and a failed download keeps the
+current Node without failing the update.
 
 ## Updating the pin
 

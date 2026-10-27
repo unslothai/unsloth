@@ -496,6 +496,22 @@ if ! studio_tree_ok; then
     log "If a new dependency is missing, re-run with --with-deps."
     exit 1
 fi
+# Studio's managed Node follows the new package's pin, as `unsloth studio update` does through
+# setup; an unchanged pin downloads nothing. Only the image's own Node dir (the installer's
+# metadata), never a user's; a failure keeps the current Node and does not fail the update.
+refresh_managed_node() {
+    local node_dir="$STUDIO_HOME/node" installer
+    [ "${UNSLOTH_SKIP_NODE_INSTALL:-0}" = "1" ] && return 0
+    [ -f "$node_dir/UNSLOTH_NODE_PREBUILT_INFO.json" ] || return 0
+    installer="$( (cd / && "$PY" -c 'import os, studio; print(os.path.join(os.path.dirname(studio.__file__), "install_node_prebuilt.py"))') 2>/dev/null)" || return 0
+    [ -f "$installer" ] || return 0
+    if (cd / && "$PY" "$installer" --install-dir "$node_dir") >/dev/null 2>&1; then
+        log "managed Node matches the new pin"
+    else
+        log "WARNING: could not move the managed Node to the new pin; keeping the current one"
+    fi
+}
+refresh_managed_node
 # The previous tree stays until the restarted service proves it can serve. The record
 # is unlinked first: a kill before that leaves a full recovery for the next run, after
 # it only scratch. Signals held off, so the exit trap cannot restore over the commit.
