@@ -7,13 +7,13 @@ anyio==4.15.1
 argon2-cffi==25.1.0
 argon2-cffi-bindings==26.1.0
 beautifulsoup4==4.15.0
-certifi==2026.7.22
+certifi==2026.10.18
 cffi==2.1.1
 charset-normalizer==3.5.1
 click==8.5.0
 cryptography==50.0.1
 fastapi==0.141.1
-filelock==3.32.5
+filelock==4.2.1
 fsspec==2026.7.0
 h11==0.16.0
 hf-xet==1.6.0
