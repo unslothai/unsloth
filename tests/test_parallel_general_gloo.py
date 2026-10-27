@@ -16,7 +16,6 @@ if multiprocessing.parent_process() is not None or getattr(
 
 import importlib.machinery  # noqa: E402
 import importlib.util  # noqa: E402
-import socket  # noqa: E402
 import sys  # noqa: E402
 import tempfile  # noqa: E402
 import types  # noqa: E402
@@ -574,9 +573,8 @@ def _worker(rank, world, port, case, tmp):
 
 
 def _free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    from tests._rendezvous_port import free_port
+    return free_port()
 
 
 def _spawn(case, world = 2):
