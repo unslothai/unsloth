@@ -363,3 +363,31 @@ test("a reference wire is recoloured when its source column changes value type, 
   const recoloured = deriver.edges(graph, new Set(), portType);
   assert.equal(recoloured.find((e) => e.id === wire?.id)?.data?.portType, "number");
 });
+
+test("deleting a recipe note and dropping it from the recipe is one undo step", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { graph, group } = recipeGraph("text-to-sql");
+  const note = { id: "recipe_note_1", text: "keep me", rect: [0, 0, 1, 1] as [number, number, number, number] };
+  const withNote = withRecipeNotes(group, [note]);
+  useDocStore.setState({
+    graph: {
+      ...graph,
+      groups: { recipe: withNote },
+      notes: { [note.id]: note },
+      noteOrder: [note.id],
+    },
+    past: [],
+    future: [],
+  });
+  useDocStore.getState().removeElements({
+    notes: [note.id],
+    updateGroups: [withRecipeNotes(withNote, [])],
+  });
+  let s = useDocStore.getState();
+  assert.equal(s.graph.notes[note.id], undefined);
+  assert.deepEqual(s.graph.groups.recipe.ui?.nodes, []);
+  s.undo();
+  s = useDocStore.getState();
+  assert.equal(s.graph.notes[note.id]?.text, "keep me");
+  assert.equal((s.graph.groups.recipe.ui?.nodes as unknown[]).length, 1);
+});

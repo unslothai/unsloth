@@ -80,6 +80,8 @@ export interface DocState {
     edges?: string[];
     groups?: string[];
     notes?: string[];
+    /** groups to rewrite in the same undo step (a recipe dropping a deleted note) */
+    updateGroups?: FlowGroup[];
   }) => void;
   connect: (edge: FlowEdge, replaceSingleInput: boolean) => void;
   insertFragment: (fragment: GraphFragment) => void;
@@ -401,7 +403,19 @@ export const useDocStore = create<DocState>((set, get) => {
           edgeOrder: dropEdges.size
             ? s.graph.edgeOrder.filter((id) => !dropEdges.has(id))
             : s.graph.edgeOrder,
-          groups: omit(s.graph.groups, dropGroups),
+          groups: Object.assign(
+            omit(
+              ids.updateGroups?.length
+                ? { ...s.graph.groups }
+                : s.graph.groups,
+              dropGroups,
+            ),
+            Object.fromEntries(
+              (ids.updateGroups ?? [])
+                .filter((g) => s.graph.groups[g.id] && !dropGroups.has(g.id))
+                .map((g) => [g.id, g]),
+            ),
+          ),
           groupOrder: dropGroups.size
             ? s.graph.groupOrder.filter((id) => !dropGroups.has(id))
             : s.graph.groupOrder,

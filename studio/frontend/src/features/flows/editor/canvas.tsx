@@ -454,9 +454,9 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
         if (group && !ids.groups.includes(group.id))
           touched.set(group.id, withRecipeNotes(group, remaining));
       }
-      if (touched.size)
-        useDocStore.getState().patchGraph({ groups: [...touched.values()] });
-      useDocStore.getState().removeElements(ids);
+      useDocStore
+        .getState()
+        .removeElements({ ...ids, updateGroups: [...touched.values()] });
       useUiStore.getState().setSelection([], []);
     },
     [],
