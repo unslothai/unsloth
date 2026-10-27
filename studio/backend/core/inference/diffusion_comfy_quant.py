@@ -961,8 +961,9 @@ def fp8_storage_wanted(
     widened_mib: Optional[int] = None,
     host_available_mib: Optional[int] = None,
 ) -> bool:
-    """Store fp8 only when widening would offload or leave under the host reserve: widening is otherwise faster
-    (measured +45% s/step eager for storage on Krea 2 / B200, parity compiled)."""
+    """Store fp8 only when widening would offload (on MPS, which never offloads: overrun the resident margin,
+    ``diffusion_memory.mps_plan_tight``) or leave under the host reserve: widening is otherwise faster (measured
+    +45% s/step eager for storage on Krea 2 / B200, parity compiled; +13% on MPS)."""
     if not comfy_fp8_storage(target, lora = lora):
         return False
     if fp8_storage_forced() or offload:
@@ -994,10 +995,8 @@ def fp8_widen_chosen(
 
 def comfy_fp8_storage(target: Any = None, *, lora: bool = False) -> bool:
     """Whether fp8 storage can run: same weights as the load-time dequant, half the bytes. Off for a LoRA (needs
-    dense Linears), MPS and torch without float8."""
+    dense Linears) and torch without float8."""
     if lora or fp8_storage_disabled():
-        return False
-    if str(getattr(target, "device", "") or "").split(":")[0] == "mps":
         return False
     try:
         import torch

@@ -587,6 +587,23 @@ def test_fp8_native_backend_keeps_codes_and_computes_the_dense_product(tmp_path,
     assert _cos(linear(x), want) > 0.999
 
 
+@pytest.mark.skipif(
+    not (getattr(torch.backends, "mps", None) and torch.backends.mps.is_available()),
+    reason = "needs Apple MPS",
+)
+def test_mps_fp8_storage_matches_the_load_time_dequant_bitwise(tmp_path, monkeypatch):
+    """MPS has no fp8 cast before torch 2.15: stored codes widen through a lookup table to the same bf16 weights."""
+    monkeypatch.setattr(cq, "_mapping", lambda cls: (_convert, _sfm()))
+    path, _dense, _tensors = _fp8_file(tmp_path)
+    stored = _load_bf16(path, fp8_backend = None, fp8_storage = True).to("mps")
+    dense = _load_bf16(path, fp8_backend = None, fp8_storage = False).to("mps")
+    assert cq.fp8_stored_layers(stored) == 10
+    x = torch.randn(64, DIM, dtype = torch.bfloat16, device = "mps")
+    for name, layer in dense.named_modules():
+        if isinstance(layer, nn.Linear):
+            assert torch.equal(stored.get_submodule(name)(x), layer(x)), name
+
+
 def test_fp8_without_a_runtime_dequantizes(tmp_path, monkeypatch):
     monkeypatch.setattr(cq, "_mapping", lambda cls: (_convert, _sfm()))
     path, _dense, tensors = _fp8_file(tmp_path)
@@ -689,8 +706,8 @@ def test_fp8_storage_follows_the_device_lora_and_kill_switch(monkeypatch):
     assert cq.comfy_fp8_storage(cuda) is True
     assert cq.comfy_fp8_storage(types.SimpleNamespace(device = "cpu")) is True
     assert cq.comfy_fp8_storage(None) is True
-    # MPS has no float8 dtypes; a LoRA needs dense Linears to attach to
-    assert cq.comfy_fp8_storage(types.SimpleNamespace(device = "mps")) is False
+    # MPS widens stored codes through a lookup table; a LoRA needs dense Linears to attach to
+    assert cq.comfy_fp8_storage(types.SimpleNamespace(device = "mps")) is True
     assert cq.comfy_fp8_storage(cuda, lora = True) is False
     for off in ("0", "off", "false"):
         monkeypatch.setenv(cq.FP8_STORAGE_ENV, off)
@@ -979,7 +996,7 @@ def test_a_lora_on_stored_fp8_layers_is_refused_with_the_way_out(tmp_path, monke
 
 
 def test_fp8_storage_default_rule_is_offload_or_host_ram(monkeypatch):
-    """Unset env stores only when widening would offload or crowd host RAM; ``1`` always; MPS and LoRA never."""
+    """Unset env stores only when widening would offload or crowd host RAM; ``1`` always; LoRA never."""
     monkeypatch.delenv(cq.FP8_STORAGE_ENV, raising = False)
     cuda = types.SimpleNamespace(device = "cuda", dtype = torch.bfloat16)
     want = cq.fp8_storage_wanted
@@ -989,7 +1006,7 @@ def test_fp8_storage_default_rule_is_offload_or_host_ram(monkeypatch):
     assert want(cuda, widened_mib = 24000, host_available_mib = 24000 + reserve + 1) is False
     assert want(cuda, widened_mib = 24000, host_available_mib = 24000 + reserve - 1) is True
     assert want(cuda, offload = True, lora = True) is False
-    assert want(types.SimpleNamespace(device = "mps"), offload = True) is False
+    assert want(types.SimpleNamespace(device = "mps"), offload = True) is True
     monkeypatch.setenv(cq.FP8_STORAGE_ENV, "1")
     assert want(cuda) is True
 
@@ -1044,8 +1061,10 @@ def _plan_harness(
     resident_at,
     fits_mib,
     comfy_mib = None,
+    mps_budget_mib = None,
 ):
-    """Run ``_plan_memory`` for a single file with a fake planner (resident iff the DiT fits ``fits_mib``)."""
+    """Run ``_plan_memory`` for a single file with a fake planner (resident iff the DiT fits ``fits_mib``; with
+    ``mps_budget_mib`` an MPS plan that stays resident against that budget)."""
     from core.inference import diffusion as d
     from core.inference import diffusion_memory as dm
 
@@ -1057,6 +1076,15 @@ def _plan_harness(
     def plan(**kwargs):
         mib = kwargs["model_dense_mib"]
         seen.append(mib)
+        if mps_budget_mib is not None:
+            return types.SimpleNamespace(
+                resident = True,
+                device_memory = types.SimpleNamespace(device = "mps", is_unified = True),
+                estimates = {
+                    "resident_required_mib": mib,
+                    "safe_device_budget_mib": mps_budget_mib,
+                },
+            )
         return types.SimpleNamespace(resident = mib is not None and mib <= fits_mib)
 
     monkeypatch.setattr(d, "plan_diffusion_memory", plan)
@@ -1266,6 +1294,37 @@ def test_a_plan_priced_with_the_offload_only_backend_keeps_it_when_resident(monk
     # Not priced offloaded: a resident plan probes resident.
     backend._comfy_priced_offload[path] = False
     assert backend._comfy_offload_for(final, path) is False
+
+
+@pytest.mark.parametrize("budget, store", [(2000, True), (4000, False)])
+def test_mps_stores_fp8_only_past_the_resident_margin(monkeypatch, tmp_path, budget, store):
+    """MPS never offloads: the widened DiT (2000) keeps its fp8 codes (1000) only when it overruns 0.85 of
+    the budget, else it widens, which runs faster."""
+
+    def comfy_mib(
+        path,
+        fam,
+        target,
+        base,
+        *,
+        lora = False,
+        fp8_storage = False,
+        offload = False,
+    ):
+        return 1000 if fp8_storage else 2000
+
+    fam = types.SimpleNamespace(name = "flux.1", single_file_is_pipeline = False)
+    backend, _final, seen, path = _plan_harness(
+        monkeypatch,
+        tmp_path,
+        fam = fam,
+        resident_at = None,
+        fits_mib = 10**6,
+        comfy_mib = comfy_mib,
+        mps_budget_mib = budget,
+    )
+    assert backend._fp8_storage_picks[path] is store
+    assert seen[-1] == (1000 if store else 2000)
 
 
 def test_a_plan_repriced_larger_under_offload_does_not_force_the_offload_probe(

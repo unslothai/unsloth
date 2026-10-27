@@ -10,7 +10,7 @@ import logging
 import sqlite3
 from dataclasses import dataclass
 
-from . import config, embeddings, store
+from . import config, embeddings, reembed, store
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +64,10 @@ def retrieve_dense(
     )
     vec = vectors[0]
     _warn_once_on_untagged(conn)
+    try:
+        reembed.start_after_backend_change(identity)
+    except Exception:  # noqa: BLE001 - re-embedding must never break retrieval
+        logger.warning("could not start re-embedding after an embedder change", exc_info = True)
     return [
         Hit(cid, s, dense_score = s)
         for cid, s in store.search_dense(conn, scope, vec, k, embedding_model = identity)
