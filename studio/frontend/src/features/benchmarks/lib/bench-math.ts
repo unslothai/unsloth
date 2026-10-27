@@ -226,7 +226,7 @@ export function sweepVariants(
       return [
         OFF,
         ...[1, 2, 3, 4, 6, 8].map((n) => ({
-          label: `MTP · ${n} draft tokens`,
+          label: `MTP · ${n} draft token${n === 1 ? "" : "s"}`,
           load: { speculative_type: "mtp", spec_draft_n_max: n },
         })),
       ];
