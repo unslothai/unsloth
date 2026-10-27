@@ -508,23 +508,6 @@ def test_a_window_sized_reply_cap_is_left_to_the_engine():
             assert asyncio.run(fit(prompt))[1] == sent
 
 
-def test_a_tool_turn_fit_leaves_a_fitting_attachment_whole():
-    import asyncio
-
-    from routes.managed_engine_chat import _message_fitter
-
-    managed = _Engine()
-    managed.engine = "sglang"
-    rows = "".join("word " * 100 + "\n" for _ in range(10))
-    content = (
-        "[data.txt: its text is below, so answer from it. For calculations, the python tool has "
-        'the file at path = "/data.txt"]\n<attachment>\n' + rows + "FINAL_MARKER=734\n</attachment>"
-    )
-    fit = _message_fitter(_tool_payload(context_overflow = "truncate_oldest"), managed, "m", None)
-    fitted, _, _ = asyncio.run(fit([{"role": "user", "content": content}]))
-    assert "FINAL_MARKER=734" in fitted[-1]["content"]
-
-
 def test_a_managed_refit_recalls_with_the_first_branch_it_saw(monkeypatch):
     import asyncio
 
@@ -540,7 +523,6 @@ def test_a_managed_refit_recalls_with_the_first_branch_it_saw(monkeypatch):
         tools = None,
         branch = None,
         tool_loop = False,
-        fit_attachments = True,
     ):
         seen.append((list(branch), tool_loop))
         return messages, None, 64

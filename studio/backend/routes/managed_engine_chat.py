@@ -148,8 +148,6 @@ def _message_fitter(
             tools = tools,
             branch = branch,
             tool_loop = tool_loop,
-            # The estimate overprices, so it would cut a latest attachment that fits.
-            fit_attachments = False,
         )
         line = None
         if truncation and truncation.get("dropped_messages"):
