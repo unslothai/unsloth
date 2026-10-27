@@ -68,12 +68,21 @@ export const CPU_PAINT_SHADOW_VARIANTS: readonly ShadowVariant[] = [
     minWidth: 200,
     minHeight: 120,
   },
+  // Sheets, and square dialogs.
   {
     name: "sheet",
     shadow: "var(--popup-shadow)",
     radius: "0px",
     minWidth: 200,
     minHeight: 200,
+  },
+  // Dialogs that drop to --radius-2xl at phone width.
+  {
+    name: "popup-compact",
+    shadow: "var(--popup-shadow)",
+    radius: "var(--radius-2xl)",
+    minWidth: 200,
+    minHeight: 120,
   },
   {
     name: "files",
