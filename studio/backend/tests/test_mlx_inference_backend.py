@@ -2370,7 +2370,12 @@ def test_mlx_stop_during_prefill_ends_the_reply_before_the_prompt_is_read(monkey
     backend = _byte_level_mlx_backend(monkeypatch, [b"a", b"b"])
     cancel, chunks = threading.Event(), []
 
-    def _stream_generate(_model, _tokenizer, prompt_progress_callback = None, **_kwargs):
+    def _stream_generate(
+        _model,
+        _tokenizer,
+        prompt_progress_callback = None,
+        **_kwargs,
+    ):
         progress = prompt_progress_callback or (lambda *_: None)
         progress(0, 8)
         for done in range(2, 8, 2):
