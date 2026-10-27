@@ -2943,8 +2943,7 @@ html[data-chat-font] .aui-root {
 	.sidebar-more-menu :is([data-slot="dropdown-menu-item"], [data-slot="dropdown-menu-sub-trigger"]) {
 		border-radius: 9999px;
 	}
-	/* Side gutter inside the scroll viewport: rows that fill its clip exactly lose a pixel of the pill's
-	   round end when the w-max width's fraction snaps. */
+	/* Gutter inside the viewport: snapping the w-max width shaved the pill's round end. */
 	.sidebar-more-menu[data-slot] {
 		padding-inline: 0 !important;
 	}

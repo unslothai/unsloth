@@ -41,7 +41,7 @@ function reportRevealError(
 }
 
 /** "Open chat folder" (desktop only). Compare chats outside a project get no item. */
-/** The folder both items act on; none for a compare chat outside a project. */
+/** None for a compare chat outside a project. */
 export function chatFolderSessionId(item: SidebarItem): string | undefined {
   return item.type === "single" || item.projectId
     ? sandboxSessionIdFor(getSidebarItemThreadIds(item)[0] ?? item.id, item.projectId)

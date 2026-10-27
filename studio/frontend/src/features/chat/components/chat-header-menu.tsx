@@ -403,7 +403,7 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
           ))}
         </DropdownMenuSubContent>
       </DropdownMenuSub>
-      {/* The folder items render nothing without a folder; so must their separator. */}
+      {/* Only with the folder items, or it doubles the next separator. */}
       {chatFolderSessionId(menu.item) ? <DropdownMenuSeparator className="mx-3" /> : null}
       <OpenChatFolderItem item={menu.item} />
       <UploadToChatFolderItem item={menu.item} />

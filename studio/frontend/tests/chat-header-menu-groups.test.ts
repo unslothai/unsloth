@@ -12,7 +12,6 @@ test("the chat menu splits into naming, marking, copying the chat, moving it out
   const body = MENU.slice(
     MENU.indexOf("  return (\n    <>\n      <Item icon={Edit03Icon}"),
   );
-  // Cut the Move to submenu's contents: it has its own separator between projects and sections.
   const outer =
     body.slice(0, body.indexOf('{t("shell.sections.moveTo")}')) +
     body.slice(body.indexOf('{t("chatMenu.copy")}'));
