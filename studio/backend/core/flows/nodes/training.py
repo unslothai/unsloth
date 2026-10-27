@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import random
 import secrets
 import time
 from typing import Any, Optional
@@ -30,6 +31,9 @@ OPTIONAL_INTS = (
     "vision_image_size",
     "dataset_slice_end",
 )
+HOLDOUT_MAX_ROWS = 200_000
+HISTORY_POINTS = 80
+LOADERS = {".parquet": "parquet", ".csv": "csv", ".json": "json", ".jsonl": "json"}
 EXPORT_QUANTS = {"q4_k_m": "Q4_K_M", "q5_k_m": "Q5_K_M", "q8_0": "Q8_0", "f16": "F16"}
 
 
@@ -70,8 +74,18 @@ async def finetune(ctx: NodeContext) -> dict:
     if ctx.params.get("weight_decay") not in (None, ""):
         config["weight_decay"] = float(ctx.params["weight_decay"])
     mapping = ctx.params.get("custom_format_mapping")
+    prompt_col = str(ctx.params.get("prompt_column") or "").strip()
+    response_col = str(ctx.params.get("response_column") or "").strip()
     if isinstance(mapping, dict) and mapping:
         config["custom_format_mapping"] = mapping
+    elif prompt_col and response_col:
+        config["custom_format_mapping"] = {prompt_col: "user", response_col: "assistant"}
+    elif prompt_col or response_col:
+        raise FlowNodeError("Set both the prompt and the response column, or leave both blank")
+    holdout = None
+    percent = int(ctx.params.get("holdout_percent") or 0)
+    if percent > 0:
+        dataset, holdout = await holdout_split(ctx, dataset, percent, int(ctx.params.get("holdout_seed") or 0))
     if dataset.get("source") == "hf":
         config["hf_dataset"] = dataset["ref"]
         if dataset.get("subset"):
@@ -113,6 +127,21 @@ async def finetune(ctx: NodeContext) -> dict:
     async def cancel() -> None:
         await ctx.call("POST", "/api/train/stop", json = {"save": True, "expected_job_id": job_id})
 
+    history: dict[str, list] = {"loss": []}
+
+    async def status() -> Any:
+        payload = await ctx.call("GET", "/api/train/status")
+        slot = _training(payload if isinstance(payload, dict) else {})
+        if slot.step and (not slot.job_id or slot.job_id == job_id):
+            history["loss"] = await loss_history(ctx, job_id) or history["loss"]
+            ctx.partial(
+                "metrics",
+                {"loss": slot.loss, "steps": slot.step, "total": slot.total_steps, "loss_history": history["loss"]},
+                step = slot.step,
+                total = slot.total_steps,
+            )
+        return payload
+
     def parse(payload: Any) -> tuple[str, Optional[dict], Optional[str]]:
         slot = _training(payload if isinstance(payload, dict) else {})
         if slot.job_id and slot.job_id != job_id:
@@ -130,7 +159,7 @@ async def finetune(ctx: NodeContext) -> dict:
 
     payload = await poll_job(
         ctx,
-        status = lambda: ctx.call("GET", "/api/train/status"),
+        status = status,
         parse = parse,
         cancel = cancel,
         interval = POLL_S,
@@ -140,7 +169,16 @@ async def finetune(ctx: NodeContext) -> dict:
     run, _ = await _run_folder(ctx.caller, details.get("output_dir"))
     if not run:
         raise FlowNodeError("Training finished but its run folder was not found")
-    metrics = {"loss": slot.loss, "steps": slot.step, "job_id": job_id}
+    metrics = {
+        "loss": slot.loss,
+        "steps": slot.step,
+        "total": slot.total_steps,
+        "job_id": job_id,
+        "loss_history": await loss_history(ctx, job_id) or history["loss"],
+    }
+    if holdout:
+        metrics["train_rows"] = dataset.get("rows")
+        metrics["holdout_rows"] = holdout["rows"]
     return {
         "checkpoint": {
             "kind": "checkpoint",
@@ -148,7 +186,86 @@ async def finetune(ctx: NodeContext) -> dict:
             "base_model": config["model_name"],
         },
         "metrics": metrics,
+        "holdout": holdout,
     }
+
+
+def downsample(values: list, points: int = HISTORY_POINTS) -> list:
+    if len(values) <= points:
+        return list(values)
+    stride = len(values) / points
+    return [values[min(len(values) - 1, round(i * stride))] for i in range(points - 1)] + [values[-1]]
+
+
+async def loss_history(ctx: NodeContext, job_id: str) -> list:
+    try:
+        found = await ctx.call("GET", "/api/train/metrics", params = {"expected_job_id": job_id})
+    except FlowNodeError:
+        return []
+    losses = found.get("loss_history") if isinstance(found, dict) else None
+    if not isinstance(losses, list):
+        return []
+    return downsample([round(float(v), 4) for v in losses if isinstance(v, (int, float))])
+
+
+def holdout_row_ids(total: int, percent: int, seed: int) -> list[int]:
+    """Same seeded split as the Data Recipes Train card: rounded, at least one row, never all of them."""
+    if percent <= 0 or total <= 1:
+        return []
+    count = min(total - 1, max(1, round(total * percent / 100)))
+    order = list(range(total))
+    random.Random(seed).shuffle(order)
+    return sorted(order[:count])
+
+
+def _load_rows(dataset: dict) -> list[dict]:
+    from datasets import load_dataset
+
+    from core.flows.nodes.data import local_seed_path
+
+    if dataset.get("source") == "hf":
+        loaded = load_dataset(
+            str(dataset["ref"]), dataset.get("subset") or None, split = dataset.get("split") or "train"
+        )
+    else:
+        path = local_seed_path(dataset.get("ref"))
+        builder = next((b for ext, b in LOADERS.items() if path.endswith(ext)), None)
+        if builder is None:
+            raise FlowNodeError("Hold-out works on Parquet, CSV or JSON datasets; set Hold out % to 0 for this one")
+        loaded = load_dataset(builder, data_files = path, split = "train")
+    if len(loaded) > HOLDOUT_MAX_ROWS:
+        raise FlowNodeError(
+            f"{len(loaded)} rows is too many to hold out from here; set Hold out % to 0 or use a smaller slice"
+        )
+    return loaded.to_list()
+
+
+async def holdout_split(ctx: NodeContext, dataset: dict, percent: int, seed: int) -> tuple[dict, dict]:
+    """Train on the rest of the rows and hand the held-out ones on as their own dataset."""
+    from core.flows.nodes.data import recipe_artifact, recipe_rows, upload_rows
+
+    if str(ctx.params.get("task") or "text") != "text" or ctx.params.get("dataset_streaming"):
+        raise FlowNodeError("Hold-out works on text datasets that are not streamed; set Hold out % to 0")
+    ctx.progress(phase = "Holding out rows")
+    if dataset.get("source") == "recipe" and not recipe_artifact(dataset.get("ref")):
+        rows = await recipe_rows(ctx, str(dataset["ref"]))
+    else:
+        try:
+            rows = await asyncio.to_thread(_load_rows, dataset)
+        except FlowNodeError:
+            raise
+        except Exception as exc:
+            raise FlowNodeError(f"Could not read the dataset to hold rows out: {exc}") from None
+    held_ids = holdout_row_ids(len(rows), percent, seed)
+    if not held_ids:
+        raise FlowNodeError(f"{len(rows)} row(s) is too few to hold any out; set Hold out % to 0")
+    held = set(held_ids)
+    name = str(dataset.get("ref") or "dataset").replace("/", "-")
+    tag = f"{name}-holdout{percent}-seed{seed}"
+    train = await upload_rows(ctx, [r for i, r in enumerate(rows) if i not in held], f"{tag}-train")
+    holdout = await upload_rows(ctx, [rows[i] for i in held_ids], f"{tag}-holdout")
+    holdout.update({"percent": percent, "seed": seed, "row_ids": held_ids, "of_rows": len(rows)})
+    return train, holdout
 
 
 @handler("train.export")

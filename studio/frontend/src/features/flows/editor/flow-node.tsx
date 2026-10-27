@@ -21,6 +21,7 @@ import {
 import type { RfNode } from "./derive-rf";
 import { nodeIcon } from "./icons";
 import { MediaThumb, isMediaValue } from "./media";
+import { TrainNodeBody } from "./train-node";
 import { StructuredBadge, isStructuredValue } from "./value-viewers";
 
 /** Below this zoom the text is unreadable anyway; hiding it (layout kept, so handles stay put)
@@ -403,10 +404,14 @@ function FlowNodeViewImpl({ id, selected }: NodeProps<RfNode>) {
               ))}
             </div>
           )}
-          {(runtime.outputs ||
-            runtime.partial ||
-            runtime.text ||
-            runtime.preview) && (
+          {spec.type === "train.finetune" && (
+            <TrainNodeBody node={node} runtime={runtime} />
+          )}
+          {spec.type !== "train.finetune" &&
+            (runtime.outputs ||
+              runtime.partial ||
+              runtime.text ||
+              runtime.preview) && (
             <div className="flow-detail px-3">
               <OutputPreview runtime={runtime} spec={spec} />
             </div>
