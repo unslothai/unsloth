@@ -4090,8 +4090,7 @@ class FastBaseModel:
                         f"Unsloth: transformers cannot load this `{quant_method}` checkpoint in process."
                     )
                 quantizer_kwargs = {}
-                # Full finetuning trains plain 16bit weights: an fp8 checkpoint must be dequantized on load,
-                # or training casts the fp8 storage to 16bit without its scales.
+                # Full finetuning must dequantize fp8 on load, else training casts fp8 storage without its scales.
                 _fp8_full_finetune = full_finetuning and str(quant_method).lower() == "fp8"
                 if (
                     _fp8_full_finetune

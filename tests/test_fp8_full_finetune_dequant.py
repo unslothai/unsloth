@@ -96,7 +96,6 @@ def test_full_finetuning_requests_fp8_dequantize(tmp_path, kwargs):
 
 @pytest.mark.skipif(not _HAS_DEQUANTIZE, reason = "transformers has no fp8 dequantize flag")
 def test_lora_load_keeps_fp8(tmp_path):
-    # Not full finetuning, no explicit 16bit: the fp8 layers stay, as before.
     kind, got = _run(tmp_path, dict(load_in_4bit = False))
     assert kind == "load" and got == {"cls": "FineGrainedFP8Config", "dequantize": False}, got
 
@@ -108,8 +107,7 @@ def test_full_finetuning_refused_without_dequantize_flag(tmp_path):
     assert kind == "refused" and "full finetuning an FP8 checkpoint" in got, got
 
 
-# On a real pre-dequantize transformers (4.57.x) the spoofed sm80 device trips the fp8 capability check, which
-# only the dequantizing releases skip; the simulated old config is what this test exercises.
+# Real 4.57.x trips the fp8 capability check on the spoofed sm80; only the simulated old config is tested.
 @pytest.mark.skipif(not _HAS_DEQUANTIZE, reason = "transformers has no fp8 dequantize flag")
 def test_lora_load_not_refused_without_dequantize_flag(tmp_path):
     kind, got = _run(tmp_path, dict(load_in_4bit = False), old_transformers = True)
