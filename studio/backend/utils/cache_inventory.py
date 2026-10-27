@@ -918,6 +918,38 @@ def _system_disk_occupancy(occupancy: _OccupancyLedger) -> int:
     return total
 
 
+def _model_cache_action(root: Path, entry: os.DirEntry) -> dict:
+    """An identity for the existing guarded Hub action, never a path-delete grant."""
+    refused = {"delete_allowed": False}
+    try:
+        if (
+            not entry.name.startswith("models--")
+            or entry.is_symlink()
+            or _is_junction(entry.path)
+            or not entry.is_dir(follow_symlinks=False)
+        ):
+            return refused
+        from hub.utils.paths import is_valid_repo_id
+        from hub.utils.hf_cache_state import scoped_delete_root
+
+        repo_id = entry.name[len("models--") :].replace("--", "/")
+        if not is_valid_repo_id(repo_id):
+            return refused
+        candidate = _safe_resolve(Path(entry.path))
+        if candidate is None or candidate.parent != root or candidate.name != entry.name:
+            return refused
+        # The Hub action independently validates known roots, including history.
+        # Its cache_path names the repo directory, rather than the hub parent.
+        if scoped_delete_root("model", repo_id, str(candidate)) != root:
+            return refused
+        return {
+            "repo_id": repo_id, "repo_type": "model",
+            "cache_path": str(candidate), "delete_allowed": True,
+        }
+    except (ImportError, OSError, ValueError, RuntimeError):
+        return refused
+
+
 def cache_breakdown(key: str) -> dict:
     """Read-only, on-demand HF directory breakdown; never accepts a browser path."""
     if key not in {"hf_hub", "hf_datasets", "hf_xet", "hf_assets"}:
@@ -940,7 +972,8 @@ def cache_breakdown(key: str) -> dict:
                         )
                         occupancy.add(info, entry.path)
                     size = occupancy.bytes - before
-                    rows.append({"name": entry.name, "path": entry.path, "size_bytes": size})
+                    action = _model_cache_action(root, entry) if key == "hf_hub" else {"delete_allowed": False}
+                    rows.append({"name": entry.name, "path": entry.path, "size_bytes": size, **action})
         except OSError:
             continue
     return {"entries": sorted(rows, key=lambda row: (-row["size_bytes"], row["path"]))}

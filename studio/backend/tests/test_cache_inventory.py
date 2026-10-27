@@ -1883,3 +1883,84 @@ def test_distinct_device_ids_in_the_same_pool_still_count_as_system_storage(
 
     monkeypatch.setattr(cache_inventory.shutil, "disk_usage", usage)
     assert cache_inventory._system_disk_occupancy(ledger) == 300
+
+
+def test_hf_model_breakdown_actions_name_one_exact_known_cache_copy(
+    tmp_path, monkeypatch, isolated_caches
+):
+    from utils import hf_cache_settings
+    from hub.utils.hf_cache_state import scoped_delete_root
+
+    active = isolated_caches / "hub"
+    old = tmp_path / "previous" / "hub"
+    for root in (active, old):
+        _write(root / "models--Org--Model" / "blobs" / "weight", "model")
+    _write(active / "models--gpt2" / "blobs" / "weight", "standalone")
+    monkeypatch.setattr(hf_cache_settings, "known_hf_hub_caches", lambda: [active, old])
+
+    rows = cache_inventory.cache_breakdown("hf_hub")["entries"]
+    copies = [row for row in rows if row.get("repo_id") == "Org/Model"]
+    assert len(copies) == 2
+    assert {row["cache_path"] for row in copies} == {
+        str(root / "models--Org--Model") for root in (active, old)
+    }
+    for row in rows:
+        assert row["delete_allowed"] is True
+        assert row["repo_type"] == "model"
+        assert row["cache_path"] == row["path"]
+        assert scoped_delete_root("model", row["repo_id"], row["cache_path"]) == Path(row["cache_path"]).parent
+
+
+@pytest.mark.parametrize("name", [
+    ".locks", "datasets--Org--Data", "spaces--Org--Space", "models--",
+    "models----Model", "models--Org--Model--nested", "models--Org--bad..name",
+    "models--Org--Model.git",
+])
+def test_hf_breakdown_never_offers_model_actions_for_non_model_or_malformed_rows(
+    tmp_path, isolated_caches, name
+):
+    _write(isolated_caches / "hub" / name / "data", "cache")
+    row = cache_inventory.cache_breakdown("hf_hub")["entries"][0]
+    assert row["delete_allowed"] is False
+    assert "repo_id" not in row and "cache_path" not in row
+
+
+def test_hf_breakdown_does_not_turn_a_model_shaped_file_into_a_delete_action(isolated_caches):
+    _write(isolated_caches / "hub" / "models--Org--File", "not a repository directory")
+    row = cache_inventory.cache_breakdown("hf_hub")["entries"][0]
+    assert row["delete_allowed"] is False
+
+
+def test_hf_breakdown_actions_are_confined_to_hub_approved_roots(
+    tmp_path, monkeypatch, isolated_caches
+):
+    outside = tmp_path / "not-a-known-cache"
+    _write(outside / "models--Org--Model" / "blobs" / "weight", "unrelated")
+    monkeypatch.setattr(cache_inventory, "_measurement_roots", lambda _definition: [outside])
+    row = cache_inventory.cache_breakdown("hf_hub")["entries"][0]
+    assert row["delete_allowed"] is False
+    assert "cache_path" not in row
+
+
+def test_hf_breakdown_does_not_offer_model_actions_inside_xet_cache(isolated_caches):
+    _write(isolated_caches / "xet" / "models--Org--Model" / "data", "xet")
+    row = cache_inventory.cache_breakdown("hf_xet")["entries"][0]
+    assert row["delete_allowed"] is False
+
+
+@pytest.mark.parametrize("link_kind", ["symlink", "junction"])
+def test_model_action_identity_refuses_links_even_to_valid_named_directories(
+    tmp_path, monkeypatch, isolated_caches, link_kind
+):
+    from types import SimpleNamespace
+
+    root = isolated_caches / "hub"
+    directory = root / "models--Org--Model"
+    directory.mkdir()
+    entry = SimpleNamespace(
+        name = directory.name, path = str(directory),
+        is_symlink = lambda: link_kind == "symlink",
+        is_dir = lambda **_kwargs: True,
+    )
+    monkeypatch.setattr(cache_inventory, "_is_junction", lambda _path: link_kind == "junction")
+    assert cache_inventory._model_cache_action(root, entry) == {"delete_allowed": False}
