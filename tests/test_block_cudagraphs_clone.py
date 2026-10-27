@@ -299,7 +299,22 @@ class FakeSparseMoeBlock(torch.nn.Module):
         return sum(e(x) for e in self.experts)
 
 
-@pytest.mark.parametrize("moe", [None, FakeMoeExperts, FakeSparseMoeBlock])
+class FakeRoutedMoe(torch.nn.Module):
+    # transformers 4.57 DeepSeek-V2 / V3, GLM4-MoE, Longcat: a ModuleList of experts, n_routed_experts,
+    # num_experts only on the gate (if at all).
+    def __init__(self):
+        super().__init__()
+        self.n_routed_experts = 2
+        self.gate = torch.nn.Linear(8, 2)
+        self.gate.num_experts = 2
+        self.experts = torch.nn.ModuleList([torch.nn.Linear(8, 8) for _ in range(2)])
+        self.shared_experts = torch.nn.Linear(8, 8)
+
+    def forward(self, x):
+        return sum(e(x) for e in self.experts) + self.shared_experts(x)
+
+
+@pytest.mark.parametrize("moe", [None, FakeMoeExperts, FakeSparseMoeBlock, FakeRoutedMoe])
 def test_moe_layers_run_without_graphs(monkeypatch, moe):
     """Qwen3-MoE under UNSLOTH_BLOCK_CUDAGRAPHS=1 failed on 1 GPU and FSDP2 alike: a host copy in the
     grouped GEMM during capture (GC off) or routing outputs overwritten by the next replay (GC on)."""

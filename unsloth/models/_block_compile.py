@@ -88,8 +88,12 @@ def _graphs_unsafe_moe(layer):
     outputs overwritten by the next replay with experts outside the graph)."""
     moe = layer.__dict__.get("_unsloth_block_graphs_moe")
     if moe is None:
+        # An "experts" child also covers transformers 4.57 DeepSeek-V2 / V3 and GLM4-MoE
+        # (ModuleList + n_routed_experts, no num_experts on the block).
         moe = any(
-            _experts_of(m) is not None or (hasattr(m, "num_experts") and hasattr(m, "experts"))
+            _experts_of(m) is not None
+            or m._modules.get("experts") is not None
+            or (hasattr(m, "num_experts") and hasattr(m, "experts"))
             for m in layer.modules()
         )
         layer.__dict__["_unsloth_block_graphs_moe"] = moe
