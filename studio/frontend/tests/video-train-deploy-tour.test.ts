@@ -30,7 +30,7 @@ test("Video re-reads its model status when returning from Train to Create", () =
   const src = readSrc("features/video/video-page.tsx");
   assert.match(
     src,
-    /if \(pageMode === "train"\) \{\s*leftForTrain\.current = true;\s*return;\s*\}\s*if \(!active \|\| !leftForTrain\.current\) return;\s*leftForTrain\.current = false;\s*void resyncAfterGenerateRefusal\(\);\s*\}, \[active, pageMode, resyncAfterGenerateRefusal\]\);/,
+    /if \(pageMode === "train"\) \{\s*leftForTrain\.current = true;\s*return;\s*\}\s*if \(!active \|\| !leftForTrain\.current\) return;\s*leftForTrain\.current = false;\s*void refreshStatus\(\);\s*\}, \[active, pageMode, refreshStatus\]\);/,
   );
 });
 

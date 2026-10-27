@@ -2256,7 +2256,8 @@ function VideoGenerator({
     setQuant(null);
   }, [refreshStatus, dropResidentState]);
 
-  // Starting a training run unloads the video model, so re-read it on the way back to Create.
+  // Starting a training run unloads the video model, so re-read it on the way back to Create. Status only:
+  // dropResidentState would cancel the poll of a load still running from before the switch.
   const leftForTrain = useRef(false);
   useEffect(() => {
     if (pageMode === "train") {
@@ -2265,8 +2266,8 @@ function VideoGenerator({
     }
     if (!active || !leftForTrain.current) return;
     leftForTrain.current = false;
-    void resyncAfterGenerateRefusal();
-  }, [active, pageMode, resyncAfterGenerateRefusal]);
+    void refreshStatus();
+  }, [active, pageMode, refreshStatus]);
 
   // Track mount so a long generate stops issuing GPU work when the page is truly unmounted.
   useEffect(() => {
