@@ -169,7 +169,10 @@ def test_explicit_flex_request_stays_flex(routed):
 
 def test_explicit_flex_is_per_model_not_per_type(routed):
     # Two models of one type: the one loaded with an explicit flex request keeps flex, the other switches.
-    explicit, routed_model = types.SimpleNamespace(config = _gemma()), types.SimpleNamespace(config = _gemma())
+    explicit, routed_model = (
+        types.SimpleNamespace(config = _gemma()),
+        types.SimpleNamespace(config = _gemma()),
+    )
     setattr(explicit, u._EXPLICIT_FLEX_ATTR, True)
     assert u.use_sdpa_for_packed_head_dim_flex(routed_model)
     assert not u.use_sdpa_for_packed_head_dim_flex(explicit)
