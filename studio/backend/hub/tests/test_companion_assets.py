@@ -1288,3 +1288,33 @@ def test_a_speed_loaded_image_base_is_never_offered_as_unused(monkeypatch):
     assert _offered() == {}
     _install(monkeypatch, _repo(base, [("model_index.json", 400), *_VAE]))
     assert base in _offered()
+
+
+def test_a_scoped_delete_of_one_speed_load_copy_retains_the_hosted_components(monkeypatch):
+    from hub.utils import hf_cache_state
+
+    base, hosted = "Tongyi-MAI/Z-Image-Turbo", "unsloth/Z-Image-Turbo-FP8"
+    copies = [_repo(base, [("model_index.json", 400), *_VAE], cache = c) for c in ("/a", "/b")]
+    monkeypatch.setattr(
+        hf_cache_state, "resolve_delete_target_root", lambda *a: Path(a[2]).parent.resolve()
+    )
+    _install(monkeypatch, *copies, _repo(hosted, [("Z-Image-Turbo-FP8.safetensors", 6_100_000)]))
+    impact = asyncio.run(
+        companion_cleanup.delete_impact_response(base, None, cache_path = copies[0].repo_path)
+    )
+    assert impact["freeable_companions"] == []
+    assert impact["retained_companions"] == [
+        {"repo_id": hosted, "size_bytes": 6_100_000, "needed_by": [base]}
+    ]
+
+
+def test_the_orphan_recheck_refuses_a_base_that_became_a_speed_load(monkeypatch):
+    base = "Tongyi-MAI/Z-Image-Turbo"
+    _install(
+        monkeypatch,
+        _repo(base, [("model_index.json", 400), *_VAE]),
+        _repo("unsloth/Z-Image-Turbo-FP8", [("Z-Image-Turbo-FP8.safetensors", 6_100_000)]),
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        deletion._delete_cached_model_blocking(base, None, None, only_if_orphan = True)
+    assert excinfo.value.status_code == 409

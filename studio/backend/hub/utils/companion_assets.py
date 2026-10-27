@@ -683,13 +683,7 @@ def required_companion_bases(
     return required
 
 
-def _add_hosted_dependents(required, cache_scans, checkpoints, pick_names, ignored) -> None:
-    """Pin hosted components per cached FILE to installs whose loader reads them. A hosted DENOISER is read only
-    beside a curated base, so only a base identity pins one. A curated base with weights plus a cached hosted
-    denoiser is a speed load, so the base lists itself and Free up space never offers half of it."""
-    table = _hosted_component_table()
-    if not table:
-        return
+def _cached_hosted_owners(table, cache_scans) -> dict[str, set[tuple[str, str, str]]]:
     cached: dict[str, set[tuple[str, str, str]]] = {}
     for scan in cache_scans or ():
         for repo in getattr(scan, "repos", ()) or ():
@@ -700,6 +694,40 @@ def _add_hosted_dependents(required, cache_scans, checkpoints, pick_names, ignor
                 cached.setdefault(key, set()).update(_hosted_repo_owners(table, repo))
             except Exception:  # noqa: BLE001 -- one unreadable row never hides the rest
                 continue
+    return cached
+
+
+def repo_is_install(repo, cache_scans) -> bool:
+    """:func:`repo_holds_denoiser`, or this copy is a speed-loaded base: a curated base holding weights while a
+    hosted denoiser of its family is cached (the pair is the install)."""
+    if repo_holds_denoiser(repo):
+        return True
+    try:
+        table = _hosted_component_table()
+        key = _normalise(str(getattr(repo, "repo_id", "") or ""))
+        families = _base_families().get(key) if key not in table else None
+        if not families or not any(
+            n.lower().endswith(_WEIGHT_SUFFIXES) for n in _snapshot_relative_names(repo)
+        ):
+            return False
+        cached = _cached_hosted_owners(table, cache_scans)
+        return any(
+            (r, f) in families and k == _HOSTED_DENOISER
+            for owners in cached.values()
+            for r, f, k in owners
+        )
+    except Exception:  # noqa: BLE001 -- fail closed: an unreadable cache counts as an install
+        return True
+
+
+def _add_hosted_dependents(required, cache_scans, checkpoints, pick_names, ignored) -> None:
+    """Pin hosted components per cached FILE to installs whose loader reads them. A hosted DENOISER is read only
+    beside a curated base, so only a base identity pins one. A curated base with weights plus a cached hosted
+    denoiser is a speed load, so the base lists itself and Free up space never offers half of it."""
+    table = _hosted_component_table()
+    if not table:
+        return
+    cached = _cached_hosted_owners(table, cache_scans)
     listed = {repo_key: set().union(*files.values()) for repo_key, files in table.items()}
     in_view = {(r, f) for repo_key in cached for r, f, _k in listed[repo_key]}
     denoisers = {
