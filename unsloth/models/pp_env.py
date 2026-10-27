@@ -159,17 +159,21 @@ def resolve_microbatches(stage, batch_size, train = True):
     want = int(explicit or stage.n_microbatches)
     floor = stage.num_stages if (stage.schedule == "1f1b" and train) or _gpipe_needs_stage_count() else 1
     if batch_size % want == 0:
-        return want, 0
-    if explicit is not None and train:
+        m = want
+    elif explicit is not None and train:
         raise ValueError(
             f"Unsloth: UNSLOTH_PP_MICROBATCHES={explicit} must divide the Trainer batch size ({batch_size} rows "
             "per device): set per_device_train_batch_size to a multiple of it, or unset UNSLOTH_PP_MICROBATCHES."
         )
-    m = max(d for d in range(1, min(want, batch_size) + 1) if batch_size % d == 0)
+    else:
+        m = max(d for d in range(1, min(want, batch_size) + 1) if batch_size % d == 0)
     pad = 0
     if m < floor:
+        # Whole micro-batches of filler rows after the real ones (the real rows keep their micro-batch shape).
+        pad = (floor - m) * (batch_size // m)
         m = floor
-        pad = -batch_size % floor
+    if m == want and not pad:
+        return m, 0
     if train and not stage.__dict__.get("_unsloth_mb_note"):
         stage.__dict__["_unsloth_mb_note"] = True
         rows = batch_size + pad
@@ -632,6 +636,28 @@ def _pp_training_step(self, model, inputs, num_items_in_batch = None, *args, **k
     return loss.detach().to(self.args.device)
 
 
+def _eval_items(trainer, inputs, labels):
+    """The loss normaliser of one eval batch, counted as this Trainer counts it on one GPU (Unsloth's
+    prediction step passes _get_num_items_in_batch: unshifted labels on transformers 4.x), for this dp
+    replica's batch only; else the shifted label count (the model's own mean)."""
+    getter = getattr(trainer, "_get_num_items_in_batch", None)
+    if callable(getter):
+        args = trainer.args
+        flag = getattr(args, "average_tokens_across_devices", None)
+        try:
+            if flag:
+                args.average_tokens_across_devices = False
+            value = getter([inputs], args.device)
+        except Exception:
+            value = None
+        finally:
+            if flag:
+                args.average_tokens_across_devices = flag
+        if value is not None:
+            return int(value.reshape(-1)[0]) if torch.is_tensor(value) else int(value)
+    return int((labels[:, 1:] != -100).sum())
+
+
 def _pp_prediction_step(self, model, inputs, prediction_loss_only, ignore_keys = None):
     stage = self.__dict__["_unsloth_pipeline_parallel"]
     if not prediction_loss_only:
@@ -643,7 +669,7 @@ def _pp_prediction_step(self, model, inputs, prediction_loss_only, ignore_keys =
     inputs = self._prepare_inputs(inputs)
     input_ids, labels, extra = _batch(stage, inputs)
     m, pad = resolve_microbatches(stage, input_ids.shape[0], train = False)
-    count = int((labels[:, 1:] != -100).sum())
+    count = _eval_items(self, inputs, labels)
     input_ids, labels, extra = _pad_rows(input_ids, labels, extra, pad)
     loss = stage.eval_loss(input_ids, labels, num_items_in_batch = count, n_microbatches = m, **extra)
     return (loss.detach().to(self.args.device), None, None)
