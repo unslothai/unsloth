@@ -328,6 +328,32 @@ def test_a_reply_cap_is_clamped_to_the_room_the_prompt_leaves(monkeypatch, engin
     assert sent[-1]["max_tokens"] == 256
 
 
+def test_a_latest_turn_the_strict_estimate_refuses_still_drops_old_history():
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    orchestrator = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    orchestrator.active_model_name = "m"
+    orchestrator.models = {"m": {"engine": "sglang", "context_length": 2048}}
+    orchestrator._managed_engine = SimpleNamespace(adapter = ADAPTERS["sglang"])
+
+    def count(*args, **kwargs):
+        raise RuntimeError("500 Server Error: Integer exceeds 64-bit range")
+
+    orchestrator.count_chat_tokens = count
+    messages = []
+    for index in range(10):
+        messages += [
+            {"role": "user", "content": "word " * 400},
+            {"role": "assistant", "content": "ok"},
+        ]
+    messages.append({"role": "user", "content": "word " * 400 + "latest"})
+    fitted = orchestrator.compact_chat_context(
+        messages, context_overflow = "truncate_oldest", max_tokens = 256
+    )
+    assert fitted["messages"][-1]["content"].endswith("latest")
+    assert len(fitted["messages"]) < len(messages)
+
+
 def test_tool_stream_reasoning_reaches_studio_as_reasoning_content():
     from routes.managed_engine_chat import _with_reasoning_content
 

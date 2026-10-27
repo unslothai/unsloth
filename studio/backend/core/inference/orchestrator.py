@@ -55,6 +55,8 @@ logger = get_logger(__name__)
 
 # dense_ascii charges two characters a token and a token spans at least one, so half the window bounds the real count.
 _ESTIMATED_FIT_HEADROOM = 0.5
+# Matches routes.inference._EXTERNAL_COMPACTION_HEADROOM; for a latest turn the strict bound refuses.
+_LOOSE_FIT_HEADROOM = 0.25
 
 # Delimited, not a whitelist: a whitelist stopped at the apostrophe in `/home/o'connor/`.
 _PATH_COMPONENT = r"[^\s\\/](?:(?:(?![A-Za-z]:[\\/])[^\\/\n\",;])*[^\s\\/])?"
@@ -2834,21 +2836,22 @@ class InferenceOrchestrator:
                 "preserve_thinking": preserve_thinking,
             }
             # SGLang 0.5.17's /tokenize returns 500 when model_max_length is the 1e30 sentinel.
-            estimated = False
+            estimated = dense = False
+            window = context_length
             if getattr(self, "_managed_engine", None) is not None:
                 try:
                     self.count_chat_tokens(conversation[-1:], "", **count_kwargs)
                 except Exception as exc:
                     logger.info("Fitting the managed engine prompt by estimate: %s", exc)
-                    estimated = True
-                    context_length = int(context_length * (1 - _ESTIMATED_FIT_HEADROOM))
+                    estimated = dense = True
+                    context_length = int(window * (1 - _ESTIMATED_FIT_HEADROOM))
 
             def _count(fitted):
                 if cancel_event is not None and cancel_event.is_set():
                     raise RuntimeError("Context compaction cancelled")
                 if estimated:
                     return estimate_messages_tokens_conservative(
-                        messages_without_unpriced_media(fitted), dense_ascii = True
+                        messages_without_unpriced_media(fitted), dense_ascii = dense
                     )
                 return self.count_chat_tokens(fitted, "", **count_kwargs)[0]
 
@@ -2880,9 +2883,7 @@ class InferenceOrchestrator:
                     compaction_headroom_ratio = compaction_headroom_ratio,
                 )
             )
-            fitted, truncation = _fit_with_instruction_pins(
-                conversation,
-                context_length = context_length,
+            fit_kwargs = dict(
                 max_tokens = max_tokens,
                 count_tokens = _count,
                 anchor_ids = anchor_ids,
@@ -2896,6 +2897,21 @@ class InferenceOrchestrator:
                 force_reset = force_reset,
                 **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
             )
+            fitted, truncation = _fit_with_instruction_pins(
+                conversation, context_length = context_length, **fit_kwargs
+            )
+            # A refusal under the strict bound may still fit: drop what the looser estimate drops.
+            if (
+                estimated
+                and truncation
+                and not truncation.get("fits")
+                and not truncation.get("dropped_messages")
+            ):
+                dense = False
+                context_length = int(window * (1 - _LOOSE_FIT_HEADROOM))
+                fitted, truncation = _fit_with_instruction_pins(
+                    conversation, context_length = context_length, **fit_kwargs
+                )
             if not truncation:
                 return {**unchanged, "boundary_applied": True}
 
