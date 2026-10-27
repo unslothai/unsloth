@@ -4725,7 +4725,12 @@ class TestPricingALoad:
         config = self._checkpoint(tmp_path)
         wide = mm.mlx_weight_bytes(str(tmp_path), config, load_in_4bit = False)
         quantized = mm.mlx_weight_bytes(str(tmp_path), config, load_in_4bit = True)
-        assert (wide, quantized) == (2_886_144, 813_568)
+        from unsloth_zoo.mlx.loader import _resolve_mlx_quantization_spec
+
+        embeddings_quantized = (
+            "quantize_embeddings" in inspect.signature(_resolve_mlx_quantization_spec).parameters
+        )
+        assert (wide, quantized) == (2_886_144, 813_568 if embeddings_quantized else 1_001_984)
         assert quantized < wide < mm._shard_bytes(str(tmp_path), config) == 2_888_265
 
     def test_engram_mlx_vlm_reads_from_disk_is_not_priced(self, tmp_path, monkeypatch):
