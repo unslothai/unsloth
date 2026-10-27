@@ -7624,6 +7624,8 @@ def fix_cudnn_sdpa_d256_masked_backward():
 
 _SDPA_GRAD_LAYOUT_FLAG = "_unsloth_gives_sdpa_backward_the_output_layout"
 _SDPA_GRAD_LAYOUT_FUNCTION = []
+# Eager outputs whose backward is cuDNN's; flash / efficient / math outputs stay untouched.
+_SDPA_GRAD_LAYOUT_NODES = frozenset(("ScaledDotProductCudnnAttentionBackward0",))
 
 
 def _cudnn_sdpa_backward_cache_ignores_grad_layout(torch_version, cudnn_version):
@@ -7638,25 +7640,42 @@ def _cudnn_sdpa_backward_cache_ignores_grad_layout(torch_version, cudnn_version)
     return cudnn_version is not None and int(cudnn_version) >= 90501
 
 
+def _sdpa_grad_to_layout(stride, grad):
+    if grad.stride() == stride:
+        return grad
+    return grad.new_empty_strided(grad.size(), stride).copy_(grad)
+
+
 def _sdpa_grad_layout_function():
     if _SDPA_GRAD_LAYOUT_FUNCTION:
         return _SDPA_GRAD_LAYOUT_FUNCTION[0]
     import torch
 
+    try:
+        import torch._dynamo.config as dynamo_config
+
+        # torch 2.6 Dynamo bans grad.stride() in a traced backward: a graph break per SDPA call.
+        stride_banned = "stride" in dynamo_config._autograd_backward_strict_mode_banned_ops
+    except Exception:
+        stride_banned = False
+
     class _GradInOutputLayout(torch.autograd.Function):
+        # setup_context + generate_vmap_rule: torch.func.grad / vmap / jacrev keep working.
+        generate_vmap_rule = True
+
         @staticmethod
-        def forward(ctx, out):
-            ctx.out_size = out.size()
-            ctx.out_stride = out.stride()
+        def forward(out):
             return out.view_as(out)
 
         @staticmethod
+        def setup_context(ctx, inputs, output):
+            ctx.out_stride = inputs[0].stride()
+
+        @staticmethod
         def backward(ctx, grad):
-            if grad.stride() == ctx.out_stride:
-                return grad
-            return torch.empty_strided(
-                ctx.out_size, ctx.out_stride, dtype = grad.dtype, device = grad.device
-            ).copy_(grad)
+            if stride_banned and torch.compiler.is_compiling():
+                return grad.new_empty_strided(grad.size(), ctx.out_stride).copy_(grad)
+            return _sdpa_grad_to_layout(ctx.out_stride, grad)
 
     _SDPA_GRAD_LAYOUT_FUNCTION.append(_GradInOutputLayout)
     return _GradInOutputLayout
@@ -7691,7 +7710,13 @@ def fix_cudnn_sdpa_backward_grad_layout():
         out = original(*args, **kwargs)
         # Plain tensors only: a DTensor gradient cannot be copied into a plain empty_strided buffer.
         if type(out) is torch.Tensor and out.requires_grad and out.is_cuda and not out.is_nested:
-            return grad_in_output_layout.apply(out)
+            if torch.compiler.is_compiling():
+                # Dynamo graph-breaks on a hook on an intermediate; the Function traces inline.
+                return grad_in_output_layout.apply(out)
+            if type(out.grad_fn).__name__ in _SDPA_GRAD_LAYOUT_NODES:
+                # A hook keeps out a plain tensor: a Function output is a view, so in-place
+                # ops on it would raise.
+                out.register_hook(functools.partial(_sdpa_grad_to_layout, out.stride()))
         return out
 
     scaled_dot_product_attention.__wrapped__ = original
