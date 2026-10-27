@@ -564,3 +564,15 @@ def test_masked_bucket_takes_an_inference_mode_mask(monkeypatch):
         mask = torch.zeros(2, 1, 200, 200)
     seen = _cpu_bucketed_masks(monkeypatch, mask, 200)
     assert len(seen) == 2 and seen[0].shape == (2, 1, 256, 256)
+
+
+def test_shared_padded_mask_is_only_reused_on_its_own_stream(monkeypatch):
+    """A cache hit from another stream would read the padded copy before its producing kernels finish."""
+    streams = iter(["stream_a", "stream_b", "stream_b"])
+    mask = torch.zeros(2, 1, 200, 200)
+    monkeypatch.setattr(type(mask), "is_cuda", property(lambda self: True))
+    monkeypatch.setattr(torch.cuda, "current_stream", lambda device = None: next(streams))
+    first = ad._shared_padded_mask(mask, 56)
+    other = ad._shared_padded_mask(mask, 56)
+    again = ad._shared_padded_mask(mask, 56)
+    assert other.data_ptr() != first.data_ptr() and again.data_ptr() == other.data_ptr()

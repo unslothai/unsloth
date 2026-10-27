@@ -279,11 +279,13 @@ except Exception:
 def _shared_padded_mask(attn_mask, pad):
     if _PADDED_ADDITIVE_MASKS is None:
         return _padded_bucket_mask(attn_mask, pad)
+    # Only on the stream that built it: another stream would read it before its padding kernels finish.
+    stream = torch.cuda.current_stream(attn_mask.device) if attn_mask.is_cuda else None
     hit = _PADDED_ADDITIVE_MASKS.get(attn_mask)
-    if hit is not None and hit[0] == attn_mask._version and hit[1] == pad:
-        return hit[2]
+    if hit is not None and hit[:3] == (attn_mask._version, pad, stream):
+        return hit[3]
     padded = _padded_bucket_mask(attn_mask, pad)
-    _PADDED_ADDITIVE_MASKS[attn_mask] = (attn_mask._version, pad, padded)
+    _PADDED_ADDITIVE_MASKS[attn_mask] = (attn_mask._version, pad, stream, padded)
     return padded
 
 
