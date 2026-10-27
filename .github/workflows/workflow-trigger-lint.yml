@@ -75,6 +75,7 @@ jobs:
         run: |
           python3 -m pytest -q -n 4 \
             tests/studio/test_absorbed_lanes_still_run.py \
+            tests/studio/test_appimage_toolchain_contract.py \
             tests/studio/test_lint_ci_scans_committed_files.py \
             tests/studio/test_agent_guides_verdicts.py \
             tests/studio/test_agent_guides_openclaw_node.py \
