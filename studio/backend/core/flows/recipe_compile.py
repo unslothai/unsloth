@@ -53,6 +53,14 @@ def compile_recipe(graph: dict) -> dict:
             raise RecipeCompileError(
                 f"{column['name']} reads {off[0]}, which is disabled. Enable it or take the reference out"
             )
+    seeded = {n for n in (group.get("ui") or {}).get("seed_columns") or [] if isinstance(n, str)}
+    for column in columns:
+        parent = (column.get("params") or {}).get("category")
+        if column.get("sampler_type") == "subcategory" and parent not in every | seeded:
+            raise RecipeCompileError(
+                f"{column['name']} follows the category {parent!r}, which is not in this recipe. "
+                "Pick another category for it"
+            )
     reads = {c["name"]: column_references(c, every) for c in columns}
     state: dict[str, int] = {}
 

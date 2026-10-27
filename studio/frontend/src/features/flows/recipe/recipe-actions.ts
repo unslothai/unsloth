@@ -109,6 +109,19 @@ export function disconnectColumns(edgeIds: string[]): string[] {
   return handled;
 }
 
+/** Deletes nodes, taking a deleted column's `{{ reference }}` out of the columns that read it. */
+export function removeNodes(nodeIds: string[]): void {
+  const graph = useDocStore.getState().graph;
+  const drop = new Set(nodeIds);
+  disconnectColumns(
+    graph.edgeOrder.filter((id) => {
+      const edge = graph.edges[id];
+      return drop.has(edge.source) && !drop.has(edge.target);
+    }),
+  );
+  useDocStore.getState().removeElements({ nodes: nodeIds });
+}
+
 export function insideRecipeGroup(
   graph: DocGraph,
   pos: [number, number],

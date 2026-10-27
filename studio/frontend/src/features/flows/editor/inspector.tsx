@@ -8,7 +8,7 @@ import { useCatalogStore } from "../stores/catalog-store";
 import { cloneFragment, useDocStore } from "../stores/doc-store";
 import { IDLE_RUNTIME, useRuntimeStore } from "../stores/runtime-store";
 import { useUiStore } from "../stores/ui-store";
-import { commitRecipe } from "../recipe/recipe-actions";
+import { commitRecipe, removeNodes } from "../recipe/recipe-actions";
 import {
   COLUMN_TYPE,
   GENERATE_TYPE,
@@ -206,21 +206,23 @@ function InspectorImpl() {
             >
               <HugeiconsIcon icon={DiceIcon} size={12} /> Re-roll
             </button>
-            <button
-              type="button"
-              onClick={() => {
-                const doc = useDocStore.getState();
-                const fragment = cloneFragment(doc.graph, [node.id], [40, 40]);
-                doc.insertFragment(fragment);
-                useUiStore.getState().setSelection(
-                  fragment.nodes.map((n) => n.id),
-                  [],
-                );
-              }}
-              className="flex items-center gap-1 rounded-md border border-white/10 px-2 py-1 text-[12px] hover:bg-white/5"
-            >
-              <HugeiconsIcon icon={Copy01Icon} size={12} /> Duplicate
-            </button>
+            {node.type !== GENERATE_TYPE && (
+              <button
+                type="button"
+                onClick={() => {
+                  const doc = useDocStore.getState();
+                  const fragment = cloneFragment(doc.graph, [node.id], [40, 40]);
+                  doc.insertFragment(fragment);
+                  useUiStore.getState().setSelection(
+                    fragment.nodes.map((n) => n.id),
+                    [],
+                  );
+                }}
+                className="flex items-center gap-1 rounded-md border border-white/10 px-2 py-1 text-[12px] hover:bg-white/5"
+              >
+                <HugeiconsIcon icon={Copy01Icon} size={12} /> Duplicate
+              </button>
+            )}
           </>
         )}
         <button
@@ -249,7 +251,7 @@ function InspectorImpl() {
           type="button"
           aria-label="Delete node"
           onClick={() => {
-            useDocStore.getState().removeElements({ nodes: [node.id] });
+            removeNodes([node.id]);
             useUiStore.getState().openInspector(null);
           }}
           className="ml-auto rounded-md p-1 text-zinc-500 hover:bg-red-500/10 hover:text-red-300"

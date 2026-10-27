@@ -14,6 +14,7 @@ const { applyConfigPatch, commitStudioEdit, studioView } = await import(
 );
 const {
   COLUMN_TYPE,
+  GENERATE_TYPE,
   columnName,
   columnSummary,
   referenceEdgeDiff,
@@ -223,5 +224,64 @@ test("the catalog snapshot has the recipe column and Recipe Dataset blocks", () 
   assert.deepEqual(
     generate?.outputs.map((p) => p.id),
     ["dataset", "preview"],
+  );
+});
+
+test("deleting a column from the inspector or Ctrl+X takes its {{ reference }} out of its readers", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { removeNodes } = await import("../src/features/flows/recipe/recipe-actions.ts");
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { group, nodes } = sqlGroup();
+  useDocStore.getState().load({ ...doc(nodes, referenceEdges(nodes)), groups: [group] });
+  const prompt = byName(nodes, "sql_prompt");
+  removeNodes([prompt.id]);
+  const graph = useDocStore.getState().graph;
+  assert.equal(graph.nodes[prompt.id], undefined);
+  const sql = graph.nodes[byName(nodes, "sql").id];
+  assert.doesNotMatch(JSON.stringify(sql.params.column), /sql_prompt/);
+  assert.ok(Object.values(graph.edges).every((e) => e.source !== prompt.id));
+});
+
+async function loadCatalog() {
+  const { useCatalogStore } = await import("../src/features/flows/stores/catalog-store.ts");
+  const catalog = JSON.parse(
+    readFileSync(new URL("./fixtures/flows-catalog.json", import.meta.url), "utf8"),
+  ) as { nodes: { type: string }[] };
+  useCatalogStore.setState({
+    specs: Object.fromEntries(catalog.nodes.map((s) => [s.type, s])) as never,
+  });
+}
+
+test("a Recipe Dataset dropped into a recipe frame joins it, and a second one is refused", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { addNodeConnected } = await import("../src/features/flows/editor/node-factory.ts");
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  await loadCatalog();
+  const { group, nodes } = sqlGroup();
+  const frame = { ...group, rect: [0, 0, 2000, 600] as [number, number, number, number] };
+  useDocStore.getState().load({ ...doc(nodes), groups: [frame] });
+  const added = addNodeConnected(GENERATE_TYPE, [100, 400]);
+  assert.equal(added?.group, "recipe");
+  assert.equal(useDocStore.getState().graph.nodes[added?.id ?? ""]?.group, "recipe");
+  assert.equal(addNodeConnected(GENERATE_TYPE, [200, 400]), null);
+});
+
+test("Quick Add of a Recipe Dataset from a dataset output wires that dataset into its seed", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { addNodeConnected } = await import("../src/features/flows/editor/node-factory.ts");
+  const { outHandle } = await import("../src/features/flows/editor/connection-rules.ts");
+  const { doc, node } = await import("./flows-editor-fixtures.ts");
+  await loadCatalog();
+  useDocStore.getState().load(doc([node("hf", "data.hf_dataset")]));
+  const generate = addNodeConnected(
+    GENERATE_TYPE,
+    [600, 0],
+    { nodeId: "hf", handleId: outHandle("dataset"), side: "out", kind: "data", port: null },
+    "seed",
+  );
+  assert.ok(generate);
+  const edges = Object.values(useDocStore.getState().graph.edges);
+  assert.ok(
+    edges.some((e) => e.source === "hf" && e.target === generate.id && e.target_port === "seed"),
   );
 });

@@ -451,6 +451,10 @@ export function FlowsGalleryPage(): ReactElement {
       const kept = result.skipped.length;
       if (made === 0 && kept === 0 && result.failed.length === 0)
         toast.info("No saved Data Recipes yet");
+      else if (made === 0 && kept === 0)
+        toast.error("Could not bring in your Data Recipes", {
+          description: result.failed.map((f) => `${f.name}: ${f.error}`).join("; "),
+        });
       else
         toast.success(
           made
@@ -462,6 +466,12 @@ export function FlowsGalleryPage(): ReactElement {
               : "Your recipes stay on the Data Recipes page too.",
           },
         );
+      const notices = result.created.flatMap((c) =>
+        (c.notices ?? []).map((notice) => `${c.name}: ${notice}`),
+      );
+      for (const notice of notices.slice(0, 4)) toast.info(notice);
+      if (notices.length > 4)
+        toast.info(`${notices.length - 4} more notes on the brought-in recipes`);
       refresh();
     } catch (error) {
       toast.error(

@@ -851,7 +851,9 @@ export function RecipeStudioPage({
             onOpenInFlows={
               onOpenInFlows
                 ? () => {
-                    void persistRecipe().then(onOpenInFlows);
+                    void persistRecipe().then(
+                      (saved) => saved && onOpenInFlows(),
+                    );
                   }
                 : undefined
             }

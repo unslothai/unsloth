@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from auth.authentication import get_current_subject
-from core.flows import compiler
+from core.flows import compiler, package
 from core.flows.compiler import RECIPE_PARAM, CompileError, compile_flow, parse_document
 from core.flows.nodes import data
 from core.flows.recipe_import import COLUMN_TYPE, GENERATE_TYPE, flow_from_recipe
@@ -133,9 +133,81 @@ def test_a_loop_or_a_lost_group_fails_on_the_generate_step():
         "reads instruction_phrase, which is disabled" in i["message"] for i in caught.value.issues
     )
     doc = _flow()
+    for name, other in (("left", "right"), ("right", "left")):
+        column = copy.deepcopy(_column(doc, "domain"))
+        column.update(id = name, label = name, disabled = True)
+        column["params"]["column"] = {
+            "column_type": "expression",
+            "name": name,
+            "expr": "{{ " + other + " }}",
+        }
+        doc["nodes"].append(column)
+        doc["edges"].append(
+            {
+                "id": f"{other}__{name}",
+                "source": other,
+                "source_port": "out",
+                "target": name,
+                "target_port": "in",
+                "kind": "data",
+            }
+        )
+    assert compiler.validate(doc)["ok"], compiler.validate(doc)
+    doc = _flow()
+    doc["nodes"].remove(_column(doc, "domain"))
+    with pytest.raises(CompileError) as caught:
+        compile_flow(doc)
+    assert any("follows the category 'domain'" in i["message"] for i in caught.value.issues)
+    doc = _flow()
+    extra = copy.deepcopy(next(n for n in doc["nodes"] if n["type"] == GENERATE_TYPE))
+    extra["id"] = "extra_generate"
+    doc["nodes"].append(extra)
+    with pytest.raises(CompileError) as caught:
+        compile_flow(doc)
+    assert any("one Recipe Dataset step" in i["message"] for i in caught.value.issues)
+    extra["disabled"] = True
+    assert compiler.validate(doc)["ok"], compiler.validate(doc)
+    doc = _flow()
     doc["groups"][0]["kind"] = None
     with pytest.raises(CompileError):
         compile_flow(doc)
+
+
+def test_seed_tokens_and_local_seed_paths_stay_on_this_machine():
+    payload = copy.deepcopy(SQL)
+    payload["recipe"]["seed_config"] = {
+        "source": {"seed_type": "github_repo", "repos": ["a/b"], "token": "ghp_live"}
+    }
+    doc, _ = flow_from_recipe(payload, name = "SQL")
+    assert "ghp_live" in json.dumps(doc)
+    for mode in ("json", "package", "baked"):
+        out, _, _ = asyncio.run(package.export_flow(doc, mode, None))
+        assert b"ghp_live" not in out
+
+    payload = copy.deepcopy(SQL)
+    payload["recipe"]["seed_config"] = {
+        "source": {"seed_type": "unstructured", "paths": ["/home/me/.unsloth/uploads/x/a.pdf"]}
+    }
+    payload["ui"] = {
+        "unstructured_file_ids": ["u1"],
+        "unstructured_file_names": ["a.pdf"],
+        "unstructured_upload_uid": "up1",
+        "seed_preview_rows": [{"text": "private page"}],
+    }
+    doc, _ = flow_from_recipe(payload, name = "SQL")
+    assert doc["groups"][0]["config"]["seed_config"]["source"]["paths"]
+    data_bytes, _, _ = asyncio.run(package.export_flow(doc, "json", None))
+    group = json.loads(data_bytes)["groups"][0]
+    assert "paths" not in group["config"]["seed_config"]["source"]
+    for mode in ("json", "package", "baked"):
+        out, _, _ = asyncio.run(package.export_flow(doc, mode, None))
+        assert b"private page" not in out and b"up1" not in out and b"a.pdf" not in out
+    payload = copy.deepcopy(SQL)
+    payload["recipe"]["seed_config"] = {"source": {"seed_type": "hf", "path": "me/private"}}
+    payload["ui"] = {"seed_preview_rows": [{"text": "private row"}]}
+    doc, _ = flow_from_recipe(payload, name = "SQL")
+    out, _, _ = asyncio.run(package.export_flow(doc, "json", None))
+    assert b"private row" not in out and b"me/private" in out
 
 
 def test_importing_strips_tool_servers_and_keys_and_says_so():
