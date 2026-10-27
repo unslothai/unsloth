@@ -163,6 +163,25 @@ async def _embed(value: Any, read_media: ReadMedia, files: dict[str, tuple[bytes
     return {k: await _embed(v, read_media, files) for k, v in value.items()}
 
 
+_LOCAL_SEEDS = ("local", "unstructured")
+_UPLOAD_UI = ("unstructured_file_ids", "unstructured_file_names", "unstructured_file_sizes")
+
+
+def _drop_local_seeds(doc: dict) -> None:
+    """A recipe group's uploaded seed lives on this machine: its path and upload ids stay here."""
+    for group in doc.get("groups") or []:
+        if not isinstance(group, dict) or group.get("kind") != "recipe":
+            continue
+        seed = (group.get("config") or {}).get("seed_config")
+        source = seed.get("source") if isinstance(seed, dict) else None
+        if isinstance(source, dict) and source.get("seed_type") in _LOCAL_SEEDS:
+            source.pop("path", None)
+            source.pop("paths", None)
+        if isinstance(group.get("ui"), dict):
+            for key in _UPLOAD_UI:
+                group["ui"].pop(key, None)
+
+
 def _drop_local(value: Any) -> Any:
     if isinstance(value, list):
         return [
@@ -198,6 +217,7 @@ def _uses_models(doc: dict) -> bool:
 async def export_flow(doc: dict, mode: str, read_media: ReadMedia) -> tuple[bytes, str, str]:
     """(bytes, filename, media type) for ``mode`` json, package or baked."""
     doc = scrub(json.loads(json.dumps(doc)))
+    _drop_local_seeds(doc)
     meta = dict(doc.get("meta") or {})
     meta["created_with"] = "Unsloth Studio"
     meta.setdefault("license", DEFAULT_LICENSE)

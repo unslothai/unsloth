@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from auth.authentication import get_current_subject
-from core.flows import compiler
+from core.flows import compiler, package
 from core.flows.compiler import RECIPE_PARAM, CompileError, compile_flow, parse_document
 from core.flows.nodes import data
 from core.flows.recipe_import import COLUMN_TYPE, GENERATE_TYPE, flow_from_recipe
@@ -132,6 +132,28 @@ def test_a_loop_or_a_lost_group_fails_on_the_generate_step():
     doc["groups"][0]["kind"] = None
     with pytest.raises(CompileError):
         compile_flow(doc)
+
+
+def test_seed_tokens_stay_out_and_local_seed_paths_stay_on_this_machine():
+    payload = copy.deepcopy(SQL)
+    payload["recipe"]["seed_config"] = {
+        "source": {"seed_type": "github_repo", "repos": ["a/b"], "token": "ghp_live"}
+    }
+    doc, notices = flow_from_recipe(payload, name = "SQL")
+    assert "ghp_live" not in json.dumps(doc)
+    assert any("token" in n for n in notices)
+
+    payload = copy.deepcopy(SQL)
+    payload["recipe"]["seed_config"] = {
+        "source": {"seed_type": "unstructured", "paths": ["/home/me/.unsloth/uploads/x/a.pdf"]}
+    }
+    payload["ui"] = {"unstructured_file_ids": ["u1"], "unstructured_file_names": ["a.pdf"]}
+    doc, _ = flow_from_recipe(payload, name = "SQL")
+    assert doc["groups"][0]["config"]["seed_config"]["source"]["paths"]
+    data_bytes, _, _ = asyncio.run(package.export_flow(doc, "json", None))
+    group = json.loads(data_bytes)["groups"][0]
+    assert "paths" not in group["config"]["seed_config"]["source"]
+    assert "unstructured_file_ids" not in (group.get("ui") or {})
 
 
 def test_importing_strips_tool_servers_and_keys_and_says_so():
