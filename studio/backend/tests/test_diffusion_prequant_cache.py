@@ -1138,6 +1138,8 @@ def blackholed_hub(monkeypatch):
 
     seen: list = []
     monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_OFFLINE", False)
+    # huggingface_hub >= 1.33 with telemetry on fetches its agent registry on a cold cache.
+    monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_DISABLE_TELEMETRY", True)
     C._REMOTE_MEMO.clear()
     getattr(C, "_UNREACHABLE", {}).clear()
     set_factory = getattr(huggingface_hub, "set_client_factory", None)
