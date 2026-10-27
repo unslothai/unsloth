@@ -73,6 +73,29 @@ def _mig_rows(gpu_ids: list[int]):
         return None
 
 
+_CA_BUNDLE_VARIABLES = ("SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE")
+
+
+def _point_tls_at_studio_ca_bundle(child_env: dict[str, str]) -> None:
+    """Have the engine verify TLS against Studio's own certifi bundle.
+
+    The engine locks are hash-pinned, so an engine venv keeps the certifi it was installed with
+    (2026.7.22 still trusts the revoked emSign roots) until the user updates the engine. Studio's
+    venv carries the current certifi, and httpx, requests and huggingface_hub in the engine all
+    read these variables. A bundle the user chose is left alone.
+    """
+    if any(child_env.get(name) for name in _CA_BUNDLE_VARIABLES):
+        return
+    try:
+        import certifi
+        bundle = certifi.where()
+    except Exception:
+        return
+    if os.path.isfile(bundle):
+        child_env["SSL_CERT_FILE"] = bundle
+        child_env["REQUESTS_CA_BUNDLE"] = bundle
+
+
 def _child_cuda_mask(gpu_ids: list[int]) -> str:
     """Instance UUIDs on an R570+ MIG host (numeric ids would name the whole host), else the numeric mask."""
     try:
@@ -716,6 +739,7 @@ class ManagedEngine:
                     if rocm:
                         child_env.update(_rocm_visibility(child_env, gpu_ids or [0]))
                     child_env["PYTHONNOUSERSITE"] = "1"
+                    _point_tls_at_studio_ca_bundle(child_env)
                     from .engine_install import engine_root
 
                     cache = (
