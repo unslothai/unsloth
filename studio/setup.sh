@@ -2130,8 +2130,7 @@ if [ -n "$_SYS_NODE_VER" ]; then
     _probe_system_node_tool npm
     _SYS_NPM_VER="$_PROBED_VER"
 fi
-# Only the installer's metadata marks a PATH Node as managed (also when a staged update or a moved
-# home puts NODE_DIR elsewhere); a location match alone could be a user's Node linked in.
+# Only installer metadata marks a PATH Node managed (wherever NODE_DIR is); a bare path match may be a user's link.
 _NODE_ON_PATH_IS_MANAGED=0
 _node_on_path="$(command -v node || true)"
 if [ -n "$_node_on_path" ]; then

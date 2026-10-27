@@ -5122,8 +5122,7 @@ function Get-NodeDecision {
 
 
 function Test-ManagedNodeOnPath {
-    # Only the installer's metadata marks it managed (also for a staged update or a moved home);
-    # a location match alone could be a user's Node linked in.
+    # Only installer metadata marks it managed (wherever NodeDir is); a bare path match may be a user's link.
     $command = Get-Command node -ErrorAction SilentlyContinue
     if (-not $command -or -not $command.Path) { return $false }
     $parent = Split-Path -Parent $command.Path
