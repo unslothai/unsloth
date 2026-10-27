@@ -25185,19 +25185,36 @@ class LlamaCppBackend:
                         )
                         _mtp_kv_unsized = False
 
-                    def _host_input_bytes_now(weights: int) -> int:
+                    def _host_input_bytes_now(
+                        weights: int,
+                        subset = None,
+                        *,
+                        tp: Optional[bool] = None,
+                    ) -> int:
+                        # The whole host unless the GPUs are settled: a candidate subset, or the auto tensor pair.
+                        if subset is None and _auto.engaged:
+                            subset = gpus
+                        _scope_ids = None if subset is None else {i for i, _f in subset}
+
+                        def _touches(ids) -> bool:
+                            return (
+                                bool(ids) if _scope_ids is None else not _scope_ids.isdisjoint(ids)
+                            )
+
+                        _scope = gpus if subset is None else subset
+                        _tp = tensor_parallel if tp is None else tp
                         if not (
-                            gpus
-                            and not _integrated_gpus
-                            and not _shared_gpu_ids
-                            and not _shared_pool_gpus
+                            _scope
+                            and not _touches(_integrated_gpus)
+                            and not _touches(_shared_gpu_ids)
+                            and not _touches(_shared_pool_gpus)
                             and not _metal_capable_host()
-                            and not self._amd_apu_wants_unified_memory([i for i, _f in gpus])
+                            and not self._amd_apu_wants_unified_memory([i for i, _f in _scope])
                             and not set(
                                 LlamaCppBackend._INTEGRATED_CUDA_IDS.get(
                                     LlamaCppBackend._integrated_cuda_mask_key(), ()
                                 )
-                            ).intersection(i for i, _f in gpus)
+                            ).intersection(i for i, _f in _scope)
                         ):
                             return 0
                         # A streamed table stays on the host whatever -ot says.
@@ -25211,7 +25228,14 @@ class LlamaCppBackend:
                             self._clear_manual_placement_env(_inp_env)
                         if _gpu_ids_own_device_flags:
                             self._clear_device_placement_env(_inp_env)
-                        self._reconcile_split_mode_env(_inp_env, tensor_parallel = tensor_parallel)
+                        self._reconcile_split_mode_env(_inp_env, tensor_parallel = _tp)
+                        _inp_indices = (
+                            gpu_indices
+                            if gpu_indices is not None or not gpu_ids
+                            else [int(i) for i in gpu_ids]
+                        )
+                        if _inp_indices is None and _scope_ids is not None:
+                            _inp_indices = sorted(_scope_ids)
                         try:
                             _inp_lazy = "off"
                             if server_caps.get("supports_lazy_mode"):
@@ -25221,17 +25245,13 @@ class LlamaCppBackend:
                                     flag = str(server_caps.get("lazy_mode_flag") or "--lazy-mode"),
                                 )
                             if _inp_lazy == "auto" and self._lazy_auto_resolves_off(
-                                gpu_indices = (
-                                    gpu_indices
-                                    if gpu_indices is not None or not gpu_ids
-                                    else [int(i) for i in gpu_ids]
-                                ),
+                                gpu_indices = _inp_indices,
                                 detected_gpus = _detected_gpus,
                                 shared_gpu_ids = _shared_gpu_ids,
                                 is_vulkan_backend = is_vulkan_backend,
                                 extra_args = _inp_extras,
                                 env = _inp_env,
-                                tensor_parallel = tensor_parallel,
+                                tensor_parallel = _tp,
                                 integrated_gpu_ids = _vulkan_igpu_ids,
                             ):
                                 _inp_lazy = "off"
@@ -25367,14 +25387,12 @@ class LlamaCppBackend:
                                     and (mtp_overhead_fn is None or _mtp_kv_unsized)
                                     else 0
                                 )
-                                # Lookup tables kept in host memory cost no VRAM, as in the fit below; priced per mode.
+                                # Lookup tables kept in host memory cost no VRAM, as in the fit below: priced like
+                                # main's own placement for one card, on the candidate's cards for a pair.
                                 _auto_host_one = _host_input_bytes_now(model_size)
                                 _auto_layer_fa = planned_flash_attn
                                 planned_flash_attn = _replanned_flash_attn(True)
-                                _auto_layer_tp = tensor_parallel
-                                tensor_parallel = True
                                 try:
-                                    _auto_host_pair = _host_input_bytes_now(model_size)
                                     if _auto_ctx_priced:
                                         _auto_kv_bytes = _kv_bytes(_auto_ctx) + _mtp_bytes(
                                             _auto_ctx
@@ -25382,7 +25400,6 @@ class LlamaCppBackend:
                                         _auto_cc_mib = _cc_bytes(_auto_ctx) / (1024 * 1024)
                                 finally:
                                     planned_flash_attn = _auto_layer_fa
-                                    tensor_parallel = _auto_layer_tp
                                 _auto_soft = self._CUDA_CONTEXT_RESERVE_BYTES
                                 if effective_is_vision and mmproj_size > 0:
                                     _auto_soft += int(
@@ -25391,9 +25408,6 @@ class LlamaCppBackend:
                                 if _auto_mtp_gpu:
                                     _auto_soft += self._MTP_DRAFT_COMPUTE_BYTES
                                 _auto_extra_bytes = _auto_mtp_floor + _auto_soft + _auto_kv_bytes
-                                _auto_required_mib = (
-                                    model_size - _auto_host_pair + _auto_extra_bytes
-                                ) / (1024 * 1024)
                                 _auto_per_gpu_mib = _auto_reserve_mib + _auto_cc_mib
                                 # One card priced with the pair's full footprint, discrete first as the placement ranks.
                                 _single_pick, _single_fit = self._select_gpus(
@@ -25423,14 +25437,15 @@ class LlamaCppBackend:
                                         return False
                                     if any(_gpu_usable(g) < _auto_per_gpu_mib for g in _sub):
                                         return False
-                                    if (
-                                        sum(_gpu_usable(g) for g in _sub)
-                                        - len(_sub) * _auto_per_gpu_mib
-                                        <= _auto_required_mib
-                                    ):
+                                    _host_pair = _host_input_bytes_now(model_size, _sub, tp = True)
+                                    if sum(_gpu_usable(g) for g in _sub) - len(
+                                        _sub
+                                    ) * _auto_per_gpu_mib <= (
+                                        model_size - _host_pair + _auto_extra_bytes
+                                    ) / (1024 * 1024):
                                         return False
                                     _pick, _use_fit = self._select_gpus(
-                                        max(1, model_size - _auto_host_pair),
+                                        max(1, model_size - _host_pair),
                                         _sub,
                                         usable_fraction = _vram_frac,
                                         total_by_idx = total_by_idx,

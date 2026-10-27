@@ -1102,6 +1102,25 @@ def test_wired_host_lookup_tables_are_not_priced_on_the_pair(tmp_path, monkeypat
     assert _split_flag(cmd) == "tensor"
 
 
+def test_wired_host_lookup_tables_are_credited_on_a_discrete_pair_beside_a_unified_gpu(
+    tmp_path, monkeypatch
+):
+    # Unified GPU 0 voids the whole-host credit, but the auto pair is discrete and settled.
+    backend, gguf = _wired_backend(
+        tmp_path,
+        monkeypatch,
+        memory = [(0, 12_288, 65_536), (1, 15_360, 15_360), (2, 15_360, 15_360)],
+        model_gib = 34,
+        names = {0: "NVIDIA GB10", 1: T4, 2: T4},
+    )
+    backend._rocm_unified_memory_gpu_ids = lambda: {0}
+    monkeypatch.setattr(LlamaCppBackend, "_GPU_IDS_ARE_PCI_INDICES", False)
+    _host_lookup_tables(monkeypatch, backend, 10)
+    launched = _launch(backend, gguf, gpu_memory_mode = "auto", n_ctx = 4096, speculative_type = "off")
+    assert _split_flag(launched["cmd"]) == "tensor"
+    assert tuple(backend._auto_split_decision.gpu_indices) == (1, 2)
+
+
 def test_wired_p2p_diagnostic_reads_the_pair_that_runs(tmp_path, monkeypatch):
     mem = [(0, 13_000, 15_360), (1, 13_000, 15_360), (2, 15_360, 15_360), (3, 15_360, 15_360)]
     backend, gguf = _wired_backend(
