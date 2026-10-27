@@ -279,6 +279,11 @@ def _w8a8_rows(x2: Any, rot_h: Any, weight_q: Any, weight_scale: Any, bias: Any)
     return out.to(x2.dtype)
 
 
+def _w8a8_rows_into(x2: Any, rot_h: Any, weight_q: Any, weight_scale: Any, bias: Any, out: Any) -> None:
+    """``_w8a8_rows`` stored straight into ``out`` (a row slice of the chunked output), no temporary chunk result."""
+    out.copy_(_w8a8_rows(x2, rot_h, weight_q, weight_scale, bias))
+
+
 _FUSED_STATE: dict = {"fn": None, "failed": None}
 
 
@@ -304,6 +309,8 @@ def _fused_w8a8() -> Optional[Callable[..., Any]]:
     # Registered in eager, before any trace reads the handle.
     _FUSED_STATE["row_major"] = _row_major_op()
     fn = torch.compile(_w8a8_rows, dynamic = True, fullgraph = True)
+    # One graph for every slice offset and chunk height (dynamic storage offset), written in place by inductor.
+    _FUSED_STATE["into"] = torch.compile(_w8a8_rows_into, dynamic = True, fullgraph = True)
     _FUSED_STATE["fn"] = fn
     return fn
 
@@ -313,12 +320,22 @@ def _fused_w8a8_failed(exc: BaseException) -> None:
 
     _FUSED_STATE["failed"] = repr(exc)
     _FUSED_STATE["fn"] = None
+    _FUSED_STATE["into"] = None
     logging.getLogger(__name__).warning(
         "diffusion.native_quant: the compiled int8 W8A8 linear failed (%s); eager kernels from here on "
         "(set %s=0 to skip it)",
         exc,
         NATIVE_INT8_FUSED_ENV,
     )
+
+
+def _autocast_on(x: Any) -> bool:
+    import torch
+
+    try:
+        return bool(torch.is_autocast_enabled(x.device.type))
+    except TypeError:  # torch without the device_type argument: treat any autocast as on
+        return bool(torch.is_autocast_enabled() or torch.is_autocast_cpu_enabled())
 
 
 def fused_w8a8_state() -> dict:
@@ -522,16 +539,25 @@ def native_linear_class():
                 if rows <= chunk or chunk < 2 * _INT_MM_MIN_ROWS:
                     out = fn(x2, rot_h, self.weight_q, self.weight_scale, bias)
                 else:
-                    # Allocated from the first chunk to keep the compiled dtype (autocast can differ from x2's).
-                    out = None
+                    # Only the rotation matmul can change the dtype (autocast); without it the output is x2's dtype.
+                    into = _FUSED_STATE.get("into")
+                    if into is not None and (rot_h is None or not _autocast_on(x2)):
+                        out = x2.new_empty(rows, self.out_features)
+                    else:
+                        into = out = None
                     start = 0
                     for part in torch.tensor_split(x2, -(-rows // chunk)):
-                        got = fn(part.detach(), rot_h, self.weight_q, self.weight_scale, bias)
-                        if out is None:
-                            out = got.new_empty(rows, self.out_features)
                         stop = start + part.shape[0]
-                        out[start:stop].copy_(got)
-                        del got
+                        if into is not None:
+                            # Each chunk is stored once, into its own rows: no chunk-sized temporary or copy.
+                            into(part.detach(), rot_h, self.weight_q, self.weight_scale, bias, out[start:stop])
+                        else:
+                            got = fn(part.detach(), rot_h, self.weight_q, self.weight_scale, bias)
+                            if out is None:
+                                # Allocated from the first chunk to keep the compiled dtype (autocast can differ).
+                                out = got.new_empty(rows, self.out_features)
+                            out[start:stop].copy_(got)
+                            del got
                         start = stop
             except torch.cuda.OutOfMemoryError:
                 raise
