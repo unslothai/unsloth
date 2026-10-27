@@ -366,6 +366,7 @@ async def managed_tool_chat(
                         tool_choice = payload.tool_choice,
                         supports_vision = bool(info.get("is_vision")),
                         promoted_image_parts = promoted_image_parts,
+                        continue_final_message = continuing,
                     ),
                     policy = ToolLoopPolicy(
                         tools = tools,

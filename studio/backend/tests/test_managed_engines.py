@@ -973,6 +973,74 @@ def test_studio_tool_execution_refuses_a_response_format_it_cannot_honor(monkeyp
     assert refusal.value.detail["error"]["param"] == "response_format"
 
 
+def test_studio_tool_loop_resumes_the_partial_it_was_given(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    import routes.inference as inf
+    import routes.managed_engine_chat as mec
+    from core.inference.api_monitor import ApiMonitor
+    from models.inference import ChatCompletionRequest
+    from state.tool_policy import reset_tool_policy
+
+    runs = []
+
+    class _Stop(Exception):
+        pass
+
+    def capture(transport, *, run, **kwargs):
+        runs.append(run)
+        raise _Stop
+
+    engine = ManagedEngine("vllm")
+    engine.base_url, engine.model, engine.context = "http://127.0.0.1:9", "m", 2048
+
+    class Backend:
+        active_model_name = "m"
+        models = {"m": {"engine": "vllm", "context_length": 2048, "supports_tools": True}}
+        _managed_engine = engine
+
+        def reset_generation_state(self, caller_cancel_event = None):
+            pass
+
+    class Request:
+        state = SimpleNamespace()
+        url = SimpleNamespace(path = "/v1/chat/completions")
+        method = "POST"
+        scope: dict = {}
+        headers: dict = {}
+
+        async def is_disconnected(self):
+            return False
+
+    reset_tool_policy()
+    monkeypatch.setattr(mec, "stream_with_studio_tools", capture)
+    monkeypatch.setattr(inf, "api_monitor", ApiMonitor(max_entries = 8))
+    monkeypatch.setattr(
+        inf,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(
+            is_loaded = False, supports_tools = False, is_vision = False, context_length = None
+        ),
+    )
+    monkeypatch.setattr(inf, "get_inference_backend", lambda: Backend())
+    payload = ChatCompletionRequest(
+        model = "m",
+        stream = False,
+        enable_tools = True,
+        enabled_tools = ["python"],
+        permission_mode = "off",
+        continue_final_message = True,
+        messages = [
+            {"role": "user", "content": "Count to five."},
+            {"role": "assistant", "content": "one, two,"},
+        ],
+    )
+    with pytest.raises(_Stop):
+        asyncio.run(inf.openai_chat_completions(payload, request = Request(), current_subject = "u"))
+    assert runs and runs[-1].continue_final_message is True
+
+
 def test_unsupported_tools_are_not_silently_dropped(peer):
     engine, requests = peer
     with pytest.raises(ValueError, match = "Tools"):
