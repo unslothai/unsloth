@@ -960,35 +960,70 @@ def _dunder_all_names(src: str) -> set[str]:
 
 
 def _top_level_binding(src: str | None, name: str):
-    """How a module binds `name` at top level: "def", ("import", module, original_name), or None."""
+    """How a module binds `name` at top level: "def", ("import", module, original_name), None, or "ambiguous"
+    when it is bound more than once (a later binding can shadow the definition) or by a plain `import`."""
     if src is None:
         return None
     try:
         tree = ast.parse(src)
     except SyntaxError:
         return None
-    found = None
-    for node in tree.body:
-        if (
-            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-            and node.name == name
-        ):
-            return "def"
-        if isinstance(node, ast.Assign) and any(
-            isinstance(t, ast.Name) and t.id == name for t in node.targets
-        ):
-            return "def"
-        if (
-            isinstance(node, ast.AnnAssign)
-            and isinstance(node.target, ast.Name)
-            and node.target.id == name
-        ):
-            return "def"
-        if isinstance(node, ast.ImportFrom):
-            for alias in node.names:
-                if (alias.asname or alias.name) == name:
-                    found = ("import", "." * (node.level or 0) + (node.module or ""), alias.name)
-    return found
+    found = []
+
+    def targets(node) -> list[str]:
+        if isinstance(node, ast.Name):
+            return [node.id]
+        if isinstance(node, (ast.Tuple, ast.List)):
+            return [n for elt in node.elts for n in targets(elt)]
+        if isinstance(node, ast.Starred):
+            return targets(node.value)
+        return []
+
+    def visit(body) -> None:
+        for node in body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                if node.name == name:
+                    found.append("def")
+                continue
+            if isinstance(node, ast.Assign):
+                found.extend("def" for t in node.targets if name in targets(t))
+            elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+                if name in targets(node.target):
+                    found.append("def")
+            elif isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    if (alias.asname or alias.name) == name:
+                        found.append(
+                            ("import", "." * (node.level or 0) + (node.module or ""), alias.name)
+                        )
+            elif isinstance(node, ast.Import):
+                found.extend(
+                    "ambiguous" for a in node.names if (a.asname or a.name.split(".")[0]) == name
+                )
+            elif isinstance(node, (ast.For, ast.AsyncFor, ast.With, ast.AsyncWith)):
+                for item in getattr(node, "items", []):
+                    if item.optional_vars is not None and name in targets(item.optional_vars):
+                        found.append("ambiguous")
+                if isinstance(node, (ast.For, ast.AsyncFor)) and name in targets(node.target):
+                    found.append("ambiguous")
+            # Conditional and guarded blocks still bind at module level.
+            try_like = isinstance(node, ast.Try) or isinstance(node, getattr(ast, "TryStar", ()))
+            if try_like or isinstance(
+                node, (ast.If, ast.For, ast.AsyncFor, ast.While, ast.With, ast.AsyncWith)
+            ):
+                for field in ("body", "orelse", "finalbody"):
+                    visit(getattr(node, field, []) or [])
+            if try_like:
+                for handler in node.handlers:
+                    visit(handler.body)
+            if isinstance(node, getattr(ast, "Match", ())):
+                for case in node.cases:
+                    visit(case.body)
+
+    visit(tree.body)
+    if not found:
+        return None
+    return found[0] if len(found) == 1 else "ambiguous"
 
 
 def _module_paths(module: str, importer: str) -> list[str]:
@@ -1066,7 +1101,7 @@ def _git_moved(before_ref: str, after_ref: str, importer: str):
         left = _top_level_binding(show(after_ref, old_path), name)
         if left is None:
             return True
-        if left == "def":
+        if not isinstance(left, tuple):
             return False
         _, module, original = left
         return original == name and locate(module, after_ref, old_path) == new_path
