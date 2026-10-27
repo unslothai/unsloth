@@ -5185,6 +5185,12 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	scrollbar-gutter: stable both-edges;
 }
 
+/* thread-gutter.ts. Padding, not a border: WebKit snaps borders at fractional zoom and the column drifts off the composer. */
+.aui-thread-viewport[data-gutter-shift] {
+	scrollbar-gutter: stable;
+	padding-left: calc(var(--spacing) * 5 + var(--thread-gutter-shift));
+}
+
 .aui-thread-host[data-aui-following] + .aui-thread-root .aui-thread-viewport {
 	overflow-anchor: none;
 }
@@ -5764,6 +5770,10 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 	padding-top: calc(0.75rem * var(--ui-space-scale, 1));
 	padding-left: calc(1rem * var(--ui-space-scale, 1));
 	padding-right: calc(1rem * var(--ui-space-scale, 1));
+}
+
+.chat-full-view-dock .aui-thread-viewport[data-gutter-shift] {
+	padding-left: calc(1rem * var(--ui-space-scale, 1) + var(--thread-gutter-shift));
 }
 
 .chat-full-view-dock[data-expanded="false"] :is(.chat-thread-pane, .aui-thread-root) {

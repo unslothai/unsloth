@@ -176,6 +176,7 @@ export function WebUpdateBanner({
                 </Button>
                 <Button
                   size="sm"
+                  variant="dark"
                   className="-mr-1 h-auto whitespace-nowrap rounded-full px-3 py-2 text-ui-13"
                   onClick={handleCopyCommand}
                   data-testid="web-update-copy-button"

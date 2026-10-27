@@ -35,25 +35,45 @@ test("the API tab still publishes a tunnel URL that comes up after it opens", ()
 });
 
 test("usage examples sit right under the keys, where a new key lands", () => {
-  const examples = TAB.indexOf("<UsageExamples");
+  const examples = TAB.indexOf("<ApiExamplesPanel");
   assert.ok(examples > TAB.indexOf("<CreateKeyForm"));
-  assert.ok(examples < TAB.indexOf("<MonitorLink />"));
+  assert.ok(examples < TAB.indexOf("<MonitorLink hideHeading={true} />"));
   assert.ok(examples < TAB.indexOf("<KeylessApiAccessLink"));
 });
 
-test("jump links above the token form reach the tab's APIs from any page, which sit images first, then audio, then decisions", () => {
-  const links = readSrc("features/settings/components/api-jump-links.tsx");
+test("MCP, keyless access and the monitor sit under one heading", () => {
+  assert.match(
+    TAB,
+    /<SettingsSection title="Access & monitoring">\s*\{isOwner \? <McpAccessSection apiKey=\{revealed\} \/> : null\}\s*\{isOwner \? <KeylessApiAccessLink \/> : null\}\s*<MonitorLink hideHeading=\{true\} \/>\s*<\/SettingsSection>/,
+  );
+  const keyless = readSrc("features/settings/components/keyless-api-access-link.tsx");
+  assert.match(keyless, /<SettingsRow\s+label="Keyless API access"/);
+  assert.doesNotMatch(keyless, /SettingsSection/);
+  const monitor = readSrc("features/settings/components/monitor-link.tsx");
+  assert.match(monitor, /hideHeading=\{hideHeading\}/);
+});
+
+test("one tab row holds every example, with no jump links above it; Agents opens its own settings", () => {
   const examples = readSrc("features/settings/components/usage-examples.tsx");
-  for (const target of ["api-keys-media-api", "api-keys-audio-api", "api-keys-decision-api", "api-keys-agents", "api-keys-mcp"]) {
-    assert.match(links, new RegExp(`target: "${target}"`));
+  const tabs = readSrc("features/settings/components/api-example-tabs.tsx");
+  assert.match(TAB, /<ApiExamplesPanel/);
+  for (const gone of ["<UsageExamples", "<MediaApiExamples", "<AudioApiExamples", "<DecisionApiSection"]) {
+    assert.ok(!TAB.includes(gone), gone);
   }
-  assert.match(links, /openDialog\("api-keys", \{ scrollTarget: link\.target \}\)/);
-  assert.match(examples, /scrollTarget !== "api-keys-agents" && scrollTarget !== "api-keys-mcp"/);
-  assert.match(examples, /consumeScrollTarget\(target\)/);
-  assert.match(examples, /<div ref=\{agentsRef\} className=/);
-  assert.match(examples, /<div ref=\{mcpRef\}>\{agentsExtra\}<\/div>/);
-  assert.match(examples, /if \(agentsOnly\) return;\s*if \(scrollTarget !== "api-keys-agents"/);
-  assert.doesNotMatch(examples, /getElementById/);
+  for (const card of [
+    /<UsageExamples\s+part="chat"/,
+    /<MediaApiExamples[^>]*showHeading=\{false\}/,
+    /<AudioApiExamples[^>]*showHeading=\{false\}/,
+    /<DecisionApiSection showHeading=\{false\} \/>/,
+  ]) {
+    assert.match(tabs, card);
+  }
+  assert.doesNotMatch(tabs, /<h2|<h3/);
+  assert.match(tabs, /entry\.id === "agents"\s*\? useSettingsDialogStore\.getState\(\)\.openDialog\("agents"\)/);
+  assert.match(tabs, /\.\.\.\(isOwner\s*\? \[[\s\S]*?id: "agents" as const/);
+  for (const [target, tab] of [["api-keys-media-api", "media"], ["api-keys-audio-api", "audio"], ["api-keys-decision-api", "decision"]]) {
+    assert.match(tabs, new RegExp(`"${target}": "${tab}"`));
+  }
   for (const [file, target] of [
     ["media-api-examples.tsx", "api-keys-media-api"],
     ["audio-api-examples.tsx", "api-keys-audio-api"],
@@ -61,29 +81,17 @@ test("jump links above the token form reach the tab's APIs from any page, which 
   ]) {
     assert.match(readSrc(`features/settings/components/${file}`), new RegExp(`if \\(!showHeading \\|\\| scrollTarget !== "${target}"`), file);
   }
-  assert.ok(TAB.indexOf("<ApiJumpLinks") > 0);
-  assert.ok(TAB.indexOf("<ApiJumpLinks") < TAB.indexOf("<CreateKeyForm"));
+  assert.match(examples, /if \(agentsOnly \|\| part !== "all"\) return;/);
+  assert.match(examples, /\{part === "chat" \? null : \(/);
+  assert.ok(!TAB.includes("ApiJumpLinks"));
   assert.match(TAB, /<h2 className="settings-heading text-base font-semibold font-heading">\s*\{t\("settings\.apiKeys\.accessTokens"\)\}\s*<\/h2>\s*<AnimatePresence/);
-  assert.equal(TAB.split('t("settings.apiKeys.accessTokens")').length - 1, 1);
   const monitor = readSrc("features/api-monitor/api-monitor-page.tsx");
-  assert.doesNotMatch(monitor, /<ApiJumpLinks/);
-  for (const part of [
-    /<MediaApiExamples useTunnel=\{useTunnel\} showHeading=\{false\} \/>/,
-    /<AudioApiExamples useTunnel=\{useTunnel\} showHeading=\{false\} \/>/,
-    /<DecisionApiSection showHeading=\{false\} \/>/,
-    /<UsageExamples[^>]*agentsOnly=\{true\}/,
-  ]) {
-    assert.match(monitor, part);
-  }
-  assert.match(monitor, /\.\.\.\(isOwner\s*\? \[\{ id: "decision" as const/);
-  assert.doesNotMatch(monitor, /McpAccessSection|id: "mcp"/);
-  assert.match(monitor, /font-heading text-ui-15/);
-  assert.match(examples, /\{agentsOnly \? null : \(/);
+  assert.doesNotMatch(monitor, /<ApiJumpLinks|<UsageExamples/);
+  assert.match(monitor, /<ApiExampleTabNav kind=\{kind\} onChange=\{setKind\}/);
+  assert.match(tabs, /font-heading text-ui-15/);
   for (const icon of ["MessageCircleIcon", "Image01Icon", "AiSpeechIcon", "TaskDone01Icon", "BotIcon"]) {
-    assert.match(monitor, new RegExp(`label: "[^"]+", icon: ${icon} \\}`));
+    assert.match(tabs, new RegExp(`icon: ${icon}`));
   }
-  assert.ok(TAB.indexOf("<MediaApiExamples") < TAB.indexOf("<AudioApiExamples"));
-  assert.ok(TAB.indexOf("<AudioApiExamples") < TAB.indexOf("<DecisionApiSection"));
   const decision = readSrc("features/settings/components/decision-api-section.tsx");
   assert.match(
     decision,
@@ -147,4 +155,11 @@ test("the keyless note shows beside a public address too, since LAN callers stay
     /keylessLanEligible &&\s*status\.publicUrls\.length === 0/,
   );
   assert.equal(lan.match(/\{keylessNote\}/g)?.length, 2);
+});
+
+test("the no-model note sits above the Basic / With tools / Advanced sampling toggle", () => {
+  const examples = readSrc("features/settings/components/usage-examples.tsx");
+  const note = examples.indexOf('t("settings.apiKeys.usageNoModel")');
+  assert.ok(note > 0);
+  assert.ok(note < examples.indexOf('label={t("settings.apiKeys.exampleRequest")}'));
 });

@@ -1316,13 +1316,13 @@ export const it = {
       unsupportedArch: "La sandbox di Windows (MXC) funziona solo su Windows x64, quindi non è disponibile su questo PC.",
       builtinNeedsUpdate: "Il container integrato di Windows richiede la build {required} o successiva, e questo PC esegue {current}. Installa l'ultimo aggiornamento di Windows per usarlo senza un passaggio da amministratore, oppure attiva la sandbox di riserva qui sotto.",
       unsupportedBuild: "La sandbox di Windows (MXC) richiede Windows 11 24H2 (build 26100) o successivo, quindi non è disponibile su questo PC.",
-      permissionsIntro: "Scegli quando gli strumenti chiedono prima e se Python e Terminale vengono eseguiti anche nella sandbox del sistema.",
       permissionLabel: "Autorizzazioni strumenti",
+      levelRowLabel: "Livello sandbox",
       levelPickerTitle: "Come isolare il codice?",
       levelOff: "Disattivato",
       levelOffShort: "Accesso completo disattiva la sandbox",
-      levelHighDetail: "Sandbox del sistema. Python e Terminale vengono eseguiti nella sandbox del sistema (bubblewrap, Seatbelt o MXC) oltre alle protezioni software. Senza una sandbox del sistema funzionante, le chiamate rischiose chiedono prima.",
-      levelLowDetail: "Sandbox software. Python e Terminale vengono eseguiti solo con le protezioni software, fuori dalla sandbox del sistema. Le chiamate rischiose chiedono prima, tranne con Accesso completo.",
+      levelHighDetail: "Python e Terminale vengono eseguiti nella sandbox del sistema (bubblewrap, Seatbelt o MXC) oltre alle protezioni software. Senza una sandbox del sistema funzionante, le chiamate rischiose chiedono prima.",
+      levelLowDetail: "Python e Terminale vengono eseguiti solo con le protezioni software, fuori dalla sandbox del sistema. Le chiamate rischiose chiedono prima, tranne con Accesso completo.",
       levelLabel: "Sandbox",
       levelHigh: "Alto",
       levelLow: "Basso",
@@ -1772,13 +1772,13 @@ export const it = {
         },
         details: {
           ask:
-            "Chiede conferma prima di ogni chiamata agli strumenti, compresi codice da terminale e Python, ricerche web, modifiche ai file e strumenti MCP. Gli strumenti eseguiti da un provider esterno non vengono messi in pausa. Ideale se vuoi controllare ogni passaggio.",
+            "Chiede conferma prima di ogni chiamata agli strumenti, compresi codice da terminale e Python, ricerche web, modifiche ai file e strumenti MCP. Gli strumenti eseguiti da un provider esterno non vengono messi in pausa.",
           auto:
             "Esegue da solo le chiamate abituali e chiede conferma solo quando un'azione sembra rischiosa, come leggere credenziali, aumentare i privilegi o eseguire comandi distruttivi.",
           off:
-            "Esegue ogni chiamata agli strumenti senza chiedere. Il codice Python e da terminale viene comunque eseguito nella sandbox, che limita i file del tuo computer a cui può accedere. Se questo computer non ha una sandbox del sistema funzionante, le chiamate rischiose di Python e terminale chiedono prima.",
+            "Esegue ogni chiamata agli strumenti senza chiedere. Il codice Python e da terminale viene comunque eseguito nella sandbox, che limita i file del tuo computer a cui può accedere. Senza una sandbox del sistema funzionante, le chiamate rischiose chiedono prima.",
           full:
-            "Esegue ogni chiamata agli strumenti senza chiedere e disattiva la sandbox del codice, così il codice Python e da terminale può leggere e modificare qualsiasi file accessibile al tuo account. Ideale per attività affidabili che devono lavorare fuori dalla sandbox.",
+            "Esegue ogni chiamata agli strumenti senza chiedere e disattiva la sandbox del codice, così il codice Python e da terminale può leggere e modificare qualsiasi file accessibile al tuo account.",
         },
       },
       notifications: {

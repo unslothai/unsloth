@@ -33,19 +33,17 @@ import {
   ApiKeyTableHeader,
   TOKEN_TABLE,
 } from "../components/api-key-row";
-import { AudioApiExamples } from "../components/audio-api-examples";
-import { MediaApiExamples } from "../components/media-api-examples";
 import { CreateKeyForm } from "../components/create-key-form";
-import { DecisionApiSection } from "../components/decision-api-section";
 import { KeyRevealCard } from "../components/key-reveal-card";
-import { ApiJumpLinks } from "../components/api-jump-links";
 import { KeylessApiAccessLink } from "../components/keyless-api-access-link";
 import { McpAccessSection } from "../components/mcp-access-section";
 import { ModelAliasesSection } from "../components/model-aliases-section";
 import { ModelAutoSwitchSection } from "../components/model-auto-switch-section";
 import { ModelMemorySection } from "../components/model-memory-section";
 import { MonitorLink } from "../components/monitor-link";
-import { UsageExamples, useApiTunnelPref } from "../components/usage-examples";
+import { SettingsSection } from "../components/settings-section";
+import { ApiExamplesPanel } from "../components/api-example-tabs";
+import { useApiTunnelPref } from "../components/usage-examples";
 import { usePublishAccessUrls } from "../hooks/use-publish-access-urls";
 
 function expiryDays(key: ApiKey): number | null {
@@ -192,8 +190,6 @@ export function ApiKeysTab() {
         </p>
       </header>
 
-      <ApiJumpLinks />
-
       <section className="flex min-w-0 flex-col gap-4">
         <h2 className="settings-heading text-base font-semibold font-heading">
           {t("settings.apiKeys.accessTokens")}
@@ -279,20 +275,21 @@ export function ApiKeysTab() {
         </div>
       </section>
 
-      <UsageExamples
+      <ApiExamplesPanel
         apiKey={revealed}
         useTunnel={useTunnel}
         onUseTunnelChange={setUseTunnel}
         keylessScope={keyless.scope}
         keylessTools={keyless.tools}
         keylessExposure={keyless.exposure}
-        // Installation-wide, so owner-only routes.
-        agentsExtra={isOwner ? <McpAccessSection apiKey={revealed} /> : null}
       />
 
-      {isOwner ? <KeylessApiAccessLink /> : null}
-
-      <MonitorLink />
+      {/* Installation-wide, so owner-only routes. */}
+      <SettingsSection title="Access & monitoring">
+        {isOwner ? <McpAccessSection apiKey={revealed} /> : null}
+        {isOwner ? <KeylessApiAccessLink /> : null}
+        <MonitorLink hideHeading={true} />
+      </SettingsSection>
 
       {isOwner ? (
         <>
@@ -303,22 +300,6 @@ export function ApiKeysTab() {
           <ModelAliasesSection />
         </>
       ) : null}
-
-      <MediaApiExamples
-        apiKey={revealed}
-        useTunnel={useTunnel}
-        keylessScope={keyless.scope}
-        keylessExposure={keyless.exposure}
-      />
-
-      <AudioApiExamples
-        apiKey={revealed}
-        useTunnel={useTunnel}
-        keylessScope={keyless.scope}
-        keylessExposure={keyless.exposure}
-      />
-
-      {isOwner ? <DecisionApiSection /> : null}
 
       <Dialog
         open={revokeTarget !== null}

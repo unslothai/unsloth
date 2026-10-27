@@ -1415,13 +1415,13 @@ export const fr = {
       unsupportedArch: "Le bac à sable Windows (MXC) ne fonctionne que sous Windows x64, il n'est donc pas disponible sur ce PC.",
       builtinNeedsUpdate: "Le conteneur intégré de Windows nécessite la build {required} ou plus récente, et ce PC exécute {current}. Installez la dernière mise à jour de Windows pour l'utiliser sans étape administrateur, ou activez le sandbox de secours ci-dessous.",
       unsupportedBuild: "Le bac à sable Windows (MXC) nécessite Windows 11 24H2 (build 26100) ou plus récent, il n'est donc pas disponible sur ce PC.",
-      permissionsIntro: "Choisissez quand les outils demandent d'abord, et si Python et le Terminal s'exécutent aussi dans le bac à sable du système.",
       permissionLabel: "Autorisations des outils",
+      levelRowLabel: "Niveau de sandbox",
       levelPickerTitle: "Comment isoler le code ?",
       levelOff: "Désactivé",
       levelOffShort: "L'Accès complet désactive le bac à sable",
-      levelHighDetail: "Bac à sable du système. Python et le Terminal s'exécutent dans le bac à sable du système (bubblewrap, Seatbelt ou MXC) en plus des protections logicielles. Sans bac à sable du système fonctionnel, les appels risqués demandent d'abord.",
-      levelLowDetail: "Bac à sable logiciel. Python et le Terminal s'exécutent avec les seules protections logicielles, hors du bac à sable du système. Les appels risqués demandent d'abord, sauf en Accès complet.",
+      levelHighDetail: "Python et le Terminal s'exécutent dans le bac à sable du système (bubblewrap, Seatbelt ou MXC) en plus des protections logicielles. Sans bac à sable du système fonctionnel, les appels risqués demandent d'abord.",
+      levelLowDetail: "Python et le Terminal s'exécutent avec les seules protections logicielles, hors du bac à sable du système. Les appels risqués demandent d'abord, sauf en Accès complet.",
       levelLabel: "Sandbox",
       levelHigh: "Élevé",
       levelLow: "Faible",
@@ -2075,13 +2075,13 @@ export const fr = {
         },
         details: {
           ask:
-            "Demande votre accord avant chaque appel d'outil, y compris le code terminal et Python, les recherches web, les modifications de fichiers et les outils MCP. Les outils exécutés par un fournisseur externe ne sont pas mis en pause. Idéal pour vérifier chaque étape.",
+            "Demande votre accord avant chaque appel d'outil, y compris le code terminal et Python, les recherches web, les modifications de fichiers et les outils MCP. Les outils exécutés par un fournisseur externe ne sont pas mis en pause.",
           auto:
             "Exécute seul les appels d'outils courants et ne demande votre accord que lorsqu'une action semble risquée, comme lire des identifiants, élever des privilèges ou lancer des commandes destructrices.",
           off:
-            "Exécute chaque appel d'outil sans demander. Le code Python et terminal reste exécuté dans le bac à sable, qui limite les fichiers auxquels il peut accéder sur votre ordinateur. Si cet ordinateur n'a pas de bac à sable système fonctionnel, les appels Python et terminal risqués demandent d'abord.",
+            "Exécute chaque appel d'outil sans demander. Le code Python et terminal reste exécuté dans le bac à sable, qui limite les fichiers auxquels il peut accéder sur votre ordinateur. Sans bac à sable du système fonctionnel, les appels risqués demandent d'abord.",
           full:
-            "Exécute chaque appel d'outil sans demander et désactive le bac à sable du code : le code Python et terminal peut lire et modifier tout fichier accessible à votre compte. Idéal pour les tâches de confiance qui doivent travailler hors du bac à sable.",
+            "Exécute chaque appel d'outil sans demander et désactive le bac à sable du code : le code Python et terminal peut lire et modifier tout fichier accessible à votre compte.",
         },
       },
     },

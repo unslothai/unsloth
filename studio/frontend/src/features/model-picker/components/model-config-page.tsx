@@ -1320,7 +1320,7 @@ function AdvancedSettingsToggle({
   onCheckedChange: (next: boolean) => void;
 }) {
   return (
-    <div className={`${ROW_CLASS} border-t border-border pt-5`}>
+    <div className={ROW_CLASS}>
       <div className="flex min-w-0 items-center gap-1.5">
         <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-muted-foreground">
           Advanced settings
@@ -4313,12 +4313,13 @@ export function ModelConfigPage({
         {/* Always rendered so a status change never moves the buttons; the sidebar's name box already does. */}
         <div
           className={cn(
-            "-mt-1.5 -mb-0.5 flex min-h-[calc(1.375em+0.25rem)] min-w-0 items-center gap-2 pl-3.5",
+            "-mt-1.5 -mb-0.5 flex min-h-[calc(1.375em+0.25rem)] min-w-0 items-center gap-2",
             naming && (variant === "sidebar" ? "hidden" : "invisible"),
           )}
         >
           <Checkbox
             id={alwaysLoadId}
+            className="size-3.5 rounded-full border-[color-mix(in_oklab,var(--foreground)_calc(30%*var(--contrast-edge-gain,1)),transparent)] disabled:opacity-70"
             aria-label="Always load with these settings"
             aria-describedby={saveStatusId}
             checked={selectedSet !== null && selectedSet === pinnedSet}
@@ -4338,7 +4339,7 @@ export function ModelConfigPage({
                 ? "Change a setting or pick a saved one to always load it"
                 : "Every load of this model uses these settings, even after you load it once with others"
             }
-            className="shrink-0 cursor-pointer select-none text-ui-12 text-muted-foreground peer-disabled:cursor-default peer-disabled:opacity-60"
+            className="shrink-0 cursor-pointer select-none text-ui-12 text-foreground/80 peer-disabled:cursor-default peer-disabled:opacity-70"
           >
             {variant === "sidebar" ? "Always load" : "Always load with these settings"}
           </label>
