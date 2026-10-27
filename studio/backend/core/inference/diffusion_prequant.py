@@ -3225,7 +3225,9 @@ def stream_prequantized_module(
                 payload_mib = sum(
                     tensor_payload_bytes(t) for t in chain(module.parameters(), module.buffers())
                 ) // (1024 * 1024)
-                kwargs["low_cpu_mem_usage"] = not _streamed_pin_plan(payload_mib, 0, logger)[0]
+                kwargs["low_cpu_mem_usage"] = not _streamed_pin_plan(
+                    payload_mib, 0, logger, device = onload
+                )[0]
         # Pin through one slab arena: per-tensor pin_memory() rounds each weight to a power of two.
         from .diffusion_pinned_arena import pinned_arena_for_group_offload
 
