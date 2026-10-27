@@ -2470,7 +2470,6 @@ async def start_training(
                         hf_token = hf_token,
                         training_type = training_kwargs["training_type"],
                         load_in_4bit = training_kwargs["load_in_4bit"],
-                        # A batch trains every member's rows and adapter at once.
                         batch_size = sum(m["batch_size"] for m in members),
                         max_seq_length = training_kwargs["max_seq_length"],
                         lora_rank = sum(m["lora_r"] for m in members),

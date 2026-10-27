@@ -16,7 +16,7 @@ import sys
 
 import pytest
 
-# The repo root (pytest pythonpath) shadows PYTHONPATH; the kernels may come from a checkout of #14648.
+# The repo root (pytest pythonpath) shadows PYTHONPATH.
 if "unsloth" not in sys.modules:
     for _entry in os.environ.get("PYTHONPATH", "").split(os.pathsep)[::-1]:
         if _entry and os.path.isfile(os.path.join(_entry, "unsloth", "kernels", "multi_lora.py")):
@@ -25,7 +25,7 @@ if "unsloth" not in sys.modules:
 try:
     import torch
     from unsloth.kernels import multi_lora as ml
-except Exception as exc:  # noqa: BLE001 - no #14648 kernels or no importable unsloth here
+except Exception as exc:  # noqa: BLE001 - no multi-LoRA kernels or no importable unsloth here
     pytest.skip(f"unsloth.kernels.multi_lora unavailable: {exc}", allow_module_level = True)
 
 from datasets import Dataset

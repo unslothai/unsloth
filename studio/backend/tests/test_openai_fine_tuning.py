@@ -837,9 +837,6 @@ def test_a_sidecar_swap_conflict_queues_and_a_crash_after_cancel_stays_cancelled
     assert queued.status == "queued" and after.status == "cancelled"
 
 
-# Multi-LoRA batching of compatible queued jobs
-
-
 def _entry(
     tmp_path,
     name = "a",
@@ -1392,7 +1389,6 @@ def test_start_training_batch_runs_one_start_carrying_every_member(monkeypatch):
         {"run_id": run_ids[1], "project_name": "b", "lora_r": 16},
         {"run_id": run_ids[2], "project_name": "c", "lora_r": 32},
     ]
-    # Outside a batch start, start_training adds nothing to its backend call.
     assert training_routes._batch_members_for_start({"project_name": "a"}) is None
 
 
