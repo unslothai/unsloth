@@ -5084,16 +5084,20 @@ class FastLlamaModel:
                 offload_input_embeddings(model, temporary_location)
 
             for _ in range(3):
-                gc.collect()
+                collected = gc.collect()
                 clean_gpu_cache()
+                if collected == 0:
+                    break
 
             if train_lm_head:
                 print("Unsloth: Offloading output_embeddings to disk to save VRAM")
                 offload_output_embeddings(model, temporary_location)
 
             for _ in range(3):
-                gc.collect()
+                collected = gc.collect()
                 clean_gpu_cache()
+                if collected == 0:
+                    break
 
         from .lora_init import fast_lora_init, record_fast_pissa
 
@@ -5211,8 +5215,10 @@ class FastLlamaModel:
         _mark_unsloth_disable_data_parallel(model)
 
         for _ in range(3):
-            gc.collect()
+            collected = gc.collect()
             clean_gpu_cache()
+            if collected == 0:
+                break
 
         patch_peft_fast_inference(model)
 
@@ -5458,8 +5464,10 @@ class FastLlamaModel:
             internal_model._saved_temp_tokenizer.padding_side = "right"
 
         for _ in range(3):
-            gc.collect()
+            collected = gc.collect()
             clean_gpu_cache()
+            if collected == 0:
+                break
 
         patch_peft_fast_inference(model)
 

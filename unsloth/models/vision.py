@@ -4518,8 +4518,10 @@ class FastBaseModel:
                     exec(custom_datatype)
                 cast_mixed_linear_inputs(model, torch_dtype)
         for _ in range(3):
-            gc.collect()
+            collected = gc.collect()
             clean_gpu_cache()
+            if collected == 0:
+                break
 
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
         # The loader resolves this (caller's adapter repo vs resolved base model); the fallback below covers a direct call.
@@ -4898,8 +4900,10 @@ class FastBaseModel:
             float32_mixed_precision = float32_mixed_precision,
         )
         for _ in range(3):
-            gc.collect()
+            collected = gc.collect()
             clean_gpu_cache()
+            if collected == 0:
+                break
         # Saving restores sentencepiece assets from the repo name alone, which carries no branch. Stamped here, not per processor branch, so a fallback cannot lose it.
         _mark_loaded_revision(tokenizer, _tokenizer_revision)
         model = _mark_forced_float32(model, do_forced_float32)
@@ -5203,8 +5207,10 @@ class FastBaseModel:
                 )
 
         for _ in range(3):
-            gc.collect()
+            collected = gc.collect()
             clean_gpu_cache()
+            if collected == 0:
+                break
         max_seq_length = model.max_seq_length
         # Passing loftq_config = None gives an error.
         loftq_config = validate_loftq_config(
@@ -5428,8 +5434,10 @@ class FastBaseModel:
         )
         skip_checkpointing(model, checkpoint_skip_layers)
         for _ in range(3):
-            gc.collect()
+            collected = gc.collect()
             clean_gpu_cache()
+            if collected == 0:
+                break
         patch_saving_functions(model, vision = True)
         patch_peft_fast_inference(model)
 
@@ -5607,8 +5615,10 @@ class FastBaseModel:
         _mark_unsloth_disable_data_parallel(model, disable = not full_finetuning)
 
         for _ in range(3):
-            gc.collect()
+            collected = gc.collect()
             clean_gpu_cache()
+            if collected == 0:
+                break
         model.for_training = functools.partial(FastBaseModel.for_training, model)
         model.for_inference = functools.partial(FastBaseModel.for_inference, model)
         m = model

@@ -611,6 +611,8 @@ class FastGraniteModel(FastLlamaModel):
         import gc
 
         for _ in range(3):
-            gc.collect()
+            collected = gc.collect()
             clean_gpu_cache()
+            if collected == 0:
+                break
         return model, tokenizer
