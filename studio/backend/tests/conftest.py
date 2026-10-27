@@ -160,8 +160,7 @@ def _forget_mcp_discovery_state():
 
 @pytest.fixture(autouse = True)
 def _forget_queued_media_requests():
-    # A video left waiting would make every later /v1/videos create on the worker join the queue behind it,
-    # and an image batch left open would collect a later test's requests.
+    # Prevent queued requests and open batches from leaking between tests.
     def _forget():
         video_routes = sys.modules.get("routes.video")
         if video_routes is not None:

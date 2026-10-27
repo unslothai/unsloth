@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""/v1/images/generations requests that wait for the GPU together render as one batch; the backend is faked."""
+"""Concurrent /v1/images/generations requests with a fake backend."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from utils.api_errors import install_api_error_handlers
 
 
 class _Backend:
-    """A diffusers-like engine whose render the test holds open with ``rendering``."""
+    """Fake diffusers backend with a controllable busy flag."""
 
     def __init__(self) -> None:
         self.rendering = False
@@ -113,7 +113,7 @@ def _waiting() -> int:
 
 
 def _post_while_rendering(app, backend, bodies: list[dict], waiting: int) -> list[httpx.Response]:
-    """Send ``bodies`` at once while a render holds the engine, release it once ``waiting`` requests wait."""
+    """Submit concurrent requests; release the engine once ``waiting`` have queued."""
 
     async def run():
         transport = httpx.ASGITransport(app = app)
@@ -143,7 +143,7 @@ def test_waiting_compatible_requests_render_as_one_call_and_each_gets_its_own_im
     ]
     responses = _post_while_rendering(app, backend, bodies, waiting = 3)
     assert [len(r.json()["data"]) for r in responses] == [2, 1, 1]
-    # One call; requests join in the order they reach the batch, each keeping its images together.
+    # Arrival order may vary; each request's images stay together.
     [call] = backend.calls
     assert call["batch_size"] == 4 and call["seed"] is None
     assert call["prompt"] == call["prompts"][0]
@@ -153,7 +153,7 @@ def test_waiting_compatible_requests_render_as_one_call_and_each_gets_its_own_im
         ("a fox", 6),
         ("an owl", 20),
     ]
-    # Each request's gallery entries carry its own prompt, n, seeds and base seed, as a lone request's would.
+    # Preserve each request's gallery recipe.
     by_prompt = {}
     for record in saved:
         by_prompt.setdefault(record["prompt"], []).append(

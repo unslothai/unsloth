@@ -2040,8 +2040,7 @@ async def openai_create_video(
     current_subject: str = Depends(get_current_subject),
     hf_token: Optional[str] = Depends(get_hf_token),
 ):
-    """Create a video job. Unsloth Studio renders one video at a time: a job created while another renders,
-    or while others wait, is returned with status ``queued`` and starts in order once the engine is free."""
+    """Create a video job; start immediately or join the FIFO queue."""
     # The body must be parsed before the monitor row can name the model.
     from routes.inference import _monitored_media_request
 
@@ -2074,7 +2073,7 @@ class _VideoCreateInputs:
 async def _validated_video_inputs(
     body: VideoJobCreateRequest, reference: Optional[str]
 ) -> _VideoCreateInputs:
-    """The checks that need no model: run before a video starts or joins the queue, so bad input is a 400 now."""
+    """Validate model-independent inputs before starting or queueing a video."""
     try:
         size = _parse_openai_video_size(body.size)
     except ValueError as exc:
@@ -2140,7 +2139,7 @@ def _new_video_id() -> str:
 
 
 def _video_seed(body: VideoJobCreateRequest) -> int:
-    # Drawn once per video, so a queued start or a model_changed retry renders the same take.
+    # Keep the seed stable across queueing and retries.
     return body.seed if body.seed is not None else _secrets.randbelow(2**53)
 
 
@@ -2150,7 +2149,7 @@ async def _create_openai_video(
     current_subject: str,
     hf_token: Optional[str],
 ):
-    """Start one video now, or refuse with the busy 409 while another renders: the chat tool's path."""
+    """Start immediately or return 409 when busy (chat tool path)."""
     inputs = await _validated_video_inputs(body, reference)
     return await _start_openai_video(
         body,
@@ -2174,7 +2173,7 @@ async def _start_openai_video(
     seed: int,
     created_at: Optional[int] = None,
 ):
-    """Start one video now. A queued video passes the id, seed and creation time it was given when queued."""
+    """Start a video with the supplied job ID, seed, and creation time."""
     from core.inference.gpu_arbiter import VIDEO
     from core.inference.media_auto_switch import (
         maybe_auto_switch_media_model,
@@ -2379,17 +2378,14 @@ async def _start_openai_video(
 
 # Queue
 
-# OpenAI's POST /v1/videos accepts a video while others render and reports it "queued". Unsloth Studio
-# renders one video at a time, so a create that finds the video engine busy, or videos already waiting,
-# waits here first in first out and starts as its own account once the engine is free, through the same
-# _start_openai_video as an immediate start. The queue lives in this process: waiting videos do not
-# survive a restart.
+# In-memory FIFO queue; jobs start as their submitting account.
+# Waiting jobs are lost on restart.
 VIDEO_QUEUE_POLL_S = 2.0
 VIDEO_QUEUE_MAX = 64
 VIDEO_QUEUE_MAX_PER_ACCOUNT = 32
-# A model change that keeps refusing the start with the engine idle will not clear by waiting: give up.
+# Limit model_changed retries.
 VIDEO_QUEUE_IDLE_CONFLICTS = 12
-# Refusals that clear once the running video, or the model switch waiting on it, ends.
+# Retry these refusals after the current work finishes.
 _VIDEO_WAIT_CODES = ("model_busy", "model_loading", "gpu_busy")
 
 
@@ -2418,7 +2414,7 @@ _video_start_locks: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asynci
 
 
 def _video_start_lock() -> asyncio.Lock:
-    # One start at a time, so two drains never start two videos for one free engine.
+    # Serialize queued starts on each event loop.
     loop = asyncio.get_running_loop()
     lock = _video_start_locks.get(loop)
     if lock is None:
@@ -2433,7 +2429,7 @@ def _video_engine_busy() -> bool:
 
 
 def _refusal_error(exc: BaseException) -> dict:
-    """The OpenAI error fields of a refusal: its own for an HTTPException, a generic one otherwise."""
+    """Extract a refusal's code and message, sanitizing unexpected errors."""
     from core.inference.gpu_arbiter import GpuBusyForAnotherAccountError
 
     if isinstance(exc, GpuBusyForAnotherAccountError):
@@ -2452,8 +2448,7 @@ def _refusal_error(exc: BaseException) -> dict:
 
 
 def _video_wait(exc: BaseException) -> Optional[str]:
-    """'busy' for a refusal that clears once the running video ends, 'conflict' for a model change during
-    the start, None for one that fails the video."""
+    """Classify retryable refusals as 'busy' or 'conflict'; return None otherwise."""
     from core.inference.gpu_arbiter import GpuBusyForAnotherAccountError
     from core.inference.video_families import VIDEO_GENERATION_BUSY_MSG
 
@@ -2523,8 +2518,7 @@ async def _create_or_queue_openai_video(
 ) -> VideoJob:
     video_id = _new_video_id()
     seed = _video_seed(body)
-    # First come, first served: with videos already waiting, a new one joins the back of the queue.
-    # The queue is read after the busy check, so a video queued during that await is not overtaken.
+    # Recheck the queue after awaiting the busy probe to prevent overtaking.
     engine_busy = await asyncio.to_thread(_video_engine_busy)
     if not _VIDEO_QUEUE and not engine_busy:
         try:
@@ -2540,10 +2534,10 @@ async def _create_or_queue_openai_video(
         except Exception as exc:
             if _video_wait(exc) != "busy":
                 raise
-    # A start decodes the audio before rendering; a queued video is checked now, so it fails here instead.
+    # Reject invalid audio before queueing.
     await asyncio.to_thread(_refuse_unreadable_audio, inputs.reference_audios)
     model = await asyncio.to_thread(_queued_model_name, body)
-    # No await from here to the append: the limits hold against creates arriving together.
+    # No awaits between the capacity check and append.
     account = current_account()
     waiting = sum(1 for entry in _VIDEO_QUEUE if entry.account.account_id == account.account_id)
     if waiting >= VIDEO_QUEUE_MAX_PER_ACCOUNT or len(_VIDEO_QUEUE) >= VIDEO_QUEUE_MAX:
@@ -2575,7 +2569,7 @@ async def _create_or_queue_openai_video(
 
 
 def _fail_queued_video(entry: _QueuedVideo, exc: BaseException) -> None:
-    """Record a video whose start was refused as a failed job, so polling it ends."""
+    """Persist a refused start as a failed job."""
     error = _refusal_error(exc)
     job = _VideoJob(
         id = entry.id,
@@ -2601,14 +2595,13 @@ def _drop_queued_video(entry: _QueuedVideo) -> None:
 
 
 async def _settle_failed_queued_video(entry: _QueuedVideo, exc: BaseException) -> None:
-    """End a video whose start was refused: record it as failed so polling ends, unless it was deleted.
-    It stays marked starting while the record is written, so a DELETE then only flags it, and the record
-    is removed again once written."""
+    """Persist failure, then honor any concurrent delete.
+    Keep ``starting`` set during persistence so DELETE defers cleanup."""
     entry.starting = True
     try:
         if not entry.cancel_requested:
             await asyncio.to_thread(_fail_queued_video, entry, exc)
-    except Exception:  # noqa: BLE001 -- the queue must move on even when the record cannot be written
+    except Exception:  # noqa: BLE001 -- persistence failure must not block the queue
         logger.exception("Could not record queued video %s as failed", entry.id)
     finally:
         _drop_queued_video(entry)
@@ -2620,7 +2613,7 @@ async def _settle_failed_queued_video(entry: _QueuedVideo, exc: BaseException) -
 
 
 async def _start_queued_video(entry: _QueuedVideo) -> bool:
-    """Start the queue head as its own account; False while the video engine is still busy."""
+    """Start the queue head as its account; return False to retry later."""
     async with _video_start_lock():
         if entry not in _VIDEO_QUEUE:
             return True
@@ -2629,7 +2622,7 @@ async def _start_queued_video(entry: _QueuedVideo) -> bool:
             return True
         if await asyncio.to_thread(_video_engine_busy):
             return False
-        # A delete can land during that check; marking it starting with no await between keeps it from rendering.
+        # Recheck deletion after the await; claim the entry without yielding.
         if entry not in _VIDEO_QUEUE or entry.cancel_requested:
             _drop_queued_video(entry)
             return True
@@ -2648,7 +2641,7 @@ async def _start_queued_video(entry: _QueuedVideo) -> bool:
                     created_at = entry.created_at,
                 ),
             )
-        except Exception as exc:  # noqa: BLE001 -- a refused start ends this video, never the queue
+        except Exception as exc:  # noqa: BLE001 -- settle failures and continue draining
             wait = None if entry.cancel_requested else _video_wait(exc)
             if wait == "conflict":
                 entry.idle_conflicts += 1
@@ -2663,7 +2656,7 @@ async def _start_queued_video(entry: _QueuedVideo) -> bool:
             return True
         _drop_queued_video(entry)
     if entry.cancel_requested:
-        # Deleted while its start was in flight: delete it as a delete of the running video would.
+        # Honor a DELETE received during startup.
         try:
             await arun_as(entry.account, openai_delete_video(entry.id, entry.subject))
         except HTTPException as exc:
@@ -2679,7 +2672,7 @@ async def _drain_video_queue_once() -> None:
         await _start_queued_video(entry)
     except Exception as exc:  # noqa: BLE001 -- the next video must still start
         logger.exception("Could not settle queued video %s", entry.id)
-        # Still queued means it never started; a started video already has its own job record.
+        # A started job already has its own record.
         if entry in _VIDEO_QUEUE:
             await _settle_failed_queued_video(entry, exc)
 
@@ -2798,7 +2791,7 @@ async def openai_delete_video(video_id: str, current_subject: str = Depends(get_
 
     queued = _own_queued_video(video_id)
     if queued is not None:
-        # Not started: it leaves the queue and never runs. Mid-start: the drainer deletes it once started.
+        # Defer deletion until any in-flight start finishes.
         if queued.starting:
             queued.cancel_requested = True
         else:

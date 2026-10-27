@@ -1,19 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Compatible ``POST /v1/images/generations`` requests that wait for the GPU together render as one batch.
+"""Batch compatible waiting requests to ``POST /v1/images/generations``.
 
-An image engine renders one request at a time, so a request that arrives while another renders waits. The
-first compatible request to wait collects the ones that arrive behind it, and once the engine is free it runs
-them as one call over a list of prompts and seeds, then hands each request back its own images. Each image
-keeps its own generator, so its seed reproduces it as it would alone, up to batch-size-dependent kernel
-numerics (see ``diffusion_batched``).
-
-Nothing waits for more requests: one that finds the engine idle runs at once, exactly as before. A request
-that does not fit the batch runs alone. If the shared call fails for any reason, every request in it runs
-alone instead, so a refusal reads exactly as it would have without batching.
-
-Pure asyncio and torch-free: the caller supplies the busy check and the call that renders a batch.
+Idle requests run immediately. Failed batches fall back to individual requests;
+cancellation ends the batch. Per-image seeds are preserved, but batch size can
+affect numerical results (see ``diffusion_batched``).
 """
 
 from __future__ import annotations
@@ -30,14 +22,12 @@ from .diffusion_batched import SEED_MASK
 
 logger = get_logger(__name__)
 
-# Images in one batched call. A single request can already ask for 10 in one forward (n), so 4 stays well
-# inside what the memory planner and the OOM backoff are built for.
 BATCH_MAX_DEFAULT = 4
 POLL_S = 0.05
 
 
 class _RunAlone(Exception):
-    """The batch this request joined did not render; the request runs on its own instead."""
+    """Retry this request individually."""
 
 
 @dataclass
@@ -54,7 +44,7 @@ class _Batch:
     images: int = 0
 
 
-# Batches still collecting, keyed by what their requests share. Read and written on the event loop only.
+# Collecting batches; accessed only on the event loop.
 _OPEN: dict[Hashable, _Batch] = {}
 
 
@@ -66,13 +56,13 @@ def batch_max() -> int:
 
 
 def request_seeds(seed: Optional[int], n: int) -> list[int]:
-    """Per-image seeds as a lone request derives them: base, base+1, ...; a random base when none is sent."""
+    """Derive seeds from a supplied or random base, wrapping at SEED_MASK."""
     base = seed if seed is not None else secrets.randbelow(SEED_MASK + 1)
     return [(base + i) & SEED_MASK for i in range(n)]
 
 
 def _split(result: dict[str, Any], members: list[_Member]) -> list[dict[str, Any]]:
-    """Each member's own images and seeds, with its base seed as the batch seed a lone request reports."""
+    """Split images and seeds by request, restoring each request's base seed."""
     images = list(result.get("images") or [])
     seeds = list(result.get("seeds") or [])
     wanted = sum(len(member.seeds) for member in members)
@@ -109,9 +99,8 @@ async def generate(
     run_batch: Callable[[list[str], list[int]], Awaitable[dict[str, Any]]],
     shared_outcome: Callable[[BaseException], bool] = lambda exc: False,
 ) -> Optional[dict[str, Any]]:
-    """This request's result from a shared batch, or None for the caller to render it alone: the engine is
-    idle, the request does not fit, it led a batch nobody joined, or the shared call failed. A failure that
-    ``shared_outcome`` accepts (a cancel) is raised in every request instead, since rendering alone would undo it."""
+    """Return this request's batch result, or None to render individually.
+    Exceptions accepted by ``shared_outcome`` propagate to all batch members."""
     cap = batch_max()
     if cap <= 1 or n >= cap:
         return None
@@ -149,7 +138,7 @@ async def generate(
         )
         try:
             parts = _split(await run_batch(prompts, seeds), members)
-        except Exception as exc:  # noqa: BLE001 -- each request then runs alone and reports its own outcome
+        except Exception as exc:  # noqa: BLE001 -- fall back unless the outcome applies to every request
             if shared_outcome(exc):
                 for member in members[1:]:
                     if not member.future.done():

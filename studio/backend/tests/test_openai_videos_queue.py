@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""POST /v1/videos while a video renders: the new one is queued, as OpenAI reports it, and starts in order."""
+"""FIFO queueing for POST /v1/videos."""
 
 from __future__ import annotations
 
@@ -79,7 +79,7 @@ def test_queued_videos_start_first_in_first_out_and_a_new_create_waits_behind_th
     backend.gate.set()
     _wait_terminal(client, first["id"])
 
-    # The engine is free, but two videos are waiting: a new create joins the back instead of overtaking.
+    # New requests must join the queue even when the engine is idle.
     c = client.post("/v1/videos", json = {"prompt": "c"}).json()
     assert c["status"] == "queued"
     assert [entry.id for entry in video_routes._VIDEO_QUEUE] == [a["id"], b["id"], c["id"]]
@@ -117,7 +117,7 @@ def test_a_video_deleted_while_its_start_is_in_flight_is_deleted_once_started(
 
     async def _start_then_delete(*args, **kwargs):
         job = await real_start(*args, **kwargs)
-        # The client's DELETE lands while the start is still returning.
+        # Delete before startup returns.
         assert client.delete(f"/v1/videos/{queued['id']}").status_code == 200
         return job
 
@@ -214,7 +214,7 @@ def test_a_delete_during_the_drains_busy_check_keeps_the_video_from_starting(
     real_busy = video_routes._video_engine_busy
 
     def _busy_check_with_a_delete():
-        # The client's DELETE lands while the drain checks whether the engine is free.
+        # Delete during the busy check.
         assert client.delete(f"/v1/videos/{queued['id']}").status_code == 200
         return real_busy()
 
@@ -237,7 +237,7 @@ def test_a_delete_while_a_refused_start_is_recorded_leaves_no_failed_job(
     deleted = []
 
     def _fail_with_a_delete(entry, exc):
-        # The client's DELETE lands while the failed job is being written.
+        # Delete during failure persistence.
         deleted.append(client.delete(f"/v1/videos/{queued['id']}").status_code)
         real_fail(entry, exc)
 

@@ -14437,7 +14437,7 @@ class DiffusionBackend:
                     self._gen = None
 
     def generation_running(self) -> bool:
-        """Whether a generation or a model change holds the engine, so a request arriving now would wait."""
+        """Whether generation or a model change holds the generation lock."""
         return self._generate_lock.locked()
 
     def generate_progress(self) -> dict[str, Any]:

@@ -49989,9 +49989,8 @@ async def _batched_openai_images(
     guidance: float,
     expected_load: Any,
 ) -> Optional[dict]:
-    """This request's images from one diffusers call shared with the compatible requests waiting beside it,
-    or None to render it alone. sd.cpp and MLX take no prompt or seed lists, and FLUX.3 renders one image per
-    call anyway, so those always render alone."""
+    """Batch compatible diffusers requests, or return None to render individually.
+    sd.cpp and MLX lack prompt lists; FLUX.3 renders one image per call."""
     from core.inference import image_request_batching
     from core.inference.diffusion_engine_router import ENGINE_DIFFUSERS, active_engine_name
     from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
@@ -50008,7 +50007,7 @@ async def _batched_openai_images(
     def busy() -> bool:
         try:
             return bool(running())
-        except Exception:  # noqa: BLE001 -- unknown means render alone, as before
+        except Exception:  # noqa: BLE001 -- no busy signal; render individually
             return False
 
     async def run_batch(prompts: list[str], seeds: list[int]) -> dict:
@@ -50026,7 +50025,7 @@ async def _batched_openai_images(
             expected_load = expected_load,
         )
 
-    # Everything but the prompt, the seed and n must match, and the account too: the images land in its gallery.
+    # Group by account, model, and rendering parameters.
     key = (
         current_account_id(),
         expected_load,
@@ -50189,7 +50188,7 @@ async def _generate_openai_images(
         "workflow": result.get("workflow"),
         "created_at": float(created),
     }
-    # Every engine, and a shared batch's split, lists each image's own seed; "seed" is this request's base, kept as batch_seed.
+    # Keep per-image seeds and the request's base seed for gallery replay.
     per_image_seeds = result.get("seeds")
 
     def _persist() -> list[ImageGenerationData]:
