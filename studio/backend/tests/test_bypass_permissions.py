@@ -100,8 +100,10 @@ def captured_popen(monkeypatch):
     cap = {}
 
     def fake_popen(cmd, **kwargs):
-        cap["cmd"] = cmd
-        cap["kwargs"] = kwargs
+        # First call only: the tool launch. On macOS the child is then recorded through `ps`, which
+        # also goes through subprocess.Popen and would otherwise replace it.
+        cap.setdefault("cmd", cmd)
+        cap.setdefault("kwargs", kwargs)
         return _FakeProc()
 
     monkeypatch.setattr(tools.subprocess, "Popen", fake_popen)
