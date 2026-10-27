@@ -2517,6 +2517,8 @@ export const zhCN = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "运行时长",
         processMemory: "进程内存",
         notInstalled: "未安装",
@@ -3248,6 +3250,7 @@ export const zhCN = {
       desktopAppVersionUnavailable: "不可用",
       llamaCppVersion: "llama.cpp 版本",
       audioCppVersion: "audio.cpp 版本",
+      mlxVersion: "MLX 版本",
       whisperCppVersion: "whisper.cpp 版本",
       engines: {
         title: "引擎",
