@@ -447,3 +447,24 @@ def test_a_large_scratch_folder_does_not_hide_a_deletion(chat, monkeypatch):
 
     assert _rewind(history, ["u1"]).recreated == ["keep.txt"]
     assert (workdir / "keep.txt").read_text(encoding = "utf-8") == "v1\n"
+
+
+def test_an_upload_during_the_last_walk_is_never_undone_with_it(chat, monkeypatch):
+    workdir, history = chat
+    file_history.set_turn("chat-1", "u1")
+    _edit("seed.txt", "", "s\n")  # the baseline
+    real_walk, walks = tools._snapshot_workdir_files, []
+
+    def walk_with_an_upload(path, history = False):
+        walks.append(history)
+        if history and walks.count(True) == 2:
+            tools.save_sandbox_upload("s", "upload.txt", [b"mine\n"])
+        return real_walk(path, history = history)
+
+    monkeypatch.setattr(tools, "_snapshot_workdir_files", walk_with_an_upload)
+    execute_tool("python", {"code": "open('out.txt', 'w').write('x')"}, session_id = "s")
+    monkeypatch.setattr(tools, "_snapshot_workdir_files", real_walk)
+
+    report = _rewind(history, ["u1"])
+    assert "upload.txt" in report.conflicts
+    assert (workdir / "upload.txt").read_text(encoding = "utf-8") == "mine\n"

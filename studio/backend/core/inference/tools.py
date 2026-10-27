@@ -21143,10 +21143,10 @@ def _history_begin(call_token: dict, session_id: "str | None") -> None:
 def _history_end(call_token: "dict | None") -> None:
     if not call_token or call_token.get("history") is None:
         return
-    if call_token.get("shared"):
-        # An upload or another call wrote here meanwhile: what changed is not all this turn's.
-        call_token["history"].ambiguous = True
     snap, complete = _history_walk(call_token["workdir"])
+    # Checked after the walk: an upload landing mid-walk is in `snap` and must not read as ours.
+    if call_token.get("shared"):
+        call_token["history"].ambiguous = True
     file_history.end_call(call_token["history"], snap, complete = complete)
 
 
