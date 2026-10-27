@@ -136,6 +136,22 @@ def test_a_resumed_run_skips_the_warmup():
     assert rl_format.warmup_steps_to_run(settings, "dpo", resuming = False) == 0
 
 
+def test_the_reasoning_format_refuses_rows_with_tools():
+    from datasets import Dataset
+
+    from core.training.rl import reasoning_format_refusal
+
+    user = {"role": "user", "content": "q"}
+    plain = Dataset.from_list([{"prompt": [user]}])
+    assert reasoning_format_refusal(plain) is None
+    tool = {"type": "function", "function": {"name": "add"}}
+    assert "tool" in reasoning_format_refusal(
+        Dataset.from_list([{"prompt": [user], "tools": [tool]}])
+    )
+    turns = [user, {"role": "tool", "content": "4"}]
+    assert "tool" in reasoning_format_refusal(Dataset.from_list([{"prompt": turns}]))
+
+
 def test_resume_payload_keeps_the_reasoning_format_and_warmup():
     stored = {"reasoning_format": True, "format_warmup_steps": 50}
     req = _request(rl_settings = stored, max_seq_length = 2048)

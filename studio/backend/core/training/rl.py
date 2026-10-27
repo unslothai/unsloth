@@ -451,6 +451,26 @@ def render_prompts_without_thinking(
     return render_grpo_prompts(dataset, tokenizer, enable_thinking, num_proc)
 
 
+def reasoning_format_refusal(dataset) -> Optional[str]:
+    """The reasoning template renders only user and assistant text: no tool schemas or turns."""
+    columns = getattr(dataset, "column_names", None) or []
+    if "tools" in columns and any(_row_tools({"tools": t}) for t in dataset["tools"]):
+        has_tools = True
+    else:
+        has_tools = any(
+            isinstance(m, dict) and (m.get("role") == "tool" or m.get("tool_calls"))
+            for p in (dataset["prompt"] if "prompt" in columns else [])
+            if isinstance(p, list)
+            for m in p
+        )
+    if has_tools:
+        return (
+            "The reasoning format renders only user and assistant text, so this dataset's tool "
+            "schemas and tool turns would be lost. Turn the reasoning format off for it."
+        )
+    return None
+
+
 def _row_tools(row: dict):
     # Only structured (Arrow) schemas carry other rows' keys as None; JSON text keeps its own nulls.
     def decode(value):
@@ -928,6 +948,10 @@ def build_rl_trainer(
 
         if not reward_specs:
             raise ValueError("GRPO needs at least one reward selected.")
+        if settings.get("reasoning_format"):
+            refusal = reasoning_format_refusal(train_dataset)
+            if refusal:
+                raise ValueError(refusal)
         if tokenizer is not None:
             thinking = settings.get("enable_thinking")
             keep_turns = any(s.get("kind") == "python" for s in reward_specs)
