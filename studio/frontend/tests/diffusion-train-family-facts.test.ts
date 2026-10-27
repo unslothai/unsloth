@@ -50,3 +50,17 @@ test("keeps the family facts for Klein 4B and unknown custom bases", () => {
     "4B",
   );
 });
+
+
+test("mirror access overrides a gated family without losing its license note", () => {
+  const note = "Downloads from unsloth/FLUX.1-dev. The original model license still applies.";
+  const family = {
+    params: "12B", qlora_vram_gb: 16, gated: true,
+    base_specs: { "black-forest-labs/FLUX.1-dev": { gated: false, note } },
+  };
+  const facts = resolveDiffusionTrainingFacts(family, "black-forest-labs/FLUX.1-dev");
+  assert.equal(facts.gated, false);
+  assert.equal(facts.note, note);
+  assert.equal(facts.params, "12B");
+  assert.equal(facts.qlora_vram_gb, 16);
+});
