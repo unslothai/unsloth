@@ -76,6 +76,10 @@ def _for_training(module, class_name):
             "switch_training_mode",
             "_mode_switch_class_info",
             "_has_gradient_checkpointing",
+            # for_training's first call since #15368: a no-op unless the model is tensor parallel.
+            "_tensor_parallel_for_training",
+            "_is_unsloth_tensor_parallel",
+            "_unsloth_model_parallel_marker",
         )
     ]
     for node in shared:
