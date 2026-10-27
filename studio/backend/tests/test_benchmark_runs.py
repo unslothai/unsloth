@@ -265,7 +265,9 @@ def test_a_sweep_refuses_other_loads_until_it_lets_go(monkeypatch):
     client.delete("/api/benchmarks/lease", params = {"holder": mine["holder"]})
     assert client.post("/api/inference/load").status_code == 200
     client.post("/api/benchmarks/lease", json = mine)
-    assert TestClient(app).post("/api/inference/load").status_code == 200  # the route's auth decides
+    assert (
+        TestClient(app).post("/api/inference/load").status_code == 200
+    )  # the route's auth decides
     client.delete("/api/benchmarks/lease", params = {"holder": mine["holder"]})
     # Only sweeps fence loads: llama-bench and Evals manage the server themselves.
     client.post("/api/benchmarks/lease", json = {"holder": "tab-bbbbbbbb", "kind": "llama-bench"})

@@ -274,7 +274,9 @@ def test_studio_scoring_requests_use_neutral_defaults_without_mutating_payload(m
     assert seen[-1]["repeat_penalty"] == 1.0
     assert "presence_penalty" not in payload
     # A value the request sets wins over the neutral default.
-    lm._post_with_retries(lm.completions_url, {"prompt": [1], "presence_penalty": 0.25, "repeat_penalty": 1.1})
+    lm._post_with_retries(
+        lm.completions_url, {"prompt": [1], "presence_penalty": 0.25, "repeat_penalty": 1.1}
+    )
     assert (seen[-1]["presence_penalty"], seen[-1]["repeat_penalty"]) == (0.25, 1.1)
     lm._tokenize("hello", False)
     assert "presence_penalty" not in seen[-1]
