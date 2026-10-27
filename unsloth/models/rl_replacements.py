@@ -2928,7 +2928,11 @@ def _unsloth_vllm_active_adapters(model):
     configs = getattr(model, "peft_config", None) or {}
     active = getattr(model, "active_adapters", None)
     if callable(active):
-        active = active()
+        try:
+            active = active()
+        except ValueError:
+            # transformers' PeftAdapterMixin raises on a model with no adapter (full finetuning).
+            active = None
     if isinstance(active, str):
         active = [active]
     return set(active) if active else set(configs)

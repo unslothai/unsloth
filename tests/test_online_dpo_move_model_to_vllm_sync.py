@@ -138,8 +138,14 @@ def _trainer(model, shared_weights = False):
     return trainer, rec
 
 
+class _NoAdapterModel(torch.nn.Linear):
+    # transformers PeftAdapterMixin.active_adapters on a model with no adapter loaded
+    def active_adapters(self):
+        raise ValueError("No adapter loaded. Please load an adapter first.")
+
+
 def test_trl_colocated_vllm_receives_dense_weights():
-    trainer, rec = _trainer(torch.nn.Linear(2, 2))
+    trainer, rec = _trainer(_NoAdapterModel(2, 2))
     trainer._move_model_to_vllm()
     assert rec.loaded == ["weight", "bias"]
     assert rec.resets == 1
