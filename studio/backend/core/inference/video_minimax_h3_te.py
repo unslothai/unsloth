@@ -465,6 +465,17 @@ def _round_up(value: int, multiple: int) -> int:
     return (value + multiple - 1) // multiple * multiple
 
 
+def _pinned_arena(size: int) -> Any:
+    import torch
+
+    from .diffusion_memory import registered_pinned_empty
+
+    arena = registered_pinned_empty(size)
+    if arena is not None:
+        return arena
+    return torch.empty(size, dtype = torch.uint8, pin_memory = True)
+
+
 def pin_module_in_place(
     module: Any,
     *,
@@ -500,11 +511,7 @@ def pin_module_in_place(
         slot = next((a for a in arenas if a[0].numel() - a[1] >= need), None)
         if slot is None:
             size = max(int(arena_bytes), 1 << (need - 1).bit_length())
-            arena = (
-                _arena_factory(size)
-                if _arena_factory is not None
-                else torch.empty(size, dtype = torch.uint8, pin_memory = True)
-            )
+            arena = _arena_factory(size) if _arena_factory is not None else _pinned_arena(size)
             slot = [arena, 0]
             arenas.append(slot)
         offset = slot[1]
