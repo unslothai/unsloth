@@ -25,6 +25,7 @@ import secrets as _secrets
 import threading
 import time as _time
 import uuid
+import weakref
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Annotated, Any, Literal, Optional
@@ -43,7 +44,7 @@ from core.inference.model_ids import public_model_id
 from hub.dependencies import get_hf_token
 from hub.services.models import account_access
 from hub.services.models.account_access import media_link_account, media_link_target
-from utils.account_context import run_as
+from utils.account_context import AccountContext, arun_as, current_account, run_as
 from loggers import get_logger
 from loggers.media_progress import (
     byte_fraction,
@@ -1776,6 +1777,9 @@ def _await_generate_settled(video_id: str, timeout: float = _DELETE_SETTLE_TIMEO
 def _lookup_video(video_id: str) -> Optional[VideoJob]:
     from core.inference import video_gallery
 
+    queued = _own_queued_video(video_id)
+    if queued is not None:
+        return _queued_video_job(queued)
     _hydrate_job(video_id)
     _sync_jobs()
     with _jobs_lock:
@@ -1807,6 +1811,8 @@ def _all_videos() -> list[VideoJob]:
         for job in jobs.values()
         if job.id not in seen and job.status != "completed"
     )
+    seen.update(video.id for video in listed)
+    listed.extend(video for video in _own_queued_videos() if video.id not in seen)
     return listed
 
 
@@ -2034,6 +2040,8 @@ async def openai_create_video(
     current_subject: str = Depends(get_current_subject),
     hf_token: Optional[str] = Depends(get_hf_token),
 ):
+    """Create a video job. Unsloth Studio renders one video at a time: a job created while another renders,
+    or while others wait, is returned with status ``queued`` and starts in order once the engine is free."""
     # The body must be parsed before the monitor row can name the model.
     from routes.inference import _monitored_media_request
 
@@ -2048,32 +2056,25 @@ async def openai_create_video(
         prompt = body.prompt,
         subject = current_subject,
     ) as monitor_id:
-        job = await _create_openai_video(body, reference, current_subject, hf_token)
+        inputs = await _validated_video_inputs(body, reference)
+        job = await _create_or_queue_openai_video(
+            body, reference, inputs, current_subject, hf_token
+        )
         api_monitor.relabel(monitor_id, job.model)
         return job
 
 
-# Split out so the API monitor can wrap the handler without reindenting, like the OpenAI image route.
-async def _create_openai_video(
-    body: VideoJobCreateRequest,
-    reference: Optional[str],
-    current_subject: str,
-    hf_token: Optional[str],
-):
-    from core.inference.gpu_arbiter import VIDEO
-    from core.inference.media_auto_switch import (
-        maybe_auto_switch_media_model,
-        resident_answers_media_request,
-    )
-    from core.inference.video import get_video_backend
-    from core.inference.video_families import (
-        VIDEO_GENERATION_BUSY_MSG,
-        VIDEO_MODEL_CHANGED_MSG,
-        VIDEO_NOT_LOADED_MSG,
-        VideoShapeError,
-    )
-    from utils.openai_auto_switch_settings import get_media_auto_switch_enabled
+@dataclass
+class _VideoCreateInputs:
+    size: Optional[tuple[int, int]]
+    seconds: Optional[float]
+    reference_audios: Optional[list[str]]
 
+
+async def _validated_video_inputs(
+    body: VideoJobCreateRequest, reference: Optional[str]
+) -> _VideoCreateInputs:
+    """The checks that need no model: run before a video starts or joins the queue, so bad input is a 400 now."""
     try:
         size = _parse_openai_video_size(body.size)
     except ValueError as exc:
@@ -2082,7 +2083,6 @@ async def _create_openai_video(
         seconds = _parse_openai_video_seconds(body.seconds)
     except ValueError as exc:
         raise _openai_video_error(400, str(exc), param = "seconds")
-    width, height = size if size is not None else (None, None)
     if reference is not None and body.reference_images:
         raise _openai_video_error(
             400,
@@ -2132,7 +2132,65 @@ async def _create_openai_video(
             )
         except Exception:  # noqa: BLE001 -- any decode failure is client input feedback
             raise _openai_video_error(400, f"{param} is not a readable image.", param = param)
+    return _VideoCreateInputs(size = size, seconds = seconds, reference_audios = reference_audios)
 
+
+def _new_video_id() -> str:
+    return _VIDEO_JOB_ID_PREFIX + uuid.uuid4().hex
+
+
+def _video_seed(body: VideoJobCreateRequest) -> int:
+    # Drawn once per video, so a queued start or a model_changed retry renders the same take.
+    return body.seed if body.seed is not None else _secrets.randbelow(2**53)
+
+
+async def _create_openai_video(
+    body: VideoJobCreateRequest,
+    reference: Optional[str],
+    current_subject: str,
+    hf_token: Optional[str],
+):
+    """Start one video now, or refuse with the busy 409 while another renders: the chat tool's path."""
+    inputs = await _validated_video_inputs(body, reference)
+    return await _start_openai_video(
+        body,
+        reference,
+        inputs,
+        current_subject,
+        hf_token,
+        video_id = _new_video_id(),
+        seed = _video_seed(body),
+    )
+
+
+async def _start_openai_video(
+    body: VideoJobCreateRequest,
+    reference: Optional[str],
+    inputs: _VideoCreateInputs,
+    current_subject: str,
+    hf_token: Optional[str],
+    *,
+    video_id: str,
+    seed: int,
+    created_at: Optional[int] = None,
+):
+    """Start one video now. A queued video passes the id, seed and creation time it was given when queued."""
+    from core.inference.gpu_arbiter import VIDEO
+    from core.inference.media_auto_switch import (
+        maybe_auto_switch_media_model,
+        resident_answers_media_request,
+    )
+    from core.inference.video import get_video_backend
+    from core.inference.video_families import (
+        VIDEO_GENERATION_BUSY_MSG,
+        VIDEO_MODEL_CHANGED_MSG,
+        VIDEO_NOT_LOADED_MSG,
+        VideoShapeError,
+    )
+    from utils.openai_auto_switch_settings import get_media_auto_switch_enabled
+
+    size, seconds, reference_audios = inputs.size, inputs.seconds, inputs.reference_audios
+    width, height = size if size is not None else (None, None)
     audio_checked = [False]
 
     def _refuse_unservable_request(pick) -> None:
@@ -2210,9 +2268,6 @@ async def _create_openai_video(
         await asyncio.to_thread(_refuse_unreadable_audio, reference_audios)
 
     backend = get_video_backend()
-    video_id = _VIDEO_JOB_ID_PREFIX + uuid.uuid4().hex
-    # Drawn once, outside the retry, so a model_changed retry renders the same take.
-    seed = body.seed if body.seed is not None else _secrets.randbelow(2**53)
     # Managed callers are authorized against the exact resident state, pinned to the reservation;
     # on a mismatch, re-authorize once and retry, as /video/generate does.
     # An explicit fps is judged against the family, so it is pinned to the state it was judged on.
@@ -2309,7 +2364,7 @@ async def _create_openai_video(
         seconds_text = body.seconds or "auto"
     job = _VideoJob(
         id = video_id,
-        created_at = int(_time.time()),
+        created_at = created_at if created_at is not None else int(_time.time()),
         prompt = body.prompt,
         model = public_model_id(
             str(reserved.get("model") or status.get("repo_id") or body.model or "video")
@@ -2320,6 +2375,307 @@ async def _create_openai_video(
     )
     _remember_job(job)
     return _job_to_openai(job)
+
+
+# Queue
+
+# OpenAI's POST /v1/videos accepts a video while others render and reports it "queued". Unsloth Studio
+# renders one video at a time, so a create that finds the video engine busy, or videos already waiting,
+# waits here first in first out and starts as its own account once the engine is free, through the same
+# _start_openai_video as an immediate start. The queue lives in this process: waiting videos do not
+# survive a restart.
+VIDEO_QUEUE_POLL_S = 2.0
+VIDEO_QUEUE_MAX = 64
+VIDEO_QUEUE_MAX_PER_ACCOUNT = 32
+# A model change that keeps refusing the start with the engine idle will not clear by waiting: give up.
+VIDEO_QUEUE_IDLE_CONFLICTS = 12
+# Refusals that clear once the running video, or the model switch waiting on it, ends.
+_VIDEO_WAIT_CODES = ("model_busy", "model_loading", "gpu_busy")
+
+
+@dataclass
+class _QueuedVideo:
+    id: str
+    account: AccountContext
+    subject: str
+    hf_token: Optional[str]
+    body: VideoJobCreateRequest
+    reference: Optional[str]
+    inputs: _VideoCreateInputs
+    seed: int
+    created_at: int
+    model: str
+    starting: bool = False
+    cancel_requested: bool = False
+    idle_conflicts: int = 0
+
+
+_VIDEO_QUEUE: list[_QueuedVideo] = []
+_video_drainer: Optional[asyncio.Task] = None
+_video_start_locks: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _video_start_lock() -> asyncio.Lock:
+    # One start at a time, so two drains never start two videos for one free engine.
+    loop = asyncio.get_running_loop()
+    lock = _video_start_locks.get(loop)
+    if lock is None:
+        lock = _video_start_locks[loop] = asyncio.Lock()
+    return lock
+
+
+def _video_engine_busy() -> bool:
+    from core.inference.video import get_video_backend
+    progress = get_video_backend().generate_progress() or {}
+    return bool(progress.get("active"))
+
+
+def _refusal_error(exc: BaseException) -> dict:
+    """The OpenAI error fields of a refusal: its own for an HTTPException, a generic one otherwise."""
+    from core.inference.gpu_arbiter import GpuBusyForAnotherAccountError
+
+    if isinstance(exc, GpuBusyForAnotherAccountError):
+        return {"code": "gpu_busy", "message": str(exc)}
+    if isinstance(exc, HTTPException):
+        detail = exc.detail
+        if isinstance(detail, dict) and isinstance(detail.get("error"), dict):
+            return {
+                "code": detail["error"].get("code"),
+                "message": str(detail["error"].get("message") or "Video generation failed."),
+            }
+        if isinstance(detail, dict):
+            return {"code": detail.get("error"), "message": str(detail.get("message") or "")}
+        return {"code": None, "message": str(detail)}
+    return {"code": None, "message": "Video generation failed."}
+
+
+def _video_wait(exc: BaseException) -> Optional[str]:
+    """'busy' for a refusal that clears once the running video ends, 'conflict' for a model change during
+    the start, None for one that fails the video."""
+    from core.inference.gpu_arbiter import GpuBusyForAnotherAccountError
+    from core.inference.video_families import VIDEO_GENERATION_BUSY_MSG
+
+    if isinstance(exc, GpuBusyForAnotherAccountError):
+        return "busy"
+    if not isinstance(exc, HTTPException) or exc.status_code not in (409, 503):
+        return None
+    error = _refusal_error(exc)
+    if error["message"] == VIDEO_GENERATION_BUSY_MSG or error["code"] in _VIDEO_WAIT_CODES:
+        return "busy"
+    return "conflict" if error["code"] == "model_changed" else None
+
+
+def _queued_video_job(entry: _QueuedVideo) -> VideoJob:
+    size = entry.inputs.size
+    return VideoJob(
+        id = entry.id,
+        model = entry.model,
+        status = "queued",
+        progress = 0,
+        created_at = entry.created_at,
+        prompt = entry.body.prompt,
+        size = f"{size[0]}x{size[1]}" if size is not None else "auto",
+        seconds = entry.body.seconds or "auto",
+        seed = entry.seed,
+    )
+
+
+def _own_queued_video(video_id: str) -> Optional[_QueuedVideo]:
+    account_id = current_account_id()
+    return next(
+        (
+            entry
+            for entry in list(_VIDEO_QUEUE)
+            if entry.id == video_id
+            and entry.account.account_id == account_id
+            and not entry.cancel_requested
+        ),
+        None,
+    )
+
+
+def _own_queued_videos() -> list[VideoJob]:
+    account_id = current_account_id()
+    return [
+        _queued_video_job(entry)
+        for entry in list(_VIDEO_QUEUE)
+        if entry.account.account_id == account_id and not entry.cancel_requested
+    ]
+
+
+def _queued_model_name(body: VideoJobCreateRequest) -> str:
+    from core.inference.video import get_video_backend
+
+    if isinstance(body.model, str) and body.model.strip():
+        return public_model_id(body.model) or body.model
+    resident = get_video_backend().status().get("repo_id")
+    return public_model_id(str(resident)) if resident else "video"
+
+
+async def _create_or_queue_openai_video(
+    body: VideoJobCreateRequest,
+    reference: Optional[str],
+    inputs: _VideoCreateInputs,
+    current_subject: str,
+    hf_token: Optional[str],
+) -> VideoJob:
+    video_id = _new_video_id()
+    seed = _video_seed(body)
+    # First come, first served: with videos already waiting, a new one joins the back of the queue.
+    if not _VIDEO_QUEUE and not await asyncio.to_thread(_video_engine_busy):
+        try:
+            return await _start_openai_video(
+                body,
+                reference,
+                inputs,
+                current_subject,
+                hf_token,
+                video_id = video_id,
+                seed = seed,
+            )
+        except Exception as exc:
+            if _video_wait(exc) != "busy":
+                raise
+    # A start decodes the audio before rendering; a queued video is checked now, so it fails here instead.
+    await asyncio.to_thread(_refuse_unreadable_audio, inputs.reference_audios)
+    account = current_account()
+    waiting = sum(1 for entry in _VIDEO_QUEUE if entry.account.account_id == account.account_id)
+    if waiting >= VIDEO_QUEUE_MAX_PER_ACCOUNT or len(_VIDEO_QUEUE) >= VIDEO_QUEUE_MAX:
+        full = (
+            f"{VIDEO_QUEUE_MAX_PER_ACCOUNT} videos are already waiting for this account"
+            if waiting >= VIDEO_QUEUE_MAX_PER_ACCOUNT
+            else f"{VIDEO_QUEUE_MAX} videos are already waiting"
+        )
+        raise _openai_video_error(
+            429,
+            f"{full} in Unsloth Studio; create this one once some have started.",
+            code = "rate_limit_exceeded",
+        )
+    entry = _QueuedVideo(
+        id = video_id,
+        account = account,
+        subject = current_subject,
+        hf_token = hf_token,
+        body = body,
+        reference = reference,
+        inputs = inputs,
+        seed = seed,
+        created_at = int(_time.time()),
+        model = await asyncio.to_thread(_queued_model_name, body),
+    )
+    _VIDEO_QUEUE.append(entry)
+    _ensure_video_drainer()
+    return _queued_video_job(entry)
+
+
+def _fail_queued_video(entry: _QueuedVideo, exc: BaseException) -> None:
+    """Record a video whose start was refused as a failed job, so polling it ends."""
+    error = _refusal_error(exc)
+    job = _VideoJob(
+        id = entry.id,
+        created_at = entry.created_at,
+        prompt = entry.body.prompt,
+        model = entry.model,
+        size = _queued_video_job(entry).size,
+        seconds = entry.body.seconds or "auto",
+        seed = entry.seed,
+        status = "failed",
+        completed_at = int(_time.time()),
+        error = {
+            "code": error["code"] or _VIDEO_FAILED_CODE,
+            "message": error["message"] or "Video generation failed.",
+        },
+    )
+    run_as(entry.account, _remember_job, job)
+
+
+def _drop_queued_video(entry: _QueuedVideo) -> None:
+    if entry in _VIDEO_QUEUE:
+        _VIDEO_QUEUE.remove(entry)
+
+
+async def _start_queued_video(entry: _QueuedVideo) -> bool:
+    """Start the queue head as its own account; False while the video engine is still busy."""
+    async with _video_start_lock():
+        if entry not in _VIDEO_QUEUE:
+            return True
+        if entry.cancel_requested:
+            _drop_queued_video(entry)
+            return True
+        if await asyncio.to_thread(_video_engine_busy):
+            return False
+        entry.starting = True
+        try:
+            await arun_as(
+                entry.account,
+                _start_openai_video(
+                    entry.body,
+                    entry.reference,
+                    entry.inputs,
+                    entry.subject,
+                    entry.hf_token,
+                    video_id = entry.id,
+                    seed = entry.seed,
+                    created_at = entry.created_at,
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001 -- a refused start ends this video, never the queue
+            entry.starting = False
+            if entry.cancel_requested:
+                _drop_queued_video(entry)
+                return True
+            wait = _video_wait(exc)
+            if wait == "busy":
+                return False
+            if wait == "conflict":
+                entry.idle_conflicts += 1
+                if entry.idle_conflicts < VIDEO_QUEUE_IDLE_CONFLICTS:
+                    return False
+            if not isinstance(exc, HTTPException):
+                logger.exception("Could not start queued video %s", entry.id)
+            await asyncio.to_thread(_fail_queued_video, entry, exc)
+            _drop_queued_video(entry)
+            return True
+        _drop_queued_video(entry)
+    if entry.cancel_requested:
+        # Deleted while its start was in flight: delete it as a delete of the running video would.
+        try:
+            await arun_as(entry.account, openai_delete_video(entry.id, entry.subject))
+        except HTTPException as exc:
+            logger.warning("openai_videos.queued_delete_failed: %s", exc.detail)
+    return True
+
+
+async def _drain_video_queue_once() -> None:
+    if not _VIDEO_QUEUE:
+        return
+    entry = _VIDEO_QUEUE[0]
+    try:
+        await _start_queued_video(entry)
+    except Exception as exc:  # noqa: BLE001 -- the next video must still start
+        logger.exception("Could not settle queued video %s", entry.id)
+        entry.starting = False
+        _drop_queued_video(entry)
+        try:
+            await asyncio.to_thread(_fail_queued_video, entry, exc)
+        except Exception:  # noqa: BLE001
+            logger.exception("Could not record queued video %s as failed", entry.id)
+
+
+async def _drain_video_queue() -> None:
+    while _VIDEO_QUEUE:
+        head = _VIDEO_QUEUE[0]
+        await _drain_video_queue_once()
+        if _VIDEO_QUEUE and _VIDEO_QUEUE[0] is head:
+            await asyncio.sleep(VIDEO_QUEUE_POLL_S)
+
+
+def _ensure_video_drainer() -> None:
+    global _video_drainer
+    if _video_drainer is None or _video_drainer.done():
+        _video_drainer = asyncio.get_running_loop().create_task(_drain_video_queue())
 
 
 @openai_router.get("/videos", response_model = VideoJobListResponse)
@@ -2420,6 +2776,14 @@ async def openai_delete_video(video_id: str, current_subject: str = Depends(get_
     from core.inference import video_gallery
     from core.inference.video import get_video_backend
 
+    queued = _own_queued_video(video_id)
+    if queued is not None:
+        # Not started: it leaves the queue and never runs. Mid-start: the drainer deletes it once started.
+        if queued.starting:
+            queued.cancel_requested = True
+        else:
+            _drop_queued_video(queued)
+        return VideoJobDeleteResponse(id = video_id)
     video = await asyncio.to_thread(_lookup_video, video_id)
     if video is None:
         raise _not_found(video_id)

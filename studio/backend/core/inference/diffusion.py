@@ -14436,6 +14436,10 @@ class DiffusionBackend:
                     # Sole clear of published progress, on every exit.
                     self._gen = None
 
+    def generation_running(self) -> bool:
+        """Whether a generation or a model change holds the engine, so a request arriving now would wait."""
+        return self._generate_lock.locked()
+
     def generate_progress(self) -> dict[str, Any]:
         """Live per-step progress for an in-flight generation (lock-free read)."""
         gen = self._gen
