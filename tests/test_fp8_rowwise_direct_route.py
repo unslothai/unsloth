@@ -21,19 +21,32 @@ def spies(monkeypatch):
         F8, "_fp8_rowwise_direct", lambda X, w, s, b, route: calls.append(route) or "direct"
     )
     monkeypatch.setattr(
-        F8, "_fbgemm_fp8_linear_compiled", lambda X, w, s, b = None: calls.append("compiled") or "compiled"
+        F8,
+        "_fbgemm_fp8_linear_compiled",
+        lambda X, w, s, b = None: calls.append("compiled") or "compiled",
     )
     return calls
 
 
-def _args(rows, N = 256, K = 512, requires_grad = False):
+def _args(
+    rows,
+    N = 256,
+    K = 512,
+    requires_grad = False,
+):
     X = torch.empty(1, rows, K, device = "cuda", dtype = torch.bfloat16, requires_grad = requires_grad)
-    w = torch.nn.Parameter(torch.empty(N, K, device = "cuda", dtype = torch.float8_e4m3fn), requires_grad = False)
-    s = torch.nn.Parameter(torch.empty(N, 1, device = "cuda", dtype = torch.float32), requires_grad = False)
+    w = torch.nn.Parameter(
+        torch.empty(N, K, device = "cuda", dtype = torch.float8_e4m3fn), requires_grad = False
+    )
+    s = torch.nn.Parameter(
+        torch.empty(N, 1, device = "cuda", dtype = torch.float32), requires_grad = False
+    )
     return X, w, s
 
 
-@pytest.mark.parametrize("rows, route", [(17, "dequant"), (64, "dequant"), (65, "scaled_mm"), (4096, "scaled_mm")])
+@pytest.mark.parametrize(
+    "rows, route", [(17, "dequant"), (64, "dequant"), (65, "scaled_mm"), (4096, "scaled_mm")]
+)
 def test_inference_calls_take_the_direct_path(spies, rows, route):
     with FakeTensorMode(), torch.no_grad():
         assert F8.fbgemm_fp8_linear(*_args(rows)) == "direct"
@@ -85,7 +98,10 @@ def test_direct_path_is_bitwise_equal_to_the_compiled_path(dtype):
     with torch.no_grad():
         for N, K in ((256, 512), (768, 2048), (512, 5120), (208, 4112), (256, 16400)):
             w = (torch.randn(N, K, device = "cuda") * 0.5).to(torch.float8_e4m3fn)
-            for s in (torch.rand(N, 1, device = "cuda") * 0.01 + 1e-3, (torch.rand(N, 1, device = "cuda") + 0.5).to(torch.bfloat16)):
+            for s in (
+                torch.rand(N, 1, device = "cuda") * 0.01 + 1e-3,
+                (torch.rand(N, 1, device = "cuda") + 0.5).to(torch.bfloat16),
+            ):
                 for rows in (17, 64, 65, 300):
                     X = (torch.randn(2, rows, K, device = "cuda") * 3).to(dtype)
                     X[0, 0] = 0
@@ -100,8 +116,19 @@ def test_direct_path_is_bitwise_equal_to_the_compiled_path(dtype):
                             elif hasattr(w, "input_scale_ub"):
                                 del w.input_scale_ub
                             route = F8._fp8_rowwise_direct_route(X, w, s)
-                            assert route == ("scaled_mm" if 2 * rows > 64 and N % 16 == 0 and K % 16 == 0 else "dequant")
+                            assert route == (
+                                "scaled_mm"
+                                if 2 * rows > 64 and N % 16 == 0 and K % 16 == 0
+                                else "dequant"
+                            )
                             ref = F8._fbgemm_fp8_linear_compiled(X, w, s, b)
                             out = F8.fbgemm_fp8_linear(X, w, s, b)
                             assert out.shape == ref.shape and out.dtype == ref.dtype
-                            assert torch.equal(out.view(torch.int16), ref.view(torch.int16)), (N, K, rows, s.dtype, b is None, ub)
+                            assert torch.equal(out.view(torch.int16), ref.view(torch.int16)), (
+                                N,
+                                K,
+                                rows,
+                                s.dtype,
+                                b is None,
+                                ub,
+                            )

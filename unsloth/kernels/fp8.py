@@ -2141,9 +2141,7 @@ def _fp8_act_quant_per_row_kernel(
         row_max = tl.minimum(
             row_max, tl.load(ub_ptr).to(tl.float32), propagate_nan = tl.PropagateNan.ALL
         )
-    scale = tl.maximum(
-        row_max / 448.0, 1.0 / (448.0 * 512.0), propagate_nan = tl.PropagateNan.ALL
-    )
+    scale = tl.maximum(row_max / 448.0, 1.0 / (448.0 * 512.0), propagate_nan = tl.PropagateNan.ALL)
     if ONE_BLOCK:
         y = tl.maximum(x / scale[:, None], -448.0, propagate_nan = tl.PropagateNan.ALL)
         y = tl.minimum(y, 448.0, propagate_nan = tl.PropagateNan.ALL)
