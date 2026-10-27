@@ -5081,6 +5081,7 @@ class MLXInferenceBackend:
             "token": hf_token,
             "trust_remote_code": trust_remote_code,
             "text_only": not use_vlm,
+            "quantize_embeddings": not is_lora,
         }
         if is_distributed:
             if parallel_mode == "pipeline":
