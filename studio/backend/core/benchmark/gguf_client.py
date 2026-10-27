@@ -3,11 +3,10 @@
 
 """lm_eval's ``gguf`` backend, pointed at Studio instead of a bare llama-server.
 
-The upstream backend sends every request with module-level ``requests`` calls and
-no headers, and tokenizes through ``<server>/tokenize``. Studio requires a bearer
-key on every route and only serves the tokenize passthrough under ``/v1``, so the
-stock backend gets a 401 from ``/props`` and a 404 from ``/tokenize``. This
-subclass sends the run's key and uses ``/v1/tokenize``; scoring is unchanged.
+The upstream backend tokenizes through ``<server>/tokenize``. Studio requires a
+bearer key on every route and serves tokenize under ``/v1``. This subclass
+sends the run's key, uses ``/v1/tokenize``, and supplies neutral
+sampling defaults so evaluation does not inherit Studio's chat recommendations.
 """
 
 import logging
@@ -44,6 +43,19 @@ class StudioGGUFLM(GGUFLM):
         retries = 3,
         delay = 5,
     ):
+        if url == self.completions_url:
+            # Omitted values otherwise inherit per-model chat recommendations
+            # in Studio's completions route. Penalties affect greedy decoding
+            # too, and must also stay neutral for teacher-forced scoring.
+            payload = {
+                "presence_penalty": 0.0,
+                "frequency_penalty": 0.0,
+                "repeat_penalty": 1.0,
+                "top_p": 1.0,
+                "top_k": 0,
+                "min_p": 0.0,
+                **payload,
+            }
         for _ in range(retries):
             try:
                 response = self._session.post(url, json = payload, timeout = self.timeout)

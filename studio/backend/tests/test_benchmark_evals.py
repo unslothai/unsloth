@@ -231,6 +231,55 @@ def test_studio_gguf_backend_authenticates_and_uses_v1_tokenize():
     assert ("GET", "/props", "Bearer sk-test") in seen
 
 
+def test_studio_evals_do_not_inherit_chat_sampling(monkeypatch):
+    pytest.importorskip("lm_eval.models.gguf")
+    from core.benchmark.gguf_client import StudioGGUFLM
+
+    lm = StudioGGUFLM(base_url = "http://localhost:8888", parallel = 1)
+    seen = []
+
+    def post(url, *, json, timeout):
+        seen.append((url, json))
+        return SimpleNamespace(
+            raise_for_status = lambda: None,
+            json = lambda: {"choices": [{"text": " answer\n\n"}]},
+        )
+
+    monkeypatch.setattr(lm._session, "post", post)
+    # The pinned harness strips the reply; its whitespace handling is not what this test is about.
+    assert lm._generate_one(("Question: 2+2?\nAnswer:", {})).strip() == "answer"
+    body = seen[0][1]
+    assert body["presence_penalty"] == 0.0
+    assert body["frequency_penalty"] == 0.0
+    assert body["repeat_penalty"] == 1.0
+    assert (body["top_p"], body["top_k"], body["min_p"]) == (1.0, 0, 0.0)
+    assert body["temperature"] == 0.0
+
+
+def test_studio_scoring_requests_use_neutral_defaults_without_mutating_payload(monkeypatch):
+    pytest.importorskip("lm_eval.models.gguf")
+    from core.benchmark.gguf_client import StudioGGUFLM
+
+    lm = StudioGGUFLM(base_url = "http://localhost:8888", parallel = 1)
+    seen = []
+
+    def post(url, *, json, timeout):
+        seen.append(json)
+        return SimpleNamespace(raise_for_status = lambda: None, json = lambda: {"tokens": [1]})
+
+    monkeypatch.setattr(lm._session, "post", post)
+    payload = {"prompt": [1, 2], "logit_bias": [[3, 100]], "max_tokens": 1}
+    lm._post_with_retries(lm.completions_url, payload)
+    assert seen[-1]["presence_penalty"] == 0.0
+    assert seen[-1]["repeat_penalty"] == 1.0
+    assert "presence_penalty" not in payload
+    # A value the request sets wins over the neutral default.
+    lm._post_with_retries(lm.completions_url, {"prompt": [1], "presence_penalty": 0.25, "repeat_penalty": 1.1})
+    assert (seen[-1]["presence_penalty"], seen[-1]["repeat_penalty"]) == (0.25, 1.1)
+    lm._tokenize("hello", False)
+    assert "presence_penalty" not in seen[-1]
+
+
 def test_run_from_an_executor_records_the_requesting_account(monkeypatch):
     # The route runs backend.run in an executor thread, which does not inherit
     # the request's account context; it passes the account explicitly.
