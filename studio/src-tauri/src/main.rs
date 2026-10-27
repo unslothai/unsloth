@@ -1031,7 +1031,6 @@ fn setup_linux_media_permissions(app: &tauri::App) -> Result<(), Box<dyn std::er
     Ok(())
 }
 
-// Browser pages keep accelerated compositing; only the main view turns it off.
 #[cfg(target_os = "linux")]
 fn setup_linux_main_view_compositing(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     if !linux_webkit::main_view_compositing_off() {

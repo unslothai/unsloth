@@ -422,7 +422,6 @@ pub fn configure_renderer() -> Option<(&'static [&'static str], &'static str)> {
     }
 }
 
-/// Whether configure_renderer left compositing on for pages but wants it off in the main view.
 pub fn main_view_compositing_off() -> bool {
     MAIN_VIEW_COMPOSITING_OFF.load(Ordering::Relaxed)
 }
@@ -545,7 +544,6 @@ mod tests {
                 RenderingPlan::Apply(for_pages, NVIDIA_REASON)
             );
         }
-        // Same transport as the opt-out, never the process-wide compositing switch.
         assert_eq!(for_pages.variables(), &[FORCE_SHARED_MEMORY, FORCE_DMABUF]);
         assert!(for_pages.main_view_compositing_off());
         assert!(!RenderingWorkaround::ForceSharedMemoryOnNvidia.main_view_compositing_off());
