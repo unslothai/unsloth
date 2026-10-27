@@ -431,3 +431,36 @@ test("unpinning one chat of a queued bulk pin keeps the rest and unblocks the qu
   assert.deepEqual(disk.readPending(), []);
 });
 
+test("an older intent another tab journaled replays before this tab's newer one", async () => {
+  const storage = new MemoryStorage();
+  let server: string[] = [];
+  const writes: string[][] = [];
+  let online = false;
+  const disk = createPinnedChatsJournal(storage, "server|session");
+  const a = createPinnedChatsSync({
+    load: async () => server.slice(),
+    compareAndSet: async (expected, next) => {
+      if (!online) throw new Error("offline");
+      writes.push(next.slice());
+      if (JSON.stringify(expected ?? []) !== JSON.stringify(server)) return { applied: false, pinnedIds: server.slice() };
+      server = next.slice();
+      return { applied: true, pinnedIds: server.slice() };
+    },
+    readLegacy: () => [],
+    readPending: disk.readPending,
+    writePending: disk.writePending,
+    publish: () => undefined,
+  });
+  await a.refresh().catch(() => undefined);
+  await assert.rejects(a.setPinned(["chat"], false));
+  // Tab B's pin, written before A's unpin but not yet seen by A.
+  storage.setItem(
+    `${PIN_JOURNAL_PREFIX}${encodeURIComponent("server|session")}:pending:b-pin`,
+    JSON.stringify({ operation: pin("b-pin", "chat"), order: 1 }),
+  );
+  online = true;
+  await a.refresh().catch(() => undefined);
+  await a.refresh().catch(() => undefined);
+  assert.deepEqual(server, []);
+});
+

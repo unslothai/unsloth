@@ -130,14 +130,16 @@ export function createPinnedChatsSync(options: PinnedChatsSyncOptions) {
       throw new PinnedChatsValidationError("Invalid pending pin operations");
     }
     const operations = saved.map(validatePinOperation);
-    const durable = new Set(operations.map((entry) => entry.operationId));
-    // Every intent is journaled before it is queued, so one missing from the journal was
-    // acknowledged or cancelled (an unpin) by another tab: replaying it would undo that.
-    const kept = pending.filter((entry) => durable.has(entry.operationId));
-    const known = new Set(kept.map((entry) => entry.operationId));
-    const additions = operations.filter((entry) => !known.has(entry.operationId));
-    if (kept.length !== pending.length || additions.length > 0) {
-      pending = [...kept, ...new Map(additions.map((entry) => [entry.operationId, entry])).values()];
+    // The journal is the queue: an intent missing from it was acknowledged or cancelled by
+    // another tab, and its order (not discovery order) keeps an older intent ahead of a newer one.
+    const next = [
+      ...new Map(operations.map((entry) => [entry.operationId, entry])).values(),
+    ];
+    const changed =
+      next.length !== pending.length ||
+      next.some((entry, index) => entry.operationId !== pending[index]?.operationId);
+    if (changed) {
+      pending = next;
       publish();
     }
   }

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
+import { usePinnedChatsStore } from "../stores/pinned-chats-store";
 import { chatHistoryClearBoundary } from "./chat-history-clear-boundary";
 import { clearStoredChats, countStoredChats } from "./chat-history-storage";
 import { requestPromptQueueStop } from "./prompt-queue-boundary";
@@ -23,5 +24,14 @@ export async function clearAllChats(options: { deleteFiles?: boolean } = {}) {
     stopChatThread(threadId);
   }
   requestPromptQueueStop();
-  return await clearStoredChats(options);
+  const result = await clearStoredChats(options);
+  if (result.backend === "cleared") {
+    // Unpin what the clear removed, so a queued pin for a never-imported legacy comparison
+    // (no row to record its deletion) is cancelled rather than blocking later pin saves.
+    const failed = new Set(result.failedThreadIds);
+    const { pinnedIds, setPinned } = usePinnedChatsStore.getState();
+    const removed = pinnedIds.filter((id) => !failed.has(id));
+    if (removed.length > 0) setPinned(removed, false);
+  }
+  return result;
 }
