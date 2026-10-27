@@ -193,6 +193,25 @@ def _install_cpu_trainer_module():
 _install_cpu_trainer_module()
 del _install_cpu_trainer_module
 
+
+def _load_dataprep(name: str):
+    # By file: dataprep/__init__ also imports synthetic.py, which needs a GPU device type.
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parent / "dataprep" / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(f"unsloth._cpu_{name}", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_raw_text = _load_dataprep("raw_text")
+RawTextDataLoader = _raw_text.RawTextDataLoader
+TextPreprocessor = _raw_text.TextPreprocessor
+load_ebook_dataset = _load_dataprep("ebooks").load_ebook_dataset
+del _raw_text, _load_dataprep
+
 __all__ = [
     "FastLanguageModel",
     "FastModel",
@@ -208,6 +227,9 @@ __all__ = [
     "UnslothTrainer",
     "UnslothTrainingArguments",
     "UnslothVisionDataCollator",
+    "RawTextDataLoader",
+    "TextPreprocessor",
+    "load_ebook_dataset",
     "DEVICE_TYPE",
     "DEVICE_TYPE_TORCH",
     "DEVICE_COUNT",

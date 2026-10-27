@@ -40,6 +40,7 @@ print("PROBE " + json.dumps({
     "fast": [c.__name__ for c in unsloth.FastLanguageModel.__mro__],
     "modules": mods,
     "trainer_file": getattr(sys.modules.get("unsloth.trainer"), "__file__", None),
+    "dataprep": [n for n in ("load_ebook_dataset", "RawTextDataLoader", "TextPreprocessor") if hasattr(unsloth, n)],
 }))
 """
 
@@ -100,6 +101,8 @@ def test_no_accelerator_loads_the_cpu_backend():
     assert (
         probe["trainer_file"] is None
     ), "unsloth.trainer must be the CPU shim, not unsloth/trainer.py"
+    # The dataprep helpers the GPU backend exports, without loading synthetic.py.
+    assert probe["dataprep"] == ["load_ebook_dataset", "RawTextDataLoader", "TextPreprocessor"]
 
 
 def test_gpu_host_never_loads_the_cpu_backend():
