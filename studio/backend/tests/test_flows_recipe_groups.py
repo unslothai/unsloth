@@ -251,7 +251,8 @@ def _job_routes(final, *, preview_rows = 3):
             }
         if path.endswith("/dataset"):
             rows = [{"sql_prompt": f"q{i}", "sql": "SELECT 1"} for i in range(preview_rows)]
-            return {"dataset": rows[: params["limit"]], "total": preview_rows}
+            start = params.get("offset", 0)
+            return {"dataset": rows[start : start + params["limit"]], "total": preview_rows}
         if path.endswith("/analysis"):
             return {"num_records": preview_rows, "column_statistics": []}
         raise AssertionError(path)
@@ -283,6 +284,19 @@ def test_each_run_is_kept_as_a_recipe_studio_execution_record(monkeypatch):
     ids = [r["lastEventId"] for _, _, r in saved]
     assert ids == sorted(ids) and len({r["id"] for _, _, r in saved}) == 1
     assert len(out["preview"]) == 20
+
+
+def test_a_long_preview_keeps_every_row(monkeypatch):
+    saved = []
+    from storage import flows_db
+
+    monkeypatch.setattr(flows_db, "save_recipe_run", lambda f, n, record: saved.append(record))
+    ctx = _FlowCtx(
+        _job_routes("completed", preview_rows = 700),
+        params = {RECIPE_PARAM: _compiled(_flow()), "rows": 700, "mode": "preview"},
+    )
+    asyncio.run(data.recipe_group(ctx))
+    assert len(saved[-1]["dataset"]) == 700 and saved[-1]["datasetTotal"] == 700
 
 
 def test_a_failed_run_is_kept_with_its_error(monkeypatch):

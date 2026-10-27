@@ -193,15 +193,18 @@ class RunHistory:
         if not self.enabled:
             return
         rows, analysis = preview, None
-        path = f"{RECIPES}/jobs/{quote(job_id, safe = '')}"
+        if self.record.get("kind") == "preview":
+            # The view pages a preview from the record alone, as Recipe Studio does: keep every row.
+            try:
+                rows = await recipe_rows(ctx, job_id) or preview
+            except FlowNodeError:
+                pass
         try:
-            if self.record.get("kind") == "preview":
-                page = await ctx.call("GET", f"{path}/dataset", params = {"limit": 500})
-                if isinstance(page, dict):
-                    rows = [r for r in page.get("dataset") or [] if isinstance(r, dict)]
-            analysis = await ctx.call("GET", f"{path}/analysis")
+            analysis = await ctx.call("GET", f"{RECIPES}/jobs/{quote(job_id, safe = '')}/analysis")
         except FlowNodeError:
             pass
+        if self.record.get("kind") == "preview":
+            total = len(rows)
         await self.update(
             status = "completed",
             dataset = rows,

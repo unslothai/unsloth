@@ -191,9 +191,9 @@ export const nodeHistory = (flowId: string, nodeId: string) =>
     `/${encodeURIComponent(flowId)}/nodes/${encodeURIComponent(nodeId)}/history`,
   );
 
-export const recipeRuns = (flowId: string, nodeId: string) =>
+export const recipeRuns = (flowId: string, nodeId: string, limit: number) =>
   request<{ executions: Record<string, unknown>[] }>(
-    `/${encodeURIComponent(flowId)}/nodes/${encodeURIComponent(nodeId)}/recipe-runs`,
+    `/${encodeURIComponent(flowId)}/nodes/${encodeURIComponent(nodeId)}/recipe-runs?limit=${limit}`,
   );
 
 export interface ImportReport {

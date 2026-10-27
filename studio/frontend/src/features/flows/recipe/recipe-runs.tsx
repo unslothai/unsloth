@@ -37,6 +37,7 @@ import {
 } from "./recipe-runs-state";
 
 const POLL_MS = 2000;
+const RUNS_LIMIT = 200;
 
 type Page = Pick<
   RecipeExecutionRecord,
@@ -53,7 +54,7 @@ function useRecipeRuns(flowId: string | null, nodeId: string | undefined) {
   const load = useCallback(async () => {
     if (!flowId || !nodeId) return;
     try {
-      const { executions } = await recipeRuns(flowId, nodeId);
+      const { executions } = await recipeRuns(flowId, nodeId, RUNS_LIMIT);
       setRecords(toRunRecords(executions));
       warned.current = false;
     } catch (error) {
@@ -162,7 +163,7 @@ function RecipeRunsOpen({ target }: { target: RecipeRunsTarget }) {
             <DialogDescription className="text-xs">
               {preview
                 ? "The latest run of this recipe: its rows, each column, and any errors."
-                : "Every run of this recipe in this flow, newest first."}
+                : `This recipe's runs in this flow, newest first (up to ${RUNS_LIMIT}).`}
             </DialogDescription>
           </div>
           {preview && (records?.length ?? 0) > 1 && (
