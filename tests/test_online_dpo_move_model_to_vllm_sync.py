@@ -5,7 +5,6 @@ import textwrap
 import types
 from contextlib import nullcontext
 
-import pytest
 import torch
 
 
@@ -57,36 +56,47 @@ _TRL_SOURCES = {
                         llm_model = self.llm.llm_engine.model_executor.driver_worker.model_runner.model
                         llm_model.load_weights([(name, param.data)])
 """,
+    # trl 0.22.2 trainer/online_dpo_trainer.py: the sync is inline, before generation.
+    "_generate_vllm": """
+    def _generate_vllm(self, model, prompts):
+        # Load the latest weights
+        llm_model = self.llm.llm_engine.model_executor.driver_worker.model_runner.model
+        llm_model.load_weights(model.state_dict().items())
+        return prompts
+""",
 }
 
 
 class _Recorder:
     def __init__(self):
         self.loaded = []
+        self.tensors = {}
         self.resets = 0
 
     def load_weights(self, weights):
-        self.loaded.extend(name for name, _ in weights)
+        for name, tensor in weights:
+            self.loaded.append(name)
+            self.tensors[name] = tensor.clone()
 
     def reset_prefix_cache(self):
         self.resets += 1
 
 
-class _LoraModel(torch.nn.Module):
-    prefix = "lora_"
-
+class _Proj(torch.nn.Module):
     def __init__(self):
         super().__init__()
-        self.proj = torch.nn.Module()
-        self.proj.base_layer = torch.nn.Linear(2, 2)
-        self.proj.lora_A = torch.nn.Parameter(torch.ones(1, 2))
-        self.merges = 0
+        self.proj = torch.nn.Linear(16, 16, dtype = torch.bfloat16)
 
-    def merge_adapter(self):
-        self.merges += 1
+    def forward(self, x):
+        return self.proj(x)
 
-    def unmerge_adapter(self):
-        pass
+
+def _lora_model():
+    from peft import LoraConfig, get_peft_model
+    torch.manual_seed(0)
+    return get_peft_model(
+        _Proj(), LoraConfig(r = 4, lora_alpha = 8, target_modules = ["proj"], init_lora_weights = False)
+    )
 
 
 def _patched_trainer_class():
@@ -95,7 +105,7 @@ def _patched_trainer_class():
 
     namespace = {
         "nullcontext": nullcontext,
-        "is_peft_model": lambda model: hasattr(model, "merge_adapter"),
+        "is_peft_model": lambda model: hasattr(model, "peft_config"),
     }
     for function, source in _TRL_SOURCES.items():
         for edit in RL_FUNCTIONS["online_dpo_trainer"]:
@@ -128,20 +138,50 @@ def _trainer(model, shared_weights = False):
     return trainer, rec
 
 
-@pytest.mark.parametrize(
-    "model, names",
-    [(torch.nn.Linear(2, 2), ["weight", "bias"]), (_LoraModel(), ["proj.weight", "proj.bias"])],
-    ids = ["full", "lora"],
-)
-def test_trl_colocated_vllm_receives_trainer_weights(model, names):
-    trainer, rec = _trainer(model)
+def test_trl_colocated_vllm_receives_dense_weights():
+    trainer, rec = _trainer(torch.nn.Linear(2, 2))
     trainer._move_model_to_vllm()
-    assert rec.loaded == names
+    assert rec.loaded == ["weight", "bias"]
     assert rec.resets == 1
 
 
+def test_trl_colocated_vllm_receives_lora_merged_out_of_place():
+    model = _lora_model()
+    layer = model.base_model.model.proj
+    base = layer.base_layer.weight.detach().clone()
+    expected = (
+        base.float()
+        + (layer.lora_B["default"].weight.float() @ layer.lora_A["default"].weight.float())
+        * layer.scaling["default"]
+    ).to(base.dtype)
+    trainer, rec = _trainer(model)
+    for _ in range(3):
+        trainer._move_model_to_vllm()
+    assert rec.loaded[:2] == ["proj.weight", "proj.bias"]
+    assert torch.equal(rec.tensors["proj.weight"], expected)
+    assert torch.equal(layer.base_layer.weight, base)
+
+
 def test_fast_inference_shared_weights_skips_sync():
-    model = _LoraModel()
+    model = _lora_model()
+    base = model.base_model.model.proj.base_layer.weight.detach().clone()
     trainer, rec = _trainer(model, shared_weights = True)
     assert trainer._move_model_to_vllm() is None
-    assert rec.loaded == [] and rec.resets == 0 and model.merges == 0
+    assert trainer._generate_vllm(model, ["p"]) == ["p"]
+    assert rec.loaded == [] and rec.resets == 0
+    assert torch.equal(model.base_model.model.proj.base_layer.weight, base)
+
+
+def test_trl_022_inline_sync_reaches_trl_engine():
+    dense = torch.nn.Linear(2, 2)
+    trainer, rec = _trainer(dense)
+    assert trainer._generate_vllm(dense, ["p"]) == ["p"]
+    assert rec.loaded == ["weight", "bias"]
+
+    model = _lora_model()
+    base = model.base_model.model.proj.base_layer.weight.detach().clone()
+    trainer, rec = _trainer(model)
+    trainer._generate_vllm(model, ["p"])
+    assert rec.loaded[:2] == ["proj.weight", "proj.bias"]
+    assert not torch.equal(rec.tensors["proj.weight"], base)
+    assert torch.equal(model.base_model.model.proj.base_layer.weight, base)

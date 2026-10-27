@@ -985,32 +985,6 @@ def online_dpo_trainer__forward(function_name, function):
 RL_FUNCTIONS["online_dpo_trainer"].append(online_dpo_trainer__forward)
 
 
-def online_dpo_trainer__move_model_to_vllm(function_name, function):
-    if function_name != "_move_model_to_vllm":
-        return function
-    match = re.search(
-        r"^[ \t]*def _move_model_to_vllm\(self\):[ \t]*\n(?P<indent>[ \t]+)\S",
-        function,
-        re.MULTILINE,
-    )
-    if match is None:
-
-        def _move_model_to_vllm(self, *args, **kwargs):
-            return None
-
-        return inspect.getsource(_move_model_to_vllm)
-    indent = match.group("indent")
-    start = match.start("indent")
-    guard = (
-        f"{indent}if getattr(getattr(self, 'llm', None), 'shared_weights', False):\n"
-        f"{indent}    return None\n"
-    )
-    return function[:start] + guard + function[start:]
-
-
-RL_FUNCTIONS["online_dpo_trainer"].append(online_dpo_trainer__move_model_to_vllm)
-
-
 _WRAPPED_PACKING_SETUP = (
     "    import inspect as _inspect\n"
     "    try:\n"
@@ -3397,6 +3371,60 @@ def grpo_trainer__move_model_to_vllm(function_name, function):
 
 
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__move_model_to_vllm)
+
+
+def online_dpo_trainer__move_model_to_vllm(function_name, function):
+    if function_name != "_move_model_to_vllm":
+        return function
+    function = grpo_trainer__move_model_to_vllm(function_name, function)
+    # TRL's server path batches the per-tensor updates inside weight_update().
+    return re.sub(
+        r"^([ \t]+)return _unsloth_vllm_sync_peft_merged\(self\)\n",
+        r"\1if self.vllm_mode == 'server' and self.accelerator.is_main_process and hasattr(self.vllm_client, 'weight_update'):\n"
+        r"\1    with self.vllm_client.weight_update():\n"
+        r"\1        return _unsloth_vllm_sync_peft_merged(self)\n"
+        r"\1return _unsloth_vllm_sync_peft_merged(self)\n",
+        function,
+        count = 1,
+        flags = re.MULTILINE,
+    )
+
+
+RL_FUNCTIONS["online_dpo_trainer"].append(online_dpo_trainer__move_model_to_vllm)
+
+
+def _unsloth_vllm_load_state_dict(trainer, model):
+    trainer.llm.llm_engine.model_executor.driver_worker.model_runner.model.load_weights(
+        model.state_dict().items()
+    )
+
+
+def online_dpo_trainer__generate_vllm(function_name, function):
+    # TRL < 0.23 syncs inline here, which _strip_vllm_weight_loads would turn into pass.
+    if function_name != "_generate_vllm":
+        return function
+    match = re.search(
+        r"^(?P<indent>[ \t]+)llm_model = self\.llm\.llm_engine\.model_executor\.driver_worker\.model_runner\.model\n"
+        r"(?P=indent)llm_model\.load_weights\(model\.state_dict\(\)\.items\(\)\)\n",
+        function,
+        re.MULTILINE,
+    )
+    if match is None:
+        return function
+    i = match.group("indent")
+    sync = (
+        f"{i}if not getattr(self.llm, 'shared_weights', False):\n"
+        f"{i}    from unsloth.models.rl_replacements import _unsloth_vllm_sync_kind_cached, _unsloth_vllm_sync_peft_merged, _unsloth_vllm_load_state_dict\n"
+        f"{i}    _unsloth_sync_kind = _unsloth_vllm_sync_kind_cached(self)\n"
+        f"{i}    if _unsloth_sync_kind == 'peft_merged':\n"
+        f"{i}        _unsloth_vllm_sync_peft_merged(self)\n"
+        f"{i}    elif _unsloth_sync_kind == 'trl':\n"
+        f"{i}        _unsloth_vllm_load_state_dict(self, model)\n"
+    )
+    return function[: match.start()] + sync + function[match.end() :]
+
+
+RL_FUNCTIONS["online_dpo_trainer"].append(online_dpo_trainer__generate_vllm)
 
 
 def grpo_trainer__get_per_token_logps(function_name, function):
