@@ -902,7 +902,6 @@ class TestEstimateMemoryRoute:
             prefill_chunk = 8192,
         )
         assert (asked["offload"], asked["prefill_chunk"]) == ((None, 0.6), 8192)
-        # Where the offload made room for it, costless means fitting at least what the target-only plan fits.
         seen = []
 
         def costless(attached, alone):
@@ -1211,7 +1210,6 @@ class TestEstimateMemoryRoute:
                 lambda *a, **kw: fits.append((kw["offload"], kw["baseline"])) or (True, None),
             )
             assert price(mlx_ple_offload = "off") == (None, 0.62)
-            # Auto plans with its drafter, and without it for the costless check.
             assert [p["drafter"] for p in planned[-2:]] == [(str(tmp_path), True), None]
             assert fits[-1] == ((None, 0.62), {"offload": (None, 0.6), "prefill_chunk": 8192})
             estimate(mlx_ple_offload = "off", speculative_type = "mtp")
@@ -3827,7 +3825,6 @@ def test_auto_offload_is_planned_on_the_route_the_load_takes(monkeypatch):
         ("inventory", True),
         ("sized", True),
     ]
-    # A drafter to make room for is priced in the plan's sizing and in its context cost alike.
     drafters.clear(), costs.clear()
     mm._clear_sizing_cache()
     mm.mlx_offload_plan("/x", budget_bytes = 1, max_ctx = 512, vision = True, drafter = ("/x", True))

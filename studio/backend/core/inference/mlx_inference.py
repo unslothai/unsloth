@@ -1115,8 +1115,7 @@ def mlx_resolve_offload(
     return fixed if plan is None else plan
 
 
-# Most of each offloadable part an auto drafter may add to disk: measured MoE drafters needed 2-3.5 points,
-# and the costliest broke even at about 5 on low-acceptance sampling.
+# Most of each offloadable part an auto drafter may add to disk (break-even was ~5 points on sampled decode, #15342).
 MLX_AUTO_DRAFTER_ROOM = 0.04
 
 
@@ -5332,9 +5331,8 @@ class MLXInferenceBackend:
                 chosen, alone = mlx_resolve_drafter_offload(
                     model_dir, wanted, drafter or None, auto = spec_mode == "auto", **priced
                 )
-                if (
-                    "auto" in wanted
-                ):  # a repeat call sees the fractions and plans no step: keep the first
+                # A repeat call sees the fractions and plans no step: keep the first baseline.
+                if "auto" in wanted:
                     offload_baseline.update(route = alone and mlx_offload_route(alone))
                 return chosen
 
