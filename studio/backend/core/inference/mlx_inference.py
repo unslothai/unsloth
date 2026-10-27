@@ -4263,8 +4263,9 @@ class _VisionBatchSession:
         except BatchRowRefused as refusal:
             raise RowRefused(str(refusal)) from refusal
         row = _VisionBatchRow(handle = handle, plan = plan, row = row_number)
-        # A speculative batch prefills the row inside add(), so its clock starts before it.
-        row.admitted_at = admitted_at
+        if self._speculative is not None:
+            # A speculative batch prefills the row inside add(), so its clock starts before it.
+            row.admitted_at = admitted_at
         self._rows[handle] = row
         self._by_row[row_number] = row
         logger.info(

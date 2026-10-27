@@ -7798,8 +7798,16 @@ def test_a_vision_row_times_its_prefill_wherever_the_batch_runs_it(monkeypatch, 
         vars(result).update(_DRAFTS)
         yield SimpleNamespace(index = 0, delta = "", result = result)
 
+    def add(request):
+        if speculative:
+            prefill()
+        else:
+            # A plain add() only prepares the row; that time is not its prefill.
+            clock[0] += 3.0
+        return 0
+
     session.stream = SimpleNamespace(
-        add = lambda request: (prefill() if speculative else None) or 0,
+        add = add,
         step = lambda: list(events()),
         iter_step = events,
     )
