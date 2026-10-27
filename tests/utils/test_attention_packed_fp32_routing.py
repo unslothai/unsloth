@@ -229,3 +229,35 @@ def test_packed_fp32_cuda_parity(monkeypatch):
     torch.testing.assert_close(out.double().reshape(ref.shape), ref, atol = tol, rtol = tol)
     for a, b in zip(got, want):
         torch.testing.assert_close(a.double(), b, atol = tol, rtol = tol)
+
+
+def test_packed_fp32_reroute_keeps_fp32_output_on_sm100(native_packed_host, monkeypatch):
+    # sm_100+ downcasts fp32 for xformers; without autocast the output must stay fp32.
+    monkeypatch.setattr(ad, "_xformers_rejects_fp32", lambda device: True)
+    lengths = [3, 5]
+    Q, K, V = _packed_qkv(torch.float32, lengths)
+    out = _attend(Q, K, V, _seq_info(lengths), ad.select_attention_backend(use_varlen = True))
+    assert native_packed_host == {"xformers": 1, "sdpa": 0}
+    assert out.dtype == torch.float32
+    o_proj = torch.nn.Linear(H * D, H * D)
+    o_proj(out.as_subclass(torch.Tensor).reshape(1, sum(lengths), H * D))
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a real CUDA device")
+def test_packed_fp32_cuda_feeds_an_fp32_o_proj(monkeypatch):
+    if not ad.HAS_XFORMERS:
+        pytest.skip("needs xformers")
+    monkeypatch.setattr(ad, "HAS_FLASH_ATTENTION", False)
+    monkeypatch.setattr(ad, "_NATIVE_BEATS_XFORMERS", True)
+    lengths = [40, 32, 24]
+    T = sum(lengths)
+    leaves = [torch.randn(1, h, T, 64, device = "cuda", requires_grad = True) for h in (H, KV, KV)]
+    o_proj = torch.nn.Linear(H * 64, H * 64, device = "cuda")
+    out = _attend(*leaves, _seq_info(lengths, "cuda"), ad.select_attention_backend(True))
+    assert out.dtype == torch.float32
+    o_proj(out.reshape(1, T, H * 64)).sum().backward()
+    assert all(t.grad is not None and t.grad.dtype == torch.float32 for t in leaves)
+    with torch.autocast("cuda", dtype = torch.bfloat16):
+        out = _attend(*leaves, _seq_info(lengths, "cuda"), ad.select_attention_backend(True))
+    if ad._xformers_rejects_fp32(leaves[0].device):
+        assert out.dtype == torch.bfloat16
