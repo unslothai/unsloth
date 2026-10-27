@@ -80,6 +80,7 @@ def _case_multi(
     steps = 3,
     tie = None,
     bsz = 4,
+    compile_layers = False,
 ):
     from torch.distributed.device_mesh import init_device_mesh
 
@@ -103,7 +104,19 @@ def _case_multi(
         "embed": weakref.ref(model.get_input_embeddings()),
         "head": weakref.ref(model.get_output_embeddings()),
     }
+    if compile_layers:
+        # Unsloth compiles each decoder block (torch.compile regions): AOTAutograd's compiled backward donates
+        # buffers, which a split (zero bubble) backward with retain_graph cannot run.
+        from torch import _dynamo
+
+        _dynamo.config.cache_size_limit = 64
+        for layer in ppn._find_parts(model).layers:
+            layer.compile(dynamic = False)
+    from torch._functorch import config as functorch_config
+
+    donated_before = getattr(functorch_config, "donated_buffer", None)
     pp = ppn.apply_pipeline_parallel(model, mesh["pp"], n_microbatches = n_mb, schedule = schedule)
+    donated_after = getattr(functorch_config, "donated_buffer", None)
     gc_module.collect()
     alive = {k: r() is not None for k, r in originals.items()}
     outs = {k: [] for k in pp.local_stages}
@@ -167,6 +180,7 @@ def _case_multi(
         "repr": repr(pp),
         "torch_map": torch_map,
         "layer_calls": calls,
+        "donated": (donated_before, donated_after),
         "gc": gc,
         "n_mb": n_mb,
     }
@@ -218,6 +232,11 @@ def _check_multi(results, saved, pp, schedule, layers = N_LAYERS, v = 2):
         for i, name in enumerate(res["layer_types"]):
             assert (name == "_PPPassThrough") == (i not in owned_layers), (rank, i, name)
         assert "split for pipeline parallelism" in (res["direct_error"] or "")
+        # Zero bubble (split backward) turns AOTAutograd's donated buffers off; other schedules leave it alone.
+        before, after = res["donated"]
+        if before is not None:
+            split = schedule in ("interleavedzerobubble", "zbvzerobubble", "dualpipev")
+            assert after == (False if split else before), (schedule, res["donated"])
     assert union == set(ref["grads"]), sorted(union ^ set(ref["grads"]))[:6]
     assert set(saved["pp"]) == set(saved["ref"]), sorted(set(saved["pp"]) ^ set(saved["ref"]))[:6]
     trained = {}
@@ -411,6 +430,14 @@ def test_pp2_zero_bubble_with_non_reentrant_checkpointing_matches_one_process(sc
     _skip_v(schedule)
     saved = {}
     results = _spawn("multi", 2, keep = saved, arch = "llama", schedule = schedule, gc = "non_reentrant")
+    _check_multi(results, saved, 2, schedule)
+
+
+@pytest.mark.parametrize("schedule", ["interleavedzerobubble", "zbvzerobubble"])
+def test_pp2_zero_bubble_with_compiled_blocks_matches_one_process(schedule):
+    _skip_v(schedule)
+    saved = {}
+    results = _spawn("multi", 2, keep = saved, arch = "llama", schedule = schedule, compile_layers = True)
     _check_multi(results, saved, 2, schedule)
 
 
