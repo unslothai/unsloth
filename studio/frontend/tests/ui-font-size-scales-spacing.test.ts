@@ -412,7 +412,7 @@ test("composite settings controls shrink inside their row", () => {
     ),
   );
   const resources = readSrc("features/settings/tabs/resources-tab.tsx");
-  assert.ok(resources.includes("flex min-w-0 flex-wrap items-center justify-between"));
+  assert.ok(resources.includes("flex min-w-0 flex-wrap items-start justify-between"));
   assert.ok(
     resources.includes(
       '"flex w-[min(calc(392px*var(--ui-space-scale,1)),100%)] shrink-0 flex-col',

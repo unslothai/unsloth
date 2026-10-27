@@ -355,25 +355,30 @@ export function Masonry<T>({
 
 export function CardGrid({
   children,
-  equalRows = false,
+  minRowHeight,
 }: {
   children: ReactNode;
-  equalRows?: boolean;
+  /** Rows are max(this, the column's 8:7 height). */
+  minRowHeight?: string;
 }) {
   const container = useRef<HTMLDivElement>(null);
   const columns = useCardColumns(container);
-  return (
+  const grid = (
     <div
       ref={container}
       className={cn("grid gap-x-5", CARD_ROW_GAP)}
       style={{
         gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
-        gridAutoRows: equalRows ? "1fr" : undefined,
+        gridAutoRows: minRowHeight
+          ? `max(${minRowHeight}, calc((100cqw - ${columns - 1} * var(--spacing) * 5) / ${columns} * 7 / 8))`
+          : undefined,
       }}
     >
       {children}
     </div>
   );
+  // cqw resolves against an ancestor container, never the grid itself.
+  return minRowHeight ? <div className="@container">{grid}</div> : grid;
 }
 
 export function FolderGrid({

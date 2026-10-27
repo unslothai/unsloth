@@ -347,11 +347,25 @@ export function DecisionApiSection({
     }
   };
 
+  // title, not aria-label, so the accessible name stays the visible text.
+  const docsLink = (
+    <a
+      href={DOCS_URL}
+      target="_blank"
+      rel="noreferrer"
+      title={t("settings.apiKeys.decisionApi.docsLabel")}
+      className="inline-flex shrink-0 items-center gap-1 rounded-full font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+    >
+      {t("settings.apiKeys.decisionApi.docs")}
+      <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
+    </a>
+  );
   const header = (
     <div className="flex items-start justify-between gap-3">
       <div className="flex min-w-0 flex-col gap-1">
-        <div className="flex min-w-0 items-baseline gap-2">
-          {showHeading && (
+        {/* Centred, not baseline: the h2 is a flex box, so its baseline is the icon's foot. */}
+        {showHeading && (
+          <div className="flex min-w-0 items-center gap-3">
             <h2 className="settings-heading flex items-center gap-2 text-base font-semibold font-heading">
               <HugeiconsIcon
                 icon={TaskDone01Icon}
@@ -360,21 +374,12 @@ export function DecisionApiSection({
               />
               {t("settings.apiKeys.decisionApi.title")}
             </h2>
-          )}
-          {/* title, not aria-label, so the accessible name stays the visible text. */}
-          <a
-            href={DOCS_URL}
-            target="_blank"
-            rel="noreferrer"
-            title={t("settings.apiKeys.decisionApi.docsLabel")}
-            className="inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          >
-            {t("settings.apiKeys.decisionApi.docs")}
-            <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
-          </a>
-        </div>
+            <span className="text-ui-11">{docsLink}</span>
+          </div>
+        )}
         <p className="text-xs leading-relaxed text-muted-foreground">
           {t("settings.apiKeys.decisionApi.description")}
+          {showHeading ? null : <span className="ml-1.5 inline-flex align-baseline">{docsLink}</span>}
         </p>
       </div>
       {settings ? (
@@ -408,7 +413,7 @@ export function DecisionApiSection({
     </div>
   );
   const errorLine = error ? (
-    <p className="px-4 py-2.5 text-xs leading-snug text-destructive">{error}</p>
+    <p className="py-2.5 text-xs leading-snug text-destructive">{error}</p>
   ) : null;
 
   if (!settings) {
@@ -418,7 +423,7 @@ export function DecisionApiSection({
         className="flex min-w-0 max-w-full flex-col gap-4"
       >
         {header}
-        <div className="overflow-hidden rounded-xl border border-border/70">
+        <div>
           {errorLine}
         </div>
       </section>
@@ -497,9 +502,9 @@ export function DecisionApiSection({
     >
       {header}
 
-      <div className="overflow-hidden rounded-xl border border-border/70">
+      <div>
         {errorLine}
-        <div className={cn("px-4 py-1", error && "border-t border-border/60")}>
+        <div className="py-1">
           <SettingsRow
             label={t("settings.apiKeys.decisionApi.enable")}
             description={
@@ -749,8 +754,9 @@ export function DecisionApiSection({
               <button
                 type="button"
                 className="font-medium text-foreground underline underline-offset-2 hover:text-primary"
+                // openDialog, not setActiveTab: the API page shows this card with no dialog open.
                 onClick={() =>
-                  useSettingsDialogStore.getState().setActiveTab("connections")
+                  useSettingsDialogStore.getState().openDialog("connections")
                 }
               >
                 {t("settings.apiKeys.decisionApi.openConnections")}

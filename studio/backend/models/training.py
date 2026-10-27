@@ -603,7 +603,7 @@ class TrainingStartRequest(BaseModel):
             "and unsloth's historical recommended value."
         ),
     )
-    packing: bool = Field(False, description = "Enable sequence packing")
+    packing: bool = Field(True, description = "Enable sequence packing where supported")
     optim: str = Field("adamw_8bit", description = "Optimizer")
     lr_scheduler_type: str = Field("linear", description = "Learning rate scheduler type")
     embedding_learning_rate: Optional[float] = Field(
@@ -646,7 +646,9 @@ class TrainingStartRequest(BaseModel):
     use_rslora: bool = Field(False, description = "Use RSLoRA")
     use_loftq: bool = Field(False, description = "Use LoftQ")
     use_dora: bool = Field(False, description = "Use DoRA")
-    train_on_completions: bool = Field(False, description = "Train on completions only")
+    train_on_completions: bool = Field(
+        True, description = "Train on assistant completions where supported"
+    )
 
     finetune_vision_layers: bool = Field(False, description = "Finetune vision layers")
     finetune_language_layers: bool = Field(True, description = "Finetune language layers")
@@ -705,6 +707,21 @@ class TrainingStartRequest(BaseModel):
     def _normalize_target_modules(cls, value: Any) -> Any:
         # Sanitized non-LoRA history stores the unused value as null; treat it as an omitted list.
         return [] if value is None else value
+
+    @model_validator(mode = "after")
+    def _default_training_objective_toggles(self) -> "TrainingStartRequest":
+        # getattr: validate_assignment on a model_construct() instance lacks required fields.
+        non_chat = getattr(self, "is_embedding", False) or getattr(self, "is_decision", False)
+        if "packing" not in self.model_fields_set and non_chat:
+            self.packing = False
+        if "train_on_completions" not in self.model_fields_set and (
+            non_chat
+            or getattr(self, "dataset_streaming", False)
+            or getattr(self, "training_type", None) == "Continued Pretraining"
+            or getattr(self, "format_type", None) in ("raw", "raw_text")
+        ):
+            self.train_on_completions = False
+        return self
 
     @model_validator(mode = "after")
     def _validate_streaming_splits(self) -> "TrainingStartRequest":
@@ -803,7 +820,7 @@ class TokenPreviewRequest(BaseModel):
     dataset_known_cached: bool = False
     format_type: str = "auto"
     custom_format_mapping: Optional[Dict[str, Any]] = None
-    train_on_completions: bool = False
+    train_on_completions: bool = True
     is_cpt: bool = False
     max_seq_length: int = Field(2048, ge = 1, le = 1_048_576)
     num_samples: int = Field(3, ge = 1, le = 8)
@@ -1211,6 +1228,13 @@ class DiffusionTrainingPreparation(BaseModel):
     total: Optional[int] = None
 
 
+class DiffusionTrainingDownloadProgress(BaseModel):
+    bytes_done: int = Field(default = 0, ge = 0)
+    bytes_total: int = Field(default = 0, ge = 0)
+    label: str = "Model files"
+    scope: str = "active_files"
+
+
 class DiffusionTrainingStatusResponse(BaseModel):
     """A snapshot of the current diffusion training job (or idle)."""
 
@@ -1231,6 +1255,7 @@ class DiffusionTrainingStatusResponse(BaseModel):
     num_images: Optional[int] = None
     in_model_load: bool = False
     preparation: Optional[DiffusionTrainingPreparation] = None
+    download_progress: Optional[DiffusionTrainingDownloadProgress] = None
     output_dir: Optional[str] = None
     lora_path: Optional[str] = None
     # The second, EMA-averaged adapter written in the run's ema subdir when ema_decay was enabled.
@@ -1337,6 +1362,7 @@ class DiffusionTrainableFamily(BaseModel):
     supports_checkpoints: bool = True
     supports_samples: bool = False
     supports_bucketing: bool = True
+    is_video: bool = False
     # 1 for a family whose forward covers one packed sequence: a value above the cap is refused rather
     # than clamped, and declaring it here is what stops Pydantic dropping it from the response.
     max_train_batch_size: Optional[int] = None
