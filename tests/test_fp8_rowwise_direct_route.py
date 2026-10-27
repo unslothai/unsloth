@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Rowwise FP8 inference calls skip the compiled wrapper (its host cost dominates decode / small prefill) and
-launch the same kernels directly, bitwise equal; autograd, traced and FBGEMM calls keep the compiled path.
-Routing runs on fake CUDA tensors (no GPU needed); parity needs an sm89+ GPU."""
+"""Rowwise FP8 direct-route routing (fake CUDA tensors) and parity (sm89+ GPU)."""
 
 import pytest
 import torch
@@ -55,7 +53,6 @@ def test_inference_calls_take_the_direct_path(spies, rows, route):
 
 def test_autograd_fbgemm_and_kill_switch_keep_the_compiled_path(spies, monkeypatch):
     with FakeTensorMode():
-        # LoRA / training: the activation needs a gradient.
         assert F8.fbgemm_fp8_linear(*_args(128, requires_grad = True)) == "compiled"
         with torch.no_grad():
             X, w, s = _args(128)
@@ -63,7 +60,6 @@ def test_autograd_fbgemm_and_kill_switch_keep_the_compiled_path(spies, monkeypat
             assert F8.fbgemm_fp8_linear(X[..., :256], w.t(), s) == "compiled"
             X2, w2, s2 = _args(128, N = 200)
             assert F8.fbgemm_fp8_linear(X2, w2, s2) == "direct"
-            # Prefill / training sized calls are GPU bound: compiled as before.
             assert F8.fbgemm_fp8_linear(*_args(F8._FP8_ROWWISE_DIRECT_MAX_ROWS + 1)) == "compiled"
             monkeypatch.setattr(F8, "_fp8_rowwise_backend", lambda device: "fbgemm")
             assert F8.fbgemm_fp8_linear(X, w, s) == "compiled"

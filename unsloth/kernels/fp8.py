@@ -2090,10 +2090,8 @@ def _fbgemm_fp8_linear_compiled(
     )
 
 
-# Eager inference path for rowwise FP8. A call into the compiled wrapper costs 75-95 us of host time (Dynamo
-# guards, AOT runtime wrapper, generated Python) while the GPU work at decode / small prefill is 10-80 us, so
-# those linears were launch bound. Outside a trace and without autograd, launch the same kernels Inductor
-# generates directly; outputs are bitwise equal to the compiled path. UNSLOTH_FP8_ROWWISE_DIRECT=0 disables it.
+# Rowwise FP8 inference: the compiled wrapper costs 75-95 us host time vs 10-80 us GPU at decode, so launch
+# Inductor's kernels directly (bitwise equal). UNSLOTH_FP8_ROWWISE_DIRECT=0 disables it.
 _FP8_ROWWISE_DIRECT = os.environ.get("UNSLOTH_FP8_ROWWISE_DIRECT", "1").strip().lower() not in (
     "0",
     "false",
@@ -2116,8 +2114,7 @@ def _fp8_act_quant_per_row_kernel(
     BLOCK_K: tl.constexpr,
     ONE_BLOCK: tl.constexpr,
 ):
-    # _quantize_fp8_per_row in one launch, with the same fp32 math Inductor emits for it (bitwise equal).
-    # One row per program; the row is held as a [1, BLOCK_K] tile (faster than 1D at 8192 columns on sm120).
+    # Same fp32 math Inductor emits for _quantize_fp8_per_row; [1, BLOCK_K] tile is faster than 1D on sm120.
     row = tl.program_id(0).to(tl.int64)
     x_row = x_ptr + row * stride_xm
     y_row = y_ptr + row * K
@@ -2158,8 +2155,7 @@ def _fp8_act_quant_per_row_kernel(
 
 @triton.jit
 def _fp8_rowwise_dequant_kernel(w_ptr, s_ptr, y_ptr, numel, K, BLOCK: tl.constexpr):
-    # weight_dequant for a contiguous (N, K) weight with (N, 1) scales: one fp32 multiply, one rounding,
-    # as Inductor fuses it (an eager x.to(dtype) * s.to(dtype) rounds the scale first and differs).
+    # One fp32 multiply, one rounding, as Inductor fuses it (eager x.to(dtype) * s.to(dtype) rounds twice).
     offs = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
     mask = offs < numel
     w = tl.load(w_ptr + offs, mask = mask, other = 0.0).to(tl.float32)
@@ -2229,7 +2225,6 @@ def _fp8_rowwise_direct(X, weight, weight_scale, bias, route):
         x_quantized = torch.empty((M, K), device = X.device, dtype = torch.float8_e4m3fn)
         x_scale = torch.empty((M, 1), device = X.device, dtype = torch.float32)
         scale_ub = getattr(weight, "input_scale_ub", None)
-        # One pass over the row up to K = 16384 (the loop only runs again past that).
         block_k = min(triton.next_power_of_2(K), 16384)
         with _fp8_triton_device_context(X, static_device_count = True):
             _fp8_act_quant_per_row_kernel[(M,)](
@@ -2276,7 +2271,6 @@ def fbgemm_fp8_linear(
     weight_scale,
     bias = None,
 ):
-    # Traced (a user's torch.compile) or needing autograd: the compiled wrapper, as before.
     if not torch.compiler.is_compiling():
         route = _fp8_rowwise_direct_route(X, weight, weight_scale)
         if route is not None:
