@@ -299,7 +299,9 @@ def test_rotation_under_autocast_keeps_the_returning_path(monkeypatch):
     monkeypatch.setattr(nq, "_INT_MM_FUSED_CHUNK_ELEMS", 512 * 40)
 
     def into(*_a):
-        raise AssertionError("autocast may change the rotated dtype; the output dtype must come from a chunk")
+        raise AssertionError(
+            "autocast may change the rotated dtype; the output dtype must come from a chunk"
+        )
 
     nq._FUSED_STATE.update(fn = lambda x2, *_a: (x2[:, :128] * 2).to(torch.float16), into = into)
     x = torch.randn(100, 512, dtype = torch.float32)

@@ -279,7 +279,9 @@ def _w8a8_rows(x2: Any, rot_h: Any, weight_q: Any, weight_scale: Any, bias: Any)
     return out.to(x2.dtype)
 
 
-def _w8a8_rows_into(x2: Any, rot_h: Any, weight_q: Any, weight_scale: Any, bias: Any, out: Any) -> None:
+def _w8a8_rows_into(
+    x2: Any, rot_h: Any, weight_q: Any, weight_scale: Any, bias: Any, out: Any
+) -> None:
     """``_w8a8_rows`` stored straight into ``out`` (a row slice of the chunked output), no temporary chunk result."""
     out.copy_(_w8a8_rows(x2, rot_h, weight_q, weight_scale, bias))
 
@@ -331,7 +333,6 @@ def _fused_w8a8_failed(exc: BaseException) -> None:
 
 def _autocast_on(x: Any) -> bool:
     import torch
-
     try:
         return bool(torch.is_autocast_enabled(x.device.type))
     except TypeError:  # torch without the device_type argument: treat any autocast as on
@@ -549,7 +550,14 @@ def native_linear_class():
                     for part in torch.tensor_split(x2, -(-rows // chunk)):
                         stop = start + part.shape[0]
                         if into is not None:
-                            into(part.detach(), rot_h, self.weight_q, self.weight_scale, bias, out[start:stop])
+                            into(
+                                part.detach(),
+                                rot_h,
+                                self.weight_q,
+                                self.weight_scale,
+                                bias,
+                                out[start:stop],
+                            )
                         else:
                             got = fn(part.detach(), rot_h, self.weight_q, self.weight_scale, bias)
                             if out is None:
