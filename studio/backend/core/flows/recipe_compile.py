@@ -28,10 +28,15 @@ def compile_recipe(graph: dict) -> dict:
     group = graph.get("group") or {}
     group_id = group.get("id")
     columns: list[dict] = []
+    disabled: set[str] = set()
     for node in graph.get("nodes") or []:
-        if node.get("type") != COLUMN_TYPE or node.get("group") != group_id or node.get("disabled"):
+        if node.get("type") != COLUMN_TYPE or node.get("group") != group_id:
             continue
         column = (node.get("params") or {}).get("column")
+        if node.get("disabled"):
+            if isinstance(column, dict) and column.get("name"):
+                disabled.add(column["name"])
+            continue
         if not isinstance(column, dict) or not column.get("name"):
             raise RecipeCompileError(f"Column node {node.get('id')} has no column name")
         columns.append(copy.deepcopy(column))
@@ -42,6 +47,12 @@ def compile_recipe(graph: dict) -> dict:
     if duplicates:
         raise RecipeCompileError(f"Two columns share the name {duplicates[0]!r}")
     every = set(names)
+    for column in columns:
+        off = sorted(set(column_references(column, every | disabled)) & disabled)
+        if off:
+            raise RecipeCompileError(
+                f"{column['name']} reads {off[0]}, which is disabled. Enable it or take the reference out"
+            )
     reads = {c["name"]: column_references(c, every) for c in columns}
     state: dict[str, int] = {}
 

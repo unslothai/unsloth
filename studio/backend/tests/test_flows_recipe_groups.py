@@ -81,10 +81,10 @@ def test_references_are_typed_wires_between_columns():
 def test_the_generate_step_runs_the_group_as_edited():
     doc = _flow()
     _column(doc, "sql")["params"]["column"]["prompt"] = "Write SQL for {{ sql_prompt }}"
-    _column(doc, "instruction_phrase")["disabled"] = True
+    _column(doc, "sql-validator")["disabled"] = True
     recipe = _compiled(doc)["recipe"]
     names = [c["name"] for c in recipe["columns"]]
-    assert "instruction_phrase" not in names
+    assert "sql-validator" not in names
     assert next(c for c in recipe["columns"] if c["name"] == "sql")["prompt"].startswith("Write SQL")
     assert recipe["model_configs"] == SQL["recipe"]["model_configs"]
     assert "mcp_providers" not in recipe and "tool_configs" not in recipe
@@ -121,6 +121,13 @@ def test_a_loop_or_a_lost_group_fails_on_the_generate_step():
     with pytest.raises(CompileError) as caught:
         compile_flow(doc)
     assert any("loop" in i["message"] and i.get("node_id") for i in caught.value.issues)
+    doc = _flow()
+    _column(doc, "instruction_phrase")["disabled"] = True
+    with pytest.raises(CompileError) as caught:
+        compile_flow(doc)
+    assert any(
+        "reads instruction_phrase, which is disabled" in i["message"] for i in caught.value.issues
+    )
     doc = _flow()
     doc["groups"][0]["kind"] = None
     with pytest.raises(CompileError):
