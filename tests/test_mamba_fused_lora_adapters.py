@@ -36,8 +36,7 @@ _FIX = _ROOT / "unsloth" / "models" / "_mamba_lora.py"
 
 
 def _patch_fn():
-    # Loaded by path (it only needs torch + peft), so no GPU / unsloth_zoo import is needed. A no-op
-    # on trees without the fix, so the behavioural assertions, not an ImportError, decide.
+    # Loaded by path (torch + peft only); a no-op on trees without the fix.
     if not _FIX.is_file():
         return lambda model: model
     spec = importlib.util.spec_from_file_location("_unsloth_mamba_lora_under_test", _FIX)
@@ -49,8 +48,6 @@ def _patch_fn():
 def _fake_fused(
     xz, conv1d_weight, conv1d_bias, x_proj_weight, delta_proj_weight, out_proj_weight, *a, **k
 ):
-    # The real kernel's output depends only on the weights it is handed; any function of them shows
-    # whether an adapter reached it.
     out = F.linear(xz.chunk(2, dim = 1)[0].transpose(1, 2), out_proj_weight)
     return out + 1e-3 * (x_proj_weight.sum() + delta_proj_weight.sum())
 
@@ -241,7 +238,6 @@ def test_plain_lora_keeps_fused_kernel_with_merged_weights(monkeypatch, arch):
         if not p.requires_grad:
             assert p.grad is None, name
 
-    # Changing a raw-weight lora_B must change the output, as it does for any applied adapter.
     for leaf in RAW:
         with torch.no_grad():
             before = model(input_ids = ids, use_cache = False).logits
@@ -403,7 +399,6 @@ def test_unmergeable_dt_proj_routes_only_where_the_slow_path_calls_it(monkeypatc
         assert len(calls) == 2, "left the fused kernel for an adapter the slow path ignores"
     if _legacy(arch):
         assert trained and not warned
-    # Never silent: either the adapter trains or the user is told it does not.
     assert trained != warned, (trained, warned)
 
 

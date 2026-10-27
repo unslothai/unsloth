@@ -29,8 +29,7 @@ __all__ = ["patch_mamba_fused_lora"]
 
 # Mixer leaves a fused kernel reads as `.weight` instead of calling the module.
 _RAW_WEIGHT_LEAVES = ("x_proj", "dt_proj", "out_proj")
-# Fused entry points in the modeling modules; in transformers 5 each mixer falls back to its torch
-# path when one returns None.
+# Fused entry points; transformers 5 falls back to its torch path when one returns None.
 _FUSED_FNS = (
     "mamba_inner_fn",
     "mamba_split_conv1d_scan_combined",
@@ -43,7 +42,6 @@ class _Routing(threading.local):
     # Per thread: nn.DataParallel replicas run their forwards concurrently.
     def __init__(self):
         self.force_slow = 0
-        # One _Frame per mixer forward in flight.
         self.stack = []
 
 
