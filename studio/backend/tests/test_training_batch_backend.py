@@ -393,3 +393,53 @@ def test_batch_start_sizes_chat_coexistence_for_every_member(monkeypatch):
     )
     assert [s.status for s in started] == ["queued"] * 3
     assert [(kw["batch_size"], kw["lora_rank"]) for kw in asked] == [(2 + 4 + 1, 8 + 16 + 32)]
+
+
+def test_xet_respawn_replays_pending_member_stops(monkeypatch, tmp_path):
+    class _Queue:
+        def __init__(self):
+            self.items = []
+
+        def put(self, item, *a, **k):
+            self.items.append(item)
+
+    class _Proc:
+        pid = 4322
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def start(self):
+            pass
+
+        def is_alive(self):
+            return False
+
+        def join(self, timeout = None):
+            pass
+
+    class _Ctx:
+        def __init__(self):
+            self.spawned = []
+
+        def Queue(self):
+            return _Queue()
+
+        def Process(self, **kwargs):
+            self.spawned.append(kwargs)
+            return _Proc(**kwargs)
+
+    b = _batch_backend(tmp_path)
+    b._last_full_config = {"model_name": "unsloth/tiny", "batch_members": []}
+    b._last_hf_cache_env = {"HF_HOME": str(tmp_path / "hf")}
+    b._proc = _Proc()
+    b._batch_members["job_a"]["stop_requested"] = True
+    b._batch_members["job_c"].update(stop_requested = True, terminal = True)
+    ctx = _Ctx()
+    monkeypatch.setattr(training_mod, "_CTX", ctx)
+    monkeypatch.setattr(b, "_pump_loop", lambda: None)
+    monkeypatch.setattr(b, "_open_worker_stderr_capture", lambda: None)
+
+    assert b._respawn_worker_disable_xet() is True
+    stop_queue = b._stop_queue
+    assert stop_queue.items == [{"type": "stop_member", "run_id": "job_a", "save": True}]

@@ -2706,6 +2706,10 @@ class TrainingBackend:
                     self._model_download_repo_id = None
                     self._event_queue = event_queue
                     self._stop_queue = stop_queue
+                    # Member stops sent to the stalled worker's queue died with it; under the lock no new one is lost.
+                    for run_id, member in self._batch_members.items():
+                        if member["stop_requested"] and not member["terminal"]:
+                            stop_queue.put({"type": "stop_member", "run_id": run_id, "save": True})
                     self._proc = new_proc
                     self._spawn_in_progress = False
                     self._pump_thread = new_pump
