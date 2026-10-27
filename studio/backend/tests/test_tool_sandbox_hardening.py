@@ -19,8 +19,7 @@ from core.inference.os_sandbox import ToolLaunchPlan
 
 _POSIX = pytest.mark.skipif(sys.platform == "win32", reason = "POSIX launch layout")
 
-# Names of the chat-planted pytest11 entry points a name-less scan sees. Python 3.9's
-# importlib.metadata.entry_points() takes no group and returns a dict of groups; 3.10+ selects.
+# Old importlib.metadata.entry_points() returns a dict of groups; 3.10+ selects.
 _PYTEST11_SCAN = (
     "_eps = m.entry_points()\n"
     "_eps = _eps.select(group = 'pytest11') if hasattr(_eps, 'select') else _eps.get('pytest11', ())\n"
