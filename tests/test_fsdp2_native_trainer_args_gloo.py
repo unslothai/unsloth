@@ -146,9 +146,7 @@ def _worker(rank, world, port, out, case, tmp, env):
         native = _load_native()
         _stub_unsloth_save()
         if case == "xpu_install_use_cpu_import_time":
-            # Only what `import unsloth` installs (unsloth/__init__.py): no loader has wrapped the
-            # Trainer yet (a plain Trainer, or a FastSentenceTransformer encoder loaded without
-            # FastModel). patch_gradient_accumulation_fix installs the real wrapper source.
+            # Only `import unsloth` ran: no loader has wrapped the Trainer yet.
             utils = types.ModuleType("unsloth.models._utils")
             utils.patch_gradient_accumulation_fix = lambda cls: _install_wrapped_trainer_init()
             sys.modules["unsloth.models._utils"] = utils
@@ -314,8 +312,7 @@ def test_xpu_install_cpu_trainer_shards_natively(tmp_path):
 
 
 def test_xpu_install_cpu_trainer_shards_natively_without_a_loader(tmp_path):
-    # Only `import unsloth` wrapped the Trainer: the CPU reclaim must still run (it lives in the
-    # wrapper, which the import-time installer used to skip on a non-CUDA install).
+    # The import-time installer used to skip the wrapper (and its CPU reclaim) on non-CUDA installs.
     pytest.importorskip("transformers")
     pytest.importorskip("peft")
     for rank, r in _run("xpu_install_use_cpu_import_time", tmp_path).items():
