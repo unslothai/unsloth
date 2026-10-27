@@ -165,7 +165,14 @@ fn resolve_launched_hidden(app: &tauri::AppHandle) -> bool {
     let relaunched = in_app_relaunch_config_dir(app)
         .map(|dir| take_in_app_relaunch_marker(&dir))
         .unwrap_or(false);
-    argv_has_hidden_flag() && !relaunched
+    let hidden = argv_has_hidden_flag();
+    // The marker is gone now, so a GPU crash before the window reports in must not relaunch
+    // hidden.
+    #[cfg(target_os = "linux")]
+    if hidden && relaunched {
+        linux_gpu_supervisor::note_window_will_show();
+    }
+    hidden && !relaunched
 }
 
 /// True for a login autostart; false for an in-app relaunch that inherits `--hidden`.

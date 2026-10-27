@@ -183,6 +183,13 @@ pub fn install_gdk_hook() {
     );
 }
 
+/// Call when a `--hidden` launch decides to show its window after all (an in-app relaunch).
+/// The window's first frame is where Error 71 strikes, so the CPU relaunch must already know
+/// not to come back hidden; [`note_window_shown`] still arms the ready timer later.
+pub fn note_window_will_show() {
+    send(MSG_SHOWN);
+}
+
 /// Call whenever the main window is shown. The first call arms a one-shot timer; if the
 /// process is still alive [`READY_GRACE`] later it tells the parent the GPU path works.
 pub fn note_window_shown() {
@@ -907,6 +914,7 @@ mod tests {
         // Tests never set CHANNEL (channel_from_env does not touch the static).
         assert!(CHANNEL.get().is_none());
         note_window_shown();
+        note_window_will_show();
         start_control_reader(|| panic!("no channel"));
         install_gdk_hook();
         #[cfg(debug_assertions)]
