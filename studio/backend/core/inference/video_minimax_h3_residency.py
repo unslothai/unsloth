@@ -390,7 +390,9 @@ def pin_streamed_top_level_group(transformer: Any, logger: Any = None) -> bool:
     from .video_minimax_h3_te import h3_te_pin_allowed
 
     top, blocks = h3_offload_groups(transformer)
-    if not h3_te_pin_allowed(group_payload_bytes(top) if top is not None else 0):
+    if not h3_te_pin_allowed(
+        group_payload_bytes(top) if top is not None else 0, getattr(top, "onload_device", None)
+    ):
         if logger is not None:
             logger.info(
                 "video.h3_top_group: left as diffusers built it (pinning not allowed on this host)"
@@ -493,7 +495,9 @@ def pin_streamed_block_groups(transformer: Any, logger: Any = None) -> tuple[int
             tensors = _group_tensors(group)
             if any(getattr(t, "device", None) is None or t.device.type != "cpu" for t in tensors):
                 break
-            if not h3_te_pin_allowed(group_payload_bytes(group)):
+            if not h3_te_pin_allowed(
+                group_payload_bytes(group), getattr(group, "onload_device", None)
+            ):
                 break
             saved = (group.low_cpu_mem_usage, group.cpu_param_dict)
             try:
@@ -723,7 +727,7 @@ def defer_streamed_block_pins(
 
     if not pin_arena_enabled() or _pinned_memory_capped():
         return None
-    if not _background_pin_enabled() or not _fast_pin_supported():
+    if not _background_pin_enabled(device) or not _fast_pin_supported(device):
         return None
     for group in lazy:
         cpu = group.cpu_param_dict
@@ -734,7 +738,7 @@ def defer_streamed_block_pins(
                 or tensor not in cpu
             ):
                 return None
-    if not h3_te_pin_allowed(group_payload_bytes(lazy[0])):
+    if not h3_te_pin_allowed(group_payload_bytes(lazy[0]), device):
         return None
     pending = getattr(pipe, _PENDING_PINS_ATTR, None)
     if pending is None:
@@ -749,7 +753,7 @@ def defer_streamed_block_pins(
         lazy,
         device,
         logger,
-        admit = lambda g: h3_te_pin_allowed(group_payload_bytes(g)),
+        admit = lambda g: h3_te_pin_allowed(group_payload_bytes(g), device),
     )
     # cpu_param_dict already maps each tensor to its pageable host copy; onloads read it until the pin swaps it
     for group in lazy:
