@@ -922,7 +922,7 @@ export function ResourcesTab() {
           </div>
         ) : null}
         {separateInferenceGpu && (
-          <div className="flex items-center justify-between gap-4 border-b border-border/60 py-3 text-sm">
+          <div className="flex items-start justify-between gap-4 border-b border-border/60 py-3 text-sm">
             <span className="text-muted-foreground">
               {t("settings.resources.gpu.ggufInference")}
             </span>
@@ -1006,7 +1006,7 @@ export function ResourcesTab() {
             return (
               <div
                 key={`${device.index ?? index}-${device.name ?? "gpu"}`}
-                className="flex min-w-0 flex-wrap items-center justify-between gap-x-4 gap-y-2 py-3 max-[992px]:flex-col max-[992px]:items-stretch"
+                className="flex min-w-0 flex-wrap items-start justify-between gap-x-4 gap-y-2 py-3 max-[992px]:flex-col max-[992px]:items-stretch"
               >
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm font-medium text-foreground">
