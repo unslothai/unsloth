@@ -187,8 +187,10 @@ def _moves_with_offload(tensor: Any) -> bool:
 def _wait_for_transfers(value: Any) -> None:
     """Group offload onloads on its own stream with non_blocking copies: finish them before the writer reads."""
     if value.device.type == "cuda":
-        import torch
-        torch.cuda.synchronize(value.device)
+        from .diffusion_cuda_graph import synchronize_outside_capture
+
+        # A device sync inside another thread's CUDA graph capture would invalidate it.
+        synchronize_outside_capture(value.device)
 
 
 def _live_refs(transformer: Any, state: dict) -> dict:
