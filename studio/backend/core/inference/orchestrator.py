@@ -2899,7 +2899,6 @@ class InferenceOrchestrator:
                 sticky_is_checkpoint = sticky_is_checkpoint,
                 sticky_manual = sticky_manual,
                 force_reset = force_reset,
-                fit_attachments = not estimated,
                 **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
             )
             fitted, truncation = _fit_with_instruction_pins(

@@ -256,11 +256,9 @@ def _fit_context(messages, **kwargs):
     force_reset = bool(kwargs.pop("force_reset", False))
     sticky_manual = bool(kwargs.pop("sticky_manual", False))
     replay_only = bool(kwargs.pop("replay_only", False))
-    # An estimated count overprices, so it would cut a latest attachment that fits.
-    fit_attachments = bool(kwargs.pop("fit_attachments", True))
     if replay_only and int(kwargs.get("sticky_dropped") or 0) <= 0:
         return messages, None
-    if fit_attachments and kwargs.get("count_tokens") is not None:
+    if kwargs.get("count_tokens") is not None:
         try:
             messages = fit_oversized_attachments(
                 messages,
