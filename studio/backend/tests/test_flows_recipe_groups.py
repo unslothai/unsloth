@@ -359,3 +359,14 @@ def test_recipe_runs_are_listed_per_step_and_go_with_the_flow(client):
     assert client.get("/api/flows/nope/nodes/gen/recipe-runs").status_code == 404
     client.delete(f"/api/flows/{flow_id}")
     assert flows_db.recipe_runs(flow_id, "gen") == []
+
+
+def test_a_restart_ends_the_recipe_runs_it_left_running(client):
+    from storage import flows_db
+
+    flows_db.save_recipe_run("f", "gen", {"id": "live", "createdAt": 1, "status": "active"})
+    flows_db.save_recipe_run("f", "gen", {"id": "done", "createdAt": 2, "status": "completed"})
+    flows_db.reconcile_orphaned_runs()
+    runs = {r["id"]: r for r in flows_db.recipe_runs("f", "gen")}
+    assert runs["live"]["status"] == "error" and "restarted" in runs["live"]["error"]
+    assert runs["live"]["finishedAt"] and runs["done"]["status"] == "completed"

@@ -526,6 +526,16 @@ def reconcile_orphaned_runs(
             f" WHERE status IN ({', '.join('?' * len(ACTIVE_RUN_STATUSES))})",
             (error, now_ms(), *ACTIVE_RUN_STATUSES),
         )
+        # Their recipe jobs went with the old process too.
+        conn.execute(
+            """
+            UPDATE flow_recipe_runs SET record_json = json_set(
+                record_json, '$.status', 'error', '$.error', ?, '$.finishedAt', ?)
+            WHERE COALESCE(json_extract(record_json, '$.status'), '')
+                NOT IN ('completed', 'error', 'cancelled')
+            """,
+            (error, now_ms()),
+        )
         conn.commit()
         return cur.rowcount
     finally:
