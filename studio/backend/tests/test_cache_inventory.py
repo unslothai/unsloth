@@ -1800,7 +1800,8 @@ def test_hf_history_deduplicates_shared_inodes_and_walks_each_root_once(
     walked = []
     measure = cache_inventory._measure_root
     monkeypatch.setattr(
-        cache_inventory, "_measure_root",
+        cache_inventory,
+        "_measure_root",
         lambda root, **kwargs: (walked.append(root), measure(root, **kwargs))[1],
     )
 
@@ -1858,15 +1859,14 @@ def test_system_cache_accounting_matches_system_volume_when_studio_is_elsewhere(
     ledger.add(SimpleNamespace(st_dev = 2, st_ino = 20, st_size = 200), studio / "new-model")
     monkeypatch.setattr(cache_inventory, "_system_disk_device", lambda: 1)
     monkeypatch.setattr(
-        cache_inventory.shutil, "disk_usage",
+        cache_inventory.shutil,
+        "disk_usage",
         lambda path: SimpleNamespace(total = 1000 if Path(path) == system else 2000, free = 100),
     )
     assert cache_inventory._system_disk_occupancy(ledger) == 100
 
 
-def test_distinct_device_ids_in_the_same_pool_still_count_as_system_storage(
-    tmp_path, monkeypatch
-):
+def test_distinct_device_ids_in_the_same_pool_still_count_as_system_storage(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
     system = Path(os.path.abspath(os.sep))

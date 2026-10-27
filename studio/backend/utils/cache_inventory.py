@@ -754,7 +754,9 @@ class _OccupancyLedger:
 
 
 def _record_entry(
-    entry: os.DirEntry, ledger: LinkLedger, occupancy: Optional[_OccupancyLedger] = None
+    entry: os.DirEntry,
+    ledger: LinkLedger,
+    occupancy: Optional[_OccupancyLedger] = None,
 ) -> None:
     try:
         # Windows DirEntry.stat leaves volume/inode/link-count at zero. HF
@@ -777,7 +779,9 @@ def _descendable(entry: os.DirEntry) -> bool:
 
 
 def _measure_tree(
-    path: Path, ledger: LinkLedger, occupancy: Optional[_OccupancyLedger] = None
+    path: Path,
+    ledger: LinkLedger,
+    occupancy: Optional[_OccupancyLedger] = None,
 ) -> int:
     """Size is left to the ledger: a multi-link inode's cost is only known after every root is walked."""
     count = 0
@@ -801,8 +805,11 @@ def _measure_tree(
 
 
 def _measure_root(
-    root: Path, *, patterns: Optional[Iterable[str]] = None,
-    ledger: Optional[LinkLedger] = None, occupancy: Optional[_OccupancyLedger] = None,
+    root: Path,
+    *,
+    patterns: Optional[Iterable[str]] = None,
+    ledger: Optional[LinkLedger] = None,
+    occupancy: Optional[_OccupancyLedger] = None,
 ) -> tuple[int, int]:
     ledger = LinkLedger() if ledger is None else ledger
     entries = 0
@@ -860,7 +867,6 @@ def _measurement_roots(definition: CacheDefinition) -> list[Path]:
     roots = _resolve_roots(definition)
     if definition.key == "hf_hub":
         from utils.hf_cache_settings import known_hf_hub_caches
-
         roots.extend(known_hf_hub_caches())
     elif definition.key in {"hf_datasets", "hf_xet", "hf_assets"}:
         child = definition.key.removeprefix("hf_")
@@ -874,7 +880,7 @@ def _measurement_roots(definition: CacheDefinition) -> list[Path]:
         # Reading a protected tree's cache is fine; reading the protected root
         # itself, or following a link into it, is not a bounded cache measurement.
         try:
-            assert_purgeable_root(root, protected=protected, trees=set(), keep={})
+            assert_purgeable_root(root, protected = protected, trees = set(), keep = {})
         except CachePurgeRefused:
             continue
         if any(_is_within(resolved, previous) for previous in unique):
@@ -931,19 +937,20 @@ def cache_breakdown(key: str) -> dict:
                     if entry.is_symlink() or _is_junction(entry.path):
                         continue
                     before = occupancy.bytes
-                    if entry.is_dir(follow_symlinks=False):
-                        _measure_root(Path(entry.path), occupancy=occupancy)
+                    if entry.is_dir(follow_symlinks = False):
+                        _measure_root(Path(entry.path), occupancy = occupancy)
                     else:
                         info = (
-                            os.stat(entry.path, follow_symlinks=False)
-                            if os.name == "nt" else entry.stat(follow_symlinks=False)
+                            os.stat(entry.path, follow_symlinks = False)
+                            if os.name == "nt"
+                            else entry.stat(follow_symlinks = False)
                         )
                         occupancy.add(info, entry.path)
                     size = occupancy.bytes - before
                     rows.append({"name": entry.name, "path": entry.path, "size_bytes": size})
         except OSError:
             continue
-    return {"entries": sorted(rows, key=lambda row: (-row["size_bytes"], row["path"]))}
+    return {"entries": sorted(rows, key = lambda row: (-row["size_bytes"], row["path"]))}
 
 
 def describe_cache(definition: CacheDefinition) -> dict:
@@ -991,8 +998,10 @@ def describe_cache(definition: CacheDefinition) -> dict:
         for root in measured_paths:
             clearable = _safe_resolve(root) in clear_roots
             _, count = _measure_root(
-                root, patterns=patterns, occupancy=occupancy,
-                ledger=clear_ledger if clearable else None,
+                root,
+                patterns = patterns,
+                occupancy = occupancy,
+                ledger = clear_ledger if clearable else None,
             )
             entries += count
             if clearable:
