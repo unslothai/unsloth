@@ -404,7 +404,7 @@ def _builtin_specs() -> list[PatchSpec]:
             else getattr(ctx.pipe, "transformer", None)
         )
         if not fp16_rmsnorm_wanted(denoiser, ctx.dtype, ctx.speed_mode):
-            uninstall_fp16_rmsnorm()  # a previous fp16 eager load's patch never outlives it
+            uninstall_fp16_rmsnorm()  # never outlives the load that installed it
             return False
         return install_fp16_rmsnorm()
 
@@ -514,8 +514,7 @@ def _builtin_specs() -> list[PatchSpec]:
             speed_only = True,
             env = "UNSLOTH_DIFFUSION_ARCH_PATCHES",
         ),
-        # After the shared fusions (an ``off`` load uninstalls them first): the fused RMSNorm alone on the fp16 eager
-        # tier of a measured family; every other load reverts it.
+        # Must follow the shared fusions (an ``off`` load uninstalls them first).
         PatchSpec(
             "fp16_eager_rmsnorm",
             STAGE_LOAD_EAGER,

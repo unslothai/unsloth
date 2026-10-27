@@ -55,7 +55,6 @@ def test_full_set_replaces_the_rmsnorm_only_patch():
     assert ep.install_fp16_rmsnorm()
     assert ep.install_compile_safe_patches() >= 2
     assert AdaLayerNormZero.forward is not orig_ada and not ep.fp16_rmsnorm_installed()
-    # the RMSNorm-only uninstall leaves the full set alone
     ep.uninstall_fp16_rmsnorm()
     assert ep.is_installed() and AdaLayerNormZero.forward is not orig_ada
 
@@ -77,11 +76,9 @@ def test_registry_installs_on_off_and_reverts_on_the_next_load():
     orig = RMSNorm.forward
     aa.install_patches(ap.STAGE_LOAD_EAGER, **(_ctx("off")))
     assert ep.fp16_rmsnorm_installed() and RMSNorm.forward is not orig
-    # an fp16 off load of another family reverts it (the patch never outlives its load)
     aa.install_patches(ap.STAGE_LOAD_EAGER, **(_ctx("off", denoiser = torch.nn.Linear(2, 2))))
     assert not ep.fp16_rmsnorm_installed() and RMSNorm.forward is orig
     aa.install_patches(ap.STAGE_LOAD_EAGER, **(_ctx("off")))
-    # a speed-tier load: the full set, not the RMSNorm-only patch
     aa.install_patches(ap.STAGE_LOAD_EAGER, **(_ctx("default")))
     assert not ep.fp16_rmsnorm_installed() and ep.is_installed()
     ap.uninstall_group(ap.GROUP_EAGER)

@@ -140,7 +140,7 @@ def install_compile_safe_patches() -> int:
         uninstall_patches()
         return 0
     if _fp16_rmsnorm_only:
-        # an fp16 eager load left the RMSNorm-only patch: the full set re-installs from the stock classes
+        # full set must install from the stock classes
         uninstall_fp16_rmsnorm()
     if _patched:
         return len(_patched)
@@ -178,12 +178,8 @@ def uninstall_patches() -> None:
     _orig_rmsnorm_forward = None
 
 
-# --- fp16 eager tier: the fused RMSNorm alone --------------------------------------------------------------------
-# The ``off`` tier keeps the stock classes (bit-identical to diffusers). On fp16 compute (Turing / Volta, no bf16)
-# Z-Image's eager denoise spends ~4 s per 8-step 1024^2 image in diffusers' decomposed fp32 RMSNorm (pow, mean, rsqrt,
-# two casts per call) where one F.rms_norm kernel does it (Colab T4: 4.4 s of the 29.9 s denoise). This installs
-# only that patch, only for those loads. F.rms_norm rounds once (diffusers twice): nearer fp64, not bit-identical.
-# Kill switch: UNSLOTH_DIFFUSION_FP16_RMSNORM=0.
+# fp16 ``off`` tier: fused RMSNorm alone (Colab T4 Z-Image: 4.4 s of a 29.9 s denoise in decomposed RMSNorm).
+# F.rms_norm rounds once (diffusers twice): nearer fp64, not bit-identical.
 FP16_RMSNORM_ENV = "UNSLOTH_DIFFUSION_FP16_RMSNORM"
 FP16_RMSNORM_CLASSES = ("ZImageTransformer2DModel",)
 _fp16_rmsnorm_only: list[type] = []
@@ -199,7 +195,6 @@ def fp16_rmsnorm_enabled() -> bool:
 
 
 def fp16_rmsnorm_wanted(denoiser: object, dtype: object, speed_mode: Optional[str]) -> bool:
-    """An fp16 ``off``-tier load of a measured family (``FP16_RMSNORM_CLASSES``)."""
     return (
         fp16_rmsnorm_enabled()
         and _patches_enabled()
@@ -210,7 +205,7 @@ def fp16_rmsnorm_wanted(denoiser: object, dtype: object, speed_mode: Optional[st
 
 
 def install_fp16_rmsnorm() -> bool:
-    """The fused RMSNorm alone (idempotent). False when the full set already holds it or the patch is refused."""
+    """False when the full set already holds it or the patch is refused."""
     global _orig_rmsnorm_forward
     if _fp16_rmsnorm_only:
         return True
@@ -228,7 +223,6 @@ def install_fp16_rmsnorm() -> bool:
 
 
 def uninstall_fp16_rmsnorm() -> None:
-    """Revert the RMSNorm-only patch (idempotent; leaves the full set alone)."""
     global _orig_rmsnorm_forward
     for cls in list(_fp16_rmsnorm_only):
         revert_patch(cls, "forward")
