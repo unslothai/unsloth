@@ -7,6 +7,7 @@ import { getApiBase, isTauri } from "@/lib/api-base";
 import { createNavigationNonce } from "@/lib/navigation-nonce";
 import { createChatPinsApi } from "./api/chat-pins-api";
 import {
+  discardUnboundPinEdits,
   setPinnedChatsActions,
   usePinnedChatsStore,
 } from "./stores/pinned-chats-store";
@@ -105,4 +106,5 @@ export function resetPinnedChats({
   const previous = runtime;
   runtime = undefined;
   previous?.reset(clearPending);
+  if (clearPending) discardUnboundPinEdits();
 }

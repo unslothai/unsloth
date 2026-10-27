@@ -18,16 +18,54 @@ export interface PinnedChatsState extends PinnedChatsActions {
 }
 
 let actions: PinnedChatsActions | null = null;
-// Edits made while the lazy sync runtime is still loading; replayed when it binds.
-let unbound: Array<[string[], boolean]> = [];
+
+// Edits made while the lazy sync runtime is still loading, kept across a reload and replayed
+// when it binds. Storage-free environments (tests) fall back to memory.
+const UNBOUND_KEY = "unsloth_chat_pin_unbound";
+let unboundMemory: Array<[string[], boolean]> = [];
+
+function readUnbound(): Array<[string[], boolean]> {
+  try {
+    if (typeof localStorage === "undefined") return unboundMemory;
+    const saved: unknown = JSON.parse(localStorage.getItem(UNBOUND_KEY) ?? "[]");
+    return Array.isArray(saved)
+      ? saved.filter(
+          (entry): entry is [string[], boolean] =>
+            Array.isArray(entry) &&
+            Array.isArray(entry[0]) &&
+            entry[0].every((id: unknown) => typeof id === "string") &&
+            typeof entry[1] === "boolean",
+        )
+      : [];
+  } catch {
+    return unboundMemory;
+  }
+}
+
+function writeUnbound(edits: Array<[string[], boolean]>): void {
+  unboundMemory = edits;
+  try {
+    if (typeof localStorage === "undefined") return;
+    if (edits.length) localStorage.setItem(UNBOUND_KEY, JSON.stringify(edits));
+    else localStorage.removeItem(UNBOUND_KEY);
+  } catch {
+    // Storage full or blocked: the edit still reaches the runtime if it binds this session.
+  }
+}
+
+/** Sign-out: drop edits made before the runtime bound and the pins they showed. */
+export function discardUnboundPinEdits(): void {
+  writeUnbound([]);
+  usePinnedChatsStore.setState({ pinnedIds: [] });
+}
 
 /** Bind persistence at runtime without pulling API/auth modules into this state store. */
 export function setPinnedChatsActions(next: PinnedChatsActions | null): void {
   actions = next;
-  const queued = unbound;
-  unbound = [];
-  // Unbinding is a session boundary: never replay one session's edits into the next.
-  if (next) for (const [ids, pinned] of queued) next.setPinned(ids, pinned);
+  if (!next) return;
+  const queued = readUnbound();
+  writeUnbound([]);
+  for (const [ids, pinned] of queued) next.setPinned(ids, pinned);
 }
 
 export const usePinnedChatsStore = create<PinnedChatsState>((set, get) => ({
@@ -39,7 +77,7 @@ export const usePinnedChatsStore = create<PinnedChatsState>((set, get) => ({
       actions.setPinned(ids, pinned);
       return;
     }
-    unbound.push([ids, pinned]);
+    writeUnbound([...readUnbound(), [ids, pinned]]);
     set((state) => {
       if (!pinned) {
         const dropping = new Set(ids);
