@@ -782,7 +782,13 @@ def test_traced_leave_block_call_runs_the_eager_wrapper(monkeypatch):
     torch._dynamo.reset()
     fn = torch.compile(
         lambda q: hpa._sdpa_packed_varlen(
-            module, q, q, q, mask, packed_seq_lengths = psl, **{hpa.BLOCK_VARLEN_KWARG: hpa._LEAVE_BLOCK}
+            module,
+            q,
+            q,
+            q,
+            mask,
+            packed_seq_lengths = psl,
+            **{hpa.BLOCK_VARLEN_KWARG: hpa._LEAVE_BLOCK},
         )[0],
         backend = "eager",
     )

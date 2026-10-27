@@ -204,7 +204,6 @@ def test_a_document_too_long_to_split_under_int32_stays_on_flex(routed):
 
 def test_packing_passes_the_trainer_max_length(routed, monkeypatch):
     from unsloth.utils import packing
-
     monkeypatch.setattr(hpa, "enable_hf_packed_attention", lambda: True)
     for max_length, impl in ((2**22, "flex_attention"), (131072, "sdpa")):
         config = _gemma()

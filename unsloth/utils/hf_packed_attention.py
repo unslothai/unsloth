@@ -572,8 +572,11 @@ def _sdpa_packed_varlen(
                 from .packing import _host_segment_lengths
 
                 # Documents are independent: groups of them stay under the limit, exactly.
-                refused, groups = False, _int32_safe_groups(
-                    _host_segment_lengths(kwargs["packed_seq_lengths"]), n_heads, head_dim
+                refused, groups = (
+                    False,
+                    _int32_safe_groups(
+                        _host_segment_lengths(kwargs["packed_seq_lengths"]), n_heads, head_dim
+                    ),
                 )
                 if groups is None:
                     torch_varlen, backend = None, None
