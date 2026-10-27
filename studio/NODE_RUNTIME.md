@@ -27,6 +27,16 @@ managed Node update; image builds run Studio setup.
 
 ## Updating the pin
 
+Dependabot cannot update this file: it is not a package manifest, and the digests have to be
+checked against Node's signed checksums. Instead `.github/workflows/node-pins-update.yml` runs
+`scripts/update_node_pins.py` daily. When the pinned LTS line has a newer release (security
+releases included), it verifies `SHASUMS256.txt` against the Node release keys, downloads and
+hashes all six archives, and opens or refreshes one PR on `ci/node-pins`. It never moves to a
+new LTS major; that stays the manual review below. Run it locally with
+`python scripts/update_node_pins.py --check` (exit 1 when a newer release exists) or `--write`.
+
+For a manual update or a new major:
+
 1. Check the [Node release schedule](https://github.com/nodejs/Release#release-schedule)
    and the selected release's notes, including security fixes.
 2. Fetch its `SHASUMS256.txt` and signature from `https://nodejs.org/dist/v<version>/`.
