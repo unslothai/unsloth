@@ -208,6 +208,13 @@ def _should_pack(config) -> bool:
     return not getattr(config, "_unsloth_disable_auto_packing", False)
 
 
+def _pipeline_parallel_env_requested() -> bool:
+    try:
+        return int(os.environ.get("UNSLOTH_PP_SIZE", "1").strip() or 1) > 1
+    except ValueError:
+        return False
+
+
 def _should_auto_padding_free(config) -> bool:
     if config is None or _AUTO_PADDING_FREE_ENV_DISABLED or getattr(config, "packing", False):
         return False
@@ -1909,9 +1916,12 @@ def _patch_sft_trainer_auto_packing(trl_module):
         eval_logits_wanted = os.environ.get(
             "UNSLOTH_RETURN_LOGITS", "0"
         ) == "1" or _wants_eval_logits(original_init, args, kwargs)
+        # UNSLOTH_PP_SIZE: packed rows are not carried between pipeline stages yet (models/pp_env.py).
+        is_pipeline_parallel_env = _pipeline_parallel_env_requested()
         blocked = (
             (data_collator is not None)
             or is_ring_context_parallel
+            or is_pipeline_parallel_env
             or (is_processor and not processor_text_only)
             or is_auto_processor_vlm
             or is_vision_dataset
@@ -1928,7 +1938,9 @@ def _patch_sft_trainer_auto_packing(trl_module):
             if hasattr(config_arg, "padding_free"):
                 setattr(config_arg, "padding_free", False)
         # TRL resolves eval_packing on its own; packed eval batches would hit ring attention's varlen refusal.
-        if is_ring_context_parallel and getattr(config_arg, "eval_packing", None):
+        if (is_ring_context_parallel or is_pipeline_parallel_env) and getattr(
+            config_arg, "eval_packing", None
+        ):
             setattr(config_arg, "eval_packing", False)
 
         if blocked and requested_pack:
@@ -1947,6 +1959,8 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 reason = f"unsupported model type(s): {', '.join(model_types)}"
             elif is_ring_context_parallel:
                 reason = "ring context parallelism"
+            elif is_pipeline_parallel_env:
+                reason = "pipeline parallel (UNSLOTH_PP_SIZE)"
             elif forward_rejects_packing:
                 # Name the real blocker (for a string `model=`, the resolved class).
                 blocker = (

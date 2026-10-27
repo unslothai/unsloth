@@ -4014,7 +4014,7 @@ def _refuse_save_on_each_node(training_args):
 
 
 def _env_tensor_parallel_dp_mesh(model):
-    if not os.environ.get("UNSLOTH_TP_SIZE"):
+    if not os.environ.get("UNSLOTH_TP_SIZE") and not os.environ.get("UNSLOTH_PP_SIZE"):
         return None
     from .tp_env import fsdp2_dp_mesh
     return fsdp2_dp_mesh(model)

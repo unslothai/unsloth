@@ -1,20 +1,30 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Tensor parallelism from the environment, for unmodified training scripts.
+"""Tensor / pipeline parallelism from the environment, for unmodified training scripts.
 
     UNSLOTH_TP_SIZE=2 torchrun --nproc-per-node 2 train.py                    # tp 2
     UNSLOTH_TP_SIZE=2 torchrun --nproc-per-node 4 train.py                    # dp 2 (DDP-style) x tp 2
     UNSLOTH_TP_SIZE=2 UNSLOTH_FSDP2=1 torchrun --nproc-per-node 4 train.py    # dp 2 (native FSDP2) x tp 2
+    UNSLOTH_PP_SIZE=2 torchrun --nproc-per-node 2 train.py                    # pp 2
+    UNSLOTH_PP_SIZE=2 UNSLOTH_TP_SIZE=2 torchrun --nproc-per-node 4 train.py  # pp 2 x tp 2
+    UNSLOTH_PP_SIZE=2 [UNSLOTH_FSDP2=1] torchrun --nproc-per-node 4 train.py  # pp 2 x dp 2 (DDP-style / FSDP2)
 
-The layout is read once. The world splits into dp x tp ranks (tp the inner dimension, as in
-init_device_mesh(..., (dp, tp), ("dp", "tp"))). The script's own calls apply it:
+The layout is read once. The world splits into pp x dp x tp ranks (pp outermost, tp the inner dimension, as in
+init_device_mesh(..., (pp, dp, tp), ("pp", "dp", "tp")), torchtitan's order). Tensor parallel alone:
 - FastLanguageModel / FastModel.from_pretrained: 16-bit checkpoints load through sharded_loading (each rank
   reads its slices of the attention / MLP projections); 4-bit loads in full and is sharded at get_peft_model.
 - get_peft_model: apply_tensor_parallel over mesh["tp"] once LoRA is attached (full-size LoRA, 1-GPU init).
 - Trainer.__init__: tensor parallel if get_peft_model did not apply it; native FSDP2 shards over mesh["dp"]
   (UNSLOTH_FSDP2=1), otherwise gradients are averaged over mesh["dp"] before clipping and the optimizer step.
-So the order is always split (pipeline parallel, not from the environment yet) -> tp -> FSDP2.
+So the order is always split -> tp -> FSDP2.
+
+With UNSLOTH_PP_SIZE (models/pp_env.py) the model loads in full on every rank and stays whole until the
+Trainer: Trainer.__init__ splits it (apply_pipeline_parallel over mesh["pp"], the other stages' weights kept on
+the CPU for the post-training cells), then applies tensor parallel inside the stage, then FSDP2 / DDP-style
+averaging over mesh["dp"], and runs every training step through the pipeline schedule.
+UNSLOTH_PP_MICROBATCHES (default 2 x pp, lowered to a divisor of the batch) and UNSLOTH_PP_SCHEDULE (gpipe,
+1f1b) tune it.
 
 UNSLOTH_TP_SHARDED_LOAD=0 loads 16-bit checkpoints in full on every rank instead (then shards them).
 """
@@ -57,18 +67,33 @@ def _int_env(name):
 
 
 class TPEnvLayout:
-    """world = dp x tp; `mesh()` builds (once) the device mesh, initializing the process group if needed."""
+    """world = pp x dp x tp; `mesh()` builds (once) the device mesh, initializing the process group if needed."""
 
-    def __init__(self, tp, dp, world, fsdp2):
+    def __init__(self, tp, dp, world, fsdp2, pp = 1, microbatches = None, schedule = "gpipe"):
         self.tp, self.dp, self.world, self.fsdp2 = tp, dp, world, fsdp2
+        self.pp, self.microbatches, self.schedule = pp, microbatches, schedule
         self._mesh = None
 
     def __repr__(self):
-        dp = f"dp {self.dp} ({'native FSDP2' if self.fsdp2 else 'DDP'}) x " if self.dp > 1 else ""
-        return f"{dp}tp {self.tp}"
+        parts = [f"pp {self.pp}"] if self.pp > 1 else []
+        if self.dp > 1:
+            parts.append(f"dp {self.dp} ({'native FSDP2' if self.fsdp2 else 'DDP'})")
+        if self.tp > 1:
+            parts.append(f"tp {self.tp}")
+        return " x ".join(parts)
+
+    @property
+    def env_vars(self):
+        """The environment variables that asked for this layout, e.g. "UNSLOTH_PP_SIZE=2 UNSLOTH_TP_SIZE=2"."""
+        out = [f"UNSLOTH_PP_SIZE={self.pp}"] if self.pp > 1 else []
+        if self.tp > 1:
+            out.append(f"UNSLOTH_TP_SIZE={self.tp}")
+        return " ".join(out)
 
     @property
     def sharded_loading(self):
+        if self.pp > 1:
+            return False  # the pipeline split comes first, on whole layers (models/pp_env.py)
         return os.environ.get("UNSLOTH_TP_SHARDED_LOAD", "1").strip().lower() not in (
             "0",
             "false",
@@ -90,65 +115,103 @@ class TPEnvLayout:
             dist.init_process_group("nccl" if cuda else "gloo")
         if dist.get_world_size() != self.world:
             raise RuntimeError(
-                f"Unsloth: UNSLOTH_TP_SIZE={self.tp} read WORLD_SIZE={self.world}, but the process group has "
+                f"Unsloth: {self.env_vars} read WORLD_SIZE={self.world}, but the process group has "
                 f"{dist.get_world_size()} ranks."
             )
         device = "cuda" if cuda else "cpu"
-        if self.dp == 1:
-            mesh = init_device_mesh(device, (self.tp,), mesh_dim_names = ("tp",))
-        else:
-            mesh = init_device_mesh(device, (self.dp, self.tp), mesh_dim_names = ("dp", "tp"))
+        dims = [(name, size) for name, size in (("pp", self.pp), ("dp", self.dp), ("tp", self.tp))]
+        dims = [(name, size) for name, size in dims if size > 1] or [("tp", self.tp)]
+        mesh = init_device_mesh(
+            device, tuple(size for _, size in dims), mesh_dim_names = tuple(name for name, _ in dims)
+        )
+        if len(dims) > 1:
             from .pp_native import check_mesh_composition
             check_mesh_composition(
-                {"dp": mesh["dp"], "tp": mesh["tp"]}, f"UNSLOTH_TP_SIZE={self.tp} (dp x tp)"
+                {name: mesh[name] for name, _ in dims}, f"{self.env_vars} ({self})"
             )
         self._mesh = mesh
         if dist.get_rank() == 0:
-            print(f"Unsloth: tensor parallel from UNSLOTH_TP_SIZE: {self} over {self.world} ranks.")
+            what = "pipeline" if self.pp > 1 else "tensor"
+            if self.pp > 1 and self.tp > 1:
+                what = "pipeline x tensor"
+            print(f"Unsloth: {what} parallel from {self.env_vars}: {self} over {self.world} ranks.")
         return mesh
 
     @property
     def tp_mesh(self):
-        return self.mesh()["tp"]
+        return self.mesh()["tp"] if self.tp > 1 else None
 
     @property
     def dp_mesh(self):
         return self.mesh()["dp"] if self.dp > 1 else None
 
+    @property
+    def pp_mesh(self):
+        return self.mesh()["pp"] if self.pp > 1 else None
+
+
+_PP_SCHEDULES = ("gpipe", "1f1b")
+
 
 def _read_layout():
-    pp = _int_env("UNSLOTH_PP_SIZE")
-    if pp is not None and pp > 1:
-        raise ValueError(
-            f"Unsloth: UNSLOTH_PP_SIZE={pp}: pipeline parallelism cannot be launched from the environment yet "
-            "(the Trainer cannot train a pipeline parallel model until Trainer support lands). Use the Python "
-            "API (apply_pipeline_parallel and PipelineParallel.step in a custom loop, "
-            "unsloth/models/pp_native.py), or unset UNSLOTH_PP_SIZE."
-        )
-    tp = _int_env("UNSLOTH_TP_SIZE")
-    if tp is None or tp == 1:
+    pp = _int_env("UNSLOTH_PP_SIZE") or 1
+    tp = _int_env("UNSLOTH_TP_SIZE") or 1
+    if pp == 1 and tp == 1:
         return None
     try:
         world = int(os.environ.get("WORLD_SIZE", "1"))
     except ValueError:
         world = 1
-    if world % tp:
-        raise ValueError(
-            f"Unsloth: UNSLOTH_TP_SIZE={tp} must divide the number of ranks (WORLD_SIZE={world}); launch with "
-            f"torchrun --nproc-per-node {tp} (or a multiple of {tp} for data parallel x tensor parallel), or "
-            "unset UNSLOTH_TP_SIZE."
+    names = " x ".join(
+        name for name, size in (("UNSLOTH_PP_SIZE", pp), ("UNSLOTH_TP_SIZE", tp)) if size > 1
+    )
+    given = " ".join(
+        f"{name}={size}" for name, size in (("UNSLOTH_PP_SIZE", pp), ("UNSLOTH_TP_SIZE", tp)) if size > 1
+    )
+    if world % (pp * tp):
+        what = (
+            "data parallel x tensor parallel"
+            if pp == 1
+            else "data parallel x pipeline parallel" + (" x tensor parallel" if tp > 1 else "")
         )
+        raise ValueError(
+            f"Unsloth: {given}: {names} = {pp * tp} must divide the number of ranks (WORLD_SIZE={world}); "
+            f"launch with torchrun --nproc-per-node {pp * tp} (or a multiple of {pp * tp} for {what}), or "
+            f"unset {' / '.join(name for name in names.split(' x '))}."
+        )
+    microbatches, schedule = None, "gpipe"
+    if pp > 1:
+        microbatches = _int_env("UNSLOTH_PP_MICROBATCHES")
+        schedule = (os.environ.get("UNSLOTH_PP_SCHEDULE") or "gpipe").strip().lower().replace("-", "")
+        schedule = schedule.replace("_", "")
+        if schedule not in _PP_SCHEDULES:
+            raise ValueError(
+                f"Unsloth: UNSLOTH_PP_SCHEDULE={os.environ.get('UNSLOTH_PP_SCHEDULE')!r} must be one of "
+                f"{_PP_SCHEDULES}."
+            )
+        if schedule == "1f1b" and microbatches is not None and microbatches < pp:
+            raise ValueError(
+                f"Unsloth: UNSLOTH_PP_SCHEDULE=1f1b needs UNSLOTH_PP_MICROBATCHES >= UNSLOTH_PP_SIZE "
+                f"({microbatches} < {pp})."
+            )
+        from .pp_native import _check_torch_pipelining
+
+        try:
+            _check_torch_pipelining()
+        except RuntimeError as exc:
+            raise RuntimeError(f"{exc} (UNSLOTH_PP_SIZE={pp}: unset it to run without pipeline parallel.)") from None
     from ..fsdp2_launch import unsloth_fsdp2_requested
 
     fsdp2 = bool(unsloth_fsdp2_requested())
     backend = os.environ.get("UNSLOTH_FSDP2_BACKEND", "").strip().lower()
     if fsdp2 and backend in ("accelerate", "hf", "transformers"):
+        what = "pipeline" if pp > 1 else "tensor"
         raise ValueError(
-            f"Unsloth: UNSLOTH_TP_SIZE={tp} composes with native FSDP2 only (UNSLOTH_FSDP2=1); "
-            f"UNSLOTH_FSDP2_BACKEND={backend} would hand the tensor parallel model to accelerate's FSDP. "
+            f"Unsloth: {given} composes with native FSDP2 only (UNSLOTH_FSDP2=1); "
+            f"UNSLOTH_FSDP2_BACKEND={backend} would hand the {what} parallel model to accelerate's FSDP. "
             "Unset UNSLOTH_FSDP2_BACKEND."
         )
-    return TPEnvLayout(tp, world // tp, world, fsdp2)
+    return TPEnvLayout(tp, world // (pp * tp), world, fsdp2, pp, microbatches, schedule)
 
 
 def env_layout():
@@ -173,6 +236,12 @@ def env_hint():
         layout = None
     if layout is None:
         return ""
+    if layout.pp > 1:
+        what = "Pipeline parallelism" + (" x tensor parallelism" if layout.tp > 1 else "")
+        return (
+            f" ({what} came from {layout.env_vars}: unset {'them' if layout.tp > 1 else 'it'} to run this "
+            "script with DDP or UNSLOTH_FSDP2=1.)"
+        )
     return (
         f" (Tensor parallelism came from UNSLOTH_TP_SIZE={layout.tp}: unset it to run this script with "
         "DDP or UNSLOTH_FSDP2=1.)"
@@ -240,29 +309,43 @@ def tensor_parallel_env_load(fn):
         if layout is None or _DEPTH["load"]:
             return fn(*args, **kwargs)
         values = _bound(fn, args, kwargs)
-        refused = [what for key, what in _REFUSED_LOAD_FLAGS if values.get(key)]
+        what = (
+            "tensor parallel"
+            if layout.pp == 1
+            else ("pipeline parallel" + (" x tensor parallel" if layout.tp > 1 else ""))
+        )
+        unset = " / ".join(var.split("=")[0] for var in layout.env_vars.split())
+        refused = [what_ for key, what_ in _REFUSED_LOAD_FLAGS if values.get(key)]
         if refused:
             raise NotImplementedError(
-                f"Unsloth: UNSLOTH_TP_SIZE={layout.tp} (tensor parallel) does not support "
+                f"Unsloth: {layout.env_vars} ({what}) does not support "
                 + "; ".join(refused)
-                + ". Unset UNSLOTH_TP_SIZE to run this script with DDP or UNSLOTH_FSDP2=1."
+                + f". Unset {unset} to run this script with DDP or UNSLOTH_FSDP2=1."
             )
         from .fsdp2_load import fsdp2_sharded_load_requested
 
         if fsdp2_sharded_load_requested():
-            # Its per-rank shard reads know nothing of the tp mesh.
+            # Its per-rank shard reads know nothing of the tp / pp mesh.
             raise NotImplementedError(
-                f"Unsloth: UNSLOTH_TP_SIZE={layout.tp} (tensor parallel) does not support "
-                "UNSLOTH_FSDP2_SHARDED_LOAD=1. Unset UNSLOTH_FSDP2_SHARDED_LOAD; tensor parallel "
-                "already loads 16-bit weights sharded."
+                f"Unsloth: {layout.env_vars} ({what}) does not support "
+                "UNSLOTH_FSDP2_SHARDED_LOAD=1. Unset UNSLOTH_FSDP2_SHARDED_LOAD"
+                + ("; tensor parallel already loads 16-bit weights sharded." if layout.pp == 1 else ".")
             )
+        if layout.tp == 1:
+            # Pipeline parallel alone: a whole model on every rank (split at the Trainer), checked now.
+            layout.mesh()
+            _DEPTH["load"] += 1
+            try:
+                out = fn(*args, **kwargs)
+            finally:
+                _DEPTH["load"] -= 1
+            return _check_pipeline_model(out, layout)
         mesh = layout.tp_mesh
         _DEPTH["load"] += 1
         try:
             if _four_bit(values, fn) or not layout.sharded_loading or _is_adapter(values):
-                return fn(
-                    *args, **kwargs
-                )  # full load; get_peft_model shards it (Params4bit included)
+                out = fn(*args, **kwargs)  # full load; get_peft_model shards it (Params4bit included)
+                return _check_pipeline_model(out, layout) if layout.pp > 1 else out
             from .tp_native import sharded_loading
 
             try:
@@ -285,6 +368,25 @@ def tensor_parallel_env_load(fn):
 
     from_pretrained._unsloth_tp_env = True
     return _marks_world_save(from_pretrained)
+
+
+def _check_pipeline_model(out, layout):
+    """UNSLOTH_PP_SIZE: refuse a model the pipeline split cannot take right after loading it (not at the
+    Trainer), naming the environment variable."""
+    model = _model_of(out)
+    if model is None or layout.pp == 1 or _is_peft_adapter_model(model):
+        return out
+    from .pp_native import check_pipeline_model
+
+    try:
+        check_pipeline_model(model)
+    except (ValueError, RuntimeError, NotImplementedError) as exc:
+        _reraise_with_hint(exc)
+    return out
+
+
+def _is_peft_adapter_model(model):
+    return hasattr(model, "peft_config") and bool(getattr(model, "peft_config", None))
 
 
 def _marks_world_save(from_pretrained):
@@ -345,7 +447,8 @@ def tensor_parallel_env_peft(fn):
     @functools.wraps(fn)
     def get_peft_model(*args, **kwargs):
         layout = env_layout()
-        if layout is None or _DEPTH["peft"]:
+        if layout is None or _DEPTH["peft"] or layout.tp == 1 or layout.pp > 1:
+            # Under UNSLOTH_PP_SIZE tensor parallel comes after the split, at the Trainer.
             return fn(*args, **kwargs)
         _DEPTH["peft"] += 1
         try:
@@ -383,10 +486,21 @@ def install_tensor_parallel_env_trainer_init():
 
 
 def tensor_parallel_env_trainer_pre(model):
-    """Trainer.__init__ before anything else touches the model: tensor parallel (if get_peft_model did not
-    apply it) and the DDP-style dp dimension. Returns the layout (None without UNSLOTH_TP_SIZE)."""
+    """Trainer.__init__ before anything else touches the model: the pipeline split (UNSLOTH_PP_SIZE), tensor
+    parallel (if get_peft_model did not apply it) and the DDP-style dp dimension. Returns the layout (None
+    without UNSLOTH_TP_SIZE / UNSLOTH_PP_SIZE)."""
     layout = env_layout()
     if layout is None or not isinstance(model, torch.nn.Module):
+        return layout
+    if layout.pp > 1:
+        from .pp_env import pipeline_parallel_env_apply
+
+        pipeline_parallel_env_apply(model, layout)  # also the DDP-style dp start (broadcast, stage.ddp_mesh)
+        if layout.tp > 1:
+            _apply(model, layout)
+            if layout.dp > 1 and not layout.fsdp2:
+                for level in _levels(model):
+                    level.__dict__[_DDP_MESH] = layout.dp_mesh
         return layout
     _apply(model, layout)
     if layout.dp > 1 and not layout.fsdp2:
@@ -427,9 +541,10 @@ def fsdp2_dp_mesh(model):
         or not isinstance(model, torch.nn.Module)
     ):
         return None
+    from .pp_native import is_pipeline_parallel
     from .tp_native import is_tensor_parallel
 
-    return layout.dp_mesh if is_tensor_parallel(model) else None
+    return layout.dp_mesh if is_tensor_parallel(model) or is_pipeline_parallel(model) else None
 
 
 def fsdp2_has_no_dp_dimension():

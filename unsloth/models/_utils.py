@@ -6028,7 +6028,10 @@ def patch_gradient_accumulation_fix(Trainer):
             # Unsloth tensor parallel model (apply_tensor_parallel): no DDP over the tp ranks, dataloader
             # sharded over dp only, tp-aware clipping (tp_native.tp_trainer_setup). Dict lookups otherwise.
             _refuse_pipeline_parallel_for_trainer(model)
-            # UNSLOTH_TP_SIZE (unmodified scripts): tensor parallel before native FSDP2 shards the dp dimension.
+            # UNSLOTH_PP_SIZE: trainers / arguments the pipeline step cannot run, refused before the split.
+            _pipeline_parallel_env_refusals(self, _original_trainer_init, args, kwargs)
+            # UNSLOTH_TP_SIZE / UNSLOTH_PP_SIZE (unmodified scripts): the pipeline split, then tensor parallel,
+            # before native FSDP2 shards the dp dimension.
             tp_env = _tensor_parallel_env_trainer_pre(model)
             if (
                 tp_env is not None
@@ -6049,12 +6052,12 @@ def patch_gradient_accumulation_fix(Trainer):
                 )
             if native_fsdp2 and tp_env is not None and tp_env.dp == 1:
                 native_fsdp2 = (
-                    False  # UNSLOTH_TP_SIZE = world size: no data parallel dimension to shard
+                    False  # UNSLOTH_TP_SIZE x UNSLOTH_PP_SIZE = world size: no data parallel dimension to shard
                 )
             if tp_env is not None and tp_env.dp > 1 and tp_env.fsdp2 and not native_fsdp2:
                 # The dp dimension would be neither FSDP2-sharded nor gradient-averaged: replicas would drift.
                 raise RuntimeError(
-                    f"Unsloth: UNSLOTH_TP_SIZE={tp_env.tp} with UNSLOTH_FSDP2=1 needs Unsloth's native FSDP2 for "
+                    f"Unsloth: {tp_env.env_vars} with UNSLOTH_FSDP2=1 needs Unsloth's native FSDP2 for "
                     f"the data parallel dimension (dp {tp_env.dp}), but this launch selects accelerate's FSDP "
                     "(ACCELERATE_USE_FSDP / an accelerate FSDP config, or a non-CUDA install). Launch with "
                     "torchrun and UNSLOTH_FSDP2_BACKEND unset, or unset UNSLOTH_FSDP2 for DDP-style data parallel."
@@ -6098,6 +6101,10 @@ def patch_gradient_accumulation_fix(Trainer):
             if tensor_parallel:
                 from .tp_native import tp_trainer_setup
                 tp_trainer_setup(phase = "post", trainer = self)
+            if _is_env_pipeline_parallel(getattr(self, "model", None)):
+                # After the tensor parallel setup: the pipeline schedule owns the step, eval, saves and clipping.
+                from .pp_env import pp_trainer_setup
+                pp_trainer_setup(self)
             try:
                 accelerator = getattr(self, "accelerator", None)
                 if (
@@ -6187,13 +6194,42 @@ def _refuse_tensor_parallel_for_trainer(model):
     _refuse_pipeline_parallel_for_trainer(model)
 
 
+def _is_env_pipeline_parallel(model):
+    """A model split under UNSLOTH_PP_SIZE (models/pp_env.py): the Trainer runs it through the pipeline."""
+    if not _is_unsloth_pipeline_parallel(model):
+        return False
+    from .pp_native import pipeline_stage_of
+    stage = pipeline_stage_of(model)
+    return stage is not None and getattr(stage, "env_layout", None) is not None
+
+
 def _refuse_pipeline_parallel_for_trainer(model):
-    if _is_unsloth_pipeline_parallel(model):
+    if _is_unsloth_pipeline_parallel(model) and not _is_env_pipeline_parallel(model):
         raise RuntimeError(
-            "Unsloth: a pipeline parallel model (apply_pipeline_parallel) cannot be trained by the "
-            "Trainer yet: each rank holds one stage, and a stage cannot run a forward alone. Use a custom "
-            "training loop with PipelineParallel.step (unsloth/models/pp_native.py)."
+            "Unsloth: a pipeline parallel model split with apply_pipeline_parallel cannot be trained by the "
+            "Trainer: each rank holds one stage, and a stage cannot run a forward alone. Use a custom "
+            "training loop with PipelineParallel.step (unsloth/models/pp_native.py), or launch the unchanged "
+            "script with UNSLOTH_PP_SIZE (the Trainer then splits the model and runs the pipeline itself)."
         )
+
+
+def _pipeline_parallel_env_refusals(trainer, init, args, kwargs):
+    if not os.environ.get("UNSLOTH_PP_SIZE"):
+        return
+    from .tp_env import env_layout
+    layout = env_layout()
+    if layout is None or layout.pp == 1:
+        return
+    training_args = kwargs.get("args")
+    if training_args is None:
+        try:
+            import inspect
+            bound = inspect.signature(init).bind_partial(trainer, *args, **kwargs)
+            training_args = bound.arguments.get("args")
+        except (TypeError, ValueError):
+            training_args = None
+    from .pp_env import pp_trainer_refusals
+    pp_trainer_refusals(type(trainer), training_args, layout)
 
 
 def _tensor_parallel_env_trainer_pre(model):
@@ -6263,24 +6299,47 @@ def _refuse_model_parallel_export(model, method):
             f"base model with that adapter and call `{method}` there."
         )
     if _is_unsloth_pipeline_parallel(model):
+        from .pp_native import pipeline_stage_of
+        from .tp_env import env_hint
+        stage = pipeline_stage_of(model)
+        if stage is not None and stage._kept is not None:
+            from .pp_env import replica_refusal
+            refusal = replica_refusal(stage, method)
+            if refusal is not None:
+                raise RuntimeError(refusal)
+            return
         raise RuntimeError(
             f"Unsloth: `{method}` does not support a pipeline parallel model (apply_pipeline_parallel): each "
             "rank holds one stage, and the other stages' layers, embeddings and lm_head are placeholders. Save "
             "the adapter with `pp.save_adapter(directory)` (on every pp rank), then in a single process load "
-            f"the base model with that adapter and call `{method}` there."
+            f"the base model with that adapter and call `{method}` there.{env_hint()}"
         )
 
 
 def _tensor_parallel_for_inference(model):
     """for_inference on a tensor parallel model gathers a whole replica on every rank (tp_replica.py)."""
+    if _is_unsloth_pipeline_parallel(model) and _pipeline_keeps_replica(model):
+        # Every rank puts the whole model back (the other stages' CPU copies + their trained weights).
+        from .pp_env import pp_for_inference
+        return pp_for_inference(model)
     if _is_unsloth_tensor_parallel(model):
         from .tp_replica import tp_for_inference
         return tp_for_inference(model)
     _refuse_tensor_parallel_for_inference(model)
 
 
+def _pipeline_keeps_replica(model):
+    from .pp_native import pipeline_stage_of
+    stage = pipeline_stage_of(model)
+    return stage is not None and stage._kept is not None
+
+
 def _tensor_parallel_for_training(model):
     """for_training puts the sharded parameters back after a for_inference replica."""
+    if _is_unsloth_pipeline_parallel(model):
+        from .pp_env import pp_for_training
+        pp_for_training(model)
+        return
     if _is_unsloth_tensor_parallel(model):
         from .tp_replica import tp_for_training
         tp_for_training(model)

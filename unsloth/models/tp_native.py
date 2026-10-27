@@ -2412,7 +2412,7 @@ def _print_rank0(message):
         print(message)
 
 
-def _refuse_tp_trainer_args(args, cpu_shards = False):
+def _refuse_tp_trainer_args(args, cpu_shards = False, pipeline = False):
     problems = []
     if getattr(args, "deepspeed", None):
         problems.append("DeepSpeed")
@@ -2421,7 +2421,8 @@ def _refuse_tp_trainer_args(args, cpu_shards = False):
             "accelerate FSDP / ParallelismConfig (use shard_model over mesh['dp'] for data parallel)"
         )
     if (
-        _strategy(getattr(args, "eval_strategy", getattr(args, "evaluation_strategy", "no")))
+        not pipeline  # pp_env: the pipeline evaluates, gathering over the dp group only
+        and _strategy(getattr(args, "eval_strategy", getattr(args, "evaluation_strategy", "no")))
         != "no"
     ):
         problems.append("evaluation during training (set eval_strategy = 'no')")
@@ -2460,7 +2461,7 @@ def tp_trainer_setup(
                 "Unsloth: pass the Trainer the outermost model (the one apply_tensor_parallel was given, or a "
                 "wrapper of it)."
             )
-        ranks = tp_mesh.size() * (dp_mesh.size() if dp_mesh is not None else 1)
+        ranks = tp_mesh.size() * (dp_mesh.size() if dp_mesh is not None else 1) * _pp_size(model)
         if dist.is_initialized() and ranks != dist.get_world_size():
             raise RuntimeError(
                 f"Unsloth: the Trainer on a tensor parallel model needs every rank in the tp mesh, or in the (dp, "
@@ -2473,7 +2474,10 @@ def tp_trainer_setup(
     tp_mesh, dp_mesh = _tp_meshes(model)
     cpu_shards = tp_mesh.device_type == "cpu"
     _tp_bnb_optim(trainer.args, cpu_shards)
-    _refuse_tp_trainer_args(trainer.args, cpu_shards)
+    from .pp_native import is_pipeline_parallel
+
+    pipeline = is_pipeline_parallel(model)
+    _refuse_tp_trainer_args(trainer.args, cpu_shards, pipeline)
     ddp_mesh = _ddp_mesh(model)
     dp_size, dp_rank = (dp_mesh.size(), dp_mesh.get_local_rank()) if dp_mesh is not None else (1, 0)
     trainer.accelerator.__dict__[_TP_DATA] = (dp_size, dp_rank)
@@ -2482,7 +2486,7 @@ def tp_trainer_setup(
     )
     _tp_scaler(trainer, dp_size)
     trainer.__dict__["save_model"] = types.MethodType(_tp_trainer_save_model, trainer)
-    for name in ("evaluate", "predict"):
+    for name in ("evaluate", "predict") if not pipeline else ():
         trainer.__dict__[name] = _refuse_tp_trainer_call(name)
     # Trainer checkpoints: per-rank local shards (instance level: before native FSDP2's class hooks, whose
     # full-state gathers do not restore the packed tp part order).
@@ -2612,8 +2616,10 @@ def _tp_layout(trainer):
         for name, p in trainer.model.named_parameters()
         if p.requires_grad
     ]
+    pp = _pp_size(trainer.model)
     return {
         "world": dist.get_world_size() if dist.is_initialized() else 1,
+        **({"pp": pp} if pp > 1 else {}),  # pp_env Trainer checkpoints (a tp-only layout keeps its old keys)
         "tp": tp_mesh.size() if tp_mesh is not None else 1,
         "dp": dp_mesh.size() if dp_mesh is not None else 1,
         "dp_kind": None
@@ -2724,7 +2730,7 @@ def _tp_resume_payload(self, checkpoint):
     if want != got:
         diff = {
             k: (got.get(k), want.get(k))
-            for k in ("world", "tp", "dp", "dp_kind")
+            for k in ("world", "pp", "tp", "dp", "dp_kind")
             if got.get(k) != want.get(k)
         }
         raise RuntimeError(
@@ -2818,8 +2824,13 @@ def _install_tp_accelerate_hooks():
     original_clip = Accelerator.clip_grad_norm_
 
     def _tp_model(self, model):
-        if self.__dict__.get(_TP_DATA) is None or not is_tensor_parallel(model):
+        if self.__dict__.get(_TP_DATA) is None:
             return False
+        if not is_tensor_parallel(model):
+            from .pp_native import is_pipeline_parallel
+
+            if not is_pipeline_parallel(model):  # UNSLOTH_PP_SIZE (pp_env.pp_trainer_setup): no DDP either
+                return False
         try:
             from .fsdp2_native import is_native_fsdp2
         except Exception:
