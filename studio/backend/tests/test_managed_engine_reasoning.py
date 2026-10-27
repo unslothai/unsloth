@@ -27,34 +27,44 @@ _QWEN3 = (
     "template,engine,parser",
     [
         (_QWEN3, "vllm", "qwen3"),
-        (_QWEN3, "sglang", None),
+        (_QWEN3, "sglang", "qwen3"),
         ("<|channel|>analysis<|message|>", "vllm", "openai_gptoss"),
+        ("<|channel|>analysis<|message|>", "sglang", "gpt-oss"),
         ("<｜Assistant｜><think></think>", "vllm", "deepseek_r1"),
+        ("<｜Assistant｜><think></think>", "sglang", "deepseek-r1"),
+        ("<minimax:tool_call><think></think>", "sglang", "minimax"),
+        ("<arg_key><think></think>", "sglang", "glm45"),
+        ("<|tool_calls_section_begin|><think></think>", "sglang", "kimi_k2"),
         # V3.1 gates on `thinking` and answers untagged when it is off.
         (
             "<｜Assistant｜>{% if thinking %}<think>{% else %}</think>{% endif %}",
             "vllm",
             "deepseek_v3",
         ),
+        (
+            "<｜Assistant｜>{% if thinking %}<think>{% else %}</think>{% endif %}",
+            "sglang",
+            "deepseek-v3",
+        ),
         ("<｜Assistant｜>{{ reasoning_effort }}<think></think>", "vllm", None),
         # QwQ / Qwen3 Thinking-2507 open <think> in the prompt, which deepseek_r1 expects.
         ("<|im_start|>assistant\n<think>\n{# </think> #}", "vllm", "deepseek_r1"),
         ("<|im_start|>assistant", "vllm", None),
         (None, "vllm", None),
+        ("<|im_start|>assistant", "sglang", None),
     ],
 )
 def test_reasoning_parser_follows_the_template(template, engine, parser):
     assert reasoning_parser_for_template(template, engine) == parser
 
 
-def test_reasoning_parser_reaches_only_the_vllm_argv():
-    vllm, sglang = ADAPTERS["vllm"], ADAPTERS["sglang"]
-    argv = vllm.command("/py", "org/m", 1, "k", 4096, 0.8, options = {"reasoning_parser": "qwen3"})
-    assert argv[argv.index("--reasoning-parser") + 1] == "qwen3"
-    assert "--reasoning-parser" not in launch_arguments("vllm", "/py", "org/m", 1, "k", 4096)
-    assert "--reasoning-parser" not in sglang.command(
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+def test_reasoning_parser_reaches_the_engine_argv(engine):
+    argv = ADAPTERS[engine].command(
         "/py", "org/m", 1, "k", 4096, 0.8, options = {"reasoning_parser": "qwen3"}
     )
+    assert argv[argv.index("--reasoning-parser") + 1] == "qwen3"
+    assert "--reasoning-parser" not in launch_arguments(engine, "/py", "org/m", 1, "k", 4096)
 
 
 def _model_dir(tmp_path, template):
@@ -66,6 +76,13 @@ def _model_dir(tmp_path, template):
 
 def test_validate_records_the_parser_and_template_flags(tmp_path):
     options = validate_model(_model_dir(tmp_path, _QWEN3), engine = "vllm")
+    assert options["reasoning_parser"] == "qwen3"
+    assert options["reasoning_flags"]["supports_reasoning"] is True
+    assert options["reasoning_flags"]["reasoning_style"] == "enable_thinking"
+
+
+def test_sglang_validate_records_its_own_parser_and_the_template_flags(tmp_path):
+    options = validate_model(_model_dir(tmp_path, _QWEN3), engine = "sglang")
     assert options["reasoning_parser"] == "qwen3"
     assert options["reasoning_flags"]["supports_reasoning"] is True
     assert options["reasoning_flags"]["reasoning_style"] == "enable_thinking"
@@ -104,6 +121,13 @@ def test_preserved_thinking_is_replayed_as_vllm_reads_it():
     assert engine.replay_reasoning(history, True) == [
         {"role": "assistant", "content": "4", "reasoning": "2+2"}
     ]
+
+
+def test_preserved_thinking_reaches_sglang_as_reasoning_content():
+    engine = ManagedEngine("sglang")
+    engine.reasoning_parser = "qwen3"
+    history = [{"role": "assistant", "content": "4", "reasoning_content": "2+2"}]
+    assert engine.replay_reasoning(history, True) == history
 
 
 @pytest.fixture
@@ -167,7 +191,7 @@ def test_reasoning_controls_are_refused_only_without_a_parser():
         payload, {"engine": "vllm", "reasoning_flags": {"supports_reasoning": True}}
     )
     payload = payload.model_copy(update = {"continue_final_message": True})
-    assert _managed_engine_unsupported_controls(
+    assert not _managed_engine_unsupported_controls(
         payload, {"engine": "vllm", "reasoning_flags": {"supports_reasoning": True}}
     )
 
@@ -248,7 +272,9 @@ class _Engine:
     engine = "vllm"
     context = 2048
     reasoning_parser = "qwen3"
+    opens_thought = False
     replay_reasoning = ManagedEngine.replay_reasoning
+    continue_final_message = ManagedEngine.continue_final_message
 
 
 def _tool_payload(**fields):
@@ -318,6 +344,191 @@ def test_tool_loop_keeps_and_replays_reasoning_when_preserving():
     assert drop.preserves_reasoning is False
     asyncio.run(run(drop))
     assert "reasoning" not in sent[-1]["messages"][1]
+
+
+def test_tool_loop_continues_only_the_turn_that_ends_on_the_partial():
+    import asyncio
+
+    from routes.managed_engine_chat import ManagedToolTransport
+
+    sent = []
+
+    class _Response:
+        status_code = 200
+
+        async def aiter_lines(self):
+            yield 'data: {"choices":[{"delta":{"reasoning_content":" upon a time"}}]}'
+
+        async def aclose(self):
+            return None
+
+    class _Stream:
+        async def __aenter__(self):
+            return _Response()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class _Client:
+        def stream(
+            self,
+            method,
+            url,
+            headers = None,
+            json = None,
+        ):
+            sent.append(json)
+            return _Stream()
+
+    engine = _Engine()
+    engine.base_url, engine.headers = "http://engine", {}
+    transport = ManagedToolTransport(_Client(), engine, {"model": "m"}, continuing = True)
+
+    async def run(messages):
+        lines = transport.stream(
+            messages = messages, tools = None, tool_choice = None, cancel_event = asyncio.Event()
+        )
+        return [json.loads(line[5:])["choices"][0]["delta"] async for line in lines]
+
+    partial = [{"role": "user", "content": "q"}, {"role": "assistant", "content": "Once"}]
+    assert asyncio.run(run(partial)) == [{"content": " upon a time"}]
+    assert sent[-1]["continue_final_message"] is True
+    assert sent[-1]["add_generation_prompt"] is False
+    later = [*partial, {"role": "tool", "tool_call_id": "c", "content": "r"}]
+    assert asyncio.run(run(later)) == [{"reasoning_content": " upon a time"}]
+    assert "continue_final_message" not in sent[-1]
+    assert "add_generation_prompt" not in sent[-1]
+
+
+@pytest.mark.parametrize(
+    "engine_name,parser",
+    [("vllm", "deepseek_r1"), ("vllm", "qwen3"), ("sglang", "deepseek-r1"), ("sglang", "qwen3")],
+)
+def test_a_continued_answer_stays_answer_under_a_forcing_parser(thinking_peer, engine_name, parser):
+    engine, requests = thinking_peer
+    engine.engine, engine.reasoning_parser = engine_name, parser
+    out = "".join(
+        engine.generate(
+            messages = [
+                {"role": "user", "content": "2+2?"},
+                {"role": "assistant", "content": "The sum is"},
+            ],
+            continue_final_message = True,
+            enable_thinking = True,
+        )
+    )
+    assert out == "two plus two\n\n4"
+    assert requests[-1]["continue_final_message"] is True
+
+
+_R1 = (
+    "{% for m in messages %}<｜User｜>{{ m['content'] }}{% endfor %}"
+    "{% if add_generation_prompt %}<｜Assistant｜><think>\n{% endif %}"
+)
+
+
+@pytest.mark.parametrize(
+    "template,opens",
+    [(_R1, True), (_QWEN3, False), ("<|im_start|>assistant\n", False), ("{% if %}<think>", False)],
+)
+def test_the_generation_prompt_opening_a_thought_is_read_off_the_template(template, opens):
+    from core.inference.managed_engine import generation_prompt_opens_thought
+    assert generation_prompt_opens_thought(template) is opens
+
+
+def test_only_sglang_records_a_generation_prompt_that_opens_a_thought(tmp_path):
+    assert validate_model(_model_dir(tmp_path, _R1), engine = "sglang")["opens_thought"] is True
+    assert "opens_thought" not in validate_model(_model_dir(tmp_path, _R1), engine = "vllm")
+    assert "opens_thought" not in validate_model(_model_dir(tmp_path, _QWEN3), engine = "sglang")
+
+
+@pytest.mark.parametrize(
+    "opens_thought,reasoning,expected",
+    [
+        # SGLang renders a fresh generation prompt, so R1's open <think> must be closed here.
+        (True, " Two plus two. ", "Two plus two.\n</think>\n\nThe sum is"),
+        # Raw SGLang text already carries the thought and its close (or is still inside it).
+        (True, None, "The sum is"),
+        (False, "Two plus two.", "<think>\nTwo plus two.\n</think>\n\nThe sum is"),
+        (False, None, "The sum is"),
+    ],
+)
+def test_sglang_prefills_the_finished_thought_before_the_partial(
+    thinking_peer, opens_thought, reasoning, expected
+):
+    engine, requests = thinking_peer
+    engine.engine, engine.reasoning_parser, engine.opens_thought = "sglang", None, opens_thought
+    partial = {"role": "assistant", "content": "The sum is"}
+    if reasoning is not None:
+        partial["reasoning_content"] = reasoning
+    list(
+        engine.generate(
+            messages = [{"role": "user", "content": "2+2?"}, partial], continue_final_message = True
+        )
+    )
+    assert requests[-1]["messages"][-1] == {"role": "assistant", "content": expected}
+    assert requests[-1]["continue_final_message"] is True
+
+
+def test_sglang_tool_loop_continuation_carries_the_thought_in_the_prefill():
+    import asyncio
+
+    from routes.managed_engine_chat import ManagedToolTransport
+
+    sent = []
+
+    class _Response:
+        status_code = 200
+
+        async def aiter_lines(self):
+            yield 'data: {"choices":[{"delta":{"content":" 4"}}]}'
+
+        async def aclose(self):
+            return None
+
+    class _Stream:
+        async def __aenter__(self):
+            return _Response()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class _Client:
+        def stream(
+            self,
+            method,
+            url,
+            headers = None,
+            json = None,
+        ):
+            sent.append(json)
+            return _Stream()
+
+    engine = _Engine()
+    engine.engine, engine.opens_thought = "sglang", True
+    engine.base_url, engine.headers = "http://engine", {}
+    transport = ManagedToolTransport(_Client(), engine, {"model": "m"}, continuing = True)
+    messages = [
+        {"role": "user", "content": "q"},
+        {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "The sum is"}],
+            "reasoning_content": "2+2",
+        },
+    ]
+
+    async def run():
+        lines = transport.stream(
+            messages = messages, tools = None, tool_choice = None, cancel_event = asyncio.Event()
+        )
+        return [line async for line in lines]
+
+    asyncio.run(run())
+    assert sent[-1]["messages"][-1] == {
+        "role": "assistant",
+        "content": "2+2\n</think>\n\nThe sum is",
+    }
+    assert messages[-1]["reasoning_content"] == "2+2"
 
 
 def test_tool_loop_turns_are_fitted_to_the_engine_window():
@@ -391,16 +602,20 @@ def test_tool_loop_honors_the_server_default_overflow(monkeypatch):
     assert _message_fitter(_tool_payload(context_overflow = "error"), _Engine(), "m", None) is None
 
 
-def test_a_renamed_deepseek_v31_directory_keeps_its_thinking_toggle(tmp_path):
+@pytest.mark.parametrize("engine,parser", [("vllm", "deepseek_v3"), ("sglang", "deepseek-v3")])
+def test_a_renamed_deepseek_v31_directory_keeps_its_thinking_toggle(
+    tmp_path_factory, engine, parser
+):
     template = (
         "{% for m in messages %}<｜User｜>{{ m.content }}{% endfor %}<｜Assistant｜>"
         "{% if thinking is defined and thinking %}<think>{% else %}</think>{% endif %}"
     )
-    (tmp_path / "config.json").write_text(json.dumps({"model_type": "deepseek_v3"}))
-    (tmp_path / "chat_template.jinja").write_text(template)
-    config = SimpleNamespace(is_local = True, path = str(tmp_path), identifier = str(tmp_path))
-    options = validate_model(config, engine = "vllm")
-    assert options["reasoning_parser"] == "deepseek_v3"
+    model = tmp_path_factory.mktemp("my-model")
+    (model / "config.json").write_text(json.dumps({"model_type": "deepseek_v3"}))
+    (model / "chat_template.jinja").write_text(template)
+    config = SimpleNamespace(is_local = True, path = str(model), identifier = str(model))
+    options = validate_model(config, engine = engine)
+    assert options["reasoning_parser"] == parser
     assert options["reasoning_flags"]["supports_reasoning"] is True
     assert options["reasoning_flags"]["reasoning_always_on"] is False
 

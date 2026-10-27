@@ -2400,6 +2400,21 @@ def plan_fits_total_capacity(plan: Any) -> bool:
     return int(required) <= budget
 
 
+def mps_plan_tight(plan: Any) -> bool:
+    """Whether an Apple MPS plan, which stays resident whatever it needs (unified memory), needs more than the 0.85
+    share of its budget a discrete plan stays resident in. False on every other device or when a size is unknown."""
+    try:
+        if plan.device_memory.device != "mps":
+            return False
+        required = plan.estimates.get("resident_required_mib")
+        budget = plan.estimates.get("safe_device_budget_mib")
+    except Exception:  # noqa: BLE001 - malformed plan: not tight
+        return False
+    if required is None or budget is None:
+        return False
+    return int(required) > int(int(budget) * 0.85)
+
+
 def total_capacity_budget_mib(memory: DeviceMemory) -> Optional[int]:
     """TOTAL capacity minus the same reserve the free budget takes, times the 0.85 resident margin. None when the
     total is unknown. Shared with the dense prefetch gate so the two cannot disagree."""
@@ -6473,6 +6488,30 @@ class _RegisteredHostBuffer:
             self._map.close()
         except Exception:  # noqa: BLE001
             pass
+
+
+# "0" restores torch's pinned allocator for up-front pinned slabs.
+REGISTERED_SLAB_ENV = "UNSLOTH_DIFFUSION_REGISTERED_SLABS"
+
+
+def registered_pinned_empty(nbytes: int) -> Optional[Any]:
+    """Page-locked uint8 host tensor in registered memory, or None (use torch's pinned allocator).
+    Torch's allocator faults pages on one thread (~18 s for MiniMax-H3); ``zero_`` here faults them in parallel."""
+    if (os.environ.get(REGISTERED_SLAB_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
+        return None
+    if int(nbytes) <= 0 or not _fast_pin_supported():
+        return None
+    import numpy as np
+    import torch
+
+    try:
+        holder = _RegisteredHostBuffer(int(nbytes))
+        buf = torch.from_numpy(np.asarray(holder))
+        buf.zero_()
+        holder.register()
+    except Exception:  # noqa: BLE001
+        return None
+    return buf
 
 
 def registered_host_copy(src: Any) -> Any:
