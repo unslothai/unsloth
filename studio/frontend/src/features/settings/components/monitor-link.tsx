@@ -17,7 +17,6 @@ import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
-/** `hideHeading`: the API tab lists it under its access group's heading. */
 export function MonitorLink({
   hideHeading = false,
 }: {

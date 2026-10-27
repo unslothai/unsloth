@@ -142,7 +142,7 @@ export const ContextUsageBar: FC<
     /** Side padding of the face, in --spacing units; the widths below count it. */
     padX?: number;
     ringFirst?: boolean;
-    /** As wide as its text, never compacting: the ch widths below assume the mono face. */
+    /** Text width, never compacting: the ch widths assume the mono face. */
     fitContent?: boolean;
   }
 > = ({ className, compactUnknownAsIcon = false, pinOnClick = false, hoverClassName, padX = 2.5, ringFirst = false, fitContent = false, ...input }) => {

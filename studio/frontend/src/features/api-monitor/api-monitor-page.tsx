@@ -312,7 +312,6 @@ function openApiSettings(): void {
   useSettingsDialogStore.getState().openDialog("api-keys");
 }
 
-/** Keeping several models loaded is off by default, so say where to turn it on. Resources is an owner tab. */
 function MultiModelHint({
   servedCount,
 }: {
@@ -320,7 +319,7 @@ function MultiModelHint({
 }): ReactElement | null {
   const keepLoaded = useChatRuntimeStore((s) => s.keepModelsLoaded);
   const isOwner = useIsAccountOwner();
-  // The store defaults to off: wait for the read, or the hint flashes for everyone who has it on.
+  // Store defaults to off: without the read the hint flashes for users who have it on.
   const [known, setKnown] = useState(false);
   useEffect(() => {
     let cancelled = false;
@@ -465,7 +464,6 @@ function Fact({
     <div className={cn("flex min-w-0 items-center", className)} title={label}>
       <dt className="sr-only">{label}</dt>
       <dd className="flex min-w-0 items-center gap-1.5 whitespace-nowrap text-ui-12 text-foreground">
-        {/* 1em: sized from the value beside it, so it follows the UI font size. */}
         {icon ? (
           <HugeiconsIcon
             icon={icon}
@@ -1424,7 +1422,6 @@ export function ApiMonitorPage(): ReactElement {
                 hoverClassName="rounded-full transition-colors group-hover:bg-muted dark:group-hover:bg-chat-icon-bg-hover"
                 padX={2}
                 fitContent={true}
-                // The row's other facts are sans at text-ui-12; the chip defaults to mono.
                 className="-mx-2 -my-1 h-6 font-sans text-ui-12 tabular-nums [--icon-size:--spacing(3.5)] [&>button]:rounded-full"
                 used={used}
                 total={windowSize}
@@ -1468,10 +1465,7 @@ export function ApiMonitorPage(): ReactElement {
   };
   return (
     <>
-      {/* Model picker where Chat keeps it; sticky, so the log scrolls under it. On the native
-          macOS titlebar the root insets non-chat pages below it, so this lifts back into the
-          titlebar row as Chat's header sits; z-40 and pointer-events-none as there, so the
-          empty row still drags the window. */}
+      {/* In the macOS titlebar row like Chat's header; click-through so the row still drags. */}
       <div
         className={cn(
           "pointer-events-none sticky top-0 z-40 flex min-h-[calc(48px*var(--ui-space-scale,1))] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)]",
@@ -1668,7 +1662,7 @@ export function ApiMonitorPage(): ReactElement {
                     : `${served.length} models answering requests`}
                   <MultiModelHint servedCount={served.length} />
                 </p>
-                {/* Fact columns hug their content: a fixed width left a short value's slack before the next. */}
+                {/* Not fixed widths: they left a short value's slack before the next column. */}
                 <div className="flex flex-col gap-3 @3xl/served:grid @3xl/served:grid-cols-[minmax(0,max-content)_auto_auto_auto_auto_1fr] @3xl/served:items-center @3xl/served:gap-x-10 @3xl/served:gap-y-1.5">
                   {served.map((model) => (
                     // A subgrid, not `contents`: the row needs a box (gaps included) to hover.

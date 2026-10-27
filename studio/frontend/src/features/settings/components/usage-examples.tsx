@@ -527,7 +527,6 @@ export function UsageExamples({
 }: {
   apiKey?: string | null;
   agentsOnly?: boolean;
-  /** Settings' tab row shows only the chat examples; Agents opens its own tab. */
   part?: "all" | "chat";
   agentsExtra?: ReactNode;
   useTunnel: boolean;
@@ -950,15 +949,12 @@ export function UsageExamples({
                 {t("settings.tabs.agents")}
               </h2>
             )}
-            {/* Agents is owner-only (settings-tab-visibility.ts): other accounts would land
-                on General, so they get the agent's docs instead. The tab restores its agent
-                from this pref when it mounts. */}
+            {/* Agents is an owner-only tab, so others get the docs. The tab reads this pref on mount. */}
             {isOwner ? (
               <button
                 type="button"
                 onClick={() => {
                   setAgentsTabAgent(agent);
-                  // Off the API page there is no dialog to switch tabs in.
                   if (agentsOnly) useSettingsDialogStore.getState().openDialog("agents");
                   else useSettingsDialogStore.getState().setActiveTab("agents");
                 }}
@@ -1008,7 +1004,6 @@ export function UsageExamples({
                       </span>
                     </SelectValue>
                   </SelectTrigger>
-                  {/* Seven 36px rows, as on the Agents tab; the rest scroll. */}
                   <SelectContent
                     align="start"
                     className="max-h-[min(var(--radix-select-content-available-height),calc(7*2.25rem+0.5rem))] [&_[data-slot=select-scroll-down-button]]:hidden [&_[data-slot=select-scroll-up-button]]:hidden"

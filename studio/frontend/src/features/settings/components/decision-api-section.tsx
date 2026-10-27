@@ -379,7 +379,6 @@ export function DecisionApiSection({
         )}
         <p className="text-xs leading-relaxed text-muted-foreground">
           {t("settings.apiKeys.decisionApi.description")}
-          {/* No title to sit beside, so it ends the description. */}
           {showHeading ? null : <span className="ml-1.5 inline-flex align-baseline">{docsLink}</span>}
         </p>
       </div>

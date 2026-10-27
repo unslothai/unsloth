@@ -56,7 +56,6 @@ test("MCP, keyless access and the monitor sit under one heading", () => {
 test("one tab row holds every example, with no jump links above it; Agents opens its own settings", () => {
   const examples = readSrc("features/settings/components/usage-examples.tsx");
   const tabs = readSrc("features/settings/components/api-example-tabs.tsx");
-  // No section per API: one panel, no title, every card headless.
   assert.match(TAB, /<ApiExamplesPanel/);
   for (const gone of ["<UsageExamples", "<MediaApiExamples", "<AudioApiExamples", "<DecisionApiSection"]) {
     assert.ok(!TAB.includes(gone), gone);
@@ -70,13 +69,11 @@ test("one tab row holds every example, with no jump links above it; Agents opens
     assert.match(tabs, card);
   }
   assert.doesNotMatch(tabs, /<h2|<h3/);
-  // Agents is a link to its tab, owner-only like that tab.
   assert.match(tabs, /entry\.id === "agents"\s*\? useSettingsDialogStore\.getState\(\)\.openDialog\("agents"\)/);
   assert.match(tabs, /\.\.\.\(isOwner\s*\? \[[\s\S]*?id: "agents" as const/);
   for (const [target, tab] of [["api-keys-media-api", "media"], ["api-keys-audio-api", "audio"], ["api-keys-decision-api", "decision"]]) {
     assert.match(tabs, new RegExp(`"${target}": "${tab}"`));
   }
-  // The cards' own scroll handlers stay off without a heading, so only the panel answers.
   for (const [file, target] of [
     ["media-api-examples.tsx", "api-keys-media-api"],
     ["audio-api-examples.tsx", "api-keys-audio-api"],

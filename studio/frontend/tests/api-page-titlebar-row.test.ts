@@ -9,18 +9,15 @@ import { readSrc } from "./helpers/kit.ts";
 test("the API page's model picker sits in the titlebar row, where Chat's does", () => {
   const page = readSrc("features/api-monitor/api-monitor-page.tsx");
   const root = readSrc("app/routes/__root.tsx");
-  // The root insets non-chat pages by the native macOS titlebar; chat-like pages get none.
   assert.match(
     root,
     /const isChatLike = isChatRoute \|\| isImagesRoute \|\| isVideoRoute \|\| isAudioRoute;/,
   );
   assert.match(root, /--studio-non-chat-content-top-inset/);
-  // So the picker bar takes that inset back, less the inset Chat itself gets.
   assert.match(
     page,
     /!isMobileShell &&\s*"-mt-\[calc\(var\(--studio-non-chat-content-top-inset,var\(--studio-content-top-inset,0px\)\)-var\(--studio-content-top-inset,0px\)\)\]"/,
   );
-  // As Chat's header: above the drag strip, click-through except the picker.
   assert.match(page, /"pointer-events-none sticky top-0 z-40 flex/);
   assert.match(
     page,

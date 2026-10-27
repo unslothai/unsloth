@@ -34,13 +34,11 @@ test("served-model facts hug their content with one gap, icons sized from their 
   );
   assert.match(page, /@3xl\/served:grid-cols-subgrid @3xl\/served:gap-x-10/);
   assert.match(page, /className="size-\[1em\] shrink-0 text-muted-foreground"/);
-  // Total time uses the scheduled clock, in the rows and the log.
   assert.match(
     page,
     /<Fact label="Total time, average per request" icon=\{Clock01Icon\}>/,
   );
   assert.doesNotMatch(page, /Timer01Icon/);
-  // Context reads in the same sans text-ui-12 as the rest, sized to its text, padding cancelled both sides.
   assert.match(
     page,
     /fitContent=\{true\}[\s\S]{0,140}className="-mx-2 -my-1 h-6 font-sans text-ui-12 tabular-nums/,
@@ -55,7 +53,6 @@ test("served-model facts hug their content with one gap, icons sized from their 
 
 test("the served-models line points to Model memory while one model at a time", () => {
   const page = readSrc("features/api-monitor/api-monitor-page.tsx");
-  // Gone once it is on, or once several models are loaded anyway.
   assert.match(
     page,
     /if \(!known \|\| keepLoaded \|\| servedCount > 1\) return null;/,
@@ -65,7 +62,6 @@ test("the served-models line points to Model memory while one model at a time", 
     page,
     /openDialog\("resources", \{\s*scrollTarget: "resources-model-memory",\s*\}\)/,
   );
-  // Resources is an owner tab: a managed account gets the fact, not a link it cannot follow.
   assert.match(
     page,
     /isOwner \? \([\s\S]{0,700}\) : \(\s*"One model at a time"\s*\)/,

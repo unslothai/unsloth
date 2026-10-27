@@ -36,12 +36,11 @@ import { UsageExamples } from "./usage-examples";
 
 export type ApiExampleKind = "chat" | "media" | "audio" | "decision" | "agents";
 
-/** Decision and Agents are owner-only, as their section and settings tab are. */
 export function useApiExampleKinds(): {
   id: ApiExampleKind;
   label: string;
   icon: IconSvgElement;
-  /** Settings search scrolls to this label, so it must stay on screen with its card unmounted. */
+  /** Settings search target: the card is unmounted off its tab. */
   searchLabel?: TranslationKey;
 }[] {
   const isOwner = useIsAccountOwner();
@@ -73,8 +72,6 @@ export function useApiExampleKinds(): {
   ];
 }
 
-/** Library's tab row: Hellix, an icon each, the active tab a raised pill. Agents is a link
- *  to its settings tab, which configures the agent, not an inline example. */
 export function ApiExampleTabNav({
   kind,
   onChange,
@@ -103,7 +100,6 @@ export function ApiExampleTabNav({
           }
           className={cn(
             "flex h-9 shrink-0 items-center gap-2 rounded-full px-3.5 font-heading text-ui-15 text-foreground/80 transition-colors hover:text-foreground",
-            // On a card or the dialog, so a step above it, not its colour.
             entry.id === kind &&
               cn(RAISED_SURFACE, "font-medium text-foreground dark:bg-accent"),
           )}
@@ -126,7 +122,6 @@ const TAB_FOR_TARGET: Partial<Record<SettingsScrollTarget, ApiExampleKind>> = {
   "api-keys-decision-api": "decision",
 };
 
-/** Holds `el` in view while the pane settles (a tab's card mounting), until the user scrolls. */
 function pinUntilUserScrolls(
   el: HTMLElement,
   target: SettingsScrollTarget,
@@ -151,7 +146,6 @@ function pinUntilUserScrolls(
   };
 }
 
-/** Settings > API: every example behind one tab row, in place of a section each. */
 export function ApiExamplesPanel({
   apiKey,
   useTunnel,
@@ -171,8 +165,7 @@ export function ApiExamplesPanel({
   const [kind, setKind] = useState<ApiExampleKind>("chat");
   const panelRef = useRef<HTMLDivElement | null>(null);
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
-  // An "Open in API" request picks its tab, which mounts the card that takes the request
-  // (a model, a Try), then brings the row into view.
+  // Picking the tab mounts the card that takes the request.
   useEffect(() => {
     const tab = scrollTarget ? TAB_FOR_TARGET[scrollTarget] : undefined;
     const el = panelRef.current;

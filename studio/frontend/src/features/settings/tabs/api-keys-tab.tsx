@@ -284,8 +284,7 @@ export function ApiKeysTab() {
         keylessExposure={keyless.exposure}
       />
 
-      {/* How other apps reach this server, and where to watch them. MCP and keyless access are
-          installation-wide, so owner-only routes. */}
+      {/* Installation-wide, so owner-only routes. */}
       <SettingsSection title="Access & monitoring">
         {isOwner ? <McpAccessSection apiKey={revealed} /> : null}
         {isOwner ? <KeylessApiAccessLink /> : null}
