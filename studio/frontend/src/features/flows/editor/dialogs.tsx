@@ -2,7 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog,
   DialogContent,
@@ -100,16 +102,16 @@ export function RunDialog({
                   }
                 />
               ) : param.type === "bool" ? (
-                <input
-                  type="checkbox"
+                <Checkbox
                   aria-label={param.label ?? param.id}
                   checked={!!values[param.id]}
-                  onChange={(e) =>
-                    setValues((v) => ({ ...v, [param.id]: e.target.checked }))
+                  onCheckedChange={(checked) =>
+                    setValues((v) => ({ ...v, [param.id]: checked === true }))
                   }
                 />
               ) : (
-                <textarea
+                <Textarea
+                  fieldSizing="fixed"
                   aria-label={param.label ?? param.id}
                   rows={param.type === "text" ? 3 : 1}
                   value={String(values[param.id] ?? "")}
@@ -122,7 +124,7 @@ export function RunDialog({
                           : e.target.value,
                     }))
                   }
-                  className="rounded-md border bg-transparent px-2 py-1.5 text-sm"
+                  className="min-h-0"
                 />
               )}
             </div>

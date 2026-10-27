@@ -73,7 +73,7 @@ function EditorBody({
 
   return (
     <div
-      className="flows-editor dark flex h-full min-h-0 w-full flex-col bg-zinc-950 text-zinc-100"
+      className="flows-editor flex h-full min-h-0 w-full flex-col bg-background text-foreground"
       data-testid="flows-editor"
     >
       <Toolbar
@@ -96,7 +96,7 @@ function EditorBody({
         }
       />
       {readOnly && (
-        <div className="border-b border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-[12px] text-amber-200">
+        <div className="border-b border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-[12px] text-amber-700 dark:text-amber-200">
           This flow uses blocks this version of Unsloth Studio does not know, so
           it opens read-only. Update Studio to edit or run it.
         </div>
@@ -111,7 +111,7 @@ function EditorBody({
               <button
                 type="button"
                 onClick={() => useUiStore.getState().setDrawer(true, "run")}
-                className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full border border-white/10 bg-zinc-900/90 px-3 py-1 text-[12px] capitalize text-zinc-300 shadow-lg hover:bg-zinc-800"
+                className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full border border-border bg-popover px-3 py-1 text-[12px] capitalize text-foreground shadow-border hover:bg-accent"
               >
                 Run: {runStatus}
               </button>
@@ -168,16 +168,16 @@ export function FlowsEditorPage({ flowId }: { flowId: string }): ReactElement {
 
   if (state.status === "loading") {
     return (
-      <div className="flex h-full flex-1 items-center justify-center bg-zinc-950 text-sm text-zinc-500">
+      <div className="flex h-full flex-1 items-center justify-center bg-background text-sm text-muted-foreground">
         Opening flow…
       </div>
     );
   }
   if (state.status === "error") {
     return (
-      <div className="flex h-full flex-1 flex-col items-center justify-center gap-2 bg-zinc-950 text-sm text-zinc-400">
+      <div className="flex h-full flex-1 flex-col items-center justify-center gap-2 bg-background text-sm text-muted-foreground">
         <p>{state.message}</p>
-        <a href="/flows" className="text-sky-400 hover:underline">
+        <a href="/flows" className="text-primary hover:underline">
           Back to flows
         </a>
       </div>

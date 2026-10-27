@@ -37,7 +37,7 @@ export function StructuredOutput({
   return (
     <Suspense
       fallback={
-        <p className="text-[11px] text-zinc-500">
+        <p className="text-[11px] text-muted-foreground">
           {structuredSummary(value as StructuredValue)}
         </p>
       }
@@ -52,7 +52,7 @@ export function StructuredBadge({
 }: { value: unknown }): ReactElement | null {
   if (!isStructuredValue(value)) return null;
   return (
-    <span className="rounded bg-white/5 px-1.5 py-0.5 text-[11px] text-zinc-300">
+    <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-foreground">
       {structuredSummary(value)}
     </span>
   );

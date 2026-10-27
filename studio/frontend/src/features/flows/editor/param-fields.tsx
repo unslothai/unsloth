@@ -2,6 +2,18 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch, getAuthSessionEpoch } from "@/features/auth";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { memo, useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -11,8 +23,7 @@ import { DiceIcon, Upload01Icon } from "./icon-data";
 import { MediaThumb, isMediaValue } from "./media";
 import { pickOptions } from "./remote-options";
 
-const FIELD =
-  "w-full rounded-md border border-white/10 bg-zinc-900 px-2 py-1.5 text-[13px] text-zinc-100 outline-none focus:border-sky-500/60";
+const FIELD = "text-[13px]";
 
 export interface FieldProps {
   spec: ParamSpec;
@@ -45,7 +56,8 @@ function JsonField({
   }, [serialized]);
   return (
     <div className="flex flex-col gap-1">
-      <textarea
+      <Textarea
+        fieldSizing="fixed"
         value={text}
         rows={rows}
         spellCheck={false}
@@ -69,7 +81,7 @@ function JsonField({
         }}
         className={`${FIELD} font-mono text-[12px] leading-snug`}
       />
-      {error && <p className="text-[11px] text-red-300">{error}</p>}
+      {error && <p className="text-[11px] text-destructive">{error}</p>}
     </div>
   );
 }
@@ -108,20 +120,18 @@ function ModelField({ spec, value, onChange }: FieldProps) {
   }, []);
   return (
     <div className="flex flex-col gap-1.5">
-      <label className="flex items-center gap-2 text-[12px] text-zinc-400">
-        <input
-          type="checkbox"
+      <label className="flex items-center gap-2 text-[12px] text-muted-foreground">
+        <Checkbox
           checked={choice === null}
-          onChange={(e) =>
-            onChange(e.target.checked ? null : { repo: "", variant: null })
+          onCheckedChange={(checked) =>
+            onChange(checked === true ? null : { repo: "", variant: null })
           }
-          className="accent-sky-500"
         />
         Use the loaded {spec.model_kind ?? ""} model
       </label>
       {choice !== null && (
         <>
-          <input
+          <Input
             value={choice.repo}
             list={listId}
             placeholder="org/model (Hugging Face repo)"
@@ -133,7 +143,7 @@ function ModelField({ spec, value, onChange }: FieldProps) {
               <option key={id} value={id} />
             ))}
           </datalist>
-          <input
+          <Input
             value={choice.variant ?? ""}
             placeholder="Variant / quant (optional, e.g. Q4_K_M)"
             onChange={(e) =>
@@ -177,28 +187,31 @@ function AssetField({ spec, value, onChange }: FieldProps) {
         />
       )}
       {docName !== null && (
-        <p className="truncate rounded-md border border-white/10 px-2 py-1.5 text-[12px] text-zinc-300">
+        <p className="truncate rounded-md border border-border px-2 py-1.5 text-[12px] text-foreground">
           {docName}
         </p>
       )}
       <div className="flex gap-2">
-        <button
+        <Button
           type="button"
+          variant="outline"
+          size="xs"
           disabled={busy}
           onClick={() => inputRef.current?.click()}
-          className="flex items-center gap-1.5 rounded-md border border-white/10 px-2 py-1 text-[12px] text-zinc-300 hover:bg-white/5 disabled:opacity-50"
         >
           <HugeiconsIcon icon={Upload01Icon} size={13} />
           {busy ? "Uploading…" : hasValue ? "Replace" : "Upload"}
-        </button>
+        </Button>
         {hasValue && (
-          <button
+          <Button
             type="button"
+            variant="ghost"
+            size="xs"
             onClick={() => onChange(null)}
-            className="text-[12px] text-zinc-500 hover:text-zinc-300"
+            className="text-muted-foreground"
           >
             Clear
-          </button>
+          </Button>
         )}
       </div>
       <input
@@ -262,7 +275,7 @@ function RemoteOptionsField({ spec, value, onChange }: FieldProps) {
   const listId = useId();
   return (
     <>
-      <input
+      <Input
         value={String(value ?? "")}
         list={options ? listId : undefined}
         placeholder={options ? `${options.length} choices` : undefined}
@@ -289,7 +302,7 @@ function TextField({ spec, value, onChange }: FieldProps) {
   const suggestions = useRouteSuggestions(spec);
   return (
     <>
-      <input
+      <Input
         value={(value as string) ?? ""}
         list={suggestions.length ? listId : undefined}
         onChange={(e) => onChange(e.target.value)}
@@ -322,14 +335,14 @@ function LoraListField({ spec, value, onChange }: FieldProps) {
       {rows.map((row, index) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: rows have no id of their own
         <div key={index} className="flex items-center gap-1.5">
-          <input
+          <Input
             value={row.id}
             list={listId}
             placeholder="LoRA id"
             onChange={(e) => update(index, { id: e.target.value })}
             className={FIELD}
           />
-          <input
+          <Input
             type="number"
             min={0}
             max={2}
@@ -340,24 +353,28 @@ function LoraListField({ spec, value, onChange }: FieldProps) {
             }
             className={`${FIELD} w-20`}
           />
-          <button
+          <Button
             type="button"
+            variant="ghost"
+            size="icon-xs"
             onClick={() => onChange(rows.filter((_, i) => i !== index))}
-            className="rounded px-1.5 text-zinc-500 hover:text-red-300"
+            className="text-muted-foreground hover:text-destructive"
             aria-label="Remove LoRA"
           >
             x
-          </button>
+          </Button>
         </div>
       ))}
       {rows.length < 8 && (
-        <button
+        <Button
           type="button"
+          variant="outline"
+          size="xs"
           onClick={() => onChange([...rows, { id: "", weight: 1 }])}
-          className="self-start rounded-md border border-white/10 px-2 py-1 text-[12px] text-zinc-300 hover:bg-white/5"
+          className="self-start"
         >
           Add LoRA
-        </button>
+        </Button>
       )}
       <datalist id={listId}>
         {suggestions.map((id) => (
@@ -379,7 +396,8 @@ function ParamFieldImpl({ spec, value, onChange }: FieldProps) {
     case "textarea":
       return (
         <div className="flex flex-col gap-1">
-          <textarea
+          <Textarea
+            fieldSizing="fixed"
             value={(value as string) ?? ""}
             rows={Math.min(
               14,
@@ -389,8 +407,8 @@ function ParamFieldImpl({ spec, value, onChange }: FieldProps) {
             className={`${FIELD} leading-snug`}
           />
           {spec.id.includes("prompt") || spec.id === "template" ? (
-            <p className="text-[10.5px] text-zinc-500">
-              Use <code className="text-zinc-400">{"{{name}}"}</code> to insert
+            <p className="text-[10.5px] text-muted-foreground">
+              Use <code className="text-foreground">{"{{name}}"}</code> to insert
               a connected input or flow input.
             </p>
           ) : null}
@@ -399,7 +417,7 @@ function ParamFieldImpl({ spec, value, onChange }: FieldProps) {
     case "number":
     case "int":
       return (
-        <input
+        <Input
           type="number"
           value={value === null || value === undefined ? "" : String(value)}
           min={spec.min}
@@ -420,36 +438,30 @@ function ParamFieldImpl({ spec, value, onChange }: FieldProps) {
       );
     case "bool":
       return (
-        <button
-          type="button"
-          role="switch"
-          aria-checked={!!value}
-          onClick={() => onChange(!value)}
-          className={`relative h-5 w-9 rounded-full transition-colors ${value ? "bg-sky-500" : "bg-zinc-700"}`}
-        >
-          <span
-            className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-[left] ${value ? "left-4.5" : "left-0.5"}`}
-          />
-        </button>
+        <Switch checked={!!value} onCheckedChange={() => onChange(!value)} />
       );
     case "select":
       return (
-        <select
+        <Select
           value={String(value ?? "")}
-          onChange={(e) => onChange(e.target.value)}
-          className={FIELD}
+          onValueChange={(next) => onChange(next)}
         >
-          {(spec.options ?? []).map((option) => (
-            <option key={option} value={option}>
-              {option}
-            </option>
-          ))}
-        </select>
+          <SelectTrigger className={`${FIELD} w-full`}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {(spec.options ?? []).map((option) => (
+              <SelectItem key={option} value={option}>
+                {option}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       );
     case "seed":
       return (
         <div className="flex gap-2">
-          <input
+          <Input
             type="number"
             value={value === null || value === undefined ? "" : String(value)}
             placeholder="From the flow seed"
@@ -462,14 +474,15 @@ function ParamFieldImpl({ spec, value, onChange }: FieldProps) {
             }
             className={FIELD}
           />
-          <button
+          <Button
             type="button"
+            variant="outline"
+            size="icon"
             title="New random seed"
             onClick={() => onChange(Math.floor(Math.random() * 2 ** 31))}
-            className="rounded-md border border-white/10 px-2 text-zinc-300 hover:bg-white/5"
           >
             <HugeiconsIcon icon={DiceIcon} size={15} />
-          </button>
+          </Button>
         </div>
       );
     case "model":
@@ -480,12 +493,13 @@ function ParamFieldImpl({ spec, value, onChange }: FieldProps) {
           type="color"
           value={(value as string) || "#000000"}
           onChange={(e) => onChange(e.target.value)}
-          className="h-8 w-16 cursor-pointer rounded border border-white/10 bg-transparent"
+          className="h-8 w-16 cursor-pointer rounded border border-border bg-transparent"
         />
       );
     case "string_list":
       return (
-        <textarea
+        <Textarea
+          fieldSizing="fixed"
           value={Array.isArray(value) ? (value as string[]).join("\n") : ""}
           rows={Math.min(
             12,
@@ -500,7 +514,7 @@ function ParamFieldImpl({ spec, value, onChange }: FieldProps) {
       return (
         <div className="flex flex-col gap-1">
           <JsonField value={value} onChange={onChange} rows={4} />
-          <p className="text-[10.5px] leading-snug text-zinc-500">
+          <p className="text-[10.5px] leading-snug text-muted-foreground">
             {'{"op": ">", "args": [{"var": "courage"}, 2]}'} · ops: == != &lt;
             &gt; and or not + - * / min max len contains dice
           </p>

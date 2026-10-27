@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { Input } from "@/components/ui/input";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { memo, useDeferredValue, useMemo, useState } from "react";
 import { useCatalogStore } from "../stores/catalog-store";
@@ -25,7 +26,7 @@ function PaletteItem({
       onClick={() => onAdd(spec.type)}
       title={spec.description}
       data-testid={`palette-${spec.type}`}
-      className="group flex w-full cursor-grab items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12.5px] text-zinc-300 hover:bg-white/5 hover:text-white active:cursor-grabbing"
+      className="group flex w-full cursor-grab items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12.5px] text-foreground hover:bg-muted active:cursor-grabbing"
     >
       <HugeiconsIcon
         icon={nodeIcon(spec.icon)}
@@ -35,7 +36,7 @@ function PaletteItem({
       />
       <span className="flex-1 truncate">{spec.title}</span>
       {spec.lane === "gpu" && (
-        <span className="text-[9px] uppercase text-zinc-600 group-hover:text-zinc-400">
+        <span className="text-[9px] uppercase text-muted-foreground/70 group-hover:text-muted-foreground">
           gpu
         </span>
       )}
@@ -67,18 +68,18 @@ function PaletteImpl({ onAdd }: { onAdd: (type: string) => void }) {
   }, [catalog, deferred]);
 
   return (
-    <div className="flex h-full w-58 shrink-0 flex-col border-white/10 border-r bg-zinc-950/80">
-      <div className="flex items-center gap-2 border-white/10 border-b px-3 py-2">
+    <div className="flex h-full w-58 shrink-0 flex-col border-border border-r bg-background">
+      <div className="relative border-border border-b px-2 py-2">
         <HugeiconsIcon
           icon={Search01Icon}
           size={14}
-          className="text-zinc-500"
+          className="pointer-events-none absolute top-1/2 left-4.5 -translate-y-1/2 text-muted-foreground"
         />
-        <input
+        <Input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search nodes"
-          className="w-full bg-transparent text-sm text-zinc-200 outline-none placeholder:text-zinc-600"
+          className="h-8 pl-8"
           data-testid="flows-palette-search"
         />
       </div>
@@ -89,7 +90,7 @@ function PaletteImpl({ onAdd }: { onAdd: (type: string) => void }) {
             <div key={category.id} className="mb-1.5">
               <button
                 type="button"
-                className="flex w-full items-center gap-2 px-2 py-1 text-[10.5px] font-semibold uppercase tracking-wider text-zinc-500 hover:text-zinc-300"
+                className="flex w-full items-center gap-2 px-2 py-1 text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground"
                 onClick={() =>
                   setCollapsed((c) => ({
                     ...c,
@@ -102,7 +103,7 @@ function PaletteImpl({ onAdd }: { onAdd: (type: string) => void }) {
                   style={{ background: category.color }}
                 />
                 <span className="flex-1 text-left">{category.title}</span>
-                <span className="text-zinc-600">{isCollapsed ? "+" : "−"}</span>
+                <span className="text-muted-foreground/70">{isCollapsed ? "+" : "−"}</span>
               </button>
               {!isCollapsed &&
                 specs.map((spec) => (
@@ -117,7 +118,7 @@ function PaletteImpl({ onAdd }: { onAdd: (type: string) => void }) {
           );
         })}
       </div>
-      <p className="border-white/10 border-t px-3 py-2 text-[10.5px] leading-snug text-zinc-600">
+      <p className="border-border border-t px-3 py-2 text-[10.5px] leading-snug text-muted-foreground/70">
         Drag onto the canvas, or double-click the canvas to search.
       </p>
     </div>

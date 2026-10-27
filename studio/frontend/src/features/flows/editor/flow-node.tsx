@@ -21,6 +21,7 @@ import {
 import type { RfNode } from "./derive-rf";
 import { nodeIcon } from "./icons";
 import { MediaThumb, isMediaValue } from "./media";
+import { portInk } from "./theme-colors";
 import { StructuredBadge, isStructuredValue } from "./value-viewers";
 
 /** Below this zoom the text is unreadable anyway; hiding it (layout kept, so handles stay put)
@@ -30,14 +31,14 @@ const lowDetailSelector = (s: { transform: [number, number, number] }) =>
   s.transform[2] < LOW_DETAIL_ZOOM;
 
 const STATUS_RING: Record<string, string> = {
-  queued: "ring-1 ring-sky-400/50",
-  waiting: "ring-2 ring-amber-400/70",
-  loading_model: "ring-2 ring-sky-400 animate-pulse",
-  running: "ring-2 ring-sky-400 shadow-[0_0_24px_-4px] shadow-sky-500/60",
-  done: "ring-1 ring-emerald-400/70",
-  cached: "ring-1 ring-emerald-400/40",
-  failed: "ring-2 ring-red-500",
-  cancelled: "ring-1 ring-zinc-500",
+  queued: "ring-1 ring-sky-500/50",
+  waiting: "ring-2 ring-amber-500/70",
+  loading_model: "ring-2 ring-sky-500 animate-pulse",
+  running: "ring-2 ring-sky-500 shadow-[0_0_24px_-4px] shadow-sky-500/60",
+  done: "ring-1 ring-emerald-500/70",
+  cached: "ring-1 ring-emerald-500/40",
+  failed: "ring-2 ring-destructive",
+  cancelled: "ring-1 ring-muted-foreground",
   skipped: "opacity-60",
 };
 
@@ -101,7 +102,7 @@ function OutputPreview({
   }
   if ((runtime.status === "running" || !runtime.outputs) && runtime.text) {
     return (
-      <p className="line-clamp-4 whitespace-pre-wrap text-[11px] leading-snug text-zinc-300">
+      <p className="line-clamp-4 whitespace-pre-wrap text-[11px] leading-snug text-foreground">
         {runtime.text}
       </p>
     );
@@ -114,7 +115,7 @@ function OutputPreview({
     const at = runtime.partialStep;
     return (
       <div className="flex flex-col gap-1">
-        <span className="text-[10px] uppercase tracking-wide text-amber-300/80">
+        <span className="text-[10px] uppercase tracking-wide text-amber-700 dark:text-amber-300/80">
           {at
             ? runtime.status === "running"
               ? `Partial: ${at.step} of ${at.total}`
@@ -168,27 +169,27 @@ function OutputValues({
     if (isStructuredValue(value)) return <StructuredBadge value={value} />;
     if (typeof value === "string") {
       return (
-        <p className="line-clamp-4 whitespace-pre-wrap text-[11px] leading-snug text-zinc-300">
+        <p className="line-clamp-4 whitespace-pre-wrap text-[11px] leading-snug text-foreground">
           {value}
         </p>
       );
     }
     if (typeof value === "number" || typeof value === "boolean") {
       return (
-        <span className="rounded bg-white/5 px-1.5 py-0.5 font-mono text-[11px] text-zinc-200">
+        <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-foreground">
           {String(value)}
         </span>
       );
     }
     if (Array.isArray(value)) {
       return (
-        <span className="rounded bg-white/5 px-1.5 py-0.5 text-[11px] text-zinc-300">
+        <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-foreground">
           {value.length} items
         </span>
       );
     }
     return (
-      <span className="rounded bg-white/5 px-1.5 py-0.5 font-mono text-[11px] text-zinc-300">
+      <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-foreground">
         {"{ "}
         {Object.keys(value as object)
           .slice(0, 4)
@@ -213,7 +214,7 @@ function FlowNodeViewImpl({ id, selected }: NodeProps<RfNode>) {
   if (!node) return null;
   if (!spec) {
     return (
-      <div className="w-60 rounded-xl border border-red-500/60 bg-zinc-900 p-3 text-xs text-red-300">
+      <div className="w-60 rounded-xl border border-destructive/60 bg-card p-3 text-xs text-destructive">
         Unknown node type <code>{node.type}</code>
       </div>
     );
@@ -227,8 +228,8 @@ function FlowNodeViewImpl({ id, selected }: NodeProps<RfNode>) {
 
   return (
     <div
-      className={`group/node relative w-65 rounded-xl border bg-zinc-900 text-zinc-100 shadow-md shadow-black/30 transition-opacity ${
-        selected ? "border-white/60" : "border-white/10"
+      className={`group/node relative w-65 rounded-xl border bg-card text-card-foreground shadow-sm transition-opacity ${
+        selected ? "border-ring-strong shadow-md" : "border-border"
       } ${ring} ${node.disabled ? "opacity-45" : ""} ${lowDetail ? "[&_.flow-detail]:invisible" : ""}`}
       data-node-id={id}
       data-status={runtime.status}
@@ -245,7 +246,7 @@ function FlowNodeViewImpl({ id, selected }: NodeProps<RfNode>) {
             type="target"
             id={FLOW_IN_HANDLE}
             position={Position.Left}
-            className="!h-3 !w-3 !rounded-sm !border-2 !border-white !bg-zinc-900"
+            className="!h-3 !w-3 !rounded-sm !border-2 !border-foreground !bg-card"
             style={{ top: 18 }}
           />
         )}
@@ -259,20 +260,20 @@ function FlowNodeViewImpl({ id, selected }: NodeProps<RfNode>) {
           {title}
         </span>
         {runtime.cached && runtime.status !== "running" && (
-          <span className="rounded bg-emerald-500/15 px-1 text-[10px] text-emerald-300">
+          <span className="rounded bg-emerald-500/15 px-1 text-[10px] text-emerald-700 dark:text-emerald-300">
             cached
           </span>
         )}
         {runtime.status !== "idle" && !runtime.cached && (
           <span
-            className={`text-[10px] ${runtime.status === "failed" ? "text-red-300" : running ? "text-sky-300" : "text-zinc-400"}`}
+            className={`text-[10px] ${runtime.status === "failed" ? "text-destructive" : running ? "text-sky-700 dark:text-sky-300" : "text-muted-foreground"}`}
             title={runtime.error ?? undefined}
           >
             {STATUS_LABEL[runtime.status] ?? runtime.status}
           </span>
         )}
         {spec.lane === "gpu" && runtime.status === "idle" && (
-          <span className="rounded bg-white/5 px-1 text-[9px] uppercase tracking-wide text-zinc-500">
+          <span className="rounded bg-muted px-1 text-[9px] uppercase tracking-wide text-muted-foreground">
             gpu
           </span>
         )}
@@ -325,13 +326,13 @@ function FlowNodeViewImpl({ id, selected }: NodeProps<RfNode>) {
                       type="target"
                       id={inHandle(port.id)}
                       position={Position.Left}
-                      className="!h-2.5 !w-2.5 !border-2 !border-zinc-900"
+                      className="!h-2.5 !w-2.5 !border-2 !border-card"
                       style={{
-                        background: portColorOf(portColors, port),
+                        background: portInk(portColorOf(portColors, port)),
                         left: -5,
                       }}
                     />
-                    <span className="flow-detail truncate text-[11px] text-zinc-400">
+                    <span className="flow-detail truncate text-[11px] text-muted-foreground">
                       {port.label}
                       {port.multi ? "+" : ""}
                     </span>
@@ -344,16 +345,16 @@ function FlowNodeViewImpl({ id, selected }: NodeProps<RfNode>) {
                     key={port.id}
                     className="relative flex h-5 items-center pl-1 pr-3"
                   >
-                    <span className="flow-detail truncate text-[11px] text-zinc-400">
+                    <span className="flow-detail truncate text-[11px] text-muted-foreground">
                       {port.label}
                     </span>
                     <Handle
                       type="source"
                       id={outHandle(port.id)}
                       position={Position.Right}
-                      className="!h-2.5 !w-2.5 !border-2 !border-zinc-900"
+                      className="!h-2.5 !w-2.5 !border-2 !border-card"
                       style={{
-                        background: portColorOf(portColors, port),
+                        background: portInk(portColorOf(portColors, port)),
                         right: -5,
                       }}
                     />
@@ -376,14 +377,14 @@ function FlowNodeViewImpl({ id, selected }: NodeProps<RfNode>) {
                     key={name}
                     className="relative flex h-5 max-w-full items-center pl-1 pr-3"
                   >
-                    <span className="flow-detail truncate text-[11px] italic text-zinc-300">
+                    <span className="flow-detail truncate text-[11px] italic text-foreground">
                       {label} ›
                     </span>
                     <Handle
                       type="source"
                       id={flowOutHandle(name)}
                       position={Position.Right}
-                      className="!h-3 !w-3 !rounded-sm !border-2 !border-white !bg-zinc-900"
+                      className="!h-3 !w-3 !rounded-sm !border-2 !border-foreground !bg-card"
                       style={{ right: -6 }}
                     />
                   </div>
@@ -396,7 +397,7 @@ function FlowNodeViewImpl({ id, selected }: NodeProps<RfNode>) {
               {summary.map((line) => (
                 <p
                   key={line}
-                  className="flow-detail line-clamp-2 text-[11px] leading-snug text-zinc-500"
+                  className="flow-detail line-clamp-2 text-[11px] leading-snug text-muted-foreground"
                 >
                   {line}
                 </p>
@@ -412,16 +413,16 @@ function FlowNodeViewImpl({ id, selected }: NodeProps<RfNode>) {
             </div>
           )}
           {runtime.status === "failed" && runtime.error && (
-            <p className="mx-3 line-clamp-3 rounded bg-red-500/10 px-2 py-1 text-[11px] text-red-300">
+            <p className="mx-3 line-clamp-3 rounded bg-destructive/10 px-2 py-1 text-[11px] text-destructive">
               {runtime.error}
             </p>
           )}
         </div>
       )}
       {running && (
-        <div className="absolute inset-x-0 bottom-0 h-1 overflow-hidden rounded-b-xl bg-white/5">
+        <div className="absolute inset-x-0 bottom-0 h-1 overflow-hidden rounded-b-xl bg-muted">
           <div
-            className={`h-full bg-sky-400 transition-[width] duration-300 ${runtime.progress === null ? "w-1/3 animate-pulse" : ""}`}
+            className={`h-full bg-sky-500 transition-[width] duration-300 ${runtime.progress === null ? "w-1/3 animate-pulse" : ""}`}
             style={
               runtime.progress === null
                 ? undefined

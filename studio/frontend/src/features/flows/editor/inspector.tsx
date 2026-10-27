@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { Button } from "@/components/ui/button";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { memo, useCallback, useState } from "react";
 import { loopMembers } from "../app/app-form";
@@ -29,12 +30,12 @@ function NodeOutputs({ nodeId, spec }: { nodeId: string; spec: NodeSpec }) {
   const hasOutputs = runtime.outputs && Object.keys(runtime.outputs).length > 0;
   if (!hasOutputs && !runtime.text && !runtime.error) return null;
   return (
-    <section className="flex flex-col gap-2 border-white/10 border-t px-4 py-3">
-      <h3 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+    <section className="flex flex-col gap-2 border-border border-t px-4 py-3">
+      <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
         Output
       </h3>
       {runtime.error && (
-        <p className="rounded bg-red-500/10 px-2 py-1.5 text-[12px] text-red-300">
+        <p className="rounded-md bg-destructive/10 px-2 py-1.5 text-[12px] text-destructive">
           {runtime.error}
         </p>
       )}
@@ -48,7 +49,7 @@ function NodeOutputs({ nodeId, spec }: { nodeId: string; spec: NodeSpec }) {
         spec.outputs.map((port) =>
           runtime.outputs && port.id in runtime.outputs ? (
             <div key={port.id} className="flex flex-col gap-1">
-              <span className="text-[11px] text-zinc-500">{port.label}</span>
+              <span className="text-[11px] text-muted-foreground">{port.label}</span>
               <OutputValue value={runtime.outputs[port.id]} />
             </div>
           ) : null,
@@ -70,11 +71,11 @@ function ParamRow({
 }) {
   return (
     <div className="flex flex-col gap-1">
-      <span className="text-[11.5px] font-medium text-zinc-400">
+      <span className="text-[11.5px] font-medium text-muted-foreground">
         {param.label}
       </span>
       {bound ? (
-        <p className="rounded-md border border-dashed border-white/15 px-2 py-1.5 text-[12px] text-zinc-400">
+        <p className="rounded-md border border-dashed border-border px-2 py-1.5 text-[12px] text-muted-foreground">
           Set by its connected input
         </p>
       ) : (
@@ -124,11 +125,11 @@ function InspectorImpl() {
 
   return (
     <aside
-      className="flex h-full w-85 shrink-0 flex-col border-white/10 border-l bg-zinc-950/95 text-zinc-100"
+      className="flex h-full w-85 shrink-0 flex-col border-border border-l bg-background text-foreground"
       data-testid="flows-inspector"
     >
       <header
-        className="flex items-start gap-2 border-white/10 border-b px-4 py-3"
+        className="flex items-start gap-2 border-border border-b px-4 py-3"
         style={{ borderTop: `2px solid ${color}` }}
       >
         <HugeiconsIcon
@@ -147,40 +148,46 @@ function InspectorImpl() {
                 .getState()
                 .updateNode(node.id, { label: e.target.value || null })
             }
-            className="w-full bg-transparent font-semibold text-[15px] outline-none placeholder:text-zinc-100"
+            className="w-full bg-transparent font-semibold text-[15px] outline-none placeholder:text-foreground"
           />
-          <p className="mt-0.5 text-[11.5px] leading-snug text-zinc-500">
+          <p className="mt-0.5 text-[11.5px] leading-snug text-muted-foreground">
             {spec.description}
           </p>
         </div>
-        <button
+        <Button
           type="button"
+          variant="ghost"
+          size="icon-xs"
           aria-label="Close inspector"
           onClick={() => useUiStore.getState().openInspector(null)}
-          className="rounded p-1 text-zinc-500 hover:bg-white/5 hover:text-zinc-200"
+          className="text-muted-foreground"
         >
           <HugeiconsIcon icon={Cancel01Icon} size={15} />
-        </button>
+        </Button>
       </header>
-      <div className="flex flex-wrap gap-1.5 border-white/10 border-b px-4 py-2">
-        <button
+      <div className="flex flex-wrap gap-1.5 border-border border-b px-4 py-2">
+        <Button
           type="button"
+          variant="dark"
+          size="xs"
           onClick={() => void runToNode(node.id)}
-          className="flex items-center gap-1 rounded-md bg-sky-600/80 px-2 py-1 text-[12px] hover:bg-sky-500"
           title="Run only what this node needs"
         >
           <HugeiconsIcon icon={PlayIcon} size={12} /> Run to here
-        </button>
-        <button
+        </Button>
+        <Button
           type="button"
+          variant="outline"
+          size="xs"
           onClick={() => void rerollNode(node.id)}
-          className="flex items-center gap-1 rounded-md border border-white/10 px-2 py-1 text-[12px] hover:bg-white/5"
           title="Run this node again, ignoring the cache (new seed when it has one)"
         >
           <HugeiconsIcon icon={DiceIcon} size={12} /> Re-roll
-        </button>
-        <button
+        </Button>
+        <Button
           type="button"
+          variant="outline"
+          size="xs"
           onClick={() => {
             const doc = useDocStore.getState();
             const fragment = cloneFragment(doc.graph, [node.id], [40, 40]);
@@ -190,48 +197,51 @@ function InspectorImpl() {
               [],
             );
           }}
-          className="flex items-center gap-1 rounded-md border border-white/10 px-2 py-1 text-[12px] hover:bg-white/5"
         >
           <HugeiconsIcon icon={Copy01Icon} size={12} /> Duplicate
-        </button>
-        <button
+        </Button>
+        <Button
           type="button"
+          variant="outline"
+          size="xs"
           onClick={() =>
             useDocStore
               .getState()
               .updateNode(node.id, { disabled: !node.disabled })
           }
-          className="rounded-md border border-white/10 px-2 py-1 text-[12px] hover:bg-white/5"
         >
           {node.disabled ? "Enable" : "Disable"}
-        </button>
-        <button
+        </Button>
+        <Button
           type="button"
+          variant="outline"
+          size="xs"
           onClick={() =>
             useDocStore
               .getState()
               .updateNode(node.id, { collapsed: !node.collapsed })
           }
-          className="rounded-md border border-white/10 px-2 py-1 text-[12px] hover:bg-white/5"
         >
           {node.collapsed ? "Expand" : "Collapse"}
-        </button>
-        <button
+        </Button>
+        <Button
           type="button"
+          variant="ghost"
+          size="icon-xs"
           aria-label="Delete node"
           onClick={() => {
             useDocStore.getState().removeElements({ nodes: [node.id] });
             useUiStore.getState().openInspector(null);
           }}
-          className="ml-auto rounded-md p-1 text-zinc-500 hover:bg-red-500/10 hover:text-red-300"
+          className="ml-auto text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
         >
           <HugeiconsIcon icon={Delete02Icon} size={14} />
-        </button>
+        </Button>
       </div>
       <div className="flex-1 overflow-y-auto">
         <section className="flex flex-col gap-3 px-4 py-3">
           {spec.params.length === 0 && (
-            <p className="text-[12px] text-zinc-500">
+            <p className="text-[12px] text-muted-foreground">
               This node has no settings.
             </p>
           )}
@@ -248,7 +258,7 @@ function InspectorImpl() {
             ))}
           {spec.params.some((param) => param.advanced) && (
             <details>
-              <summary className="cursor-pointer select-none text-[11.5px] font-medium text-zinc-400 hover:text-zinc-200">
+              <summary className="cursor-pointer select-none text-[11.5px] font-medium text-muted-foreground hover:text-foreground">
                 Advanced
               </summary>
               <div className="mt-3 flex flex-col gap-3">
@@ -272,8 +282,8 @@ function InspectorImpl() {
         )}
         <NodeOutputs nodeId={node.id} spec={spec} />
         {viewed && (
-          <section className="flex flex-col gap-2 border-white/10 border-t px-4 py-3">
-            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+          <section className="flex flex-col gap-2 border-border border-t px-4 py-3">
+            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
               Earlier output
             </h3>
             {(spec.outputs.length > 0
@@ -283,7 +293,7 @@ function InspectorImpl() {
             ).map((port) =>
               port.id in viewed ? (
                 <div key={port.id} className="flex flex-col gap-1">
-                  <span className="text-[11px] text-zinc-500">
+                  <span className="text-[11px] text-muted-foreground">
                     {port.label}
                   </span>
                   <OutputValue value={viewed[port.id]} />

@@ -5,6 +5,7 @@ import { type NodeProps, NodeResizer } from "@xyflow/react";
 import { memo, useState } from "react";
 import { useDocStore } from "../stores/doc-store";
 import type { RfNode } from "./derive-rf";
+import { portInk } from "./theme-colors";
 
 function GroupFrameImpl({ data, selected }: NodeProps<RfNode>) {
   const groupId = (data as { groupId: string }).groupId;
@@ -23,8 +24,8 @@ function GroupFrameImpl({ data, selected }: NodeProps<RfNode>) {
         isVisible={selected}
         minWidth={200}
         minHeight={120}
-        lineClassName="!border-white/30"
-        handleClassName="!h-2.5 !w-2.5 !rounded-sm !border-white/60 !bg-zinc-800"
+        lineClassName="!border-ring"
+        handleClassName="!h-2.5 !w-2.5 !rounded-sm !border-ring-strong !bg-background"
         onResizeEnd={(_, p) =>
           resizeGroup({
             ...group,
@@ -54,7 +55,7 @@ function GroupFrameImpl({ data, selected }: NodeProps<RfNode>) {
             }}
           />
         ) : (
-          <span className="truncate text-sm font-semibold" style={{ color }}>
+          <span className="truncate text-sm font-semibold" style={{ color: portInk(color) }}>
             {group.label}
           </span>
         )}
@@ -69,13 +70,13 @@ function NoteFrameImpl({ data, selected }: NodeProps<RfNode>) {
   const upsertNote = useDocStore((s) => s.upsertNote);
   if (!note) return null;
   return (
-    <div className="h-full w-full rounded-lg border border-amber-300/30 bg-amber-200/10 p-2 shadow-md">
+    <div className="h-full w-full rounded-lg border border-amber-400/40 bg-amber-200/30 p-2 shadow-sm dark:border-amber-300/30 dark:bg-amber-200/10">
       <NodeResizer
         isVisible={selected}
         minWidth={140}
         minHeight={60}
-        lineClassName="!border-amber-200/30"
-        handleClassName="!h-2 !w-2 !rounded-sm !border-amber-200/60 !bg-zinc-800"
+        lineClassName="!border-amber-400/40"
+        handleClassName="!h-2 !w-2 !rounded-sm !border-amber-500/60 !bg-background"
         onResizeEnd={(_, p) =>
           upsertNote({
             ...note,
@@ -84,7 +85,7 @@ function NoteFrameImpl({ data, selected }: NodeProps<RfNode>) {
         }
       />
       <textarea
-        className="nodrag nowheel h-full w-full resize-none bg-transparent text-[12px] leading-snug text-amber-100 outline-none placeholder:text-amber-100/40"
+        className="nodrag nowheel h-full w-full resize-none bg-transparent text-[12px] leading-snug text-amber-950 outline-none placeholder:text-amber-900/40 dark:text-amber-100 dark:placeholder:text-amber-100/40"
         placeholder="Write a note…"
         value={note.text}
         onChange={(e) =>

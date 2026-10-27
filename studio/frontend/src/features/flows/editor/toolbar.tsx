@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useReactFlow } from "@xyflow/react";
 import { memo, useState } from "react";
@@ -57,20 +59,18 @@ function IconButton({
   active?: boolean;
 }) {
   return (
-    <button
+    <Button
       type="button"
+      variant="ghost"
+      size="icon-sm"
       aria-label={label}
       title={label}
       disabled={disabled}
       onClick={onClick}
-      className={`rounded-md p-1.5 transition-colors disabled:opacity-35 ${
-        active
-          ? "bg-white/10 text-white"
-          : "text-zinc-400 hover:bg-white/5 hover:text-zinc-100"
-      }`}
+      className={active ? "bg-muted text-foreground" : "text-muted-foreground"}
     >
       <HugeiconsIcon icon={icon} size={16} strokeWidth={1.8} />
-    </button>
+    </Button>
   );
 }
 
@@ -101,7 +101,7 @@ function ToolbarImpl({
   const [dialog, setDialog] = useState<"run" | "plan" | "share" | null>(null);
 
   return (
-    <div className="flex h-12 shrink-0 items-center gap-1 border-white/10 border-b bg-zinc-950 px-2 text-zinc-100">
+    <div className="flex h-12 shrink-0 items-center gap-1 border-border border-b bg-background px-2 text-foreground">
       <IconButton icon={ArrowLeft01Icon} label="All flows" onClick={onBack} />
       <IconButton
         icon={SidebarLeftIcon}
@@ -118,21 +118,21 @@ function ToolbarImpl({
           if (!e.target.value.trim())
             useDocStore.getState().setMeta({ name: "Untitled flow" });
         }}
-        className="ml-1 w-[min(320px,30vw)] rounded-md bg-transparent px-2 py-1 font-semibold text-[14px] outline-none hover:bg-white/5 focus:bg-white/5"
+        className="ml-1 w-[min(320px,30vw)] rounded-full bg-transparent px-2.5 py-1 font-semibold text-[14px] outline-none hover:bg-muted focus:bg-muted"
         aria-label="Flow name"
         data-testid="flows-name"
       />
-      <span className="rounded bg-white/5 px-1.5 py-0.5 text-[10.5px] capitalize text-zinc-400">
+      <Badge variant="secondary" className="capitalize">
         {kind}
-      </span>
+      </Badge>
       <span
-        className={`ml-1 text-[11px] ${saveState === "error" || saveState === "conflict" ? "text-red-300" : "text-zinc-500"}`}
+        className={`ml-1 text-[11px] ${saveState === "error" || saveState === "conflict" ? "text-destructive" : "text-muted-foreground"}`}
         data-testid="flows-save-state"
       >
         {SAVE_LABEL[saveState]}
       </span>
 
-      <div className="mx-2 h-5 w-px bg-white/10" />
+      <div className="mx-2 h-5 w-px bg-border" />
       <IconButton
         icon={Undo02Icon}
         label="Undo (Ctrl+Z)"
@@ -210,49 +210,53 @@ function ToolbarImpl({
           }
         />
         {onApp && kind === "pipeline" && (
-          <button
+          <Button
             type="button"
+            variant="outline"
+            size="sm"
             onClick={onApp}
-            className="flex items-center gap-1.5 rounded-md border border-white/15 px-2.5 py-1.5 text-[12.5px] text-zinc-200 hover:bg-white/10"
             title="Open this flow as a simple form with its results"
             data-testid="flows-open-app"
           >
             <HugeiconsIcon icon={GridViewIcon} size={15} /> Open as app
-          </button>
+          </Button>
         )}
         {(kind === "story" || kind === "world" || playsChat) && (
-          <button
+          <Button
             type="button"
+            variant="outline"
+            size="sm"
             onClick={onPlay}
-            className="flex items-center gap-1.5 rounded-md border border-violet-400/40 bg-violet-500/15 px-2.5 py-1.5 text-[12.5px] text-violet-100 hover:bg-violet-500/25"
             data-testid="flows-play"
           >
             <HugeiconsIcon icon={GameController01Icon} size={15} /> Play
-          </button>
+          </Button>
         )}
         {running ? (
-          <button
+          <Button
             type="button"
+            variant="destructive"
+            size="sm"
             onClick={() => void stopFlow()}
             disabled={runStatus === "cancelling"}
-            className="flex items-center gap-1.5 rounded-md bg-red-600/90 px-3 py-1.5 text-[12.5px] font-medium hover:bg-red-500 disabled:opacity-60"
             data-testid="flows-stop"
           >
             <HugeiconsIcon icon={StopIcon} size={14} />{" "}
             {runStatus === "cancelling" ? "Stopping…" : "Stop"}
-          </button>
+          </Button>
         ) : (
-          <button
+          <Button
             type="button"
+            variant="dark"
+            size="sm"
             onClick={() =>
               collectFlowParams().length ? setDialog("run") : void runFlow()
             }
-            className="flex items-center gap-1.5 rounded-md bg-sky-600 px-3 py-1.5 text-[12.5px] font-medium hover:bg-sky-500"
             title="Run (Ctrl+Enter)"
             data-testid="flows-run"
           >
             <HugeiconsIcon icon={PlayIcon} size={14} /> Run
-          </button>
+          </Button>
         )}
       </div>
       <RunDialog

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { Button } from "@/components/ui/button";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
@@ -50,30 +51,32 @@ export function CapabilityBanner({ flowId }: { flowId: string }) {
 
   return (
     <div
-      className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-sky-500/30 bg-sky-500/10 px-3 py-1.5 text-[12px] text-sky-100"
+      className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-sky-500/30 bg-sky-500/10 px-3 py-1.5 text-[12px] text-sky-900 dark:text-sky-100"
       data-testid="flows-capabilities"
     >
       <span className="font-medium">This flow reaches outside Studio:</span>
       {items.map((item) => (
         <span
           key={item.key}
-          className="rounded bg-white/10 px-1.5 py-0.5 text-sky-50"
+          className="rounded bg-background/70 px-1.5 py-0.5 text-foreground"
         >
           {item.label}
         </span>
       ))}
       {report.can_approve ? (
-        <button
+        <Button
           type="button"
+          variant="dark"
+          size="xs"
           disabled={busy}
           onClick={() => void approve()}
-          className="ml-auto rounded-md bg-sky-500/80 px-2.5 py-1 text-[12px] font-medium text-white hover:bg-sky-500 disabled:opacity-50"
+          className="ml-auto"
           data-testid="flows-capabilities-approve"
         >
           Approve and allow
-        </button>
+        </Button>
       ) : (
-        <span className="ml-auto text-sky-200/80">
+        <span className="ml-auto text-sky-800/80 dark:text-sky-200/80">
           Only the Studio owner can approve these; until then those blocks do
           not run.
         </span>

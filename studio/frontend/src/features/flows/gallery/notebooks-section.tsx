@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useState } from "react";
 import { type NotebookEntry, listNotebooks } from "../api";
@@ -58,17 +59,17 @@ export function NotebooksSection({
             or download the .ipynb and import it: Studio reads its settings and
             never runs its code.
           </p>
-          <div className="flex items-center gap-2 rounded-md border px-2">
+          <div className="relative">
             <HugeiconsIcon
               icon={Search01Icon}
               size={14}
-              className="text-muted-foreground"
+              className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-muted-foreground"
             />
-            <input
+            <Input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Search notebooks"
-              className="h-8 flex-1 bg-transparent text-sm outline-none"
+              className="h-8 pl-8"
             />
           </div>
           {failed ? (

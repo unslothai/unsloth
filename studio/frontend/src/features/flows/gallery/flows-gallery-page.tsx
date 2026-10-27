@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog,
   DialogContent,
@@ -144,7 +145,7 @@ function FlowCard({
               {flow.name}
             </span>
             <span
-              className={`rounded px-1.5 py-0.5 text-[10.5px] ${kind.className}`}
+              className={`rounded-full px-2 py-0.5 text-[10.5px] font-medium ${kind.className}`}
             >
               {kind.label}
             </span>
@@ -176,27 +177,31 @@ function FlowCard({
         </span>
       )}
       {onApp && (
-        <button
+        <Button
           type="button"
+          variant="secondary"
+          size="icon-sm"
           aria-label={`Open ${flow.name} as an app`}
           title="Open as app"
           onClick={onApp}
-          className="absolute top-2 right-10 rounded-md bg-background/80 p-1.5 text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100"
+          className="absolute top-2 right-11 opacity-0 transition-opacity group-hover:opacity-100"
           data-testid="flows-card-app"
         >
           <HugeiconsIcon icon={GridViewIcon} size={14} />
-        </button>
+        </Button>
       )}
       {onDelete && (
-        <button
+        <Button
           type="button"
+          variant="secondary"
+          size="icon-sm"
           aria-label={`Delete ${flow.name}`}
           title="Delete"
           onClick={onDelete}
-          className="absolute top-2 right-2 rounded-md bg-background/80 p-1.5 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
+          className="absolute top-2 right-2 opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
         >
           <HugeiconsIcon icon={Delete02Icon} size={14} />
-        </button>
+        </Button>
       )}
     </div>
   );
@@ -358,12 +363,13 @@ function ImportDialog({
                 if (file) void submit(file);
               }}
             />
-            <textarea
+            <Textarea
+              fieldSizing="fixed"
               value={text}
               onChange={(e) => setText(e.target.value)}
               placeholder='…or paste JSON: {"format": "unsloth-flow", …}'
               rows={5}
-              className="rounded-md border bg-transparent px-2 py-1.5 font-mono text-xs"
+              className="font-mono text-xs"
             />
           </div>
         )}

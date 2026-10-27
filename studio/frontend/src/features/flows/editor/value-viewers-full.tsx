@@ -79,7 +79,7 @@ export function TableViewer({
   const total = table.row_count ?? table.rows.length;
   return (
     <div className="flex flex-col gap-1.5" data-testid="flows-table-viewer">
-      <div className="flex items-center gap-2 text-[11px] text-zinc-500">
+      <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
         <span>
           {total} row{total === 1 ? "" : "s"}
           {total > rows.length ? ` (showing ${rows.length})` : ""}
@@ -87,7 +87,7 @@ export function TableViewer({
         <span className="flex-1" />
         <button
           type="button"
-          className="rounded px-1.5 py-0.5 hover:bg-white/10 hover:text-zinc-200"
+          className="rounded px-1.5 py-0.5 hover:bg-accent hover:text-foreground"
           onClick={() =>
             void fullTable(table).then((t) =>
               t ? copyText(tableToCsv(t), "CSV") : undefined,
@@ -98,7 +98,7 @@ export function TableViewer({
         </button>
         <button
           type="button"
-          className="rounded px-1.5 py-0.5 hover:bg-white/10 hover:text-zinc-200"
+          className="rounded px-1.5 py-0.5 hover:bg-accent hover:text-foreground"
           onClick={() =>
             void fullTable(table).then((t) =>
               t ? copyText(tableToMarkdown(t), "Markdown") : undefined,
@@ -108,18 +108,18 @@ export function TableViewer({
           Copy Markdown
         </button>
       </div>
-      <div className="max-h-80 overflow-auto rounded-md border border-white/10">
+      <div className="max-h-80 overflow-auto rounded-md border border-border">
         <table className="w-full border-collapse text-[11.5px]">
-          <thead className="sticky top-0 bg-zinc-900">
+          <thead className="sticky top-0 bg-card">
             <tr>
               {table.columns.map((column) => (
                 <th
                   key={column.id}
-                  className="whitespace-nowrap border-white/10 border-b px-2 py-1 text-left font-medium text-zinc-300"
+                  className="whitespace-nowrap border-border border-b px-2 py-1 text-left font-medium text-foreground"
                 >
                   <button
                     type="button"
-                    className="select-none hover:text-white"
+                    className="select-none hover:text-foreground"
                     onClick={() =>
                       setSort((s) =>
                         s?.id === column.id
@@ -140,12 +140,12 @@ export function TableViewer({
               <tr
                 // biome-ignore lint/suspicious/noArrayIndexKey: rows have no identity of their own
                 key={i}
-                className="odd:bg-white/[0.02]"
+                className="odd:bg-muted/40"
               >
                 {table.columns.map((column) => (
                   <td
                     key={column.id}
-                    className={`whitespace-nowrap px-2 py-0.5 text-zinc-200 ${
+                    className={`whitespace-nowrap px-2 py-0.5 text-foreground ${
                       column.type === "number" ? "text-right font-mono" : ""
                     }`}
                   >
@@ -184,7 +184,7 @@ export function ChartViewer({
     ? `${chart.y_label}${chart.unit ? ` (${chart.unit})` : ""}`
     : chart.unit;
   const axes = [
-    <CartesianGrid key="grid" strokeDasharray="3 3" stroke="#ffffff14" />,
+    <CartesianGrid key="grid" strokeDasharray="3 3" stroke="var(--border)" />,
     <XAxis
       key="x"
       dataKey="x"
@@ -195,14 +195,14 @@ export function ChartViewer({
             tickFormatter: (v: unknown) => formatCell(v),
           }
         : {})}
-      tick={{ fill: "#a1a1aa", fontSize: 11 }}
+      tick={{ fill: "var(--muted-foreground)", fontSize: 11 }}
       label={
         chart.x_label
           ? {
               value: chart.x_label,
               position: "insideBottom",
               offset: -2,
-              fill: "#71717a",
+              fill: "var(--muted-foreground)",
               fontSize: 11,
             }
           : undefined
@@ -210,7 +210,7 @@ export function ChartViewer({
     />,
     <YAxis
       key="y"
-      tick={{ fill: "#a1a1aa", fontSize: 11 }}
+      tick={{ fill: "var(--muted-foreground)", fontSize: 11 }}
       width={52}
       label={
         yLabel
@@ -218,7 +218,7 @@ export function ChartViewer({
               value: yLabel,
               angle: -90,
               position: "insideLeft",
-              fill: "#71717a",
+              fill: "var(--muted-foreground)",
               fontSize: 11,
             }
           : undefined
@@ -226,7 +226,7 @@ export function ChartViewer({
     />,
     <Tooltip
       key="tip"
-      contentStyle={{ background: "#18181b", border: "1px solid #3f3f46" }}
+      contentStyle={{ background: "var(--popover)", border: "1px solid var(--border)", color: "var(--popover-foreground)" }}
     />,
     chart.series.length > 1 ? <Legend key="legend" /> : null,
   ];
@@ -246,7 +246,7 @@ export function ChartViewer({
                 isAnimationActive={false}
               >
                 {s.error ? (
-                  <ErrorBar dataKey={`e${j}`} stroke="#a1a1aa" />
+                  <ErrorBar dataKey={`e${j}`} stroke="var(--muted-foreground)" />
                 ) : null}
               </Line>
             ))}
@@ -263,7 +263,7 @@ export function ChartViewer({
                 isAnimationActive={false}
               >
                 {s.error ? (
-                  <ErrorBar dataKey={`e${j}`} stroke="#a1a1aa" />
+                  <ErrorBar dataKey={`e${j}`} stroke="var(--muted-foreground)" />
                 ) : null}
               </Bar>
             ))}
@@ -331,12 +331,12 @@ function HeatmapCanvas({ value }: { value: HeatmapValue }) {
     }
   }, [matrix, lo, hi, value.diverging]);
   if (!matrix)
-    return <p className="text-[11px] text-zinc-500">Loading heatmap...</p>;
+    return <p className="text-[11px] text-muted-foreground">Loading heatmap...</p>;
   return (
     <div className="flex flex-col gap-1" data-testid="flows-heatmap-viewer">
       <canvas
         ref={canvas}
-        className="max-h-80 w-full rounded border border-white/10"
+        className="max-h-80 w-full rounded border border-border"
         style={{ imageRendering: "pixelated", aspectRatio: "auto" }}
         onMouseMove={(e) => {
           const rect = e.currentTarget.getBoundingClientRect();
@@ -354,7 +354,7 @@ function HeatmapCanvas({ value }: { value: HeatmapValue }) {
         }}
         onMouseLeave={() => setHover(null)}
       />
-      <div className="flex justify-between text-[11px] text-zinc-500">
+      <div className="flex justify-between text-[11px] text-muted-foreground">
         <span>
           {formatCell(lo)} to {formatCell(hi)}
         </span>
@@ -388,7 +388,7 @@ export function TensorViewer({
   const stats = useMemo(() => numericStats(tensor.data), [tensor]);
   return (
     <div className="flex flex-col gap-1.5" data-testid="flows-tensor-viewer">
-      <p className="font-mono text-[11px] text-zinc-400">
+      <p className="font-mono text-[11px] text-muted-foreground">
         shape [{tensor.shape.join(", ")}]
         {tensor.dtype ? ` ${tensor.dtype}` : ""}
         {tensor.axes?.length ? ` (${tensor.axes.join(", ")})` : ""}

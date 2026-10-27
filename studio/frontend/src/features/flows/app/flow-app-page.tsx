@@ -1,6 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import { useNavigate } from "@tanstack/react-router";
 import {
   type ReactElement,
@@ -38,12 +49,6 @@ const IDLE: AppRunState = {
   errors: [],
 };
 
-const BUTTON =
-  "rounded-md px-3 py-1.5 text-sm font-medium transition-colors disabled:opacity-60";
-
-const FIELD =
-  "w-full rounded-md border bg-background px-2.5 py-1.5 text-sm outline-none focus:ring-2 focus:ring-ring";
-
 function FieldInput({
   field,
   value,
@@ -60,9 +65,8 @@ function FieldInput({
   switch (field.kind) {
     case "number":
       return (
-        <input
+        <Input
           type="number"
-          className={FIELD}
           value={value === null || value === undefined ? "" : String(value)}
           onChange={(e) =>
             onChange(e.target.value === "" ? null : Number(e.target.value))
@@ -71,31 +75,33 @@ function FieldInput({
       );
     case "bool":
       return (
-        <input
-          type="checkbox"
-          className="size-4"
+        <Checkbox
           checked={value === true || value === "true"}
-          onChange={(e) => onChange(e.target.checked)}
+          onCheckedChange={(checked) => onChange(checked === true)}
         />
       );
     case "select":
       return (
-        <select
-          className={FIELD}
+        <Select
           value={String(value ?? "")}
-          onChange={(e) => onChange(e.target.value)}
+          onValueChange={(next) => onChange(next)}
         >
-          {(field.options ?? []).map((option) => (
-            <option key={option} value={option}>
-              {option}
-            </option>
-          ))}
-        </select>
+          <SelectTrigger className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {(field.options ?? []).map((option) => (
+              <SelectItem key={option} value={option}>
+                {option}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       );
     case "list":
       return (
-        <textarea
-          className={FIELD}
+        <Textarea
+          fieldSizing="fixed"
           rows={4}
           placeholder="One item per line"
           value={Array.isArray(value) ? value.join("\n") : String(value ?? "")}
@@ -154,8 +160,8 @@ function FieldInput({
     case "text":
     case "textarea":
       return (
-        <textarea
-          className={FIELD}
+        <Textarea
+          fieldSizing="fixed"
           rows={field.kind === "json" ? 5 : 3}
           value={
             typeof value === "string"
@@ -280,15 +286,15 @@ export function FlowAppPage({ flowId }: { flowId: string }): ReactElement {
               </p>
             )}
           </div>
-          <button
+          <Button
             type="button"
-            className={`${BUTTON} border hover:bg-muted`}
+            variant="outline"
             onClick={() =>
               void navigate({ to: "/flows/$flowId", params: { flowId } })
             }
           >
             Edit flow
-          </button>
+          </Button>
         </header>
 
         {fields.length > 0 && (
@@ -316,24 +322,24 @@ export function FlowAppPage({ flowId }: { flowId: string }): ReactElement {
 
         <div className="flex items-center gap-3">
           {running ? (
-            <button
+            <Button
               type="button"
-              className={`${BUTTON} bg-destructive text-white hover:bg-destructive/90`}
+              variant="destructive"
               onClick={() => runId && void cancelRun(runId)}
               data-testid="flows-app-stop"
             >
               Stop
-            </button>
+            </Button>
           ) : (
-            <button
+            <Button
               type="button"
-              className={`${BUTTON} bg-primary text-primary-foreground hover:bg-primary/90`}
+              variant="dark"
               onClick={() => void start()}
               disabled={uploadingAny}
               data-testid="flows-app-run"
             >
               {uploadingAny ? "Uploading…" : "Run"}
-            </button>
+            </Button>
           )}
           {run.status !== "idle" && (
             <span className="text-muted-foreground text-sm">
