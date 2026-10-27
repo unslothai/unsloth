@@ -172,6 +172,14 @@ def _case_units(rank, world, tmp):
         pp_native._default_activation_dtype(plain, parts),
         pp_native._default_activation_dtype(forced, parts),
     )
+
+    # Later stages' embedding stub returns zeros in the dtype the real (here upcasting) embedding returns.
+    class Upcast(torch.nn.Embedding):
+        def forward(self, ids):
+            return super().forward(ids).float()
+
+    stub = pp_native._PPEmbeddingStub(Upcast(10, 4).half())
+    out["stub_dtype"] = stub(torch.zeros(2, 3, dtype = torch.long)).dtype
     return out
 
 
@@ -553,6 +561,7 @@ def test_pp_env_layout_and_refusals():
         assert "packing" in (res["packing"] or ""), res["packing"]
     assert "mixture-of-experts" in (res["moe"] or "") and "UNSLOTH_PP_SIZE=2: unset it" in res["moe"], res["moe"]
     assert res["act_dtype"] == (torch.float16, torch.float32), res["act_dtype"]
+    assert res["stub_dtype"] == torch.float32, res["stub_dtype"]
 
 
 @needs_pipelining

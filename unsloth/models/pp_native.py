@@ -788,7 +788,8 @@ def _placeholder(weight):
 
 
 class _PPEmbeddingStub(nn.Module):
-    """The input embedding on stages > 0: zeros in its place (replaced before the first owned layer)."""
+    """The input embedding on stages > 0: zeros in its place (replaced before the first owned layer), in the
+    dtype the real embedding returns (model-level masks and rotary tables are built in that dtype)."""
 
     def __init__(self, source):
         super().__init__()
@@ -800,9 +801,25 @@ class _PPEmbeddingStub(nn.Module):
         if scale is not None:
             self.__dict__["embed_scale"] = scale
         self.__dict__["_pp_width"] = weight.shape[-1]
+        self.__dict__["_pp_out_dtype"] = _embedding_output_dtype(source)
 
     def forward(self, input_ids, *args, **kwargs):
-        return self.weight.new_zeros(*input_ids.shape, self._pp_width)
+        return torch.zeros(
+            (*input_ids.shape, self._pp_width), dtype = self._pp_out_dtype, device = input_ids.device
+        )
+
+
+def _embedding_output_dtype(embedding):
+    """What `embedding` returns for one token (a patched / scaled embedding may upcast), else its weight dtype."""
+    weight = embedding.weight
+    try:
+        with torch.no_grad():
+            out = embedding(torch.zeros((1, 1), dtype = torch.long, device = weight.device))
+        if isinstance(out, torch.Tensor) and out.is_floating_point():
+            return out.dtype
+    except Exception:
+        pass
+    return weight.dtype
 
 
 class _PPHeadStub(nn.Module):
