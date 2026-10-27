@@ -149,7 +149,9 @@ def import_recipe(payload: Any, *, group_id: str = "recipe") -> dict:
                 }
             )
     width = (max(depths, default = 0) + 1) * _GRID[0]
-    cards = sum(len(recipe.get(k) or []) for k in ("model_providers", "model_configs", "tool_configs"))
+    cards = sum(
+        len(recipe.get(k) or []) for k in ("model_providers", "model_configs", "tool_configs")
+    )
     height = max(max(rows.values(), default = 1) * _GRID[1], _GENERATE_H + cards * _CARD_H)
     nodes.append(
         {

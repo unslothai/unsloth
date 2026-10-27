@@ -37,7 +37,9 @@ def _flow(payload = SQL) -> dict:
 
 def _column(doc: dict, name: str) -> dict:
     return next(
-        n for n in doc["nodes"] if n["type"] == COLUMN_TYPE and n["params"]["column"]["name"] == name
+        n
+        for n in doc["nodes"]
+        if n["type"] == COLUMN_TYPE and n["params"]["column"]["name"] == name
     )
 
 
@@ -85,7 +87,9 @@ def test_the_generate_step_runs_the_group_as_edited():
     recipe = _compiled(doc)["recipe"]
     names = [c["name"] for c in recipe["columns"]]
     assert "sql-validator" not in names
-    assert next(c for c in recipe["columns"] if c["name"] == "sql")["prompt"].startswith("Write SQL")
+    assert next(c for c in recipe["columns"] if c["name"] == "sql")["prompt"].startswith(
+        "Write SQL"
+    )
     assert recipe["model_configs"] == SQL["recipe"]["model_configs"]
     assert "mcp_providers" not in recipe and "tool_configs" not in recipe
 
@@ -238,7 +242,12 @@ def client():
         yield test_client
 
 
-def _save_recipe(recipe_id: str, name: str, payload = SQL, updated = 2) -> None:
+def _save_recipe(
+    recipe_id: str,
+    name: str,
+    payload = SQL,
+    updated = 2,
+) -> None:
     data_recipes_db.upsert_recipe(
         {"id": recipe_id, "name": name, "payload": payload, "createdAt": 1, "updatedAt": updated}
     )
