@@ -64,7 +64,12 @@ def serving_child():
     p.wait()
 
 
-def _embedder(process, port, monkeypatch, host = "127.0.0.1"):
+def _embedder(
+    process,
+    port,
+    monkeypatch,
+    host = "127.0.0.1",
+):
     monkeypatch.setattr(config, "EMBED_HOST", host)
     b = LlamaServerBackend.__new__(LlamaServerBackend)
     b._process, b._port = process, port

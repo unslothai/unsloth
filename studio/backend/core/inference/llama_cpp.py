@@ -17875,7 +17875,11 @@ class LlamaCppBackend:
             return s.getsockname()[1]
 
     @staticmethod
-    def _health_listener_is_ours(process, port, bind_host = None) -> bool:
+    def _health_listener_is_ours(
+        process,
+        port,
+        bind_host = None,
+    ) -> bool:
         """False when the port answering /health is demonstrably not held by our child's tree.
 
         _find_free_port releases the port before llama-server binds it, so another local user could
