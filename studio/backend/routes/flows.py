@@ -30,7 +30,7 @@ from core.flows import assets as asset_store
 from core.flows import caller as flow_caller
 from core.flows import capabilities, compiler, notebook_import, package, replication, triggers
 from core.flows.recipe_compile import RecipeCompileError, compile_recipe, recipe_graph
-from core.flows.recipe_import import flow_from_recipe
+from core.flows.recipe_import import GENERATE_TYPE, flow_from_recipe
 from core.flows.recipe_share import share_recipe, stdio_names
 from core.flows.examples import build_examples as examples
 from core.flows.compiler import CompileError
@@ -320,7 +320,15 @@ def export_recipe(body: RecipeExportBody) -> dict:
     except RecipeCompileError as exc:
         raise HTTPException(status_code = 400, detail = str(exc))
     recipe, ui = share_recipe(compiled["recipe"], graph["group"].get("ui"))
-    return package.scrub({"recipe": recipe, "run": compiled["run"], "ui": ui})
+    run = compiled["run"]
+    # Rows and mode live on the Recipe Dataset step, not on the group.
+    step = next((n for n in graph["nodes"] if n.get("type") == GENERATE_TYPE), None)
+    if step:
+        params = step.get("params") or {}
+        if isinstance(params.get("rows"), int) and params["rows"] > 0:
+            run["rows"] = params["rows"]
+        run["preview"] = params.get("mode", "preview") == "preview"
+    return package.scrub({"recipe": recipe, "run": run, "ui": ui})
 
 
 @router.post("/import/recipes")

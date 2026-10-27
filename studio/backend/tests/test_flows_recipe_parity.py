@@ -226,6 +226,8 @@ def client():
 def test_recipe_json_round_trips_out_of_flows_and_back(client):
     doc = _flow()
     _column(doc, "sql")["params"]["column"]["prompt"] = "Edited in Flows {{ sql_prompt }}"
+    step = next(n for n in doc["nodes"] if n["type"] == "recipe.generate")
+    step["params"].update(rows = 250, mode = "full")
     out = client.post("/api/flows/export/recipe", json = {"doc": doc, "group_id": "recipe"})
     assert out.status_code == 200
     exported = out.json()
@@ -237,6 +239,9 @@ def test_recipe_json_round_trips_out_of_flows_and_back(client):
     back = client.post("/api/flows/import/recipe", json = {"payload": exported, "name": "Back"}).json()
     again = compile_recipe(recipe_graph(back["flow"]["doc"], "recipe"))
     assert again["recipe"] == exported["recipe"]
+    assert exported["run"]["rows"] == 250 and exported["run"]["preview"] is False
+    step = next(n for n in back["flow"]["doc"]["nodes"] if n["type"] == "recipe.generate")
+    assert step["params"] == {"rows": 250, "mode": "full"}
 
 
 def test_recipe_json_export_follows_the_sharing_rule(client):
