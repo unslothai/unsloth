@@ -5,6 +5,7 @@ flash-attn) instead of SDPA over a dense block-causal mask; heads past flash's 2
 layers, 512) and shapes an FA4 / FA3 impl refuses run SDPA's memory-efficient kernel over the same
 cu_seqlens. Anything else reaches the wrapped "sdpa"."""
 
+import contextlib
 import inspect
 import logging
 import os
@@ -691,11 +692,25 @@ def _varlen_in_graph_eager(device_index, dtype, head_dim, n_heads, n_kv_heads, w
     return _VARLEN_IN_GRAPH[key]
 
 
+def _no_saved_tensor_hooks():
+    # Only the innermost pair applies. Pushing raises while torch has hooks disabled: keep the ambient state.
+    enabled = getattr(torch._C._autograd, "_saved_tensors_hooks_is_enabled", lambda: True)
+    if enabled():
+        return torch.autograd.graph.saved_tensors_hooks(_identity, _identity)
+    return contextlib.nullcontext()
+
+
+def _identity(tensor):
+    return tensor
+
+
 def _varlen_in_graph_probe(device_index, dtype, head_dim, n_heads, n_kv_heads, window):
     """aten's flash varlen takes this shape on this device: one real forward and backward (a build
     that refuses at run time would otherwise fail inside the compiled graph)."""
     # Cached for all grad modes; first trace may be no_grad (reentrant checkpoint), where backward raises.
-    with torch.inference_mode(False), torch.enable_grad():
+    # Identity saved-tensor hooks: inside a non-reentrant checkpoint its pack hooks would capture the
+    # probe's tensors, so the probe's backward recomputes the block and the outer recompute miscounts.
+    with torch.inference_mode(False), torch.enable_grad(), _no_saved_tensor_hooks():
         try:
             from .flash_impl import flash_impl_allows
 

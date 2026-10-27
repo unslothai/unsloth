@@ -1541,6 +1541,44 @@ def test_varlen_in_graph_probe_runs_its_backward_with_grad_enabled(monkeypatch, 
     assert seen == [(True, False)]
 
 
+@pytest.mark.parametrize("compiled", [False, True])
+def test_varlen_in_graph_probe_inside_a_nonreentrant_checkpoint(monkeypatch, compiled):
+    """First trace inside a non-reentrant checkpoint (VLMs under DDP): the probe's own backward must
+    not go through the checkpoint's saved-tensor hooks, and the outer backward must still recompute."""
+    from torch.utils.checkpoint import checkpoint
+
+    seen = []
+
+    def torch_varlen(device):
+        # Stands in for the probe's kernel forward and backward (CUDA only).
+        try:
+            q = torch.zeros(4, 4, requires_grad = True)
+            (q @ q).sin().sum().backward()
+            seen.append(q.grad is not None)
+        except Exception as error:
+            seen.append(repr(error))
+        return None
+
+    monkeypatch.setattr(hpa, "_torch_varlen", torch_varlen)
+    monkeypatch.setattr(hpa, "_VARLEN_IN_GRAPH", {})
+
+    def block(x):
+        if hpa._varlen_in_graph(0, torch.bfloat16, 64, 8, 2, None):
+            return (x * 3).cos()
+        return (x * 2).sin()
+
+    if compiled:
+        # Dynamo calls the assume_constant_result probe eagerly while tracing, hooks still live.
+        torch._dynamo.reset()
+        block = torch.compile(block, backend = "eager", fullgraph = True)
+    x = torch.randn(4, 4, requires_grad = True)
+    # Through the checkpoint's hooks the probe's backward recomputes the block from inside the probe
+    # (_StopRecomputationError), and compiled the outer recompute then miscounts saved tensors.
+    checkpoint(block, x, use_reentrant = False).sum().backward()
+    assert seen == [True]
+    torch.testing.assert_close(x.grad, 2 * torch.cos(2 * x.detach()))
+
+
 @_CUDA
 @_TORCH_VARLEN_HOST
 @pytest.mark.parametrize("mode", ["no_grad", "inference_mode"])
