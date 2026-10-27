@@ -81,6 +81,7 @@ _CROSS_LAYER_CONFIG_KEYS = (
 )
 _ATTENTION_LAYER_TYPES = {"full_attention", "sliding_attention", "chunked_attention", "attention"}
 _STEP_KWARGS = ("attention_mask", "position_ids")
+_STAGE_IDS = "_unsloth_pp_input_ids"  # the batch's token ids, for stages after the first
 _SIMPLE = (bool, int, float, str, type(None))
 
 
@@ -853,10 +854,13 @@ class _PPStageModule(nn.Module):
 
     def forward(self, x, **kwargs):
         ctx = self._pp_ctx
+        # Every rank holds the batch: later stages get the real token ids too (the embedding stub ignores them),
+        # so model-level code reading input_ids (padding / pad-token masks, token types) sees what one GPU does.
+        ids = kwargs.pop(_STAGE_IDS, None)
         if ctx.is_first:
             input_ids = x
         else:
-            input_ids = torch.zeros(x.shape[:2], dtype = torch.long, device = x.device)
+            input_ids = ids if ids is not None else torch.zeros(x.shape[:2], dtype = torch.long, device = x.device)
             ctx.stage_input = x
         ctx.active = True
         try:
@@ -1227,6 +1231,8 @@ class PipelineParallel:
                 value = value.to(device)
             step_kwargs[key] = value
         step_kwargs["labels"] = labels.to(device)
+        if not self.is_first:
+            step_kwargs[_STAGE_IDS] = input_ids.to(device)
         step_kwargs["num_items_in_batch"] = num_items_in_batch
         if scaler is not None and scaler.is_enabled():
             scaler.scale(
@@ -1297,6 +1303,8 @@ class PipelineParallel:
             for key, value in kwargs.items()
         }
         step_kwargs["labels"] = labels.to(device)
+        if not self.is_first:
+            step_kwargs[_STAGE_IDS] = input_ids.to(device)
         step_kwargs["num_items_in_batch"] = max(int(num_items_in_batch), 1)
         schedule = self._schedule_for(bsz // m, seq, m, train = False)
         self._mb_losses = []

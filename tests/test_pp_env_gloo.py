@@ -247,6 +247,15 @@ def _case_env(
         per_device_eval_batch_size = eval_bs or bs,
     )
     trainer = SequentialTrainer(model = model, args = args, train_dataset = data, data_collator = collate)
+    stage_ids = []
+    split = pp_native.pipeline_stage_of(trainer.model)
+    if split is not None and not split.is_first:
+        # Later stages run the model on the batch's real token ids (not zeros), as one GPU does.
+        def record(module, args, kwargs):
+            if torch.is_grad_enabled() and kwargs.get("input_ids") is not None:
+                stage_ids.append(int(kwargs["input_ids"].sum()))
+
+        split.parts.inner.register_forward_pre_hook(record, with_kwargs = True)
     trainer.train()
     logs = [h for h in trainer.state.log_history if "loss" in h]
     res = {
@@ -254,6 +263,7 @@ def _case_env(
         "losses": [h["loss"] for h in logs],
         "grad_norms": [h.get("grad_norm") for h in logs],
         "seen": list(seen),
+        "stage_ids": list(stage_ids),  # the training run above (not the later cells)
         "pre_split": pre_split,
         "layout": None if layout is None else repr(layout),
         "is_pp": pp_native.is_pipeline_parallel(trainer.model),
@@ -562,6 +572,8 @@ def test_pp_env_trainer_matches_one_process(world, env, ref_bs):
     stages = set()
     for rank, res in enumerate(results):
         assert res["is_pp"] and res["pre_split"], res  # whole until the Trainer
+        if res["stage"] == 1:
+            assert res["stage_ids"] and sum(res["stage_ids"]) == sum(res["seen"]), (res["stage_ids"], res["seen"])
         assert "DistributedDataParallel" not in res["wrapped"]
         _close(res, ref, what = rank)
         stages.add(res["stage"])
