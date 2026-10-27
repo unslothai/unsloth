@@ -227,7 +227,7 @@ function SelectedOptionDescription({ name, detail }: { name: string; detail: str
   );
 }
 
-// The glyph fills its box, so it drops to the label's cap line; the end margin widens the gap to the text.
+// The glyph fills its box: drop it to the label's cap line.
 const ROW_ICON_CLASS =
   "me-1.5 mt-[calc(0.1875rem*var(--ui-font-scale,1))] size-[calc(20px*var(--ui-space-scale,1))]";
 

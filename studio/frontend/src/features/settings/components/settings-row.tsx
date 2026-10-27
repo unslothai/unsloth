@@ -27,7 +27,6 @@ export function SettingsRow({
   /** Shown on hover; plain text because it doubles as the trigger's aria-label. */
   hint?: string;
   icon?: ReactNode;
-  /** "top" keeps the icon level with the label when a description wraps under it. */
   iconAlign?: "center" | "top";
   children?: ReactNode;
   destructive?: boolean;

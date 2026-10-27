@@ -30,12 +30,10 @@ test("Settings lists every permission mode as its own row with a switch", () => 
     SANDBOX_TAB.indexOf("function PermissionsSection"),
     SANDBOX_TAB.indexOf("function SandboxLevelSection"),
   );
-  // Each mode is named and fully explained on the page, not behind a dropdown.
   assert.match(section, /choice\.options\.map/);
   assert.match(section, /label=\{t\(`settings\.general\.permissions\.names\.\$\{option\.value\}`\)\}\s*description=\{t\(`settings\.general\.permissions\.details\.\$\{option\.value\}`\)\}/);
   assert.match(section, /<Switch\b/);
   assert.match(section, /checked=\{choice\.permissionMode === option\.value\}/);
-  // Full access still confirms first, and the menu's sandbox controls stay out of Settings.
   assert.match(section, /<FullAccessConfirmDialog/);
   assert.match(MENU, /if \(mode === "full"\) setConfirmOpen\(true\);/);
   assert.doesNotMatch(SANDBOX_TAB, /PermissionModeDropdown/);
@@ -47,7 +45,6 @@ test("Settings picks the sandbox level with the Queue/Steer style Low | High tog
     SANDBOX_TAB.indexOf("function SandboxLevelSection"),
     SANDBOX_TAB.indexOf("export function SandboxTab"),
   );
-  // Its own Sandbox subheading below Permissions.
   assert.match(section, /title=\{t\("settings\.sandbox\.levelLabel"\)\}/);
   assert.match(SANDBOX_TAB, /<PermissionsSection \/>\s*<SandboxLevelSection \/>/);
   assert.match(SANDBOX_TAB, /settings\.sandbox\.levelHighDetail/);
