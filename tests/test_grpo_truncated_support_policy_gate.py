@@ -162,7 +162,8 @@ def test_policies_with_their_own_kept_set_score_the_full_vocabulary(monkeypatch,
 
 
 def test_refusals_do_not_claim_the_variable_was_set(monkeypatch):
-    # zoo's automatic gate means refusals fire with the variable unset: never say "ignoring ...=1".
+    # An older zoo's automatic gate fires refusals with the variable unset: never say "ignoring ...=1",
+    # and name the variable without claiming a value or an automatic default.
     monkeypatch.delenv("UNSLOTH_GRPO_TRUNCATED_SUPPORT", raising = False)
     _, messages = _bind(monkeypatch, _trainer(beta = 0.04))
     refuse = _refuse_helper(monkeypatch, _SUPPORT)
@@ -178,7 +179,7 @@ def test_refusals_do_not_claim_the_variable_was_set(monkeypatch):
         assert message.startswith(
             "Unsloth: not scoring over the rollouts' top_k / top_p / min_p kept set"
         )
-        assert "automatic" in message
+        assert "UNSLOTH_GRPO_TRUNCATED_SUPPORT" in message and "automatic" not in message
 
 
 def _own_support_logps(logits, index, top_k):

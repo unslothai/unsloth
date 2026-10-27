@@ -1256,6 +1256,18 @@ export function EnvironmentSection({
             t("settings.resources.environment.notInstalled"),
         )}
       />
+      {systemInfo.ml_packages.mlx_lm ? (
+        <InfoRow
+          label={t("settings.resources.environment.mlxLm")}
+          value={hostReading(systemInfo.ml_packages.mlx_lm)}
+        />
+      ) : null}
+      {systemInfo.ml_packages.mlx_vlm ? (
+        <InfoRow
+          label={t("settings.resources.environment.mlxVlm")}
+          value={hostReading(systemInfo.ml_packages.mlx_vlm)}
+        />
+      ) : null}
       <InfoRow
         label={t("settings.resources.environment.uptime")}
         value={hostReading(formatUptime(systemInfo.uptime_seconds))}
