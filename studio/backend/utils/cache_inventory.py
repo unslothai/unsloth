@@ -727,6 +727,9 @@ class LinkLedger:
         else:
             record[2] += 1
 
+    def add_single_link_bytes(self, size: int) -> None:
+        self._single += size
+
     def freeable_bytes(self) -> int:
         return self._single + sum(size for size, links, met in self._multi.values() if met >= links)
 
@@ -744,26 +747,48 @@ def _descendable(entry: os.DirEntry) -> bool:
     return not _is_junction(entry.path)
 
 
+def _walk_into(stack: list, ledger: LinkLedger) -> int:
+    """Sizes every directory on the stack and below it; returns the entries seen.
+
+    A uv or triton cache can hold millions of files, so the loop body is the whole cost: paths
+    stay strings and single-link sizes are summed locally rather than through the ledger.
+    """
+    count = 0
+    single = 0
+    add = ledger.add
+    pop = stack.pop
+    push = stack.append
+    try:
+        while stack:
+            current = pop()
+            try:
+                with os.scandir(current) as entries:
+                    for entry in entries:
+                        count += 1
+                        if entry.is_symlink():
+                            continue
+                        if entry.is_dir(follow_symlinks = False):
+                            if _descendable(entry):
+                                push(entry.path)
+                            continue
+                        try:
+                            found = entry.stat(follow_symlinks = False)
+                        except OSError:
+                            continue
+                        if found.st_nlink <= 1:
+                            single += found.st_size
+                        else:
+                            add(found)
+            except OSError:
+                continue
+    finally:
+        ledger.add_single_link_bytes(single)
+    return count
+
+
 def _measure_tree(path: Path, ledger: LinkLedger) -> int:
     """Size is left to the ledger: a multi-link inode's cost is only known after every root is walked."""
-    count = 0
-    stack = [path]
-    while stack:
-        current = stack.pop()
-        try:
-            with os.scandir(current) as entries:
-                for entry in entries:
-                    count += 1
-                    if entry.is_symlink():
-                        continue
-                    if entry.is_dir(follow_symlinks = False):
-                        if _descendable(entry):
-                            stack.append(Path(entry.path))
-                        continue
-                    _record_entry(entry, ledger)
-        except OSError:
-            continue
-    return count
+    return _walk_into([os.fspath(path)], ledger)
 
 
 def _measure_root(root: Path, *, patterns: Optional[Iterable[str]] = None) -> tuple[int, int]:
@@ -774,6 +799,8 @@ def _measure_root(root: Path, *, patterns: Optional[Iterable[str]] = None) -> tu
             return 0, 0
     except OSError:
         return 0, 0
+    # Subdirectories are walked after the listing, in one loop, so they are still sized when it fails part way.
+    subdirs: list = []
     try:
         with os.scandir(root) as scan:
             for entry in scan:
@@ -784,11 +811,14 @@ def _measure_root(root: Path, *, patterns: Optional[Iterable[str]] = None) -> tu
                     continue
                 if entry.is_dir(follow_symlinks = False):
                     if _descendable(entry):
-                        _measure_tree(Path(entry.path), ledger)
+                        subdirs.append(entry.path)
                     continue
                 _record_entry(entry, ledger)
     except OSError as exc:
         logger.debug(f"Could not size {root}: {exc}")
+    # Popped from the end, so reversed keeps the base walk's top-level order.
+    subdirs.reverse()
+    _walk_into(subdirs, ledger)
     return ledger.freeable_bytes(), entries
 
 
@@ -881,8 +911,12 @@ def _patterns_for(definition: CacheDefinition) -> Optional[tuple[str, ...]]:
 
 # Walks take seconds on large uv/triton caches, so repeat reads within the TTL reuse the last answer.
 _INVENTORY_TTL_SECONDS = 60.0
-# Tuple of (walk start, store time, entry): TTL uses store time, forced reads compare walk start.
-_size_cache: dict[str, tuple[float, float, dict]] = {}
+# A cache whose last walk took this long is answered from that walk once the TTL lapses and
+# re-walked in the background: a few million files are tens of seconds of stat calls, which no
+# faster loop removes, and the Settings page would wait on every one of them.
+_BACKGROUND_WALK_SECONDS = 2.0
+# Tuple of (walk start, store time, entry, walk seconds): TTL uses store time, forced reads compare walk start.
+_size_cache: dict[str, tuple[float, float, dict, float]] = {}
 # Bumped per invalidation so a walk begun earlier cannot store a stale size.
 _size_epochs: dict[str, int] = {}
 _size_cache_lock = threading.Lock()
@@ -903,12 +937,51 @@ def _flight_for(key: str) -> threading.Lock:
         return _size_flights.setdefault(key, threading.Lock())
 
 
+def _walk_and_remember(definition: CacheDefinition, epoch: int) -> dict:
+    """Caller holds the key's flight; an invalidation since ``epoch`` keeps the answer out of the memo."""
+    begun = time.monotonic()
+    entry = describe_cache(definition)
+    finished = time.monotonic()
+    with _size_cache_lock:
+        if _size_epochs.get(definition.key, 0) == epoch:
+            _size_cache[definition.key] = (begun, finished, entry, finished - begun)
+    return entry
+
+
+def _refresh_in_background(definition: CacheDefinition) -> None:
+    """At most one walk per cache: one already running, foreground or not, stores the newer size anyway."""
+    flight = _flight_for(definition.key)
+    if not flight.acquire(blocking = False):
+        return
+
+    def walk() -> None:
+        try:
+            with _size_cache_lock:
+                epoch = _size_epochs.get(definition.key, 0)
+            _walk_and_remember(definition, epoch)
+        except Exception as exc:  # noqa: BLE001 - a failed refresh leaves the last size in place
+            logger.debug(f"Could not refresh the {definition.key} cache size: {exc}")
+        finally:
+            flight.release()
+
+    try:
+        threading.Thread(target = walk, name = f"cache-size-{definition.key}", daemon = True).start()
+    except Exception as exc:  # noqa: BLE001 - e.g. no thread left; the next read walks in the foreground
+        flight.release()
+        logger.debug(f"Could not start a {definition.key} cache size refresh: {exc}")
+
+
 def _described(definition: CacheDefinition, *, refresh: bool) -> dict:
     started = time.monotonic()
     with _size_cache_lock:
         remembered = None if refresh else _size_cache.get(definition.key)
-    if remembered is not None and started - remembered[1] < _INVENTORY_TTL_SECONDS:
-        return remembered[2]
+    if remembered is not None:
+        if started - remembered[1] < _INVENTORY_TTL_SECONDS:
+            return remembered[2]
+        # A forced read (the Recheck button) still waits for a fresh walk below.
+        if remembered[3] >= _BACKGROUND_WALK_SECONDS:
+            _refresh_in_background(definition)
+            return remembered[2]
     # One walk per cache at a time, or simultaneous misses (e.g. two open tabs) each pay a cold walk.
     with _flight_for(definition.key):
         with _size_cache_lock:
@@ -921,12 +994,7 @@ def _described(definition: CacheDefinition, *, refresh: bool) -> dict:
                     return remembered[2]
             elif time.monotonic() - remembered[1] < _INVENTORY_TTL_SECONDS:
                 return remembered[2]
-        begun = time.monotonic()
-        entry = describe_cache(definition)
-        with _size_cache_lock:
-            if _size_epochs.get(definition.key, 0) == epoch:
-                _size_cache[definition.key] = (begun, time.monotonic(), entry)
-        return entry
+        return _walk_and_remember(definition, epoch)
 
 
 def cache_inventory(*, refresh: bool = False) -> dict:
