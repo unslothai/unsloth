@@ -902,6 +902,35 @@ class TestEstimateMemoryRoute:
             prefill_chunk = 8192,
         )
         assert (asked["offload"], asked["prefill_chunk"]) == ((None, 0.6), 8192)
+        seen = []
+
+        def costless(attached, alone):
+            monkeypatch.setattr(
+                mlx_memory,
+                "mlx_fit_outcome",
+                lambda d, *, drafter = None, offload = None, prefill_chunk = None, **_: seen.append(
+                    (bool(drafter), offload, prefill_chunk)
+                )
+                or (attached if drafter else alone),
+            )
+            return mlx_inference.mlx_drafter_fit(
+                "/m",
+                32768,
+                None,
+                source,
+                load_in_4bit = False,
+                costless = True,
+                offload = (None, 0.6),
+                prefill_chunk = 8192,
+                baseline = {"offload": (None, 0.5), "prefill_chunk": 4096},
+            )[0]
+
+        assert costless(("fitted", 10240), ("fitted", 8192)) is True
+        assert seen == [(True, (None, 0.6), 8192), (False, (None, 0.5), 4096)]
+        assert costless(("fits", None), ("fitted", 8192)) is True
+        assert costless(("fitted", 9216), ("fitted", 11520)) is False
+        assert costless(("fitted", 8192), ("fits", None)) is False
+        assert costless(("fits", None), ("unsizable", None)) is False
 
     def test_mlx_model_not_on_disk_is_not_downloaded(self, monkeypatch):
         self._mlx_target(monkeypatch, None)
@@ -1123,6 +1152,7 @@ class TestEstimateMemoryRoute:
     def test_an_mlx_estimate_prices_the_offload_the_load_applies(self, monkeypatch, tmp_path):
         import core.inference.mlx_inference as mlx_inference
         import core.inference.mlx_memory as mlx_memory
+        import core.inference.mlx_speculative as mlx_speculative
 
         self._mlx_target(monkeypatch, str(tmp_path))
         seen, four_bit, planned = [], {"on": False}, []
@@ -1136,7 +1166,11 @@ class TestEstimateMemoryRoute:
             mlx_memory,
             "mlx_offload_plan",
             lambda d, **kw: planned.append(kw)
-            or (kw["ple"], 0.6 if kw["experts"] == "auto" else kw["experts"], 8192),
+            or (
+                kw["ple"],
+                (0.62 if kw["drafter"] else 0.6) if kw["experts"] == "auto" else kw["experts"],
+                8192,
+            ),
         )
         monkeypatch.setattr(
             mlx_memory,
@@ -1159,13 +1193,33 @@ class TestEstimateMemoryRoute:
         assert seen[-1][1] == 8192
         assert planned[-1]["vision"] is None
         with monkeypatch.context() as patch:
+            source = mlx_speculative.DrafterSource("mtp", str(tmp_path), True)
+            patch.setattr(
+                mlx_speculative,
+                "resolve_speculation",
+                lambda mode, named, **where: mlx_speculative.SpecResolution(mode, (source,)),
+            )
+            patch.setattr(ri, "_mlx_estimate_speculates", lambda request, model_dir: False)
+            estimate(mlx_ple_offload = "off", speculative_type = "mtp")
+            assert planned[-1]["drafter"] is None  # refused (KV quantization): no room to make
             patch.setattr(ri, "_mlx_estimate_speculates", lambda request, model_dir: True)
-            estimate(mlx_ple_offload = "off")
-        assert planned[-1]["vision"] is True and len(planned) == 2
+            fits = []
+            patch.setattr(
+                mlx_inference,
+                "mlx_drafter_fit",
+                lambda *a, **kw: fits.append((kw["offload"], kw.get("baseline"))) or (True, None),
+            )
+            assert price(mlx_ple_offload = "off") == (None, 0.62)
+            assert [p["drafter"] for p in planned[-2:]] == [(str(tmp_path), True), None]
+            assert fits[-1] == ((None, 0.62), {"offload": (None, 0.6), "prefill_chunk": 8192})
+            estimate(mlx_ple_offload = "off", speculative_type = "mtp")
+            assert planned[-1]["drafter"] == (str(tmp_path), True)
+            assert fits[-1] == ((None, 0.62), None)
+        assert planned[-1]["vision"] is True and len(planned) == 5
         four_bit["on"] = True  # already quantized: nothing for the load to quantize, so it offloads
         assert price(mlx_ple_offload = 1.0) == (1.0, 0.6)
         (tmp_path / "config.json").write_text("{}")
-        assert price(mlx_ple_offload = 1.0) is None and len(planned) == 3
+        assert price(mlx_ple_offload = 1.0) is None and len(planned) == 6
         off = estimate(mlx_ple_offload = "off", mlx_expert_offload = "off")
         assert off.mlx_offload.offloadable == []
         four_bit["on"] = False
@@ -3720,23 +3774,34 @@ def test_offload_is_priced_by_what_unsloth_zoos_offload_takes(tmp_path, monkeypa
 
 
 def test_auto_offload_is_planned_on_the_route_the_load_takes(monkeypatch):
-    routes = []
+    routes, costs = [], []
     decide = lambda inventory, context_cost, **kw: {
-        "context": context_cost(512, 8192) and 512,
+        "context": costs.append(context_cost(512, 8192)) or costs[-1] and 512,
         "ple": None if inventory["ple"] else 1.0,
         "experts": 0.5,
     }
-    monkeypatch.setattr(mm, "_priced_at", lambda sizing, tokens: SimpleNamespace(total_bytes = 11))
+    # A drafter's weights and cache are priced with the context, so a plan making room for one sees them there.
+    monkeypatch.setattr(
+        mm,
+        "_priced_at",
+        lambda sizing, tokens: SimpleNamespace(total_bytes = 11 + 5 * bool(sizing.drafter)),
+    )
     monkeypatch.setattr(mm, "mlx_offload_planner", lambda: SimpleNamespace(plan_offload = decide))
     monkeypatch.setattr(
         mm, "_snapshot_config", lambda d: {"model_type": "qwen3_moe", "quantization": {"bits": 4}}
     )
     monkeypatch.setattr(mm, "_checkpoint_fingerprint", lambda d: ())
+    drafters = []
     monkeypatch.setattr(
         mm,
         "_size_load",
-        lambda d, kv, chunk, four, vision = None: routes.append(("sized", vision))
-        or SimpleNamespace(weights = 10, chunk = 512),
+        lambda d, kv, chunk, four, vision = None, drafter = None: routes.append(("sized", vision))
+        or drafters.append(drafter)
+        or (
+            None
+            if drafter == ("/unsizable", False)
+            else SimpleNamespace(weights = 10, chunk = 512, drafter = drafter)
+        ),
     )
     monkeypatch.setattr(mm, "_lazy_checkpoint", lambda d, config: mm._builds_on_mlx_vlm(config))
     found = lambda tree: {
@@ -3760,6 +3825,16 @@ def test_auto_offload_is_planned_on_the_route_the_load_takes(monkeypatch):
         ("inventory", True),
         ("sized", True),
     ]
+    drafters.clear(), costs.clear()
+    mm._clear_sizing_cache()
+    mm.mlx_offload_plan("/x", budget_bytes = 1, max_ctx = 512, vision = True, drafter = ("/x", True))
+    assert drafters == [("/x", True)] * 2 and costs == [6]  # the target alone costs 1
+    # One that cannot be sized is skipped by the load too: the target is still planned, alone.
+    drafters.clear(), costs.clear()
+    mm._clear_sizing_cache()
+    unsizable = ("/unsizable", False)
+    planned = mm.mlx_offload_plan("/x", budget_bytes = 1, max_ctx = 512, vision = True, drafter = unsizable)
+    assert planned == (1.0, 0.5, None) and drafters == [unsizable, None, None] and costs == [1]
 
 
 def test_the_offload_probe_maps_a_text_model_on_the_route_unsloth_zoo_builds_it(monkeypatch):

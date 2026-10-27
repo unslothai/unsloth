@@ -1283,6 +1283,118 @@ def test_auto_offload_is_planned_as_the_load_is_priced(monkeypatch):
     assert request["prefill_step"] == 8192
 
 
+def test_an_auto_drafter_gets_offload_room_only_within_the_cap_where_it_then_fits(monkeypatch):
+    from core.inference import mlx_inference as mi
+
+    plans, fits, asked = {}, {"on": True}, []
+    monkeypatch.setattr(
+        mi, "mlx_resolve_offload", lambda d, knobs, drafter = None, **_: plans[bool(drafter)]
+    )
+    monkeypatch.setattr(mi, "mlx_checkpoint_window", lambda d: 32768)
+    monkeypatch.setattr(
+        mi,
+        "mlx_drafter_fit",
+        lambda d, ceiling, pinned, source, **kw: asked.append(
+            (ceiling, pinned, source.path, source.builtin, kw)
+        )
+        or (fits["on"], None),
+    )
+    resolve = lambda auto, drafter = ("/head", True): mi.mlx_resolve_drafter_offload(
+        "/snap", ("auto", "auto"), drafter, auto = auto, pinned = None, load_in_4bit = False
+    )
+    cases = [  # (with the drafter, without it, the auto plan)
+        ((0.5, 0.53, 4096), (0.5, 0.5, 8192), "room"),
+        ((None, 0.04, 4096), (None, None, 8192), "room"),
+        ((0.5, 0.55, 4096), (0.5, 0.5, 8192), "alone"),
+        ((0.55, 0.5, 4096), (0.5, 0.5, 8192), "alone"),
+        ((None, 0.05, 4096), (None, None, 8192), "alone"),
+    ]
+    for room, alone, chosen in cases:
+        plans.update({True: room, False: alone})
+        assert resolve(True) == ({"room": room, "alone": alone}[chosen], alone)
+        assert resolve(False) == (room, None)  # an explicit mode's drafter always gets its room
+    assert resolve(True, None) == resolve(False, None) == (alone, None)
+    # Room only the costless fit would then use: asked on the room plan against the target-only one.
+    plans.update({True: (0.5, 0.53, 4096), False: (0.5, 0.5, 8192)})
+    asked.clear(), fits.update(on = False)
+    assert resolve(True) == ((0.5, 0.5, 8192),) * 2
+    assert asked == [
+        (
+            32768,
+            None,
+            "/head",
+            True,
+            {
+                "load_in_4bit": False,
+                "costless": True,
+                "baseline": {"offload": (0.5, 0.5), "prefill_chunk": 8192},
+                "offload": (0.5, 0.53),
+                "prefill_chunk": 4096,
+            },
+        )
+    ]
+    plans.update({True: (0.5, 0.5, 8192)})
+    assert resolve(True) == ((0.5, 0.5, 8192),) * 2 and len(asked) == 1
+    # An explicit drafter priced not to fit its room plan keeps the target-only plan, not all-on-disk.
+    plans.update({True: (None, 1.0, None), False: (None, 0.78, 8192)})
+    asked.clear()
+    assert resolve(False) == ((None, 0.78, 8192), None)
+    assert asked[-1][4] == {"load_in_4bit": False, "offload": (None, 1.0), "prefill_chunk": None}
+    fits.update(on = None)  # unpriceable: the load keeps it, so does the plan
+    assert resolve(False) == ((None, 1.0, None), None)
+
+
+def test_an_auto_load_fits_its_drafter_against_the_target_only_plan(monkeypatch, tmp_path):
+    pytest.importorskip("mlx.core")
+    from core.inference import mlx_inference as mi
+    from core.inference import mlx_memory as mm
+    from core.inference import mlx_speculative
+
+    fits = []
+
+    class _Loader:
+        @staticmethod
+        def from_pretrained(name, **kwargs):
+            kwargs["offload"](str(tmp_path)), kwargs["offload"](str(tmp_path))  # as unsloth_zoo may
+            model = SimpleNamespace(
+                _src_path = str(tmp_path), _unsloth_offload = {"experts": {"on_disk_bytes": 1}}
+            )
+            return model, SimpleNamespace()
+
+    loader = types.ModuleType("unsloth_zoo.mlx.loader")
+    loader.FastMLXModel = _Loader
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.loader", loader)
+    monkeypatch.setattr(mm, "mlx_offload_planner", lambda: object())
+    monkeypatch.setattr(
+        mi,
+        "mlx_resolve_offload",
+        lambda d, knobs, drafter = None, **_: (
+            ((None, 0.52, 4096) if drafter else (None, 0.5, 8192))
+            if "auto" in knobs
+            else (*knobs, None)
+        ),
+    )
+    monkeypatch.setattr(mi, "_classify_mlx_audio_type", lambda *a, **k: None)
+    monkeypatch.setattr(
+        mi.MLXInferenceBackend, "_resolve_context_lengths", lambda *a: (8192, 8192, 8192)
+    )
+    source = mlx_speculative.DrafterSource("mtp", str(tmp_path), True)
+    monkeypatch.setattr(mlx_speculative, "speculation_refusal", lambda **_k: None)
+    monkeypatch.setattr(
+        mlx_speculative,
+        "resolve_speculation",
+        lambda mode, *_a, **_k: mlx_speculative.SpecResolution(mode, (source,)),
+    )
+    monkeypatch.setattr(mi, "mlx_drafter_fit", lambda *a, **kw: fits.append(kw) or (True, None))
+    config = SimpleNamespace(identifier = "org/moe", is_vision = True, is_lora = False)
+
+    mi.MLXInferenceBackend().load_model(config, max_seq_length = 0)
+    assert (fits[-1]["offload"], fits[-1]["prefill_chunk"]) == ((None, 0.52), 4096)
+    assert fits[-1]["baseline"] == {"offload": (None, 0.5), "prefill_chunk": 8192}
+    mi.MLXInferenceBackend().load_model(config, max_seq_length = 0, speculative_type = "mtp")
+    assert fits[-1]["offload"] == (None, 0.52) and fits[-1]["baseline"] is None
+
+
 @pytest.mark.parametrize("decided_on_mlx_vlm", [False, True])
 def test_a_load_falling_back_to_mlx_lm_plans_auto_offload_again(monkeypatch, decided_on_mlx_vlm):
     pytest.importorskip("mlx.core")
@@ -1304,7 +1416,7 @@ def test_a_load_falling_back_to_mlx_lm_plans_auto_offload_again(monkeypatch, dec
             return SimpleNamespace(config = {}), SimpleNamespace()
 
     def resolve(model_dir, knobs, **kw):
-        plans.append((knobs, kw["vision"]))
+        plans.append((knobs, kw["vision"], kw.get("drafter")))
         # A plan for the mlx-vlm route differs from the one mlx-lm needs, so a reused plan shows.
         return (None, 0.25, 4096) if kw["vision"] else (None, 1.0, 8192)
 
@@ -1327,7 +1439,10 @@ def test_a_load_falling_back_to_mlx_lm_plans_auto_offload_again(monkeypatch, dec
     config = SimpleNamespace(identifier = "org/moe", is_vision = False, is_lora = False)
 
     mi.MLXInferenceBackend().load_model(config, speculative_type = "dflash")
-    assert plans[-1] == (("auto", "auto"), None)
+    # The speculative mlx-vlm plan makes room for the drafter; the mlx-lm one, which does not speculate, does not.
+    assert plans == [(("auto", "auto"), True, ("/drafter", False))] * decided_on_mlx_vlm + [
+        (("auto", "auto"), None, None)
+    ]
     assert applied == [{"ple": None, "experts": 1.0}]
 
 

@@ -1087,12 +1087,13 @@ def mlx_resolve_offload(
     retains_history: bool,
     kv_bits = None,
     vision = None,
+    drafter = None,
 ) -> tuple:
     """The ``(ple, expert)`` fractions a load of *model_dir* reads from disk (None for off), from
     knobs as ``normalize_mlx_offload`` gives them: an ``"auto"`` knob decided by unsloth_zoo's 50/50
     rule on this load's pricing, and off where that cannot be planned; any other knob as given;
     then the planned prefill step for experts on disk, else None. ``vision=True`` prices the
-    mlx-vlm route a speculative text load takes."""
+    mlx-vlm route a speculative text load takes; ``drafter``, a ``(path, builtin)`` to make room for."""
     fixed = tuple(None if knob == "auto" else knob for knob in knobs) + (None,)
     if "auto" not in knobs or not model_dir:
         return fixed
@@ -1118,11 +1119,59 @@ def mlx_resolve_offload(
                 kv_bits = kv_bits,
                 load_in_4bit = load_in_4bit,
                 vision = vision,
+                drafter = drafter,
             )
         except Exception as exc:
             logger.info("MLX auto offload not planned for %s: %s", model_dir, exc)
             return fixed
     return fixed if plan is None else plan
+
+
+# Most of each offloadable part an auto drafter may add to disk (break-even was ~5 points on sampled decode, #15342).
+MLX_AUTO_DRAFTER_ROOM = 0.04
+
+
+def mlx_resolve_drafter_offload(model_dir, knobs, drafter, *, auto: bool, **priced) -> tuple:
+    """``(plan, baseline)``: ``mlx_resolve_offload``'s plan with room made for *drafter*, and for an *auto*
+    drafter the target-only plan its costless check measures against. An explicit drafter keeps its room
+    unless it is priced not to fit there; an auto drafter gets room only when no part puts more than
+    ``MLX_AUTO_DRAFTER_ROOM`` more of itself on disk and it then fits costlessly; otherwise, the target-only plan."""
+    if not drafter:
+        return mlx_resolve_offload(model_dir, knobs, **priced), None
+    from types import SimpleNamespace
+
+    def fits(plan, **kwargs):
+        return mlx_drafter_fit(
+            model_dir,
+            mlx_checkpoint_window(model_dir),
+            priced["pinned"],
+            SimpleNamespace(path = drafter[0], builtin = drafter[1]),
+            load_in_4bit = priced["load_in_4bit"],
+            **kwargs,
+            **mlx_offload_route(plan),
+        )[0]
+
+    room = mlx_resolve_offload(model_dir, knobs, drafter = drafter, **priced)
+    if not auto:
+        # A plan the load would then refuse the drafter on (nothing fits: all on disk, no step) helps nobody.
+        if "auto" in knobs and fits(room) is False:
+            return mlx_resolve_offload(model_dir, knobs, **priced), None
+        return room, None
+    alone = mlx_resolve_offload(model_dir, knobs, **priced)
+    if room == alone:
+        return room, alone
+    if all(
+        (more or 0) - (less or 0) <= MLX_AUTO_DRAFTER_ROOM
+        for more, less in zip(room[:2], alone[:2])
+    ) and fits(room, costless = True, baseline = mlx_offload_route(alone)):
+        return room, alone
+    return alone, alone
+
+
+def mlx_offload_route(plan) -> dict:
+    """The ``offload`` / ``prefill_chunk`` pricing kwargs of a ``(ple, experts, prefill_step)`` plan, both
+    always present so they override a priced route."""
+    return {"offload": tuple(plan[:2]) if any(plan[:2]) else None, "prefill_chunk": plan[2]}
 
 
 def mlx_checkpoint_window(model_dir) -> Optional[int]:
@@ -2788,6 +2837,11 @@ def _fitted_context(
     return fitted, verdict
 
 
+def _fit_rank(outcome, context) -> tuple:
+    # An unpriceable baseline outranks every fit, so nothing is costless against it.
+    return {"no_fit": 0, "fitted": 1, "fits": 2}.get(outcome, 3), context or 0
+
+
 def mlx_drafter_fit(
     model_dir,
     ceiling,
@@ -2798,10 +2852,12 @@ def mlx_drafter_fit(
     costless = False,
     offload = None,
     prefill_chunk = None,
+    baseline = None,
 ):
     """``(attaches, fitted context or None)`` for *source*'s drafter on an mlx-vlm load of *model_dir*:
     only a priced fit reserves it, a pinned context must fit whole, and a ``costless`` one must fit
-    the context the load fits without it. ``attaches`` is None when the fit could not be priced."""
+    at least the context the load fits without it, on the *baseline* route (``mlx_offload_route``)
+    when the offload made room for it. ``attaches`` is None when the fit could not be priced."""
     budget = mlx_memory_budget(retains_history = mlx_vlm_snapshot_store_available())
     ceiling = pinned or ceiling
     if budget is None or not ceiling or not model_dir:
@@ -2823,7 +2879,7 @@ def mlx_drafter_fit(
             outcome, fitted = fit(drafter = (source.path, source.builtin))
             if outcome == "unsizable":
                 return None, fitted
-            if costless and (outcome, fitted) != fit():
+            if costless and _fit_rank(outcome, fitted) < _fit_rank(*fit(**(baseline or {}))):
                 return False, fitted
         except Exception as exc:
             logger.info("MLX drafter %s not priced: %s", source.path, exc)
@@ -5312,19 +5368,35 @@ class MLXInferenceBackend:
 
         # Auto is planned only where the load is priced: not distributed, an adapter or an explicit dtype.
         def offload_request():
-            return _mlx_offload_request(
-                knobs,
-                None
-                if is_distributed or is_lora or dtype is not None
-                else functools.partial(
-                    mlx_resolve_offload,
-                    pinned = _positive_int(max_seq_length),
-                    load_in_4bit = load_in_4bit,
-                    retains_history = not use_vlm or mlx_vlm_snapshot_store_available(),
-                    kv_bits = None if self._turboquant else _normalize_mlx_kv_bits(kv_bits),
-                    vision = True if speculates and not is_vision else None,
-                ),
+            if is_distributed or is_lora or dtype is not None:
+                return _mlx_offload_request(knobs, None)
+            priced = dict(
+                pinned = _positive_int(max_seq_length),
+                load_in_4bit = load_in_4bit,
+                retains_history = not use_vlm or mlx_vlm_snapshot_store_available(),
+                kv_bits = None if self._turboquant else _normalize_mlx_kv_bits(kv_bits),
+                vision = True if speculates and not is_vision else None,
             )
+
+            def plan(model_dir, wanted):
+                drafter = speculates and mlx_speculative.offload_drafter(
+                    spec_mode,
+                    spec_draft_model,
+                    model_dir = model_dir,
+                    target_name = model_name,
+                    allowed = spec_drafters_allowed,
+                )
+                chosen, alone = mlx_resolve_drafter_offload(
+                    model_dir, wanted, drafter or None, auto = spec_mode == "auto", **priced
+                )
+                # A repeat call sees the fractions and plans no step: keep the first baseline.
+                if "auto" in wanted:
+                    offload_baseline.update(route = alone and mlx_offload_route(alone))
+                return chosen
+
+            return _mlx_offload_request(knobs, plan)
+
+        offload_baseline = {"route": None}
 
         offload = offload_request()
         load_kwargs.update(offload["kwargs"])
@@ -5459,6 +5531,7 @@ class MLXInferenceBackend:
                     source,
                     load_in_4bit = load_in_4bit,
                     costless = spec_mode == "auto",
+                    baseline = offload_baseline["route"],
                     **_offloaded,
                 )
 
