@@ -226,9 +226,7 @@ def test_small_card_with_tuned_backward_forced_keeps_fitting_tiles(monkeypatch):
         assert seen[k] == v
 
 
-@pytest.mark.parametrize(
-    "requested", [{"FORCE_USE_FLEX_ATTENTION": True}, {"BACKEND": "TRITON"}]
-)
+@pytest.mark.parametrize("requested", [{"FORCE_USE_FLEX_ATTENTION": True}, {"BACKEND": "TRITON"}])
 def test_wrapper_forced_main_kernel_no_grad_short_query_gets_tiles(monkeypatch, requested):
     # Gradient checkpointing runs each block's first forward under no_grad, and the block compile
     # hook forces the main kernel there, whose default head_dim 256 tiles do not fit (#15271).

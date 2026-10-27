@@ -1510,7 +1510,12 @@ def _flex_preferred_fits(config, dtype = None):
         return True
 
 
-def _supports_flex_attention(model_class, config, model_type, dtype = None):
+def _supports_flex_attention(
+    model_class,
+    config,
+    model_type,
+    dtype = None,
+):
     if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "1") == "0":
         return False
     if not getattr(model_class, "_supports_flex_attn", False):
@@ -3008,7 +3013,9 @@ def resolve_attention_implementation(
     prefers_flex_for_head_dim = _prefers_flex_for_head_dim(config)
     if prefers_flex_for_head_dim and not supports_flex_attention:
         if _enable_flex_attention_support(model_class, model_type):
-            supports_flex_attention = _supports_flex_attention(model_class, config, model_type, dtype)
+            supports_flex_attention = _supports_flex_attention(
+                model_class, config, model_type, dtype
+            )
     # An explicit 1 forces flex over flash_attention_2 too, but only when flex can be scoped to the decoder
     flex_forced_for_head_dim = (
         _flex_large_head_dim_override() is True
