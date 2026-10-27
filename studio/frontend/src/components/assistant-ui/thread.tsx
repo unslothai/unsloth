@@ -66,6 +66,10 @@ import { MessageTiming } from "@/components/assistant-ui/message-timing";
 import { attachThreadFastCopy } from "@/components/assistant-ui/thread-fast-copy";
 import { attachWheelHoverSuppression } from "@/components/assistant-ui/thread-wheel-hover";
 import { threadHasResearchMessage } from "@/components/assistant-ui/thread-research-presence";
+import {
+  THREAD_GUTTER_CHANGE_EVENT,
+  watchThreadGutter,
+} from "@/components/assistant-ui/thread-gutter";
 import { observeThreadWidthSteps } from "@/components/assistant-ui/thread-width-steps";
 import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
 import { researchReplyOwners } from "@/components/assistant-ui/research-reply-owners";
@@ -2117,6 +2121,11 @@ export const Thread: FC<{
     return attachWheelHoverSuppression(viewportEl);
   }, [viewportEl]);
 
+  useEffect(() => {
+    if (!viewportEl) return;
+    return watchThreadGutter(viewportEl);
+  }, [viewportEl]);
+
   // composer growth applies immediately because content below the scroll position is invisible.
   // composer shrink waits until clamping scrollTop is safe or a bottom pin owns the motion.
   // imperative sizing restores remounted spacers even when composerHeight is unchanged.
@@ -2604,7 +2613,11 @@ const ThreadComposerDock: FC<{
     apply();
     resizeObserver.observe(viewport);
     resizeObserver.observe(dock);
-    return () => resizeObserver.disconnect();
+    viewport.addEventListener(THREAD_GUTTER_CHANGE_EVENT, apply);
+    return () => {
+      resizeObserver.disconnect();
+      viewport.removeEventListener(THREAD_GUTTER_CHANGE_EVENT, apply);
+    };
   }, []);
 
   return (

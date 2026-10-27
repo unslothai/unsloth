@@ -34706,13 +34706,12 @@ async def reveal_sandbox_dir(
     backend runs on the user's own machine, which is the desktop app.
     """
     await _authenticate_header_or_query(request, token)
+    # Like open: it drives the host's desktop, so only its owner may.
+    account_access.require_installation_owner()
 
     from starlette.concurrency import run_in_threadpool
 
     if file:
-        # Like open: it drives the host's desktop, so only its owner may.
-        account_access.require_installation_owner()
-
         from pathlib import Path
 
         from utils.paths.path_utils import reveal_in_file_manager

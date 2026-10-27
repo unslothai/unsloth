@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import type { ModelOption } from "@/features/model-picker/components/model-selector/types";
 import { toast } from "@/lib/toast";
-import { SpeechToTextIcon } from "@hugeicons/core-free-icons";
+import { ClosedCaptionIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ComponentProps, useState } from "react";
 import type { AudioGalleryClip } from "../api";
@@ -98,7 +98,7 @@ function CloneInputs({
               }
               onClick={() => void transcriber.transcribe(reference)}
             >
-              <HugeiconsIcon icon={SpeechToTextIcon} className="size-3.5" />
+              <HugeiconsIcon icon={ClosedCaptionIcon} className="size-[1em]" />
               {transcriber.transcribing ? "Transcribing…" : "Transcribe"}
             </Button>
           </div>

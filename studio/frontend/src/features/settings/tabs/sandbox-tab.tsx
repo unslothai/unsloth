@@ -8,17 +8,19 @@ import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { useIsAccountOwner } from "@/features/auth";
 import {
-  PermissionModeDropdown,
+  FullAccessConfirmDialog,
   SandboxSetupDialog,
   type SandboxSetupJob,
   type SandboxSetupOperation,
   forgetSandboxCapability,
   loadSandboxSetup,
   pickSandboxLevel,
+  SANDBOX_DOCS_URL,
   sandboxSwitchState,
   startSandboxSetup,
   useActivePermissionMode,
   useChatRuntimeStore,
+  usePermissionModeChoice,
   useSandboxCapability,
 } from "@/features/chat";
 import { type TranslationKey, useT } from "@/i18n";
@@ -226,22 +228,15 @@ function SelectedOptionDescription({ name, detail }: { name: string; detail: str
   );
 }
 
+// Drops the edge-to-edge glyph to the label's cap line.
+const ROW_ICON_CLASS =
+  "me-1.5 mt-[calc(0.1875rem*var(--ui-font-scale,1))] size-[calc(20px*var(--ui-space-scale,1))]";
+
 /** Per account, so every account sees it; the OS sandbox sections below are the owner's. */
 function PermissionsSection() {
   const t = useT();
   const permissionsRef = useRef<HTMLElement | null>(null);
-  const activePermission = useActivePermissionMode();
-  const sandboxLevel = useChatRuntimeStore((s) => s.sandboxLevel);
-  const setSandboxLevel = useChatRuntimeStore((s) => s.setSandboxLevel);
-  const capability = useSandboxCapability(sandboxLevel === "high");
-  const { checked, disabled } = sandboxSwitchState(
-    sandboxLevel,
-    activePermission.value,
-    capability,
-  );
-  const [setupOpen, setSetupOpen] = useState(false);
-  const levelDescriptionId = useId();
-  const pillId = useId();
+  const choice = usePermissionModeChoice();
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
   const consumeScrollTarget = useSettingsDialogStore((s) => s.consumeScrollTarget);
 
@@ -254,29 +249,59 @@ function PermissionsSection() {
     return () => window.cancelAnimationFrame(frame);
   }, [consumeScrollTarget, scrollTarget]);
 
+  return (
+    <SettingsSection
+      ref={permissionsRef}
+      title={t("settings.general.permissions.sectionTitle")}
+    >
+      {/* Exclusive: switching the active one off is a no-op. */}
+      {choice.options.map((option) => (
+        <SettingsRow
+          key={option.value}
+          icon={<option.icon className={ROW_ICON_CLASS} strokeWidth={1.75} />}
+          iconAlign="top"
+          label={t(`settings.general.permissions.names.${option.value}`)}
+          description={t(`settings.general.permissions.details.${option.value}`)}
+        >
+          <Switch
+            aria-label={t(`settings.general.permissions.names.${option.value}`)}
+            checked={choice.permissionMode === option.value}
+            onCheckedChange={(on) => {
+              if (on) choice.choose(option.value);
+            }}
+          />
+        </SettingsRow>
+      ))}
+      <FullAccessConfirmDialog open={choice.confirmOpen} onOpenChange={choice.setConfirmOpen} />
+    </SettingsSection>
+  );
+}
+
+function SandboxLevelSection() {
+  const t = useT();
+  const activePermission = useActivePermissionMode();
+  const sandboxLevel = useChatRuntimeStore((s) => s.sandboxLevel);
+  const setSandboxLevel = useChatRuntimeStore((s) => s.setSandboxLevel);
+  const capability = useSandboxCapability(sandboxLevel === "high");
+  const { checked, disabled } = sandboxSwitchState(
+    sandboxLevel,
+    activePermission.value,
+    capability,
+  );
+  const [setupOpen, setSetupOpen] = useState(false);
+  const levelDescriptionId = useId();
+  const pillId = useId();
+
   // Full access turns the sandbox off: show Disabled and lock Low and High.
   const activeLevel = disabled ? "off" : checked ? "high" : "low";
   const levels = disabled ? (["off", "low", "high"] as const) : (["low", "high"] as const);
 
   return (
     <SettingsSection
-      ref={permissionsRef}
-      title={t("settings.general.permissions.sectionTitle")}
-      description={t("settings.sandbox.permissionsIntro")}
+      title={t("settings.sandbox.levelLabel")}
     >
       <SettingsRow
-        label={t("settings.sandbox.permissionLabel")}
-        description={
-          <SelectedOptionDescription
-            name={t(`settings.general.permissions.names.${activePermission.value}`)}
-            detail={t(`settings.general.permissions.details.${activePermission.value}`)}
-          />
-        }
-      >
-        <PermissionModeDropdown sandboxControls={false} />
-      </SettingsRow>
-      <SettingsRow
-        label={t("settings.sandbox.levelLabel")}
+        label={t("settings.sandbox.levelRowLabel")}
         description={
           <span id={levelDescriptionId}>
             <SelectedOptionDescription
@@ -325,8 +350,6 @@ function PermissionsSection() {
   );
 }
 
-const SANDBOX_DOCS_URL = "https://unsloth.ai/docs/new/studio/sandboxing-in-unsloth";
-
 export function SandboxTab() {
   const t = useT();
   const isOwner = useIsAccountOwner();
@@ -360,6 +383,7 @@ export function SandboxTab() {
         </p>
       </header>
       <PermissionsSection />
+      <SandboxLevelSection />
       {/* Not mounted for managed accounts, so none of the owner-only sandbox routes are called. */}
       {isOwner ? (
         <OsSandboxSections />

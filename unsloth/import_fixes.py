@@ -7106,7 +7106,9 @@ def _key_inductor_caches_on_readback_barrier(inductor_config, custom_graph_pass)
             return self.inner(graph, *args, **kwargs)
 
         def uuid(self):
-            return (marker, self.inner.uuid())
+            # None is the inner pass opting out of the FX cache: keep it, never key a stale graph.
+            inner_uuid = self.inner.uuid()
+            return None if inner_uuid is None else (marker, inner_uuid)
 
     inductor_config.post_grad_custom_post_pass = ReadbackBarrierKeyedPass(existing)
 
