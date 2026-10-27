@@ -276,7 +276,6 @@ def test_the_streaming_tier_kill_switch_pins_no_encoder(host, monkeypatch):
 
 
 class _Writes:
-
     def __init__(self, finished = False):
         self.finished = finished
 
