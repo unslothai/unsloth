@@ -2092,11 +2092,22 @@ def _fbgemm_fp8_linear_compiled(
 
 # Rowwise FP8 inference: the compiled wrapper costs 75-95 us host time vs 10-80 us GPU at decode, so launch
 # Inductor's kernels directly (bitwise equal). UNSLOTH_FP8_ROWWISE_DIRECT=0 disables it.
-_FP8_ROWWISE_DIRECT = os.environ.get("UNSLOTH_FP8_ROWWISE_DIRECT", "1").strip().lower() not in (
-    "0",
-    "false",
-    "no",
-    "off",
+try:
+    from unsloth_zoo.temporary_patches.common import UNSLOTH_COMPILE_DISABLE as _COMPILE_DISABLED
+except ImportError:
+    _COMPILE_DISABLED = os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") in ("1", "partial")
+
+
+def _fp8_rowwise_direct_enabled(setting, compile_disabled):
+    # With UNSLOTH_COMPILE_DISABLE the wrapper runs eagerly (scale rounded to the activation dtype before the
+    # multiply), so the direct path, which matches the compiled numerics, would change outputs there.
+    if compile_disabled:
+        return False
+    return setting.strip().lower() not in ("0", "false", "no", "off")
+
+
+_FP8_ROWWISE_DIRECT = _fp8_rowwise_direct_enabled(
+    os.environ.get("UNSLOTH_FP8_ROWWISE_DIRECT", "1"), _COMPILE_DISABLED
 )
 # Past this many rows the call is GPU bound and the compiled wrapper costs nothing extra; keep it there.
 _FP8_ROWWISE_DIRECT_MAX_ROWS = 4096

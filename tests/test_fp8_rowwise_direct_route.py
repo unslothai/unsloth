@@ -128,3 +128,11 @@ def test_direct_path_is_bitwise_equal_to_the_compiled_path(dtype):
                                 b is None,
                                 ub,
                             )
+
+
+def test_compile_disabled_keeps_the_eager_wrapper():
+    # UNSLOTH_COMPILE_DISABLE runs the wrapper eagerly, whose dequant rounds the scale first: keep it.
+    assert F8._fp8_rowwise_direct_enabled("1", compile_disabled = True) is False
+    assert F8._fp8_rowwise_direct_enabled("1", compile_disabled = False) is True
+    for off in ("0", "false", "No", " off "):
+        assert F8._fp8_rowwise_direct_enabled(off, compile_disabled = False) is False
