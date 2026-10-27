@@ -393,6 +393,12 @@ const MoreVerticalCenteredIcon = MoreVerticalIcon.map(([tag, attrs]) => [
   { ...attrs, transform: "translate(0 -0.5)" },
 ]) as unknown as IconSvgElement;
 
+// The header ellipsis has the same half-unit vertical offset as the row kebab.
+const MoreHorizontalCenteredIcon = MoreHorizontalIcon.map(([tag, attrs]) => [
+  tag,
+  { ...attrs, transform: "translate(0 -0.5)" },
+]) as unknown as IconSvgElement;
+
 const PROJECT_CHAT_LIMIT = 4;
 const SIDEBAR_PROJECT_LIMIT = 5;
 const RECENTS_PAGE_SIZE = SIDEBAR_PAGE_SIZE;
@@ -4555,7 +4561,7 @@ export function AppSidebar() {
             aria-label={options.ariaLabel}
             className="sidebar-header-action"
           >
-            <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-icon" />
+            <HugeiconsIcon icon={MoreHorizontalCenteredIcon} strokeWidth={1.75} className="size-icon" />
           </button>
         )}
       >
