@@ -42,7 +42,10 @@ import {
   useRlWorkspaceStore,
   useTrainingConfigStore,
 } from "@/features/training";
-import { pythonRewardRow } from "@/features/training/lib/rl-roles";
+import {
+  alpacaPromptCell,
+  pythonRewardRow,
+} from "@/features/training/lib/rl-roles";
 import { type TranslationKey, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
@@ -350,7 +353,7 @@ function previewPrompt(
     Object.entries(mapping).find(([, r]) => r === role)?.[0];
   const promptColumn = column("prompt");
   const systemColumn = column("system");
-  const cell = promptColumn ? row?.[promptColumn] : undefined;
+  const cell = alpacaPromptCell(row, mapping, promptColumn);
   const turns =
     Array.isArray(cell) &&
     cell.every((m) => typeof m === "object" && m !== null);

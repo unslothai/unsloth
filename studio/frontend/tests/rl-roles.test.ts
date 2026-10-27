@@ -9,6 +9,7 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 registerBundlerResolver();
 const {
   RL_IGNORE,
+  alpacaPromptCell,
   effectiveTrainingObjective,
   missingRlRoles,
   pythonRewardRow,
@@ -85,9 +86,8 @@ test("a prompt-only GRPO dataset gives a Python reward no answer", () => {
 });
 
 test("GRPO reward reference columns must come from the dataset", async () => {
-  const { missingRewardColumns } = await import(
-    "../src/features/training/lib/rl-roles.ts"
-  );
+  const { missingRewardColumns } =
+    await import("../src/features/training/lib/rl-roles.ts");
   assert.deepEqual(missingRewardColumns(["answer"], ["question"], {}), [
     "answer",
   ]);
@@ -203,4 +203,29 @@ test("auto-mapping prefers the higher-priority alias over column order", () => {
   );
   assert.equal(mapping.instruction, "prompt");
   assert.equal(mapping.input, undefined);
+});
+
+test("Try it joins an Alpaca input onto the instruction, as training does", () => {
+  const row = { instruction: "Add these.", input: "2 and 2", output: "4" };
+  assert.equal(
+    alpacaPromptCell(row, { instruction: "prompt" }, "instruction"),
+    "Add these.\n\n2 and 2",
+  );
+  assert.equal(
+    alpacaPromptCell(
+      row,
+      { instruction: "prompt", input: RL_IGNORE },
+      "instruction",
+    ),
+    "Add these.",
+  );
+  assert.equal(
+    alpacaPromptCell(
+      { ...row, input: " " },
+      { instruction: "prompt" },
+      "instruction",
+    ),
+    "Add these.",
+  );
+  assert.equal(alpacaPromptCell(row, { input: "prompt" }, "input"), "2 and 2");
 });
