@@ -144,7 +144,7 @@ def _validate_extract(extract: Any) -> Optional[dict]:
 # conversational prompt raises "Invalid keys in the example").
 _TRL_REWARD_ARGS = frozenset(
     {"prompt", "prompts", "completion", "completions", "completion_ids", "trainer_state"}
-    | {"chosen", "rejected", "messages", "label", "images"}
+    | {"chosen", "rejected", "messages", "label", "image", "images"}
 )
 
 # Seconds one user-pattern match may take before it scores as a miss (needs the regex module).
