@@ -861,3 +861,28 @@ test("trimming an already-committed bulk pin does not repin what another client 
   assert.deepEqual(value, []);
 });
 
+test("an unpin over an original and its trimmed copy fences their shared server ID once", async () => {
+  const sent: PinOperation[] = [];
+  const queued: PinOperation[] = [
+    { kind: "pin", operationId: "orig", ids: ["a", "b", "c"], pinned: true },
+    { kind: "pin", operationId: "copy", ids: ["b", "c"], pinned: true, serverId: "orig" },
+  ];
+  let journal = structuredClone(queued);
+  const sync = createPinnedChatsSync({
+    load: async () => [],
+    compareAndSet: async (_expected, next, operation) => {
+      if (operation) sent.push(operation);
+      return { applied: false, pinnedIds: [] };
+    },
+    readLegacy: () => [],
+    readPending: () => structuredClone(journal),
+    writePending: (operations) => { journal = structuredClone(operations); },
+    publish: () => undefined,
+  });
+  const unpin = sync.setPinned(["b"], false).catch(() => undefined);
+  const saved = journal.find((operation) => !operation.pinned);
+  assert.deepEqual(saved?.cancels, ["orig"]);
+  sync.reset();
+  await unpin;
+});
+

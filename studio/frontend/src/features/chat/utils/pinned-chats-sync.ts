@@ -379,7 +379,8 @@ export function createPinnedChatsSync(options: PinnedChatsSyncOptions) {
           : [{ ...entry, ids, operationId: createNavigationNonce(), serverId }];
       });
       if (superseded.length > 0) {
-        operation = validatePinOperation({ ...operation, cancels: superseded });
+        // An original and its trimmed replacement can coexist after a partial journal write.
+        operation = validatePinOperation({ ...operation, cancels: [...new Set(superseded)] });
       }
       const next = [...kept, operation];
       if (next.length > 10_000) {
