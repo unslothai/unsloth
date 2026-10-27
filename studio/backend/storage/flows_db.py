@@ -184,6 +184,7 @@ def delete_flow(flow_id: str) -> None:
         conn.execute("DELETE FROM flow_capabilities WHERE flow_id = ?", (flow_id,))
         conn.execute("DELETE FROM flow_triggers WHERE flow_id = ?", (flow_id,))
         conn.execute("DELETE FROM flow_runs WHERE flow_id = ?", (flow_id,))
+        conn.execute("DELETE FROM flow_recipe_runs WHERE flow_id = ?", (flow_id,))
         conn.execute(
             "INSERT OR IGNORE INTO flow_tombstones (id, deleted_at) VALUES (?, ?)",
             (flow_id, now_ms()),
@@ -482,6 +483,36 @@ def node_output_history(
     finally:
         conn.close()
     return entries
+
+
+def save_recipe_run(flow_id: str, node_id: str, record: dict) -> None:
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO flow_recipe_runs (id, flow_id, node_id, created_at, record_json)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET record_json = excluded.record_json
+            WHERE flow_recipe_runs.flow_id = excluded.flow_id
+            """,
+            (record["id"], flow_id, node_id, int(record["createdAt"]), json.dumps(record)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def recipe_runs(flow_id: str, node_id: str, limit: int = 50) -> list[dict]:
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT record_json FROM flow_recipe_runs WHERE flow_id = ? AND node_id = ?"
+            " ORDER BY created_at DESC LIMIT ?",
+            (flow_id, node_id, limit),
+        ).fetchall()
+        return [json.loads(r["record_json"]) for r in rows]
+    finally:
+        conn.close()
 
 
 def reconcile_orphaned_runs(

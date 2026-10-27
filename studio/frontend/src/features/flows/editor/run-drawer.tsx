@@ -5,6 +5,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useReactFlow } from "@xyflow/react";
 import { memo, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { GENERATE_TYPE } from "../recipe/recipe-columns";
 import { useCatalogStore } from "../stores/catalog-store";
 import { useDocStore } from "../stores/doc-store";
 import {
@@ -71,6 +72,9 @@ function Timeline() {
           rt={rt}
           now={rt.startedAt && rt.finishedAt == null ? now : 0}
           fitView={fitView}
+          recipeGroup={
+            node.type === GENERATE_TYPE ? (node.group ?? undefined) : undefined
+          }
         />
       ))}
     </ul>
@@ -83,15 +87,17 @@ const TimelineRow = memo(function TimelineRow({
   rt,
   now,
   fitView,
+  recipeGroup,
 }: {
   id: string;
   title: string;
   rt: NodeRuntime;
   now: number;
   fitView: ReturnType<typeof useReactFlow>["fitView"];
+  recipeGroup?: string;
 }) {
   return (
-    <li>
+    <li className="flex items-center hover:bg-white/5">
       <button
         type="button"
         onClick={() => {
@@ -99,7 +105,7 @@ const TimelineRow = memo(function TimelineRow({
           useUiStore.getState().openInspector(id);
           void fitView({ nodes: [{ id }], duration: 300, maxZoom: 1.2 });
         }}
-        className="flex w-full items-center gap-3 px-4 py-1.5 text-left text-[12.5px] hover:bg-white/5"
+        className="flex min-w-0 flex-1 items-center gap-3 px-4 py-1.5 text-left text-[12.5px]"
       >
         <span
           className={`h-2 w-2 shrink-0 rounded-full ${
@@ -140,6 +146,21 @@ const TimelineRow = memo(function TimelineRow({
           {duration(rt, now)}
         </span>
       </button>
+      {recipeGroup &&
+        (["preview", "runs"] as const).map((view) => (
+          <button
+            key={view}
+            type="button"
+            onClick={() =>
+              useUiStore
+                .getState()
+                .setRecipeRuns({ groupId: recipeGroup, view })
+            }
+            className="mr-2 rounded px-1.5 py-0.5 text-[11.5px] capitalize text-sky-300 hover:bg-white/10"
+          >
+            {view}
+          </button>
+        ))}
     </li>
   );
 });

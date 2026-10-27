@@ -191,6 +191,11 @@ export const nodeHistory = (flowId: string, nodeId: string) =>
     `/${encodeURIComponent(flowId)}/nodes/${encodeURIComponent(nodeId)}/history`,
   );
 
+export const recipeRuns = (flowId: string, nodeId: string) =>
+  request<{ executions: Record<string, unknown>[] }>(
+    `/${encodeURIComponent(flowId)}/nodes/${encodeURIComponent(nodeId)}/recipe-runs`,
+  );
+
 export interface ImportReport {
   missing_models: PlanModel[];
   warnings: string[];

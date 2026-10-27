@@ -729,6 +729,15 @@ def node_history(
     return {"entries": flows_db.node_output_history(flow_id, node_id, limit)}
 
 
+@router.get("/{flow_id}/nodes/{node_id}/recipe-runs")
+def recipe_runs(flow_id: str, node_id: str, limit: int = Query(50, ge = 1, le = 200)) -> dict:
+    """A Recipe Dataset step's runs as Recipe Studio execution records, newest first."""
+    _flow_or_404(flow_id)
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", node_id):
+        raise HTTPException(status_code = 400, detail = "Invalid node id")
+    return {"executions": flows_db.recipe_runs(flow_id, node_id, limit)}
+
+
 @router.get("/{flow_id}/latest-outputs")
 def latest_outputs(flow_id: str) -> dict:
     _flow_or_404(flow_id)

@@ -430,6 +430,22 @@ def _ensure_flows_schema(conn: sqlite3.Connection) -> None:
         ) WITHOUT ROWID
         """
     )
+    # A recipe group's runs in Recipe Studio's execution record shape; data_recipe_executions needs a saved recipe.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS flow_recipe_runs (
+            id TEXT NOT NULL PRIMARY KEY,
+            flow_id TEXT NOT NULL,
+            node_id TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            record_json TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_flow_recipe_runs_node"
+        " ON flow_recipe_runs(flow_id, node_id, created_at)"
+    )
     # What the owner approved a flow to do; kept out of the document, which any editor or import can write.
     conn.execute(
         """

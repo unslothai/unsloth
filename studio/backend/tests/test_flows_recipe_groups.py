@@ -222,6 +222,77 @@ def test_stop_cancels_the_recipe_job():
     assert cancelled == ["/api/data-recipe/jobs/job7/cancel"]
 
 
+class _FlowCtx(_Ctx):
+    flow_id = "f1"
+    node_id = "gen"
+
+
+def _job_routes(final, *, preview_rows = 3):
+    polls = iter(["active", final])
+
+    def routes(method, path, params, body):
+        if path == "/api/data-recipe/validate":
+            return {"valid": True}
+        if path == "/api/data-recipe/jobs":
+            return {"job_id": "job9"}
+        if path.endswith("/status"):
+            state = next(polls)
+            return {
+                "status": state,
+                "rows": 3,
+                "progress": {"done": 1, "total": 3, "percent": 33.3},
+                "current_column": "sql",
+                "error": "llama-server went away" if state == "error" else None,
+                "artifact_path": "/x/recipes/recipe_sql" if state == "completed" else None,
+            }
+        if path.endswith("/dataset"):
+            rows = [{"sql_prompt": f"q{i}", "sql": "SELECT 1"} for i in range(preview_rows)]
+            return {"dataset": rows[: params["limit"]], "total": preview_rows}
+        if path.endswith("/analysis"):
+            return {"num_records": preview_rows, "column_statistics": []}
+        raise AssertionError(path)
+
+    return routes
+
+
+def test_each_run_is_kept_as_a_recipe_studio_execution_record(monkeypatch):
+    saved = []
+    from storage import flows_db
+
+    monkeypatch.setattr(
+        flows_db, "save_recipe_run", lambda flow, node, record: saved.append((flow, node, record))
+    )
+    ctx = _FlowCtx(
+        _job_routes("completed", preview_rows = 30),
+        params = {RECIPE_PARAM: _compiled(_flow()), "rows": 30, "mode": "preview"},
+    )
+    out = asyncio.run(data.recipe_group(ctx))
+    assert [r["status"] for _, _, r in saved] == ["pending", "active", "completed", "completed"]
+    assert {(f, n) for f, n, _ in saved} == {("f1", "gen")}
+    last = saved[-1][2]
+    assert last["recipeId"] == "flow:f1:gen" and last["jobId"] == "job9"
+    assert last["kind"] == "preview" and last["rows"] == 3
+    assert len(last["dataset"]) == 30 and last["datasetTotal"] == 30
+    assert last["analysis"] == {"num_records": 30, "column_statistics": []}
+    assert last["artifact_path"] == "/x/recipes/recipe_sql" and last["finishedAt"]
+    assert saved[1][2]["progress"]["done"] == 1 and saved[1][2]["current_column"] == "sql"
+    ids = [r["lastEventId"] for _, _, r in saved]
+    assert ids == sorted(ids) and len({r["id"] for _, _, r in saved}) == 1
+    assert len(out["preview"]) == 20
+
+
+def test_a_failed_run_is_kept_with_its_error(monkeypatch):
+    saved = []
+    from storage import flows_db
+
+    monkeypatch.setattr(flows_db, "save_recipe_run", lambda f, n, record: saved.append(record))
+    ctx = _FlowCtx(_job_routes("error"), params = {RECIPE_PARAM: _compiled(_flow())})
+    with pytest.raises(FlowNodeError, match = "went away"):
+        asyncio.run(data.recipe_group(ctx))
+    assert saved[-1]["status"] == "error" and saved[-1]["error"] == "llama-server went away"
+    assert saved[-1]["finishedAt"]
+
+
 @pytest.fixture
 def client():
     app = FastAPI()
@@ -268,3 +339,23 @@ def test_bringing_every_recipe_in_twice_makes_one_flow_each(client):
     flows = client.get("/api/flows").json()["flows"]
     assert sorted(f["name"] for f in flows) == ["One", "Two"]
     assert len(data_recipes_db.list_recipes()) == 3
+
+
+def test_recipe_runs_are_listed_per_step_and_go_with_the_flow(client):
+    from storage import flows_db
+
+    flow = client.post("/api/flows/import/recipe", json = {"payload": SQL, "name": "S"}).json()
+    flow_id = flow["flow"]["id"]
+    for i, created in enumerate((5, 9)):
+        record = {"id": f"e{i}", "recipeId": f"flow:{flow_id}:gen", "createdAt": created}
+        flows_db.save_recipe_run(flow_id, "gen", record)
+    flows_db.save_recipe_run(flow_id, "other", {"id": "e9", "createdAt": 1})
+    listed = client.get(f"/api/flows/{flow_id}/nodes/gen/recipe-runs").json()["executions"]
+    assert [e["id"] for e in listed] == ["e1", "e0"]
+    flows_db.save_recipe_run(flow_id, "gen", {"id": "e0", "createdAt": 5, "status": "completed"})
+    listed = client.get(f"/api/flows/{flow_id}/nodes/gen/recipe-runs").json()["executions"]
+    assert listed[1]["status"] == "completed"
+    assert client.get(f"/api/flows/{flow_id}/nodes/bad id/recipe-runs").status_code == 400
+    assert client.get("/api/flows/nope/nodes/gen/recipe-runs").status_code == 404
+    client.delete(f"/api/flows/{flow_id}")
+    assert flows_db.recipe_runs(flow_id, "gen") == []
