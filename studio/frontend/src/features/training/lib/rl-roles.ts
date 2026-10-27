@@ -143,7 +143,8 @@ export function alpacaPromptCell(
   const input = row?.input;
   if (
     promptColumn === "instruction" &&
-    !mapping.input &&
+    !(RL_ROLES.grpo as readonly string[]).includes(mapping.input) &&
+    mapping.input !== RL_IGNORE &&
     typeof cell === "string" &&
     typeof input === "string" &&
     input.trim()
