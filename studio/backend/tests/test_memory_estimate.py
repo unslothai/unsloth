@@ -1207,7 +1207,7 @@ class TestEstimateMemoryRoute:
             patch.setattr(
                 mlx_inference,
                 "mlx_drafter_fit",
-                lambda *a, **kw: fits.append((kw["offload"], kw["baseline"])) or (True, None),
+                lambda *a, **kw: fits.append((kw["offload"], kw.get("baseline"))) or (True, None),
             )
             assert price(mlx_ple_offload = "off") == (None, 0.62)
             assert [p["drafter"] for p in planned[-2:]] == [(str(tmp_path), True), None]

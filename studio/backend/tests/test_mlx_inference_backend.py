@@ -1335,6 +1335,13 @@ def test_an_auto_drafter_gets_offload_room_only_within_the_cap_where_it_then_fit
     ]
     plans.update({True: (0.5, 0.5, 8192)})
     assert resolve(True) == ((0.5, 0.5, 8192),) * 2 and len(asked) == 1
+    # An explicit drafter priced not to fit its room plan keeps the target-only plan, not all-on-disk.
+    plans.update({True: (None, 1.0, None), False: (None, 0.78, 8192)})
+    asked.clear()
+    assert resolve(False) == ((None, 0.78, 8192), None)
+    assert asked[-1][4] == {"load_in_4bit": False, "offload": (None, 1.0), "prefill_chunk": None}
+    fits.update(on = None)  # unpriceable: the load keeps it, so does the plan
+    assert resolve(False) == ((None, 1.0, None), None)
 
 
 def test_an_auto_load_fits_its_drafter_against_the_target_only_plan(monkeypatch, tmp_path):

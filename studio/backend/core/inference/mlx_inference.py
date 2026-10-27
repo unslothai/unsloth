@@ -1121,13 +1121,29 @@ MLX_AUTO_DRAFTER_ROOM = 0.04
 
 def mlx_resolve_drafter_offload(model_dir, knobs, drafter, *, auto: bool, **priced) -> tuple:
     """``(plan, baseline)``: ``mlx_resolve_offload``'s plan with room made for *drafter*, and for an *auto*
-    drafter the target-only plan its costless check measures against. An auto drafter gets room only when
-    no part puts more than ``MLX_AUTO_DRAFTER_ROOM`` more of itself on disk and it then fits costlessly;
-    otherwise, the target-only plan."""
+    drafter the target-only plan its costless check measures against. An explicit drafter keeps its room
+    unless it is priced not to fit there; an auto drafter gets room only when no part puts more than
+    ``MLX_AUTO_DRAFTER_ROOM`` more of itself on disk and it then fits costlessly; otherwise, the target-only plan."""
     if not drafter:
         return mlx_resolve_offload(model_dir, knobs, **priced), None
+    from types import SimpleNamespace
+
+    def fits(plan, **kwargs):
+        return mlx_drafter_fit(
+            model_dir,
+            mlx_checkpoint_window(model_dir),
+            priced["pinned"],
+            SimpleNamespace(path = drafter[0], builtin = drafter[1]),
+            load_in_4bit = priced["load_in_4bit"],
+            **kwargs,
+            **mlx_offload_route(plan),
+        )[0]
+
     room = mlx_resolve_offload(model_dir, knobs, drafter = drafter, **priced)
     if not auto:
+        # A plan the load would then refuse the drafter on (nothing fits: all on disk, no step) helps nobody.
+        if "auto" in knobs and fits(room) is False:
+            return mlx_resolve_offload(model_dir, knobs, **priced), None
         return room, None
     alone = mlx_resolve_offload(model_dir, knobs, **priced)
     if room == alone:
@@ -1135,20 +1151,8 @@ def mlx_resolve_drafter_offload(model_dir, knobs, drafter, *, auto: bool, **pric
     if all(
         (more or 0) - (less or 0) <= MLX_AUTO_DRAFTER_ROOM
         for more, less in zip(room[:2], alone[:2])
-    ):
-        from types import SimpleNamespace
-        fits, _ = mlx_drafter_fit(
-            model_dir,
-            mlx_checkpoint_window(model_dir),
-            priced["pinned"],
-            SimpleNamespace(path = drafter[0], builtin = drafter[1]),
-            load_in_4bit = priced["load_in_4bit"],
-            costless = True,
-            baseline = mlx_offload_route(alone),
-            **mlx_offload_route(room),
-        )
-        if fits:
-            return room, alone
+    ) and fits(room, costless = True, baseline = mlx_offload_route(alone)):
+        return room, alone
     return alone, alone
 
 
