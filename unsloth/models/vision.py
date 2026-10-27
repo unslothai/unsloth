@@ -54,8 +54,7 @@ def _apply_user_rope_scaling(config, rope_scaling):
                 "Unsloth: this model keeps one RoPE setting per layer type "
                 f"({sorted(current)}); pass rope_scaling as a dict keyed by those layer types."
             )
-        # Legacy {"type": ...} spelling: Gemma 3's rotary init reads "rope_type" directly, and this
-        # branch bypasses transformers' own normalisation (which does the same setdefault).
+        # Map legacy "type": this branch bypasses transformers' normalisation; Gemma 3 reads "rope_type".
         scaling = {
             k: (
                 {"rope_type": v["type"], **v}
