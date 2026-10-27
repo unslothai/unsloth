@@ -207,17 +207,27 @@ class BenchmarkTrafficMiddleware:
 
     async def __call__(self, scope, receive, send):
         if _lease is not None and scope.get("type") == "http" and scope.get("method") == "POST":
-            from core.inference.llama_keepwarm import _carries_bearer_credentials, _is_inference_path
+            from core.inference.llama_keepwarm import (
+                _carries_bearer_credentials,
+                _is_inference_path,
+            )
 
             path = scope.get("path") or ""
             holder = next(
-                (v.decode("latin-1") for k, v in scope.get("headers") or () if k.lower() == LEASE_HEADER),
+                (
+                    v.decode("latin-1")
+                    for k, v in scope.get("headers") or ()
+                    if k.lower() == LEASE_HEADER
+                ),
                 None,
             )
             # Uncredentialed calls go on to the route's own 401.
-            if path in LOAD_PATHS and _carries_bearer_credentials(scope, path) and load_refused(holder):
+            if (
+                path in LOAD_PATHS
+                and _carries_bearer_credentials(scope, path)
+                and load_refused(holder)
+            ):
                 from starlette.responses import JSONResponse
-
                 await JSONResponse(
                     {
                         "detail": "A benchmark is running on this model. Stop it on the Benchmarks "
