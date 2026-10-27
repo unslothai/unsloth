@@ -250,7 +250,7 @@ def validate_rule(rule: dict) -> dict:
                 "the answer role and compare to 'answer' instead."
             )
         # GRPO prompt rendering drops tools and writes the prefill column before rewards run.
-        if column in ("tools", PREFILL_COLUMN, PROMPT_TURNS_COLUMN):
+        if column in ("tools", PREFILL_COLUMN, PROMPT_TURNS_COLUMN, TOOLS_COLUMN):
             raise RewardError(f"compare_to cannot be '{column}': Studio uses that column itself.")
         out["compare_to"] = column
         # GSM8K-style references ("...reasoning #### 72") need their answer pulled out too.
@@ -644,6 +644,8 @@ def score_rule(
 PREFILL_COLUMN = "_studio_prefill"
 # The structured turns of a prompt rendered to text, for Python rewards (make_python_reward_funcs).
 PROMPT_TURNS_COLUMN = "_studio_prompt_turns"
+# The row's tool schemas, which GRPO rendering drops, for Python rewards.
+TOOLS_COLUMN = "_studio_tools"
 
 
 def make_reward_func(spec: dict) -> Callable[..., list[float]]:

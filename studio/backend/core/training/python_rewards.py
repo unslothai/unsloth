@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from core.training import reward_worker_main as _worker_io
-from core.training.rewards import PREFILL_COLUMN, PROMPT_TURNS_COLUMN
+from core.training.rewards import PREFILL_COLUMN, PROMPT_TURNS_COLUMN, TOOLS_COLUMN
 
 try:
     import resource as _resource
@@ -364,6 +364,9 @@ def make_python_reward_funcs(
             # A prompt rendered to text (render_grpo_prompts) comes back as its turns, with the
             # assistant prefill TRL would have put in front of the completion.
             turns = kwargs.pop(PROMPT_TURNS_COLUMN, None)
+            tools = kwargs.pop(TOOLS_COLUMN, None)
+            if isinstance(tools, list) and "tools" not in kwargs:
+                kwargs["tools"] = [json.loads(t) if isinstance(t, str) else t for t in tools]
             prefills = kwargs.pop(PREFILL_COLUMN, None)
             if isinstance(turns, list) and isinstance(prompts, list) and len(turns) == len(prompts):
                 prompts = [json.loads(t) if isinstance(t, str) else t for t in turns]
@@ -476,12 +479,15 @@ def preview_python_scores(
             other["timer"].cancel()
         if other["worker"] is not None:
             other["worker"].close()
-    from core.training.rl import _REWARD_CALL_KEYS, prompt_turns
+    from core.training.rl import _REWARD_CALL_KEYS, _row_tools, prompt_turns
 
     prompts = [prompt_turns(prompt, system_prompt)]
     completions = [[{"role": "assistant", "content": text}]]
     # As format_rl_dataset drops them: TRL passes these names to the reward itself.
     kwargs = {k: [v] for k, v in (row or {}).items() if k not in _REWARD_CALL_KEYS}
+    if "tools" in kwargs:
+        # Decoded and unpadded, as training passes them.
+        kwargs["tools"] = [_row_tools(row)]
     failed = True
     try:
         with entry["start"]:
