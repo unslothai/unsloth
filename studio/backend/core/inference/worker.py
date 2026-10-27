@@ -1284,8 +1284,7 @@ def _handle_prompt_cache_resume(
     resp_queue: Any,
     busy: bool = False,
 ) -> None:
-    """Save or restore the prompt cache kept across an unload; every outcome answers, since the
-    parent otherwise waits out its timeout."""
+    """Every outcome answers: the parent otherwise waits out its timeout."""
     method, argument = _PROMPT_CACHE_RESUME_METHODS[cmd["type"]]
     reply = {"type": f"{cmd['type']}_response", "request_id": cmd.get("request_id")}
     run = getattr(backend, method, None)

@@ -18560,8 +18560,7 @@ async def _load_model_impl(
         _close_load_event(
             _load_event, model_log_label if native_grant_backed else config.identifier, None
         )
-        # Clear the idle-unload stash so the next /v1 request doesn't resurrect an old GGUF; an MLX
-        # chat context kept across a media swap is restored onto this load first.
+        # Consume the reload stash: an MLX swap's chat context is restored, anything else dropped.
         from core.inference.llama_keepwarm import note_model_loaded
 
         if replacing:

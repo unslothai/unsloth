@@ -3032,8 +3032,7 @@ class InferenceOrchestrator:
         should_abort: Optional[Callable[[], bool]] = None,
         timeout: float = 120.0,
     ) -> Optional[dict]:
-        """Have the MLX worker save its newest prompt cache for the next load of this model; the
-        manifest, or None. A save that fails or is abandoned has its directory removed."""
+        """The MLX worker's save manifest, or None; a failed or abandoned save's dir is removed."""
         if not self._serves_mlx() or not self._gen_lock.acquire(blocking = False):
             return None
         directory = manifest = None
@@ -3070,7 +3069,6 @@ class InferenceOrchestrator:
         manifest: dict,
         timeout: float = 120.0,
     ) -> int:
-        """Have the MLX worker load a saved prompt cache back; how many entries it restored."""
         if not self._serves_mlx() or not self._gen_lock.acquire(timeout = timeout):
             return 0
         try:

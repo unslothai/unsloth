@@ -632,8 +632,7 @@ class VLMPromptSnapshotStore:
             self.discard(other)
 
     def resume_entries(self):
-        """``(key, prefix, entries, replay)`` of the newest turn: its last-touched boundary snapshot
-        (``_touch`` moves a base after its readers, so that is the longest), then its replay."""
+        """Newest turn's longest boundary snapshot (``_touch`` keeps it last), then its replay."""
         newest = next(reversed(self._entries), None)
         if newest is None:
             return []
@@ -3188,7 +3187,6 @@ class _MLXPromptCacheHistory:
         self._lru.insert_cache(key, tokens, cache)
 
     def resume_entries(self):
-        """``[(key, tokens, cache, False)]`` of the last insert, while this history still holds it."""
         if self._newest is None:
             return []
         key, tokens = self._newest
@@ -3203,7 +3201,7 @@ class _MLXPromptCacheHistory:
 
 
 def _resume_save_max_bytes():
-    # The cap llama-server's slot save uses (core.inference.llama_cpp._SLOT_SAVE_MAX_BYTES).
+    # Mirrors core.inference.llama_cpp._SLOT_SAVE_MAX_BYTES.
     try:
         return int(os.environ.get("UNSLOTH_SLOT_SAVE_MAX_BYTES") or (10 << 30))
     except ValueError:
@@ -3214,8 +3212,7 @@ _RESUME_CACHE_MODULES = ("mlx.", "mlx_lm.", "mlx_vlm.", "unsloth_zoo.mlx.")
 
 
 def save_resume_cache(path, key, tokens, entries):
-    """One prompt cache in a safetensors file: its arrays, and the object layout pickled around them,
-    so every cache class (mlx-lm, mlx-vlm, quantized, nested) round-trips without its own codec."""
+    """Arrays as safetensors tensors, the cache layout pickled in metadata: any cache class fits."""
     import base64
     import io
     import pickle
@@ -4556,8 +4553,7 @@ class MLXInferenceBackend:
         return tuple(files)
 
     def _resume_fingerprint(self):
-        """What a saved prompt cache must match to be restored: the weight files as this load read
-        them and every load setting that changes the KV layout or its numerics."""
+        """What a restore must match: the weights this load read and every KV-affecting setting."""
         import mlx.core as mx
 
         files = self._resume_files
@@ -4583,8 +4579,7 @@ class MLXInferenceBackend:
         return (("text", self._prompt_cache_history), ("vlm", self._vlm_snapshot_store))
 
     def save_prompt_cache_for_resume(self, directory):
-        """Write each prompt cache store's entries for the newest turn into ``directory`` for a later
-        load of this model; the manifest, or None when there is nothing to keep."""
+        """Saves each store's newest turn into ``directory``; the manifest, or None."""
         if not self.active_model_name or self._distributed_world_size > 1:
             return None
         # The KV was computed from the weights read at load; files replaced since would mislabel it.
@@ -4600,7 +4595,7 @@ class MLXInferenceBackend:
                 (store_name, store.resume_entries() if store is not None else ())
                 for store_name, store in self._resume_stores()
             ]
-            # Same bounds as llama-server's slot save: a cap, and 1 GiB of disk left after it.
+            # llama-slots' bounds: a cap, and 1 GiB of disk left after it.
             total = sum(cache_entries_nbytes(item[2]) for _, items in kept for item in items)
             if total > _resume_save_max_bytes() or shutil.disk_usage(directory).free < total + (
                 1 << 30
@@ -4625,8 +4620,7 @@ class MLXInferenceBackend:
             self._generation_lock.release()
 
     def restore_prompt_cache_for_resume(self, manifest):
-        """Put a ``save_prompt_cache_for_resume`` manifest's entries back into the stores when it was
-        saved under this exact load; how many entries were restored."""
+        """Restores a manifest saved under this exact load; the entry count."""
         if not self.active_model_name or manifest.get("engine") != "mlx":
             return 0
         if manifest.get("fingerprint") != self._resume_fingerprint():

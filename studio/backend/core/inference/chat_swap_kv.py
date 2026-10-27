@@ -306,7 +306,6 @@ def _chat_account() -> Optional[str]:
 
 
 def mlx_chat_identity(orchestrator):
-    """The swap identity of the MLX chat model ``orchestrator`` serves, or None."""
     serves_mlx = getattr(orchestrator, "_serves_mlx", None)
     if not callable(serves_mlx) or not serves_mlx():
         return None
