@@ -1294,6 +1294,8 @@ def _rocm_missing_sonames_fresh() -> Optional[list[str]]:
             [sys.executable, "-I", "-c", _ROCM_SONAME_PROBE, *_ROCM_RUNTIME_SONAMES],
             capture_output = True,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = 20,
         )
         result = (
