@@ -1101,6 +1101,25 @@ def validate_h3_transformer_filename(filename: str) -> None:
         )
 
 
+def _h3_role(filename: str) -> str:
+    return {
+        H3_VIDEO_VAE: "video VAE",
+        H3_AUDIO_VAE: "audio VAE",
+        H3_QWEN_Q2: "text encoder",
+        H3_QWEN_Q4: "text encoder",
+    }.get(filename, "denoiser")
+
+
+def h3_offline_miss_error(repo_id: str, filename: str) -> RuntimeError:
+    """A cache-only load (offline, or an auto-switch) missing an H3 file, e.g. VAEs cached before the vae/official/ move."""
+    return RuntimeError(
+        f"MiniMax-H3 needs its {_h3_role(filename)} ({filename}) from {repo_id}, and it is not in the local "
+        "Hugging Face cache. This load may only use cached files (offline, or a load Studio started on its own), "
+        "so it could not download it. Load MiniMax-H3 once while online (or reconnect) so Studio can fetch it; "
+        "after that it loads offline."
+    )
+
+
 def h3_download_error(repo_id: str, filename: str, exc: Exception) -> Exception:
     """Returns (never raises) an H3 access error naming repo and component, since private/gated look like not-found; other errors pass through unchanged."""
     from huggingface_hub.errors import GatedRepoError, RepositoryNotFoundError
@@ -1108,12 +1127,7 @@ def h3_download_error(repo_id: str, filename: str, exc: Exception) -> Exception:
     if not isinstance(exc, (RepositoryNotFoundError, GatedRepoError)):
         return exc
 
-    role = {
-        H3_VIDEO_VAE: "video VAE",
-        H3_AUDIO_VAE: "audio VAE",
-        H3_QWEN_Q2: "text encoder",
-        H3_QWEN_Q4: "text encoder",
-    }.get(filename, "denoiser")
+    role = _h3_role(filename)
     gated = isinstance(exc, GatedRepoError)
     detail = (
         "accept its licence on the Hub, then set a token in Settings"

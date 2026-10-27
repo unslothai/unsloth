@@ -161,6 +161,23 @@ test("OpenAI's gpt-4o transcribe models never ask for timestamps", () => {
   }
 });
 
+test("dated and newer GPT transcription models never ask for timestamps either", () => {
+  for (const model of [
+    "gpt-4o-mini-transcribe-2025-12-15",
+    "gpt-4o-mini-transcribe-2025-03-20",
+    "gpt-4o-transcribe-2025-03-20",
+    "gpt-transcribe",
+    "gpt-4o-transcribe-diarize",
+  ]) {
+    const result = connectionTranscribeSwitches({ timestamps: true }, model);
+    assert.equal(result.timestamps.disabled, true, model);
+    assert.equal(result.request.timestamps, false, model);
+  }
+  for (const model of ["whisper-1", "whisper-large-v3", "parakeet-tdt", "my-gpt-transcriber"]) {
+    assert.equal(connectionTranscribeSwitches({ timestamps: true }, model).request.timestamps, true, model);
+  }
+});
+
 test("an owner-shared connection lists only the models the owner allowed", () => {
   const shared = { providerType: "openai", models: ["gpt-5.5", "whisper-1"], sharedByOwner: true };
   assert.deepEqual(connectionTranscribeModels(shared, "gpt-4o-transcribe"), ["whisper-1"]);

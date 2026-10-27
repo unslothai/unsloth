@@ -5,6 +5,7 @@ flash-attn) instead of SDPA over a dense block-causal mask; heads past flash's 2
 layers, 512) and shapes an FA4 / FA3 impl refuses run SDPA's memory-efficient kernel over the same
 cu_seqlens. Anything else reaches the wrapped "sdpa"."""
 
+import contextlib
 import inspect
 import logging
 import os
@@ -691,26 +692,41 @@ def _varlen_in_graph_eager(device_index, dtype, head_dim, n_heads, n_kv_heads, w
     return _VARLEN_IN_GRAPH[key]
 
 
+def _no_saved_tensor_hooks():
+    # Only the innermost pair applies. Pushing raises while torch has hooks disabled: keep the ambient state.
+    enabled = getattr(torch._C._autograd, "_saved_tensors_hooks_is_enabled", lambda: True)
+    if enabled():
+        return torch.autograd.graph.saved_tensors_hooks(_identity, _identity)
+    return contextlib.nullcontext()
+
+
+def _identity(tensor):
+    return tensor
+
+
 def _varlen_in_graph_probe(device_index, dtype, head_dim, n_heads, n_kv_heads, window):
     """aten's flash varlen takes this shape on this device: one real forward and backward (a build
     that refuses at run time would otherwise fail inside the compiled graph)."""
-    try:
-        from .flash_impl import flash_impl_allows
+    # Cached for all grad modes; first trace may be no_grad (reentrant checkpoint), where backward raises.
+    # Identity hooks: a non-reentrant checkpoint's pack hooks would make the probe's backward recompute the block.
+    with torch.inference_mode(False), torch.enable_grad(), _no_saved_tensor_hooks():
+        try:
+            from .flash_impl import flash_impl_allows
 
-        device = torch.device("cuda", device_index)
-        query = torch.zeros(1, n_heads, 16, head_dim, device = device, dtype = dtype)
-        key = torch.zeros(1, n_kv_heads, 16, head_dim, device = device, dtype = dtype)
-        torch_varlen = _torch_varlen(device)
-        # Hardware and build only: the sdpa policy can change, block_varlen_kwargs checks it each step.
-        if torch_varlen is None or not flash_impl_allows(head_dim, window, device):
+            device = torch.device("cuda", device_index)
+            torch_varlen = _torch_varlen(device)
+            # Hardware and build only: the sdpa policy can change, block_varlen_kwargs checks it each step.
+            if torch_varlen is None or not flash_impl_allows(head_dim, window, device):
+                return False
+            query = torch.zeros(1, n_heads, 16, head_dim, device = device, dtype = dtype)
+            key = torch.zeros(1, n_kv_heads, 16, head_dim, device = device, dtype = dtype)
+            query.requires_grad_()
+            cu_seqlens = torch.tensor([0, 7, 16], dtype = torch.int32, device = device)
+            out = _flash_varlen(query, key, key, cu_seqlens, 9, 1.0, window)
+            out.float().sum().backward()
+            return True
+        except Exception:
             return False
-        query.requires_grad_()
-        cu_seqlens = torch.tensor([0, 7, 16], dtype = torch.int32, device = device)
-        out = _flash_varlen(query, key, key, cu_seqlens, 9, 1.0, window)
-        out.float().sum().backward()
-        return True
-    except Exception:
-        return False
 
 
 _varlen_in_graph = torch._dynamo.assume_constant_result(_varlen_in_graph_eager)
@@ -736,11 +752,14 @@ def block_varlen_kwargs(layer, hidden_states, kwargs):
         and entry[2] == (hidden_states.device, seq_lengths._version, mask._version)
         # cu_seqlens built under inference_mode cannot be saved for a training step's backward.
         and (not entry[4] or torch.is_inference_mode_enabled())
+        # sdpa_kernel / deterministic mode can change between calls on the same tensors.
+        and (entry[5] is None or _sdpa_policy_requested(*entry[5]) == entry[6])
     ):
         if entry[3] is not None:
             HF_PACKED_ATTENTION_STATS["compiled"] += 1
         return entry[3]
-    result = _block_varlen_prepare(layer, attention, hidden_states, kwargs)
+    policy = []
+    result = _block_varlen_prepare(layer, attention, hidden_states, kwargs, policy)
     if (
         isinstance(seq_lengths, torch.Tensor)
         and isinstance(mask, torch.Tensor)
@@ -755,6 +774,7 @@ def block_varlen_kwargs(layer, hidden_states, kwargs):
             (hidden_states.device, seq_lengths._version, mask._version),
             result,
             torch.is_inference_mode_enabled(),
+            *(policy[0] if policy else (None, None)),
         )
     return result
 
@@ -762,7 +782,13 @@ def block_varlen_kwargs(layer, hidden_states, kwargs):
 _BLOCK_PREP = {}
 
 
-def _block_varlen_prepare(layer, attention, hidden_states, kwargs):
+def _block_varlen_prepare(
+    layer,
+    attention,
+    hidden_states,
+    kwargs,
+    policy = None,
+):
     if (
         _disabled()
         or _ORIG_SDPA[0] is None
@@ -788,9 +814,11 @@ def _block_varlen_prepare(layer, attention, hidden_states, kwargs):
     n_kv_heads = getattr(config, "num_key_value_heads", None) or n_heads
     if not all(isinstance(n, int) for n in (head_dim, n_heads, n_kv_heads)):
         return None
-    if _sdpa_policy_requested(
-        hidden_states.device, hidden_states.dtype, head_dim, n_heads, n_kv_heads
-    ):
+    policy_args = (hidden_states.device, hidden_states.dtype, head_dim, n_heads, n_kv_heads)
+    wants_sdpa = _sdpa_policy_requested(*policy_args)
+    if policy is not None:
+        policy.append((policy_args, wants_sdpa))
+    if wants_sdpa:
         return None
     if not _VARLEN_INT32_GUARD_DISABLED and _varlen_backward_overflows_int32(
         kwargs["packed_seq_lengths"].numel(), total, n_heads, head_dim

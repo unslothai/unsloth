@@ -526,6 +526,8 @@ def _transcode_gif_palette(
         frame.pts = count
         frame.time_base = time_base
         buffer.push(frame)
+        # palettegen emits only at EOF, but pulling lets FFmpeg consume each frame instead of queueing the whole clip
+        _drain_sink(sink)
         if held is not None:
             held.append(frame)
         count += 1
