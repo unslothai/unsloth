@@ -1318,3 +1318,46 @@ def test_the_orphan_recheck_refuses_a_base_that_became_a_speed_load(monkeypatch)
     with pytest.raises(HTTPException) as excinfo:
         deletion._delete_cached_model_blocking(base, None, None, only_if_orphan = True)
     assert excinfo.value.status_code == 409
+
+
+_HOSTED_21 = "unsloth/Qwen-Image-2.1-FP8"
+_HOSTED_21_FILES = [
+    ("Qwen-Image-2.1-FP8.safetensors", 7_120_000),
+    ("Qwen-Image-2.1-text_encoder-FP8.safetensors", 9_400_000),
+    ("vae/qwen_image_2.1_vae_bf16.safetensors", 680_000),
+]
+_CONFIG_ONLY_21 = [
+    ("model_index.json", 400),
+    ("transformer/config.json", 300),
+    ("text_encoder/config.json", 300),
+    ("vae/config.json", 300),
+    ("tokenizer/tokenizer.json", 9_000),
+]
+
+
+def test_a_fully_hosted_speed_load_is_an_install(monkeypatch):
+    """Hosted DiT, encoder and VAE: the base keeps only configs and the tokenizer, and still loads."""
+    base = "Qwen/Qwen-Image-2.1"
+    _install(monkeypatch, _repo(base, _CONFIG_ONLY_21), _repo(_HOSTED_21, _HOSTED_21_FILES))
+    assert companion_cleanup.companion_dependents(_HOSTED_21) == [base]
+    assert _offered() == {}
+    impact = asyncio.run(companion_cleanup.delete_impact_response(base, None))
+    assert impact["blocked_by"] == []
+    assert [row["repo_id"] for row in impact["freeable_companions"]] == [_HOSTED_21]
+    for repo_id, refusal in ((base, 409), (_HOSTED_21, 400)):
+        with pytest.raises(HTTPException) as excinfo:
+            deletion._delete_cached_model_blocking(repo_id, None, None, only_if_orphan = True)
+        assert excinfo.value.status_code == refusal
+
+
+def test_a_config_only_base_with_no_hosted_weights_stays_an_orphan(monkeypatch):
+    base = "Qwen/Qwen-Image-2.1"
+    _install(monkeypatch, _repo(base, _CONFIG_ONLY_21))
+    assert base in _offered()
+
+
+def test_a_config_only_base_missing_a_hosted_component_is_kept(monkeypatch):
+    """No hosted VAE cached: the next load refetches the dense vae/, so the speed load is still an install."""
+    base = "Qwen/Qwen-Image-2.1"
+    _install(monkeypatch, _repo(base, _CONFIG_ONLY_21), _repo(_HOSTED_21, _HOSTED_21_FILES[:2]))
+    assert _offered() == {}

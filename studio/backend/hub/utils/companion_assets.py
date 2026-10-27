@@ -161,7 +161,6 @@ _WEIGHT_SUFFIXES = (".safetensors", ".bin", ".ckpt", ".pt", ".pth", ".gguf")
 
 
 _HOSTED_DENOISER = "denoiser"
-_HOSTED_COMPANION = "companion"
 
 
 def _hosted_component_table() -> dict[str, dict[str, set[tuple[str, str, str]]]]:
@@ -216,37 +215,34 @@ def _hosted_component_table() -> dict[str, dict[str, set[tuple[str, str, str]]]]
         for registry, fam in families:
             owner = (registry, str(fam.name))
             rows = [
-                (str(r[2]), str(r[3] if len(r) > 3 else r[1]))
+                (str(r[2]), str(r[3] if len(r) > 3 else r[1]), str(r[1]))
                 for r in getattr(fam, "te_prequant_repos", ()) or ()
                 if len(r) >= 3
             ]
             rows += [
-                (str(r[3]), str(r[2]))
+                (str(r[3]), str(r[2]), str(r[2]))
                 for r in getattr(fam, "te_prequant_variant_repos", ()) or ()
                 if len(r) >= 4
             ]
-            for repo, component in rows:
+            for repo, component, slot in rows:
                 for scheme in ("fp8", "int8"):
-                    add(
-                        repo,
-                        te_prequant_repo_filenames(repo, component, scheme),
-                        owner,
-                        _HOSTED_COMPANION,
-                    )
+                    add(repo, te_prequant_repo_filenames(repo, component, scheme), owner, slot)
             for row in getattr(fam, "hosted_bf16_vae", ()) or ():
                 if len(row) == 3:
-                    add(row[1], [row[2]], owner, _HOSTED_COMPANION)
-        entries = [(f, e) for f, comps in TE_INT8_CONVROT_FILES.items() for e in comps.values()]
+                    add(row[1], [row[2]], owner, "vae")
+        entries = [
+            (f, c, e) for f, comps in TE_INT8_CONVROT_FILES.items() for c, e in comps.items()
+        ]
         entries += [
-            (f, e)
+            (f, c, e)
             for f, bases in TE_INT8_CONVROT_VARIANT_FILES.items()
             for comps in bases.values()
-            for e in comps.values()
+            for c, e in comps.items()
         ]
-        for fam_name, entry in entries:
+        for fam_name, slot, entry in entries:
             for owner in by_name.get(str(fam_name), ()):
                 if len(entry) >= 2:
-                    add(entry[0], [entry[1]], owner, _HOSTED_COMPANION)
+                    add(entry[0], [entry[1]], owner, str(slot))
     except Exception as exc:  # noqa: BLE001
         logger.debug("Hosted text-encoder table unavailable: %s", exc)
 
@@ -260,13 +256,13 @@ def _hosted_component_table() -> dict[str, dict[str, set[tuple[str, str, str]]]]
             for n in (name, name.replace("/official/", "/"))
         ]
         for owner in by_name.get("minimax-h3", ()):
-            add(H3_TE_QUANT_REPO, names, owner, _HOSTED_COMPANION)
+            add(H3_TE_QUANT_REPO, names, owner, "text_encoder")
     except Exception as exc:  # noqa: BLE001
         logger.debug("H3 conditioner table unavailable: %s", exc)
     try:
         from core.inference.video_ltx25 import LTX25_TE_HOSTED_FILE, LTX25_TE_HOSTED_REPO
         for owner in by_name.get("ltx-2.5", ()):
-            add(LTX25_TE_HOSTED_REPO, [LTX25_TE_HOSTED_FILE], owner, _HOSTED_COMPANION)
+            add(LTX25_TE_HOSTED_REPO, [LTX25_TE_HOSTED_FILE], owner, "text_encoder")
     except Exception as exc:  # noqa: BLE001
         logger.debug("LTX-2.5 encoder table unavailable: %s", exc)
 
@@ -356,9 +352,26 @@ def _hosted_holds_unknown(table, repo) -> bool:
         lowered = name.lower()
         if lowered in names:
             continue
-        if lowered.endswith(_WEIGHT_SUFFIXES) or (dual_role and "/" in lowered):
+        if lowered.endswith(_WEIGHT_SUFFIXES) or (
+            dual_role and ("/" in lowered or lowered in _PIPELINE_INDEXES)
+        ):
             return True
     return False
+
+
+_PIPELINE_INDEXES = ("model_index.json", "modular_model_index.json")
+
+
+def _staged_pipeline(repo) -> bool:
+    """A base copy a speed load runs from: a weight, or the pipeline index plus component configs, which is all
+    that is left once hosted denoiser, encoder and VAE files replace the dense shards. Callers also require a
+    cached hosted denoiser; a component that is neither cached nor hosted is refetched, so the copy is kept."""
+    names = [n.lower() for n in _snapshot_relative_names(repo)]
+    if any(n.endswith(_WEIGHT_SUFFIXES) for n in names):
+        return True
+    return any(n in _PIPELINE_INDEXES for n in names) and any(
+        n.count("/") == 1 and n.endswith("/config.json") for n in names
+    )
 
 
 def repo_holds_denoiser(repo, *, folders: bool = True) -> bool:
@@ -706,11 +719,11 @@ def repo_is_install(repo, cache_scans) -> bool:
         table = _hosted_component_table()
         key = _normalise(str(getattr(repo, "repo_id", "") or ""))
         families = _base_families().get(key) if key not in table else None
-        if not families or not any(
-            n.lower().endswith(_WEIGHT_SUFFIXES) for n in _snapshot_relative_names(repo)
-        ):
+        if not families:
             return False
         cached = _cached_hosted_owners(table, cache_scans)
+        if not _staged_pipeline(repo):
+            return False
         return any(
             (r, f) in families and k == _HOSTED_DENOISER
             for owners in cached.values()
@@ -752,9 +765,7 @@ def _add_hosted_dependents(required, cache_scans, checkpoints, pick_names, ignor
                 # A hosted repo that is also a base mirror is a companion here, never its own speed load.
                 if not families:
                     continue
-                if not any(
-                    n.lower().endswith(_WEIGHT_SUFFIXES) for n in _snapshot_relative_names(repo)
-                ):
+                if not _staged_pipeline(repo):
                     continue
                 if families & in_view and not families & denoisers:
                     # This family's hosted repos are cached and none holds its denoiser: a companion-only fetch.
