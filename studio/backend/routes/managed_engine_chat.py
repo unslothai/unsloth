@@ -16,9 +16,10 @@ from fastapi.responses import JSONResponse
 
 from core.inference.engine_transport import engine_messages, engine_request_timeout
 from core.inference.inference_gate import gated_async_client
-from core.inference.managed_engine import CONTINUATION_FIELDS, fold_reasoning_into_answer
+from core.inference.managed_engine import fold_reasoning_into_answer
 from core.inference.http_stream import closing_response_lines
 from core.inference.studio_tool_loop import ToolLoopPolicy, ToolLoopRun, stream_with_studio_tools
+from utils.api_errors import openai_error_body
 
 
 class ManagedToolTransport:
@@ -60,7 +61,7 @@ class ManagedToolTransport:
             body["max_tokens"] = max_tokens
         continuing = self._continuing and messages[-1].get("role") == "assistant"
         if continuing:
-            body.update(CONTINUATION_FIELDS)
+            self.engine.continue_final_message(body)
         if truncation_line:
             yield truncation_line
         if tools:
@@ -245,6 +246,19 @@ async def managed_tool_chat(
     )
     if tools and api._wants_multiple_choices(payload):
         raise reject("Multiple choices are unavailable when Unsloth executes tools.")
+    if tools and api._response_format_constrains_decoding(payload):
+        # The tool loop never forwards response_format; refuse rather than violate it (as GGUF does).
+        message = (
+            "response_format is not supported with Unsloth tool execution; send the request "
+            "without enable_tools or mcp_enabled to use guided decoding."
+        )
+        api.api_monitor.fail(monitor_id, message)
+        raise HTTPException(
+            status_code = 400,
+            detail = openai_error_body(
+                message, status = 400, code = "unsupported_parameter", param = "response_format"
+            ),
+        )
     if tools:
         api._reject_confirm_gate_without_channel(
             payload, ui_events, monitor_id, api._catalog_names(tools)
@@ -376,8 +390,6 @@ async def managed_tool_chat(
                 )
             elif not payload.stream:
                 request_body = {**body, "stream": False}
-                if continuing:
-                    request_body.update(CONTINUATION_FIELDS)
                 truncation_line = None
                 if transport._message_fitter is not None:
                     fitted, max_tokens, truncation_line = await transport._message_fitter(messages)
@@ -386,6 +398,8 @@ async def managed_tool_chat(
                     )
                     if max_tokens:
                         request_body["max_tokens"] = max_tokens
+                if continuing:
+                    engine.continue_final_message(request_body)
                 response = await client.post(
                     engine.base_url + "/v1/chat/completions",
                     headers = engine.headers,

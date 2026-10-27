@@ -916,6 +916,63 @@ def test_chat_completions_hand_structured_output_and_continuation_to_the_engine(
     assert len(calls) == sent_before
 
 
+@pytest.mark.parametrize("stream", [False, True])
+def test_studio_tool_execution_refuses_a_response_format_it_cannot_honor(monkeypatch, stream):
+    import asyncio
+    from types import SimpleNamespace
+
+    import routes.inference as inf
+    from fastapi import HTTPException
+    from core.inference.api_monitor import ApiMonitor
+    from models.inference import ChatCompletionRequest
+    from state.tool_policy import reset_tool_policy
+
+    class Backend:
+        active_model_name = "m"
+        models = {"m": {"engine": "vllm", "context_length": 2048, "supports_tools": True}}
+        _managed_engine = None
+
+        def reset_generation_state(self, caller_cancel_event = None):
+            pass
+
+    class Request:
+        state = SimpleNamespace()
+        url = SimpleNamespace(path = "/v1/chat/completions")
+        method = "POST"
+        scope: dict = {}
+        headers: dict = {}
+
+        async def is_disconnected(self):
+            return False
+
+    reset_tool_policy()
+    monkeypatch.setattr(inf, "api_monitor", ApiMonitor(max_entries = 8))
+    monkeypatch.setattr(
+        inf,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(
+            is_loaded = False, supports_tools = False, is_vision = False, context_length = None
+        ),
+    )
+    monkeypatch.setattr(inf, "get_inference_backend", lambda: Backend())
+    payload = ChatCompletionRequest(
+        model = "m",
+        stream = stream,
+        enable_tools = True,
+        enabled_tools = ["python"],
+        permission_mode = "bypass",
+        messages = [{"role": "user", "content": "Compute 7*567 and answer as JSON."}],
+        response_format = {
+            "type": "json_schema",
+            "json_schema": {"name": "a", "schema": {"type": "object"}},
+        },
+    )
+    with pytest.raises(HTTPException) as refusal:
+        asyncio.run(inf.openai_chat_completions(payload, request = Request(), current_subject = "u"))
+    assert refusal.value.status_code == 400
+    assert refusal.value.detail["error"]["param"] == "response_format"
+
+
 def test_unsupported_tools_are_not_silently_dropped(peer):
     engine, requests = peer
     with pytest.raises(ValueError, match = "Tools"):

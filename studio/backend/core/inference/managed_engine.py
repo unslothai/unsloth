@@ -278,6 +278,8 @@ def validate_model(
         options["seed"] = seed
     if gpu_memory_utilization is not None:
         options["gpu_memory_utilization"] = gpu_memory_utilization
+    if engine == "sglang" and generation_prompt_opens_thought(template):
+        options["opens_thought"] = True
     if reasoning_parser:
         from .llama_cpp import detect_reasoning_flags
         options["reasoning_parser"] = reasoning_parser
@@ -476,7 +478,7 @@ def _rocm_visibility(env: dict, gpu_ids) -> dict:
 # SGLang raises when its derived gRPC port (HTTP + 10000) exceeds 65535.
 _PORT_LIMIT = 55535
 # Launch options that change no compiled artifact, so they share the compile cache.
-_UNCACHED_OPTIONS = frozenset(("seed", "gpu_memory_utilization"))
+_UNCACHED_OPTIONS = frozenset(("seed", "gpu_memory_utilization", "opens_thought"))
 
 
 def _free_port(limit: int | None = _PORT_LIMIT) -> int:
@@ -546,6 +548,46 @@ def _token_file_token(env) -> str | None:
 CONTINUATION_FIELDS = {"continue_final_message": True, "add_generation_prompt": False}
 
 
+def generation_prompt_opens_thought(template) -> bool:
+    """R1 distills, QwQ and Qwen3 Thinking-2507 end the generation prompt inside ``<think>``."""
+    if not isinstance(template, str) or "<think>" not in template:
+        return False
+    from jinja2.sandbox import ImmutableSandboxedEnvironment
+
+    def raise_exception(message):
+        raise ValueError(message)
+
+    try:
+        environment = ImmutableSandboxedEnvironment(
+            extensions = ["jinja2.ext.loopcontrols", "jinja2.ext.do"]
+        )
+        environment.globals["raise_exception"] = raise_exception
+        prompt = environment.from_string(template).render(
+            messages = [{"role": "user", "content": "Hi"}],
+            add_generation_prompt = True,
+            bos_token = "",
+            eos_token = "",
+        )
+    except Exception:
+        return False
+    return prompt.rstrip().endswith("<think>")
+
+
+def sglang_prefill(message: dict, opens_thought: bool) -> dict:
+    """SGLang drops the trailing assistant turn, renders a fresh generation prompt and appends only
+    its string content, so the finished thought and its closing tag must travel in that content."""
+    content = message.get("content")
+    if isinstance(content, list):
+        content = "".join(part.get("text") or "" for part in content if isinstance(part, dict))
+    thought = (message.get("reasoning_content") or message.get("reasoning") or "").strip()
+    if opens_thought:
+        content = f"{thought}\n</think>\n\n{content or ''}"
+    elif thought:
+        content = f"<think>\n{thought}\n</think>\n\n{content or ''}"
+    rest = {k: v for k, v in message.items() if k not in ("reasoning", "reasoning_content")}
+    return {**rest, "content": content}
+
+
 # The prompt closed the thought, but a forcing parser (deepseek_r1) files the rest as one.
 def fold_reasoning_into_answer(part: dict) -> None:
     reasoning = part.pop("reasoning", None)
@@ -571,6 +613,7 @@ class ManagedEngine:
         self._last_output = time.monotonic()
         self.base_url = ""
         self.reasoning_parser = None
+        self.opens_thought = False
         self._guest_environment = None
         # A URL-safe token can start with '-', which CLI parsers read as an option.
         self.key = "studio-" + secrets.token_urlsafe(32)
@@ -693,6 +736,7 @@ class ManagedEngine:
                 self.base_url = f"http://127.0.0.1:{port}"
                 self.model, self.context = model, context or 4096
                 self.reasoning_parser = (options or {}).get("reasoning_parser")
+                self.opens_thought = bool((options or {}).get("opens_thought"))
                 stdin = None
                 if info.get("host") == "wsl":
                     command, child_env = self._wsl_command(
@@ -1043,6 +1087,13 @@ class ManagedEngine:
             fields["reasoning_effort"] = reasoning_effort
         return fields
 
+    def continue_final_message(self, body: dict) -> None:
+        """Resume the trailing assistant turn of ``body["messages"]`` in place."""
+        body.update(CONTINUATION_FIELDS)
+        if self.engine == "sglang" and body.get("messages"):
+            *head, last = body["messages"]
+            body["messages"] = [*head, sglang_prefill(last, self.opens_thought)]
+
     def replay_reasoning(
         self,
         messages,
@@ -1207,7 +1258,7 @@ class ManagedEngine:
         )
         continuing = bool(params.get("continue_final_message"))
         if continuing:
-            payload.update(CONTINUATION_FIELDS)
+            self.continue_final_message(payload)
         from .engine_transport import stream_chat_events
 
         def cancelled():
