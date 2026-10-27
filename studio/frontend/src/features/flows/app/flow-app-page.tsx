@@ -90,7 +90,7 @@ function FieldInput({
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            {(field.options ?? []).map((option) => (
+            {(field.options ?? []).filter(Boolean).map((option) => (
               <SelectItem key={option} value={option}>
                 {option}
               </SelectItem>
