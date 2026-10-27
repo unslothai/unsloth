@@ -137,6 +137,7 @@ type CountModule = {
   countContext: (
     branch: readonly unknown[],
     threadId: string | undefined,
+    readBranch?: () => readonly unknown[],
   ) => Promise<{ input_tokens: number } | null>;
 };
 
@@ -244,6 +245,27 @@ for (const [name, overrides, counted] of [
     if (name === "another model answered") assert.equal(result, null);
   });
 }
+
+test("the ring keeps its number when the branch moved during the count", async () => {
+  const { state, published } = runtimeState();
+  const { module } = loadCount(state, { input_tokens: 348 });
+  await module.countContext([{ id: "m1" }, { id: "m2" }], "t1", () => [
+    { id: "m1" },
+  ]);
+  assert.deepEqual(published, []);
+});
+
+test("the ring takes the count when the branch is the one counted", async () => {
+  const { state, published } = runtimeState();
+  const { module } = loadCount(state, { input_tokens: 348 });
+  await module.countContext([{ id: "m1" }], "t1", () => [{ id: "m1" }]);
+  assert.equal(published.length, 1);
+});
+
+test("an API report treats a text-length estimate as no usage yet", () => {
+  const report = readSrc("components/assistant-ui/context-report.tsx");
+  assert.match(report, /stored\?\.estimated \? null : stored/);
+});
 
 test("/compact clears a /context report, whose numbers the reset makes stale", () => {
   const thread = readSrc("components/assistant-ui/thread.tsx");
