@@ -2309,6 +2309,7 @@ export const ko = {
       liveMonitor: {
         title: "실시간 모니터",
         apiTitle: "API 모니터",
+        apiDescription: "다른 앱이 이 서버의 API로 보내는 내용을 도착하는 대로 확인합니다.",
         summary: "진행 중인 요청, 오류 및 토큰 사용량",
         status: "진행 중 {active}개 · 최근 {recent}개 · {model}",
         noModelLoaded: "로드된 모델 없음",

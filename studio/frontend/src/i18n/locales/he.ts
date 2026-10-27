@@ -2418,6 +2418,7 @@ export const he = {
       liveMonitor: {
         title: "מוניטור חי",
         apiTitle: "מוניטור API",
+        apiDescription: "ראה מה אפליקציות אחרות שולחות ל-API של השרת הזה ברגע שזה מגיע.",
         summary: "בקשות חיות, שגיאות ושימוש בטוקנים",
         status: "{active} פעילות · {recent} לאחרונה · {model}",
         noModelLoaded: "אין מודל טעון",
