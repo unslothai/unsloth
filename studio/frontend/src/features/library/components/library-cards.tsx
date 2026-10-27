@@ -358,7 +358,7 @@ export function CardGrid({
   minRowHeight,
 }: {
   children: ReactNode;
-  /** Fixed rows: the column's 8:7 height or this, whichever is taller, so no card's content sizes the grid. */
+  /** Rows are max(this, the column's 8:7 height). */
   minRowHeight?: string;
 }) {
   const container = useRef<HTMLDivElement>(null);
