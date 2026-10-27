@@ -1,10 +1,7 @@
-# Model defaults for unsloth/llama-3-8b-Instruct-bnb-4bit
-# Based on Llama3_(8B)-Conversational.ipynb
 # Also applies to: unsloth/llama-3-8b-Instruct, meta-llama/Meta-Llama-3-8B-Instruct
 
 training:
   max_seq_length: 2048
-  # num_epochs: 4
   num_epochs: 0
   learning_rate: 2e-4
   batch_size: 2

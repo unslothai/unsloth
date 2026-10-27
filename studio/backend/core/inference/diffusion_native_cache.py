@@ -456,6 +456,239 @@ def load(
         return None
 
 
+STREAM_BUILD_ENV = "UNSLOTH_DIFFUSION_NATIVE_STREAM_BUILD"
+# Dtypes a bf16 load never casts; any other floating dtype falls back to the dense load.
+_STREAM_DTYPES = {
+    "BF16": "bfloat16",
+    "I64": "int64",
+    "I32": "int32",
+    "I16": "int16",
+    "I8": "int8",
+    "U8": "uint8",
+    "BOOL": "bool",
+}
+
+
+def stream_build_enabled() -> bool:
+    value = (os.environ.get(STREAM_BUILD_ENV) or "").strip().lower()
+    return value not in ("0", "off", "false", "no")
+
+
+def _dense_shards(source: Any, component: str, cache_dir: Optional[str]) -> Optional[list[str]]:
+    """The shard files ``from_pretrained(source, subfolder = component)`` reads (index first, as diffusers), or None."""
+    stem = f"{component}/diffusion_pytorch_model"
+    index = _cache._local_file(str(source), f"{stem}.safetensors.index.json", cache_dir)
+    if index is not None:
+        with open(index, "r", encoding = "utf-8") as fh:
+            weight_map = (json.load(fh) or {}).get("weight_map") or {}
+        names = sorted(set(str(v) for v in weight_map.values()))
+        paths = [_cache._local_file(str(source), f"{component}/{n}", cache_dir) for n in names]
+        return [str(p) for p in paths] if names and all(paths) else None
+    single = _cache._local_file(str(source), f"{stem}.safetensors", cache_dir)
+    return [str(single)] if single else None
+
+
+def _shard_entries(path: str) -> Optional[tuple[int, dict]]:
+    """(data start, ``{key: header entry}``) of a shard holding only dtypes in ``_STREAM_DTYPES``, else None."""
+    raw = _cache.read_header_bytes(path)
+    if raw is None:
+        return None
+    header = json.loads(raw[8:].decode("utf-8"))
+    header.pop("__metadata__", None)
+    if any(entry.get("dtype") not in _STREAM_DTYPES for entry in header.values()):
+        return None
+    return len(raw), header
+
+
+def _map_tensor(fd: int, start: int, entry: dict) -> Any:
+    """One tensor over its own private mapping, unmapped when freed (a whole-shard mapping stays resident while any
+    tensor survives)."""
+    import mmap
+
+    import torch
+
+    begin, end = (int(v) for v in entry["data_offsets"])
+    dtype = getattr(torch, _STREAM_DTYPES[entry["dtype"]])
+    shape = [int(d) for d in entry["shape"]]
+    count = 1
+    for d in shape:
+        count *= d
+    if end - begin != count * torch.empty((), dtype = dtype).element_size():
+        raise ValueError("shard entry size does not match its shape")
+    if end == begin:
+        return torch.empty(shape, dtype = dtype)
+    offset = start + begin
+    aligned = offset - offset % mmap.ALLOCATIONGRANULARITY
+    # Copy-on-write: writable, nothing reaches the file.
+    window = mmap.mmap(
+        fd, offset + (end - begin) - aligned, offset = aligned, access = mmap.ACCESS_COPY
+    )
+    flat = torch.frombuffer(window, dtype = torch.uint8, count = end - begin, offset = offset - aligned)
+    return flat.view(dtype).reshape(shape)
+
+
+def build_from_shards(
+    transformer_cls: Any,
+    config_source: str,
+    spec: dict,
+    *,
+    family: Optional[str],
+    dtype: Any,
+    component: str = "transformer",
+    config_kwargs: Optional[dict] = None,
+    logger: Any = None,
+    cancel_check: Optional[Any] = None,
+) -> Any:
+    """Build the native ``component`` per tensor, bit-identical to the in-place build, or None for the dense load
+    (also on cancel, which the caller re-checks). Never raises."""
+    cancelled = [False]
+
+    def _check() -> None:
+        if cancel_check is None:
+            return
+        try:
+            cancel_check()
+        except BaseException:
+            cancelled[0] = True
+            raise
+
+    t0 = time.perf_counter()
+    try:
+        import torch
+
+        from .diffusion_native_quant import NATIVE_INT8, native_linear_class
+        from .diffusion_transformer_quant import exclude_tokens_for_scheme, make_filter_fn
+
+        def skip(why: str) -> None:
+            _cache._log(logger, "info", f"native {component}: per-tensor build skipped ({why})")
+
+        if not stream_build_enabled() or transformer_cls is None:
+            return None
+        if dtype is not torch.bfloat16:
+            return skip(f"loads at {str(dtype).replace('torch.', '')}, not bfloat16")
+        if getattr(transformer_cls, "_keep_in_fp32_modules", None):
+            return skip("the class keeps fp32 modules")
+        scheme = spec["scheme"]
+        cache_dir = (config_kwargs or {}).get("cache_dir")
+        shards = _dense_shards(config_source, component, cache_dir)
+        if not shards:
+            return skip("dense shards not found locally")
+        if _cache._hub_source_stale(shards, logger):
+            return None
+        entries = []
+        for shard in shards:
+            found = _shard_entries(shard)
+            if found is None:
+                return skip("a shard holds a dtype other than bf16")
+            entries.append((shard, *found))
+        stored = {key: entry for _shard, _start, header in entries for key, entry in header.items()}
+        _check()
+        config = transformer_cls.load_config(
+            config_source, subfolder = component, **(config_kwargs or {})
+        )
+        try:
+            from accelerate import init_empty_weights
+        except Exception:  # noqa: BLE001
+            return skip("accelerate is missing")
+        # Buffers stay real: non-persistent ones (rope tables) are built by __init__ as a dense load builds them.
+        with init_empty_weights(include_buffers = False):
+            model = transformer_cls.from_config(config)
+        # The in-place build filters the loaded module, whose weights carry the stored dtype.
+        for name, mod in model.named_modules():
+            entry = stored.get(f"{name}.weight") if name else None
+            if (
+                isinstance(mod, torch.nn.Linear)
+                and entry is not None
+                and mod.weight.device.type == "meta"
+            ):
+                mod.weight = torch.nn.Parameter(
+                    torch.empty(
+                        mod.weight.shape,
+                        dtype = getattr(torch, _STREAM_DTYPES[entry["dtype"]]),
+                        device = "meta",
+                    ),
+                    requires_grad = mod.weight.requires_grad,
+                )
+        filter_fn = make_filter_fn(
+            int(spec["min_features"]),
+            exclude_name_tokens = exclude_tokens_for_scheme(scheme, family) + ("lora_",),
+            require_bf16 = True,
+        )
+        quant = {name for name, mod in model.named_modules() if name and filter_fn(mod, name)}
+        act_int8 = scheme == NATIVE_INT8 and bool(spec["act_int8"])
+        rot_group = int(spec["rot_group"]) if act_int8 else 0
+        cls = native_linear_class()
+        state: dict = {}
+        built = 0
+        for shard, start, header in entries:
+            fd = os.open(shard, os.O_RDONLY)
+            try:
+                for key, entry in sorted(
+                    header.items(), key = lambda kv: int(kv[1]["data_offsets"][0])
+                ):
+                    _check()
+                    tensor = _map_tensor(fd, start, entry)
+                    fqn, _, leaf = key.rpartition(".")
+                    if leaf != "weight" or fqn not in quant:
+                        state[key] = tensor
+                        continue
+                    parent_name, _, attr = fqn.rpartition(".")
+                    parent = model.get_submodule(parent_name) if parent_name else model
+                    dense = getattr(parent, attr)
+                    stand_in = torch.nn.Linear(
+                        int(dense.in_features),
+                        int(dense.out_features),
+                        bias = dense.bias is not None,
+                        device = "meta",
+                        dtype = tensor.dtype,
+                    )
+                    stand_in.weight = torch.nn.Parameter(tensor, requires_grad = False)
+                    del tensor
+                    layer = cls(stand_in, scheme, act_int8 = act_int8, rot_group = rot_group)
+                    del stand_in
+                    setattr(parent, attr, layer)
+                    state[f"{fqn}.weight_q"] = layer.weight_q
+                    state[f"{fqn}.weight_scale"] = layer.weight_scale
+                    built += 1
+            finally:
+                # The mappings outlive the descriptor; each closes with its tensor.
+                os.close(fd)
+        if built != len(quant):
+            return skip(f"{len(quant) - built} quantizable weights missing from the shards")
+        model.load_state_dict(state, strict = True, assign = True)
+        del state
+        if any(t.device.type == "meta" for t in (*model.parameters(), *model.buffers())):
+            return skip("tensors left on meta")
+        model.eval()
+        try:
+            model._unsloth_runtime_quant = scheme
+            model._unsloth_runtime_quant_info = {"scheme": scheme, "native": True}
+        except Exception:  # noqa: BLE001
+            pass
+        _cache._log(
+            logger,
+            "info",
+            f"native {component}: {scheme} "
+            + (
+                ("W8A8 torch._int_mm" + (f" ConvRot g{rot_group}" if rot_group else ""))
+                if act_int8
+                else "weight-only"
+            )
+            + f" built per tensor from {len(shards)} dense shard(s) on {built} linears "
+            f"in {time.perf_counter() - t0:.1f} s",
+        )
+        return model
+    except Exception as exc:  # noqa: BLE001 - the caller loads the dense module whole instead
+        if cancelled[0]:
+            return None
+        _cache._log(
+            logger,
+            "warning",
+            f"native {component}: per-tensor build failed: {type(exc).__name__}: {str(exc)[:200]}",
+        )
+        return None
+
+
 def build_spec(transformer: Any, family: Optional[str]) -> Optional[dict]:
     """``native_spec`` of an in-memory native build, read from its layers, or None (no native layers, or a mix)."""
     try:

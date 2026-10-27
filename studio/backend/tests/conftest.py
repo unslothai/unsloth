@@ -112,6 +112,11 @@ def _zoo_without_gdn_decode_kernel(monkeypatch):
 
 
 @pytest.fixture(autouse = True)
+def _sd_cpp_windows_rocm_ignores_the_host_dlls(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_SD_CPP_WINDOWS_ROCM", "1")
+
+
+@pytest.fixture(autouse = True)
 def _no_real_mxc_drive_aliases(monkeypatch):
     # Windows hosts would map real drive letters; MXC tests opt back in.
     monkeypatch.setenv("UNSLOTH_MXC_DRIVE_ALIAS", "0")
@@ -133,12 +138,20 @@ def _forget_hub_unreachable_verdict():
 @pytest.fixture(autouse = True)
 def _forget_mcp_discovery_state():
     # Discovered tools and failed-probe cool-offs are keyed by server id, and most tests reuse "s1": a cool-off
-    # one test records made a later test on the worker skip discovery for its own "s1".
+    # one test records made a later test on the worker skip discovery for its own "s1". A scoped HTTP session a
+    # test leaves cached is the same: test_mcp_http_sessions asserts the cache is empty after its own calls.
     def _forget():
         client = sys.modules.get("core.inference.mcp_client")
         if client is not None:
             client._tool_cache.clear()
             client._probe_cooloff_until.clear()
+            if client._mcp_sessions:
+                try:
+                    client.close_mcp_sessions(all_accounts = True)
+                except AttributeError:
+                    # A test's monkeypatched stand-in sessions (SimpleNamespace) have no close(); its own
+                    # monkeypatch puts the real dict back.
+                    pass
 
     _forget()
     yield
@@ -802,6 +815,12 @@ def _hub_reachable_without_probing(monkeypatch):
     monkeypatch.setattr(
         utils_utils, "_hf_reachability", (time.monotonic() + 10**6, False), raising = False
     )
+
+
+@pytest.fixture(autouse = True)
+def _no_hub_mirror_probe(monkeypatch):
+    """Saving a mirror endpoint would start a background probe; test_hub_mirror_probe.py turns it back on."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HUB_PROBE", "0")
 
 
 @pytest.fixture(scope = "session")

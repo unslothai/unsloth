@@ -154,7 +154,7 @@ def _request_once(
         return 0, str(exc)
 
 
-# /api/inference/load and /unload commit a 200 after about 15 seconds and pad the body so a proxy cannot time the call out
+# /load and /unload commit a 200 after ~15s and pad the body so a proxy cannot time out.
 _DEFERRED_ERROR_KEY = "_deferred_error"
 
 
@@ -191,7 +191,7 @@ def _stream_events_once(
     headers = {
         "Content-Type": "application/json",
         "Accept": "text/event-stream",
-        # tool_start / tool_end carry no `choices`, so /v1/chat/completions suppresses them for external clients and emits a clean OpenAI stream
+        # Without this header, tool_start/tool_end are suppressed for external clients.
         "X-Unsloth-Events": "1",
     }
     if token:
@@ -241,7 +241,6 @@ def discover_port(explicit: Optional[int]) -> int:
     ports = [explicit] if explicit else DEFAULT_PORTS
     for port in ports:
         status, body = _request(f"http://127.0.0.1:{port}", "GET", "/api/liveness", timeout = 5)
-        # The identity marker, not the status code.
         if status == 200 and isinstance(body, dict) and body.get("service") == "Unsloth UI Backend":
             return port
     raise SystemExit(
@@ -415,10 +414,9 @@ class StatusPoller(threading.Thread):
             )
             self.in_flight_since = None
             elapsed = time.monotonic() - start
-            # Windows timer granularity can end a timed-out read a few ms before the timeout.
+            # Windows timer granularity can end a timed-out read a few ms early.
             timed_out = status == 0 and (elapsed >= self.read_timeout or "timed out" in str(body))
             self.polls.append((start, elapsed * 1000.0, timed_out))
-            # A read that ran past the tick is followed at once by the tick it blocked, as the frontend's queued refresh does
             self._stop_event.wait(max(0.0, self.interval - elapsed))
 
     def stalls_ms(self) -> list[float]:
@@ -489,13 +487,12 @@ def chat(
         "stream": False,
     }
     if tools:
-        # Streamed, because tool_start / tool_end ride the stream and nothing else says a tool ran
+        # Streamed: only the stream's tool_start/tool_end events show a tool ran.
         names = enabled_tools or ["web_search"]
         payload["stream"] = True
         payload["enable_tools"] = True
         payload["enabled_tools"] = names
         payload["tool_choice"] = {"type": "function", "function": {"name": names[0]}}
-        # Nobody is at the keyboard.
         payload["permission_mode"] = "off"
         status, events, error = _stream_events(
             base_url, "/v1/chat/completions", payload, token = token
@@ -581,7 +578,6 @@ def main() -> int:
     token = authenticate(base_url, resolve_studio_home(args.home), args.password)
     print("authenticated")
 
-    # Which llama-server Studio will run, in its own precedence
     status, body = _request(base_url, "GET", "/api/settings/llama-cpp-path", token = token)
     runtime = (
         body
@@ -609,7 +605,7 @@ def main() -> int:
     if variant:
         load_payload["gguf_variant"] = variant
     try:
-        # A model already resident makes /load a no-op ("already_loaded"), and then no PE is loaded inside the evidence window
+        # A resident model makes /load a no-op, so no PE would load inside the window.
         status, body = _request(
             base_url,
             "POST",
@@ -681,7 +677,6 @@ def main() -> int:
             )
             print(f"  tool calls: {results['steps']['tool_calls']['tool_calls']}")
 
-            # UnloadRequest.model_path is required
             status, body = _request(
                 base_url,
                 "POST",
@@ -713,7 +708,6 @@ def main() -> int:
         "in_flight_ms": None if in_flight is None else round(in_flight, 1),
         "max_ms": round(max(durations), 1) if durations else None,
         "median_ms": round(statistics.median(durations), 1) if durations else None,
-        # Reads the frontend would have abandoned, and how long each run of them lasted.
         "abandoned_reads": sum(1 for _, _, t in poller.polls if t),
         "stalls_ms": [round(x, 1) for x in stalls],
         "over_10s": sum(1 for d in durations if d >= 10_000),

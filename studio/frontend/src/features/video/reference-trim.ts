@@ -3,8 +3,7 @@
 
 export const H3_REFERENCE_MIN_SECONDS = 2;
 export const H3_REFERENCE_MAX_SECONDS = 15;
-// Matches validate_h3_reference_trim's slack. Exact comparison refused intervals the server
-// accepts: the 0.1-step inputs reach 2.3 - 0.3, which is 1.9999999999999998.
+// Matches validate_h3_reference_trim's slack: 2.3 - 0.3 is 1.9999999999999998.
 const DURATION_EPSILON = 1e-6;
 
 export interface ReferenceVideoTrimFeedback {
@@ -17,7 +16,6 @@ export interface ReferenceVideoTrim {
   end: number | null;
 }
 
-/** Select the first model-sized interval when a source is too long. */
 export function defaultReferenceVideoTrim(
   sourceDuration?: number,
 ): ReferenceVideoTrim {
@@ -27,15 +25,12 @@ export function defaultReferenceVideoTrim(
     : { start: null, end: null };
 }
 
-/** Return user-facing validation for one optional reference-video interval. */
 export function referenceVideoTrimError(
   label: string,
   start: number | null,
   end: number | null,
   sourceDuration?: number,
 ): string | null {
-  // No interval inside a too-short source can reach the minimum, so say so here instead of letting
-  // the decoder refuse it later.
   if (
     sourceDuration !== undefined &&
     sourceDuration + DURATION_EPSILON < H3_REFERENCE_MIN_SECONDS
@@ -66,7 +61,6 @@ export function referenceVideoTrimError(
   return null;
 }
 
-/** Describe the current trim in the form without presenting a valid selection as a warning. */
 export function referenceVideoTrimFeedback(
   label: string,
   start: number | null,
