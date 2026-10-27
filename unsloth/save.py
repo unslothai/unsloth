@@ -362,6 +362,14 @@ def _add_bare_params4bit_quant_state(model, state_dict):
 _PARAMS4BIT_COMPARE_CHUNK_BYTES = 64 * 1024 * 1024
 
 
+def _packed_bytes_equal(a, b):
+    # Float quant_storage packs NaN / +-0 byte patterns: torch.equal would misjudge them.
+    if a.is_floating_point() or a.is_complex():
+        a = a.contiguous().reshape(-1).view(torch.uint8)
+        b = b.contiguous().reshape(-1).view(torch.uint8)
+    return torch.equal(a, b)
+
+
 def _is_live_params4bit_data(param, value):
     """True when `value` is `param`'s packed data: the same storage, or equal bytes. The byte
     comparison moves bounded slices of the live data to `value`'s device (a CPU-offloaded
@@ -385,17 +393,17 @@ def _is_live_params4bit_data(param, value):
         step = max(1, chunk_bytes // max(1, live.element_size()))
         for start in range(0, live_flat.numel(), step):
             live_chunk = live_flat[start : start + step].to(value.device)
-            if not torch.equal(live_chunk, value_flat[start : start + step]):
+            if not _packed_bytes_equal(live_chunk, value_flat[start : start + step]):
                 return False
         return True
     # Non-contiguous: slice along dim 0 (each slice copies at most its own rows).
     if live.dim() == 0:
-        return bool(torch.equal(live.to(value.device), value))
+        return bool(_packed_bytes_equal(live.to(value.device), value))
     row_bytes = max(1, live[0].numel() * live.element_size())
     step = max(1, chunk_bytes // row_bytes)
     for start in range(0, live.shape[0], step):
         live_chunk = live[start : start + step].to(value.device)
-        if not torch.equal(live_chunk, value[start : start + step]):
+        if not _packed_bytes_equal(live_chunk, value[start : start + step]):
             return False
     return True
 
