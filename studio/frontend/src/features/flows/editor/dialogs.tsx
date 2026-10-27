@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -22,6 +24,7 @@ import {
   exportFlow,
   planFlow,
 } from "../api";
+import { FieldLabel } from "@/features/recipe-studio/dialogs/shared/field-label";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import { documentFromState, useDocStore } from "../stores/doc-store";
 import { useUiStore } from "../stores/ui-store";
@@ -85,8 +88,8 @@ export function RunDialog({
         </DialogHeader>
         <div className="flex flex-col gap-3">
           {params.map((param) => (
-            <div key={param.id} className="flex flex-col gap-1 text-sm">
-              <span className="font-medium">{param.label ?? param.id}</span>
+            <div key={param.id} className="grid gap-1.5">
+              <FieldLabel label={param.label ?? param.id} />
               {param.type === "image" || param.type === "audio" ? (
                 <ParamField
                   spec={{
@@ -152,35 +155,36 @@ export function ModelRequirementList({ models }: { models: PlanModel[] }) {
   if (!models.length)
     return <p className="text-muted-foreground text-sm">No models needed.</p>;
   return (
-    <ul className="flex flex-col divide-y rounded-md border">
+    <ul className="flex flex-col divide-y divide-border/60 rounded-lg border border-border/60">
       {models.map((model) => (
         <li
           key={`${model.kind}:${model.repo}:${model.variant ?? ""}`}
           className="flex items-center gap-3 px-3 py-2 text-sm"
         >
-          <span className="w-16 shrink-0 rounded bg-muted px-1.5 py-0.5 text-center text-[11px] uppercase">
+          <Badge variant="secondary" className="w-16 shrink-0 text-ui-10 uppercase">
             {model.kind}
-          </span>
+          </Badge>
           <span
-            className="min-w-0 flex-1 truncate font-mono text-[12px]"
+            className="min-w-0 flex-1 truncate font-mono text-xs"
             title={model.repo}
           >
             {model.repo}
             {model.variant ? ` · ${model.variant}` : ""}
           </span>
-          <span className="text-[11px] text-muted-foreground">
+          <span className="text-xs text-muted-foreground">
             {formatBytes(model.size_bytes)}
           </span>
-          <span
-            className={`text-[11px] ${
+          <Badge
+            variant="outline"
+            className={
               model.loaded
-                ? "text-emerald-500"
+                ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
                 : model.downloaded
-                  ? "text-sky-500"
+                  ? "border-sky-500/25 bg-sky-500/10 text-sky-700 dark:text-sky-300"
                   : model.fits === false
-                    ? "text-red-500"
-                    : "text-amber-500"
-            }`}
+                    ? "border-destructive/25 bg-destructive/10 text-destructive"
+                    : "border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300"
+            }
           >
             {model.loaded
               ? "loaded"
@@ -189,7 +193,7 @@ export function ModelRequirementList({ models }: { models: PlanModel[] }) {
                 : model.fits === false
                   ? "too big"
                   : "will download"}
-          </span>
+          </Badge>
         </li>
       ))}
     </ul>
@@ -229,7 +233,9 @@ export function PlanDialog({
         </DialogHeader>
         {error && <p className="text-destructive text-sm">{error}</p>}
         {!plan && !error && (
-          <p className="text-muted-foreground text-sm">Checking…</p>
+          <p className="flex items-center gap-2 text-muted-foreground text-sm">
+            <Spinner /> Checking…
+          </p>
         )}
         {plan && (
           <div className="flex flex-col gap-3">
@@ -250,7 +256,7 @@ export function PlanDialog({
             {(plan.hints ?? []).map((hint) => (
               <div
                 key={hint.id}
-                className="flex items-start gap-3 rounded-md border px-3 py-2 text-sm"
+                className="flex items-start gap-3 rounded-lg border border-border/60 bg-muted/10 px-3 py-2 text-sm"
                 data-testid={`flow-plan-hint-${hint.id}`}
               >
                 <p className="min-w-0 flex-1 text-muted-foreground">
@@ -426,9 +432,9 @@ export function ShareDialog({
                   setBusy(null);
                 }
               }}
-              className="flex flex-col items-start gap-0.5 rounded-lg border px-3 py-2.5 text-left hover:bg-muted disabled:opacity-60"
+              className="flex flex-col items-start gap-0.5 rounded-lg border border-border/60 px-3 py-3 text-left transition hover:bg-muted/25 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              <span className="font-medium text-sm">
+              <span className="font-medium text-foreground text-sm">
                 {busy === option.mode ? "Preparing…" : option.title}
               </span>
               <span className="text-muted-foreground text-xs">

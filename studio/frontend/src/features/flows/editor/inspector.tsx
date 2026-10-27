@@ -2,6 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import { CollapsibleSectionTriggerButton } from "@/features/recipe-studio/dialogs/shared/collapsible-section-trigger";
+import { FieldLabel } from "@/features/recipe-studio/dialogs/shared/field-label";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { memo, useCallback, useState } from "react";
 import { loopMembers } from "../app/app-form";
@@ -18,24 +25,31 @@ import {
   PlayIcon,
 } from "./icon-data";
 import { nodeIcon } from "./icons";
+import { NodeIconTile } from "./node-card";
 import { NodeHistory } from "./node-history";
 import { rerollNode, runToNode } from "./node-actions";
 import { OutputValue } from "./output-value";
 import { ParamField } from "./param-fields";
+import { CATEGORY_TONES } from "./node-tones";
 import { TriggerPanel } from "./trigger-panel";
 
+function InspectorHeading({ children }: { children: string }) {
+  return (
+    <h3 className="text-xs font-semibold uppercase text-muted-foreground">
+      {children}
+    </h3>
+  );
+}
 
 function NodeOutputs({ nodeId, spec }: { nodeId: string; spec: NodeSpec }) {
   const runtime = useRuntimeStore((s) => s.nodes[nodeId]) ?? IDLE_RUNTIME;
   const hasOutputs = runtime.outputs && Object.keys(runtime.outputs).length > 0;
   if (!hasOutputs && !runtime.text && !runtime.error) return null;
   return (
-    <section className="flex flex-col gap-2 border-border border-t px-4 py-3">
-      <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-        Output
-      </h3>
+    <section className="flex flex-col gap-2 border-border/60 border-t px-4 py-3">
+      <InspectorHeading>Output</InspectorHeading>
       {runtime.error && (
-        <p className="rounded-md bg-destructive/10 px-2 py-1.5 text-[12px] text-destructive">
+        <p className="rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
           {runtime.error}
         </p>
       )}
@@ -49,7 +63,7 @@ function NodeOutputs({ nodeId, spec }: { nodeId: string; spec: NodeSpec }) {
         spec.outputs.map((port) =>
           runtime.outputs && port.id in runtime.outputs ? (
             <div key={port.id} className="flex flex-col gap-1">
-              <span className="text-[11px] text-muted-foreground">{port.label}</span>
+              <span className="text-xs text-muted-foreground">{port.label}</span>
               <OutputValue value={runtime.outputs[port.id]} />
             </div>
           ) : null,
@@ -70,12 +84,10 @@ function ParamRow({
   onChange: (value: unknown) => void;
 }) {
   return (
-    <div className="flex flex-col gap-1">
-      <span className="text-[11.5px] font-medium text-muted-foreground">
-        {param.label}
-      </span>
+    <div className="grid gap-1.5">
+      <FieldLabel label={param.label} />
       {bound ? (
-        <p className="rounded-md border border-dashed border-border px-2 py-1.5 text-[12px] text-muted-foreground">
+        <p className="rounded-lg border border-dashed border-border/60 px-3 py-2 text-xs text-muted-foreground">
           Set by its connected input
         </p>
       ) : (
@@ -93,6 +105,7 @@ function InspectorImpl() {
   );
   const spec = useCatalogStore((s) => (node ? s.specs[node.type] : undefined));
   const [viewed, setViewed] = useState<Record<string, unknown> | null>(null);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const color =
     useCatalogStore((s) =>
       spec ? s.categories[spec.category]?.color : undefined,
@@ -128,19 +141,15 @@ function InspectorImpl() {
       className="flex h-full w-85 shrink-0 flex-col border-border border-l bg-background text-foreground"
       data-testid="flows-inspector"
     >
-      <header
-        className="flex items-start gap-2 border-border border-b px-4 py-3"
-        style={{ borderTop: `2px solid ${color}` }}
-      >
-        <HugeiconsIcon
+      <header className="flex items-start gap-2.5 border-border/60 border-b px-4 py-3">
+        <NodeIconTile
           icon={nodeIcon(spec.icon)}
-          size={18}
-          strokeWidth={1.8}
-          style={{ color }}
-          className="mt-1"
+          tone={CATEGORY_TONES[spec.category]}
+          accent={color}
         />
         <div className="min-w-0 flex-1">
           <input
+            aria-label="Node name"
             value={node.label ?? ""}
             placeholder={spec.title}
             onChange={(e) =>
@@ -148,9 +157,9 @@ function InspectorImpl() {
                 .getState()
                 .updateNode(node.id, { label: e.target.value || null })
             }
-            className="w-full bg-transparent font-semibold text-[15px] outline-none placeholder:text-foreground"
+            className="-mx-1.5 w-[calc(100%+0.75rem)] rounded-md bg-transparent px-1.5 py-0.5 font-semibold text-sm outline-none placeholder:text-foreground hover:bg-muted focus:bg-muted"
           />
-          <p className="mt-0.5 text-[11.5px] leading-snug text-muted-foreground">
+          <p className="mt-0.5 text-ui-11 leading-snug text-muted-foreground">
             {spec.description}
           </p>
         </div>
@@ -165,7 +174,7 @@ function InspectorImpl() {
           <HugeiconsIcon icon={Cancel01Icon} size={15} />
         </Button>
       </header>
-      <div className="flex flex-wrap gap-1.5 border-border border-b px-4 py-2">
+      <div className="flex flex-wrap gap-1.5 border-border/60 border-b px-4 py-2">
         <Button
           type="button"
           variant="dark"
@@ -239,9 +248,9 @@ function InspectorImpl() {
         </Button>
       </div>
       <div className="flex-1 overflow-y-auto">
-        <section className="flex flex-col gap-3 px-4 py-3">
+        <section className="flex flex-col gap-4 px-4 py-3">
           {spec.params.length === 0 && (
-            <p className="text-[12px] text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               This node has no settings.
             </p>
           )}
@@ -257,11 +266,14 @@ function InspectorImpl() {
               />
             ))}
           {spec.params.some((param) => param.advanced) && (
-            <details>
-              <summary className="cursor-pointer select-none text-[11.5px] font-medium text-muted-foreground hover:text-foreground">
-                Advanced
-              </summary>
-              <div className="mt-3 flex flex-col gap-3">
+            <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
+              <CollapsibleTrigger asChild={true}>
+                <CollapsibleSectionTriggerButton
+                  label="Advanced"
+                  open={advancedOpen}
+                />
+              </CollapsibleTrigger>
+              <CollapsibleContent className="mt-3 flex flex-col gap-4">
                 {spec.params
                   .filter((param) => param.advanced)
                   .map((param) => (
@@ -273,8 +285,8 @@ function InspectorImpl() {
                       onChange={(value) => setParam(param.id, value)}
                     />
                   ))}
-              </div>
-            </details>
+              </CollapsibleContent>
+            </Collapsible>
           )}
         </section>
         {spec.type.startsWith("trigger.") && (
@@ -282,10 +294,8 @@ function InspectorImpl() {
         )}
         <NodeOutputs nodeId={node.id} spec={spec} />
         {viewed && (
-          <section className="flex flex-col gap-2 border-border border-t px-4 py-3">
-            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-              Earlier output
-            </h3>
+          <section className="flex flex-col gap-2 border-border/60 border-t px-4 py-3">
+            <InspectorHeading>Earlier output</InspectorHeading>
             {(spec.outputs.length > 0
               ? spec.outputs
               : // Output blocks declare no ports but store what they showed.
@@ -293,7 +303,7 @@ function InspectorImpl() {
             ).map((port) =>
               port.id in viewed ? (
                 <div key={port.id} className="flex flex-col gap-1">
-                  <span className="text-[11px] text-muted-foreground">
+                  <span className="text-xs text-muted-foreground">
                     {port.label}
                   </span>
                   <OutputValue value={viewed[port.id]} />

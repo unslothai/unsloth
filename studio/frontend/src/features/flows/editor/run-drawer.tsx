@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Empty, EmptyDescription } from "@/components/ui/empty";
+import { Progress } from "@/components/ui/progress";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useReactFlow } from "@xyflow/react";
 import { memo, useMemo } from "react";
@@ -20,14 +24,25 @@ import { MediaThumb, isMediaValue } from "./media";
 import { StructuredOutput, isStructuredValue } from "./value-viewers";
 
 const RUN_STATUS_STYLE: Record<string, string> = {
-  queued: "bg-muted text-foreground",
-  running: "bg-sky-500/15 text-sky-700 dark:text-sky-300",
-  cancelling: "bg-amber-500/15 text-amber-700 dark:text-amber-300",
-  cancelled: "bg-muted text-muted-foreground",
-  completed: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
-  failed: "bg-destructive/10 text-destructive",
-  interrupted: "bg-amber-500/15 text-amber-700 dark:text-amber-300",
+  queued: "text-muted-foreground",
+  running: "border-sky-500/25 bg-sky-500/10 text-sky-700 dark:text-sky-300",
+  cancelling:
+    "border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300",
+  cancelled: "text-muted-foreground",
+  completed:
+    "border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+  failed: "border-destructive/25 bg-destructive/10 text-destructive",
+  interrupted:
+    "border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300",
 };
+
+function DrawerEmpty({ children }: { children: string }) {
+  return (
+    <Empty className="p-6">
+      <EmptyDescription className="text-xs">{children}</EmptyDescription>
+    </Empty>
+  );
+}
 
 function duration(rt: NodeRuntime, now: number): string {
   if (!rt.startedAt) return "";
@@ -56,14 +71,10 @@ function Timeline() {
     [graph, runtimeNodes],
   );
   if (!rows.length)
-    return (
-      <p className="px-4 py-6 text-center text-[12px] text-muted-foreground">
-        Run the flow to see each step here.
-      </p>
-    );
+    return <DrawerEmpty>Run the flow to see each step here.</DrawerEmpty>;
   const now = Date.now();
   return (
-    <ul className="divide-y divide-border">
+    <ul className="divide-y divide-border/60">
       {rows.map(({ id, node, rt }) => (
         <TimelineRow
           key={id}
@@ -100,14 +111,14 @@ const TimelineRow = memo(function TimelineRow({
           useUiStore.getState().openInspector(id);
           void fitView({ nodes: [{ id }], duration: 300, maxZoom: 1.2 });
         }}
-        className="flex w-full items-center gap-3 px-4 py-1.5 text-left text-[12.5px] hover:bg-muted"
+        className="flex w-full items-center gap-3 px-4 py-1.5 text-left text-xs transition hover:bg-muted/35"
       >
         <span
           className={`h-2 w-2 shrink-0 rounded-full ${
             rt.status === "failed"
               ? "bg-destructive"
               : rt.status === "running" || rt.status === "loading_model"
-                ? "animate-pulse bg-sky-500"
+                ? "animate-pulse bg-primary"
                 : rt.status === "done" || rt.status === "cached"
                   ? "bg-emerald-500"
                   : "bg-muted-foreground"
@@ -130,14 +141,12 @@ const TimelineRow = memo(function TimelineRow({
           </span>
         )}
         {rt.progress !== null && rt.status === "running" && (
-          <span className="h-1 w-24 overflow-hidden rounded bg-muted">
-            <span
-              className="block h-full bg-sky-500"
-              style={{ width: `${Math.round(rt.progress * 100)}%` }}
-            />
-          </span>
+          <Progress
+            value={Math.round(rt.progress * 100)}
+            className="h-1 w-24"
+          />
         )}
-        <span className="w-14 text-right font-mono text-[11px] text-muted-foreground">
+        <span className="w-14 text-right font-mono text-ui-11 text-muted-foreground">
           {duration(rt, now)}
         </span>
       </button>
@@ -148,13 +157,9 @@ const TimelineRow = memo(function TimelineRow({
 function Logs() {
   const logs = useRuntimeStore((s) => s.logs);
   if (!logs.length)
-    return (
-      <p className="px-4 py-6 text-center text-[12px] text-muted-foreground">
-        No log lines yet.
-      </p>
-    );
+    return <DrawerEmpty>No log lines yet.</DrawerEmpty>;
   return (
-    <pre className="px-4 py-2 font-mono text-[11px] leading-relaxed text-muted-foreground">
+    <pre className="px-4 py-2 font-mono text-ui-11 leading-relaxed text-muted-foreground">
       {logs.map((line) => (
         <LogLine key={line.seq} line={line} />
       ))}
@@ -231,15 +236,15 @@ function Outputs() {
   }, [runtimeOutputs]);
   if (!media.length && !structured.length)
     return (
-      <p className="px-4 py-6 text-center text-[12px] text-muted-foreground">
+      <DrawerEmpty>
         Images, audio, video, tables and charts from the run appear here.
-      </p>
+      </DrawerEmpty>
     );
   return (
     <div className="flex flex-col gap-3 p-3">
       {structured.map((item) => (
         <section key={item.key} className="flex flex-col gap-1">
-          <h4 className="font-mono text-[11px] text-muted-foreground">{item.label}</h4>
+          <h4 className="font-mono text-ui-11 text-muted-foreground">{item.label}</h4>
           <StructuredOutput value={item.value} />
         </section>
       ))}
@@ -270,28 +275,29 @@ function RunDrawerImpl() {
       className="flex h-65 shrink-0 flex-col border-border border-t bg-background text-foreground"
       data-testid="flows-run-drawer"
     >
-      <div className="flex items-center gap-1 border-border border-b px-2 py-1">
-        {(["run", "outputs", "logs"] as const).map((id) => (
-          <Button
-            key={id}
-            type="button"
-            variant="ghost"
-            size="xs"
-            onClick={() => setDrawer(true, id)}
-            className={`capitalize ${tab === id ? "bg-muted text-foreground" : "text-muted-foreground"}`}
-          >
-            {id}
-          </Button>
-        ))}
+      <div className="flex items-center gap-2 border-border/60 border-b px-2 py-1.5">
+        <Tabs
+          value={tab}
+          onValueChange={(value) => setDrawer(true, value as typeof tab)}
+        >
+          <TabsList className="group-data-horizontal/tabs:h-8">
+            {(["run", "outputs", "logs"] as const).map((id) => (
+              <TabsTrigger key={id} value={id} className="px-3 text-xs capitalize">
+                {id}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
         {runStatus && (
-          <span
-            className={`ml-2 rounded-full px-2 py-0.5 text-[10.5px] font-medium capitalize ${RUN_STATUS_STYLE[runStatus] ?? ""}`}
+          <Badge
+            variant="outline"
+            className={`capitalize ${RUN_STATUS_STYLE[runStatus] ?? ""}`}
           >
             {runStatus}
-          </span>
+          </Badge>
         )}
         {runError && (
-          <span className="ml-2 truncate text-[11.5px] text-destructive">
+          <span className="truncate text-xs text-destructive">
             {runError}
           </span>
         )}

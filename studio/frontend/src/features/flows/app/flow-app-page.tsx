@@ -2,7 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyTitle,
+} from "@/components/ui/empty";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -11,7 +18,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { FieldLabel } from "@/features/recipe-studio/dialogs/shared/field-label";
 import { useNavigate } from "@tanstack/react-router";
 import {
   type ReactElement,
@@ -28,6 +38,7 @@ import {
   startRun,
   uploadAsset,
 } from "../api";
+import { Upload01Icon } from "../editor/icon-data";
 import { MediaThumb } from "../editor/media";
 import { OutputValue } from "../editor/output-value";
 import { DOCUMENT_ACCEPT, documentName } from "../editor/param-fields";
@@ -62,6 +73,7 @@ function FieldInput({
 }) {
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
   switch (field.kind) {
     case "number":
       return (
@@ -126,13 +138,25 @@ function FieldInput({
           {uploadError && (
             <span className="text-destructive text-xs">{uploadError}</span>
           )}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="self-start"
+            disabled={uploading}
+            onClick={() => fileRef.current?.click()}
+          >
+            <HugeiconsIcon icon={Upload01Icon} className="size-4" />
+            {uploading ? "Uploading…" : media || docName ? "Replace" : "Choose file"}
+          </Button>
           <input
+            ref={fileRef}
             type="file"
             accept={
               field.kind === "document" ? DOCUMENT_ACCEPT : `${field.kind}/*`
             }
             disabled={uploading}
-            className="text-sm"
+            className="hidden"
             onChange={(e) => {
               const file = e.target.files?.[0];
               e.target.value = "";
@@ -258,14 +282,17 @@ export function FlowAppPage({ flowId }: { flowId: string }): ReactElement {
 
   if (failed)
     return (
-      <div className="flex flex-1 items-center justify-center p-8 text-muted-foreground">
-        {failed}
-      </div>
+      <Empty>
+        <EmptyHeader>
+          <EmptyTitle>Could not open this app</EmptyTitle>
+          <EmptyDescription>{failed}</EmptyDescription>
+        </EmptyHeader>
+      </Empty>
     );
   if (!doc)
     return (
-      <div className="flex flex-1 items-center justify-center p-8 text-muted-foreground">
-        Loading…
+      <div className="flex flex-1 items-center justify-center gap-2 p-8 text-muted-foreground text-sm">
+        <Spinner /> Loading…
       </div>
     );
 
@@ -277,7 +304,7 @@ export function FlowAppPage({ flowId }: { flowId: string }): ReactElement {
       >
         <header className="flex items-start gap-3">
           <div className="min-w-0 flex-1">
-            <h1 className="truncate font-heading text-xl font-semibold">
+            <h1 className="truncate text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground">
               {doc.name}
             </h1>
             {doc.description && (
@@ -298,11 +325,11 @@ export function FlowAppPage({ flowId }: { flowId: string }): ReactElement {
         </header>
 
         {fields.length > 0 && (
-          <section className="flex flex-col gap-4 rounded-xl border bg-card p-4">
+          <Card size="sm" className="gap-4 px-4">
             {fields.map((field) => (
               // biome-ignore lint/a11y/noLabelWithoutControl: the control is the field rendered inside
-              <label key={field.key} className="flex flex-col gap-1.5">
-                <span className="text-sm font-medium">{field.label}</span>
+              <label key={field.key} className="grid gap-1.5">
+                <FieldLabel label={field.label} />
                 <FieldInput
                   field={field}
                   value={values[field.key]}
@@ -317,7 +344,7 @@ export function FlowAppPage({ flowId }: { flowId: string }): ReactElement {
                 />
               </label>
             ))}
-          </section>
+          </Card>
         )}
 
         <div className="flex items-center gap-3">
@@ -351,7 +378,7 @@ export function FlowAppPage({ flowId }: { flowId: string }): ReactElement {
         </div>
 
         {run.errors.length > 0 && (
-          <div className="rounded-md bg-destructive/10 px-3 py-2 text-destructive text-sm">
+          <div className="rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-destructive text-sm">
             {run.errors.map((e, i) => (
               // biome-ignore lint/suspicious/noArrayIndexKey: messages can repeat
               <p key={i}>{e}</p>
@@ -365,11 +392,8 @@ export function FlowAppPage({ flowId }: { flowId: string }): ReactElement {
             data-testid="flows-app-results"
           >
             {outputs.map((node) => (
-              <div
-                key={node.id}
-                className="flex flex-col gap-2 rounded-xl border bg-card p-4 dark"
-              >
-                <span className="text-muted-foreground text-xs uppercase tracking-wide">
+              <Card key={node.id} size="sm" className="gap-2 px-4">
+                <span className="text-muted-foreground text-xs font-semibold uppercase">
                   {node.label ||
                     (node.type === "output.result"
                       ? String(node.params.name ?? "Result")
@@ -382,7 +406,7 @@ export function FlowAppPage({ flowId }: { flowId: string }): ReactElement {
                     {running ? "Waiting…" : "Run the flow to see this."}
                   </span>
                 )}
-              </div>
+              </Card>
             ))}
           </section>
         )}

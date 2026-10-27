@@ -28,13 +28,13 @@ export function OutputValue({ value }: { value: unknown }) {
   if (isStructuredValue(value)) return <StructuredOutput value={value} />;
   if (typeof value === "string") {
     return (
-      <p className="max-h-72 overflow-y-auto whitespace-pre-wrap text-[12.5px] leading-relaxed text-foreground">
+      <p className="max-h-72 overflow-y-auto whitespace-pre-wrap text-xs leading-relaxed text-foreground">
         {value}
       </p>
     );
   }
   return (
-    <pre className="max-h-72 overflow-auto rounded-md bg-muted p-2 font-mono text-[11px] leading-snug text-foreground">
+    <pre className="max-h-72 overflow-auto rounded-lg border border-border/60 bg-muted/40 p-2 font-mono text-ui-11 leading-snug text-foreground">
       {JSON.stringify(value, null, 2).slice(0, 20_000)}
     </pre>
   );

@@ -1,7 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  Alert,
+  AlertAction,
+  AlertDescription,
+  AlertTitle,
+} from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
@@ -11,6 +19,7 @@ import {
 } from "../api";
 import { pendingItems } from "../capability-items";
 import { useUiStore } from "../stores/ui-store";
+import { InformationCircleIcon } from "./icon-data";
 
 export function CapabilityBanner({ flowId }: { flowId: string }) {
   const [report, setReport] = useState<CapabilityReport | null>(null);
@@ -50,37 +59,39 @@ export function CapabilityBanner({ flowId }: { flowId: string }) {
   };
 
   return (
-    <div
-      className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-sky-500/30 bg-sky-500/10 px-3 py-1.5 text-[12px] text-sky-900 dark:text-sky-100"
+    <Alert
+      className="rounded-none border-x-0 border-t-0 py-2"
       data-testid="flows-capabilities"
     >
-      <span className="font-medium">This flow reaches outside Studio:</span>
-      {items.map((item) => (
-        <span
-          key={item.key}
-          className="rounded bg-background/70 px-1.5 py-0.5 text-foreground"
-        >
-          {item.label}
-        </span>
-      ))}
-      {report.can_approve ? (
-        <Button
-          type="button"
-          variant="dark"
-          size="xs"
-          disabled={busy}
-          onClick={() => void approve()}
-          className="ml-auto"
-          data-testid="flows-capabilities-approve"
-        >
-          Approve and allow
-        </Button>
-      ) : (
-        <span className="ml-auto text-sky-800/80 dark:text-sky-200/80">
-          Only the Studio owner can approve these; until then those blocks do
-          not run.
-        </span>
+      <HugeiconsIcon icon={InformationCircleIcon} />
+      <AlertTitle className="text-xs">This flow reaches outside Studio</AlertTitle>
+      <AlertDescription className="flex flex-wrap items-center gap-1.5 text-xs">
+        {items.map((item) => (
+          <Badge key={item.key} variant="outline">
+            {item.label}
+          </Badge>
+        ))}
+        {!report.can_approve && (
+          <span>
+            Only the Studio owner can approve these; until then those blocks do
+            not run.
+          </span>
+        )}
+      </AlertDescription>
+      {report.can_approve && (
+        <AlertAction className="top-1/2 -translate-y-1/2">
+          <Button
+            type="button"
+            variant="dark"
+            size="xs"
+            disabled={busy}
+            onClick={() => void approve()}
+            data-testid="flows-capabilities-approve"
+          >
+            Approve and allow
+          </Button>
+        </AlertAction>
       )}
-    </div>
+    </Alert>
   );
 }

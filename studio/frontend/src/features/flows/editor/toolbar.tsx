@@ -118,15 +118,15 @@ function ToolbarImpl({
           if (!e.target.value.trim())
             useDocStore.getState().setMeta({ name: "Untitled flow" });
         }}
-        className="ml-1 w-[min(320px,30vw)] rounded-full bg-transparent px-2.5 py-1 font-semibold text-[14px] outline-none hover:bg-muted focus:bg-muted"
+        className="ml-1 h-7 w-[min(320px,30vw)] rounded-md border border-transparent bg-transparent px-2 font-semibold text-sm text-foreground outline-none transition hover:border-border focus-visible:border-ring"
         aria-label="Flow name"
         data-testid="flows-name"
       />
-      <Badge variant="secondary" className="capitalize">
+      <Badge variant="secondary" className="h-6 shrink-0 text-ui-10 capitalize">
         {kind}
       </Badge>
       <span
-        className={`ml-1 text-[11px] ${saveState === "error" || saveState === "conflict" ? "text-destructive" : "text-muted-foreground"}`}
+        className={`ml-1 text-xs ${saveState === "error" || saveState === "conflict" ? "text-destructive" : "text-muted-foreground"}`}
         data-testid="flows-save-state"
       >
         {SAVE_LABEL[saveState]}
