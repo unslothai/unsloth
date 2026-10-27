@@ -414,7 +414,6 @@ test("sections have created and last modified dates, and Last modified is the de
 test("chat, project and section cards are a little shorter than square, dated bottom left", () => {
   const items = readSrc("features/library/chats/chats-items.tsx");
   const card = items.slice(items.indexOf("const CARD = cn("), items.indexOf("const ICON ="));
-  // The grid row sets the size, so no card's name or footer can grow it or, through equal rows, its tab.
   assert.doesNotMatch(card, /aspect-\[/);
   assert.match(card, /min-h-0 min-w-0/);
   assert.match(card, /CHAT_CARD_ROW_MIN =\s*"calc\(var\(--spacing\) \* 26 \+ 2\.75 \* var\(--text-ui-14\) \+ 3 \* var\(--text-ui-12\)\)"/);
