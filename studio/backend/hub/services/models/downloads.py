@@ -563,6 +563,7 @@ async def cancel_download_model_response(body: CancelDownloadRequest):
         )
     key = _download_job_key(repo_id, variant)
     from hub.services import training_downloads
+
     if training_downloads.is_training_variant(variant):
         state = await asyncio.to_thread(training_downloads.cancel, key, body.generation)
         return {"job_key": key, "state": state}
@@ -792,6 +793,7 @@ async def get_gguf_download_progress_response(
 ) -> dict:
     """Return download progress for a specific GGUF variant."""
     from hub.services import training_downloads
+
     if training_downloads.is_training_variant(variant):
         key = _download_job_key(repo_id, variant)
         return await asyncio.to_thread(training_downloads.progress, key)

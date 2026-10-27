@@ -34,11 +34,19 @@ def claim(service, job_id: str, repo_id: Optional[str]) -> Optional[str]:
     variant = f"{PREFIX}{job_id}"
     key = download_registry.normalize_job_key(f"{repo_id}::{variant}")
     metadata = registry.get_job_metadata(key)
-    if metadata is not None and metadata.owner == OWNER and registry.get_job(key).state == "running":
+    if (
+        metadata is not None
+        and metadata.owner == OWNER
+        and registry.get_job(key).state == "running"
+    ):
         return key
     accepted, state = registry.claim(
-        key, download_registry.TRANSPORT_AUTO,
-        repo_type = "model", repo_id = repo_id, variant = variant, owner = OWNER,
+        key,
+        download_registry.TRANSPORT_AUTO,
+        repo_type = "model",
+        repo_id = repo_id,
+        variant = variant,
+        owner = OWNER,
     )
     if not accepted:
         raise RuntimeError(f"Model files are already in use by another download ({state}).")
@@ -47,7 +55,11 @@ def claim(service, job_id: str, repo_id: Optional[str]) -> Optional[str]:
     return key
 
 
-def settle(key: Optional[str], outcome: str = "idle", error: Optional[str] = None) -> None:
+def settle(
+    key: Optional[str],
+    outcome: str = "idle",
+    error: Optional[str] = None,
+) -> None:
     if key is None:
         return
     registry = download_registry.get_models_registry()
@@ -70,7 +82,7 @@ def cancel(key: str, generation: Optional[int]) -> str:
     service = _services.get(key)
     if metadata is None or metadata.owner != OWNER or service is None:
         return registry.get_job(key).state
-    job_id = metadata.variant[len(PREFIX):]
+    job_id = metadata.variant[len(PREFIX) :]
     service.stop(save = False, job_id = job_id, download_only = True, download_generation = generation)
     return registry.get_job(key).state
 
@@ -82,7 +94,9 @@ def progress(key: str) -> dict:
     snapshot = service.status() if service is not None else {}
     metadata = registry.get_job_metadata(key)
     same_job = metadata is not None and metadata.variant == f"{PREFIX}{snapshot.get('job_id')}"
-    reading = snapshot.get("download_progress") if same_job and snapshot.get("in_model_load") else None
+    reading = (
+        snapshot.get("download_progress") if same_job and snapshot.get("in_model_load") else None
+    )
     done = reading.get("bytes_done", 0) if reading else 0
     total = reading.get("bytes_total", 0) if reading else 0
     return {

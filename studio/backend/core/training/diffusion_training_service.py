@@ -72,7 +72,11 @@ class _DownloadPhaseQueue:
     def put(self, event):
         kind = event.get("type")
         if kind == "model_load_started" or kind in (
-            "model_load_completed", "preparing", "progress", "complete", "error"
+            "model_load_completed",
+            "preparing",
+            "progress",
+            "complete",
+            "error",
         ):
             flag, lock = self.phase
             with lock:
@@ -83,7 +87,13 @@ class _DownloadPhaseQueue:
         self.queue.put(event)
 
 
-def _run_diffusion_child(*, event_queue: Any, stop_queue: Any, config: dict, download_phase = None) -> None:
+def _run_diffusion_child(
+    *,
+    event_queue: Any,
+    stop_queue: Any,
+    config: dict,
+    download_phase = None,
+) -> None:
     # Fresh spawned interpreter: re-apply network injections inside the secret scrub and before the trainer imports diffusers.
     from utils.native_tls import activate_native_tls
     from utils.happy_eyeballs import activate_happy_eyeballs
@@ -103,8 +113,11 @@ def _run_diffusion_child(*, event_queue: Any, stop_queue: Any, config: dict, dow
     from .diffusion_lora_trainer import run_diffusion_training_process
 
     run_diffusion_training_process(
-        event_queue = _DownloadPhaseQueue(event_queue, download_phase) if download_phase else event_queue,
-        stop_queue = stop_queue, config = config,
+        event_queue = _DownloadPhaseQueue(event_queue, download_phase)
+        if download_phase
+        else event_queue,
+        stop_queue = stop_queue,
+        config = config,
     )
 
 
@@ -723,21 +736,32 @@ class DiffusionTrainingService:
     @_invalidates_gpu_memory("diffusion training stop")
     @job_control
     def stop(
-        self, save: bool = True, *, job_id: Optional[str] = None,
-        download_only: bool = False, download_generation: Optional[int] = None,
+        self,
+        save: bool = True,
+        *,
+        job_id: Optional[str] = None,
+        download_only: bool = False,
+        download_generation: Optional[int] = None,
     ) -> bool:
         """Request a clean stop: the trainer finishes the current step, then either saves
         a partial adapter (``save=True``, the default) or discards the run (``save=False``,
         matching the LLM trainer's cancel). Returns True if a stop was signalled, False if
         nothing was running."""
-        with self._lock, self._download_phase[1] if self._download_phase else contextlib.nullcontext():
+        with (
+            self._lock,
+            self._download_phase[1] if self._download_phase else contextlib.nullcontext(),
+        ):
             # A Downloads row can outlive its transfer or be clicked as a replacement starts.
             # Check under the same lock as signalling; never cancel a different run or its training.
             if job_id is not None and self._state.get("job_id") != job_id:
                 return False
             if download_generation is not None:
                 from hub.utils.download_registry import get_models_registry
-                if not self._download_key or get_models_registry().current_generation(self._download_key) != download_generation:
+                if (
+                    not self._download_key
+                    or get_models_registry().current_generation(self._download_key)
+                    != download_generation
+                ):
                     return False
             if download_only and (
                 job_id is None
@@ -761,12 +785,17 @@ class DiffusionTrainingService:
                     self._proc.kill()
                     self._proc.join(timeout = 2.0)
                 if self._proc.is_alive():
-                    raise RuntimeError("The training download worker has not stopped yet. Try stopping it again.")
+                    raise RuntimeError(
+                        "The training download worker has not stopped yet. Try stopping it again."
+                    )
                 self._stop_signalled = True
                 self._discard_requested = not save
                 self._state.update(
-                    active = False, status = "stopped", in_model_load = False,
-                    preparation = None, download_progress = None,
+                    active = False,
+                    status = "stopped",
+                    in_model_load = False,
+                    preparation = None,
+                    download_progress = None,
                     message = "Stopped while loading model files; training had not started.",
                     updated_at = time.time(),
                 )
@@ -906,8 +935,11 @@ class DiffusionTrainingService:
                         discarding = self._discard_requested
                         training_downloads.settle(
                             self._download_key,
-                            "cancelled" if self._state.get("status") == "stopped"
-                            else "error" if self._state.get("status") == "error" else "idle",
+                            "cancelled"
+                            if self._state.get("status") == "stopped"
+                            else "error"
+                            if self._state.get("status") == "error"
+                            else "idle",
                             self._state.get("message"),
                         )
                     if discarding:
@@ -1256,7 +1288,11 @@ class DiffusionTrainingService:
             elif etype in ("preparing", "model_load_completed", "progress", "complete", "error"):
                 training_downloads.settle(
                     self._download_key,
-                    "error" if etype == "error" else "cancelled" if s.get("status") == "stopped" else "idle",
+                    "error"
+                    if etype == "error"
+                    else "cancelled"
+                    if s.get("status") == "stopped"
+                    else "idle",
                     s.get("message") if etype == "error" else None,
                 )
 

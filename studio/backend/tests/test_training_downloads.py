@@ -43,8 +43,11 @@ def rig(monkeypatch):
     service._proc = BlockingDownload()
     service._stop_queue = queue.Queue()
     service._state.update(
-        job_id = "a" * 32, active = True, status = "running",
-        base_model = "unsloth/FLUX.1-dev", in_model_load = True,
+        job_id = "a" * 32,
+        active = True,
+        status = "running",
+        base_model = "unsloth/FLUX.1-dev",
+        in_model_load = True,
     )
     service._download_key = training_downloads.claim(service, "a" * 32, "unsloth/FLUX.1-dev")
     yield service, registry, service._download_key
@@ -58,12 +61,20 @@ def test_metadata_stage_is_discoverable_and_cancellable_through_main_manager(rig
     assert [(r.repo_id, r.owner, r.variant) for r in rows] == [
         ("unsloth/FLUX.1-dev", "training", "@training-" + "a" * 32)
     ]
-    reading = asyncio.run(downloads.get_gguf_download_progress_response(rows[0].repo_id, rows[0].variant))
+    reading = asyncio.run(
+        downloads.get_gguf_download_progress_response(rows[0].repo_id, rows[0].variant)
+    )
     assert reading["expected_bytes"] == 0
     assert reading["progress_scope"] == "active_files"
-    result = asyncio.run(downloads.cancel_download_model_response(CancelDownloadRequest(
-        repo_id = rows[0].repo_id, gguf_variant = rows[0].variant, generation = rows[0].generation,
-    )))
+    result = asyncio.run(
+        downloads.cancel_download_model_response(
+            CancelDownloadRequest(
+                repo_id = rows[0].repo_id,
+                gguf_variant = rows[0].variant,
+                generation = rows[0].generation,
+            )
+        )
+    )
     assert result["state"] == "cancelled"
     assert not service._proc.is_alive()
     assert service._stop_queue.empty(), "blocked Xet never reads this queue"
@@ -73,9 +84,16 @@ def test_metadata_stage_is_discoverable_and_cancellable_through_main_manager(rig
 
 def test_current_files_never_claim_the_entire_model_is_installed(rig):
     service, registry, key = rig
-    service._apply_event({"type": "model_download_progress", "download_progress": {
-        "bytes_done": 10, "bytes_total": 10, "label": "Reconstructing (incomplete total...)",
-    }})
+    service._apply_event(
+        {
+            "type": "model_download_progress",
+            "download_progress": {
+                "bytes_done": 10,
+                "bytes_total": 10,
+                "label": "Reconstructing (incomplete total...)",
+            },
+        }
+    )
     reading = training_downloads.progress(key)
     assert (reading["downloaded_bytes"], reading["expected_bytes"]) == (10, 10)
     assert reading["complete_on_disk"] is False
@@ -127,7 +145,9 @@ def test_real_child_phase_wins_over_a_delayed_parent_loading_event(rig):
     assert service._state["in_model_load"] is True  # The parent has not consumed the event.
     assert service.stop(save = False, job_id = "a" * 32, download_only = True) is False
     assert service.stop(save = True) is True
-    assert service._proc.is_alive(), "optimizer/preparation cannot be terminated using stale parent status"
+    assert (
+        service._proc.is_alive()
+    ), "optimizer/preparation cannot be terminated using stale parent status"
     assert service._stop_queue.get_nowait() is True
 
 
@@ -135,7 +155,12 @@ def test_buffered_events_cannot_resurrect_a_killed_download(rig):
     service, registry, key = rig
     assert service.stop(save = False)
     service._apply_event({"type": "model_load_started"}, proc = service._proc)
-    service._apply_event({"type": "model_download_progress", "download_progress": {"bytes_done": 1, "bytes_total": 2}})
+    service._apply_event(
+        {
+            "type": "model_download_progress",
+            "download_progress": {"bytes_done": 1, "bytes_total": 2},
+        }
+    )
     assert service.status()["status"] == "stopped"
     assert service.status()["download_progress"] is None
     assert registry.get_job(key).state == "cancelled"
@@ -157,7 +182,10 @@ def test_registry_account_is_checked_before_reading_or_cancelling(rig, monkeypat
     from fastapi import HTTPException
 
     monkeypatch.setattr(download_lifecycle, "download_belongs_to_account", lambda *_args: False)
-    for action in [lambda: training_downloads.progress(key), lambda: training_downloads.cancel(key, registry.current_generation(key))]:
+    for action in [
+        lambda: training_downloads.progress(key),
+        lambda: training_downloads.cancel(key, registry.current_generation(key)),
+    ]:
         with pytest.raises(HTTPException) as error:
             action()
         assert error.value.status_code == 404
