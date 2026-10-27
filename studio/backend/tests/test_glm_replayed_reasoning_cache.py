@@ -131,14 +131,21 @@ def test_other_clients_keep_the_billing_header_as_upstream():
     msgs = [{"role": "user", "content": "hi"}]
     text = "x-anthropic-billing-header: cc_version=1; cch=abc;\nYou are helpful"
     assert anthropic_messages_to_openai(msgs, text)[0] == {"role": "system", "content": text}
-    blocks = [{"type": "text", "text": "x-anthropic-billing-header: cch=1;"}, {"type": "text", "text": "Hi"}]
+    blocks = [
+        {"type": "text", "text": "x-anthropic-billing-header: cch=1;"},
+        {"type": "text", "text": "Hi"},
+    ]
     assert anthropic_messages_to_openai(msgs, blocks)[0]["content"] == (
         "x-anthropic-billing-header: cch=1;\nHi"
     )
 
 
 class _Headers(dict):
-    def get(self, key, default = None):
+    def get(
+        self,
+        key,
+        default = None,
+    ):
         return {k.lower(): v for k, v in self.items()}.get(key.lower(), default)
 
 

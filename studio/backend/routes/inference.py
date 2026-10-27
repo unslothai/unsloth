@@ -4879,7 +4879,11 @@ def _from_claude_desktop_gateway(request) -> bool:
     return bool(headers is not None and headers.get(GATEWAY_CLIENT_HEADER) == GATEWAY_CLIENT_VALUE)
 
 
-def _anthropic_preserve_thinking(llama_backend, payload, request = None) -> bool:
+def _anthropic_preserve_thinking(
+    llama_backend,
+    payload,
+    request = None,
+) -> bool:
     """None means unset: keep the launch preserve mode; coercing to False would strip replayed reasoning."""
     if payload.preserve_thinking is not None:
         return bool(payload.preserve_thinking)
