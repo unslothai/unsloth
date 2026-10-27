@@ -670,6 +670,16 @@ def _fit_configs_to_smem(
 _WIDE_DW_MIN_OUTPUT = 768 * 1024
 
 
+def _wide_dw_device_ok(device = None) -> bool:
+    """NVIDIA sm80+ only: on T4 (sm75) the 128-wide dW tile was 7-9x slower, and ROCm is unmeasured."""
+    try:
+        if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
+            return False
+        return torch.cuda.get_device_capability(device)[0] >= 8
+    except Exception:
+        return False
+
+
 def _get_heuristic_configs(
     n_dim: Optional[int] = None,
     k_dim: Optional[int] = None,
@@ -739,6 +749,7 @@ def _get_heuristic_configs(
         and n_dim is not None
         and n_dim % 128 == 0
         and n_dim * k_dim >= _WIDE_DW_MIN_OUTPUT
+        and _wide_dw_device_ok(device)
     ):
         config_bwd_dw.BLOCK_SIZE_N = 128
         config_bwd_dw.num_stages = 3

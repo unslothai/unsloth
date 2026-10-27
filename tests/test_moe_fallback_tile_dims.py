@@ -89,7 +89,8 @@ def no_smem_fit(ac, monkeypatch):
 
 @pytest.mark.parametrize("hidden,inter", SHAPES + [(2048, 1024)])
 @pytest.mark.parametrize("which", ["heuristic", "default"])
-def test_fallback_tiles_divide_each_gemm(ac, no_smem_fit, hidden, inter, which):
+def test_fallback_tiles_divide_each_gemm(ac, no_smem_fit, monkeypatch, hidden, inter, which):
+    monkeypatch.setattr(ac, "_wide_dw_device_ok", lambda device = None: True)
     fn = ac._get_heuristic_configs if which == "heuristic" else ac._get_default_configs
     old = OLD_HEURISTIC if which == "heuristic" else OLD_DEFAULT
     for kwargs, (n, k) in _gemms(hidden, inter):
@@ -140,7 +141,8 @@ def test_1408_backward_k_shrinks(ac):
     assert (dx.BLOCK_SIZE_N, dw.BLOCK_SIZE_N) == (64, 64)
 
 
-def test_heuristic_dw_widens_n_when_k_leaves_64(ac):
+def test_heuristic_dw_widens_n_when_k_leaves_64(ac, monkeypatch):
+    monkeypatch.setattr(ac, "_wide_dw_device_ok", lambda device = None: True)
     # gpt-oss-20b: GEMM1 N = 5760, K = 2880 -> dW 64 x 128 x 64 at 3 stages; fwd / dX tiles unchanged.
     fwd, dx, dw = ac._get_heuristic_configs(n_dim = 5760, k_dim = 2880)
     assert _tiles((fwd, dx)) == ((64, 128, 64, 8, 3), (64, 64, 64, 8, 4))
@@ -265,3 +267,21 @@ def test_smem_limit_follows_the_current_device(ac, monkeypatch):
     assert ac._device_smem_per_block() == 166912
     current["index"] = 1
     assert ac._device_smem_per_block() == 101376
+
+
+@pytest.mark.parametrize(
+    "available,hip,capability,ok",
+    [(True, None, (7, 5), False), (True, None, (8, 0), True), (True, None, (10, 0), True),
+     (True, "7.1", (11, 5), False), (False, None, (8, 0), False)],
+)
+def test_wide_dw_tile_only_on_sm80_plus_nvidia(ac, monkeypatch, available, hip, capability, ok):
+    # T4 (sm75): the 128-wide dW tile was 7-9x slower than 64 x 64 (fp16, torch 2.14); ROCm unmeasured.
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: available)
+    monkeypatch.setattr(torch.version, "hip", hip)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: capability)
+    assert ac._wide_dw_device_ok() is ok
+
+
+def test_t4_keeps_the_fitted_dw_tile(ac, no_smem_fit, monkeypatch):
+    monkeypatch.setattr(ac, "_wide_dw_device_ok", lambda device = None: False)
+    assert _tiles(ac._get_heuristic_configs(n_dim = 5760, k_dim = 2880)[2:]) == ((64, 64, 64, 8, 4),)
