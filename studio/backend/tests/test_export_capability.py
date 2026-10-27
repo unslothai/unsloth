@@ -95,6 +95,7 @@ def test_apple_without_mlx_reports_mlx_unavailable(monkeypatch):
 
 def test_apple_no_torch_install_reports_no_torch(monkeypatch):
     _patch(monkeypatch, torch = False, device = hw.DeviceType.CPU, apple = True)
+    monkeypatch.setattr(hw.platform, "mac_ver", lambda: ("14.5", ("", "", ""), ""))
     monkeypatch.setattr(hw, "current_chat_only_verdict", lambda: ("no_torch", None))
     cap = hw.export_capability()
     assert cap["export_supported"] is False

@@ -87,6 +87,19 @@ def test_an_overflowing_prompt_drops_its_oldest_turns_and_reports_the_boundary(
     assert result["messages"][-1] is messages[-1]
 
 
+def test_chat_stop_reaches_the_archive_embedding_pass(archive_calls):
+    """Stop must be able to interrupt the archive's embedding before inference (#14519)."""
+    import threading
+
+    stop = threading.Event()
+    _fit(_backend(), _thread(), thread_id = "thread-1", cancel_event = stop)
+
+    cancel_check = archive_calls[-1]["cancel_check"]
+    assert cancel_check() is False
+    stop.set()
+    assert cancel_check() is True
+
+
 @pytest.mark.parametrize(
     "case", ["not_opted_in", "not_mlx", "media", "resumed_reply", "resumed_thought", "no_count"]
 )

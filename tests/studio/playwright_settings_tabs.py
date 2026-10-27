@@ -348,13 +348,20 @@ def run_lan_address_actions(page) -> None:
         if address.count() != 1:
             fail(f"LAN address {url}: expected one visible row, found {address.count()}")
             continue
+        # The row is the widest ancestor that still names only this address, not the text's
+        # parent: the copy button now sits inside the URL pill and the QR button beside it.
         labels = address.evaluate(
-            """(node) => [...node.parentElement.querySelectorAll('button')]
-                .map((button) => button.getAttribute('aria-label'))"""
+            """(node, urls) => {
+                const names = (el) => urls.filter((u) => el.textContent.includes(u)).length;
+                let row = node.parentElement;
+                while (row.parentElement && names(row.parentElement) === 1) row = row.parentElement;
+                return [...row.querySelectorAll('button')].map((b) => b.getAttribute('aria-label'));
+            }""",
+            LAN_URLS,
         )
         rows[url] = labels
         expected = [f"Show QR code for {url}", f"Copy {url}"]
-        if labels != expected:
+        if sorted(labels) != sorted(expected):
             fail(f"LAN address {url}: row actions {labels}, expected {expected}")
 
     if len(rows) != len(LAN_URLS):
@@ -523,6 +530,84 @@ def run_keystroke_search(page) -> None:
     report["steps"].append("keystroke-search")
 
 
+def run_shortcut_recorder(page) -> None:
+    """Selecting a chord records the next one ahead of the shortcut it names and of the dialog's
+    own Escape; the row's switch and Backspace turn the action off without losing the dialog."""
+    open_dialog(page, "keyboard-shortcuts")
+    settle_panel(page)
+    row = page.locator(f'{PANEL} [data-settings-label="New chat"]')
+    chord = row.locator('button[aria-label^="Change shortcut"]').first
+    box = row.locator("input")
+    stored_js = "() => localStorage.getItem('unsloth_keyboard_shortcuts')"
+    # Same platform read as run_keystroke_search: Meta records nothing off macOS.
+    mac = page.evaluate(
+        "() => /mac|iphone|ipad|ipod/i.test(`${navigator.platform} ${navigator.userAgent}`)"
+    )
+    mod = "Meta" if mac else "Control"
+    state: dict = {"mod": mod}
+
+    click_forced(chord, timeout = 15000)
+    box.wait_for(state = "visible", timeout = 5000)
+    state["placeholder"] = box.get_attribute("placeholder")
+    # A dialog gone here means the press reached Radix before the recorder.
+    page.keyboard.press("Escape")
+    page.wait_for_timeout(SETTLE_MS)
+    state["after_escape"] = {
+        "dialog": page.locator('div[role="dialog"]').count(),
+        "recording": box.count(),
+    }
+
+    click_forced(chord, timeout = 15000)
+    box.wait_for(state = "visible", timeout = 5000)
+    page.keyboard.press(f"{mod}+Shift+KeyY")
+    until(page, f"() => ({stored_js})()?.includes('Mod+Shift+KeyY')")
+    state["recorded"] = {"stored": page.evaluate(stored_js), "shown": chord.inner_text()}
+
+    switch = row.locator('button[role="switch"]')
+    click_forced(switch, timeout = 15000)
+    until(page, f"() => ({stored_js})()?.includes('\"disabled\":true')")
+    state["switched_off"] = {
+        "checked": switch.get_attribute("aria-checked"),
+        "stored": page.evaluate(stored_js),
+    }
+
+    click_forced(chord, timeout = 15000)
+    box.wait_for(state = "visible", timeout = 5000)
+    # Hold the box before the key: Backspace closes the recorder in the same render (#14896), so
+    # resolving the locator afterwards waits 30 s for an input that is already gone.
+    recorder = box.element_handle()
+    page.keyboard.press("Backspace")
+    until(page, "el => el && !el.isConnected", arg = recorder)
+    state["cleared"] = {"shown": chord.inner_text(), "stored": page.evaluate(stored_js)}
+
+    click_forced(page.get_by_role("button", name = "Restore defaults"), timeout = 15000)
+    until(page, f"() => ({stored_js})() === null")
+    state["reset"] = {
+        "stored": page.evaluate(stored_js),
+        "checked": switch.get_attribute("aria-checked"),
+    }
+    report["shortcut_recorder"] = state
+
+    if state["placeholder"] != "Press key sequence":
+        fail(f"shortcut recorder: no recorder box ({state['placeholder']})")
+    if state["after_escape"]["dialog"] != 1:
+        fail("shortcut recorder: Escape closed the dialog instead of cancelling")
+    if state["after_escape"]["recording"] != 0:
+        fail("shortcut recorder: Escape left the recorder open")
+    if "Mod+Shift+KeyY" not in (state["recorded"]["stored"] or ""):
+        fail(f"shortcut recorder: the chord was not stored ({state['recorded']})")
+    if "Y" not in state["recorded"]["shown"]:
+        fail(f"shortcut recorder: the row does not show the chord ({state['recorded']})")
+    if state["switched_off"]["checked"] != "false":
+        fail(f"shortcut recorder: the switch did not turn off ({state['switched_off']})")
+    if state["cleared"]["shown"].strip() != "none":
+        fail(f"shortcut recorder: Backspace did not clear the chord ({state['cleared']})")
+    if state["reset"]["stored"] is not None or state["reset"]["checked"] != "true":
+        fail(f"shortcut recorder: Reset all left overrides ({state['reset']})")
+    page.evaluate("() => window.__settingsSmoke.close()")
+    report["steps"].append("shortcut-recorder")
+
+
 def assert_model_memory_rows() -> None:
     """The image/video idle row moved to Model memory; keepKv renders without a backend."""
     labels = {
@@ -678,6 +763,8 @@ def run(page) -> None:
     report["steps"].append("search-jump")
 
     run_keystroke_search(page)
+
+    run_shortcut_recorder(page)
 
     run_scroll_resets_on_tab_switch(page)
 

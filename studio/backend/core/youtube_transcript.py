@@ -65,11 +65,7 @@ class Transcript:
 
 
 def extract_video_id(url: str) -> Optional[str]:
-    """Return the 11-character video id in a YouTube URL, or None if it is not one.
-
-    Accepts ``/watch?v=``, ``youtu.be/<id>``, ``/shorts/``, ``/embed/``, ``/live/``
-    and ``/v/`` on the youtube.com, youtu.be and youtube-nocookie.com hosts.
-    """
+    """Return the 11-char video id from a youtube.com, youtu.be or youtube-nocookie.com URL (watch, shorts, embed, live, v), else None."""
     try:
         parsed = urlsplit(url.strip())
     except ValueError:
@@ -100,11 +96,8 @@ def watch_url(video_id: str) -> str:
 
 
 async def fetch_transcript(video_id: str, languages: Sequence[str] = ()) -> Transcript:
-    """Download the captions for ``video_id``, preferring ``languages`` in order.
-
-    Within a language a human-written track wins over an auto-generated one. With no
-    match the track YouTube pairs with the video's default audio track is used.
-    """
+    """Languages in order first; within one, human-written beats auto-generated; else default-audio
+    track."""
     if not _VIDEO_ID_RE.fullmatch(video_id):
         raise TranscriptUnavailable("That is not a YouTube video link.")
 
@@ -200,8 +193,7 @@ def _select_track(
         base = wanted.split("-")[0]
         for want_generated in (False, True):
             candidates = [t for t in tracks if (t.get("kind") == "asr") is want_generated]
-            # exact locale before the base-language fallback: a pt-BR request must not take a pt-PT track just
-            # because it is listed first
+            # exact locale first: pt-BR must not take a pt-PT track
             for matches_wanted in (
                 lambda code: code == wanted,
                 lambda code: code.split("-")[0] == base,
@@ -213,11 +205,8 @@ def _select_track(
 
 
 def _default_track_index(tracks: list[dict[str, Any]], tracklist: dict[str, Any]) -> int:
-    """Index of the caption track paired with the video's default audio track.
-
-    A multi-language video lists its tracks alphabetically, so track 0 is often an
-    unrelated translation rather than the language actually spoken.
-    """
+    """Track 0 is often an unrelated translation, so pick the caption paired with the default audio
+    track."""
     audio_tracks = tracklist.get("audioTracks") or []
     audio_index = tracklist.get("defaultAudioTrackIndex")
     if isinstance(audio_index, int) and 0 <= audio_index < len(audio_tracks):
@@ -256,8 +245,7 @@ async def _fetch_track_text(client: httpx.AsyncClient, base_url: str) -> str:
 
     body = b""
     for _ in range(_MAX_CAPTION_REDIRECTS + 1):
-        # Redirects are followed by hand so the host allowlist covers every hop, not just the URL the player
-        # response handed us.
+        # Redirects followed by hand so the host allowlist covers every hop.
         async with client.stream(
             "GET", url, headers = {"User-Agent": _USER_AGENT}, follow_redirects = False
         ) as response:

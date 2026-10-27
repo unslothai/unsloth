@@ -10,8 +10,14 @@ import types
 
 import pytest
 import torch
+from torch.torch_version import TorchVersion  # noqa: E402
+
 
 from core.inference import video_minimax_h3_vae as H
+
+# A CUDA build's version tag: Studio reads ROCm from the "+rocm" tag too (AMD SDK / Radeon wheels leave
+# torch.version.hip unset), so a test that fakes NVIDIA clears both.
+_CUDA_TORCH_VERSION = TorchVersion(str(torch.__version__).split("+")[0] + "+cu130")
 
 CUDA = torch.cuda.is_available() and not getattr(torch.version, "hip", None)
 needs_cuda = pytest.mark.skipif(
@@ -275,7 +281,8 @@ def test_the_decoder_residual_stream_stays_float32_under_the_decode_autocast(mon
     with torch.no_grad(), torch.autocast("cuda", dtype = torch.float16):
         got, want = vae.decoder(z), ref.decoder(z)
     assert not getattr(vae.decoder, "_unsloth_fast_failed", False)
-    assert seen == [torch.float32, torch.float32]
+    # the stock forward aligns register_tokens with proj_in's autocast output, then the float32 anchors promote
+    assert seen == [torch.float16, torch.float32]
     assert got.dtype == want.dtype
     torch.testing.assert_close(got.float(), want.float(), rtol = 2e-3, atol = 2e-3)
 
@@ -351,6 +358,46 @@ def test_fused_decoder_matches_the_stock_decoder(device):
     ), "the fused path fell back to stock"
     assert got.shape == ref.shape
     torch.testing.assert_close(got, ref, rtol = 1e-4, atol = 1e-4)
+
+
+def _mixed_precision_vae(tmp_path, device):
+    """The tiny VAE through diffusers' own bfloat16 load: ``_keep_in_fp32_modules`` pins the norms and the
+    ``scale1`` / ``scale2`` anchors to float32 while the decoder GEMMs load in bfloat16, as Studio's H3 load does."""
+    _tiny_vae().save_pretrained(tmp_path / "vae")
+    vae = type(_tiny_vae()).from_pretrained(tmp_path / "vae", torch_dtype = torch.bfloat16)
+    return vae.to(device).eval()
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_fused_decoder_follows_the_mixed_precision_load(tmp_path, device):
+    vae = _mixed_precision_vae(tmp_path, device)
+    block = vae.decoder.transformer_blocks[0]
+    if (
+        block.scale1.dtype is not torch.float32
+        or block.attn.to_q.weight.dtype is not torch.bfloat16
+    ):
+        pytest.skip("this diffusers loads the H3 VAE without the float32 anchors")
+    fast = copy.deepcopy(vae)
+    assert H._install_decoder(fast)
+    seen = []
+    stack = H._fast_block_stack
+
+    def spy(decoder, hidden_states, *args):
+        out = stack(decoder, hidden_states, *args)
+        seen.append(out.dtype)
+        return out
+
+    z = torch.randn(1, 8, 3, 4, 5, device = device, dtype = torch.bfloat16)
+    with torch.no_grad(), pytest.MonkeyPatch.context() as mp:
+        mp.setattr(H, "_fast_block_stack", spy)
+        ref = vae.decoder(z)
+        got = fast.decoder(z)
+    assert not getattr(
+        fast.decoder, "_unsloth_fast_failed", False
+    ), "the fused decoder fell back to stock on the bfloat16 / float32 mixed load"
+    assert seen == [torch.float32], "the residual stream must stay float32 like the stock blocks"
+    assert got.dtype == ref.dtype and got.shape == ref.shape
+    torch.testing.assert_close(got.float(), ref.float(), rtol = 2e-2, atol = 2e-2)
 
 
 def test_tile_batching_matches_the_stock_tile_loop(monkeypatch):
@@ -717,8 +764,8 @@ def test_the_fast_path_is_for_the_h3_vae_class_only(monkeypatch):
     class AutoencoderKLMiniMaxH3:
         pass
 
-    if getattr(torch.version, "hip", None):
-        pytest.skip("ROCm build")
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", _CUDA_TORCH_VERSION, raising = False)
     assert not H.cuda_fast_path_available(AutoencoderKLWan())
     assert H.cuda_fast_path_available(AutoencoderKLMiniMaxH3())
 
@@ -741,6 +788,7 @@ def test_the_fast_path_asks_the_windows_triton_toolchain(monkeypatch, platform, 
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", _CUDA_TORCH_VERSION, raising = False)
     monkeypatch.setattr(H, "_kernels", lambda: object())
     monkeypatch.setattr(H, "_triton_version_ok", lambda: True)
     monkeypatch.setattr(H.sys, "platform", platform)
@@ -1079,6 +1127,7 @@ def test_the_fast_path_needs_a_verified_triton(monkeypatch, version, ok):
     assert H._triton_version_ok(version) is ok
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", _CUDA_TORCH_VERSION, raising = False)
     monkeypatch.setattr(H, "_kernels", lambda: object())
     monkeypatch.setattr(H, "_triton_jit_toolchain_ok", lambda: True)
     monkeypatch.setattr(H, "_triton_version_ok", lambda: ok)

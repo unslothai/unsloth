@@ -11,8 +11,7 @@ const ROUTE = "/api/settings/managed-provider-urls";
 export type ManagedProviderUrlSettings = {
   allowed: boolean;
   defaultAllowed: boolean;
-  // UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 refuses private addresses for
-  // every account, so the switch cannot take effect while it is set.
+  // UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 overrides the switch for every account.
   lockedByEnvironment: boolean;
 };
 
@@ -36,9 +35,7 @@ function fromApi(
 
 export async function loadManagedProviderUrls(): Promise<ManagedProviderUrlSettings> {
   const res = await authFetch(ROUTE);
-  // A backend older than this bundle does not serve the route. Told apart from a
-  // failed read so the row can be hidden rather than shown with a red error the
-  // owner cannot act on.
+  // 404 means an older backend: hide the row instead of showing an unactionable error.
   if (res.status === 404) {
     throw new SettingsRouteAbsentError(ROUTE);
   }

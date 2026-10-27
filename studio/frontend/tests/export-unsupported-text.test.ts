@@ -13,14 +13,14 @@ const { exportUnsupportedText } = await import("../src/features/export/lib/unsup
 const NO_TORCH_MESSAGE =
   "This install was set up without the training stack (--no-torch), so export is disabled. Reinstall Unsloth Studio without --no-torch to enable export.";
 
-test("a Desktop Chat only install is pointed at Repair installation", () => {
+test("a Desktop Chat only install is pointed at the full install upgrade", () => {
   const text = exportUnsupportedText("no_torch", NO_TORCH_MESSAGE, true);
-  assert.match(text, /Use Repair installation in Settings/);
+  assert.match(text, /Use Upgrade to full install in Settings/);
   assert.doesNotMatch(text, /--no-torch/);
 });
 
-test("without a Repair action the backend's --no-torch advice stays", () => {
-  // Web, CLI install.sh --no-torch, or a Desktop attached to a terminal-started backend.
+test("without the Install type row the backend's message stays", () => {
+  // Web, CLI --no-torch, a terminal-started backend, or a Mac the MLX wheels skip.
   assert.equal(exportUnsupportedText("no_torch", NO_TORCH_MESSAGE, false), NO_TORCH_MESSAGE);
 });
 

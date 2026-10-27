@@ -42,7 +42,7 @@ test("a project row opens its chats in place", () => {
 
 test("the disclosure sits with the name it opens", () => {
   const name = PAGE.indexOf("{project.name}");
-  const chevron = PAGE.indexOf("<ChevronDownIcon", name);
+  const chevron = PAGE.indexOf("icon={ChevronDownStandardIcon}", name);
   assert.notEqual(name, -1, "the name moved");
   assert.notEqual(chevron, -1, "the disclosure moved");
   assert.match(
@@ -108,7 +108,7 @@ test("the pin and the menu are on show, the disclosure follows the cursor", () =
 test("the Updated column names the list's order and turns it around", () => {
   assert.ok(!PAGE.includes(">Modified<"), "the old column name is still rendered");
   assert.match(PAGE, /\n\s*Updated\n(?:\s*\{\/\*[^\n]*\*\/\}\n)?\s*<ArrowDownIcon/);
-  assert.match(PAGE, /import \{ ArrowDownIcon, ChevronDownIcon, MoreHorizontalIcon \} from "lucide-react";/);
+  assert.match(PAGE, /import \{ ArrowDownIcon \} from "lucide-react";/);
   assert.match(
     PAGE,
     /onClick=\{\(\) => setSortDir\(\(dir\) => \(dir === "desc" \? "asc" : "desc"\)\)\}/,
@@ -121,7 +121,7 @@ test("the Updated column names the list's order and turns it around", () => {
   assert.ok(!PAGE.includes("Sort by"), "the sort control is still in the header");
   assert.ok(!PAGE.includes("sortMode"), "the sort mode outlived its control");
   assert.match(PAGE, /<div className="relative min-w-0 flex-1 sm:max-w-md">/);
-  assert.match(PAGE, /className="h-9 w-full rounded-full border-none bg-muted pl-10/);
+  assert.match(PAGE, /className="h-control w-full rounded-full border-none bg-muted pl-10/);
   assert.match(
     PAGE,
     /<div className="flex w-full min-w-0 items-center justify-end gap-3 sm:w-auto sm:flex-1">/,
@@ -276,10 +276,10 @@ test("a row is a container, and each of its controls is its own button", () => {
   }
   assert.match(
     PAGE,
-    /className="group\/project-row relative flex items-center gap-3 rounded-xl px-5 py-4 text-left transition-colors duration-150 hover:bg-muted\/70 dark:hover:bg-\[rgb\(255_255_255_\/_calc\(0\.055\*var\(--contrast-wash-gain,1\)\)\)\]"/,
+    /className="group\/project-row relative flex items-center gap-3 rounded-md px-5 py-4 text-left transition-colors duration-150 hover:bg-muted\/70 dark:hover:bg-\[rgb\(255_255_255_\/_calc\(0\.055\*var\(--contrast-wash-gain,1\)\)\)\]"/,
   );
   assert.match(
     PAGE,
-    /className="group\/chat-row flex items-center gap-3 rounded-xl py-1\.5 pl-2 pr-5 text-left text-sm/,
+    /className="group\/chat-row flex items-center gap-3 rounded-full py-1\.5 pl-2 pr-5 text-left text-sm/,
   );
 });

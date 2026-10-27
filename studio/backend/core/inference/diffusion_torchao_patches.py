@@ -91,9 +91,7 @@ def _make_safe_int_mm(mod, original):
 
         if not mat2.is_contiguous():  # silently gives incorrect result without this
             mat2 = mat2.contiguous()
-        if (not input.is_contiguous()) and (
-            input.shape[0] % 8 != 0
-        ):  # gives cryptic error without this
+        if (not input.is_contiguous()) and (input.shape[0] % 8 != 0):
             input = input.contiguous()
         try:
             return out_dtype(torch.ops.aten.mm.default, torch.int32, input, mat2)
@@ -208,11 +206,7 @@ class _TorchaoIntmmPatchFinder(importlib.abc.MetaPathFinder):
 
 
 def install_torchao_int_mm_patch():
-    """Install the capture-safe ``safe_int_mm`` if torchao is present; idempotent, so several modules may each
-    ask for it. ``UNSLOTH_TORCHAO_INT_MM_FIX=0`` keeps upstream's behaviour. True when patched or the finder was
-    installed, False when there is nothing to do, None when torchao is absent or the fix is off."""
-    # Every diffusion, video and diffusion-training entry point calls this, so it also carries the
-    # peft LoRA guard, which is independent of the int_mm switch.
+    """Every diffusion, video and diffusion-training entry point calls this, so it also carries the peft LoRA guard (independent of the switch)."""
     try:
         install_peft_torchao_dispatch_guard()
     except Exception:
@@ -242,14 +236,8 @@ def install_torchao_int_mm_patch():
     return True
 
 
-# Studio's copy of ``unsloth/import_fixes.py::fix_peft_torchao_missing_tensor_subclass`` (#11168), for the
-# same reason as the int_mm copy above: the diffusion process never runs ``unsloth/__init__``, so the
-# original never reaches ``pipe.load_lora_weights``. peft <= 0.18 imports LinearActivationQuantizedTensor
-# inside ``dispatch_torchao`` for every LoRA target, torchao 0.18 deleted it, and Studio installs torchao
-# 0.18 on torch >= 2.12, so every diffusion LoRA load raised. Both copies mark their wrapper
-# ``__unsloth_patched__``, so whichever runs second leaves the first in place.
-# The spellings a torchao removal produces (class, its old module, the whole ``torchao.dtypes`` package on main).
-# Only these, so a BROKEN torchao still raises.
+# Copy of unsloth/import_fixes.py::fix_peft_torchao_missing_tensor_subclass: diffusion never
+# runs unsloth/__init__. Both mark ``__unsloth_patched__``; only torchao-removal errors match.
 _PEFT_TORCHAO_MISSING_TENSOR_SUBCLASS = re.compile(
     r"linear_?activation_?quantized_?tensor|affine_?quantized_?tensor"
     r"|no module named '?torchao\.dtypes'?(?![.\w])",
@@ -281,15 +269,9 @@ def _peft_torchao_tensor_subclasses():
 
 
 def _guard_peft_torchao_dispatcher(original):
-    """Wrap one `dispatch_torchao` so a removed tensor subclass costs only that class.
-
-    The wrapper calls through, so a torchao shipping both classes behaves exactly as upstream.
-    Only on a failure naming one of the two does it redo upstream's work against the classes that
-    remain, so an AffineQuantizedTensor weight still gets a TorchaoLoraLinear.
-    """
+    """Calls upstream; only a failure naming a removed class redoes dispatch with the classes left."""
     warned = [False]
-    # The defining module's own globals, so the degraded path uses the very objects upstream would
-    # have, including an is_torchao_available already patched by the sibling fix.
+    # Defining module's globals, incl. an is_torchao_available patched by the sibling fix.
     namespace = getattr(original, "__globals__", None)
     if not isinstance(namespace, dict):
         namespace = {}
@@ -357,9 +339,7 @@ def _guard_peft_torchao_dispatcher(original):
                 raise
             classes, missing = _peft_torchao_tensor_subclasses()
             if not missing:
-                # The message named one of the two classes but both are there, so this came from
-                # somewhere else in the dispatcher and is a real failure. Redoing the dispatch
-                # would swallow it and re-run whatever construction already happened.
+                # Both classes exist, so this is a real failure; redoing the dispatch would hide it.
                 raise
         if not warned[0]:
             warned[0] = True

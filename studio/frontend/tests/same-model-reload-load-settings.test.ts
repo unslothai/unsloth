@@ -105,6 +105,11 @@ test("a same-model MLX reload elsewhere moves the KV width, int8 prefill and ver
       mlx_kv_quant_reason: "Quantized KV cache to 8 bits",
       mlx_kv_quant_note: "from token 256",
       mlx_int8_prefill_requested: true,
+      mlx_offload: {
+        ple: { applied: 0.5, requested: "auto", reason: null },
+        experts: { applied: null, requested: 0.25, reason: "no_quantized_experts" },
+        disk_bytes: 1024,
+      },
     }),
     MLX,
   );
@@ -115,6 +120,10 @@ test("a same-model MLX reload elsewhere moves the KV width, int8 prefill and ver
   assert.equal(s.mlxKvQuantNote, "from token 256");
   assert.equal(s.mlxInt8Prefill, true);
   assert.equal(s.loadedMlxInt8PrefillRequested, true);
+  assert.deepEqual(
+    [s.mlxPleOffload, s.loadedMlxPleOffload, s.mlxExpertOffload, s.loadedMlxExpertOffload, s.mlxExpertOffloadReason],
+    [null, 0.5, 0.25, null, "no_quantized_experts"],
+  );
 });
 
 test("a same-model MLX reload elsewhere moves a width that was already seeded", () => {
