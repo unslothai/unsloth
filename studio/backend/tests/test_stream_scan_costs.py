@@ -168,3 +168,40 @@ def test_passthrough_normalize_hands_back_the_decoded_line():
             if data is _SSE_LINE_UNPARSED:
                 continue
             assert data == json.loads(out[len("data:") :].strip()), (line, cap)
+
+
+def test_literal_anchored_search_matches_the_regex_search():
+    from core.inference import tool_call_parser as tcp
+
+    pieces = [
+        "call",
+        "call:",
+        "call :",
+        "call:web_search{",
+        "xcall:a{",
+        "_call:a{",
+        "recall:b{",
+        "{",
+        "}",
+    ]
+    pieces += [
+        " ",
+        "\n",
+        "a",
+        "b:",
+        "<tool_call>",
+        "</tool_call>",
+        "中",
+        "call:\n web_search {",
+        '<|"|>',
+    ]
+    rng = random.Random(0)
+    for _ in range(20000):
+        text = "".join(rng.choice(pieces) for _ in range(rng.randint(0, 30)))
+        pos = rng.randint(0, len(text))
+        want = tcp._GEMMA_BARE_TC_RE.search(text, pos)
+        got = tcp._search_from_literal(tcp._GEMMA_BARE_TC_RE, "call", text, pos)
+        assert (want and (want.span(), want.groups())) == (got and (got.span(), got.groups())), (
+            text,
+            pos,
+        )
