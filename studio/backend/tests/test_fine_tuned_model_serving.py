@@ -208,3 +208,14 @@ def test_unloading_by_checkpoint_name_targets_the_folder_it_loads(monkeypatch):
 
     assert seen == [(str(checkpoint_dir), None), (str(checkpoint_dir), "attempt-1")]
     assert [answer["model"] for answer in answers] == [CHECKPOINT, CHECKPOINT]
+
+
+def test_a_checkpoint_loaded_by_path_answers_to_its_job_name(monkeypatch):
+    # what the extra-slot router asks each slot, so a checkpoint kept alongside is found too
+    checkpoint_dir = _run_dir() / "checkpoint-5"
+    checkpoint_dir.mkdir()
+    _wire(str(checkpoint_dir), monkeypatch)
+    assert inference_route._loaded_satisfies(CHECKPOINT)
+    assert not inference_route._loaded_satisfies(f"{RUN}/checkpoint-6")
+    _wire(str(outputs_root() / RUN), monkeypatch)
+    assert not inference_route._loaded_satisfies(CHECKPOINT)

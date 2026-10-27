@@ -9909,6 +9909,10 @@ def _loaded_satisfies(requested: str) -> bool:
     matches = _matches_any(
         base, [active, public_model_id(active), getattr(backend, "_openai_advertised_id", None)]
     )
+    if not matches and _looks_like_local_path(active):
+        # a fine-tuning job's "<run>/checkpoint-N" name for the folder loaded by path
+        trained = _trained_run_dir(requested)
+        matches = trained is not None and _norm_path(trained) == _norm_path(active)
     if not matches:
         return False
     # Only llama.cpp carries a quant identity, so this backend can only match on the repo.
@@ -10034,11 +10038,6 @@ def _resolve_trained_run_request(request) -> bool:
     note_resolved_handle(request.model_path, trained)
     request.model_path = trained
     return True
-
-
-def _trained_run_is_resident(run_dir: str) -> bool:
-    active = getattr(get_inference_backend(), "active_model_name", None)
-    return bool(active) and _norm_path(active) == _norm_path(run_dir)
 
 
 def _looks_like_local_path(value: str) -> bool:
@@ -10346,13 +10345,9 @@ async def _reject_unservable_model(
             and base.strip().count("/") == 1
             and await asyncio.to_thread(local_gguf_torn_only, base)
         )
-        trained_dir = None if here else await asyncio.to_thread(_trained_run_dir, requested_model)
-        # a checkpoint loads by path, so its "<run>/checkpoint-N" name never matches the resident id
-        if trained_dir is not None and await asyncio.to_thread(
-            _trained_run_is_resident, trained_dir
-        ):
-            return
-        trained = trained_dir is not None
+        trained = (
+            not here and await asyncio.to_thread(_trained_run_dir, requested_model) is not None
+        )
         here = here or torn or trained
         switchable = downloaded and get_openai_auto_switch_enabled()
     except HTTPException:
