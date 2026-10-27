@@ -1640,6 +1640,11 @@ _MEASURED_IMAGE_ACTIVATION_MIB: dict[
 _RESIDENT_ONLY_CALIBRATED = frozenset({"sdxl"})
 
 
+def _resident_only_hint(family: Optional[str]) -> bool:
+    parts = str(family or "").split()
+    return bool(parts) and parts[0] in _RESIDENT_ONLY_CALIBRATED
+
+
 def calibrated_image_activation(
     family: Optional[str], *, max_speed: bool = True
 ) -> Optional[CalibratedImageActivation]:
@@ -7645,6 +7650,9 @@ def image_activation_verdict(
         if budget is None:
             return ImageActivationVerdict(ACTIVATION_RUN)
         # Calibrated tiers measured only the unconditioned denoise; a ControlNet counts as one output-sized image.
+        # Not on a U-Net: its ControlNet adds no tokens and stays under the measured decode peak.
+        if controlnet and _resident_only_hint(family):
+            controlnet = False
         input_pixels = max(0, int(condition_pixels or 0))
         conditioned = bool(calibrated_placement) and (input_pixels > 0 or bool(controlnet))
         if calibrated_placement and controlnet:

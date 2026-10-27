@@ -66,7 +66,7 @@ def _tiny_bert(path):
     return str(path)
 
 
-def test_fsdp2_sentence_transformer_save_equals_one_process(tmp_path):
+def _run_two_ranks(target, tmp_path):
     import torch.multiprocessing as mp
 
     checkpoint = _tiny_bert(tmp_path / "bert")
@@ -74,7 +74,7 @@ def test_fsdp2_sentence_transformer_save_equals_one_process(tmp_path):
     queue = ctx.Queue()
     port = _free_port()
     procs = [
-        ctx.Process(target = worker.run_rank, args = (r, port, checkpoint, str(tmp_path), queue))
+        ctx.Process(target = target, args = (r, port, checkpoint, str(tmp_path), queue))
         for r in range(2)
     ]
     for p in procs:
@@ -96,6 +96,11 @@ def test_fsdp2_sentence_transformer_save_equals_one_process(tmp_path):
     for rank, out in sorted(results.items()):
         assert out["error"] is None, (rank, out["error"])
     assert sorted(results) == [0, 1]
+    return results
+
+
+def test_fsdp2_sentence_transformer_save_equals_one_process(tmp_path):
+    results = _run_two_ranks(worker.run_rank, tmp_path)
     for rank in (0, 1):
         assert results[rank]["n_sharded"] > 0
         # The gather put the shards back afterwards.
@@ -108,3 +113,16 @@ def test_fsdp2_sentence_transformer_save_equals_one_process(tmp_path):
         assert fsdp2[name] == reference[name], name
     # Trainer.save_model (checkpoints, SentenceTransformerTrainer._save -> save_pretrained) writes the same.
     assert results[0]["trainer"] == fsdp2
+
+
+def test_fsdp2_sentence_transformer_save_honours_card_option_and_training_mode(tmp_path):
+    results = _run_two_ranks(worker.run_rank_save_options, tmp_path)
+    for rank in (0, 1):
+        out = results[rank]
+        assert out["n_sharded"] > 0
+        assert out["still_sharded"] == out["n_sharded"]
+        assert out["no_card_runs"] == 0, (rank, out)
+        assert out["no_card_eval_modules"] == 0, (rank, out)
+        assert out["card_runs"] == 1, (rank, out)
+        assert out["card_eval_modules"] == 0, (rank, out)
+    assert results[0]["no_card_has_st_card"] is False

@@ -54,6 +54,15 @@ def _apply_user_rope_scaling(config, rope_scaling):
                 "Unsloth: this model keeps one RoPE setting per layer type "
                 f"({sorted(current)}); pass rope_scaling as a dict keyed by those layer types."
             )
+        # Map legacy "type": this branch bypasses transformers' normalisation; Gemma 3 reads "rope_type".
+        scaling = {
+            k: (
+                {"rope_type": v["type"], **v}
+                if isinstance(v, dict) and "rope_type" not in v and "type" in v
+                else v
+            )
+            for k, v in scaling.items()
+        }
         # Gemma 3's rotary init indexes rope_parameters[layer_type]["rope_theta"]: keep each base.
         target.rope_parameters = {
             k: (
