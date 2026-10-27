@@ -355,3 +355,32 @@ test("orphan-only migration may leave pins absent before a valid operation is re
   assert.equal(await noValidLegacy.migrateLegacy(["orphan"]), undefined);
   assert.equal(fresh.fallback, undefined);
 });
+
+test("upgrade replay skips a pin whose chat was unpinned (deleted) later in the offline log", async () => {
+  let remote: string[] = ["chat"];
+  const tombstones = new Set<string>();
+  let fallback: PinnedChatsFallbackState | undefined = {
+    baseIds: [],
+    pinnedIds: ["new"],
+    operations: [pin("01", ["pair"]), pin("02", ["pair"], false), pin("03", ["new"])],
+  };
+  const transport = createPinnedChatsTransport({
+    load: async () => remote.slice(),
+    compareAndSet: async (expected, next, operation) => {
+      // The upgraded server never learned the deleted comparison's pair ID.
+      if (next.includes("pair")) return { pinnedIds: remote.slice(), applied: false };
+      if (JSON.stringify(expected) !== JSON.stringify(remote)) return { pinnedIds: remote.slice(), applied: false };
+      if (operation && !operation.pinned) operation.ids.forEach((id) => tombstones.add(id));
+      remote = next.slice();
+      return { pinnedIds: remote.slice(), applied: true };
+    },
+    migrateLegacy: async () => remote.slice(),
+    readLegacy: () => [],
+    readFallback: () => fallback && structuredClone(fallback),
+    writeFallback: (value) => { fallback = value && structuredClone(value); },
+  });
+  assert.deepEqual(await transport.load(), ["new", "chat"]);
+  assert.equal(fallback, undefined);
+  assert.ok(tombstones.has("pair"));
+});
+

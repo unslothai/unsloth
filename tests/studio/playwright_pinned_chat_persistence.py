@@ -10,7 +10,7 @@ The delayed-read cases put an optimistic edit behind an in-flight request; merel
 adding keepalive to the eventual write cannot make those cases pass.
 
 Prerequisites: frontend npm dependencies, Chromium installed by Playwright, and
-Python packages playwright, fastapi, httpx, pyjwt, argon2-cffi, huggingface_hub,
+Python packages playwright, fastapi, httpx, pyjwt, argon2-cffi, cryptography, huggingface_hub,
 python-multipart, and structlog. Run from any directory:
 
     python tests/studio/playwright_pinned_chat_persistence.py

@@ -65,6 +65,22 @@ function isUnsupported(error: unknown): boolean {
   return onlyUnsupportedPins && rejectsPinField;
 }
 
+/** Drop pins a later entry unpins: the server cannot place a chat deleted while offline. */
+function compactReplay(operations: PinOperation[]): PinOperation[] {
+  const unpinnedLater = new Set<string>();
+  const kept: PinOperation[] = [];
+  for (const operation of [...operations].reverse()) {
+    if (!operation.pinned) {
+      operation.ids.forEach((id) => unpinnedLater.add(id));
+      kept.push(operation);
+      continue;
+    }
+    const ids = operation.ids.filter((id) => !unpinnedLater.has(id));
+    if (ids.length > 0) kept.push({ ...operation, ids });
+  }
+  return kept.reverse();
+}
+
 function sameIds(left: string[] | undefined, right: string[]): boolean {
   return left !== undefined && left.length === right.length &&
     left.every((id, index) => id === right[index]);
@@ -138,7 +154,7 @@ export function createPinnedChatsTransport(options: PinnedChatsTransportOptions)
 
   async function recover(state: PinnedChatsFallbackState, current: string[] | undefined, epoch: number) {
     current = await remoteMigration(state.baseIds, current, epoch);
-    for (const operation of state.operations) {
+    for (const operation of compactReplay(state.operations)) {
       let applied = false;
       for (let attempt = 0; attempt < 8; attempt += 1) {
         assertCurrent(epoch);

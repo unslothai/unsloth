@@ -491,7 +491,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         timeout-minutes: 3
         run: |
-          python3 -m pip install fastapi httpx pyjwt argon2-cffi huggingface_hub python-multipart structlog
+          python3 -m pip install fastapi httpx pyjwt argon2-cffi cryptography huggingface_hub python-multipart structlog
           python3 tests/studio/playwright_pinned_chat_persistence.py
 
       # A gate, not a measurement. The released and streamdown variants are positive controls
