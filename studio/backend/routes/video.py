@@ -2401,6 +2401,8 @@ class _QueuedVideo:
     seed: int
     created_at: int
     model: str
+    size: str
+    seconds: str
     starting: bool = False
     cancel_requested: bool = False
     idle_conflicts: int = 0
@@ -2463,7 +2465,6 @@ def _video_wait(exc: BaseException) -> Optional[str]:
 
 
 def _queued_video_job(entry: _QueuedVideo) -> VideoJob:
-    size = entry.inputs.size
     return VideoJob(
         id = entry.id,
         model = entry.model,
@@ -2471,8 +2472,8 @@ def _queued_video_job(entry: _QueuedVideo) -> VideoJob:
         progress = 0,
         created_at = entry.created_at,
         prompt = entry.body.prompt,
-        size = f"{size[0]}x{size[1]}" if size is not None else "auto",
-        seconds = entry.body.seconds or "auto",
+        size = entry.size,
+        seconds = entry.seconds,
         seed = entry.seed,
     )
 
@@ -2500,13 +2501,35 @@ def _own_queued_videos() -> list[VideoJob]:
     ]
 
 
-def _queued_model_name(body: VideoJobCreateRequest) -> str:
+def _queued_job_display(
+    body: VideoJobCreateRequest, inputs: _VideoCreateInputs
+) -> tuple[str, str, str]:
+    """Model, size and seconds as an immediate start reports them, read off the model loaded now."""
     from core.inference.video import get_video_backend
 
+    status = get_video_backend().status()
+    defaults = status.get("defaults") or {}
     if isinstance(body.model, str) and body.model.strip():
-        return public_model_id(body.model) or body.model
-    resident = get_video_backend().status().get("repo_id")
-    return public_model_id(str(resident)) if resident else "video"
+        model = public_model_id(body.model) or body.model
+    else:
+        resident = status.get("repo_id")
+        model = public_model_id(str(resident)) if resident else "video"
+    presets = defaults.get("resolution_presets") or []
+    if inputs.size is not None:
+        size = f"{inputs.size[0]}x{inputs.size[1]}"
+    elif presets:
+        size = f"{int(presets[0][0])}x{int(presets[0][1])}"
+    else:
+        size = "auto"
+    fps = body.fps or defaults.get("fps")
+    if inputs.seconds is not None:
+        frames = _frames_for_seconds(inputs.seconds, {**defaults, "fps": fps})
+    else:
+        frames = body.num_frames or defaults.get("num_frames")
+    seconds = (
+        _format_seconds(int(frames) / float(fps)) if frames and fps else body.seconds or "auto"
+    )
+    return model, size, seconds
 
 
 async def _create_or_queue_openai_video(
@@ -2536,7 +2559,7 @@ async def _create_or_queue_openai_video(
                 raise
     # Reject invalid audio before queueing.
     await asyncio.to_thread(_refuse_unreadable_audio, inputs.reference_audios)
-    model = await asyncio.to_thread(_queued_model_name, body)
+    model, size, seconds = await asyncio.to_thread(_queued_job_display, body, inputs)
     # No awaits between the capacity check and append.
     account = current_account()
     waiting = sum(1 for entry in _VIDEO_QUEUE if entry.account.account_id == account.account_id)
@@ -2562,6 +2585,8 @@ async def _create_or_queue_openai_video(
         seed = seed,
         created_at = int(_time.time()),
         model = model,
+        size = size,
+        seconds = seconds,
     )
     _VIDEO_QUEUE.append(entry)
     _ensure_video_drainer()
@@ -2576,8 +2601,8 @@ def _fail_queued_video(entry: _QueuedVideo, exc: BaseException) -> None:
         created_at = entry.created_at,
         prompt = entry.body.prompt,
         model = entry.model,
-        size = _queued_video_job(entry).size,
-        seconds = entry.body.seconds or "auto",
+        size = entry.size,
+        seconds = entry.seconds,
         seed = entry.seed,
         status = "failed",
         completed_at = int(_time.time()),

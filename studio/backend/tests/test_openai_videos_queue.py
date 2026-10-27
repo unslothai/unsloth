@@ -249,19 +249,38 @@ def test_a_delete_while_a_refused_start_is_recorded_leaves_no_failed_job(
     assert queued["id"] not in [v["id"] for v in client.get("/v1/videos").json()["data"]]
 
 
+def test_a_queued_job_reports_the_size_and_seconds_an_immediate_start_would(client, backend):
+    first = _render_one(client, backend)
+    immediate_shape = {k: first[k] for k in ("size", "seconds", "model")}
+    queued = client.post("/v1/videos", json = {"prompt": "second"}).json()
+    assert queued["status"] == "queued"
+    assert {k: queued[k] for k in ("size", "seconds", "model")} == immediate_shape
+    timed = client.post("/v1/videos", json = {"prompt": "third", "seconds": "4"}).json()
+    assert timed["seconds"] == "4.04"
+    backend.gate.set()
+    _wait_terminal(client, first["id"])
+    _drain()
+    # Once completed, seconds is the saved clip's own duration, for an immediate start too.
+    started = _wait_terminal(client, queued["id"])
+    assert (started["size"], started["model"]) == (
+        immediate_shape["size"],
+        immediate_shape["model"],
+    )
+
+
 def test_creates_arriving_together_cannot_pass_the_cap_together(client, backend, monkeypatch):
     import time
 
     import httpx
 
     monkeypatch.setattr(video_routes, "VIDEO_QUEUE_MAX_PER_ACCOUNT", 1)
-    real_model_name = video_routes._queued_model_name
+    real_display = video_routes._queued_job_display
 
-    def _slow_model_name(body):
+    def _slow_display(body, inputs):
         time.sleep(0.2)
-        return real_model_name(body)
+        return real_display(body, inputs)
 
-    monkeypatch.setattr(video_routes, "_queued_model_name", _slow_model_name)
+    monkeypatch.setattr(video_routes, "_queued_job_display", _slow_display)
     _render_one(client, backend)
 
     async def run():
