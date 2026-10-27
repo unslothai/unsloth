@@ -14,6 +14,8 @@ import pytest
 from core.training.provenance import (
     ExactResumeResourcesUnavailable,
     RESOURCE_PROVENANCE_KEY,
+    _MODEL_WEIGHT_RE,
+    _snapshot_has_model_weights,
     attest_loaded_dataset,
     build_worker_provenance_event,
     effective_training_load_in_4bit,
@@ -717,6 +719,24 @@ def test_config_only_snapshot_cannot_attest_model_weights(tmp_path):
         normalize_worker_provenance_event(event, config)[RESOURCE_PROVENANCE_KEY]["status"]
         == "incomplete"
     )
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "model.safetensors-00001-of-00001.safetensors",
+        "model.safetensors-00001-of-00001",
+        "model-00000-of-00001.safetensors",
+        "model.safetensors",
+    ],
+)
+def test_extension_before_shard_weight_names_count_as_model_weights(tmp_path, filename):
+    """Qwen3.5 Hub shards use model.safetensors-00001-of-00001.safetensors (#15405)."""
+    assert _MODEL_WEIGHT_RE.fullmatch(filename)
+    snapshot = _model_snapshot(tmp_path, "unsloth/Qwen3.5-2B", "qwen35", weights = False)
+    (snapshot / filename).write_bytes(b"weights")
+    assert _snapshot_has_model_weights(snapshot)
+    assert exact_model_snapshot_path(str(snapshot), "unsloth/Qwen3.5-2B") == str(snapshot.resolve())
 
 
 def test_exact_model_snapshot_accepts_own_blob_symlink(tmp_path):

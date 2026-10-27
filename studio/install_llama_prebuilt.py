@@ -4729,12 +4729,19 @@ def runtime_patterns_for_install_kind(
         "linux-arm64",
         "linux-vulkan",
     }:
-        return ["llama-server", "llama-quantize", "llama-diffusion-gemma-visual-server", "lib*.so*"]
+        return [
+            "llama-server",
+            "llama-quantize",
+            "llama-diffusion-gemma-visual-server",
+            "llama-bench",
+            "lib*.so*",
+        ]
     if install_kind in {"macos-arm64", "macos-x64"}:
         return [
             "llama-server",
             "llama-quantize",
             "llama-diffusion-gemma-visual-server",
+            "llama-bench",
             "llama-fit-params",
             "lib*.dylib",
         ]
@@ -4752,6 +4759,7 @@ def runtime_patterns_for_install_kind(
             "llama-server.exe",
             "llama-quantize.exe",
             "llama-diffusion-gemma-visual-server.exe",
+            "llama-bench.exe",
             "*.dll",
         ]
     raise PrebuiltFallback(f"unsupported install kind for runtime overlay: {install_kind}")
@@ -5454,6 +5462,10 @@ def install_from_archives(
         raise PrebuiltFallback("unix executables were not installed correctly into build/bin")
     os.chmod(source_server, 0o755)
     os.chmod(source_quantize, 0o755)
+    # Optional; bundles ship it non-executable.
+    source_bench = build_bin / "llama-bench"
+    if source_bench.is_file():
+        os.chmod(source_bench, 0o755)
     ensure_fit_params_executable(install_dir)
 
     root_server = install_dir / "llama-server"
