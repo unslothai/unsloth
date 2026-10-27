@@ -717,23 +717,15 @@ def _prefers_flex_for_head_dim(config):
 
 
 _PACKED_VARLEN_OVER_FLEX_ENV_VAR = "UNSLOTH_PACKED_VARLEN_OVER_FLEX"
-# Model types whose latest load asked for flex_attention explicitly. Keyed by model_type, not config
-# identity: from_pretrained deep-copies the config it was given.
-_EXPLICIT_FLEX_MODEL_TYPES = set()
+# Set on a loaded model whose loader call asked for flex_attention: packing keeps it on flex.
+_EXPLICIT_FLEX_ATTR = "_unsloth_explicit_flex_attention"
 
 
-def _remember_explicit_flex_request(config, requested_attn_implementation):
+def requests_flex_attention(requested_attn_implementation):
     requested = requested_attn_implementation
-    explicit = requested == "flex_attention" or (
+    return requested == "flex_attention" or (
         isinstance(requested, dict) and "flex_attention" in requested.values()
     )
-    for attention_config in _iter_attention_configs(config):
-        model_type = _config_get(attention_config, "model_type", None)
-        if isinstance(model_type, str) and model_type:
-            if explicit:
-                _EXPLICIT_FLEX_MODEL_TYPES.add(model_type.lower())
-            else:
-                _EXPLICIT_FLEX_MODEL_TYPES.discard(model_type.lower())
 
 
 def _packed_attention_dtype(model, config):
@@ -800,11 +792,8 @@ def use_sdpa_for_packed_head_dim_flex(model):
     config = getattr(model, "config", None)
     if config is None or _config_prefers_flex_attention(config):
         return False
-    if any(
-        (_config_get(attention_config, "model_type", None) or "").lower()
-        in _EXPLICIT_FLEX_MODEL_TYPES
-        for attention_config in _text_attention_configs(config) + [config]
-    ):
+    base = model.get_base_model() if hasattr(model, "get_base_model") else model
+    if getattr(base, _EXPLICIT_FLEX_ATTR, False) or getattr(model, _EXPLICIT_FLEX_ATTR, False):
         return False
     head_dim = _text_attention_head_dim(config)
     if head_dim is None or head_dim > _FLEX_KERNEL_OPTIONS_SAFE_HEAD_DIM:
@@ -3099,7 +3088,6 @@ def resolve_attention_implementation(
         supports_sdpa = False
     if not supports_sdpa:
         _remember_no_sdpa_config(config)
-    _remember_explicit_flex_request(config, requested_attn_implementation)
     supports_flash_attention = _model_class_supports_flash_attention(
         model_class
     ) and not _is_flash_excluded(model_type)

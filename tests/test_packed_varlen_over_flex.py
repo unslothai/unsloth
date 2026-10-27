@@ -51,7 +51,6 @@ def routed(monkeypatch):
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
     # SDPA backend state for these shapes: flash enabled, flash picked (not math).
     monkeypatch.setattr(hpa, "_SDPA_MATH", [-1, lambda *args: (True, 0)])
-    monkeypatch.setattr(u, "_EXPLICIT_FLEX_MODEL_TYPES", set(), raising = False)
 
 
 def test_head_dim_flex_moves_to_sdpa(routed):
@@ -158,31 +157,24 @@ def test_rows_the_varlen_wrapper_declines_stay_on_flex(routed, monkeypatch, requ
 
 
 def test_explicit_flex_request_stays_flex(routed):
-    config = _gemma(impl = None)
-    u.resolve_attention_implementation(
-        transformers.GemmaForCausalLM,
-        config,
-        requested_attn_implementation = "flex_attention",
-        dtype = torch.bfloat16,
-    )
-    assert config._attn_implementation == "flex_attention"
-    assert not u.use_sdpa_for_packed_head_dim_flex(types.SimpleNamespace(config = config))
-    assert config._attn_implementation == "flex_attention"
-
-
-def test_a_later_unrequested_load_of_the_type_switches_again(routed):
-    u.resolve_attention_implementation(
-        transformers.GemmaForCausalLM,
-        _gemma(impl = None),
-        requested_attn_implementation = "flex_attention",
-        dtype = torch.bfloat16,
-    )
-    u.resolve_attention_implementation(
-        transformers.GemmaForCausalLM, _gemma(impl = None), dtype = torch.bfloat16
-    )
+    assert u.requests_flex_attention("flex_attention")
+    assert u.requests_flex_attention({"text_config": "flex_attention"})
+    assert not u.requests_flex_attention(None) and not u.requests_flex_attention("sdpa")
     config = _gemma()
-    assert u.use_sdpa_for_packed_head_dim_flex(types.SimpleNamespace(config = config))
-    assert config._attn_implementation == "sdpa"
+    model = types.SimpleNamespace(config = config)
+    setattr(model, u._EXPLICIT_FLEX_ATTR, True)
+    assert not u.use_sdpa_for_packed_head_dim_flex(model)
+    assert config._attn_implementation == "flex_attention"
+
+
+def test_explicit_flex_is_per_model_not_per_type(routed):
+    # Two models of one type: the one loaded with an explicit flex request keeps flex, the other switches.
+    explicit, routed_model = types.SimpleNamespace(config = _gemma()), types.SimpleNamespace(config = _gemma())
+    setattr(explicit, u._EXPLICIT_FLEX_ATTR, True)
+    assert u.use_sdpa_for_packed_head_dim_flex(routed_model)
+    assert not u.use_sdpa_for_packed_head_dim_flex(explicit)
+    assert explicit.config._attn_implementation == "flex_attention"
+    assert routed_model.config._attn_implementation == "sdpa"
 
 
 def test_padding_free_metadata_makes_the_switch(routed, monkeypatch):

@@ -246,6 +246,8 @@ from ._utils import (
     attention_class_for_load,
     _REMOTE_CLASS_HUB_OPTIONS,
     resolve_attention_implementation,
+    requests_flex_attention,
+    _EXPLICIT_FLEX_ATTR,
     _get_text_only_config,
     _is_family_text_decoder,
     _config_get,
@@ -3726,6 +3728,7 @@ class FastBaseModel:
         _attn_class, _attn_supports_sdpa = attention_class_for_load(
             model_class, _builds_remote_class, _remote_class, supports_sdpa
         )
+        _explicit_flex = requests_flex_attention(kwargs.get("attn_implementation", None))
         attn_impl = resolve_attention_implementation(
             _attn_class,
             auto_config,
@@ -4870,6 +4873,8 @@ class FastBaseModel:
         _mark_loaded_revision(tokenizer, _tokenizer_revision)
         model = _mark_forced_float32(model, do_forced_float32)
         model = _mark_full_finetuning(model, full_finetuning)
+        if _explicit_flex:
+            setattr(model, _EXPLICIT_FLEX_ATTR, True)
         # Last, so the host copies carry the fp32 recasts the passes above make.
         finish_block_swap_load(
             model, _block_swap_state, planned_prefetch_depth(device_map_planner_kwargs)
