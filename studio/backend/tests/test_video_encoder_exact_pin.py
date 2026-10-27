@@ -105,16 +105,35 @@ def test_the_kill_switch_and_an_unsupported_registered_pin_turn_the_exact_plan_o
 def test_the_late_cap_reads_the_budget_at_pin_start_less_what_earlier_pinners_owe(host):
     mine = torch.nn.Linear(4, 4)
     pipe = types.SimpleNamespace()
-    earlier = types.SimpleNamespace(
-        module = torch.nn.Linear(4, 4), pinned = 1 << 20, planned_bytes = lambda: 3 << 20
-    )
-    me = types.SimpleNamespace(module = mine, pinned = 0, planned_bytes = lambda: 99 << 20)
+    earlier = types.SimpleNamespace(module = torch.nn.Linear(4, 4), outstanding_bytes = lambda: 2 << 20)
+    me = types.SimpleNamespace(module = mine, outstanding_bytes = lambda: 99 << 20)
     setattr(pipe, dm._PENDING_PINS_ATTR, [earlier, me])
     cap = dm._late_encoder_pin_cap(pipe, mine)
     host(0)
     assert cap() == 0
     host(10)
     assert cap() == (10 << 20) - (2 << 20)
+
+
+def test_an_earlier_pinner_owes_its_unplaced_groups_once(monkeypatch):
+    """Placed groups already leave the unpinned sum: the cap must not subtract them a second time."""
+    monkeypatch.setattr(torch.Tensor, "is_pinned", lambda self: getattr(self, "_fake_pin", False))
+    groups, srcs = [], []
+    for _ in range(2):
+        w = torch.nn.Parameter(torch.zeros(4 << 20, dtype = torch.uint8), requires_grad = False)
+        src = w.data
+        groups.append(types.SimpleNamespace(cpu_param_dict = {w: src}))
+        srcs.append(src)
+    pinner = dm._GroupPinner(torch.nn.Module(), groups, torch.device("cpu"))
+    assert pinner.outstanding_bytes() == 8 << 20
+    srcs[0]._fake_pin = True  # the first group is placed
+    pinner.pinned = 4 << 20
+    assert pinner.outstanding_bytes() == 4 << 20
+    capped = dm._GroupPinner(torch.nn.Module(), groups, torch.device("cpu"), byte_cap = 6 << 20)
+    capped.pinned = 4 << 20
+    assert (
+        capped.outstanding_bytes() == 2 << 20
+    )  # what the cap has left, not the whole remaining group
 
 
 def test_a_callable_cap_is_read_when_the_pinner_runs(monkeypatch):

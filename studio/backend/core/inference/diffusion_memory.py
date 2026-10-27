@@ -6404,7 +6404,7 @@ def _late_encoder_pin_cap(
         for pinner in list(getattr(pipe, _PENDING_PINS_ATTR, None) or ()):
             if pinner.module is module:
                 break
-            owed += max(0, pinner.planned_bytes() - int(pinner.pinned))
+            owed += pinner.outstanding_bytes()
         return max(0, (int(budget) << 20) - owed)
 
     return cap
@@ -6717,7 +6717,9 @@ class _GroupPinner:
         except Exception:  # noqa: BLE001 - registration refused: the allocator's pin for this tensor
             return src.pin_memory()
 
-    def planned_bytes(self) -> int:
+    def outstanding_bytes(self) -> int:
+        """Bytes this pinner may still place: its unpinned groups (placed ones already left that sum), within what
+        its byte cap has left."""
         try:
             need = sum(
                 _page_bytes(src.nbytes)
@@ -6729,7 +6731,7 @@ class _GroupPinner:
         cap = self.byte_cap
         if callable(cap) or cap is None:
             return need
-        return min(need, int(cap))
+        return min(need, max(0, int(cap) - int(self.pinned)))
 
     def _capped_groups(self) -> list:
         if self.byte_cap is None:
