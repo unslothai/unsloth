@@ -222,6 +222,9 @@ def start(identity: str | None = None) -> dict:
     with _lock:
         job = _jobs.get(key)
         if job is not None and job.status == "running":
+            if identity is None:
+                # A Re-embed click adopts an automatic job, which then follows the current model.
+                job.identity = None
             return job.snapshot()
         job = _Job(identity)
         job.remaining = sum(stale_counts().values())

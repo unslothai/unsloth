@@ -184,6 +184,29 @@ def test_a_fallback_during_an_automatic_re_embed_stops_it(models, tmp_path, monk
     assert _row(healthy)[0] == st
 
 
+def test_a_re_embed_click_during_an_automatic_job_follows_a_model_switch(
+    models, tmp_path, monkeypatch
+):
+    scope = store.kb_scope("K16")
+    monkeypatch.setattr(embeddings, "_identity_backend_is_llama", lambda name: True)
+    doc = _ingest(tmp_path, scope, "a.txt", "alpha bravo")
+    monkeypatch.setattr(embeddings, "_identity_backend_is_llama", lambda name: False)
+    encode = embeddings.encode
+
+    def switch_and_click_while_a_encodes(texts, model_name, **kw):
+        if texts == ["alpha bravo"] and model_name == OLD:
+            models["model"] = NEW
+            reembed.start()
+        return encode(texts, model_name, **kw)
+
+    monkeypatch.setattr(embeddings, "encode", switch_and_click_while_a_encodes)
+    with _connect() as c:
+        retrieval.retrieve_dense(c, scope, "alpha", k = 1, model_name = OLD)
+    reembed._jobs["reembed"].thread.join(timeout = 10)
+    assert reembed.status()["status"] == "completed"
+    assert _row(doc)[0] == embeddings.embedding_identity(NEW)
+
+
 def test_failures_keep_the_old_index_and_only_a_streak_ends_the_job(models, tmp_path, monkeypatch):
     monkeypatch.setattr(reembed, "_MAX_CONSECUTIVE_FAILURES", 2)
     scope = store.kb_scope("K1")
