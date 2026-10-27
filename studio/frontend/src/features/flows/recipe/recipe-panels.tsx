@@ -3,12 +3,17 @@
 
 // Inspector sections for a recipe group: a column, and the Recipe Dataset step that stands for the whole recipe.
 
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { useState } from "react";
-import { useDocStore } from "../stores/doc-store";
+import { toast } from "sonner";
+import { exportRecipe } from "../api";
+import { downloadBlob } from "../editor/node-actions";
+import { documentFromState, useDocStore } from "../stores/doc-store";
 import { IDLE_RUNTIME, useRuntimeStore } from "../stores/runtime-store";
 import { type RecipeEditorTarget, useUiStore } from "../stores/ui-store";
 import type { FlowNode } from "../types";
 import { commitRecipe } from "./recipe-actions";
+import { recipeFileName } from "./recipe-io";
 import {
   type RecipeColumn,
   columnName,
@@ -46,6 +51,13 @@ const ADD_SEED: { type: string; label: string }[] = [
   { type: "seed_unstructured", label: "Document file" },
   { type: "seed_github", label: "GitHub repositories" },
 ];
+
+const SEED_LABEL: Record<string, string> = {
+  hf: "Hugging Face seed",
+  local: "CSV or JSON seed",
+  unstructured: "Document seed",
+  github_repo: "GitHub seed",
+};
 
 const BUTTON =
   "rounded-md border border-white/10 px-2 py-1 text-[12px] hover:bg-white/5";
@@ -204,6 +216,69 @@ function ConfigList({
   );
 }
 
+/** The seed's preview from its dialog: row count and columns, so the panel shows what the run starts from. */
+function SeedSummary({ ui }: { ui: Record<string, unknown> }) {
+  const rows = Array.isArray(ui.seed_preview_rows) ? ui.seed_preview_rows : [];
+  const columns = Array.isArray(ui.seed_columns)
+    ? ui.seed_columns.filter((c): c is string => typeof c === "string")
+    : [];
+  const total =
+    typeof ui.seed_total_rows === "number" ? ui.seed_total_rows : null;
+  const file =
+    typeof ui.local_file_name === "string" ? ui.local_file_name : "";
+  const docs = Array.isArray(ui.unstructured_file_names)
+    ? ui.unstructured_file_names.length
+    : 0;
+  if (!rows.length && !columns.length && !file && !docs) return null;
+  return (
+    <div
+      className="flex flex-col gap-0.5 text-[11px] text-zinc-400"
+      data-testid="recipe-seed-summary"
+    >
+      {file && <span className="truncate">{file}</span>}
+      {docs > 0 && (
+        <span>
+          {docs} document{docs === 1 ? "" : "s"}
+        </span>
+      )}
+      {columns.length > 0 && (
+        <span className="truncate font-mono">{columns.join(", ")}</span>
+      )}
+      {(total ?? rows.length) > 0 && (
+        <span>
+          {total !== null ? `${total} rows` : `${rows.length} preview rows`}
+        </span>
+      )}
+    </div>
+  );
+}
+
+async function exportGroup(groupId: string, how: "copy" | "download") {
+  try {
+    const recipe = await exportRecipe(
+      documentFromState(useDocStore.getState()),
+      groupId,
+    );
+    const text = JSON.stringify(recipe, null, 2);
+    if (how === "download") {
+      downloadBlob(
+        new Blob([text], { type: "application/json" }),
+        recipeFileName(useDocStore.getState().graph.groups[groupId]?.label),
+      );
+    } else if (await copyToClipboard(text)) {
+      toast.success("Recipe JSON copied", {
+        description: "Paste it into Data Recipes' import or another flow.",
+      });
+    } else {
+      throw new Error("Clipboard not available");
+    }
+  } catch (error) {
+    toast.error(
+      error instanceof Error ? error.message : "Could not export the recipe",
+    );
+  }
+}
+
 type Check =
   | { state: "idle" | "checking" }
   | { state: "done"; errors: string[] };
@@ -308,9 +383,34 @@ export function RecipePanel({ node }: { node: FlowNode }) {
         >
           {check.state === "checking" ? "Checking…" : "Check recipe"}
         </button>
+        <button
+          type="button"
+          onClick={() => edit({ groupId, runSettings: true })}
+          className={BUTTON}
+          data-testid="recipe-run-settings"
+        >
+          Run settings
+        </button>
         {check.state === "done" && check.errors.length === 0 && (
           <span className="text-[12px] text-emerald-300">Ready to run</span>
         )}
+      </div>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <button
+          type="button"
+          onClick={() => void exportGroup(groupId, "copy")}
+          className={BUTTON}
+          data-testid="recipe-copy-json"
+        >
+          Copy recipe JSON
+        </button>
+        <button
+          type="button"
+          onClick={() => void exportGroup(groupId, "download")}
+          className={BUTTON}
+        >
+          Download
+        </button>
       </div>
       {check.state === "done" && check.errors.length > 0 && (
         <ul className="flex flex-col gap-1 rounded bg-red-500/10 px-2 py-1.5 text-[12px] text-red-300">
@@ -338,18 +438,39 @@ export function RecipePanel({ node }: { node: FlowNode }) {
             addLabel="Model preset"
             add={{ kind: "llm", type: "model_config" }}
           />
+          <ConfigList
+            groupId={groupId}
+            title="Tool profiles"
+            items={names(config.tool_configs, "tool_alias")}
+            addLabel="Tool profile"
+            add={{ kind: "llm", type: "tool_config" }}
+          />
           <div className="flex flex-col gap-1">
             <span className="text-[11.5px] font-medium text-zinc-400">
               Seed data
             </span>
             {seed ? (
-              <button
-                type="button"
-                onClick={() => edit({ groupId, seed: true })}
-                className="rounded-md bg-white/5 px-2 py-1 text-left text-[12px] hover:bg-white/10"
-              >
-                {String(seedType ?? "seed")} seed
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={() => edit({ groupId, seed: true })}
+                  className="rounded-md bg-white/5 px-2 py-1 text-left text-[12px] hover:bg-white/10"
+                  data-testid="recipe-seed-edit"
+                >
+                  {SEED_LABEL[String(seedType)] ?? "Seed data"}
+                </button>
+                <SeedSummary ui={group.ui ?? {}} />
+                {seedType === "github_repo" && (
+                  <button
+                    type="button"
+                    onClick={() => edit({ groupId, easy: true })}
+                    className={`${BUTTON} self-start`}
+                    data-testid="recipe-github-easy"
+                  >
+                    GitHub crawler (easy view)
+                  </button>
+                )}
+              </>
             ) : (
               <select
                 value=""
@@ -380,7 +501,8 @@ export function RecipePanel({ node }: { node: FlowNode }) {
             Processors
           </button>
           <p className="text-[11px] leading-snug text-zinc-500">
-            Tool servers stay on the Data Recipes page; flows do not run them.
+            Local (stdio) tool servers only run from the Data Recipes page.
+            Exporting or sharing drops keys and local tool servers.
           </p>
         </div>
       </details>

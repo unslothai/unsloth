@@ -26,6 +26,7 @@ from core.flows import assets as asset_store
 from core.flows import glb, schema
 from core.flows.compiler import parse_document
 from core.flows import replication
+from core.flows.recipe_share import share_flow
 from core.flows.specs import SPECS_BY_TYPE
 
 MAX_ENTRIES = schema.MAX_ASSETS + 8
@@ -197,7 +198,7 @@ def _uses_models(doc: dict) -> bool:
 
 async def export_flow(doc: dict, mode: str, read_media: ReadMedia) -> tuple[bytes, str, str]:
     """(bytes, filename, media type) for ``mode`` json, package or baked."""
-    doc = scrub(json.loads(json.dumps(doc)))
+    doc = scrub(share_flow(json.loads(json.dumps(doc))))
     meta = dict(doc.get("meta") or {})
     meta["created_with"] = "Unsloth Studio"
     meta.setdefault("license", DEFAULT_LICENSE)
@@ -358,7 +359,7 @@ def read_package(data: bytes) -> tuple[dict, dict[str, tuple[bytes, str]], dict]
     doc, errors = parse_document(raw)
     if doc is None:
         raise PackageError("; ".join(e["message"] for e in errors[:5]) or "Not a valid flow")
-    doc = scrub(doc)
+    doc = scrub(share_flow(doc))
     declared = {asset_store.parse_ref(a["id"]) for a in doc.get("assets") or []}
     for digest in declared - set(files):
         warnings.append(f"Embedded file {digest[:12]} is missing from the package")

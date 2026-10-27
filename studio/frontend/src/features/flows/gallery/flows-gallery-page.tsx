@@ -44,6 +44,7 @@ import {
   TestTube01Icon,
 } from "../editor/icon-data";
 import { MediaThumb } from "../editor/media";
+import { RecipeImportDialog } from "../recipe/recipe-import-dialog";
 import type { FlowKind, FlowRecord, FlowSummary } from "../types";
 import {
   type GalleryCategory,
@@ -408,6 +409,7 @@ export function FlowsGalleryPage(): ReactElement {
   const [category, setCategory] = useState<GalleryCategory | null>(null);
   const [creating, setCreating] = useState(false);
   const [migrating, setMigrating] = useState(false);
+  const [recipeImportOpen, setRecipeImportOpen] = useState(false);
 
   const refresh = useCallback(() => {
     listFlows()
@@ -497,6 +499,13 @@ export function FlowsGalleryPage(): ReactElement {
         >
           <HugeiconsIcon icon={TestTube01Icon} size={15} />{" "}
           {migrating ? "Bringing in…" : "Bring in my Data Recipes"}
+        </Button>
+        <Button
+          variant="outline"
+          onClick={() => setRecipeImportOpen(true)}
+          data-testid="flows-import-recipe"
+        >
+          <HugeiconsIcon icon={FileImportIcon} size={15} /> Import recipe JSON
         </Button>
         <Button
           variant="outline"
@@ -658,6 +667,14 @@ export function FlowsGalleryPage(): ReactElement {
         onImport={() => setImportOpen(true)}
       />
 
+      <RecipeImportDialog
+        open={recipeImportOpen}
+        onOpenChange={setRecipeImportOpen}
+        onImported={(record) => {
+          setRecipeImportOpen(false);
+          open(record.id);
+        }}
+      />
       <ImportDialog
         open={importOpen}
         onOpenChange={setImportOpen}
