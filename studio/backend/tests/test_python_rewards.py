@@ -666,6 +666,22 @@ def test_python_rewards_keep_every_dataset_column():
     ]
 
 
+def test_kept_columns_skip_the_schema_keys_trl_reinterprets():
+    from datasets import Dataset
+
+    turns = [{"role": "user", "content": "q"}]
+    raw = Dataset.from_list([{"messages": turns, "completion": "c", "label": True, "level": 3}])
+    shaped, _ = rl.format_rl_dataset(raw, "grpo", {"messages": "prompt"}, keep_columns = ("*",))
+    assert sorted(shaped.column_names) == ["answer", "level", "prompt"]
+
+
+def test_a_preview_row_can_carry_a_wide_dataset(client):
+    md = _python_md("wide", "def reward(completions, c99, **kw):\n    return [float(c99[0])]\n")
+    row = {f"c{i}": i for i in range(100)}
+    payload = {"rewards": [{"markdown": md}], "completion": "x", "row": row}
+    assert _preview_as(client, "acct-a", payload) == 99.0
+
+
 def test_a_rule_can_compare_to_the_column_mapped_as_answer():
     from datasets import Dataset
 

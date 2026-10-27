@@ -66,7 +66,8 @@ class RewardPreviewRequest(BaseModel):
     completion: StrictStr = Field(..., max_length = 64 * 1024)
     reference: Optional[StrictStr] = Field(None, max_length = 16 * 1024)
     # Row 1 of the dataset with its own value types, as a Python reward gets it in training.
-    row: Optional[dict[StrictStr, JsonValue]] = Field(None, max_length = 64)
+    # Training keeps every column for Python rewards; the cap only bounds the request.
+    row: Optional[dict[StrictStr, JsonValue]] = Field(None, max_length = 1024)
     # The mapped prompt cell as the dataset holds it (text or chat turns), plus the system prompt
     # the run adds, so a reward sees the same turns as in training.
     prompt: Optional[

@@ -115,13 +115,16 @@ export function missingRlRoles(
   return RL_REQUIRED_ROLES[objective].filter((role) => !mapped.has(role));
 }
 
-// Mirrors _RL_ROW_KEYS and _REWARD_CALL_KEYS in rl.py: TRL fills these itself, every other
-// column reaches a Python reward.
+// Mirrors _RL_ROW_KEYS, _TRL_SCHEMA_KEYS and _REWARD_CALL_KEYS in rl.py: TRL fills or
+// refuses these, every other column reaches a Python reward.
 const RL_ROW_KEYS = new Set([
   "prompt",
   "answer",
   "chosen",
   "rejected",
+  "messages",
+  "completion",
+  "label",
   "prompts",
   "completions",
   "completion_ids",
