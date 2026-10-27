@@ -180,6 +180,8 @@ class RunHistory:
             "error",
         )
         fields = {k: status[k] for k in keep if k in status}
+        if fields.get("status") == "completed":
+            fields.pop("status")  # finish() marks it done once its rows are in the record
         if isinstance(status.get("rows"), int):
             fields["rows"] = status["rows"]
         await self.update(**fields)

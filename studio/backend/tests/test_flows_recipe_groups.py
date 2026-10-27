@@ -267,7 +267,7 @@ def test_each_run_is_kept_as_a_recipe_studio_execution_record(monkeypatch):
         params = {RECIPE_PARAM: _compiled(_flow()), "rows": 30, "mode": "preview"},
     )
     out = asyncio.run(data.recipe_group(ctx))
-    assert [r["status"] for _, _, r in saved] == ["pending", "active", "completed", "completed"]
+    assert [r["status"] for _, _, r in saved] == ["pending", "active", "active", "completed"]
     assert {(f, n) for f, n, _ in saved} == {("f1", "gen")}
     last = saved[-1][2]
     assert last["recipeId"] == "flow:f1:gen" and last["jobId"] == "job9"

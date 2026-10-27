@@ -22,7 +22,7 @@ import {
   toErrorMessage,
 } from "@/features/recipe-studio/executions/execution-helpers";
 import { toastError } from "@/shared/toast";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { recipeRuns } from "../api";
 import { runFlow } from "../editor/run-controller";
 import { useDocStore } from "../stores/doc-store";
@@ -49,14 +49,18 @@ function useRecipeRuns(flowId: string | null, nodeId: string | undefined) {
   const flowRunning = useRuntimeStore(
     (s) => s.runStatus === "running" || s.runStatus === "queued",
   );
+  const warned = useRef(false);
   const load = useCallback(async () => {
     if (!flowId || !nodeId) return;
     try {
       const { executions } = await recipeRuns(flowId, nodeId);
       setRecords(toRunRecords(executions));
+      warned.current = false;
     } catch (error) {
       setRecords((current) => current ?? []);
-      toastError("Could not load the runs", toErrorMessage(error, ""));
+      if (!warned.current)
+        toastError("Could not load the runs", toErrorMessage(error, ""));
+      warned.current = true;
     }
   }, [flowId, nodeId]);
   const live = runsAreLive(records ?? [], flowRunning);
