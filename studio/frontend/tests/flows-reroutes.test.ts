@@ -116,6 +116,39 @@ test("an empty reroute takes a wire in or out, and types itself from what is wir
   assert.equal(reroutePort(graph(), "r1").type, "image");
 });
 
+test("an empty reroute already feeding a typed input refuses an incompatible second one", () => {
+  fresh([]);
+  useDocStore.getState().addReroute({ id: "r1", pos: [300, 10] });
+  assert.equal(
+    tryConnect({
+      source: "r1",
+      sourceHandle: REROUTE_OUT_HANDLE,
+      target: "img",
+      targetHandle: inHandle("init_image"),
+    }),
+    null,
+  );
+  assert.match(
+    tryConnect({
+      source: "r1",
+      sourceHandle: REROUTE_OUT_HANDLE,
+      target: "llm",
+      targetHandle: inHandle("prompt"),
+    }) ?? "",
+    /image cannot connect to text/,
+  );
+  // Anything still goes into an `any` input.
+  assert.equal(
+    tryConnect({
+      source: "r1",
+      sourceHandle: REROUTE_OUT_HANDLE,
+      target: "out",
+      targetHandle: inHandle("value"),
+    }),
+    null,
+  );
+});
+
 test("reroute connection rules: story paths, self, loops and single inputs", () => {
   fresh();
   const store = useDocStore.getState();

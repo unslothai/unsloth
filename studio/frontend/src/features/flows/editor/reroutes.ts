@@ -11,6 +11,7 @@ import {
   rerouteDownstream,
   rerouteFeeds,
   rerouteUpstream,
+  wireInto,
 } from "../stores/reroute-graph";
 import type { PortSpec } from "../types";
 import {
@@ -60,6 +61,23 @@ export function wireHandles(
       ? REROUTE_IN_HANDLE
       : inHandle(wire.target_port),
   };
+}
+
+function chainRoot(graph: DocGraph, rerouteId: string): string {
+  let cursor = rerouteId;
+  const seen = new Set<string>();
+  while (!seen.has(cursor)) {
+    seen.add(cursor);
+    const into = wireInto(graph, cursor);
+    if (!into || !graph.reroutes[into.source]) break;
+    cursor = into.source;
+  }
+  return cursor;
+}
+
+function typedBy(graph: DocGraph, rerouteId: string): PortSpec | null {
+  const port = reroutePort(graph, rerouteId);
+  return port.type === "any" ? null : port;
 }
 
 export interface RerouteRequest {
@@ -129,7 +147,10 @@ export function checkRerouteConnection(
     if (!port) return { ok: false, reason: "Unknown port" };
     multi = !!port.multi;
   }
-  const source = portSpec(graph, upstream, "out");
+  // An empty reroute chain takes its type from the inputs it already feeds.
+  const source =
+    portSpec(graph, upstream, "out") ??
+    (fromReroute ? typedBy(graph, chainRoot(graph, req.source)) : null);
   const edges = Object.values(graph.edges);
   for (const ref of targets) {
     const port = portSpec(graph, ref, "in");
