@@ -8,6 +8,10 @@ import type { NodeSpec } from "../types";
 import { Search01Icon } from "./icon-data";
 import { nodeIcon } from "./icons";
 import { NODE_DRAG_MIME } from "./node-factory";
+import { REROUTE_TYPE } from "./reroutes";
+
+const REROUTE_HINT =
+  "Steer a wire by hand: drop it on a wire to split it, or wire into it.";
 
 function PaletteItem({
   spec,
@@ -83,6 +87,25 @@ function PaletteImpl({ onAdd }: { onAdd: (type: string) => void }) {
         />
       </div>
       <div className="flex-1 overflow-y-auto px-1.5 py-2">
+        {(!deferred || "reroute wire".includes(deferred)) && (
+          <button
+            type="button"
+            draggable={true}
+            onDragStart={(e) => {
+              e.dataTransfer.setData(NODE_DRAG_MIME, REROUTE_TYPE);
+              e.dataTransfer.effectAllowed = "move";
+            }}
+            onClick={() => onAdd(REROUTE_TYPE)}
+            title={REROUTE_HINT}
+            data-testid="palette-reroute"
+            className="mb-1.5 flex w-full cursor-grab items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12.5px] text-zinc-300 hover:bg-white/5 hover:text-white active:cursor-grabbing"
+          >
+            <span className="flex w-3.5 justify-center">
+              <span className="h-2 w-3.5 rounded-full border border-zinc-400" />
+            </span>
+            <span className="flex-1 truncate">Reroute</span>
+          </button>
+        )}
         {groups.map(({ category, specs }) => {
           const isCollapsed = !deferred && collapsed[category.id];
           return (
