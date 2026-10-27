@@ -70,11 +70,11 @@ test("Video has Create and Train, Train being Images' trainer", () => {
 test("the sibling link keeps its icon where the square button puts it and trails an arrow", () => {
   assert.match(
     LINK,
-    /iconArrow &&\s*"w-auto gap-0\.5 px-\[calc\(\(30px\*var\(--ui-space-scale,1\)-var\(--icon-size\)\)\/2\)\]"/,
+    /iconArrow &&\s*"w-auto gap-1\.5 pr-2 pl-\[calc\(\(30px\*var\(--ui-space-scale,1\)-var\(--icon-size\)\)\/2\)\]"/,
   );
   assert.match(
     LINK,
-    /\{iconArrow && \(\s*<ArrowRightIcon className="size-3\.5 shrink-0 opacity-60" \/>/,
+    /\{iconArrow && \(\s*<>[\s\S]{0,200}<span className="hidden min-w-0 truncate text-ui-13 font-medium @\[50rem\]:inline">\s*\{label\}\s*<\/span>\s*<ArrowRightIcon className="size-3\.5 shrink-0 opacity-60" \/>/,
   );
   for (const page of [IMAGES, VIDEO]) {
     assert.match(

@@ -69,9 +69,9 @@ export function MediaPageLink({
             onClick={go}
             className={cn(
               HEADER_ICON_BUTTON,
-              // Inset as in the square button, so the icon keeps its place and the arrow trails it.
+              // Inset as in the square button, so the icon keeps its place; label and arrow trail it.
               iconArrow &&
-                "w-auto gap-0.5 px-[calc((30px*var(--ui-space-scale,1)-var(--icon-size))/2)]",
+                "w-auto gap-1.5 pr-2 pl-[calc((30px*var(--ui-space-scale,1)-var(--icon-size))/2)]",
             )}
           >
             <HugeiconsIcon
@@ -80,7 +80,13 @@ export function MediaPageLink({
               className="size-icon"
             />
             {iconArrow && (
-              <ArrowRightIcon className="size-3.5 shrink-0 opacity-60" />
+              <>
+                {/* As the old Library link: the label only where the header has room. */}
+                <span className="hidden min-w-0 truncate text-ui-13 font-medium @[50rem]:inline">
+                  {label}
+                </span>
+                <ArrowRightIcon className="size-3.5 shrink-0 opacity-60" />
+              </>
             )}
           </button>
         </TooltipTrigger>
