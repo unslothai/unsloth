@@ -110,11 +110,13 @@ export {
 } from "./tool-output-scope";
 export { useToolAwaitingApproval } from "./tool-approval";
 export {
+  FullAccessConfirmDialog,
   PermissionModeDropdown,
   useActivePermissionMode,
+  usePermissionModeChoice,
   useSandboxCapability,
 } from "./permission-mode-select";
-export { sandboxSwitchState } from "./sandbox-level";
+export { SANDBOX_DOCS_URL, sandboxSwitchState } from "./sandbox-level";
 export { pickSandboxLevel } from "./sandbox-pick";
 export { SandboxSetupDialog } from "./sandbox-setup-dialog";
 export {

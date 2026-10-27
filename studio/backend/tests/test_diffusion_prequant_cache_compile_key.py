@@ -72,14 +72,31 @@ def _fresh_then_readback(tmp_path, monkeypatch, scheme_name):
     return fresh_key, _key(dense, scheme_name)
 
 
+def _int8_cpu_quantizable_and_flattenable() -> bool:
+    import core.inference.prequant_safetensors as PS
+    try:
+        from torchao.quantization import quantize_
+
+        m = torch.nn.Sequential(torch.nn.Linear(512, 512)).to(torch.bfloat16)
+        quantize_(m, T._make_quant_config("int8"))
+        helpers = PS._torchao_helpers()
+        if helpers is None:
+            return False
+        helpers[0](m.state_dict())
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def test_an_int8_read_back_keys_like_the_runtime_quantize_it_copies(
     env, tmp_path, ada, monkeypatch
 ):
+    if not _int8_cpu_quantizable_and_flattenable():
+        pytest.skip("int8 is not CPU-quantizable + flattenable on this torchao")
+    # Probed apart, so a cache save / read-back regression fails here instead of skipping.
     T._SCHEME = ("int8", True)
     try:
         fresh_key, read_key = _fresh_then_readback(tmp_path, monkeypatch, "int8")
-    except AssertionError:
-        pytest.skip("int8 is not CPU-quantizable + flattenable on this torchao")
     finally:
         T._SCHEME = None
     assert not U._STATE["installed"]

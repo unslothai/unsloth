@@ -657,7 +657,7 @@ export function GeneralTab() {
             <div
               key={channel}
               data-settings-label={name}
-              className="flex items-center justify-between gap-4 py-1.5"
+              className="flex items-start justify-between gap-4 py-1.5"
             >
               <div className="flex min-w-0 items-baseline gap-2">
                 <span className="text-sm text-foreground">{name}</span>

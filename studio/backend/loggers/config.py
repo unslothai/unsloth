@@ -289,6 +289,9 @@ def _redirect_every_bar_output() -> None:
 
         def _quiet_init(self, *args, **kwargs):
             kwargs.setdefault("file", _NullStream())
+            # disable=None means TTY detection; our stream is not a TTY but the UI needs counts.
+            if kwargs.get("disable") is None:
+                kwargs["disable"] = False
             original_init(self, *args, **kwargs)
 
         bar_cls.__init__ = _quiet_init
@@ -307,6 +310,15 @@ def keep_progress_bars_countable() -> None:
         return
     _redirect_every_bar_output()
     allow_progress_bars()
+    # Hub may already be imported: undo its cached copy of OUR default, never an operator opt-out.
+    for name in ("huggingface_hub.constants", "huggingface_hub.utils.tqdm"):
+        module = sys.modules.get(name)
+        if module is not None and getattr(module, "HF_HUB_DISABLE_PROGRESS_BARS", None) is True:
+            module.HF_HUB_DISABLE_PROGRESS_BARS = None
+    bars = sys.modules.get("huggingface_hub.utils.tqdm")
+    enable = getattr(bars, "enable_progress_bars", None)
+    if callable(enable):
+        enable()
 
 
 def quiet_bar_kwargs() -> dict:

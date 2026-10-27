@@ -42,6 +42,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Optional
 from utils.paths.path_utils import drop_appledouble_metadata
+from hub.services import training_downloads
 
 # Spawn (not fork): a fresh interpreter so parent CUDA/torch state never leaks into the trainer.
 _CTX = mp.get_context("spawn")
@@ -61,7 +62,38 @@ def _finite_or_none(value: Any) -> Optional[float]:
     return f if math.isfinite(f) else None
 
 
-def _run_diffusion_child(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
+class _DownloadPhaseQueue:
+    """Publish the real child phase before its status message reaches the parent."""
+
+    def __init__(self, queue, phase):
+        self.queue = queue
+        self.phase = phase
+
+    def put(self, event):
+        kind = event.get("type")
+        if kind == "model_load_started" or kind in (
+            "model_load_completed",
+            "preparing",
+            "progress",
+            "complete",
+            "error",
+        ):
+            flag, lock = self.phase
+            with lock:
+                if kind == "model_load_started":
+                    flag.set()
+                else:
+                    flag.clear()
+        self.queue.put(event)
+
+
+def _run_diffusion_child(
+    *,
+    event_queue: Any,
+    stop_queue: Any,
+    config: dict,
+    download_phase = None,
+) -> None:
     # Fresh spawned interpreter: re-apply network injections inside the secret scrub and before the trainer imports diffusers.
     from utils.native_tls import activate_native_tls
     from utils.happy_eyeballs import activate_happy_eyeballs
@@ -69,17 +101,23 @@ def _run_diffusion_child(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     activate_native_tls()
     activate_happy_eyeballs()
 
-    # Imported lazily so this module (and the route layer) stays torch-free at import.
-    from .diffusion_lora_trainer import run_diffusion_training_process
-
-    # Skips LogConfig.setup_logging, so this installs the Hub default; diffusers setup is in the trainer.
+    # Restore only Unsloth's own quiet default before Hub caches it at import.
     try:
-        from loggers.config import quiet_third_party_progress_bars
+        from loggers.config import keep_progress_bars_countable, quiet_third_party_progress_bars
         quiet_third_party_progress_bars()
-    except Exception:  # noqa: BLE001 - never let log tidying stop a training run
+        keep_progress_bars_countable()
+    except Exception:  # noqa: BLE001 -- progress setup must never stop training
         pass
 
-    run_diffusion_training_process(event_queue = event_queue, stop_queue = stop_queue, config = config)
+    from .diffusion_lora_trainer import run_diffusion_training_process
+
+    run_diffusion_training_process(
+        event_queue = _DownloadPhaseQueue(event_queue, download_phase)
+        if download_phase
+        else event_queue,
+        stop_queue = stop_queue,
+        config = config,
+    )
 
 
 def _default_target(
@@ -88,6 +126,7 @@ def _default_target(
     stop_queue: Any,
     config: dict,
     unsloth_stderr_mirror_path: Optional[str] = None,
+    download_phase = None,
 ) -> None:
     # First in the child, before torch: bind to parent death and scrub the native path secret; token policy precedes the returning account branch.
     if unsloth_stderr_mirror_path:
@@ -121,6 +160,7 @@ def _default_target(
             event_queue = event_queue,
             stop_queue = stop_queue,
             config = config,
+            **({"download_phase": download_phase} if download_phase is not None else {}),
         )
         return
     from utils.native_path_leases import run_without_native_path_secret
@@ -130,6 +170,7 @@ def _default_target(
         event_queue = event_queue,
         stop_queue = stop_queue,
         config = config,
+        **({"download_phase": download_phase} if download_phase is not None else {}),
     )
 
 
@@ -330,6 +371,7 @@ def _idle_state() -> dict[str, Any]:
         "num_images": None,
         "in_model_load": False,
         "preparation": None,
+        "download_progress": None,
         "output_dir": None,
         "lora_path": None,
         # The optional second (EMA-averaged) adapter, when ema_decay was enabled.
@@ -492,6 +534,9 @@ class DiffusionTrainingService:
         self._persist_interim = False
         # Only the first stop reaches the child, so only the first may set the parent's disposition.
         self._stop_signalled = False
+        self._download_key: Optional[str] = None
+        self._download_repo: Optional[str] = None
+        self._download_phase = None
         # GPU load admissions in flight; same two-sided rule as dataset mutations.
         self._gpu_admissions = 0
         self._proc: Any = None
@@ -630,6 +675,9 @@ class DiffusionTrainingService:
             }
             # Test targets take only the three job kwargs.
             if self._target is _default_target:
+                self._download_phase = (self._ctx.Event(), self._ctx.Lock())
+                self._download_phase[0].set()
+                child_kwargs["download_phase"] = self._download_phase
                 self._open_worker_stderr_capture()
                 if self._stderr_capture is not None:
                     from utils.native_path_leases import STDERR_MIRROR_KWARG
@@ -639,11 +687,23 @@ class DiffusionTrainingService:
                 kwargs = child_kwargs,
                 daemon = True,
             )
+            from .diffusion_train_common import training_fetch_repo
+
+            self._download_repo = (
+                training_fetch_repo(normalized_cfg)
+                or config.get("base_model")
+                or config.get("model_name")
+            )
+            self._download_key = training_downloads.claim(self, job_id, self._download_repo)
             # Keep the lease secret out of the child's env, as other orchestrators do.
             from utils.native_path_leases import native_path_secret_removed_for_child_start
 
-            with native_path_secret_removed_for_child_start():
-                self._proc.start()
+            try:
+                with native_path_secret_removed_for_child_start():
+                    self._proc.start()
+            except BaseException:
+                training_downloads.settle(self._download_key)
+                raise
             try:
                 from utils.process_lifetime import adopt_pid
                 adopt_pid(self._proc.pid)
@@ -656,6 +716,7 @@ class DiffusionTrainingService:
                 active = True,
                 job_id = job_id,
                 status = "running",
+                in_model_load = True,
                 message = "Starting diffusion LoRA training...",
                 base_model = config.get("base_model") or config.get("model_name"),
                 started_at = now,
@@ -679,14 +740,70 @@ class DiffusionTrainingService:
 
     @_invalidates_gpu_memory("diffusion training stop")
     @job_control
-    def stop(self, save: bool = True) -> bool:
+    def stop(
+        self,
+        save: bool = True,
+        *,
+        job_id: Optional[str] = None,
+        download_only: bool = False,
+        download_generation: Optional[int] = None,
+    ) -> bool:
         """Request a clean stop: the trainer finishes the current step, then either saves
         a partial adapter (``save=True``, the default) or discards the run (``save=False``,
         matching the LLM trainer's cancel). Returns True if a stop was signalled, False if
         nothing was running."""
-        with self._lock:
+        with (
+            self._lock,
+            self._download_phase[1] if self._download_phase else contextlib.nullcontext(),
+        ):
+            # Check under the signalling lock: never cancel a different run or its training.
+            if job_id is not None and self._state.get("job_id") != job_id:
+                return False
+            if download_generation is not None:
+                from hub.utils.download_registry import get_models_registry
+                if (
+                    not self._download_key
+                    or get_models_registry().current_generation(self._download_key)
+                    != download_generation
+                ):
+                    return False
+            if download_only and (
+                job_id is None
+                or not self._state.get("in_model_load")
+                or self._state.get("preparation") is not None
+                or self._state.get("status") != "running"
+                or (self._download_phase is not None and not self._download_phase[0].is_set())
+            ):
+                return False
             if self._proc is None or not self._proc.is_alive() or self._stop_queue is None:
                 return False
+            loading = self._state.get("in_model_load") and self._state.get("preparation") is None
+            if self._download_phase is not None:
+                loading = loading and self._download_phase[0].is_set()
+            if loading and hasattr(self._proc, "terminate"):
+                # Native Xet ignores the cooperative queue; no optimizer runs yet, so terminate the worker.
+                self._proc.terminate()
+                self._proc.join(timeout = 2.0)
+                if self._proc.is_alive() and hasattr(self._proc, "kill"):
+                    self._proc.kill()
+                    self._proc.join(timeout = 2.0)
+                if self._proc.is_alive():
+                    raise RuntimeError(
+                        "The training download worker has not stopped yet. Try stopping it again."
+                    )
+                self._stop_signalled = True
+                self._discard_requested = not save
+                self._state.update(
+                    active = False,
+                    status = "stopped",
+                    in_model_load = False,
+                    preparation = None,
+                    download_progress = None,
+                    message = "Stopped while loading model files; training had not started.",
+                    updated_at = time.time(),
+                )
+                training_downloads.settle(self._download_key, "cancelled")
+                return True
             if self._stop_signalled:
                 # Child consumes only the FIRST signal; a later stop-without-saving must not set a parent discard, which would delete checkpoints the child kept.
                 return True
@@ -814,10 +931,20 @@ class DiffusionTrainingService:
                                 # A worker killed mid-load / mid-preparation sends no terminal event to clear these.
                                 in_model_load = False,
                                 preparation = None,
+                                download_progress = None,
                                 message = self._unexpected_exit_message(proc),
                                 updated_at = time.time(),
                             )
                         discarding = self._discard_requested
+                        training_downloads.settle(
+                            self._download_key,
+                            "cancelled"
+                            if self._state.get("status") == "stopped"
+                            else "error"
+                            if self._state.get("status") == "error"
+                            else "idle",
+                            self._state.get("message"),
+                        )
                     if discarding:
                         self._apply_discard_intent()
                     _ = drained
@@ -966,19 +1093,43 @@ class DiffusionTrainingService:
         with self._lock:
             if proc is not None and self._proc is not proc:
                 return
+            if self._stop_signalled and self._state.get("status") == "stopped":
+                return
             s = self._state
             s["updated_at"] = time.time()
             if etype == "model_load_started":
                 s.update(
                     in_model_load = True,
                     preparation = None,
+                    download_progress = None,
                     status = "running",
                     message = "Loading base model...",
                 )
                 if ev.get("num_images") is not None:
                     s["num_images"] = ev.get("num_images")
+            elif etype == "model_download_progress":
+                if s.get("in_model_load") and s.get("preparation") is None:
+                    progress = ev.get("download_progress")
+                    progress = progress if isinstance(progress, dict) else {}
+                    done = _finite_or_none(progress.get("bytes_done"))
+                    total = _finite_or_none(progress.get("bytes_total"))
+                    s["download_progress"] = (
+                        {
+                            "bytes_done": int(min(done, total)),
+                            "bytes_total": int(total),
+                            "label": str(progress.get("label", "Model files"))[:200],
+                            "scope": "active_files",
+                        }
+                        if done is not None and done >= 0 and total is not None and total > 0
+                        else None
+                    )
             elif etype == "model_load_completed":
-                s.update(in_model_load = False, preparation = None, message = "Training...")
+                s.update(
+                    in_model_load = False,
+                    preparation = None,
+                    download_progress = None,
+                    message = "Training...",
+                )
             elif etype == "preparing":
                 # Long precompute such as the VAE latent cache, surfaced so the UI does not look stalled.
                 done, total = ev.get("done"), ev.get("total")
@@ -987,6 +1138,7 @@ class DiffusionTrainingService:
                     status = "running",
                     in_model_load = True,
                     preparation = {"stage": ev.get("stage"), "done": done, "total": total},
+                    download_progress = None,
                     message = (
                         f"Preparing ({stage} {done}/{total})..."
                         if done is not None and total is not None
@@ -1049,6 +1201,7 @@ class DiffusionTrainingService:
                     status = "running",
                     step = ev.get("step", s["step"]),
                     preparation = None,
+                    download_progress = None,
                     in_model_load = False,
                     total_steps = ev.get("total_steps", s["total_steps"]),
                     loss = loss,
@@ -1088,6 +1241,7 @@ class DiffusionTrainingService:
                     in_model_load = False,
                     status = "stopped" if ev.get("stopped") else "completed",
                     preparation = None,
+                    download_progress = None,
                     output_dir = ev.get("output_dir"),
                     lora_path = ev.get("lora_path"),
                     ema_path = ev.get("ema_path"),
@@ -1122,7 +1276,32 @@ class DiffusionTrainingService:
                     in_model_load = False,
                     status = "error",
                     preparation = None,
+                    download_progress = None,
                     message = str(ev.get("message", "error")),
+                )
+            if etype == "model_load_started":
+                try:
+                    self._download_key = training_downloads.claim(
+                        self,
+                        s.get("job_id"),
+                        ev.get("fetch_repo")
+                        or self._download_repo
+                        or s.get("base_model")
+                        or self._config.get("base_model"),
+                    )
+                except RuntimeError as exc:
+                    s.update(status = "error", message = str(exc), in_model_load = False)
+                    if self._proc is not None and hasattr(self._proc, "terminate"):
+                        self._proc.terminate()
+            elif etype in ("preparing", "model_load_completed", "progress", "complete", "error"):
+                training_downloads.settle(
+                    self._download_key,
+                    "error"
+                    if etype == "error"
+                    else "cancelled"
+                    if s.get("status") == "stopped"
+                    else "idle",
+                    s.get("message") if etype == "error" else None,
                 )
 
 

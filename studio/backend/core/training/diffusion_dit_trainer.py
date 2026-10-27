@@ -54,6 +54,7 @@ from core.training.diffusion_train_common import (
     _apply_perf_flags,
     _assert_trusted_base_model,
     _emit,
+    training_fetch_repo,
     _latent_cache_forced,
     _latent_cache_over_budget,
     _plan_cache_variants,
@@ -2393,7 +2394,9 @@ def run_dit_lora_training(
         preflight_resume(
             cfg.resume_from_checkpoint, identity = identity, target_steps = cfg.train_steps
         )
-    _emit(on_event, "model_load_started", num_images = len(pairs))
+    _emit(
+        on_event, "model_load_started", num_images = len(pairs), fetch_repo = training_fetch_repo(cfg)
+    )
     if _check_stop():
         out_dir = Path(cfg.output_dir).expanduser()
         _emit(
@@ -2509,6 +2512,7 @@ def _train_dit(
     if caption_embeds is not None and sample_texts:
         # Warm conditioning skips the VAE and encoders, but previews need the VAE and their own embeddings. RNG-isolated:
         # a run without previews never makes this load, so it must not move the training streams.
+        _emit(on_event, "model_load_started", fetch_repo = training_fetch_repo(cfg))
         with isolated_sampling(device, False):
             pipe, vae = spec.load_conditioners(fetch_cfg, device, weight_dtype)
             encoded = _encode_prompts_cached(spec, pipe, sample_texts, device, pcache)
@@ -2582,6 +2586,7 @@ def _train_dit(
     variant_rng = random.Random(cfg.seed + 1)
 
     # Transformer loads last, at resolved precision: nf4 by default, 'auto' picks from free VRAM.
+    _emit(on_event, "model_load_started", fetch_repo = training_fetch_repo(cfg))
     base_precision = _resolve_base_precision(cfg, spec, device)
     transformer = spec.load_transformer(fetch_cfg, device, weight_dtype, base_precision)
     base_is_bnb = base_precision == "nf4"

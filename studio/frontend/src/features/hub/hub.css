@@ -1200,8 +1200,6 @@
     /* The play glyph's empty right side reads as padding on the left, so the right gets more. */
     padding: calc(0.625rem * var(--ui-space-scale, 1)) calc(1rem * var(--ui-space-scale, 1))
       calc(0.625rem * var(--ui-space-scale, 1)) calc(0.875rem * var(--ui-space-scale, 1));
-    /* Half a pixel more on top: centred by its line box, the cap-height label sits that much high. */
-    padding-block: calc(0.625rem * var(--ui-space-scale, 1) + 0.5px) calc(0.625rem * var(--ui-space-scale, 1) - 0.5px);
     margin-inline-start: calc(0.5rem * var(--ui-space-scale, 1));
     font-size: calc(0.9375rem * var(--ui-font-scale, 1));
     font-weight: 600;
@@ -1214,9 +1212,15 @@
       0 1px 2px color-mix(in srgb, var(--status-success) 22%, transparent);
   }
 
-  /* Icons add no height. The nudge undoes the label's half pixel, so the triangle stays centred. */
+  /* Optical centring: the filled glyph's ink sits low. */
   .hub-run-action-btn svg {
     margin-block: calc(-0.625rem * var(--ui-space-scale, 1));
+    translate: 0 -0.25px;
+  }
+
+  /* A transform, not padding: text snaps to whole pixels. */
+  .hub-run-action-label {
+    display: inline-block;
     translate: 0 -0.5px;
   }
 

@@ -70,6 +70,7 @@ from .models.loader_utils import (
     _tokenizer_wants_local_only,
 )
 from .models._utils import (
+    _is_unsloth_tensor_parallel,
     _refuse_model_parallel_export,
     _convert_torchao_model,
     _merged_torchao_config_for_peft_qat,
@@ -361,6 +362,14 @@ def _add_bare_params4bit_quant_state(model, state_dict):
 _PARAMS4BIT_COMPARE_CHUNK_BYTES = 64 * 1024 * 1024
 
 
+def _packed_bytes_equal(a, b):
+    # Float quant_storage packs NaN / +-0 byte patterns: torch.equal would misjudge them.
+    if a.is_floating_point() or a.is_complex():
+        a = a.contiguous().reshape(-1).view(torch.uint8)
+        b = b.contiguous().reshape(-1).view(torch.uint8)
+    return torch.equal(a, b)
+
+
 def _is_live_params4bit_data(param, value):
     """True when `value` is `param`'s packed data: the same storage, or equal bytes. The byte
     comparison moves bounded slices of the live data to `value`'s device (a CPU-offloaded
@@ -384,17 +393,17 @@ def _is_live_params4bit_data(param, value):
         step = max(1, chunk_bytes // max(1, live.element_size()))
         for start in range(0, live_flat.numel(), step):
             live_chunk = live_flat[start : start + step].to(value.device)
-            if not torch.equal(live_chunk, value_flat[start : start + step]):
+            if not _packed_bytes_equal(live_chunk, value_flat[start : start + step]):
                 return False
         return True
     # Non-contiguous: slice along dim 0 (each slice copies at most its own rows).
     if live.dim() == 0:
-        return bool(torch.equal(live.to(value.device), value))
+        return bool(_packed_bytes_equal(live.to(value.device), value))
     row_bytes = max(1, live[0].numel() * live.element_size())
     step = max(1, chunk_bytes // row_bytes)
     for start in range(0, live.shape[0], step):
         live_chunk = live[start : start + step].to(value.device)
-        if not torch.equal(live_chunk, value[start : start + step]):
+        if not _packed_bytes_equal(live_chunk, value[start : start + step]):
             return False
     return True
 
@@ -865,12 +874,21 @@ def _merge_lora(
     bias = getattr(layer, "bias", None)
     if isinstance(layer, (Bnb_Linear4bit, Peft_Linear4bit, Peft_Linear)):
         W, quant_state, A, B, s, bias = get_lora_parameters_bias(layer)
+        stage = None
         if quant_state is not None and W.dtype == torch.float8_e4m3fn:
             # FP8 quant_state is the fp32 scale, not the model dtype: dequant in fp32, save in model dtype.
             W = fast_dequantize(W, quant_state, dtype = torch.float32)
             dtype = dtype if isinstance(dtype, torch.dtype) else torch.bfloat16
         elif quant_state is not None:
             dtype = quant_state.dtype if type(quant_state) is not list else quant_state[2]
+            # CPU-staged tp export replica: merge on its GPU, return the result on the CPU.
+            stage = getattr(W, "_unsloth_tp_stage_device", None)
+            if stage is not None:
+                from .models.tp_native import quant_state_copy
+
+                W, quant_state = W.data.to(stage), quant_state_copy(quant_state, stage)
+                A = None if A is None else A.to(stage)
+                B = None if B is None else B.to(stage)
             W = fast_dequantize(W, quant_state)
         else:
             dtype = W.dtype
@@ -882,6 +900,8 @@ def _merge_lora(
             if not torch.isfinite(maximum_element).item():
                 raise ValueError(f"Unsloth: Merge failed.\n{name} has some elements = infinity.")
         W = W.t().to(dtype)
+        if stage is not None:
+            W = W.cpu()
     else:
         W = layer.weight
     return W, bias
@@ -1285,14 +1305,45 @@ def _restore_tied_weights_keys(originals):
             pass
 
 
+_TP_IN_PLACE_MERGES = ("merged_4bit", "merged_4bit_forced", "forced_merged_4bit")
+
+
+def _refuse_tp_in_place_merge(fn, method, args, kwargs):
+    """merged_4bit merges the LoRA weights into the loaded 4-bit base (merge_and_unload): under tensor parallel
+    only rank 0 would hold that merged model. Refused on every rank (every rank makes the same call)."""
+    import inspect
+
+    try:
+        save_method = (
+            inspect.signature(fn).bind_partial(*args, **kwargs).arguments.get("save_method")
+        )
+    except (TypeError, ValueError):
+        save_method = kwargs.get("save_method")
+    if isinstance(save_method, str) and save_method.lower().strip() in _TP_IN_PLACE_MERGES:
+        raise RuntimeError(
+            f'Unsloth: `{method}(save_method = "{save_method}")` merges the LoRA weights into the 4-bit base in '
+            "place (merge_and_unload). On a tensor parallel model only rank 0 would end up with that merged "
+            "model, so it is not supported there. Save the adapter (model.save_pretrained) or use "
+            'save_method = "merged_16bit", or load the adapter on one GPU and run merged_4bit there.'
+        )
+
+
 def _model_parallel_refuses_save(method):
-    """Every whole-model export refuses an apply_tensor_parallel / apply_pipeline_parallel model before it
-    writes anything (see _refuse_model_parallel_export)."""
+    """Every whole-model export refuses an apply_pipeline_parallel model before it writes anything (see
+    _refuse_model_parallel_export). A tensor parallel model (tp, or tp x DDP-style dp) is gathered to rank 0,
+    which runs the export; the other ranks wait for it (models/tp_replica.py)."""
 
     def decorate(fn):
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
             model = args[0] if args else kwargs.get("model", kwargs.get("self"))
+            if model is not None and _is_unsloth_tensor_parallel(model):
+                from .models.tp_replica import collective_applies, tp_collective
+                if collective_applies(model):
+                    _refuse_tp_in_place_merge(fn, method, args, kwargs)
+                    # The whole model, also for LoRA-only writers: they run under inference_mode, where
+                    # state_dict() cannot detach the frozen DTensor shards.
+                    return tp_collective(model, method, lambda: fn(*args, **kwargs), "all")
             if model is not None:
                 _refuse_model_parallel_export(model, method)
             return fn(*args, **kwargs)
@@ -6724,6 +6775,32 @@ def _fsdp2_collective_save(
     return decorate
 
 
+def _tp_collective_save(method):
+    """save_pretrained / push_to_hub under tensor parallel: every rank calls, rank 0 writes the one-GPU files
+    (the LoRA tensors gathered for an adapter, the whole model otherwise) and the others wait for it. A
+    tokenizer of a tensor parallel run is written once, by rank 0. A call that brings its own `state_dict`
+    (save_tp_adapter's rank 0 write) is passed through."""
+
+    def decorate(fn):
+        @functools.wraps(fn)
+        def wrapper(self, *args, **kwargs):
+            if isinstance(self, torch.nn.Module) and _is_unsloth_tensor_parallel(self):
+                from .models.tp_replica import collective_applies, tp_collective
+                arguments = _fsdp2_save_arguments(fn, self, args, kwargs)
+                if arguments.get("state_dict") is None and collective_applies(self):
+                    adapter = isinstance(self, PeftModel) and not torch.is_inference_mode_enabled()
+                    select = "adapters" if adapter else "all"
+                    return tp_collective(self, method, lambda: fn(self, *args, **kwargs), select)
+            elif getattr(self, "__dict__", {}).get("_unsloth_tp_world_save"):
+                from .models.tp_replica import tp_world_push
+                return tp_world_push(method, lambda: fn(self, *args, **kwargs))
+            return fn(self, *args, **kwargs)
+
+        return wrapper
+
+    return decorate
+
+
 def _fsdp2_rank():
     import torch.distributed as dist
     return dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
@@ -8591,6 +8668,34 @@ def unsloth_tokenizer_save_pretrained(
     push_to_hub = False,
     **kwargs,
 ):
+    if self.__dict__.get("_unsloth_tp_world_save"):
+        from .models.tp_replica import tp_world_save
+
+        push_kwargs = dict(kwargs)
+        repo_id = push_kwargs.pop("repo_id", save_directory)
+        result = tp_world_save(
+            "tokenizer.save_pretrained",
+            lambda path: _unsloth_tokenizer_save_pretrained(
+                self, path, legacy_format, filename_prefix, False, **kwargs
+            ),
+            save_directory,
+        )
+        if push_to_hub:
+            self.push_to_hub(repo_id, **push_kwargs)
+        return result
+    return _unsloth_tokenizer_save_pretrained(
+        self, save_directory, legacy_format, filename_prefix, push_to_hub, **kwargs
+    )
+
+
+def _unsloth_tokenizer_save_pretrained(
+    self,
+    save_directory,
+    legacy_format = None,
+    filename_prefix = None,
+    push_to_hub = False,
+    **kwargs,
+):
     # Forward only what the caller set: MistralCommonBackend (Voxtral, tekken checkpoints) rejects these even as None.
     save_kwargs = dict(kwargs)
     if legacy_format is not None:
@@ -8699,11 +8804,14 @@ def patch_saving_functions(model, vision = False):
     exec(push_to_hub_text, globals())
     # Under FSDP2 every rank calls push_to_hub: the shards are gathered and rank 0 uploads. Inside,
     # the wrapped save_pretrained sees the gather already active and writes directly.
-    globals()["unsloth_push_to_hub"] = _fsdp2_collective_save(
-        lambda self, args, kwargs: isinstance(self, PeftModel),
-        offload_4bit = True,
-    )(globals()["unsloth_push_to_hub"])
+    globals()["unsloth_push_to_hub"] = _tp_collective_save("push_to_hub")(
+        _fsdp2_collective_save(
+            lambda self, args, kwargs: isinstance(self, PeftModel),
+            offload_4bit = True,
+        )(globals()["unsloth_push_to_hub"])
+    )
 
+    @_tp_collective_save("save_pretrained")
     @_fsdp2_collective_save(
         lambda self, args, kwargs: isinstance(self, PeftModel), offload_4bit = True
     )
