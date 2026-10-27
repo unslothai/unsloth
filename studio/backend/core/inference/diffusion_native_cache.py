@@ -302,7 +302,9 @@ def save(
                         f"native {component}: skipped ({name} is not a plain tensor)",
                     )
                     return None
-            name = tensor = None  # the loop's last tensor would otherwise stay referenced through the write
+            name = tensor = (
+                None  # the loop's last tensor would otherwise stay referenced through the write
+            )
             nbytes = sum(_cache._tensor_bytes(t) for t in state.values())
             budget = _cache.max_cache_bytes()
             if budget is not None and nbytes > budget:

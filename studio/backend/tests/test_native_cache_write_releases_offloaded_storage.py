@@ -147,7 +147,9 @@ def test_writer_holds_no_old_storage_after_the_weights_move(monkeypatch, base_di
             t.data = t.data.clone()
         held = [v for v in tensors.values() if isinstance(v, torch.Tensor)]
         stale = [v for v in held if v.data_ptr() in old_ptrs]
-        assert not stale, f"{len(stale)} tensors in the in-flight write still alias the moved storage"
+        assert (
+            not stale
+        ), f"{len(stale)} tensors in the in-flight write still alias the moved storage"
 
     path = _paused_save(monkeypatch, model, base_dir, offload)
     assert path is not None
