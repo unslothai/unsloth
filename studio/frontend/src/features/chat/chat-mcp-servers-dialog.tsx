@@ -5,9 +5,9 @@ import {
   Delete02Icon,
   Edit03Icon,
   PlusSignIcon,
+  Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { UploadIcon } from "lucide-react";
 import {
   type ChangeEvent,
   useCallback,
@@ -136,8 +136,7 @@ function headersToObject(
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
-// A non-HTTP address is a local stdio command. Case-insensitive to match the backend's is_stdio(),
-// so all layers split http-vs-command identically.
+// Case-insensitive to match the backend's is_stdio().
 function isHttpAddress(value: string): boolean {
   const trimmed = value.trim().toLowerCase();
   return trimmed.startsWith("http://") || trimmed.startsWith("https://");
@@ -210,8 +209,7 @@ function isValidAddress(value: string): boolean {
       return false;
     }
   }
-  // The backend owns stdio parsing and validation. In particular, the browser must not split an
-  // executable or duplicate platform-specific quoting rules.
+  // The backend owns stdio parsing; never split executables or quoting in the browser.
   return true;
 }
 
@@ -958,7 +956,7 @@ export function ChatMcpServersDialog({
         {showForm ? (
           <div className="flex flex-col gap-4">
             {view.kind === "create" && (
-              <div className="flex items-center justify-between gap-3 rounded-md border border-dashed px-3 py-2">
+              <div className="flex items-center justify-between gap-3 rounded-lg border border-dashed px-3 py-2">
                 <span className="text-xs text-muted-foreground">
                   Import servers from a config file.
                 </span>
@@ -971,7 +969,7 @@ export function ChatMcpServersDialog({
                   disabled={importing || formPending}
                   title="Import servers from a mcpServers JSON config (Claude Desktop, Cursor, VS Code…)"
                 >
-                  {importing ? <Spinner /> : <UploadIcon className="size-3.5" />}
+                  {importing ? <Spinner /> : <HugeiconsIcon icon={Upload01Icon} className="size-3.5" />}
                   Import config
                 </Button>
               </div>
@@ -1090,6 +1088,7 @@ export function ChatMcpServersDialog({
                   </span>
                 </div>
                 <Switch
+                  className="mt-[var(--ui-title-cap-inset)]"
                   id="mcp-oauth"
                   checked={form.useOauth}
                   disabled={formPending}
@@ -1101,7 +1100,7 @@ export function ChatMcpServersDialog({
             )}
 
             {form.transport === "http" && form.useOauth && (
-              <div className="grid gap-3 rounded-md border p-3">
+              <div className="grid gap-3 rounded-lg border p-3">
                 <div className="grid gap-2">
                   <Label htmlFor="mcp-oauth-client-id">OAuth client ID</Label>
                   <Input
@@ -1210,10 +1209,10 @@ export function ChatMcpServersDialog({
                 disabled={importing}
                 title="Import servers from a mcpServers JSON config (Claude Desktop, Cursor, VS Code…)"
               >
-                {importing ? <Spinner /> : <UploadIcon className="size-3.5" />}
+                {importing ? <Spinner /> : <HugeiconsIcon icon={Upload01Icon} className="size-3.5" />}
                 Import config
               </Button>
-              <Button size="sm" onClick={startCreate} disabled={importing}>
+              <Button variant="secondary" size="sm" onClick={startCreate} disabled={importing}>
                 <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
                 Add server
               </Button>
@@ -1223,11 +1222,11 @@ export function ChatMcpServersDialog({
                 <Spinner />
               </div>
             ) : servers.filter((server) => !server.builtin_id).length === 0 ? (
-              <div className="rounded-md border border-dashed py-6 text-center text-sm text-muted-foreground">
+              <div className="rounded-xl border border-dashed py-6 text-center text-sm text-muted-foreground">
                 No custom MCP servers configured yet.
               </div>
             ) : (
-              <ul className="flex flex-col divide-y rounded-md border">
+              <ul className="flex flex-col divide-y rounded-xl border">
                 {servers.filter((server) => !server.builtin_id).map((server) => (
                   <li
                     key={server.id}

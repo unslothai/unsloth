@@ -62,8 +62,7 @@ def check_flash_attn(device: str) -> None:
     ).transpose(1, 2)
     error = (out.float() - reference).abs().max().item()
     print(f"  max abs error against SDPA: {error:.4f}")
-    # bf16 accumulation, not a tolerance anyone should tighten: the point is that the kernel
-    # computed attention rather than returning plausible-looking garbage.
+    # Loose on purpose (bf16 accumulation); this only checks attention was actually computed.
     assert error < 0.1, error
 
 
@@ -86,8 +85,7 @@ def check_mamba_ssm(device: str) -> None:
     import mamba_ssm
     from mamba_ssm.ops.selective_scan_interface import selective_scan_fn
 
-    # Imported for its own sake: this is the extension torch 2.13 stopped loading, and the one
-    # the C++20 patch exists for. Importing mamba_ssm alone does not prove it is present.
+    # Import explicitly: importing mamba_ssm alone does not prove this extension loads.
     import selective_scan_cuda
 
     print("mamba_ssm", mamba_ssm.__version__, selective_scan_cuda.__file__)

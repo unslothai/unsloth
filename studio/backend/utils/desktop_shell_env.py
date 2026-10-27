@@ -27,8 +27,7 @@ DISABLE_ENV_VAR = "UNSLOTH_DISABLE_SHELL_ENV_IMPORT"
 # Set by src-tauri on every CLI child it owns (process.rs, DESKTOP_MANAGED_ENV).
 DESKTOP_MANAGED_ENV = "UNSLOTH_DESKTOP_MANAGED"
 
-# From the CLI's #7331 guard, which ran against a GUI environment that never had
-# the override: the arbiter travels, its verdict would say nothing here.
+# The CLI's guard ran in a different environment, so its verdict is not reused here.
 ROCM_INSTALLED_ARCH_ENV = "UNSLOTH_ROCM_INSTALLED_ARCH"
 HSA_OVERRIDE_ENV = "HSA_OVERRIDE_GFX_VERSION"
 
@@ -61,7 +60,7 @@ ROCM_SHELL_ENV_ALLOWLIST: tuple[str, ...] = (
     "AMD_SERIALIZE_KERNEL",
     "GPU_MAX_HW_QUEUES",
 )
-# Not HSA_TOOLS_LIB: HSA dlopens it, which loads a library rather than tuning one.
+# Not HSA_TOOLS_LIB: HSA dlopens it, so it loads a library rather than tuning one.
 
 # Exception list, so a renamed bash/zsh still gets the unsloth#12678 probe.
 _NON_POSIX_SHELLS = frozenset(
@@ -70,10 +69,7 @@ _NON_POSIX_SHELLS = frozenset(
 
 
 def probe_command(shell: str, command: str) -> str:
-    """``command`` for ``shell -ilc`` without the exit-time history save (unsloth#12678).
-
-    ``RCS`` covers zsh's readonly HISTFILE; subshell first, as dash exits on a readonly unset.
-    """
+    """Unsets RCS to skip the exit-time history save; dash exits on a readonly unset, hence the subshell."""
     if os.path.basename(shell) in _NON_POSIX_SHELLS:
         return command
     return (
@@ -87,10 +83,7 @@ _AMD_VENDOR_ID = "4098"
 
 
 def host_has_amd_gpu() -> bool:
-    """Whether the amdgpu driver is presenting a GPU here.
-
-    The KFD topology, not torch: this runs before torch is imported.
-    """
+    """Reads the KFD topology rather than torch, because this runs before torch is imported."""
     if not sys.platform.startswith("linux"):
         return False
     try:
@@ -126,13 +119,7 @@ def _node_is_an_amd_gpu(properties: str) -> bool:
 
 
 def read_login_shell_env(shell: "str | None" = None, timeout: float = 15.0) -> dict:
-    """The environment an interactive login shell would have handed us, or ``{}``.
-
-    ``-i`` runs ``~/.zshrc`` and ``-l`` the profile chain; bash reaches
-    ``~/.bashrc`` only because the stock ``~/.profile`` sources it. ``env -0``
-    into a FILE: a newline in a value corrupts a line parse, and an rc that
-    backgrounds a job leaves that child holding a capture pipe.
-    """
+    """Env goes to a file: newlines in values break line parsing; background rc jobs can hold pipes."""
     shell = shell or os.environ.get("SHELL") or "/bin/sh"
     with tempfile.TemporaryDirectory(prefix = "unsloth-shell-env-") as work:
         target = os.path.join(work, "env")
@@ -206,11 +193,7 @@ def select_missing_vars(
     shell_env,
     allowlist = ROCM_SHELL_ENV_ALLOWLIST,
 ) -> dict:
-    """The allowlisted names the shell has and this process does not.
-
-    Membership on both sides, never truthiness: exported empty is a statement, and
-    ``ROCR_VISIBLE_DEVICES=`` hides every agent.
-    """
+    """Test membership, not truthiness: an exported empty ROCR_VISIBLE_DEVICES= hides every agent."""
     out: dict = {}
     for name in allowlist:
         if name in environ:
@@ -263,11 +246,7 @@ def import_rocm_env_from_login_shell(
 
 
 def override_gfx_arch(value):
-    """The gfx arch an ``HSA_OVERRIDE_GFX_VERSION`` value names, or None.
-
-    In step with ``_hsa_override_gfx_arch`` in unsloth_cli/commands/studio.py,
-    install_python_stack.py and install.sh; the parity is tested.
-    """
+    """Kept in step with _hsa_override_gfx_arch in unsloth_cli and install.sh; a test checks parity."""
     if not isinstance(value, str) or not value:
         return None
     # [0-9] rather than str.isdigit()/\d, both of which accept non-ASCII digits.
@@ -281,11 +260,7 @@ def override_gfx_arch(value):
 
 
 def override_contradicts_install(value, installed_arch) -> bool:
-    """Whether this override names an arch the installed ROCm wheels cannot serve.
-
-    False for a value that does not parse, matching the CLI guard, which leaves an
-    override it cannot read alone.
-    """
+    """False for an unparsable value, matching the CLI guard that leaves such an override alone."""
     if not installed_arch:
         return False
     named = override_gfx_arch(value)

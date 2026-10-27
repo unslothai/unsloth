@@ -29,6 +29,7 @@ from ..models._utils import *
 from ..context_parallel import get_cp_manager
 from .ulysses import ulysses_attention
 from ..utils.packing import (
+    _inference_mode,
     build_sdpa_packed_attention_mask,
     build_xformers_block_causal_mask,
     cover_padded_cu_seqlens,
@@ -80,15 +81,14 @@ def _xformers_disabled_for_capability(
     return False
 
 
-# FlashAttention always wins in select_attention_backend and nothing downgrades flash to xformers,
-# so when it is installed xformers is never selected: skip the probe.
+# FlashAttention always wins in select_attention_backend, so skip the probe when installed.
 if HAS_XFORMERS and not HAS_FLASH_ATTENTION and torch.cuda.is_available():
     if _xformers_disabled_for_capability(torch.cuda.get_device_capability()):
         HAS_XFORMERS = False
 
 # On sm_100+ (B200, sm_120) xformers' fp32-capable cutlass op is capability-rejected and only its
 # fp16/bf16 flash-2 op runs, so fp32 Q/K/V (DoRA, #1013) must be downcast there; below sm_100
-# cutlass handles fp32 natively. Read once from device 0.
+# cutlass handles fp32 natively. Device 0 only: _xformers_rejects_fp32 reads Q's card.
 _XFORMERS_FP32_UNSUPPORTED = (
     torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 10
 )
@@ -97,6 +97,181 @@ _XFORMERS_FP32_UNSUPPORTED = (
 def scaled_dot_product_attention(*args, **kwargs):
     # Resolved per call: context_parallel monkey patches torch.nn.functional.
     return F.scaled_dot_product_attention(*args, **kwargs)
+
+
+def _avoids_cudnn(Q, training):
+    """Training calls on SM100 run without cuDNN attention (_training_sdpa); probes must match."""
+    return bool(training) and Q.is_cuda and Q.device.index in _NO_CUDNN_TRAINING
+
+
+def _training_sdpa(*args, **kwargs):
+    """SDPA for a training forward (AttentionContext.training, passed in, no global state: these
+    calls run traced). On SM100 SDPA picks cuDNN attention, which builds a plan for every new
+    sequence length (~150 ms each), and training batches change length every step."""
+    if args and _avoids_cudnn(args[0], True):
+        with _sdpa_kernel(_XFORMERS_LIKE_BACKENDS):
+            return scaled_dot_product_attention(*args, **kwargs)
+    if len(args) >= 3 and _cudnn_length_bucket_applies(*args[:3], **kwargs):
+        return _cudnn_length_bucketed_sdpa(*args, **kwargs)
+    return scaled_dot_product_attention(*args, **kwargs)
+
+
+def _inference_sdpa(*args, **kwargs):
+    """Non-training SDPA: a prefill also pays cuDNN's per-length plan, so it is bucketed too."""
+    if len(args) >= 3 and _cudnn_length_bucket_applies(*args[:3], **kwargs):
+        return _cudnn_length_bucketed_sdpa(*args, **kwargs)
+    return scaled_dot_product_attention(*args, **kwargs)
+
+
+# Wherever SDPA picks cuDNN attention for a training call (H100 on torch 2.14: the default
+# priority), every new sequence length builds a new cuDNN plan, ~170 ms forward plus backward on
+# H100. Padded batches change length every step, so that cost landed on nearly every step. Padding
+# Q / K / V along the sequence to a multiple of this bucket bounds the plans to max_len / bucket.
+# Causal calls: causal masking hides the padded keys. Masked calls (GRPO / DPO padding): the mask is
+# padded too (new keys masked out, new query rows attend everything and get zero gradient). 0 disables.
+try:
+    _CUDNN_LENGTH_BUCKET = max(int(os.environ.get("UNSLOTH_SDPA_CUDNN_BUCKET", "128")), 0)
+except ValueError:
+    _CUDNN_LENGTH_BUCKET = 128
+
+
+def _cudnn_length_bucket_applies(
+    Q,
+    K,
+    V,
+    attn_mask = None,
+    dropout_p = 0.0,
+    is_causal = False,
+    **kwargs,
+):
+    if not _CUDNN_LENGTH_BUCKET or _CUDNN_CHOICE is None:
+        return False
+    # Under context parallelism the tensors can be sequence shards: padding a shard would put unmasked
+    # zero keys inside the global sequence.
+    if get_cp_manager() is not None:
+        return False
+    if dropout_p or (attn_mask is None) != bool(is_causal):
+        return False
+    if not (isinstance(Q, Tensor) and Q.is_cuda and Q.dim() == 4 and K.dim() == 4 and V.dim() == 4):
+        return False
+    if Q.dtype not in (torch.float16, torch.bfloat16) or Q.shape[-2] != K.shape[-2]:
+        return False
+    enable_gqa = True if kwargs.get("enable_gqa", False) else False
+    if attn_mask is not None:
+        if not _cudnn_bucket_mask_ok(attn_mask, Q, K):
+            return False
+        needs_grad = torch.is_grad_enabled() and (
+            Q.requires_grad or K.requires_grad or V.requires_grad
+        )
+        choice = _sdpa_masked_choice(
+            str(Q.device),
+            Q.dtype,
+            Q.shape[-1],
+            Q.shape[1],
+            K.shape[1],
+            enable_gqa,
+            True if needs_grad else False,
+        )
+        return choice == _CUDNN_CHOICE
+    _, choice = _sdpa_backend_state(
+        str(Q.device),
+        Q.dtype,
+        Q.shape[-1],
+        Q.shape[1],
+        K.shape[1],
+        True,
+        enable_gqa,
+    )
+    return choice == _CUDNN_CHOICE
+
+
+def _cudnn_bucket_mask_ok(attn_mask, Q, K):
+    """Per-batch 4D padding masks only (bool or Q-dtype additive, no grad). Batch-shared cached masks
+    are skipped: a padded copy per layer would multiply their memory."""
+    if not isinstance(attn_mask, Tensor) or attn_mask.dim() != 4 or attn_mask.requires_grad:
+        return False
+    if attn_mask.dtype != torch.bool and attn_mask.dtype != Q.dtype:
+        return False
+    if attn_mask.device != Q.device or attn_mask.shape[-1] != K.shape[-2]:
+        return False
+    if attn_mask.shape[-2] != 1 and attn_mask.shape[-2] != Q.shape[-2]:
+        return False
+    if Q.shape[0] == 1 or attn_mask.shape[0] != Q.shape[0]:
+        return False
+    return attn_mask.shape[1] == 1 or attn_mask.shape[1] == Q.shape[1]
+
+
+def _sdpa_masked_choice(device, dtype, head_dim, n_heads, n_kv_heads, enable_gqa, needs_grad):
+    """SDPBackend SDPA picks for a masked, non-causal call with these shapes (-1 if unknown)."""
+    cuda = torch.backends.cuda
+    backends = (
+        cuda.flash_sdp_enabled(),
+        cuda.cudnn_sdp_enabled(),
+        cuda.mem_efficient_sdp_enabled(),
+        cuda.math_sdp_enabled(),
+        tuple(getattr(torch._C, "_get_sdp_priority_order", tuple)()),
+        torch.are_deterministic_algorithms_enabled(),
+        torch.is_deterministic_algorithms_warn_only_enabled(),
+    )
+    gqa, mha = _sdpa_gqa_choices(
+        device, dtype, head_dim, n_heads, n_kv_heads, False, True, needs_grad, 0.0, backends
+    )
+    return gqa if enable_gqa else mha
+
+
+def _cudnn_length_bucketed_sdpa(
+    Q,
+    K,
+    V,
+    attn_mask = None,
+    dropout_p = 0.0,
+    is_causal = False,
+    **kwargs,
+):
+    # Always pad by 1..bucket rows and slice: a zero pad specialises under dynamo (a recompile when the
+    # length becomes a bucket multiple), so an exact multiple carries one spare bucket instead.
+    q_len = Q.shape[-2]
+    pad = _CUDNN_LENGTH_BUCKET - q_len % _CUDNN_LENGTH_BUCKET
+    Q, K, V = (F.pad(x, (0, 0, 0, pad)) for x in (Q, K, V))
+    if attn_mask is None:
+        out = scaled_dot_product_attention(Q, K, V, is_causal = True, **kwargs)
+        return out[..., :q_len, :]
+    # Padded query rows attend everything (no fully masked row) and are sliced off; padded keys are masked.
+    rows = attn_mask.shape[-2]
+    shape = (*attn_mask.shape[:-2], rows if rows == 1 else rows + pad, q_len + pad)
+    if attn_mask.dtype == torch.bool:
+        padded = attn_mask.new_ones(shape)
+        padded[..., :rows, q_len:] = False
+    else:
+        padded = attn_mask.new_zeros(shape)
+        padded[..., :rows, q_len:] = torch.finfo(attn_mask.dtype).min
+    padded[..., :rows, :q_len] = attn_mask
+    out = scaled_dot_product_attention(Q, K, V, attn_mask = padded, **kwargs)
+    return out[..., :q_len, :]
+
+
+def _rerouted_sdpa(*args, **kwargs):
+    """SDPA standing in for xformers inside a compiled block, on the kernels xformers would run.
+    Without the pin, torch 2.13+ on SM100 takes cuDNN attention, which builds a new plan for every
+    new sequence length (~150 ms per length): padded batches of varying length stalled every step."""
+    with _sdpa_kernel(_XFORMERS_LIKE_BACKENDS):
+        return F.scaled_dot_product_attention(*args, **kwargs)
+
+
+# Module level: reading SDPBackend's attributes while traced breaks the graph.
+try:
+    from torch.nn.attention import SDPBackend as _SDPBackend, sdpa_kernel as _sdpa_kernel
+    _XFORMERS_LIKE_BACKENDS = [
+        _SDPBackend.FLASH_ATTENTION,
+        _SDPBackend.EFFICIENT_ATTENTION,
+        _SDPBackend.MATH,
+    ]
+    _CUDNN_CHOICE = (
+        int(_SDPBackend.CUDNN_ATTENTION) if hasattr(_SDPBackend, "CUDNN_ATTENTION") else None
+    )
+except Exception:
+    _rerouted_sdpa = scaled_dot_product_attention
+    _CUDNN_CHOICE = None
 
 
 def _per_device_backends(capabilities):
@@ -127,9 +302,102 @@ def _visible_capabilities():
         return ()
 
 
+def _no_cudnn_training_devices():
+    """Device indices whose training SDPA calls avoid cuDNN attention (SM100). UNSLOTH_SDPA_TRAIN_CUDNN=1 keeps it."""
+    if os.environ.get("UNSLOTH_SDPA_TRAIN_CUDNN", "0") == "1" or torch.version.hip is not None:
+        return frozenset()
+    return frozenset(i for i, cap in enumerate(_visible_capabilities()) if cap[0] == 10)
+
+
+_NO_CUDNN_TRAINING = _no_cudnn_training_devices()
+
+
+def _decode_no_cudnn_devices():
+    """sm90 / sm100 devices whose decode SDPA avoids cuDNN: it builds a plan per key length, i.e. per
+    generated token. UNSLOTH_SDPA_DECODE_CUDNN=1 keeps it."""
+    if os.environ.get("UNSLOTH_SDPA_DECODE_CUDNN", "0") == "1" or torch.version.hip is not None:
+        return frozenset()
+    return frozenset(i for i, cap in enumerate(_visible_capabilities()) if cap[0] in (9, 10))
+
+
+_NO_CUDNN_DECODE = _decode_no_cudnn_devices()
+
+
+_DECODE_PICKS_CUDNN = {}
+
+
+def _decode_picks_cudnn(query, key, attn_mask, enable_gqa):
+    """Whether torch would pick cuDNN for this decode call (else sdpa_kernel is ~25 us of overhead)."""
+    cache_key = (
+        query.device.index,
+        query.dtype,
+        query.shape[-1],
+        query.shape[1],
+        key.shape[1],
+        attn_mask is not None,
+        enable_gqa,
+        torch.backends.cuda.cudnn_sdp_enabled(),
+    )
+    picks = _DECODE_PICKS_CUDNN.get(cache_key)
+    if picks is None:
+        cuda = torch.backends.cuda
+        backends = (
+            cuda.flash_sdp_enabled(),
+            cuda.cudnn_sdp_enabled(),
+            cuda.mem_efficient_sdp_enabled(),
+            cuda.math_sdp_enabled(),
+            tuple(getattr(torch._C, "_get_sdp_priority_order", tuple)()),
+        )
+        gqa, mha = _sdpa_gqa_choices(
+            str(query.device), query.dtype, query.shape[-1], query.shape[1], key.shape[1],
+            False, attn_mask is not None, False, 0.0, backends, single_query = True,
+        )  # fmt: skip
+        picks = _DECODE_PICKS_CUDNN[cache_key] = (gqa if enable_gqa else mha) == _CUDNN_CHOICE
+    return picks
+
+
+def decode_scaled_dot_product_attention(query, key, value, *args, **kwargs):
+    """Decode SDPA, kept off cuDNN where torch would pick it on _NO_CUDNN_DECODE devices."""
+    if (
+        _CUDNN_CHOICE is not None
+        and query.is_cuda
+        and query.shape[-2] == 1
+        and query.device.index in _NO_CUDNN_DECODE
+        and (
+            torch.compiler.is_compiling()
+            or _decode_picks_cudnn(
+                query,
+                key,
+                kwargs.get("attn_mask", args[0] if args else None),
+                bool(kwargs.get("enable_gqa", False)),
+            )
+        )  # fmt: skip
+    ):
+        with _sdpa_kernel(_XFORMERS_LIKE_BACKENDS):
+            return F.scaled_dot_product_attention(query, key, value, *args, **kwargs)
+    return F.scaled_dot_product_attention(query, key, value, *args, **kwargs)
+
+
+decode_scaled_dot_product_attention.__doc__ = (
+    F.scaled_dot_product_attention.__doc__ or ""
+) + decode_scaled_dot_product_attention.__doc__
+
+
 # Mixed-generation hosts only (e.g. sm_86 + sm_75): the backend is re-checked against Q's device, since a
 # device-0 verdict is wrong for layers a device_map places on another card.
 _DEVICE_BACKENDS = _per_device_backends(_visible_capabilities())
+# Read at import so a traced call only indexes a tuple.
+_XFORMERS_FP32_UNSUPPORTED_BY_INDEX = tuple(c[0] >= 10 for c in _visible_capabilities())
+
+
+def _xformers_rejects_fp32(device) -> bool:
+    """sm_100+ CUDA only: CPU tensors on a B200 host must not inherit device 0's answer."""
+    if getattr(device, "type", None) != "cuda":
+        return False
+    index = getattr(device, "index", None)
+    if index is not None and index < len(_XFORMERS_FP32_UNSUPPORTED_BY_INDEX):
+        return _XFORMERS_FP32_UNSUPPORTED_BY_INDEX[index]
+    return _XFORMERS_FP32_UNSUPPORTED
 
 
 # Lazy so import never opens a CUDA context on another rank's card (torchrun sees every GPU).
@@ -196,6 +464,116 @@ def _load_torch_varlen_attn():
 
 
 _TORCH_VARLEN_ATTN = _load_torch_varlen_attn()
+
+# varlen_attn is a torch.library custom op: per call it pays Python custom-op dispatch twice (forward
+# and backward), a cuDNN eligibility check and a zeros launch for its rng state. Padding-free training
+# runs it once per layer per micro-batch, which on a launch-bound step costs more than the padding it
+# saves. Eager calls that torch would send to flash anyway take the same aten flash kernels through
+# a plain autograd.Function. UNSLOTH_LEAN_VARLEN=0 restores varlen_attn everywhere.
+_LEAN_VARLEN = _TORCH_VARLEN_ATTN is not None and os.environ.get(
+    "UNSLOTH_LEAN_VARLEN", "1"
+).lower() not in ("0", "false", "no", "off")
+if _LEAN_VARLEN:
+    try:
+        from torch.nn.attention.varlen import _can_use_cudnn as _varlen_can_use_cudnn
+    except Exception:
+        # torch 2.12 / 2.13 decide per device only (_should_use_cudnn, False on every GPU in 2.13).
+        try:
+            from torch.nn.attention.varlen import _should_use_cudnn as _varlen_should_use_cudnn
+            def _varlen_can_use_cudnn(
+                query,
+                key,
+                value,
+                max_q,
+                window_size,
+                enable_gqa = False,
+            ):
+                return query.is_cuda and _varlen_should_use_cudnn(query.device.index)
+
+        except Exception:
+            _LEAN_VARLEN = False
+
+
+class _LeanFlashVarlen(torch.autograd.Function):
+    @staticmethod
+    def forward(
+        ctx, query, key, value, cu_seqlens, max_seqlen, is_causal, scale, window_left, window_right
+    ):
+        out, lse, philox_seed, philox_offset, _ = torch.ops.aten._flash_attention_forward(
+            query,
+            key,
+            value,
+            cu_seqlens,
+            cu_seqlens,
+            max_seqlen,
+            max_seqlen,
+            0.0,
+            is_causal,
+            return_debug_mask = False,
+            scale = scale,
+            window_size_left = window_left,
+            window_size_right = window_right,
+        )
+        ctx.save_for_backward(query, key, value, cu_seqlens, out, lse, philox_seed, philox_offset)
+        ctx.max_seqlen, ctx.is_causal, ctx.scale = max_seqlen, is_causal, scale
+        ctx.window = (window_left, window_right)
+        return out
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        query, key, value, cu_seqlens, out, lse, philox_seed, philox_offset = ctx.saved_tensors
+        dq, dk, dv = torch.ops.aten._flash_attention_backward(
+            grad_out.contiguous(),
+            query,
+            key,
+            value,
+            out,
+            lse,
+            cu_seqlens,
+            cu_seqlens,
+            ctx.max_seqlen,
+            ctx.max_seqlen,
+            0.0,
+            ctx.is_causal,
+            philox_seed,
+            philox_offset,
+            scale = ctx.scale,
+            window_size_left = ctx.window[0],
+            window_size_right = ctx.window[1],
+        )
+        return dq, dk, dv, None, None, None, None, None, None
+
+
+def _varlen_attn_call(Q_f, K_f, V_f, cu_seqlens, max_seqlen, *, scale, window_size, enable_gqa):
+    if (
+        _LEAN_VARLEN
+        and not torch.compiler.is_compiling()
+        and not _varlen_can_use_cudnn(Q_f, K_f, V_f, max_seqlen, list(window_size), enable_gqa)
+    ):
+        return _LeanFlashVarlen.apply(
+            Q_f,
+            K_f,
+            V_f,
+            cu_seqlens,
+            max_seqlen,
+            window_size == (-1, 0),
+            scale,
+            window_size[0],
+            window_size[1],
+        )
+    return _TORCH_VARLEN_ATTN(
+        Q_f,
+        K_f,
+        V_f,
+        cu_seqlens,
+        cu_seqlens,
+        max_seqlen,
+        max_seqlen,
+        scale = scale,
+        window_size = window_size,
+        enable_gqa = enable_gqa,
+    )
+
 
 from .flash_impl import flash_impl_allows  # noqa: E402
 
@@ -291,6 +669,7 @@ def _constant_probe(fn):
 
 
 _sdpa_backend_state = _constant_probe(_sdpa_backend_state)
+_sdpa_masked_choice = _constant_probe(_sdpa_masked_choice)
 
 
 @functools.lru_cache(maxsize = 128)
@@ -352,7 +731,7 @@ def _sdpa_gqa_choices(
 _SDPA_NO_BACKEND = -2
 
 
-def _sdpa_gqa_state(
+def _sdpa_gqa_state_now(
     device,
     dtype,
     head_dim,
@@ -402,6 +781,15 @@ def _sdpa_gqa_state(
     return not (gqa == math and mha not in (math, -1))
 
 
+def _sdpa_gqa_state(*args, no_cudnn = False):
+    """_sdpa_gqa_state_now; no_cudnn probes under the kernels the call runs with (_training_sdpa,
+    _rerouted_sdpa), whose enabled flags are part of the probe's cache key."""
+    if no_cudnn:
+        with _sdpa_kernel(_XFORMERS_LIKE_BACKENDS):
+            return _sdpa_gqa_state_now(*args)
+    return _sdpa_gqa_state_now(*args)
+
+
 _sdpa_gqa_state = _constant_probe(_sdpa_gqa_state)
 
 
@@ -412,8 +800,10 @@ def _sdpa_takes_gqa(
     has_mask: bool,
     V: Optional[Tensor] = None,
     dropout_p = 0.0,
+    no_cudnn = False,
 ) -> bool:
-    """Whether to pass enable_gqa (True) or expand K/V (False) for this SDPA call."""
+    """Whether to pass enable_gqa (True) or expand K/V (False) for this SDPA call. no_cudnn: the
+    call runs without cuDNN attention (SM100 training, xformers stand-in), so the probe does too."""
     if not SDPA_HAS_GQA:
         return False
     if not Q.is_cuda:
@@ -426,7 +816,7 @@ def _sdpa_takes_gqa(
     single_key = True if K.shape[-2] == 1 else False
     is_causal = True if is_causal else False
     has_mask = True if has_mask else False
-    return _sdpa_gqa_state(
+    args = (
         str(Q.device),
         Q.dtype,
         Q.shape[-1],
@@ -439,6 +829,9 @@ def _sdpa_takes_gqa(
         single_query,
         single_key,
     )
+    if no_cudnn:
+        return _sdpa_gqa_state(*args, no_cudnn = True)
+    return _sdpa_gqa_state(*args)
 
 
 def _torch_varlen_beats_segments(
@@ -498,14 +891,13 @@ def _torch_varlen_packed(
         window_size = (sliding_window - 1, 0)  # packed_block_mask keeps k >= q - (window - 1)
     else:
         window_size = (-1, 0)
-    Q_f, K_f, V_f = (x[0].transpose(0, 1).contiguous() for x in (Q, K, V))
-    out = _TORCH_VARLEN_ATTN(
+    # squeeze, not [0]: select's backward allocates and zero-fills a full gradient per tensor.
+    Q_f, K_f, V_f = (x.squeeze(0).transpose(0, 1).contiguous() for x in (Q, K, V))
+    out = _varlen_attn_call(
         Q_f,
         K_f,
         V_f,
         cu_seqlens,
-        cu_seqlens,
-        max_seqlen,
         max_seqlen,
         scale = scale,
         window_size = window_size,
@@ -537,6 +929,7 @@ def _sdpa_packed_segments(
     is_causal: bool,
     sliding_window: Optional[int],
     sdpa_kwargs: dict,
+    training: bool = False,
 ) -> Optional[Tensor]:
     """Q (1, H, T, D), K / V (1, H_kv, T, D) -> (1, T, H, D), the block-diagonal mask's result;
     None when the lengths do not tile the row."""
@@ -582,12 +975,21 @@ def _sdpa_packed_segments(
         Q_run = split(Q)
         # Probe the run's own tensors: a one-token run has different eligibility than the row.
         gqa = n_groups != 1 and _sdpa_takes_gqa(
-            Q_run, split(K), kwargs["is_causal"], windowed, split(V), kwargs.get("dropout_p", 0.0)
+            Q_run,
+            split(K),
+            kwargs["is_causal"],
+            windowed,
+            split(V),
+            kwargs.get("dropout_p", 0.0),
+            # Passed only when set: callers and tests wrap the probe with the old signature.
+            **({"no_cudnn": True} if _avoids_cudnn(Q_run, training) else {}),
         )
         if gqa:
             kwargs["enable_gqa"] = True
         K_run, V_run = kv(gqa)
-        out = scaled_dot_product_attention(Q_run, split(K_run), split(V_run), **kwargs)
+        out = (_training_sdpa if training else _inference_sdpa)(
+            Q_run, split(K_run), split(V_run), **kwargs
+        )
         outs.append(out.transpose(1, 2).flatten(0, 1))
         start, i = end, j
     return torch.cat(outs, dim = 0).unsqueeze(0)
@@ -612,10 +1014,8 @@ SDPA = "sdpa"
 XFORMERS_BLOCK_DIAG_CLS = xformers.attn_bias.BlockDiagonalCausalMask if HAS_XFORMERS else None
 
 
-# flash-attn 2 varlen backward int32 overflow guard: the varlen BACKWARD kernel allocates
-# dq_accum = zeros(total_q + 128 * n_seqs, n_heads, round_up(head_dim, 32)) and indexes it with
-# int32, so at 2**31 elements the kernel faults with an illegal memory access and poisons the CUDA
-# context. Forward-only never allocates dq_accum, so the guard requires a backward to be possible.
+# flash-attn 2 varlen backward indexes dq_accum with int32: at 2**31 elements it faults and poisons
+# the CUDA context. Forward-only never allocates it.
 _INT32_ELEMENTS = 2**31
 _VARLEN_INT32_GUARD_DISABLED = os.environ.get(
     "UNSLOTH_DISABLE_VARLEN_INT32_GUARD", "0"
@@ -715,10 +1115,11 @@ class AttentionContext:
     attention_mask: Optional[Tensor]
     causal_mask: Optional[Any]
     sliding_window: Optional[int] = None
-    # PrefixGrouper: non-None routes Q/K/V through the FlexAttention shared-prefix kernel; None leaves
-    # every existing construction and behavior unchanged.
+    # PrefixGrouper: non-None routes Q/K/V via the FlexAttention shared-prefix kernel; None is unchanged
     prefix_seg_info: Optional[Any] = None
     is_causal: bool = True
+    # The attention module's .training: also true for a checkpointed forward run without grad.
+    training: bool = False
 
 
 def _ring_attention_active() -> bool:
@@ -769,6 +1170,24 @@ def select_attention_backend(use_varlen: bool = False, dropout_p: float = 0.0) -
     return SDPA
 
 
+def _packed_fp32_prefers_xformers(config, context, Q: Tensor, K: Tensor, V: Tensor) -> bool:
+    """Torch varlen takes fp16 / bf16 only, so packed fp32 would run SDPA per segment (#14158)."""
+    if not (HAS_XFORMERS and _NATIVE_BEATS_XFORMERS and _SDPA_PACKED_SEGMENTS):
+        return False
+    if context.seq_info is None or context.attention_mask is not None or not Q.is_cuda:
+        return False
+    if torch.float32 not in (Q.dtype, K.dtype, V.dtype):
+        return False
+    if (config.sdpa_kwargs or {}).get("dropout_p") or _ring_attention_active():
+        return False
+    # xformers' flash backward is non-deterministic, and sm_100+ (downcast to it) lacks head_dim > 256.
+    if torch.are_deterministic_algorithms_enabled():
+        return False
+    if Q.shape[-1] > 256 and _xformers_rejects_fp32(Q.device):
+        return False
+    return True
+
+
 def resolve_prefix_seg_info(kwargs, past_key_value, attention_mask):
     """PrefixGrouper shared-prefix segment table resolver for the arch attention forwards.
 
@@ -796,9 +1215,7 @@ def resolve_prefix_seg_info(kwargs, past_key_value, attention_mask):
     return seg
 
 
-# One dense window mask per (device, shape, window), reused across layers: every layer of a
-# Mistral-style model asks for the identical mask, and at 32K that tensor is 1 GiB with two more
-# alive while it is built, so rebuilding it 32 times OOMs the run.
+# One dense window mask per (device, shape, window) shared by all layers: at 32K it is 1 GiB.
 _WINDOW_MASK_CACHE: dict = {}
 
 
@@ -806,10 +1223,14 @@ def _windowed_causal_mask(q_len: int, k_len: int, sliding_window: int, device) -
     """Causal band mask of shape (1, 1, q_len, k_len). Read-only: callers must not mutate it."""
     params = (q_len, k_len, sliding_window)
     entry = _WINDOW_MASK_CACHE.get(device)
-    if entry is not None and entry["params"] == params:
+    if (
+        entry is not None
+        and entry["params"] == params
+        # A mask built under inference_mode cannot be saved for a training step's backward.
+        and (not entry["inference"] or _inference_mode())
+    ):
         return entry["mask"]
-    # Drop the outgoing mask first: it is dead either way, and holding it while the replacement and its
-    # temporaries are allocated would make a shape change peak a whole mask higher.
+    # Drop the outgoing mask first so a shape change does not peak a whole mask higher.
     _WINDOW_MASK_CACHE.pop(device, None)
     entry = None
     q_pos = torch.arange(k_len - q_len, k_len, device = device)
@@ -818,7 +1239,7 @@ def _windowed_causal_mask(q_len: int, k_len: int, sliding_window: int, device) -
         (k_pos[None, :] <= q_pos[:, None])
         & (k_pos[None, :] >= (q_pos[:, None] - (sliding_window - 1)))
     )[None, None, :, :]
-    _WINDOW_MASK_CACHE[device] = {"params": params, "mask": mask}
+    _WINDOW_MASK_CACHE[device] = {"params": params, "mask": mask, "inference": _inference_mode()}
     return mask
 
 
@@ -865,7 +1286,13 @@ def _run_attention(
     backend = config.backend
     if backend == FLASH_VARLEN and context.seq_info is None:
         backend = FLASH_DENSE if HAS_FLASH_ATTENTION else SDPA
-    xformers_fp32_unsupported = _XFORMERS_FP32_UNSUPPORTED
+    xformers_fp32_unsupported = _xformers_rejects_fp32(Q.device)
+    # sm_100+ downcast below must not hand bf16 to an fp32 o_proj (old SDPA path returned fp32).
+    packed_out_dtype = None
+    if backend == SDPA and _packed_fp32_prefers_xformers(config, context, Q, K, V):
+        backend = XFORMERS
+        if not torch.is_autocast_enabled():
+            packed_out_dtype = Q.dtype
     if _DEVICE_BACKENDS is not None and backend != SDPA:
         device_backend = _backend_for_device(backend, Q.device, Q.dtype)
         if device_backend != backend and _configured_softcap(config):
@@ -875,12 +1302,8 @@ def _run_attention(
                 "Ampere or newer GPUs, e.g. with CUDA_VISIBLE_DEVICES."
             )
         backend = device_backend
-        index = Q.device.index
-        if Q.device.type == "cuda" and index is not None and index < len(_DEVICE_BACKENDS):
-            xformers_fp32_unsupported = _DEVICE_BACKENDS[index][2]
 
-    # Flash/xFormers do not support arbitrary attn masks, so with a padding mask present (left-padded
-    # generation) fall back to SDPA.
+    # Flash/xFormers do not support arbitrary attn masks, so a padding mask falls back to SDPA.
     if context.attention_mask is not None and backend in (
         FLASH_DENSE,
         FLASH_VARLEN,
@@ -888,13 +1311,10 @@ def _run_attention(
     ):
         backend = SDPA
 
-    # Both varlen-capable backends land in the same flash-attn 2 backward kernel, so guard both before
-    # the int32 overflow aborts the process. Integer arithmetic plus one cached sync per step.
+    # Both varlen backends hit the flash-attn 2 backward kernel, so guard both.
     if backend in (FLASH_VARLEN, XFORMERS) and not _VARLEN_INT32_GUARD_DISABLED:
-        # Both terms are needed. Q/K/V: a frozen hidden state feeding trainable LoRA q/k/v still yields a
-        # Q that requires grad. context.requires_grad: gradient checkpointing runs its FIRST forward under
-        # no_grad and recomputes with grad on, so keying only on the tensors would pick a different
-        # backend per pass.
+        # LoRA q/k/v yield a grad-requiring Q from frozen inputs; checkpointing's first forward runs under
+        # no_grad, so tensors alone would pick a different backend per pass.
         will_backward = context.requires_grad or (
             torch.is_grad_enabled() and (Q.requires_grad or K.requires_grad or V.requires_grad)
         )
@@ -908,8 +1328,7 @@ def _run_attention(
                 else context.bsz
             )
             if _varlen_backward_overflows_int32(n_seqs, total_q, context.n_heads, context.head_dim):
-                # SDPA cannot apply logit softcapping, so rerouting a softcapped model (Gemma 2) would keep it
-                # training on wrong logits and gradients, worse than the fault this guard avoids.
+                # SDPA cannot apply logit softcapping, so rerouting Gemma 2 would train on wrong logits.
                 softcap = _configured_softcap(config)
                 if softcap:
                     raise RuntimeError(
@@ -973,8 +1392,7 @@ def _run_attention(
         torch.is_grad_enabled() and (Q.requires_grad or K.requires_grad or V.requires_grad)
     )
     sliding_window = context.sliding_window
-    # A non-positive window means "no local attention", not "a window of nothing": a config spelling
-    # it 0 would put the mask's lower bound above its causal upper bound.
+    # A non-positive window means no local attention.
     if sliding_window is not None and sliding_window <= 0:
         sliding_window = None
 
@@ -1099,7 +1517,7 @@ def _run_attention(
             out = out.reshape(bsz, q_len, n_heads, head_dim)
         else:
             out = out.view(bsz, q_len, n_heads, head_dim)
-        return out
+        return out if packed_out_dtype is None else out.to(packed_out_dtype)
     else:
         local_mask = context.attention_mask
         is_causal_local = False
@@ -1144,6 +1562,7 @@ def _run_attention(
                 is_causal = context.is_causal,
                 sliding_window = sliding_window,
                 sdpa_kwargs = sdpa_kwargs,
+                training = context.training,
             )
             if out is not None:
                 return out
@@ -1163,8 +1582,7 @@ def _run_attention(
                 local_mask = local_mask.to(device = Q.device)
 
                 if local_mask.dim() == 2:
-                    # Key padding keep mask (bsz, k_len), where 1/True is a real token; the tokenizer attention_mask is
-                    # typically int 0/1.
+                    # Key padding keep mask (bsz, k_len), 1/True is a real token.
                     if local_mask.dtype == torch.bool:
                         key_keep = local_mask
                     else:
@@ -1205,8 +1623,7 @@ def _run_attention(
                     local_mask = local_mask | no_allowed
 
             if local_mask is None and sliding_window is not None and k_len_local > sliding_window:
-                # SDPA's is_causal is FULL causal and has no window, so with no padding mask to hang the window
-                # off, a model whose config declares one attended its whole history.
+                # SDPA's is_causal has no window, so build the windowed mask explicitly.
                 local_mask = _windowed_causal_mask(
                     q_len_local, k_len_local, sliding_window, Q.device
                 )
@@ -1218,6 +1635,7 @@ def _run_attention(
             )
 
         kwargs = dict(sdpa_kwargs)
+        sdpa = _training_sdpa if context.training else _inference_sdpa
         kwargs.setdefault("attn_mask", local_mask)
         kwargs.setdefault("is_causal", is_causal_local)
 
@@ -1236,8 +1654,7 @@ def _run_attention(
             and local_mask.dim() >= 3
             and local_mask.shape[0] > 1
         ):
-            # Batched masked inference has shown row-coupled drift with SDPA GQA, so fall back to explicit KV
-            # expansion for deterministic row-wise behavior.
+            # Batched masked inference drifts with SDPA GQA, so expand KV explicitly.
             use_sdpa_gqa = False
 
         if use_sdpa_gqa and not _sdpa_takes_gqa(
@@ -1247,12 +1664,17 @@ def _run_attention(
             kwargs.get("attn_mask") is not None,
             V,
             kwargs.get("dropout_p", 0.0),
+            **(
+                {"no_cudnn": True}
+                if xformers_rerouted or _avoids_cudnn(Q, context.training)
+                else {}
+            ),
         ):
             use_sdpa_gqa = False
 
         if use_sdpa_gqa:
             kwargs.setdefault("enable_gqa", True)
-            out = scaled_dot_product_attention(Q, K, V, **kwargs)
+            out = (_rerouted_sdpa if xformers_rerouted else sdpa)(Q, K, V, **kwargs)
             out = out.transpose(1, 2)
             return out if cp_out_dtype is None else out.to(cp_out_dtype)
 
@@ -1268,7 +1690,7 @@ def _run_attention(
             K_mod = K_mod.reshape(bsz, n_heads, kv_seq_len, head_dim)
             V_mod = V_mod.reshape(bsz, n_heads, kv_seq_len, head_dim)
 
-        out = scaled_dot_product_attention(
+        out = (_rerouted_sdpa if xformers_rerouted else sdpa)(
             Q.contiguous(),
             K_mod.contiguous(),
             V_mod.contiguous(),

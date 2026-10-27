@@ -33,8 +33,7 @@ logger = get_logger(__name__)
 _LINK_FARM_DIRNAME = "unsloth-audiocpp-links"
 # Records which repo files a farm entry mirrors, so pruning needs no catalog.
 _SOURCE_MARKER = ".unsloth-source.json"
-# The Windows audiocpp_server fails to open a model path this long ("model path does not exist"),
-# and the long-path prefix does not help.
+# The Windows audiocpp_server cannot open longer model paths, even with the long-path prefix.
 _WINDOWS_MAX_MODEL_PATH = 259
 
 
@@ -106,8 +105,7 @@ def missing_files(
             return []
         if first is None:
             first = missing
-    # Measured against refs/main (listed first), where the unpinned downloads land: the fewest
-    # missing in an older snapshot would leave both incomplete.
+    # Measured on refs/main (unpinned downloads land there), not the older snapshot with fewest misses.
     return first if first is not None else [(f.path, f.size) for f in model.variant.files]
 
 
@@ -130,10 +128,7 @@ def _served_path(model: AudioCppModel, farm: Path) -> Path:
 
 
 def materialize(model: AudioCppModel, *, hub_cache: Optional[Path] = None) -> str:
-    """Path of the model for the server config: its GGUF under its real name, or a package's directory.
-
-    Raises ``FileNotFoundError`` when the variant is not downloaded.
-    """
+    """Server-config path: the GGUF under its real name, or a package directory. Raises FileNotFoundError if not downloaded."""
     root = hub_cache if hub_cache is not None else _hub_cache()
     found = _find(model, root)
     if found is None:
@@ -150,8 +145,7 @@ def materialize(model: AudioCppModel, *, hub_cache: Optional[Path] = None) -> st
         base = snapshot / model.folder if model.folder else snapshot
         return str(base if model.is_package else snapshot / model.variant.primary)
     prune_link_farm(root)
-    # One short directory per model and variant: the files keep their layout below the model's
-    # folder (PocketTTS reads embeddings/ beside its GGUF, a package reads config/ and tokenizer/).
+    # One short dir per model/variant; files keep their layout (PocketTTS reads embeddings/ beside GGUF).
     farm_root = _link_farm_root(root)
     if _is_link(farm_root):
         _unlink_link(farm_root)
@@ -180,8 +174,7 @@ def materialize(model: AudioCppModel, *, hub_cache: Optional[Path] = None) -> st
                 f"The audio runtime needs a writable folder beside the Hugging Face cache ({farm_root}): "
                 f"{exc}. Move the Hugging Face cache in Settings."
             ) from exc
-        # Unique per call: two first loads of one model (dictation materializes outside its load lock)
-        # must not unlink each other's staging file.
+        # Unique per call: concurrent first loads (dictation skips the load lock) must not unlink each other.
         tmp = dst.with_name(f"{dst.name}.unsloth-tmp-{os.getpid()}-{uuid.uuid4().hex[:8]}")
         try:
             try:
@@ -267,13 +260,7 @@ def _source_still_cached(model_dir: Path, hub_cache: Path) -> bool:
 
 
 def prune_link_farm(hub_cache: Optional[Path] = None) -> int:
-    """Drop farm entries whose files are no longer downloaded, so a deleted model frees its disk.
-
-    A hardlink keeps the blob's data alive after the cache deletes it, and a copy is a second
-    full copy, so either way the farm entry must go once the cache no longer holds the model.
-    Entries without a source record (an earlier layout) go too.
-    Returns the number of files removed. Never raises.
-    """
+    """Drops farm entries whose model left the cache (a hardlink would keep its disk alive); entries with no source record too. Never raises."""
     removed = 0
     try:
         root = hub_cache if hub_cache is not None else _hub_cache()
@@ -336,9 +323,7 @@ def _unlink_link(path: Path) -> None:
         path.unlink()
     except OSError:
         try:
-            os.rmdir(
-                path
-            )  # a Windows junction is removed as a directory, without touching its target
+            os.rmdir(path)
         except OSError:
             pass
 

@@ -148,6 +148,41 @@ def test_materialize_native_dir_symlinks_and_breaks_collisions(tmp_path):
         assert Path(r.path).parent == dest
 
 
+def test_materialize_native_dir_real_files_hardlinks_inside_dest(tmp_path):
+    # sd-server rejects a staged LoRA whose canonical path leaves --lora-model-dir, so server staging needs a real file.
+    src = tmp_path / "cache" / "a.safetensors"
+    src.parent.mkdir()
+    src.write_bytes(b"x")
+    dest = tmp_path / "managed"
+    out = dl.materialize_native_dir(
+        [dl.ResolvedLora("a", "a", str(src), "safetensors", 1.0)], dest, real_files = True
+    )
+    staged = Path(out[0].path)
+    assert not staged.is_symlink() and staged.is_file()
+    assert Path(os.path.realpath(staged)).parent == Path(os.path.realpath(dest))
+    assert os.path.samefile(staged, src)  # a hard link, not a copy
+    staged.unlink()
+    assert src.read_bytes() == b"x"
+
+
+def test_materialize_native_dir_real_files_copies_when_hardlink_fails(tmp_path, monkeypatch):
+    src = tmp_path / "a.safetensors"
+    src.write_bytes(b"x")
+
+    def _no_link(*a, **k):
+        raise OSError(18, "Invalid cross-device link")
+
+    monkeypatch.setattr(dl.os, "link", _no_link)
+    out = dl.materialize_native_dir(
+        [dl.ResolvedLora("a", "a", str(src), "safetensors", 1.0)],
+        tmp_path / "managed",
+        real_files = True,
+    )
+    staged = Path(out[0].path)
+    assert not staged.is_symlink() and staged.read_bytes() == b"x"
+    assert not os.path.samefile(staged, src)
+
+
 def test_list_loras_scans_local(tmp_path, monkeypatch):
     d = tmp_path / "loras"
     d.mkdir()
@@ -497,6 +532,42 @@ def test_scan_local_tolerates_bad_sidecar(tmp_path, monkeypatch):
     monkeypatch.setattr(dl, "loras_dir", lambda: d)
     entry = next(e for e in dl.list_loras() if e.id == "a")
     assert entry.families == () and entry.weight_default == 1.0
+
+
+def test_moss_image_has_no_lora_loader_so_lora_is_gated_off(monkeypatch):
+    import threading
+
+    pytest.importorskip("torch")
+    pytest.importorskip("diffusers")
+
+    from core.inference.diffusion_families import detect_family
+    from core.inference.diffusion_moss_image import MOSSImagePipeline
+
+    assert not hasattr(MOSSImagePipeline, "load_lora_weights")
+    for quant in (None, "int8", "fp8"):
+        assert not dl.supports_lora(
+            engine = "diffusers", family = "moss-image", model_kind = "pipeline", transformer_quant = quant
+        )
+    assert dl.supports_lora(
+        engine = "diffusers", family = "flux.1", model_kind = "pipeline", transformer_quant = None
+    )
+    fam = detect_family("OpenMOSS-Team/MOSS-Image-SFT")
+    assert fam is not None and fam.name == "moss-image"
+
+    backend = _backend()
+    monkeypatch.setattr(backend, "validate_load_request", lambda *a, **k: fam)
+    # Refused before anything loads; a weight-0 selection is not active and is not refused here.
+    for load in (backend.begin_load, backend.load_pipeline):
+        with pytest.raises(ValueError, match = "no LoRA loader"):
+            load("OpenMOSS-Team/MOSS-Image-SFT", loras = [("styleA", 1.0)])
+    # A generation-time selection on a loaded MOSS pipe is refused the same way, for every quant.
+    for quant in (None, "int8"):
+        state = types.SimpleNamespace(
+            pipe = _FakePipe(), family = fam, kind = "pipeline", transformer_quant = quant, hf_token = None
+        )
+        with pytest.raises(ValueError, match = "no LoRA loader"):
+            backend._apply_loras(state, [("styleA", 1.0)], threading.Event())
+        backend._apply_loras(state, [("styleA", 0.0)], threading.Event())
 
 
 def _peft_add_adapter(layer, name, config):

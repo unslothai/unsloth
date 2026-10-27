@@ -97,8 +97,10 @@ def maybe_kick(
         job = plan(pipe)
         if job is None:
             return False
-        free, _total = torch.cuda.mem_get_info(job["device"])
-        if free < _MIN_FREE_BYTES:
+        from .diffusion_memory import user_budget_reserve_bytes
+
+        free, total = torch.cuda.mem_get_info(job["device"])
+        if free - user_budget_reserve_bytes(job["device"], total) < _MIN_FREE_BYTES:
             return False
         return _spawn(job, logger)
     except Exception as exc:  # noqa: BLE001 - a prebuild, never a failed load

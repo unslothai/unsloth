@@ -30,24 +30,23 @@ import { toast } from "@/lib/toast";
 import {
   ArrowUpRight01Icon,
   BubbleChatAddIcon,
-  Copy01Icon,
   Download01Icon,
   File01Icon,
   FolderOpenIcon,
   InternetIcon,
   Link01Icon,
   LinkSquare02Icon,
-  SquareArrowUpRightIcon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { sandboxRoutePrefix } from "./sandbox-files";
 
 import type { ContextFile } from "./link-context-menu";
 
-const CONTENT_CLASS = "min-w-60 rounded-[20px] p-1.5";
+const CONTENT_CLASS = "min-w-60 rounded-lg p-1";
 
-const SUB_CLASS = "min-w-52 rounded-[20px] p-1.5";
+const SUB_CLASS = "min-w-52 rounded-lg p-1";
 
 function ItemIcon({ icon }: { icon: IconSvgElement }) {
   return <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-4" />;
@@ -153,7 +152,7 @@ export function FileMenuContent({ file }: { file: ContextFile }) {
   const navigate = useNavigate();
   const contentType = file.contentType ?? "";
   const kind = textFileKind(file.name, contentType);
-  // Spreadsheet text (CSV/TSV) previews as a sheet but copies as the text it is.
+  // CSV/TSV previews as a sheet but copies as text.
   const copyable = kind !== null || /\.(csv|tsv)$/i.test(file.name) || /^text\//i.test(contentType);
   const local = file.sandbox !== undefined && backendIsLocal();
   const failed = (key: "linkMenu.openFailed" | "linkMenu.revealFailed" | "linkMenu.saveFailed") => () =>
@@ -183,7 +182,7 @@ export function FileMenuContent({ file }: { file: ContextFile }) {
   const tabType = browserTabType(file.name, contentType);
   const openInTab = () => {
     if (!tabType) return;
-    // Opened now, while the click still counts for the popup blocker; loading can take a fetch.
+    // Opened now, while the click still counts for the popup blocker.
     const tab = window.open("", "_blank");
     if (tab) tab.opener = null;
     void file
@@ -217,12 +216,12 @@ export function FileMenuContent({ file }: { file: ContextFile }) {
         <ContextMenuItem
           onSelect={() => void postSandbox(sandbox.sessionId, "open", sandbox.file).catch(failed("linkMenu.openFailed"))}
         >
-          <ItemIcon icon={SquareArrowUpRightIcon} />
+          <ItemIcon icon={LinkSquare02Icon} />
           {t("linkMenu.openDefaultApp")}
         </ContextMenuItem>
       ) : null}
       <ContextMenuSub>
-        <ContextMenuSubTrigger className="gap-2.5 rounded-[11px]">
+        <ContextMenuSubTrigger className="gap-2.5 rounded-md">
           <ItemIcon icon={ArrowUpRight01Icon} />
           {t("linkMenu.openWith")}
         </ContextMenuSubTrigger>

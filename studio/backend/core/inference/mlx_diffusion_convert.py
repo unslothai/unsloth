@@ -504,7 +504,7 @@ def _check_types(reader: Any) -> dict[str, int]:
         listed = ", ".join(f"{v} x {k}" for k, v in sorted(bad.items()))
         raise UnsupportedGGUFError(
             f"GGUF holds tensor types MLX conversion does not support yet: {listed} "
-            "(supported: Q4_0, Q4_1, Q8_0, Q4_K, Q5_K, Q6_K, BF16, F16, F32)"
+            "(supported: Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, Q4_K, Q5_K, Q6_K, BF16, F16, F32)"
         )
     return counts
 

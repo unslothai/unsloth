@@ -200,8 +200,7 @@ function reuseConvertInputs(clip: AudioGalleryClip) {
         durationS: null,
       }
     : null;
-  // An upload expires within a day; the clip kept what it converted, so upload that copy again.
-  // Empty until the live id lands (the old id let Generate race the upload); expired on failure.
+  // An upload expires within a day; re-upload the clip's kept copy. Empty until the live id lands.
   reuseSeq += 1;
   if (!clip.source_clip_id && clip.source_saved && sourceId) {
     const seq = reuseSeq;
@@ -269,7 +268,6 @@ export function AudioPage({
   onInitialReady?: () => void;
 }) {
   const initialReadySent = useRef(false);
-  // Clear the floating sidebar toggle on mobile.
   const isMobileShell = useIsMobileShell();
   const { pinned } = useSidebar();
   const [mode, setMode] = useState<CreateMode>("speak");
@@ -440,6 +438,7 @@ export function AudioPage({
     srcById,
     peaksById,
     ensureClipSrc,
+    retryClipSrc,
     refreshGallery,
     loadMore,
     selectClip,
@@ -498,8 +497,7 @@ export function AudioPage({
     refreshSttStatus,
   ]);
 
-  // Activation alone is not enough: the loaded-models indicator can eject the TTS model out from
-  // under a page that stays active, leaving Generate enabled against an empty slot.
+  // The loaded-models indicator can eject the model while the page stays active.
   useEffect(() => {
     if (!active) return;
     return subscribeModelLifecycle(({ runtime, loading }) => {
@@ -1036,7 +1034,6 @@ export function AudioPage({
       }
       if (target.workflow === "transcribe") {
         if (!transitionWorkflow("transcribe")) return;
-        // A stem is a history clip, so it goes in by id like any other.
         useAudioTranscribeStore.setState({
           source: {
             kind: "clip",
@@ -1593,7 +1590,6 @@ export function AudioPage({
         transcribeSourceHandle.current?.markExpired();
       },
     ).then(() => {
-      // A timestamped run may have downloaded the aligner.
       if (request.timestamps) transcribeCaps.refresh();
     });
   };
@@ -1841,7 +1837,6 @@ export function AudioPage({
       ref={pageRootRef}
       className="@container relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]"
     >
-      {/* Page-level, so the handle covers the divider through the header too. */}
       <MediaRailResizeHandle kind="audio" placement="page" className="hidden @[50rem]:block" />
       {/* Portals to body, and this page stays mounted off-route, so gate it like the composer. */}
       {active && <GuidedTour {...tour.tourProps} />}
@@ -1947,8 +1942,7 @@ export function AudioPage({
               // Separate runs audio-to-audio models, which the speak picker's tasks leave out.
               hubTask={pageWorkflow === "separate" ? "audio-to-audio" : undefined}
               catalog={AUDIO_CATALOG}
-              // TTS/ASR come from the checkpoint's own tokenizer, not a curated recipe, so any publisher's
-              // audio repo loads here.
+              // TTS/ASR use the checkpoint's own tokenizer, so any publisher's audio repo loads.
               communityModelPolicy="search-only"
               hubCapability="audio"
               placeholder="Select audio model"
@@ -2013,8 +2007,7 @@ export function AudioPage({
           </div>
         </div>
       </div>
-      {/* Below 50rem the panes stack and the page scrolls as one column, matching Images and Video:
-          side by side, the rail plus a usable preview needs more width. */}
+      {/* Below 50rem the panes stack and the page scrolls as one column, as on Images and Video. */}
       <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden @[50rem]:flex-row @[50rem]:overflow-hidden">
         <div
           data-tour="audio-settings"
@@ -2024,7 +2017,7 @@ export function AudioPage({
             ref={attachSettingsScroll}
             onScroll={onSettingsScroll}
             className={cn(
-              "hover-scrollbar flex min-h-0 flex-1 flex-col gap-4 px-10 max-sm:px-5 pt-9 pb-6 @[50rem]:overflow-y-auto",
+              "hover-scrollbar flex min-h-0 flex-1 flex-col gap-4 px-10 max-sm:px-5 pt-9 pb-6 @[50rem]:overflow-y-auto @[50rem]:[scrollbar-gutter:stable] @[50rem]:pr-[calc(var(--spacing)*10-var(--classic-scrollbar-width,0px))]",
               mode === "speak"
                 ? "panel-scroll-fade-action"
                 : "panel-scroll-fade",
@@ -2170,7 +2163,7 @@ export function AudioPage({
           </div>
           {mode === "speak" ? (
             /* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */
-            <div className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-4">
+            <div className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-3">
               {ttsWorkflow === "edit" ? (
                 <EditFooter
                   busy={busy}
@@ -2249,7 +2242,7 @@ export function AudioPage({
               )}
             </div>
           ) : (
-            <div className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-4">
+            <div className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-3">
               <TranscribeFooter
                 busy={busy}
                 blocker={transcribeBlocker}
@@ -2333,6 +2326,7 @@ export function AudioPage({
                   clips: visibleClips,
                   selectedClip,
                   selectedClipSrc,
+                  retryClipSrc,
                   srcById,
                   handleDownloadClip,
                   handleDeleteClip,

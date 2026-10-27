@@ -865,6 +865,8 @@ def test_run_hires_plans_against_the_model_loaded_when_the_slot_is_held():
         {"prompt": "p", "width": 256, "height": 256, "steps": 8, "seed": 1, "batch_size": 1},
     )
     assert out["hires"]["upscaler"] == "latent"
+    # The latent upscaler asks the base pass for latents; a refine never decodes for it.
+    assert seen[0].latent_output is True and seen[1].latent_output is False
     assert seen[1].latent_from is not None
 
 
@@ -928,8 +930,11 @@ def test_native_cpu_restart_restages_the_model_upscaler(tmp_path, monkeypatch):
         target = (96, 96),
         refine_steps = 4,
     )
+    state = _State(family = _fam("sdxl"), server = _Server(old_dir, fail = True))
+    # The replacement is published only while the backend still holds the server it replaces.
+    b._state = state
     images, _ = b._generate_server(
-        _State(family = _fam("sdxl"), server = _Server(old_dir, fail = True)),
+        state,
         prompt = "p",
         negative_prompt = None,
         width = 64,
@@ -951,6 +956,7 @@ def test_native_cpu_restart_restages_the_model_upscaler(tmp_path, monkeypatch):
         new_dir,
     ]  # staged again in the new server's dir
     assert not any(p.exists() for p in staged_paths)  # both removed after
+    assert b._state.server is new_server
 
 
 def test_diffusers_status_names_why_hires_is_hidden():
@@ -1141,6 +1147,43 @@ def test_stop_during_an_upscale_only_resize_returns_no_image(monkeypatch):
     assert str(exc.value) == DIFFUSION_CANCELLED_MSG
 
 
+def test_a_drop_in_runs_through_the_spandrel_descriptor(tmp_path, monkeypatch):
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("spandrel")
+    from PIL import Image
+    from spandrel import ModelLoader
+    from spandrel.architectures.MMRealSR import MMRealSR
+
+    torch.manual_seed(0)
+    net = MMRealSR(
+        num_in_ch = 3,
+        num_out_ch = 3,
+        scale = 4,
+        num_feat = 8,
+        num_block = 1,
+        num_grow_ch = 4,
+        num_feats = [8, 8, 8, 8],
+        num_blocks = [1, 1, 1, 1],
+    )
+    path = tmp_path / "tiny_mmrealsr.pth"
+    torch.save(net.state_dict(), path)
+    descriptor = ModelLoader(device = "cpu").load_from_file(str(path))
+    assert type(descriptor.architecture).__name__ == "MMRealSRArch"
+    probe = torch.rand(1, 3, 32, 32)
+    with torch.inference_mode():
+        assert isinstance(descriptor.model(probe), tuple)
+        want = descriptor(probe.clone())
+    monkeypatch.setattr(ups, "models_dir", lambda: tmp_path)
+    img = Image.fromarray((torch.rand(48, 40, 3) * 255).to(torch.uint8).numpy())
+    untiled = ups.upscale_with_model(img, "local:tiny_mmrealsr", (160, 192), device = "cpu", tile = 512)
+    tiled = ups.upscale_with_model(
+        img, "local:tiny_mmrealsr", (160, 192), device = "cpu", tile = 32, overlap = 8
+    )
+    assert untiled.model_scale == 4 and untiled.tiles == 1 and tiled.tiles > 1
+    assert untiled.image.size == tiled.image.size == (160, 192)
+    assert want.shape == (1, 3, 128, 128)
+
+
 def test_a_resident_drop_in_reloads_when_its_file_is_replaced(tmp_path, monkeypatch):
     import os
 
@@ -1188,9 +1231,14 @@ def _fake_model_upscaler(tmp_path, monkeypatch, fn):
 
     monkeypatch.setattr(ups, "spandrel_available", lambda: True)
     monkeypatch.setattr(ups, "resolve_model_path", lambda upscaler_id, cancel = None: path)
-    monkeypatch.setattr(
-        ups, "_load", lambda p, dev: (types.SimpleNamespace(scale = 2, model = fn), torch.float32)
-    )
+
+    class _Descriptor:
+        scale = 2
+
+        def __call__(self, image):
+            return fn(image)
+
+    monkeypatch.setattr(ups, "_load", lambda p, dev: (_Descriptor(), torch.float32))
 
 
 def test_model_upscaler_halves_the_tile_on_oom_like_comfyui(tmp_path, monkeypatch):
@@ -1327,3 +1375,177 @@ def test_a_failed_pass_after_the_base_still_kicks_the_deferred_compile(monkeypat
     with pytest.raises(RuntimeError, match = "base failed"):
         hires.run_hires(_Backend(), base_fails, params, kw)
     assert kicks == []  # nothing was recorded, as a failed plain render
+
+
+@pytest.fixture(scope = "module")
+def tiny_sdxl_path():
+    """Resolved at module scope, before the per-test empty hub cache and the outbound-network block apply."""
+    pytest.importorskip("torch")
+    pytest.importorskip("diffusers")
+    pytest.importorskip("accelerate")
+    import sys
+    from pathlib import Path
+
+    tests_dir = str(Path(__file__).resolve().parent)
+    if tests_dir not in sys.path:
+        sys.path.insert(0, tests_dir)
+    from conftest import allow_outbound
+    from huggingface_hub import snapshot_download
+
+    repo = "hf-internal-testing/tiny-stable-diffusion-xl-pipe"
+    try:
+        return snapshot_download(repo, local_files_only = True)
+    except Exception:  # noqa: BLE001 - not cached yet
+        try:
+            with allow_outbound():
+                return snapshot_download(repo)
+        except Exception as exc:  # noqa: BLE001
+            pytest.skip(f"tiny pipeline not reachable: {exc}")
+
+
+def _fresh_tiny_sdxl(path):
+    import diffusers
+    import torch
+
+    # A fresh copy: offload hooks stay on the pipe, so the shared module fixture must not see them.
+    return diffusers.StableDiffusionXLPipeline.from_pretrained(path, torch_dtype = torch.float32)
+
+
+def _cuda_or_skip():
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("needs a CUDA device")
+    return torch
+
+
+def _latent_hires_backend(path, device, offload):
+    from core.inference.diffusion import DiffusionBackend, _LoadState
+
+    pipe = _fresh_tiny_sdxl(path)
+    if offload == "model":
+        pipe.enable_model_cpu_offload(device = device)
+    elif offload == "sequential":
+        pipe.enable_sequential_cpu_offload(device = device)
+    else:
+        pipe.to(device)
+    b = DiffusionBackend()
+    b._state = _LoadState(
+        pipe = pipe,
+        family = _fam("sdxl"),
+        repo_id = "tiny",
+        base_repo = "tiny",
+        device = device,
+        dtype = "float32",
+        cpu_offload = offload != "none",
+        offload_policy = offload,
+    )
+    return b, pipe
+
+
+@pytest.mark.parametrize(
+    "device, offload",
+    [("cpu", "none"), ("cuda", "none"), ("cuda", "model"), ("cuda", "sequential")],
+)
+def test_latent_upscaler_refines_the_sampler_latents_like_comfyui(
+    tiny_sdxl_path, monkeypatch, device, offload
+):
+    """ComfyUI LatentUpscale: the refine pass gets exactly ``F.interpolate(base_latents, nearest-exact)``, with no base
+    decode and no re-encode (fail-before: the base pass decodes to 8-bit pixels and the refine VAE-encodes them)."""
+    import functools
+
+    import diffusers
+    import numpy as np
+    import torch
+    import torch.nn.functional as F
+
+    if device == "cuda":
+        _cuda_or_skip()
+    b, pipe = _latent_hires_backend(tiny_sdxl_path, device, offload)
+    vae_calls = {"encode": 0, "decode": 0}
+    for name in vae_calls:
+        bound = getattr(pipe.vae, name)
+
+        def counted(
+            *a,
+            _name = name,
+            _bound = bound,
+            **k,
+        ):
+            vae_calls[_name] += 1
+            return _bound(*a, **k)
+
+        monkeypatch.setattr(pipe.vae, name, counted)
+    base_out, refine_in = [], []
+    orig_base = diffusers.StableDiffusionXLPipeline.__call__
+    orig_refine = diffusers.StableDiffusionXLImg2ImgPipeline.__call__
+
+    @functools.wraps(orig_base)
+    def base_spy(self, *a, **k):
+        out = orig_base(self, *a, **k)
+        base_out.append((k.get("output_type"), out.images))
+        return out
+
+    @functools.wraps(orig_refine)
+    def refine_spy(self, *a, **k):
+        refine_in.append(k["image"].detach().clone())
+        return orig_refine(self, *a, **k)
+
+    monkeypatch.setattr(diffusers.StableDiffusionXLPipeline, "__call__", base_spy)
+    monkeypatch.setattr(diffusers.StableDiffusionXLImg2ImgPipeline, "__call__", refine_spy)
+    kw = dict(
+        prompt = "a cat", width = 256, height = 256, steps = 2, guidance = 5.0, seed = 7, live_preview = False
+    )
+    plain = b.generate(**kw, batch_size = 2)
+    assert vae_calls == {"encode": 0, "decode": 1}
+    base_out.clear()
+    vae_calls.update(encode = 0, decode = 0)
+
+    out = b.generate(
+        **kw,
+        batch_size = 2,
+        hires = hires.HiresParams(scale = 1.5, denoise = 0.5, steps = 2, upscaler = "latent"),
+    )
+    assert [im.size for im in out["images"]] == [(384, 384)] * 2
+    assert out["seeds"] == plain["seeds"]
+    # One decode per refined image, none for the base pass, no encode at all.
+    assert vae_calls == {"encode": 0, "decode": 2}
+    ((output_type, latents),) = base_out
+    f = pipe.vae_scale_factor
+    assert output_type == "latent" and tuple(latents.shape) == (2, 4, 256 // f, 256 // f)
+    assert len(refine_in) == 2
+    for i, got in enumerate(refine_in):
+        want = F.interpolate(latents[i : i + 1], size = (384 // f, 384 // f), mode = "nearest-exact")
+        assert got.device == want.device and torch.equal(got, want)
+    # The base pass is unchanged: its latents decode to the pixels a plain render returns.
+    with torch.inference_mode():
+        decoded = pipe.vae.decode(latents / pipe.vae.config.scaling_factor, return_dict = False)[0]
+        pixels = pipe.image_processor.postprocess(decoded, output_type = "pil")
+    for got, want in zip(pixels, plain["images"]):
+        diff = np.abs(np.asarray(got, dtype = np.int16) - np.asarray(want, dtype = np.int16))
+        assert diff.max() <= 1
+    assert b._gen is None and b._active_generate_cancel is None
+
+
+def test_latent_upscale_is_comfyui_nearest_exact_and_needs_latents():
+    torch = pytest.importorskip("torch")
+    import torch.nn.functional as F
+
+    lat = torch.randn(1, 4, 8, 12)
+    pipe = types.SimpleNamespace(vae_scale_factor = 8)
+    got = hires.upscale_latents(pipe, lat, (144, 96))
+    assert torch.equal(got, F.interpolate(lat, size = (12, 18), mode = "nearest-exact"))
+    from PIL import Image
+
+    with pytest.raises(TypeError, match = "latents"):
+        hires.upscale_latents(pipe, Image.new("RGB", (64, 64)), (96, 96))
+
+
+def test_generation_log_line_takes_a_latent_base_pass():
+    """The latent base pass returns tensors, whose ``size`` is a method, not a pixel size."""
+    torch = pytest.importorskip("torch")
+    from core.inference.diffusion_auto_policy import format_generation_for_log
+
+    line = format_generation_for_log(
+        {"images": [torch.zeros(1, 4, 8, 8)], "workflow": "txt2img"}, engine = "diffusers"
+    )
+    assert "images=1" in line and "size=" not in line

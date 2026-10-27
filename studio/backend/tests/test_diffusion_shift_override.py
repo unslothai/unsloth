@@ -60,6 +60,7 @@ EXPECTED_NODES = {
     "lumina-2": SHIFT_NODE_SD3,
     "hunyuanimage-2.1": SHIFT_NODE_SD3,
     "hidream-i1": SHIFT_NODE_SD3,
+    "moss-image": SHIFT_NODE_SD3,
     # Not offered: Ideogram 4 runs its own mu/std preset, SDXL is not flow matching.
     "ideogram-4": None,
     "sdxl": None,

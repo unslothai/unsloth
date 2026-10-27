@@ -7,6 +7,12 @@ import os
 
 from .cells import cell_text
 from .iterable import is_streaming_dataset
+from .remote_images import (
+    fetch_opted_in_image_bytes,
+    fetch_untrusted_image_bytes,
+    is_network_share,
+    private_sources_allowed,
+)
 from loggers import get_logger
 
 logger = get_logger(__name__)
@@ -27,6 +33,11 @@ def _own_image_path(path, account):
     from utils.account_context import run_as
     from utils.security.dataset_media import require_readable_media
 
+    if isinstance(path, str) and is_network_share(path) and not private_sources_allowed():
+        raise OSError(
+            f"Refusing an image path on a network share: {path}. "
+            "Set UNSLOTH_ALLOW_PRIVATE_URL_FETCH=1 to load images from shares you trust."
+        )
     run_as(account, require_readable_media, path)
     return path
 
@@ -149,9 +160,7 @@ def standardize_chat_format(
                 # Use the inferred keys first, falling back per-message so mixed ShareGPT/ChatML rows keep valid turns.
                 original_role = message.get(role_key)
                 original_content = message.get(content_key)
-                # Blank counts as absent for the ROLE, matching the preview: `is None` here
-                # trained {"role": "", "from": "gpt"} as a user turn. Content is not blank-
-                # checked, because an empty message is a legitimate value.
+                # Blank role counts as absent, as in the preview; an is None check trained a blank-role gpt turn as a user turn. Blank content is legitimate.
                 if not _normalize_role_alias(original_role):
                     original_role = message.get("role") or message.get("from") or ""
                 if original_content is None:
@@ -392,6 +401,15 @@ def _format_eta(seconds):
         return f"{h}h {m}m"
 
 
+def _fetch_row_image(url):
+    from io import BytesIO
+
+    from PIL import Image
+
+    fetch = fetch_opted_in_image_bytes if private_sources_allowed() else fetch_untrusted_image_bytes
+    return Image.open(BytesIO(fetch(url))).convert("RGB")
+
+
 def convert_to_vlm_format(
     dataset,
     instruction = None,
@@ -400,10 +418,7 @@ def convert_to_vlm_format(
     dataset_name = None,
     progress_callback = None,
 ):
-    """Convert simple {image, text} format to VLM messages format.
-
-    Returns a LIST of dicts with a 'messages' field, not a HuggingFace Dataset, to preserve PIL Images. For URL-based datasets, runs a 200-sample parallel probe first to estimate speed and failure rate via progress_callback, an optional callable(status_message=str).
-    """
+    """Returns a list, not a Dataset, so PIL Images are preserved; URL datasets are probed first."""
     from PIL import Image
     from utils.account_context import current_account
     from .vlm_processing import generate_smart_vlm_instruction
@@ -438,16 +453,12 @@ def convert_to_vlm_format(
         uses_dynamic = False
 
     def _convert_single_sample(sample):
-        """Convert a single sample to VLM format."""
-        # Image may be a PIL Image, local path, URL, or bare filename
+        """Image may be a PIL Image, local path, URL, or bare filename."""
         image_data = sample[image_column]
 
         if isinstance(image_data, str):
             if image_data.startswith(("http://", "https://")):
-                import fsspec
-                from io import BytesIO
-                with fsspec.open(image_data, "rb", expand = True) as f:
-                    image_data = Image.open(BytesIO(f.read())).convert("RGB")
+                image_data = _fetch_row_image(image_data)
             elif _image_lookup is not None and image_data in _image_lookup:
                 # Bare filename → resolve via HF repo lookup
                 from huggingface_hub import hf_hub_download
@@ -503,11 +514,19 @@ def convert_to_vlm_format(
             dataset = dataset.select(with_image)
             total = len(with_image)
 
+    # A null caption would render as the word "None" in the assistant turn, so leave those rows out like rows without an image.
+    with_text = [i for i, text in enumerate(dataset[text_column]) if text is not None]
+    if len(with_text) < total:
+        logger.info(f"Skipping {total - len(with_text)}/{total} rows without text")
+        dataset = dataset.select(with_text)
+        total = len(with_text)
+
     _image_lookup = None
     _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff")
     if (
         not has_urls
         and isinstance(first_image, str)
+        and not is_network_share(first_image)
         and not os.path.exists(first_image)
         and dataset_name
     ):
@@ -775,6 +794,7 @@ def convert_sharegpt_with_images_to_vlm_format(
     if (
         isinstance(first_image, str)
         and not first_image.startswith(("http://", "https://"))
+        and not is_network_share(first_image)
         and not os.path.exists(first_image)
         and dataset_name
     ):
@@ -814,10 +834,7 @@ def convert_sharegpt_with_images_to_vlm_format(
             return image_data
         if isinstance(image_data, str):
             if image_data.startswith(("http://", "https://")):
-                import fsspec
-                from io import BytesIO
-                with fsspec.open(image_data, "rb", expand = True) as f:
-                    return Image.open(BytesIO(f.read())).convert("RGB")
+                return _fetch_row_image(image_data)
             elif _image_lookup is not None and image_data in _image_lookup:
                 from huggingface_hub import hf_hub_download
                 from utils.hf_cache_settings import active_hf_hub_cache

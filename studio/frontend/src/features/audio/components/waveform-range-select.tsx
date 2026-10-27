@@ -296,7 +296,7 @@ export function WaveformRangeSelect({
               <li
                 // biome-ignore lint/suspicious/noArrayIndexKey: ranges are kept sorted; the index is their name.
                 key={index}
-                className="flex items-center rounded-4xl bg-muted"
+                className="flex items-center rounded-full bg-muted"
               >
                 <button
                   type="button"
@@ -306,7 +306,7 @@ export function WaveformRangeSelect({
                   aria-keyshortcuts="Delete Backspace ArrowLeft ArrowRight"
                   title="Arrow keys move it, Shift+arrow by a second, Delete removes it"
                   className={cn(
-                    "rounded-l-4xl py-0.5 pl-2.5 pr-1 font-mono text-ui-11p5 tabular-nums text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    "rounded-l-full py-0.5 pl-2.5 pr-1 font-mono text-ui-11p5 tabular-nums text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring",
                     focused === index && "underline underline-offset-2",
                   )}
                   onKeyDown={(event) => onRangeKey(event, index, "both")}
@@ -319,7 +319,7 @@ export function WaveformRangeSelect({
                   type="button"
                   disabled={disabled}
                   aria-label={`Remove range ${index + 1}`}
-                  className="flex items-center rounded-r-4xl py-1 pl-0.5 pr-2 text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                  className="flex items-center rounded-r-full py-1 pl-0.5 pr-2 text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
                   onClick={() => remove(index)}
                 >
                   <HugeiconsIcon icon={Cancel01Icon} className="size-3" />

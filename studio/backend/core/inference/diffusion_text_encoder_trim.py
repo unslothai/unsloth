@@ -54,6 +54,7 @@ _HIDDEN_STATE_ONLY_FAMILIES = frozenset(
         # FLUX.3 Klein stacks hidden_states[4..32] (diffusers Flux3TextEncoderStep)
         "flux.3-klein",
         "flux.3-klein-base",
+        "moss-image",
     }
 )
 

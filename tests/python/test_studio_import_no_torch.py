@@ -252,6 +252,7 @@ class TestChatTemplatesNoTorchVenv:
             # rather than another stub: the suite checks what actually ships.
             sys.path.insert(0, {str(CHAT_TEMPLATES.parent)!r})
             source = source.replace('from .cells import', 'from cells import')
+            source = source.replace('from .remote_images import', 'from remote_images import')
 
             exec(source)
 
@@ -296,6 +297,7 @@ class TestChatTemplatesNoTorchVenv:
             source = source.replace('from .iterable import', 'from iterable import')
             sys.path.insert(0, {str(CHAT_TEMPLATES.parent)!r})
             source = source.replace('from .cells import', 'from cells import')
+            source = source.replace('from .remote_images import', 'from remote_images import')
             exec(source, ns)
 
             assert 'DEFAULT_ALPACA_TEMPLATE' in ns, "DEFAULT_ALPACA_TEMPLATE not defined"
@@ -386,6 +388,7 @@ class TestFormatConversionNoTorchVenv:
             source = source.replace('from .iterable import', 'from iterable import')
             sys.path.insert(0, {str(FORMAT_CONVERSION.parent)!r})
             source = source.replace('from .cells import', 'from cells import')
+            source = source.replace('from .remote_images import', 'from remote_images import')
             ns = {{'__name__': '__test__'}}
             exec(source, ns)
 
@@ -447,6 +450,7 @@ class TestFormatConversionNoTorchVenv:
             source = source.replace('from .iterable import', 'from iterable import')
             sys.path.insert(0, {str(FORMAT_CONVERSION.parent)!r})
             source = source.replace('from .cells import', 'from cells import')
+            source = source.replace('from .remote_images import', 'from remote_images import')
             ns = {{'__name__': '__test__'}}
             exec(source, ns)
 

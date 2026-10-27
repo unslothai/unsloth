@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import {
   findCanonicalHubResourceId,
   isValidHubResourceId,
@@ -62,9 +63,6 @@ import type { ModelType, TrainingMethod } from "@/types/training";
 import {
   ChipIcon,
 } from "@hugeicons/core-free-icons";
-import {
-  ChevronDownIcon,
-} from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -801,7 +799,8 @@ export function TrainModelSelector({
               {display ?? t("studio.modelPicker.selectModel")}
             </span>
           </span>
-          <ChevronDownIcon
+          <HugeiconsIcon
+            icon={ChevronDownStandardIcon}
             strokeWidth={1.25}
             className="size-3.5 shrink-0 text-muted-foreground"
           />

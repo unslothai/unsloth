@@ -54,6 +54,7 @@ def _place(
     unpriced: bool,
     speed: str = "default",
     tier_seeds: bool = True,
+    torchao: bool = False,
 ):
     for name in ENVS:
         monkeypatch.delenv(name, raising = False)
@@ -61,7 +62,7 @@ def _place(
         monkeypatch.setenv("UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_DENSE_TIERS", "0")
     Host(cards).install(monkeypatch)
     monkeypatch.setattr(dm, "_loaded_component_mib", lambda _: dict(KLEIN_LOADED))
-    monkeypatch.setattr(dm, "_pipe_denoisers_hold_torchao", lambda _: False)
+    monkeypatch.setattr(dm, "_pipe_denoisers_hold_torchao", lambda _: torchao)
     monkeypatch.setattr(
         lsp,
         "_denoiser_layouts",
@@ -72,7 +73,7 @@ def _place(
     pipe.transformer.dtype = torch.float16
     pipe.components = {"transformer": pipe.transformer}
     pipe._unsloth_dense_tier_seeds = True
-    pipe._unsloth_phase_seeds = False
+    pipe._unsloth_phase_seeds = torchao
     pipe._unsloth_unpriced_references = unpriced
     primary = cards[0]
     memory = dm.DeviceMemory("cuda", "cuda", "discrete_vram", primary.free_mib, primary.total_mib)
@@ -195,3 +196,12 @@ def test_a_learned_peak_above_the_flat_estimate_still_prices_the_split(monkeypat
         with mg.selection_scope(mg.MultiGpuSelection(0, (1,), automatic = True)):
             mg.refine_plan_for_multigpu(_Pipe(), boosted)
         assert seen and seen[0] == max(learned, flat)
+
+
+@pytest.mark.parametrize("unpriced", [True, False])
+def test_a_phase_seeded_reference_family_is_flagged_like_the_request_guard(monkeypatch, unpriced):
+    # a quantized (non-dense) denoiser places from the phase seed, also measured on text-to-image: the request guard
+    # sizes its references flat too, so the split must not be priced from that seed either
+    measured, _ = _place(monkeypatch, T4, unpriced = unpriced, torchao = True)
+    assert measured.estimates["measured_dense_transformer_mib"] is None
+    assert bool(measured.estimates.get("measured_omits_references")) is unpriced

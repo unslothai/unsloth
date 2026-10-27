@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Imports Studio chat backups, Open WebUI JSON arrays, OpenAI/ShareGPT JSONL, role/content
- *  CSV, and Studio markdown transcripts. JSON records stream individually so large exports
- *  never become one JS string. */
+/** JSON records stream individually so large exports never become one JS string. */
 
 import {
   ChatThreadWriteError,
@@ -40,24 +38,18 @@ import {
 } from "./studio-backup-import";
 import { parseConversationMarkdownDocument } from "./conversation-markdown-import";
 
-/** CSV and markdown have no record framing to stream on, so they are still read whole. */
 const WHOLE_FILE_MAX_BYTES = 64 * 1024 * 1024;
 
 /** Matches MAX_CHAT_IMPORT_CHUNK_BYTES in src-tauri/src/native_file_dialogs.rs. */
 const NATIVE_CHUNK_BYTES = 8 * 1024 * 1024;
 
-/** Limit concurrent writes for exports that may contain thousands of chats. */
 const WRITE_CONCURRENCY = 6;
 
-/** Report progress at least this often by bytes as well as by conversations. A count-only
- *  cadence leaves the toast reading "0 so far (0%)" for the entire read of an export made of
- *  a few very large chats, which is the case the toast exists for. */
+/** Byte cadence too, so exports with a few huge chats still show progress. */
 const PROGRESS_BYTES = 4 * 1024 * 1024;
 
 export interface ImportProgress {
-  /** Conversations written so far. */
   imported: number;
-  /** Conversations whose write failed; the import continues past them. */
   failed: number;
   bytesRead: number;
   totalBytes?: number;
@@ -65,7 +57,6 @@ export interface ImportProgress {
 
 export interface ImportOptions {
   onProgress?: (progress: ImportProgress) => void;
-  /** Each chat saved, by its row id (a comparison's pair id), so a caller can file it. */
   onSaved?: (rowId: string) => void;
 }
 
@@ -87,12 +78,10 @@ async function* nativeBytes(handle: {
     const bytes = await readNativeChatImportChunk(
       handle.token,
       offset,
-      // Never past the size the picker recorded: bytes appended to a file still being written are not
-      // part of the export that was chosen.
+      // Never past the recorded size: appended bytes are not part of the chosen export.
       Math.min(NATIVE_CHUNK_BYTES, handle.size - offset),
     );
-    // The picker recorded the size, so a short read means the file shrank since then. Stopping
-    // quietly would pass a partial export off as the whole one.
+    // A short read means the file shrank; do not pass a partial export as whole.
     if (bytes.byteLength === 0) {
       throw new Error(
         `${handle.name} ended after ${offset} of ${handle.size} bytes; it changed after it was picked.`,
@@ -103,7 +92,6 @@ async function* nativeBytes(handle: {
   }
 }
 
-/** Desktop: the file stays on disk and is redeemed one range at a time. */
 export function nativeImportSource(handle: {
   name: string;
   size: number;
@@ -112,16 +100,12 @@ export function nativeImportSource(handle: {
   return {
     name: handle.name,
     size: handle.size,
-    // Decoding is fatal here because the native reader it replaced rejected invalid UTF-8 outright
-    // rather than saving a chat full of U+FFFD.
+    // Fatal decoding: invalid UTF-8 is rejected rather than saved as U+FFFD.
     chunks: () => decodeTextChunks(nativeBytes(handle), true),
   };
 }
 
-// Record conversion
-
-// role:"tool" results are absorbed into the preceding assistant tool-call part's `result` field
-// rather than becoming separate records.
+// role:"tool" results fold into the preceding tool-call part's `result`.
 function oaiContentToParts(raw: unknown): unknown[] {
   if (!Array.isArray(raw)) {
     return typeof raw === "string" && raw.trim()
@@ -193,8 +177,7 @@ function oaiMessagesToRecords(
           const name = typeof fn.name === "string" ? fn.name : "unknown";
           const argsStr = typeof fn.arguments === "string" ? fn.arguments : "{}";
           let args: unknown = {};
-          // _raw matches what the stream adapter and the backend keep for arguments the model did not
-          // emit as valid JSON.
+          // _raw matches what the stream adapter and backend keep for invalid JSON arguments.
           try { args = JSON.parse(argsStr); } catch { args = { _raw: argsStr }; }
           const part = {
             type: "tool-call",
@@ -221,7 +204,6 @@ function oaiMessagesToRecords(
       role: (role === "developer" ? "system" : role) as MessageRecord["role"],
       content: content as MessageRecord["content"],
       createdAt: baseTs + idx,
-      // Ordering only: these formats do not carry a per-message send time.
       metadata: { createdAtEstimated: true },
     });
     prevId = id;
@@ -266,7 +248,6 @@ function sharegptToRecords(
       role,
       content: [{ type: "text", text: value }] as MessageRecord["content"],
       createdAt: baseTs + idx,
-      // Ordering only: these formats do not carry a per-message send time.
       metadata: { createdAtEstimated: true },
     });
     prevId = id;
@@ -311,7 +292,6 @@ function markdownToRecords(
 }
 
 function csvToRecords(csvText: string, threadId: string, baseTs: number): MessageRecord[] {
-  // parseCsv handles quoted newlines, so multi-line message content round-trips from the exporter.
   const rows = parseCsv(csvText).slice(1);
   const records: MessageRecord[] = [];
   let prevId: string | null = null;
@@ -330,7 +310,6 @@ function csvToRecords(csvText: string, threadId: string, baseTs: number): Messag
       role: validRole as MessageRecord["role"],
       content: [{ type: "text", text: content }] as MessageRecord["content"],
       createdAt: baseTs + idx,
-      // Ordering only: these formats do not carry a per-message send time.
       metadata: { createdAtEstimated: true },
     });
     prevId = id;
@@ -339,7 +318,6 @@ function csvToRecords(csvText: string, threadId: string, baseTs: number): Messag
   return records;
 }
 
-/** One streamed record -> one conversation, or null when it holds no messages. */
 export function recordToConversation(
   record: unknown,
   fallbackTitle: string,
@@ -351,7 +329,7 @@ export function recordToConversation(
   if (typeof record !== "object" || record === null) return null;
   const obj = record as Record<string, unknown>;
 
-  // Fresh ID: reusing the exported thread_id would clobber an existing thread on import.
+  // Fresh ID: reusing the exported thread_id would clobber an existing thread.
   const threadId = crypto.randomUUID();
   const title = typeof obj.title === "string" ? obj.title : fallbackTitle;
   const baseTs = typeof obj.created_at === "number" ? obj.created_at : Date.now();
@@ -367,7 +345,6 @@ export function recordToConversation(
   return { title, threadId, messages };
 }
 
-/** Kept for the CSV path and for callers that already hold the whole text. */
 export function parseImportText(
   text: string,
   filename: string,
@@ -420,8 +397,6 @@ export function parseImportText(
   return results;
 }
 
-// Persistence
-
 async function writeConversation(
   conversation: ParsedConversation,
   projectId: string | null | undefined,
@@ -434,9 +409,7 @@ async function writeConversation(
     archived: conversation.archived ?? false,
     createdAt: messages[0]?.createdAt ?? conversation.createdAt ?? Date.now(),
     ...conversation.thread,
-    // undefined is "the caller did not choose", which is the only case where the backup's own
-    // grouping decides. null is a choice: the projects page offers Recents as a destination and
-    // says so in its toast, so a backup must not quietly file the chats under projects instead.
+    // undefined lets the backup's grouping decide; null is an explicit Recents choice.
     projectId:
       projectId === undefined
         ? (conversation.thread?.projectId ?? null)
@@ -445,12 +418,8 @@ async function writeConversation(
   try {
     await saveStoredChatThread(thread);
   } catch (error) {
-    // A settings snapshot is the one field a backup can carry that this build may not accept:
-    // the thread endpoint validates it strictly, so one knob added by a newer Studio fails the
-    // whole write. The chat matters more than its settings, so drop them and try once more.
-    // Only for a rejection, though: a timeout or a 5xx is not the snapshot's fault and dropping
-    // it would lose the user's temperature and seed to an unrelated failure, silently, while
-    // reporting the chat imported.
+    // Newer settings can fail strict validation; on a rejection only (not timeout/5xx), retry
+    // without settings.
     const { settings, ...withoutSettings } = thread;
     const rejected =
       error instanceof ChatThreadWriteError && error.status === 422;
@@ -460,8 +429,7 @@ async function writeConversation(
   try {
     await syncStoredChatMessages(threadId, messages, { pruneMissing: false });
   } catch (error) {
-    // The thread row is already in the sidebar. Left behind it is a blank chat the user has to
-    // delete by hand, and a retry adds another one.
+    // Remove the blank thread row, or the user must delete it and a retry adds another.
     await deleteStoredChatThreads([threadId]).catch(() => {});
     throw error;
   }
@@ -535,7 +503,6 @@ export async function importConversationsFromSource(
           report();
         }
       },
-      // Count a malformed record and continue with the rest of the export.
       onMalformed: () => {
         progress.failed++;
       },
@@ -563,7 +530,6 @@ export async function importConversationsFromSource(
             saved(conversation);
           })
           .catch(() => {
-            // Keep importing after one conversation fails to save.
             progress.failed++;
           })
           .finally(() => {
@@ -575,7 +541,6 @@ export async function importConversationsFromSource(
       }
     }
   } catch (error) {
-    // A read that dies partway still leaves earlier chats saved.
     failure = error;
   }
 
@@ -596,8 +561,7 @@ export async function importConversationsFromSource(
   }
 
   await Promise.allSettled(inFlight);
-  // Those chats have to reach the sidebar even when the read failed, or the UI stays empty until
-  // a reload and a retry duplicates every one of them.
+  // Notify even on failure, or saved chats stay hidden and a retry duplicates them.
   if (progress.imported > 0) notifyChatHistoryUpdated();
   report();
 
