@@ -128,9 +128,12 @@ def _run(
     on_event = None,
     trainer_attrs = None,
     datasets = None,
+    model_attrs = None,
     **extra,
 ):
     base = _base()
+    for name, value in (model_attrs or {}).items():
+        setattr(base, name, value)
     pristine = copy.deepcopy(base)
     tokenizer = _tokenizer()
     trainer = types.SimpleNamespace(
@@ -424,6 +427,15 @@ def test_a_text_diffusion_model_never_trains_batched(monkeypatch, tmp_path):
     )
     assert [e["type"] for e in events if e.get("member_run_id")] == ["error", "error"]
     assert "text-diffusion" in events[-1]["error"]
+
+
+def test_an_existing_lora_adapter_never_trains_batched(monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    events, _model, _pristine = _run(
+        monkeypatch, MEMBERS[:2], model_attrs = {"peft_config": {"default": object()}}
+    )
+    assert [e["type"] for e in events if e.get("member_run_id")] == ["error", "error"]
+    assert "existing LoRA adapter" in events[-1]["error"]
 
 
 def test_pretokenized_assistant_masks_become_labels():

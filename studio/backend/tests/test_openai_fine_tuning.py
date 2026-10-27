@@ -21,7 +21,7 @@ from routes import openai_fine_tuning, training as training_routes  # noqa: E402
 from storage import studio_db  # noqa: E402
 import core.training.training as _training_core  # noqa: E402
 
-_REAL_DIFFUSION_LM = openai_fine_tuning._diffusion_lm
+_REAL_TRAINS_ALONE = openai_fine_tuning._trains_alone
 
 CHATS = (
     b'{"messages": [{"role": "user", "content": "Hi"}, {"role": "assistant", "content": "Hello!"}]}\n'
@@ -1032,10 +1032,10 @@ def batch_queue(queue, monkeypatch):
     client, calls, live, gpu = queue
     monkeypatch.setattr(openai_fine_tuning, "_multi_lora_available", lambda: True)
 
-    async def not_diffusion(request):
+    async def batchable_model(request):
         return False
 
-    monkeypatch.setattr(openai_fine_tuning, "_diffusion_lm", not_diffusion)
+    monkeypatch.setattr(openai_fine_tuning, "_trains_alone", batchable_model)
     monkeypatch.setattr(_training_core, "should_use_mlx_training_backend", lambda: False)
     monkeypatch.delenv("UNSLOTH_STUDIO_FT_BATCH_MAX", raising = False)
     backend = _BatchBackend()
@@ -1117,12 +1117,23 @@ def test_listing_pages_through_a_batch_that_is_still_loading(batch_queue):
     assert sorted(seen) == sorted(j.id for j in jobs) and len(seen) == 3
 
 
-def test_text_diffusion_jobs_never_batch(batch_queue, monkeypatch):
+@pytest.mark.parametrize("model_kind", ["diffusion", "lora_adapter"])
+def test_text_diffusion_and_adapter_jobs_never_batch(batch_queue, monkeypatch, model_kind):
     import utils.models.diffusion_lm as diffusion_lm
+    import utils.models.model_config as model_config
 
     client, calls, _live, gpu, _backend = batch_queue
-    monkeypatch.setattr(openai_fine_tuning, "_diffusion_lm", _REAL_DIFFUSION_LM)
-    monkeypatch.setattr(diffusion_lm, "diffusion_lm_profile_for_model", lambda *a, **k: "dream")
+    monkeypatch.setattr(openai_fine_tuning, "_trains_alone", _REAL_TRAINS_ALONE)
+    monkeypatch.setattr(
+        diffusion_lm,
+        "diffusion_lm_profile_for_model",
+        lambda *a, **k: "dream" if model_kind == "diffusion" else None,
+    )
+    monkeypatch.setattr(
+        model_config,
+        "get_base_model_from_lora_identifier",
+        lambda *a, **k: "unsloth/Qwen3-0.6B" if model_kind == "lora_adapter" else None,
+    )
 
     async def flow():
         uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")

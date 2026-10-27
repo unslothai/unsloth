@@ -656,14 +656,18 @@ def _batch_key(entry: _Queued) -> Optional[tuple]:
     )
 
 
-async def _diffusion_lm(request: TrainingStartRequest) -> bool:
-    """Text-diffusion models train with their own denoising objective, which the batched trainer lacks."""
+async def _trains_alone(request: TrainingStartRequest) -> bool:
+    """Text-diffusion models (own denoising objective) and saved LoRA adapters (continued in place by the
+    single-job trainer) are outside what the batched trainer runs."""
     from utils.models.diffusion_lm import diffusion_lm_profile_for_model
-    return bool(
-        await asyncio.to_thread(
-            diffusion_lm_profile_for_model, request.model_name, request.hf_token
-        )
-    )
+    from utils.models.model_config import get_base_model_from_lora_identifier
+
+    def probe() -> bool:
+        if diffusion_lm_profile_for_model(request.model_name, request.hf_token):
+            return True
+        return get_base_model_from_lora_identifier(request.model_name, request.hf_token) is not None
+
+    return await asyncio.to_thread(probe)
 
 
 def _batch_for(head: _Queued) -> list[_Queued]:
@@ -710,7 +714,7 @@ async def _start_queued(entry: _Queued) -> bool:
         if _training_busy():
             return False
         group = _batch_for(entry)
-        if len(group) > 1 and await _diffusion_lm(entry.request):
+        if len(group) > 1 and await _trains_alone(entry.request):
             group = [entry]
         if len(group) > 1:
             outcome = await _start_batch(group)

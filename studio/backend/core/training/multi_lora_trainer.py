@@ -660,6 +660,11 @@ def _run(event_queue, stop_queue, config: dict, members: list) -> None:
         raise RuntimeError(
             "Batched training does not support text-diffusion models; train these jobs one at a time."
         )
+    if getattr(trainer.model, "peft_config", None):
+        # A saved LoRA loads as a PeftModel; the multi-LoRA layers would train fresh adapters and drop its weights.
+        raise RuntimeError(
+            "Batched training cannot continue an existing LoRA adapter; train these jobs one at a time."
+        )
     trainer.load_in_4bit = load_in_4bit
     trainer.is_cpt = False
     model, tokenizer = trainer.model, trainer.tokenizer
