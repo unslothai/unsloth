@@ -1289,13 +1289,17 @@ def _rocm_missing_sonames_fresh() -> Optional[list[str]]:
         return _rocm_missing_memo[0]
     import subprocess
 
+    from utils.child_stdio import utf8_child_env
+
     try:
+        # -X utf8 as well: -I ignores the PYTHONIOENCODING utf8_child_env sets.
         proc = subprocess.run(
-            [sys.executable, "-I", "-c", _ROCM_SONAME_PROBE, *_ROCM_RUNTIME_SONAMES],
+            [sys.executable, "-X", "utf8", "-I", "-c", _ROCM_SONAME_PROBE, *_ROCM_RUNTIME_SONAMES],
             capture_output = True,
             text = True,
             encoding = "utf-8",
             errors = "replace",
+            env = utf8_child_env(),
             timeout = 20,
         )
         result = (
