@@ -354,6 +354,29 @@ def test_a_latest_turn_the_strict_estimate_refuses_still_drops_old_history():
     assert len(fitted["messages"]) < len(messages)
 
 
+def test_an_estimated_fit_leaves_a_fitting_attachment_whole():
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    orchestrator = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    orchestrator.active_model_name = "m"
+    orchestrator.models = {"m": {"engine": "sglang", "context_length": 2048}}
+    orchestrator._managed_engine = SimpleNamespace(adapter = ADAPTERS["sglang"])
+
+    def count(*args, **kwargs):
+        raise RuntimeError("500 Server Error: Integer exceeds 64-bit range")
+
+    orchestrator.count_chat_tokens = count
+    rows = "".join(f"row {i}: value={i * 7}\n" for i in range(80))
+    content = (
+        "[data.txt: its text is below, so answer from it. For calculations, the python tool has "
+        'the file at path = "/data.txt"]\n<attachment>\n' + rows + "FINAL_MARKER=734\n</attachment>"
+    )
+    fitted = orchestrator.compact_chat_context(
+        [{"role": "user", "content": content}], context_overflow = "truncate_oldest", max_tokens = 256
+    )
+    assert "FINAL_MARKER=734" in fitted["messages"][-1]["content"]
+
+
 def test_tool_stream_reasoning_reaches_studio_as_reasoning_content():
     from routes.managed_engine_chat import _with_reasoning_content
 

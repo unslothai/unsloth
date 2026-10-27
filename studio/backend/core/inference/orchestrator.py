@@ -53,8 +53,17 @@ def __getattr__(name: str):
 
 logger = get_logger(__name__)
 
-# dense_ascii charges two characters a token and a token spans at least one, so half the window bounds the real count.
+# Half a token a UTF-8 byte, and a byte-level token spans at least one, so half the window bounds the real count.
 _ESTIMATED_FIT_HEADROOM = 0.5
+
+
+def _utf8_half_tokens(messages) -> int:
+    import json
+    return sum(
+        (len(json.dumps(message, ensure_ascii = False).encode("utf-8")) + 1) // 2
+        for message in messages
+    )
+
 
 # Delimited, not a whitelist: a whitelist stopped at the apostrophe in `/home/o'connor/`.
 _PATH_COMPONENT = r"[^\s\\/](?:(?:(?![A-Za-z]:[\\/])[^\\/\n\",;])*[^\s\\/])?"
@@ -2792,7 +2801,6 @@ class InferenceOrchestrator:
         try:
             from core.inference.chat_template_helpers import trailing_assistant_resume_kind
             from core.inference.context_window import (
-                estimate_messages_tokens_conservative,
                 messages_without_unpriced_media,
                 retrieval_budget,
                 truncate_oldest_messages,
@@ -2848,9 +2856,7 @@ class InferenceOrchestrator:
                 if cancel_event is not None and cancel_event.is_set():
                     raise RuntimeError("Context compaction cancelled")
                 if estimated:
-                    return estimate_messages_tokens_conservative(
-                        messages_without_unpriced_media(fitted), dense_ascii = True
-                    )
+                    return _utf8_half_tokens(messages_without_unpriced_media(fitted))
                 return self.count_chat_tokens(fitted, "", **count_kwargs)[0]
 
             can_reset = _can_reset_epoch(
@@ -2893,6 +2899,7 @@ class InferenceOrchestrator:
                 sticky_is_checkpoint = sticky_is_checkpoint,
                 sticky_manual = sticky_manual,
                 force_reset = force_reset,
+                fit_attachments = not estimated,
                 **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
             )
             fitted, truncation = _fit_with_instruction_pins(
