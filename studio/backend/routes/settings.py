@@ -1412,7 +1412,7 @@ async def get_cache_breakdown(
     try:
         return await asyncio.to_thread(cache_breakdown, key)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
 
 
 @_owner_settings_router.post("/caches/purge", response_model = CachePurgeResponse)
