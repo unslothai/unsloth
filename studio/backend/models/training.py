@@ -1211,6 +1211,13 @@ class DiffusionTrainingPreparation(BaseModel):
     total: Optional[int] = None
 
 
+class DiffusionTrainingDownloadProgress(BaseModel):
+    bytes_done: int = Field(default = 0, ge = 0)
+    bytes_total: int = Field(default = 0, ge = 0)
+    label: str = "Model files"
+    scope: str = "active_files"
+
+
 class DiffusionTrainingStatusResponse(BaseModel):
     """A snapshot of the current diffusion training job (or idle)."""
 
@@ -1231,6 +1238,7 @@ class DiffusionTrainingStatusResponse(BaseModel):
     num_images: Optional[int] = None
     in_model_load: bool = False
     preparation: Optional[DiffusionTrainingPreparation] = None
+    download_progress: Optional[DiffusionTrainingDownloadProgress] = None
     output_dir: Optional[str] = None
     lora_path: Optional[str] = None
     # The second, EMA-averaged adapter written in the run's ema subdir when ema_decay was enabled.
