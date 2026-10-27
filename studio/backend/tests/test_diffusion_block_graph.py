@@ -863,6 +863,139 @@ def test_compiled_streamed_blocks_record_below_their_hooks_with_no_graph_break()
     handle.free()
 
 
+def _reset_retired(monkeypatch):
+    if hasattr(cg, "_RETIRED_POOLS"):
+        monkeypatch.setattr(cg, "_RETIRED_POOLS", [0, 0])
+    else:
+        monkeypatch.setattr(cg, "_RETIRED_POOL_DUE", [False], raising = False)
+
+
+def test_a_block_capture_after_a_failed_one_flushes_the_retired_pool_first(monkeypatch):
+    """A failed per-block capture retires its pool. When it cannot be flushed then (another thread started recording,
+    which prohibits the flush), the pool stays due: the next capture hands it back before it records, so it never
+    records beside the retired segments. Every block still runs its compute exactly."""
+    _cuda()
+    _reset_retired(monkeypatch)
+    net = _net(blocks = 2).cuda()
+    ref = copy.deepcopy(net)
+    handle, _ = bg.install_block_graphs(net, device = "cuda", slots = False)
+    monkeypatch.setattr(cg, "_FAILED_GRAPHS", [])
+    events = []
+    real_flush = torch.cuda.empty_cache
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: events.append("flush") or real_flush())
+    real_begin = torch.cuda.CUDAGraph.capture_begin
+    other = {"recording": False}
+
+    def begin(self, *args, **kwargs):
+        if "fail" not in events:
+            events.append("fail")
+            cg._CAPTURE_DEPTH += 1  # another render thread starts recording as this capture fails
+            other["recording"] = True
+            raise RuntimeError("capture failed")
+        events.append("begin")
+        return real_begin(self, *args, **kwargs)
+
+    real_refuse = cg.refuse_if_exhausted
+
+    def refuse(*args, **kwargs):
+        if other["recording"]:  # ... and is done before the next block records
+            other["recording"] = False
+            cg._CAPTURE_DEPTH -= 1
+        return real_refuse(*args, **kwargs)
+
+    monkeypatch.setattr(torch.cuda.CUDAGraph, "capture_begin", begin)
+    monkeypatch.setattr(cg, "refuse_if_exhausted", refuse)
+    x = torch.randn(7, 16, device = "cuda")
+    try:
+        with torch.inference_mode():
+            for _ in range(4):
+                assert torch.equal(net(x), ref(x))
+    finally:
+        if other["recording"]:
+            cg._CAPTURE_DEPTH -= 1
+    start = events.index("fail")
+    assert "begin" in events[start:]
+    assert "flush" in events[start : events.index("begin", start)]
+    if hasattr(cg, "retired_pool_due"):
+        assert not cg.retired_pool_due()
+    handle.free()
+
+
+def test_a_block_poisoned_before_capture_counts_the_graphs_it_dropped(monkeypatch):
+    """A block with recorded layouts that fails before capture_begin on a new one (budget, warm-up, statics) is
+    poisoned and drops every graph it held: their pool counts as retired, so the next capture flushes it first."""
+    _cuda()
+    _reset_retired(monkeypatch)
+    net = _net(blocks = 2).cuda()
+    ref = copy.deepcopy(net)
+    handle, _ = bg.install_block_graphs(net, device = "cuda", slots = False)
+    x = torch.randn(7, 16, device = "cuda")
+    with torch.inference_mode():
+        for _ in range(4):
+            assert torch.equal(net(x), ref(x))
+    held = sum(len(g.cache) for g in handle.graphs)
+    assert held >= 1
+
+    def refuse(*args, **kwargs):
+        raise RuntimeError("no room for the statics")
+
+    monkeypatch.setattr(cg, "refuse_if_exhausted", refuse)
+    y = torch.randn(5, 16, device = "cuda")
+    with torch.inference_mode():
+        for _ in range(4):
+            assert torch.equal(net(y), ref(y))
+    assert any(g.poisoned for g in handle.graphs)
+    due = cg.retired_pool_due() if hasattr(cg, "retired_pool_due") else False
+    assert due
+    handle.free()
+
+
+def test_evicting_a_block_graph_from_a_retired_pool_counts_it(monkeypatch):
+    """After a failed capture replaced the shared pool, older recordings still hold the old one. When the LRU evicts
+    the last of them, that pool retires: it is counted, so the next capture flushes it before recording beside it."""
+    _cuda()
+    _reset_retired(monkeypatch)
+    net = _net(blocks = 1).cuda()
+    ref = copy.deepcopy(net)
+    handle, _ = bg.install_block_graphs(net, device = "cuda", slots = False)
+    block = handle.graphs[0]
+    limit = block.max_graphs
+    with torch.inference_mode():
+        for rows in range(2, 2 + limit):
+            x = torch.randn(rows, 16, device = "cuda")
+            for _ in range(3):
+                assert torch.equal(net(x), ref(x))
+    assert len(block.cache) == limit
+    block.shared.pool = None  # what retire_failed_capture leaves: later recordings get a fresh pool
+    _reset_retired(monkeypatch)
+    with torch.inference_mode():
+        x = torch.randn(2 + limit, 16, device = "cuda")
+        for _ in range(3):
+            assert torch.equal(net(x), ref(x))
+    assert block.stats["evictions"] >= 1
+    due = cg.retired_pool_due() if hasattr(cg, "retired_pool_due") else False
+    assert due
+    handle.free()
+
+
+def test_a_block_capture_refused_before_recording_flushes_nothing(monkeypatch):
+    """Past the failure budget every block fails before capture_begin: no pool was retired, so no allocator flush."""
+    _cuda()
+    _reset_retired(monkeypatch)
+    net = _net(blocks = 2).cuda()
+    ref = copy.deepcopy(net)
+    handle, _ = bg.install_block_graphs(net, device = "cuda", slots = False)
+    flushes = cg._POOL_FLUSHES[0]
+    monkeypatch.setattr(cg, "captures_exhausted", lambda: True)
+    x = torch.randn(7, 16, device = "cuda")
+    with torch.inference_mode():
+        for _ in range(3):
+            assert torch.equal(net(x), ref(x))
+    assert handle.stats["fallbacks"] + handle.stats.get("segment_fallbacks", 0) >= 1
+    assert cg._POOL_FLUSHES[0] == flushes and not cg.retired_pool_due()
+    handle.free()
+
+
 def test_alternating_layouts_both_record():
     """True CFG calls each block with two text lengths in turn; each layout must still record and replay."""
     _cuda()

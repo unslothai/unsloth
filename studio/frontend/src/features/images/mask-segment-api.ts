@@ -10,6 +10,7 @@ import { readFastApiError } from "@/lib/format-fastapi-error";
 import {
   MASK_SEGMENT_ROUTES,
   parseSegmenterStatus,
+  SEGMENTER_STATUS_EVENT,
   parseSegmentResult,
   type SegmenterStatus,
   type SegmentRequest,
@@ -24,9 +25,13 @@ async function parseJson<T>(response: Response): Promise<T> {
 }
 
 export async function getSegmenterStatus(signal?: AbortSignal): Promise<SegmenterStatus> {
-  return parseSegmenterStatus(
+  const status = parseSegmenterStatus(
     await parseJson<unknown>(await authFetch(MASK_SEGMENT_ROUTES.status, { signal })),
   );
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent(SEGMENTER_STATUS_EVENT, { detail: status }));
+  }
+  return status;
 }
 
 /** Start the background download of the active segmenter variant. Progress is read back from the status route. */

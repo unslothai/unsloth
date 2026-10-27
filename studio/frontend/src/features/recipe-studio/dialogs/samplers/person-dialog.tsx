@@ -51,7 +51,7 @@ export function PersonDialog({
         onChange={(value) => onUpdate({ name: value })}
       />
       <div className="grid gap-3">
-        <div className="rounded-2xl border border-border/60 px-3 py-2">
+        <div className="rounded-lg border border-border/60 px-3 py-2">
           <p className="text-xs font-semibold uppercase text-muted-foreground">
             Source
           </p>

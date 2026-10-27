@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { SegmentedControl } from "@/components/segmented-control";
 import { InfoHint } from "@/components/ui/info-hint";
 import {
   Select,
@@ -11,9 +12,7 @@ import {
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import {
-  type RagAutoInject,
   type RagMode,
   useChatRuntimeStore,
 } from "@/features/chat/stores/chat-runtime-store";
@@ -73,7 +72,6 @@ function SliderRow({
   );
 }
 
-// Retrieval settings; the source itself is picked from the composer dropdown.
 export function RetrievalSettingsSection() {
   const ragMode = useChatRuntimeStore((s) => s.ragMode);
   const setRagMode = useChatRuntimeStore((s) => s.setRagMode);
@@ -153,29 +151,17 @@ export function RetrievalSettingsSection() {
             Search attached documents before answering.
           </span>
         </div>
-        <ToggleGroup
-          type="single"
-          variant="outline"
+        <SegmentedControl
           value={ragAutoInject}
-          onValueChange={(value) => {
-            // Radix clears on re-click; ignore empty so one stays selected.
-            if (value) {
-              setRagAutoInject(value as RagAutoInject);
-            }
-          }}
-          className="w-full"
-          aria-label="Auto-retrieve documents"
-        >
-          <ToggleGroupItem value="auto" className="flex-1">
-            Auto
-          </ToggleGroupItem>
-          <ToggleGroupItem value="on" className="flex-1">
-            On
-          </ToggleGroupItem>
-          <ToggleGroupItem value="off" className="flex-1">
-            Off
-          </ToggleGroupItem>
-        </ToggleGroup>
+          options={[
+            { value: "auto", label: "Auto" },
+            { value: "on", label: "On" },
+            { value: "off", label: "Off" },
+          ]}
+          onValueChange={setRagAutoInject}
+          ariaLabel="Auto-retrieve documents"
+          size="compact"
+        />
         <SliderRow
           label="Auto-retrieve threshold"
           value={ragAutoInjectMinScore}
@@ -207,7 +193,7 @@ export function RetrievalSettingsSection() {
           checked={ragOcrScanned}
           onCheckedChange={setRagOcrScanned}
           aria-label="OCR scanned pages"
-          className="panel-switch mt-0.5"
+          className="panel-switch mt-[calc(var(--text-ui-13)*0.2615)]"
         />
       </div>
 
@@ -229,7 +215,7 @@ export function RetrievalSettingsSection() {
           checked={ragCaptionFigures}
           onCheckedChange={setRagCaptionFigures}
           aria-label="Describe figures and charts"
-          className="panel-switch mt-0.5"
+          className="panel-switch mt-[calc(var(--text-ui-13)*0.2615)]"
         />
       </div>
     </div>

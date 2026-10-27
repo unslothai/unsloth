@@ -18,16 +18,13 @@ export const SUPPORTED_SOURCES_HINT =
 
 const ACCEPTED_UPLOAD_EXTS = new Set(RAG_SOURCE_UPLOAD_ACCEPT.split(","));
 
-// `accept` only filters the picker, so a drop can carry anything, including an
-// extension-less folder entry the backend would reject.
+// `accept` only filters the picker; a drop can carry anything.
 export function isSupportedSourceName(name: string): boolean {
   const dot = name.lastIndexOf(".");
   if (dot <= 0) return false;
   return ACCEPTED_UPLOAD_EXTS.has(name.slice(dot).toLowerCase());
 }
 
-/** Split a drop into what can be indexed and the names of what cannot, so the
- * caller can report the rejects instead of discarding them silently. */
 export function partitionSupported<T>(
   entries: T[],
   nameOf: (entry: T) => string,

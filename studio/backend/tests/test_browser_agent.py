@@ -125,8 +125,11 @@ def test_type_select_scroll_and_keys():
     assert _request("browser_select", {"ref": "r4", "value": "Large"})["value"] == "Large"
     assert _request("browser_select", {"ref": "r4", "value": False})["value"] == "false"
     assert _request("browser_select", {"ref": "r4", "value": 0})["value"] == "0"
-    assert _request("browser_select", {"ref": "r4"})["value"] == ""
+    assert _request("browser_select", {"ref": "r4", "value": " Large "})["value"] == "Large"
     assert _request("browser_select", {"ref": "r4", "value": True})["value"] == "true"
+    for empty in (None, "", "   "):
+        with pytest.raises(ValueError, match = "value is empty"):
+            _request("browser_select", {"ref": "r4", "value": empty})
     assert _request("browser_scroll", {}) == {"op": "scroll", "direction": "down"}
     assert _request("browser_press_key", {"key": "enter"}) == {"op": "press", "key": "Enter"}
     with pytest.raises(ValueError):
@@ -253,6 +256,49 @@ def test_errors_and_long_pages():
     assert len(long) < 26_000 and "cut here" in long
 
 
+def test_an_unreadable_address_is_withheld_rather_than_raised():
+    out = browser_agent.format_result(
+        "browser_snapshot", {"ok": True, "url": "https://[bad/", "text": "secret"}, None
+    )
+    assert out.startswith("Error:")
+    assert "secret" not in out
+
+
+def test_status_badges_say_what_the_browser_does():
+    from core.inference.tool_loop_controller import status_for_tool
+
+    assert (
+        status_for_tool("browser_navigate", {"url": "www.example.com/a?b=1"})
+        == "Opening: example.com"
+    )
+    assert (
+        status_for_tool("browser_navigate", {"url": "https://Docs.Example.org/x"})
+        == "Opening: docs.example.org"
+    )
+    assert status_for_tool("browser_navigate", {"url": "back"}) == "Going back"
+    assert status_for_tool("browser_navigate", {"url": "http://[bad/"}) == "Opening a page..."
+    assert status_for_tool("browser_snapshot", {}) == "Reading the page"
+    assert status_for_tool("browser_find", {"query": "  sign\nin "}) == "Finding: sign in"
+    assert status_for_tool("browser_click", {"ref": "r12"}) == "Clicking: r12"
+    assert status_for_tool("browser_click", {"x": 1, "y": 2}) == "Clicking the page"
+    assert status_for_tool("browser_type", {"ref": "r3", "text": "x" * 80}) == "Typing: " + "x" * 40
+    assert status_for_tool("browser_select", {"ref": "r3", "value": "Large"}) == "Choosing: Large"
+    assert status_for_tool("browser_scroll", {"direction": "up"}) == "Scrolling up"
+    assert status_for_tool("browser_scroll", {}) == "Scrolling down"
+    assert status_for_tool("browser_press_key", {"key": "Enter"}) == "Pressing: Enter"
+    assert (
+        status_for_tool("browser_evaluate", {"script": "return 1"})
+        == "Running a script on the page"
+    )
+    assert status_for_tool("browser_screenshot", {}) == "Taking a screenshot"
+    assert (
+        status_for_tool("browser_history", {"query": "qwen"}) == "Searching browsing history: qwen"
+    )
+    assert status_for_tool("browser_history", {}) == "Reading browsing history"
+    assert status_for_tool("browser_move_mouse", {"ref": "r1"}) == "Moving the mouse"
+    assert status_for_tool("browser_drag", {}) == "Dragging"
+
+
 def test_a_page_that_moved_off_the_policy_is_withheld():
     policy = {"allowedDomains": ["wikipedia.org"], "blockedDomains": []}
     out = browser_agent.format_result(
@@ -351,6 +397,18 @@ def test_bad_arguments_never_reach_the_tab():
         "browser_navigate", {"url": "http://10.0.0.1:8888"}, output_callback = callback
     )
     assert out.startswith("Error:") and seen == []
+
+
+def test_a_stream_that_is_gone_leaves_no_slot_behind():
+    def closed(_event):
+        raise RuntimeError("stream closed")
+
+    before = set(browser_actions._pending)
+    with pytest.raises(RuntimeError):
+        browser_agent.execute_browser_tool(
+            "browser_snapshot", {}, output_callback = closed, session_id = "s"
+        )
+    assert set(browser_actions._pending) == before
 
 
 def test_without_a_chat_tab_the_tool_says_so():
@@ -481,6 +539,8 @@ def test_repeated_browser_calls_run_again_and_keep_the_tools():
         "https://www.google.com//.././url?q=http://127.0.0.1:8888/private",
         # ... and maps the host the way IDNA does.
         "https://www.google\u3002com/url?q=http://127.0.0.1:8888/private",
+        "https://www.google.co.uk/url?q=http://127.0.0.1:8888/private",
+        "https://google.com.au/url?q=http://127.0.0.1:8888/private",
     ],
 )
 def test_redirect_target_is_checked_like_the_link(url):

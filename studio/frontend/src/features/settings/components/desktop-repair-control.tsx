@@ -10,37 +10,30 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { usePlatformStore } from "@/config/env";
 import { useTauriRepairController } from "@/hooks/tauri-repair-context";
 import { useT } from "@/i18n";
 import { type ReactElement, useState } from "react";
 import { SettingsRow } from "./settings-row";
 
 /**
- * Reruns the bundled installer over the managed environment.
- *
- * Exists because an update cannot repair everything an update can break. `studio update`
- * reuses the environment it finds; only the installer re-selects the PyTorch index and
- * force-reinstalls the trio. A managed venv that ended up with a CPU-only PyTorch wheel
- * therefore survives any number of successful updates, and until now the only way out was
- * to paste the install one-liner into a terminal.
- *
- * Desktop-only: outside Tauri there is no controller in context and the row renders nothing.
- * Hidden for an externally started backend too: start_managed_repair refuses to mutate an
- * environment the desktop does not manage, but the refusal arrives after startRepair has
- * already cleared the external-server state and swapped the shell to the repairing screen,
- * so a connected user would end up on the repair-error screen instead of on their server.
- * Confirmed before it runs, because it stops the backend and rewrites the environment.
+ * Reruns the bundled installer: `studio update` reuses the environment, so only this re-selects
+ * the PyTorch index (e.g. to fix a CPU-only wheel). Desktop-only, and hidden for an external
+ * backend, where the refusal would arrive after the shell switched to the repair screen.
  */
 export function DesktopRepairControl(): ReactElement | null {
   const t = useT();
   const repair = useTauriRepairController();
+  // Not useFullInstallUpgrade(): a Mac the MLX wheels skip still gets PyTorch, only not Train.
+  const upgradesToFull = usePlatformStore(
+    (s) => s.chatOnlyReason === "no_torch" && s.isChatOnly() && !s.capabilitiesUnknown(),
+  );
   const [confirmOpen, setConfirmOpen] = useState(false);
   if (!repair || repair.isExternalServer) return null;
 
   return (
     <>
       <SettingsRow
-        destructive={true}
         label={t("settings.general.repairInstall.label")}
         description={t("settings.general.repairInstall.description")}
       >
@@ -48,7 +41,7 @@ export function DesktopRepairControl(): ReactElement | null {
           variant="outline"
           size="sm"
           onClick={() => setConfirmOpen(true)}
-          className="text-destructive hover:text-destructive hover:border-destructive/60"
+          className="text-destructive hover:text-destructive"
         >
           {t("settings.general.repairInstall.action")}
         </Button>
@@ -61,7 +54,11 @@ export function DesktopRepairControl(): ReactElement | null {
               {t("settings.general.repairInstall.confirmTitle")}
             </DialogTitle>
             <DialogDescription>
-              {t("settings.general.repairInstall.confirmDescription")}
+              {t(
+                upgradesToFull
+                  ? "settings.general.repairInstall.confirmDescriptionChatOnly"
+                  : "settings.general.repairInstall.confirmDescription",
+              )}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -70,12 +67,11 @@ export function DesktopRepairControl(): ReactElement | null {
             </Button>
             <Button
               onClick={() => {
-                // Closed first: the repair swaps the app over to the repairing screen, so a dialog
-                // still mounted would sit on top of it.
+                // Close first, or the dialog would sit on top of the repairing screen.
                 setConfirmOpen(false);
                 void repair.repairInstall();
               }}
-              className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
+              variant="destructive"
             >
               {t("settings.general.repairInstall.confirmAction")}
             </Button>

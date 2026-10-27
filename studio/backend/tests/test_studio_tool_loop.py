@@ -684,6 +684,48 @@ def test_denied_call_does_not_spend_an_iteration(executed, monkeypatch):
     assert executed[0]["arguments"] == {"query": "2"}
 
 
+@pytest.mark.parametrize("verdict", ["allow", "deny"])
+def test_an_allowed_call_tells_every_follower_before_tool_end(executed, monkeypatch, verdict):
+    """Only the client that answered clears its own prompt; other tabs learn it from tool_approved."""
+    monkeypatch.setattr(loop_mod, "begin_tool_decision", lambda session, approval: object())
+    monkeypatch.setattr(
+        loop_mod, "wait_tool_decision", lambda slot, approval, cancel_event = None: verdict
+    )
+    monkeypatch.setattr(loop_mod, "abort_tool_decision", lambda slot, approval: None)
+    monkeypatch.setattr(loop_mod, "new_approval_id", lambda: "ap1")
+    call = {"index": 0, "id": "c1", "function": {"name": "python", "arguments": "{}"}}
+    transport = FakeTransport(
+        [
+            [_sse({"tool_calls": [call]}), _sse(finish = "tool_calls"), _DONE],
+            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    lines = _run(transport, tools = [PY], permission_mode = "ask", confirm_calls = True)
+
+    gated = [e for e in _events(lines, "tool_start") if e.get("awaiting_confirmation")]
+    approved = _events(lines, "tool_approved")
+    assert len(gated) == 1 and len(_events(lines, "tool_end")) == 1, lines
+    if verdict == "deny":
+        assert approved == []
+        return
+    assert approved == [
+        {
+            "type": "tool_approved",
+            "tool_name": "python",
+            "tool_call_id": gated[0]["tool_call_id"],
+            "approval_id": "ap1",
+        }
+    ]
+    kinds = [
+        json.loads(line[6:]).get("type")
+        for line in lines
+        if line.startswith("data: ") and line[6:] != "[DONE]"
+    ]
+    assert kinds.index("tool_start") < kinds.index("tool_approved") < kinds.index("tool_end")
+    # Same order as the GGUF loop: the approval before the running status.
+    assert "tool_status" not in kinds[kinds.index("tool_start") + 1 : kinds.index("tool_approved")]
+
+
 def test_auto_mode_prompts_only_for_high_risk_calls(executed, monkeypatch):
     slots: list = []
     monkeypatch.setattr(

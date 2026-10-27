@@ -36,16 +36,19 @@ def _isolate(monkeypatch):
 
 
 class TestCoerceFraction:
-    @pytest.mark.parametrize("value", [0.80, 0.9, 0.97, 1.0, "0.85", "1.00"])
+    @pytest.mark.parametrize(
+        "value", [0.10, 0.30, 0.50, 0.80, 0.9, 0.97, 1.0, "0.25", "0.85", "1.00"]
+    )
     def test_accepts_in_range(self, value):
         assert vb.coerce_fraction(value) == pytest.approx(float(value))
 
     @pytest.mark.parametrize(
         "value",
         [
-            0.79,
-            1.01,
             0.0,
+            0.05,
+            0.099,
+            1.01,
             -1.0,
             2.0,
             "nan",
@@ -150,7 +153,7 @@ class TestState:
 class TestWrite:
     def test_rejects_out_of_range(self, monkeypatch):
         monkeypatch.setattr(vb, "_invalidate", lambda _key: None)
-        for bad in (0.5, 1.5, float("nan"), "abc"):
+        for bad in (0.0, 0.05, -0.25, 1.5, float("nan"), "abc"):
             with pytest.raises(ValueError):
                 vb.set_vram_budget_fraction(bad)
 
@@ -589,13 +592,256 @@ class TestFitTarget:
         assert "--fit-target" not in flags
 
     def test_the_move_is_measured_from_the_card_that_makes_it_safe(self):
-        # --fit-target is broadcast as one value: llama.cpp device order is not ours to assume.
+        # The broadcast value, kept wherever llama.cpp's device order is not provable; TestPerDeviceFitTarget covers the per-device list.
         compact = _shared_setup_1()
         assert "if_vram_frac!=_CTX_FIT_VRAM_FRACTIONandgpus:" in compact
         assert "_fit_target_delta_mib=(_CTX_FIT_VRAM_FRACTION-_vram_frac)*_scale" in compact
         assert "_scale=(max(_scales)if_vram_frac<_CTX_FIT_VRAM_FRACTIONelsemin(_scales))" in compact
         assert "fit_target_delta_mib=_fit_target_delta_mib," in compact
         assert "total_by_idx.get(_idx)or_freefor_idx,_freeingpus" in compact
+
+
+class TestPerDeviceFitTarget:
+    """On mixed cards a lowered budget's margin is spelled per device.
+
+    One broadcast margin is sized by the largest card when lowering, so on a 48 GB +
+    24 GB host at 30% it asked the 24 GB card to keep about 33 GiB free: more than
+    the card has, so llama.cpp's fitter put nothing on it.
+    """
+
+    _ENV = {"CUDA_DEVICE_ORDER": "PCI_BUS_ID"}
+    # 48 GB and 24 GB cards at a 30% budget, legacy path (1024 MiB base).
+    _MARGINS = {0: 1024 + 0.67 * 49140, 1: 1024 + 0.67 * 24576}
+    _CMD = ["llama-server", "--fit", "on", "--fit-target", "33947", "--jinja"]
+
+    def _spell(
+        self,
+        cmd = None,
+        env = None,
+        margins = None,
+    ):
+        import core.inference.llama_cpp as lc
+        return lc.LlamaCppBackend._per_device_fit_target_argv(
+            list(cmd or self._CMD),
+            self._ENV if env is None else env,
+            self._MARGINS if margins is None else margins,
+        )
+
+    def test_each_card_keeps_its_own_margin(self):
+        out = self._spell()
+        assert out[out.index("--fit-target") + 1] == "33947,17489"
+        # Only the value moves.
+        assert [t for t in out if t != "33947,17489"] == [t for t in self._CMD if t != "33947"]
+
+    def test_the_list_follows_the_child_mask_order(self):
+        # CUDA enumerates a numeric mask in the order it lists the ids.
+        out = self._spell(env = {**self._ENV, "CUDA_VISIBLE_DEVICES": "1,0"})
+        assert out[out.index("--fit-target") + 1] == "17489,33947"
+
+    def test_a_pinned_single_card_gets_its_own_value(self):
+        out = self._spell(env = {**self._ENV, "CUDA_VISIBLE_DEVICES": "1"})
+        assert out[out.index("--fit-target") + 1] == "17489"
+
+    def test_identical_cards_keep_the_single_value(self):
+        # The same meaning, and an unchanged command on homogeneous hosts.
+        margins = {0: 9378.0, 1: 9378.0}
+        assert self._spell(cmd = ["--fit-target", "9378"], margins = margins) == [
+            "--fit-target",
+            "9378",
+        ]
+
+    @pytest.mark.parametrize(
+        "env",
+        [
+            {"CUDA_DEVICE_ORDER": "FASTEST_FIRST"},
+            {},
+            {"CUDA_DEVICE_ORDER": "PCI_BUS_ID", "CUDA_VISIBLE_DEVICES": "GPU-1234"},
+            {"CUDA_DEVICE_ORDER": "PCI_BUS_ID", "CUDA_VISIBLE_DEVICES": "0,2"},
+            {"CUDA_DEVICE_ORDER": "PCI_BUS_ID", "CUDA_VISIBLE_DEVICES": "-1"},
+            {"CUDA_DEVICE_ORDER": "PCI_BUS_ID", "LLAMA_ARG_DEVICE": "CUDA1"},
+            {"CUDA_DEVICE_ORDER": "PCI_BUS_ID", "LLAMA_ARG_RPC": "host:50052"},
+        ],
+        ids = [
+            "fastest-first",
+            "no-order",
+            "uuid-mask",
+            "unknown-id",
+            "cpu",
+            "env-device",
+            "env-rpc",
+        ],
+    )
+    def test_an_unprovable_order_keeps_the_broadcast_value(self, env):
+        assert self._spell(env = env) == self._CMD
+
+    @pytest.mark.parametrize("flag", ["--device", "-dev", "--rpc"])
+    def test_device_flags_in_the_command_keep_the_broadcast_value(self, flag):
+        cmd = [*self._CMD, flag, "CUDA0"]
+        assert self._spell(cmd = cmd) == cmd
+
+    def test_nothing_to_spell_without_margins_or_the_flag(self):
+        assert self._spell(margins = {}) == self._CMD
+        cmd = ["llama-server", "--fit", "on"]
+        assert self._spell(cmd = cmd) == cmd
+
+    def test_a_raised_budget_gives_each_card_its_own_smaller_margin(self):
+        # Above the default the delta is negative: at 98% the larger card may pack
+        # closer than the smaller one, where broadcast held both to the smaller's.
+        import core.inference.llama_cpp as lc
+
+        margins = lc.LlamaCppBackend._fit_target_margins_mib(
+            auto_fit = False,
+            fit_target_delta_by_idx = {0: -0.01 * 49140, 1: -0.01 * 24576},
+        )
+        out = self._spell(margins = margins)
+        assert out[out.index("--fit-target") + 1] == "532,778"
+        # At 100% both reach the 512 MiB floor, one value again.
+        floored = lc.LlamaCppBackend._fit_target_margins_mib(
+            auto_fit = False,
+            fit_target_delta_by_idx = {0: -0.03 * 49140, 1: -0.03 * 24576},
+        )
+        assert floored == {0: 512.0, 1: 512.0}
+        out = self._spell(margins = floored)
+        assert out[out.index("--fit-target") + 1] == "512"
+
+    def test_per_card_margins_use_the_scalar_formula(self):
+        import core.inference.llama_cpp as lc
+
+        margins = lc.LlamaCppBackend._fit_target_margins_mib(
+            auto_fit = False, fit_target_delta_by_idx = {0: 32924.0, 1: -4096.0}
+        )
+        for idx, delta in ((0, 32924.0), (1, -4096.0)):
+            assert margins[idx] == lc.LlamaCppBackend._fit_target_margin_mib(
+                auto_fit = False, fit_target_delta_mib = delta
+            )
+        assert (
+            lc.LlamaCppBackend._fit_target_margins_mib(auto_fit = False, fit_target_delta_by_idx = None)
+            is None
+        )
+        assert (
+            lc.LlamaCppBackend._fit_target_margins_mib(
+                auto_fit = False,
+                fit_target_delta_by_idx = {0: 1.0},
+                supports_fit_target = False,
+            )
+            is None
+        )
+
+    def test_the_paging_check_credits_each_card_its_own_margin(self, monkeypatch):
+        # The load-mode fit must spend what the child is told to keep, card by card.
+        import core.inference.llama_cpp as lc
+
+        backend = lc.LlamaCppBackend()
+        rows = [(0, 47000, 49140), (1, 24000, 24576)]
+        gib = 1024**3
+        # 20 GiB of weights and 4 GiB of RAM. Broadcast credits 12.7 GiB of VRAM (a
+        # 7.3 GiB spill); per card adds the 24 GB card's 6.4 GiB (a 0.9 GiB spill).
+        kwargs = dict(avail_mib = 4 * 1024, headroom_mib = 0)
+        broadcast = backend._fits_without_paging(20 * gib, rows, vram_margin_mib = 33947.0, **kwargs)
+        per_card = backend._fits_without_paging(
+            20 * gib, rows, vram_margin_mib = {0: 33947.0, 1: 17489.0}, **kwargs
+        )
+        assert broadcast is False
+        assert per_card is True
+
+    def _ok(
+        self,
+        monkeypatch,
+        *,
+        extra_args = None,
+        env = None,
+        **attrs,
+    ):
+        import core.inference.llama_cpp as lc
+
+        B = lc.LlamaCppBackend
+        # The eligibility check declines on macOS, so pin the host OS the case means.
+        monkeypatch.setattr(lc.sys, "platform", attrs.get("platform", "linux"))
+        monkeypatch.setattr(B, "_GPU_IDS_ARE_PCI_INDICES", attrs.get("pci", True))
+        monkeypatch.setattr(B, "_SMI_MIG_INDICES", attrs.get("mig", frozenset()))
+        monkeypatch.setattr(
+            B,
+            "_visibility_mask_is_unmappable",
+            staticmethod(lambda: attrs.get("unmappable", False)),
+        )
+        monkeypatch.setattr(
+            B, "_host_torch_is_rocm", staticmethod(lambda: attrs.get("rocm", False))
+        )
+        monkeypatch.setenv("CUDA_DEVICE_ORDER", attrs.get("order", "PCI_BUS_ID"))
+        if attrs.get("mask") is None:
+            monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+        else:
+            monkeypatch.setenv("CUDA_VISIBLE_DEVICES", attrs["mask"])
+        return B._fit_target_per_device_ok(
+            is_vulkan_backend = attrs.get("vulkan", False),
+            extra_args = extra_args,
+            env = env or {},
+        )
+
+    def test_eligible_on_a_plain_cuda_host(self, monkeypatch):
+        assert self._ok(monkeypatch)
+        assert self._ok(monkeypatch, mask = "1,0")
+
+    def test_a_resolvable_uuid_mask_is_ineligible(self, monkeypatch):
+        # The child inherits the uuids, which _per_device_fit_target_argv cannot order.
+        assert not self._ok(monkeypatch, mask = "GPU-aaaa,GPU-bbbb")
+
+    @pytest.mark.parametrize(
+        "attrs",
+        [
+            {"vulkan": True},
+            {"rocm": True},
+            {"pci": None},
+            {"pci": False},
+            {"order": "FASTEST_FIRST"},
+            {"unmappable": True},
+            {"mig": frozenset({0})},
+        ],
+        ids = [
+            "vulkan",
+            "rocm",
+            "ids-unknown",
+            "torch-ordinals",
+            "fastest-first",
+            "uuid-mask",
+            "mig",
+        ],
+    )
+    def test_an_unprovable_device_order_is_ineligible(self, monkeypatch, attrs):
+        assert not self._ok(monkeypatch, **attrs)
+
+    @pytest.mark.parametrize(
+        "extra_args, env",
+        [
+            (["--fit-target", "2048"], None),
+            (None, {"LLAMA_ARG_FIT_TARGET": "2048"}),
+            (["--device", "CUDA1"], None),
+            (["--rpc", "host:50052"], None),
+            (None, {"LLAMA_ARG_DEVICE": "CUDA1"}),
+            (["--spec-draft-device", "CUDA1"], None),
+            (["--mmproj-device", "CUDA1"], None),
+        ],
+        ids = [
+            "argv-fit-target",
+            "env-fit-target",
+            "device",
+            "rpc",
+            "env-device",
+            "draft-device",
+            "mmproj-device",
+        ],
+    )
+    def test_pass_through_placement_is_ineligible(self, monkeypatch, extra_args, env):
+        assert not self._ok(monkeypatch, extra_args = extra_args, env = env)
+
+    def test_the_load_path_wires_the_per_card_margins(self):
+        compact = _shared_setup_1()
+        # Planned over every probed row, which an unpinned child sees.
+        assert "for_idx,_free,_totalin_gpu_mem" in compact
+        # Spelled at both spawn sites, against the final env.
+        assert compact.count("_per_device_fit_target_argv(") == 2
+        # Priced with the same margins it emits.
+        assert "fit_margin_mib=_fit_margins_by_idxor_fit_margin_mib" in compact
 
 
 class TestManualAutoIsPriced:

@@ -541,3 +541,154 @@ def test_slice_identity_fix_is_probe_gated_and_reversible(monkeypatch):
     finally:
         dt.uninstall_slice_identity_fix()
     assert SliceVariable.__dict__.get("get_real_python_backed_value") is stock
+
+
+class Float8Tensor(torch.Tensor):
+    """Stands in for torchao's float8 weight subclass (its module and class name are read)."""
+
+
+Float8Tensor.__module__ = "torchao.quantization.quantize_.workflows.float8.float8_tensor"
+
+
+def _h3_with_float8_weight():
+    m = MiniMaxH3Transformer3DModel()
+    m.proj = torch.nn.Linear(8, 8)
+    m.proj.weight = torch.nn.Parameter(
+        torch.Tensor._make_subclass(Float8Tensor, torch.zeros(8, 8)), requires_grad = False
+    )
+    assert type(m.proj.weight).__name__ == "Float8Tensor"
+    return m
+
+
+def test_minimax_h3_float8_weights_keep_temb_backed_dynamic():
+    """torchao float8 activation quantisation guards on the row count, so an unbacked temb failed the compile."""
+    if not dt.unbacked_supported():
+        pytest.skip("torch lacks compiler.config.unbacked_sources")
+    m = _h3_with_float8_weight()
+    assert dt.unbacked_sources_for(m) == ()
+    assert "L['temb']" in dt.sources_for(m)
+    assert dt.install(m) is True
+    m(12, 2)
+    assert "L['temb']" in m.seen.split(",")
+    assert "L['temb']" not in (m.seen_unbacked or "").split(",")
+    dt.uninstall(m)
+    # a plain (bf16 / int8) H3 keeps the unbacked temb
+    assert dt.unbacked_sources_for(MiniMaxH3Transformer3DModel()) == ("L['temb']",)
+
+
+def test_minimax_h3_float8_inside_a_plain_parameter_keeps_temb_backed_dynamic():
+    """Some torchao builds keep ``Linear.weight`` a plain Parameter whose ``.data`` is the float8 subclass."""
+    if not dt.unbacked_supported():
+        pytest.skip("torch lacks compiler.config.unbacked_sources")
+    m = MiniMaxH3Transformer3DModel()
+    plain = types.SimpleNamespace(data = torch.Tensor._make_subclass(Float8Tensor, torch.zeros(8, 8)))
+    m.parameters = lambda recurse = True: iter([plain])
+    assert dt.unbacked_sources_for(m) == ()
+    assert "L['temb']" in dt.sources_for(m)
+
+
+class ZImageTransformer2DModel(torch.nn.Module):
+    """Z-Image's one block class runs the caption refiner (caption tokens), the noise refiner (image tokens) and the
+    main layers (caption + image), positionally as (x, attn_mask, freqs_cis); the caption is padded to 32-token buckets."""
+
+    def __init__(self):
+        super().__init__()
+        self.block = torch.compile(self._block, backend = "eager", dynamic = None)
+
+    @staticmethod
+    def _block(x, attn_mask, freqs_cis):
+        return (x * freqs_cis).masked_fill(~attn_mask[..., None], 0.0) + x
+
+    def forward(self, caption_len, image_len):
+        def run(n):
+            x = torch.randn(1, n, 8)
+            return self.block(x, torch.ones(1, n, dtype = torch.bool), torch.randn(1, n, 8))
+
+        run(caption_len)
+        run(image_len)
+        return run(caption_len + image_len)
+
+
+def test_zimage_new_caption_bucket_reuses_the_first_graphs():
+    """An automatic-dynamic Z-Image recompiled its block for each new length (caption, image, unified) inside the
+    first render, then again on the first longer prompt; armed, the first compile covers every length."""
+    from torch._dynamo.utils import counters
+
+    def graphs_per_render(install):
+        torch._dynamo.reset()
+        counters.clear()
+        m = ZImageTransformer2DModel()
+        if install:
+            assert dt.install(m)
+        seen = []
+        for caption_len, image_len in ((32, 64), (32, 64), (96, 64), (32, 48)):
+            before = counters["stats"]["unique_graphs"]
+            m(caption_len, image_len)
+            seen.append(counters["stats"]["unique_graphs"] - before)
+        dt.uninstall(m)
+        torch._dynamo.reset()
+        return seen
+
+    assert graphs_per_render(False)[0] > 1
+    assert graphs_per_render(True) == [1, 0, 0, 0]
+
+
+class FluxTransformer2DModel(torch.nn.Module):
+    """FLUX.1's two compiled blocks: the double block sees the text stream beside the image tokens, the single block
+    concatenates them, and the rotary tables span text + image."""
+
+    def __init__(self):
+        super().__init__()
+        self.seen = None
+        self.double = torch.compile(self._double, backend = "eager", dynamic = None)
+        self.single = torch.compile(self._single, backend = "eager", dynamic = None)
+
+    @staticmethod
+    def _double(hidden_states, encoder_hidden_states, temb, image_rotary_emb):
+        joint = (
+            torch.cat([encoder_hidden_states, hidden_states], dim = 1) * image_rotary_emb[0]
+            + image_rotary_emb[1]
+        )
+        text = encoder_hidden_states.shape[1]
+        return joint[:, text:] + temb[:, None], joint[:, :text]
+
+    @staticmethod
+    def _single(hidden_states, encoder_hidden_states, temb, image_rotary_emb):
+        joint = torch.cat([encoder_hidden_states, hidden_states], dim = 1)
+        out = joint * image_rotary_emb[0] + image_rotary_emb[1] + temb[:, None]
+        return out[:, encoder_hidden_states.shape[1] :]
+
+    def forward(self, text_len, image_len):
+        self.seen = _cfg().dynamic_sources
+        hidden_states = torch.randn(1, image_len, 8)
+        encoder_hidden_states = torch.randn(1, text_len, 8)
+        temb = torch.randn(1, 8)
+        rotary = (torch.randn(text_len + image_len, 8), torch.randn(text_len + image_len, 8))
+        hidden_states, encoder_hidden_states = self.double(
+            hidden_states, encoder_hidden_states, temb, rotary
+        )
+        return self.single(hidden_states, encoder_hidden_states, temb, rotary)
+
+
+def test_flux1_new_prompt_length_and_resolution_reuse_the_first_graphs():
+    """T5 pads to 256 or 512 tokens; a torchao FLUX.1 compiles with automatic dynamic, which recompiled both blocks on
+    the first 512-token prompt and again on the first new resolution."""
+    from torch._dynamo.utils import counters
+
+    def graphs_per_render(install):
+        torch._dynamo.reset()
+        counters.clear()
+        m = FluxTransformer2DModel()
+        if install:
+            assert dt.install(m)
+        seen = []
+        for text_len, image_len in ((16, 64), (16, 64), (32, 64), (16, 48), (32, 80)):
+            before = counters["stats"]["unique_graphs"]
+            m(text_len, image_len)
+            seen.append(counters["stats"]["unique_graphs"] - before)
+        dt.uninstall(m)
+        torch._dynamo.reset()
+        return seen
+
+    assert graphs_per_render(False)[2:] != [0, 0, 0]
+    assert graphs_per_render(True) == [2, 0, 0, 0, 0]

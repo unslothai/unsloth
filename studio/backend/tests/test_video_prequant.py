@@ -1278,6 +1278,7 @@ def _a14b_auto(
     backend,
     fam = None,
     allowed = None,
+    gated = False,
 ):
     import types
 
@@ -1295,6 +1296,10 @@ def _a14b_auto(
     monkeypatch.setattr(tq, "_scheme_supported", lambda scheme, device, **kw: scheme in allowed)
     monkeypatch.setattr(ops, "select_nvfp4_backend", lambda device = None: backend)
     monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda scheme = None: True)
+    if gated:
+        # What a measured, passing A14B gate record would read as (none ships).
+        monkeypatch.setattr(tq, "_nvfp4_gate_passed", lambda family, base_repo: True)
+        monkeypatch.setattr(tq, "_nvfp4_gate_backend_ok", lambda family, base_repo, device: True)
     fam = fam if fam is not None else detect_video_family("Wan-AI/Wan2.2-T2V-A14B-Diffusers")
     base = fam.base_repo
     return (
@@ -1315,8 +1320,17 @@ def _a14b_auto(
     )
 
 
-def test_the_a14b_auto_plan_seeds_nvfp4_where_flashinfer_serves_the_device(monkeypatch):
+def test_the_a14b_auto_plan_never_seeds_ungated_nvfp4(monkeypatch):
+    """No accuracy-gate record covers the hosted A14B NVFP4 experts, so auto keeps the ladder even on flashinfer."""
     seeded, chosen = _a14b_auto(monkeypatch, backend = "flashinfer")
+    assert chosen == "int8"
+    assert seeded == "int8"
+
+
+def test_the_a14b_auto_plan_seeds_nvfp4_where_a_gate_record_and_flashinfer_serve_the_device(
+    monkeypatch,
+):
+    seeded, chosen = _a14b_auto(monkeypatch, backend = "flashinfer", gated = True)
     assert seeded == "nvfp4"
     assert chosen == "nvfp4"
 

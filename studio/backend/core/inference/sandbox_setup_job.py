@@ -233,10 +233,7 @@ def _joined(running: SetupJob, operation: str) -> SetupJob:
 
 
 def start(operation: str, interactive: bool = True) -> SetupJob:
-    """Start the setup for `operation`, or return the run of the same operation already in progress.
-
-    ``interactive=False`` (a remote start) refuses any step that would prompt on this computer.
-    """
+    """A remote start (interactive=False) refuses any step that would prompt on this computer."""
     global _current
     from . import mxc_host_prep_job
 

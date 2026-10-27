@@ -29,6 +29,19 @@ _SOURCE_PATH = Path(__file__).resolve().parents[1] / "unsloth" / "models" / "rl_
 _SUPPORT = {"support_top_k": 2, "support_top_p": 1.0, "support_min_p": 0.0}
 
 
+def _binds(node, name):
+    return any(
+        isinstance(target, ast.Name) and target.id == name
+        for n in ast.walk(node)
+        if isinstance(n, ast.Assign)
+        for target in n.targets
+    )
+
+
+def _reads_or_binds(node, name):
+    return any(isinstance(n, ast.Name) and n.id == name for n in ast.walk(node))
+
+
 def _sources():
     text = _SOURCE_PATH.read_text(encoding = "utf-8")
     tree = ast.parse(text)
@@ -46,16 +59,18 @@ def _sources():
         stmts = getattr(node, field, None)
         if not isinstance(stmts, list):
             continue
+        # Anchored on the try that binds _support_kwargs: an earlier try in the same body also
+        # imports grpo_truncated_support_kwargs (the UNSLOTH_GRPO_LOGPROB_RECOMPUTE scorer pick).
         starts = [
             i
             for i, s in enumerate(stmts)
-            if isinstance(s, ast.Try) and "grpo_truncated_support_kwargs" in ast.unparse(s)
+            if isinstance(s, ast.Try) and _binds(s, "_support_kwargs")
         ]
         if not starts:
             continue
         block = []
         for s in stmts[starts[0] :]:
-            if "_support_kwargs" not in ast.unparse(s):
+            if not _reads_or_binds(s, "_support_kwargs"):
                 break
             block.append(textwrap.dedent(ast.get_source_segment(text, s, padded = True)))
         return "\n".join(helpers), "\n".join(block)
@@ -144,6 +159,26 @@ def test_policies_with_their_own_kept_set_score_the_full_vocabulary(monkeypatch,
     assert trainer._unsloth_truncated_support_refused is True
     _, messages = _bind(monkeypatch, trainer)
     assert not messages
+
+
+def test_refusals_do_not_claim_the_variable_was_set(monkeypatch):
+    # zoo's automatic gate means refusals fire with the variable unset: never say "ignoring ...=1".
+    monkeypatch.delenv("UNSLOTH_GRPO_TRUNCATED_SUPPORT", raising = False)
+    _, messages = _bind(monkeypatch, _trainer(beta = 0.04))
+    refuse = _refuse_helper(monkeypatch, _SUPPORT)
+    trainer = _trainer()
+    trainer._unsloth_vllm_sync_skip = True
+    with warnings.catch_warnings(record = True) as caught:
+        warnings.simplefilter("always")
+        refuse(trainer)
+    messages += [str(w.message) for w in caught]
+    assert len(messages) == 2
+    for message in messages:
+        assert "ignoring" not in message
+        assert message.startswith(
+            "Unsloth: not scoring over the rollouts' top_k / top_p / min_p kept set"
+        )
+        assert "automatic" in message
 
 
 def _own_support_logps(logits, index, top_k):

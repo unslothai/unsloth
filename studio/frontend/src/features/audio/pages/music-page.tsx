@@ -190,7 +190,7 @@ function SongInputs({
                 ? "Genre, mood, instruments and tempo…"
                 : "Genre, mood, instruments, voice and tempo…"
             }
-            className="min-h-16 rounded-lg"
+            className="min-h-16"
           />
         </Field>
         <ExamplesOrHint
@@ -316,7 +316,7 @@ function SfxInputs({
             disabled={disabled}
             onChange={(event) => patch("sfx", { prompt: event.target.value })}
             placeholder="What you want to hear, and where…"
-            className="min-h-16 rounded-lg"
+            className="min-h-16"
           />
         </Field>
         <ExamplesOrHint
@@ -442,7 +442,6 @@ export function MusicRail({
   return (
     <TtsRailFields
       {...props}
-      // Length lives in the page's fields, so Advanced keeps only the model's options.
       musicGeneration={false}
       samplingControls={false}
       inputs={

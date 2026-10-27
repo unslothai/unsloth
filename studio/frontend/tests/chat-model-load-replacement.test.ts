@@ -265,6 +265,7 @@ test("declining B before A unloads X lets C inherit X's newly edited settings", 
   const decline = section(runtime, "if (!stopDecision.proceed) {", "// Re-check the tracked picker for a load");
   const chooseC = section(runtime, "if (pendingReplacementRollback?.config) {", "// The cancelled run's own rollback target");
   const declineB = new Function("state", `let pendingReplacementRollback = state.pending;
+    let modelLoadCancelEpoch = 0;
     const modelSelectionIntentEpoch = state.epoch, loadIntentId = 2, stopDecision = { proceed: false };
     const releasePreflightLifecycleLease = () => { state.released = true; };
     const restorePreviousConfig = () => { state.restored = true; };

@@ -35,7 +35,7 @@ test("both switches come from the model's capabilities, an always-on one reads a
 test("the footer says why Transcribe is off, Stop replaces it, Mod+Enter runs it", () => {
   assert.match(
     rail,
-    /id=\{blocker \? "transcribe-blocker" : "transcribe-notice"\}[\s\S]*?\{blocker \? blocker\.reason : notice\}\s*<GenerateActions actions=\{blocker\?\.actions\} \/>/,
+    /<BlockerNote id="transcribe-blocker" blocker=\{blocker\} \/>[\s\S]*?id="transcribe-notice"/,
   );
   assert.match(rail, /onClick=\{running \? onStop : onTranscribe\}/);
   assert.match(

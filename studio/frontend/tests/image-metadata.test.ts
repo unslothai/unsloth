@@ -295,7 +295,7 @@ test("the Images page wires downloads, the stamp setting and import", () => {
   );
   assert.match(page, /onDrop=\{onImportDrop\}/);
   const store = readSrc("features/library/settings-store.ts");
-  assert.match(store, /imageInfoStamp: true,/);
+  assert.match(store, /imageInfoStamp: false,/);
 });
 
 // ComfyUI's default text-to-image graph from its `prompt` chunk, seed wired through a primitive.

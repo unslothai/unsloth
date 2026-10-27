@@ -154,7 +154,7 @@ export function EmbeddingsField({
       ) : (
         <div className="flex flex-wrap gap-1.5">
           {items.map((e) => (
-            <div key={e.id} className="flex items-center rounded-md border text-xs">
+            <div key={e.id} className="flex items-center rounded-full border text-xs">
               <span className="px-2 py-1" title={`${e.vectors} vector${e.vectors === 1 ? "" : "s"}`}>
                 {e.trigger}
               </span>

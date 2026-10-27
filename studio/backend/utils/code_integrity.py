@@ -36,8 +36,7 @@ _BLOCK_WINERRORS = {
 _ADMIN_POLICY_REASONS = frozenset({_REASON_ADMIN_POLICY})
 _SMART_APP_CONTROL_REASONS = frozenset({_REASON_SMART_APP_CONTROL})
 
-# A hash mismatch, not a policy verdict: Microsoft's text is "signed incorrectly
-# or damaged" (event 5038), so these must not deny corruption.
+# A hash mismatch can be corruption, not policy, so do not deny that.
 _INVALID_HASH_REASONS = frozenset({_REASON_INVALID_HASH_STATUS, _REASON_INVALID_HASH_WINERROR})
 
 _STATUS_TEXT_RE = re.compile(r"0x(c0e90002|c0000428|c0000602)\b", re.IGNORECASE)
@@ -88,8 +87,7 @@ def code_integrity_block_reason(error: object) -> str | None:
         return _REASON_SMART_APP_CONTROL
     if _ADMIN_POLICY_TEXT_RE.search(text):
         return _REASON_ADMIN_POLICY
-    # "Bad Image" alone is NOT a block: a corrupt DLL prints it too, and there
-    # reinstalling IS the remedy.
+    # "Bad Image" alone is not a block: a corrupt DLL prints it too.
     return None
 
 

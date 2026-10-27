@@ -17,8 +17,8 @@ from pathlib import Path
 
 STAGE_DIR_NAME = ".update-stage"
 STAGE_ROOT_ENV = "UNSLOTH_STUDIO_STAGE_ROOT"
-# Where a staged update parks the uv cache it used; the live marker is written only once the
-# stage is accepted, so an update that never activates cannot redirect the environment.
+# Where a staged update parks its uv cache; the live marker is written only once the stage is
+# accepted, so an update that never activates cannot redirect the environment.
 UV_CACHE_MARKER = "uv-cache-dir"
 SHELL_VERSION_ENV = "UNSLOTH_TAURI_SHELL_VERSION"
 VENV_NAME = "unsloth_studio"

@@ -166,10 +166,7 @@ def _add_images_to_archive(archive: zipfile.ZipFile, dataset_path: Path) -> None
 def build_dataset_download(
     *, artifact_path: str, export_format: ExportFormat, filename_stem: str
 ) -> tuple[Path, str, str]:
-    """Return ``(temp_path, media_type, download_filename)``.
-
-    The caller is responsible for deleting ``temp_path`` after the response is sent.
-    """
+    """Returns (temp_path, media_type, download_filename); the caller deletes temp_path once sent."""
     try:
         dataset_path = _resolve_recipe_artifact_path(artifact_path)
     except RecipeDatasetPublishError as exc:

@@ -13,6 +13,20 @@ export interface ApiKey {
   is_active: boolean;
 }
 
+/** a refused create or revoke, carrying the server's own reason when it gave one */
+export class ApiKeyActionError extends Error {}
+
+async function actionError(res: Response): Promise<ApiKeyActionError> {
+  try {
+    const body = (await res.json()) as { detail?: unknown };
+    return new ApiKeyActionError(
+      typeof body.detail === "string" ? body.detail : "",
+    );
+  } catch {
+    return new ApiKeyActionError("");
+  }
+}
+
 export async function fetchApiKeys(): Promise<ApiKey[]> {
   const res = await authFetch("/api/auth/api-keys");
   if (!res.ok) throw new Error("Failed to load API access");
@@ -29,7 +43,7 @@ export async function createApiKey(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name, expires_in_days: expiresInDays }),
   });
-  if (!res.ok) throw new Error("Failed to create access token");
+  if (!res.ok) throw await actionError(res);
   return res.json();
 }
 
@@ -37,5 +51,5 @@ export async function revokeApiKey(keyId: number): Promise<void> {
   const res = await authFetch(`/api/auth/api-keys/${keyId}`, {
     method: "DELETE",
   });
-  if (!res.ok) throw new Error("Failed to revoke access token");
+  if (!res.ok) throw await actionError(res);
 }
