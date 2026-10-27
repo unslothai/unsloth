@@ -149,7 +149,6 @@ def test_auto_ordinal_never_ranks_instances_by_physical_rows():
 def test_instance_ids_are_never_proven_identical_from_physical_rows():
     with mig_host(mig_cards = {2}):
         assert hw._cuda_cards_identical([0, 1]) is None
-        # Every physical card (the default) still answers in its own namespace.
         assert hw._cuda_cards_identical() is False
 
 
@@ -171,7 +170,6 @@ def test_context_free_reader_uses_the_slice_row():
 
 
 def test_a_single_whole_card_keeps_its_nvidia_smi_reading(monkeypatch):
-    # No MIG instances: ids stay nvidia-smi rows and the readers behave as before.
     spec = {
         "raw": None,
         "numeric_ids": [0],

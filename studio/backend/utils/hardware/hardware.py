@@ -2392,7 +2392,6 @@ def _cuda_cards_identical(gpu_ids: Optional[list[int]] = None) -> Optional[bool]
     from . import gpu_query
 
     if gpu_ids is not None and _cuda_instance_ids_active():
-        # MIG instance ordinals are not nvidia-smi rows, so physical identities say nothing about them.
         return None
     count = get_physical_gpu_count()
     wanted = list(range(count)) if gpu_ids is None else list(gpu_ids)
@@ -2655,7 +2654,6 @@ def _context_free_cuda_memory_info(
         return _free_in_torch_scope(total_bytes, used_bytes / (1024**3))
 
     if not IS_ROCM and parent_visible_spec.get("index_kind") == "cuda_device":
-        # MIG instance ordinals: the slice's own NVML row, never the nvidia-smi row of a card that shares the number.
         free_mib, total_mib = _cuda_instance_free_total_mib(idx)
         if free_mib is None or total_mib is None:
             return None
@@ -4615,7 +4613,6 @@ def get_gpu_utilization() -> Dict[str, Any]:
     if device == DeviceType.CUDA:
         parent_visible_spec = _get_parent_visible_gpu_spec()
         if not IS_ROCM and parent_visible_spec.get("index_kind") == "cuda_device":
-            # MIG instance ids: nvidia-smi rows are physical cards, so list each instance's own slice.
             result = get_visible_gpu_utilization()
             if result.get("index_kind") == "cuda_device":
                 return _gpu_utilization_payload(
