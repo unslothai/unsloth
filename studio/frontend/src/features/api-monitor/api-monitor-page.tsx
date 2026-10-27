@@ -342,7 +342,7 @@ function MultiModelHint({
       {" · "}
       {isOwner ? (
         <>
-          You can enable loading multiple models in{" "}
+          Enable loading multiple models in{" "}
           <button
             type="button"
             className="font-medium text-foreground underline underline-offset-2 hover:text-primary"

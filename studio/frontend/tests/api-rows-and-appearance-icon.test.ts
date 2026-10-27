@@ -60,7 +60,7 @@ test("the served-models line points to Model memory while one model at a time", 
     page,
     /if \(!known \|\| keepLoaded \|\| servedCount > 1\) return null;/,
   );
-  assert.match(page, /You can enable loading multiple models in\{" "\}/);
+  assert.match(page, /Enable loading multiple models in\{" "\}/);
   assert.match(
     page,
     /openDialog\("resources", \{\s*scrollTarget: "resources-model-memory",\s*\}\)/,
