@@ -155,6 +155,7 @@ from core.inference.llama_server_args import (
     strip_context_only,
     strip_shadowing_flags,
     strip_split_mode_only,
+    translate_ngram_mod_args,
 )
 
 
@@ -29127,6 +29128,14 @@ class LlamaCppBackend:
                                 "Dropped user device placement flags from extra args: "
                                 "explicit gpu_ids owns placement."
                             )
+                    _emit_extra_args = translate_ngram_mod_args(
+                        _emit_extra_args,
+                        _caps.get("ngram_mod_flavor"),
+                        chain_with_mtp = self._speculative_type == "draft-mtp"
+                        or _extra_args_requests_mtp(
+                            _emit_extra_args, env = _child_spec_env(_emit_extra_args)
+                        ),
+                    )
                     cmd.extend(str(a) for a in _emit_extra_args)
                     logger.info(
                         f"Appending user extra args to llama-server: {list(_emit_extra_args)}"
