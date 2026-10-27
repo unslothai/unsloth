@@ -310,6 +310,9 @@ def _fused_w8a8() -> Optional[Callable[..., Any]]:
         return None
     # Registered in eager, before any trace reads the handle.
     _FUSED_STATE["row_major"] = _row_major_op()
+    # Every key exists before the first trace: older dynamo guards on len(_FUSED_STATE), so adding
+    # "calls" after the first call would recompile each compiled function once.
+    _FUSED_STATE.setdefault("calls", 0)
     fn = torch.compile(_w8a8_rows, dynamic = True, fullgraph = True)
     # One graph for every slice offset and chunk height (dynamic storage offset), written in place by inductor.
     _FUSED_STATE["into"] = torch.compile(_w8a8_rows_into, dynamic = True, fullgraph = True)

@@ -324,7 +324,7 @@ def test_compiled_into_slice_is_one_graph_and_bit_identical(monkeypatch, rot):
     nq._FUSED_STATE["row_major"] = nq._row_major_op()
     fn = torch.compile(nq._w8a8_rows, dynamic = True, fullgraph = True, backend = "aot_eager")
     into = torch.compile(nq._w8a8_rows_into, dynamic = True, fullgraph = True, backend = cnt)
-    nq._FUSED_STATE.update(fn = fn, into = into)
+    nq._FUSED_STATE.update(fn = fn, into = into, calls = 0)  # as _fused_w8a8 leaves it
     monkeypatch.setattr(nq, "_INT_MM_FUSED_CHUNK_ELEMS", 512 * 40)
     with torch.no_grad():
         for rows in (100, 130, 77):
@@ -336,3 +336,12 @@ def test_compiled_into_slice_is_one_graph_and_bit_identical(monkeypatch, rot):
     assert cnt.frame_count == 1
     assert not counters["graph_break"]
     torch._dynamo.reset()
+
+
+def test_factory_creates_every_state_key_before_the_first_trace(monkeypatch):
+    # torch <= 2.6 dynamo guards on len(_FUSED_STATE): a key added after the first call recompiles.
+    import core.inference.diffusion_speed as sp
+
+    monkeypatch.setattr(sp, "torch_compile_runtime_available", lambda: True)
+    assert nq._fused_w8a8() is not None
+    assert {"fn", "into", "row_major", "calls", "failed"} <= set(nq._FUSED_STATE)
