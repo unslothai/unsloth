@@ -37,10 +37,10 @@ class _Stopped(Exception):
 
 
 class _Job:
-    def __init__(self, model: str | None = None) -> None:
+    def __init__(self, identity: str | None = None) -> None:
         self.id = str(uuid.uuid4())
-        # Set on automatic jobs: they re-embed for this model only and stop if Settings picks another.
-        self.model = model
+        # Set on automatic jobs: they write this vector space only and stop on a model switch or fallback.
+        self.identity = identity
         self.status = "running"
         self.done = 0
         self.failed = 0
@@ -124,6 +124,8 @@ def _reembed_document(job: _Job, doc: dict, model: str) -> bool:
         job.current = done / total
 
     vectors, identity = ingestion._embed_all(texts, model, on_progress)
+    if job.identity is not None and identity != job.identity:
+        raise _Stopped
     conn = rag_db.get_connection()
     try:
         swapped = store.replace_document_vectors(
@@ -162,9 +164,9 @@ def _run(job: _Job) -> None:
             if job.stop.is_set() or account_is_retired():
                 raise _Stopped
             model = config.effective_embedding_model()
-            if job.model is not None and model != job.model:
-                raise _Stopped
             identity = embeddings.embedding_identity(model)
+            if job.identity is not None and identity != job.identity:
+                raise _Stopped
             conn = rag_db.get_connection()
             try:
                 pending = [
@@ -212,7 +214,7 @@ def _run(job: _Job) -> None:
         job.current = 0.0
 
 
-def start(model: str | None = None) -> dict:
+def start(identity: str | None = None) -> dict:
     """Start re-embedding this account's stale documents, or return the job already running."""
     if account_is_retired():
         raise RuntimeError("Account is retired")
@@ -221,7 +223,7 @@ def start(model: str | None = None) -> dict:
         job = _jobs.get(key)
         if job is not None and job.status == "running":
             return job.snapshot()
-        job = _Job(model)
+        job = _Job(identity)
         job.remaining = sum(stale_counts().values())
         job.thread = account_thread(target = _run, args = (job,), daemon = True)
         _jobs[key] = job
@@ -255,7 +257,7 @@ def start_after_backend_change(identity: str) -> None:
         and config.embedding_identity_model(d["embedding_model"]) == model
         for d in stale
     ):
-        start(model)
+        start(identity)
 
 
 def status() -> dict | None:

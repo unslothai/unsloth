@@ -161,6 +161,29 @@ def test_a_model_switch_stops_an_automatic_re_embed(models, tmp_path, monkeypatc
     assert all(m != NEW for m, _ in models["encoded"])
 
 
+def test_a_fallback_during_an_automatic_re_embed_stops_it(models, tmp_path, monkeypatch):
+    scope = store.kb_scope("K15")
+    llama = {"on": True}
+    monkeypatch.setattr(embeddings, "_identity_backend_is_llama", lambda name: llama["on"])
+    _ingest(tmp_path, scope, "a.txt", "alpha bravo")
+    llama["on"] = False
+    healthy = _ingest(tmp_path, scope, "b.txt", "charlie delta")
+    st = _row(healthy)[0]
+    encode = embeddings.encode
+
+    def fall_back_while_a_encodes(texts, model_name, **kw):
+        if texts == ["alpha bravo"]:
+            llama["on"] = True
+        return encode(texts, model_name, **kw)
+
+    monkeypatch.setattr(embeddings, "encode", fall_back_while_a_encodes)
+    with _connect() as c:
+        retrieval.retrieve_dense(c, scope, "alpha", k = 1, model_name = OLD)
+    reembed._jobs["reembed"].thread.join(timeout = 10)
+    assert reembed.status()["status"] == "cancelled"
+    assert _row(healthy)[0] == st
+
+
 def test_failures_keep_the_old_index_and_only_a_streak_ends_the_job(models, tmp_path, monkeypatch):
     monkeypatch.setattr(reembed, "_MAX_CONSECUTIVE_FAILURES", 2)
     scope = store.kb_scope("K1")
