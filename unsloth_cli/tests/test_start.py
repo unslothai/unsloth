@@ -2860,6 +2860,7 @@ def test_codex_drops_a_removed_server_with_subtables_added_in_the_saved_home(
     assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
     with (home / "config.toml").open("a") as f:
         f.write('\n[mcp_servers.docs.env]\nUNITS = "metric"\n')
+        f.write('\n[[mcp_servers.docs.env_vars]]\nname = "TOKEN"\nsource = "local"\n')
     (source_home / "config.toml").write_text('[mcp_servers.keep]\nurl = "http://k/mcp"\n')
     assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
     config = tomllib.loads((home / "config.toml").read_text())

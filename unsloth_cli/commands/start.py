@@ -3387,11 +3387,11 @@ _TOML_STRING = re.compile(r'"(?:[^"\\]|\\.)*"|\'[^\']*\'')
 
 
 def _toml_table_path(chunk: str) -> Optional[tuple]:
-    """Key path of the [table] header opening chunk, whatever its quoting, spacing or comment."""
+    """Key path of the [table] or [[array]] header opening chunk, whatever its quoting or comment."""
     line = chunk.lstrip(" \t")
-    if not line.startswith("[") or line.startswith("[["):
+    if not line.startswith("["):
         return None
-    parts, pos = [], 1
+    parts, pos = [], 2 if line.startswith("[[") else 1
     while True:
         m = _TOML_KEY_PART.match(line, pos)
         if m is None:
