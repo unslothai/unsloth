@@ -773,13 +773,14 @@ def _packed_varlen_takes_model(model, config, target, head_dim, device_count):
     )
 
 
-def use_sdpa_for_packed_head_dim_flex(model):
+def use_sdpa_for_packed_head_dim_flex(model, max_length = None):
     """Packed / padding-free rows: a decoder on flex only for its head dim (<= 256) moves to "sdpa",
     whose packed varlen wrapper runs them through torch's varlen flash kernel exactly (B200 head_dim
     256: 6-10% faster at a fixed packed length, 15-24% with varying lengths, and no flex compile).
     True when switched. Not the gemma3 family, not head_dim 512, not a forced
     UNSLOTH_FLEX_ATTENTION_FOR_LARGE_HEAD_DIM, not an explicit flex_attention request, only where
-    torch's varlen kernel runs and only when the wrapper would take the rows (else dense-mask SDPA)."""
+    torch's varlen kernel runs and only when the wrapper would take the rows (else dense-mask SDPA).
+    max_length: the longest document; one past flash's int32 varlen backward limit stays on flex."""
     if os.environ.get(_PACKED_VARLEN_OVER_FLEX_ENV_VAR, "1").strip().lower() in (
         "0",
         "false",
@@ -813,6 +814,19 @@ def use_sdpa_for_packed_head_dim_flex(model):
         if any(_torch_varlen(torch.device("cuda", index)) is None for index in range(device_count)):
             return False
         if not _packed_varlen_takes_model(model, config, target, head_dim, device_count):
+            return False
+        from ..utils.attention_dispatch import (
+            _VARLEN_INT32_GUARD_DISABLED,
+            _varlen_backward_overflows_int32,
+        )
+
+        # The wrapper splits many documents under the limit, but not one document alone.
+        n_heads = _config_get(target, "num_attention_heads", None)
+        if (
+            not _VARLEN_INT32_GUARD_DISABLED
+            and isinstance(max_length, int)
+            and _varlen_backward_overflows_int32(1, max_length, n_heads, head_dim)
+        ):
             return False
     except Exception:
         return False

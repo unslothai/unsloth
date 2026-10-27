@@ -191,6 +191,31 @@ def test_padding_free_metadata_makes_the_switch(routed, monkeypatch):
     assert config._attn_implementation == "sdpa"
 
 
+def test_a_document_too_long_to_split_under_int32_stays_on_flex(routed):
+    """The wrapper splits many short documents under flash's int32 varlen backward limit, but one
+    document past it alone would go to dense-mask SDPA: (L + 128) * 2 heads * 256 >= 2**31."""
+    over = 2**31 // (2 * 256) - 128
+    config = _gemma()
+    assert not u.use_sdpa_for_packed_head_dim_flex(types.SimpleNamespace(config = config), over)
+    assert config._attn_implementation == "flex_attention"
+    assert u.use_sdpa_for_packed_head_dim_flex(types.SimpleNamespace(config = config), over - 1)
+    assert config._attn_implementation == "sdpa"
+
+
+def test_packing_passes_the_trainer_max_length(routed, monkeypatch):
+    from unsloth.utils import packing
+
+    monkeypatch.setattr(hpa, "enable_hf_packed_attention", lambda: True)
+    for max_length, impl in ((2**22, "flex_attention"), (131072, "sdpa")):
+        config = _gemma()
+        collator = types.SimpleNamespace(padding_free = True, torch_call = lambda examples: {})
+        trainer = types.SimpleNamespace(
+            data_collator = collator, args = types.SimpleNamespace(max_length = max_length)
+        )
+        packing.enable_padding_free_metadata(types.SimpleNamespace(config = config), trainer)
+        assert config._attn_implementation == impl
+
+
 @pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
 def test_switched_model_runs_packed_rows_on_varlen_like_flex(monkeypatch):
     if hpa._torch_varlen(torch.device("cuda", 0)) is None:
