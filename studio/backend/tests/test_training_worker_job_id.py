@@ -58,7 +58,11 @@ def test_the_worker_config_carries_the_job_id():
 
 def test_a_multi_lora_batch_runs_without_capture():
     # The multi-LoRA trainer has no capture hooks, so neither the batch nor a member may claim it.
-    member = {"model_name": "unsloth/test", "training_type": "LoRA/QLoRA", "enable_activation_capture": True}
+    member = {
+        "model_name": "unsloth/test",
+        "training_type": "LoRA/QLoRA",
+        "enable_activation_capture": True,
+    }
     seen = _start(batch_members = [{"run_id": "run-123", **member}, {"run_id": "run-456", **member}])
     assert seen["enable_activation_capture"] is False
     assert all(m["config"]["enable_activation_capture"] is False for m in seen["batch_members"])
