@@ -33,7 +33,7 @@ def _args(rows, N = 256, K = 512, requires_grad = False):
     return X, w, s
 
 
-@pytest.mark.parametrize("rows, route", [(17, "dequant"), (64, "dequant"), (65, "scaled_mm"), (2048, "scaled_mm")])
+@pytest.mark.parametrize("rows, route", [(17, "dequant"), (64, "dequant"), (65, "scaled_mm"), (4096, "scaled_mm")])
 def test_inference_calls_take_the_direct_path(spies, rows, route):
     with FakeTensorMode(), torch.no_grad():
         assert F8.fbgemm_fp8_linear(*_args(rows)) == "direct"
@@ -50,12 +50,14 @@ def test_autograd_fbgemm_and_kill_switch_keep_the_compiled_path(spies, monkeypat
             assert F8.fbgemm_fp8_linear(X[..., :256], w.t(), s) == "compiled"
             X2, w2, s2 = _args(128, N = 200)
             assert F8.fbgemm_fp8_linear(X2, w2, s2) == "direct"
+            # Prefill / training sized calls are GPU bound: compiled as before.
+            assert F8.fbgemm_fp8_linear(*_args(F8._FP8_ROWWISE_DIRECT_MAX_ROWS + 1)) == "compiled"
             monkeypatch.setattr(F8, "_fp8_rowwise_backend", lambda device: "fbgemm")
             assert F8.fbgemm_fp8_linear(X, w, s) == "compiled"
             monkeypatch.setattr(F8, "_fp8_rowwise_backend", lambda device: "scaled_mm")
             monkeypatch.setattr(F8, "_FP8_ROWWISE_DIRECT", False)
             assert F8.fbgemm_fp8_linear(X, w, s) == "compiled"
-    assert spies == ["compiled", "compiled", "dequant", "compiled", "compiled"]
+    assert spies == ["compiled", "compiled", "dequant", "compiled", "compiled", "compiled"]
 
 
 def test_cpu_and_traced_calls_keep_the_compiled_path(spies, monkeypatch):

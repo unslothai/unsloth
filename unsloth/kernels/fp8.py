@@ -2100,6 +2100,8 @@ _FP8_ROWWISE_DIRECT = os.environ.get("UNSLOTH_FP8_ROWWISE_DIRECT", "1").strip().
     "no",
     "off",
 )
+# Past this many rows the call is GPU bound and the compiled wrapper costs nothing extra; keep it there.
+_FP8_ROWWISE_DIRECT_MAX_ROWS = 4096
 
 
 @triton.jit
@@ -2191,6 +2193,7 @@ def _fp8_rowwise_direct_route(X, weight, weight_scale):
         or X.shape[-1] != K
         or N <= 1
         or X.numel() == 0
+        or X.numel() > _FP8_ROWWISE_DIRECT_MAX_ROWS * K
         or weight_scale.dtype not in (torch.float32, torch.bfloat16, torch.float16)
     ):
         return None
