@@ -84,6 +84,13 @@ function formatMetricValue(m: BenchmarkRunMetric): string {
   return m.score.toFixed(m.score < 1 ? 4 : 1);
 }
 
+// Same units as the score beside it: points on a 0-100 score, else 4 significant digits.
+function formatStderr(m: BenchmarkRunMetric): string | null {
+  const err = m.stderr != null ? Number.parseFloat(m.stderr) : Number.NaN;
+  if (!Number.isFinite(err)) return null;
+  return m.score >= 0 && m.score <= 1 ? (err * 100).toFixed(1) : String(Number(err.toPrecision(4)));
+}
+
 function getDefaultScore(run: BenchmarkRunSummary): number | null {
   if (!run.default_metric) return null;
   const m = run.metrics.find((x) => x.name === run.default_metric);
@@ -420,9 +427,9 @@ function RunDetailView({
                     {formatMetricValue(m)}
                     {m.score >= 0 && m.score <= 1 ? "%" : ""}
                   </span>
-                  {m.stderr && m.stderr !== "N/A" && (
+                  {formatStderr(m) && (
                     <span className="text-muted-foreground/50">
-                      ±{m.stderr}
+                      ±{formatStderr(m)}
                     </span>
                   )}
                 </Badge>
@@ -533,8 +540,8 @@ function CompareColumn({ detail }: { detail: BenchmarkRunDetail }) {
                 {formatMetricValue(m)}
                 {m.score >= 0 && m.score <= 1 ? "%" : ""}
               </span>
-              {m.stderr && m.stderr !== "N/A" && (
-                <span className="text-muted-foreground/50">±{m.stderr}</span>
+              {formatStderr(m) && (
+                <span className="text-muted-foreground/50">±{formatStderr(m)}</span>
               )}
             </Badge>
           ))}

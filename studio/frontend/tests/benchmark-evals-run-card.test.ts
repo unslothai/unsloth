@@ -29,3 +29,9 @@ test("history and scoreboard load on mount, mid-run included, and again when a r
     assert.doesNotMatch(src, /if \(phase === "running" \|\| phase === "starting"\) return;/, file);
   }
 });
+
+test("metric stderr shows in the score's units, not as a raw float string", () => {
+  const panel = read("components/benchmark-history-panel.tsx");
+  assert.doesNotMatch(panel, /±\{m\.stderr\}/);
+  assert.equal((panel.match(/±\{formatStderr\(m\)\}/g) ?? []).length, 2);
+});
