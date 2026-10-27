@@ -101,11 +101,11 @@ const UsageBar: FC<{ percent: number; markAt?: number }> = ({
     <Progress
       value={percent}
       className="h-1"
-      indicatorClassName="bg-foreground/45"
+      indicatorClassName="bg-[color-mix(in_oklab,var(--foreground)_calc(45%*var(--contrast-wash-gain,1)),transparent)]"
     />
     {markAt != null ? (
       <div
-        className="absolute -inset-y-0.5 w-px bg-foreground/60"
+        className="absolute -inset-y-0.5 w-px bg-[color-mix(in_oklab,var(--foreground)_calc(60%*var(--contrast-wash-gain,1)),transparent)]"
         style={{ left: `${markAt * 100}%` }}
       />
     ) : null}
@@ -123,7 +123,11 @@ const LocalCount: FC<{ onDismiss: () => void }> = ({ onDismiss }) => {
 
   useEffect(() => {
     let cancelled = false;
-    countContext(branch, remoteId ?? undefined).then(
+    countContext(
+      branch,
+      remoteId ?? undefined,
+      () => aui.thread().getState().messages,
+    ).then(
       (counted) => {
         if (cancelled) return;
         const view =
@@ -145,7 +149,7 @@ const LocalCount: FC<{ onDismiss: () => void }> = ({ onDismiss }) => {
     return () => {
       cancelled = true;
     };
-  }, [branch, remoteId]);
+  }, [aui, branch, remoteId]);
 
   const summary =
     count.state === "done"
@@ -174,7 +178,9 @@ const ApiTotal: FC<{ checkpoint: string; onDismiss: () => void }> = ({
 }) => {
   const t = useT();
   const [{ used, window }] = useState(() => {
-    const usage = useChatRuntimeStore.getState().contextUsage;
+    // A text-length estimate is not the provider's number, so it shows as no usage yet.
+    const stored = useChatRuntimeStore.getState().contextUsage;
+    const usage = stored?.estimated ? null : stored;
     return {
       used: usage?.contextTokens ?? usage?.totalTokens ?? null,
       window: externalModelContextLength(checkpoint),
