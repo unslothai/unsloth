@@ -2115,24 +2115,26 @@ def _fp8_act_quant_per_row_kernel(
     ONE_BLOCK: tl.constexpr,
 ):
     # _quantize_fp8_per_row in one launch, with the same fp32 math Inductor emits for it (bitwise equal).
+    # One row per program; the row is held as a [1, BLOCK_K] tile (faster than 1D at 8192 columns on sm120).
     row = tl.program_id(0).to(tl.int64)
     x_row = x_ptr + row * stride_xm
     y_row = y_ptr + row * K
-    offs = tl.arange(0, BLOCK_K)
+    offs = tl.arange(0, BLOCK_K)[None, :]
     if ONE_BLOCK:
         x = tl.load(x_row + offs, mask = offs < K, other = 0.0).to(tl.float32)
-        amax = tl.abs(x)
-        nans = (x != x).to(tl.int32)
+        row_max = tl.max(tl.abs(x), axis = 1)
+        nans = tl.sum((x != x).to(tl.int32), axis = 1)
     else:
-        amax = tl.zeros((BLOCK_K,), dtype = tl.float32)
-        nans = tl.zeros((BLOCK_K,), dtype = tl.int32)
+        amax = tl.zeros((1, BLOCK_K), dtype = tl.float32)
+        nan_count = tl.zeros((1, BLOCK_K), dtype = tl.int32)
         for k in range(0, K, BLOCK_K):
             xk = tl.load(x_row + k + offs, mask = k + offs < K, other = 0.0).to(tl.float32)
             amax = tl.maximum(amax, tl.abs(xk))
-            nans += (xk != xk).to(tl.int32)
-    row_max = tl.max(amax, axis = 0)
+            nan_count += (xk != xk).to(tl.int32)
+        row_max = tl.max(amax, axis = 1)
+        nans = tl.sum(nan_count, axis = 1)
     # torch.amax / clamp propagate NaN; tl.max and tl.maximum drop it by default.
-    row_max = tl.where(tl.sum(nans, axis = 0) > 0, float("nan"), row_max)
+    row_max = tl.where(nans > 0, float("nan"), row_max)
     if HAS_UB:
         row_max = tl.minimum(
             row_max, tl.load(ub_ptr).to(tl.float32), propagate_nan = tl.PropagateNan.ALL
@@ -2141,17 +2143,17 @@ def _fp8_act_quant_per_row_kernel(
         row_max / 448.0, 1.0 / (448.0 * 512.0), propagate_nan = tl.PropagateNan.ALL
     )
     if ONE_BLOCK:
-        y = tl.maximum(x / scale, -448.0, propagate_nan = tl.PropagateNan.ALL)
+        y = tl.maximum(x / scale[:, None], -448.0, propagate_nan = tl.PropagateNan.ALL)
         y = tl.minimum(y, 448.0, propagate_nan = tl.PropagateNan.ALL)
         tl.store(y_row + offs, y.to(tl.float8e4nv), mask = offs < K)
     else:
         for k in range(0, K, BLOCK_K):
             mask = k + offs < K
             xk = tl.load(x_row + k + offs, mask = mask, other = 0.0).to(tl.float32)
-            y = tl.maximum(xk / scale, -448.0, propagate_nan = tl.PropagateNan.ALL)
+            y = tl.maximum(xk / scale[:, None], -448.0, propagate_nan = tl.PropagateNan.ALL)
             y = tl.minimum(y, 448.0, propagate_nan = tl.PropagateNan.ALL)
             tl.store(y_row + k + offs, y.to(tl.float8e4nv), mask = mask)
-    tl.store(s_ptr + row, scale)
+    tl.store(s_ptr + row + tl.arange(0, 1), scale)
 
 
 @triton.jit
@@ -2167,6 +2169,11 @@ def _fp8_rowwise_dequant_kernel(w_ptr, s_ptr, y_ptr, numel, K, BLOCK: tl.constex
 
 def _fp8_rowwise_direct_route(X, weight, weight_scale):
     """The compiled branch an eager call would take, when the direct path reproduces it; else None."""
+    # Training first: it never takes the direct path, so it pays only these checks.
+    if torch.is_grad_enabled() and (
+        X.requires_grad or weight.requires_grad or weight_scale.requires_grad
+    ):
+        return None
     if not (
         _FP8_ROWWISE_DIRECT
         and X.is_cuda
@@ -2185,10 +2192,6 @@ def _fp8_rowwise_direct_route(X, weight, weight_scale):
         or N <= 1
         or X.numel() == 0
         or weight_scale.dtype not in (torch.float32, torch.bfloat16, torch.float16)
-    ):
-        return None
-    if torch.is_grad_enabled() and (
-        X.requires_grad or weight.requires_grad or weight_scale.requires_grad
     ):
         return None
     if (
@@ -2238,7 +2241,7 @@ def _fp8_rowwise_direct(X, weight, weight_scale, bias, route):
                 HAS_UB = scale_ub is not None,
                 BLOCK_K = block_k,
                 ONE_BLOCK = block_k >= K,
-                num_warps = 8 if block_k <= 4096 else 16,
+                num_warps = 4 if block_k <= 4096 else 16,
             )
         output = torch._scaled_mm(
             x_quantized,
