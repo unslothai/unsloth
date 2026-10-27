@@ -209,6 +209,14 @@ test("deleting a reroute heals the wire; deleting its source drops the plain edg
     `${toOut}:src.text->out.value`,
   ].sort());
 
+  // The canvas deletes a node together with its wires; the reroute still heals.
+  fresh();
+  useDocStore.getState().addReroute({ id: "r1", pos: [300, 10] }, "e1");
+  useDocStore
+    .getState()
+    .removeElements({ reroutes: ["r1"], edges: [...graph().wireOrder] });
+  assert.deepEqual(plain(), ["e1:src.text->llm.prompt"]);
+
   fresh();
   useDocStore.getState().addReroute({ id: "r1", pos: [300, 10] }, "e1");
   useDocStore.getState().removeElements({ nodes: ["src"] });

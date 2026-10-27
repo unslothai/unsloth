@@ -420,6 +420,15 @@ export const useDocStore = create<DocState>((set, get) => {
         const dropReroutes = new Set(
           (ids.reroutes ?? []).filter((id) => s.graph.reroutes[id]),
         );
+        // React Flow sends a deleted node's wires along with it; a reroute's own wires heal instead.
+        for (const id of dropEdges) {
+          const wire = s.graph.wires[id];
+          if (
+            wire &&
+            (dropReroutes.has(wire.source) || dropReroutes.has(wire.target))
+          )
+            dropEdges.delete(id);
+        }
         for (const edgeId of s.graph.edgeOrder) {
           const edge = s.graph.edges[edgeId];
           if (dropNodes.has(edge.source) || dropNodes.has(edge.target))
