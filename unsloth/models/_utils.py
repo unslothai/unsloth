@@ -9813,8 +9813,9 @@ class _AutoCheckpointSkip:
     first backward (hybrid stacks mix attention and Mamba blocks); AdamW state is reserved for every
     trainable param the optimizer has no state for yet. Sized for the trainer batch at the longest of
     max_length, max_seq_length and the measured length: inputs a collator expands past that (images,
-    audio) need max_seq_length set to their bound. Single process only: under torchrun each rank
-    would pick its own K."""
+    audio) need max_seq_length set to their bound. Under torchrun (DDP / native FSDP2) every rank
+    plans and the smallest K wins, so all ranks keep the same layers; tensor / pipeline parallel
+    models stay fully checkpointed."""
 
     MARGIN = 1 << 30
     FRACTION = 0.75
@@ -9854,16 +9855,6 @@ class _AutoCheckpointSkip:
     def install(cls, model):
         if not torch.cuda.is_available():
             return cls._no_cuda()
-        try:
-            from .loader_utils import is_distributed
-            distributed = is_distributed()
-        except Exception:
-            distributed = False
-        if distributed:
-            print(
-                'Unsloth: checkpoint_skip_layers = "auto" is single process only; every layer stays checkpointed.'
-            )
-            return None
         previous = getattr(model, "_unsloth_auto_skip", None)
         if previous is not None:
             previous.remove()
@@ -10035,6 +10026,41 @@ class _AutoCheckpointSkip:
                 return True
         return False
 
+    def _agree_across_ranks(self, count, device):
+        """torchrun: the smallest count over all ranks, so every rank keeps the same layers (one
+        collective, at the planning forward, which every rank reaches at the same step)."""
+        try:
+            from .loader_utils import is_distributed
+            distributed = is_distributed()
+        except Exception:
+            distributed = False
+        dist = getattr(torch, "distributed", None)
+        initialized = dist is not None and dist.is_available() and dist.is_initialized()
+        if not distributed and not (initialized and dist.get_world_size() > 1):
+            return count
+        try:
+            from .tp_native import is_tensor_parallel
+            from .pp_native import is_pipeline_parallel
+            sharded = is_tensor_parallel(self.model) or is_pipeline_parallel(self.model)
+        except Exception:
+            sharded = False
+        if sharded:
+            # Stages / shards hold different layers and memory: one K does not fit all ranks.
+            print(
+                'Unsloth: checkpoint_skip_layers = "auto" does not plan tensor / pipeline parallel models; every layer stays checkpointed.'
+            )
+            return 0
+        if not initialized:
+            print(
+                'Unsloth: checkpoint_skip_layers = "auto" under torchrun needs the process group before the second step; every layer stays checkpointed.'
+            )
+            return 0
+        backend = str(dist.get_backend())
+        on = device if "nccl" in backend and device is not None else torch.device("cpu")
+        agreed = torch.tensor([int(count)], dtype = torch.int64, device = on)
+        dist.all_reduce(agreed, op = dist.ReduceOp.MIN)
+        return int(agreed.item())
+
     def plan(self, device):
         self.remove()
         allocated_start = self.started
@@ -10078,6 +10104,7 @@ class _AutoCheckpointSkip:
         budget = headroom * self.FRACTION - self.MARGIN
         per_layer = self.layer_bytes * scale
         count = int(budget // per_layer) if per_layer > 0 and budget > 0 else 0
+        count = self._agree_across_ranks(count, device)
         self.kept = skip_checkpointing(self.model, count) if count > 0 else []
         if self.kept:
             # Smart offloading learnt the checkpointed-call count in the first step; recount it.
