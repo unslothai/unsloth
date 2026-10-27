@@ -624,6 +624,14 @@ class _StopSequenceStreamer:
             abort()
 
 
+# LlamaModel_fast_forward cuts input_ids at max_seq_length, so decoding past it crashes; FastModel's stock forward does not.
+def _truncates_past_window(model) -> bool:
+    return any(
+        getattr(getattr(type(module), "forward", None), "__name__", "") == "LlamaModel_fast_forward"
+        for module in model.modules()
+    )
+
+
 def _prompt_already_has_bos(tokenizer, prompt):
     """Most templates render BOS, so no second one is added; zephyr and tinyllama-chat do not."""
     tok = getattr(tokenizer, "tokenizer", tokenizer)
@@ -2741,7 +2749,10 @@ class InferenceBackend:
             prompt_len = int(inputs["input_ids"].shape[1])
             window = runtime_context_length(model)
             if window and prompt_len > window:
-                raise ContextBudgetExceeded(prompt_len, window)
+                if "truncates_past_window" not in model_info:
+                    model_info["truncates_past_window"] = _truncates_past_window(model)
+                if model_info["truncates_past_window"]:
+                    raise ContextBudgetExceeded(prompt_len, window)
             max_new_tokens = generation_budget_within_context(model, prompt_len, max_new_tokens)
 
             generation_kwargs = dict(
