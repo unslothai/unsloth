@@ -890,9 +890,11 @@ def test_jobs_differing_only_in_member_fields_batch_in_queue_order(batching, tmp
         random_seed = 7,
         project_name = "other",
         max_steps = 30,
+        weight_decay = 0.05,
+        warmup_steps = 10,
     )
     odd = _entry(tmp_path, "c", max_seq_length = 4096)
-    last = _entry(tmp_path, "d", lora_r = 8)
+    last = _entry(tmp_path, "d", lora_r = 8, warmup_ratio = 0.1)
     batching.extend([head, other, odd, last])
     assert openai_fine_tuning._batch_for(head) == [head, other, last]
 

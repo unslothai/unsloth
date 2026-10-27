@@ -105,8 +105,8 @@ def _member_config(m):
         "random_seed": m["seed"],
         "max_steps": m.get("max_steps", 0),
         "optim": "adamw_torch",
-        "warmup_steps": 0,
-        "weight_decay": 0.0,
+        "warmup_steps": m.get("warmup_steps", 0),
+        "weight_decay": m.get("weight_decay", 0.0),
         "gradient_accumulation_steps": 2,
     }
 
@@ -373,6 +373,35 @@ def test_gradients_are_clipped_per_member_every_step(monkeypatch, tmp_path):
     ]
     assert a == pytest.approx([float(n[0]) for _, n in seen[:2]])
     assert b == pytest.approx([float(n[1]) for _, n in seen])
+
+
+def test_each_member_keeps_its_own_weight_decay_and_warmup(monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    members = [
+        {**MEMBERS[0], "weight_decay": 0.1, "warmup_steps": 1},
+        {**MEMBERS[1], "weight_decay": 0.0, "warmup_steps": 0},
+    ]
+    built = []
+    original = mlt._build_sft_trainer
+    monkeypatch.setattr(
+        mlt, "_build_sft_trainer", lambda *a, **k: built.append(original(*a, **k)) or built[-1]
+    )
+    events, _model, _pristine = _run(monkeypatch, members)
+    assert [g["weight_decay"] for g in built[0].optimizer.param_groups] == [0.1, 0.0]
+    for m in members:
+        total = EXPECTED_STEPS[m["run_id"]]
+        reported = [
+            e["learning_rate"]
+            for e in _member_events(events, m["run_id"])
+            if e["type"] == "progress" and e["step"]
+        ]
+        warmup = m["warmup_steps"]
+        # transformers' linear schedule: ramp over the member's own warmup, then decay over its own length.
+        expected = [
+            m["lr"] * (k / warmup if k < warmup else (total - k) / (total - warmup))
+            for k in range(total)
+        ]
+        assert reported == pytest.approx(expected)
 
 
 def test_targets_follow_the_single_job_rules():

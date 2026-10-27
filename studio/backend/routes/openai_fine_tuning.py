@@ -456,6 +456,10 @@ _BATCH_MEMBER_FIELDS = frozenset(
         "random_seed",
         "project_name",
         "max_steps",
+        # Each member has its own optimizer group and scheduler, so these stay per job too.
+        "weight_decay",
+        "warmup_steps",
+        "warmup_ratio",
     }
 )
 _BATCH_OPTIMIZERS = ("adamw_8bit", "adamw_torch")
