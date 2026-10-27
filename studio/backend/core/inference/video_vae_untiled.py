@@ -70,6 +70,25 @@ def _wide_tiles_enabled() -> bool:
     return os.environ.get(WIDE_TILES_ENV, "").strip().lower() not in ("0", "false", "no", "off")
 
 
+# (longest tile, edge tile) latents a family's wide tiles keep; Cosmos3: the Wan@16x seam audit floor.
+_WIDE_TILE_FLOOR = {"cosmos3-nano": (16, 8), "cosmos3-edge": (16, 8)}
+
+
+def _wide_axis(
+    length: int, n: int, overlap: int, floor: Optional[tuple]
+) -> Optional[tuple[int, int]]:
+    """(tile, stride) latents for ``n`` tiles over ``length``, or None when ``floor`` rules the count out."""
+    if n == 1:
+        return length, length
+    stride = -(-length // n)
+    if floor is None:
+        return min(length, stride + overlap), stride
+    tile_floor, edge_floor = floor
+    if -(-length // stride) != n or length - (n - 1) * stride < edge_floor:
+        return None
+    return min(length, max(stride + overlap, tile_floor)), stride
+
+
 def wide_tile_plan(
     family: str,
     latent_shape: tuple,
@@ -93,10 +112,11 @@ def wide_tile_plan(
         for n_w in range(1, width + 1):
             if n_h * n_w > max_tiles or (n_h == 1 and n_w == 1):
                 continue
-            stride_h = -(-height // n_h)
-            stride_w = -(-width // n_w)
-            tile_h = height if n_h == 1 else min(height, stride_h + overlap)
-            tile_w = width if n_w == 1 else min(width, stride_w + overlap)
+            axis_h = _wide_axis(height, n_h, overlap, _WIDE_TILE_FLOOR.get(family))
+            axis_w = _wide_axis(width, n_w, overlap, _WIDE_TILE_FLOOR.get(family))
+            if axis_h is None or axis_w is None:
+                continue
+            (tile_h, stride_h), (tile_w, stride_w) = axis_h, axis_w
             need = coef * itemsize / 2 * max(1, batch) * tile_h * tile_w + out_bytes
             if need * _MARGIN + _MARGIN_BYTES > free:
                 continue

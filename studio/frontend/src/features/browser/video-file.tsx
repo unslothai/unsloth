@@ -19,14 +19,14 @@ import {
   ArrowExpand01Icon,
   ArrowShrink01Icon,
   MoreHorizontalIcon,
-  PauseIcon,
-  PlayIcon,
   VolumeHighIcon,
   VolumeMute02Icon,
 } from "@hugeicons/core-free-icons";
+import { PauseIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import { canCopyVideoFrame, copyVideoFrame, registerTabVideo } from "./video-registry";
+import { PlayIcon } from "lucide-react";
 
 const RATES = [0.5, 0.75, 1, 1.25, 1.5, 2] as const;
 const SEEK_SECONDS = 5;
@@ -205,7 +205,7 @@ export function VideoFile({
           {playing ? (
             <HugeiconsIcon icon={PauseIcon} strokeWidth={1.75} className="size-4.5" />
           ) : (
-            <HugeiconsIcon icon={PlayIcon} strokeWidth={1.75} className="size-4.5" />
+            <PlayIcon strokeWidth={1.75} className="size-4.5" />
           )}
         </button>
         <input

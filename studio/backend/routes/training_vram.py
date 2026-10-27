@@ -13,9 +13,8 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-# keep iff usable_gb >= required_gb * SAFETY_MARGIN + KEEP_FLOOR_GB. Conservative: the probe sees only the chat
-# model's current footprint, so reserve headroom for estimate error + KV-cache growth (KEEP_FLOOR_GB ~= 2 GB load
-# buffer + 2 GB chat).
+# keep iff usable_gb >= required_gb * SAFETY_MARGIN + KEEP_FLOOR_GB; headroom covers estimate
+# error and KV growth (KEEP_FLOOR_GB ~= 2 GB load buffer + 2 GB chat).
 SAFETY_MARGIN = 1.15
 KEEP_FLOOR_GB = 4.0
 
@@ -47,12 +46,10 @@ def summarize_resident_chat() -> Dict[str, Any]:
 
         inf = get_inference_backend()
         managed = getattr(inf, "_managed_engine", None) is not None
-        # active_model_name is set only on success; a mid-load model sits in
-        # loading_models while already holding VRAM -> both count as resident.
+        # A mid-load model sits in loading_models while already holding VRAM.
         if inf.active_model_name or inf.loading_models:
             hf_name = inf.active_model_name or next(iter(inf.loading_models), None)
-            # Any in-flight load (incl. a replacement while the old model is still
-            # active) can't be sized -> flag it so the caller frees instead of keeps.
+            # An in-flight load cannot be sized, so the caller frees instead of keeps.
             if inf.loading_models:
                 loading = True
     except Exception as e:
@@ -61,8 +58,7 @@ def summarize_resident_chat() -> Dict[str, Any]:
     try:
         from routes.inference import get_llama_cpp_backend
         llama = get_llama_cpp_backend()
-        # is_active (not is_loaded): a mid-start server already allocates VRAM.
-        # A confirmed CPU-only server (_gpu_offload_active is False) holds no VRAM.
+        # is_active: a mid-start server already allocates VRAM; a confirmed CPU-only one holds none.
         if llama.is_active and getattr(llama, "_gpu_offload_active", None) is not False:
             gguf_name = llama.model_identifier or "gguf"
             if not getattr(llama, "is_loaded", False):
@@ -117,9 +113,7 @@ def summarize_resident_stt() -> Dict[str, Any]:
         model = sidecar.loaded_model
         device = sidecar.device
         loading = sidecar.is_loading()
-        # whisper.cpp holds GPU memory via its subprocess. Both engines can be live at once (engine switch or direct
-        # /audio/stt/load), so always fold the GGUF sidecar in: a resident Transformers model must not mask a GGUF
-        # server still binding its backend, or admission lets training launch into that startup and OOM.
+        # Both STT engines can be live at once, so always fold in the GGUF sidecar.
         ggml = get_ggml_stt_sidecar()
         if not model:
             model = ggml.loaded_model
@@ -225,8 +219,7 @@ def can_keep_chat_during_training(
             )
             aggregate_fits = usable_gb >= required_gb * SAFETY_MARGIN + KEEP_FLOOR_GB
 
-            # Activations don't shard: enforce a per-GPU floor so an uneven split (free [45, 10]) cannot be
-            # kept into an OOM the aggregate misses.
+            # Activations don't shard: enforce a per-GPU floor, not just the aggregate.
             per_gpu_fits = True
             min_free_gb = min(free_vals) if free_vals else 0.0
             if len(resolved) > 1:
@@ -280,13 +273,7 @@ def can_load_chat_during_training(
     single_device_gpu: Optional[str] = None,
     post_handoff_free_gpu_vram_gb: Optional[Dict[int, float]] = None,
 ) -> Tuple[bool, Dict[str, Any]]:
-    """Decide if a NEW chat model can load without OOMing active training (inverse of
-    can_keep_chat_during_training: training is already resident, so size the chat model against the free VRAM
-    that remains). Sizes/places it the same way the loader will: HF auto reuses auto_select_gpu_ids; HF explicit
-    requires an even-share per-GPU floor for device_map="balanced"; GGUF sizes from required_override_gb over
-    the visible pool. ``single_device_gpu`` is the exact physical device token selected by a single-device
-    runner. `load_in_4bit` must be effective (LoRA can flip 4-bit -> 16-bit). CPU/MLX allows the load;
-    default-deny on any CUDA/XPU case it can't size, so a load never OOMs training."""
+    """Default-deny unsizable CUDA/XPU cases so chat loads never OOM training; use effective load_in_4bit."""
     try:
         from utils.hardware import (
             DeviceType,
@@ -307,8 +294,7 @@ def can_load_chat_during_training(
             max_seq_length = max_seq_length or 2048,
         )
 
-        # A native-audio switch's post-handoff snapshot already combines live free memory with the
-        # outgoing Studio backend, so do not re-read and add those values here.
+        # The post-handoff snapshot already includes the outgoing backend; do not re-add.
         if not requested_gpu_ids and not is_gguf and post_handoff_free_gpu_vram_gb is not None:
             required_gb = required_override_gb
             if required_gb is None:
@@ -384,17 +370,14 @@ def can_load_chat_during_training(
         elif single_device_gpu is not None:
             token = str(single_device_gpu).strip()
             if not token:
-                # Empty token = a CPU-only single-device runner, for example a CPU diffusion GGUF: it uses no GPU VRAM, so it
-                # never threatens active training and can always load.
+                # Empty token = CPU-only runner: no GPU VRAM, always loadable.
                 return True, {"mode": "single_device", "reason": "cpu_only"}
             try:
                 selected_gpu = int(token)
                 if selected_gpu < 0:
                     raise ValueError
             except (TypeError, ValueError):
-                # A non-numeric device token (CUDA UUID / MIG handle) has no free-VRAM index, but the runner still drives
-                # ONE device: size against the worst-case visible device, never the aggregate pool, or a single-device load
-                # is OK'd on capacity it cannot use.
+                # Non-numeric token (UUID/MIG) still drives ONE device: size against the worst visible device.
                 free_vals = [min(free_by_index.values())] if free_by_index else []
             else:
                 free_vals = [free_by_index.get(selected_gpu, 0.0)]
@@ -406,8 +389,7 @@ def can_load_chat_during_training(
                 return True, {"mode": mode, "reason": "invalid_gpu_ids"}
             free_vals = [free_by_index.get(i, 0.0) for i in resolved]
         else:
-            # GGUF self-placement / auto Vulkan (no requested ids): llama.cpp picks
-            # the GPU(s), so any visible GPU is a candidate -> size the whole pool.
+            # llama.cpp self-placement may use any visible GPU, so size the whole pool.
             free_vals = list(free_by_index.values())
 
         if not free_vals:
@@ -418,8 +400,7 @@ def can_load_chat_during_training(
         needed_gb = required_gb * SAFETY_MARGIN + KEEP_FLOOR_GB
         aggregate_fits = usable_gb >= needed_gb
 
-        # Explicit HF placement uses balanced sharding across a known number of GPUs. GGUF pins are candidate pools:
-        # llama.cpp may narrow an uneven pool to the smallest fitting subset, so only their aggregate matters.
+        # HF placement shards evenly; GGUF pins are candidate pools where only the aggregate matters.
         min_free_gb = min(free_vals)
         per_gpu_fits = True
         per_gpu_needed_gb = None
@@ -460,9 +441,7 @@ def free_chat_models_for_training(reason: str) -> List[str]:
     try:
         from core.inference import get_inference_backend
         inf = get_inference_backend()
-        # No CPU exemption here, unlike the GGUF branch and the STT sidecars: it would key off a marker the
-        # orchestrator writes rather than the worker that masked, and a marker that disagreed is an OOM mid-training.
-        # Freeing a model that held no VRAM only costs a reload.
+        # No CPU exemption here: a mismatched marker means OOM mid-training; a needless free only reloads.
         if (
             inf.active_model_name
             or inf.loading_models
@@ -532,23 +511,16 @@ def free_kept_models_for_training(reason: str) -> List[str]:
 
 
 def _stt_sidecar_holds_no_vram(sidecar) -> bool:
-    """True only when the resident dictation model is provably in CPU RAM. Conservative on purpose: anything
-    unreadable answers False and the sidecar is freed as before. Skipping one that does hold VRAM would starve
-    the run this is making room for, which is far worse than a needless reload.
-    """
+    """True only when provably on CPU; wrongly skipping a VRAM-holding sidecar would starve the run."""
     try:
         device = getattr(sidecar, "device", None)
         if isinstance(device, str) and device.strip().lower() == "cpu":
             return True
-        # whisper.cpp and llama.cpp report a runtime name rather than a device, so read the flag each sets when it
-        # started without the GPU. Prefer the fact over the wish: mtmd's _gpu_disabled is what the live server was
-        # started with, while _forced_cpu is the standing preference, recorded even on the branch that does NOT restart
-        # a server with a request in flight, so reading it reports a server still at -ngl 99 as holding no VRAM.
+        # Prefer mtmd's _gpu_disabled (how the live server started) over _forced_cpu (a preference).
         gpu_disabled = getattr(sidecar, "_gpu_disabled", None)
         if gpu_disabled is not None:
             return gpu_disabled is True
-        # whisper.cpp sets _forced_cpu only alongside a spawned --no-gpu and clears it
-        # on release, so there it is the fact.
+        # whisper.cpp sets _forced_cpu only with a spawned --no-gpu, so there it is the fact.
         return getattr(sidecar, "_forced_cpu", False) is True
     except Exception:  # noqa: BLE001 - a probe must never fail the release it precedes
         return False
@@ -564,11 +536,9 @@ def free_stt_model_for_training(reason: str) -> List[str]:
         sidecar = get_stt_sidecar()
         if sidecar.is_loading() and sidecar.cancel_pending_load():
             logger.info("Cancelling STT model load for training (%s)", reason)
-            # The loader may still be in from_pretrained()/.to(device) holding
-            # VRAM; wait for it to observe the cancel and release first.
+            # The loader may still hold VRAM; wait for it to observe the cancel.
             sidecar.wait_for_load_to_settle()
-            # A load that finished before seeing the cancel leaves a resident
-            # model; unload it so training gets the memory back.
+            # A load finishing after cancel leaves a resident model; unload it so training gets the memory back.
             if sidecar.loaded_model:
                 sidecar.unload()
             freed.append("stt:loading")
@@ -591,8 +561,7 @@ def free_stt_model_for_training(reason: str) -> List[str]:
         ggml = get_ggml_stt_sidecar()
         if ggml.is_loading() and ggml.cancel_pending_load():
             logger.info("Cancelling GGUF STT model load for training (%s)", reason)
-            # whisper-server may still be binding its backend; wait for the cancelled startup to be killed and
-            # reaped before training claims the memory (loaded_model stays unset until it is ready).
+            # A cancelled startup must be killed and reaped before training claims the memory.
             ggml.wait_for_load_to_settle()
             if ggml.loaded_model:
                 ggml.unload()
@@ -617,8 +586,7 @@ def free_stt_model_for_training(reason: str) -> List[str]:
         mtmd = get_mtmd_stt_sidecar()
         if mtmd.is_loading() and mtmd.cancel_pending_load():
             logger.info("Cancelling mtmd STT model load for training (%s)", reason)
-            # llama-server only becomes reachable through unload() once it is ready, so a startup has to be
-            # cancelled and reaped instead. Wait for that before training claims the memory it is allocating.
+            # A starting llama-server is unreachable via unload(), so cancel and reap it, then wait.
             mtmd.wait_for_load_to_settle()
             if mtmd.loaded_model:
                 mtmd.unload()
@@ -643,8 +611,7 @@ def free_stt_model_for_training(reason: str) -> List[str]:
         audiocpp = get_audio_cpp_stt_sidecar()
         if audiocpp.is_loading() and audiocpp.cancel_pending_load():
             logger.info("Cancelling audio.cpp STT model load for training (%s)", reason)
-            # audiocpp_server loads the model before it answers, so the cancelled startup is killed and reaped
-            # under the sidecar lock; wait for that before training claims the memory.
+            # audiocpp_server loads before answering, so a cancelled startup is reaped under the sidecar lock.
             audiocpp.wait_for_load_to_settle()
             if audiocpp.loaded_model:
                 audiocpp.unload()

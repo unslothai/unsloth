@@ -70,8 +70,7 @@ class SpillOrder(Enum):
     split), which would favour FRONT/BACK over LARGEST. Hence configurable.
     """
 
-    # Best-fit-decreasing: fewest blocks AND least overshoot. Overshoot is real bandwidth -- a 209 MiB block for a 50
-    # MiB deficit wastes 159 MiB per token.
+    # Best-fit-decreasing: fewest blocks and least overshoot (overshoot costs bandwidth).
     LARGEST_FIRST = "largest_first"
     FRONT_FIRST = "front_first"
     BACK_FIRST = "back_first"
@@ -79,25 +78,11 @@ class SpillOrder(Enum):
 
 @dataclass(frozen = True)
 class PlanOptions:
-    # Compute buffer + CUDA context + scratch, charged on every device. 1 GiB was too thin and failed CONSISTENTLY:
-    # the planner fills to ``budget - overhead_bytes_per_device``, leaving exactly this much free whatever the budget
-    # is, so the dense 27B at depth 32768 died identically at 6, 7, 8 and 10 GiB allocating 594.16 MiB on device 0.
-    # The child needs the PREFILL compute buffer (594 MiB measured) plus its own CUDA primary context, which took the
-    # rest of the old 1 GiB. Not benchmark fragmentation: 16, 64 and 1024 MiB hog blocks all reproduced the identical
-    # failure. 1.5 GiB covers the measured 1.07 GiB with margin -- a measured floor, not a fitted curve, since the
-    # steady-state compute buffer is flat in context (493 to 509 MiB from depth 4096 to 32768) but the prefill graph's
-    # reservation is not. Erring high costs some spill (linear at 5.544 ms/GiB), erring low costs the whole load.
+    # Compute buffer + CUDA context + scratch per device. 1 GiB OOMed on prefill (measured 1.07 GiB).
     overhead_bytes_per_device: int = (3 * GIB) // 2
-    # GPU-resident bytes NOT in the layout (a vision projector, an MTP draft reserve), charged once against the pooled
-    # budget: the layout only knows the target GGUF's tensor table. Subtracting from the budget also reaches
-    # max_context_for. 0 keeps the pure-layout behaviour.
+    # GPU-resident bytes outside the layout (mmproj, MTP draft), charged once to the pooled budget.
     extra_resident_bytes: int = 0
-    # The fixed per-device cost of a LAYER SPLIT, charged once for every device after the first. Separate from
-    # overhead_bytes_per_device because it is not per-device in the same sense: the first device's share is already
-    # folded into the compute buffer above, which is why every other site in llama_cpp.py applies it as ``max(0, n_gpus
-    # - 1) * ...`` and skips it entirely at k=1. Folded into the flat per-device term instead, it withheld a GiB of a
-    # single card that nothing was ever going to allocate, which is deficit the planner then spilled real blocks to
-    # cover.
+    # Layer-split cost per device after the first, applied as max(0, n_gpus - 1); kept out of the per-device overhead, which would withhold a GiB on one card
     pipeline_overhead_bytes: int = 0
     # Host RAM this planner refuses to spend, so a spill does not push the box into swap.
     host_ram_headroom_bytes: int = 2 * GIB
@@ -105,28 +90,20 @@ class PlanOptions:
     min_ctx: int = 4096
     spill_order: SpillOrder = SpillOrder.LARGEST_FIRST
     allow_lm_head_spill: bool = True
-    # What the host brings to bear on spilled weights. Spilled generation runs on the CPU backend -- ggml only moves
-    # an op to the GPU at batch >= 32 (ggml-cuda.cu, op_offload_min_batch_size) and decode is batch 1 -- so the
-    # penalty scales with core count: 2.42 / 5.83 / 11.82 / 14.94 t/s at 4 / 16 / 64 / 192 threads.
+    # Spilled decode runs on CPU (ggml offloads ops only at batch >= 32), so cost scales with cores.
     host: HostProfile = field(default_factory = HostProfile)
-    # q8_0 measured 35% slower generation, and without GGML_CUDA_FA_ALL_QUANTS only four MATCHED K/V combinations are
-    # compiled (a mismatched pair falls to CPU and stalls). Off by default; matched pairs only when enabled.
+    # q8_0 KV is ~35% slower; without GGML_CUDA_FA_ALL_QUANTS mismatched K/V pairs fall to CPU.
     allow_kv_quant: bool = False
     kv_quant_type: str = "q8_0"
-    # The caller passed -nkvo (or a false LLAMA_ARG_KV_OFFLOAD), so llama.cpp puts the WHOLE cache on the host:
-    # offload is one scalar and the buffer type falls back to the CPU one for every layer
-    # (llama-kv-cache.cpp:210-219), same branch in the recurrent and DSV4 caches. The cache and the recurrent state
-    # move out of the VRAM footprint and into the host one; charging them to VRAM anyway would spill FFN blocks for a
-    # deficit the child never has.
+    # -nkvo (or LLAMA_ARG_KV_OFFLOAD false) puts the whole KV cache on host (llama-kv-cache.cpp), so it is not charged to VRAM
     kv_on_host: bool = False
+    lazy_read_bytes: int = 0
 
 
 @dataclass(frozen = True)
 class Plan:
-    """What to launch with, and why."""
+    """False means emit nothing new: the planner abstained or the load needs no help; llama.cpp defaults then apply, always safe"""
 
-    # False means "emit nothing new": either the planner abstained or the load needs no help. Always safe, since
-    # llama.cpp's own defaults then apply.
     changed: bool = False
     n_ctx: int = 0
     ot_patterns: tuple[str, ...] = field(default_factory = tuple)
@@ -135,13 +112,11 @@ class Plan:
     cache_type_v: Optional[str] = None
     spilled_blocks: tuple[int, ...] = field(default_factory = tuple)
     spilled_lm_head: bool = False
-    # No rung fits. mmap has to stay, because it is the only thing that makes an over-commit pageable rather than
-    # OOM-killed.
+    # mmap stays: it makes an over-commit pageable instead of OOM-killed.
     insufficient: bool = False
     vram_bytes: int = 0
     host_bytes: int = 0
-    # Predicted extra ms per generated token versus fully resident, on the host this was planned for. 0.0 when nothing
-    # is spilled. Reported so callers can surface the real cost instead of implying a spill is free.
+    # Predicted extra ms per token versus fully resident on the planned host; 0.0 when nothing spills.
     predicted_gen_penalty_ms: float = 0.0
     reason: str = ""
 
@@ -190,14 +165,7 @@ def _select_blocks(
 def _spill_penalty_ms(
     layout: ModelLayout, chosen: Sequence[BlockLayout], spill_lm_head: bool, host: HostProfile
 ) -> float:
-    """Predicted extra ms per generated token for this spill, on this host.
-
-    Spilled weights are read by the CPU backend, not streamed to the GPU: ggml
-    only migrates an op at batch >= 32 and decode is batch 1, so the cost tracks
-    host cores. MoE experts are charged their ROUTED fraction, since only
-    ``n_expert_used`` of ``n_expert`` are touched per token, which is why MoE
-    tolerates spilling far better than a fully activated dense FFN.
-    """
+    """Spilled weights run on the CPU, so cost tracks host cores; MoE pays only for routed experts."""
     groups: list[TensorGroup] = []
     spilled = sum(b.spillable_bytes for b in chosen)
     if spilled:
@@ -230,23 +198,7 @@ def cache_bytes(
     kv_quantised: bool = False,
     kv_bytes_floor: int = 0,
 ) -> int:
-    """Attention cache to reserve, never below a caller-supplied measurement.
-
-    ``layout.kv_bytes`` is a plain f16 GQA product: heads times key+value width
-    times context. It has no cache-dtype, SWA, MLA, unified-stream, slot-padding
-    or flash-attention-padding term, so against a caller that has priced the real
-    cache it can land either side. Over is harmless -- the plan just reserves
-    more. UNDER is the dangerous direction: the deficit comes out too small, too
-    few blocks are spilled, and the launch path follows that with ``--fit off``,
-    so the server OOMs on a cache the caller had already sized correctly. MLA is
-    the worst case (a compressed K-only latent that this product models as a full
-    K+V pair), and it is exactly the huge-MoE shape this planner exists for.
-
-    Taking the maximum keeps the planner conservative in both directions without
-    a tolerance to tune. The floor is a measurement at the REQUESTED context, so
-    where a shrink rung re-prices at a smaller context it over-reserves; that is
-    the safe direction and at worst gives up a rung.
-    """
+    """Never below the caller's measured floor, since the layout's f16 product can undercount."""
     return max(layout.kv_bytes(n_ctx, _kv_elem_bytes(kv_quantised)), max(0, kv_bytes_floor))
 
 
@@ -258,12 +210,7 @@ def resident_floor_bytes(
     kv_bytes_floor: int = 0,
     kv_on_host: bool = False,
 ) -> int:
-    """VRAM needed with EVERY spillable tensor already on the host.
-
-    Attention weights, norms, routers, shared experts, the recurrent state, the
-    cache and lm_head. Below this, ``-ot`` has nothing left to give and only a
-    smaller quant or less context can help.
-    """
+    """Minimum VRAM with every spillable tensor on host; below it only a smaller quant or context helps."""
     if kv_on_host:
         # Both caches follow the same scalar, so neither is VRAM here.
         return layout.block_resident_bytes + layout.lm_head_bytes + layout.other_resident_bytes
@@ -341,43 +288,13 @@ def plan_placement(
     split_weights_per_device: Sequence[float] = (),
     kv_layer_weights: Sequence[int] = (),
 ) -> Plan:
-    """Decide the placement for one launch.
-
-    ``split_weights_per_device`` is the RAW free VRAM llama.cpp will size its row
-    ranges from, in the same device order as ``vram_bytes_per_device``. It is a
-    different quantity from the budget by construction -- the budget subtracts a
-    per-card reserve -- so the two must not be conflated when modelling the
-    split. Empty falls back to the budget, which is right whenever the caller has
-    applied no per-card adjustment at all.
-
-    ``kv_layer_weights`` is each layer's RELATIVE cache size, scaled to the total
-    the planner already trusts: it PLACES the cache, never re-sizes it. Empty
-    means the caller cannot say, and the per-device check then abstains.
-
-    ``kv_bytes_floor`` is an attention-cache size the caller has already computed
-    byte-accurately for this launch. The planner never reserves less than it; see
-    :func:`cache_bytes` for why the layout's own f16 product is not enough on its
-    own. 0 (the default) keeps the pure-layout arithmetic.
-
-    Ladder, cheapest first, measured on a dense 27B at 128K:
-      rung 0  nothing spilled                    75.37 t/s
-      rung 1  FFN to host                        13.63 t/s
-      rung 2  FFN + lm_head                      11.39 t/s
-      never   -ngl or --no-kv-offload            ~1.03 t/s
-
-    The order is confirmed by the cost model rather than assumed, and is stated
-    in TIME. Ranking on percentage loss is wrong: lm_head reads "43% alone, 16%
-    on top of FFN", which looks sub-additive, while the same 0.97 GiB costs
-    10.206 ms/token alone and 14.428 on top -- 41% MORE, not less. Percentages
-    of different baselines are not commensurable; milliseconds are.
-    """
+    """Rungs ordered in ms per token, not percent (percent losses use different baselines); split_weights_per_device is raw free VRAM, not the budget"""
     opts = opts or PlanOptions()
 
     if not layout.complete or not vram_bytes_per_device:
         return Plan(reason = "layout or device inventory incomplete, leaving llama.cpp defaults")
     if opts.host.unified_memory:
-        # One pool: "spilling" renames bytes on the same chips and frees nothing. Metal also keeps mmap zero copy
-        # (buffer_from_host_ptr), so the no-mmap rule inverts there too.
+        # Unified memory: spilling frees nothing, and Metal keeps mmap zero-copy.
         return Plan(reason = "unified memory host, spilling frees no device memory")
     budget = _usable_vram(vram_bytes_per_device, opts)
     if budget <= 0:
@@ -389,8 +306,7 @@ def plan_placement(
     if n_ctx <= 0:
         return Plan(reason = "no usable context length")
 
-    # PREFER_RESIDENT gets its say before the ladder: a smaller fully resident context outruns a larger spilled one,
-    # when the caller allows it to move.
+    # PREFER_RESIDENT runs before the ladder: a smaller resident context beats a larger spilled one.
     if (
         opts.context_policy is ContextPolicy.PREFER_RESIDENT
         and all_resident_bytes(
@@ -480,14 +396,7 @@ def _kv_modes(opts: PlanOptions) -> tuple[bool, ...]:
 
 
 def _device_slots(n_slots: int, split_weights: Sequence[float]) -> list[list[int]]:
-    """Which of the ``n_slots`` layer rows land on which device.
-
-    Mirrors llama.cpp's default tensor split exactly: free VRAM per device
-    (llama-model.cpp:1420-1433), prefix-summed and normalised (:1439-1447), then
-    ``upper_bound`` on the normalised row index (:1457). Row ``n_layer_all`` is
-    the output row (:1467). With every layer offloaded ``i_gpu_start`` is 0 and
-    ``act_gpu_layers`` is ``n_layer_all + 1``, which is ``n_slots`` here.
-    """
+    """Mirrors llama.cpp's default tensor split: free VRAM prefix-summed and normalised per device."""
 
     def f32(value: float) -> float:
         return struct.unpack("=f", struct.pack("=f", value))[0]
@@ -526,9 +435,7 @@ def _per_device_usage(
 ) -> tuple[Optional[str], list[int], list[list[int]]]:
     if len(vram_bytes_per_device) <= 1:
         return None, [], []
-    # These three shapes -- recurrent hybrid, n_attention_layers short of n_layers, sliding window -- are only a
-    # problem when the cache has to be spread evenly for want of anything better. A vector removes that guess; without
-    # one they still abstain.
+    # Recurrent, partial-attention or SWA layouts matter only for an even split; no vector means abstain.
     uneven_cache = (
         layout.recurrent_bytes > 0 or layout.n_attention_layers != layout.n_layers or layout.has_swa
     )
@@ -588,8 +495,7 @@ def _per_device_usage(
                 used += kv_by_layer[row]
             if row not in spilled_indices:
                 used += block.spillable_bytes
-        # Everything outside the layout sits on the main device, which is devices[0] once -sm none has already pruned
-        # the list.
+        # Unlisted tensors sit on the main device, devices[0] after -sm none pruning.
         if device == 0:
             used += max(0, opts.extra_resident_bytes)
         usage.append(used)
@@ -609,19 +515,7 @@ def _per_device_shortfall(
     split_weights_per_device: Sequence[float] = (),
     kv_layer_weights: Sequence[int] = (),
 ) -> Optional[str]:
-    """``None`` when every device provably fits, else why it cannot be shown to.
-
-    A pooled budget is not a per-device fit test, and it does not become one just
-    because every spillable block was taken. llama.cpp hands out CONTIGUOUS ROW
-    RANGES sized by free memory, so a device's share of the ROWS is proportional
-    to its free VRAM while its share of the BYTES is not: what stays resident
-    differs row by row (a block with a shared expert keeps more than a plain
-    dense one), and the budget subtracts a FIXED per-device overhead, which
-    already breaks proportionality on mixed cards -- 24 GiB and 8 GiB split the
-    rows 75/25 but the budgets 77.6/22.4, so the small card is over on a load the
-    pool says fits. A per-device shortfall is a hard throw (llama-model.cpp:1731)
-    and ``--fit off`` means common/fit.cpp never runs to catch it.
-    """
+    """A pooled budget is not a per-device fit: rows split by free VRAM, not budget bytes; a per-device shortfall is a hard throw, unguarded under --fit off"""
     error, usage, slots = _per_device_usage(
         layout,
         opts,
@@ -832,8 +726,7 @@ def _plan_at(
             ),
         )
 
-    # lm_head is the last rung: it costs 16% here against 43% taken first, because FFN offload has already made
-    # generation host-bandwidth-bound
+    # lm_head spills last: cheaper once FFN offload is host-bandwidth-bound.
     if opts.allow_lm_head_spill and layout.lm_head_bytes:
         if freed + layout.lm_head_bytes >= deficit:
             uneven = _per_device_shortfall(
@@ -890,10 +783,7 @@ def _finish(
     patterns: list[str] = []
     indices = sorted(b.index for b in chosen)
     if indices:
-        # One global pattern when every spillable block is going -- shorter, and the form the benchmarks used. NOT
-        # when the GGUF carries blocks the layout dropped: the unbounded \d+ would also match the trailing nextn/MTP
-        # blocks, whose ffn_*_exps load the moment a draft is engaged, moving bytes neither host_bytes nor the deficit
-        # counted (so the mmap decision is made on an undercount) and dragging the draft FFN onto the CPU backend.
+        # Global pattern only if no dropped blocks: \d+ would also match trailing nextn/MTP blocks.
         spillable = [b.index for b in layout.blocks if b.spillable_bytes > 0]
         all_of_them = set(indices) == set(spillable) and not layout.has_excluded_blocks
         patterns.append(spill_pattern_for(layout, None if all_of_them else indices))
@@ -903,11 +793,10 @@ def _finish(
     spilled_bytes = sum(b.spillable_bytes for b in chosen) + (
         layout.lm_head_bytes if spill_lm_head else 0
     )
-    # token_embd is host-resident on every launch, so it is host RAM this plan must pay for even when nothing is spilled
-    host_bytes = layout.token_embd_bytes + spilled_bytes
+    lazy = min(max(0, int(opts.lazy_read_bytes or 0)), layout.per_layer_embd_bytes)
+    host_bytes = layout.token_embd_bytes + layout.per_layer_embd_bytes - lazy + spilled_bytes
     if opts.kv_on_host:
-        # -nkvo moved the cache and the recurrent state out of VRAM, not out of existence: they are host RAM now, and
-        # the mmap decision below has to see them or it answers against a footprint short by the whole cache.
+        # -nkvo cache lives in host RAM; the mmap decision must count it.
         host_bytes += (
             cache_bytes(layout, n_ctx, kv_quantised = quantised, kv_bytes_floor = kv_bytes_floor)
             + layout.recurrent_bytes
@@ -923,8 +812,7 @@ def _finish(
         - spilled_bytes
     )
 
-    # mmap costs 2 to 4.6x on host-resident weight reads, so turn it off -- but only when host RAM holds the host side;
-    # otherwise mmap keeps an over-commit pageable.
+    # mmap costs 2-4.6x on host weight reads; disable only when host RAM fits the host side, else mmap keeps an over-commit pageable
     if host_ram_bytes is None:
         load_mode_none = False
     else:
@@ -937,8 +825,7 @@ def _finish(
         n_ctx = n_ctx,
         ot_patterns = tuple(patterns),
         load_mode_none = load_mode_none,
-        # Matched pairs only: an unmatched K/V combination is not compiled without GGML_CUDA_FA_ALL_QUANTS and
-        # silently falls back to CPU.
+        # Matched K/V pairs only: unmatched ones are not compiled without GGML_CUDA_FA_ALL_QUANTS and fall back to CPU
         cache_type_k = cache_type,
         cache_type_v = cache_type,
         spilled_blocks = tuple(indices),
@@ -967,28 +854,7 @@ _SMART_OFFLOAD_ON = ("1", "true", "yes", "on", "enabled")
 
 
 def smart_offload_enabled(env: Optional[Mapping[str, str]] = None) -> bool:
-    """Whether the launch path may plan a spill. OFF unless explicitly enabled.
-
-    This was briefly opt-OUT, on 118 paired runs across T4, L4, RTX PRO 6000,
-    A100, B200 and a gfx1151 APU. Every one of those hosts is a large one, and
-    that turned out to be the whole of the calibration set: #9861 measured 76
-    paired cells on a 6-core desktop and the planner was slower in 40 of the 43
-    it planned, by up to 8x on generation.
-
-    The mechanism is not the host size alone. ``rank`` in offload_cost_model
-    scores a placement as prefill PLUS generation, but the planner only ever
-    calls ``generation_penalty_ms``, so prefill is not priced at all -- which is
-    why #9861 measured prefill slower in 43 of 43 planned cells, without one
-    exception. A gate that does not count half the request cannot be trusted to
-    fire by default, so it goes back behind the flag until it does.
-
-    Off does not mean the load is unplaced: every path that would have consulted
-    the planner falls through to ``--fit on``, which is what the same report
-    measured at 0.93x to 1.16x across all 33 cells where the planner declined.
-
-    An UNRECOGNISED value disables, same as before, and now agrees with the
-    default rather than reversing it.
-    """
+    """Off unless enabled: it prices only generation, not prefill, and was slower on most planned cells."""
     raw = (os.environ if env is None else env).get("UNSLOTH_SMART_OFFLOAD")
     if raw is None:
         return False

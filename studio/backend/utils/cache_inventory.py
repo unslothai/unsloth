@@ -51,12 +51,10 @@ class CachePurgeRefused(RuntimeError):
 class CacheDefinition:
     key: str
     group: str
-    # True when emptying this costs a re-download of something the user chose to
-    # fetch. Never part of a bulk purge; the UI asks for it on its own.
+    # True when emptying costs a user-chosen re-download; never in a bulk purge.
     opt_in: bool
     resolve: Callable[[], list[Path]]
-    # When set, only top-level entries matching one of these globs are measured
-    # or deleted. For roots that hold configuration next to cache files.
+    # Only top-level entries matching these globs are measured or deleted, for config-holding roots.
     patterns: Optional[tuple[str, ...]] = None
     custom_purge: Optional[Callable[[], "PurgeOutcome"]] = None
     # Sized by its own rule, when a walk would not match what a clear removes.
@@ -91,8 +89,7 @@ def _env_dir(name: str) -> Optional[Path]:
 
 
 def _is_windows() -> bool:
-    # A seam the path-layout branches can be tested on: patching os.name is not
-    # one, because pathlib reads it and Path would build a WindowsPath on POSIX.
+    # Patching os.name is not a seam: pathlib would build WindowsPath on POSIX.
     return os.name == "nt"
 
 
@@ -124,11 +121,7 @@ _UV_CACHE_MARKER = "uv-cache-dir"
 
 
 def _recorded_uv_cache() -> Optional[Path]:
-    """The uv cache the installer recorded, which updates keep filling.
-
-    Parsed as unsloth_cli's _with_studio_uv_cache parses it: one record, one
-    trailing delimiter, and no expanduser, since uv makes a literal "~" dir.
-    """
+    """Read the way unsloth_cli parses it: no expanduser, since uv makes a literal ~ directory."""
     try:
         from utils.paths.storage_roots import cache_root
         recorded = (cache_root() / _UV_CACHE_MARKER).read_text(
@@ -146,8 +139,7 @@ def _recorded_uv_cache() -> Optional[Path]:
 
 
 def _uv_dirs() -> list[Path]:
-    # Both: _setup_cache_env seeds one, the installer may have recorded another,
-    # and either can be the multi-gigabyte one.
+    # Both: _setup_cache_env seeds one, the installer may record another; either can be multi-gigabyte.
     roots = _first(_env_dir("UV_CACHE_DIR"), _platform_cache_dir("uv"))
     recorded = _recorded_uv_cache()
     if recorded is not None:
@@ -155,19 +147,13 @@ def _uv_dirs() -> list[Path]:
     return roots
 
 
-# One answer per tool per process. The lock spans the PROBE, not just the store: recording the
-# miss first let a second cold request read it as a finished failure and show the fallback path.
+# The lock spans the probe, so a cold request never reads a pending miss as failure.
 _probed_cache_dirs: dict[str, Optional[Path]] = {}
 _probe_lock = threading.Lock()
 
 
 def _probe_tool_cache_dir(name: str, command: list[str]) -> Optional[Path]:
-    """Ask a package manager where its own cache is.
-
-    ``cache-dir`` in pip.conf and ``cache`` in .npmrc move it, no environment
-    variable carries either, and Studio's invocations of both honour them.
-    Reimplementing pip's five config kinds or npm's chain would drift.
-    """
+    """Asks the tool itself, since pip.conf and .npmrc can move the cache with no environment variable."""
     from utils.child_stdio import utf8_child_env
     with _probe_lock:
         if name in _probed_cache_dirs:
@@ -178,8 +164,7 @@ def _probe_tool_cache_dir(name: str, command: list[str]) -> Optional[Path]:
                 command,
                 capture_output = True,
                 text = True,
-                # The child would otherwise pick the locale encoding, the ANSI
-                # codepage on Windows, and mangle a non-ASCII path.
+                # Else the locale encoding (ANSI codepage on Windows) mangles non-ASCII paths.
                 encoding = "utf-8",
                 errors = "replace",
                 env = utf8_child_env(),
@@ -212,8 +197,7 @@ def _npm_configured_dir() -> Optional[Path]:
     return None if npm is None else _probe_tool_cache_dir("npm", [npm, "config", "get", "cache"])
 
 
-# The package cache and the one npx installs into, which Studio fills whenever
-# it launches an MCP server. Not the rest of ~/.npm: _logs is the user's.
+# Not the rest of ~/.npm: _logs is the user's.
 _NPM_CACHE_CHILDREN = ("_cacache", "_npx")
 
 
@@ -236,13 +220,7 @@ def _hf_paths():
 
 
 def _hf_homes() -> list[Path]:
-    """Every cache home this install has been pointed at, for PROTECTION only.
-
-    Never for deletion: an API key may append to that history through
-    ``PUT /api/settings/hugging-face-cache`` while the purge route refuses one,
-    so resolving a purge root through it would let a caller that cannot delete
-    choose what a later clear takes. Protecting extra locations is safe.
-    """
+    """For protection only: an API key can append to this history, so it must never pick a purge root."""
     from utils.hf_cache_settings import known_hf_cache_homes
     return list(known_hf_cache_homes())
 
@@ -252,8 +230,7 @@ def _hf_hub_dirs() -> list[Path]:
 
 
 def _hf_child_dirs(name: str, configured: Optional[Path]) -> list[Path]:
-    # HF reads the variable INSTEAD of <home>/<name>, so these are alternatives,
-    # and the home is the effective one rather than the one Settings displays.
+    # HF reads the variable instead of <home>/<name>, so these are alternatives; the home is the effective one, not the one Settings displays.
     from utils.hf_cache_settings import effective_cache_home
     return _first(configured, effective_cache_home() / name)
 
@@ -272,9 +249,7 @@ def _hf_datasets_dirs() -> list[Path]:
     configured = _env_dir("HF_DATASETS_CACHE")
     fallback = _studio_datasets_fallback()
     if configured is not None and fallback is not None and _safe_resolve(configured) == fallback:
-        # cache_safe._retry_in_studio_cache points the variable there for the
-        # length of one load, in THIS process, while load_dataset writes Arrow
-        # files and lock state into it. Not a cache this inventory offers.
+        # cache_safe points this at a Studio cache during one load; not offered here.
         configured = None
     return _hf_child_dirs("datasets", configured)
 
@@ -302,9 +277,7 @@ def _torch_inductor_dirs() -> list[Path]:
     resolved = None if configured is None else _safe_resolve(configured)
     if configured is not None and diffusion is not None and resolved is not None:
         if _is_within(resolved, diffusion):
-            # diffusion_compile_cache.begin() repoints this at <key>/inductor
-            # while a model is resident and restores it on unload, so a row that
-            # followed it would name one directory and the clear take another.
+            # diffusion_compile_cache repoints this while a model is resident, so a row following it would clear a different directory than it names.
             configured = None
     if configured is not None:
         return [configured]
@@ -312,9 +285,7 @@ def _torch_inductor_dirs() -> list[Path]:
     import re
     import tempfile
 
-    # torch/_inductor/runtime/cache_dir_utils.py, followed exactly. getpass also
-    # reads LOGNAME and the pwd name, so a container with no USER puts the cache
-    # at torchinductor_root while a bare uid would look at torchinductor_0.
+    # Mirrors torch cache_dir_utils exactly; uses getpass, not a bare uid, since a container with no USER puts the cache at another directory.
     try:
         user = getpass.getuser()
     except (KeyError, ModuleNotFoundError, OSError):
@@ -331,9 +302,7 @@ def _torch_extensions_dirs() -> list[Path]:
     if configured is not None:
         return [configured]
     if _is_windows():
-        # get_default_build_root() is user_cache_dir(appname = "torch_extensions")
-        # with no appauthor, and torch/_appdirs defaults the author to the app
-        # name, so Windows gets the name twice before the Cache tail.
+        # torch/_appdirs defaults appauthor to the app name, so the name appears twice.
         return [_local_app_data() / "torch_extensions" / "torch_extensions" / "Cache"]
     return [_platform_cache_dir("torch_extensions")]
 
@@ -346,8 +315,7 @@ def _cuda_dirs() -> list[Path]:
     configured = _env_dir("CUDA_CACHE_PATH")
     if configured is not None:
         return [configured]
-    # The CUDA guide's defaults, which follow no shared convention: ROAMING
-    # AppData on Windows, Application Support on macOS, ~/.nv elsewhere.
+    # CUDA's defaults: ROAMING AppData (Windows), Application Support (macOS), ~/.nv elsewhere.
     if _is_windows():
         roaming = (os.environ.get("APPDATA") or "").strip()
         base = Path(roaming) if roaming else _home() / "AppData" / "Roaming"
@@ -358,9 +326,7 @@ def _cuda_dirs() -> list[Path]:
 
 
 def _numba_dirs() -> list[Path]:
-    # __pycache__ next to the source is not ours to empty, but when it is not
-    # writable numba's UserWideCacheLocator falls back to
-    # AppDirs("numba", appauthor = False).user_cache_dir, which is numba's alone.
+    # __pycache__ is not ours to empty; numba's fallback user_cache_dir (AppDirs) is numba's alone.
     return _first(_env_dir("NUMBA_CACHE_DIR"), _platform_cache_dir("numba"))
 
 
@@ -388,16 +354,13 @@ MATPLOTLIB_PATTERNS = ("fontlist-*.json", "tex.cache", "ttfcache")
 
 
 def _matplotlib_patterns() -> Optional[tuple[str, ...]]:
-    # Only the XDG branch is a cache dir of its own. MPLCONFIGDIR and the
-    # ~/.matplotlib default are get_configdir() too, so matplotlibrc sits beside
-    # the font list and only the cache entries may go.
+    # Only the XDG branch is cache-only; other config dirs also hold matplotlibrc.
     merged = _env_dir("MPLCONFIGDIR") is not None or _is_windows() or sys.platform == "darwin"
     return MATPLOTLIB_PATTERNS if merged else None
 
 
 def _vllm_dirs() -> list[Path]:
-    # vllm/envs.py: XDG_CACHE_HOME or ~/.cache, then "vllm", on every platform,
-    # which the platform helper matches on Linux only.
+    # vllm/envs.py: XDG_CACHE_HOME or ~/.cache, then vllm, on every platform (Linux-only in the helper).
     xdg = (os.environ.get("XDG_CACHE_HOME") or "").strip()
     base = Path(xdg).expanduser() if xdg else _home() / ".cache"
     return _first(_env_dir("VLLM_CACHE_ROOT"), base / "vllm")
@@ -409,12 +372,7 @@ def _unsloth_compiled_dirs() -> list[Path]:
 
 
 def _measure_unsloth_compiled() -> tuple[int, int]:
-    """Size only what a clear would actually remove.
-
-    A directory Unsloth created goes whole; one it merely wrote into keeps
-    everything but the generated modules, so counting all of it would promise
-    space the clear cannot free.
-    """
+    """Counts only what a clear removes: directories Unsloth made whole, the rest only generated modules."""
     from utils.cache_cleanup import _cleanable_cache_dirs
 
     total = 0
@@ -429,13 +387,7 @@ def _measure_unsloth_compiled() -> tuple[int, int]:
 
 
 def _compiled_cache_refusal() -> Optional[str]:
-    """Why the compiled cache cannot be emptied, or None.
-
-    Its own gate, because the clear runs through cache_cleanup rather than by
-    emptying a root, and it is all-or-nothing across the directories it owns, so
-    one of them failing stops the whole clear. describe_cache asks too: a row
-    that offers a button this will refuse is worse than one that says why.
-    """
+    """Its own gate: the clear is all-or-nothing across the directories it owns, so one refusal stops it."""
     from utils.cache_cleanup import _cleanable_cache_dirs
 
     protected = protected_paths()
@@ -453,13 +405,7 @@ def _compiled_cache_refusal() -> Optional[str]:
 
 
 def _purge_unsloth_compiled() -> PurgeOutcome:
-    """Clear the compiled cache through the module that owns it.
-
-    cache_cleanup already knows which of these directories Unsloth created and
-    which merely hold files it generated, and it serializes against a sibling
-    backend that may be compiling right now. Re-deriving either here would give
-    this install a second, weaker answer.
-    """
+    """Delegates to cache_cleanup, which knows what Unsloth created and serializes with sibling backends."""
     from utils.cache_cleanup import (
         LOCK_BUSY,
         _cleanable_cache_dirs,
@@ -484,9 +430,7 @@ def _purge_unsloth_compiled() -> PurgeOutcome:
     outcome.freed_bytes = max(0, before - after)
     outcome.removed_entries = max(0, entries - remaining)
     if after > 0:
-        # clear_unsloth_compiled_cache swallows every failure, so a read-only
-        # directory looks identical to a clean clear. Bytes and not entries: a
-        # dedicated cache is recreated holding an empty marker file.
+        # Failures are swallowed: check remaining bytes, not entries, as a dedicated cache keeps a marker.
         outcome.errors.append(
             "Part of the compiled cache could not be removed and is still in place."
         )
@@ -508,9 +452,7 @@ CACHE_DEFINITIONS: tuple[CacheDefinition, ...] = (
     CacheDefinition("numba", GROUP_COMPILE, False, _numba_dirs),
     CacheDefinition("matplotlib", GROUP_COMPILE, False, _matplotlib_dirs),
     CacheDefinition("vllm", GROUP_COMPILE, False, _vllm_dirs),
-    # Opt-in. The others cost a recompile or a re-download; this one can break a
-    # job running RIGHT NOW, because a worker imports generated modules from here
-    # lazily and compiled_cache_lock only serialises against a sibling BACKEND.
+    # Opt-in: workers import generated modules from here lazily mid-job, so clearing can break a running job; the compile lock covers only sibling backends.
     CacheDefinition(
         "unsloth_compiled",
         GROUP_COMPILE,
@@ -530,8 +472,7 @@ CACHE_KEYS: tuple[str, ...] = tuple(definition.key for definition in CACHE_DEFIN
 
 _DEFINITIONS_BY_KEY = {definition.key: definition for definition in CACHE_DEFINITIONS}
 
-# One purge at a time per process: two concurrent sweeps of one root race each
-# other into "file disappeared" errors that look like failures.
+# Concurrent sweeps of one root race into spurious errors.
 _purge_lock = threading.Lock()
 
 
@@ -550,13 +491,7 @@ def _safe_resolve(path: Path) -> Optional[Path]:
 
 
 def _is_junction(path: Path | str) -> bool:
-    """True for a Windows directory junction or volume mount point.
-
-    The same hazard as a symlink and not the same test: since 3.8 only
-    IO_REPARSE_TAG_SYMLINK sets S_IFLNK, so is_symlink() is False for a junction
-    while realpath() follows it, and UV_CACHE_DIR pointed at one would have the
-    TARGET emptied. os.path.isjunction is 3.12+ and this package supports 3.9.
-    """
+    """On Windows is_symlink() is False for a junction yet realpath follows it, so check separately; os.path.isjunction needs 3.12 and the package supports 3.9."""
     isjunction = getattr(os.path, "isjunction", None)
     if isjunction is not None:
         try:
@@ -573,13 +508,7 @@ def _is_junction(path: Path | str) -> bool:
 
 
 def protected_paths() -> set[Path]:
-    """Locations a purge must never delete, nor delete anything containing them.
-
-    User data, not caches: the databases, the token, projects, datasets,
-    outputs, exports, and the managed asset homes. The Hugging Face cache HOME
-    is here while its ``hub`` child is purgeable, because the home also holds
-    the access token.
-    """
+    """User data, never purged; the Hugging Face home stays protected because it holds the access token."""
     from utils.paths.storage_roots import (
         assets_root,
         auth_db_path,
@@ -616,8 +545,7 @@ def protected_paths() -> set[Path]:
         tmp_root(),
         documents_root(),
         project_workspaces_root(),
-        # Not a cache root of ours as a whole: it is the parent the per-tool
-        # cache directories sit under, plus llama.cpp slot state.
+        # Not a cache root of ours as a whole: the parent of per-tool cache dirs, plus llama.cpp slot state.
         cache_root(),
     ]
     for name in ("DATA_DESIGNER_HOME", "UNSLOTH_STUDIO_PROJECTS_HOME", "UNSLOTH_STUDIO_HOME"):
@@ -629,9 +557,7 @@ def protected_paths() -> set[Path]:
             candidates.append(home)
             candidates.append(home / "token")
         paths = _hf_paths()
-        # cache_home is what Settings DISPLAYS, and HF_HUB_CACHE=/mnt/hf-cache
-        # makes it the hub directory itself. Protecting it there would make the
-        # model cache permanently unclearable and no credential safer.
+        # With HF_HUB_CACHE set, cache_home can be the hub dir itself; protecting it would make the model cache permanently unclearable.
         if _safe_resolve(paths.cache_home) != _safe_resolve(paths.hub_cache):
             candidates.append(paths.cache_home)
     except Exception as exc:  # noqa: BLE001 - a broken HF setting must not widen the allow-list
@@ -650,13 +576,7 @@ def protected_paths() -> set[Path]:
 
 
 def protected_trees() -> set[Path]:
-    """Directories nothing inside may be deleted, however a variable is pointed.
-
-    ``protected_paths`` stops a root that IS or CONTAINS user data; this stops a
-    root BENEATH it, which is what an inherited ``TRITON_CACHE_DIR`` pointing
-    into the projects folder would be. The studio home and the Hugging Face
-    cache home are deliberately absent: real caches live inside both.
-    """
+    """Refuses a cache root beneath user data, e.g. TRITON_CACHE_DIR inside projects; studio and HF cache homes are absent since real caches live in both."""
     from utils.paths.storage_roots import (
         assets_root,
         auth_root,
@@ -680,8 +600,7 @@ def protected_trees() -> set[Path]:
         rag_root(),
         tensorboard_root(),
         project_workspaces_root(),
-        # Descendants of the studio home and of the temp dir are deliberately
-        # allowed, since the caches live there, so these need naming on their own.
+        # Studio home and temp dir descendants are allowed (caches live there), so name these.
         documents_root(),
         studio_bin_root(),
         tmp_root(),
@@ -710,14 +629,7 @@ def _is_within(child: Path, parent: Path) -> bool:
 
 
 def sheltered_roots(exclude_key: Optional[str] = None) -> dict[Path, str]:
-    """Resolved roots another key's clear must not empty, mapped to why.
-
-    An opt-in cache and a pattern-limited one for the same reason: their own
-    clear is narrower than emptying the directory, so swallowing them whole
-    takes what that clear was written to keep. Nothing stops a variable from
-    putting either inside another cache (``MPLCONFIGDIR=/cache/uv/matplotlib``
-    under ``UV_CACHE_DIR=/cache/uv``). The key being cleared is excluded.
-    """
+    """Roots another key's clear must not empty: emptying one takes what its narrower clear keeps."""
     roots: dict[Path, str] = {}
     for definition in CACHE_DEFINITIONS:
         if definition.key == exclude_key:
@@ -742,18 +654,13 @@ def assert_purgeable_root(
     trees: Optional[set[Path]] = None,
     keep: Optional[dict[Path, str]] = None,
 ) -> Path:
-    """Return the real path of *root*, or raise if emptying it is not allowed.
-
-    The one gate every deletion here goes through, answering from the resolved
-    directory so a variable pointed at a symlink cannot smuggle in a target.
-    """
+    """Judges the resolved directory, so a variable pointed at a symlink cannot smuggle in a target."""
     protected = protected_paths() if protected is None else protected
     trees = protected_trees() if trees is None else trees
     raw = Path(root)
     if not raw.is_absolute():
         raise CachePurgeRefused(f"Cache root is not an absolute path: {raw}")
-    # The link itself, not its target: emptying through one deletes files at a
-    # location nobody named, and unlinking it would take the user's link.
+    # Refuse the link itself, not its target: emptying through it would delete files at a location nobody named.
     if raw.is_symlink():
         raise CachePurgeRefused(f"Cache root is a symlink: {raw}")
     if _is_junction(raw):
@@ -833,18 +740,12 @@ def _record_entry(entry: os.DirEntry, ledger: LinkLedger) -> None:
 
 
 def _descendable(entry: os.DirEntry) -> bool:
-    # is_dir is True for a junction and is_symlink is not, so descending would
-    # size its target and a junction to an ancestor would never terminate. Free
-    # on POSIX, where isjunction and the fallback answer without a syscall.
+    # is_dir is True for a junction, so descending could loop forever.
     return not _is_junction(entry.path)
 
 
 def _measure_tree(path: Path, ledger: LinkLedger) -> int:
-    """Record every file below *path* in *ledger* and return the entry count.
-
-    The size is not returned: a multi-link inode's contribution is not known until every root
-    has been walked, so only the ledger can answer that, and only at the end.
-    """
+    """Size is left to the ledger: a multi-link inode's cost is only known after every root is walked."""
     count = 0
     stack = [path]
     while stack:
@@ -923,8 +824,7 @@ def describe_cache(definition: CacheDefinition) -> dict:
     roots = _resolve_roots(definition)
     purgeable = True
     blocked_reason: Optional[str] = None
-    # Gate first, then measure: a root the gate refuses would otherwise be walked
-    # recursively on every open of the tab, for bytes nothing can reclaim.
+    # Gate first so refused roots are never walked.
     measurable = list(roots)
     if roots and definition.custom_block is not None:
         blocked_reason = definition.custom_block()
@@ -942,12 +842,9 @@ def describe_cache(definition: CacheDefinition) -> dict:
                     blocked_reason = str(exc)
                 continue
             measurable.append(root)
-        # What a clear will do: purge_cache skips a refused root and carries on,
-        # so one bad root does not put the others out of reach.
+        # purge_cache skips a refused root and carries on, so one bad root does not block the others.
         purgeable = bool(measurable)
-    # Whatever the roots say, a cache the environment is LINKED into cannot be offered: the row
-    # would advertise bytes whose removal breaks the install rather than costing a re-download.
-    # After the root checks so a genuinely refused root still names its own reason first.
+    # A LINKED cache is never offered, since removing it breaks the install; checked after root refusals.
     if blocked_reason is None:
         blocked_reason = _link_mode_refusal(definition.key)
         if blocked_reason is not None:
@@ -982,16 +879,11 @@ def _patterns_for(definition: CacheDefinition) -> Optional[tuple[str, ...]]:
     return definition.patterns
 
 
-# A walk is seconds on a large uv or triton cache, so a repeat read inside this
-# window reuses the last answer.
+# Walks take seconds on large uv/triton caches, so repeat reads within the TTL reuse the last answer.
 _INVENTORY_TTL_SECONDS = 60.0
-# (when the walk began, when it was stored, the entry). Both times: the store
-# time is what the TTL is about, and the start time is what tells a forced read
-# whether the walk it waited for saw the cache before the request was made.
+# Tuple of (walk start, store time, entry): TTL uses store time, forced reads compare walk start.
 _size_cache: dict[str, tuple[float, float, dict]] = {}
-# Bumped by every invalidation, so a walk that began before one cannot store its
-# answer after it. Dropping the entry is not enough: a scan started in one tab
-# before a purge in another would install the pre-purge size for the window.
+# Bumped per invalidation so a walk begun earlier cannot store a stale size.
 _size_epochs: dict[str, int] = {}
 _size_cache_lock = threading.Lock()
 
@@ -1017,14 +909,12 @@ def _described(definition: CacheDefinition, *, refresh: bool) -> dict:
         remembered = None if refresh else _size_cache.get(definition.key)
     if remembered is not None and started - remembered[1] < _INVENTORY_TTL_SECONDS:
         return remembered[2]
-    # One walk per cache at a time: simultaneous misses would each pay a cold
-    # walk for the same answer, and two open tabs are enough to cause it.
+    # One walk per cache at a time, or simultaneous misses (e.g. two open tabs) each pay a cold walk.
     with _flight_for(definition.key):
         with _size_cache_lock:
             epoch = _size_epochs.get(definition.key, 0)
             remembered = _size_cache.get(definition.key)
-        # A forced read needs a walk that BEGAN after it asked, or it gets the figures it
-        # asked to replace; an ordinary one only needs a fresh enough answer.
+        # A forced read needs a walk that began after it asked.
         if remembered is not None:
             if refresh:
                 if remembered[0] >= started:
@@ -1079,11 +969,7 @@ def _total_disk_bytes() -> Optional[int]:
 def _remove_entry(
     entry: os.DirEntry, root: Path, outcome: PurgeOutcome, ledger: LinkLedger, survivors: LinkLedger
 ) -> None:
-    """Remove one top-level entry, recording what it would free rather than adding it up here.
-
-    The freed total is read off the ledger once the whole root is done: an inode still linked
-    from outside frees nothing, and whether that is so cannot be decided one entry at a time.
-    """
+    """Freed bytes come from the ledger after the root: an inode still linked from outside frees nothing."""
     path = Path(entry.path)
     try:
         if entry.is_symlink():
@@ -1095,13 +981,11 @@ def _remove_entry(
                 outcome.errors.append(f"Skipped {path}: it resolves outside the cache root")
                 return
             _measure_tree(path, ledger)
-            # rmtree refuses a symlinked directory and does not follow links it
-            # finds inside, so the walk cannot leave *root*.
+            # rmtree refuses a symlinked dir and does not follow inner links, so it stays in root.
             try:
                 shutil.rmtree(path)
             except OSError:
-                # Partial removal: the whole subtree is already in the ledger, so survivors are
-                # recorded and subtracted. A "freed" figure must never count bytes still on disk.
+                # Survivors are subtracted so freed bytes never count files still on disk.
                 _measure_tree(path, survivors)
                 raise
         else:
@@ -1136,16 +1020,12 @@ def empty_cache_root(
         if not _matching(entry.name, patterns):
             continue
         _remove_entry(entry, resolved, outcome, ledger, survivors)
-    # Never negative: the survivor walk sees the tree after the failure, so it cannot record
-    # more than the pre-removal walk did, but a file that grew in between should not turn a
-    # partial purge into a negative report.
+    # Clamp at zero: a file that grew between walks must not make a partial purge report negative bytes.
     outcome.freed_bytes += max(0, ledger.freeable_bytes() - survivors.freeable_bytes())
     return outcome
 
 
-# Which registries write into each cache. Both for the hub and xet roots: a
-# dataset download snapshot_downloads its datasets-- entries into the same hub
-# tree, and each claim of either kind carries the xet cache it fetches chunks to.
+# Hub and xet roots are written by models and datasets; dataset snapshots land in the same hub tree.
 _DOWNLOAD_REGISTRIES = {
     "hf_hub": ("models", "datasets"),
     "hf_xet": ("models", "datasets"),
@@ -1156,12 +1036,7 @@ _PURGE_BUSY = "Cancel the active downloads before clearing this cache."
 
 
 def _reserve_downloads(key: str) -> tuple[list, Optional[str]]:
-    """Hold every download registry that writes into this cache, or say why not.
-
-    A reservation and not a look, for the reason the per-repository deletes call
-    begin_delete: a worker can claim between a check and the rmtree. A registry
-    this cannot reach does not block the purge, or an import would kill the button.
-    """
+    """Reserves rather than checks, since a worker could claim the cache before the rmtree; a registry that cannot be reached must not block the purge."""
     kinds = _DOWNLOAD_REGISTRIES.get(key)
     if not kinds:
         return [], None
@@ -1169,9 +1044,7 @@ def _reserve_downloads(key: str) -> tuple[list, Optional[str]]:
         from hub.services.datasets import downloads as dataset_downloads
         from hub.utils.download_registry import get_models_registry
 
-        # The SERVICE, not get_datasets_registry(): a managed install has one dataset registry
-        # per account, and the singleton is only the owner's. The service holds them all and
-        # keeps a new one from being born free mid-purge.
+        # The service, not the singleton: managed installs have one registry per account, and the service keeps new ones from appearing mid-purge.
         registries = [
             get_models_registry() if kind == "models" else dataset_downloads for kind in kinds
         ]
@@ -1200,8 +1073,7 @@ def _release_downloads(reserved: Iterable) -> None:
             logger.warning(f"Could not release a download registry: {exc}")
 
 
-# A spawned trainer reads these outside every registry here: it gets the same HF_HUB_CACHE and
-# HF_XET_CACHE and calls snapshot_download and load_dataset itself, so a clear could cost a run.
+# Spawned trainers read these via HF_HUB_CACHE and HF_XET_CACHE outside every registry here, so clearing could cost a run.
 _WORKER_SENSITIVE_KEYS = frozenset({"hf_hub", "hf_xet", "hf_datasets"})
 
 
@@ -1226,17 +1098,7 @@ def _any_training_active() -> bool:
 
 
 def _uv_symlink_refusal() -> Optional[str]:
-    """Refuse the uv cache when an installed environment is linked into it, not copied from it.
-
-    uv's own `uv help sync` warns that clearing the cache under UV_LINK_MODE=symlink "will break
-    all installed packages": the environment's files are not copies, they are links into this
-    cache. That turns a bulk clear, which is meant to cost a re-download at worst, into a broken
-    install, so the cache is refused rather than offered.
-
-    Two cheap answers, no walk. The mode this process would use, and the evidence on disk: a
-    top-level entry in the running interpreter's site-packages that is a symlink into one of the
-    uv cache roots. uv links at that level, so the directory's own entries are enough.
-    """
+    """Refuse the uv cache when UV_LINK_MODE=symlink or site-packages entries link into it, since clearing it would break installed packages."""
     if (os.environ.get("UV_LINK_MODE") or "").strip().lower() == "symlink":
         return "uv is set to link packages from this cache; clearing it would break them."
     try:
@@ -1279,16 +1141,7 @@ def _training_refusal(key: str) -> Optional[str]:
 
 
 def _inference_refusal(key: str) -> Optional[str]:
-    """Refuse a model-cache clear while an inference backend is holding cached weights.
-
-    Deleting ONE repo already runs these guards (hub/services/models/deletion.py), and emptying
-    the whole cache is every repo at once, so skipping them here was the wider action with the
-    weaker check. sd.cpp re-reads its companion VAE and text-encoder files for every generation,
-    so this breaks a model that was loaded long before the clear, not only one mid-load.
-
-    Fails CLOSED on a query that raises, as the per-repo path does: not being able to tell
-    whether weights are in use is not permission to unlink them.
-    """
+    """Refuses a model-cache clear while a backend holds weights (sd.cpp re-reads them per generation); fails closed if the check raises."""
     if key not in _WORKER_SENSITIVE_KEYS:
         return None
     try:
@@ -1361,11 +1214,9 @@ def _purge_result(definition: CacheDefinition, outcome: PurgeOutcome) -> dict:
     }
 
 
-# Emptying either removes the repositories the Hub inventory reports, so it is
-# one of the app-driven mutations inventory_scan says it is invalidated on.
+# Emptying either removes the repos the Hub inventory reports, so it invalidates inventory_scan.
 _HF_SCANNED_KEYS = frozenset({"hf_hub", "hf_datasets"})
-# The caches that live under the configured Hugging Face root, and therefore describe a
-# different directory the moment that root changes.
+# Caches under the configured HF root; they describe another directory once that root changes.
 _HF_ROOTED_KEYS = frozenset({"hf_hub", "hf_xet", "hf_datasets"})
 
 
@@ -1379,24 +1230,13 @@ def _invalidate_hf_scans() -> None:
 
 
 def invalidate_hf_rooted_sizes() -> None:
-    """Forget the sizes measured under the previous Hugging Face root.
-
-    The memo above is keyed by cache key, not by path, so moving the Models Folder leaves
-    three entries describing directories nobody reads any more. A browser hides that by
-    forcing a refresh off the inventory-version event, but an API-key caller is allowed to
-    change the folder and read the inventory while being forbidden refresh=true, and would
-    see the old root's figures for the rest of the TTL with no way to ask again.
-    """
+    """Memo is keyed by cache key, not path, so a moved Models Folder leaves stale sizes for the TTL."""
     for key in _HF_ROOTED_KEYS:
         invalidate_cache_size(key)
 
 
 def purge_caches(keys: Iterable[str]) -> dict:
-    """Empty each named cache, then report what the inventory looks like after.
-
-    Unknown keys raise before anything is deleted, so a request that names one
-    cache this build does not have changes nothing at all.
-    """
+    """Unknown keys raise before any deletion, so a request naming one unknown cache changes nothing."""
     requested = [str(key) for key in keys]
     if not requested:
         raise ValueError("Choose at least one cache to clear.")
