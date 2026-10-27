@@ -146,6 +146,15 @@ def test_a_loop_or_a_lost_group_fails_on_the_generate_step():
         )
     assert compiler.validate(doc)["ok"], compiler.validate(doc)
     doc = _flow()
+    extra = copy.deepcopy(next(n for n in doc["nodes"] if n["type"] == GENERATE_TYPE))
+    extra["id"] = "extra_generate"
+    doc["nodes"].append(extra)
+    with pytest.raises(CompileError) as caught:
+        compile_flow(doc)
+    assert any("one Recipe Dataset step" in i["message"] for i in caught.value.issues)
+    extra["disabled"] = True
+    assert compiler.validate(doc)["ok"], compiler.validate(doc)
+    doc = _flow()
     doc["groups"][0]["kind"] = None
     with pytest.raises(CompileError):
         compile_flow(doc)

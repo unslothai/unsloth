@@ -206,21 +206,23 @@ function InspectorImpl() {
             >
               <HugeiconsIcon icon={DiceIcon} size={12} /> Re-roll
             </button>
-            <button
-              type="button"
-              onClick={() => {
-                const doc = useDocStore.getState();
-                const fragment = cloneFragment(doc.graph, [node.id], [40, 40]);
-                doc.insertFragment(fragment);
-                useUiStore.getState().setSelection(
-                  fragment.nodes.map((n) => n.id),
-                  [],
-                );
-              }}
-              className="flex items-center gap-1 rounded-md border border-white/10 px-2 py-1 text-[12px] hover:bg-white/5"
-            >
-              <HugeiconsIcon icon={Copy01Icon} size={12} /> Duplicate
-            </button>
+            {node.type !== GENERATE_TYPE && (
+              <button
+                type="button"
+                onClick={() => {
+                  const doc = useDocStore.getState();
+                  const fragment = cloneFragment(doc.graph, [node.id], [40, 40]);
+                  doc.insertFragment(fragment);
+                  useUiStore.getState().setSelection(
+                    fragment.nodes.map((n) => n.id),
+                    [],
+                  );
+                }}
+                className="flex items-center gap-1 rounded-md border border-white/10 px-2 py-1 text-[12px] hover:bg-white/5"
+              >
+                <HugeiconsIcon icon={Copy01Icon} size={12} /> Duplicate
+              </button>
+            )}
           </>
         )}
         <button

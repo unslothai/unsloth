@@ -359,12 +359,21 @@ def compile_flow(doc: dict) -> Plan:
         and not node.get("disabled")
     }
     recipe_groups = {g["id"] for g in doc.get("groups") or [] if g.get("kind") == "recipe"}
+    steps: dict[str, int] = {}
+    for node in nodes.values():
+        if node["type"] == GENERATE_TYPE and not node.get("disabled") and node.get("group"):
+            steps[node["group"]] = steps.get(node["group"], 0) + 1
     for nid, node in nodes.items():
         if node["type"] == COLUMN_TYPE and node.get("group") not in recipe_groups:
             errors.append(
                 issue("A recipe column belongs inside a Data Recipe group", node_id = nid)
             )
         if nid not in executable or node["type"] != GENERATE_TYPE:
+            continue
+        if steps.get(node.get("group") or "", 0) > 1:
+            errors.append(
+                issue("A Data Recipe runs from one Recipe Dataset step; delete or disable the extra one", node_id = nid)
+            )
             continue
         try:
             compiled = compile_recipe(recipe_graph(doc, node.get("group") or ""))
