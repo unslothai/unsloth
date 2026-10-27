@@ -110,7 +110,9 @@ def _flex_block_mask_call(args, kwargs):
         if type(value).__name__ == "BlockMask":
             if not _GRAPHS_FLEX_LOGGED[0]:
                 _GRAPHS_FLEX_LOGGED[0] = True
-                print("Unsloth: block CUDA graphs skip flex attention blocks; they run compiled without graphs.")
+                print(
+                    "Unsloth: block CUDA graphs skip flex attention blocks; they run compiled without graphs."
+                )
             return True
     return False
 

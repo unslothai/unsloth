@@ -364,7 +364,12 @@ def test_flex_block_mask_calls_run_without_graphs(monkeypatch, mask):
             super().__init__()
             self.proj = torch.nn.Linear(8, 8)
 
-        def forward(self, hidden_states, attention_mask = None, **kwargs):
+        def forward(
+            self,
+            hidden_states,
+            attention_mask = None,
+            **kwargs,
+        ):
             return self.proj(hidden_states)
 
     bc._wrap(FlexDecoderLayer, {**bc._COMPILE_OPTIONS, "triton.cudagraphs": True})
