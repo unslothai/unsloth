@@ -270,10 +270,11 @@ def _balanced_json_span(text: str, start: int) -> int | None:
 
 
 # Runs the brace scan ignores, skipped in C: up to the next quote, brace, or Gemma quote marker.
-_BRACE_SKIP_RE = re.compile(r'[^"{}]*+')
-_BRACE_SKIP_GEMMA_RE = re.compile(r'(?:[^"{}<]++|<(?!\|"\|>))*+')
-# The rest of a JSON string through its closing quote; a backslash escapes the next character.
-_JSON_STRING_REST_RE = re.compile(r'(?:[^"\\]++|\\.)*+"', re.DOTALL)
+# Unrolled loops with nothing after them, so no match backtracks; no possessive quantifiers (3.11+).
+_BRACE_SKIP_RE = re.compile(r'[^"{}]*')
+_BRACE_SKIP_GEMMA_RE = re.compile(r'[^"{}<]*(?:<(?!\|"\|>)[^"{}<]*)*')
+# A JSON string body up to its closing quote; a backslash escapes the next character.
+_JSON_STRING_BODY_RE = re.compile(r'[^"\\]*(?:\\.[^"\\]*)*', re.DOTALL)
 
 
 def _balanced_brace_end(
@@ -287,7 +288,7 @@ def _balanced_brace_end(
         return None
     n = len(content)
     skip = _BRACE_SKIP_GEMMA_RE.match if gemma_quotes else _BRACE_SKIP_RE.match
-    string_rest = _JSON_STRING_REST_RE.match
+    string_body = _JSON_STRING_BODY_RE.match
     depth = 0
     i = brace_start
     while i < n:
@@ -303,10 +304,11 @@ def _balanced_brace_end(
             i = close + len(_GEMMA_QUOTE)
             continue
         if ch == '"':
-            m = string_rest(content, i + 1)
-            if m is None:
+            i = string_body(content, i + 1).end()
+            # The body stops at the closing quote, at the end, or before a trailing lone backslash.
+            if i >= n or content[i] != '"':
                 return None
-            i = m.end()
+            i += 1
             continue
         if ch == "{":
             depth += 1

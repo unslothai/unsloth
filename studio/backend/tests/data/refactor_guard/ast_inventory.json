@@ -2057,11 +2057,11 @@
   },
   "core.tool_healing": {
     "compiled": {
-      "_BRACE_SKIP_GEMMA_RE": "'(?:[^\"{}<]++|<(?!\\\\|\"\\\\|>))*+' flags=32",
-      "_BRACE_SKIP_RE": "'[^\"{}]*+' flags=32",
+      "_BRACE_SKIP_GEMMA_RE": "'[^\"{}<]*(?:<(?!\\\\|\"\\\\|>)[^\"{}<]*)*' flags=32",
+      "_BRACE_SKIP_RE": "'[^\"{}]*' flags=32",
       "_CODE_SPAN_RE": "'^[ \\\\t]*(?:>[ \\\\t]*)*(?:(?P<bt>```+)[^`\\\\n]*$.*?(?:^[ \\\\t]*(?:>[ \\\\t]*)*(?P=bt)`*[ \\\\t\\\\r]*$|\\\\Z)|(?P<tl>~~~+)[^\\\\n]*$.*?(?:^[ \\\\t]*(?:>[ \\\\t]*)*(?P=tl)~*[ \\\\t\\\\r]*$|\\\\Z))|``(?:[^`]|`(?!`))*?``|`[^`\\\\n]*`' flags=56",
       "_GEMMA_NEXT_KEY_RE": "'\\\\s*[A-Za-z_][\\\\w.\\\\-]*\\\\s*:' flags=32",
-      "_JSON_STRING_REST_RE": "'(?:[^\"\\\\\\\\]++|\\\\\\\\.)*+\"' flags=48",
+      "_JSON_STRING_BODY_RE": "'[^\"\\\\\\\\]*(?:\\\\\\\\.[^\"\\\\\\\\]*)*' flags=48",
       "_MISTRAL_ARRAY_RE": "'\\\\[TOOL_CALLS\\\\]\\\\s*(?=\\\\[)' flags=32",
       "_MISTRAL_BRACKET_RE": "'\\\\[TOOL_CALLS\\\\]\\\\s*([\\\\w-]+)(?:\\\\[CALL_ID\\\\][\\\\w-]+)?(?:\\\\[ARGS\\\\])?\\\\s*(?=\\\\{)' flags=32",
       "_REHEARSAL_CLOSED_STRIP_RE": "'(?<!\\\\[CALL_ID\\\\])\\\\b([\\\\w-]+)\\\\[ARGS\\\\]\\\\s*\\\\{[^{}]*(?:\\\\{[^{}]*\\\\}[^{}]*)*\\\\}' flags=48",
@@ -2108,8 +2108,6 @@
     },
     "regexes": {
       "re.compile('(?:<tool_call>|<\\\\|content_invoke_tool_json\\\\|>)\\\\s*\\\\{')": 1,
-      "re.compile('(?:[^\"\\\\\\\\]++|\\\\\\\\.)*+\"', re.DOTALL)": 1,
-      "re.compile('(?:[^\"{}<]++|<(?!\\\\|\"\\\\|>))*+')": 1,
       "re.compile('(?<!\\\\[CALL_ID\\\\])\\\\b([\\\\w-]+)\\\\[ARGS\\\\]\\\\s*' + _BRACKETED_JSON_ONE_LEVEL, re.DOTALL)": 1,
       "re.compile('(?<!\\\\[CALL_ID\\\\])\\\\b([\\\\w-]+)\\\\[ARGS\\\\]\\\\s*(?:\\\\{.*)?$', re.DOTALL)": 1,
       "re.compile('(?<!\\\\[CALL_ID\\\\])\\\\b([\\\\w-]+)\\\\[ARGS\\\\]\\\\s*(?=\\\\{)')": 1,
@@ -2127,7 +2125,9 @@
       "re.compile('<tool_call>.*$', re.DOTALL)": 1,
       "re.compile('<tool_call>.*?</tool_call>', re.DOTALL)": 1,
       "re.compile('<tool_call\\\\|>')": 2,
-      "re.compile('[^\"{}]*+')": 1,
+      "re.compile('[^\"\\\\\\\\]*(?:\\\\\\\\.[^\"\\\\\\\\]*)*', re.DOTALL)": 1,
+      "re.compile('[^\"{}<]*(?:<(?!\\\\|\"\\\\|>)[^\"{}<]*)*')": 1,
+      "re.compile('[^\"{}]*')": 1,
       "re.compile('\\\\[/TOOL_CALLS\\\\]')": 1,
       "re.compile('\\\\[TOOL_CALLS\\\\].*$', re.DOTALL)": 1,
       "re.compile('\\\\[TOOL_CALLS\\\\]\\\\s*(?=\\\\[)')": 1,
@@ -2166,7 +2166,7 @@
       "_GEMMA_QUOTE": {
         "kind": "assign"
       },
-      "_JSON_STRING_REST_RE": {
+      "_JSON_STRING_BODY_RE": {
         "kind": "assign"
       },
       "_MAX_BRACKET_SCAN_CHARS": {

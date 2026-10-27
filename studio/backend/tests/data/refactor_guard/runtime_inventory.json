@@ -322,7 +322,7 @@
       "_FUNC_CLOSE_TAG",
       "_GEMMA_NEXT_KEY_RE",
       "_GEMMA_QUOTE",
-      "_JSON_STRING_REST_RE",
+      "_JSON_STRING_BODY_RE",
       "_MAX_BRACKET_SCAN_CHARS",
       "_MCP_TOOL_PREFIX",
       "_MISTRAL_ARRAY_RE",
