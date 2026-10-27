@@ -305,10 +305,12 @@ class FileHistory:
                 continue
             new = self._capture(workdir, rel, key, budget)
             if old is not None and old.kind == new.kind == "blob" and old.blob == new.blob:
-                old.mtime_ns, old.digest, old.mode = new.mtime_ns, new.digest, new.mode
+                # Same content, so a known digest still holds; a probe that hashed nothing must not drop it.
+                old.mtime_ns, old.mode = new.mtime_ns, new.mode
+                old.digest = old.digest if new.digest is None else new.digest
                 self._db.execute(
                     "UPDATE workdir_state SET mtime_ns=?, digest=?, mode=? WHERE workdir=? AND rel_path=?",
-                    (new.mtime_ns, new.digest, new.mode, workdir, rel),
+                    (old.mtime_ns, old.digest, old.mode, workdir, rel),
                 )
                 continue
             changes[rel] = (old, new)

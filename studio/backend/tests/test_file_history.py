@@ -486,3 +486,12 @@ def test_a_rewind_after_a_capped_walk_keeps_a_later_user_edit(chat):
     report = history.rewind("chat-1", ["u1"], capped)
     assert report.conflicts == ["src/keep.txt"]
     assert keep.read_text(encoding = "utf-8") == "user later edit\n"
+
+
+def test_a_probe_of_a_missed_file_keeps_its_content_digest(chat):
+    workdir, history = chat
+    (workdir / "keep.txt").write_text("same\n", encoding = "utf-8")
+    info = (workdir / "keep.txt").stat()
+    history._walk_sync(str(workdir), lambda wd: ({"keep.txt": (1, info.st_size, "d1")}, True))
+    history._walk_sync(str(workdir), lambda wd: ({}, False))  # capped: keep.txt is probed
+    assert history._load_state(os.path.realpath(str(workdir)))["keep.txt"].digest == "d1"
