@@ -5301,21 +5301,29 @@ def test_qwen38_on_a_16gib_card_launches_pinned_past_the_host_guard(
     assert backend.last_load_warning is None, backend.last_load_warning
 
 
-def test_qwen38_fully_resident_keeps_the_micro_batch_raise(tmp_path, _moe_cache_host):
-    """Qwen3.8-Flash-Next UD-IQ4_XS (87.25 GiB, 26.82 GiB lazy table) on a 96 GB card
-    with 80 GB free: the file needs --fit, but only the lazy table stays on the host and
-    every routed expert is resident before and after the raise, so the 2048 micro-batch
-    is kept (2k prompt 3201 -> 4373 tok/s measured) and no cache is added."""
+@pytest.mark.parametrize(
+    "free_mib, expected_fit, expected_ubatch",
+    [(70_000, "on", ["2048"]), (80_000, "off", [])],
+)
+def test_qwen38_fully_resident_keeps_the_micro_batch_raise(
+    tmp_path, _moe_cache_host, free_mib, expected_fit, expected_ubatch
+):
+    """Qwen3.8-Flash-Next UD-IQ4_XS (87.25 GiB, 26.82 GiB lazy table) on a 96 GB card.
+    The lazy table is priced on the host, so at 70,000 MiB free the GPU weights still
+    need --fit while every routed expert is resident before and after the raise: the
+    2048 micro-batch is kept (2k prompt 3201 -> 4373 tok/s measured). At 80,000 MiB the
+    launch is unfitted (--fit off) and keeps the default micro-batch. No cache either way."""
     backend, cmd = _cache_launch(
         tmp_path,
         size_gib = 87.25,
-        memory = [(0, 80_000, 98_000)],
+        memory = [(0, free_mib, 98_000)],
         expert_gib = 52.0,
         lazy = {"per_layer_token_embd.weight": _QWEN38_PLE},
         arch = "qwen4exp",
     )
 
-    assert _ubatch_values(cmd) == ["2048"], cmd
+    assert cmd[cmd.index("--fit") + 1] == expected_fit, cmd
+    assert _ubatch_values(cmd) == expected_ubatch, cmd
     assert not _has_moe_cache(cmd), cmd
 
 
