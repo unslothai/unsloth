@@ -318,8 +318,7 @@ def _state_paths(
     *,
     raw_hub_cache: Optional[str | Path] = None,
 ) -> tuple[Path, ...]:
-    """Canonical-first read/delete paths across the filename migration. Writers use only the default state-dir path; readers and cleanup also probe the prior repository and double-hyphen variant encodings, plus the pre-``resolve`` cache-scope digest, deduplicating when a repository, variant or cache scope never needed migration. ``raw_hub_cache`` is the caller's own spelling of ``hub_cache`` before canonicalization, and is what the extra scope digest has to come from: the canonical string resolves to itself, so deriving the fallback from it would reproduce the canonical digest and probe nothing. The scope fan-out collapses to one entry whenever the two spellings agree, which is every path that resolves to itself."""
-    # _scope_spellings, not cache_scope_names: the single-variant delete route hands over a root resolve_delete_target_root has ALREADY resolved, so the raw spelling reproduces the canonical digest and the pre-resolve scope is never probed, leaving state for the next read to resurrect. It adds the configured cache's own spelling only when it names the same directory.
+    """Not cache_scope_names: a resolved root skips the pre-resolve scope; state resurrects."""
     scopes = (
         (None,)
         if hub_cache is None

@@ -98,6 +98,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.delenv(C.ENV_MAX_GB, raising = False)
     monkeypatch.delenv("UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH", raising = False)
     C._HEADER_MEMO.clear()
+    getattr(C, "_UNREACHABLE", {}).clear()
     return root
 
 
@@ -1076,7 +1077,12 @@ def test_hub_coords_of_legacy_and_copied_snapshots_keep_their_names(tmp_path):
     base.mkdir(parents = True)
     (base / "diffusion_pytorch_model.safetensors").write_bytes(b"weights")
     link, blob = _hub_snapshot(tmp_path, tmp_path / "base")
-    assert C._hub_coords(link) == ("org/tiny", "transformer/diffusion_pytorch_model.safetensors", blob, "c" * 40)
+    assert C._hub_coords(link) == (
+        "org/tiny",
+        "transformer/diffusion_pytorch_model.safetensors",
+        blob,
+        "c" * 40,
+    )
     copy = _copy_snapshot(tmp_path, tmp_path / "base")
     assert C._hub_coords(copy)[2] == "diffusion_pytorch_model.safetensors"
 
@@ -1105,6 +1111,116 @@ def test_the_freshness_check_of_a_gated_base_carries_the_loads_token(env, monkey
 
     assert load(hf_token = "hf_request_token") == "e" * 64
     assert seen == ["hf_request_token"]
+
+
+def _sharded_hub_snapshot(tmp_path: Path, n: int) -> list[str]:
+    import hashlib
+
+    repo_dir = tmp_path / "hub" / "models--org--sharded"
+    (repo_dir / "blobs").mkdir(parents = True)
+    snap = repo_dir / "snapshots" / ("c" * 40) / "transformer"
+    snap.mkdir(parents = True)
+    links = []
+    for i in range(n):
+        data = f"shard {i}".encode()
+        blob = repo_dir / "blobs" / hashlib.sha256(data).hexdigest()
+        blob.write_bytes(data)
+        link = snap / f"diffusion_pytorch_model-{i + 1:05d}-of-{n:05d}.safetensors"
+        os.symlink(blob, link)
+        links.append(str(link))
+    return links
+
+
+@pytest.fixture
+def blackholed_hub(monkeypatch):
+    """Every Hub request times out via a mocked transport; yields the requested URLs."""
+    import huggingface_hub
+
+    seen: list = []
+    monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_OFFLINE", False)
+    # huggingface_hub >= 1.33 with telemetry on fetches its agent registry on a cold cache.
+    monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_DISABLE_TELEMETRY", True)
+    C._REMOTE_MEMO.clear()
+    getattr(C, "_UNREACHABLE", {}).clear()
+    set_factory = getattr(huggingface_hub, "set_client_factory", None)
+    if set_factory is None:  # older huggingface_hub (requests)
+        import requests
+
+        def metadata(url, **_k):
+            seen.append(str(url))
+            raise requests.exceptions.ReadTimeout("read timed out")
+
+        monkeypatch.setattr(huggingface_hub, "get_hf_file_metadata", metadata)
+        yield seen
+        return
+    import httpx
+
+    def handler(request):
+        seen.append(str(request.url))
+        raise httpx.ReadTimeout("timed out", request = request)
+
+    set_factory(lambda: httpx.Client(transport = httpx.MockTransport(handler)))
+    try:
+        yield seen
+    finally:
+        from huggingface_hub.utils._http import default_client_factory
+        set_factory(default_client_factory)
+
+
+def test_a_blackholed_hub_costs_one_probe_per_process_not_one_per_shard_per_lookup(
+    env, tmp_path, blackholed_hub
+):
+    """Unreachable but not flagged offline: 4 shards x 3 lookups used to cost 12 timeouts."""
+    shards = _sharded_hub_snapshot(tmp_path, 4)
+    for _ in range(3):
+        assert C._hub_source_stale(shards) is False
+    assert len(blackholed_hub) == 1
+    assert "org/sharded" in blackholed_hub[0]
+
+
+def test_an_http_answer_is_not_taken_for_an_unreachable_hub(env, tmp_path, monkeypatch):
+    """A gated / 5xx answer is per repo: it must not silence other probes."""
+    import huggingface_hub
+    from huggingface_hub.errors import HfHubHTTPError
+
+    monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_OFFLINE", False)
+    C._REMOTE_MEMO.clear()
+    calls = []
+
+    def metadata(url, **_k):
+        calls.append(url)
+        raise HfHubHTTPError("503 Service Unavailable")
+
+    monkeypatch.setattr(huggingface_hub, "get_hf_file_metadata", metadata)
+    shards = _sharded_hub_snapshot(tmp_path, 2)
+    assert C._hub_source_stale(shards) is False
+    assert len(calls) == 2 and not C._UNREACHABLE
+
+
+def test_the_hub_is_asked_again_once_the_unreachable_verdict_expires(env, tmp_path, monkeypatch):
+    import huggingface_hub
+
+    shards = _sharded_hub_snapshot(tmp_path, 2)
+    blob = os.path.basename(os.path.realpath(shards[0]))
+    monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_OFFLINE", False)
+    C._REMOTE_MEMO.clear()
+    calls = []
+
+    def down(url, **_k):
+        calls.append(url)
+        raise OSError("network unreachable")
+
+    monkeypatch.setattr(huggingface_hub, "get_hf_file_metadata", down)
+    assert C._hub_source_stale(shards) is False
+    assert len(calls) == 1
+    C._UNREACHABLE[C._endpoint()] -= C._REMOTE_TTL_SECONDS + 1
+    monkeypatch.setattr(
+        huggingface_hub,
+        "get_hf_file_metadata",
+        lambda url, **_k: calls.append(url) or types.SimpleNamespace(etag = "f" * 64),
+    )
+    assert C._hub_source_stale(shards) is True
+    assert len(calls) == 2 and blob != "f" * 64
 
 
 def test_an_entry_the_loader_rejected_is_a_miss_until_replaced(env, tmp_path, scheme):
@@ -1317,3 +1433,191 @@ def test_the_video_save_fingerprints_the_repo_that_supplied_the_dense_weights():
     video = inspect.getsource(V.VideoBackend.load_pipeline)
     call = video.split("_save_runtime_quant_to_cache(", 1)[1][:400]
     assert "source = _base_local_dir or fetch_base," in call
+
+
+def _pipeline_read(D, pipe, fam, base, scheme, **kw):
+    target = types.SimpleNamespace(dtype = torch.bfloat16, device = "cpu")
+    return D.DiffusionBackend._pipeline_quant_from_cache(
+        pipe,
+        fam,
+        [("transformer", pipe.transformer)],
+        target = target,
+        transformer_quant = scheme,
+        fast_accum = None,
+        loras = kw.pop("loras", []),
+        base = str(base),
+        fetch_base = str(base),
+        source_base = kw.pop("source_base", str(base)),
+        hf_token = None,
+        **kw,
+    )
+
+
+def _patch_scheme(monkeypatch, D, scheme):
+    monkeypatch.setattr(D, "select_transformer_quant_scheme", lambda *a, **k: scheme)
+    monkeypatch.setattr(D, "native_quant_scheme", lambda *a, **k: None)
+
+
+def test_a_returning_pipeline_load_reads_the_cache_bit_identically(
+    env, tmp_path, scheme, monkeypatch
+):
+    """The pipeline-kind quantize loop wrote the cache but never read it: a second load re-quantized from bf16."""
+    from core.inference import diffusion as D
+
+    if not _SCHEME[1]:
+        pytest.skip("torchao cannot quantize on this host's CPU")
+    base, model = _write_base(tmp_path)
+    fresh_dense = Tiny().to(torch.bfloat16)
+    fresh_dense.load_state_dict(model.state_dict())
+    fam = _fam(base)
+    _patch_scheme(monkeypatch, D, scheme)
+    miss = types.SimpleNamespace(transformer = fresh_dense)
+    assert _pipeline_read(D, miss, fam, base, scheme) is None
+    assert not D.transformer_is_quantised(fresh_dense)
+
+    _quantize(model, scheme)
+    assert C.save_runtime_quant(model, fam, base_repo = str(base)) is not None
+    pipe = types.SimpleNamespace(transformer = fresh_dense)
+    assert _pipeline_read(D, pipe, fam, base, scheme) == scheme
+    assert pipe.transformer is fresh_dense and D.transformer_is_quantised(fresh_dense)
+    assert fresh_dense._unsloth_runtime_quant == scheme
+    assert _flat_equal(model.state_dict(), fresh_dense.state_dict()) == []
+
+
+def test_the_pipeline_read_finds_shards_under_the_source_base(env, tmp_path, scheme):
+    """Saved with the dense shards read from a mirror / local snapshot: the lookup must search the same place."""
+    mirror, model = _write_base(tmp_path, name = "mirror")
+    upstream = tmp_path / "upstream"  # no shards here: only the mirror holds them
+    fam = types.SimpleNamespace(name = FAMILY, transformer_class = "Tiny", base_repo = str(upstream))
+    _quantize(model, scheme)
+    assert C.save_runtime_quant(model, fam, base_repo = str(upstream), source_base = str(mirror))
+    assert C.lookup(fam, scheme, base_repo = str(upstream)) is None
+    assert C.lookup(fam, scheme, base_repo = str(upstream), source_base = str(mirror))
+
+
+def test_a_pipeline_read_is_never_served_a_build_of_other_source_shards(env, tmp_path, scheme):
+    """A build of the upstream shards must not be served to a load that read a different snapshot / mirror."""
+    upstream, model = _write_base(tmp_path, name = "upstream")
+    other, _ = _write_base(tmp_path, name = "other", seed = 1)
+    fam = types.SimpleNamespace(name = FAMILY, transformer_class = "Tiny", base_repo = str(upstream))
+    _quantize(model, scheme)
+    assert C.save_runtime_quant(model, fam, base_repo = str(upstream))
+    assert C.lookup(fam, scheme, base_repo = str(upstream))
+    assert C.lookup(fam, scheme, base_repo = str(upstream), source_base = str(other)) is None
+
+
+def test_a_pipeline_read_that_does_not_fit_leaves_the_module_dense(
+    env, tmp_path, scheme, monkeypatch
+):
+    from core.inference import diffusion as D
+
+    if not _SCHEME[1]:
+        pytest.skip("torchao cannot quantize on this host's CPU")
+    base, model = _write_base(tmp_path)
+    fam = _fam(base)
+    _quantize(model, scheme)
+    assert C.save_runtime_quant(model, fam, base_repo = str(base))
+    _patch_scheme(monkeypatch, D, scheme)
+
+    class Other(Tiny):
+        def __init__(self) -> None:
+            super().__init__()
+            self.extra = torch.nn.Linear(512, 512)
+
+    other = Other().to(torch.bfloat16)
+    pipe = types.SimpleNamespace(transformer = other)
+    assert _pipeline_read(D, pipe, fam, base, scheme) is None
+    assert not D.transformer_is_quantised(other)
+    dense = Tiny().to(torch.bfloat16)
+    pipe = types.SimpleNamespace(transformer = dense)
+    assert _pipeline_read(D, pipe, fam, base, scheme, loras = [("a", 1.0)]) is None
+    assert not D.transformer_is_quantised(dense)
+
+
+def test_the_pipeline_quant_loop_reads_the_cache_before_quantizing():
+    import inspect
+
+    from core.inference import diffusion as D
+
+    src = inspect.getsource(D.DiffusionBackend.load_pipeline)
+    read = src.index("self._pipeline_quant_from_cache(")
+    assert read < src.index("scheme = quantize_transformer(", read)
+
+
+def test_a_rotated_int8_pipeline_read_matches_the_fresh_rotated_build(env, tmp_path, monkeypatch):
+    """ConvRot: cached build has the offline rotation, the read installs the online half."""
+    import core.inference.diffusion_transformer_quant as Q
+    from core.inference import diffusion as D
+    from core.inference.diffusion_convrot import is_rotated_linear
+    from safetensors.torch import save_file
+
+    family = "qwen-image-2.1"
+    monkeypatch.setenv(Q.INT8_CONVROT_ENV, "1")
+
+    class Attn(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.to_q = torch.nn.Linear(512, 512, bias = False)
+            self.to_out = torch.nn.ModuleList([torch.nn.Linear(512, 512, bias = False)])
+
+        def forward(self, x):
+            return self.to_out[0](self.to_q(x))
+
+    class Block(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.attn = Attn()
+
+        def forward(self, x):
+            return x + self.attn(x)
+
+    class Rot(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.transformer_blocks = torch.nn.ModuleList([Block() for _ in range(2)])
+
+        def forward(self, x):
+            for b in self.transformer_blocks:
+                x = b(x)
+            return x
+
+    torch.manual_seed(0)
+    built = Rot().to(torch.bfloat16)
+    base = tmp_path / "base"
+    (base / "transformer").mkdir(parents = True)
+    save_file(
+        {k: v.contiguous() for k, v in built.state_dict().items()},
+        str(base / "transformer" / "diffusion_pytorch_model.safetensors"),
+    )
+    dense = Rot().to(torch.bfloat16)
+    dense.load_state_dict(built.state_dict())
+    target = types.SimpleNamespace(dtype = torch.bfloat16, device = "cpu")
+    monkeypatch.setattr(Q, "native_quant_scheme", lambda *a, **k: None)
+    monkeypatch.setattr(Q, "select_transformer_quant_scheme", lambda *a, **k: "int8")
+    try:
+        engaged = Q.quantize_transformer(
+            types.SimpleNamespace(transformer = built), target, mode = "int8", family = family
+        )
+    except Exception:  # noqa: BLE001
+        engaged = None
+    if engaged != "int8" or not D.transformer_is_quantised(built):
+        pytest.skip("torchao cannot int8-quantize on this host's CPU")
+    assert is_rotated_linear(built.transformer_blocks[0].attn.to_q)
+    fam = types.SimpleNamespace(name = family, transformer_class = "Rot", base_repo = str(base))
+    path = C.save_runtime_quant(built, fam, base_repo = str(base))
+    if path is None:
+        pytest.skip("this torchao cannot flatten int8 for the cache")
+
+    _patch_scheme(monkeypatch, D, "int8")
+    pipe = types.SimpleNamespace(transformer = dense)
+    assert _pipeline_read(D, pipe, fam, base, "int8") == "int8"
+    assert is_rotated_linear(dense.transformer_blocks[0].attn.to_q)
+    assert _flat_equal(built.state_dict(), dense.state_dict()) == []
+    x = torch.randn(4, 512, dtype = torch.bfloat16)
+    with torch.no_grad():
+        try:
+            want = built(x)
+        except Exception:  # noqa: BLE001 - no CPU int8 GEMM: the bytes check above still stands
+            return
+        got = dense(x)
+    assert torch.equal(want, got)

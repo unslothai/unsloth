@@ -638,7 +638,7 @@ def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
     assert "dark:border-white" not in decoration
     assert "dark:border-t-white" not in decoration
     # Pinned, it is the sidebar's full-height edge: dark has no sidebar border-r to continue it.
-    assert re.search(r'pinned &&\s*"rounded-tl-\[12px\] border-l"', decoration)
+    assert re.search(r'pinned &&\s*"rounded-tl-md border-l"', decoration)
     assert re.search(
         r'className="absolute top-\[12px\] '
         r"h-\[calc\(100dvh-var\(--studio-custom-titlebar-height\)-12px\)\] "
@@ -1471,26 +1471,28 @@ def _escapes_the_model(tag: str) -> str | None:
 
 def _touch_spinner_reach(block: str, spacing: float) -> tuple[str, float] | None:
     """The spinner must clear the title too, not just the actions, or the touch gutter is too narrow."""
-    gate = next(
-        (
-            found
-            for found in re.finditer(r"\{\s*([A-Za-z_$][\w$]*)\s*\?\s*\(", block)
-            if re.match(r"\s*<span", block[found.end() :])
-        ),
-        None,
-    )
-    if not gate:
+
+    def branch_end(gate: re.Match) -> int | None:
+        depth = 0
+        for index in range(gate.end() - 1, len(block)):
+            if block[index] == "(":
+                depth += 1
+            elif block[index] == ")":
+                depth -= 1
+                if depth == 0:
+                    return index
         return None
-    depth, end = 0, None
-    for index in range(gate.end() - 1, len(block)):
-        if block[index] == "(":
-            depth += 1
-        elif block[index] == ")":
-            depth -= 1
-            if depth == 0:
-                end = index
-                break
-    if end is None:
+
+    # The span gate that renders the spinner: the row also has span gates for its screen-reader labels.
+    gate, end = None, None
+    for found in re.finditer(r"\{\s*([A-Za-z_$][\w$]*)\s*\?\s*\(", block):
+        if not re.match(r"\s*<span", block[found.end() :]):
+            continue
+        found_end = branch_end(found)
+        if found_end is not None and "<Spinner" in block[found.end() : found_end]:
+            gate, end = found, found_end
+            break
+    if gate is None:
         return None
     rendered = block[gate.end() : end]
     # An inline style or transform on the positioning span changes the reach without `right`.
@@ -2018,7 +2020,7 @@ def test_audio_page_matches_the_image_rail_header_and_action_footer():
     assert 'mode === "speak"' in layout
     assert '"panel-scroll-fade-action"' in layout
     assert '"panel-scroll-fade"' in layout
-    assert "relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-4" in layout
+    assert "relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-3" in layout
     assert "btn-float-action" not in layout
     assert "absolute inset-x-0 bottom-0" not in layout
     assert layout.count("p-6 px-10 @[50rem]:pt-[60px]") == 2

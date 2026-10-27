@@ -22,6 +22,8 @@ w2's own (rotating) forward. Same ops on the same values as the three stock rota
 quant + ``_int_mm`` + epilogue without torchao 0.17's always-on zero-point pass, and the act quant itself as one probed
 Triton kernel (``int8_act_quant_rows``, bit-identical to torchao 0.17 and 0.18): Inductor's codegen of the same per-row
 quant ran 2-3x slower on B200 (Z-Image shapes, M 4224: K 3840 24-32 -> 11 us, K 10240 53-70 -> 32 us).
+A rotated input (ConvRot) is rotated and quantized by one kernel (``_rotated_act_quant``: ``rotq_h16`` of
+``diffusion_convrot_quant``) on an unlisted-arch card it was armed for, else rotation GEMM + act quant.
 Kill switch: ``UNSLOTH_DIFFUSION_INT8_FUSED=0`` (all of the above).
 """
 
@@ -52,6 +54,8 @@ _OP_HANDLE: Any = None
 _ACTQ_HANDLE: Any = None
 # device indices whose own probe passed; the kernel never runs on a device that failed or was never probed
 _ACTQ_DEVICES: frozenset = frozenset()
+_RQ_HANDLE: Any = None
+_RQ_DEVICES: frozenset = frozenset()
 # UNSLOTH_DIFFUSION_INT8_FUSED=0 at the last install: int8_linear is then module(x)
 _LINEAR_OFF = False
 # torchao's safe_int_mm home, resolved at install (outside any trace) for the same reason.
@@ -132,8 +136,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         FP32_SCALE: tl.constexpr,
         PIN_RN: tl.constexpr,
     ):
-        # torchao Int8Tensor linear epilogue: (int32 * x_scale).to(bf16) * w_scale (+ bias), then .to(bf16).
-        # FINAL_ROUND=False leaves the last rounding to the caller (it commutes with a row max).
+        # Epilogue as torchao: (int32 * x_scale) to bf16, * w_scale, + bias, then bf16; FINAL_ROUND=False defers the last round (it commutes with row max).
         c = tl.load(c_ptr + offs, mask = mask, other = 0, eviction_policy = EVICT)
         if FP32_SCALE:
             c = c.to(tl.float32)
@@ -376,9 +379,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         PIN_RN: tl.constexpr,
         CHUNK: tl.constexpr,
     ):
-        # c row = the fused GEMM output; the gate half starts at column G0, the value half at V0 (both N wide).
-        # Two int32 rows per output row make recomputing in pass 2 ALU-bound, so pass 1 parks the bf16 product in a
-        # scratch row (still in L2 when pass 2 reads it back).
+        # Pass 1 parks the bf16 product in a scratch row: recomputing two int32 rows is ALU-bound.
         row = tl.program_id(0).to(tl.int64)
         xs = tl.load(xs_ptr + row).to(tl.float32)
         base = tl.arange(0, CHUNK)
@@ -438,9 +439,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         ONE_PASS: tl.constexpr,
         FP32_SCALE: tl.constexpr,
     ):
-        # torchao Int8Tensor.from_hp(x, PerRow()), symmetric: s = bf16(max(bf16(amax / 127.5), fp32 eps)); torchao
-        # <= 0.17 keeps s in bf16 and rounds 1 / s and x * (1 / s) to bf16, >= 0.18 stores s as fp32 and keeps both
-        # in fp32 (FP32_SCALE). q = clamp(rint(x * (1 / s)), -128, 127).
+        # Matches torchao from_hp PerRow: torchao <=0.17 rounds s, 1/s and x*(1/s) to bf16; >=0.18 keeps them fp32; q = clamp(rint, -128, 127).
         row = tl.program_id(0).to(tl.int64)
         offs = tl.arange(0, BLOCK)
         xrow = x_ptr + row * stride_x
@@ -674,8 +673,7 @@ def _op() -> Any:
     if custom_op is None:  # torch < 2.4
         return None
     try:
-        # Explicit schema: this module's annotations are strings (``from __future__ import annotations``) and torch is
-        # imported lazily, so schema inference from them would not resolve.
+        # Explicit schema: string annotations + lazy torch import break schema inference.
         @custom_op(
             qualname,
             mutates_args = (),
@@ -822,7 +820,9 @@ def _act_quant_device_ok(index: int) -> bool:
             rq, rs = reference_act_quant(x)
             if not (torch.equal(q, rq) and s.dtype == rs.dtype and torch.equal(s, rs)):
                 return False
-        torch.cuda.synchronize(dev)
+        from .diffusion_cuda_graph import synchronize_outside_capture
+
+        synchronize_outside_capture(dev)
         return True
     except Exception:  # noqa: BLE001 - any failure keeps torchao's quant
         return False
@@ -1225,8 +1225,7 @@ def _split_spec(module: Any) -> Optional[tuple]:
     return None
 
 
-# SwiGLU kernel is bit-exact vs eager but moved FLUX.2-klein / Qwen-Image-2.1 compiled renders further from eager bf16
-# (LPIPS) than the stock path: Z-Image only until understood.
+# Off: bit-exact, but moved FLUX.2 / Qwen-Image compiled renders further from eager (LPIPS).
 _SWIGLU_ALL_LAYOUTS = False
 
 
@@ -1264,13 +1263,7 @@ def _torchao_epilogue(c: Any, xs: Any, ws: Any, bias: Any, out_dtype: Any) -> An
 
 
 def int8_linear(module: Any, x: Any) -> Any:
-    """``module(x)`` for a plain ``nn.Linear`` or ``ConvRotLinear`` holding a plain per-row ``Int8Tensor``: the module's
-    own input rotation, torchao's act quant, ``_int_mm`` and torchao's epilogue, minus one term. torchao 0.17 applies
-    the ASYMMETRIC zero-point correction whenever the activation carries a zero point, which its symmetric quant always
-    does (zeros): a row sum of the int8 weight and a full-output ``- 0`` on every call (~4 ms per Z-Image 1024px step
-    on B200). 0.18 skips it for symmetric activations, as this does; the values are the same (``y - 0 == y``).
-    Anything else (LoRA wrappers, legacy tensors, small M, CPU, a Linear running diffusion_int8_gemm's fused GEMM) is
-    ``module(x)``."""
+    """Skips the torchao 0.17 zero-point correction (a no-op for symmetric int8 activations); LoRA, legacy, small-M, CPU and other cases stay module(x)."""
     from torch import nn
 
     from .diffusion_convrot import is_rotated_linear
@@ -1309,8 +1302,9 @@ def int8_linear_core(module: Any, x: Any) -> Any:
     ):
         return _stock_call(module, x)
     if rotated:
-        x2d = _rotate(x2d, module.convrot_groupsize)
-    xq, xs = _fast_act_quant(x2d, weight)
+        xq, xs = _rotated_act_quant(x2d, module.convrot_groupsize, weight)
+    else:
+        xq, xs = _fast_act_quant(x2d, weight)
     y = _torchao_epilogue(
         _int_mm(xq.reshape(-1, xq.shape[-1]), weight), xs, weight.scale, module.bias, x.dtype
     )
@@ -1329,6 +1323,48 @@ def _rotate(x2d: Any, group: int) -> Any:
     return rotate_convrot_activation(
         x2d, build_convrot_hadamard(group, device = x2d.device, dtype = x2d.dtype), group
     )
+
+
+def _rotated_act_quant(x2d: Any, group: int, weight: Any) -> tuple:
+    """``_fast_act_quant(_rotate(x2d, group), weight)``: one fused rotation + quant kernel (``rotq_h16``) on a device
+    it was armed for (an arch the tiled ``rotq_i8`` does not cover), else the rotation GEMM + act quant."""
+    import torch
+
+    if (
+        _RQ_HANDLE is not None
+        and group == 256
+        and x2d.is_cuda
+        and x2d.device.index in _RQ_DEVICES
+        and x2d.dtype == torch.bfloat16
+        and x2d.dim() == 2
+        and x2d.shape[0] > 0
+        and x2d.shape[1] % 256 == 0
+    ):
+        q, s = _RQ_HANDLE(x2d, group, True)
+        return q, s.reshape(-1, 1)
+    return _fast_act_quant(_rotate(x2d, group), weight)
+
+
+def arm_rotated(index: int) -> bool:
+    """Arm ``rotq_h16`` for card ``index`` (outside any trace); False keeps the rotation GEMM + act quant."""
+    global _RQ_HANDLE, _RQ_DEVICES
+    if int8_fused_disabled():
+        return False
+    try:
+        from .diffusion_convrot_quant import _rotq_op, unlisted_device_ok
+
+        actq = _act_quant_op() if _act_quant_device_ok(index) else None
+        ok = unlisted_device_ok(index, actq)
+        handle = _rotq_op() if ok else None
+    except Exception:  # noqa: BLE001 - optimisation only
+        ok, handle = False, None
+    with _LOCK:
+        if ok and handle is not None:
+            _RQ_HANDLE = handle
+            _RQ_DEVICES = _RQ_DEVICES | {index}
+            return True
+        _RQ_DEVICES = _RQ_DEVICES - {index}
+    return False
 
 
 def _swiglu_forward(self: Any, hidden_states: Any, *args: Any, **kwargs: Any) -> Any:
@@ -1357,8 +1393,7 @@ def _swiglu_forward(self: Any, hidden_states: Any, *args: Any, **kwargs: Any) ->
         return type(self).forward(self, hidden_states, *args, **kwargs)
     down = _get(self, down_name)
     if in_group:
-        x2d = _rotate(x2d, in_group)
-        xq, xs = _fast_act_quant(x2d, fused_in.weight)
+        xq, xs = _rotated_act_quant(x2d, in_group, fused_in.weight)
     else:
         xq, xs = _act_quant(x2d, fused_in.weight)
     c = _int_mm(xq.reshape(-1, xq.shape[-1]), fused_in.weight)
@@ -1544,8 +1579,7 @@ def run_on_first_call(module: Any, key: str, fn: Any) -> None:
         try:
             import torch
 
-            # Studio renders under inference_mode, where detaching / viewing a torchao weight subclass raises
-            # "Cannot set version_counter for inference tensor" and the fused SwiGLU / QKV silently stayed off.
+            # Under inference_mode, detaching torchao weight subclasses raises and fusion silently stays off.
             with torch.inference_mode(False), torch.no_grad():
                 fn(mod)
         except Exception:  # noqa: BLE001 - an optimisation: the stock path stays
@@ -1569,11 +1603,12 @@ def install(
     offload_active: bool = False,
 ) -> int:
     """Idempotent; returns the (candidate) count. Must run before the first compiled forward, which traces ``forward``."""
-    global _ACTQ_HANDLE, _ACTQ_DEVICES, _LINEAR_OFF
+    global _ACTQ_HANDLE, _ACTQ_DEVICES, _RQ_DEVICES, _LINEAR_OFF
     if int8_fused_disabled():
         # process-global: a previous load's probe must not outlive the kill switch
         _ACTQ_HANDLE = None
         _ACTQ_DEVICES = frozenset()
+        _RQ_DEVICES = frozenset()
         _LINEAR_OFF = True
         return 0
     _LINEAR_OFF = False
@@ -1594,6 +1629,37 @@ def install(
     if candidates:
         run_on_first_call(transformer, "int8_fused", lambda t: _finalize(t, logger))
     return candidates
+
+
+def arm_linear(device: Any) -> bool:
+    """Arm ``int8_linear`` on ``device`` for a denoiser with no fused-MLP candidate (MOSS-Image calls it from its own
+    block forward): resolve torchao's ``safe_int_mm`` home and probe the act quant kernel. True when the probed kernel
+    serves this device; False keeps torchao's quant (``int8_linear`` still works, at the stock quant's speed)."""
+    global _ACTQ_HANDLE, _ACTQ_DEVICES, _INTMM_MODULE, _LINEAR_OFF
+    if int8_fused_disabled():
+        _LINEAR_OFF = True
+        return False
+    _LINEAR_OFF = False
+    try:
+        import torch
+
+        intmm = _resolve_intmm()
+        if intmm is None:
+            return False
+        _INTMM_MODULE = intmm
+        index = device.index if device.index is not None else torch.cuda.current_device()
+        if not _device_ok(index):
+            return False
+        actq = _act_quant_op() if _act_quant_device_ok(index) else None
+    except Exception:  # noqa: BLE001 - optimisation only
+        return False
+    with _LOCK:
+        if actq is None:
+            _ACTQ_DEVICES = _ACTQ_DEVICES - {index}
+            return False
+        _ACTQ_HANDLE = actq
+        _ACTQ_DEVICES = _ACTQ_DEVICES | {index}
+    return True
 
 
 def _swiglu_candidate(module: Any) -> bool:
@@ -1620,6 +1686,14 @@ def _swiglu_eligible(module: Any) -> bool:
         if _split_rotation_groups(*parts) is None:
             return False
         return all(_plain_int8_weight(m.weight) for m in parts)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _has_rotated(transformer: Any) -> bool:
+    try:
+        from .diffusion_convrot import is_rotated_linear
+        return any(is_rotated_linear(m) for m in transformer.modules())
     except Exception:  # noqa: BLE001
         return False
 
@@ -1662,6 +1736,9 @@ def _finalize(transformer: Any, logger: Any = None) -> int:
         indices = [dev.index if dev.index is not None else torch.cuda.current_device()]
     count = 0
     rearm = False
+    if _has_rotated(transformer):
+        for index in indices:
+            arm_rotated(index)
     actq_ok = {index: _act_quant_device_ok(index) for index in indices}
     actq = _act_quant_op() if any(actq_ok.values()) else None
     with _LOCK:
@@ -1690,8 +1767,7 @@ def _finalize(transformer: Any, logger: Any = None) -> int:
             bound = types.MethodType(fn, module)
             slot = _hooked_forward_slot(module)
             if slot is not None:
-                # A step cache (FBCache / MagCache) engaged before the speed layer: its hook owns the instance forward,
-                # so the swap goes under it. Overwriting the wrapper would drop the skip logic and the tail residuals.
+                # A step cache hook owns the instance forward: swap under it so its skip logic survives.
                 ref, attr = slot
                 stock_inner = _drop_compiled_inner(module)
                 module.__dict__[_MARK] = (
@@ -1769,10 +1845,13 @@ def relocate_after_layer_split(transformer: Any, logger: Any = None) -> dict:
                 index = _module_card(module)
                 if index is not None:
                     cards.setdefault(index, []).append(module)
+    rotated = _has_rotated(transformer)
     for index, modules in cards.items():
         if _device_ok(index):
             if _act_quant_device_ok(index) and _ACTQ_HANDLE is not None:
                 _ACTQ_DEVICES = _ACTQ_DEVICES | {index}
+            if rotated:
+                arm_rotated(index)
             continue
         for module in modules:
             _restore_module(module)

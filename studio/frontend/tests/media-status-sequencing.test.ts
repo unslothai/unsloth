@@ -9,8 +9,9 @@ import test from "node:test";
 import { readSrc } from "./helpers/kit.ts";
 
 const PAGES = [
-  ["images", "features/images/images-page.tsx", "getDiffusionStatus", "unloadDiffusionModel"],
-  ["video", "features/video/video-page.tsx", "getVideoStatus", "unloadVideoModel"],
+  // Images also publishes the finished build's status from its mount probe.
+  ["images", "features/images/images-page.tsx", "getDiffusionStatus", "unloadDiffusionModel", 4],
+  ["video", "features/video/video-page.tsx", "getVideoStatus", "unloadVideoModel", 3],
 ] as const;
 
 function callbackBody(source: string, name: string): string {
@@ -29,7 +30,7 @@ function callbackBody(source: string, name: string): string {
   assert.fail(`${name}'s callback never closes`);
 }
 
-for (const [name, path, read, unload] of PAGES) {
+for (const [name, path, read, unload, writes] of PAGES) {
   test(`the ${name} page lets only the newest status read write`, () => {
     const page = readSrc(path);
     assert.match(page, /const statusTicket = useRef\(0\);/);
@@ -83,8 +84,8 @@ for (const [name, path, read, unload] of PAGES) {
     );
     assert.equal(
       (page.match(/setStatusIfNewest\(/g) ?? []).length,
-      3,
-      "the refresh, the load-progress read and the unload all go through it",
+      writes,
+      "every status read (refresh, load-progress, unload) goes through it",
     );
   });
 

@@ -131,6 +131,7 @@ _AUTO_INT8_FILE_BYTES = {
     "flux.3-klein": 5_247_076_320,
     "flux.3-klein-base": 5_247_076_320,
     "qwen-image-2.1": 9_349_769_248,
+    "moss-image": 11_488_171_720,
 }
 
 

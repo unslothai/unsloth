@@ -445,11 +445,14 @@ class HostRamBudget:
         path: str,
         why: str,
         logger: Any = None,
+        *,
+        fp8_widen_chosen: bool = False,
     ) -> None:
         from .diffusion_small_host import (
             host_ram_check_disabled,
             host_ram_mib,
             host_reserve_mib,
+            single_file_host_reserve_mib,
         )
 
         self.path, self.why, self.logger = path, why, logger
@@ -469,7 +472,11 @@ class HostRamBudget:
         if available is None:
             return
         self.available_mib = int(available)
-        self.reserve_mib = host_reserve_mib(total)
+        # Capped only for a load the fp8-storage rule chose to widen, so the two never disagree; any other load
+        # (no fp8 storage option, LoRA, int8 / nvfp4 layers) keeps the proportional small-host reserve.
+        self.reserve_mib = (
+            single_file_host_reserve_mib(total) if fp8_widen_chosen else host_reserve_mib(total)
+        )
         # Armed by the file size here, and by the widened estimate in ``check``: a 900 MiB nvfp4 file widens
         # to 3.6 GiB of bf16. Only a load small on disk AND in its estimate is never checked.
         try:
@@ -581,11 +588,13 @@ def load_original_layout_transformer(
     logger: Any = None,
     *,
     fp8_storage: bool = False,
+    fp8_widen_chosen: bool = False,
 ) -> Any:
     """Load a plain original-layout safetensors file for a class without ``from_single_file``
     (Krea 2 on diffusers 0.40). ``sf_kwargs`` = the ``from_single_file`` kwargs. Cast like
     ``from_pretrained`` (``_keep_in_fp32_modules`` stay fp32); strict on keys and shapes. ``fp8_storage``
-    keeps fp8 Linears as fp8 with unit scales."""
+    keeps fp8 Linears as fp8 with unit scales; ``fp8_widen_chosen``: the fp8-storage rule chose to widen it, so the
+    host RAM refusal uses that rule's reserve."""
     import torch
     from diffusers.loaders import single_file_model as sfm
 
@@ -612,7 +621,10 @@ def load_original_layout_transformer(
         keep = [keep]
     # Before any read: fp8 widened to bf16 (13B Krea 2: ~26 GB) used to OOM the whole app.
     budget = HostRamBudget(
-        path, f"widening its weights to {str(dtype).replace('torch.', '')}", logger
+        path,
+        f"widening its weights to {str(dtype).replace('torch.', '')}",
+        logger,
+        fp8_widen_chosen = bool(fp8_widen_chosen) and not fp8_storage,
     )
     budget.check(
         converted_host_bytes(

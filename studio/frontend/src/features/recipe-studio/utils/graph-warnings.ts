@@ -143,7 +143,6 @@ function checkLlmMissingDataInput(
 ): GraphWarning[] {
   const configById = new Map(allConfigs.map((c) => [c.id, c]));
 
-  /** LLM IDs that have at least one non-infra pipeline edge. */
   const llmWithPipelineEdge = new Set<string>();
   for (const edge of edges) {
     const sourceConfig = configById.get(edge.source);

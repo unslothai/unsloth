@@ -73,7 +73,7 @@ test("a plain search page the user asked for still opens without a question", as
   assert.equal(await askedBy(navigate("c1", context, "https://www.google.com/search?q=qwen"), "google.com"), null);
 });
 
-test("a redirect link the open page shows is asked about before it loads, not after", async () => {
+test("a redirect link the open page shows opens its target without a question, like any link there", async () => {
   const context = run("d");
   show("d");
   assert.equal(await askedBy(navigate("d1", context, "https://www.google.com/search?q=qwen"), "google.com"), null);
@@ -81,10 +81,33 @@ test("a redirect link the open page shows is asked about before it loads, not af
   links = [wrapped];
   await snapshot("d2", context);
   links = [];
-  assert.deepEqual(await askedBy(navigate("d3", context, wrapped), "result.example"), { host: "result.example", openedFirst: false });
+  assert.equal(await askedBy(navigate("d3", context, wrapped), "result.example"), null);
+  assert.equal(opened().includes("https://result.example/page"), true, "the linked result did not open");
+  // Being on the page links only that result: another site the model names still asks.
+  assert.equal(
+    (await askedBy(navigate("d4", context, `https://www.google.com/url?q=${encodeURIComponent("https://unlisted.example/")}`), "unlisted.example"))
+      ?.host,
+    "unlisted.example",
+  );
 });
 
-test("a clicked redirect link is asked about at its target before the tab loads it", async () => {
+test("a redirect link the page shows is still refused when its target is blocked", async () => {
+  const context = run("f");
+  show("f");
+  assert.equal(await askedBy(navigate("f1", context, "https://www.google.com/search?q=qwen"), "google.com"), null);
+  const wrapped = "https://www.google.com/url?q=https://blocked.example/page&sa=U";
+  links = [wrapped];
+  await snapshot("f2", context);
+  links = [];
+  await runBrowserAction(
+    { id: "f3", sessionId: "s", op: "navigate", url: wrapped, direction: "down", policy: { allowedDomains: [], blockedDomains: ["blocked.example"] } },
+    context,
+  );
+  assert.equal(pending(), null);
+  assert.equal(opened().includes("blocked.example/page"), false, "the blocked target was opened");
+});
+
+test("a clicked search-result redirect link opens its target without a question", async () => {
   const context = run("e");
   show("e");
   assert.equal(await askedBy(navigate("e1", context, "https://www.google.com/search?q=qwen"), "google.com"), null);
@@ -100,7 +123,8 @@ test("a clicked redirect link is asked about at its target before the tab loads 
   try {
     await snapshot("e2", context);
     const click = runBrowserAction({ id: "e3", sessionId: "s", op: "click", ref: "r5", direction: "down", policy }, context);
-    assert.deepEqual(await askedBy(click, "clicked.example"), { host: "clicked.example", openedFirst: false });
+    assert.equal(await askedBy(click, "clicked.example"), null);
+    assert.equal(opened().includes("https://clicked.example/page"), true, "the clicked result did not open");
   } finally {
     globals.__frameAgent = original;
     links = [];

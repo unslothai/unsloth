@@ -25,10 +25,8 @@ export type Personalization = {
   version: number;
   profile: PersonalizationProfile;
   appearance: PersonalizationAppearance;
-  // Distinguishes server hydrate from first local migration.
   saved: boolean;
-  // False when the stored record predates these fields (legacy migration): the
-  // client then keeps local values instead of the server-filled defaults.
+  // False for legacy records: the client keeps local values over server-filled defaults.
   customizationSaved: boolean;
   chatWidthSaved?: boolean;
   sentAttachmentsSaved?: boolean;

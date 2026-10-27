@@ -14,8 +14,7 @@ import re
 
 REDACTED = "<redacted>"
 
-# Stripped BEFORE anything is matched: a colorized writer puts an escape between a key and its value, and the "m" ending a colour code is a word character, so every anchored rule below stops matching. ECMA-48 5.4 (CSI) and 5.6 (OSC / DCS / SOS / PM / APC).
-# _strip_ansi replaces one alternation of lazy `[\s\S]*?` bodies whose FAILURE was quadratic: an unterminated introducer scanned to end of record, failed, and the engine retried from the next position. Its output is identical to that pattern on every input, by differential fuzzing, and must stay so: a redactor is the wrong place to smuggle a behaviour change into a performance fix, and every attempt to also improve the truncated cases moved a leak rather than removing one (unslothai/unsloth#10721).
+# Strip ANSI first, as escapes defeat the anchored rules. Output must stay identical to the old regex: fixing truncated cases moved a leak.
 _CSI_7BIT_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _CSI_8BIT_RE = re.compile(r"\x9b[0-?]*[ -/]*[@-~]")
 # Fe covers 0x40-0x5F, so it also claims a "]" or "P" whose control string never terminated. Hence tried last.

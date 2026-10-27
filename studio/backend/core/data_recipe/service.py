@@ -6,11 +6,13 @@ from __future__ import annotations
 from core.training.account_jobs import account_path, managed_account, validate_recipe_access
 import base64
 import functools
+import hashlib
 import io
 import json
 import logging
 import math
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -456,12 +458,7 @@ def _apply_data_designer_sql_inline_config_patch() -> None:
 
 
 def _require_public_provider_endpoint(endpoint: str) -> None:
-    """The recipe engine dials providers itself, so a managed account's endpoint cannot use the pinned
-    transport: require HTTPS, which binds the peer to its certificate rather than to a DNS answer that
-    may rebind to loopback or the LAN after this public-address check.
-
-    With the switch on, the HTTPS and public-address rules stand down so a saved connection is one
-    a recipe can run on. The metadata rule does not: this path has no validator behind it."""
+    """Managed endpoints need HTTPS unless private switch is on; the metadata block holds even then."""
     if not managed_account():
         return
     from urllib.parse import urlsplit
@@ -476,8 +473,7 @@ def _require_public_provider_endpoint(endpoint: str) -> None:
     url = str(endpoint or "")
     if get_managed_private_provider_urls_allowed():
         try:
-            # The switch lifts HTTPS-only and public-only, not http(s)-only: everywhere else a
-            # provider URL is one of those two schemes, and this gate has no validator behind it.
+            # The switch lifts HTTPS-only and public-only, not http(s)-only.
             if urlsplit(url).scheme not in ("http", "https"):
                 raise ValueError("Provider endpoints must use http or https.")
             provider_address_excluding_metadata(url)
@@ -501,12 +497,8 @@ def _require_public_provider_endpoint(endpoint: str) -> None:
 
 
 def install_public_egress_guard() -> None:
-    """Managed recipe workers: the engine dials providers itself, so every name resolves through this
-    guard and a host that rebinds to loopback or the LAN after the endpoint check is refused at connect
-    time rather than dialled. Process-wide, so it is installed only in the job subprocess.
-
-    With the switch on the guard narrows to the metadata services rather than standing down: a
-    worker whose engine dials for itself has nothing else between it and that address."""
+    """Job subprocess only: refuses rebinding hosts at connect; with the private switch on, metadata
+    only."""
     if not managed_account():
         return
     from utils.managed_provider_url_settings import get_managed_private_provider_urls_allowed
@@ -673,8 +665,7 @@ def _require_confinable_mcp_transport(provider_type: str) -> None:
 def build_mcp_providers(recipe: dict[str, Any]) -> list:
     from data_designer.config.mcp import LocalStdioMCPProvider, MCPProvider  # pyright: ignore[reportMissingImports]
 
-    # Same gate as the chat MCP path: stdio providers spawn a local subprocess, so build
-    # them only when this host allows it (desktop loopback default / explicit opt-in).
+    # stdio providers spawn a local subprocess; same gate as chat MCP.
     from core.inference.mcp_client import stdio_mcp_enabled
 
     stdio_allowed = stdio_mcp_enabled()
@@ -746,20 +737,52 @@ def _strip_frontend_model_config_metadata(recipe: dict[str, Any]) -> dict[str, A
 
 
 def validate_recipe_names(recipe: dict[str, Any]) -> None:
-    """Refuse a column, processor or validator target name holding a path separator: the code
-    validator writes `<tmp>/<record id>_<column>.py`, and Windows resolves `..` after it lexically."""
-    for field in ("columns", "processors"):
-        items = recipe.get(field)
-        for item in items if isinstance(items, list) else []:
-            if not isinstance(item, dict):
-                continue
-            # A validator's targets can be seed columns, named by the seed file rather than the recipe.
-            targets = item.get("target_columns")
-            for name in [item.get("name"), *(targets if isinstance(targets, list) else ())]:
-                if isinstance(name, str) and ("/" in name or "\\" in name or name in (".", "..")):
-                    raise ValueError(
-                        f"Column and processor names can't contain '/' or '\\' or be '.' / '..': {name!r}"
-                    )
+    """Processor names must be one folder: Data Designer stores them as `processors-files/<name>`
+    and neither previews nor lists a nested one. Column names are sanitized by the validator patch."""
+    processors = recipe.get("processors")
+    for item in processors if isinstance(processors, list) else []:
+        name = item.get("name") if isinstance(item, dict) else None
+        if isinstance(name, str) and (
+            "/" in name or "\\" in name or name in (".", "..") or re.match(r"^[A-Za-z]:", name)
+        ):
+            raise ValueError(
+                f"Processor names can't contain '/' or '\\', start with a drive letter, or be '.' / '..': {name!r}"
+            )
+
+
+def _safe_module_name(record_id: Any, column_name: str) -> str:
+    # The code validator writes `<tmp>/<module>.py`: keep the column name readable but path-free.
+    safe = re.sub(r"[^\w-]", "_", str(column_name))
+    if safe != column_name:
+        safe += "_" + hashlib.sha256(str(column_name).encode("utf-8")).hexdigest()[:8]
+    return f"{record_id}_{safe}"
+
+
+def _apply_data_designer_python_validator_path_patch() -> None:
+    try:
+        from data_designer.engine.validators.python import (  # pyright: ignore[reportMissingImports]
+            RECORD_ID_COLUMN_NAME,
+            PythonValidator,
+        )
+    except ImportError:
+        return
+
+    if getattr(PythonValidator, "_unsloth_python_validator_path_patch_applied", False):
+        return
+
+    def _patched_write(self: Any, row: Any, code_column: str, path: str) -> None:
+        root = Path(path).resolve()
+        target = (
+            root / f"{self._get_module_name(row[RECORD_ID_COLUMN_NAME], code_column)}.py"
+        ).resolve()
+        if target.parent != root:
+            raise ValueError(f"Code validator file left its temp folder: {code_column!r}")
+        with open(target, "w", encoding = "utf-8") as file:
+            file.write(row[code_column])
+
+    PythonValidator._get_module_name = staticmethod(_safe_module_name)
+    PythonValidator._write_code_to_file = _patched_write
+    setattr(PythonValidator, "_unsloth_python_validator_path_patch_applied", True)
 
 
 def build_config_builder(recipe: dict[str, Any]):
@@ -787,8 +810,7 @@ def build_config_builder(recipe: dict[str, Any]):
         specs = text_format_specs,
     )
 
-    # DataDesignerConfigBuilder.from_config skips processors; re-attach so drop_columns/schema_transform
-    # survive the API payload.
+    # from_config skips processors; re-attach them.
     for processor in recipe_core.get("processors") or []:
         if not isinstance(processor, dict):
             continue
@@ -813,11 +835,11 @@ def create_data_designer(recipe: dict[str, Any], *, artifact_path: str | None = 
     _apply_data_designer_mixed_type_parquet_patch()
     _apply_data_designer_seed_uri_quote_patch()
     _apply_data_designer_sql_inline_config_patch()
+    _apply_data_designer_python_validator_path_patch()
     from data_designer.interface.data_designer import DataDesigner  # pyright: ignore[reportMissingImports]
 
     if artifact_path is None:
-        # DataDesigner defaults to cwd/artifacts and packaged Unsloth can run with cwd=/, so pin the
-        # writable recipe artifact root.
+        # Packaged Unsloth can run with cwd=/, so pin the artifact root.
         artifact_path = str(recipe_datasets_root())
 
     recipe = _strip_frontend_model_config_metadata(recipe)

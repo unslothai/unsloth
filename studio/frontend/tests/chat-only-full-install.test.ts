@@ -108,3 +108,26 @@ test("the greyed Train row opens the full install dialog when the upgrade is off
   assert.match(source, /<FullInstallDialog\s+open=\{fullInstallOpen\}/);
   assert.match(en.settings.general.fullInstall.confirmDescription, /at least 5 GB of disk space/);
 });
+
+test("the Train hint and the Export banner both carry an Install Training button", async () => {
+  const sidebar = await readSrcAsync("components/app-sidebar.tsx");
+  const row = /train: \{[\s\S]*?\n    \},\n/.exec(sidebar);
+  assert.ok(row, "could not find the train nav row");
+  assert.match(
+    row[0],
+    /tooltipAction: fullInstall\s*\? \{ label: "Install Training", onClick: \(\) => setFullInstallOpen\(true\) \}\s*: undefined,/,
+  );
+  // The inline row renders it, and a still-spinning row never offers it.
+  assert.match(sidebar, /tooltipAction=\{rowState\.pending \? undefined : row\.tooltipAction\}/);
+  assert.match(sidebar, /<Button size="xs" onClick=\{tooltipAction\.onClick\}>/);
+  // The More flyout renders no button, so its title keeps the click guidance.
+  assert.match(sidebar, /row\.tooltipAction && !rowState\.pending\s*\? `\$\{rowState\.tooltip\} Click to install it\.`/);
+  // The nav provider disables hoverable tooltips; a tooltip with a button must opt back in.
+  assert.match(sidebar, /interactiveTooltip=\{Boolean\(tooltip && tooltipAction\)\}/);
+
+  const exportPage = await readSrcAsync("features/export/export-page.tsx");
+  const banner = /<AlertTitle>Export unavailable<\/AlertTitle>[\s\S]*?<\/Alert>/.exec(exportPage);
+  assert.ok(banner, "could not find the Export unavailable banner");
+  assert.match(banner[0], /\{fullInstall && \([\s\S]*?setFullInstallOpen\(true\)[\s\S]*?Install Training/);
+  assert.match(exportPage, /<FullInstallDialog\s+open=\{fullInstallOpen\}/);
+});

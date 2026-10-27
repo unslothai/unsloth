@@ -12,7 +12,7 @@ import { useBrowserAgentStore } from "./agent-store";
 
 /** Like MCP: the model needs Studio's tool loop, so a loaded model without tools rules it out; so
  *  does a chat with nowhere to show the panel (mobile, compare), where no browser tool is sent. */
-function useBrowserAgentDisabled(): boolean {
+export function useBrowserAgentDisabled(): boolean {
   const noTools = useChatRuntimeStore((s) => !!s.params.checkpoint && !s.modelLoading && !s.supportsTools);
   // Both hooks every render: `noTools || !useBrowserPanelAvailable()` skips one once a tool-less
   // model loads, and React's changed hook order crashes the chat.

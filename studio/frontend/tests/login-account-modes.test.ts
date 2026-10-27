@@ -135,7 +135,8 @@ function mountForm(
           routes.push(to);
         },
     },
-    "lucide-react": { Eye: "Eye", EyeOff: "EyeOff" },
+    "@hugeicons/core-free-icons": { ViewIcon: "ViewIcon", ViewOffSlashIcon: "ViewOffSlashIcon" },
+    "@hugeicons/react": { HugeiconsIcon: "HugeiconsIcon" },
     "../api": {
       refreshSession: async () => true,
       refreshSessionOutcome: async () => session.outcome ?? "ok",

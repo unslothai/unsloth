@@ -8,9 +8,9 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import {
-  CheckmarkCircle01Icon,
   InformationCircleIcon,
   LayersIcon,
+  CheckmarkCircle02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { QUANT_OPTIONS } from "../constants";
@@ -18,7 +18,6 @@ import { QUANT_OPTIONS } from "../constants";
 interface QuantPickerProps {
   value: string[];
   onChange: (v: string[]) => void;
-  /** quant value -> "~X GB"; blank/missing when the model size is unknown. */
   sizes?: Record<string, string>;
   /** Choices to offer; defaults to every GGUF quant. */
   options?: { value: string; label: string; recommended?: boolean }[];
@@ -85,13 +84,13 @@ export function QuantPicker({
               className={cn(
                 "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium ring-1 transition-colors",
                 active
-                  ? "ring-ring-strong bg-primary/10 text-foreground"
+                  ? "ring-ring-strong bg-wash-10 text-foreground"
                   : "ring-border text-muted-foreground hover:text-foreground hover:ring-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)]",
               )}
             >
               {active && (
                 <HugeiconsIcon
-                  icon={CheckmarkCircle01Icon}
+                  icon={CheckmarkCircle02Icon}
                   className="size-3 text-primary"
                 />
               )}

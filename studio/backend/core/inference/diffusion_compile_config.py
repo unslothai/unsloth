@@ -12,9 +12,7 @@ from contextvars import ContextVar
 from typing import Any
 from .rocm_bf16 import is_rocm_torch
 
-# dynamic_scale_rblock benchmarks R0_BLOCK vs R0_BLOCK/2 per process (never cached); the two sum in different orders,
-# so renders differed across servers on one seed (FLUX.1-schnell int8, B200). =1 restores inductor's default, and also
-# drops the per-family reduction-config filter (diffusion_speed.pin_reduction_configs).
+# dynamic_scale_rblock benchmarks per process, so renders differed across servers on one seed.
 DYNAMIC_SCALE_RBLOCK_ENV = "UNSLOTH_DIFFUSION_DYNAMIC_SCALE_RBLOCK"
 
 

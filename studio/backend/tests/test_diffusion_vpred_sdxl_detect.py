@@ -71,6 +71,12 @@ def _write_safetensors(path: Path, keys) -> Path:
     return path
 
 
+@pytest.fixture(autouse = True)
+def _private_studio_cache(tmp_path, monkeypatch):
+    """Recorded marker reads land in a per-test Studio cache, never the real one."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio_home"))
+
+
 @pytest.fixture
 def hub_cache(tmp_path, monkeypatch):
     """An empty HF hub cache root, pinned as the live one; ``put`` caches a repo file."""
@@ -404,7 +410,9 @@ def test_a_cache_only_prefetch_never_touches_the_hub(hub_cache, monkeypatch):
 def test_the_load_route_passes_user_initiated_to_the_prefetch():
     import ast
 
-    source = (Path(__file__).resolve().parents[1] / "routes" / "inference.py").read_text()
+    source = (Path(__file__).resolve().parents[1] / "routes" / "inference.py").read_text(
+        encoding = "utf-8"
+    )
     tree = ast.parse(source)
     route = next(
         n
@@ -570,12 +578,120 @@ def test_a_staged_pipeline_snapshot_reads_the_root_markers_off_the_hub(tmp_path,
     assert seen == []
 
 
+def _stub_noob_hub(monkeypatch, keys, seen):
+    import huggingface_hub
+
+    def files(
+        self,
+        repo_id,
+        token = None,
+        **kw,
+    ):
+        seen.append("list")
+        return ["model_index.json", NOOB_FILE]
+
+    def parse(
+        self,
+        repo_id,
+        filename,
+        token = None,
+        **kw,
+    ):
+        seen.append("header")
+        if keys is None:
+            raise OSError("offline")
+        return types.SimpleNamespace(tensors = {k: None for k in keys}, metadata = {})
+
+    monkeypatch.setattr(huggingface_hub.HfApi, "list_repo_files", files)
+    monkeypatch.setattr(huggingface_hub.HfApi, "parse_safetensors_file_metadata", parse)
+
+
+def _staged_snapshot(hub_cache, commit = SHA) -> Path:
+    # A staged pipeline snapshot: model_index.json + scheduler config, no root single file.
+    hub_cache.put(NOOB, "model_index.json", payload = SDXL_INDEX)
+    target = hub_cache.put(NOOB, "scheduler/scheduler_config.json", payload = NOOB_SCHEDULER)
+    snap = target.parent.parent
+    if commit != SHA:
+        renamed = snap.parent / commit
+        snap.rename(renamed)
+        (snap.parent.parent / "refs" / "main").write_text(commit)
+        snap = renamed
+    return snap
+
+
+VPRED = {
+    "prediction_type": "v_prediction",
+    "rescale_betas_zero_snr": True,
+    "timestep_spacing": "trailing",
+}
+
+
+def test_a_cache_only_reload_of_a_staged_snapshot_keeps_the_online_marker_read(
+    hub_cache, monkeypatch
+):
+    diffusers = pytest.importorskip("diffusers")
+    from core.inference.diffusion_sampler import apply_pipeline_prediction_type
+
+    snap = _staged_snapshot(hub_cache)
+    seen = []
+    _stub_noob_hub(monkeypatch, SDXL_UNET_KEYS + ["v_pred", "ztsnr"], seen)
+    assert pipeline_prediction_overrides(NOOB_SCHEDULER, str(snap), NOOB, None, True) == VPRED
+    assert seen == ["list", "header"]
+    # Offline loads (by snapshot path or repo id) reuse the recorded markers.
+    seen.clear()
+    _stub_noob_hub(monkeypatch, None, seen)
+    assert pipeline_prediction_overrides(NOOB_SCHEDULER, str(snap), NOOB, None, False) == VPRED
+    assert pipeline_prediction_overrides(NOOB_SCHEDULER, None, NOOB, None, False) == VPRED
+    assert seen == []
+    pipe = types.SimpleNamespace(
+        scheduler = diffusers.EulerDiscreteScheduler.from_config(NOOB_SCHEDULER)
+    )
+    assert apply_pipeline_prediction_type(pipe, str(snap), repo_id = NOOB, allow_network = False)
+    cfg = pipe.scheduler.config
+    assert (cfg.prediction_type, cfg.rescale_betas_zero_snr, cfg.timestep_spacing) == (
+        "v_prediction",
+        True,
+        "trailing",
+    )
+
+
+def test_a_failed_online_marker_read_falls_back_to_the_recorded_one(hub_cache, monkeypatch):
+    snap = _staged_snapshot(hub_cache)
+    seen = []
+    _stub_noob_hub(monkeypatch, SDXL_UNET_KEYS + ["v_pred", "ztsnr"], seen)
+    assert pipeline_prediction_overrides(NOOB_SCHEDULER, str(snap), NOOB, None, True) == VPRED
+    _stub_noob_hub(monkeypatch, None, seen)
+    assert pipeline_prediction_overrides(NOOB_SCHEDULER, str(snap), NOOB, None, True) == VPRED
+
+
+def test_a_recorded_marker_read_is_per_snapshot_commit(hub_cache, monkeypatch):
+    snap = _staged_snapshot(hub_cache)
+    _stub_noob_hub(monkeypatch, SDXL_UNET_KEYS + ["v_pred", "ztsnr"], [])
+    assert pipeline_prediction_overrides(NOOB_SCHEDULER, str(snap), NOOB, None, True) == VPRED
+    other = snap.parent / ("f" * 40)
+    other.mkdir()
+    # Another commit of the repo was never read: its shipped config stands offline.
+    assert pipeline_prediction_overrides(NOOB_SCHEDULER, str(other), NOOB, None, False) == {}
+    # An online read that finds no markers replaces the record, so an eps re-release stays eps offline.
+    _stub_noob_hub(monkeypatch, SDXL_UNET_KEYS, [])
+    assert pipeline_prediction_overrides(NOOB_SCHEDULER, str(snap), NOOB, None, True) == {}
+    assert pipeline_prediction_overrides(NOOB_SCHEDULER, str(snap), NOOB, None, False) == {}
+
+
+def test_an_unrecorded_cache_only_load_keeps_the_shipped_config(hub_cache, monkeypatch):
+    snap = _staged_snapshot(hub_cache)
+    seen = []
+    _stub_noob_hub(monkeypatch, SDXL_UNET_KEYS + ["v_pred", "ztsnr"], seen)
+    assert pipeline_prediction_overrides(NOOB_SCHEDULER, str(snap), NOOB, None, False) == {}
+    assert seen == []
+
+
 def test_the_load_passes_the_repo_to_the_pipeline_marker_check():
     import ast
 
     source = (
         Path(__file__).resolve().parents[1] / "core" / "inference" / "diffusion.py"
-    ).read_text()
+    ).read_text(encoding = "utf-8")
     calls = [
         c
         for c in ast.walk(ast.parse(source))
@@ -661,7 +777,7 @@ def test_the_load_hands_the_uncollapsed_token_to_the_marker_probe():
 
     source = (
         Path(__file__).resolve().parents[1] / "core" / "inference" / "diffusion.py"
-    ).read_text()
+    ).read_text(encoding = "utf-8")
     tree = ast.parse(source)
     methods = {
         n.name: n
@@ -691,3 +807,82 @@ def test_the_load_hands_the_uncollapsed_token_to_the_marker_probe():
     assert len(probe) == 1
     token_kw = next(k for k in probe[0].keywords if k.arg == "hf_token")
     assert isinstance(token_kw.value, ast.Name) and token_kw.value.id == "hub_token"
+
+
+def test_the_marker_probe_reads_the_snapshot_it_records(hub_cache, monkeypatch):
+    import huggingface_hub
+
+    snap = _staged_snapshot(hub_cache)
+    revisions = []
+
+    def files(
+        self,
+        repo_id,
+        token = None,
+        **kw,
+    ):
+        revisions.append(kw.get("revision"))
+        return ["model_index.json", NOOB_FILE]
+
+    def parse(
+        self,
+        repo_id,
+        filename,
+        token = None,
+        **kw,
+    ):
+        revisions.append(kw.get("revision"))
+        keys = SDXL_UNET_KEYS + ["v_pred", "ztsnr"]
+        return types.SimpleNamespace(tensors = {k: None for k in keys}, metadata = {})
+
+    monkeypatch.setattr(huggingface_hub.HfApi, "list_repo_files", files)
+    monkeypatch.setattr(huggingface_hub.HfApi, "parse_safetensors_file_metadata", parse)
+    # No revision pin: both Hub reads still target the staged commit, not the moving HEAD.
+    assert pipeline_prediction_overrides(NOOB_SCHEDULER, str(snap), NOOB, None, True) == VPRED
+    assert revisions == [SHA, SHA]
+
+
+@pytest.mark.parametrize("markers", [5, [["v_pred"]], "v_pred", [1]])
+def test_a_malformed_recorded_entry_is_a_cache_miss(hub_cache, monkeypatch, markers):
+    from core.inference.diffusion_sampler import _marks_key, _marks_record_path
+
+    snap = _staged_snapshot(hub_cache)
+    path = _marks_record_path()
+    path.parent.mkdir(parents = True, exist_ok = True)
+    path.write_text(json.dumps({_marks_key(NOOB, SHA): [{"markers": markers}]}))
+    assert pipeline_prediction_overrides(NOOB_SCHEDULER, str(snap), NOOB, None, False) == {}
+    _stub_noob_hub(monkeypatch, None, [])
+    assert pipeline_prediction_overrides(NOOB_SCHEDULER, str(snap), NOOB, None, True) == {}
+
+
+def test_concurrent_marker_records_keep_every_entry(hub_cache, monkeypatch):
+    import os
+    import threading
+
+    import core.inference.diffusion_sampler as sampler
+
+    real_replace = os.replace
+    first_read = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def slow_replace(src, dst):
+        # The first writer has read the record; hold it until the second writer has had its turn.
+        if not calls:
+            calls.append(1)
+            first_read.set()
+            release.wait(5)
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", slow_replace)
+    a = threading.Thread(target = sampler._record_marks, args = (NOOB, "a" * 40, [["v_pred"]]))
+    a.start()
+    assert first_read.wait(5)
+    b = threading.Thread(target = sampler._record_marks, args = (NOOB, "b" * 40, [["v_pred"]]))
+    b.start()
+    b.join(1)
+    release.set()
+    a.join(5)
+    b.join(5)
+    record = json.loads(sampler._marks_record_path().read_text(encoding = "utf-8"))
+    assert {sampler._marks_key(NOOB, "a" * 40), sampler._marks_key(NOOB, "b" * 40)} <= set(record)

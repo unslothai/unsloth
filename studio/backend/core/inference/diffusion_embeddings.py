@@ -25,7 +25,7 @@ import copy
 import hashlib
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -285,6 +285,8 @@ class AppliedEmbeddings:
     skipped: list[str]
     pattern: Optional[re.Pattern]
     marker_owners: list[Any]
+    # (pooling module, original eos_token_id)
+    pool_eos: list[tuple[Any, Any]] = field(default_factory = list)
 
     def rewrite(self, call_kwargs: dict) -> dict:
         """``call_kwargs`` with every trigger replaced by its internal token (a new dict; the input is kept)."""
@@ -304,6 +306,12 @@ class AppliedEmbeddings:
         return out
 
     def restore(self) -> None:
+        for text_model, original in reversed(self.pool_eos):
+            try:
+                text_model.eos_token_id = original
+            except Exception:  # noqa: BLE001
+                pass
+        self.pool_eos.clear()
         for encoder, original in reversed(self.encoders):
             try:
                 encoder.set_input_embeddings(original)
@@ -322,6 +330,31 @@ class AppliedEmbeddings:
                 pass
         self.encoders.clear()
         self.tokenizers.clear()
+
+
+def _clip_pooling_module(encoder: Any) -> Any:
+    """CLIP module owning ``eos_token_id``: ``text_model`` (transformers 4.x) or the model itself (5.x)."""
+    module = encoder
+    for _ in range(3):
+        if module is None:
+            return None
+        if "eos_token_id" in getattr(module, "__dict__", {}):
+            return module
+        module = getattr(module, "text_model", None)
+    return None
+
+
+def _pool_at_eos(applied: AppliedEmbeddings, encoder: Any, tokenizer: Any) -> None:
+    """Legacy ``eos_token_id == 2`` configs (pre transformers #24773, both SDXL encoders) pool at
+    ``input_ids.argmax(-1)``, which an added token outranks; pool at the real EOS instead."""
+    text_model = _clip_pooling_module(encoder)
+    eos = getattr(tokenizer, "eos_token_id", None)
+    if text_model is None or getattr(text_model, "eos_token_id", None) != 2:
+        return
+    if not isinstance(eos, int) or isinstance(eos, bool) or eos == 2:
+        return
+    applied.pool_eos.append((text_model, text_model.eos_token_id))
+    text_model.eos_token_id = eos
 
 
 def _slots_for(pipe: Any, kind: str) -> list[tuple[str, Any, Any, str]]:
@@ -423,6 +456,7 @@ def apply(
                     table = table.to(device = weight.device, dtype = weight.dtype)
             applied.encoders.append((encoder, original_embedding))
             encoder.set_input_embeddings(_make_extended_embedding(original_embedding, table))
+            _pool_at_eos(applied, encoder, tok_copy)
             applied.tokenizers.append((tok_attr, tokenizer))
             setattr(pipe, tok_attr, tok_copy)
     except BaseException:

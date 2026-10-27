@@ -462,10 +462,10 @@ def upscale_with_model(
         arr = torch.from_numpy(np.asarray(rgb, dtype = np.uint8).copy())
         x = arr.permute(2, 0, 1).unsqueeze(0).to(device = dev, dtype = torch.float32) / 255.0
         scale = int(descriptor.scale)
-        model = descriptor.model
 
         def _run(piece: Any) -> Any:
-            return model(piece.to(dtype)).float()
+            # Not descriptor.model: the descriptor pads, unwraps tuple outputs (MMRealSR) and clamps.
+            return descriptor(piece.to(dtype)).float()
 
         boxes = tile_boxes(x.shape[3], x.shape[2], tile, overlap)
         try:
@@ -498,7 +498,7 @@ def upscale_with_model(
                         boxes = tile_boxes(x.shape[3], x.shape[2], tile, overlap)
         finally:
             if not keep_resident:
-                del model, descriptor, cached
+                del descriptor, cached
                 _resident.pop(key, None)
         tw, th = int(target[0]), int(target[1])
         if (y.shape[3], y.shape[2]) != (tw, th):
