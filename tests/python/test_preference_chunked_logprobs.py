@@ -400,3 +400,11 @@ def test_square_head_needs_an_affirmative_hidden_state_signal():
     assert rl._unsloth_pref_returns_hidden_states(marked, out, square) is True
     # GRPO keeps its leniency for a zoo too old to write the marker.
     assert rl._unsloth_grpo_returns_hidden_states(plain, out, square) is True
+
+
+def test_every_generated_trainer_with_a_head_guard_defines_the_global_hook_check():
+    # A trainer that copies a chunked-head guard into its source must copy the helper it calls.
+    for trainer, items in rl.RL_PRE_ITEMS.items():
+        pre = "\n".join(items)
+        if "def _unsloth_dpo_chunked_head(" in pre or "def _unsloth_pref_chunked_head(" in pre:
+            assert "def _unsloth_global_module_hooks(" in pre, trainer
