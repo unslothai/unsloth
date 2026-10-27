@@ -36,8 +36,9 @@ export function parseHandle(
     return { kind: "flow", side: "in", port: FLOW_TARGET_PORT };
   if (handle.startsWith("fo:"))
     return { kind: "flow", side: "out", port: handle.slice(3) };
+  // A recipe column's port per column it reads ("i:in@<source>") is still its "in" port.
   if (handle.startsWith("i:"))
-    return { kind: "data", side: "in", port: handle.slice(2) };
+    return { kind: "data", side: "in", port: handle.slice(2).split("@")[0] };
   if (handle.startsWith("o:"))
     return { kind: "data", side: "out", port: handle.slice(2) };
   return null;

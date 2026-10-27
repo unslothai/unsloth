@@ -24,6 +24,8 @@ GENERATE_TYPE = "recipe.generate"
 _JINJA_BLOCK = re.compile(r"\{\{(.*?)\}\}|\{%(.*?)%\}", re.S)
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*")
 _GRID = (320, 180)
+# The canvas stacks a card per model provider, preset and tool profile under the generate node.
+_GENERATE_H, _CARD_H = 160, 96
 _HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
 # Canvas layout from Recipe Studio; a Flows group lays its columns out again.
 _LAYOUT_UI = ("nodes", "edges", "layout_direction", "aux_nodes", "advanced_open_by_node")
@@ -147,7 +149,8 @@ def import_recipe(payload: Any, *, group_id: str = "recipe") -> dict:
                 }
             )
     width = (max(depths, default = 0) + 1) * _GRID[0]
-    height = max(rows.values(), default = 1) * _GRID[1]
+    cards = sum(len(recipe.get(k) or []) for k in ("model_providers", "model_configs", "tool_configs"))
+    height = max(max(rows.values(), default = 1) * _GRID[1], _GENERATE_H + cards * _CARD_H)
     nodes.append(
         {
             "id": f"{group_id}_generate",

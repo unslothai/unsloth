@@ -4,7 +4,8 @@
 import type { Edge, Node } from "@xyflow/react";
 import { type DocGraph, GROUP_KEY, NOTE_KEY } from "../stores/doc-store";
 import type { FlowEdge, FlowGroup, FlowNode, FlowNote } from "../types";
-import { edgeHandles } from "./connection-rules";
+import { columnTargetPort } from "../recipe/recipe-look";
+import { edgeHandles, inHandle } from "./connection-rules";
 
 export type FlowNodeData = { nodeId: string };
 export type FlowEdgeData = { kind: "data" | "flow"; portType: string };
@@ -232,6 +233,8 @@ export class RfDeriver {
       const portType =
         cached && cached.source === edge ? cached.portType : portTypeOf(edge);
       const handles = edgeHandles(edge);
+      if (edge.kind === "data")
+        handles.targetHandle = inHandle(columnTargetPort(edge, graph));
       const rf: RfEdge = {
         id,
         source: edge.source,

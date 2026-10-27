@@ -43,6 +43,7 @@ export interface GraphFragment {
 export interface GraphPatch {
   nodes?: FlowNode[];
   groups?: FlowGroup[];
+  notes?: FlowNote[];
   addEdges?: FlowEdge[];
   removeEdges?: string[];
 }
@@ -539,6 +540,12 @@ export const useDocStore = create<DocState>((set, get) => {
           if (!edges[edge.id]) edgeOrder = [...edgeOrder, edge.id];
           edges[edge.id] = edge;
         }
+        const notes = patch.notes?.length ? { ...s.graph.notes } : s.graph.notes;
+        let noteOrder = s.graph.noteOrder;
+        for (const note of patch.notes ?? []) {
+          if (!notes[note.id]) noteOrder = [...noteOrder, note.id];
+          notes[note.id] = note;
+        }
         return withGraph(s, {
           nodes,
           nodeOrder,
@@ -546,6 +553,8 @@ export const useDocStore = create<DocState>((set, get) => {
           groupOrder,
           edges,
           edgeOrder,
+          notes,
+          noteOrder,
         });
       }, coalesceKey),
 

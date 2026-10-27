@@ -2,8 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { type NodeProps, NodeResizer } from "@xyflow/react";
-import { memo, useState } from "react";
+import { Suspense, lazy, memo, useState } from "react";
 import { groupGenerate } from "../recipe/recipe-columns";
+import { noteRecipeGroup, withRecipeNotes } from "../recipe/recipe-notes";
 import { useDocStore } from "../stores/doc-store";
 import { useUiStore } from "../stores/ui-store";
 import type { RfNode } from "./derive-rf";
@@ -81,11 +82,77 @@ function GroupFrameImpl({ data, selected }: NodeProps<RfNode>) {
   );
 }
 
+const MarkdownPreview = lazy(() =>
+  import("@/components/markdown/markdown-preview").then((m) => ({
+    default: m.MarkdownPreview,
+  })),
+);
+
 function NoteFrameImpl({ data, selected }: NodeProps<RfNode>) {
   const noteId = (data as { noteId: string }).noteId;
   const note = useDocStore((s) => s.graph.notes[noteId]);
   const upsertNote = useDocStore((s) => s.upsertNote);
+  // A note from a Data Recipe reads as markdown, like Recipe Studio, and edits go back into the recipe.
+  const fromRecipe = useDocStore((s) => !!noteRecipeGroup(s.graph, noteId));
+  const [editing, setEditing] = useState(false);
   if (!note) return null;
+  const write = (text: string) => {
+    const next = { ...note, text };
+    const { graph, patchGraph } = useDocStore.getState();
+    const group = fromRecipe ? noteRecipeGroup(graph, note.id) : null;
+    if (!group) return upsertNote(next, `note:${note.id}`);
+    const notes = graph.noteOrder.map((id) =>
+      id === note.id ? next : graph.notes[id],
+    );
+    patchGraph(
+      { notes: [next], groups: [withRecipeNotes(group, notes)] },
+      `note:${note.id}`,
+    );
+  };
+  if (fromRecipe && !editing) {
+    return (
+      <div
+        className="h-full w-full overflow-hidden rounded-lg border border-amber-300/30 bg-amber-200/10 shadow-md"
+        style={
+          note.color
+            ? { borderColor: `${note.color}55`, background: `${note.color}14` }
+            : undefined
+        }
+        onDoubleClick={(e) => {
+          e.stopPropagation();
+          setEditing(true);
+        }}
+        title="Double-click to edit"
+      >
+        <NodeResizer
+          isVisible={selected}
+          minWidth={140}
+          minHeight={60}
+          lineClassName="!border-amber-200/30"
+          handleClassName="!h-2 !w-2 !rounded-sm !border-amber-200/60 !bg-zinc-800"
+          onResizeEnd={(_, p) =>
+            upsertNote({
+              ...note,
+              rect: [p.x, p.y, Math.round(p.width), Math.round(p.height)],
+            })
+          }
+        />
+        <Suspense
+          fallback={
+            <p className="whitespace-pre-wrap p-2 text-[12px] text-zinc-300">
+              {note.text}
+            </p>
+          }
+        >
+          <MarkdownPreview
+            markdown={note.text}
+            plain={true}
+            className="text-zinc-200 [&_h1]:text-sm [&_h2]:text-sm [&_h3]:text-[13px]"
+          />
+        </Suspense>
+      </div>
+    );
+  }
   return (
     <div className="h-full w-full rounded-lg border border-amber-300/30 bg-amber-200/10 p-2 shadow-md">
       <NodeResizer
@@ -105,9 +172,10 @@ function NoteFrameImpl({ data, selected }: NodeProps<RfNode>) {
         className="nodrag nowheel h-full w-full resize-none bg-transparent text-[12px] leading-snug text-amber-100 outline-none placeholder:text-amber-100/40"
         placeholder="Write a note…"
         value={note.text}
-        onChange={(e) =>
-          upsertNote({ ...note, text: e.target.value }, `note:${note.id}`)
-        }
+        // biome-ignore lint/a11y/noAutofocus: editing starts on double-click
+        autoFocus={editing}
+        onBlur={() => setEditing(false)}
+        onChange={(e) => write(e.target.value)}
       />
     </div>
   );

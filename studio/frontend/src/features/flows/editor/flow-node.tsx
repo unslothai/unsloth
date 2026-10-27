@@ -11,7 +11,13 @@ import {
   type NodeRuntime,
   useRuntimeStore,
 } from "../stores/runtime-store";
-import { COLUMN_TYPE, columnOf, columnSummary } from "../recipe/recipe-columns";
+import {
+  RecipeColumnDetails,
+  RecipeColumnHeader,
+  RecipeColumnPorts,
+  columnAccent,
+} from "../recipe/recipe-column-node";
+import { COLUMN_TYPE } from "../recipe/recipe-columns";
 import { useColumnSamples } from "../recipe/recipe-panels";
 import type { FlowNode, NodeSpec, PortSpec } from "../types";
 import {
@@ -63,10 +69,6 @@ function portColorOf(
 }
 
 function summarizeParams(node: FlowNode, spec: NodeSpec): string[] {
-  if (node.type === COLUMN_TYPE) {
-    const { badge, line } = columnSummary(columnOf(node));
-    return line ? [badge, line] : [badge];
-  }
   const lines: string[] = [];
   for (const param of spec.params) {
     if (lines.length >= 2) break;
@@ -220,7 +222,7 @@ function ColumnSample({ node }: { node: FlowNode }) {
 function FlowNodeViewImpl({ id, selected }: NodeProps<RfNode>) {
   const node = useDocStore((s) => s.graph.nodes[id]);
   const spec = useCatalogStore((s) => (node ? s.specs[node.type] : undefined));
-  const color =
+  const categoryColor =
     useCatalogStore((s) =>
       spec ? s.categories[spec.category]?.color : undefined,
     ) ?? "#64748b";
@@ -236,10 +238,13 @@ function FlowNodeViewImpl({ id, selected }: NodeProps<RfNode>) {
     );
   }
   const title = node.label || spec.title;
+  const isColumn = node.type === COLUMN_TYPE;
+  const color = isColumn ? columnAccent(node) : categoryColor;
   const ring = STATUS_RING[runtime.status] ?? "";
   const running =
     runtime.status === "running" || runtime.status === "loading_model";
-  const summary = node.collapsed ? [] : summarizeParams(node, spec);
+  const summary =
+    node.collapsed || isColumn ? [] : summarizeParams(node, spec);
   const collapsed = !!node.collapsed;
 
   return (
@@ -266,15 +271,21 @@ function FlowNodeViewImpl({ id, selected }: NodeProps<RfNode>) {
             style={{ top: 18 }}
           />
         )}
-        <HugeiconsIcon
-          icon={nodeIcon(spec.icon)}
-          size={15}
-          strokeWidth={1.8}
-          style={{ color }}
-        />
-        <span className="min-w-0 flex-1 truncate font-medium text-[13px]">
-          {title}
-        </span>
+        {isColumn ? (
+          <RecipeColumnHeader node={node} />
+        ) : (
+          <>
+            <HugeiconsIcon
+              icon={nodeIcon(spec.icon)}
+              size={15}
+              strokeWidth={1.8}
+              style={{ color }}
+            />
+            <span className="min-w-0 flex-1 truncate font-medium text-[13px]">
+              {title}
+            </span>
+          </>
+        )}
         {runtime.cached && runtime.status !== "running" && (
           <span className="rounded bg-emerald-500/15 px-1 text-[10px] text-emerald-300">
             cached
@@ -295,7 +306,11 @@ function FlowNodeViewImpl({ id, selected }: NodeProps<RfNode>) {
         )}
       </div>
 
-      {collapsed ? (
+      {collapsed && isColumn ? (
+        <div className="relative h-0 overflow-hidden opacity-0">
+          <RecipeColumnPorts node={node} />
+        </div>
+      ) : collapsed ? (
         <div className="relative h-0">
           {spec.inputs.map((port) => (
             <Handle
@@ -330,7 +345,8 @@ function FlowNodeViewImpl({ id, selected }: NodeProps<RfNode>) {
         </div>
       ) : (
         <div className="flex flex-col gap-1.5 py-2">
-          {(spec.inputs.length > 0 || spec.outputs.length > 0) && (
+          {isColumn && <RecipeColumnPorts node={node} />}
+          {!isColumn && (spec.inputs.length > 0 || spec.outputs.length > 0) && (
             <div className="flex justify-between gap-2">
               <div className="flex min-w-0 flex-col gap-1">
                 {spec.inputs.map((port) => (
@@ -420,7 +436,8 @@ function FlowNodeViewImpl({ id, selected }: NodeProps<RfNode>) {
               ))}
             </div>
           )}
-          {node.type === COLUMN_TYPE && <ColumnSample node={node} />}
+          {isColumn && <RecipeColumnDetails node={node} />}
+          {isColumn && <ColumnSample node={node} />}
           {(runtime.outputs ||
             runtime.partial ||
             runtime.text ||
