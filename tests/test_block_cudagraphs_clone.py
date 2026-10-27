@@ -289,7 +289,7 @@ class FakeMoeExperts(torch.nn.Module):
 
 
 class FakeSparseMoeBlock(torch.nn.Module):
-    # transformers 4.57 style: a ModuleList of experts and num_experts, no *Experts class.
+    # transformers 4.57: ModuleList experts + num_experts.
     def __init__(self):
         super().__init__()
         self.num_experts = 2
@@ -300,8 +300,7 @@ class FakeSparseMoeBlock(torch.nn.Module):
 
 
 class FakeRoutedMoe(torch.nn.Module):
-    # transformers 4.57 DeepSeek-V2 / V3, GLM4-MoE, Longcat: a ModuleList of experts, n_routed_experts,
-    # num_experts only on the gate (if at all).
+    # transformers 4.57 DeepSeek-V2 / V3, GLM4-MoE: n_routed_experts, num_experts only on the gate.
     def __init__(self):
         super().__init__()
         self.n_routed_experts = 2
@@ -316,8 +315,7 @@ class FakeRoutedMoe(torch.nn.Module):
 
 @pytest.mark.parametrize("moe", [None, FakeMoeExperts, FakeSparseMoeBlock, FakeRoutedMoe])
 def test_moe_layers_run_without_graphs(monkeypatch, moe):
-    """Qwen3-MoE under UNSLOTH_BLOCK_CUDAGRAPHS=1 failed on 1 GPU and FSDP2 alike: a host copy in the
-    grouped GEMM during capture (GC off) or routing outputs overwritten by the next replay (GC on)."""
+    """Qwen3-MoE broke under block CUDA graphs (capture host copy / replay-overwritten routing)."""
     seen = []
 
     def fake_compile(fn, **kwargs):
@@ -359,8 +357,7 @@ class BlockMask:
 
 @pytest.mark.parametrize("mask", [None, "tensor", "block_mask"])
 def test_flex_block_mask_calls_run_without_graphs(monkeypatch, mask):
-    """Gemma3 on flex attention re-recorded its block graphs every step (the BlockMask index tensors
-    are static inputs rebuilt per step) and trained slower than without graphs."""
+    """Flex BlockMask calls re-record block graphs every step."""
     seen = []
 
     def fake_compile(fn, **kwargs):

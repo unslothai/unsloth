@@ -83,13 +83,11 @@ def _in_nonreentrant_checkpoint():
 
 
 def _graphs_unsafe_moe(layer):
-    """MoE layers run compiled without graphs: routing and grouped GEMMs read token counts or
-    offsets the capture cannot hold (Qwen3-MoE: host copy during capture on sm80 / sm89, routing
-    outputs overwritten by the next replay with experts outside the graph)."""
+    """MoE routing / grouped GEMMs read token counts the capture cannot hold (Qwen3-MoE: host copy
+    during capture, routing outputs overwritten by the next replay)."""
     moe = layer.__dict__.get("_unsloth_block_graphs_moe")
     if moe is None:
-        # An "experts" child also covers transformers 4.57 DeepSeek-V2 / V3 and GLM4-MoE
-        # (ModuleList + n_routed_experts, no num_experts on the block).
+        # "experts" child: transformers 4.57 DeepSeek-V2 / V3, GLM4-MoE have no num_experts.
         moe = any(
             _experts_of(m) is not None
             or m._modules.get("experts") is not None
@@ -107,9 +105,8 @@ _GRAPHS_MOE_LOGGED = [False]
 
 
 def _flex_block_mask_call(args, kwargs):
-    """A flex BlockMask's index tensors reach the block graph as static inputs and are rebuilt every
-    step, so the graph re-records on each call (torch 2.14 leaves StaticInputIdxMismatch out of the
-    re-record limit). Gemma3 on L4: 4 records per step, 108 ms vs 63 ms without graphs."""
+    """BlockMask index tensors are static graph inputs rebuilt every step, so the graph re-records
+    each call (StaticInputIdxMismatch is outside the re-record limit); Gemma3 was slower with graphs."""
     for value in (*args, *kwargs.values()):
         if type(value).__name__ == "BlockMask":
             if not _GRAPHS_FLEX_LOGGED[0]:
