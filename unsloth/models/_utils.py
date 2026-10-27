@@ -817,6 +817,7 @@ def use_sdpa_for_packed_head_dim_flex(model):
         return False
     try:
         from ..utils.hf_packed_attention import _ORIG_SDPA, _torch_varlen
+
         if _ORIG_SDPA[0] is None or not torch.cuda.is_available():
             return False
         device_count = torch.cuda.device_count()
