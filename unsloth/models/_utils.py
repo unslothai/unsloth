@@ -6240,7 +6240,8 @@ def _tensor_parallel_env_trainer_pre(model):
 
 
 def _refuse_tensor_parallel_env_model_init(layout, init, args, kwargs):
-    """UNSLOTH_TP_SIZE setup runs on the __init__ model, so a model_init model would silently train as plain DDP."""
+    """UNSLOTH_TP_SIZE / UNSLOTH_PP_SIZE setup runs on the __init__ model, so a model_init model would silently
+    train as plain DDP."""
     model_init = kwargs.get("model_init")
     if model_init is None:
         import inspect
@@ -6271,11 +6272,16 @@ def _refuse_tensor_parallel_env_model_init(layout, init, args, kwargs):
             index = names.index("model_init")
             model_init = args[index] if index < len(args) else None
     if model_init is not None:
+        pp = getattr(layout, "pp", 1) > 1
+        what = "pipeline parallel" if pp else "tensor parallel"
+        if pp and layout.tp > 1:
+            what += " x tensor parallel"
+        names = " and ".join(v.split("=")[0] for v in layout.env_vars.split()) if pp else "UNSLOTH_TP_SIZE"
         raise RuntimeError(
-            f"Unsloth: UNSLOTH_TP_SIZE={layout.tp} (tensor parallel) does not support "
+            f"Unsloth: {layout.env_vars if pp else f'UNSLOTH_TP_SIZE={layout.tp}'} ({what}) does not support "
             "`Trainer(model_init = ...)` or `hyperparameter_search`: the model model_init builds would not "
-            "be tensor parallel. Build the model first and pass it as `Trainer(model = model)`, or unset "
-            "UNSLOTH_TP_SIZE."
+            f"be {what}. Build the model first and pass it as `Trainer(model = model)`, or unset "
+            f"{names}."
         )
 
 

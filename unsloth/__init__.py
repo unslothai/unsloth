@@ -1691,7 +1691,9 @@ else:
     _install_native_trainer_init()
     del _install_native_trainer_init
 
-    if os.environ.get("UNSLOTH_TP_SIZE", "").strip() not in ("", "1"):
+    if os.environ.get("UNSLOTH_TP_SIZE", "").strip() not in ("", "1") or os.environ.get(
+        "UNSLOTH_PP_SIZE", ""
+    ).strip() not in ("", "1"):
         from .models.tp_env import (
             install_tensor_parallel_env_trainer_init as _install_tp_trainer_init,
         )

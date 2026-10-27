@@ -788,6 +788,27 @@ def test_env_tp_model_and_model_init_is_refused():
         assert "model_init" in res["refused"], res
 
 
+def _pipelining_step_outputs():
+    try:
+        import inspect
+
+        from torch.distributed.pipelining import ScheduleGPipe
+    except Exception:
+        return False
+    return "return_outputs" in inspect.signature(ScheduleGPipe.step).parameters
+
+
+@pytest.mark.skipif(not _pipelining_step_outputs(), reason = "UNSLOTH_PP_SIZE needs torch >= 2.10")
+@pytest.mark.parametrize("import_only", [False, True], ids = ["patched", "plain_import"])
+@pytest.mark.parametrize("hooked", [False, True], ids = ["plain", "unsloth_loaders"])
+def test_env_pp_model_init_is_refused(hooked, import_only):
+    """The same silent DDP under UNSLOTH_PP_SIZE: the pipeline split runs on the __init__ model only."""
+    for res in _spawn("model_init", 2, {"UNSLOTH_PP_SIZE": "2"}, hooked = hooked, import_only = import_only):
+        assert "UNSLOTH_PP_SIZE=2 (pipeline parallel)" in (res["refused"] or ""), res
+        assert "unset UNSLOTH_PP_SIZE." in res["refused"], res
+        assert "model_init" in res["refused"] and res["built"] == [], res
+
+
 @pytest.mark.parametrize("hooked", [False, True], ids = ["plain", "unsloth_loaders"])
 def test_env_tp_model_init_is_refused_after_plain_import(hooked):
     """Only `import unsloth`: nothing installed the Trainer wrapper before model_init ran, so it trained."""

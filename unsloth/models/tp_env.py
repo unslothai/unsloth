@@ -474,8 +474,8 @@ def _levels(model):
 
 def install_tensor_parallel_env_trainer_init():
     """Install the Trainer.__init__ wrapper at import: loads that all run inside model_init would otherwise
-    train in an unwrapped Trainer, without tensor parallel."""
-    if str(os.environ.get("UNSLOTH_TP_SIZE", "")).strip() in ("", "1"):
+    train in an unwrapped Trainer, without tensor / pipeline parallel."""
+    if all(str(os.environ.get(k, "")).strip() in ("", "1") for k in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE")):
         return False
     from transformers import Trainer
 
