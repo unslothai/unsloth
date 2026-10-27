@@ -4541,6 +4541,22 @@ def _strip_flag_pairs(args: Iterable[str], flags: frozenset[str]) -> list[str]:
 # common_params defaults in the bundled llama.cpp runtime.
 _DEFAULT_LLAMA_N_BATCH = 2048
 _DEFAULT_LLAMA_N_UBATCH = 512
+_ENV_DEFAULT_N_BATCH = "UNSLOTH_LLAMA_DEFAULT_N_BATCH"
+_ENV_DEFAULT_N_UBATCH = "UNSLOTH_LLAMA_DEFAULT_N_UBATCH"
+
+
+def _env_positive_int(name: str) -> Optional[int]:
+    """Positive int from env ``name`` (clamped to 65536), or None when unset/invalid."""
+    raw = os.environ.get(name, "").strip()
+    if not raw.isdigit() or int(raw) < 1:
+        return None
+    return min(int(raw), 65536)
+
+
+def _launcher_batch_default(value: Optional[int], env_name: str) -> Optional[int]:
+    """Per-load ``value`` when set, else the opt-in env default (or None)."""
+    return value if value is not None else _env_positive_int(env_name)
+
 # Non-causal image decoding needs one image chunk per micro-batch; limits from clip.cpp.
 _MMPROJ_NON_CAUSAL_IMAGE_TOKENS = {
     "gemma4v": 1120,
@@ -28017,6 +28033,10 @@ class LlamaCppBackend:
                 if self.is_embedding_gguf:
                     cmd.append("--embedding")
 
+                # Opt-in env defaults for -b / -ub when the load leaves them unset;
+                # per-load fields and pass-through extras still win.
+                n_batch = _launcher_batch_default(n_batch, _ENV_DEFAULT_N_BATCH)
+                n_ubatch = _launcher_batch_default(n_ubatch, _ENV_DEFAULT_N_UBATCH)
                 # emitted before user extras so a pass-through -b / -ub still last-wins-overrides
                 if n_batch is not None:
                     # -b < --parallel and -b 1 both GGML_ASSERT, so the batch floor is max(slots, 2).
