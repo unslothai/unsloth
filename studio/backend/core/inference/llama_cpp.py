@@ -4557,6 +4557,7 @@ def _launcher_batch_default(value: Optional[int], env_name: str) -> Optional[int
     """Per-load ``value`` when set, else the opt-in env default (or None)."""
     return value if value is not None else _env_positive_int(env_name)
 
+
 # Non-causal image decoding needs one image chunk per micro-batch; limits from clip.cpp.
 _MMPROJ_NON_CAUSAL_IMAGE_TOKENS = {
     "gemma4v": 1120,
