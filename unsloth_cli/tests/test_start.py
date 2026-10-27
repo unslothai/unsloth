@@ -2876,7 +2876,7 @@ def test_codex_session_from_a_saved_home_reads_its_origin(fake_studio, tmp_path,
     saved = tmp_path / "agents" / "codex"
     assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
     with (saved / "config.toml").open("a") as f:
-        f.write('\n[mcp_servers.local]\ncommand = "local-server"\n')
+        f.write('\n[mcp_servers.local]\ncommand = "local-server"')
 
     (source_home / "config.toml").write_text('[mcp_servers.fresh]\nurl = "http://f/mcp"\n')
     monkeypatch.setenv("CODEX_HOME", str(saved))

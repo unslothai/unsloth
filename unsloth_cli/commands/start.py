@@ -3549,7 +3549,7 @@ def _with_user_codex_mcp_servers(text: str, home: Path) -> str:
     carried |= servers
     out = "".join(c for c in _toml_chunks(text) if _codex_mcp_server(c) not in carried)
     if tables:
-        out = out.rstrip("\n") + "\n\n" + "".join(tables).rstrip("\n") + "\n"
+        out = out.rstrip("\n") + "\n\n" + "\n\n".join(c.rstrip("\n") for c in tables) + "\n"
     if _toml_parses(out) is False:
         return text
     # Written even when empty: a recipe shell's CODEX_HOME=home must still find a custom origin.
