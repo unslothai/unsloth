@@ -1052,6 +1052,25 @@ class ManagedEngine:
             for message in messages
         ]
 
+    def _reply_cap_in_window(self, messages, system_prompt, limit, params):
+        """vLLM and SGLang refuse prompt + max_tokens past the window, where llama-server stops at it."""
+        try:
+            prompt = self.count_tokens(
+                messages,
+                system_prompt,
+                enable_thinking = params.get("enable_thinking"),
+                reasoning_effort = params.get("reasoning_effort"),
+                preserve_thinking = params.get("preserve_thinking"),
+            )[0]
+        except Exception:
+            from .context_window import estimate_messages_tokens_conservative
+
+            # SGLang 0.5.17's /tokenize fails on a 1e30 model_max_length; a third over the estimate.
+            if system_prompt:
+                messages = [{"role": "system", "content": system_prompt}, *messages]
+            prompt = estimate_messages_tokens_conservative(messages) * 4 // 3
+        return max(1, min(limit, self.context - prompt))
+
     def count_tokens(
         self,
         messages,
@@ -1188,7 +1207,11 @@ class ManagedEngine:
         # -1 or full context leaves no room for the prompt; let the engine budget it.
         limit = params.get("max_new_tokens") or 0
         if limit > 0 and (not self.context or limit < self.context):
-            payload["max_tokens"] = limit
+            payload["max_tokens"] = (
+                self._reply_cap_in_window(messages, system_prompt, limit, params)
+                if self.context and not request_images
+                else limit
+            )
         payload.update(
             self.reasoning_fields(
                 params.get("enable_thinking"),

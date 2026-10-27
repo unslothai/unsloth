@@ -1469,7 +1469,8 @@ def test_max_tokens_sentinel_is_not_sent_as_a_negative_limit(peer, limit):
     engine, requests = peer
     engine.context = 4096
     assert list(engine.generate(messages = [{"role": "user", "content": "Hi"}], max_new_tokens = limit))
-    payload = requests[0][2]
+    # A cap is first fitted to the window through /tokenize.
+    payload = next(body for path, _, body in requests if path.endswith("/chat/completions"))
     if limit is not None and 0 < limit < engine.context:
         assert payload["max_tokens"] == limit
     else:

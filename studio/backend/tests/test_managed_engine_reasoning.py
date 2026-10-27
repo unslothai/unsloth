@@ -298,6 +298,37 @@ def test_a_failed_sglang_count_falls_back_to_an_estimated_fit():
     assert truncation["fits"] and truncation["prompt_tokens_after"] <= 2048 * 3 // 4 - 256
 
 
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+def test_a_reply_cap_is_clamped_to_the_room_the_prompt_leaves(monkeypatch, engine):
+    # Both engines refuse prompt + max_tokens past the window, so a fitted chat with a cap would fail.
+    from core.inference import engine_transport
+
+    sent = []
+    monkeypatch.setattr(
+        engine_transport,
+        "stream_chat_events",
+        lambda url, headers, payload, cancelled: sent.append(payload) or iter(()),
+    )
+    managed = ManagedEngine(engine)
+    managed.base_url, managed.model, managed.context = "http://engine", "m", 2048
+    messages = [{"role": "user", "content": "hi"}]
+    for counted, cap, expected in ((1500, 1024, 548), (100, 1024, 1024), (100, 4096, None)):
+        managed.count_tokens = lambda *a, counted = counted, **k: (counted, "m")
+        list(managed.generate(messages = messages, max_new_tokens = cap))
+        assert sent[-1].get("max_tokens") == expected
+
+    def refuse(*a, **k):
+        raise RuntimeError("500 Server Error")
+
+    managed.count_tokens = refuse
+    list(
+        managed.generate(
+            messages = [{"role": "user", "content": "word " * 1200}], max_new_tokens = 1024
+        )
+    )
+    assert 1 <= sent[-1]["max_tokens"] < 1024
+
+
 def test_tool_stream_reasoning_reaches_studio_as_reasoning_content():
     from routes.managed_engine_chat import _with_reasoning_content
 
