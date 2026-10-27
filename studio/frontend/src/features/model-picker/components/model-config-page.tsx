@@ -4319,7 +4319,7 @@ export function ModelConfigPage({
         >
           <Checkbox
             id={alwaysLoadId}
-            // Stays readable while disabled: on Default settings it is the hint that saving enables pinning.
+            // Readable while disabled: it is the hint that saving enables pinning.
             className="size-3.5 rounded-full border-[color-mix(in_oklab,var(--foreground)_calc(30%*var(--contrast-edge-gain,1)),transparent)] disabled:opacity-70"
             aria-label="Always load with these settings"
             aria-describedby={saveStatusId}
