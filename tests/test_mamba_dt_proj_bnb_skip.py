@@ -27,7 +27,6 @@ def test_mamba_skips_dt_proj():
 
 def test_mamba_skips_fused_kernel_dense_weights(monkeypatch):
     _mamba_ssm(monkeypatch, True)
-    # mamba_inner_fn reads x_proj.weight and out_proj.weight as dense matrices during training.
     from unsloth.models.vision import _architecture_skip_modules
 
     skip = _architecture_skip_modules(["mamba"])

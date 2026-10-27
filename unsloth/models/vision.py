@@ -2787,7 +2787,6 @@ def _target_parameters_in_layers(
 
 
 def _mamba_ssm_importable():
-    """transformers routes Mamba training through mamba_ssm's fused mamba_inner_fn whenever the package imports."""
     import importlib.util
     try:
         return importlib.util.find_spec("mamba_ssm") is not None
@@ -2805,9 +2804,7 @@ def _architecture_skip_modules(model_types):
     # Mamba's transformers 5 slow path does dt_proj.weight @ time_step, which fails on Params4bit; dt_proj is tiny.
     if any(mt == "mamba" for mt in model_types):
         skip.append("dt_proj")
-    # With mamba_ssm importable, training calls mamba_inner_fn with dt_proj / x_proj / out_proj .weight as dense
-    # matrices (Mamba and Falcon-Mamba, transformers 4.57 and 5.x), which a packed Params4bit cannot be. Without it
-    # the slow path calls the modules, which 4-bit serves, so those users keep the smaller weights.
+    # mamba_ssm's fused mamba_inner_fn reads these .weight as dense matrices; the slow path is fine with 4-bit.
     if any(mt in ("mamba", "falcon_mamba") for mt in model_types) and _mamba_ssm_importable():
         skip.extend(m for m in ("dt_proj", "x_proj", "out_proj") if m not in skip)
     # LongCat-Flash MLA: NF4 on q_b_proj / kv_b_proj badly hurts loss; both are small.
