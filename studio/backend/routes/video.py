@@ -883,6 +883,10 @@ async def cancel_video_generation(
     from core.inference.video import get_video_backend
 
     video_id = await _cancel_video_id(request)
+    queued = _own_queued_video(video_id) if video_id is not None else None
+    if queued is not None and not queued.starting:
+        _drop_queued_video(queued)
+        return {"cancelled": True}
     backend = get_video_backend()
     # One read: a second could name a successor and hand it back as expected_account.
     reserved = _reserved_generation_account(backend)
