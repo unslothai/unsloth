@@ -9909,7 +9909,7 @@ def _loaded_satisfies(requested: str) -> bool:
     matches = _matches_any(
         base, [active, public_model_id(active), getattr(backend, "_openai_advertised_id", None)]
     )
-    if not matches and _looks_like_local_path(active):
+    if not matches:
         # a fine-tuning job's "<run>/checkpoint-N" name for the folder loaded by path
         trained = _trained_run_dir(requested)
         matches = trained is not None and _norm_path(trained) == _norm_path(active)

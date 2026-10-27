@@ -219,3 +219,10 @@ def test_a_checkpoint_loaded_by_path_answers_to_its_job_name(monkeypatch):
     assert not inference_route._loaded_satisfies(f"{RUN}/checkpoint-6")
     _wire(str(outputs_root() / RUN), monkeypatch)
     assert not inference_route._loaded_satisfies(CHECKPOINT)
+
+
+def test_a_checkpoint_loaded_by_a_forward_slash_drive_path_is_recognized(monkeypatch):
+    windows_dir = "C:/Studio/outputs/run/checkpoint-5"
+    monkeypatch.setattr(inference_route, "_trained_run_dir", lambda _m: windows_dir)
+    _wire(windows_dir, monkeypatch)
+    assert inference_route._loaded_satisfies(CHECKPOINT)
