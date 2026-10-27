@@ -144,6 +144,13 @@ test("every preset has unique labels, since a label is a row's identity", () => 
   }
 });
 
+test("one MTP draft token reads the same in the depth sweep and in Auto-tune", () => {
+  const depth = sweepVariants("draft").find((v) => v.load.spec_draft_n_max === 1);
+  const tune = sweepVariants("tune").find((v) => v.load.speculative_type === "mtp" && v.load.spec_draft_n_max === 1);
+  assert.equal(depth?.label, "MTP · 1 draft token");
+  assert.equal(tune?.label, depth?.label);
+});
+
 test("context steps stop at the model's window and keep at most five rows", () => {
   assert.deepEqual(contextSteps(32768), [4096, 8192, 16384, 32768]);
   assert.deepEqual(contextSteps(40000), [4096, 8192, 16384, 32768, 40000]);
