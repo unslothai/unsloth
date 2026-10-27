@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tool detection reads Jinja syntax, not the spelling of it.
-
-The detector is an over-approximation on purpose, so the tests are split three ways:
-what it must get right, what it deliberately answers loosely, and what it must never
-do (raise, or disagree with itself over line endings).
-"""
+"""Tool detection reads Jinja syntax and deliberately over-approximates; it must never raise."""
 
 from __future__ import annotations
 
@@ -43,7 +38,6 @@ def _renders_catalog(template, **context):
     return "get_weather" in output
 
 
-# ── the published templates this exists for ─────────────────────────────────
 @pytest.mark.parametrize(
     ("name", "detected"),
     [
@@ -89,7 +83,6 @@ def test_granite_really_does_render_its_catalog():
     assert "get_weather" in rendered
 
 
-# ── the spellings a guard comes in ──────────────────────────────────────────
 @pytest.mark.parametrize(
     ("template", "detected"),
     [
@@ -97,13 +90,10 @@ def test_granite_really_does_render_its_catalog():
         ("{%- if tools -%}{{ tools|tojson }}{%- endif -%}", True),
         ("{% if tools is defined and tools %}{{ tools|tojson }}{% endif %}", True),
         ("{% if tools and not available_tools %}{{ tools|tojson }}{% endif %}", True),
-        # A guarded branch advertises tools even when its body is only prose.
         ("{% if tools %}You may call the tools listed above.{% endif %}", True),
-        # Tool results coming back from the model.
         ("{% for m in messages %}{{ m.tool_calls|tojson }}{% endfor %}", True),
         ("{% if message.role == 'tool' %}{{ message.content }}{% endif %}", True),
         ("{% if message['role'] == 'tool' %}{{ message.content }}{% endif %}", True),
-        # Nothing to do with tools.
         ("{% for m in messages %}{{ m.content }}{% endfor %}", False),
         ("{% if enable_thinking %}<think>{% endif %}", False),
         ("", False),
@@ -114,7 +104,6 @@ def test_guard_spellings(template, detected):
     assert template_supports_tools(template) is detected
 
 
-# ── carrying the catalog through names ──────────────────────────────────────
 @pytest.mark.parametrize(
     ("template", "detected"),
     [
@@ -148,7 +137,6 @@ def test_guard_spellings(template, detected):
         ("{% if a %}x{% elif b %}{% set tools = none %}{% endif %}{{ tools|tojson }}", True),
         ("{% for m in messages %}{% set tools = m.tools %}{% endfor %}{{ tools|tojson }}", True),
         ("{% macro unused() %}{% set tools = none %}{% endmacro %}{{ tools|tojson }}", True),
-        # On EVERY arm there is no surviving path, so an exhaustive chain kills.
         (
             "{% if x %}{% set tools = none %}{% else %}{% set tools = none %}{% endif %}"
             "{{ tools|tojson }}",
@@ -164,7 +152,6 @@ def test_guard_spellings(template, detected):
             "{% else %}{% set tools = none %}{% endif %}{{ tools|tojson }}",
             False,
         ),
-        # One arm leaving it alone is a path where it survives.
         ("{% if x %}{% set tools = none %}{% else %}prose{% endif %}{{ tools|tojson }}", True),
         # Undefined after `{% endfor %}`, so it carries nothing out.
         ("{% for t in tools %}{% endfor %}{{ t|tojson }}", False),
@@ -172,10 +159,8 @@ def test_guard_spellings(template, detected):
             "{% for t in tools %}{% endfor %}{% for t in messages %}{{ t.content }}{% endfor %}",
             False,
         ),
-        # A tuple target binds and rebinds like a plain name, both ways round.
         ("{% set tools, flag = none, false %}{{ tools|tojson }}", False),
         ("{% set a, b = tools, none %}{% set a, b = none, none %}{{ a|tojson }}", False),
-        # Stored under a tools guard, so tool-conditional whatever the value is.
         (
             "{% set intro = '' %}{% if tools %}{% set intro = 'You may call functions.' %}"
             "{% endif %}{{ intro }}",
@@ -186,8 +171,6 @@ def test_guard_spellings(template, detected):
             "{% endif %}{{ intro }}",
             False,
         ),
-        # The check can sit in the output expression, and a guarded branch can
-        # store its instructions through a side effect. Markers matched both.
         ("{{ message.content if message.role == 'tool' else '' }}", True),
         ("{{ message.content if message.role != 'tool' else '' }}", False),
         ("{{ message.content if message.role == 'user' else '' }}", False),
@@ -202,7 +185,6 @@ def test_guard_spellings(template, detected):
             "{% do ns.lines.append('Think') %}{% endif %}{{ ns.lines|join(',') }}",
             False,
         ),
-        # `.get('tool_calls')` is the same member read spelled as a call.
         (
             "{% set tool_calls = message.get('tool_calls') %}"
             "{% if tool_calls is defined %}{{ tool_calls }}{% endif %}",
@@ -210,7 +192,6 @@ def test_guard_spellings(template, detected):
         ),
         ("{% set tc = message.get('tool_calls') %}{% if tc %}{{ tc }}{% endif %}", True),
         ("{% set x = message.get('content') %}{{ x }}", False),
-        # A stored predicate renders what the inline one does.
         (
             "{% set handles_tool = message.role == 'tool' %}"
             "{% if handles_tool %}{{ message.content }}{% endif %}",
@@ -221,16 +202,13 @@ def test_guard_spellings(template, detected):
             "{% if is_user %}{{ message.content }}{% endif %}",
             False,
         ),
-        # A loop's inline filter is a guard like any other.
         ("{% for m in messages if m.role == 'tool' %}{{ m.content }}{% endfor %}", True),
         ('{% for m in messages if m["role"] == "tool" %}{{ m.content }}{% endfor %}', True),
         ("{% for m in messages if m.role != 'tool' %}{{ m.content }}{% endfor %}", False),
         ('{% for m in messages if m.role == "user" %}{{ m.content }}{% endfor %}', False),
-        # `{% with %}` binds for its block and for nothing else.
         ("{% with catalog = tools %}{{ catalog|tojson }}{% endwith %}", True),
         ("{% with tools = none %}{{ tools|tojson }}{% endwith %}", False),
         ("{% with tools = none %}x{% endwith %}{{ tools|tojson }}", True),
-        # Handing the catalog to a container puts it in that container.
         ("{% set c = [] %}{% do c.append(tools) %}{{ c|tojson }}", True),
         ("{% set c = [] %}{% set _ = c.append(tools) %}{{ c|tojson }}", True),
         ("{% set ns = namespace(c=[]) %}{% do ns.c.extend(tools) %}{{ ns.c|tojson }}", True),
@@ -265,28 +243,16 @@ def test_positives_match_a_real_render(template):
     assert template_supports_tools(template) is True
 
 
-# ── deliberate over-approximation ───────────────────────────────────────────
 @pytest.mark.parametrize(
     "template",
     [
-        # A branch that can never run.
         "{% if false %}{{ tools|tojson }}{% endif %}",
-        # A catalog put somewhere and then taken back out again.
         "{% set c = [] %}{% do c.append(tools) %}{% do c.clear() %}{{ c|tojson }}",
-        # Iterating a mapping yields its keys, not the catalog under them.
         "{% for key in {'weather': tools} %}{{ key }}{% endfor %}",
     ],
 )
 def test_known_over_approximations_answer_yes(template):
-    """These render no schema, and the detector says yes anyway.
-
-    A value handed to a container is assumed to stay there, a branch is walked whether
-    or not it can run, and a mapping's values are not told apart from its keys.
-    Tracking any of that properly needs a much larger analysis, and none of it is
-    reachable from the 120 published templates checked. The error runs towards showing
-    a tool control that the backend then re-checks, rather than hiding one that works,
-    so it is left here on purpose rather than papered over.
-    """
+    """Over-approximations answer yes: a wrongly shown tool control is re-checked, not wrongly hidden."""
     assert not _renders_catalog(template, item = {}, message = {}, messages = [])
     assert template_supports_tools(template) is True
 
@@ -300,9 +266,7 @@ def test_a_guarded_branch_counts_even_without_naming_the_catalog():
     assert template_supports_tools(template) is True
 
 
-# ── robustness ──────────────────────────────────────────────────────────────
-# Named, not generated: pytest exports the id in PYTEST_CURRENT_TEST and Windows
-# refuses an env var over 32767 characters, which the 5000-repeat id exceeds.
+# Named, not generated: Windows refuses PYTEST_CURRENT_TEST over 32767 chars.
 @pytest.mark.parametrize(
     "template",
     [
@@ -331,10 +295,7 @@ def test_non_string_templates_are_turned_away(template):
 
 
 def test_a_string_subclass_cannot_escape_the_fail_closed_branch():
-    """`isinstance` lets a subclass through, and then its own `__hash__` and
-    `__contains__` run before the try: the cache hashes the argument and the early-out
-    does `"tool" not in template`. Narrowing to str is what keeps those from reaching
-    a caller that has no except around the model load."""
+    """Only exact str passes: a str subclass's own __hash__ or __contains__ could run unguarded."""
 
     class NoHash(str):
         __hash__ = None

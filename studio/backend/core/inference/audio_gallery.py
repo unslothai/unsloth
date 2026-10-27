@@ -47,11 +47,7 @@ def save(
     meta: dict[str, Any],
     source_wav: Optional[Path] = None,
 ) -> dict[str, Any]:
-    """Persist WAV bytes plus their recipe sidecar; return the record.
-
-    Staged then renamed in, wav first: the sidecar is the pair's commit marker. On any
-    failure every artifact is removed, so no invisible orphan wav is left behind.
-    """
+    """Stages the WAV and sidecar, WAV first since the sidecar is the commit marker; any failure removes every artifact, so no orphan WAV stays"""
     audio_id = uuid.uuid4().hex
     directory = gallery_dir()
     wav_path = directory / f"{audio_id}.wav"
@@ -88,10 +84,7 @@ def save_file(
     *,
     prune: bool = True,
 ) -> dict[str, Any]:
-    """Move a WAV on disk into the gallery with its sidecar; all or nothing.
-
-    Multi-file runs pass ``prune=False`` and prune once at the end, so a cap never splits a run.
-    """
+    """Moves a WAV into the gallery with its sidecar, all or nothing; multi-file runs pass prune=False and prune once at the end"""
     audio_id = uuid.uuid4().hex
     directory = gallery_dir()
     wav_path = directory / f"{audio_id}.wav"
@@ -120,24 +113,17 @@ def save_file(
     return _record(audio_id, meta)
 
 
-# The OpenAI-compatible /v1/audio/speech route persists every call, so an automated client can grow the gallery until
-# the disk fills. Bounded here rather than at that route so the UI's own runaway is covered too. Generous by default:
-# this is a convenience gallery, and the clip is returned to the caller either way.
+# /v1/audio/speech persists every call, so cap the gallery to avoid filling the disk.
 _MAX_CLIPS_ENV = "UNSLOTH_AUDIO_GALLERY_MAX_CLIPS"
 _DEFAULT_MAX_CLIPS = 2000
 
-# A count alone does not bound the disk: 2000 clips of maximum-length speech is tens of gigabytes, and the cap exists to
-# stop /v1/audio/speech filling the disk. Whichever limit binds first wins.
+# Count alone can't bound disk: 2000 max-length clips is tens of GB; whichever cap binds first wins
 _MAX_BYTES_ENV = "UNSLOTH_AUDIO_GALLERY_MAX_BYTES"
 _DEFAULT_MAX_BYTES = 5 * 1024 * 1024 * 1024
 
 
 def _max_clips() -> int:
-    """0, or any non-numeric value such as "off", disables pruning.
-
-    An unset variable is the only case that takes the default: restoring it for a value the
-    operator did set would delete recordings they had asked to keep.
-    """
+    """Unset alone takes the default; 0 or non-numeric such as off disables pruning; a set value is never reset, or kept clips get deleted"""
     return _env_limit(_MAX_CLIPS_ENV, _DEFAULT_MAX_CLIPS)
 
 
@@ -166,11 +152,7 @@ def _clip_bytes(audio_id: str) -> int:
 
 
 def _prune_to_cap() -> int:
-    """Drop the oldest owned pairs beyond the count or byte cap; return the count removed.
-
-    Best-effort, so a save never fails on housekeeping. Only Unsloth-owned pairs are eligible,
-    archived and pinned clips are exempt, and an unreadable flag store skips the prune rather than guess.
-    """
+    """Best-effort; only Unsloth-owned pairs are pruned, archived and pinned clips are exempt, and an unreadable flag store skips the prune"""
     cap = _max_clips()
     byte_cap = _max_bytes()
     if cap <= 0 and byte_cap <= 0:
@@ -178,15 +160,13 @@ def _prune_to_cap() -> int:
     directory = gallery_dir()
     removed = 0
     try:
-        # Select AND delete under one lock, as clear() does. Choosing victims from a snapshot and unlinking after it
-        # leaves a window where an archive lands and is deleted anyway.
+        # Select AND delete under one lock, as clear() does; choosing victims from a snapshot lets an archive land and be deleted anyway.
         with gallery_flags.exclusive(directory, require_file_lock = True):
             # By age, not display order: a clip dragged down is not older. Pinned clips are exempt.
             entries = [e for e in _list_audio_entries() if not e[0].get("pinned")]
             entries.sort(key = lambda e: _mtime(gallery_dir() / f"{e[0]['id']}.wav"), reverse = True)
 
-            # Newest first, so the index where either budget runs out is the cut point. The newest is always kept:
-            # dropping what the caller just generated looks like a silent failure.
+            # Newest first, so the cut point drops the oldest; the newest is always kept, never a silent failure
             keep = len(entries) if cap <= 0 else min(cap, len(entries))
             if byte_cap > 0:
                 running = 0
@@ -200,9 +180,7 @@ def _prune_to_cap() -> int:
             if keep >= len(entries):
                 return 0
 
-            # Re-read TRUSTED immediately before deleting: read() answers "nothing is archived" for a store it cannot
-            # parse, which here would drop the clips the shelf exists to keep. It also covers filesystems where the
-            # cross-process lock degrades to a no-op.
+            # Re-read TRUSTED immediately before deleting: read() reports nothing archived for an unparseable store, which would drop kept clips.
             flags = gallery_flags.read_trusted(directory)
             victims = [
                 record["id"]
@@ -353,10 +331,7 @@ def _read_meta(sidecar: Path) -> Optional[dict[str, Any]]:
 
 
 def owned_audio_path(audio_id: str) -> Optional[Path]:
-    """Resolve an id to its WAV only for an Unsloth-owned clip (readable sidecar).
-
-    The serve route uses this rather than audio_path() so a guessed stem for a
-    hand-dropped or orphan WAV cannot be streamed out."""
+    """Serve routes use this, not audio_path(), so a guessed stem for an orphan WAV cannot stream out."""
     path = audio_path(audio_id)
     if path is None or _read_meta(_sidecar_path(audio_id)) is None:
         return None
@@ -439,12 +414,7 @@ def list_audio(
     valid: Optional[Callable[[dict[str, Any]], bool]] = None,
     archived: bool = False,
 ) -> list[dict[str, Any]]:
-    """A window of clips for infinite scroll: pinned first, then newest first.
-
-    Ordered by pin, then the drag key or WAV mtime; a file without its pair is skipped. ``valid`` filters BEFORE pagination,
-    so offset, limit and has_more count over the accepted records. ``before`` is an exclusive,
-    stable cursor for callers that must tolerate deletions between pages, and ``archived`` picks
-    the shelf."""
+    """valid filters before pagination, so offset, limit and has_more count accepted records only."""
     return [
         record
         for record, _ in _list_audio_entries(
@@ -578,12 +548,7 @@ def delete_group(group_id: str) -> int:
 
 
 def clear(include_archived: bool = False, workflow: Optional[str] = None) -> int:
-    """Delete every Unsloth-owned pair (readable sidecar); return the count removed. Foreign and
-    orphan WAVs are preserved, since list_audio already hides them.
-
-    Archived clips are spared unless ``include_archived``, and sparing them raises
-    FlagsUnavailable when the flag store cannot be read. A ``workflow`` (speak, clone, edit,
-    convert, music or separate) spares the other workflows' clips."""
+    """Deletes only Unsloth-owned pairs; foreign and orphan WAVs are kept. Archived clips are spared unless include_archived is set."""
     removed = 0
     directory = gallery_dir()
     with gallery_flags.exclusive(directory, require_file_lock = not include_archived):

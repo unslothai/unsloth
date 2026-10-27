@@ -148,7 +148,6 @@ test("clicking Audio in More opens the page, and the open page keeps the row out
     "function MediaMoreSubmenu<",
     "function ImagesMoreSubmenu(",
   );
-  // preventing the click stops Radix from opening the submenu; keys keep the parent behavior.
   assert.match(
     submenu,
     /onClick=\{\(event\) => \{\s*if \(disabled\) return;\s*event\.preventDefault\(\);\s*onOpen\(\);\s*\}\}/,
@@ -160,7 +159,6 @@ test("clicking Audio in More opens the page, and the open page keeps the row out
     more,
     /onOpen: \(\) => \{\s*setMoreOpen\(false\);\s*row\.onClick\(\);\s*\},/,
   );
-  // omitting a workflow request preserves the page's current workflow.
   assert.match(
     SIDEBAR,
     /audio: \{[\s\S]*?onClick: \(\) => \{\s*navigateFromRow\(\{ to: "\/audio" \}\);\s*closeMobileIfOpen\(\);\s*\}/,
@@ -193,7 +191,7 @@ test("a nav row's New pill sits beside its label, clear of the trailing disclosu
   // no ml-auto: a trailing pill would sit under the overlay's chevron.
   assert.match(
     item,
-    /<Badge\s+variant="secondary"\s+className="group-data-\[collapsible=icon\]:hidden"\s*>\s*\{badge\}/,
+    /<Badge\s+variant="accent"\s+className="group-data-\[collapsible=icon\]:hidden"\s*>\s*\{badge\}/,
   );
   assert.match(item, /\{overlay\}/);
   const more = block(

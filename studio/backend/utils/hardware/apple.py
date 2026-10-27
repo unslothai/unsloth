@@ -18,6 +18,7 @@ Public API (never raises; returns None when sensors are unavailable):
 
 import ctypes
 import struct
+import threading
 import time
 from typing import Iterable, Optional
 
@@ -65,7 +66,6 @@ def _average_valid_temps(values: Iterable[float]) -> Optional[float]:
 
 
 def _is_gpu_energy_channel(name: str) -> bool:
-    # Exact "GPU Energy" plus "DIE_N_GPU Energy" on Ultra chips; the separate
     # "GPU SRAM*" channels are not GPU core power.
     return name.endswith("GPU Energy") and "SRAM" not in name
 
@@ -332,8 +332,7 @@ class _IOReportEnergy:
         )
         if not self._sub:
             raise OSError("IOReportCreateSubscription failed")
-        # Sample with the channels IOReport subscribes us to, not the requested
-        # group (matches macmon); fall back if the OS leaves it unset.
+        # Sample the channels IOReport subscribed (as macmon does); fall back if unset.
         self._sample_channels = subscribed if subscribed else self._channels
         self._channels_key = _cfstr(self._cf, "IOReportChannels")
         self._prev: Optional[tuple[int, float]] = None
@@ -380,6 +379,8 @@ _smc: Optional[_SMCConnection] = None
 _smc_failed = False
 _energy: Optional[_IOReportEnergy] = None
 _energy_failed = False
+# Two polling threads: gpu_power_w releases the previous CF sample, so unlocked it double-frees.
+_sensor_lock = threading.Lock()
 
 
 def read_gpu_temperature_c() -> Optional[float]:
@@ -388,9 +389,10 @@ def read_gpu_temperature_c() -> Optional[float]:
     if _smc_failed:
         return None
     try:
-        if _smc is None:
-            _smc = _SMCConnection()
-        return _smc.gpu_temperature_c()
+        with _sensor_lock:
+            if _smc is None:
+                _smc = _SMCConnection()
+            return _smc.gpu_temperature_c()
     except Exception as e:
         _smc_failed = True
         logger.warning("Apple SMC GPU temperature unavailable: %s", e)
@@ -398,17 +400,15 @@ def read_gpu_temperature_c() -> Optional[float]:
 
 
 def read_gpu_power_w() -> Optional[float]:
-    """Average GPU power in watts since the previous call, or None.
-
-    The first call establishes the baseline sample and returns None.
-    """
+    """Average GPU watts since the previous call; the first call only sets the baseline and returns None."""
     global _energy, _energy_failed
     if _energy_failed:
         return None
     try:
-        if _energy is None:
-            _energy = _IOReportEnergy()
-        return _energy.gpu_power_w()
+        with _sensor_lock:
+            if _energy is None:
+                _energy = _IOReportEnergy()
+            return _energy.gpu_power_w()
     except Exception as e:
         _energy_failed = True
         logger.warning("Apple IOReport GPU power unavailable: %s", e)

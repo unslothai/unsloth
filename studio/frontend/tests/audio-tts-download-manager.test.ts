@@ -14,7 +14,6 @@ test("uncached remote TTS GGUFs stage the picked quant through the shared manage
     source,
     /meta\.source === "hub"[\s\S]*meta\.isDownloaded === false[\s\S]*ggufFilename/,
   );
-  // A named quant is the standard variant download, as in Chat; a bare file stays scoped.
   assert.match(
     source,
     /stageTtsDownload\(\[\s*meta\.ggufVariant\s*\?\s*\{[\s\S]*repoId,[\s\S]*ggufVariant: meta\.ggufVariant,[\s\S]*\}\s*:\s*\{[\s\S]*files: \[ggufFilename\],[\s\S]*bytes: meta\.expectedBytes \?\? 0/,
@@ -48,8 +47,7 @@ test("remote code approval precedes native model staging and survives completion
 test("cached and local TTS picks keep the direct load path and supersede stale staging", () => {
   assert.match(
     source,
-    // meta.loadId is the load target for a row cached in a non-active HF cache; sending
-    // the display repo id instead failed offline or re-downloaded into the active cache.
+    // meta.loadId targets a row cached in a non-active HF cache; the display id would re-download.
     /pendingStagedTtsLoad\.current = null;[\s\S]*stageTtsDownload\(\[\]\);[\s\S]*loadTtsModelRef\.current\([\s\S]*repoId,[\s\S]*ggufFilename,[\s\S]*meta\.loadId,[\s\S]*meta\.audioType/,
   );
   assert.match(source, /if \(busyRef\.current !== null\) return;/);
@@ -57,18 +55,13 @@ test("cached and local TTS picks keep the direct load path and supersede stale s
     source,
     /\/\*\* Start a pick that lost the race[\s\S]*?const replayQueuedTtsPick = useCallback/,
   );
-  // Still single-flight, but the loser is queued rather than dropped: a pick arriving
-  // while a cancelled load settles used to vanish, and the route effect had already
-  // cleared ?model=, so nothing retried it.
   assert.match(
     source,
     /if \(ttsLoadInFlight\.current \|\| busyRef\.current === "generating"\) \{\s*pendingRoutedTtsPick\.current = \{[\s\S]*repoId,[\s\S]*ggufFilename,[\s\S]*loadId,[\s\S]*audioType,[\s\S]*remoteCodeApproval,[\s\S]*\};\s*return;\s*\}/,
   );
   assert.match(
     source,
-    // Replayed only while Audio is visible, and again when it becomes visible. Replaying
-    // unconditionally started a load with activeRef already false, which the deactivation
-    // effect had already stopped watching, so a hidden page could replace Chat's model.
+    // Replay only while visible: a hidden page's load could replace Chat's model.
     /if \(activeRef\.current\) replayQueuedTtsPick\(\);/,
   );
 });

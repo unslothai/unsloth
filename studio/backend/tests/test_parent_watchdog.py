@@ -60,12 +60,10 @@ def test_callback_exception_is_contained():
     def _boom():
         raise RuntimeError("shutdown failed")
 
-    pw._fire(_boom)  # must not raise
+    pw._fire(_boom)
 
 
 def test_fires_immediately_when_the_owner_is_not_the_current_parent(monkeypatch):
-    # Explicit owner pid but already reparented: the owner died during backend
-    # startup (reaped or zombie alike). Must fire before the first wait.
     monkeypatch.setattr(pw.os, "getppid", lambda: 7777)
     fired = threading.Event()
     started = time.monotonic()
@@ -76,9 +74,7 @@ def test_fires_immediately_when_the_owner_is_not_the_current_parent(monkeypatch)
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "unix reparenting path")
 def test_process_exits_when_parent_dies(tmp_path):
-    # The callback writes a marker before exiting: liveness cannot be probed
-    # with kill(pid, 0), which also succeeds while the child is an unreaped
-    # zombie under a non-reaping init.
+    # Liveness via a marker: kill(pid, 0) succeeds on an unreaped zombie.
     marker = tmp_path / "fired"
     watcher = tmp_path / "watcher.py"
     watcher.write_text(
@@ -110,8 +106,6 @@ subprocess.Popen([sys.executable, {str(watcher)!r}, str(os.getpid())])
 """
     )
 
-    # The intermediate parent spawns the watcher and exits immediately,
-    # orphaning it; the watchdog must notice and exit the watcher.
     subprocess.run([sys.executable, str(parent)], check = True, timeout = 15)
 
     deadline = time.monotonic() + 10

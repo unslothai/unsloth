@@ -556,8 +556,9 @@ def _encode_device(
     need = _weights_mib(model) + ENCODE_MARGIN_MIB
     room: Optional[int] = None
     try:
-        free, _total = getattr(torch, kind).mem_get_info(torch.device(device))
-        room = free >> 20
+        free, total = getattr(torch, kind).mem_get_info(torch.device(device))
+        share = float(config.get("vram_reserve_share") or 0.0)
+        room = (int(free) - int(int(total) * share)) >> 20
     except Exception:  # noqa: BLE001 -- judged by the budget alone
         pass
     budget = config.get("budget_mib")

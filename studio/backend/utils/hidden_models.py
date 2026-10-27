@@ -43,9 +43,7 @@ _HIDDEN_STT_REPO_IDS = frozenset(
 )
 _HIDDEN_STT_REPO_IDS_LOWER = frozenset(repo_id.lower() for repo_id in _HIDDEN_STT_REPO_IDS)
 
-# audio.cpp's umbrella repo: every speech, music and ASR package lives in one of its subfolders, so
-# the cache holds GGUFs the chat index would otherwise offer as a chat model. The Audio page and
-# Voice settings reach them through the audio.cpp catalog instead.
+# audio.cpp umbrella repo: its subfolder GGUFs would show as chat models, so the Audio page and Voice settings reach them through the audio.cpp catalog.
 _HIDDEN_AUDIO_CPP_REPO_IDS_LOWER = frozenset({"audio-cpp/audio.cpp-gguf"})
 
 # Curated Audio-page TTS checkpoints, which stay VISIBLE but must not be chat-loadable: a chat turn on one comes back as synthesized speech. Listed by id because config sniffing cannot catch them (Orpheus/OuteTTS are LlamaForCausalLM, Spark is Qwen2ForCausalLM) and a GGUF companion carries no tokenizer_config for the codec probe.
@@ -181,6 +179,24 @@ def _path_basename_is_default_embedder(value: str) -> bool:
         basename == needle
         or any(basename.startswith(f"{needle}{separator}") for separator in ("-", "_", "."))
         for needle in _DEFAULT_EMBEDDING_PATH_BASENAMES
+    )
+
+
+def is_selected_embedder(repo_id: str | None) -> bool:
+    """True if *repo_id* is the Settings-picked (not env/default) embedder or its GGUF; the Hub keeps it as a deletable non-chat row."""
+    if not repo_id or not _HF_REPO_ID_RE.match(repo_id):
+        return False
+    from core.rag import config as rag_config
+
+    defaults = {
+        rag_config.EMBEDDING_MODEL.lower(),
+        rag_config.default_gguf_repo().lower(),
+        *(repo.lower() for repo in _DEFAULT_EMBEDDING_REPO_IDS),
+    }
+    wanted = repo_id.lower()
+    return wanted not in defaults and any(
+        model and model.lower() == wanted and not _existing_resolved_path(model)
+        for model in (rag_config.effective_embedding_model(), rag_config.effective_gguf_repo())
     )
 
 

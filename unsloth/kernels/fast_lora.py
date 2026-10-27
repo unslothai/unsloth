@@ -66,8 +66,15 @@ def _forward_fake_quant_linears():
 
 def _has_activation_fake_quantizer(proj):
     # Fused LoRA skips per-layer activation fake quantizers; explicit children, as proj.modules() is slow per call.
+    # A plain nn.Linear (after merge_and_unload / unload) has no lora_A / lora_B: check the layer itself.
     forward_fake_quant_linears = _forward_fake_quant_linears()
-    for module in (getattr(proj, "base_layer", proj), *proj.lora_A.values(), *proj.lora_B.values()):
+    modules = proj._modules
+    lora_A, lora_B = modules.get("lora_A"), modules.get("lora_B")
+    for module in (
+        modules.get("base_layer", proj),
+        *(() if lora_A is None else lora_A.values()),
+        *(() if lora_B is None else lora_B.values()),
+    ):
         if module._modules.get("activation_fake_quantizer") is not None or isinstance(
             module, forward_fake_quant_linears
         ):
@@ -129,6 +136,55 @@ def lora_bias_blocks_fused(proj):
     return not FUSED_LORA_BIAS and _has_active_lora_bias(proj)
 
 
+def _needs_peft_forward(proj, adapter):
+    # A PEFT LoRA variant (DoRA, MoNTeCLoRA, VeLoRA, BD-LoRA, ...) replaces the LoRA branch in PEFT's
+    # forward, and a trainable base weight needs its gradient: the fused Functions compute neither.
+    variants = proj.__dict__.get("lora_variant")
+    if variants and adapter in variants:
+        return True
+    return _base_weight_requires_grad(proj)
+
+
+def _base_weight_requires_grad(proj):
+    base = proj._modules.get("base_layer")
+    W = None if base is None else base._parameters.get("weight")
+    return W is not None and W.requires_grad
+
+
+_is_any_autocast_enabled = getattr(torch._C, "_is_any_autocast_enabled", None)
+
+
+def _active_lora_requires_grad(projs):
+    # A trainable active adapter elsewhere in the block makes autograd run the fused backward even when X
+    # needs no grad (frozen embeddings without an input-grad hook) and only some projections are merged.
+    for proj in projs:
+        adapter = _active_lora_adapter(proj)
+        if adapter is None:
+            continue
+        for module in (proj.lora_A[adapter], proj.lora_B[adapter]):
+            for p in module.parameters():
+                if p.requires_grad:
+                    return True
+    return False
+
+
+def _autocast_dtype_mismatch(X):
+    # Under autocast the fused matmuls return the autocast dtype but the in-place LoRA accumulation runs
+    # in X's dtype (in-place ops are not autocast), so a different autocast dtype cannot be fused.
+    # Mode flags only, no tensor work. Eager first asks whether any autocast is on (a private query, so not
+    # under Dynamo, which traces the public calls below as constants).
+    if (
+        _is_any_autocast_enabled is not None
+        and not _is_compiling()
+        and not _is_any_autocast_enabled()
+    ):
+        return False
+    device_type = "cuda" if X.is_cuda else X.device.type
+    return (
+        torch.is_autocast_enabled(device_type) and torch.get_autocast_dtype(device_type) != X.dtype
+    )
+
+
 def _is_plain_lora(proj):
     # One enabled, unmerged adapter with no dropout module and no lora_B bias (the default LoRA config).
     # Reads PEFT's instance state directly: getattr through nn.Module / properties costs more than the
@@ -141,7 +197,14 @@ def _is_plain_lora(proj):
         adapter = adapter[0]
     if state.get("_disable_adapters", True) or state.get("merged_adapters"):
         return False
+    variants = state.get("lora_variant")
+    if variants and adapter in variants:
+        return False
     modules = proj._modules
+    base = modules.get("base_layer")
+    W = None if base is None else base._parameters.get("weight")
+    if W is not None and W.requires_grad:
+        return False
     dropout = modules.get("lora_dropout")
     lora_B = modules.get("lora_B")
     if dropout is None or lora_B is None:
@@ -156,6 +219,8 @@ def _is_plain_lora(proj):
 
 def _lora_dropout_and_bias(projs, X):
     """(dropout probabilities or None, lora_B biases) for the fused kernels, or None to use PEFT."""
+    if _autocast_dtype_mismatch(X):
+        return None
     for proj in projs:
         if not _is_plain_lora(proj):
             break
@@ -166,6 +231,7 @@ def _lora_dropout_and_bias(projs, X):
     # module or lora_B bias keeps PEFT's traceable forward, as before they were fused, not a graph break.
     peft_when_unplain = not TRACE_LORA_FUNCTIONS and _is_compiling()
     has_dropout_module = False
+    grad_enabled = None
     for proj in projs:
         if peft_when_unplain and not _is_plain_lora(proj):
             return None
@@ -174,9 +240,22 @@ def _lora_dropout_and_bias(projs, X):
             # Enabled adapter missing from this projection: PEFT runs the base layer alone.
             if not getattr(proj, "disable_adapters", True) and not getattr(proj, "merged", False):
                 return None
+            # Disabled or merged: the fused Functions run the base matmul alone (the no-grad reference
+            # forward of DPO / GRPO), but their backward needs LoRA weights, so PEFT runs it under grad.
+            if grad_enabled is None:
+                grad_enabled = torch.is_grad_enabled()
+            if grad_enabled and (
+                X.requires_grad
+                or _base_weight_requires_grad(proj)
+                or _active_lora_requires_grad(projs)
+            ):
+                return None
             dropout_p.append(0.0)
             biases.append(None)
             continue
+        if _needs_peft_forward(proj, adapter):
+            # A LoRA variant, or a trainable base weight.
+            return None
         dropout = getattr(proj, "lora_dropout", None)
         has_dropout_module |= (
             dropout is not None

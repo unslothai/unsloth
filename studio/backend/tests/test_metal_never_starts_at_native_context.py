@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Metal must never be sent "-c 0".
-
-llama.cpp reads "-c 0" as fit_params_min_ctx = UINT32_MAX, pinning the model's
-full native context and disabling --fit's reduction. No GPU is enumerated on
-Apple Silicon, so the Apple cap in load_model is the only thing holding the
-context down, and two paths reach the command builder with a zero context after
-that cap has been skipped or discarded: a GGUF carrying no context length in its
-metadata (the cap is guarded on effective_ctx > 0), and the broad
-`except Exception` around GPU selection, which restores the original request.
-"""
+"""Metal must never get -c 0: it pins the native context and disables --fit reduction."""
 
 from __future__ import annotations
 
@@ -58,7 +49,6 @@ from core.inference.llama_cpp import (  # noqa: E402
 _floor = LlamaCppBackend._metal_zero_ctx_floor
 _drops = LlamaCppBackend._metal_drops_zero_ctx_override
 _REAL_POPEN = subprocess.Popen
-# argv and child env of the most recent _launch, for the tests that assert on the env.
 _LAST_LAUNCH: dict = {}
 
 
@@ -220,23 +210,13 @@ class TestOnMetal:
 
 
 def test_every_caller_of_the_floor_states_whether_the_fitter_runs():
-    """``fitter_runs`` defaults to True, the permissive value, so a call that omits it
-    gets the 8192 ceiling and the auto_fit exemption back.
-
-    That default is deliberate: there is one production caller and 60-odd test call
-    sites, and making it required would churn the latter to constrain the former. What
-    it costs is that a SECOND production caller could reintroduce this bug by saying
-    nothing, which is how the previous version of this arm went wrong -- a docstring
-    claim about what callers pass, with nothing checking that they do. So the claim is
-    checked here instead of asserted in prose.
-    """
+    """fitter_runs defaults to True, so a new caller that omits it can silently reintroduce the bug."""
     source = Path(inspect.getfile(LlamaCppBackend)).read_text(encoding = "utf-8")
     calls = [m for m in re.finditer(r"self\._metal_zero_ctx_floor\(", source)]
     assert calls, "the floor is no longer called from the backend; this guard is stale"
     for match in calls:
         line = source[: match.start()].count("\n") + 1
-        # Balance the parens rather than stopping at the first ")": the argument this
-        # guard is looking for is itself a call, so a naive scan ends inside it.
+        # Balance parens: the argument is itself a call.
         depth, end = 1, match.end()
         while end < len(source) and depth:
             depth += {"(": 1, ")": -1}.get(source[end], 0)
@@ -251,12 +231,7 @@ def test_every_caller_of_the_floor_states_whether_the_fitter_runs():
 
 
 class TestWithNoFitterToReduceIt:
-    """_FIT_MIN_CTX is a ceiling the child's --fit is expected to come down from.
-
-    "Being BELOW llama.cpp's own floor is what made that safe to raise" -- so with
-    the fitter off, this arm has to hand over what the fitter would have reduced
-    to instead, or a Mac with room for 4096 and not 8192 has no way down.
-    """
+    """With the fitter off, the floor must drop to llama.cpp's own minimum, since nothing can reduce it."""
 
     def test_the_floor_drops_to_llama_cpps_own(self, on_metal):
         assert _floor(0, False, False, 262144, fitter_runs = False) == _LLAMA_FIT_MIN_CTX
@@ -317,16 +292,11 @@ class TestAPassThroughZeroContext:
 
 
 class TestTheEmittedCommand:
-    """What llama-server actually receives, argv-level.
-
-    Floor and drop are only correct together: extras are appended after Unsloth's
-    own -c and llama.cpp is last-wins, so a surviving "-c 0" undoes the floor.
-    """
+    """Extras come after Unsloth's -c and win, so a surviving -c 0 would undo the floor."""
 
     def test_a_zero_override_does_not_outlive_the_floor(self, tmp_path, monkeypatch):
         cmd, _ = _launch(tmp_path, monkeypatch, extra_args = ["-c", "0", "--top-k", "5"])
         assert _ctx_values(cmd) == [str(_FIT_MIN_CTX)]
-        # Only the context is dropped; the rest of the user's extras survive.
         assert "--top-k" in cmd and "5" in cmd
 
     def test_the_long_spelling_is_dropped_too(self, tmp_path, monkeypatch):
@@ -339,11 +309,7 @@ class TestTheEmittedCommand:
         assert _ctx_values(cmd) == [str(_FIT_MIN_CTX)]
 
     def test_the_context_studio_computed_is_what_survives(self, tmp_path, monkeypatch):
-        """Not a constant: the cap's own answer stands, here the model's 2048.
-
-        load_model already treats "-c 0" as non-explicit, so the cap overrides it
-        either way. The drop only stops the trailing copy from undoing that.
-        """
+        """The cap's answer stands: dropping the trailing -c 0 stops it undoing the cap."""
         cmd, _ = _launch(tmp_path, monkeypatch, ctx_metadata = 2048, extra_args = ["-c", "0"])
         assert _ctx_values(cmd) == ["2048"]
 
@@ -362,11 +328,7 @@ class TestTheEmittedCommand:
 
 
 class TestAutoLayers:
-    """gpu_memory_mode "manual" with gpu_layers < 0: no -c, --fit sizes it.
-
-    The context is decided entirely by --fit here, so a pass-through "-c 0" is
-    worse in this mode than anywhere else: the fit never runs at all.
-    """
+    """Auto-layers: --fit alone decides the context, so a pass-through -c 0 disables sizing entirely."""
 
     def _launch_auto_layers(self, tmp_path, monkeypatch, **kwargs):
         return _launch(tmp_path, monkeypatch, gpu_memory_mode = "manual", gpu_layers = -1, **kwargs)
@@ -407,19 +369,7 @@ class TestAutoLayers:
 
 
 class TestAutoLayersWithTheFitterTurnedOff:
-    """The Auto-layers exemption is only as good as the fitter it defers to.
-
-    Extras land after Unsloth's own "--fit on" and win, so a pass-through
-    "--fit off" leaves a command carrying no -c and no fitter, which is
-    llama.cpp's native context and the over-commit this branch prevents.
-
-    The floor that replaces it cannot be _FIT_MIN_CTX either. 8192 is defensible
-    on a Mac only as a ceiling the child's own --fit can still reduce, down to
-    llama.cpp's fit_params_min_ctx; with the fitter off there is no reduction
-    path at all, so a Mac with room for 4096 and not 8192 fails at startup or at
-    decode. The user typed --fit off, so the conservative context is what gives
-    way, not their flag.
-    """
+    """Auto-layers exemption needs the fitter: with --fit off, the floor applies or native context loads."""
 
     AUTO_LAYERS = {"gpu_memory_mode": "manual", "gpu_layers": -1}
 
@@ -437,18 +387,8 @@ class TestAutoLayersWithTheFitterTurnedOff:
         assert cmd[-2:] == ["--fit", "off"]
 
     def test_the_no_kv_cap_lands_on_the_same_floor(self, tmp_path, monkeypatch):
-        """The cap path, not the zero-context one, and in DEFAULT memory mode.
-
-        Manual with Auto layers resolves an Auto request to 0, so it never reaches
-        the cap; the default mode expands it to the model's native length, which
-        does.
-
-        A GGUF that DOES carry a context length takes the Apple cap, which assigns
-        a positive context of its own. _metal_zero_ctx_floor never sees it: its
-        first condition returns 0 for any positive effective_ctx, so the no-fitter
-        reduction has to be made where the cap is chosen. Without that, this arm
-        hands a Mac 8192 with nothing able to bring it down.
-        """
+        """With a context length in its GGUF, the Apple cap applies, and must apply the no-fitter
+        reduction."""
         cmd, _ = _launch(
             tmp_path,
             monkeypatch,
@@ -458,10 +398,8 @@ class TestAutoLayersWithTheFitterTurnedOff:
         assert _ctx_values(cmd) == [str(_LLAMA_FIT_MIN_CTX)]
 
     def test_the_no_kv_cap_keeps_the_raised_floor_while_a_fitter_runs(self, tmp_path, monkeypatch):
-        """The control: same path, fitter left on, so the exemption stands and the
-        command carries no -c at all, leaving the child to size the context. What
-        must NOT happen is this arm quietly adopting llama.cpp's lower floor for a
-        launch that still has a fitter to come down from."""
+        """With a fitter running, the raised floor is kept and no -c is emitted, leaving the child
+        to size it."""
         cmd, _ = _launch(tmp_path, monkeypatch, ctx_metadata = 262144)
         assert _ctx_values(cmd) == [
             str(_FIT_MIN_CTX)
@@ -509,11 +447,7 @@ class TestAutoLayersWithTheFitterTurnedOff:
 
 
 class TestAnInheritedContextEnvironment:
-    """LLAMA_ARG_CTX_SIZE runs -c's own handler, and env parses before argv.
-
-    So the command line wins wherever Unsloth emits one. Auto-layers emits none,
-    on purpose, leaving an inherited 0 to cancel the --fit that sizes the mode.
-    """
+    """Auto-layers emits no -c on purpose, since an inherited 0 would cancel the --fit that sizes it."""
 
     AUTO_LAYERS = {"gpu_memory_mode": "manual", "gpu_layers": -1}
 
@@ -554,11 +488,8 @@ class TestAnInheritedContextEnvironment:
 
 
 class TestAVirtualisedMetalDevice:
-    """The paravirtual pin rewrites every placement to manual/0 before these guards.
-
-    Auto is the default, so reading the mode off the rewritten placement made the
-    common case on a virtualised Mac look caller-owned and emit "-c 0" anyway.
-    """
+    """Read the mode from the request, not the paravirtual-rewritten placement, or Auto emits -c 0
+    anyway."""
 
     def _launch_pv(self, tmp_path, monkeypatch, **kwargs):
         return _launch(tmp_path, monkeypatch, paravirtual = True, **kwargs)
@@ -605,19 +536,13 @@ def test_the_emission_guard_is_still_in_place():
 
 
 class TestTheAdvertisedCeilingMatchesWhatWeLaunch:
-    """max_context_length must not outlive the cap that never ran.
-
-    On the exception path max_available_ctx still holds the native length its
-    initialiser put there, which nothing has said fits. Publishing it makes the
-    UI call it the largest context that fits, advertising the over-commit as safe.
-    """
+    """A failed cap must not publish the native length as max_context_length; nothing said it fits."""
 
     NATIVE = 262144
 
     def test_the_native_length_is_not_advertised_after_the_floor(self, on_metal):
         floor = _floor(0, False, False, self.NATIVE, self.NATIVE)
         assert floor == _FIT_MIN_CTX
-        # What load_model now publishes: the floor itself, not max(ceiling, floor).
         assert floor < self.NATIVE
 
     def test_a_real_ceiling_below_the_floor_still_wins(self, on_metal):
@@ -632,11 +557,7 @@ class TestTheAdvertisedCeilingMatchesWhatWeLaunch:
 
 
 class TestTheStripDoesNotRewriteWhatWasRequested:
-    """The zero-context strip is a launch decision, not a record of the ask.
-
-    _requested_extra_args is the comparator a later Apply is matched against, so
-    storing the stripped list there reloaded the model on every Apply.
-    """
+    """The -c 0 strip is a launch decision: storing it in _requested_extra_args made every Apply reload."""
 
     def test_the_strip_removes_only_the_context_pair(self):
         from core.inference.llama_cpp import strip_context_only
@@ -644,15 +565,12 @@ class TestTheStripDoesNotRewriteWhatWasRequested:
         assert strip_context_only(list(user)) == ["--threads", "8", "--mlock"]
 
     def test_a_suppressed_drafter_does_not_snapshot_the_strip(self, tmp_path, monkeypatch):
-        """The paravirtual drafter drop takes its own copy, and that copy wins
-        below. Taken after the zero-context strip, it would put the rewrite back
-        into the comparator and cause the reload this class exists to prevent.
-        """
+        """The drafter drop snapshots before the strip, or the rewrite re-enters the comparator and
+        reloads."""
         import core.inference.llama_cpp as _llama_cpp
 
         draft = tmp_path / "draft.gguf"
         draft.write_bytes(b"\x00" * 16)
-        # No draft-layer flag, so the drafter cannot be pinned and is dropped instead.
         monkeypatch.setattr(_llama_cpp, "_paravirtual_draft_ngl_flag", lambda caps: None)
         requested = ["-md", str(draft), "-c", "0", "--top-k", "5"]
         cmd, backend = _launch(tmp_path, monkeypatch, extra_args = list(requested), paravirtual = True)

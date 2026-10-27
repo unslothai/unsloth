@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""S9 for PR #9642: cached datasets need a timestamp for Recent to mean anything.
-
-/api/hub/datasets/cached carried no time field, while local recipe and upload
-datasets carried updated_at, so every cached Hub dataset sorted below every
-local one whatever the date.
-
-Deliberately not beside its subject in hub/tests/: studio-backend-ci runs
-`pytest tests/` from studio/backend, and hub/tests is a sibling of that path, so
-nothing there is collected. A guard that never runs is not a guard.
-"""
+"""Cached Hub datasets must carry a timestamp, or every one sorts below local datasets in Recent."""
 
 import os
 from types import SimpleNamespace
@@ -59,7 +50,6 @@ def _stub_hf_scan(monkeypatch, repos):
 
 def test_schema_carries_the_timestamp():
     assert "last_modified" in CachedDatasetItem.__annotations__
-    # Unset rather than 0, or an unreadable cache sorts as 1970.
     assert CachedDatasetItem(repo_id = "Org/Data").last_modified is None
 
 
@@ -72,13 +62,10 @@ def test_hf_scan_reports_the_repo_timestamp_in_seconds(monkeypatch):
     rows = cache_inventory._scan_hf_dataset_caches()
 
     assert len(rows) == 1
-    # POSIX seconds, as the cached-model scan emits, so one normalizer covers both.
     assert rows[0]["last_modified"] == pytest.approx(1_700_000_000.5)
 
 
 def test_the_key_is_omitted_when_no_mtime_is_readable(monkeypatch):
-    # Broken symlink, clockless share, or a cache deleted mid-scan. Still listed,
-    # just undated.
     _stub_hf_scan(
         monkeypatch,
         [
@@ -110,8 +97,6 @@ def test_a_non_positive_mtime_is_dropped_rather_than_reported_as_1970(monkeypatc
 def test_falls_back_to_stat_when_the_library_reports_nothing(monkeypatch, tmp_path):
     cache_dir = tmp_path / "datasets--Org--Data"
     (cache_dir / "snapshots").mkdir(parents = True)
-    # Both candidates: the fallback takes the newest, or a freshly created parent
-    # directory would dominate.
     os.utime(cache_dir / "snapshots", (1_700_000_000, 1_700_000_000))
     os.utime(cache_dir, (1_690_000_000, 1_690_000_000))
 
@@ -138,7 +123,6 @@ def test_a_merge_keeps_the_newer_of_the_two_timestamps(monkeypatch):
         monkeypatch,
         [_cached_repo()],
     )
-    # The processed-cache scan describes the same dataset, more recently touched.
     monkeypatch.setattr(
         cache_inventory,
         "_scan_processed_dataset_caches",
@@ -335,7 +319,6 @@ def test_processed_scan_uses_the_newest_nested_artifact_mtime(monkeypatch, tmp_p
 
 
 def test_recent_order_is_now_derivable_from_the_payload(monkeypatch):
-    # The whole point: two cached datasets, and the newer one sorts first.
     _stub_hf_scan(
         monkeypatch,
         [

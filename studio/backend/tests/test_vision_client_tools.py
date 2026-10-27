@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Repros for the four defects in PR #10092 (client tools on a vision turn).
-
-Route-level tests stub ``generate_chat_response`` entirely, so these call
-``_generate_vision_response`` directly against a fake processor instead.
-"""
+"""Vision-turn client tool repros; calls _generate_vision_response on a fake processor directly."""
 
 import importlib
 import importlib.machinery
@@ -19,8 +15,7 @@ from unittest.mock import MagicMock
 import pytest
 
 
-# #12382: with the date setting on and no system prompt, the chat's first message opens with
-# this note. It is the only rewrite of the user's text these assertions allow.
+# With the date setting on, the first message opens with this note; the only allowed rewrite.
 _DATE_NOTE = re.compile(r"\A\[Current date: \d{4}-\d{2}-\d{2}\]\n\n")
 
 
@@ -62,14 +57,7 @@ def _stub_if_missing(
     attrs = (),
     named_spec = False,
 ):
-    """Register a stub for a dep this job does not install. A real install is left alone.
-
-    Same helper and reason as test_audio_type_inconclusive.py: unstubbed, this module fails
-    COLLECTION under the studio-backend-ci.yml matrix and takes the whole job down.
-
-    ``named_spec`` gives the stub a real ModuleSpec, which only torchao needs: transformers
-    probes it with find_spec, which raises ValueError on ``__spec__ = None``.
-    """
+    """Stubs a missing dep so collection survives CI; torchao needs a real ModuleSpec for find_spec."""
     if name in sys.modules:
         return
     try:
@@ -123,7 +111,6 @@ _LOOKUP = {
     "function": {"name": "lookup", "description": "Look something up"},
 }
 
-# Reads the ``tools`` variable AND replays tool turns.
 _CHATML_WITH_TOOLS = (
     "{% if tools %}<|im_start|>system\n"
     "{% for t in tools %}{{ t.function.name }}: {{ t.function.description }}\n{% endfor %}"
@@ -134,7 +121,6 @@ _CHATML_WITH_TOOLS = (
     "{% if add_generation_prompt %}<|im_start|>assistant\n{% endif %}"
 )
 
-# Replays tool turns but never reads ``tools``: renders identically either way.
 _TOOL_ROUNDTRIP_ONLY = (
     "{% for m in messages %}<|im_start|>{{ m['role'] }}\n"
     "{% if m['role'] == 'tool' %}<tool_response>{{ m['content'] }}</tool_response>"
@@ -182,8 +168,6 @@ def _vision_probe(chat_template = _CHATML_WITH_TOOLS):
             return "PROMPT"
 
         def __call__(self, *args, **_kwargs):
-            # The pixels arrive as the first positional argument, one object when
-            # there is a single image and the list itself when there are several.
             if args:
                 seen["images"] = args[0]
             return Batch({"input_ids": torch.zeros((1, 1), dtype = torch.long)})
@@ -590,10 +574,7 @@ def test_the_worker_forwards_the_processor_template_to_the_parent():
     import ast
     import pathlib
 
-    # Anchored on this file, like the same read in test_native_context_length and
-    # test_audio_unsupported_backend_error. A bare relative path resolves against the
-    # working directory, so this only found the worker when pytest happened to be
-    # invoked from studio/backend and raised FileNotFoundError from anywhere else.
+    # Anchored on this file so the read works from any working directory.
     worker = pathlib.Path(__file__).resolve().parents[1] / "core/inference/worker.py"
     source = worker.read_text("utf-8")
     tree = ast.parse(source)
@@ -621,7 +602,6 @@ def test_a_replay_only_processor_body_is_not_authorized_for_healing():
     )
     assert catalog == []
 
-    # A tokenizer body keeps the round-trip clause: a native template sits behind it.
     assert renderable_tool_catalog_for_targets(
         [_LOOKUP],
         (None,),
@@ -977,7 +957,6 @@ def test_a_named_processor_template_is_classified_without_tool_use():
     monkeypatch = _pytest.MonkeyPatch()
     try:
         passthrough._install(monkeypatch, backend)
-        # Honour prefer_tool_use through the real selector; a stub ignoring it cannot fail.
         from core.inference.chat_template_helpers import (
             _selected_template_strings_from_value,
         )
@@ -1105,7 +1084,6 @@ def _plain_route_messages(chat_template_info):
 def test_a_historical_image_stays_on_the_turn_that_sent_it_without_tools():
     """The plain route attached the thread's latest picture to the newest question on
     every request, so the prompt prefix holding it was never shared between turns."""
-    # A template-less processor still places the image: the gate is renders_image.
     sent = _plain_route_messages({"template": _CHATML_WITH_TOOLS, "renders_image": True})
     earlier, owning, later = [m for m in sent if m.get("role") == "user"]
     assert [p.get("type") for p in owning["content"]] == ["image", "text"]
@@ -1300,8 +1278,7 @@ def test_an_image_turn_still_penalizes_on_a_transformers_without_prompt_ignore_l
     )
 
     (penalty,) = [p for p in calls[0]["logits_processor"] if isinstance(p, Floor)]
-    # Same slice the 4.52+ processor does internally: the one prompt id is skipped,
-    # so id 9 never indexes past this 4-wide vocabulary and only id 2 is penalized.
+    # Same slice the 4.52+ processor does: the prompt id is skipped, so only id 2 is penalized.
     scores = penalty(torch.tensor([[9, 2]]), torch.ones((1, 4)))
     assert scores.tolist() == [[1.0, 1.0, 0.5, 1.0]]
 
@@ -1327,21 +1304,12 @@ def test_an_image_only_turn_without_a_fallback_is_unchanged(content, structured,
 
 
 def test_no_image_marker_on_the_plain_route_when_renders_image_is_false():
-    """``renders_image`` is the whole gate, and it is read with ``.get``, so a model whose
-    capability probe never reported one leaves the thread as strings.
-
-    Named for the key it actually varies. As "..._when_the_render_is_text_only", carrying a
-    ``processor_template``, it read as a claim about the render target and asserted nothing
-    about it: the same dict without ``renders_image`` passes identically on the commit
-    before this one, so it could not have caught the marker firing on a text render.
-    """
+    """renders_image is the whole gate, read with .get, so a missing key must mean no image marker."""
     sent = _plain_route_messages(
         {"template": _CHATML_WITH_TOOLS, "processor_template": _CHATML_WITH_TOOLS}
     )
     assert all(isinstance(m.get("content"), str) for m in sent if m.get("role") == "user")
 
-    # And with the gate open, the same thread is marked: the assertion above is about
-    # renders_image, not about the processor_template sitting next to it.
     marked = _plain_route_messages(
         {
             "template": _CHATML_WITH_TOOLS,
@@ -1382,7 +1350,6 @@ def test_an_assistant_tool_call_turn_without_content_is_still_parts():
     out = messages_with_attached_image(
         [
             {"role": "user", "content": "what is in this"},
-            # exclude_none leaves no content key at all.
             {"role": "assistant", "tool_calls": [{"id": "c1", "type": "function"}]},
             {"role": "tool", "content": ""},
         ],
@@ -1573,12 +1540,7 @@ def test_a_catalog_render_failure_does_not_drop_the_system_turn():
 
 
 def test_reasoning_is_not_rescued_from_the_tokenizer_body_on_an_image_turn():
-    """The reasoning search must not widen to the tokenizer body when the caller asked
-    about ONE body, or the image turn enables a channel its renderer never selected (#10092).
-
-    Deliberately does NOT stub _detect_safetensors_features: stubbing it made an earlier
-    version of this check pass with the fix reverted.
-    """
+    """Reasoning must not come from the tokenizer body on an image turn; that enables a stray channel."""
     import routes.inference as inf
 
     from core.inference.chat_template_helpers import _GEMMA_TEMPLATE_OPENERS
@@ -1604,7 +1566,6 @@ def test_reasoning_is_not_rescued_from_the_tokenizer_body_on_an_image_turn():
     widened = inf._detect_safetensors_features(backend, processor_body, prefer_tool_use = False)
 
     assert not features.get("supports_reasoning"), features
-    # If the widened call ever stops being True the test no longer proves anything.
     assert widened.get("supports_reasoning"), widened
 
 
@@ -1644,17 +1605,12 @@ def test_the_nudge_retry_skips_the_image_marker_on_a_text_only_fallback():
 
 
 def test_an_earlier_attachment_keeps_its_own_turn_against_a_newer_replay():
-    """The attachment's turn can PRECEDE a tool's picture. The plain route used to
-    pre-add its marker, so this backend counted that marker as history's, the top-up
-    became a no-op, and pixels_in_marker_order could no longer tell the two apart --
-    the model was shown the screenshot where the user's own diagram belonged."""
+    """An earlier attachment keeps its own image turn; pre-added markers swapped the pictures."""
     from core.inference.mcp_images import placeholder_turn
 
     backend, seen = _vision_probe()
     attachment, replayed = object(), object()
 
-    # What the plain route hands the backend once it stops pre-marking: the
-    # attachment's turn is a plain string and the only marker is the replay's.
     messages = [
         {"role": "user", "content": "here is my diagram"},
         {"role": "assistant", "content": "noted"},
@@ -1705,7 +1661,6 @@ def test_replayed_vision_images_honor_adapter_selection_under_lock(initial, requ
 
     def apply(value):
         assert backend._generation_lock.locked()
-        # The real helper's contract: None leaves the loaded state alone.
         if value is None:
             return
         state["applied"].append(value)

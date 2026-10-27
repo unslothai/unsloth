@@ -25,7 +25,6 @@ from core.inference.llama_cpp import (
 )
 from routes.inference import _quote_cut_sse_chunk, produce_openai_chat_completions
 
-# Reported and observed Qwen3.8 cuts, plus each other opener context.
 _CUT_TAILS = [
     "Actually I need to check whether the actual file contains `",
     "that's actually the canonical Qwen behavior (keeps `",
@@ -46,7 +45,6 @@ _CUT_TAILS = [
     '{"',
 ]
 
-# Ways finished text ends, including ones that end on a quote or backtick.
 _FINISHED_TAILS = [
     "The answer is 4.",
     "Four",
@@ -89,12 +87,9 @@ _DONE = "The answer is 4."
         (_DONE, _CUT, "stop", True, True),
         (_DONE, "", "stop", True, False),
         (_DONE, _DONE, "stop", True, False),
-        # A complete answer overrides a suspicious reasoning tail.
         (_CUT, _DONE, "stop", True, False),
-        # `length` has its own recovery and terminal state.
         (_CUT, _CUT, "length", True, False),
         (_CUT, _CUT, None, True, False),
-        # The Anthropic route does not forward the event.
         (_CUT, _CUT, "stop", False, False),
     ],
     ids = [
@@ -284,7 +279,6 @@ _UNFLAGGED = {
 }
 
 
-# A `length` turn is continued, so it needs a second stream to finish on.
 _SPARE = _stream(content = _FINISHED_ANSWER)
 
 
@@ -317,5 +311,4 @@ def test_the_shown_text_is_unchanged(monkeypatch):
     texts = [
         e for e in _plain(_make_backend(monkeypatch, [_stream(_CUT_THOUGHT)])) if isinstance(e, str)
     ]
-    # The warning preserves the promoted thought.
     assert texts[-1].endswith("</think>" + _CUT_THOUGHT)

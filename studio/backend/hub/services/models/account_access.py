@@ -434,16 +434,7 @@ def hidden_chat_status_response():
 
 
 def hidden_generate_progress_response(response_model):
-    """The generate-progress shape, idle, with nothing of the resident.
-
-    A generate-progress route declares ``active``/``fraction``/..., and a returned
-    ``Response`` bypasses that model, so answering ``hidden_resident_response()``
-    there hands a poller an object with no ``active`` at all. ``progress["active"]``
-    then raises ``KeyError`` instead of reading "nothing is running", which is what
-    the caller is entitled to learn either way. The model's own defaults ARE idle,
-    so they reveal exactly as little as the loaded/yours pair and stay in step with
-    the declared shape on their own.
-    """
+    """Idle model defaults as JSON, not a bare Response; they reveal nothing resident."""
     return JSONResponse(
         content = {**response_model().model_dump(mode = "json"), "loaded": True, "yours": False}
     )
@@ -896,6 +887,30 @@ def _cached_repo(path: Path) -> tuple[str, str] | None:
                 pieces = part[len(prefix) :].split("--")
                 if len(pieces) in (1, 2) and all(pieces):
                     return "/".join(pieces), repo_type
+    return None
+
+
+def cached_model_repo(reference: str) -> str | None:
+    """Recover a resident's Hub identity only from a verified model-cache path."""
+    from utils.hf_cache_settings import known_hf_hub_caches
+    from utils.paths.path_utils import is_network_or_device_path
+
+    if not reference or is_network_or_device_path(reference):
+        return None
+    try:
+        path = Path(reference).expanduser()
+        cached = _cached_repo(path)
+        if cached is None or cached[1] != "model":
+            return None
+        resolved = path.resolve()
+        if _cached_repo(resolved) != cached:
+            return None
+        if Path(normalize_path(reference)).expanduser().resolve() != resolved:
+            return None
+        if any(resolved.is_relative_to(root.resolve()) for root in known_hf_hub_caches()):
+            return cached[0]
+    except (OSError, RuntimeError, ValueError):
+        pass
     return None
 
 

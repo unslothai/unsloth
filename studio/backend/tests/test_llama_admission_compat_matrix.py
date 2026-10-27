@@ -1,22 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Every backend shape this accounting can be handed, and every old caller of it.
-
-Re-costing changes how a tool loop is admitted, so every install that does NOT get the new
-path must behave exactly as it did. Budget and slot count are both derived from the loaded
-backend, and that derivation differs per platform and per device:
-
-  * ``capacity`` is ``effective_parallel_slots``, reduced to fit VRAM and forced to 1 on a
-    CPU-only or small-VRAM load. A 1-slot backend must be untouched by this change.
-  * ``budget`` is ``_kv_cache_context_total``: ``n_ctx`` under ``--kv-unified``,
-    ``n_ctx * slots`` without it, None when the context length cannot be read back from
-    ``/props``. None means slot-only admission, the pre-#9392 behaviour.
-
-The matrix below is the real portability surface, not a stand-in for other operating
-systems: the code added here is stdlib threading and ``time.monotonic`` with no
-OS-specific branch, and what varies per platform is which of these numbers arrives.
-"""
+"""Installs off the new path must admit exactly as before; a None budget means slot-only admission."""
 
 from __future__ import annotations
 
@@ -72,7 +57,7 @@ def _lease(
     return reservation.lease_nowait()
 
 
-# (label, slots, n_ctx, kv_unified) -- the shapes a real load actually produces.
+# (label, slots, n_ctx, kv_unified)
 BACKENDS = [
     ("cpu-only, 1 slot", 1, 4096, True),
     ("small vram, downshifted", 1, 8192, True),
@@ -184,7 +169,7 @@ class TestNothingChangesWhenTheBudgetIsUnknown:
         assert queue._reparking == 0
 
 
-# In the order they were added, so older positional callers keep their meaning.
+# in the order they were added, so older positional callers keep their meaning
 _TOOL_LOOP_HOOKS = ("on_conversation_grew", "on_decode_slot", "thinking_budget_tokens")
 
 
@@ -209,7 +194,6 @@ class TestOldCallers:
         assert queue._reparking == 0, "the non-blocking path must never touch the wait line"
 
     def test_the_route_recost_helper_accepts_no_cancel_event(self):
-        # Reservation None is the "not admitted yet" case every call site can hit.
         import routes.inference as routes_inference
         routes_inference._openai_llama_admission_recost(
             None,
@@ -238,7 +222,6 @@ class TestOldCallers:
         names = list(
             inspect.signature(LlamaCppBackend.generate_chat_completion_with_tools).parameters
         )
-        # Later parameters may only be appended after the hooks, never inserted before them.
         start = names.index(_TOOL_LOOP_HOOKS[0])
         hooks = names[start : start + len(_TOOL_LOOP_HOOKS)]
         assert hooks == list(
@@ -277,7 +260,6 @@ class TestNoPersistentStateChanged:
 
         from core.inference.llama_admission import llama_admission_config_from_env
 
-        # A completely bare environment must still produce a usable config.
         saved = {k: v for k, v in os.environ.items() if k.startswith("UNSLOTH_")}
         try:
             for key in list(saved):
@@ -297,16 +279,7 @@ class TestNoPersistentStateChanged:
 
 
 class TestTheInjectedToolCatalogueIsCharged:
-    """The regression that a live run caught and every unit test missed.
-
-    ``payload.tools`` is what the CLIENT sent. Unsloth's own tool loop resolves Web Search
-    and the rest server-side and renders them into the prompt AFTER admission has priced
-    the request, so pricing from the payload alone undercounts by the whole catalogue.
-    Measured on Qwen3.5-4B-MTP-GGUF, the same user turn is 1716 prompt tokens with tools
-    off and 2969 with them on. At ``-c 4096`` that gap is fatal: priced at an equal share
-    four tool chats were all admitted and llama.cpp answered every one with ``Context size
-    has been exceeded``.
-    """
+    """Price the server-injected tool catalogue, since payload.tools holds only what the client sent."""
 
     CATALOG = [
         {
@@ -333,7 +306,8 @@ class TestTheInjectedToolCatalogueIsCharged:
         it there is correct."""
         import routes.inference as routes_inference
 
-        budget, capacity = 8192, 16  # share 512, smaller than the catalogue
+        # share 512, smaller than the catalogue
+        budget, capacity = 8192, 16
         payload = _payload(text = "hi")
         without = _tokens(payload, budget = budget, capacity = capacity, tool_loop = True)
         with_catalog = routes_inference._openai_llama_admission_tokens(
@@ -386,5 +360,5 @@ class TestTheInjectedToolCatalogueIsCharged:
             def __repr__(self):
                 raise RuntimeError("no")
 
-        # default=str still reaches __repr__, so this must be caught rather than raised.
+        # default=str still reaches __repr__, so this must be caught rather than raised
         assert routes_inference._openai_llama_admission_injected_tool_tokens([Awkward()]) >= 0

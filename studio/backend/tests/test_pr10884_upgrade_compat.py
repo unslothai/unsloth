@@ -1,22 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""What an already-installed Unsloth Studio does on its first load after this update.
-
-The auto tensor-split fallback changes what a load DOES with a ``tensor_split``
-it is handed. The question an existing install asks is narrower and more
-important: can anything already on my disk start feeding it one?
-
-Saved per-model settings live in one row of ``app_settings``
-(``openai_api_auto_switch_overrides``), and the only things that ever reach a
-load from there are what ``normalize_model_override`` allow-lists on the way in
-and what ``model_override_load_kwargs`` emits on the way out. So the upgrade
-question is answerable exactly, without a database: put a saved override
-through both and see whether a ratio can come out the other side.
-
-Forwards compatibility is the same argument run backwards. #12774 later began
-persisting a validated ratio beside its GPU pin; a row without one is unchanged.
-"""
+"""Saved per-model overrides must not yield a tensor_split ratio on load, so the upgrade is safe."""
 
 from __future__ import annotations
 
@@ -34,9 +19,6 @@ from utils.openai_auto_switch_settings import (  # noqa: E402
     normalize_model_override,
 )
 
-# A saved override from an existing install, using every placement key the
-# allow-list does carry. This is the shape that replays on the first load after
-# an update.
 LEGACY_OVERRIDE = {
     "gpu_memory_mode": "manual",
     "gpu_layers": 99,

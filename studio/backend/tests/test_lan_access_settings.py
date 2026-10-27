@@ -28,6 +28,7 @@ import lan_access  # noqa: E402
 import routes.settings as routes  # noqa: E402
 import utils.host_policy as host_policy  # noqa: E402
 import utils.lan_access_settings as lan_settings  # noqa: E402
+import utils.paths.file_manager as file_manager  # noqa: E402
 from storage import studio_db  # noqa: E402
 
 # captured before the autouse fixture swaps in the dict stand-in
@@ -65,13 +66,9 @@ def stored_settings(monkeypatch):
     yield stored
     lan_access.stop_lan_listener()
     lan_access.clear_lan_listener_error()
-    # drain watchers are daemon threads that outlive their test, so the shared
-    # counter has to be reset or a later decrement lands on the next test's state
+    # drain watchers are daemon threads that outlive the test; reset the shared counter
     lan_access._pending_drains = 0
     host_policy._reset_loopback_default_state()
-
-
-# ── persisted preference ──
 
 
 def test_auto_start_persistence_is_strict_and_fail_closed(monkeypatch, stored_settings):
@@ -556,9 +553,6 @@ def test_private_lan_launch_managed_matrix(
     )
 
 
-# ── status ──
-
-
 def test_a_loopback_launch_offers_a_startable_off_state():
     status = lan_settings.lan_access_status(_app())
     assert status["state"] == "off"
@@ -709,6 +703,7 @@ def test_a_wildcard_launch_refreshes_lan_addresses_instead_of_showing_the_public
 ):
     """The status refreshes every LAN address instead of relying on server_url's
     single direct base, and never leaks an obsolete public-address value."""
+    monkeypatch.setattr(file_manager, "_in_container", lambda: False)
     monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda _ip_version = 4: ["192.168.1.24"])
     state = _app(
         lan_access_launch_managed = True,
@@ -721,6 +716,78 @@ def test_a_wildcard_launch_refreshes_lan_addresses_instead_of_showing_the_public
 
     monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda _ip_version = 4: ["10.0.0.7"])
     assert lan_settings.lan_access_status(state)["urls"] == ["http://10.0.0.7:8888"]
+
+
+def test_a_wildcard_launch_in_a_container_advertises_no_bridge_address(monkeypatch):
+    monkeypatch.setattr(file_manager, "_in_container", lambda: True)
+    monkeypatch.setattr(lan_settings, "_veth_addresses", lambda: {"172.17.0.2"})
+    monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda _ip_version = 4: ["172.17.0.2"])
+    state = _app(lan_access_launch_managed = True, lan_access_wildcard_bind = True)
+    assert lan_settings.lan_access_status(state)["urls"] == []
+
+    # --network host sees the host's own NICs, no veth, even on a 172.16/12 office LAN.
+    monkeypatch.setattr(lan_settings, "_veth_addresses", lambda: set())
+    monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda _ip_version = 4: ["172.20.1.5"])
+    assert lan_settings.lan_access_status(state)["urls"] == ["http://172.20.1.5:8888"]
+
+
+def test_veth_addresses_reads_the_peer_link_from_sysfs(monkeypatch, tmp_path):
+    entry = lambda address: SimpleNamespace(address = address)
+    monkeypatch.setitem(
+        sys.modules,
+        "psutil",
+        SimpleNamespace(
+            net_if_addrs = lambda: {
+                "eth0": [entry("172.17.0.2")],
+                "enp3s0": [entry("172.20.1.5")],
+                "enp3s0.100": [entry("172.21.0.5")],
+            }
+        ),
+    )
+    # eth0's peer (index 12) is the host-side veth, outside this namespace; a NIC and its VLAN link to index 2.
+    for name, (iflink, ifindex) in {
+        "eth0": ("12", "11"),
+        "enp3s0": ("2", "2"),
+        "enp3s0.100": ("2", "3"),
+    }.items():
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "iflink").write_text(iflink + "\n")
+        (tmp_path / name / "ifindex").write_text(ifindex + "\n")
+    assert lan_settings._veth_addresses(str(tmp_path)) == {"172.17.0.2"}
+
+
+def test_lan_status_reports_keyless_off_while_a_managed_account_exists(monkeypatch):
+    import auth.policy as policy
+    import utils.keyless_api_access as keyless
+
+    monkeypatch.setattr(keyless, "get_keyless_api_access_settings", lambda: ("inference", True))
+    monkeypatch.setattr(policy, "installation_has_managed_accounts", lambda: True)
+    status = lan_settings.lan_access_status(_app())
+    assert (status["keyless_scope"], status["keyless_tools"]) == ("off", False)
+
+
+@pytest.mark.parametrize(
+    ("name", "host_only"),
+    [
+        ("docker0", True),
+        ("br-0123456789ab", True),
+        ("virbr0", True),
+        ("vboxnet0", True),
+        ("vmnet8", True),
+        ("br0", False),
+        ("en0", False),
+        ("eth0", False),
+    ],
+)
+def test_virtual_switches_are_not_offered_as_lan_addresses(name, host_only):
+    assert lan_access._is_host_only_interface(name) is host_only
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason = "BSD SO_REUSEADDR semantics")
+def test_lan_bind_does_not_take_a_port_another_app_serves(monkeypatch):
+    monkeypatch.setattr(lan_access, "_already_served", lambda address, port: True)
+    with pytest.raises(OSError):
+        lan_access._bind_listener("127.0.0.1", 0)
 
 
 def test_listener_urls_bracket_ipv6_literals():
@@ -805,11 +872,7 @@ def test_a_failed_start_is_reported_as_an_error_state(monkeypatch):
     )
     status = lan_settings.lan_access_status(_app())
     assert status["state"] == "error" and status["error"] == "no_lan_address"
-    # the failure is retryable: nothing about it blocks a second attempt
     assert status["can_start"] is True
-
-
-# ── address detection ──
 
 
 def test_detection_drops_addresses_no_other_device_can_open(monkeypatch):
@@ -849,8 +912,7 @@ def test_detection_survives_a_host_that_resolves_to_nothing(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "psutil", None)
     monkeypatch.setattr(lan_access.socket, "getaddrinfo", _boom)
-    # under the suite's outbound-network guard the UDP probe is refused too, so
-    # a failed lookup must contribute nothing rather than raise
+    # the suite's network guard refuses the UDP probe too; a failed lookup must not raise
     assert lan_access.detect_lan_addresses() == []
 
 
@@ -861,7 +923,6 @@ def test_detection_enumerates_interfaces_rather_than_the_default_route(monkeypat
     routed = _require_lan_address()
     assert routed in lan_access._interface_addresses()
 
-    # with the probe unavailable, enumeration alone still finds the address
     def _no_route(*_args, **_kwargs):
         raise OSError("network is unreachable")
 
@@ -1051,9 +1112,6 @@ def test_concurrent_wsl_mode_checks_share_one_probe(monkeypatch):
     assert len(mode_calls) == 1
 
 
-# ── live listener ──
-
-
 def _free_port() -> int:
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
@@ -1155,7 +1213,6 @@ def test_the_listener_adds_and_removes_network_reach_without_a_restart(live_serv
     assert _get(local_url) == 200, "loopback must keep serving while the LAN listener runs"
     assert lan_access.lan_listener_status()["running"] is True
 
-    # a second start is a no-op rather than a second bind on the same address
     again = lan_access.start_lan_listener(live_server.app, live_server.loop, live_server.port)
     assert again == bound
 
@@ -1169,7 +1226,6 @@ def test_the_listener_adds_and_removes_network_reach_without_a_restart(live_serv
         "error": None,
     }
 
-    # the same address rebinds, so a stop does not strand the port until restart
     lan_access.start_lan_listener(live_server.app, live_server.loop, live_server.port)
     assert _get(lan_url) == 200
 
@@ -1242,8 +1298,7 @@ def test_stop_from_inside_the_event_loop_does_not_wait_on_itself(live_server):
         timeout = 5
     )
     assert elapsed < lan_access._STOP_TIMEOUT
-    # the gate closes at once, but ownership and the trust flag stay until uvicorn
-    # closes the sockets, which it cannot do while _graceful_shutdown holds the loop
+    # gate closes at once, but ownership stays until uvicorn closes the sockets
     assert lan_access._bound_addresses == ()
     assert lan_access.lan_listener_status()["running"] is True
     assert host_policy.remote_connector_active() is True
@@ -1267,7 +1322,6 @@ def test_a_listener_that_fails_to_serve_gives_up_without_waiting_it_out(live_ser
     assert time.monotonic() - started < lan_access._START_TIMEOUT
     status = lan_access.lan_listener_status()
     assert status["running"] is False and status["error"] == "listener_start_failed"
-    # the sockets it opened were released, so the port is free again
     assert _free_port_is_bindable(live_server.port)
 
 
@@ -1320,16 +1374,13 @@ def test_a_stop_that_cannot_confirm_the_port_keeps_the_host_marked_reachable(mon
         status = lan_settings.stop_lan_access(app)
         assert status["error"] == "stop_timed_out"
         assert host_policy.remote_connector_active() is True
-        # ownership is retained, so the stop stays offered and a retry re-waits
         assert status["can_stop"] is True
         assert lan_access.lan_listener_status()["running"] is True
 
-        # a second stop must not report success while the port may still accept
         retried = lan_settings.stop_lan_access(app)
         assert retried["error"] == "stop_timed_out"
         assert host_policy.remote_connector_active() is True
 
-        # once the socket really closes, the retry settles and clears the error
         lingering.close()
         settled = lan_settings.stop_lan_access(app)
         assert settled["state"] == "off" and settled["error"] is None
@@ -1358,7 +1409,6 @@ def test_a_schedule_that_cannot_reach_the_loop_releases_the_bound_sockets(live_s
     status = lan_access.lan_listener_status()
     assert status["running"] is False and status["error"] == "listener_start_failed"
     assert host_policy.remote_connector_active() is False, "trust left on with no listener"
-    # the port is free, so a later start is not locked out by the leaked sockets
     assert _free_port_is_bindable(live_server.port)
 
 
@@ -1428,9 +1478,6 @@ def test_stop_releases_the_sockets_itself_when_the_serving_loop_is_gone(monkeypa
     assert lan_access.lan_listener_status()["running"] is False
 
 
-# ── settings orchestration ──
-
-
 def _configured(live_server):
     lan_settings.set_lan_access_port(live_server.port)
     """The live app carrying the launch policy run.py would have published on it."""
@@ -1458,7 +1505,6 @@ def test_start_and_stop_track_the_beyond_loopback_trust_flag(live_server):
     assert status["can_stop"] is True and status["can_start"] is False
     assert host_policy.remote_connector_active() is True
 
-    # a repeated start is answered with the running listener, not a second bind
     assert lan_settings.start_lan_access(app)["urls"] == status["urls"]
 
     stopped = lan_settings.stop_lan_access(app)
@@ -1473,7 +1519,6 @@ def test_auto_start_brings_the_listener_up_at_boot(live_server, stored_settings)
     app = _configured(live_server)
     assert lan_settings.maybe_auto_start_lan_access(app) is True
     assert lan_settings.lan_access_status(app)["state"] == "online"
-    # stopping now must not silently clear the preference
     lan_settings.stop_lan_access(app)
     assert lan_settings.get_lan_access_auto_start() is True
 
@@ -1507,7 +1552,6 @@ def test_a_repeated_stop_does_not_clear_trust_a_pending_drain_still_owns(monkeyp
         lan_access._sync_lan_trust()
     assert host_policy.remote_connector_active() is True
 
-    # the idempotent stop path: no server, but a drain still owns the flag
     assert lan_access.stop_lan_listener() is True
     assert host_policy.remote_connector_active() is True
 
@@ -1539,7 +1583,6 @@ def test_the_trust_flag_moves_with_the_listener_under_one_lock():
         body = ast.unparse(node)
         if "set_lan_connector_active" in body:
             holders.add(node.name)
-    # only the two helpers that run under _lock may touch it
     assert holders == {"start_lan_listener", "_sync_lan_trust"}, holders
 
 
@@ -1653,7 +1696,6 @@ def test_start_refuses_once_the_server_loop_is_gone(monkeypatch):
     )
     with pytest.raises(RuntimeError, match = "server_not_running"):
         lan_settings.start_lan_access(_app(lan_access_loop = None))
-    # a loop that exists but is no longer serving would never run the listener either
     idle = asyncio.new_event_loop()
     try:
         with pytest.raises(RuntimeError, match = "server_not_running"):
@@ -1674,9 +1716,6 @@ def test_auto_start_is_skipped_entirely_when_the_preference_is_off(monkeypatch):
         lan_settings, "start_lan_access", lambda _app: pytest.fail("started despite the preference")
     )
     assert lan_settings.maybe_auto_start_lan_access(_app()) is False
-
-
-# ── routes and wiring ──
 
 
 def test_colab_auto_start_setting_is_read_only(monkeypatch):
@@ -1718,7 +1757,6 @@ def test_management_rejects_api_keys():
     with pytest.raises(HTTPException) as exc:
         routes._require_ui_session(True)
     assert exc.value.status_code == 403
-    # every /lan-access handler must carry the UI-session gate
     tree = ast.parse(Path(routes.__file__).read_text(encoding = "utf-8"))
     gated = {}
     for node in ast.walk(tree):
@@ -1809,7 +1847,6 @@ def test_the_desktop_assets_mount_admits_the_lan_listener():
         lan_access._bound_addresses = original
     assert served
 
-    # the SPA routes share the decision through a closure the mount does not expose
     source = (_BACKEND / "main.py").read_text(encoding = "utf-8")
     assert "return not tunnel_only or _is_remote_frontend_request(request.scope, app.state)" in (
         source
@@ -1818,9 +1855,7 @@ def test_the_desktop_assets_mount_admits_the_lan_listener():
 
 def test_run_py_wires_the_listener_into_the_server_lifecycle():
     source = (_BACKEND / "run.py").read_text(encoding = "utf-8")
-    # without the loop the settings route has nothing to schedule the listener on
     assert "app.state.lan_access_loop = loop" in source
     assert "close_lan_listener_lifecycle" in source
-    # readiness is what unblocks the whole feature, and it has to land before auto-start
     ready = source.index("app.state.lan_access_ready = True")
     assert ready < source.index("maybe_auto_start_lan_access(app)")

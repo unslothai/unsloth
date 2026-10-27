@@ -52,8 +52,7 @@ try:
     if _moe_path not in sys.path:
         sys.path.insert(0, _moe_path)
 
-    # Import first to apply the TMA compatibility shim, which patches triton.language for both old and
-    # new TMA API names.
+    # Import first to apply the TMA API compatibility shim to triton.language.
     import grouped_gemm  # noqa: F401 - triggers TMA compatibility shim
 
     from grouped_gemm.interface import grouped_gemm
@@ -368,8 +367,7 @@ class FastGLM47Model(FastLlamaModel):
             Glm4MoeLiteNaiveMoe.forward = Glm4MoeLiteNaiveMoe_fast_forward
             Glm4MoeLiteMoE.forward = Glm4MoeLiteMoE_fast_forward
 
-        # Attention/rope/decoder/model forwards are NOT patched: GLM4 uses MLA with different projection
-        # names and lacks extend_rope_embedding, so the Llama-compatible infrastructure does not apply.
+        # GLM4 uses MLA and lacks extend_rope_embedding, so Llama attention patches do not apply.
 
         return
 

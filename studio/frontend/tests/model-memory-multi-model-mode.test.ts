@@ -133,7 +133,19 @@ test("the row is a three-item Select and the idle row closes the section", () =>
   const last = (section.parent as ts.JsxElement).children
     .filter((c) => !(ts.isJsxText(c) && c.containsOnlyTriviaWhiteSpaces))
     .at(-1);
-  const lastTag = last ? openingTag(last) : null;
+  // The API tab's copy leaves the idle row out: `{full ? <MediaIdleUnloadSetting /> : null}`.
+  const lastTags: ts.JsxOpeningLikeElement[] = [];
+  const collect = (node: ts.Node): void => {
+    const tag = openingTag(node);
+    if (tag) {
+      lastTags.push(tag);
+    }
+    ts.forEachChild(node, collect);
+  };
+  if (last) {
+    collect(last);
+  }
+  const lastTag = lastTags[0] ?? null;
   assert.equal(lastTag?.tagName.getText(), "MediaIdleUnloadSetting");
   assert.match(
     lastTag ? (attr(lastTag, "residencyKey") ?? "") : "",

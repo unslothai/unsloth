@@ -210,12 +210,7 @@ def _effective_env(settings: HubSettings) -> tuple[dict[str, str | None], str]:
 
 
 def apply_hub_settings() -> None:
-    """Point this process, and every worker it spawns from now on, at the saved endpoints.
-
-    Safe before huggingface_hub is imported (startup) and after (a save): the
-    library reads the endpoint once at import, so its copies are refreshed too.
-    Workers already running keep the endpoint they started with.
-    """
+    """Safe before or after huggingface_hub import; running workers keep the endpoint they started with."""
     global _operator_endpoints, _saved_only_endpoints
     with _apply_lock:
         if _operator_endpoints is None:
@@ -240,6 +235,13 @@ def apply_hub_settings() -> None:
         utils_module = sys.modules.get("utils.utils")
         if utils_module is not None:
             utils_module.reset_hf_reachability_cache()
+    endpoint = get_hf_endpoint()
+    if source == HUGGINGFACE and endpoint != DEFAULTS_BY_HEALTH_KEY["hf_endpoint"]:
+        try:
+            from utils.hub_mirror_probe import warn_if_mirror_redirects_to_official
+            warn_if_mirror_redirects_to_official(endpoint)
+        except Exception:  # noqa: BLE001 - a log-only probe must never fail applying settings
+            logger.debug("Hugging Face endpoint probe did not start", exc_info = True)
 
 
 def saved_only_endpoints() -> frozenset[str]:
@@ -249,7 +251,7 @@ def saved_only_endpoints() -> frozenset[str]:
 
 def _bypass_proxy_for(url: str) -> None:
     """Keep the loopback adapter off a configured proxy: httpx proxies 127.0.0.1 too unless NO_PROXY lists it."""
-    # Environment proxies only: on macOS / Windows an env no_proxy makes getproxies() skip the system proxy.
+    # Env proxies only: on macOS/Windows env no_proxy makes getproxies() skip system proxy.
     from urllib.request import getproxies_environment
 
     host = urlsplit(url).hostname
@@ -271,9 +273,7 @@ def _bypass_proxy_for(url: str) -> None:
             http._GLOBAL_CLIENT = None
 
 
-# huggingface_hub closes its shared client in every forked child, so any preexec_fn child (tools,
-# sidecar servers) can block before exec on httpx locks another thread held at the fork. Child
-# hooks run in registration order, which import order decides, so the parent disarms the client.
+# huggingface_hub closes its client in forked children, which can deadlock on httpx locks.
 _inherited_hub_clients: list = []
 
 

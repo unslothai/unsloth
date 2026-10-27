@@ -95,8 +95,9 @@ test("the Seed field has Random and Reuse last seed buttons", () => {
     /const runSeed = lastSeedOf\(res\.images\);\n\s+if \(runSeed !== null\) setSessionSeed\(runSeed\);/,
   );
   // A HugeIcons glyph only this lazy page uses still lands in the eager icon chunk via the barrel
-  // and pushed the startup budget over, so Reuse last seed draws lucide's Recycle.
-  assert.match(page, /<Recycle className="size-4" strokeWidth=\{1\.5\} \/>/);
+  // and pushed the startup budget over, so both seed buttons draw lucide glyphs.
+  assert.match(page, /<Shuffle className="size-4" strokeWidth=\{1\.5\} \/>/);
+  assert.match(page, /<HistoryIcon className="size-4" strokeWidth=\{1\.5\} \/>/);
   assert.doesNotMatch(page, /Recycle01Icon/);
 });
 
@@ -180,7 +181,7 @@ test("a run whose response was lost still becomes the seed Reuse last seed picks
   assert.match(page, /seed: runBaseSeed,/);
   assert.match(
     page,
-    /if \(!\(err instanceof GenerateResponseLostError\)\) throw err;[\s\S]*?if \(!external\) setSessionSeed\(runBaseSeed\);\n\s+setGenDone\(i \+ 1\);\n\s+continue;/,
+    /if \(!\(err instanceof GenerateResponseLostError\)\) throw err;[\s\S]*?if \(!external\) setSessionSeed\((?:compare\?\.sentSeed\(i\) \?\? )?runBaseSeed\);\n\s+setGenDone\(i \+ 1\);\n\s+continue;/,
   );
 });
 

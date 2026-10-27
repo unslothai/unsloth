@@ -349,7 +349,6 @@ test("a sandbox file is deleted as the file it was listed as", async () => {
   });
   await store.getState().refresh();
   const shown = store.getState().items[0] as Item & { fingerprint: string };
-  // Replaced while the confirmation was open: the refresh must not lend the delete its fingerprint.
   fingerprint = "9:2.5";
   await store.getState().refresh();
   await store.getState().removeItem(shown.id, shown.fingerprint);

@@ -319,6 +319,30 @@ def test_a_resident_denoiser_is_armed_by_default(monkeypatch):
     )
 
 
+def test_a_resident_denoiser_off_cuda_stays_plain_unless_forced(monkeypatch):
+    """CPU / MPS loads have no device timer, so the trial cannot price the doubled call: the shape stays plain and the
+    render matches two plain calls exactly. ``force`` still batches."""
+    model = Flux2Transformer2DModel()
+    pipe = _Pipe(model)
+    assert cb.install_cfg_batch(pipe, offload_policy = "none") is None
+    router = cb.router_for(pipe)
+    ref, _ = _flux_loop(Flux2Transformer2DModel())
+    for _ in range(2):
+        got, _ = _flux_loop(model)
+        cb.end_cfg_batch_render(pipe)
+        torch.testing.assert_close(got, ref, rtol = 0, atol = 0)
+    assert set(model.calls) == {1}
+    assert router.stats["batched_steps"] == 0
+    assert "no device timer on cpu" in cb.cfg_batch_status(pipe)["shape_off"]
+
+    monkeypatch.setenv(cb.CFG_BATCH_ENV, "force")
+    forced = Flux2Transformer2DModel()
+    fpipe = _Pipe(forced)
+    assert cb.install_cfg_batch(fpipe, offload_policy = "none") is None
+    _flux_loop(forced)
+    assert 2 in forced.calls and cb.router_for(fpipe).stats["batched_steps"] > 0
+
+
 class _Clock:
     """A fake device timer: each forward costs ``cost(batch)`` seconds of the router's perf_counter."""
 
@@ -753,3 +777,235 @@ def test_both_backends_pass_the_requested_speed_mode():
         assert calls and all(
             "speed_mode = speed_mode" in c.split(")")[0] for c in calls
         ), module.__name__
+
+
+_TRIAL = [
+    1,
+    1,
+    2,
+    1,
+    1,
+    2,
+]  # the discarded trial after steps 1-2 (two plain pairs, two doubled calls)
+
+
+def _switchable(
+    monkeypatch,
+    tmp_path,
+    card = "FakeGPU",
+):
+    """A timed fake whose doubled-call cost the test moves (timing noise around the gate), on a named card, with
+    the verdict store in ``tmp_path``. ``raising = False``: main has no store, so the behaviour is what fails there."""
+    cost = {"batched": 1.2}
+    model = _timed(monkeypatch, lambda b: 1.0 if b == 1 else cost["batched"])
+    monkeypatch.setenv(cb.CFG_BATCH_ENV, "auto")
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_CFG_BATCH_VERDICTS_FILE", str(tmp_path / "verdicts.json"))
+    monkeypatch.setattr(cb, "_card_name", lambda latent: card, raising = False)
+    return model, cost
+
+
+def _render(pipe, model):
+    start = len(model.calls)
+    _flux_loop(model)
+    cb.end_cfg_batch_render(pipe)
+    return model.calls[start:]
+
+
+def _fresh_load(model_cls):
+    """A new load of the same model (another process: only the verdict store survives)."""
+    model = model_cls()
+    pipe = _Pipe(model)
+    assert cb.install_cfg_batch(pipe, offload_policy = "none") is None
+    return pipe, model
+
+
+@pytest.mark.parametrize("first_wins", [True, False])
+def test_a_borderline_shape_takes_one_path_in_every_process(monkeypatch, tmp_path, first_wins):
+    model, cost = _switchable(monkeypatch, tmp_path)
+    cost["batched"] = (
+        1.8 if first_wins else 1.9
+    )  # 0.90 vs 0.95 of the plain pair: either side of the 0.92 gate
+    pipe = _Pipe(model)
+    assert cb.install_cfg_batch(pipe, offload_policy = "none") is None
+    first = _render(pipe, model)
+    assert first[4:10] == _TRIAL
+    first_path = first[:4] + first[10:]
+    # the next process times the same shape on the other side of the gate (noise): it must not re-decide
+    cost["batched"] = 1.9 if first_wins else 1.8
+    for _ in range(2):
+        pipe2, model2 = _fresh_load(type(model))
+        later = _render(pipe2, model2)
+        assert later == first_path  # no trial, the stored path
+        assert cb.router_for(pipe2).last_shape.verdict == ("batch" if first_wins else "plain")
+    assert first_path == ([1] * 4 + [2] * 4 if first_wins else [1] * 12)
+
+
+def test_memory_pressure_never_re_times_a_judged_shape(monkeypatch, tmp_path):
+    model, cost = _switchable(monkeypatch, tmp_path)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_CFG_BATCH_VERDICTS", "0")  # the in-load latch alone
+    pipe = _Pipe(model)
+    assert cb.install_cfg_batch(pipe, offload_policy = "none") is None
+    router = cb.router_for(pipe)
+    assert _render(pipe, model)[10:] == [2] * 4
+    real = router.orig_forward
+    state = {"oom": True}
+
+    def oom_once(*a, **k):
+        if state["oom"] and int(k["hidden_states"].shape[0]) == 2:
+            state["oom"] = False
+            raise torch.cuda.OutOfMemoryError("CUDA out of memory")
+        return real(*a, **k)
+
+    router.orig_forward = oom_once
+    assert _render(pipe, model) == [1] * 12  # the OOM render fell back to plain
+    router.orig_forward = real
+    cost["batched"] = 1.9  # a re-timing now would turn the shape plain for good
+    assert _render(pipe, model) == [1] * 4 + [2] * 4
+    assert router.last_shape.off is None and router.last_shape.verdict == "batch"
+
+
+def test_no_room_mid_render_keeps_the_rest_of_that_render_plain(monkeypatch, tmp_path):
+    model, _ = _switchable(monkeypatch, tmp_path)
+    free = iter([True, True, True, False, True, True] + [True] * 20)
+    monkeypatch.setattr(cb.CfgBatchRouter, "_memory_ok", lambda self, latent, shape: next(free))
+    pipe = _Pipe(model)
+    assert cb.install_cfg_batch(pipe, offload_policy = "none") is None
+    calls = _render(pipe, model)
+    # trial gate, verdict gate, step 3 batched, step 4 no room: steps 4-6 plain (not batched again at step 5)
+    assert calls[10:] == [2] + [1] * 6
+    assert _render(pipe, model) == [1] * 4 + [2] * 4  # the next render batches again, untimed
+
+
+def test_the_verdict_store_is_keyed_on_the_card_and_skipped_off_cuda(monkeypatch, tmp_path):
+    model, cost = _switchable(monkeypatch, tmp_path)
+    pipe = _Pipe(model)
+    assert cb.install_cfg_batch(pipe, offload_policy = "none") is None
+    _render(pipe, model)
+    assert "verdict" in (tmp_path / "verdicts.json").read_text()
+    cost["batched"] = 1.9
+    monkeypatch.setattr(cb, "_card_name", lambda latent: "OtherGPU")
+    pipe2, model2 = _fresh_load(type(model))
+    assert _render(pipe2, model2)[4:10] == _TRIAL  # another card is priced on its own
+    assert "measured no gain" in cb.router_for(pipe2).last_shape.off
+    monkeypatch.setattr(cb, "_card_name", lambda latent: None)  # off CUDA: nothing timed is stored
+    before = (tmp_path / "verdicts.json").read_text()
+    pipe3, model3 = _fresh_load(type(model))
+    assert _render(pipe3, model3)[4:10] == _TRIAL
+    assert (tmp_path / "verdicts.json").read_text() == before
+
+
+def test_usable_free_does_not_count_graph_held_cache(monkeypatch):
+    import core.inference.diffusion_memory as dm
+
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device = None: (1000 * 2**20, 0))
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device = None: 600 * 2**20)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda device = None: 0)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(dm, "_user_budget_reserve_mib", lambda total_mib: 0)
+    monkeypatch.setattr(dm, "_graph_held_cache_bytes", lambda device = None: 500 * 2**20)
+    monkeypatch.setattr(cb, "_torch", lambda: torch)
+    assert cb._usable_free_mib(torch.device("cuda", 0)) == 1100
+
+
+class _QuantDen(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.config = {"num_layers": 2, "hidden": 64}
+        torch.manual_seed(0)
+        self.a = torch.nn.Linear(64, 64, dtype = torch.bfloat16)
+        self.b = torch.nn.Linear(64, 64, dtype = torch.bfloat16)
+
+
+def _torchao_loads():
+    import copy
+
+    tq = pytest.importorskip("torchao.quantization")
+    base = _QuantDen()
+    loads = {"bf16": base}
+    int8 = copy.deepcopy(base)
+    tq.quantize_(int8, tq.Int8DynamicActivationInt8WeightConfig())
+    loads["int8"] = int8
+    try:
+        from torchao.float8.inference import Float8MMConfig
+        for fast in (True, False):
+            fp8 = copy.deepcopy(base)
+            tq.quantize_(
+                fp8,
+                tq.Float8DynamicActivationFloat8WeightConfig(
+                    granularity = tq.PerRow(), mm_config = Float8MMConfig(use_fast_accum = fast)
+                ),
+            )
+            loads[f"fp8_fast{int(fast)}"] = fp8
+    except Exception:  # noqa: BLE001
+        pass
+    assert {str(m.a.weight.dtype) for m in loads.values()} == {"torch.bfloat16"}
+    return loads
+
+
+def test_the_verdict_key_tells_bf16_from_torchao_int8_and_fp8_loads():
+    loads = _torchao_loads()
+    keys = {name: cb._load_identity(m, "none", None) for name, m in loads.items()}
+    assert None not in keys.values()
+    assert len(set(keys.values())) == len(keys), keys
+
+
+def test_the_verdict_key_includes_the_engaged_transformer_quant():
+    model = _QuantDen()
+    keys = {q: cb._load_identity(model, "none", None, q) for q in (None, "int8", "fp8", "nvfp4")}
+    assert len(set(keys.values())) == len(keys)
+
+
+def test_the_same_load_gives_a_stable_verdict_key():
+    loads = _torchao_loads()
+    import copy
+
+    for name, model in loads.items():
+        again = copy.deepcopy(model)
+        assert cb._load_identity(model, "none", "default", "int8") == cb._load_identity(
+            again, "none", "default", "int8"
+        ), name
+    assert cb._load_identity(_QuantDen(), "none", None) == cb._load_identity(
+        _QuantDen(), "none", None
+    )
+
+
+def test_install_keys_the_router_on_the_engaged_quant(monkeypatch):
+    monkeypatch.setenv(cb.CFG_BATCH_ENV, "auto")
+    ids = set()
+    for quant in (None, "int8"):
+        pipe = _Pipe(_quiet_flux())
+        assert cb.install_cfg_batch(pipe, offload_policy = "none", transformer_quant = quant) is None
+        ids.add(cb.router_for(pipe).identity)
+    assert len(ids) == 2 and None not in ids
+
+
+def test_the_verdict_key_follows_the_live_attention_backend(monkeypatch):
+    monkeypatch.setenv(cb.CFG_BATCH_ENV, "auto")
+    monkeypatch.setattr(cb, "_card_name", lambda latent: "card")
+    pipe = _Pipe(_quiet_flux())
+    assert cb.install_cfg_batch(pipe, offload_policy = "none") is None
+    router = cb.router_for(pipe)
+    shape = cb._Shape("s")
+    keys = set()
+    for backend in (None, "native", "flash"):
+        pipe.transformer._unsloth_attention_backend = backend
+        keys.add(router._verdict_key(shape, None))
+    assert len(keys) == 3 and None not in keys
+
+
+def test_a_version_1_verdict_store_is_not_read(monkeypatch, tmp_path):
+    import json
+
+    from core.inference import diffusion_measured_peaks as peaks
+
+    path = tmp_path / "verdicts.json"
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_CFG_BATCH_VERDICTS_FILE", str(path))
+    entry = {"k": {"verdict": "plain", "reason": "old key"}}
+    path.write_text(json.dumps({"version": 1, "runtime": peaks.runtime_stamp(), "entries": entry}))
+    assert cb.stored_verdict("k") is None
+    path.write_text(
+        json.dumps(
+            {"version": cb._VERDICTS_VERSION, "runtime": peaks.runtime_stamp(), "entries": entry}
+        )
+    )
+    assert cb.stored_verdict("k") == entry["k"]

@@ -14,6 +14,10 @@ export const MASK_SEGMENT_ROUTES = {
   segment: "/api/inference/images/segment",
 } as const;
 
+/** Window event carrying every segmenter status read (detail: SegmenterStatus), so a second reader (the Detailer
+ *  control) sees a download finish in the Mask from text panel without polling. */
+export const SEGMENTER_STATUS_EVENT = "unsloth:segmenter-status";
+
 export const MASK_FROM_TEXT_LABEL = "Mask from text";
 export const MASK_FROM_TEXT_PLACEHOLDER = "sofa, red lamp, pillow:2";
 export const MASK_FROM_TEXT_HINT =

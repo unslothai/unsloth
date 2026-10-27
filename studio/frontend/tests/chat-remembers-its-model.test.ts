@@ -4,8 +4,8 @@
 // Every thread row has carried modelId since long before this notice, and each send now
 // moves it to the model that send ran on, so a chat knows the model it last used. What was
 // missing was offering it back. The rules below are the ones that keep the offer from becoming a
-// nuisance: it never loads anything on its own, and it stays quiet whenever it could not
-// be honoured.
+// nuisance: it never loads anything on its own, it stays quiet whenever it could not be
+// honoured, and a model still loaded alongside is switched to without asking.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -21,10 +21,12 @@ registerBundlerResolver();
 const { store } = installLocalStorageFake();
 const {
   chatModelIsResident,
+  chatModelLoadedTarget,
   chatModelSelectableId,
   chatModelSwitchMeta,
   createChatModelHistoryReader,
   resolveChatModelSwitchTarget,
+  stepChatModelAutoSwitch,
 } = await import("../src/features/chat/components/chat-model-notice-switch.ts");
 const { modelDisplayName } = await import(
   "../src/features/hub/lib/model-identity.ts"
@@ -48,6 +50,7 @@ const { wantsDownloadManagerStaging } = await import(
 const notice = atDefaultUiScale(readText("../src/features/chat/components/chat-model-notice.tsx"));
 const page = atDefaultUiScale(readText("../src/features/chat/chat-page.tsx"));
 const runtimeProvider = atDefaultUiScale(readText("../src/features/chat/runtime-provider.tsx"));
+const runtimeHook = readText("../src/features/chat/hooks/use-chat-model-runtime.ts");
 const adapter = atDefaultUiScale(readText("../src/features/chat/api/chat-adapter.ts"));
 const chatApi = atDefaultUiScale(readText("../src/features/chat/api/chat-api.ts"));
 const types = atDefaultUiScale(readText("../src/features/chat/types.ts"));
@@ -59,7 +62,6 @@ const switchSource = readText(
   "../src/features/chat/components/chat-model-notice-switch.ts",
 );
 
-/** The selection handleCheckpointChange builds from the meta, mirrored field for field. */
 function switchBackSelection(
   target: { modelId: string; ggufVariant?: string | null },
   rows: Parameters<typeof chatModelSwitchMeta>[1] = [],
@@ -86,17 +88,204 @@ function slice(source: string, from: string, to: string): string {
 // Source assertions: the notice reaches external-providers, which does not resolve in a
 // bare node test. The sibling thread-scoped suites do the same for the same reason.
 
-test("the notice never switches a model on its own", () => {
+test("the notice never loads a model on its own", () => {
   // Opening a chat must not evict what is resident: a local load is multi-gigabyte.
   assert.doesNotMatch(notice, /loadModel|setCheckpoint/);
-  // The only way out of it is the button.
+  // A model that is not loaded is only ever switched to from the button.
   assert.match(notice, /onClick=\{\(\) => onSwitch\(switchTarget\)\}/);
+  // The one automatic switch is to a slot that is already loaded.
+  const body = notice.slice(notice.indexOf("export function ChatModelNotice"));
+  assert.match(body, /chatModelLoadedTarget\(createdModel, loadedModels\)/);
+  assert.match(
+    body,
+    /onAutoSwitch\(\s*switchTo,\s*\(\) => autoSwitchRef\.current === state && createdKeyRef\.current === key,\s*\);/,
+  );
+});
+
+test("a chat goes back to its model when that model is still loaded", () => {
+  const slots = [
+    { id: "unsloth/Model-A-GGUF", quant: "Q4_K_M", checkpoint: "unsloth/Model-A-GGUF" },
+    { id: "Model-B", quant: null, checkpoint: "/models/Model-B" },
+  ];
+  assert.deepEqual(
+    chatModelLoadedTarget(
+      { modelId: "unsloth/Model-A-GGUF", ggufVariant: "Q4_K_M" },
+      slots,
+    ),
+    { modelId: "unsloth/Model-A-GGUF", ggufVariant: "Q4_K_M" },
+  );
+  // A local model is loaded by its path, so the slot's checkpoint is what gets selected.
+  assert.deepEqual(
+    chatModelLoadedTarget({ modelId: "/models/Model-B", ggufVariant: null }, slots),
+    { modelId: "/models/Model-B", ggufVariant: null },
+  );
+  // A chat saved without a variant takes the quant the slot is serving.
+  assert.deepEqual(
+    chatModelLoadedTarget({ modelId: "unsloth/Model-A-GGUF" }, slots),
+    { modelId: "unsloth/Model-A-GGUF", ggufVariant: "Q4_K_M" },
+  );
+});
+
+test("a chat is not switched to a loaded slot that would need another load", () => {
+  const slots = [
+    { id: "unsloth/Model-A-GGUF", quant: "Q4_K_M", checkpoint: "unsloth/Model-A-GGUF" },
+  ];
+  // Another quant of the same repo is a different load.
+  assert.equal(
+    chatModelLoadedTarget(
+      { modelId: "unsloth/Model-A-GGUF", ggufVariant: "Q8_0" },
+      slots,
+    ),
+    null,
+  );
+  // A slot whose quant is not known yet cannot vouch for the saved variant.
+  assert.equal(
+    chatModelLoadedTarget(
+      { modelId: "unsloth/Model-A-GGUF", ggufVariant: "Q4_K_M" },
+      [{ id: "unsloth/Model-A-GGUF", checkpoint: "unsloth/Model-A-GGUF" }],
+    ),
+    null,
+  );
+  // Nor a chat saved without a variant: the slot may serve another quant until its lookup lands.
+  assert.equal(
+    chatModelLoadedTarget(
+      { modelId: "unsloth/Model-A-GGUF" },
+      [{ id: "unsloth/Model-A-GGUF", checkpoint: "unsloth/Model-A-GGUF" }],
+    ),
+    null,
+  );
+  assert.equal(
+    chatModelLoadedTarget({ modelId: "unsloth/Model-C" }, slots),
+    null,
+  );
+  assert.equal(chatModelLoadedTarget({ modelId: "unsloth/Model-A-GGUF" }, []), null);
+});
+
+test("the automatic switch runs once per chat open", () => {
+  const modelA = { modelId: "unsloth/Model-A-GGUF", ggufVariant: "Q4_K_M" };
+  const open = (threadId: string | undefined) => ({
+    threadId,
+    active: true,
+    resident: false,
+    loadedTarget: modelA as typeof modelA | null,
+    modelLoading: false,
+  });
+  // Opening chat A while Model B is selected switches to A's loaded slot, once.
+  let step = stepChatModelAutoSwitch({ settled: false }, open("a"));
+  assert.deepEqual(step.switchTo, modelA);
+  step = stepChatModelAutoSwitch(step.state, open("a"));
+  assert.equal(step.switchTo, null);
+  // Going to chat B and back to A switches again.
+  step = stepChatModelAutoSwitch(step.state, { ...open("b"), loadedTarget: null });
+  step = stepChatModelAutoSwitch(step.state, open("a"));
+  assert.deepEqual(step.switchTo, modelA);
+
+  // Opened already on its model: a pick made afterwards inside the chat is not undone.
+  step = stepChatModelAutoSwitch({ settled: false }, {
+    ...open("a"),
+    resident: true,
+    loadedTarget: null,
+  });
+  step = stepChatModelAutoSwitch(step.state, open("a"));
+  assert.equal(step.switchTo, null);
+
+  // Waits for the saved model and the loaded slots to be known, then switches.
+  step = stepChatModelAutoSwitch({ settled: false }, { ...open("a"), loadedTarget: null });
+  assert.equal(step.state.settled, false);
+  step = stepChatModelAutoSwitch(step.state, open("a"));
+  assert.deepEqual(step.switchTo, modelA);
+
+  // A load already in flight wins, and is not undone when it lands.
+  step = stepChatModelAutoSwitch({ settled: false }, { ...open("a"), modelLoading: true });
+  assert.equal(step.switchTo, null);
+  step = stepChatModelAutoSwitch(step.state, open("a"));
+  assert.equal(step.switchTo, null);
+
+  // Leaving the chat route and coming back to the same chat is a new open, so it switches again.
+  step = stepChatModelAutoSwitch({ settled: false }, open("a"));
+  step = stepChatModelAutoSwitch(step.state, { ...open("a"), active: false });
+  step = stepChatModelAutoSwitch(step.state, open("a"));
+  assert.deepEqual(step.switchTo, modelA);
+
+  // Off the chat route, or on an unsent New Chat, nothing happens.
+  assert.equal(
+    stepChatModelAutoSwitch({ settled: false }, { ...open("a"), active: false }).switchTo,
+    null,
+  );
+  assert.equal(stepChatModelAutoSwitch({ settled: false }, open(undefined)).switchTo, null);
+
+  const body = notice.slice(notice.indexOf("export function ChatModelNotice"));
+  assert.match(
+    body,
+    /onAutoSwitch\(\s*switchTo,\s*\(\) => autoSwitchRef\.current === state && createdKeyRef\.current === key,\s*\);/,
+  );
+  // Any loaded slot counts, Keep models loaded on or off: the switch only ever adopts it.
+  assert.match(body, /createdModel && !resident\s*\?\s*chatModelLoadedTarget/);
+  assert.doesNotMatch(body, /keepModelsLoaded/);
+  // A cross-tab revision carries no thread, so the saved model is read again rather than kept stale.
+  // Only the plain cross-tab Event re-reads (streamed chunks are CustomEvents), and a slower read
+  // never lands over a newer answer.
+  assert.match(notice, /if \(event instanceof CustomEvent\) return;\s*reader\.invalidate\(\);\s*const generation = \+\+readGeneration;/);
+  assert.match(notice, /if \(updatedThread\.id === threadId\) readGeneration \+= 1;/);
+  assert.match(
+    notice,
+    /getStoredChatThread\(threadId\)\s*\.then\(\(thread\) => \{\s*if \(thread && generation === readGeneration\) reader\.applyUpdate\(thread\);/,
+  );
+  // Leaving a chat drops its read: a change made while unsubscribed must not settle the next open.
+  assert.match(
+    notice,
+    /window\.removeEventListener\(CHAT_HISTORY_UPDATED_EVENT, onHistoryUpdated\);\s*(\/\/[^\n]*\n\s*)?setRead\(null\);/,
+  );
+  // Unmounting ends the open, so a pending switch's check turns false.
+  assert.match(body, /useEffect\(\s*\(\) => \(\) => \{\s*autoSwitchRef\.current = \{ settled: false \};\s*\},\s*\[\],\s*\);/);
+  assert.match(
+    page,
+    /loadedModels=\{loadedModels\}\s*onSwitch=\{handleSwitchBackToChatModel\}\s*onAutoSwitch=\{handleAutoSwitchToChatModel\}/,
+  );
+});
+
+test("the automatic switch only adopts a slot, it never reaches /load", () => {
+  const auto = slice(page, "const handleAutoSwitchToChatModel", "\n  );\n");
+  assert.match(auto, /isDownloaded: true,\s*adoptOnly: true,/);
+  // Any pick of the user's after dispatch, staged or no-op, cancels the pending adoption.
+  assert.match(auto, /stillWanted: \(\) => stillWanted\(\) && userPickCountRef\.current === picks,/);
+  assert.match(page, /if \(!meta\?\.adoptOnly\) userPickCountRef\.current \+= 1;\s*if \(!value\) return;/);
+  assert.match(page, /adoptOnly: meta\?\.adoptOnly,\s*stillWanted: meta\?\.stillWanted,\s*\};\s*await stageOrLoad\(selection\);/);
+  // Bails after the adopt check and before the lease that every /load holds.
+  const select = slice(runtimeHook, "const selectModel = useCallback", "let lifecycleLease");
+  const adopted = select.lastIndexOf("void refreshContextUsage({ afterModelLoad: true });");
+  const bail = select.indexOf("if (adoptOnly) {");
+  assert.ok(adopted !== -1 && bail > adopted, "adoptOnly bails after the adopt path");
+  assert.match(select.slice(bail), /restorePreviousConfig\(\);[\s\S]*?return;/);
+  // Never displaces a load (before taking an intent, and in the replacement loop that would cancel it),
+  // and never lands on a chat that is no longer open.
+  const guard = /if \(adoptOnly && \(loadInFlight\(\) \|\| !stillWanted\(\)\)\) \{\s*restorePreviousConfig\(\);\s*return;/g;
+  assert.equal(select.match(guard)?.length, 2);
+  assert.ok(
+    select.indexOf("if (adoptOnly && (loadInFlight() || !stillWanted()))") <
+      select.indexOf("const loadIntentId = ++modelSelectionIntentEpoch;"),
+  );
+  assert.match(select, /if \(adoptOnly && \(inFlightLoad \|\| activeRun\)\) \{\s*restorePreviousConfig\(\);\s*return;/);
+  // Downloads nothing, so it never opens the Hub token prompt.
+  assert.match(select, /const mayReachHub =\s*!adoptOnly &&/);
+  // NPU picks always reach /load, and an external pick is never a loaded slot.
+  assert.match(
+    page,
+    /if \(meta\?\.adoptOnly && \(isNpuModelId\(value\) \|\| isExternalModelId\(value\)\)\) \{\s*return;\s*\}/,
+  );
+  assert.ok(
+    page.indexOf("if (meta?.adoptOnly && (isNpuModelId(value)") < page.indexOf("void loadNpuModel(value"),
+  );
+  assert.ok(
+    select.indexOf("if (adoptOnly && (inFlightLoad || activeRun))") <
+      select.indexOf("await cancelLoadRun(activeRun, true)"),
+  );
 });
 
 test("the notice stays quiet when it has nothing to offer", () => {
   const body = notice.slice(notice.indexOf("export function ChatModelNotice"));
   // no stamp, already on the pick (including snapshot vs repo id), or a model that has since gone away
-  assert.match(body, /if \(!createdModel\) return null;/);
+  assert.match(body, /if \(!createdModel \|\| resident\) return null;/);
   assert.match(
     body,
     /chatModelIsResident\(createdModel, checkpoint, activeGgufVariant\)/,
@@ -108,11 +297,7 @@ test("the notice stays quiet when it has nothing to offer", () => {
 });
 
 test("switching chats does not show the outgoing chat's model", () => {
-  // The read is async, so a stale value would sit over the incoming chat until it lands.
-  // Clearing it inside the effect is not enough: the effect is passive, so the first
-  // render for the incoming chat commits with the outgoing chat's model already on
-  // screen. The answer is keyed by the chat it was read for, so a foreign value cannot
-  // be returned at all rather than being returned briefly.
+  // The answer is keyed by chat id so a stale async value can never render for another chat.
   const hook = notice.slice(
     notice.indexOf("export function useChatCreatedModel"),
     notice.indexOf("type ChatModelNoticeProps"),
@@ -163,9 +348,7 @@ test("a thread update wins over an older initial model read", () => {
 });
 
 test("the notice is wired to the picker's own handler, not a private path", () => {
-  // handleCheckpointChange carries the confirmations, VRAM checks and external
-  // handling; a second switch path would drift from it. The wrapper only
-  // resolves the row metadata the picker also supplies, then calls it.
+  // The switch back must reuse handleCheckpointChange so confirmations and checks do not drift.
   assert.match(page, /onSwitch=\{handleSwitchBackToChatModel\}/);
   const wrapper = slice(
     page,
@@ -175,7 +358,6 @@ test("the notice is wired to the picker's own handler, not a private path", () =
   assert.match(wrapper, /handleCheckpointChange\(/);
   assert.match(wrapper, /chatModelSwitchMeta\(target, loraModels\)/);
   assert.match(page, /selectableModelIds=\{selectableModelIds\}/);
-  // Offered only for a real saved chat, in the single-chat view.
   assert.match(page, /view\.mode === "single" && \(\s*<ChatModelNotice/);
 });
 
@@ -215,7 +397,6 @@ test("Switch Back resolves a snapshot-path chat to the live picker row", () => {
     ),
     null,
   );
-  // a plain local file collapses to a bare stem, which is no repo
   assert.equal(
     chatModelSelectableId(
       "/srv/models/a/Repo-Q4_K_M.gguf",
@@ -312,9 +493,7 @@ test("the conversation and research panel reserve only the chat header", () => {
 });
 
 test("a chat started as New Chat gets the notice once its row exists", () => {
-  // ?new=<nonce> carries no thread in the URL and keeps none after the first send, so
-  // the notice saw nothing until the chat was reopened. The store's id is only this
-  // chat's after ThreadNewChatSwitch has blanked the previous one, hence the latch.
+  // No thread id in ?new=<nonce>; the store's id is this chat's only after the blank, hence the latch.
   const gate = slice(
     page,
     "const newChatBlankedRef",
@@ -328,7 +507,6 @@ test("a chat started as New Chat gets the notice once its row exists", () => {
 
   const derived = slice(page, "const newChatThreadId =", "\n  const");
   assert.match(derived, /newChatBlankedRef\.current === search\.new/);
-  // The latched id is only ever the persisted one, so an unsent chat still offers nothing.
   assert.match(derived, /\? persistedActiveThreadId/);
   assert.match(derived, /: null/);
 
@@ -431,11 +609,7 @@ test("a chat remembers the model it last sent to", () => {
   assert.equal(shouldPersistRunModel({ modelId: "a" }, "", null), false);
 });
 
-// The switch back is the picker's handler, so it has to arrive carrying what the picker
-// itself would have put on it. A local or fine-tuned row is in neither /api/models/list
-// nor the external ids, so with the bare id selectModel resolves isGguf false and the
-// /load request loses n_parallel, n_batch, n_ubatch and llama_extra_args and sizes the
-// context down the transformers path.
+// Switch back must carry the picker's metadata, or a local GGUF loads down the transformers path.
 
 test("switching back to a single-file local GGUF still loads as a GGUF", () => {
   const meta = chatModelSwitchMeta({ modelId: "/models/qwen3-4b-q4.gguf" }, [
@@ -456,8 +630,6 @@ test("switching back to a single-file local GGUF still loads as a GGUF", () => {
 });
 
 test("a single .gguf file carries its format out of the local inventory", () => {
-  // chatLocalModelOptions is where the format is either kept or lost; the resolver
-  // above has nothing else to read it from.
   const [option] = chatLocalModelOptions([
     {
       id: "/models/qwen3-4b-q4.gguf",
@@ -501,17 +673,13 @@ test("a saved GGUF variant is carried back exactly", () => {
 
 test("switching back to a hub GGUF loads it instead of staging a download", () => {
   store.clear();
-  // stageOrLoad routes a pick with source "hub" and no isDownloaded through the download
-  // manager. Two of requestStart's outcomes, conflict and busy, toast and return without
-  // loading, so a switch back that lands there silently does nothing.
+  // Hub picks without isDownloaded go through the download manager, which can silently do nothing.
   const selection = switchBackSelection({
     modelId: "unsloth/Qwen3-4B-GGUF",
     ggufVariant: "Q8_0",
   });
   assert.equal(wantsDownloadManagerStaging(selection), false);
-  // and the variant, the one thing no resolver can recover, still travels
   assert.equal(selection.ggufVariant, "Q8_0");
-  // A pick the picker itself marks as a hub row still stages, so nothing else moved.
   assert.equal(
     wantsDownloadManagerStaging({
       id: "unsloth/Qwen3-4B-GGUF",
@@ -520,7 +688,6 @@ test("switching back to a hub GGUF loads it instead of staging a download", () =
     }),
     true,
   );
-  // The selection mapping above and the predicate under test are the page's own.
   const built = slice(
     page,
     "const selection = {",
@@ -555,8 +722,6 @@ test("switching back to a hub GGUF loads it instead of staging a download", () =
 });
 
 test("a history update that leaves the model alone is not re-emitted", () => {
-  // Every CHAT_HISTORY_UPDATED_EVENT for the thread reaches applyUpdate, renames and
-  // archives included, and a fresh object each time re-renders the notice for nothing.
   const seen: unknown[] = [];
   const reader = createChatModelHistoryReader("thread-1", (model) => {
     seen.push(model);
@@ -610,7 +775,6 @@ test("a legacy GGUF directory recovers its sole saved variant and context", () =
   const meta = chatModelSwitchMeta(target, [option]);
   assert.equal(meta?.isGguf, true);
   assert.equal(meta?.ggufVariant?.toLowerCase(), "q6_k");
-  // The variant is the key the saved 32768 is filed under; stageOrLoad does the lookup.
   assert.equal(
     resolveInitialConfig(modelId, target.ggufVariant ?? undefined).config
       .customContextLength,
@@ -677,7 +841,6 @@ test("the switch back leaves the remembered config to stageOrLoad", () => {
       isDirectGguf: true,
     },
   ]);
-  // A config on the meta would duplicate the lookup stageOrLoad already does.
   assert.doesNotMatch(
     slice(switchSource, "import type {", "export type ChatModelSwitchTarget"),
     /resolveInitialConfig/,
@@ -736,7 +899,6 @@ test("switch back recovers a repo-keyed context through a snapshot path", () => 
 });
 
 test("switching back to a fine-tuned row mirrors the picker's own metadata", () => {
-  // Same fields the fine-tuned list's selectionMeta sets, so the two doors agree.
   const adapters = [
     { id: "run-1", name: "run-1", source: "training" as const },
     {
@@ -761,9 +923,6 @@ test("switching back to a fine-tuned row mirrors the picker's own metadata", () 
 });
 
 test("a Hub or external id is still switched on the id alone", () => {
-  // Those two resolve without help: /api/models/list carries isGguf, and
-  // isExternalModelId routes the rest. Inventing a "local" source for them would
-  // send them down the wrong branch of handleCheckpointChange.
   assert.equal(
     chatModelSwitchMeta({ modelId: "unsloth/Qwen3-4B-GGUF" }, []),
     undefined,
@@ -771,5 +930,20 @@ test("a Hub or external id is still switched on the id alone", () => {
   assert.equal(
     chatModelSwitchMeta({ modelId: "openai:gpt-5-mini" }, []),
     undefined,
+  );
+});
+
+test("another tab's change leaves no model until a fresh read lands", () => {
+  const seen: unknown[] = [];
+  const reader = createChatModelHistoryReader("t1", (model) => seen.push(model));
+  reader.applyInitial({ id: "t1", modelId: "unsloth/A" } as never);
+  reader.invalidate();
+  // The opening read that was still in flight no longer answers.
+  reader.applyInitial({ id: "t1", modelId: "unsloth/A" } as never);
+  // The fresh read lands even when it names the same model.
+  reader.applyUpdate({ id: "t1", modelId: "unsloth/A" } as never);
+  assert.deepEqual(
+    seen.map((m) => (m as { modelId?: string } | null)?.modelId ?? null),
+    ["unsloth/A", null, "unsloth/A"],
   );
 });

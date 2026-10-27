@@ -41,8 +41,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 
-# Effective decay is min(decay, (1 + updates) / (WARMUP_OFFSET + updates)); at offset 10 step 1 averages aggressively
-# (~0.18) and the ramp reaches 0.99 after ~1000 updates.
+# Effective decay = min(decay, (1 + n) / (WARMUP_OFFSET + n)).
 
 _EMA_WARMUP_OFFSET = 10.0
 
@@ -78,13 +77,7 @@ class LoRAEMA:
             self._shadow[name] = shadow
 
     def reseed_from(self, model: Any) -> None:
-        """Re-point every shadow at the model's CURRENT trainable weights.
-
-        For a resume that turns EMA on for the first time. The trainer builds the EMA before it
-        restores the adapter, so the shadow holds freshly initialised LoRA weights, and a
-        checkpoint written with EMA off carries no shadow to replace them with -- leaving the
-        exported EMA adapter blending the restored weights with initialisation noise. Starting
-        from the restored weights is what enabling EMA at step N means."""
+        """For a resume that first enables EMA: shadows would otherwise hold freshly initialised weights."""
         import torch
 
         with torch.no_grad():
@@ -119,13 +112,7 @@ class LoRAEMA:
         return {name: t.detach().clone() for name, t in self._shadow.items()}
 
     def missing_from(self, state: dict[str, Any]) -> tuple[str, ...]:
-        """Live shadow names a saved EMA state does not cover, by name or by shape.
-
-        ``load_state_dict`` skips those entries by design (a differently-wrapped model should
-        degrade rather than raise), which is exactly why a caller restoring a run has to ask:
-        a partial EMA silently blends restored shadows for some parameters with freshly
-        initialised ones for the rest, and every later update and the exported EMA adapter
-        carry that mixture while the run reports a clean resume."""
+        """load_state_dict skips missing shadows silently, which would blend restored and fresh weights."""
         saved = state or {}
         missing = []
         for name, shadow in self._shadow.items():
@@ -139,12 +126,7 @@ class LoRAEMA:
         state: dict[str, Any],
         updates: int = 0,
     ) -> None:
-        """Restore shadows saved by ``state_dict`` (a resume checkpoint), in place.
-
-        ``updates`` restores the warmup ramp position: without it a resumed run would
-        restart the ramp and pull the shadow hard towards the current weights. Entries the
-        live model does not have are ignored, so a checkpoint from a differently-wrapped
-        model degrades to "keep the freshly initialised shadow" instead of raising."""
+        """Pass updates to keep the warmup ramp position; otherwise the ramp restarts on resume."""
         import torch
 
         with torch.no_grad():
@@ -182,12 +164,7 @@ class LoRAEMA:
 
 
 def save_ema_adapter(ema: "LoRAEMA", transformer: Any, spec_save: Any, out_dir: str) -> str:
-    """Export the EMA weights as a second adapter under ``out_dir``/ema.
-
-    Temporarily swaps the shadow values into the live LoRA params so
-    ``get_peft_model_state_dict`` serialises them through the exact same
-    (diffusers-format) path as the primary adapter, then restores the trained
-    weights. Returns the ema output directory."""
+    """Temporarily swaps EMA shadows into the live LoRA params for the diffusers export path, then restores the trained weights."""
     from peft.utils import get_peft_model_state_dict
 
     ema_dir = Path(out_dir) / "ema"
@@ -224,15 +201,7 @@ def _sanitize(token: str) -> str:
 
 
 def _hub_cache_roots() -> list[str]:
-    """Hub cache roots to look a repo up in, ACTIVE one first.
-
-    Unsloth can move its cache during a session (Settings), and loading follows the live setting,
-    but ``huggingface_hub.constants.HF_HUB_CACHE`` is a snapshot of the environment at import
-    time. Reading only that constant left the revision "unresolved" (or pinned to a snapshot in
-    the previous root) once the cache moved, so pulling a new revision of the same checkpoint no
-    longer changed this key and a warm run silently reused the old embeddings and latents. The
-    constant stays as a fallback, since the trainer subprocess may run without Unsloth's settings
-    module importable."""
+    """HF_HUB_CACHE is an import-time snapshot, so the active Unsloth cache root is searched first."""
     import os  # noqa: PLC0415 - keep the module import list light for the subprocess
 
     roots: list[str] = []
@@ -255,22 +224,12 @@ def _hub_cache_roots() -> list[str]:
     return roots
 
 
-# An in-place edit of any of these must change the fingerprint: text_encoder*/tokenizer* produce
-# the embeddings and vae* the latents. "connectors" is LTX-2's, the only family running a module
-# between encode_prompt and the DiT: its connector output, not the raw Gemma3 state, is cached.
+# In-place edits here must change the fingerprint; "connectors" is LTX-2's cached connector.
 _CACHE_SOURCE_SUBDIRS = ("text_encoder", "tokenizer", "vae", "connectors")
 
 
 def source_revision(ref: Any) -> str:
-    """Revision/content marker for a checkpoint reference, resolved without loading it.
-
-    A repo id or directory path is not a version: a Hub repo that advances to a new
-    revision, or a directory edited in place, keeps the same string while its encoders
-    or VAE change, so cached conditioning from the old ones would be reused. Shared by the
-    trainer's cache namespace and the inference-side wrapper; deliberately cheap and
-    never touches the encoders, since the point of the cache is that a warm run does
-    not load them.
-    """
+    """A repo id or path is not a version; the marker tracks content so stale cache is not reused; it must never load the encoders."""
     import os  # noqa: PLC0415 - keep the module import list light for the subprocess
     try:
         name = str(ref or "").strip()
@@ -395,8 +354,7 @@ class PersistentConditioningCache:
 
 BUCKET_DIVISOR = 64
 
-# Widest aspect ratio a bucket may take; anything more extreme clamps to it (matching the common
-# practice of capping panoramas).
+# Widest bucket aspect ratio; more extreme images clamp to it, as is common for panoramas.
 MAX_BUCKET_RATIO = 2.0
 
 
