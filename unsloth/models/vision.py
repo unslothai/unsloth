@@ -4101,12 +4101,26 @@ class FastBaseModel:
                         f"Unsloth: transformers cannot load this `{quant_method}` checkpoint in process."
                     )
                 quantizer_kwargs = {}
+                # Full finetuning must dequantize fp8 on load, else training casts fp8 storage without its scales.
+                _fp8_full_finetune = full_finetuning and str(quant_method).lower() == "fp8"
+                if (
+                    _fp8_full_finetune
+                    and user_quantization_config is None
+                    and quantizer is not None
+                    and "dequantize" not in inspect.signature(quantizer).parameters
+                ):
+                    raise RuntimeError(
+                        "Unsloth: full finetuning an FP8 checkpoint needs it dequantized on load, which this "
+                        "transformers version cannot do (its FineGrainedFP8Config has no `dequantize`). "
+                        "Upgrade transformers, use the BF16 version of the model, or train LoRA instead."
+                    )
                 if quant_method == "compressed-tensors" or quantizer is None:
                     pass
                 else:
                     # Cannot dequantize (MXFP4 would become BF16), except LoRA with zoo's packed experts.
                     if (
                         load_in_16bit
+                        or _fp8_full_finetune
                         or _mxfp4_lora_keeps_experts_packed(
                             quant_method,
                             full_finetuning,
@@ -4300,7 +4314,7 @@ class FastBaseModel:
                     prepare_fsdp2_qlora(model, bnb_compute_dtype)
                 # Any dequantizing fp8 load (explicit config, pre-sm89 / CPU fallback); else a no-op.
                 _drop_fp8_dequantize_conversions(model)
-                if load_in_16bit and not load_in_4bit and not load_in_8bit:
+                if (load_in_16bit or full_finetuning) and not load_in_4bit and not load_in_8bit:
                     _dequantize_leftover_fp8_params(
                         model,
                         model_name,
