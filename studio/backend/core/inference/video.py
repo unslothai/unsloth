@@ -2685,6 +2685,17 @@ def _request_available_bytes(device_obj: Any, module: Any) -> int:
     return int(free_bytes) + int(reserved_bytes) - _user_reserve_bytes(device_obj, total_bytes)
 
 
+def _h3_host_copy_follows(device: Any) -> bool:
+    """True on a discrete GPU (pinning allowed): H3's prequant denoiser is copied off its host load."""
+    if str(device or "").strip().lower() in ("", "cpu", "meta"):
+        return False
+    try:
+        from .host_pinning import host_pinning_allowed
+        return bool(host_pinning_allowed(device))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _h3_free_device_bytes(device: str) -> Optional[int]:
     """Live free VRAM, or None when it cannot be read. None means "cannot tell", never zero."""
     free = _h3_signed_free_device_bytes(device)
@@ -10489,6 +10500,7 @@ class VideoBackend:
                     # Config from this partition: reference loads stage transformer_ref/; else offline loads hit Hub.
                     config_subfolder = denoiser_component,
                     logger = logger,
+                    host_copy_follows = _h3_host_copy_follows(device),
                 )
                 if transformer is None:
                     # Best-effort: missing, mismatched or unreadable checkpoints fall back to dense, not after teardown.
