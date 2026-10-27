@@ -81,8 +81,13 @@ _pending: dict[str, dict] = {}
 class LiveToolPermissions:
     """One live tool loop's upgrade, never a process/session-wide permission grant."""
 
-    def __init__(self, session_id, cancel_event = None):
+    def __init__(
+        self,
+        session_id,
+        cancel_event = None,
+    ):
         from utils.account_context import current_account
+
         self.session_id = session_id or ""
         self.account = current_account()
         self.account_id = self.account.account_id
@@ -95,7 +100,12 @@ class LiveToolPermissions:
         return permission_mode, bypass_permissions
 
 
-def bind_permission_upgrade(slot, permissions, *, eligible = True):
+def bind_permission_upgrade(
+    slot,
+    permissions,
+    *,
+    eligible = True,
+):
     """Bind before yielding the approval card; image disclosure alone never grants full access."""
     if not isinstance(slot, dict) or not eligible or permissions is None:
         return
@@ -112,6 +122,7 @@ def new_approval_id() -> str:
 def begin_tool_decision(session_id, approval_id) -> dict:
     """Register a pending decision slot and return it. Call this *before* yielding the ``tool_start`` event so the waiter always exists by the time the user's confirmation can arrive."""
     from utils.account_context import current_account_id
+
     slot = {
         "event": threading.Event(),
         "account_id": current_account_id(),
@@ -260,12 +271,15 @@ def resolve_tool_decision(
         if session_id is not None and slot["session"] != (session_id or ""):
             return False
         from utils.account_context import current_account_id
+
         if slot.get("account_id") != current_account_id() or slot["event"].is_set():
             return False
         if full_access:
             permissions = slot.get("permission_upgrade")
             if (
-                decision != "allow" or not session_id or permissions is None
+                decision != "allow"
+                or not session_id
+                or permissions is None
                 or permissions.account_id != current_account_id()
                 or permissions.session_id != session_id
                 or slot.get("reason") is not None
@@ -275,6 +289,7 @@ def resolve_tool_decision(
             # Defense in depth for internal callers as well as the authenticated route.
             from state.tool_policy import require_tool_access
             from utils.account_context import run_as
+
             require_tool_access("full")
             # The eventual tool worker retains the originating run's API/UI identity.
             # A UI approval must not acknowledge a grant that that worker will refuse.

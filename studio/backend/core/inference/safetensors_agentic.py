@@ -620,6 +620,7 @@ def run_safetensors_tool_loop(
         permission_mode, bypass_permissions
     )
     from state.tool_approvals import LiveToolPermissions, bind_permission_upgrade
+
     live_permissions = LiveToolPermissions(session_id, cancel_event)
     sandbox_level = normalize_sandbox_level(sandbox_level)
     stream_tool_execution = account_tool_stream(stream_tool_execution)
@@ -1405,7 +1406,9 @@ def run_safetensors_tool_loop(
             # Bypass wins here too, so a direct internal caller with both flags
             # never prompts. "auto" pauses only high-risk calls; "off" pauses only a
             # high-risk python/terminal call without OS isolation.
-            permission_mode, bypass_permissions = live_permissions.apply(permission_mode, bypass_permissions)
+            permission_mode, bypass_permissions = live_permissions.apply(
+                permission_mode, bypass_permissions
+            )
             needs_confirm = needs_tool_confirmation(
                 confirm_tool_calls = bool(confirm_tool_calls),
                 bypass_permissions = bypass_permissions,
@@ -1460,7 +1463,9 @@ def run_safetensors_tool_loop(
                 )
                 # Read before decision_slot is dropped in the deny branch below.
                 _decision_reason = decision_reason(decision_slot)
-                permission_mode, bypass_permissions = live_permissions.apply(permission_mode, bypass_permissions)
+                permission_mode, bypass_permissions = live_permissions.apply(
+                    permission_mode, bypass_permissions
+                )
                 if bypass_permissions:
                     strict_isolation = False
                 if _decision is not None and _decision != "deny":
