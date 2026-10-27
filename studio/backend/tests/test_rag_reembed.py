@@ -207,6 +207,37 @@ def test_a_re_embed_click_during_an_automatic_job_follows_a_model_switch(
     assert _row(doc)[0] == embeddings.embedding_identity(NEW)
 
 
+def test_an_automatic_job_leaves_a_document_another_model_finished_meanwhile(
+    models, tmp_path, monkeypatch
+):
+    other = "org/other-embedder"
+    monkeypatch.setitem(WIDTHS, other, WIDTHS[OLD])
+    scope = store.kb_scope("K17")
+    monkeypatch.setattr(embeddings, "_identity_backend_is_llama", lambda name: True)
+    _ingest(tmp_path, scope, "a.txt", "alpha bravo")
+    monkeypatch.setattr(embeddings, "_identity_backend_is_llama", lambda name: False)
+    (tmp_path / "b.txt").write_text("charlie delta", encoding = "utf-8")
+    encode = embeddings.encode
+    late = []
+
+    def finish_an_upload_while_a_encodes(texts, model_name, **kw):
+        if texts == ["alpha bravo"] and not late:
+            late.append(
+                ingestion.start_ingestion(
+                    scope, None, None, "b.txt", str(tmp_path / "b.txt"),
+                    model_name = other, background = False,
+                )[0]
+            )  # fmt: skip
+        return encode(texts, model_name, **kw)
+
+    monkeypatch.setattr(embeddings, "encode", finish_an_upload_while_a_encodes)
+    with _connect() as c:
+        retrieval.retrieve_dense(c, scope, "alpha", k = 1, model_name = OLD)
+    reembed._jobs["reembed"].thread.join(timeout = 10)
+    assert reembed.status()["status"] == "cancelled"
+    assert _row(late[0])[0] == embeddings.embedding_identity(other)
+
+
 def test_failures_keep_the_old_index_and_only_a_streak_ends_the_job(models, tmp_path, monkeypatch):
     monkeypatch.setattr(reembed, "_MAX_CONSECUTIVE_FAILURES", 2)
     scope = store.kb_scope("K1")

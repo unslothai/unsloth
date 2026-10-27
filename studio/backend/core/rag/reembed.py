@@ -177,6 +177,8 @@ def _run(job: _Job) -> None:
                 ]
             finally:
                 conn.close()
+            if job.identity is not None and not _upgraded_from_llama(pending, job.identity):
+                raise _Stopped
             job.remaining = len(pending)
             if not pending:
                 job.status = "completed"
@@ -237,6 +239,16 @@ def start(identity: str | None = None) -> dict:
     return started
 
 
+def _upgraded_from_llama(stale: list[dict], identity: str) -> bool:
+    """Every stale document is this identity's model written by llama-server."""
+    model = config.embedding_identity_model(identity)
+    return all(
+        d["embedding_model"].startswith("llama-server:")
+        and config.embedding_identity_model(d["embedding_model"]) == model
+        for d in stale
+    )
+
+
 def start_after_backend_change(identity: str) -> None:
     """Re-embed on its own only after an upgrade moved the same model from llama-server to
     sentence-transformers; a runtime fallback the other way must not overwrite the ST vectors."""
@@ -255,11 +267,7 @@ def start_after_backend_change(identity: str) -> None:
         stale = _stale_documents(conn, identity)
     finally:
         conn.close()
-    if stale and all(
-        d["embedding_model"].startswith("llama-server:")
-        and config.embedding_identity_model(d["embedding_model"]) == model
-        for d in stale
-    ):
+    if stale and _upgraded_from_llama(stale, identity):
         start(identity)
 
 
