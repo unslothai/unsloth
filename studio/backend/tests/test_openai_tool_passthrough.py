@@ -10029,7 +10029,11 @@ class TestApiMonitorSafetensorsUsage:
             ):
                 if getattr(func, "__name__", "") == "resolve_local_gguf":
                     return None
-                if func in (inf_mod.get_inference_backend, inf_mod._loaded_satisfies):
+                if func in (
+                    inf_mod.get_inference_backend,
+                    inf_mod._loaded_satisfies,
+                    inf_mod._trained_run_dir,
+                ):
                     return func(*_args, **_kwargs)
                 raise asyncio.CancelledError()
 

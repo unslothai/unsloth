@@ -2559,6 +2559,8 @@ export const hi = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "अपटाइम",
         processMemory: "प्रोसेस मेमोरी",
         notInstalled: "इंस्टॉल नहीं है",
@@ -3311,6 +3313,7 @@ export const hi = {
       desktopAppVersionUnavailable: "उपलब्ध नहीं",
       llamaCppVersion: "llama.cpp संस्करण",
       audioCppVersion: "audio.cpp संस्करण",
+      mlxVersion: "MLX संस्करण",
       whisperCppVersion: "whisper.cpp संस्करण",
       engines: {
         title: "इंजन",

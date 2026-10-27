@@ -62,6 +62,14 @@ def fp8_bits_to_float32(bits: Any, fmt: str = "float8_e4m3fn") -> Any:
     return torch.where((b & 0x80) != 0, -mag, mag)
 
 
+@lru_cache(maxsize = None)
+def fp8_lookup_table(fmt: str, device: str) -> Any:
+    """float32 value of every fp8 code on ``device``. MPS has no fp8 casts before torch 2.15; indexing this table
+    with the uint8 codes gives the same bits as the cast on any torch."""
+    import torch
+    return torch.arange(256, dtype = torch.uint8).view(getattr(torch, fmt)).float().to(device)
+
+
 def int8_act_requested() -> bool:
     import os
     return os.environ.get(NATIVE_INT8_ACT_ENV, "").strip() == "1"
@@ -279,6 +287,13 @@ def _w8a8_rows(x2: Any, rot_h: Any, weight_q: Any, weight_scale: Any, bias: Any)
     return out.to(x2.dtype)
 
 
+def _w8a8_rows_into(
+    x2: Any, rot_h: Any, weight_q: Any, weight_scale: Any, bias: Any, out: Any
+) -> None:
+    """``_w8a8_rows`` stored straight into ``out`` (a row slice of the chunked output), no temporary chunk result."""
+    out.copy_(_w8a8_rows(x2, rot_h, weight_q, weight_scale, bias))
+
+
 _FUSED_STATE: dict = {"fn": None, "failed": None}
 
 
@@ -303,7 +318,12 @@ def _fused_w8a8() -> Optional[Callable[..., Any]]:
         return None
     # Registered in eager, before any trace reads the handle.
     _FUSED_STATE["row_major"] = _row_major_op()
+    # Every key exists before the first trace: older dynamo guards on len(_FUSED_STATE), so adding
+    # "calls" after the first call would recompile each compiled function once.
+    _FUSED_STATE.setdefault("calls", 0)
     fn = torch.compile(_w8a8_rows, dynamic = True, fullgraph = True)
+    # One graph for every slice offset and chunk height (dynamic storage offset), written in place by inductor.
+    _FUSED_STATE["into"] = torch.compile(_w8a8_rows_into, dynamic = True, fullgraph = True)
     _FUSED_STATE["fn"] = fn
     return fn
 
@@ -313,12 +333,21 @@ def _fused_w8a8_failed(exc: BaseException) -> None:
 
     _FUSED_STATE["failed"] = repr(exc)
     _FUSED_STATE["fn"] = None
+    _FUSED_STATE["into"] = None
     logging.getLogger(__name__).warning(
         "diffusion.native_quant: the compiled int8 W8A8 linear failed (%s); eager kernels from here on "
         "(set %s=0 to skip it)",
         exc,
         NATIVE_INT8_FUSED_ENV,
     )
+
+
+def _autocast_on(x: Any) -> bool:
+    import torch
+    try:
+        return bool(torch.is_autocast_enabled(x.device.type))
+    except TypeError:  # torch without the device_type argument: treat any autocast as on
+        return bool(torch.is_autocast_enabled() or torch.is_autocast_cpu_enabled())
 
 
 def fused_w8a8_state() -> dict:
@@ -428,6 +457,11 @@ def native_linear_class():
                 wide = self.weight_q.to(torch.float32)
             elif torch.compiler.is_compiling():
                 wide = fp8_bits_to_float32(self.weight_q, self.fp8_format)
+            elif self.weight_q.device.type == "mps":
+                lut = fp8_lookup_table(self.fp8_format, str(self.weight_q.device))
+                wide = lut.index_select(0, self.weight_q.reshape(-1).int()).view(
+                    self.weight_q.shape
+                )
             else:
                 wide = self.weight_q.view(getattr(torch, self.fp8_format)).to(torch.float32)
             return (wide * scale[:, None]).to(dtype)
@@ -522,16 +556,31 @@ def native_linear_class():
                 if rows <= chunk or chunk < 2 * _INT_MM_MIN_ROWS:
                     out = fn(x2, rot_h, self.weight_q, self.weight_scale, bias)
                 else:
-                    # Allocated from the first chunk to keep the compiled dtype (autocast can differ from x2's).
-                    out = None
+                    # Only the rotation matmul can change the dtype (autocast); without it the output is x2's dtype.
+                    into = _FUSED_STATE.get("into")
+                    if into is not None and (rot_h is None or not _autocast_on(x2)):
+                        out = x2.new_empty(rows, self.out_features)
+                    else:
+                        into = out = None
                     start = 0
                     for part in torch.tensor_split(x2, -(-rows // chunk)):
-                        got = fn(part.detach(), rot_h, self.weight_q, self.weight_scale, bias)
-                        if out is None:
-                            out = got.new_empty(rows, self.out_features)
                         stop = start + part.shape[0]
-                        out[start:stop].copy_(got)
-                        del got
+                        if into is not None:
+                            into(
+                                part.detach(),
+                                rot_h,
+                                self.weight_q,
+                                self.weight_scale,
+                                bias,
+                                out[start:stop],
+                            )
+                        else:
+                            got = fn(part.detach(), rot_h, self.weight_q, self.weight_scale, bias)
+                            if out is None:
+                                # Allocated from the first chunk to keep the compiled dtype (autocast can differ).
+                                out = got.new_empty(rows, self.out_features)
+                            out[start:stop].copy_(got)
+                            del got
                         start = stop
             except torch.cuda.OutOfMemoryError:
                 raise

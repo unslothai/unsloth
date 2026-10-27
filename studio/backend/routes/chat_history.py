@@ -1948,9 +1948,6 @@ def rewind_thread_files(
             status_code = 409, detail = "This chat is still generating. Rewind it once it finishes."
         )
 
-    def walk(workdir: str):
-        return tools._history_snapshot(tools._snapshot_workdir_files(workdir))
-
     def busy(workdir: str) -> bool:
         with tools._calls_lock:
             return any(os.path.realpath(w) == workdir for w in tools._workdir_calls)
@@ -1959,7 +1956,7 @@ def rewind_thread_files(
         report = file_history.store().rewind(
             thread_id,
             payload.turn_ids,
-            walk,
+            tools._history_walk,
             dry_run = payload.dry_run,
             force = payload.force,
             busy = busy,
