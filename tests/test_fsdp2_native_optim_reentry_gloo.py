@@ -113,6 +113,8 @@ def _case_optimizer_cls(native, tmp):
             except Exception as exc:
                 err = f"{type(exc).__name__}: {str(exc)[:200]}"
             res[f"{name}.{how}"] = {"error": err, "sharded": native.is_native_fsdp2(model)}
+    # #15008: a real bitsandbytes Adam / AdamW steps local shards when this bitsandbytes can.
+    res["_bnb_local"] = bool(native._bnb_local_shards_available())
     return res
 
 
@@ -261,17 +263,22 @@ def test_stateful_mixed_optimizer_is_refused(tmp_path):
 
 
 def test_bnb_optimizer_cls_and_kwargs_is_refused(tmp_path):
+    """A torch class is sharded. A bitsandbytes Adam / AdamW is kept and sharded where this
+    bitsandbytes steps local shards (#15008), else refused. A class that only claims the
+    bitsandbytes module (AdamW8bitLike) cannot step local shards, so it is always refused."""
     pytest.importorskip("transformers")
     pytest.importorskip("peft")
     for rank, r in _run("optimizer_cls", tmp_path).items():
+        bnb_local = r.pop("_bnb_local")
         for key, v in r.items():
-            if key.startswith("torch."):
-                assert v["error"] == "" and v["sharded"], (rank, key, v)
+            if key.startswith("torch.") or (key.startswith("bnb.") and bnb_local):
+                assert v["error"] == "" and v["sharded"], (rank, key, v, bnb_local)
             else:
                 assert v["error"].startswith("ValueError") and "bitsandbytes" in v["error"], (
                     rank,
                     key,
                     v,
+                    bnb_local,
                 )
                 assert not v["sharded"], (rank, key, v)
 

@@ -213,7 +213,6 @@ export function ThreadSidebar({
           </SidebarGroupContent>
         </SidebarGroup>
         <SidebarGroup className="flex-1 px-4">
-          {/* Recents label with export-all menu */}
           <div className="flex items-center justify-between px-2 py-1.5">
             <span className="text-xs font-medium text-muted-foreground/80">Recents</span>
             <DropdownMenu>
@@ -340,7 +339,7 @@ export function ThreadSidebar({
           href="https://unsloth.ai/docs/new/studio/chat"
           target="_blank"
           rel="noopener noreferrer"
-          className="flex items-center gap-2 rounded-full px-2 py-1.5 text-xs font-medium text-primary bg-primary/10 transition-colors hover:bg-primary/20"
+          className="flex items-center gap-2 rounded-full px-2 py-1.5 text-xs font-medium text-foreground bg-wash-10 transition-colors hover:bg-wash-20"
         >
           <HugeiconsIcon icon={BookOpen02Icon} className="size-4 shrink-0" strokeWidth={2} />
           <span>Learn more in docs</span>
@@ -356,7 +355,6 @@ export function ThreadSidebar({
         </a>
       </SidebarFooter>
 
-      {/* Rename dialog */}
       <Dialog open={renamingItem !== null} onOpenChange={(open) => { if (!open) setRenamingItem(null); }}>
         <DialogContent
           className="corner-squircle dialog-soft-surface sm:max-w-sm"

@@ -6,13 +6,13 @@ import {
   ArrowRight02Icon,
   ArrowTurnBackwardIcon,
   Cancel01Icon,
-  Copy01Icon,
   Delete02Icon,
   Download01Icon,
   Folder01Icon,
   Image02Icon,
   MoreHorizontalIcon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { type KeyboardEventHandler, type ReactNode, useRef, useState } from "react";
 
@@ -48,7 +48,6 @@ export interface MediaViewerActions {
   onToggleFavorite?: () => void;
   onAddToProject?: (projectId: string) => Promise<{ already: boolean }>;
   onDelete?: () => void;
-  /** Delete's label when it only takes the file out of something, e.g. an unsent message. */
   deleteLabel?: string;
   copy?: { label: string; onClick: () => void };
 }
@@ -121,7 +120,6 @@ export function ScaleMenu({
               {percent(scale, locale)}
             </DropdownMenuRadioItem>
           ))}
-          {/* Fit, the one a preview opens at, sits apart below the fixed sizes, as ChatGPT has it. */}
           {fitScale !== undefined && (
             <>
               <DropdownMenuSeparator />
@@ -199,7 +197,6 @@ export function MediaViewer({
   onKeyDown?: KeyboardEventHandler<HTMLDivElement>;
   flush?: boolean;
   redactFromReload?: boolean;
-  /** "lightbox": the picture alone over the blurred page, its controls floating above it. */
   variant?: "card" | "lightbox";
   gallery?: MediaViewerGallery;
   itemKey?: string;
@@ -259,7 +256,7 @@ export function MediaViewer({
                   "flex h-10 shrink-0 cursor-pointer items-center gap-2 rounded-full px-4 text-sm font-medium text-foreground outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:opacity-50",
                   FLOATING,
                 )
-              : "mr-1 flex h-9 shrink-0 items-center gap-2 rounded-full bg-foreground px-4 text-sm font-medium text-background outline-none transition-opacity hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+              : "mr-1 flex h-9 shrink-0 items-center gap-2 rounded-full bg-action px-4 text-sm font-medium text-background outline-none transition-opacity hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
           }
         >
           <HugeiconsIcon icon={actions.primary.icon} strokeWidth={1.75} className="size-4" />

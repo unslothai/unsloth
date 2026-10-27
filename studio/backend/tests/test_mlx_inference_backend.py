@@ -93,7 +93,7 @@ def mlx_inference_patches(monkeypatch, native_vlm_generation_context):
     module = types.ModuleType("unsloth_zoo.mlx.inference")
     for name in FUSIONS + ZOO_ONLY_FUSIONS:
         setattr(module, f"fused_{name}", _neutral_scope)
-    for name, helper in PLAIN_HELPERS.items():
+    for name, helper in {**PLAIN_HELPERS, **NEUTRAL_PLAIN_HELPERS}.items():
         setattr(module, name, helper)
     module.INFERENCE_SCOPES = _zoo_registry()
     module.inference_scopes = _stub_inference_scopes(module)
@@ -122,6 +122,16 @@ def _fusion_modules(model, modules):
 
 # Plain-function helpers zoo's generate.py imports; the neutral scope cannot stand in for them.
 PLAIN_HELPERS = {"_fusion_modules": _fusion_modules}
+
+
+def _fused_drafter_ops(model, *_args, **_kwargs):
+    """zoo's fused_drafter_ops (unsloth_zoo #2031) is a plain call returning how many drafter
+    modules it fused, not a scope. Its body needs Metal kernels, so the stub fuses none."""
+    return 0
+
+
+# Plain calls whose zoo body cannot run here, so the stub returns their do-nothing answer instead.
+NEUTRAL_PLAIN_HELPERS = {"fused_drafter_ops": _fused_drafter_ops}
 
 
 def _neutral_zoo_helper(name):
@@ -836,7 +846,7 @@ def test_the_stub_accepts_every_call_zoo_makes_to_an_inference_helper(mlx_infere
         args = [object() for _ in call.args]
         kwargs = {kw.arg: object() for kw in call.keywords if kw.arg}
         helper = getattr(mlx_inference_patches, call.func.id)
-        if call.func.id in PLAIN_HELPERS:
+        if call.func.id in PLAIN_HELPERS or call.func.id in NEUTRAL_PLAIN_HELPERS:
             helper(*args, **kwargs)
             continue
         with helper(*args, **kwargs):
@@ -7739,6 +7749,74 @@ def test_a_text_load_batch_row_carries_one_bos_as_the_single_path_does(monkeypat
     backend._reads_vision = False
     session.admit({}, "gemma")
     assert added == ["hi", "hi", "<s>hi", "<s>hi"]
+
+
+@pytest.mark.parametrize("speculative", (None, "draft"))
+def test_a_vision_row_times_its_prefill_wherever_the_batch_runs_it(monkeypatch, speculative):
+    from core.inference import mlx_inference
+
+    engine = _batch_engine(monkeypatch)
+    monkeypatch.setattr(engine, "GenerationRequest", SimpleNamespace, raising = False)
+    monkeypatch.setattr(engine, "SamplingParams", dict, raising = False)
+    monkeypatch.setattr(engine, "BatchRowRefused", RuntimeError, raising = False)
+    monkeypatch.setattr(engine, "vlm_batch_adds_special_tokens", lambda *a: True, raising = False)
+    backend = _vlm_backend(monkeypatch, markers = None)
+    plan = SimpleNamespace(
+        prompt = "hi",
+        images = None,
+        max_tokens = 16,
+        sampling = {},
+        processors = None,
+        think_prefix = "",
+        stream = _vlm_row(backend),
+    )
+    backend._plan_vlm_request = lambda request: plan
+    backend._reads_vision = False
+    session = _open_vision_session([])
+    session.backend, session._adapter_state, session._resumes_rows = backend, None, False
+    session._speculative = speculative
+    clock = [0.0]
+    monkeypatch.setattr(mlx_inference.time, "perf_counter", lambda: clock[0])
+
+    def prefill():
+        clock[0] += 2.0
+
+    steps = []
+
+    def events(waiting = None):
+        steps.append(None)
+        if len(steps) == 1:
+            if not speculative:
+                prefill()
+            yield SimpleNamespace(index = 0, delta = "a", result = None)
+            return
+        clock[0] += 1.0
+        result = SimpleNamespace(
+            finish_reason = "length", prompt_token_count = 1000, token_ids = [1] * 10
+        )
+        vars(result).update(_DRAFTS)
+        yield SimpleNamespace(index = 0, delta = "", result = result)
+
+    def add(request):
+        if speculative:
+            prefill()
+        else:
+            # A plain add() only prepares the row; that time is not its prefill.
+            clock[0] += 3.0
+        return 0
+
+    session.stream = SimpleNamespace(
+        add = add,
+        step = lambda: list(events()),
+        iter_step = events,
+    )
+    session.admit({}, "r")
+    while session.rows_in_flight:
+        list(session.step())
+
+    timings = session.take_stats("r")["timings"]
+    assert timings["prompt_per_second"] == pytest.approx(500.0)
+    assert timings["predicted_per_second"] == pytest.approx(10.0)
 
 
 def test_a_resident_vision_row_resumes_from_the_snapshot_store_and_reports_it(monkeypatch):

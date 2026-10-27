@@ -95,6 +95,7 @@ _KV_CACHE_ESTIMATE_KEYS = frozenset(
     {
         "kv_bytes",
         "weights_bytes",
+        "lookup_table_bytes",
         "native_context",
         "spec_bytes",
         "n_ctx",
@@ -135,6 +136,32 @@ class TestTheKvCacheEstimateEnvelope:
             f"keys removed from a shipped contract: {sorted(_KV_CACHE_ESTIMATE_KEYS - got)}. "
             "This is a narrowing and it breaks callers."
         )
+
+    def test_the_null_answer_carries_the_same_keys(self, monkeypatch):
+        """An unresolved quant answers every shipped key, nulled."""
+        out = _call_route(
+            monkeypatch,
+            path = "",
+            weights_bytes = 0,
+            repo_id = "unsloth/contract-freeze-GGUF",
+            speculative_type = None,
+        )
+        assert out is not None and out["kv_bytes"] is None
+        assert set(out) == _KV_CACHE_ESTIMATE_KEYS
+
+    def test_no_lookup_table_reads_as_none_not_zero(self, monkeypatch, tmp_path):
+        """The route's rule for every term it itemizes: None for "no such term"."""
+        gguf = _write_gguf(tmp_path / "model-Q4_K_M.gguf", _PLAIN_GQA)
+        _reach_the_planner(monkeypatch, gguf)
+        out = _call_route(
+            monkeypatch,
+            path = gguf,
+            weights_bytes = 4_000_000_000,
+            repo_id = "unsloth/contract-freeze-GGUF",
+            speculative_type = None,
+        )
+        assert out["kv_bytes"] is not None
+        assert out["lookup_table_bytes"] is None
 
     def test_weights_bytes_is_the_quant_file_alone(self, monkeypatch, tmp_path):
         # Planner reached so the aggregate differs; otherwise this holds vacuously.

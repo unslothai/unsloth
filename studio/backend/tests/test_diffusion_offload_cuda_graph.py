@@ -167,6 +167,231 @@ def test_release_and_restore_records_again_and_stays_exact():
     assert handles[0].stats["invalidations"] >= 1 and handles[0].stats["captures"] >= 2
 
 
+class _Encoder(torch.nn.Module):
+    """A text encoder whose output takes the VRAM the encode release frees, as a real encode's weights and activations
+    do: the stock re-pin then cannot land on the blocks the resident groups gave back."""
+
+    def __init__(self, net, nbytes):
+        super().__init__()
+        self.net = net
+        self.nbytes = nbytes
+        self.proj = torch.nn.Linear(8, 8).cuda()
+        self.mapped: list = []
+
+    def forward(self, x):
+        ranges = self.net.__dict__.get("_unsloth_repin_ranges") or []
+        self.mapped.append([r.arena.mapped for r in ranges])
+        held = torch.empty(self.nbytes, dtype = torch.uint8, device = "cuda")
+        return self.proj(x), held
+
+
+@pytest.mark.parametrize("stable", [True, False])
+def test_an_encode_release_re_pins_where_the_step_recorded(monkeypatch, stable):
+    """12 GiB tier (partial residency + the encode release): every new prompt encode streams resident groups and pins
+    them again before step 0. The re-pin lands in each group's stable range, so the step recorded on prompt 1 replays
+    on every later prompt (captures per prompt 1, 0, 0, 0), bit-identical to the eager forward; the ranges hold no
+    memory during the encode. UNSLOTH_DIFFUSION_GROUP_REPIN_RANGE=0 is the stock re-pin: later prompts record again."""
+    _cuda()
+    if not stable:
+        monkeypatch.setenv(sa.REPIN_ENV, "0")
+    prompts = 4
+    seeds = list(range(2 * prompts))
+    want = _eager_reference(6, seeds)
+    torch.manual_seed(0)
+    net = _streamed(_Net(), 6)
+    resident = [g for g in dm._offload_groups(net) if getattr(g, "_unsloth_resident", False)]
+    streamed = [g for g in dm._offload_groups(net) if not getattr(g, "_unsloth_resident", False)]
+    assert (
+        len(resident) >= 4 and streamed
+    )  # partial residency: some blocks pinned, the rest streamed
+    enc = _Encoder(net, 6 << 20)
+    pipe = types.SimpleNamespace(
+        transformer = net, components = {"transformer": net, "text_encoder": enc}
+    )
+    plan = types.SimpleNamespace(
+        resident_transformer_mib = 6, estimates = {"encode_resident_transformer_mib": 2}
+    )
+    handles, reason = cg.arm_after_placement(pipe)
+    assert len(handles) == 1 and handles[0].placement.mode == "group", reason
+    assert dm.install_encode_release(pipe, plan, None) == 1
+    h = handles[0]
+    got, per_prompt = [], []
+    for prompt in range(prompts):
+        with torch.no_grad():
+            out = enc(torch.randn(2, 8, device = "cuda"))  # releases, then pins back before step 0
+        before = h.stats["captures"]
+        got += _run(net, seeds[2 * prompt : 2 * prompt + 2])
+        per_prompt.append(h.stats["captures"] - before)
+        del out
+    for a, b in zip(got, want):
+        assert torch.equal(a, b)
+    repin = cg.stats(handles).get("stable_repin")
+    if stable:
+        assert per_prompt == [1, 0, 0, 0]
+        assert h.stats["replays"] == 2 * prompts  # the recording call replays too
+        assert repin["groups"] >= 1 and repin["unmaps"] == repin["groups"] * (prompts - 1)
+        # the first encode released the load's stock pins; every later one found the ranges unmapped during it
+        assert all(not any(m) for m in enc.mapped[1:]) and all(enc.mapped[1:])
+        assert all(r.arena.mapped for r in net.__dict__["_unsloth_repin_ranges"])
+    else:
+        # the stock re-pin lands wherever the allocator has room after the encode: a later prompt records again
+        assert per_prompt[0] == 1 and sum(per_prompt[1:]) >= 1
+        assert repin is None or repin["groups"] == 0
+    cg.uninstall_all(handles)
+
+
+def test_the_render_peak_counts_weights_moved_into_a_stable_range():
+    """A render that first moves resident groups into their ranges drops the allocator by their size; the learned peak
+    counts the mapped range, so it never reads low on the stock scale."""
+    _cuda()
+    from core.inference.diffusion_measured_peaks import PeakProbe
+
+    try:
+        sa._driver()
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"CUDA VMM unavailable ({exc})")
+    dev = torch.cuda.current_device()
+    held = torch.empty(
+        8 << 20, dtype = torch.uint8, device = "cuda"
+    )  # a resident group, pinned the stock way
+    arena = sa.VmmArena(8 << 20, dev)
+    before = sa.mapped_bytes(dev)
+    probe = PeakProbe("cuda")
+    del held  # the re-pin: the group leaves the allocator ...
+    arena.map()  # ... and lands in its range
+    assert sa.mapped_bytes(dev) == before + arena.size
+    peak = probe.finish()
+    assert peak is not None and peak >= arena.size >> 20
+    arena.close()
+    assert sa.mapped_bytes(dev) == before
+
+
+def test_the_render_peak_counts_a_stable_range_unmapped_before_the_probe_ends():
+    """A model-offload denoiser range is mapped for the denoise and unmapped again before the render's probe ends:
+    the peak still counts it (the allocator never saw those bytes)."""
+    _cuda()
+    from core.inference.diffusion_measured_peaks import PeakProbe
+
+    try:
+        sa._driver()
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"CUDA VMM unavailable ({exc})")
+    dev = torch.cuda.current_device()
+    arena = sa.VmmArena(16 << 20, dev)
+    before = sa.mapped_bytes(dev)
+    probe = PeakProbe("cuda")
+    arena.map()  # the denoiser onloads into its range ...
+    arena.unmap()  # ... and offloads before the decode
+    assert sa.mapped_bytes(dev) == before
+    peak = probe.finish()
+    assert peak is not None and peak >= arena.size >> 20
+    arena.close()
+
+
+def _repin_cycle(
+    net,
+    pipe,
+    enc_bytes = 6 << 20,
+):
+    restore = dm.release_resident_groups(pipe, 10_000, None)
+    hold = torch.empty(
+        enc_bytes, dtype = torch.uint8, device = "cuda"
+    )  # the encoder takes the freed room
+    restore()
+    del hold
+
+
+def test_a_group_range_is_rebuilt_when_its_host_tensors_change():
+    """A LoRA load or unload can change a released group's tensors: the re-pin lays the range out again, so every
+    weight of the group lands in it (none beside a fully mapped stale range at a new address each re-pin)."""
+    _cuda()
+    torch.manual_seed(0)
+    net = _streamed(_Net(), 6)
+    pipe = _pipe(net)
+    handles, _ = cg.arm_after_placement(pipe)
+    _repin_cycle(net, pipe)  # the first re-pin lays the ranges out
+    ranged = [g for g in dm._offload_groups(net) if "_unsloth_repin_range" in g.__dict__]
+    assert ranged
+    group = ranged[-1]
+    restore = dm.release_resident_groups(pipe, 10_000, None)
+    block = group.modules[0]
+    block.extra = torch.nn.Parameter(
+        torch.randn(256, 256)
+    )  # a new adapter weight, on the host like the rest
+    restore()
+    rng = group.__dict__["_unsloth_repin_range"]
+    lo, hi = rng.arena.va, rng.arena.va + rng.arena.size
+    assert all(lo <= t.data_ptr() < hi for t in dm._resident_tensors(group))
+    assert sa.repin_stats(net)["rebuilds"] == 1
+    cg.uninstall_all(handles)
+
+
+def test_a_failed_stable_re_pin_leaves_no_range_mapped(monkeypatch):
+    """A re-pin into the range that raises after mapping it (rebuilding a wrapper weight, say) unmaps the range
+    before the group moves the stock way: the fallback never holds two copies of the group."""
+    _cuda()
+    seeds = [0, 1, 2]
+    want = _eager_reference(6, seeds)
+    torch.manual_seed(0)
+    net = _streamed(_Net(), 6)
+    pipe = _pipe(net)
+    handles, _ = cg.arm_after_placement(pipe)
+    got = _run(net, seeds[:1])
+    _repin_cycle(net, pipe)
+    got += _run(net, seeds[1:2])
+    real = sa.pin_group_in_range
+
+    def fails_after_mapping(owner, group, tensors, pending, host_of, device, swap):
+        rng = group.__dict__.get("_unsloth_repin_range")
+        if rng is not None:
+            rng.arena.map()
+        raise RuntimeError("wrapper rebuild failed")
+
+    monkeypatch.setattr(sa, "pin_group_in_range", fails_after_mapping)
+    _repin_cycle(net, pipe)
+    ranges = net.__dict__["_unsloth_repin_ranges"]
+    assert ranges and not any(r.arena.mapped for r in ranges)
+    assert all(
+        g._unsloth_resident for g in dm._offload_groups(net) if "_unsloth_repin_range" in g.__dict__
+    )  # placed the stock way
+    got += _run(net, seeds[2:])
+    for a, b in zip(got, want):
+        assert torch.equal(a, b)
+    monkeypatch.setattr(sa, "pin_group_in_range", real)
+    cg.uninstall_all(handles)
+
+
+def test_a_re_pin_failing_midway_rolls_back_the_tensors_it_placed(monkeypatch):
+    """A re-pin that raises after it already put an earlier tensor into the range (a later copy or wrapper rebuild
+    failing) points that tensor back at its original storage before re-raising: the caller can then unmap the range
+    and move the whole group the stock way, instead of keeping the range mapped beside the stock copies. CPU only:
+    a fake range whose second view raises."""
+    buf = torch.zeros(64)
+    calls = [0]
+
+    def view(offset, shape, dtype, stride):
+        calls[0] += 1
+        if calls[0] == 2:
+            raise RuntimeError("wrapper rebuild failed")
+        return buf[offset // 4 : offset // 4 + 8].view(shape)
+
+    arena = types.SimpleNamespace(map = lambda: None, view = view, maps = 0)
+    a = torch.nn.Parameter(torch.randn(8), requires_grad = False)
+    b = torch.nn.Parameter(torch.randn(8), requires_grad = False)
+    host_a = a.data
+    slot = ((0, (8,), (1,), torch.float32),)
+    rng = types.SimpleNamespace(arena = arena, layout = {0: slot, 1: ((128,) + slot[0][1:],)})
+    monkeypatch.setattr(sa, "_range_for", lambda *args: rng)
+    owner, group = types.SimpleNamespace(), types.SimpleNamespace()
+    with pytest.raises(RuntimeError):
+        sa.pin_group_in_range(
+            owner, group, [a, b], lambda t: True, lambda t: t, "cuda:0", lambda t, s: None
+        )
+    lo, hi = buf.data_ptr(), buf.data_ptr() + buf.numel() * 4
+    assert not any(lo <= t.data_ptr() < hi for t in (a, b))
+    assert a.data.data_ptr() == host_a.data_ptr()
+
+
 def _reset_retired(monkeypatch):
     if hasattr(cg, "_RETIRED_POOLS"):
         monkeypatch.setattr(cg, "_RETIRED_POOLS", [0, 0])
@@ -192,8 +417,9 @@ def test_an_offloaded_re_record_hands_the_dropped_pool_back_first(monkeypatch):
     """Each new prompt encode moves the resident groups (release, the encoder takes the room, re-pin elsewhere), so
     the step records again. The encode release no longer flushes the allocator; the re-record itself hands the
     dropped recording's pool back before it records, so the reserved memory stays flat instead of growing by a pool
-    per prompt, and every output stays exact."""
+    per prompt, and every output stays exact. The stock re-pin (no stable group range): with it the step replays."""
     _cuda()
+    monkeypatch.setenv(sa.REPIN_ENV, "0")
     _reset_retired(monkeypatch)
     seeds = list(range(6))
     want = _eager_reference(3, seeds)
@@ -236,8 +462,9 @@ def _two_shapes(net, shapes = (16, 8)):
 
 def test_one_invalidation_flushes_the_retired_pool_once_for_every_re_recorded_key(monkeypatch):
     """Two keys re-recorded under one new placement share one retired pool: the first re-record flushes it, the second
-    does not flush the allocator again."""
+    does not flush the allocator again. The stock re-pin (no stable group range): with it nothing records again."""
     _cuda()
+    monkeypatch.setenv(sa.REPIN_ENV, "0")
     _reset_retired(monkeypatch)
     torch.manual_seed(0)
     net = _streamed(_Net(), 3)
@@ -884,6 +1111,150 @@ def test_a_failed_capture_gives_the_stable_range_back(monkeypatch):
     assert arena.stats["onloads"] == 1 and arena.stats["unmaps"] == 1
     assert sa.arena_of(net) is None and "to" not in net.__dict__ and arena.arena is None
     cg.uninstall_all(handles)
+
+
+def test_a_poisoned_model_offload_graph_gives_back_the_stable_range():
+    """A failed capture poisons the handle for the load: no graph replays again, so the module goes back to the stock
+    onload. Poisoned mid-render (the weights in the range), the range is closed on the offload that moves them out."""
+    _cuda()
+    pytest.importorskip("accelerate")
+    ref, net, hook = _model_offloaded()
+    handles, reason = cg.arm_after_placement(_pipe(net))
+    assert len(handles) == 1 and "stable device range" in reason, reason
+    arena = sa.arena_of(net)
+    _run(net, [0, 1])
+    assert arena.arena.mapped
+    handles[0].poison(RuntimeError("capture failed"))
+    assert arena.arena.mapped  # the weights still live in it
+    hook.offload()
+    assert net.proj_in.weight.device.type == "cpu"
+    assert sa.arena_of(net) is None and "to" not in net.__dict__
+    assert arena.arena is None  # closed: no mapping left behind
+    maps = arena.stats["maps"]
+    for a, b in zip(_run(net, [2, 3]), _run(ref, [2, 3])):
+        assert torch.equal(a, b)
+    assert arena.stats["maps"] == maps and arena.stats["onloads"] == 1
+    cg.uninstall_all(handles)
+
+
+def test_freed_block_offload_graphs_stop_the_stable_repin():
+    _cuda()
+    net = _streamed(_Net(), 3)
+    handles, _ = cg.arm_after_placement(_pipe(net))
+    assert sa.stable_repin_wanted(net)
+    cg.uninstall_all(handles)
+    assert not sa.stable_repin_wanted(net)
+
+
+def test_a_poisoned_block_offload_step_keeps_the_stable_repin_for_its_block_fallback():
+    """The per-block fallback a poisoned step arms keys its graphs on the resident groups' addresses: the stable re-pin
+    stays while it can still record, and stops once no fallback is left."""
+    _cuda()
+    net = _streamed(_Net(), 3)
+    handles, _ = cg.arm_after_placement(_pipe(net))
+    step = handles[0]
+    assert sa.stable_repin_wanted(net)
+    step.fallback = lambda: object()
+    step.poison(RuntimeError("capture failed"))
+    assert sa.stable_repin_wanted(net)
+    step._engage_fallback()
+    assert step.fallback_handle is not None and sa.stable_repin_wanted(net)
+    step.fallback_handle = None
+    step.fallback = lambda: None  # the fallback could not arm: nothing records over the placement
+    step._engage_fallback()
+    assert not sa.stable_repin_wanted(net)
+    cg.uninstall_all(handles)
+
+
+def test_a_declined_block_offload_step_retires_the_stable_repin_once_no_fallback_records():
+    """A speed-declined placement refuses every later recording; a per-block fallback that then fails to arm (or none
+    at all) leaves nothing recording, so the re-pin stops paying for stable addresses. A dropped key alone keeps it."""
+    _cuda()
+    net = _streamed(_Net(), 3)
+    handles, _ = cg.arm_after_placement(_pipe(net))
+    step = handles[0]
+    assert sa.stable_repin_wanted(net)
+    step.fallback = lambda: None
+    step._dropped.add("k")
+    step._engage_fallback()  # a dropped key, placement still recording
+    assert sa.stable_repin_wanted(net)
+    step.placement.decline("slower than eager")
+    step.fallback = lambda: None
+    step._engage_fallback()
+    assert not sa.stable_repin_wanted(net)
+    cg.uninstall_all(handles)
+
+
+def test_model_offload_stable_range_is_rebuilt_when_a_weight_changes_on_the_host():
+    """A weight added or reshaped on the host after the range was laid out (a new adapter) lands in a rebuilt range,
+    not beside a fully mapped stale one at a new address every onload."""
+    _cuda()
+    pytest.importorskip("accelerate")
+    ref, net, hook = _model_offloaded()
+    arena, why = sa.attach(net)
+    assert arena is not None, why
+    _run(net, [0])
+    hook.offload()
+    net.extra = torch.nn.Parameter(
+        torch.randn(512, 512)
+    )  # on the host, like the rest between renders
+    for render in range(2):
+        for a, b in zip(_run(net, [render + 1]), _run(ref, [render + 1])):
+            assert torch.equal(a, b)
+        lo, hi = arena.arena.va, arena.arena.va + arena.arena.size
+        assert all(lo <= p.data_ptr() < hi for p in net.parameters())
+        hook.offload()
+        assert not arena.arena.mapped
+    assert arena.stats["rebuilds"] == 1
+    arena.detach()
+
+
+def test_model_offload_stable_range_is_rebuilt_when_a_weight_is_removed():
+    """An adapter unloaded after the range was laid out frees its slots: the next onload maps a rebuilt, smaller range
+    instead of the old full-size one."""
+    _cuda()
+    pytest.importorskip("accelerate")
+    ref, net, hook = _model_offloaded()
+    net.extra = torch.nn.Parameter(
+        torch.randn(2048, 2048)
+    )  # 16 MiB: well past the mapping granularity
+    arena, why = sa.attach(net)
+    assert arena is not None, why
+    _run(net, [0])
+    full = arena.arena.size
+    hook.offload()
+    del net.extra
+    for a, b in zip(_run(net, [1]), _run(ref, [1])):
+        assert torch.equal(a, b)
+    assert arena.stats["rebuilds"] == 1 and arena.arena.size < full
+    hook.offload()
+    arena.detach()
+
+
+def test_a_failed_wrap_of_the_mapped_range_leaves_it_unmapped_and_retryable(monkeypatch):
+    _cuda()
+    try:
+        sa._driver()
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"CUDA VMM unavailable ({exc})")
+    dev = torch.cuda.current_device()
+    arena = sa.VmmArena(4 << 20, dev)
+    before = sa.mapped_bytes(dev)
+    real = torch.as_tensor
+
+    def refuse(*args, **kwargs):
+        raise TypeError("unsupported __cuda_array_interface__")
+
+    monkeypatch.setattr(torch, "as_tensor", refuse)
+    with pytest.raises(TypeError):
+        arena.map()
+    assert not arena.mapped and sa.mapped_bytes(dev) == before
+    monkeypatch.setattr(torch, "as_tensor", real)
+    base = arena.map()
+    base.fill_(7)
+    assert arena.mapped and int(base[0]) == 7
+    arena.close()
+    assert sa.mapped_bytes(dev) == before
 
 
 def test_model_offload_stops_recording_only_when_moves_outpace_replays():

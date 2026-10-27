@@ -27,12 +27,12 @@ import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useAuiState } from "@assistant-ui/react";
 import {
-  Copy01Icon,
   Download01Icon,
   InternetIcon,
   LinkSquare02Icon,
   SourceCodeIcon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useMemo, useRef } from "react";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -15,9 +16,6 @@ import {
   Delete02Icon,
   PlusSignIcon,
 } from "@hugeicons/core-free-icons";
-import {
-  ChevronRightIcon,
-} from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
 import { listMcpTools } from "../../api";
@@ -130,7 +128,8 @@ function McpServerCard({
               type="button"
               className="flex min-w-0 flex-1 items-start gap-3 text-left"
             >
-              <ChevronRightIcon
+              <HugeiconsIcon
+                icon={ChevronRightStandardIcon}
                 className={`mt-0.5 size-4 shrink-0 text-muted-foreground transition-transform ${
                   open ? "rotate-90" : ""
                 }`}
@@ -641,6 +640,7 @@ export function ToolProfileDialog({
               variant="outline"
               onClick={() => setActiveTab("servers")}
             >
+              <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
               Add servers first
             </Button>
           </div>
@@ -666,6 +666,7 @@ export function ToolProfileDialog({
                   </p>
                 </div>
                 <Button
+                  className="mt-[var(--ui-title-cap-inset)]"
                   type="button"
                   size="xs"
                   variant="outline"

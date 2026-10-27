@@ -47,8 +47,6 @@ function currentRoute(): string {
   return window.location.pathname + window.location.search;
 }
 
-// Create-project dialog for the composer, sidebar and projects page. Creating opens the new
-// project; `onCreated` overrides that for callers with their own follow-up.
 export function NewProjectDialog({
   open,
   onOpenChange,
@@ -80,7 +78,6 @@ export function NewProjectDialog({
   // A desktop drop reaches `staged` only once its native registration settles. Creating before
   // then would upload without the files the user just dropped.
   const [stagingDrop, setStagingDrop] = useState(false);
-  // Same for a folder pick still resolving over IPC.
   const [pickingFolder, setPickingFolder] = useState(false);
   const nameImeRef = useRef(newInputImeState());
   const nameImeHandlers = {
@@ -100,8 +97,7 @@ export function NewProjectDialog({
   const sentLeases = useRef(new Set<string>());
   const appliedLease = useRef<string | null>(null);
   useEffect(() => {
-    // Set on setup, not just cleared on cleanup: StrictMode replays setup/cleanup/setup, which would
-    // otherwise leave this false forever.
+    // Set on setup too: StrictMode replays setup/cleanup/setup.
     mounted.current = true;
     return () => {
       mounted.current = false;
@@ -123,8 +119,7 @@ export function NewProjectDialog({
     appliedLease.current = null;
   }
 
-  // Every close path routes through here: callers keep this mounted, so a draft left behind would
-  // resurface, and upload, on the next project.
+  // Every close path routes here: a leftover draft would resurface on the next project.
   function close() {
     if (busy || pickingWorkingFolder) return;
     reset();
@@ -143,8 +138,6 @@ export function NewProjectDialog({
     )
       return;
     setBusy(true);
-    // Sidebar callers keep this mounted across routes, so unmounting alone cannot tell whether the
-    // user has moved on during a slow upload.
     const origin = currentRoute();
     let project = createdProject;
     const token = workingFolder?.token ?? null;
@@ -217,20 +210,18 @@ export function NewProjectDialog({
         close();
       }}
     >
-      <DialogContent className="corner-squircle dialog-soft-surface gap-5 sm:max-w-lg">
+      <DialogContent className="corner-squircle dialog-soft-surface grid-cols-[minmax(0,1fr)] gap-5 sm:max-w-xl">
         <DialogHeader>
           <DialogTitle className="text-ui-21">{title}</DialogTitle>
         </DialogHeader>
-        {/* Name field: folder glyph in its own cell, divided from the input. */}
         <div className="flex items-stretch overflow-hidden rounded-full border border-border bg-background transition-colors focus-within:border-ring has-[input:disabled]:opacity-50 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]">
-          <span className="flex w-10 shrink-0 items-center justify-center pl-1 text-muted-foreground">
+          <span className="flex shrink-0 items-center pl-5 text-muted-foreground">
             <HugeiconsIcon
               icon={Folder02Icon}
               strokeWidth={1.75}
               className="size-5"
             />
           </span>
-          <span aria-hidden="true" className="my-3 w-px bg-border" />
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
@@ -252,7 +243,7 @@ export function NewProjectDialog({
             maxLength={120}
             placeholder="Project name"
             aria-label="Project name"
-            className="min-w-0 flex-1 bg-transparent py-4 pr-4 pl-2.5 text-base outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed"
+            className="min-w-0 flex-1 bg-transparent py-4 pr-4 pl-3.5 text-base outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed"
           />
         </div>
         <WorkingFolderPicker
@@ -287,6 +278,7 @@ export function NewProjectDialog({
             Cancel
           </Button>
           <Button
+            variant="dark"
             type="button"
             onClick={() => void commitCreate()}
             disabled={

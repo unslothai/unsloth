@@ -99,8 +99,7 @@ def _get_base_load_in_4bit(model_config) -> bool:
 
 
 def _compare_needs_second_model() -> bool:
-    # MLX cannot toggle the adapter off, so compare loads the base separately; probe MLX quietly since
-    # detect_hardware() prints into the chat and imports torch.
+    # MLX cannot toggle the adapter off; probe quietly since detect_hardware() prints and imports torch.
     try:
         from studio.backend.utils.hardware import hardware as hw
 

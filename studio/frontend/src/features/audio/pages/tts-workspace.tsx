@@ -9,7 +9,13 @@ import {
 } from "@/components/gallery-item-menu";
 import { StripDropLine } from "@/components/gallery-strip-reorder";
 import { Button } from "@/components/ui/button";
-import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { InfoHint } from "@/components/ui/info-hint";
 import { Progress } from "@/components/ui/progress";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
@@ -19,12 +25,12 @@ import { PillTabs } from "@/features/model-picker/components/model-selector/pill
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
-  Copy01Icon,
   DiceFaces03Icon,
   FloppyDiskIcon,
   SparklesIcon,
-  StopIcon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
+import { StopIcon } from "@/lib/media-control-icons";
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { addAudioClipToProject, type AudioGalleryClip } from "../api";
@@ -85,6 +91,63 @@ export function GenerateActions({ actions }: { actions?: GenerateAction[] }) {
         </span>
       ))}
     </>
+  );
+}
+
+/** Under Generate: first fix as a link, the reason on a hint (and sr-only), the rest in a menu. */
+export function BlockerNote({
+  id,
+  blocker,
+}: {
+  id: string;
+  blocker: GenerateBlocker;
+}) {
+  const [first, ...rest] = blocker.actions ?? [];
+  if (!first) {
+    return (
+      <p id={id} className="text-center text-ui-11p5 leading-snug text-muted-foreground">
+        {blocker.reason}
+      </p>
+    );
+  }
+  return (
+    <p
+      id={id}
+      className="flex flex-wrap items-center justify-center gap-x-1.5 text-ui-11p5 leading-snug text-muted-foreground"
+    >
+      <span className="sr-only">{blocker.reason}</span>
+      <Button
+        type="button"
+        variant="link"
+        className="h-auto p-0 text-ui-11p5 font-medium text-foreground"
+        onClick={first.onClick}
+      >
+        {first.label}
+      </Button>
+      {rest.length > 0 ? (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild={true}>
+            <Button
+              type="button"
+              variant="link"
+              className="h-auto p-0 text-ui-11p5 text-muted-foreground hover:text-foreground"
+            >
+              or a suggestion
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="center">
+            {rest.map((action) => (
+              <DropdownMenuItem key={action.label} onSelect={action.onClick}>
+                {action.label.charAt(0).toUpperCase() + action.label.slice(1)}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      ) : null}
+      <InfoHint side="right" hoverOnly={true}>
+        {blocker.reason}
+      </InfoHint>
+    </p>
   );
 }
 
@@ -157,8 +220,7 @@ export function TtsRailFields({
     : allAudioOptionSpecs;
   return (
     <>
-      {/* Field inlined: its label needs a form control to point
-          at, and PillTabs is a tablist with its own name. */}
+      {/* Field inlined: its label needs a form control, and PillTabs is a tablist. */}
       <div className="grid gap-1.5">
         <span className="text-ui-13 font-medium text-foreground">
           Load model into
@@ -187,9 +249,7 @@ export function TtsRailFields({
             { value: "cpu", label: "CPU RAM" },
           ]}
         />
-        {/* Phrased as what the next load will do, not as the resident
-            model's state: a model loaded by another tab or client can
-            be on the other device, and status does not report it. */}
+        {/* Phrased as the next load: another client may have loaded the model on the other device. */}
         <p className="text-ui-11p5 leading-snug text-muted-foreground">
           {audioDevice === "cpu"
             ? "New loads go into system RAM instead of the GPU. Slower to generate, and no GPU memory is used."
@@ -373,7 +433,7 @@ export function TtsFooter({
         {secondaryAction}
         <Button
           className={cn(
-            "relative z-10 mx-auto h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100",
+            "relative z-10 text-ui-13 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100",
             // Same Stop as Images: outline, neutral hover. Destructive is for deleting, not for stopping.
             generationPresentation && "hover:bg-muted dark:hover:bg-muted",
           )}
@@ -391,7 +451,7 @@ export function TtsFooter({
                 (musicNeedsDescription && !audioInstructions.trim()) ||
                 blocker !== null
           }
-          variant={generationPresentation ? "outline" : "default"}
+          variant={generationPresentation ? "outline" : "dark"}
           aria-describedby={blocker ? "audio-generate-blocker" : undefined}
           aria-keyshortcuts="Control+Enter Meta+Enter"
           title={
@@ -414,13 +474,7 @@ export function TtsFooter({
         </Button>
       </div>
       {blocker && !generationPresentation ? (
-        <p
-          id="audio-generate-blocker"
-          className="text-center text-ui-11p5 leading-snug text-muted-foreground"
-        >
-          {blocker.reason}
-          <GenerateActions actions={blocker.actions} />
-        </p>
+        <BlockerNote id="audio-generate-blocker" blocker={blocker} />
       ) : error && !generationPresentation ? (
         <p
           role="alert"
@@ -530,7 +584,6 @@ export function TtsOutput({
       clip: AudioGalleryClip,
       place: "selected" | "history",
     ) => string | null;
-    /** Replaces the selected clip's waveform, such as Convert's Source/Converted compare. */
     renderPlayer?: (
       clip: AudioGalleryClip,
       src: string,
@@ -538,7 +591,6 @@ export function TtsOutput({
     ) => ReactNode;
     useAgainLabel?: string;
     showCopyText?: boolean;
-    /** Replaces the plain player; `focusRef` goes on its first control. */
     selectedPlayer?: (
       clip: AudioGalleryClip,
       src: string,
@@ -636,7 +688,7 @@ export function TtsOutput({
           <PendingClipCard {...pending} />
         ) : selectedClip ? (
           <div
-            className="flex w-full flex-col gap-2"
+            className="flex w-full max-w-xl flex-col gap-2"
             onErrorCapture={(event) => {
               // Only this clip's link: source players and a previous selection's late errors are not ours to retry.
               const media = event.target;

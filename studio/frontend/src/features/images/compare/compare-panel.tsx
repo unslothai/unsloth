@@ -341,7 +341,7 @@ export default function ComparePanel(props: ComparePanelProps) {
                   ? `${shape} = ${count} cell${count === 1 ? "" : "s"} (limit ${MAX_COMPARE_CELLS})`
                   : preview.error}
             </p>
-            <Button type="button" size="sm" disabled={busy || running !== null || !preview.ok} onClick={() => void run()}>
+            <Button variant="dark" type="button" size="sm" disabled={busy || running !== null || !preview.ok} onClick={() => void run()}>
               {preview.ok ? `Generate grid (${count})` : "Generate grid"}
             </Button>
           </div>

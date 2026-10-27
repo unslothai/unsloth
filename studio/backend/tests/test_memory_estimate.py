@@ -3826,6 +3826,138 @@ def test_the_offload_probe_never_evaluates_a_converted_checkpoint(tmp_path, monk
         mm._lazy_checkpoint(str(tmp_path), config)
 
 
+def test_a_deepseek_v41_oq_quant_is_priced_as_unsloth_zoo_loads_it(tmp_path, monkeypatch):
+    if not _HAVE_MLX:
+        pytest.skip("needs MLX to build and load a checkpoint")
+    v41 = pytest.importorskip("mlx_vlm.models.deepseek_v41.deepseek_v41")
+    loader = pytest.importorskip("unsloth_zoo.mlx.loader")
+    if not hasattr(loader, "_ensure_deepseek_v41_omlx_layout"):
+        pytest.skip("this unsloth_zoo loads no oQ quant")
+    import gc
+    import re
+
+    import mlx.core as mx
+    import mlx.nn as nn
+    from mlx.utils import tree_flatten
+    from mlx_vlm.models.deepseek_v41.config import ModelConfig
+
+    text = dict(
+        vocab_size = 512,
+        hidden_size = 256,
+        moe_intermediate_size = 128,
+        num_hidden_layers = 4,
+        num_attention_heads = 4,
+        head_dim = 64,
+        qk_rope_head_dim = 32,
+        q_lora_rank = 128,
+        o_lora_rank = 64,
+        o_groups = 2,
+        n_routed_experts = 16,
+        num_experts_per_tok = 2,
+        sliding_window = 16,
+        compress_ratios = [0, 2, 1, 1],
+        kv_source_layer_ids = [1, 2],
+        index_source_layer_ids = [1, 2, 3],
+        index_n_heads = 2,
+        index_head_dim = 64,
+        candidate_source_layer_id = 2,
+        engram_layer_ids = [1],
+        engram_num_embeddings = [1024],
+        engram_n_heads = 2,
+        engram_head_dim = 64,
+    )
+    config = {
+        "model_type": "deepseek_v41",
+        "text_config": text,
+        "vision_config": {"num_hidden_layers": 1, "hidden_size": 64},
+    }
+    model = v41.Model(ModelConfig.from_dict(json.loads(json.dumps(config))))
+
+    def oq2e(path, module):
+        if (
+            not hasattr(module, "to_quantized")
+            or path.startswith(("vision", "aligner"))
+            or path.endswith(("head", "embed_tokens", "ffn.gate", "wo_a"))
+        ):
+            return False
+        if path.endswith("engram.wkv"):
+            return {"group_size": 32, "bits": 8, "mode": "mxfp8"}
+        if path.endswith("engram.embed"):
+            return {"group_size": 32, "bits": 4, "mode": "affine"}
+        return {"group_size": 64, "bits": 2 if ".switch_mlp." in path else 8, "mode": "affine"}
+
+    specs = {}
+    nn.quantize(
+        model, class_predicate = lambda path, module: specs.setdefault(path, oq2e(path, module))
+    )
+    names = {"gate_proj": "w1", "down_proj": "w2", "up_proj": "w3"}
+
+    def omlx(key):
+        key = key.replace("language_model.embed_tokens.", "language_model.embed.").replace(
+            ".switch_mlp.", ".experts."
+        )
+        key = re.sub(r"(experts)\.(\w+_proj)\.", lambda m: f"{m[1]}.{names[m[2]]}.", key)
+        return re.sub(r"^(vision\.blocks\.\d+)\.mlp\.", r"\1.ffn.", key)
+
+    # bf16 as stored, beside the float32 the model is built in: a name sanitize misses keeps the latter.
+    params = {
+        k: v.astype(mx.bfloat16)
+        if v.dtype == mx.float32 and "hc_" not in k and "gate.bias" not in k
+        else v
+        for k, v in tree_flatten(model.parameters())
+    }
+    stored = {
+        omlx(k): v.reshape(-1, v.shape[-1]) if k.endswith("wo_a.weight") else v
+        for k, v in params.items()
+    }
+    stored["language_model.mtp.0.ffn.experts.w1.weight"] = mx.zeros(
+        (16, 128, 32), mx.uint32
+    )  # a DSpark stage
+    mx.save_safetensors(str(tmp_path / "model.safetensors"), stored)
+    # No "quantization": only unsloth_zoo's reading of the config supplies it.
+    quantized = {
+        omlx(f"{p}.weight").removesuffix(".weight"): s
+        if s["mode"] == "affine"
+        else {"bits": s["bits"], "mode": s["mode"]}
+        for p, s in specs.items()
+        if s and not p.endswith("engram.embed")
+    }
+    quantized["language_model.mtp.0.ffn.experts.w1"] = {"bits": 4, "mode": "mxfp4"}
+    table = "language_model.layers.1.engram.embed"
+    keys = {
+        "weight_key": f"{table}.weight",
+        "scale_key": f"{table}.scales",
+        "bias_key": f"{table}.biases",
+    }
+    config["omlx_deepseek_v41"] = {
+        "version": 1,
+        "quantized_modules": quantized,
+        "engram_tables": {table: {**keys, "bits": 4, "group_size": 32, "mode": "affine"}},
+    }
+    (tmp_path / "config.json").write_text(json.dumps(config))
+
+    model_dir = str(tmp_path)
+    priced = mm._snapshot_config(model_dir)
+    # Installed process-wide: reset between checks so each must install it itself.
+    sanitize = v41.Model.sanitize
+    if getattr(sanitize, "_unsloth_omlx_layout", False):
+        pytest.skip("an earlier load in this process installed the oQ layout")
+    monkeypatch.setattr(v41.Model, "sanitize", sanitize)
+    assert mm._load_is_refused(model_dir, priced, load_in_4bit = True) is None
+    v41.Model.sanitize = sanitize
+    experts = sum(v.nbytes for k, v in params.items() if ".switch_mlp." in k)
+    found = mm._offloadable(model_dir, priced)
+    assert (found["expert_bytes"], found["experts"]) == (experts, None)
+    assert mm.mlx_offloadable_parts(model_dir) == ("experts",)
+    # The view carrying that config lives exactly as long as the model mapping its shards.
+    lazy = mm._lazy_checkpoint(model_dir, priced)
+    (view,) = lazy._unsloth_mlx_config_view_paths
+    assert os.path.isfile(os.path.join(view, "model.safetensors"))
+    del lazy
+    gc.collect()
+    assert not os.path.exists(view)
+
+
 try:
     import importlib
 
@@ -4967,8 +5099,10 @@ def test_a_real_checkpoint_is_fitted_to_the_byte(budget_gib, fitted):
 
 
 @_NEEDS_MLX
-def test_a_companion_drafter_adds_its_stored_weights_and_a_cache_to_the_load():
+def test_a_companion_drafter_adds_its_stored_weights_and_a_cache_to_the_load(monkeypatch):
     _on_bfloat16_chip()
+    # unsloth-zoo otherwise loads a bf16 DFlash drafter at 4 bits, and sizes it so.
+    monkeypatch.setenv("UNSLOTH_MLX_DRAFTER_BITS", "0")
     target = _local_snapshot("mlx-community/Qwen3.5-4B-4bit")
     drafter = _local_snapshot("z-lab/Qwen3.5-4B-DFlash")
     stored = 0

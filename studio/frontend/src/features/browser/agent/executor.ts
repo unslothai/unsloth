@@ -15,10 +15,21 @@ import { useBrowserHistoryStore } from "../history-store";
 import { hasNativeView, keepInBackground, nativeAction, releaseBackground, whenViewOpen } from "../native-view";
 import { isLoopbackUrl } from "../address";
 import { callNative, localOriginGranted, useNativeBrowser } from "../native-support";
-import { requestFrameAgent } from "../page-frame";
+import { requestFrameAgent, sendFrameCommand } from "../page-frame";
 import { browserPanelAvailable } from "../panel-availability";
 import { type BrowserTab, chatKeyOfThread, currentEntry, onChatAdopted, useBrowserStore } from "../store";
-import { type Answer, adoptAgentChat, agentChat, askUser, liveChat, onBrowserAgentRunEnd, patchAgentChat, setActiveAction, useBrowserAgentStore } from "./agent-store";
+import {
+  type AgentStep,
+  type Answer,
+  adoptAgentChat,
+  agentChat,
+  askUser,
+  liveChat,
+  onBrowserAgentRunEnd,
+  patchAgentChat,
+  setActiveAction,
+  useBrowserAgentStore,
+} from "./agent-store";
 import { type Gate, type Question, type SitePolicy, gateElement, gateNavigation, hostOfUrl, navigationBlocks } from "./gate";
 import { type SiteRule, ruleFor } from "./permissions";
 import { type AgentAnswer, type ElementInfo, pageAgentSource } from "./page-agent";
@@ -50,11 +61,13 @@ export type BrowserAction = {
 };
 
 /** `scope`: the chat the run belongs to; sites approved in one chat aren't approved in another.
- *  `chat`: its browser chat when that isn't the thread's own (a compare pane's pair). */
+ *  `chat`: its browser chat when that isn't the thread's own (a compare pane's pair).
+ *  `temporary`: the run's chat is temporary, so its pages stay out of history whatever chat is shown. */
 export type ActionContext = {
   runKey: string;
   scope?: string;
   chat?: string;
+  temporary?: boolean;
   userText: string;
   fullAccess?: boolean;
   signal?: AbortSignal;
@@ -199,8 +212,9 @@ function admit(url: string, gate: Gate, context: Run): void {
 
 const TEXT_ROLES = new Set(["textbox", "searchbox", "password", "combobox", "spinbutton"]);
 
-// A replayed stream frame must not click twice.
+// A replayed frame must not click twice; ids are unguessable, so only recent ones are kept.
 const seen = new Set<string>();
+const MAX_SEEN = 4_000;
 
 export function runBrowserAction(action: BrowserAction, actionContext: ActionContext): Promise<void> {
   const session = sessionFor(chatOf(actionContext));
@@ -208,6 +222,10 @@ export function runBrowserAction(action: BrowserAction, actionContext: ActionCon
   const { chat } = session;
   if (seen.has(action.id)) return session.queue;
   seen.add(action.id);
+  for (const old of seen) {
+    if (seen.size <= MAX_SEEN) break;
+    seen.delete(old);
+  }
   // The server's wait starts when it sends the action, not when an earlier one lets this one run.
   const expires = action.timeoutS ? Date.now() + (action.timeoutS - 2) * 1000 : null;
   const next = session.queue.then(async () => {
@@ -235,7 +253,7 @@ export function runBrowserAction(action: BrowserAction, actionContext: ActionCon
       if (deadline) clearTimeout(deadline);
       context.signal?.removeEventListener("abort", abort);
       setActiveAction(chat, null);
-      patchAgentChat(chat, { working: false });
+      patchAgentChat(chat, { working: false, step: null });
     }
     if (expired && !result.ok) result = { ok: false, error: EXPIRED };
     if (agentChat(chat).stoppedRun === context.runKey) result = { ok: false, error: STOPPED };
@@ -314,7 +332,7 @@ const AGENT_ERRORS = [
   /^r\d{1,9} is covered by an overlay; snapshot to find its close button, or scroll first\.$/,
   /^r\d{1,9} is not a text field\.$/,
   /^r\d{1,9} is disabled or read-only\.$/,
-  /^r\d{1,9} takes a value like (2026-03-14|09:30|2026-03-14T09:30|2026-03|2026-W11)\.$/,
+  /^r\d{1,9} takes a value like (2026-03-14|09:30|2026-03-14T09:30|2026-03|2026-W11|a number such as 42)\.$/,
   /^r\d{1,9} is a radio button; select another option in its group instead\.$/,
   /^r\d{1,9} is a (checkbox|radio|switch); value must be "true", "false" or its own label\. Pick the ref of the option to choose\.$/,
   /^that key does nothing in this field; click or type instead\.$/,
@@ -550,8 +568,9 @@ async function askInPanel(question: Question, context: Run, remember = true): Pr
   const tabId = agentChat(context.session.chat).tabId;
   const store = useBrowserStore.getState();
   if (tabId) store.revealIn(context.session.chat, tabId);
-  else if (chatOnScreen(context) && !store.open) store.openPanel();
-  if (!chatOnScreen(context)) notifyOffScreenQuestion(context.session.chat);
+  // Even when already open: a project's overlay or Research can be hiding it, and only a new open shows it.
+  if (chatOnScreen(context)) store.openPanel();
+  else notifyOffScreenQuestion(context.session.chat);
   const answer = await askUser(context.session.chat, question, context.signal, keep);
   if (answer === "always" && keep) granted.add(key);
   return answer;
@@ -610,12 +629,12 @@ async function open(url: string, context: Run): Promise<BrowserTab | null> {
     : agent && !onGrantedOrigin(agent) ? agent : undefined;
   if (existing) {
     if (agentChat(context.session.chat).tabId !== existing.id) moveRun(context, existing.id);
-    store.navigate(existing.id, { url }, { replace: false });
+    store.navigate(existing.id, { url, temporary: context.temporary }, { replace: false });
     showTab(existing, context);
     return waitForLoad(existing.id, context.signal);
   }
   // In its own chat's tabs: a chat off screen gets a tab there, and the panel on screen stays put.
-  const tabId = store.openTabIn(context.session.chat, url);
+  const tabId = store.openTabIn(context.session.chat, url, { temporary: context.temporary });
   if (!tabId) return null;
   // Off screen the view opens a beat later: loading until it reports in, so the wait below doesn't read the blank view.
   if (!chatOnScreen(context)) store.updateTab(tabId, { loading: true });
@@ -623,6 +642,40 @@ async function open(url: string, context: Run): Promise<BrowserTab | null> {
   const tab = findTab(tabId);
   if (tab) showTab(tab, context);
   return waitForLoad(tabId, context.signal);
+}
+
+function stepOf(action: BrowserAction): AgentStep {
+  switch (action.op) {
+    case "navigate":
+      return { kind: "open", detail: hostOfUrl(action.url ?? "") };
+    case "back":
+    case "forward":
+    case "reload":
+      return { kind: action.op, detail: "" };
+    case "find":
+      return { kind: "find", detail: action.query ?? "" };
+    case "click":
+    case "type":
+    case "select":
+      return { kind: action.op, detail: action.ref ?? "" };
+    case "press":
+      return { kind: "press", detail: action.key ?? "" };
+    case "scroll":
+    case "screenshot":
+    case "evaluate":
+    case "history":
+    case "move":
+    case "drag":
+      return { kind: action.op, detail: "" };
+    default:
+      return { kind: "read", detail: "" };
+  }
+}
+
+function nameStep(chat: string, info: ElementInfo): void {
+  const current = agentChat(chat).step;
+  if (!current) return;
+  patchAgentChat(chat, { step: { ...current, detail: info.name || info.role || current.detail } });
 }
 
 function permissions(context: Pick<ActionContext, "fullAccess">) {
@@ -698,7 +751,7 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
   if (owner && owner !== context.runKey) {
     return { ok: false, error: "Another reply in this chat is using the browser right now. Wait for it to finish, or tell the user." };
   }
-  patchAgentChat(chat, { working: true, runKey: context.runKey });
+  patchAgentChat(chat, { working: true, runKey: context.runKey, step: stepOf(action) });
 
   if (action.op === "navigate") {
     const url = redirectEnd(action.url ?? "");
@@ -751,6 +804,22 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
           : entry?.kind === "web"
             ? entry.url
             : "";
+    // A router's pushState / hash history lives in the page and comes first, as the toolbar's Back does.
+    if (action.op !== "reload" && !nativeMove && tab.pageHistory?.[action.op]) {
+      const since = Date.now();
+      if (sendFrameCommand(tab.id, { command: "go", delta: action.op === "back" ? -1 : 1 })) {
+        const after = await settle(tab.id, before, since, signal);
+        if (!after) return { ok: false, error: "the browser tab closed." };
+        return arrive(after, before, action, context, since);
+      }
+    }
+    if (action.op !== "reload" && !nativeMove && !entry) {
+      const ready = tab.loading ? await waitForLoad(tab.id, signal) : tab;
+      if (!ready) return { ok: false, error: "the browser tab closed." };
+      const refused = await stillAllowed(ready, action, context);
+      if (refused) return { ok: false, error: refused };
+      return observe(ready, context, `There is no ${action.op === "back" ? "previous" : "next"} page in this tab's history; this is still the same page.`);
+    }
     if (destination) {
       const blocked = navigationBlocks(destination, action.policy, permissions(context));
       const gate: Gate = blocked
@@ -826,6 +895,7 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
     return { ok: false, error: described.error ?? (point ? "nothing is at that point." : `${ref} could not be found.`) };
   }
   const info: ElementInfo = described.info;
+  if (action.op !== "press") nameStep(chat, action.op === "select" && info.option ? { ...info, name: info.option } : info);
   const gates: Gate[] = [];
   if (action.op === "click" || action.op === "type") gates.push(gateElement(action.op, info, here, action.policy, permissions(context)));
   const opaque = point ? opaqueGate(info, here, context) : null;
@@ -920,7 +990,7 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
       }
       const sent = Date.now();
       // Straight to the landing page that was gated: the store unwraps only one redirect hop.
-      useBrowserStore.getState().navigate(ready.id, { url: end, from: here }, { replace: false });
+      useBrowserStore.getState().navigate(ready.id, { url: end, from: here, temporary: context.temporary }, { replace: false });
       const loaded = await waitForLoad(ready.id, signal);
       return loaded ? arrive(loaded, end, action, context, sent) : { ok: false, error: "the browser tab closed." };
     }
@@ -1340,6 +1410,10 @@ async function readHistory(action: BrowserAction, context: Run): Promise<Result>
       return terms.every((term) => haystack.includes(term));
     })
     .slice(0, limit);
-  const lines = visits.map((visit) => `${new Date(visit.visitedAt).toISOString().slice(0, 16).replace("T", " ")}  ${visit.title || "(untitled)"}  ${visit.url}`);
+  const when = (at: number) => {
+    const date = new Date(at);
+    return Number.isNaN(date.getTime()) ? "(unknown time)" : date.toISOString().slice(0, 16).replace("T", " ");
+  };
+  const lines = visits.map((visit) => `${when(visit.visitedAt)}  ${visit.title || "(untitled)"}  ${visit.url}`);
   return { ok: true, text: lines.length ? lines.join("\n") : "No pages in the browsing history match." };
 }

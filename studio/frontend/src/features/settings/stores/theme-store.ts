@@ -21,9 +21,8 @@ export function isPalette(value: unknown): value is Palette {
   return isColorThemeId(value);
 }
 
-// Persist a re-derived literal from a fixed allow-list rather than the argument,
-// so a value arriving via the authenticated personalization sync is not tracked
-// as sensitive data flowing into storage (these are plain UI preferences).
+// Persist a literal from an allow-list, not the argument, so synced values are not flagged as
+// sensitive data flowing into storage.
 const STORED_THEME: Record<Theme, Theme> = {
   light: "light",
   dark: "dark",
@@ -57,9 +56,7 @@ function readStoredPalette(): Palette {
   return isPalette(stored) ? stored : "standard";
 }
 
-// In-memory source of truth so a selected value survives even when localStorage is blocked (private
-// browsing). Without it the snapshots would re-read empty storage and revert React state to the
-// default while the DOM already changed.
+// In-memory source of truth so a choice survives blocked localStorage.
 let currentTheme: Theme = readStoredTheme();
 let currentPalette: Palette = readStoredPalette();
 
@@ -78,15 +75,13 @@ function applyToDocument(resolved: ResolvedTheme) {
   const el = document.documentElement;
   el.classList.toggle("dark", resolved === "dark");
   el.classList.toggle("light", resolved === "light");
-  // Native controls (scrollbars, spinners, pickers) follow the app mode.
   el.style.colorScheme = resolved;
 }
 
 function applyPaletteToDocument(palette: Palette) {
   if (typeof document === "undefined") return;
   const el = document.documentElement;
-  // Standard is the base :root/.dark palette; no attribute keeps the DOM
-  // (and CSS selectors) simple for the default look.
+  // Standard is the base :root/.dark palette and uses no attribute.
   if (palette === "standard") {
     el.removeAttribute("data-palette");
   } else {
@@ -101,13 +96,11 @@ function subscribe(cb: () => void) {
     return () => listeners.delete(cb);
   }
   const mq = window.matchMedia("(prefers-color-scheme: dark)");
-  // OS scheme flip: only the resolved value changes; keep the in-memory choice
-  // (re-reading storage here would clobber it when storage is blocked).
+  // Keep the in-memory choice; re-reading blocked storage would clobber it.
   const onSchemeChange = () => {
     applyToDocument(resolveTheme(currentTheme));
     cb();
   };
-  // Another tab wrote storage (only fires when storage is available): adopt it.
   const onStorage = (e: StorageEvent) => {
     if (
       e.key === STORAGE_KEY ||
@@ -121,8 +114,7 @@ function subscribe(cb: () => void) {
       cb();
     }
   };
-  // Apply on mount so this store is the single source of truth for the DOM
-  // class after the index.html bootstrap script painted the first frame.
+  // Take over the DOM class after the index.html bootstrap painted the first frame.
   applyToDocument(resolveTheme(currentTheme));
   applyPaletteToDocument(currentPalette);
   mq.addEventListener("change", onSchemeChange);
@@ -142,9 +134,7 @@ function getServerSnapshot(): Theme {
   return "system";
 }
 
-// Snapshot the RESOLVED mode too: under "system" the theme string never
-// changes when the OS scheme flips, so consumers keyed on `resolved`
-// (customization applier, mode-scoped settings) would not re-render.
+// Under "system" the theme string never changes when the OS flips, so snapshot the resolved mode.
 function getResolvedSnapshot(): ResolvedTheme {
   return resolveTheme(currentTheme);
 }
@@ -153,11 +143,7 @@ function getResolvedServerSnapshot(): ResolvedTheme {
   return "light";
 }
 
-/**
- * Single source of truth for setting the theme. All writers (Settings dialog
- * control, sidebar dropdown toggler) route through this so the DOM class,
- * localStorage, and React subscribers stay in sync.
- */
+/** Every writer goes through here so the DOM class, storage and subscribers stay in sync. */
 export function setTheme(next: Theme): void {
   if (typeof window === "undefined") return;
   currentTheme = next;
@@ -193,11 +179,6 @@ function getPaletteServerSnapshot(): Palette {
   return "standard";
 }
 
-/**
- * Single source of truth for setting the color palette; mirrors setTheme so
- * the data-palette attribute, localStorage, and React subscribers stay in
- * sync.
- */
 export function setPalette(next: Palette): void {
   if (typeof window === "undefined") return;
   currentPalette = next;

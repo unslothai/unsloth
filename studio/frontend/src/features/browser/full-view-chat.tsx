@@ -22,6 +22,7 @@ import {
   BubbleChatIcon,
   MinusSignIcon,
   MoreHorizontalIcon,
+  PlusSignIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
@@ -30,7 +31,6 @@ import { useBrowserStore } from "./store";
 const WASH =
   "hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)]";
 
-/** Full-view chat bar: minimize, title (toggles the conversation), split menu. */
 export function FullViewChatBar({ title }: { title: string | undefined }) {
   const t = useT();
   const dock = useBrowserStore((state) => state.chatDock);
@@ -95,6 +95,7 @@ export function FullViewChatBar({ title }: { title: string | undefined }) {
             onClick={() => setChatDock(expanded ? "composer" : "expanded")}
             className="flex h-8 min-w-0 cursor-pointer items-center gap-1.5 rounded-full px-2.5 text-ui-14 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
+            <HugeiconsIcon icon={PlusSignIcon} className="size-4" />
             <span className="min-w-0 truncate">
               {title || t("browser.fullView.newChat")}
             </span>

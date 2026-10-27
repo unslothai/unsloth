@@ -64,6 +64,12 @@ _FP4_VALUES = (
     -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0,
 )  # fmt: skip
 _LUT_CACHE = {}
+# torch < 2.12's ldexp forms 2^e in the input dtype: in fp16 2^16 is inf (0 * 2^16 -> NaN, 2^-10 * 2^20 -> inf)
+# and 2^-25 is 0. Decode fp16 in fp32 there, then round once.
+_LDEXP_IN_INPUT_DTYPE = tuple(int(x) for x in torch.__version__.split("+")[0].split(".")[:2]) < (
+    2,
+    12,
+)
 
 
 def mxfp4_keep_packed_enabled() -> bool:
@@ -71,12 +77,13 @@ def mxfp4_keep_packed_enabled() -> bool:
 
 
 def _dequantize_torch(blocks, scales, dtype):
-    key = (blocks.device, dtype)
+    work = torch.float32 if dtype == torch.float16 and _LDEXP_IN_INPUT_DTYPE else dtype
+    key = (blocks.device, work)
     lut = _LUT_CACHE.get(key)
     if lut is None:
-        lut = _LUT_CACHE[key] = torch.tensor(_FP4_VALUES, dtype = dtype, device = blocks.device)
+        lut = _LUT_CACHE[key] = torch.tensor(_FP4_VALUES, dtype = work, device = blocks.device)
     *prefix, G, B = blocks.shape
-    out = torch.empty(*prefix, G, B * 2, dtype = dtype, device = blocks.device)
+    out = torch.empty(*prefix, G, B * 2, dtype = work, device = blocks.device)
     out[..., 0::2] = lut[(blocks & 0x0F).long()]
     out[..., 1::2] = lut[(blocks >> 4).long()]
     out = torch.ldexp(out, (scales.to(torch.int32) - 127).unsqueeze(-1)).to(dtype)
@@ -122,20 +129,61 @@ def mxfp4_packed_matmul(
 ):
     """``x @ W^T (+ bias)`` (``transpose=False``) or ``x @ W`` for the packed ``[out, in / 2]`` weight, in x's dtype.
     Skinny forward inputs (decode, small batches) never build the 16-bit weight on sm_80+; below sm_80 they decode it
-    for cuBLAS only as far as memory allows (row chunks, else the tile kernel); the rest decode it once for cuBLAS."""
+    for cuBLAS only as far as memory allows (row chunks, else the tile kernel); the rest decode it once for cuBLAS.
+    Differentiable in ``x`` / ``bias``: the kernels and the reused chunk buffer have no autograd of their own."""
+    if torch.is_grad_enabled() and (
+        x.requires_grad or (bias is not None and not transpose and bias.requires_grad)
+    ):
+        y = _Mxfp4PackedMatmulFunction.apply(x, packed, scale, transpose, bias)
+        # As _linear: a used bias never writes out.
+        if out is None or (bias is not None and not transpose):
+            return y
+        return out.copy_(y)
+    return _mxfp4_packed_matmul(x, packed, scale, transpose, out, bias)
+
+
+def _mxfp4_packed_matmul(x, packed, scale, transpose, out, bias):
     rows = x.numel() // x.shape[-1] if x.shape[-1] else 0
     # dX (transpose) stays on decode + cuBLAS: the fused kernel only wins it for a few wide shapes.
-    if not transpose and _zoo_mxfp4_matmul is not None and rows <= _FUSED_MAX_ROWS and x.is_cuda:
-        if mxfp4_gemm_available(x.device, x.dtype):
+    if _zoo_mxfp4_matmul is not None and rows <= _FUSED_MAX_ROWS and x.is_cuda:
+        fused = mxfp4_gemm_available(x.device, x.dtype)
+        if fused and not transpose:
             return _zoo_mxfp4_matmul(x, packed, scale, trans = transpose, out = out, bias = bias)
-        if _zoo_mxfp4_kernel_verified is not None and _zoo_mxfp4_kernel_verified(x.device, x.dtype):
+        if (
+            not fused
+            and _zoo_mxfp4_kernel_verified is not None
+            and _zoo_mxfp4_kernel_verified(x.device, x.dtype)
+        ):
             # Below sm_80 decode + cuBLAS beats the tile kernel, but only the tile kernel never builds the
-            # 16-bit weight: decode in chunks of output rows when the weight does not fit.
+            # 16-bit weight: decode in chunks of weight rows when the weight does not fit. dX (the backward of
+            # such a forward) is bounded the same way.
+            if transpose:
+                return _bounded_dense_matmul_t(x, packed, scale, out)
             return _bounded_dense_matmul(x, packed, scale, out, bias)
     weight = dequantize_mxfp4_packed(packed, scale, x.dtype)
     if transpose:
         return torch.matmul(x, weight, out = out)
     return _linear(x, weight, out, bias)
+
+
+class _Mxfp4PackedMatmulFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, packed, scale, transpose, bias):
+        ctx.save_for_backward(packed, scale)
+        ctx.transpose, ctx.x_dtype = transpose, x.dtype
+        return _mxfp4_packed_matmul(x, packed, scale, transpose, None, None if transpose else bias)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        packed, scale = ctx.saved_tensors
+        grad_x = grad_bias = None
+        if ctx.needs_input_grad[0]:
+            grad_x = _mxfp4_packed_matmul(
+                grad_output, packed, scale, not ctx.transpose, None, None
+            ).to(ctx.x_dtype)
+        if ctx.needs_input_grad[4] and not ctx.transpose:
+            grad_bias = grad_output.reshape(-1, grad_output.shape[-1]).sum(0)
+        return grad_x, None, None, None, grad_bias
 
 
 def _linear(x, weight, out, bias):
@@ -231,7 +279,60 @@ def _bounded_dense_matmul_eager(
         state[0] = step * row_bytes // 2
 
 
+def _bounded_dense_matmul_t_eager(
+    x,
+    packed,
+    scale,
+    out = None,
+):
+    """``x @ W`` (the dX of ``x @ W^T``) under the same budget as ``_bounded_dense_matmul_eager``: the whole W
+    when it allocates, else row chunks of W whose products are summed in fp32, else the tile kernel."""
+    N, half = packed.shape
+    K = half * 2
+    dtype, device = x.dtype, x.device
+    row_bytes = K * x.element_size()
+    key = device.index
+    state = _DENSE_BUDGET.get(key)
+    if state is not None:
+        state[1] -= 1
+        if state[1] <= 0:
+            _DENSE_BUDGET.pop(key, None)
+            state = None
+    if state is None or N * row_bytes <= state[0]:
+        try:
+            weight = torch.empty((N, K), dtype = dtype, device = device)
+            weight = dequantize_mxfp4_packed(packed, scale, dtype, out = weight)
+            return torch.matmul(x, weight, out = out)
+        except torch.cuda.OutOfMemoryError:
+            weight = None
+        state = _DENSE_BUDGET[key] = [_free_bytes(device) // 2, _DENSE_RETRY_CALLS]
+    lead = x.shape[:-1]
+    x2 = x.reshape(-1, N)
+    # Each chunk holds its 16-bit decode and the fp32 copy the fp32 product reads.
+    chunk_row_bytes = row_bytes + K * 4
+    while True:
+        step = min(N, state[0] // chunk_row_bytes)
+        if step < _DENSE_MIN_CHUNK_ROWS:
+            return _zoo_mxfp4_matmul(x, packed, scale, trans = True, out = out)
+        try:
+            buffer = torch.empty((step, K), dtype = dtype, device = device)
+            acc = torch.zeros((x2.shape[0], K), dtype = torch.float32, device = device)
+            for r0 in range(0, N, step):
+                r1 = min(N, r0 + step)
+                weight = dequantize_mxfp4_packed(
+                    packed[r0:r1], scale[r0:r1], dtype, out = buffer[: r1 - r0]
+                )
+                # fp32 products: a 16-bit chunk product can overflow even when the sum fits.
+                acc.addmm_(x2[:, r0:r1].float(), weight.float())
+            y = acc.to(dtype).view(*lead, K)
+            return y if out is None else out.copy_(y)
+        except torch.cuda.OutOfMemoryError:
+            buffer = weight = acc = None
+        state[0] = step * chunk_row_bytes // 2
+
+
 _bounded_dense_matmul_op = None
+_bounded_dense_matmul_t_op = None
 try:
 
     @torch.library.custom_op("unsloth::mxfp4_bounded_dense_matmul", mutates_args = ())
@@ -246,6 +347,29 @@ try:
 
 except Exception:
     _bounded_dense_matmul_op = None
+try:
+
+    @torch.library.custom_op("unsloth::mxfp4_bounded_dense_matmul_t", mutates_args = ())
+    def _bounded_dense_matmul_t_op(
+        x: torch.Tensor, packed: torch.Tensor, scale: torch.Tensor
+    ) -> torch.Tensor:
+        return _bounded_dense_matmul_t_eager(x, packed, scale, None)
+
+    @_bounded_dense_matmul_t_op.register_fake
+    def _(x, packed, scale):
+        return x.new_empty((*x.shape[:-1], packed.shape[1] * 2))
+
+except Exception:
+    _bounded_dense_matmul_t_op = None
+
+
+def _bounded_dense_matmul_t(x, packed, scale, out):
+    if torch.compiler.is_compiling():
+        if _bounded_dense_matmul_t_op is None:
+            return torch.matmul(x, dequantize_mxfp4_packed(packed, scale, x.dtype), out = out)
+        y = _bounded_dense_matmul_t_op(x, packed, scale)
+        return y if out is None or out.shape != y.shape else out.copy_(y)
+    return _bounded_dense_matmul_t_eager(x, packed, scale, out)
 
 
 def _bounded_dense_matmul(x, packed, scale, out, bias):
@@ -578,6 +702,33 @@ def _full_finetuning() -> bool:
     return os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1"
 
 
+def _unwrap_offload_after_lazy_decompress(model) -> bool:
+    """A plain transformers load (e.g. reloading a checkpoint Unsloth saved, in the same process) keeps
+    the weights compressed and decompresses them in compressed-tensors' first-forward hook, which also
+    wraps every module's parameters in an OffloadCache. Unsloth's compiled forwards cannot trace that
+    cache ("Unsupported: Data pointer comparison"), so unwrap the same-device ones right after the
+    hook, as Unsloth's own loads do. Real CPU / disk offload is left alone."""
+    if not hasattr(model, "ct_decompress_hook") or hasattr(model, "_unsloth_ct_unwrap_hook"):
+        return False
+
+    def _unsloth_ct_unwrap_hook(module, args):
+        # Pre-hooks run in registration order: still present means the decompress hook did not run.
+        if hasattr(module, "ct_decompress_hook"):
+            return None
+        handle = module.__dict__.pop("_unsloth_ct_unwrap_hook", None)
+        if handle is not None:
+            handle.remove()
+        try:
+            from .loader_utils import _remove_same_device_compressed_tensors_offload
+            _remove_same_device_compressed_tensors_offload(module)
+        except Exception:
+            pass
+        return None
+
+    model._unsloth_ct_unwrap_hook = model.register_forward_pre_hook(_unsloth_ct_unwrap_hook)
+    return True
+
+
 def install_compressed_tensors_keep_packed() -> bool:
     """Stock compressed-tensors loader keeps MXFP4 packed (adopt, then stack experts) under the same
     all-or-nothing plan; declined, full finetuning or explicit dequantize = stock. Idempotent."""
@@ -645,6 +796,7 @@ def install_compressed_tensors_keep_packed() -> bool:
 
     def _process_model_after_weight_loading(self, model, **kwargs):
         result = original_after(self, model, **kwargs)
+        _unwrap_offload_after_lazy_decompress(model)
         blocks = getattr(self, "_unsloth_mxfp4_blocks", None)
         if blocks:
             self._unsloth_mxfp4_blocks = []
@@ -665,8 +817,7 @@ def install_compressed_tensors_keep_packed() -> bool:
     return True
 
 
-# PEFT merge on a packed base: `weight.data += delta` would hit a throwaway decode, silently a no-op.
-# Merge densifies to an exact-decode nn.Linear (bytes kept aside); unmerging the last adapter restores them.
+# PEFT merge: weight.data += delta silently no-ops on packed base; merge densifies, unmerge restores
 
 _PACKED_STATE = "_unsloth_mxfp4_packed_state"
 

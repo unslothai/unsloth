@@ -2,4 +2,4 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export const RECIPE_FLOATING_ICON_BUTTON_CLASS =
-  "btn-fill corner-squircle group h-11 w-11 rounded-full border-0 p-0 text-muted-foreground hover:text-primary";
+  "btn-fill corner-squircle group h-11 w-11 rounded-full border-0 p-0 text-muted-foreground hover:text-foreground";

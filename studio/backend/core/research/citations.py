@@ -38,38 +38,20 @@ _PLACEHOLDER_KINDS = ("research-code", "research-citation")
 _PLACEHOLDER = re.compile(rf"\x00(?:{'|'.join(_PLACEHOLDER_KINDS)})-[0-9]+\x00")
 # For a pass that deletes prose but must carry the code through.
 _CODE_PLACEHOLDER = re.compile(r"\x00research-code-[0-9]+\x00")
-# remark-gfm renders the indented lines under a footnote definition as prose, where a bare URL
-# becomes a live link; the CommonMark parse below calls them code. Validate rather than mask.
+# Footnote lines render as prose in remark-gfm but as code in CommonMark: validate them, do not mask.
 _FOOTNOTE_DEFINITION = re.compile(r" {0,3}\[\^[^\]\s]+\]:")
-# A mermaid fence is not shown as code, it is executed into a diagram, and mermaid's image shape
-# (`A@{ img: "..." }`, mermaid >= 11.3) puts its URL straight on an SVG image the browser then
-# fetches, outside the markdown image pipeline that would have vetted it. So the URLs inside one
-# stay subject to the catalog, exactly as before code was masked at all. Case-insensitive while
-# the renderer's own gate is not: over-matching costs a validated diagram, under-matching leaves
-# a report able to name any URL it likes.
+# Mermaid fences execute (image URLs fetched by the browser), so their URLs stay validated.
 _MERMAID_FENCE = re.compile(r"mermaid\b", re.IGNORECASE)
 
 
 def _citation_title(source: dict, fallback: str) -> str:
-    """Title as it may appear in a markdown link label.
-
-    The prompt tells the model to copy titles verbatim from the source catalog, and search
-    titles routinely carry a bracket ("[PDF] Annual Report") which makes the citation
-    unmatchable, so the catalog and the citation writer strip them the same way.
-    """
+    """Strips brackets from titles, since a [PDF] prefix would make the citation unmatchable."""
     title = str(source.get("title") or fallback).replace("[", "").replace("]", "").strip()
     return title or fallback
 
 
 def _trim_url_tail(raw: str) -> str:
-    """Strip trailing prose punctuation that ``_RAW_URL`` swallowed.
-
-    Mirrors GFM extended autolink path validation: walk right to left, dropping
-    ``.,;:!?`` and any ``)`` that has no matching ``(`` inside the URL, stopping at the
-    first character that is neither. Both rules must run in one interleaved pass, else
-    ``https://x/y.)`` keeps a stray dot. Without this, ``(https://x/y)`` never matches
-    the catalog and the citation is dropped from the report.
-    """
+    """Trims trailing prose punctuation and unmatched ')' like GFM autolinks, in one interleaved pass."""
     end = len(raw)
     opening, closing = raw.count("("), raw.count(")")
     while end:
@@ -85,11 +67,7 @@ def _trim_url_tail(raw: str) -> str:
 
 
 def _placeholder(kind: str, index: int) -> str:
-    """Sentinel for text a validator must move but not rewrite.
-
-    NUL delimited: ``_mask_code`` normalizes away any the model wrote, so one cannot reach a
-    report and be mistaken for a token.
-    """
+    """NUL-delimited: _mask_code strips any NULs the model wrote, so a copy cannot pass as a token."""
     return f"\x00{kind}-{index}\x00"
 
 
@@ -100,8 +78,7 @@ def _record_code_span(state, silent: bool) -> bool:
     if (
         matched
         and not silent
-        # The block's own source only: the image rule re-enters with alt text, where these
-        # offsets address the wrong string. get() records nothing rather than raising.
+        # Block's own source only: the image rule re-enters with alt text.
         and state.src is state.env.get("code_source")
         and len(state.tokens) > count
         and state.tokens[-1].type == "code_inline"
@@ -110,19 +87,13 @@ def _record_code_span(state, silent: bool) -> bool:
     return matched
 
 
-# Block maps keep the original lines, indentation and container markers included, so inline
-# source is parsed separately to keep code offsets on those same lines.
-# Tables enabled to match the renderer: otherwise a row is one paragraph line and backticks in
-# two cells pair into a span across the boundary, unvalidating text that still renders as text.
+# Tables enabled to match the renderer, else backticks pair across cells.
 _CODE_MARKDOWN = MarkdownIt("commonmark").enable("table").disable("inline")
 _CODE_MARKDOWN.inline.ruler.at("backticks", _record_code_span)
 
 
 def _footnote_content_lines(lines: list[str]) -> set[int]:
-    """Line numbers the renderer reads as footnote content, whatever this parser calls them.
-
-    Loose on purpose: over-collecting only costs a masked block, which errs towards validating.
-    """
+    """Footnote content lines per the renderer; loose on purpose, as over-collecting only masks a block."""
     covered = set()
     inside = False
     for number, line in enumerate(lines):
@@ -140,9 +111,7 @@ def _footnote_content_lines(lines: list[str]) -> set[int]:
 
 
 def _mask_code(text: str, placeholders: dict[str, str]) -> str:
-    # CommonMark maps NUL to U+FFFD, so the renderer already shows it that way, and doing it
-    # first stops a report spelling a token and being handed another region's text. One code
-    # point either way, so the offsets below are unaffected.
+    # Do this first: CommonMark maps NUL to U+FFFD, so a report cannot spell a token; offsets unchanged.
     text = text.replace("\x00", "\ufffd")
     offsets = [0, *(match.end() for match in re.finditer(r"\r\n?|\n", text))]
     if offsets[-1] != len(text):
@@ -158,11 +127,7 @@ def _mask_code(text: str, placeholders: dict[str, str]) -> str:
         spans.extend((start + first, start + last) for first, last in env["code_spans"])
 
     def record_row(start: int, end: int) -> None:
-        """Cell by cell, as the renderer splits a row before parsing inline.
-
-        Every cell token carries the whole row's map, so cutting at unescaped pipes is what
-        keeps a span inside one cell.
-        """
+        """Cuts at unescaped pipes, as the renderer splits rows, so a code span stays inside one cell."""
         cell = start
         escaped = False
         for index in range(start, end):
@@ -183,8 +148,7 @@ def _mask_code(text: str, placeholders: dict[str, str]) -> str:
             in_table = False
         if token.map is None:
             continue
-        # Mask only what the renderer shows as code: an indented block under a footnote
-        # definition is prose there, and a mermaid fence is an executed diagram.
+        # Mask only real code: a footnote's indented block is prose; a mermaid fence is an executed diagram.
         if token.type == "code_block" and token.map[0] in footnote_content:
             continue
         if token.type == "fence" and _MERMAID_FENCE.match((token.info or "").strip()):
@@ -211,11 +175,7 @@ def _mask_code(text: str, placeholders: dict[str, str]) -> str:
 
 
 def _restore_placeholders(text: str, placeholders: dict[str, str]) -> str:
-    """Substitute every token in one pass.
-
-    A replace() per token rescans the report once per span, costing O(len(report) x spans); one
-    sub() is linear, and never rescans restored code for a later token.
-    """
+    """Restores every token in one re.sub pass; a replace per token rescans the report once per span."""
     if not placeholders:
         return text
 
@@ -224,8 +184,7 @@ def _restore_placeholders(text: str, placeholders: dict[str, str]) -> str:
         value = placeholders.get(token)
         if value is not None:
             return value
-        # Unreachable while _mask_code normalizes NUL away. If a later path ever skips that,
-        # drop the delimiters rather than deliver a NUL.
+        # Unreachable while _mask_code normalizes NULs; if skipped, drop delimiters rather than emit a NUL.
         return token.replace("\x00", "\ufffd")
 
     return _PLACEHOLDER.sub(restore, text)
@@ -382,13 +341,11 @@ def _validate_masked_document_sources(
     allowed = _allowed_document_citations(sources)
 
     def keep_if_allowed(match: re.Match) -> str:
-        # Judge it as the model wrote it: the pattern already spans a "]" inside a filename
-        # ("budget [final].pdf"), and backticks in one were masked before this pass ran.
+        # Judge it as written: the pattern spans ']' in filenames, and backticks were already masked.
         citation = _restore_placeholders(match.group(0), placeholders)
         if citation in allowed:
             return match.group(0)
-        # An unsupported citation can reach across code ("[Document: `cmd` ]"); dropping it
-        # must not take the code with it.
+        # An unsupported citation may span code; dropping it must keep the code it covers.
         return "".join(_CODE_PLACEHOLDER.findall(match.group(0)))
 
     return _DOCUMENT_CITATION.sub(keep_if_allowed, report)
@@ -403,8 +360,7 @@ def _validate_report_document_sources(report: str, sources: list[dict]) -> str:
 
 
 def _validate_report(report: str, sources: list[dict], document_sources: list[dict]) -> str:
-    # Mask the draft once: removing a URL-only line can split a paragraph, and reparsing
-    # would then read an indented citation as code.
+    # Mask once: removing a URL-only line may split a paragraph and turn an indented citation into code.
     placeholders: dict[str, str] = {}
     validated = _validate_masked_sources(_mask_code(report, placeholders), sources, placeholders)
     validated = _validate_masked_document_sources(validated, document_sources, placeholders)

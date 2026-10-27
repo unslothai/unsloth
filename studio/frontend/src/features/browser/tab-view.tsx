@@ -287,7 +287,7 @@ function PageError({
         <Button type="button" variant={botCheck ? "ghost" : "outline"} size="sm" onClick={onRetry}>
           {t("browser.error.retry")}
         </Button>
-        <Button type="button" variant={botCheck ? "default" : "ghost"} size="sm" onClick={() => openExternalLink(url)}>
+        <Button type="button" variant={botCheck ? "dark" : "ghost"} size="sm" onClick={() => openExternalLink(url)}>
           {t("browser.openExternal")}
         </Button>
       </div>

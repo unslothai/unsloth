@@ -241,7 +241,7 @@ export function ExecutionProgressIsland({
               type="button"
               variant="outline"
               size="sm"
-              className="h-7 w-full text-ui-11"
+              className="w-full text-ui-11"
               onClick={onViewExecutions}
             >
               View run details

@@ -100,7 +100,7 @@ export function DiffusionSamples({
             onClick={() => setPicked({ jobId, step: r.step })}
             className={`rounded-full px-2 py-0.5 text-ui-11 tabular-nums ${
               r.step === current.step
-                ? "bg-primary text-primary-foreground"
+                ? "bg-action text-background"
                 : "bg-muted text-muted-foreground hover:text-foreground"
             }`}
           >
