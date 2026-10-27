@@ -1345,6 +1345,7 @@ class DiffusionTrainableFamily(BaseModel):
     supports_checkpoints: bool = True
     supports_samples: bool = False
     supports_bucketing: bool = True
+    is_video: bool = False
     # 1 for a family whose forward covers one packed sequence: a value above the cap is refused rather
     # than clamped, and declaring it here is what stops Pydantic dropping it from the response.
     max_train_batch_size: Optional[int] = None

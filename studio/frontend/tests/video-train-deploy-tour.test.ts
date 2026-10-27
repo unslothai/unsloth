@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { readSrc } from "./helpers/kit.ts";
+
+test("video-family adapters get no Deploy to Create", () => {
+  const src = readSrc("features/images/train/diffusion-train-panel.tsx");
+  assert.match(src, /\?\.is_video === true/);
+  assert.match(
+    src,
+    /viewRun\.catalog_path && !isVideoFamily\(viewRun\.family \|\| ""\) && \(\s*<Button[\s\S]{0,400}onDeploy\?\.\(/,
+  );
+  assert.match(
+    src,
+    /status\?\.catalog_path && !isVideoFamily\(status\.family \|\| family\?\.name \|\| ""\) && \(\s*<Button type="button" size="sm" onClick=\{onDeployClick\}>/,
+  );
+  assert.match(readSrc("features/images/api.ts"), /is_video\?: boolean;/);
+});
+
+test("the tour attaches to the first visible target, not a hidden page's", () => {
+  const src = readSrc("features/tour/components/guided-tour.tsx");
+  assert.match(src, /document\.querySelectorAll\(sel\)/);
+  assert.match(src, /found\.find\(isUsableTarget\) \?\? found\[0\] \?\? null/);
+  assert.doesNotMatch(src, /document\.querySelector\(sel\)/);
+});

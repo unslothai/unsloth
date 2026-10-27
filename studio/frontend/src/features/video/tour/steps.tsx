@@ -11,7 +11,7 @@ const modeStep: TourStep = {
   body: (
     <>
       Create generates videos. Train fine-tunes a diffusion LoRA with the same
-      trainer as Images, and finished LoRAs load in Images.
+      trainer as Images, and finished image LoRAs load in Images.
     </>
   ),
 };
