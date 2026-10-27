@@ -974,6 +974,21 @@ _ROCM_FLASH_GATE_LOCK = threading.Lock()
 # The native SDPA baseline the in-memory verdicts were timed against; when it moves (a later load re-enables or disables
 # the fused SDPA kernels), both in-memory caches are dropped and the disk cache, keyed on it, decides again.
 _ROCM_FLASH_BASELINE: list = [None]
+# ``torch.fx.experimental.symbolic_shapes.statically_known_true`` when this torch's Dynamo traces it in graph (no
+# guard), else None. Resolved outside tracing, when the dispatch guard installs.
+_ROCM_FLASH_STATICALLY_KNOWN_TRUE: list = [None]
+
+
+def _resolve_statically_known_true() -> None:
+    try:
+        from torch._dynamo import trace_rules
+        from torch.fx.experimental.symbolic_shapes import statically_known_true
+
+        name = "torch.fx.experimental.symbolic_shapes.statically_known_true"
+        if name in trace_rules.manual_torch_name_rule_map:
+            _ROCM_FLASH_STATICALLY_KNOWN_TRUE[0] = statically_known_true
+    except Exception:  # noqa: BLE001 - older torch: the direct comparison stays
+        pass
 
 
 def _sync_rocm_flash_baseline() -> None:
@@ -1050,7 +1065,11 @@ def _rocm_flash_length_reason(query: Any, key: Any) -> Optional[str]:
             return None
         h, d, geometries = match[0][2], match[0][3], tuple(sorted(match[1]))
         b_bucket = _rocm_flash_batch_bucket(batch)
-        joint = kv == seq  # self / joint attention: one symbol, so no guard
+        # Self / joint attention: keys and queries share one length symbol. ``statically_known_true`` answers that
+        # without a guard, so cross attention (an independent key length) never specialises on the query length.
+        # A torch whose Dynamo cannot trace it (2.6) compares directly, which guards.
+        known = _ROCM_FLASH_STATICALLY_KNOWN_TRUE[0]
+        joint = known(kv == seq) if known is not None else kv == seq
         kv_bucket = None if joint else _rocm_flash_bucket(kv)
         # Guard only where the route changes, so neighbouring same-verdict buckets reuse this graph.
         segments = _rocm_flash_traced_segments(
@@ -2182,6 +2201,7 @@ def _rocm_flash_reroute_reason(query: Any, key: Any, value: Any, attn_mask: Any)
 
 
 def _install_rocm_flash_dispatch_guard() -> bool:
+    _resolve_statically_known_true()
     try:
         import torch
         torch.compiler.assume_constant_result(_rocm_flash_traced_reason)
