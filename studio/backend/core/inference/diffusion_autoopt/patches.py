@@ -439,6 +439,14 @@ def _builtin_specs() -> list[PatchSpec]:
         from ..diffusion_qwenimage_rope import uninstall
         uninstall()
 
+    def qwen_host_consts(ctx: PatchContext) -> bool:
+        from ..diffusion_qwenimage_host_consts import install
+        return install(ctx.transformer, ctx.logger)
+
+    def qwen_host_consts_uninstall() -> None:
+        from ..diffusion_qwenimage_host_consts import uninstall
+        uninstall()
+
     def zimage_fused(ctx: PatchContext) -> bool:
         from ..diffusion_zimage_fused import install
         return install(ctx.transformer, ctx.logger, offload_active = ctx.offload_active)
@@ -548,6 +556,17 @@ def _builtin_specs() -> list[PatchSpec]:
             classes = ("QwenImageTransformer2DModel",),
             warn = "qwen-image real rope",
             env = "UNSLOTH_DIFFUSION_QWEN_REAL_ROPE",
+        ),
+        # Device-cached modulate_index / text-length constants and device RoPE tables: the step graph captures.
+        PatchSpec(
+            "qwenimage_host_consts",
+            STAGE_PRE_COMPILE,
+            qwen_host_consts,
+            qwen_host_consts_uninstall,
+            group = GROUP_FUSED_DIT,
+            classes = ("QwenImageTransformer2DModel",),
+            warn = "qwen-image host constants",
+            env = "UNSLOTH_DIFFUSION_QWEN_HOST_CONSTS",
         ),
         PatchSpec(
             "zimage_fused",

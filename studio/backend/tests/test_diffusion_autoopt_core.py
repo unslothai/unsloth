@@ -202,6 +202,7 @@ def test_builtin_specs_cover_every_former_install_site():
         "wan_fused",
         "qwenimage21_real_rope",
         "qwenimage_real_rope",
+        "qwenimage_host_consts",
         "zimage_fused",
         "qwenimage21_fused",
         "moss_fused",
@@ -211,6 +212,7 @@ def test_builtin_specs_cover_every_former_install_site():
         "flux2_rope",
         "rocm_fused",
         "qwenimage_real_rope",
+        "qwenimage_host_consts",
         "zimage_fused",
         "qwenimage21_fused",
         "moss_fused",
@@ -224,6 +226,7 @@ def test_builtin_specs_cover_every_former_install_site():
     assert [s.name for s in ap.specs(ap.STAGE_PRE_INT8)] == ["qwenimage21_real_rope"]
     assert [s.name for s in ap.specs(ap.STAGE_PRE_COMPILE)] == [
         "qwenimage_real_rope",
+        "qwenimage_host_consts",
         "zimage_fused",
         "qwenimage21_fused",
         "moss_fused",
