@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 from typing import Optional
 import os
 
+from core.inference.lookup_tables import is_per_layer_embedding
+
 logger = logging.getLogger(__name__)
 
 # Hybrid Mamba-2 archs storing head_count_kv (and on Bolt expert_used_count) per layer.
@@ -52,6 +54,7 @@ class ModelLayout:
     lm_head_bytes: int = 0
     # llama.cpp pins dev_input to CPU: never VRAM, but charged to host RAM
     token_embd_bytes: int = 0
+    per_layer_embd_bytes: int = 0
     # Every tensor's bytes, excluded blocks included; the file size less its metadata.
     tensor_bytes: int = 0
     # output_norm and friends: GPU-resident, too small to be worth spilling.
@@ -259,6 +262,7 @@ def _layout_from_readers(readers) -> ModelLayout:
     resident: dict[int, int] = {}
     lm_head = 0
     token_embd = 0
+    per_layer_embd = 0
     other_resident = 0
 
     for tensor in (t for r in readers for t in r.tensors):
@@ -276,8 +280,11 @@ def _layout_from_readers(readers) -> ModelLayout:
             else:
                 resident[index] = resident.get(index, 0) + nbytes
             continue
+        # Before the token_embd substring below, which would otherwise swallow the per-layer table.
+        if is_per_layer_embedding(name):
+            per_layer_embd += nbytes
         # token_embd_norm is a repeating-layer tensor, not a host-pinned input embedding.
-        if "token_embd" in name and not name.startswith("token_embd_norm"):
+        elif "token_embd" in name and not name.startswith("token_embd_norm"):
             token_embd += nbytes
         elif name == "output.weight":
             lm_head += nbytes
@@ -315,6 +322,7 @@ def _layout_from_readers(readers) -> ModelLayout:
         blocks = blocks,
         lm_head_bytes = lm_head,
         token_embd_bytes = token_embd,
+        per_layer_embd_bytes = per_layer_embd,
         tensor_bytes = sum(int(t.n_bytes) for r in readers for t in r.tensors),
         other_resident_bytes = other_resident,
         kv_bytes_per_token_f16 = kv_per_token,
