@@ -14,7 +14,7 @@ import os, importlib.util, platform, sys
 # Restored at the end of this file.
 from ._import_gc import raise_gc_threshold as _raise_gc_threshold
 
-_raise_gc_threshold()
+_raise_gc_threshold(sys.modules.get(__name__))
 del _raise_gc_threshold
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"

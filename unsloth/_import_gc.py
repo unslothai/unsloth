@@ -12,19 +12,44 @@
 """Fewer cyclic GC passes while `import unsloth` pulls in torch / transformers / trl.
 
 Those imports allocate ~700k long-lived objects, so the default generation 0 threshold
-triggers several full collections that find almost nothing. The caller's thresholds come
-back at the end of the import. This module outlives a failed `import unsloth` in
-sys.modules, so a retry still restores the thresholds from before the first attempt.
+triggers several full collections that find almost nothing. The caller's generation 0
+threshold comes back at the end of the import. If the import raises instead, the package
+leaves sys.modules and a one-shot meta path hook restores it on the next import anywhere;
+this module also outlives the failed import, so a retry still sees the original value.
 """
 
 import gc
+import sys
 
 IMPORT_THRESHOLD = 100_000
 _saved = None
 
 
-def raise_gc_threshold():
-    global _saved
+class _RestoreAfterFailedImport:
+    """Never finds anything; once `import unsloth` is no longer in flight, gives the threshold back."""
+
+    __slots__ = ("module", "name")
+
+    def __init__(self, module):
+        self.module = module
+        self.name = module.__name__
+
+    def find_spec(
+        self,
+        name,
+        path = None,
+        target = None,
+    ):
+        if sys.modules.get(self.name) is not self.module:
+            restore_gc_threshold()
+        return None
+
+
+_hook = None
+
+
+def raise_gc_threshold(module = None):
+    global _saved, _hook
     current = gc.get_threshold()
     if _saved is not None and current[0] == IMPORT_THRESHOLD:
         return  # Still raised by an earlier attempt that failed.
@@ -32,13 +57,23 @@ def raise_gc_threshold():
     if current[0] == 0 or current[0] >= IMPORT_THRESHOLD:
         _saved = None
         return
-    _saved = current
+    _saved = current[0]
     gc.set_threshold(IMPORT_THRESHOLD, *current[1:])
+    if module is not None and _hook is None:
+        _hook = _RestoreAfterFailedImport(module)
+        sys.meta_path.insert(0, _hook)
 
 
 def restore_gc_threshold():
-    global _saved
+    global _saved, _hook
+    hook, _hook = _hook, None
+    if hook is not None:
+        try:
+            sys.meta_path.remove(hook)
+        except ValueError:
+            pass
     saved, _saved = _saved, None
-    # Leave it alone if something changed it during the import.
-    if saved is not None and gc.get_threshold()[0] == IMPORT_THRESHOLD:
-        gc.set_threshold(*saved)
+    # Leave it alone if something changed it during the import; generations 1 and 2 are the caller's.
+    current = gc.get_threshold()
+    if saved is not None and current[0] == IMPORT_THRESHOLD:
+        gc.set_threshold(saved, *current[1:])
