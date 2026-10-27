@@ -97,7 +97,7 @@ def test_fallback_tiles_divide_each_gemm(ac, no_smem_fit, hidden, inter, which):
         for kind, tile, old_tile in zip(("fwd", "dX", "dW"), tiles, old):
             m, bn, bk, warps, stages = tile
             assert n % bn == 0 and k % bk == 0, (which, hidden, inter, n, k, tile)
-            if which == "heuristic" and kind == "dW" and bk == 64 and n % 128 == 0:
+            if which == "heuristic" and kind == "dW" and bk == 64 and n % 128 == 0 and n * k >= 768 * 1024:
                 assert tile == WIDE_DW, (
                     hidden,
                     inter,
@@ -144,6 +144,10 @@ def test_heuristic_dw_widens_n_when_k_leaves_64(ac):
     # K = 1408 keeps BLOCK_SIZE_K 128 and K = 352 drops to 32: neither is widened.
     assert _tiles(ac._get_heuristic_configs(n_dim = 2048, k_dim = 1408)[2:]) == ((64, 64, 128, 8, 4),)
     assert _tiles(ac._get_heuristic_configs(n_dim = 2048, k_dim = 352)[2:]) == ((64, 64, 32, 8, 4),)
+    # A small N x K output keeps the fitted tile: half the programs leave the card idle.
+    assert _tiles(ac._get_heuristic_configs(n_dim = 1024, k_dim = 576)[2:]) == ((64, 64, 64, 8, 4),)
+    assert _tiles(ac._get_heuristic_configs(n_dim = 1024, k_dim = 192)[2:]) == ((64, 64, 64, 8, 4),)
+    assert _tiles(ac._get_heuristic_configs(n_dim = 1024, k_dim = 960)[2:]) == (WIDE_DW,)
     # the fallback (autotune failed) configs are not touched
     assert _tiles(ac._get_default_configs(n_dim = 5760, k_dim = 2880)[2:]) == ((128, 128, 64, 8, 3),)
 
