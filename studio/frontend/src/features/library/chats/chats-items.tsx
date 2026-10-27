@@ -81,9 +81,15 @@ import { CARD_SHADOW, OVERLAY_CONTROL, RAISED_SURFACE } from "../surface";
 const CARD = cn(
   RAISED_SURFACE,
   CARD_SHADOW,
-  // min-w-0: a grid item's automatic minimum is its content, so a long project line widened the card past its column.
-  "group/chat relative flex aspect-[8/7] min-w-0 cursor-pointer flex-col gap-2.5 self-stretch rounded-2xl px-5 py-5 transition hover:bg-neutral-100 hover:shadow-none dark:hover:bg-accent/60",
+  // The grid row sets the size (CHAT_CARD_ROW_MIN). min-h-0 min-w-0: a grid item's automatic minimum is its content,
+  // so a long name or a project line grew the card, and through equal rows every card on that tab.
+  "group/chat relative flex min-h-0 min-w-0 cursor-pointer flex-col gap-2.5 self-stretch rounded-2xl px-5 py-5 transition hover:bg-neutral-100 hover:shadow-none dark:hover:bg-accent/60",
 );
+
+/** Fits the fullest card: padding, tile, gaps, a two-line title and a two-line footer (the extra spacing unit is the
+ *  footer icon). Every tab shares it, so tiled All cards and tileless ones are one size. */
+export const CHAT_CARD_ROW_MIN =
+  "calc(var(--spacing) * 26 + 2.75 * var(--text-ui-14) + 3 * var(--text-ui-12))";
 import {
   type ChatContents,
   type ChatSort,
