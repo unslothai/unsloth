@@ -428,10 +428,33 @@ pub fn main_view_compositing_off() -> bool {
 
 /// The per-view form of WEBKIT_DISABLE_COMPOSITING_MODE, which would turn pages off as well.
 pub fn turn_off_compositing(view: &webkit2gtk::WebView) {
-    use webkit2gtk::{HardwareAccelerationPolicy, SettingsExt, WebViewExt};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use webkit2gtk::glib::prelude::ObjectExt;
+    use webkit2gtk::{
+        HardwareAccelerationPolicy, SettingsExt, WebProcessTerminationReason, WebViewExt,
+    };
     if let Some(settings) = view.settings() {
         settings.set_hardware_acceleration_policy(HardwareAccelerationPolicy::Never);
     }
+    // A page created before the switch drops every wheel event afterwards, even across
+    // navigations, and Tauri has no hook before the first load on Linux. Restart the web process
+    // so the page is created again under NEVER, then load it once WebKit reports the restart.
+    let Some(uri) = view.uri().filter(|uri| !uri.is_empty()) else {
+        return;
+    };
+    let handler = Rc::new(RefCell::new(None));
+    let slot = handler.clone();
+    *handler.borrow_mut() = Some(view.connect_web_process_terminated(move |view, reason| {
+        if reason != WebProcessTerminationReason::TerminatedByApi {
+            return;
+        }
+        if let Some(id) = slot.borrow_mut().take() {
+            view.disconnect(id);
+        }
+        view.load_uri(&uri);
+    }));
+    view.terminate_web_process();
 }
 
 #[cfg(test)]
