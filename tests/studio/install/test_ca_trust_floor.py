@@ -32,9 +32,7 @@ def test_the_no_torch_runtime_pin_is_at_or_above_the_floor() -> None:
     assert _release(pin) >= CERTIFI_FLOOR
 
 
-ENGINE_LOCKS = sorted(
-    (REPO_ROOT / "studio" / "backend" / "requirements" / "engines").glob("*.txt")
-)
+ENGINE_LOCKS = sorted((REPO_ROOT / "studio" / "backend" / "requirements" / "engines").glob("*.txt"))
 
 
 def test_there_are_engine_locks() -> None:
