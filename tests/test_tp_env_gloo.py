@@ -392,8 +392,7 @@ def _case_model_init(
     hooked,
     with_model = False,
 ):
-    """Trainer(model_init = ...) under UNSLOTH_TP_SIZE: the model is built inside Trainer.__init__ (and again by
-    train / hyperparameter_search), after the tensor parallel Trainer setup ran on model = None."""
+    """Trainer(model_init = ...) under UNSLOTH_TP_SIZE: model_init runs after the tp setup saw model = None."""
     error = _import_checkout_unsloth()
     if error is not None:
         return {"skip": error}
@@ -706,16 +705,14 @@ def test_env_tp_x_accelerate_fsdp_is_refused():
 
 @pytest.mark.parametrize("hooked", [False, True], ids = ["plain", "unsloth_loaders"])
 def test_env_tp_model_init_is_refused(hooked):
-    """Without the refusal, a plain model_init model trained as 2-rank DDP (no tensor parallel, each rank its own
-    batches) while the launch asked for UNSLOTH_TP_SIZE=2."""
+    """Unrefused, a model_init model silently trained as plain DDP despite UNSLOTH_TP_SIZE=2."""
     for res in _spawn("model_init", 2, {"UNSLOTH_TP_SIZE": "2"}, hooked = hooked):
         assert "UNSLOTH_TP_SIZE=2" in (res["refused"] or ""), res
         assert "model_init" in res["refused"] and res["built"] == [], res
 
 
 def test_env_tp_model_and_model_init_is_refused():
-    """Trainer(model = m, model_init = f): on transformers 4.x train() replaced the tensor parallel m with a
-    plain model from f and trained it as DDP; 5.x refuses both (ValueError). Neither may train silently."""
+    """Trainer(model = m, model_init = f): 4.x train() swapped tp m for a plain DDP model; 5.x raises ValueError."""
     for res in _spawn("model_init", 2, {"UNSLOTH_TP_SIZE": "2"}, hooked = False, with_model = True):
         assert res["refused"] is not None and res["built"] == [], res
         assert "model_init" in res["refused"], res

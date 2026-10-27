@@ -6197,9 +6197,7 @@ def _tensor_parallel_env_trainer_pre(model):
 
 
 def _refuse_tensor_parallel_env_model_init(layout, init, args, kwargs):
-    """UNSLOTH_TP_SIZE + Trainer(model_init = ...): the tensor parallel Trainer setup runs on the model passed to
-    __init__, so a model model_init builds would silently train without tensor parallel (plain DDP over every
-    rank), and one sharded inside model_init is refused only after it was loaded."""
+    """UNSLOTH_TP_SIZE setup runs on the __init__ model, so a model_init model would silently train as plain DDP."""
     model_init = kwargs.get("model_init")
     if model_init is None:
         import inspect
