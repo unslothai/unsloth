@@ -225,3 +225,18 @@ test("the catalog snapshot has the recipe column and Recipe Dataset blocks", () 
     ["dataset", "preview"],
   );
 });
+
+test("deleting a column from the inspector or Ctrl+X takes its {{ reference }} out of its readers", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { removeNodes } = await import("../src/features/flows/recipe/recipe-actions.ts");
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { group, nodes } = sqlGroup();
+  useDocStore.getState().load({ ...doc(nodes, referenceEdges(nodes)), groups: [group] });
+  const prompt = byName(nodes, "sql_prompt");
+  removeNodes([prompt.id]);
+  const graph = useDocStore.getState().graph;
+  assert.equal(graph.nodes[prompt.id], undefined);
+  const sql = graph.nodes[byName(nodes, "sql").id];
+  assert.doesNotMatch(JSON.stringify(sql.params.column), /sql_prompt/);
+  assert.ok(Object.values(graph.edges).every((e) => e.source !== prompt.id));
+});
