@@ -79,8 +79,7 @@ import {
   tabStepForKey,
 } from "../utils/chat-search-tabs";
 
-// Rows mounted while the dialog animates open; the rest follow once it settles, so a long
-// history never lays out hundreds of rows mid-transition.
+// Mount a few rows during the open animation; the rest follow once it settles.
 const INITIAL_ROW_COUNT = 24;
 const FULL_ROW_REVEAL_MS = 220;
 
@@ -88,10 +87,7 @@ const KINDS = CHAT_SEARCH_TABS.filter(
   (tab): tab is ChatSearchKind => tab !== "all",
 );
 
-// We filter rows here (cmdk runs with shouldFilter=false) to control the two-tier behavior and
-// avoid cmdk's fuzzy scorer keeping non-matches visible (#5572): every whitespace token must
-// be a substring. User messages are searched first; expand to the full conversation only when
-// user text alone matches nothing anywhere.
+// Filter here (cmdk shouldFilter=false): every token must be a substring, user messages first.
 export function selectVisibleChats<
   T extends { userSearchText: string; searchText: string },
 >(items: T[], search: string): T[] {
@@ -115,12 +111,10 @@ function whenKey(time: number): WhenKey {
   return "older";
 }
 
-/** Hugeicons path data, or a lucide icon (compare and fork, as in the Library). */
 type RowIcon = IconSvgElement | LucideIcon;
 
 interface Row extends ChatSearchRow {
   icon: RowIcon;
-  /** Replaces the age at the row's end. */
   meta?: string;
   /** Not a runnable model (embedder, STT, probe); listed only when queried. */
   hidden?: boolean;
@@ -138,7 +132,6 @@ interface Action {
   labelKey: TranslationKey;
 }
 
-// Run through the shortcut registry, like the command palette.
 const ACTIONS: Action[] = [
   { id: "newChat", icon: PencilEdit02Icon, labelKey: "shell.search.newChat" },
   {
@@ -176,7 +169,6 @@ export function ChatSearchDialog() {
   const opener = useChatSearchStore((s) => s.opener);
   const navigate = useNavigate();
   const { items, loading } = useChatSearchIndex(isOpen);
-  // Every thread, empty ones too: the index skips those, the sidebar's project ages do not.
   const { items: threads } = useChatSidebarItems({
     enabled: isOpen,
     requireMessages: false,
@@ -189,21 +181,18 @@ export function ChatSearchDialog() {
   });
   const [query, setQuery] = useState("");
   const [tab, setTab] = useState<ChatSearchTab>("all");
-  // Pin the highlight to the first row until the user moves it: later-loading kinds can sort above it.
+  // Pin the highlight to the first row until the user moves it; later-loading kinds can sort above it.
   const [selected, setSelected] = useState("");
   const [moved, setMoved] = useState(false);
-  // Filtering scans every conversation's text, so keep it off the keystroke path.
   const deferredQuery = useDeferredValue(query);
-  // An empty query needs no scan, and the deferred value must not hold a previous filter over a reopened dialog.
+  // The deferred value must not hold a previous filter over a reopened dialog.
   const activeQuery = query === "" ? "" : deferredQuery;
   const [rowLimit, setRowLimit] = useState(INITIAL_ROW_COUNT);
-  // Centered, so the height is decided per open and only ever relaxed compact -> fixed.
   const [compactList, setCompactList] = useState(() =>
     isCompactChatSearchList(true, chatSearchIndexHasRows()),
   );
 
-  // One call per action (hooks cannot run in a loop). Availability can change while open, so it
-  // gates the selection keys too, not just the rendered rows.
+  // Availability can change while open, so it gates the selection keys too.
   const available: Record<ActionId, boolean> = {
     newChat: useShortcutAvailable("newChat", false),
     newTemporaryChat: useShortcutAvailable("newTemporaryChat", false),
@@ -211,7 +200,6 @@ export function ChatSearchDialog() {
     switchToImages: useShortcutAvailable("switchToImages", false),
     switchToVideo: useShortcutAvailable("switchToVideo", false),
   };
-  // Compact only while no kind has rows: projects, Library, downloads and actions fill the list too.
   const otherRows =
     projects.length > 0 ||
     sources.files.length > 0 ||
@@ -220,9 +208,7 @@ export function ChatSearchDialog() {
     localRows.length > 0 ||
     Object.values(available).some(Boolean);
 
-  // Reset in the opening render, not an effect: Radix mounts the portal as this render commits, so
-  // an effect would trim rows only after the previous set was in the DOM. Resetting on close
-  // instead would tear rows down inside the exit animation.
+  // Reset in render, not an effect: Radix mounts the portal as this render commits.
   const [wasOpen, setWasOpen] = useState(isOpen);
   if (isOpen !== wasOpen) {
     setWasOpen(isOpen);
@@ -240,7 +226,6 @@ export function ChatSearchDialog() {
     compactList !==
     isCompactChatSearchList(compactList, otherRows || items.length > 0)
   ) {
-    // Backstop for an open with no hint at all: the fixed height is taken when the first build lands.
     setCompactList(false);
   }
 
@@ -264,7 +249,6 @@ export function ChatSearchDialog() {
     close();
   };
 
-  // The labels a row shows but its text lacks, so typing them finds it.
   const chats = useMemo(() => {
     const untitled = t("shell.search.untitledChat").toLowerCase();
     const compare = t("shell.search.compare").toLowerCase();
@@ -283,9 +267,7 @@ export function ChatSearchDialog() {
     });
   }, [items, t]);
 
-  // Unfiltered rows per kind. Chats are matched separately (two tiers).
   const rowsByKind = useMemo<Record<Exclude<ChatSearchKind, "chats">, Row[]>>(() => {
-    // As the sidebar: a project's own edits or its newest chat, whichever is later.
     const newestChat = new Map<string, number>();
     for (const thread of threads) {
       if (!thread.projectId) continue;
@@ -311,12 +293,10 @@ export function ChatSearchDialog() {
         }))
         .sort((a, b) => b.time - a.time),
       files: sources.files.map((entry) => libraryRow(entry, "files", navigate)),
-      // Hub downloads plus Library fine-tunes.
       models: [
         ...downloadedModelRows(cachedRows, localRows, navigate),
         ...sources.fineTunes.map((entry) => {
           const row = libraryRow(entry, "models", navigate);
-          // How it was made, as the Library labels it (LoRA, GGUF export, ...).
           const label = t(modelLabelKey(entry.item) ?? "library.modelKind.model");
           return { ...row, meta: label, haystack: `${row.haystack} ${label.toLowerCase()}` };
         }),
@@ -331,7 +311,6 @@ export function ChatSearchDialog() {
         .sort((a, b) => b.time - a.time),
       projects: filterRows(rowsByKind.projects, search),
       files: filterRows(rowsByKind.files, search),
-      // Infrastructure models stay out until a query names them, as in the Hub.
       models: filterRows(
         queryTokens(search).length > 0
           ? rowsByKind.models
@@ -344,14 +323,13 @@ export function ChatSearchDialog() {
   const matched = useMemo(() => matchAll(activeQuery), [matchAll, activeQuery]);
 
   const hasQuery = queryTokens(activeQuery).length > 0;
-  // Live query, not the deferred one: Enter must never run an action the input no longer matches.
+  // Live query: Enter must never run an action the input no longer matches.
   const visibleActions = ACTIONS.filter(
     (action) =>
       available[action.id] &&
       haystackMatches(t(action.labelKey).toLowerCase(), queryTokens(query)),
   );
 
-  // All: one headed group per kind. A kind's tab: one list.
   const groupsFor = (
     rows: Record<ChatSearchKind, Row[]>,
     queried: boolean,
@@ -376,11 +354,10 @@ export function ChatSearchDialog() {
   ]);
 
   const activate = (row: Row) => {
-    // The list can trail the input by a render; only open rows the live query still matches.
+    // The list can trail the input by a render; only open rows the live query matches.
     if (query === activeQuery) return go(row.open)();
     const live = matchAll(query);
     if (live[row.kind].some((match) => match.key === row.key)) return go(row.open)();
-    // A stale auto-highlight: run what the caught-up list will show first.
     if (moved) return;
     const first = groupsFor(live, queryTokens(query).length > 0).find(
       (group) => group.rows.length > 0,
@@ -396,7 +373,6 @@ export function ChatSearchDialog() {
   };
 
   const onInputKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    // An arrow mid-composition moves the IME caret, not the tab.
     if (isImeComposing(event.nativeEvent)) return;
     if (event.altKey || event.metaKey || event.ctrlKey || event.shiftKey) return;
     const step = tabStepForKey(event.key, event.currentTarget);
@@ -451,8 +427,7 @@ export function ChatSearchDialog() {
           />
           <CommandPrimitive.Input
             placeholder={t("shell.search.placeholder")}
-            // Controlled: reopening inside the exit animation reuses the mounted tree, so cmdk would keep
-            // the previous text while the filter state is clear.
+            // Controlled: reopening mid exit-animation would otherwise keep cmdk's previous text.
             value={query}
             onValueChange={(value) => {
               setQuery(value);
@@ -489,10 +464,9 @@ export function ChatSearchDialog() {
               type="button"
               role="tab"
               aria-selected={entry === tab}
-              // Keep focus in the input.
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => switchTab(entry)}
-              // cmdk's root runs the highlighted row on Enter; a focused tab must only switch.
+              // cmdk runs the highlighted row on Enter; a focused tab must only switch.
               onKeyDown={(e) => {
                 if (e.key === "Enter") e.stopPropagation();
               }}
@@ -583,7 +557,6 @@ const FORMAT_LABELS: Partial<Record<ModelInventoryFormat, string>> = {
   adapter: "Adapter",
 };
 
-/** Complete downloads only. */
 function downloadedModelRows(
   cachedRows: readonly CachedInventoryRow[],
   localRows: readonly LocalInventoryRow[],
@@ -591,7 +564,6 @@ function downloadedModelRows(
 ): Row[] {
   const open = (id: string) => () =>
     navigate({ to: "/hub", search: { tab: "downloaded", model: id } });
-  // The server already hides infrastructure cache rows, but not optimistic ones.
   const cached = cachedRows
     .filter(
       (row) =>
@@ -737,7 +709,6 @@ function ActionItem({
 
 const GLYPH_CLASS = "size-4 shrink-0 text-muted-foreground";
 
-// Same stroke as the sidebar and Library.
 function RowGlyph({ icon }: { icon: RowIcon }) {
   if (isHugeicon(icon)) {
     return <HugeiconsIcon icon={icon} strokeWidth={1.75} className={GLYPH_CLASS} />;
@@ -746,7 +717,6 @@ function RowGlyph({ icon }: { icon: RowIcon }) {
   return <Icon strokeWidth={1.75} className={GLYPH_CLASS} />;
 }
 
-// Hugeicons glyphs are arrays; lucide glyphs are components.
 function isHugeicon(icon: RowIcon): icon is IconSvgElement {
   return Array.isArray(icon);
 }

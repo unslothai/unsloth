@@ -31,6 +31,8 @@ from test_tp_native_oracle import (  # noqa: E402
 )
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Small next to a typical trained-weight gradient (~6e-6 on the tiny llama lm_head), so Adam still moves it.
+_ADAM_EPS = 1e-6
 
 
 def _free_port():
@@ -114,8 +116,11 @@ def _case_parity(
     tpn.apply_tensor_parallel(model, mesh["tp"], plan = plan)
     assert tpn.is_tensor_parallel(model)
     assert tpn.apply_tensor_parallel(model, mesh["tp"]) is model  # idempotent
-    with pytest.raises(RuntimeError, match = "generation is not supported"):
-        model.generate(input_ids = torch.zeros(1, 2, dtype = torch.long))
+    # The training forward below releases the generate replica, so parity also covers that release.
+    generated = model.generate(
+        input_ids = torch.zeros(1, 2, dtype = torch.long), max_new_tokens = 2, pad_token_id = 0
+    )
+    assert generated.shape == (1, 4), generated.shape
     from test_fsdp2_native_units import _load_native
 
     try:
@@ -187,7 +192,7 @@ def _case_guards(rank, world, tmp):
     import transformers
     from torch.distributed.device_mesh import init_device_mesh
     from unsloth import FastLanguageModel, FastModel
-    from unsloth.models import fsdp2_native, tp_native
+    from unsloth.models import fsdp2_native, tp_native, tp_replica
     from unsloth.models._utils import patch_gradient_accumulation_fix
 
     patch_gradient_accumulation_fix(transformers.Trainer)
@@ -215,9 +220,14 @@ def _case_guards(rank, world, tmp):
                 lambda: fsdp2_native._refuse_tensor_parallel_model(level)
             )
             res[f"for_inference:{name}"] = _raised(lambda: FastLanguageModel.for_inference(level))
+            res[f"replica_released:{name}"] = tp_replica.release_replica(level)
             res[f"FastModel.for_inference:{name}"] = _raised(lambda: FastModel.for_inference(level))
+            tp_replica.release_replica(level)
             if name != "decoder":
-                res[f"generate:{name}"] = _raised(lambda: level.generate(input_ids = ids))
+                res[f"generate:{name}"] = _raised(
+                    lambda: level.generate(input_ids = ids, max_new_tokens = 2, pad_token_id = 0)
+                )
+                tp_replica.release_replica(level)
                 res[f"trainer:{name}"] = _raised(
                     lambda: transformers.Trainer(model = level, args = args)
                 )
@@ -404,6 +414,376 @@ def _case_save_subgroup(rank, world, tmp):
     return {"error": _raised(lambda: tpn.save_tp_adapter(model, os.path.join(tmp, "out")))}
 
 
+def _save_checkpoint(
+    arch,
+    directory,
+    overrides = None,
+):
+    """A tiny random model saved as several safetensors files (index + shards), like a Hub checkpoint."""
+    repo, base_overrides = ARCHS[arch]
+    model = build(repo, {**base_overrides, **(overrides or {})}, lora = False)
+    model.generation_config.pad_token_id = None  # tiny repos ship -1, which save_pretrained rejects
+    model.save_pretrained(directory, max_shard_size = "1MB", safe_serialization = True)
+    return directory
+
+
+def _case_sharded_load(
+    rank,
+    world,
+    tmp,
+    arch,
+    ckpt,
+    lora_kwargs = None,
+):
+    """sharded_loading + get_peft_model + apply_tensor_parallel vs a full load (1 process, and v1 TP)."""
+    from peft import LoraConfig, get_peft_model
+    from safetensors.torch import load_file
+    from torch.distributed.device_mesh import init_device_mesh
+    from transformers import AutoModelForCausalLM
+
+    mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("tp",))
+    kw = dict(torch_dtype = torch.float32, attn_implementation = "eager")
+
+    def peft(model):
+        torch.manual_seed(1)
+        config = dict(r = 4, lora_alpha = 8, target_modules = "all-linear", init_lora_weights = False)
+        config.update(lora_kwargs or {})
+        return get_peft_model(model, LoraConfig(**config)).eval()
+
+    ref = peft(AutoModelForCausalLM.from_pretrained(ckpt, **kw))
+    full_tp = peft(AutoModelForCausalLM.from_pretrained(ckpt, **kw))
+    tpn.apply_tensor_parallel(full_tp, mesh["tp"])
+    model = tpn.load_tensor_parallel(
+        ckpt, mesh["tp"], loader = AutoModelForCausalLM.from_pretrained, **kw
+    )
+    stats = dict(model._unsloth_tp_load_stats)
+    ids = _batch(ref)
+    unapplied = _raised(lambda: model(input_ids = ids))
+    model = peft(model)
+    tpn.apply_tensor_parallel(model, mesh["tp"])
+    # Every local tensor equals the v1 shard bitwise (weights, biases, LoRA, buffers).
+    a, b = full_tp.state_dict(), model.state_dict()
+    local = lambda t: t.to_local() if tpn._is_dtensor(t) else t  # noqa: E731
+    diffs = sorted(set(a) ^ set(b)) + [
+        k for k in a if k in b and not torch.equal(local(a[k]), local(b[k]))
+    ]
+    full_local = sum(local(p).numel() for p in full_tp.parameters())
+    sharded_local = sum(local(p).numel() for p in model.parameters())
+    from test_fsdp2_native_units import _load_native
+
+    try:
+        _load_native()._refuse_tensor_parallel_model(model)
+        fsdp2_refused = None
+    except RuntimeError as e:
+        fsdp2_refused = str(e)
+    ref_out = _train(ref, ids, 3, torch.nn.utils.clip_grad_norm_)
+    v1_out = _train(full_tp, ids, 3, tpn.tp_clip_grad_norm_)
+    tp_out = _train(model, ids, 3, tpn.tp_clip_grad_norm_)
+    ref_dir, tp_dir = os.path.join(tmp, f"ref{rank}"), os.path.join(tmp, "tp")
+    ref.save_pretrained(ref_dir)
+    tpn.save_tp_adapter(model, tp_dir)
+    q = tpn._weight(model._unsloth_tp_plan.regions[0].projs[0].module)[0]
+    return {
+        "ref": ref_out,
+        "tp": tp_out,
+        "v1": v1_out,
+        "diffs": diffs,
+        "stats": stats,
+        "unapplied": unapplied,
+        "local_numel": (full_local, sharded_local),
+        "saved_ref": load_file(os.path.join(ref_dir, "adapter_model.safetensors")),
+        "saved_tp": load_file(os.path.join(tp_dir, "adapter_model.safetensors"))
+        if rank == 0
+        else None,
+        "local_q": (tuple(q.to_local().shape), tuple(q.shape), q.placements[0].dim),
+        "fsdp2_refused": fsdp2_refused,
+    }
+
+
+def _case_tp_fsdp2(
+    rank,
+    world,
+    tmp,
+    arch,
+    fit_layout = True,
+    lora_kwargs = None,
+):
+    """dp 2 x tp 2: apply_tensor_parallel over mesh['tp'], native FSDP2 shard_model over mesh['dp'], each dp
+    replica on its own half of the batch, vs one process on the whole batch."""
+    import torch.distributed as dist
+    from safetensors.torch import load_file
+    from torch.distributed.device_mesh import init_device_mesh
+    from test_fsdp2_native_units import _load_native
+
+    native = _load_native()
+    repo, overrides = ARCHS[arch]
+    mesh = init_device_mesh("cpu", (2, world // 2), mesh_dim_names = ("dp", "tp"))
+    dp = mesh["dp"].get_local_rank()
+    ref = build(repo, overrides, **(lora_kwargs or {}))
+    model = build(repo, overrides, **(lora_kwargs or {}))
+    ids = _batch(ref, bsz = 4)
+    mine = ids[2 * dp : 2 * dp + 2]
+    tpn.apply_tensor_parallel(model, mesh["tp"])
+    if not native._supports_ignored_params(native._fsdp_api()[2]):
+        # torch < 2.7: no fully_shard(ignored_params) to keep the frozen tp shards out of FSDP2.
+        config = native.FSDP2Config(param_dtype = torch.float32, mesh = mesh["dp"])
+        return {"unsupported": _raised(lambda: native.shard_model(model, config))}
+    refusals = {
+        "no_mesh": _raised(
+            lambda: native.shard_model(model, native.FSDP2Config(param_dtype = torch.float32))
+        ),
+        "tp_mesh": _raised(
+            lambda: native.shard_model(
+                model, native.FSDP2Config(param_dtype = torch.float32, mesh = mesh["tp"])
+            )
+        ),
+        "shard_frozen": _raised(
+            lambda: native.shard_model(
+                model,
+                native.FSDP2Config(param_dtype = torch.float32, mesh = mesh["dp"], shard_frozen = True),
+            )
+        ),
+    }
+    native.shard_model(
+        model, native.FSDP2Config(param_dtype = torch.float32, mesh = mesh["dp"], fit_layout = fit_layout)
+    )
+    layouts = tpn._param_layouts(model)
+    params = [p for p in model.parameters() if p.requires_grad]
+    ref_params = [p for p in ref.parameters() if p.requires_grad]
+    # Adam's g / (sqrt(v) + eps) has slope lr / eps at g = 0. A full lm_head copy (modules_to_save) holds
+    # hundreds of entries with |g| ~ 1e-9, where the default eps = 1e-8 turns ~1e-12 of reduction-order
+    # noise into ~5e-6 of weight, half the saved-weight tolerance, and over it on some CI CPUs.
+    opt = torch.optim.AdamW(params, lr = 1e-2, eps = _ADAM_EPS, foreach = False)
+    ref_opt = torch.optim.AdamW(ref_params, lr = 1e-2, eps = _ADAM_EPS, foreach = False)
+    losses, ref_losses, norms, native_norms, ref_norms = [], [], [], [], []
+    for step in range(3):
+        out = model(input_ids = mine, labels = mine, use_cache = False)
+        out.loss.backward()
+        r = ref(input_ids = ids, labels = ids, use_cache = False)
+        r.loss.backward()
+        if step == 0:
+            grads = {
+                n: tpn._full(p.grad, layout = layouts.get(id(p))).detach().clone()
+                for n, p in model.named_parameters()
+                if p.grad is not None
+            }
+            ref_grads = {
+                n: p.grad.detach().clone() for n, p in ref.named_parameters() if p.grad is not None
+            }
+            mismatched = [
+                n
+                for n, p in model.named_parameters()
+                if p.grad is not None and tuple(p.grad.placements) != tuple(p.placements)
+            ]
+        native_norms.append(float(native.native_clip_grad_norm_(params, 1e9)))
+        norms.append(float(tpn.tp_clip_grad_norm_(params, 1.0)))
+        ref_norms.append(float(_clip_fp64(ref_params, 1.0)))
+        opt.step(), opt.zero_grad(set_to_none = True)
+        ref_opt.step(), ref_opt.zero_grad(set_to_none = True)
+        loss = out.loss.detach().clone()
+        dist.all_reduce(loss)  # mean over the 4 ranks = mean over the 2 dp halves (tp ranks agree)
+        losses.append(float(loss) / world)
+        ref_losses.append(float(r.loss))
+    ref_dir, tp_dir = os.path.join(tmp, f"ref{rank}"), os.path.join(tmp, "tp")
+    ref.save_pretrained(ref_dir)
+    tpn.save_tp_adapter(model, tp_dir)
+    dist.barrier()
+    return {
+        "grads": grads,
+        "ref_grads": ref_grads,
+        "mismatched": mismatched,
+        "losses": losses,
+        "ref_losses": ref_losses,
+        "norms": norms,
+        "native_norms": native_norms,
+        "ref_norms": ref_norms,
+        "refusals": refusals,
+        "placements": {
+            n: tuple(p.placements) for n, p in model.named_parameters() if p.requires_grad
+        },
+        "saved_ref": load_file(os.path.join(ref_dir, "adapter_model.safetensors")),
+        "saved_tp": load_file(os.path.join(tp_dir, "adapter_model.safetensors"))
+        if rank == 0
+        else None,
+    }
+
+
+def _case_tp_fsdp2_trainable_norms(rank, world, tmp):
+    from torch.distributed.device_mesh import init_device_mesh
+    from test_fsdp2_native_units import _load_native
+
+    native = _load_native()
+    mesh = init_device_mesh("cpu", (2, 2), mesh_dim_names = ("dp", "tp"))
+    model = build(QWEN3, train_norms = True)
+    tpn.apply_tensor_parallel(model, mesh["tp"])
+    return {
+        "error": _raised(
+            lambda: native.shard_model(
+                model, native.FSDP2Config(param_dtype = torch.float32, mesh = mesh["dp"])
+            )
+        )
+    }
+
+
+class _Rows(torch.utils.data.Dataset):
+    def __init__(self, ids):
+        self.ids = ids
+
+    def __len__(self):
+        return len(self.ids)
+
+    def __getitem__(self, i):
+        return {"input_ids": self.ids[i], "labels": self.ids[i]}
+
+
+def _trainer_args(tmp, bs, **overrides):
+    import transformers
+
+    kwargs = dict(
+        output_dir = tmp,
+        per_device_train_batch_size = bs,
+        gradient_accumulation_steps = 2,
+        max_steps = 3,
+        learning_rate = 1e-2,
+        optim = "adamw_torch",
+        lr_scheduler_type = "constant",
+        warmup_steps = 0,
+        weight_decay = 0.0,
+        max_grad_norm = 1.0,
+        logging_steps = 1,
+        save_strategy = "no",
+        report_to = [],
+        use_cpu = True,
+        seed = 0,
+        dataloader_drop_last = True,
+        remove_unused_columns = False,
+        disable_tqdm = True,
+    )
+    kwargs.update(overrides)
+    return transformers.TrainingArguments(**kwargs)
+
+
+def _case_trainer(
+    rank,
+    world,
+    tmp,
+    dp,
+    tp,
+    lora_kwargs = None,
+):
+    """The HF Trainer on a tp (dp = 1) or dp x tp (shard_model over mesh['dp']) model; tp = 1: the 1-process
+    reference with a dp times larger batch. Sequential batches, so both read the same rows per step."""
+    import torch.distributed as dist
+    import transformers
+    from safetensors.torch import load_file
+
+    error = _import_checkout_unsloth()
+    if error is not None:
+        return {"skip": error}
+    from torch.distributed.device_mesh import init_device_mesh
+    from unsloth.models import fsdp2_native, tp_native
+    from unsloth.models._utils import patch_gradient_accumulation_fix
+
+    patch_gradient_accumulation_fix(transformers.Trainer)
+    seen = []
+
+    class SequentialTrainer(transformers.Trainer):
+        def _get_train_sampler(self, *args, **kwargs):
+            return torch.utils.data.SequentialSampler(self.train_dataset)
+
+        def compute_loss(self, model, inputs, *args, **kwargs):
+            seen.append(inputs["input_ids"].clone())
+            return super().compute_loss(model, inputs, *args, **kwargs)
+
+    model = build(LLAMA, **(lora_kwargs or {}))
+    data = _Rows(list(_batch(model, bsz = 12 * dp, seq = 9)))
+    refusals = {}
+    if tp > 1:
+        mesh = init_device_mesh("cpu", (dp, tp), mesh_dim_names = ("dp", "tp"))
+        tp_native.apply_tensor_parallel(model, mesh["tp"])
+        if dp > 1:
+            refusals["no_shard_model"] = _raised(
+                lambda: SequentialTrainer(
+                    model = model, args = _trainer_args(tmp, 2), train_dataset = data
+                )
+            )
+            fsdp2_native.shard_model(
+                model, fsdp2_native.FSDP2Config(param_dtype = torch.float32, mesh = mesh["dp"])
+            )
+        for key, overrides in {
+            "checkpoints": {"save_strategy": "steps", "save_steps": 1},
+            "eval": {"eval_strategy": "steps", "eval_steps": 1},
+            "optim_8bit": {"optim": "adamw_bnb_8bit"},
+        }.items():
+            refusals[key] = _raised(
+                lambda: SequentialTrainer(
+                    model = model,
+                    args = _trainer_args(tmp, 2, **overrides),
+                    train_dataset = data,
+                    eval_dataset = data,
+                )
+            )
+    if tp > 1 and lora_kwargs:
+        # A prebuilt scheduler already recorded the mixed groups: refused, not split under it.
+        opt = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr = 1e-2)
+        sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda step: 1.0)
+        refusals["prebuilt_scheduler"] = _raised(
+            lambda: SequentialTrainer(
+                model = model,
+                args = _trainer_args(tmp, 2),
+                train_dataset = data,
+                optimizers = (opt, sched),
+            ).train()
+        )
+    trainer = SequentialTrainer(
+        model = model, args = _trainer_args(tmp, 2 * dp if tp == 1 else 2), train_dataset = data
+    )
+    trainer.train()
+    refusals["evaluate"] = _raised(lambda: trainer.evaluate(data)) if tp > 1 else None
+    logs = [h for h in trainer.state.log_history if "loss" in h]
+    out_dir = os.path.join(tmp, f"adapter_{world}_{rank}")
+    trainer.save_model(out_dir)
+    if dist.is_initialized():
+        dist.barrier()
+    state = (
+        tp_native.tp_full_state_dict(trainer.model, adapters_only = True)
+        if tp > 1
+        else {k: v.detach().clone() for k, v in trainer.model.state_dict().items() if "lora_" in k}
+    )
+    wrapped = type(trainer.model_wrapped).__name__
+    return {
+        "losses": [h["loss"] for h in logs],
+        "grad_norms": [h.get("grad_norm") for h in logs],
+        "seen": [x.sum().item() for x in seen],
+        "state": {k: v for k, v in state.items() if "lora_" in k},
+        "saved": load_file(os.path.join(out_dir, "adapter_model.safetensors"))
+        if rank == 0 or tp == 1
+        else None,
+        "wrapped": wrapped,
+        "refusals": refusals,
+        "mixed_groups": fsdp2_native._mixed_param_groups(trainer.optimizer),
+    }
+
+
+def _case_sharded_lora_init(rank, world, tmp, ckpt):
+    """Weight-dependent LoRA init (PiSSA) on sharded_loading slices is refused before any mutation."""
+    from peft import LoraConfig, get_peft_model
+    from torch.distributed.device_mesh import init_device_mesh
+    from transformers import AutoModelForCausalLM
+
+    mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("tp",))
+    out = {}
+    for init in ("pissa", "gaussian"):
+        model = tpn.load_tensor_parallel(
+            ckpt, mesh["tp"], loader = AutoModelForCausalLM.from_pretrained, torch_dtype = torch.float32
+        )
+        config = LoraConfig(r = 4, lora_alpha = 8, target_modules = "all-linear", init_lora_weights = init)
+        model = get_peft_model(model, config)
+        out[init] = _raised(lambda: tpn.apply_tensor_parallel(model, mesh["tp"]))
+        out[init + "_tp"] = tpn.is_tensor_parallel(model)
+    return out
+
+
 CASES = {
     "parity": _case_parity,
     "save_subgroup": _case_save_subgroup,
@@ -411,6 +791,11 @@ CASES = {
     "guards": _case_guards,
     "qlora": _case_qlora,
     "qlora_misaligned": _case_qlora_misaligned,
+    "sharded_load": _case_sharded_load,
+    "sharded_lora_init": _case_sharded_lora_init,
+    "tp_fsdp2": _case_tp_fsdp2,
+    "tp_fsdp2_trainable_norms": _case_tp_fsdp2_trainable_norms,
+    "trainer": _case_trainer,
 }
 
 
@@ -593,7 +978,7 @@ def test_tp2_tied_norm_weight_is_summed_once():
     _check_parity(_spawn("parity", 2, arch = "qwen3", tie_norms = True), 2)
 
 
-def test_tp2_entry_points_outside_the_regions_are_refused():
+def test_tp2_entry_points_outside_the_regions_are_refused_or_gather():
     results = _spawn("guards", 2)
     if "skip" in results[0]:
         pytest.skip(f"import unsloth failed on this host: {results[0]['skip']}")
@@ -609,20 +994,24 @@ def test_tp2_entry_points_outside_the_regions_are_refused():
                         key,
                         value,
                     )
-                elif "for_inference" in key:
-                    assert value and "for_inference is not supported" in value, (
+                elif "for_inference" in key or key.startswith("generate:"):
+                    assert value is None, (
                         applied,
                         key,
                         value,
-                    )
-                elif key.startswith("generate:"):
-                    assert value and "generation is not supported" in value, (applied, key, value)
-                elif key.startswith(("trainer:", "model_init:")):
+                    )  # gathered a replica (tp_replica.py)
+                elif key.startswith("replica_released:"):
+                    assert value is True, (applied, key, value)
+                elif key.startswith("model_init:"):
                     assert value and "cannot be trained by the Trainer" in value, (
                         applied,
                         key,
                         value,
                     )
+                elif key.startswith("trainer:"):
+                    # The Trainer takes a tensor parallel model with its default args (save_strategy "steps":
+                    # per-rank checkpoints).
+                    assert value is None, (applied, key, value)
                 elif key.startswith("cached:"):
                     assert value and "cached decoding" in value, (applied, key, value)
 
@@ -630,3 +1019,203 @@ def test_tp2_entry_points_outside_the_regions_are_refused():
 def test_save_refuses_a_tp_mesh_smaller_than_the_world():
     for res in _spawn("save_subgroup", 2):
         assert res["error"] and "data parallel > 1 is outside v1" in res["error"], res
+
+
+@pytest.mark.parametrize(
+    "arch,world,overrides",
+    [
+        ("llama", 2, None),
+        ("llama_bias", 2, None),  # colwise biases sliced on read, row biases whole
+        ("phi3", 2, None),  # fused qkv [q, kv, kv] and packed gate_up read as per-part slices
+        ("gemma2", 2, None),  # tied embeddings, softcapping
+        ("qwen3", 4, {"num_attention_heads": 8, "num_key_value_heads": 4, "intermediate_size": 64}),
+    ],
+)
+def test_sharded_loading_matches_full_load(arch, world, overrides):
+    skip_unsupported(arch)
+    with tempfile.TemporaryDirectory() as ckpt:
+        _save_checkpoint(arch, ckpt, overrides)
+        results = _spawn("sharded_load", world, arch = arch, ckpt = ckpt)
+    _check_parity(results, world)
+    for res in results:
+        assert res["diffs"] == [], res["diffs"][:6]
+        # The sharded load trains exactly like v1's full load + apply_tensor_parallel.
+        assert res["tp"][2] == res["v1"][2] and res["tp"][3] == res["v1"][3]
+        torch.testing.assert_close(res["tp"][0], res["v1"][0], rtol = 0, atol = 0)
+        assert res["unapplied"] and "call apply_tensor_parallel" in res["unapplied"], res[
+            "unapplied"
+        ]
+        stats = res["stats"]
+        # Only this rank's slices of the sharded projections were read; replicated tensors were read whole.
+        assert stats["read_bytes_sliced"] * world == stats["sharded_numel"] * 4, stats
+        assert stats["read_bytes_full"] == stats["replicated_numel"] * 4, stats
+        assert stats["sharded_numel"] > 0 and stats["regions"] > 0, stats
+        full_local, sharded_local = res["local_numel"]
+        assert full_local == sharded_local
+
+
+def test_sharded_loading_refuses_weight_dependent_lora_init():
+    with tempfile.TemporaryDirectory() as ckpt:
+        _save_checkpoint("llama", ckpt, None)
+        results = _spawn("sharded_lora_init", 2, ckpt = ckpt)
+    for res in results:
+        assert "depends on the base weight" in (res["pissa"] or ""), res
+        assert not res["pissa_tp"]
+        assert res["gaussian"] is None and res["gaussian_tp"], res
+
+
+def test_sharded_loading_refuses_quantized_loads():
+    from transformers import AutoModelForCausalLM
+    for key in ("load_in_4bit", "quantization_config"):
+        with pytest.raises(ValueError, match = "16-bit safetensors checkpoints only"):
+            tpn.load_tensor_parallel(
+                LLAMA, None, loader = AutoModelForCausalLM.from_pretrained, **{key: True}
+            )
+
+
+# Per-step grad norms over 3 AdamW steps. phi3's fused qkv / gate_up shards add reduction-order noise that the
+# optimizer compounds: on the CI runners its step-3 norm lands 6.9e-5 / 7.7e-5 relative off one process
+# (1.5e-6 at step 1), while this host stays inside 1e-5. The step-1 per-gradient check in the test
+# (rtol 1e-4, atol 1e-6) is what catches a real tp error such as a missed all-reduce, and it is unchanged.
+_TP_FSDP2_NORM_REL = {"phi3": 2e-4}
+
+
+@pytest.mark.parametrize(
+    "arch,fit_layout,lora_kwargs",
+    [
+        ("llama", True, None),
+        ("llama", None, None),  # automatic layout (frozen tp shards still replicated over dp)
+        ("phi3", True, None),  # packed / fused parts: saved in the 1-GPU order through FSDP2
+        (
+            "llama_bias",
+            True,
+            {"bias": "all"},
+        ),  # trainable column (Shard) and row (Replicate) biases
+        (
+            "llama",
+            True,
+            {"modules_to_save": ["lm_head"]},
+        ),  # a dp-only (1-D) trainable outside the tp regions
+    ],
+)
+def test_tp2_x_fsdp2_dp2_matches_one_process(arch, fit_layout, lora_kwargs):
+    skip_unsupported(arch)
+    results = _spawn("tp_fsdp2", 4, arch = arch, fit_layout = fit_layout, lora_kwargs = lora_kwargs)
+    if "unsupported" in results[0]:
+        assert all("torch 2.7+" in (r["unsupported"] or "") for r in results), results
+        pytest.skip(
+            "torch < 2.7: tensor parallel x FSDP2 is refused (no fully_shard(ignored_params))"
+        )
+    for rank, res in enumerate(results):
+        assert set(res["grads"]) == set(res["ref_grads"]) and res["grads"]
+        for name, ref in res["ref_grads"].items():
+            torch.testing.assert_close(res["grads"][name], ref, rtol = 1e-4, atol = 1e-6, msg = name)
+        assert not res["mismatched"], res["mismatched"][:4]
+        assert res["losses"] == pytest.approx(res["ref_losses"], rel = 1e-5), (
+            res["losses"],
+            res["ref_losses"],
+        )
+        assert res["norms"] == pytest.approx(
+            res["ref_norms"], rel = _TP_FSDP2_NORM_REL.get(arch, 1e-5)
+        ), (
+            res["norms"],
+            res["ref_norms"],
+        )
+        # CPU vector_norm sums fp32 squares sequentially: about 3e-5 relative on the 2M-element lm_head copy.
+        native_rel = 1e-4 if "modules_to_save" in (lora_kwargs or {}) else 1e-5
+        assert res["native_norms"][0] == pytest.approx(res["ref_norms"][0], rel = native_rel)
+        # FSDP2 shards the LoRA DTensors over dp on top of their tp placement.
+        assert all(
+            len(pl) == (1 if "lm_head" in n else 2) for n, pl in res["placements"].items()
+        ), res["placements"]
+        assert "the data parallel dimension" not in (res["refusals"]["no_mesh"] or "")
+        assert "does not compose with Unsloth tensor parallelism" in (
+            res["refusals"]["no_mesh"] or ""
+        )
+        assert "must be the data parallel dimension" in (res["refusals"]["tp_mesh"] or ""), res[
+            "refusals"
+        ]
+        assert "shard_frozen = True" in (res["refusals"]["shard_frozen"] or ""), res["refusals"]
+    saved_tp, saved_ref = results[0]["saved_tp"], results[0]["saved_ref"]
+    assert set(saved_tp) == set(saved_ref)
+    for key in saved_ref:
+        torch.testing.assert_close(
+            saved_tp[key],
+            saved_ref[key],
+            rtol = 1e-4,
+            atol = 1e-5,
+            msg = lambda m, key = key: f"{key}: {m}",
+        )
+
+
+def test_tp_x_fsdp2_refuses_trainable_head_norms():
+    for res in _spawn("tp_fsdp2_trainable_norms", 4):
+        assert res["error"] and "trainable per-head norms" in res["error"], res
+
+
+def test_trainer_splits_mixed_optimizer_groups_for_tp_only():
+    # modules_to_save lm_head: a plain trainable next to the LoRA DTensors (foreach / fused take one kind).
+    kw = {"modules_to_save": ["lm_head"]}
+    ref = _spawn("trainer", 1, dp = 1, tp = 1, lora_kwargs = kw)[0]
+    if "skip" in ref:
+        pytest.skip(f"import unsloth failed on this host: {ref['skip']}")
+    for rank, res in enumerate(_spawn("trainer", 2, dp = 1, tp = 2, lora_kwargs = kw)):
+        assert res["mixed_groups"] == 0, rank
+        assert "already built the scheduler" in (res["refusals"]["prebuilt_scheduler"] or ""), res[
+            "refusals"
+        ]
+        assert res["losses"] == pytest.approx(ref["losses"], rel = 1e-5), (
+            rank,
+            res["losses"],
+            ref["losses"],
+        )
+        # transformers 5.x would clip mixed DTensor / plain gradients itself (_mixed_mesh_grad_norm). The
+        # reference norm is torch's CPU fp32 vector_norm over the plain lm_head gradient: ~2e-4 off.
+        assert res["grad_norms"] == pytest.approx(ref["grad_norms"], rel = 1e-3), (
+            rank,
+            res["grad_norms"],
+            ref["grad_norms"],
+        )
+
+
+@pytest.mark.parametrize("dp,tp", [(1, 2), (2, 2)])
+def test_trainer_trains_a_tensor_parallel_model_like_one_process(dp, tp):
+    ref = _spawn("trainer", 1, dp = dp, tp = 1)[0]
+    if "skip" in ref:
+        pytest.skip(f"import unsloth failed on this host: {ref['skip']}")
+    results = _spawn("trainer", dp * tp, dp = dp, tp = tp)
+    if "torch < 2.7" in str(results[0]["refusals"].get("no_shard_model", "")):
+        pytest.skip("torch < 2.7: tensor parallel x FSDP2 is refused")
+    assert len(ref["losses"]) == 3
+    for rank, res in enumerate(results):
+        assert "DistributedDataParallel" not in res["wrapped"], res["wrapped"]
+        assert res["losses"] == pytest.approx(ref["losses"], rel = 1e-5), (
+            rank,
+            res["losses"],
+            ref["losses"],
+        )
+        assert res["grad_norms"] == pytest.approx(ref["grad_norms"], rel = 1e-5), (
+            res["grad_norms"],
+            ref["grad_norms"],
+        )
+        assert set(res["state"]) == set(ref["state"]) and ref["state"]
+        for key, value in ref["state"].items():
+            torch.testing.assert_close(res["state"][key], value, rtol = 1e-4, atol = 1e-6, msg = key)
+        refusals = res["refusals"]
+        # Checkpoints are per rank, bitsandbytes AdamW steps local shards (or switches to torch's AdamW).
+        assert refusals["checkpoints"] is None, refusals
+        assert "evaluation during training" in (refusals["eval"] or ""), refusals
+        assert refusals["optim_8bit"] is None, refusals
+        assert "Trainer.evaluate is not supported" in (refusals["evaluate"] or ""), refusals
+        if dp > 1:
+            assert "covers 2 of 4 ranks" in (refusals["no_shard_model"] or ""), refusals
+    # The tp ranks of a replica read the same batches; dp replicas read different ones.
+    for rank, res in enumerate(results):
+        peer = results[rank ^ 1]  # same dp replica (tp is the inner mesh dimension)
+        assert res["seen"] == peer["seen"]
+        if dp > 1:
+            assert res["seen"] != results[(rank + tp) % (dp * tp)]["seen"]
+    saved, saved_ref = results[0]["saved"], ref["saved"]
+    assert set(saved) == set(saved_ref)
+    for key in saved_ref:
+        torch.testing.assert_close(saved[key], saved_ref[key], rtol = 1e-4, atol = 1e-6, msg = key)

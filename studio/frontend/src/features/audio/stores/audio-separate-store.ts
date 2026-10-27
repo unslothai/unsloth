@@ -9,7 +9,6 @@ export const AUDIO_SEPARATE_STORAGE_KEY = "unsloth_audio_separate_v1";
 
 interface AudioSeparateState {
   source: AudioSourceSelection | null;
-  /** So a change is announced as a reload. */
   lastOverlapByModel: Record<string, boolean>;
   setSource: (source: AudioSourceSelection | null) => void;
   setLastOverlap: (model: string, overlap: boolean) => void;

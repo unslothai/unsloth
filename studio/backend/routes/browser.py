@@ -170,8 +170,8 @@ _MODULE_CACHE_ENTRIES = 128
 _MODULE_CACHE_CHARS = 16 * 1024 * 1024
 _module_cache_chars = 0
 
-# https only (http could hit local services; WebKit lacks local network protection). The sandbox
-# (no allow-same-origin) isolates pages; the injected script submits forms.
+# https only: http could hit local services (WebKit lacks local network protection).
+# The sandbox (no allow-same-origin) isolates pages.
 _FRAME_CSP = (
     "default-src https: data: blob:; "
     "script-src 'unsafe-inline' 'unsafe-eval' https: data: blob:; "
@@ -1549,9 +1549,7 @@ _ANNOTATE_JS = r"""
 """
 
 
-# Print shell: the panel posts it a copy of the page (`snapshot` above), which it shows without
-# scripts and prints. Its own sandbox allows the print dialog, which the page's does not; its CSP
-# runs only this script, so nothing in the copy can.
+# Print shell: its own sandbox allows the print dialog; its CSP runs only this script.
 _PRINT_SCRIPT = r"""
 (() => {
   let started = false;

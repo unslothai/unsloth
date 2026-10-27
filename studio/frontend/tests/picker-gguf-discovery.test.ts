@@ -314,3 +314,50 @@ test("an up-to-date cached quant keeps the Hub's companion-inclusive size", asyn
   assert.equal(result.variants[0].download_size_bytes, 900);
   assert.equal(result.variants[0].cache_path, "/cache/old");
 });
+
+const GIB = 1024 ** 3;
+type Variant = GgufVariantsResponse["variants"][number];
+
+async function mergedRow(cached: Partial<Variant>, hub: Partial<Variant>) {
+  const merged = await loadPickerGgufVariants(
+    async (localOnly) => ({
+      ...local,
+      variants: [{ ...local.variants[0], ...(localOnly ? cached : hub) }],
+    }),
+    options,
+    () => {},
+  );
+  return merged.variants[0];
+}
+
+test("an update's table size travels with the update's file size", async () => {
+  const row = await mergedRow(
+    { size_bytes: 70 * GIB, lookup_table_bytes: 20 * GIB },
+    { size_bytes: 80 * GIB, lookup_table_bytes: 30 * GIB, update_available: true },
+  );
+  assert.equal(row.size_bytes, 80 * GIB);
+  assert.equal(row.lookup_table_bytes, 30 * GIB);
+});
+
+for (const [name, hub, table] of [
+  [
+    "a Hub row with no table reading keeps the local header's",
+    { lookup_table_bytes: 0 },
+    20 * GIB,
+  ],
+  [
+    "an up-to-date local header's table wins over the Hub's bounded reading",
+    { lookup_table_bytes: 12 * GIB },
+    20 * GIB,
+  ],
+  [
+    "an update that drops the table is taken at its word",
+    { lookup_table_bytes: 0, update_available: true },
+    0,
+  ],
+] as const) {
+  test(name, async () => {
+    const row = await mergedRow({ lookup_table_bytes: 20 * GIB }, hub);
+    assert.equal(row.lookup_table_bytes, table);
+  });
+}

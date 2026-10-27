@@ -76,7 +76,6 @@ import {
   Cancel01Icon,
   Clock01Icon,
   ComputerTerminal01Icon,
-  Copy01Icon,
   Folder01Icon,
   Link01Icon,
   Download01Icon,
@@ -92,13 +91,13 @@ import {
   ViewIcon,
   VolumeMute02Icon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
+import { ReloadIcon } from "@/lib/reload-icon";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import {
   ArrowLeft,
   ArrowRight,
-  RotateCw,
   ShieldCheck,
-  XIcon,
 } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import {
@@ -471,8 +470,7 @@ function TabRenameInput({ tab, title }: { tab: BrowserTab; title: string }) {
 const TAB_DRAG_THRESHOLD_PX = 5;
 const TAB_SHIFT_TRANSITION = "transform 160ms cubic-bezier(0.2, 0, 0, 1)";
 
-/** Which way the tab at `position` slides while the one from `slot` is held over `target`: the
- *  tabs it has passed move one place toward where it came from. */
+/** Which way a tab slides while another is dragged from slot over target; passed tabs shift one place. */
 function tabShift(position: number, slot: number, target: number): -1 | 0 | 1 {
   if (slot < target && position > slot && position <= target) return -1;
   if (target < slot && position >= target && position < slot) return 1;
@@ -864,8 +862,7 @@ function AddressBar({
   );
 }
 
-/** Whether `tab` shows its page as fetched: over https, Studio's fetch checks the certificate and
- *  host name, so a page that loaded had a valid one. A native view checks it itself. */
+/** Over https Studio's fetch checks the certificate, so a page that loaded had a valid one. */
 function pageVerified(tab: BrowserTab | undefined): boolean {
   if (!tab) return false;
   const entry = currentEntry(tab);
@@ -876,7 +873,6 @@ function pageVerified(tab: BrowserTab | undefined): boolean {
 
 const LEARN_MORE_URL = "https://support.mozilla.org/kb/how-do-i-tell-if-my-connection-is-secure";
 
-/** The shield at the bar's start: the site panel (connection, Security view, data, settings); a magnifier when there is no site. */
 function SiteIdentity({ address, tab }: { address: string; tab: BrowserTab | undefined }) {
   const t = useT();
   const [clearOpen, setClearOpen] = useState(false);
@@ -994,7 +990,7 @@ function SiteIdentity({ address, tab }: { address: string; tab: BrowserTab | und
                   className={iconButton}
                   onClick={() => setOpen(false)}
                 >
-                  <XIcon strokeWidth={2} className="size-4" />
+                  <HugeiconsIcon icon={Cancel01Icon} strokeWidth={2} className="size-4" />
                 </button>
               </div>
               <div className="mx-3 h-px bg-border" />
@@ -1487,7 +1483,7 @@ function WebToolbar({ tab, visible }: { tab: BrowserTab | undefined; visible: bo
           }}
           className={NAV_BUTTON}
         >
-          <RotateCw strokeWidth={NAV_STROKE} className={cn(NAV_ICON, "scale-[0.94]")} />
+          <HugeiconsIcon icon={ReloadIcon} strokeWidth={NAV_STROKE} className={NAV_ICON} />
         </IconButton>
       </div>
       <AddressBar
@@ -1602,7 +1598,7 @@ function BrowserFileToolbar({
           onClick={runAgain}
           className={NAV_BUTTON}
         >
-          <RotateCw strokeWidth={NAV_STROKE} className={cn(NAV_ICON, "scale-[0.94]")} />
+          <HugeiconsIcon icon={ReloadIcon} strokeWidth={NAV_STROKE} className={NAV_ICON} />
         </IconButton>
       </div>
       <AddressBar

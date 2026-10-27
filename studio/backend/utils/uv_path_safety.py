@@ -77,8 +77,7 @@ def uv_safe_path(path: object) -> str:
                 os.symlink(source_dir, alias_dir, target_is_directory = True)
                 dst = os.path.join(alias_dir, source_name)
             except OSError:
-                # No symlink permission: copy instead. That loses relative -r/-c
-                # includes, but returning the spaced path loses the file entirely.
+                # No symlink permission: copy instead; loses relative -r/-c includes but keeps the file.
                 dst = os.path.join(tmp_dir, source_name)
                 shutil.copyfile(s, dst)
         _UV_SAFE_PATH_TMPDIRS.append(tmp_dir)

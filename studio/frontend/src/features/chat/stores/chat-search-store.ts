@@ -10,7 +10,7 @@ interface OpenChatSearchOptions {
 
 interface ChatSearchStore {
   isOpen: boolean;
-  // Radix cannot recover a trigger that unmounted first (the command palette).
+  // Radix cannot refocus a trigger that unmounted first (the command palette).
   opener: HTMLElement | null;
   open: (options?: OpenChatSearchOptions) => void;
   close: () => void;

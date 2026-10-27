@@ -286,6 +286,55 @@ def test_rl_trainers_refuse_ring(monkeypatch):
         Trainer(_args(context_parallel_backend = "ring"))
 
 
+def _accelerate_cp_accelerator(monkeypatch, cp_size):
+    # What `accelerate launch` with parallelism_config_cp_size hands the Accelerator: a ParallelismConfig
+    # built from the environment, read through the real Accelerator.parallelism_config property.
+    from accelerate import Accelerator
+    from accelerate.parallelism_config import ParallelismConfig
+
+    monkeypatch.setenv("ACCELERATE_USE_PARALLELISM_CONFIG", "true")
+    monkeypatch.setenv("PARALLELISM_CONFIG_CP_SIZE", str(cp_size))
+
+    class _Accelerator:
+        parallelism_config = Accelerator.parallelism_config
+
+        def __init__(self):
+            self.state = types.SimpleNamespace(parallelism_config = ParallelismConfig())
+            self.device = torch.device("cpu")
+
+    return _Accelerator()
+
+
+@pytest.mark.parametrize("kind", ["dpo_trainer", "grpo_trainer"])
+@pytest.mark.parametrize("route", ["accelerate config", "parallelism_config"])
+@pytest.mark.parametrize("cp_size", [1, 2])
+@pytest.mark.parametrize("unsloth_size", [1, 2])
+def test_rl_trainers_refuse_transformers_cp(monkeypatch, kind, route, cp_size, unsloth_size):
+    monkeypatch.setattr(cp, "_install_accelerator_state", lambda *a: None)
+    monkeypatch.setattr(cp, "_check_cp_runtime", lambda *a: None)
+    monkeypatch.setattr(cp, "_check_cp_trainer", lambda *a: None)
+    monkeypatch.setattr(cp, "attach_rl_hooks", lambda *a: None)
+    monkeypatch.setattr(cp, "ContextParallelManager", lambda size, backend: object())
+    accelerator = _accelerate_cp_accelerator(monkeypatch, cp_size)
+    # transformers forwards TrainingArguments.parallelism_config to the Accelerator.
+    args_pc = accelerator.state.parallelism_config if route == "parallelism_config" else None
+
+    class Trainer(_fake_trainer_class([])):
+        def __init__(self, args):
+            super().__init__(args)
+            self.accelerator = accelerator
+            self._generate = lambda prompts: (prompts,)
+
+    cp.patch_rl_trainer(Trainer, kind)
+    args = _args(context_parallel_size = unsloth_size, parallelism_config = args_pc)
+    if cp_size == 1:
+        Trainer(args)
+        return
+    config = "DPOConfig" if kind == "dpo_trainer" else "GRPOConfig"
+    with pytest.raises(NotImplementedError, match = rf"{config}\(context_parallel_size = 2.*{route}"):
+        Trainer(args)
+
+
 def test_rl_trainers_without_cp_are_untouched(monkeypatch):
     monkeypatch.setattr(cp, "_install_accelerator_state", lambda *a: None)
     log = []

@@ -157,8 +157,7 @@ def CohereAttention_fast_forward(
             "softmax_scale": getattr(self, "softmax_scale", None),
         },
     )
-    # PrefixGrouper seg table rides in **kwargs from the GRPO logprob forward; misuse (KV cache /
-    # padding mask) raises. None means the byte-identical default.
+    # PrefixGrouper seg table rides in kwargs; None is the default path, and KV cache or padding mask misuse raises
     _pg_seg = resolve_prefix_seg_info(kwargs, past_key_value, attention_mask)
     context = AttentionContext(
         bsz = bsz,

@@ -139,7 +139,7 @@ function isInLatexBracketMath(context: TokenizeContext): boolean {
   return state.openDelimiters.length > 0;
 }
 
-/** deliberately conservative: ambiguous prose remains literal. */
+/** Deliberately conservative: ambiguous prose remains literal. */
 export function looksLikeEscapedInlineMath(body: string): boolean {
   const value = body.trim();
   if (!value || value.length > MAX_BODY_LENGTH) {
@@ -479,7 +479,7 @@ function escapedMathRanges(markdown: string): EscapedMathRange[] {
   return ranges.sort((left, right) => left.start - right.start);
 }
 
-/** normalize model-emitted `\$…\$` before currency and streaming repair. */
+/** Runs before currency and streaming repair. */
 export function normalizeEscapedInlineMath(markdown: string): string {
   if (!markdown.includes("\\$")) {
     return markdown;

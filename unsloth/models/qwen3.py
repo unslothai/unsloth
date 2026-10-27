@@ -149,8 +149,7 @@ def Qwen3Attention_fast_forward(
             "softmax_scale": getattr(self, "softmax_scale", None),
         },
     )
-    # PrefixGrouper seg table rides in **kwargs from the GRPO logprob forward; misuse (KV cache /
-    # padding mask) raises. None means the byte-identical default.
+    # PrefixGrouper seg table rides in **kwargs; misuse (KV cache or padding mask) raises; None is default
     _pg_seg = resolve_prefix_seg_info(kwargs, past_key_value, attention_mask)
     context = AttentionContext(
         bsz = bsz,
@@ -206,7 +205,7 @@ def Qwen3Attention_fast_forward_inference(
     hidden_size = self.config.hidden_size
     attention_size = n_heads * head_dim
     # Graph mode (a captured decode step): no host lengths, the cache slot is on the device.
-    static = _decode_graphs.static() if _decode_graphs.ENABLED else None
+    static = _decode_graphs.static()
     seq_len = K1.shape[-2]
     kv_seq_len = seq_len + 1
 
@@ -382,8 +381,7 @@ class FastQwen3Model(FastLlamaModel):
         PeftModelForCausalLM.forward = PeftModel_fast_forward
         fix_prepare_inputs_for_generation(Qwen3ForCausalLM)
 
-        # Retain the old rotary embeddings: the static KV cache (transformers 4.38.0) slowed training.
-        # See unslothai/unsloth#168 and huggingface/transformers#27931.
+        # Static KV cache (4.38.0) slowed training (#168), so the old rotary embeddings are retained.
         import transformers.models.qwen3.modeling_qwen3
 
         transformers.models.qwen3.modeling_qwen3.Qwen3RotaryEmbedding = LlamaRotaryEmbedding

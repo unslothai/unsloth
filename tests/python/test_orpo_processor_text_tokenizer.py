@@ -13,11 +13,22 @@ def _load_orpo_rewriter(name = "orpo_trainer_text_tokenizer"):
     src = open(RL_PATH, encoding = "utf-8").read()
     tree = ast.parse(src)
     ns = {"re": re}
+    private = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id.startswith("_") for t in node.targets)
+    ]
+    # Some private constants are built by a module-level helper (e.g. _fused_pass_logps_re).
+    called = {
+        call.func.id
+        for node in private
+        for call in ast.walk(node.value)
+        if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+    }
     for node in tree.body:
-        if isinstance(node, ast.Assign):
-            for target in node.targets:
-                if isinstance(target, ast.Name) and target.id.startswith("_"):
-                    exec(ast.get_source_segment(src, node), ns)
+        if node in private or (isinstance(node, ast.FunctionDef) and node.name in called):
+            exec(ast.get_source_segment(src, node), ns)
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name == name:
             exec(ast.get_source_segment(src, node), ns)

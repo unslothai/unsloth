@@ -59,9 +59,10 @@ import {
   Comment01Icon,
   InternetIcon,
   TextAlignLeft01Icon,
+  PlusSignIcon,
+  Cancel01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { PlusIcon, XIcon } from "lucide-react";
 import {
   createContext,
   type FC,
@@ -191,8 +192,7 @@ type PastedTextAttachment = {
   readonly sentBytes?: number;
 };
 
-// Long pastes arrive as a synthetic .txt and render as a chip, not a tile. The selector only passes
-// references along: the text can be megabytes, so nothing here may copy or scan it.
+// The text can be megabytes, so the selector only passes references and nothing here copies or scans it.
 const usePastedTextAttachment = (): PastedTextAttachment | null => {
   return useAuiState(
     useShallow(({ attachment }): PastedTextAttachment | null => {
@@ -210,7 +210,6 @@ const usePastedTextAttachment = (): PastedTextAttachment | null => {
   );
 };
 
-/** Only the composer inlines, and there the File is always still around. */
 const readPastedText = async ({ file }: PastedTextAttachment): Promise<string> =>
   file ? await file.text() : "";
 
@@ -223,8 +222,6 @@ const readPastedTextPreview = async (
   return pastedTextPreview(await readPastedText(attachment));
 };
 
-/** Annotations made on a document in the browser. Read off the File in the composer and off the
- *  stored text once sent; the text is only parsed when its tag says it is one. */
 const useAnnotationsAttachment = (): DocumentAnnotations | null => {
   const { file, sentText } = useAuiState(
     useShallow(({ attachment }) => {
@@ -237,7 +234,6 @@ const useAnnotationsAttachment = (): DocumentAnnotations | null => {
   return useMemo(() => annotationsOfFile(file) ?? parseAnnotationsContent(sentText), [file, sentText]);
 };
 
-/** "1 annotation", with what was marked and asked on hover, as ChatGPT shows it. */
 const AnnotationsAttachmentUI: FC<{ annotations: DocumentAnnotations; isComposer: boolean }> = ({
   annotations,
   isComposer,
@@ -264,7 +260,6 @@ const AnnotationsAttachmentUI: FC<{ annotations: DocumentAnnotations; isComposer
             {label}
           </button>
         </HoverCardTrigger>
-        {/* The menus' surface: their soft shadow and radius, no ring, rather than a hover card's lift. */}
         <HoverCardContent
           side="top"
           align="start"
@@ -308,8 +303,7 @@ const PastedTextPreviewDialog: FC<
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
-    // Laying out megabytes in one text node locks the page, so show an
-    // opening. The attachment itself still holds everything.
+    // Laying out megabytes in one text node locks the page, so show only an opening.
     readPastedTextPreview(attachment)
       .then((value) => {
         if (!cancelled) setPreview(value);
@@ -361,20 +355,17 @@ const PastedTextAttachmentUI: FC<{
       mountedRef.current = false;
     };
   }, []);
-  // Read off the header, never measured: the paste can be megabytes and this
-  // runs while the thread is trying to paint.
+  // Read off the header, never measured: the paste can be megabytes.
   const bytes = attachment.file?.size ?? attachment.sentBytes;
   // A sent paste reopened for editing has no File to read back, so it previews instead.
   const canInline = isComposer && attachment.file !== undefined;
 
-  // Clicking the chip pours the text back into the composer.
   const showInTextField = useCallback(() => {
     if (inlining) return;
     setInlining(true);
     void readPastedText(attachment)
       .then((text) => {
-        // Reading a big file is slow enough to outlive the send that cleared
-        // the composer, which would leave the text behind as a stray draft.
+        // A slow read can outlive the send that cleared the composer and leave a stray draft.
         if (!mountedRef.current || text.length === 0) return;
         const composer = aui.composer();
         if (
@@ -409,7 +400,7 @@ const PastedTextAttachmentUI: FC<{
     variant === "card" ? (
       <button
         className={cn(
-          "aui-pasted-text-card group flex cursor-pointer overflow-hidden rounded-lg text-left transition-colors",
+          "aui-pasted-text-card group flex cursor-pointer overflow-hidden rounded-[14px] text-left transition-colors",
           CARD_SIZE,
           CARD_EDGE,
           CARD_SURFACE,
@@ -426,7 +417,6 @@ const PastedTextAttachmentUI: FC<{
           center={
             <span className="flex flex-col items-center gap-1 text-ui-11">
               {textIcon("size-6")}
-              {/* Hover swaps the size for the action. */}
               <span className={canInline ? "group-hover:hidden" : undefined}>
                 {sizeLabel}
               </span>
@@ -443,7 +433,7 @@ const PastedTextAttachmentUI: FC<{
     ) : variant === "row" ? (
       <button
         className={cn(
-          "aui-pasted-text-row flex max-w-full cursor-pointer items-center gap-3 rounded-lg px-4 py-3 text-left transition-colors",
+          "aui-pasted-text-row flex max-w-full cursor-pointer items-center gap-3 rounded-[14px] px-4 py-3 text-left transition-colors",
           SENT_ROW_WIDTH,
           CARD_EDGE,
           "hover:bg-[color-mix(in_oklab,var(--foreground)_5%,transparent)]",
@@ -498,14 +488,13 @@ const PastedTextAttachmentUI: FC<{
 const AttachmentCardRemove: FC = () => {
   return (
     <AttachmentPrimitive.Remove asChild={true}>
-      {/* No tooltip: the X says what it does, and a label popping over the next card is noise. */}
       <Button
         variant="ghost"
         size="icon"
         aria-label="Remove file"
-        className="aui-attachment-card-remove absolute top-1.5 right-1.5 size-5 rounded-full bg-foreground p-0 opacity-0 shadow-sm transition-opacity hover:bg-foreground! focus-visible:opacity-100 group-hover/attachment-card:opacity-100 group-focus-within/attachment-card:opacity-100 [@media(pointer:coarse)]:opacity-100 [&_svg]:text-background"
+        className="aui-attachment-card-remove absolute top-1.5 right-1.5 size-5 rounded-full bg-white p-0 opacity-0 shadow-sm ring-1 ring-black/15 transition-opacity hover:bg-white! dark:bg-black dark:ring-white/20 dark:hover:bg-black! focus-visible:opacity-100 group-hover/attachment-card:opacity-100 group-focus-within/attachment-card:opacity-100 [@media(pointer:coarse)]:opacity-100 [&_svg]:text-black dark:[&_svg]:text-white"
       >
-        <XIcon className="aui-attachment-remove-icon size-3 stroke-[2.5px]" />
+        <HugeiconsIcon icon={Cancel01Icon} className="aui-attachment-remove-icon size-3 stroke-[2.5px]" />
       </Button>
     </AttachmentPrimitive.Remove>
   );
@@ -558,7 +547,7 @@ const ComposerAttachmentCard: FC = () => {
       <AttachmentPreviewDialog redactFromReload={true}>
         <button
           className={cn(
-            "aui-attachment-card-tile flex cursor-pointer overflow-hidden rounded-lg text-left transition-colors",
+            "aui-attachment-card-tile flex cursor-pointer overflow-hidden rounded-[14px] text-left transition-colors",
             CARD_SIZE,
             CARD_EDGE,
             !src && CARD_SURFACE,
@@ -588,7 +577,7 @@ const SentImageTile: FC = () => {
       <AttachmentPreviewDialog redactFromReload={false}>
         <button
           className={cn(
-            "aui-attachment-image-tile block cursor-pointer overflow-hidden rounded-lg transition-opacity hover:opacity-85",
+            "aui-attachment-image-tile block cursor-pointer overflow-hidden rounded-[14px] transition-opacity hover:opacity-85",
             layout === "list" ? SENT_IMAGE_SIZE : SENT_IMAGE_SIZE_COMPACT,
             CARD_EDGE,
           )}
@@ -658,7 +647,7 @@ const SentFileItem: FC = () => {
         {layout === "list" ? (
           <button
             className={cn(
-              "aui-attachment-row flex max-w-full cursor-pointer items-center gap-3 rounded-lg px-4 py-3 text-left transition-colors",
+              "aui-attachment-row flex max-w-full cursor-pointer items-center gap-3 rounded-[14px] px-4 py-3 text-left transition-colors",
               SENT_ROW_WIDTH,
               CARD_EDGE,
               "hover:bg-[color-mix(in_oklab,var(--foreground)_5%,transparent)]",
@@ -833,7 +822,7 @@ export const ComposerAddAttachment: FC = () => {
         className="aui-composer-add-attachment size-8.5 rounded-full p-1 font-semibold text-xs hover:bg-muted-foreground/15 dark:hover:bg-muted-foreground/30"
         aria-label="Add Attachment"
       >
-        <PlusIcon className="aui-attachment-add-icon size-5 stroke-[1.5px]" />
+        <HugeiconsIcon icon={PlusSignIcon} className="aui-attachment-add-icon size-5 stroke-[1.5px]" />
       </TooltipIconButton>
     </ComposerPrimitive.AddAttachment>
   );
