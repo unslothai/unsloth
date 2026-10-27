@@ -24,7 +24,11 @@ def _free_port():
         return s.getsockname()[1]
 
 
-def _load(distributed = None, tensor_parallel = False, pipeline_parallel = False):
+def _load(
+    distributed = None,
+    tensor_parallel = False,
+    pipeline_parallel = False,
+):
     """The planner from _utils.py, with its package-relative imports (is_distributed,
     is_tensor_parallel, is_pipeline_parallel) answered by stubs instead of falling back."""
     sys.path.insert(0, HERE)
@@ -195,7 +199,6 @@ def _worker(rank, world, port, kind, scenario, usable, queue):
         queue.put((rank, run(rank, scenario, usable[rank]), None))
     except Exception:
         import traceback
-
         queue.put((rank, None, traceback.format_exc()))
     finally:
         if dist.is_initialized():
@@ -249,7 +252,9 @@ def test_process_group_missing_under_torchrun_keeps_every_layer(monkeypatch, cap
     import torch.distributed as dist
 
     assert not dist.is_initialized()
-    monkeypatch.setattr(dist, "all_reduce", lambda *a, **k: pytest.fail("collective without a group"))
+    monkeypatch.setattr(
+        dist, "all_reduce", lambda *a, **k: pytest.fail("collective without a group")
+    )
     model = T._FakeModel([GIB // 16] * 8, memory)
     ns["skip_checkpointing"](model, "auto")
     planner = model._unsloth_auto_skip
@@ -270,7 +275,9 @@ def test_single_process_plans_alone_without_a_collective(monkeypatch, world_size
     memory = T._fake_cuda(monkeypatch, ns, usable = 4 * GIB)
     import torch.distributed as dist
 
-    monkeypatch.setattr(dist, "all_reduce", lambda *a, **k: pytest.fail("collective on one process"))
+    monkeypatch.setattr(
+        dist, "all_reduce", lambda *a, **k: pytest.fail("collective on one process")
+    )
     model = T._FakeModel([GIB // 16] * 8, memory)
     ns["skip_checkpointing"](model, "auto")
     planner = model._unsloth_auto_skip
