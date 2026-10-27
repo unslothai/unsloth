@@ -23,7 +23,6 @@ def _free_port():
 
 def _worker(rank, world, port, usable, queue):
     import torch.distributed as dist
-
     sys.path.insert(0, HERE)
     try:
         dist.init_process_group(
@@ -48,7 +47,6 @@ def _worker(rank, world, port, usable, queue):
         queue.put((rank, list(planner.kept), None))
     except Exception as error:  # reported to the parent instead of hanging it
         import traceback
-
         queue.put((rank, None, traceback.format_exc()))
     finally:
         if dist.is_initialized():
@@ -63,9 +61,7 @@ def test_auto_agrees_on_the_smallest_count_across_ranks():
     queue = ctx.Queue()
     port = _free_port()
     usable = [4 * GIB, 2 * GIB]
-    procs = [
-        ctx.Process(target = _worker, args = (r, 2, port, usable[r], queue)) for r in range(2)
-    ]
+    procs = [ctx.Process(target = _worker, args = (r, 2, port, usable[r], queue)) for r in range(2)]
     for p in procs:
         p.start()
     results = dict()
