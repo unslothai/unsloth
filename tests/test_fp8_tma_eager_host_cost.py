@@ -14,7 +14,6 @@ if F8._TensorDescriptor is None:
 
 
 class _Fake:
-    # Just what _fp8_tma_gemm_ok reads from A, B and C.
     def __init__(
         self,
         shape,
@@ -153,7 +152,7 @@ def test_launch_skips_per_call_validation(monkeypatch):
     A = torch.zeros(M, K, dtype = torch.float8_e4m3fn)
     B = torch.zeros(N, K, dtype = torch.float8_e4m3fn)
     C = torch.empty(M, N, dtype = torch.bfloat16)
-    _launch(monkeypatch, A, B, C, M, N, K)  # first launch may validate once per dtype / block
+    _launch(monkeypatch, A, B, C, M, N, K)
     built = []
     real = F8._TensorDescriptor.from_tensor
     monkeypatch.setattr(

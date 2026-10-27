@@ -592,9 +592,7 @@ def _fp8_tma_gemm_ok(A, B, C, BLOCK_SIZE_M, block_n, block_k, long_idx):
     return checked
 
 
-# TensorDescriptor.from_tensor re-validates every field per call (~4 us each). The fields that do not
-# change per call (block shape, padding, ...) are validated once per (dtype, block shape) here;
-# _fp8_tma_gemm_ok already checked the alignment of the base and row pitch.
+# from_tensor re-validates every field per call (~4 us each): validate once per (dtype, block shape).
 _FP8_TMA_DESC_FIELDS = {}
 
 
@@ -610,8 +608,7 @@ def _fp8_tma_descriptor(tensor, rows, cols, block_shape):
             if k not in ("base", "shape", "strides")
         }
         _FP8_TMA_DESC_FIELDS[key] = fields
-    # A sliced weight's row pitch is not its width: from_tensor reads the real strides. A contiguous
-    # tensor of rows * cols elements has strides (cols, 1) as a (rows, cols) view, without building it.
+    # A sliced weight's row pitch is not its width: keep from_tensor's real strides.
     if (
         not fields
         or rows <= 0
@@ -622,11 +619,10 @@ def _fp8_tma_descriptor(tensor, rows, cols, block_shape):
         return _TensorDescriptor.from_tensor(tensor.view(rows, cols), list(block_shape))
     desc = _TensorDescriptor.__new__(_TensorDescriptor)
     desc.__dict__.update(fields)
-    # Built per call from the live tensor: a replaced or in-place edited weight is never stale.
     desc.base = tensor
     desc.shape = [rows, cols]
     desc.strides = [cols, 1]
-    desc.block_shape = list(block_shape)  # not shared with the cache or other descriptors
+    desc.block_shape = list(block_shape)
     return desc
 
 
