@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""What one rank hands the others through the torch.distributed default store. JSON, never pickle:
-c10d's TCPStore listens on every interface without authentication, so bytes read back from it must
-not be able to run code. Only plain data survives (None, bools, numbers, strings, paths, and lists,
-tuples and str-keyed dicts of them); anything else arrives as None."""
+"""Cross-rank values via the c10d store: JSON, never pickle (TCPStore is unauthenticated).
+Non-plain values arrive as None."""
 
 import json
 import os
@@ -39,7 +37,6 @@ def encode(value) -> bytes:
 
 
 def decode(data):
-    """The value `encode` wrote. Raises ValueError on bytes that are not its JSON."""
     try:
         return _unplain(json.loads(bytes(data).decode("utf-8")))
     except UnicodeDecodeError as exc:

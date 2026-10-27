@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""What one rank hands the others through the c10d default store is JSON, never pickle.
-
-The TCPStore listens on every interface without authentication, so a value read back from it must
-not be able to run code on the reading rank.
-"""
+"""Store payloads are JSON, never pickle: the TCPStore is unauthenticated."""
 
 from __future__ import annotations
 
