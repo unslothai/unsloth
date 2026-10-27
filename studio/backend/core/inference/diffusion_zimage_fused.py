@@ -82,7 +82,9 @@ def _make_call(stock: Any) -> Any:
     import torch
 
     # bound here, not inside the traced __call__
-    from .diffusion_int8_fused import int8_linear
+    from .diffusion_int8_fused import ensure_intmm_module, int8_linear
+
+    ensure_intmm_module()  # resolved here, eagerly: an import under the trace is a graph break per Linear
 
     def __call__(
         self,

@@ -89,7 +89,7 @@ test("a corrupt stored spot falls back to the default placement", () => {
 test("both monitors persist under their own key and a reset clears them", () => {
   assert.match(
     readSrc("components/floating-monitor.tsx"),
-    /FLOATING_PANEL_POSITION_KEYS\.liveMonitor,\s*\);/,
+    /FLOATING_PANEL_POSITION_KEYS\.liveMonitor,\s*cornerCard,\s*\);/,
   );
   assert.match(
     readSrc("features/api-monitor/api-monitor-overlay.tsx"),
@@ -101,10 +101,12 @@ test("both monitors persist under their own key and a reset clears them", () => 
   );
 });
 
-test("layout skips a 0x0 frame and only a drag writes the stored spot", () => {
+test("layout skips a 0x0 frame and only a drag or a nudge writes the stored spot", () => {
   const hook = readSrc("hooks/use-floating-panel-layout.ts");
   assert.match(hook, /if \(isDegenerateBox\(constraintsBox\)\) \{\s*return;/);
-  assert.equal(hook.split("storePanelIntent(").length - 1, 1);
+  assert.equal(hook.split("storePanelIntent(").length - 1, 2);
+  const nudge = hook.slice(hook.indexOf("function nudge("));
+  assert.match(nudge, /storePanelIntent\(storageKey, intentRef\.current\)/);
   const finish = hook.slice(hook.indexOf("function finishDrag"));
   assert.match(finish, /storePanelIntent\(storageKey, intentRef\.current\)/);
   const card = readSrc("features/loaded-models/use-drag-position.ts");

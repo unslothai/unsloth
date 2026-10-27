@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import contextlib
 import logging
 import sys
 import types
@@ -39,6 +40,8 @@ def _plain_logger(monkeypatch):
 
 
 class FakeArray:
+    __repr__ = lambda self: repr(self.rows)
+
     def __init__(self, rows):
         self.rows = list(rows)
 
@@ -444,6 +447,54 @@ def test_session_captures_the_boundary_and_resumes_leaving_a_copy_behind(fake_mx
 
     session, _cache, stored = _generate(store, language_model, longer + [1])
     assert session.reused_tokens == 768 and stored and len(store) == 5
+
+
+class LayeredLanguageModel(FakeLanguageModel):
+    capture, skipped = None, ()
+
+    def __call__(
+        self,
+        inputs,
+        cache = None,
+        **kwargs,
+    ):
+        for at in range(0, len(inputs), STEP):
+            output = super().__call__(inputs[at : at + STEP], cache, **kwargs)
+            if self.capture and min(at + STEP, len(inputs)) == self.capture[0]:
+                self.capture[2].update(
+                    (id(e), self.capture[1](e))
+                    for i, e in enumerate(cache)
+                    if i not in self.skipped
+                )
+        return output
+
+
+def test_a_window_of_grid_steps_snapshots_the_grid_inside_it(fake_mx, monkeypatch):
+    model, zoo, ids = (
+        LayeredLanguageModel(),
+        types.ModuleType("unsloth_zoo.mlx.offload"),
+        list(range(1900)),
+    )
+
+    def capture(rows, copy):
+        model.capture = (rows, copy, {})
+        yield model.capture[2]
+        model.capture = None
+
+    zoo.capture_prefill_rows = contextlib.contextmanager(capture)
+    monkeypatch.setitem(sys.modules, zoo.__name__, zoo)
+    stores = [VLMPromptSnapshotStore(max_bytes = 10**9) for _ in range(2)]
+    for tokens in (ids, ids + [1] * 300):
+        _generate(stores[0], FakeLanguageModel(), tokens)
+        _generate(stores[1], model, tokens, window = 4 * STEP, kwargs = {"step": 4 * STEP})
+    held = [
+        {key: [entry.state for entry in entries] for key, (entries, _) in store._entries.items()}
+        for store in stores
+    ]
+    assert [len(key[1]) for key in held[1]] == [1792, 2048, 2199] and repr(held[0]) == repr(held[1])
+    model.skipped, store = (1,), VLMPromptSnapshotStore(max_bytes = 10**9)
+    _generate(store, model, ids, window = 4 * STEP, kwargs = {"step": 4 * STEP})
+    assert [len(key[1]) for key in store._entries] == [1899]
 
 
 def test_session_replays_a_prompt_from_where_its_prefill_ended(fake_mx):

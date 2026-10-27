@@ -11,7 +11,7 @@ torch.compile fuses either form to the same kernel -- so they help EAGER and are
 Patched (measured B200, bf16, DiT shapes):
 * ``RMSNorm.forward`` -> fused ``F.rms_norm`` on the common path (non-NPU, no bias, weight
   None/fp16/bf16; else the exact original). The standout win (~6-12x per call, QK-norm runs every
-  attention block on Qwen-Image + Z-Image). Bit-identical in bf16.
+  attention block on Qwen-Image + Z-Image). bf16: one rounding instead of two (~1 ULP off stock, nearer fp64).
 * ``AdaLayerNormContinuous`` / ``AdaLayerNormZero`` / ``AdaLayerNormZeroSingle`` -> the
   ``norm(x)*(1+scale)+shift`` modulation fused via ``torch.addcmul`` (~1.2x, fp32 exact, bf16 1
   ULP). Covers flux.1 / flux.2-klein / qwen-image.
@@ -106,22 +106,20 @@ _orig_rmsnorm_forward: Optional[Callable] = None
 
 
 def _rmsnorm_forward(self, hidden_states):
-    # Fall back to the exact original where F.rms_norm is NOT equivalent to diffusers: NPU / bias / fp32-weight, a
-    # tuple `dim` (diffusers reduces only the LAST dim), or a dtype mismatch (diffusers computes variance in fp32 from
-    # the ORIGINAL tensor).
+    # Fall back where F.rms_norm differs from diffusers: NPU, bias, tuple dim, dtype mismatch.
     if _NPU or self.bias is not None or _orig_rmsnorm_forward is None or len(tuple(self.dim)) != 1:
         return _orig_rmsnorm_forward(self, hidden_states)  # type: ignore[misc]
     weight = self.weight
     if weight is None:
         return F.rms_norm(hidden_states, self.dim, None, self.eps)
     if weight.dtype in (torch.float16, torch.bfloat16) and hidden_states.dtype == weight.dtype:
-        # Common DiT path (bf16 acts + bf16 weight): F.rms_norm matches diffusers bit-for-bit.
+        # Common DiT path (bf16 acts + bf16 weight). Not bit-identical to diffusers: F.rms_norm rounds to bf16 once
+        # (diffusers rounds twice), so it is closer to fp64 per call; ComfyUI's comfy/rmsnorm.py uses the same op.
         return F.rms_norm(hidden_states, self.dim, weight, self.eps)
     return _orig_rmsnorm_forward(self, hidden_states)  # type: ignore[misc]
 
 
-# Install / uninstall via the shared patch backend: the live original is fingerprinted so a changed forward is left
-# UNPATCHED, and stashed for exact restore.
+# True for families needing multiple denoisers no single file carries (Ideogram 4), so only a full pipeline load is valid
 def _specs():
     return [
         (_AdaLayerNormContinuous, _adaln_continuous_forward),
@@ -136,10 +134,7 @@ _patched: list[type] = []
 
 
 def install_compile_safe_patches() -> int:
-    """Install the shared compile-safe speedup patches (idempotent).
-
-    Returns the number of patches applied. A second call while installed is a no-op.
-    """
+    """Returns the number of patches applied; a second call while installed is a no-op."""
     global _orig_rmsnorm_forward
     if not _patches_enabled():
         uninstall_patches()

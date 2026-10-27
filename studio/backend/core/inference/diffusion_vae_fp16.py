@@ -15,14 +15,13 @@ import functools
 import types
 from typing import Any, Optional
 
+from .diffusion_vae_upcast import fp32_keeping_storage
+
 _SCALE_LOG2 = 8
 
 
 def _scale_plan(decoder: Any) -> Optional[tuple]:
-    """(convs, norms) scaling the residual stream after ``up_blocks[0]``'s upsampler; None for other layouts.
-
-    ``(conv, divide_weight)``: unscaled input divides weight + bias, already-scaled input (shortcut, later upsamplers)
-    only bias. ``norms`` read the scaled stream, so their eps shrinks by scale**2."""
+    """Unscaled inputs divide weight and bias, scaled ones only bias; norm eps shrinks by scale squared."""
     import torch
 
     up_blocks = list(getattr(decoder, "up_blocks", None) or ())
@@ -116,13 +115,9 @@ def enable_fp16_vae_decode(
         slot = types.SimpleNamespace(decode = decode)
 
         def _fp32_call(fn: Any, parts: list, x: Any, *args: Any, **kwargs: Any) -> Any:
-            for part in parts:
-                part.to(torch.float32)
-            try:
+            # Leaves the stored fp16 weights in place, so they stay pinned under model offload.
+            with fp32_keeping_storage(vae, parts):
                 return fn(x.to(torch.float32), *args, **kwargs)
-            finally:
-                for part in parts:
-                    part.to(torch.float16)
 
         @functools.wraps(decode)
         def fp16_decode(z: Any, *args: Any, **kwargs: Any) -> Any:

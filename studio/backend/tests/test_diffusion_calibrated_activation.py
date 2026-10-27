@@ -228,7 +228,8 @@ def test_only_measured_families_are_calibrated():
     assert calibrated_image_activation("hidream-i1") is None
     assert calibrated_image_activation("qwen-image-edit") is None
     assert calibrated_image_activation("qwen-image") is None
-    assert calibrated_image_activation("sdxl") is None
+    assert calibrated_image_activation("sdxl").resident_only
+    assert not calibrated_image_activation("flux.1").resident_only
     for family, tiers in dm._MEASURED_IMAGE_ACTIVATION_MIB.items():
         for max_speed, raw in zip((False, True), tiers):
             act = calibrated_image_activation(family, max_speed = max_speed)
@@ -249,7 +250,43 @@ def test_16gb_qwen_image_21_at_the_max_speed_tier_keeps_streaming_the_transforme
     act = calibrated_image_activation("qwen-image-2.1", max_speed = True)
     assert _plan(16, QWEN21_GGUF, act) == _plan(16, QWEN21_GGUF, None)
     plan = _plan(22, QWEN21_GGUF, act)
-    assert plan.offload_policy == OFFLOAD_MODEL and plan.vae_tiling is False
+    assert plan.offload_policy == OFFLOAD_GROUP and plan.stream_transformer is False
+
+
+# Real max-tier load of qwen-image-2.1-Q8_0.gguf, transformer_quant=none (plain GGUF, no offload groups).
+QWEN21_Q8_GGUF = dict(
+    model_dense_mib = 17_210, companion_dense_mib = 9_560, text_encoder_dense_mib = 8_916
+)
+# Real max-tier load of unsloth/Qwen-Image-2.1-GGUF (auto: INT8 DiT + INT8 TE).
+QWEN21_AUTO_INT8 = dict(
+    model_dense_mib = 18_128, companion_dense_mib = 10_680, text_encoder_dense_mib = 9_345
+)
+
+
+@pytest.mark.parametrize(
+    "total_gib, used_mib, sizes",
+    [
+        (22, 1_229, QWEN21_GGUF),
+        (24, 2_400, QWEN21_GGUF),
+        (24, 2_700, QWEN21_GGUF),
+        (24, 1_229, QWEN21_AUTO_INT8),
+        (24, 3_000, QWEN21_AUTO_INT8),
+        # tightest cells: a capped B200 rendered 2048x2048 here without OOM
+        (22, 1_850, QWEN21_Q8_GGUF),
+        (24, 3_850, QWEN21_Q8_GGUF),
+    ],
+)
+def test_a_resident_transformer_is_not_demoted_for_the_2048_worst_case(total_gib, used_mib, sizes):
+    # Demoting would upload the whole transformer per 1024 render (~1.7x slower on a capped B200).
+    act = calibrated_image_activation("qwen-image-2.1", max_speed = True)
+    total = int(total_gib * GIB)
+    card = DeviceMemory("cuda", "cuda", "discrete_vram", total - used_mib, total)
+    kwargs = dict(target = _target(), device_memory = card, runtime_headroom_mib = 8192, **sizes)
+    flat = plan_diffusion_memory(**kwargs)
+    assert flat.offload_policy == OFFLOAD_GROUP and flat.stream_transformer is False
+    plan = plan_diffusion_memory(calibrated_activation = act, **kwargs)
+    assert plan.offload_policy == OFFLOAD_GROUP and plan.stream_transformer is False
+    assert not any("2048 denoise" in reason for reason in plan.reasons)
 
 
 def test_the_shipped_qwen_image_21_figures_never_stream_the_transformer_on_16gb():
@@ -401,7 +438,8 @@ def test_generation_guard_never_refuses_the_calibrated_2048_canvas_on_a_promoted
     for step in range(10 * 4, 48 * 4 + 1):
         gib = step / 4
         plan = _plan(gib, sizes, act)
-        if "calibrated_headroom_mib" not in plan.estimates:
+        resident = plan.offload_policy == OFFLOAD_GROUP and not plan.stream_transformer
+        if "calibrated_headroom_mib" not in plan.estimates and not resident:
             continue
         promoted += 1
         total = int(gib * GIB)
@@ -543,3 +581,47 @@ def test_generate_passes_the_calibrated_placement_and_controlnet_to_the_guard():
     src = inspect.getsource(d)
     assert 'calibrated_placement = bool(getattr(state, "calibrated_placement", False)),' in src
     assert 'controlnet = workflow == "controlnet" and control_pil is not None,' in src
+
+
+# Real Tesla T4 load of stabilityai/stable-diffusion-xl-base-1.0 at fp16: the planner inputs it logged.
+SDXL_FP16 = dict(model_dense_mib = 6_775, companion_dense_mib = 6_775, text_encoder_dense_mib = 1_559)
+
+
+def _t4_plan(act, mode = None):
+    return plan_diffusion_memory(
+        target = _target(),
+        device_memory = DeviceMemory("cuda", "cuda", "discrete_vram", 14_807, 14_912),
+        runtime_headroom_mib = 8192,
+        requested_mode = mode,
+        calibrated_activation = act,
+        **SDXL_FP16,
+    )
+
+
+def test_sdxl_measured_activation_keeps_a_t4_resident():
+    """The flat 8 GiB guess offloaded (and demoted explicit fast) SDXL on a 15 GB card; the measured peak fits."""
+    act = calibrated_image_activation("sdxl")
+    assert _t4_plan(None).offload_policy == OFFLOAD_MODEL
+    assert _t4_plan(None, MEMORY_MODE_FAST).offload_policy == OFFLOAD_MODEL
+    for mode in (None, MEMORY_MODE_FAST):
+        plan = _t4_plan(act, mode)
+        assert plan.offload_policy == OFFLOAD_NONE, mode
+        assert not plan.vae_tiling and not plan.vae_slicing
+    assert _t4_plan(act, MEMORY_MODE_LOW_VRAM).offload_policy == OFFLOAD_MODEL
+    assert _t4_plan(act, MEMORY_MODE_BALANCED).offload_policy == OFFLOAD_GROUP
+
+
+def test_sdxl_measured_activation_only_ever_adds_the_resident_tier():
+    """Only whole-module offload may become resident (never a group tier); more VRAM never picks a slower tier."""
+    act = calibrated_image_activation("sdxl")
+    resident_from = None
+    for gib in (6, 8, 10, 12, 14, 15, 16, 20, 24, 48):
+        flat, plan = _plan(gib, SDXL_FP16, None), _plan(gib, SDXL_FP16, act)
+        if plan.offload_policy != flat.offload_policy:
+            assert plan.offload_policy == OFFLOAD_NONE, gib
+        if plan.offload_policy == OFFLOAD_NONE and resident_from is None:
+            resident_from = gib
+        if resident_from is not None:
+            assert plan.offload_policy == OFFLOAD_NONE, gib
+    assert resident_from == 15
+    assert _plan(12, SDXL_FP16, act).offload_policy == OFFLOAD_MODEL

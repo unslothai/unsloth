@@ -29,7 +29,6 @@ export function ComposerSettings({ embedded = false }: { embedded?: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
   const labels = composerShortcutLabels(prefs.sendShortcut, isMacPlatform());
-  // The multiline mode's chord changes once the prompt has a line break.
   const multiline = composerShortcutLabels(prefs.sendShortcut, isMacPlatform(), "\n");
   const oppositeShortcut =
     labels.opposite === multiline.opposite
@@ -63,7 +62,7 @@ export function ComposerSettings({ embedded = false }: { embedded?: boolean }) {
           className={
             embedded
               ? ""
-              : "mt-2 divide-y divide-border/60 rounded-2xl border border-border/60 bg-muted/20 px-4"
+              : "mt-2 divide-y divide-border/60 rounded-xl border border-border/60 bg-muted/20 px-4"
           }
         >
           <SettingsRow
@@ -104,7 +103,6 @@ export function ComposerSettings({ embedded = false }: { embedded?: boolean }) {
             })}
             hint={t("composerSettings.steerDescription")}
           >
-            {/* Shared track + pill selector, as on the API key expiry row. */}
             <div
               className="hub-tab-toggle inline-flex h-8 items-center rounded-full"
               role="group"

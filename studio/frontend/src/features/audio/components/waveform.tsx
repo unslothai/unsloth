@@ -3,7 +3,7 @@
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { PauseIcon, PlayIcon } from "@hugeicons/core-free-icons";
+import { PauseIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type CSSProperties,
@@ -18,6 +18,7 @@ import {
   useState,
 } from "react";
 import { formatSeconds, resamplePeaks } from "./waveform-peaks";
+import { PlayIcon } from "lucide-react";
 
 const SEEK_STEP_SECONDS = 5;
 const BAR_GAP_PX = 2;
@@ -151,10 +152,11 @@ export function Waveform({
         disabled={!src}
         onClick={toggle}
       >
-        <HugeiconsIcon
-          icon={playing ? PauseIcon : PlayIcon}
-          className="size-3.5"
-        />
+        {playing ? (
+          <HugeiconsIcon icon={PauseIcon} className="size-3.5" />
+        ) : (
+          <PlayIcon className="size-3.5" />
+        )}
       </Button>
       {overlay !== undefined || tailS > 0 ? (
         <div className="relative flex h-[calc(32px*var(--ui-space-scale,1))] min-w-0 flex-1">
@@ -197,7 +199,6 @@ export function Waveform({
   );
 }
 
-/** Seekable bars; keys are left to the caller. */
 export function WaveformBars({
   peaks,
   fraction,

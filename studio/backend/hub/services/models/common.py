@@ -358,8 +358,7 @@ def _local_transformers_can_chat(path: Path) -> Optional[bool]:
     if names and all(name in _BARE_TEXT_BACKBONE_ARCHITECTURES for name in names):
         return False
 
-    # The type alone decides: requiring the name shape too kept rows chat-capable when it did not fit,
-    # e.g.
+    # The type alone decides; requiring the name shape too kept non-fitting rows chat-capable.
     if normalized_type in _ENCODER_ONLY_MODEL_TYPES:
         return False
     return None

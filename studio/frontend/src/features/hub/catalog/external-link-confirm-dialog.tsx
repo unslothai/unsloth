@@ -54,7 +54,7 @@ export function ExternalLinkConfirmDialog() {
           </AlertDialogDescription>
         </AlertDialogHeader>
         {pendingUrl && (
-          <div className="min-w-0 rounded-[12px] bg-muted/50 px-3.5 py-3 text-left">
+          <div className="min-w-0 rounded-lg bg-muted/50 px-3.5 py-3 text-left">
             <p className="truncate text-ui-13 font-medium text-foreground">
               {hostOf(pendingUrl)}
             </p>

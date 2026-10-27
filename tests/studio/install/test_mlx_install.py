@@ -488,7 +488,7 @@ def test_mlx_image_engine_pins_leave_the_mlx_stack_alone():
     assert stack._MLX_PINS == ("mlx==0.32.4", "mlx-metal==0.32.4")
     names = {Requirement(spec).name.lower() for spec in stack._MLX_DIFFUSION_PINS}
     names |= {Requirement(spec).name.lower() for spec in stack._MLX_DIFFUSION_DEPS}
-    assert names == {"mflux", "piexif", "platformdirs", "toml"}
+    assert names == {"mflux", "pillow", "piexif", "platformdirs", "toml"}
     # The heavy declared deps of mflux stay out: --no-deps plus this list is the whole install.
     assert not names & {
         "opencv-python",

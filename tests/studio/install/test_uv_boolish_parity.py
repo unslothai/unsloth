@@ -487,3 +487,13 @@ def test_a_no_index_set_to_a_false_value_still_names_an_index(script, variable, 
     got = _ps_last(snippet, env = _env(variable, value))
     assert got != "[]", f"{variable}={value!r} is false, so an index must still be named"
     assert "https://pypi.org/simple" in got, got
+
+
+def test_setup_defines_the_uv_reader_before_its_first_mirror_probe():
+    """A PowerShell function exists only once its definition has run. setup.ps1 probes mirrors
+    (Test-MirrorConfigured reads UV_NO_CONFIG) from `Invoke-MirrorFallback -SpareOnly` early on,
+    so a reader defined later is undefined there, which is what pushed a copy of it inline."""
+    define = re.search(r"(?m)^function Test-UvEnvFlag\b", SETUP_SRC)
+    first_call = re.search(r"(?m)^Invoke-MirrorFallback\b", SETUP_SRC)
+    assert define and first_call
+    assert define.start() < first_call.start()

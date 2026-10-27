@@ -54,6 +54,13 @@ UPSAMPLER_MODEL_FILES = {
 # divergence than the imatrix Q4_K_M for 6% more bytes, at the same speed.
 UPSAMPLER_DEFAULT_QUANT = "UD-Q4_K_XL"
 UPSAMPLER_MODEL_FILE = UPSAMPLER_MODEL_FILES[UPSAMPLER_DEFAULT_QUANT]
+# What a run reads, best first: an install holding Q4_K_M (the default until UD-Q4_K_XL) keeps enhancing offline.
+UPSAMPLER_CACHED_FALLBACK_QUANTS = ("Q8_0", "Q4_K_M")
+UPSAMPLER_MODEL_FILE_PREFERENCE = (UPSAMPLER_MODEL_FILE,) + tuple(
+    UPSAMPLER_MODEL_FILES[quant] for quant in UPSAMPLER_CACHED_FALLBACK_QUANTS
+)
+# Q8_0 is closer to BF16 than the default: a complete Q8_0 pair is not offered a smaller download "for better captions".
+UPSAMPLER_SUPERSEDED_FILES = frozenset((UPSAMPLER_MODEL_FILES["Q4_K_M"],))
 # Vision projector, needed only for edits (reference images).
 UPSAMPLER_MMPROJ_FILE = "mmproj-F16.gguf"
 # Expected sizes of the files as built, for the UI before the download starts (the download reads the real ones).
@@ -724,18 +731,23 @@ def _cached_at_any_revision(filename: str, hub_cache: Optional[Path] = None) -> 
     return None
 
 
-def _cached_pair(hub_cache: Optional[Path] = None) -> tuple[Optional[str], Optional[str]]:
+def _cached_pair(
+    hub_cache: Optional[Path] = None, model_files: tuple = UPSAMPLER_MODEL_FILE_PREFERENCE
+) -> tuple[Optional[str], Optional[str]]:
     """The model and projector from ONE revision (the recorded one first), as the downloader pins them; a model
-    with no projector at its revision when no revision holds both."""
+    with no projector at its revision when no revision holds both. A complete pair of any ``model_files`` beats a
+    model alone, so an interrupted default download does not cost edits their reference images."""
+    revisions = _candidate_revisions(hub_cache)
     model_only = None
-    for revision in _candidate_revisions(hub_cache):
-        model = _cached_file(UPSAMPLER_MODEL_FILE, hub_cache = hub_cache, revision = revision)
-        if model is None:
-            continue
-        mmproj = _cached_file(UPSAMPLER_MMPROJ_FILE, hub_cache = hub_cache, revision = revision)
-        if mmproj is not None:
-            return model, mmproj
-        model_only = model_only or model
+    for model_file in model_files:
+        for revision in revisions:
+            model = _cached_file(model_file, hub_cache = hub_cache, revision = revision)
+            if model is None:
+                continue
+            mmproj = _cached_file(UPSAMPLER_MMPROJ_FILE, hub_cache = hub_cache, revision = revision)
+            if mmproj is not None:
+                return model, mmproj
+            model_only = model_only or model
     return model_only, None
 
 
@@ -745,7 +757,8 @@ def _cached_download_paths(
     hub_cache: Optional[Path] = None,
     revision: Optional[str] = None,
 ) -> Optional[tuple[str, str]]:
-    """Both repo files at one revision, or None (the download state's completion check)."""
+    """Both repo files at one revision, or None (the download state's completion check). A pinned revision is the
+    one just downloaded, so it checks the default quant the download fetched; without one, any cached quant counts."""
     if revision is None:
         model, mmproj = _cached_pair(hub_cache)
     else:
@@ -827,25 +840,45 @@ def status() -> dict:
     """The prompt-upsampler status route body."""
     model = model_path()
     mmproj = mmproj_path()
-    model_name = (
-        Path(model).name if model and os.environ.get(ENV_MODEL_OVERRIDE) else UPSAMPLER_MODEL_FILE
-    )
+    model_name = Path(model).name if model else UPSAMPLER_MODEL_FILE
     size = None
     if model:
         with suppress(OSError):
             size = os.path.getsize(model)
+    overridden = _overridden()
+    # Not the unpinned _cached_download_paths: any cached quant completes that one.
+    current_downloaded = (
+        overridden
+        or None not in _cached_pair(model_files = (UPSAMPLER_MODEL_FILE,))
+        or (mmproj is not None and model_name not in UPSAMPLER_SUPERSEDED_FILES)
+    )
+    # Bytes still to fetch: a file already cached at any revision is a blob the hub cache reuses.
+    missing = (
+        []
+        if current_downloaded
+        else [
+            name
+            for name in (UPSAMPLER_MODEL_FILE, UPSAMPLER_MMPROJ_FILE)
+            if _cached_at_any_revision(name) is None
+        ]
+    )
     return {
         "supported": find_llama_server_binary() is not None,
         "downloaded": model is not None,
         "loaded": get_sidecar().loaded,
         "repo": UPSAMPLER_REPO,
         "filename": model_name,
-        "size_bytes": size or UPSAMPLER_FILE_SIZES.get(UPSAMPLER_MODEL_FILE),
+        "size_bytes": size
+        or UPSAMPLER_FILE_SIZES.get(model_name)
+        or UPSAMPLER_FILE_SIZES.get(UPSAMPLER_MODEL_FILE),
         "mmproj_filename": UPSAMPLER_MMPROJ_FILE,
         "mmproj_size_bytes": UPSAMPLER_FILE_SIZES.get(UPSAMPLER_MMPROJ_FILE),
         "mmproj_downloaded": mmproj is not None,
+        "current_filename": UPSAMPLER_MODEL_FILE,
+        "current_downloaded": current_downloaded,
+        "current_missing_bytes": sum(UPSAMPLER_FILE_SIZES.get(name, 0) for name in missing),
         # Local files from the env overrides: the repo download is not offered beside them.
-        "override": _overridden(),
+        "override": overridden,
         "download": download_status(),
     }
 
@@ -1334,12 +1367,49 @@ class PromptUpsamplerSidecar:
         self._load_cancel.clear()
         with self._lock:
             self._loading = True
+        slot = None
         try:
+            # Offloaded layers size themselves to the free memory read at spawn: a render denoising meanwhile (another
+            # request's) has not reached its peak yet, so the start waits for the generation slot, as a warm start
+            # holds it. Called ahead of the request's own render, never inside one.
+            slot = self._wait_for_render_slot()
             self._spawn_server(binary, model, mmproj)
         finally:
+            if slot is not None:
+                slot.release()
             with self._lock:
                 self._loading = False
                 self._starting_process = None
+
+    def _wait_for_render_slot(self) -> Any:
+        """The active image engine's generation lock, acquired, or None where the start would not offload (training,
+        nobody on the GPU, a CPU-only host) or the engine cannot be read. Waited for cancellably: a Stop, training
+        start or handover sets ``_load_cancel``."""
+        from core.inference.stt_sidecar import _training_active
+
+        if _training_active() or _gpu_unowned():
+            return None
+        if _accelerator_memory_mib(_resident_cuda_ordinal())[2] == "cpu":
+            return None
+        try:
+            from core.inference.diffusion_engine_router import get_active_diffusion_engine
+            engine = get_active_diffusion_engine()
+            lock = getattr(engine, "_generate_lock", None)
+        except Exception:  # noqa: BLE001 -- unreadable: start as before rather than fail the enhancement
+            return None
+        if lock is None:
+            return None
+        while not lock.acquire(timeout = 0.2):
+            if self._load_cancel.is_set():
+                raise UpsamplerCancelledError("The prompt upsampler load was cancelled.")
+        if self._load_cancel.is_set():
+            lock.release()
+            raise UpsamplerCancelledError("The prompt upsampler load was cancelled.")
+        if _engine_loading(engine) or not _image_model_owns_gpu():
+            # The model this caption is for is leaving: the run goes as typed (or retries with the new model).
+            lock.release()
+            raise UpsamplerUnavailableError("The image model is being replaced.")
+        return lock
 
     def _spawn_server(self, binary: str, model: str, mmproj: Optional[str]) -> None:
         from core.inference.stt_mtmd_sidecar import (

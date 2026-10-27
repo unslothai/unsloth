@@ -85,7 +85,6 @@ def _head(torch):
 
 
 def _wrapped(torch, head, registered):
-    """PeftModel -> LoraModel -> base model, with the head on the innermost model."""
     base = torch.nn.Module()
     base.config = None
     if registered:
@@ -297,7 +296,6 @@ def test_nextn_head_round_trips_through_save_pretrained(save_module, tmp_path):
     reloaded = get_mtp_head(fresh, source = str(out))
     assert all(torch.equal(reloaded.mtp_state_dict()[k], v) for k, v in expected.items())
 
-    # Saving again over a checkpoint that now carries the head rewrites it in place.
     report = save_module._stitch_mtp_head(fresh, str(out))
     assert report["mode"] == "replaced"
 
@@ -495,7 +493,6 @@ def test_mtp_push_keeps_the_datasets_metadata(save_module, monkeypatch):
         )
     )
     assert len(calls) == 1 and calls[0][:2] == ("dev", True) and "org/data" in calls[0][2]
-    # A new repo still gets the hub path's model card, with the caller's tags.
     assert "unsloth" in calls[0][2] and "my-tag" in calls[0][2] and "org/base" in calls[0][2]
 
 
@@ -632,3 +629,206 @@ def test_get_mtp_head_reads_the_loaded_commit(tmp_path):
     assert _loaded_revision(model, "org/m", None) == "abc123"
     assert _loaded_revision(model, "org/m", "dev") == "dev"
     assert _loaded_revision(model, str(tmp_path), None) is None
+
+
+@pytest.mark.parametrize("adapter_name", ["default", "task"])
+def test_named_peft_adapter_save_keeps_the_head(save_module, tmp_path, adapter_name):
+    """PEFT writes a non-default adapter under `<out>/<adapter_name>/`; the head goes beside it."""
+    import torch
+    from peft import LoraConfig, get_peft_model
+
+    pytest.importorskip("unsloth_zoo.speculative.nextn")
+    from unsloth.models.speculative import attach_saved_mtp_head, get_mtp_head
+
+    model = get_peft_model(
+        _tiny_glm(tmp_path, torch),
+        LoraConfig(r = 4, lora_alpha = 8, target_modules = ["q_proj", "v_proj"]),
+        adapter_name = adapter_name,
+    )
+    head = get_mtp_head(model, random_init = True)
+    with torch.no_grad():
+        for p in head.parameters():
+            p.add_(0.01)
+    expected = {k: v.detach().clone() for k, v in head.mtp_state_dict().items()}
+
+    out = tmp_path / "saved"
+    model.save_pretrained(str(out))
+    folder = out if adapter_name == "default" else out / adapter_name
+    assert (folder / "adapter_config.json").is_file()
+    assert (folder / "mtp_head.safetensors").is_file()
+    assert not list(out.glob("model*.safetensors"))
+
+    reloaded = attach_saved_mtp_head(_tiny_glm(tmp_path, torch), str(folder))
+    assert reloaded is not None
+    assert all(torch.equal(reloaded.mtp_state_dict()[k], v) for k, v in expected.items())
+
+
+def test_every_saved_adapter_folder_gets_the_head(save_module, tmp_path, monkeypatch):
+    """A save of several adapters writes the head beside each folder and pushes each one."""
+    import torch
+    from unsloth.models.speculative import _wrap_save_pretrained
+    from unsloth_zoo.speculative.stitch import load_saved_mtp_head
+
+    model = torch.nn.Module()
+    object.__setattr__(model, "peft_config", {"default": None, "task": None})
+
+    def transformers_save(
+        save_directory,
+        push_to_hub = False,
+        **kwargs,
+    ):
+        for name in ("default", "task"):
+            folder = Path(save_directory) / ("" if name == "default" else name)
+            folder.mkdir(parents = True, exist_ok = True)
+            (folder / "adapter_config.json").write_text("{}")
+
+    object.__setattr__(model, "save_pretrained", transformers_save)
+    object.__setattr__(model, "_unsloth_mtp_head", _head(torch))
+    _wrap_save_pretrained(model)
+    uploads = []
+
+    class Api:
+        def __init__(self, **kwargs):
+            pass
+
+        def upload_folder(self, **kwargs):
+            uploads.append(kwargs)
+
+    import huggingface_hub
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", Api)
+    model.save_pretrained(str(tmp_path), push_to_hub = True, repo_id = "me/x")
+    for folder in (tmp_path, tmp_path / "task"):
+        loaded, _ = load_saved_mtp_head(folder)
+        assert set(loaded) == {"fc.weight", "norm.weight"}
+    assert len(uploads) == 1
+    assert sorted(uploads[0]["allow_patterns"]) == [
+        "mtp_head.safetensors",
+        "task/mtp_head.safetensors",
+    ]
+
+
+def _two_adapter_model(torch, active):
+    """PEFT-shaped model: `selected_adapters` picks which folders a save writes."""
+    from unsloth.models.speculative import _wrap_save_pretrained
+
+    model = torch.nn.Module()
+    object.__setattr__(model, "peft_config", {"default": None, "task": None})
+    object.__setattr__(model, "active_adapter", active)
+
+    def peft_save(
+        save_directory,
+        safe_serialization = True,
+        selected_adapters = None,
+        **kwargs,
+    ):
+        for name in ("default", "task") if selected_adapters is None else selected_adapters:
+            folder = Path(save_directory) / ("" if name == "default" else name)
+            folder.mkdir(parents = True, exist_ok = True)
+            (folder / "adapter_config.json").write_text(json.dumps({"name": name}))
+
+    object.__setattr__(model, "save_pretrained", peft_save)
+    object.__setattr__(model, "_unsloth_mtp_head", _head(torch))
+    _wrap_save_pretrained(model)
+    return model
+
+
+@pytest.mark.parametrize("positional", [False, True])
+def test_selected_adapters_save_leaves_other_folders_alone(save_module, tmp_path, positional):
+    """`default` saved a moment earlier is not rewritten by a save of `task` only."""
+    import torch
+
+    model = _two_adapter_model(torch, active = "task")
+    (tmp_path / "adapter_config.json").write_text("{}")
+    if positional:
+        model.save_pretrained(str(tmp_path), True, ["task"])
+    else:
+        model.save_pretrained(str(tmp_path), selected_adapters = ["task"])
+    assert (tmp_path / "task" / "mtp_head.safetensors").is_file()
+    assert not (tmp_path / "mtp_head.safetensors").exists()
+
+
+def test_head_is_written_only_beside_the_active_adapter(save_module, tmp_path):
+    """The head was trained against the active adapter; an inactive one must not inherit it."""
+    import torch
+
+    model = _two_adapter_model(torch, active = "task")
+    model.save_pretrained(str(tmp_path))
+    assert (tmp_path / "task" / "mtp_head.safetensors").is_file()
+    assert not (tmp_path / "mtp_head.safetensors").exists()
+    out = tmp_path / "inactive"
+    model.save_pretrained(str(out), selected_adapters = ["default"])
+    assert (out / "adapter_config.json").is_file()
+    assert not list(out.rglob("mtp_head.safetensors"))
+
+
+@pytest.mark.parametrize("adapter_name", ["default", "task"])
+def test_transformers_native_adapter_head_goes_to_the_root(
+    save_module, tmp_path, monkeypatch, adapter_name
+):
+    """`PreTrainedModel.add_adapter` saves the active adapter into `<out>/` whatever its name."""
+    import torch
+    from peft import LoraConfig
+
+    pytest.importorskip("unsloth_zoo.speculative.nextn")
+    import unsloth.save as save
+    from unsloth.models.speculative import attach_saved_mtp_head, get_mtp_head
+
+    model = _tiny_glm(tmp_path, torch)
+    model.add_adapter(
+        LoraConfig(r = 4, lora_alpha = 8, target_modules = ["q_proj", "v_proj"]),
+        adapter_name = adapter_name,
+    )
+    model.set_adapter(adapter_name)
+    head = get_mtp_head(model, random_init = True)
+    with torch.no_grad():
+        for p in head.parameters():
+            p.add_(0.01)
+    expected = {k: v.detach().clone() for k, v in head.mtp_state_dict().items()}
+
+    out = tmp_path / "saved"
+    monkeypatch.setattr(
+        save, "_stitch_mtp_head", lambda *a, **k: pytest.fail("stitched an adapter save")
+    )
+    model.save_pretrained(str(out))
+    assert (out / "adapter_config.json").is_file()
+    assert (out / "mtp_head.safetensors").is_file()
+    assert not (out / adapter_name).exists()
+
+    reloaded = attach_saved_mtp_head(_tiny_glm(tmp_path, torch), str(out))
+    assert reloaded is not None
+    assert all(torch.equal(reloaded.mtp_state_dict()[k], v) for k, v in expected.items())
+
+
+def test_an_empty_adapter_selection_saves_no_head(save_module, tmp_path, monkeypatch):
+    """`selected_adapters = []` saves nothing: no head, no `default` fallback, no checkpoint stitch."""
+    import torch
+    import unsloth.save as save
+
+    model = _two_adapter_model(torch, active = "default")
+    # Fresh `default` adapter config from a save a moment earlier, not part of this one.
+    (tmp_path / "adapter_config.json").write_text("{}")
+    monkeypatch.setattr(
+        save, "_stitch_mtp_head", lambda *a, **k: pytest.fail("stitched an adapter save")
+    )
+    model.save_pretrained(str(tmp_path), selected_adapters = [])
+    assert not list(tmp_path.rglob("mtp_head.safetensors"))
+    assert not (tmp_path / "task").exists()
+
+
+def test_a_combined_adapter_head_is_not_split_into_sidecars(save_module, tmp_path, capsys):
+    """Trained with several adapters active at once, the head belongs to none of them alone."""
+    import torch
+
+    model = _two_adapter_model(torch, active = ["default", "task"])
+    # A head left in the folder by an earlier single-adapter save must not survive either.
+    (tmp_path / "task").mkdir()
+    (tmp_path / "task" / "mtp_head.safetensors").write_bytes(b"stale")
+    model.save_pretrained(str(tmp_path))
+    assert (tmp_path / "task" / "adapter_config.json").is_file()
+    assert not list(tmp_path.rglob("mtp_head.safetensors"))
+    assert "active together" in capsys.readouterr().out
+    object.__setattr__(model, "active_adapter", "task")
+    model.save_pretrained(str(tmp_path / "single"))
+    assert (tmp_path / "single" / "task" / "mtp_head.safetensors").is_file()
+    assert not (tmp_path / "single" / "mtp_head.safetensors").exists()

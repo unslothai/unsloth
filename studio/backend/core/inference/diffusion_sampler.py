@@ -196,12 +196,16 @@ def _safetensors_top_level_keys(path: str) -> frozenset[str]:
 def checkpoint_prediction_overrides(path: Optional[str]) -> dict[str, Any]:
     """Scheduler overrides a single-file checkpoint asks for through its ``v_pred`` / ``ztsnr`` marker
     tensors (ComfyUI's detection, comfy/supported_models.py SDXL.model_type). Empty when unmarked."""
-    if not path or not str(path).endswith(".safetensors"):
+    if not path or not str(path).lower().endswith(".safetensors"):
         return {}
     try:
         keys = _safetensors_top_level_keys(str(path))
     except Exception:  # noqa: BLE001 - an unreadable header keeps the shipped scheduler
         return {}
+    return _marker_overrides(keys)
+
+
+def _marker_overrides(keys: Any) -> dict[str, Any]:
     if "v_pred" not in keys:
         return {}
     overrides: dict[str, Any] = {"prediction_type": "v_prediction"}
@@ -211,13 +215,213 @@ def checkpoint_prediction_overrides(path: Optional[str]) -> dict[str, Any]:
     return overrides
 
 
-def apply_checkpoint_prediction_type(
-    pipe: Any,
-    path: Optional[str],
-    logger: Any = None,
+# Hub marker reads cached per (repo, snapshot commit) so later offline loads sample the same way.
+_MARKS_FILE = "diffusion_prediction_markers.json"
+_MAX_RECORDED_MARKS = 512
+
+
+def _marks_record_path() -> Any:
+    try:
+        from utils.paths.storage_roots import cache_root
+        return cache_root() / _MARKS_FILE
+    except Exception:  # noqa: BLE001 - no Studio cache root: nothing is recorded
+        return None
+
+
+def _snapshot_commit(root: Optional[str], repo_id: str, revision: Optional[str]) -> Optional[str]:
+    """Snapshot commit from a ``snapshots/<commit>`` path, else the cached ``model_index.json``."""
+    from pathlib import Path
+
+    try:
+        if root:
+            folder = Path(str(root))
+            if folder.parent.name == "snapshots" and folder.name:
+                return folder.name
+        from huggingface_hub import try_to_load_from_cache
+
+        from utils.hf_cache_settings import active_hf_hub_cache
+
+        hit = try_to_load_from_cache(
+            repo_id,
+            "model_index.json",
+            cache_dir = active_hf_hub_cache(),
+            revision = revision,
+        )
+    except Exception:  # noqa: BLE001 - no cache view: nothing to key on
+        return None
+    return Path(hit).parent.name if isinstance(hit, str) else None
+
+
+def _marks_key(repo_id: str, commit: str) -> str:
+    return f"{repo_id.strip().lower()}@{commit}"
+
+
+def _recorded_marks(repo_id: str, commit: Optional[str]) -> list[dict[str, Any]]:
+    import json
+
+    path = _marks_record_path()
+    if not commit or path is None:
+        return []
+    try:
+        hit = json.loads(path.read_text(encoding = "utf-8")).get(_marks_key(repo_id, commit))
+    except Exception:  # noqa: BLE001 - absent / unreadable record: nothing recorded
+        return []
+    if not isinstance(hit, list) or not all(_well_formed_marks(m) for m in hit):
+        return []
+    return [_marker_overrides(set(m.get("markers") or ())) for m in hit]
+
+
+def _well_formed_marks(entry: Any) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    markers = entry.get("markers")
+    return markers is None or (
+        isinstance(markers, list) and all(isinstance(m, str) for m in markers)
+    )
+
+
+def _record_marks(repo_id: str, commit: Optional[str], markers: list[list[str]]) -> None:
+    import contextlib
+    import json
+    import os
+    import threading
+
+    path = _marks_record_path()
+    if not commit or path is None:
+        return
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        path.parent.mkdir(parents = True, exist_ok = True)
+        try:
+            from filelock import FileLock
+            lock: Any = FileLock(f"{path}.lock", timeout = 30)
+        except ImportError:
+            lock = contextlib.nullcontext()
+        # One read / evict / write under a cross-process lock, so concurrent probes never drop entries.
+        with lock:
+            try:
+                record = json.loads(path.read_text(encoding = "utf-8"))
+                if not isinstance(record, dict):
+                    record = {}
+            except Exception:  # noqa: BLE001 - absent / corrupt: start over
+                record = {}
+            key = _marks_key(repo_id, commit)
+            record.pop(key, None)
+            while len(record) >= _MAX_RECORDED_MARKS:
+                record.pop(next(iter(record)))
+            record[key] = [{"markers": sorted(m)} for m in markers]
+            tmp.write_text(json.dumps(record), encoding = "utf-8")
+            os.replace(tmp, path)
+    except Exception:  # noqa: BLE001 - read-only cache / lock timeout: the next offline load lacks the markers
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+
+def _root_single_marks(
+    root: Optional[str],
+    repo_id: Optional[str] = None,
+    hf_token: Any = None,
+    allow_network: bool = False,
+) -> list[dict[str, Any]]:
+    """Marker overrides of each root ``.safetensors`` of a pipeline: off disk when the folder holds them,
+    else off the Hub headers of ``repo_id``. A staged Hub pipeline snapshot keeps only
+    ``model_index.json`` at its root (the packaged single file is never downloaded), so the folder
+    alone would miss the markers. Header range reads only; empty on anything unreadable."""
+    from pathlib import Path
+
+    try:
+        folder = Path(str(root)) if root else None
+        singles = (
+            sorted(
+                p for p in folder.iterdir() if p.suffix.lower() == ".safetensors" and p.is_file()
+            )
+            if folder is not None and folder.is_dir()
+            else []
+        )
+    except OSError:
+        singles = []
+    if singles:
+        return [checkpoint_prediction_overrides(str(p)) for p in singles]
+    rid = (repo_id or "").strip()
+    if rid.count("/") != 1:
+        return []
+    try:
+        if Path(rid).expanduser().exists():
+            return []
+        from .diffusion_families import pinned_revision_kwargs
+
+        rev = pinned_revision_kwargs(rid)
+        commit = _snapshot_commit(root, rid, rev.get("revision"))
+    except Exception:  # noqa: BLE001 - odd id: the shipped scheduler config stands
+        return []
+    if not allow_network:
+        # A cache-only load of a snapshot an online load already read keeps that read's verdict.
+        return _recorded_marks(rid, commit)
+    if commit:
+        # Read the snapshot the record is keyed on, never a HEAD that moved past the staged copy.
+        rev = {"revision": commit}
+    try:
+        from huggingface_hub import HfApi
+
+        from hub.utils.hf_tokens import normalize_token
+
+        # One normalisation for every Hub call here: False (anonymous) never becomes None (ambient).
+        hf_token = normalize_token(hf_token)
+        api = HfApi()
+        names = sorted(
+            f
+            for f in api.list_repo_files(rid, token = hf_token, **rev)
+            if "/" not in f and f.lower().endswith(".safetensors")
+        )
+        markers = [
+            sorted(
+                k
+                for k in api.parse_safetensors_file_metadata(
+                    rid, name, token = hf_token, **rev
+                ).tensors
+                if k in ("v_pred", "ztsnr")
+            )
+            for name in names
+        ]
+    except Exception:  # noqa: BLE001 - offline / gated / odd: an earlier read of this snapshot, else the config
+        return _recorded_marks(rid, commit)
+    _record_marks(rid, commit, markers)
+    return [_marker_overrides(set(m)) for m in markers]
+
+
+def pipeline_prediction_overrides(
+    config: Any,
+    root: Optional[str],
+    repo_id: Optional[str] = None,
+    hf_token: Any = None,
+    allow_network: bool = False,
+) -> dict[str, Any]:
+    """Scheduler overrides a diffusers SDXL pipeline directory asks for. Empty when it asks for none.
+
+    Two sources. The repo's packaged root single file: NoobAI-XL V-Pred 1.0 ships an epsilon
+    ``scheduler_config.json`` beside a root ``.safetensors`` carrying ``v_pred`` / ``ztsnr``, which is
+    the file ComfyUI loads and samples as v-prediction with zero terminal SNR. Only when every root
+    single file agrees, so a repo shipping an eps and a v-pred variant side by side keeps its config.
+    And a config that declares v-prediction with ``rescale_betas_zero_snr`` but leading spacing,
+    which never samples the terminal timestep that zero-SNR training exists for (the marker path
+    sets ``trailing`` for the same reason)."""
+    overrides: dict[str, Any] = {}
+    marks = _root_single_marks(root, repo_id, hf_token, allow_network)
+    if marks and marks[0] and all(m == marks[0] for m in marks):
+        overrides.update(marks[0])
+    config = config or {}
+    prediction = overrides.get("prediction_type", config.get("prediction_type"))
+    zsnr = overrides.get("rescale_betas_zero_snr", config.get("rescale_betas_zero_snr"))
+    if prediction == "v_prediction" and zsnr and config.get("timestep_spacing") != "trailing":
+        overrides["timestep_spacing"] = "trailing"
+    return overrides
+
+
+def _apply_scheduler_overrides(
+    pipe: Any, overrides: dict[str, Any], logger: Any, source: str
 ) -> bool:
-    """Rebuild ``pipe.scheduler`` for a v-prediction checkpoint. True when it changed; idempotent."""
-    overrides = checkpoint_prediction_overrides(path)
     scheduler = getattr(pipe, "scheduler", None)
     config = getattr(scheduler, "config", None)
     if not overrides or config is None:
@@ -228,5 +432,36 @@ def apply_checkpoint_prediction_type(
         return False
     pipe.scheduler = type(scheduler).from_config(config, **overrides)
     if logger is not None:
-        logger.info("scheduler set from checkpoint markers: %s", overrides)
+        logger.info("scheduler set from %s: %s", source, overrides)
     return True
+
+
+def apply_checkpoint_prediction_type(
+    pipe: Any,
+    path: Optional[str],
+    logger: Any = None,
+) -> bool:
+    """Rebuild ``pipe.scheduler`` for a v-prediction checkpoint. True when it changed; idempotent."""
+    return _apply_scheduler_overrides(
+        pipe, checkpoint_prediction_overrides(path), logger, "checkpoint markers"
+    )
+
+
+def apply_pipeline_prediction_type(
+    pipe: Any,
+    root: Optional[str],
+    logger: Any = None,
+    *,
+    repo_id: Optional[str] = None,
+    hf_token: Any = None,
+    allow_network: bool = False,
+) -> bool:
+    """``apply_checkpoint_prediction_type`` for a diffusers pipeline directory
+    (``pipeline_prediction_overrides``). True when it changed; idempotent."""
+    config = getattr(getattr(pipe, "scheduler", None), "config", None)
+    return _apply_scheduler_overrides(
+        pipe,
+        pipeline_prediction_overrides(config, root, repo_id, hf_token, allow_network),
+        logger,
+        "pipeline v-prediction",
+    )

@@ -24,7 +24,6 @@ import {
 } from "../lib/color-themes";
 import { usePalette, useTheme } from "../stores/theme-store";
 
-/** "Aa" swatch in the theme's background and accent. */
 function ThemeChip({
   colors,
 }: {
@@ -83,7 +82,7 @@ export function ColorThemeSelect() {
         <button
           type="button"
           aria-label={t("settings.appearance.palette.label")}
-          className="flex h-9 w-52 cursor-pointer items-center gap-2 rounded-full border border-border bg-background pl-1.5 pr-3 text-sm outline-none transition-colors hover:bg-accent/50 focus-visible:border-ring data-[state=open]:bg-accent/50 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:focus-visible:border-transparent dark:focus-visible:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))] dark:data-[state=open]:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
+          className="flex h-control w-52 cursor-pointer items-center gap-2 rounded-full border border-border bg-background pl-1.5 pr-3 text-sm outline-none transition-colors hover:bg-accent/50 focus-visible:border-ring data-[state=open]:bg-accent/50 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:focus-visible:border-transparent dark:focus-visible:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))] dark:data-[state=open]:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
         >
           <ThemeChip colors={COLOR_THEMES[palette][resolved]} />
           <span className="min-w-0 flex-1 truncate text-left">
@@ -106,7 +105,6 @@ export function ColorThemeSelect() {
               {t("settings.appearance.palette.moreThemes")}
             </span>
           </DropdownMenuSubTrigger>
-          {/* Cap height and scroll an inner viewport to keep rounded corners. */}
           <DropdownMenuSubContent className="flex max-h-[min(--spacing(112),var(--radix-dropdown-menu-content-available-height))] w-56 flex-col">
             <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
               {FLAVOR_THEME_IDS.map(renderItem)}

@@ -15,7 +15,6 @@ export type AudioSourceStatus =
   | { phase: "expired" };
 
 interface AudioSourcePreview {
-  /** Selection key drawn, or "local:<n>" for a file still uploading. */
   key: string | null;
   /** The local key of the upload that just got an id, so its late decode still lands. */
   localKey?: string | null;
