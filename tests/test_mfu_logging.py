@@ -674,3 +674,37 @@ def test_blackwell_dense_peaks(monkeypatch):
     ):
         monkeypatch.setattr(torch.cuda, "get_device_name", lambda device = None, n = name: n)
         assert mfu.get_peak_tflops(dtype = torch.bfloat16) == peak, name
+
+
+def test_sm120_entries_and_name_order(monkeypatch):
+    # NVIDIA RTX PRO Blackwell whitepaper v1.1 Table 4, RTX PRO 6000 Blackwell Server Edition page,
+    # RTX Blackwell (GeForce) whitepaper v1.1 Table 3; dense 16 bit with FP32 accumulate.
+    monkeypatch.delenv("UNSLOTH_PEAK_TFLOPS", raising = False)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    cases = (
+        ("NVIDIA RTX PRO 6000 Blackwell Server Edition", 500.0),  # Colab G4 reports this name
+        ("NVIDIA RTX PRO 6000 Blackwell Workstation Edition", 503.8),
+        ("NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition", 438.9),
+        ("NVIDIA GeForce RTX 5090", 209.5),
+        ("NVIDIA GeForce RTX 5090 D", None),
+        ("NVIDIA GeForce RTX 5090 Laptop GPU", None),
+        # Neighbours that must not pick up an sm120 entry.
+        ("NVIDIA RTX 6000 Ada Generation", None),
+        ("Quadro RTX 6000", None),
+        ("NVIDIA RTX PRO 5000 Blackwell", None),
+        ("NVIDIA GeForce RTX 5080", None),
+    )
+    for name, peak in cases:
+        monkeypatch.setattr(torch.cuda, "get_device_name", lambda device = None, n = name: n)
+        for dtype in (torch.float16, torch.bfloat16):
+            assert mfu.get_peak_tflops(dtype = dtype) == peak, name
+
+
+def test_every_table_name_resolves_to_its_own_entry(monkeypatch):
+    # Substring order: a key listed later must never be shadowed by an earlier key that
+    # matches inside it (B200 inside GB200, H100 inside H100 NVL, L4 inside L40S ...).
+    monkeypatch.delenv("UNSLOTH_PEAK_TFLOPS", raising = False)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    for key, value in mfu._PEAK_TFLOPS_16BIT:
+        monkeypatch.setattr(torch.cuda, "get_device_name", lambda device = None, n = key: "NVIDIA " + n)
+        assert mfu.get_peak_tflops(dtype = torch.float16) == value, key

@@ -1,13 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""CUDA-graph decode (UNSLOTH_DECODE_CUDA_GRAPHS=1): a replayed step is bit for bit the eager step
+"""CUDA-graph decode (forced on / off per test through _decode_graphs.ENABLED): a replayed step is bit for bit the eager step
 (greedy tokens and raw logits, 16-bit and 4-bit, batch 1 and a left-padded batch), graphs are
 re-captured when LoRA weights change between generate() calls, and the KV cache may grow."""
-
-import os
-
-os.environ.setdefault("UNSLOTH_DECODE_CUDA_GRAPHS", "1")
 
 import pytest
 

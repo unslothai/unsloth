@@ -143,3 +143,137 @@ def test_compile_disable_still_bypasses_the_block(monkeypatch):
     step = _cap_layer_step(monkeypatch)
     monkeypatch.setenv("UNSLOTH_COMPILE_DISABLE", "1")
     assert step(16) == set()
+
+
+# Replayed-backward stand-in: one reused weight grad buffer per shape, like the cudagraph pool.
+_POOL = {}
+
+
+class _PoolMatmul(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, weight):
+        ctx.save_for_backward(x, weight)
+        return x @ weight.t()
+
+    @staticmethod
+    def backward(ctx, grad):
+        x, weight = ctx.saved_tensors
+        g_w = (grad.reshape(-1, grad.shape[-1]).t() @ x.reshape(-1, x.shape[-1])).contiguous()
+        buf = _POOL.setdefault(tuple(g_w.shape), torch.empty_like(g_w))
+        buf.copy_(g_w)
+        return (
+            grad @ weight,
+            buf.detach(),
+        )
+
+
+def _pool_layers(monkeypatch, graphs):
+    _POOL.clear()
+    monkeypatch.setattr(torch, "compile", lambda fn, **kwargs: fn)
+
+    class PoolDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.randn(8, 8) / 8)
+
+        def forward(self, hidden_states, **kwargs):
+            return torch.sin(_PoolMatmul.apply(hidden_states, self.weight))
+
+    bc._wrap(PoolDecoderLayer, {**bc._COMPILE_OPTIONS, "triton.cudagraphs": graphs})
+    torch.manual_seed(0)
+    layers = [PoolDecoderLayer().train() for _ in range(3)]
+    refs = [torch.nn.Parameter(l.weight.detach().clone()) for l in layers]
+    return layers, refs
+
+
+def _reference_grads(refs, xs):
+    for x in xs:
+        y = x
+        for w in refs:
+            y = torch.sin(y @ w.t())
+        y.square().mean().backward()
+    return [w.grad for w in refs]
+
+
+@pytest.mark.parametrize("micro_steps", [1, 2])
+def test_param_grads_are_copied_out_of_the_graph_pool(monkeypatch, micro_steps):
+    """Reentrant checkpointing: a .grad left in the replay buffer is overwritten by the next replay."""
+    from torch.utils.checkpoint import checkpoint
+
+    layers, refs = _pool_layers(monkeypatch, graphs = True)
+    xs = [torch.randn(2, 4, 8) for _ in range(micro_steps)]
+    for x in xs:
+        y = x.clone().requires_grad_()
+        for layer in layers:
+            y = checkpoint(layer, y, use_reentrant = True)
+        y.square().mean().backward()
+    want = _reference_grads(refs, xs)
+    ptrs = {buf.data_ptr() for buf in _POOL.values()}
+    for layer, grad in zip(layers, want):
+        assert layer.weight.grad.data_ptr() not in ptrs
+        torch.testing.assert_close(layer.weight.grad, grad)
+
+
+def test_preallocated_grads_are_accumulated_in_place(monkeypatch):
+    # An existing .grad (zero_grad(set_to_none=False), DDP bucket views) is not replaced.
+    layers, refs = _pool_layers(monkeypatch, graphs = True)
+    for layer in layers:
+        layer.weight.grad = torch.zeros_like(layer.weight)
+    owned = [layer.weight.grad.data_ptr() for layer in layers]
+    x = torch.randn(2, 4, 8)
+    y = x
+    for layer in layers:
+        y = layer(y)
+    y.square().mean().backward()
+    want = _reference_grads(refs, [x])
+    for layer, ptr, grad in zip(layers, owned, want):
+        assert layer.weight.grad.data_ptr() == ptr
+        torch.testing.assert_close(layer.weight.grad, grad)
+
+
+def test_param_grads_hooked_only_with_graphs(monkeypatch):
+    layers, _ = _pool_layers(monkeypatch, graphs = False)
+    x = torch.randn(2, 4, 8)
+    y = x
+    for layer in layers:
+        y = layer(y)
+    y.sum().backward()
+    assert not any(l.__dict__.get("_unsloth_block_grad_hooks") for l in layers)
+
+
+def test_nonreentrant_checkpoint_runs_without_graphs(monkeypatch):
+    """Non-reentrant checkpoint forward and recompute skip graphs; reentrant keeps them."""
+    if not hasattr(torch._C._autograd, "_top_saved_tensors_default_hooks"):
+        pytest.skip("torch < 2.8 cannot read the saved tensor hooks stack")
+    from torch.utils.checkpoint import checkpoint
+
+    seen = []
+
+    def fake_compile(fn, **kwargs):
+        tag = "graphs" if kwargs.get("options", {}).get("triton.cudagraphs") else "plain"
+
+        def inner(*args, **kw):
+            seen.append(tag)
+            return fn(*args, **kw)
+
+        return inner
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+
+    class CkptDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+
+        def forward(self, hidden_states, **kwargs):
+            return self.proj(hidden_states)
+
+    bc._wrap(CkptDecoderLayer, {**bc._COMPILE_OPTIONS, "triton.cudagraphs": True})
+    layer = CkptDecoderLayer().train()
+    for reentrant, want in ((False, {"plain"}), (True, {"graphs"})):
+        seen.clear()
+        x = torch.randn(2, 16, 8, requires_grad = True)
+        checkpoint(layer, x, use_reentrant = reentrant).sum().backward()
+        assert len(seen) == 2 and set(seen) == want
+        assert x.grad is not None
+    assert not bc._in_nonreentrant_checkpoint()

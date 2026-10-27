@@ -3,8 +3,7 @@
 
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 
-// Hugeicons "Shield Alert" (stroke-rounded), newer than the pinned free-icons package.
-// https://hugeicons.com/icon/shield-alert
+// Hugeicons "Shield Alert", newer than the pinned free-icons package.
 export const ShieldAlertIcon: IconSvgElement = [
   [
     "path",
@@ -40,7 +39,6 @@ export const ShieldAlertIcon: IconSvgElement = [
   ],
 ];
 
-/** Lucide-compatible wrapper, for the permission-mode option list. */
 export function ShieldAlertGlyph({
   className,
   strokeWidth,

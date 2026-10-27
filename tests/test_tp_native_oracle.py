@@ -56,7 +56,7 @@ QWEN3 = "trl-internal-testing/tiny-Qwen3ForCausalLM"
 GEMMA2 = "trl-internal-testing/tiny-Gemma2ForCausalLM"
 GEMMA3 = "hf-internal-testing/tiny-random-Gemma3ForCausalLM"
 MISTRAL = "hf-internal-testing/tiny-random-MistralForCausalLM"
-PHI3 = "trl-internal-testing/tiny-Phi3ForCausalLM"
+PHI3 = "trl-internal-testing/tiny-Phi3ForCausalLM-3"
 QWEN2 = "trl-internal-testing/tiny-Qwen2ForCausalLM-2.5-Coder"
 STABLELM = "hf-internal-testing/tiny-random-StableLmForCausalLM"  # no transformers TP plan
 OLMO2 = "hf-internal-testing/tiny-random-Olmo2ForCausalLM"
@@ -686,3 +686,54 @@ def test_stub_packages_keep_valid_specs():
     for name in ("unsloth", "unsloth.models"):
         assert sys.modules[name].__spec__ is not None, name
     importlib.util.find_spec("unsloth.models")
+
+
+def test_generated_trl_trainer_init_skips_for_inference_on_a_tp_model():
+    """The generated TRL trainers end __init__ with model.for_inference(); a tensor parallel trainer
+    (tp_native.tp_trainer_setup sets _unsloth_tensor_parallel) must skip it, every other trainer keeps it."""
+    import re
+    import textwrap
+
+    source = open(os.path.join(REPO, "unsloth", "models", "rl.py"), encoding = "utf-8").read()
+    match = re.search(
+        r"super\(\)\.__init__\(\{RLTrainer_call_args\}\{RLTrainer_kwargs\}\)\n(.*?)\n\{RLTrainer_post\}",
+        source,
+        re.S,
+    )
+    assert match, "generated trainer __init__ tail not found"
+    tail = textwrap.dedent(match.group(1))
+    calls = []
+
+    class Model:
+        def for_inference(self):
+            calls.append(type(self).__name__)
+
+    for tensor_parallel in (False, True):
+        trainer = types.SimpleNamespace(
+            **({"_unsloth_tensor_parallel": True} if tensor_parallel else {})
+        )
+        exec(tail, {}, {"self": trainer, "model": Model()})
+    assert calls == ["Model"], calls
+
+
+def test_trainer_dataloader_workers_are_seeded_by_dp_rank():
+    import functools
+
+    pytest.importorskip("accelerate")
+    from accelerate import Accelerator
+    from transformers.trainer_utils import seed_worker
+
+    tp = _load_tp()
+    tp._install_tp_accelerate_hooks()
+    accelerator = Accelerator(cpu = True)
+    accelerator.__dict__[tp._TP_DATA] = (1, 0)  # dp 1: every tp rank is dp rank 0
+    try:
+        init_fn = functools.partial(seed_worker, num_workers = 2, rank = 3)
+        loader = torch.utils.data.DataLoader(
+            list(range(8)), batch_size = 2, num_workers = 2, worker_init_fn = init_fn
+        )
+        prepared = accelerator.prepare_data_loader(loader)
+    finally:
+        accelerator.__dict__.pop(tp._TP_DATA, None)
+    assert prepared.worker_init_fn.func is seed_worker
+    assert prepared.worker_init_fn.keywords == {"num_workers": 2, "rank": 0}

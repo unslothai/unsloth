@@ -78,13 +78,7 @@ _REPO_SIBLINGS: "dict[tuple[str, str, str], tuple[tuple, float]]" = {}
 
 
 def _repo_siblings(repo_type: str, repo_id: str, hf_token: HfTokenArg) -> tuple:
-    """Return a briefly cached file listing with sizes, or an empty tuple when none was ever read.
-
-    A failed refresh serves the last listing instead: sizes at a revision do not change, and
-    discarding them would report an oversized download as unmeasured, which reads as
-    HTTP-eligible. What the refresh is really for, whether the oversized file is now cached, is
-    decided against the local cache by ``largest_download_file_bytes``.
-    """
+    """A failed refresh serves the last listing; unmeasured sizes would wrongly read as HTTP-eligible."""
     key = (str(repo_type), repo_id.lower(), hf_cache_scan.token_fingerprint(hf_token))
     now = time.monotonic()
     with _repo_siblings_lock:
@@ -113,8 +107,7 @@ def _repo_siblings(repo_type: str, repo_id: str, hf_token: HfTokenArg) -> tuple:
         return cached[0] if cached is not None else ()
     with _repo_siblings_lock:
         if key not in _REPO_SIBLINGS and len(_REPO_SIBLINGS) >= _REPO_SIBLINGS_MAX:
-            # Evict least-recently-used, not everything: a clear drops the listings that in-flight
-            # downloads still depend on.
+            # Evict LRU only: in-flight downloads depend on the listings.
             _REPO_SIBLINGS.pop(next(iter(_REPO_SIBLINGS)), None)
         _REPO_SIBLINGS[key] = (siblings, now)
     return siblings
@@ -130,17 +123,7 @@ def largest_download_file_bytes(
     allow_ambient_token: bool = True,
     hub_cache: Optional[str] = None,
 ) -> Optional[int]:
-    """Return the largest selected, uncached file, or None when it cannot be measured.
-
-    Selection matches the worker: explicit files, a GGUF variant plan, filtered model snapshots, or
-    every dataset file. Finalized blobs are excluded because ``snapshot_download`` skips them, so
-    ``0`` means the job has nothing left to fetch. It is not ``None``: only ``None`` says the size
-    is unknown, and a caller carrying an earlier measurement forward needs to tell those apart.
-
-    ``allow_ambient_token`` is the caller's boundary, applied exactly as ``spawn_worker`` applies
-    it: a caller denied the backend's own login measures anonymously, so this probe can never read
-    a repository the download it is deciding for could not.
-    """
+    """None means unmeasurable, 0 nothing left; a caller denied ambient login measures anonymously."""
     siblings = _repo_siblings(
         repo_type, repo_id, hf_token_arg(hf_token, allow_ambient_token = allow_ambient_token)
     )
@@ -211,13 +194,8 @@ def http_rung_reason(
     allow_ambient_token: bool = True,
     known_largest_file_bytes: Optional[int] = None,
 ) -> Optional[str]:
-    """Return why this job cannot use the recovery ladder's HTTP rung, if applicable.
-
-    The measurement is taken again here because the worker may have finalized the oversized file.
-    ``known_largest_file_bytes`` is what the job measured before it ran, and it stands when the
-    fresh attempt cannot measure at all: the sibling cache that would otherwise carry it is
-    bounded, so 64 other repositories are enough to evict an hours-long download's only listing.
-    """
+    """Re-measures, falling back to known_largest_file_bytes when the bounded sibling cache cannot
+    answer."""
     measured = _largest_file_bytes_for_job(
         repo_type,
         repo_id,
@@ -368,14 +346,7 @@ def spawn_worker(
     allow_ambient_token: bool = True,
     files: Optional[Sequence[str]] = None,
 ) -> subprocess.Popen:
-    """Spawn the download worker.
-
-    XET and ``hf_transfer`` write chunks out of order, so their partials can't
-    resume under a sequential writer; the HTTP path stays sequential so
-    SIGKILL -> resume is byte-identical. ``protected_blob_hashes`` are blobs a
-    concurrent same-repo peer is writing, excluded from the cache-prep purge so a
-    shared ``.incomplete`` (e.g. bundled mmproj) is never deleted.
-    """
+    """Only HTTP resumes after SIGKILL (XET reorders writes); blobs a peer is writing are never purged."""
     allow_ambient_token = allow_ambient_token and not account_access.managed_account()
     cwd = backend_dir()
     mode = download_registry.TRANSPORT_XET if use_xet else download_registry.TRANSPORT_HTTP
@@ -406,8 +377,7 @@ def spawn_worker(
         try:
             hf_token = get_token_to_send(None)
         except Exception as e:  # noqa: BLE001
-            # Best effort, like the env lookup this replaced: do not narrow this catch. An OIDCError
-            # or httpx error from hub's OIDC rung would 500 a public download and strand a reservation.
+            # Do not narrow: OIDC/httpx errors would 500 a public download and strand a reservation.
             detail = download_registry.scrub_secrets(f"{type(e).__name__}: {e}")
             logger.warning(
                 f"Could not resolve a saved Hugging Face login ({detail}); downloading anonymously"
@@ -576,10 +546,7 @@ def finalize_worker_exit(
     deferred_error_out: "Optional[list[str]]" = None,
     largest_file_bytes: Optional[int] = None,
 ) -> str:
-    """Reap *proc* and record its terminal state.
-
-    ``deferred_error_out`` captures a deferred error for callers that exhaust all retry rungs.
-    """
+    """deferred_error_out captures a deferred error for callers that exhaust all retry rungs."""
     stderr_data = drain_stderr_excerpt(proc.stderr)
     rc = proc.wait()
     _cleanup_worker_files(proc)
@@ -1476,8 +1443,7 @@ def launch_worker(
     watch_name: str,
     allow_ambient_token: bool = True,
 ) -> str:
-    # Only the Xet success-recording consumes this, and sampling lazy-loads unsloth_zoo, so torch and
-    # transformers, on the request path.
+    # Sampling lazy-loads unsloth_zoo, which pulls torch and transformers onto the request path.
     if account_access.account_scope() is not None:
         record_download_account(registry, key)
         require_live_account(registry, key)
@@ -1501,9 +1467,8 @@ def launch_worker(
                 else None
             ),
         )
-    # The one-off `X-Unsloth-HF-Token` is kept nowhere, so a repo fetched with it can sit in the
-    # cache of a host whose credential set is empty. Recorded HERE, after the in-flight check and
-    # the registry claim, so a rejected request cannot mark a repo it never fetched.
+    # A one-off `X-Unsloth-HF-Token` is stored nowhere, so record the repo. After the in-flight
+    # check and claim, so a rejected request marks nothing.
     from hub.utils import hf_tokens as _hf_tokens
 
     _hf_tokens.note_repo_fetched_with_a_request_token(hf_token, repo_id, repo_type)
@@ -1563,8 +1528,7 @@ def cancel_worker(
     if proc is None:
         if not registry.mark_pending_cancel(key, generation):
             return registry.get_job(key).state
-        # Registration can race the first lookup now that launch runs in a thread: if it got
-        # past the pending-cancel check, kill that process below.
+        # Registration can race the lookup; kill below if it slipped past.
         proc = registry.get_process(key)
         if proc is None:
             return "cancelling"

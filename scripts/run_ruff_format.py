@@ -18,8 +18,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 CONFIG = HERE.parent / ".pre-commit-config.yaml"
-# Set to run against whatever ruff is installed. For a one-off experiment; a commit
-# made under it will be reformatted by the hook and fail pre-commit.
+# One-off experiments only: commits made under it get reformatted by the hook.
 ANY_VERSION_ENV = "UNSLOTH_RUFF_FORMAT_ANY_VERSION"
 USAGE = "usage: run_ruff_format.py FILE [FILE ...]  (formats in place; no options)"
 # Worker count for the Python pass after ruff. The hook is require_serial (#14174), so

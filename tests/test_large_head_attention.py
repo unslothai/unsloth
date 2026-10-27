@@ -502,6 +502,40 @@ def test_router_skips_the_mask_scan_when_it_cannot_use_the_result(monkeypatch):
     assert len(calls) == 1
 
 
+@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
+def test_router_leaves_an_explicit_is_causal_beside_a_mask_to_sdpa():
+    calls, original = _sentinel()
+    router = LH._make_router(original)
+    dtype = _cuda_dtype()
+    q = torch.randn(1, 4, 24, 512, device = "cuda", dtype = dtype)
+    kv = torch.randn(1, 2, 24, 512, device = "cuda", dtype = dtype)
+    allowed = torch.ones(1, 1, 24, 24, device = "cuda", dtype = torch.bool)
+    before = LH.LARGE_HEAD_ENGAGED["calls"]
+    assert router(_Module(), q, kv, kv, allowed, is_causal = True)[0] == "original"
+    assert calls[-1]["is_causal"] is True and LH.LARGE_HEAD_ENGAGED["calls"] == before
+    causal = _causal(24).cuda()[None, None]
+    assert router(_Module(), q, kv, kv, causal)[0] != "original"
+    assert router(_Module(), q, kv, kv, causal, is_causal = False)[0] != "original"
+    assert LH.LARGE_HEAD_ENGAGED["calls"] == before + 2 and len(calls) == 1
+
+
+@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
+def test_router_falls_back_to_sdpa_on_mask_scan_oom(monkeypatch):
+    def oom(*args, **kwargs):
+        raise torch.cuda.OutOfMemoryError("CUDA out of memory.")
+
+    calls, original = _sentinel()
+    router = LH._make_router(original)
+    device, dtype = torch.device("cuda", torch.cuda.current_device()), _cuda_dtype()
+    assert LH._self_check(device, dtype) is True
+    monkeypatch.setattr(LH, "intervals_from_mask", oom)
+    q = torch.randn(1, 4, 24, 512, device = "cuda", dtype = dtype)
+    kv = torch.randn(1, 2, 24, 512, device = "cuda", dtype = dtype)
+    before = LH.LARGE_HEAD_ENGAGED["fallback"]
+    assert router(_Module(), q, kv, kv, _causal(24).cuda()[None, None])[0] == "original"
+    assert LH.LARGE_HEAD_ENGAGED["fallback"] == before + 1 and len(calls) == 1
+
+
 def test_pre_ampere_keeps_sdpa_without_compiling(monkeypatch):
     def kernel(*args, **kwargs):
         raise AssertionError("kernel compiled on sm75")

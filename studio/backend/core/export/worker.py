@@ -38,25 +38,12 @@ activate_happy_eyeballs()
 from utils.hardware import apply_gpu_ids
 
 
-# Gate controlling whether captured stdout/stderr lines are forwarded to the
-# parent's resp_queue (and on to the export-dialog SSE stream). Closed by default
-# so the noisy bootstrap phase (imports, model resolution, loading bars) is
-# suppressed in the UI; _handle_export() opens it when export work starts. The
-# orchestrator spawns a fresh subprocess per checkpoint load, resetting this.
-# Dropped lines are still echoed to the saved fds so the server log keeps them.
+# Closed during bootstrap to hide import noise from the export dialog; dropped lines are still echoed.
 _log_forward_gate = threading.Event()
 
 
 def _setup_log_capture(resp_queue: Any) -> None:
-    """Redirect fds 1 and 2 through pipes so every line printed by this worker
-    and any child it spawns is forwarded to the parent via resp_queue as
-    {"type": "log", ...} messages.
-
-    Must run BEFORE LogConfig.setup_logging and any ML imports, else library
-    handlers may capture the original stderr reference and bypass the pipe.
-    Lines are also echoed back to the original fds so the server console keeps
-    the full output even while ``_log_forward_gate`` is closed.
-    """
+    """Redirects fds 1 and 2 into resp_queue pipes; must run before setup_logging and ML imports or handlers bypass it; lines still echo"""
 
     try:
         saved_out_fd = os.dup(1)
@@ -125,8 +112,7 @@ def _setup_log_capture(resp_queue: Any) -> None:
                 if not line:
                     continue
                 if not _log_forward_gate.is_set():
-                    # Gate closed (bootstrap): already echoed above; drop the
-                    # line so the export dialog skips import noise.
+                    # Gate closed at bootstrap: already echoed above, so drop it to keep import noise out of the dialog
                     continue
                 try:
                     resp_queue.put_nowait(
@@ -171,7 +157,6 @@ def _setup_log_capture(resp_queue: Any) -> None:
 
 def _activate_transformers_version(model_name: str, hf_token: str | None = None) -> None:
     """Activate the correct transformers version BEFORE any ML imports."""
-    # Ensure backend is on sys.path for utils imports.
     backend_path = str(Path(__file__).resolve().parent.parent.parent)
     if backend_path not in sys.path:
         sys.path.insert(0, backend_path)
@@ -472,13 +457,11 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
     hf_token = hf_token_arg(cmd.get("hf_token"), allow_ambient_token = cmd.get("allow_ambient", True))
     max_seq_length = cmd.get("max_seq_length", 2048)
     load_in_4bit = cmd.get("load_in_4bit", True)
-    # Latest-sidecar checkpoints load 16-bit here too: bnb 4-bit feeds quantized
-    # expert weights into unvalidated paths (same flip as the chat worker).
+    # Latest-sidecar checkpoints load 16-bit: bnb 4-bit hits unvalidated expert paths.
     if load_in_4bit:
         from utils.transformers_version import latest_tier_active_for
 
-        # Plain token, like the activation below: the sentinel reads no cache offline,
-        # misses the sidecar and leaves 4-bit on.
+        # Plain token: the sentinel reads no cache offline, misses the sidecar and leaves 4-bit on.
         if latest_tier_active_for(checkpoint_path, hf_token or None):
             load_in_4bit = False
             logger.info(
@@ -572,13 +555,10 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
     export_type = cmd["export_type"]  # "merged", "base", "gguf", "lora"
     response_type = f"export_{export_type}_done"
 
-    # Open the log forwarding gate so the user sees export progress in the live
-    # log panel. Stays open for the rest of this subprocess's life; the
-    # orchestrator spawns a fresh subprocess per checkpoint load, resetting it.
+    # Opens the log gate for export progress; it stays open until the subprocess is respawned per load
     _log_forward_gate.set()
 
-    # Phase milestone so the heavy export step shows in the server log; the
-    # merge/save/convert itself only forwards stdout to the live panel.
+    # Phase milestone for the server log; merge/save/convert itself only streams stdout to the live panel
     _phase = {
         "merged": f"Exporting merged model ({cmd.get('format_type', '16-bit (FP16)')})...",
         "gguf": f"Exporting GGUF ({cmd.get('quantization_method', 'Q4_K_M')})...",
@@ -750,25 +730,17 @@ def _handle_cleanup(backend, resp_queue: Any) -> None:
 
 
 def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None:
-    """Subprocess entrypoint. Persistent — runs command loop until shutdown.
-
-    Args:
-        cmd_queue: mp.Queue for receiving commands from parent.
-        resp_queue: mp.Queue for sending responses to parent.
-        config: Initial configuration dict with checkpoint_path.
-    """
+    """Subprocess entrypoint that blocks in the command loop until shutdown."""
     import queue as _queue
 
-    # Install fd-level stdout/stderr capture FIRST so every subsequent print and
-    # every child process inherits the redirected fds (powers the live log stream).
+    # Install fd-level capture FIRST so child processes inherit the redirected fds.
     _setup_log_capture(resp_queue)
 
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     os.environ["PYTHONWARNINGS"] = "ignore"  # suppress C-level warnings before imports
     # Unbuffered output from child Python (e.g. GGUF converter) so prints surface live.
     os.environ["PYTHONUNBUFFERED"] = "1"
-    # tqdm defaults to a 10s mininterval when stdout isn't a tty (we redirected
-    # fd 1/2 to a pipe), making multi-step bars look frozen; force frequent flushes.
+    # tqdm uses a 10s mininterval on a non-tty stdout, so bars look frozen behind the pipe; force frequent flushes
     os.environ.setdefault("TQDM_MININTERVAL", "0.5")
 
     import warnings
@@ -777,9 +749,7 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
     if os.getenv("ENVIRONMENT_TYPE", "production") == "production":
         warnings.filterwarnings("ignore")
 
-    # This worker's stdout is forwarded to the export dialog once the log gate opens,
-    # and the Hub upload bar is the only live byte progress a long push_to_hub has, so
-    # it keeps its progress bars even though the server turned its own off.
+    # Keep progress bars on: the Hub upload bar is the only live progress for a long push_to_hub
     from loggers.config import allow_progress_bars
 
     allow_progress_bars()
@@ -793,20 +763,16 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
 
     checkpoint_path = config["checkpoint_path"]
 
-    # Before the huggingface_hub import: it latches HF_HUB_DISABLE_IMPLICIT_TOKEN into a
-    # module constant. So an export runs under the identity that loaded the checkpoint.
+    # Before the huggingface_hub import, which latches HF_HUB_DISABLE_IMPLICIT_TOKEN, so exports run as the identity that loaded the checkpoint
     from hub.utils.hf_tokens import apply_token_to_child_env
 
     if not config.get("allow_ambient", True):
-        # The sentinel, not the caller's token: this worker outlives the load and serves
-        # whoever exports next. The caller's own travels as an argument instead.
+        # The sentinel, not the caller's token: this worker serves whoever exports next.
         apply_token_to_child_env(os.environ, False)
 
     with _offline_window_if_unreachable(step = "activating transformers"):
         try:
-            # Plain token: _load_config_json refuses the hub cache for the sentinel, so
-            # offline a cached model falls to the default sidecar. Anonymity here is the
-            # scrubbed environment, not the argument.
+            # Plain token: _load_config_json refuses the hub cache for the sentinel, so offline a cached model falls to the default sidecar
             _activate_transformers_version(checkpoint_path, config.get("hf_token") or None)
         except Exception as exc:
             _send_response(
@@ -887,8 +853,7 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
     try:
         backend = ExportBackend()
 
-        # Offline window covers the load preflights (malware/consent scans hit the Hub)
-        # before load_checkpoint runs its own probe; restored after so later loads re-decide.
+        # Offline window for load preflights that hit the Hub; restored after so later loads re-probe
         with _offline_window_if_unreachable():
             _handle_load(backend, config, resp_queue)
 
@@ -942,8 +907,7 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
                     _handle_load(backend, cmd, resp_queue)
 
             elif cmd_type == "export":
-                # Re-probed per export: connectivity may change after loading. A push needs the Hub,
-                # so pinning it offline for the whole export would only make the push fail.
+                # Probed per export since connectivity may change after load; pinning offline would make a push fail
                 export_window = (
                     contextlib.nullcontext()
                     if cmd.get("push_to_hub")

@@ -47,11 +47,11 @@ import {
   FolderExportIcon,
   Notebook01Icon,
   RamMemoryIcon,
-  StopIcon,
   TaskDone01Icon,
   TemperatureIcon,
   ZapIcon,
 } from "@hugeicons/core-free-icons";
+import { StopIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { type ReactElement, type ReactNode, useState } from "react";
@@ -173,7 +173,6 @@ export function ProgressSection({
     await navigate({ to: "/chat" });
   };
 
-  // A finished run can be exported to GGUF: deep-link to Export with this run preselected.
   const exportRunName = data.outputDir
     ? (data.outputDir.replace(/[/\\]+$/, "").split(/[/\\]/).pop() || null)
     : null;
@@ -223,7 +222,7 @@ export function ProgressSection({
     ? data.currentGradNorm
     : (lastValue(data.gradNormHistory) ?? data.currentGradNorm);
 
-  // Prefer the run's saved snapshot when present (#6853); History shows blanks, never form values.
+  // History shows blanks, never form values.
   const cfg = configOverride ?? (isHistorical ? undefined : config);
   const cfgEpochs = cfg?.epochs;
   const cfgBatchSize = cfg?.batchSize;
@@ -237,7 +236,7 @@ export function ProgressSection({
   const cfgLoraDropout = cfg?.loraDropout;
   const cfgLoraVariant = cfg?.loraVariant;
 
-  // Mirror the training form: on Mac the MLX backend runs CUDA optimizers as AdamW.
+  // On Mac the MLX backend runs CUDA optimizers as AdamW.
   const effectiveOptimizer =
     platformDeviceType === "mac" &&
     OPTIMIZER_OPTIONS.some((o) => o.value === cfgOptimizerType)

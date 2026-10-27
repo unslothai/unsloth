@@ -1,7 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""CUDA-graph replay of the native one-token decode step (opt-in: UNSLOTH_DECODE_CUDA_GRAPHS=1).
+"""CUDA-graph replay of the native one-token decode step.
+
+When it runs (decided per call, enabled()): UNSLOTH_DECODE_CUDA_GRAPHS=1 everywhere, =0 nowhere; unset,
+only for the generate() calls an RL trainer makes on the training model (GRPO / RLOO / online DPO /
+GKD ... through rl.py's unwrap_model_for_generation, rl_generation()) on NVIDIA CUDA, not for plain
+model.generate() and not on ROCm / HIP (graph replay there is not verified bitwise; =1 still forces it).
+The decode buffers and graphs of such a call are released when it returns to training: the next
+optimizer step invalidates the graphs anyway, and training gets the memory back.
 
 The eager decode step is host bound (hundreds of small launches per token). It is captured once per
 batch size as n_layers + 1 graph segments split at each layer's attention core, which runs eagerly
@@ -27,7 +34,9 @@ import threading
 
 import torch
 
-ENABLED = os.environ.get("UNSLOTH_DECODE_CUDA_GRAPHS", "0") == "1"
+# Programmatic override (tests, harnesses): True / False force graphs on / off, None (default) follows
+# the environment variable read at call time and the RL generation scope (enabled()).
+ENABLED = None
 # KV-cache rows are allocated in multiples of this with graphs on.
 BUCKET = 256
 # Captured steps (one per batch size / autocast state) kept per model.
@@ -35,11 +44,14 @@ MAX_GRAPHS = int(os.environ.get("UNSLOTH_DECODE_GRAPH_MAX", "8"))
 
 __all__ = [
     "ENABLED",
+    "enabled",
+    "rl_generation",
     "static",
     "alloc_decode_buffers",
     "decode_step",
     "invalidate",
     "release",
+    "release_for_training",
     "register_attention",
     "start_generation",
     "end_generation",
@@ -54,14 +66,59 @@ BUFFER_EPOCH = 0
 GENERATION_EPOCH = 0
 # prompt + max_new_tokens of the running generate() call, 0 when unknown.
 MAX_LEN_HINT = 0
+# 1: size the graph KV cache for prompt + max_new_tokens up front (early stops still hold it all).
+PREALLOC = os.environ.get("UNSLOTH_DECODE_GRAPH_PREALLOC", "0") == "1"
 _SUPPORTED_ATTENTION = set()
 # Tested families only (Qwen2 shares the Llama attention but is untested here).
 _SUPPORTED_MODEL_TYPES = {"llama", "qwen3"}
 _PROJ_NAMES = ("q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj")
 
 
+def enabled():
+    """Whether a decode step / prefill on this thread runs (and sizes its buffers) for graph replay."""
+    if ENABLED is not None:
+        return bool(ENABLED)
+    if torch.compiler.is_compiling():
+        # Traced code never replays graphs (decode_step bails too); keep the trace free of env / TLS reads.
+        return False
+    flag = os.environ.get("UNSLOTH_DECODE_CUDA_GRAPHS", "")
+    if flag == "1":
+        return True
+    if flag == "0":
+        return False
+    return _DEFAULT_OK and getattr(_TLS, "rl_depth", 0) > 0
+
+
+def _default_ok():
+    # The RL default is NVIDIA CUDA only: HIP graph replay is not verified bitwise against the eager
+    # step on ROCm (=1 still forces it), and XPU / MPS / CPU never take the graphed step.
+    try:
+        return torch.version.hip is None and torch.cuda.is_available()
+    except Exception:
+        return False
+
+
+_DEFAULT_OK = _default_ok()
+
+
+class rl_generation:
+    """Scope of an RL trainer's generate() call (per thread): graphs default on inside it."""
+
+    __slots__ = ()
+
+    def __enter__(self):
+        _TLS.rl_depth = getattr(_TLS, "rl_depth", 0) + 1
+        return self
+
+    def __exit__(self, *exc):
+        _TLS.rl_depth -= 1
+        return False
+
+
 def static():
     """The _StepStatics of a graph-mode step running on this thread, else None (eager)."""
+    if torch.compiler.is_compiling():
+        return None
     return getattr(_TLS, "statics", None)
 
 
@@ -115,7 +172,8 @@ def alloc_decode_buffers(
     global BUFFER_EPOCH, GENERATION_EPOCH
     seq_len = K1.shape[-2]
     attention_size = n_heads * head_dim
-    if not ENABLED:
+    config = getattr(attn, "config", None)
+    if not enabled() or getattr(config, "model_type", None) not in _SUPPORTED_MODEL_TYPES:
         attn.paged_attention = torch.empty(
             (increment + seq_len + 1, 2, bsz, n_kv_heads, head_dim),
             dtype = dtype,
@@ -141,6 +199,9 @@ def alloc_decode_buffers(
         )
     else:
         rows = _round_up(max(increment + seq_len + 1, MAX_LEN_HINT + 1), BUCKET)
+        if not PREALLOC:
+            # Start at the eager size; resize_decode_buffers grows it.
+            rows = min(rows, _round_up(increment + seq_len + 1, BUCKET))
         store = attn.__dict__.get("_unsloth_graph_buffers")
         if store is None:
             store = attn._unsloth_graph_buffers = {}
@@ -193,11 +254,17 @@ def resize_decode_buffers(attn, increment, bsz, n_heads, n_kv_heads, head_dim):
     """The eager growth of the KV cache by `increment` rows (new rows zeroed with graphs on)."""
     global BUFFER_EPOCH
     rows = attn.paged_attention.shape[0]
+    if "_unsloth_graph_buffers" in attn.__dict__:
+        # Each growth re-captures: double, capped at the hint, so O(log n) re-captures.
+        grown = max(rows + increment, 2 * rows)
+        if MAX_LEN_HINT + 1 > rows:
+            grown = min(grown, MAX_LEN_HINT + 1)
+        increment = _round_up(grown, BUCKET) - rows
     attn.paged_attention.resize_((rows + increment, 2, bsz, n_kv_heads, head_dim))
     attn.paged_attention_K = attn.paged_attention[:, 0]
     attn.paged_attention_V = attn.paged_attention[:, 1]
     attn.attention.resize_((bsz, n_heads, 1, attn.attention.shape[-1] + increment))
-    if ENABLED:
+    if "_unsloth_graph_buffers" in attn.__dict__:
         attn.paged_attention[rows:].zero_()
         BUFFER_EPOCH += 1
 
@@ -274,15 +341,32 @@ def invalidate(model):
 def release(model):
     """Drops captured steps and the persistent decode buffers (frees their memory)."""
     global BUFFER_EPOCH
-    for state in _states(model):
-        state.clear()
-        state.statics.clear()
+    found = False
     for module in model.modules():
-        if "_unsloth_graph_buffers" in module.__dict__:
-            del module.__dict__["_unsloth_graph_buffers"]
+        d = module.__dict__
+        state = d.get("_unsloth_decode_graphs")
+        if state is not None:
+            found = True
+            state.clear()
+            state.statics.clear()
+        if "_unsloth_graph_buffers" in d:
+            found = True
+            del d["_unsloth_graph_buffers"]
             for name in _BUFFER_NAMES:
-                module.__dict__.pop(name, None)
-    BUFFER_EPOCH += 1
+                d.pop(name, None)
+    if found:
+        BUFFER_EPOCH += 1
+
+
+def release_for_training(model):
+    """release(), plus the eager decode buffers the last generate() left on the attention modules:
+    the next prefill allocates fresh ones, so training gets the KV cache memory back."""
+    release(model)
+    for module in model.modules():
+        d = module.__dict__
+        if "paged_attention" in d:
+            for name in _BUFFER_NAMES:
+                d.pop(name, None)
 
 
 def _version(t):
@@ -452,6 +536,14 @@ def decode_step(
         return None
     if torch.cuda.is_current_stream_capturing() or torch.compiler.is_compiling():
         return None
+    index = input_ids.device.index
+    if index is not None and index != torch.cuda.current_device():
+        # Capture on the model's GPU, else the capture fails and decode stays eager.
+        with torch.cuda.device(index):
+            return decode_step(
+                model, fast_forward_inference, logits_fn, mask_fn, input_ids, past_key_values,
+                position_ids, attention_mask,
+            )  # fmt: skip
     state = _state(model)
     if state.disabled is not None:
         return None
@@ -589,6 +681,9 @@ def _capture(
     attention_mask,
     seq_len,
 ):
+    if state.stream is not None and state.stream.device.index != torch.cuda.current_device():
+        state.stream = None
+        state.pool = None
     if state.pool is None:
         state.pool = torch.cuda.graph_pool_handle()
     if state.stream is None:
