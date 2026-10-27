@@ -172,7 +172,8 @@ def test_update_size_uses_the_matching_architecture_runtime_in_a_mixed_release(
     _write_record(
         managed.tree,
         asset = f"audio-v0.9.0-unsloth.1-bin-windows-{arch}-cuda13.zip",
-        accelerator = "cuda", accelerator_request = "cuda",
+        accelerator = "cuda",
+        accelerator_request = "cuda",
     )
     assets = [
         (f"audio-{_LATEST}-bin-windows-{arch}-cuda13.zip", 100_000_000),

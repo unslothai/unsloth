@@ -139,10 +139,14 @@ def test_cudart_requires_a_known_bundle_architecture(arch):
     assert M.cudart_asset_for(names, f"audio-{TAG}-bin-windows-{arch}-cuda13.zip") is None
 
 
-@pytest.mark.parametrize("bundle_arch,runtime_arch", [("x64", "AMD64"), ("amd64", "x86_64"), ("ARM64", "aarch64")])
+@pytest.mark.parametrize(
+    "bundle_arch,runtime_arch", [("x64", "AMD64"), ("amd64", "x86_64"), ("ARM64", "aarch64")]
+)
 def test_cudart_preserves_explicit_legacy_architecture_aliases(bundle_arch, runtime_arch):
     runtime = f"audio-{TAG}-cudart-windows-{runtime_arch}-cuda12.4.zip"
-    assert M.cudart_asset_for([runtime], f"audio-{TAG}-bin-win-{bundle_arch}-cuda12.4.zip") == runtime
+    assert (
+        M.cudart_asset_for([runtime], f"audio-{TAG}-bin-win-{bundle_arch}-cuda12.4.zip") == runtime
+    )
 
 
 @pytest.mark.parametrize(
