@@ -375,20 +375,17 @@ async def exercise_browser(url: str, client) -> list[str]:
             await downgraded.evaluate("window.pins.refreshPinnedChats()")
             assert await pins(downgraded) == ["downgrade-offline", "downgrade-a", "downgrade-b"]
             await downgraded.evaluate(
-                "window.pins.usePinnedChatsStore.getState().move('downgrade-b', 'downgrade-offline', 'before')"
-            )
-            await downgraded.evaluate(
                 "window.pins.usePinnedChatsStore.getState().unpin('downgrade-a')"
             )
             await downgraded.evaluate("window.pins.refreshPinnedChats()")
             await downgraded.reload()
             await downgraded.wait_for_function("window.ready === true")
             await mount(downgraded)
-            assert await pins(downgraded) == ["downgrade-b", "downgrade-offline"]
+            assert await pins(downgraded) == ["downgrade-offline", "downgrade-b"]
             save_server_pins(["downgrade-concurrent", "downgrade-a", "downgrade-b"])
             downgrade["old_backend"] = False
             await downgraded.evaluate("window.pins.refreshPinnedChats()")
-            expected = ["downgrade-b", "downgrade-offline", "downgrade-concurrent"]
+            expected = ["downgrade-offline", "downgrade-concurrent", "downgrade-b"]
             assert await pins(downgraded) == expected
             assert server_pins() == expected
             passed.append(

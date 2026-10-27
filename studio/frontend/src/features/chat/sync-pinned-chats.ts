@@ -45,9 +45,6 @@ function createRuntime(sessionScope: string) {
     readLegacy,
     readFallback: journal.readFallback,
     writeFallback: journal.writeFallback,
-    // The scoped fallback journal is the local cache. Rewriting the old global
-    // key would turn offline edits into fresh legacy imports after sign-out.
-    writeLocal: () => undefined,
     onUnsupported: () =>
       toast.info(
         "This server saves pins in this browser. They will sync after the server is updated.",
@@ -69,9 +66,6 @@ function createRuntime(sessionScope: string) {
   setPinnedChatsActions({
     setPinned: (ids, pinned) => {
       void sync.setPinned(ids, pinned).catch(() => undefined);
-    },
-    move: (id, targetId, placement) => {
-      void sync.move(id, targetId, placement).catch(() => undefined);
     },
   });
   return {

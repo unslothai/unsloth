@@ -16,20 +16,18 @@ function pin(operationId: string, ids: string[], pinned = true): PinOperation {
   return { operationId, kind: "pin", ids, pinned };
 }
 function fixture(error: unknown = unsupported()) {
-  let local = ["legacy"];
+  const legacy = ["legacy"];
   let remote: string[] | undefined;
   let failure = error;
   let loadFailure: unknown;
   let remoteCalls = 0;
   let loads = 0;
   let warnings = 0;
-  let writes = 0;
   let fallback: PinnedChatsFallbackState | undefined;
   let journalFailure = false;
-  let cacheFailure = false;
   const acknowledged = new Set<string>();
   const tombstones = new Set<string>();
-  const readLegacy = () => local.slice();
+  const readLegacy = () => legacy.slice();
   const options = {
     load: async () => {
       loads += 1;
@@ -54,11 +52,6 @@ function fixture(error: unknown = unsupported()) {
       return remote.slice();
     },
     readLegacy,
-    writeLocal: (ids: string[]) => {
-      if (cacheFailure) throw new Error("cache full");
-      local = ids;
-      writes += 1;
-    },
     readFallback: () => fallback && structuredClone(fallback),
     writeFallback: (value: PinnedChatsFallbackState | undefined) => {
       if (journalFailure) throw new Error("journal full");
@@ -77,29 +70,26 @@ function fixture(error: unknown = unsupported()) {
     set failure(value: unknown) { failure = value; },
     set loadFailure(value: unknown) { loadFailure = value; },
     set journalFailure(value: boolean) { journalFailure = value; },
-    set cacheFailure(value: boolean) { cacheFailure = value; },
     set remote(value: string[] | undefined) { remote = value; },
     get remote() { return remote; },
-    get local() { return local; },
+    get local() { return fallback?.pinnedIds ?? legacy; },
     get visible() { return visible; },
     get fallback() { return fallback; },
     get remoteCalls() { return remoteCalls; },
     get loads() { return loads; },
     get warnings() { return warnings; },
-    get writes() { return writes; },
   };
 }
 
-test("an older backend journals local pin/unpin/move and probes again on refresh", async () => {
+test("an older backend journals local pin/unpin and probes again on refresh", async () => {
   const f = fixture();
   await f.sync.refresh();
   assert.deepEqual(f.visible, ["legacy"]);
   await f.sync.setPinned(["new", "another"], true);
-  await f.sync.move("legacy", "new", "before");
-  assert.deepEqual(f.local, ["legacy", "new", "another"]);
+  assert.deepEqual(f.local, ["new", "another", "legacy"]);
   await f.sync.setPinned(["legacy", "new", "another"], false);
   assert.deepEqual(f.local, []);
-  assert.equal(f.fallback?.operations.length, 3);
+  assert.equal(f.fallback?.operations.length, 2);
   const before = f.loads;
   await f.sync.refresh();
   assert.equal(f.loads, before + 1);
@@ -185,7 +175,6 @@ test("network, auth, server, and unrelated validation failures never switch to l
       (caught) => caught === error,
     );
     assert.deepEqual(f.local, ["legacy"]);
-    assert.equal(f.writes, 0);
     assert.equal(f.warnings, 0);
     assert.equal(f.remoteCalls, 2);
     assert.equal(f.fallback, undefined);
@@ -195,8 +184,8 @@ test("network, auth, server, and unrelated validation failures never switch to l
 
 test("upgrade automatically merges baseline and replays explicit changes in order", async () => {
   const f = fixture();
-  await f.sync.setPinned(["new", "another"], true);
-  await f.sync.move("another", "new", "before");
+  await f.sync.setPinned(["new"], true);
+  await f.sync.setPinned(["another"], true);
   await f.sync.setPinned(["legacy"], false);
   f.remote = ["other-browser"];
   f.upgrade();
@@ -255,20 +244,6 @@ test("journal failure cannot claim a saved local write", async () => {
   assert.deepEqual(f.fallback?.operations, []);
 });
 
-test("cache failure leaves a durable operation and retry does not duplicate it", async () => {
-  const f = fixture();
-  await f.sync.refresh();
-  f.cacheFailure = true;
-  const operation = pin("once", ["new"]);
-  await assert.rejects(f.transport.compareAndSet(["legacy"], ["new", "legacy"], operation), /cache full/);
-  assert.equal(f.fallback?.operations.length, 1);
-  f.cacheFailure = false;
-  const result = await f.transport.compareAndSet(["legacy"], ["new", "legacy"], operation);
-  assert.equal(result.applied, true);
-  assert.deepEqual(f.local, ["new", "legacy"]);
-  assert.equal(f.fallback?.operations.length, 1);
-});
-
 test("partial replay retains operation IDs and retries without repeating acknowledged edits", async () => {
   const f = fixture();
   await f.sync.setPinned(["first"], true);
@@ -325,7 +300,6 @@ test("stale unsupported response after session reset cannot create a fallback jo
   reject(unsupported());
   await assert.rejects(before, /session changed/);
   assert.equal(f.fallback, undefined);
-  assert.equal(f.writes, 0);
 });
 
 test("stale recovery after reset cannot clear the durable fallback", async () => {

@@ -18,9 +18,6 @@ export function readLegacyPinnedChatIds(
   try {
     const saved = JSON.parse(storage.getItem("unsloth_pinned_chats") ?? "null");
     const pinned = ids(saved?.state?.pinnedIds);
-    if (saved?.state?.manualOrderIncluded === true) {
-      return pinned;
-    }
     let order: string[] = [];
     try {
       const organization = JSON.parse(
@@ -36,18 +33,4 @@ export function readLegacyPinnedChatIds(
   } catch {
     return [];
   }
-}
-
-/** Compatibility with older servers: keep the full order in a single browser write. */
-export function writeLocalPinnedChatIds(
-  storage: Pick<Storage, "setItem">,
-  pinnedIds: string[],
-): void {
-  storage.setItem(
-    "unsloth_pinned_chats",
-    JSON.stringify({
-      state: { pinnedIds, manualOrderIncluded: true },
-      version: 0,
-    }),
-  );
 }

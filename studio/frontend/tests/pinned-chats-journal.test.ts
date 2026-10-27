@@ -149,27 +149,21 @@ test("concurrent initial fallback snapshots retain both tabs' known pins", () =>
   assert.equal(storage.length, 2);
 });
 
-test("fallback combines separate baselines before replaying explicit unpin and relative move", () => {
+test("fallback combines separate baselines before replaying explicit unpin and pin", () => {
   const storage = new MemoryStorage();
   const first = createPinnedChatsJournal(storage, "session");
   const second = createPinnedChatsJournal(storage, "session");
   const unpin = pin("01-remove", "removed", false);
-  const move: PinOperation = {
-    kind: "move",
-    operationId: "02-move",
-    id: "c",
-    targetId: "a",
-    placement: "before",
-  };
+  const added = pin("02-add", "added");
   first.writeFallback(fallback(["a", "removed", "c"], [unpin]));
   second.readFallback();
   second.writeFallback(
-    fallback(["a", "removed", "c", "remote"], [unpin, move]),
+    fallback(["a", "removed", "c", "remote"], [unpin, added]),
   );
   const saved = createPinnedChatsJournal(storage, "session").readFallback();
   assert.deepEqual(saved?.baseIds, ["a", "removed", "c", "remote"]);
-  assert.deepEqual(saved?.operations, [unpin, move]);
-  assert.deepEqual(saved?.pinnedIds, ["c", "a", "remote"]);
+  assert.deepEqual(saved?.operations, [unpin, added]);
+  assert.deepEqual(saved?.pinnedIds, ["added", "a", "c", "remote"]);
 });
 
 test("completed fallback replay acknowledges only entries observed before another tab wrote", () => {

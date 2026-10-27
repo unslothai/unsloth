@@ -140,18 +140,6 @@ test("bulk operations deduplicate IDs and preserve existing pin positions", asyn
   assert.deepEqual(backend.value, ["another", "existing"]);
 });
 
-test("a stale relative move preserves concurrent pins and cannot restore an unpin", async () => {
-  const backend = server(["A", "B", "C"]);
-  const a = client(backend);
-  const b = client(backend);
-  await Promise.all([a.sync.refresh(), b.sync.refresh()]);
-  await a.sync.setPinned(["A"], false);
-  await a.sync.setPinned(["new"], true);
-  await b.sync.move("C", "B", "before");
-  await b.sync.move("A", "C", "before");
-  assert.deepEqual(backend.value, ["new", "C", "B"]);
-});
-
 test("pinning before initial hydration preserves legacy pins", async () => {
   const backend = server();
   const a = client(backend, ["old"]);
@@ -344,8 +332,6 @@ test("an absent unpin reaches the server to record migration tombstones", async 
       : undefined,
     false,
   );
-  await fresh.reorder([]);
-  assert.equal(backend.calls.length, 1);
 });
 
 test("unpinning the final migrated pin persists an authoritative empty list", async () => {
@@ -601,29 +587,6 @@ test("explicit session reset clears the old journal while normal reset retains i
   a.sync.reset({ clearPending: true });
   assert.deepEqual(disk.read(), []);
   assert.deepEqual(a.visible, []);
-});
-
-test("independent relative moves survive concurrent compare-and-set rebases", async () => {
-  const backend = server(["A", "B", "C", "D"]);
-  const a = client(backend);
-  const b = client(backend);
-  await Promise.all([a.sync.refresh(), b.sync.refresh()]);
-  await Promise.all([
-    a.sync.move("A", "B", "after"),
-    b.sync.move("D", "C", "before"),
-  ]);
-  assert.deepEqual(backend.value, ["B", "A", "D", "C"]);
-  assert.equal(backend.calls.length, 3);
-});
-
-test("a move whose target was unpinned cannot re-create either missing row", async () => {
-  const backend = server(["A", "B", "C"]);
-  const a = client(backend);
-  const b = client(backend);
-  await Promise.all([a.sync.refresh(), b.sync.refresh()]);
-  await a.sync.setPinned(["B"], false);
-  await b.sync.move("A", "B", "after");
-  assert.deepEqual(backend.value, ["A", "C"]);
 });
 
 test("legacy merge runs even when server pins exist and preserves durable unpin tombstones", async () => {

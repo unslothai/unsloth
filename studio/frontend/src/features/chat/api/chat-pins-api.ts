@@ -97,9 +97,7 @@ export function createChatPinsApi(sessionSignal: AbortSignal) {
           requireSupport: true,
           operationId: supportsOperationId ? operation?.operationId : undefined,
           unpinnedChatIds:
-            supportsOperationId &&
-            operation?.kind === "pin" &&
-            !operation.pinned
+            supportsOperationId && operation && !operation.pinned
               ? operation.ids
               : undefined,
         },

@@ -26,7 +26,6 @@ interface PinnedChatsTransportOptions {
   ) => Promise<{ pinnedIds: string[] | undefined; applied: boolean }>;
   migrateLegacy?: (ids: string[]) => Promise<string[] | undefined>;
   readLegacy: () => string[];
-  writeLocal: (ids: string[]) => void;
   readFallback: () => PinnedChatsFallbackState | undefined;
   writeFallback: (state: PinnedChatsFallbackState | undefined) => void;
   onUnsupported?: () => void;
@@ -180,7 +179,6 @@ export function createPinnedChatsTransport(options: PinnedChatsTransportOptions)
     const pinnedIds = existing || !operation
       ? state.pinnedIds : validatePinnedIds(applyPinOperation(state.pinnedIds, operation))!;
     options.writeFallback({ ...state, pinnedIds, operations });
-    options.writeLocal(pinnedIds.slice());
     return { pinnedIds, applied: true };
   }
 

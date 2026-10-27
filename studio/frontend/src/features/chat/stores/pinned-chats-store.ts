@@ -3,11 +3,8 @@
 
 import { create } from "zustand";
 
-export type PinnedChatPlacement = "before" | "after";
-
 export interface PinnedChatsActions {
   setPinned: (ids: string[], pinned: boolean) => void;
-  move: (id: string, targetId: string, placement: PinnedChatPlacement) => void;
 }
 
 export interface PinnedChatsState extends PinnedChatsActions {
@@ -47,29 +44,6 @@ export const usePinnedChatsStore = create<PinnedChatsState>((set, get) => ({
       return additions.length === 0
         ? state
         : { pinnedIds: [...additions, ...state.pinnedIds] };
-    });
-  },
-  move: (id, targetId, placement) => {
-    if (actions) {
-      actions.move(id, targetId, placement);
-      return;
-    }
-    set((state) => {
-      if (
-        id === targetId ||
-        !state.pinnedIds.includes(id) ||
-        !state.pinnedIds.includes(targetId)
-      )
-        return state;
-      const next = state.pinnedIds.filter((entry) => entry !== id);
-      next.splice(
-        next.indexOf(targetId) + (placement === "after" ? 1 : 0),
-        0,
-        id,
-      );
-      return next.every((entry, index) => entry === state.pinnedIds[index])
-        ? state
-        : { pinnedIds: next };
     });
   },
 }));

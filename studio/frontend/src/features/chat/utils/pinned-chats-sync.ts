@@ -1,15 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-export type PinOperation = { operationId: string } & (
-  | { kind: "pin"; ids: string[]; pinned: boolean }
-  | {
-      kind: "move";
-      id: string;
-      targetId: string;
-      placement: "before" | "after";
-    }
-);
+export type PinOperation = {
+  operationId: string;
+  kind: "pin";
+  ids: string[];
+  pinned: boolean;
+};
 
 export interface PinnedChatsSyncOptions {
   load: () => Promise<string[] | undefined>;
@@ -82,20 +79,6 @@ export function validatePinOperation(value: unknown): PinOperation {
       };
     }
   }
-  if (
-    operation.kind === "move" &&
-    isValidPinId(operation.id) &&
-    isValidPinId(operation.targetId) &&
-    (operation.placement === "before" || operation.placement === "after")
-  ) {
-    return {
-      kind: "move",
-      operationId: operation.operationId,
-      id: operation.id,
-      targetId: operation.targetId,
-      placement: operation.placement,
-    };
-  }
   throw new PinnedChatsValidationError("Invalid pending pin operation");
 }
 
@@ -104,21 +87,6 @@ export function applyPinOperation(
   ids: string[],
   operation: PinOperation,
 ): string[] {
-  if (operation.kind === "move") {
-    if (
-      operation.id === operation.targetId ||
-      !ids.includes(operation.id) ||
-      !ids.includes(operation.targetId)
-    ) {
-      return ids.slice();
-    }
-    const next = ids.filter((id) => id !== operation.id);
-    const at =
-      next.indexOf(operation.targetId) +
-      (operation.placement === "after" ? 1 : 0);
-    next.splice(at, 0, operation.id);
-    return next;
-  }
   const selected = new Set(operation.ids);
   if (!operation.pinned) {
     return ids.filter((id) => !selected.has(id));
@@ -358,11 +326,7 @@ export function createPinnedChatsSync(options: PinnedChatsSyncOptions) {
     });
   }
 
-  function mutate(
-    intent:
-      | Omit<Extract<PinOperation, { kind: "pin" }>, "operationId">
-      | Omit<Extract<PinOperation, { kind: "move" }>, "operationId">,
-  ): Promise<void> {
+  function mutate(intent: Omit<PinOperation, "operationId">): Promise<void> {
     try {
       restore();
       const operation = validatePinOperation({
@@ -419,26 +383,6 @@ export function createPinnedChatsSync(options: PinnedChatsSyncOptions) {
     },
     setPinned(ids: string[], pinned: boolean): Promise<void> {
       return mutate({ kind: "pin", ids: [...new Set(ids)], pinned });
-    },
-    move(
-      id: string,
-      targetId: string,
-      placement: "before" | "after",
-    ): Promise<void> {
-      return mutate({ kind: "move", id, targetId, placement });
-    },
-    /** Compatibility for callers that still submit a complete order. Prefer move(). */
-    reorder(ids: string[]): Promise<void> {
-      const ordered = [...new Set(ids)];
-      const operations = ordered.slice(1).map((id, index) =>
-        mutate({
-          kind: "move",
-          id,
-          targetId: ordered[index],
-          placement: "after",
-        }),
-      );
-      return Promise.all(operations).then(() => undefined);
     },
     reset({ clearPending = false }: { clearPending?: boolean } = {}): void {
       generation += 1;
