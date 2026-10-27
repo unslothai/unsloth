@@ -68,6 +68,27 @@ def test_the_two_prices_differ_for_this_encoder():
     assert dm._module_registered_mib(enc) == 18
 
 
+def test_a_tied_embedding_is_priced_once_per_offload_group_that_copies_it():
+    class Tied(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.shared = torch.nn.Embedding(1024, 1024).to(torch.bfloat16)  # 2 MiB
+            self.embed_tokens = self.shared
+            self.encoder = torch.nn.Module()
+            self.encoder.embed_tokens = self.shared  # UMT5: one tensor, two owning submodules
+            self.proj = torch.nn.Linear(1024, 1024, bias = False).to(torch.bfloat16)  # 2 MiB
+
+    m = Tied()
+    assert dm._module_registered_mib(m) == 4  # unique tensors
+    assert dm._module_offload_registered_mib(m) == 4  # modules() visits the shared Embedding once
+    m.encoder.embed_tokens = torch.nn.Embedding(1024, 1024).to(torch.bfloat16)
+    m.encoder.embed_tokens.weight = (
+        m.shared.weight
+    )  # tied weight, separate module: two leaf groups copy it
+    assert dm._module_registered_mib(m) == 4
+    assert dm._module_offload_registered_mib(m) == 6
+
+
 def test_the_kill_switch_and_an_unsupported_registered_pin_turn_the_exact_plan_off(monkeypatch):
     monkeypatch.delenv(_EXACT_ENV, raising = False)
     monkeypatch.setattr(dm, "_fast_pin_supported", lambda: True)

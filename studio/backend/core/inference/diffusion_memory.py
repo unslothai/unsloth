@@ -6050,6 +6050,26 @@ def _module_registered_mib(module: Any) -> int:
         return _module_host_mib(module)
 
 
+def _module_offload_registered_mib(module: Any) -> int:
+    """Registered host MiB a group offload of ``module`` pins: each tensor page-rounded and counted once per owning
+    submodule, since every offload group copies its own tensors (UMT5's tied ``shared`` / ``embed_tokens`` embedding
+    pins twice: 14.4 GiB for 12.5 GiB of unique weights)."""
+    try:
+        total = 0
+        for sub in module.modules():
+            seen: set[int] = set()
+            for tensor in list(sub.parameters(recurse = False)) + list(sub.buffers(recurse = False)):
+                if id(tensor) in seen:
+                    continue
+                seen.add(id(tensor))
+                total += sum(
+                    _page_bytes(nbytes) for nbytes in _storage_nbytes(tensor) if nbytes > 0
+                )
+        return -(-total // (1024 * 1024))
+    except Exception:  # noqa: BLE001 - priced as the per-tensor pin
+        return _module_host_mib(module)
+
+
 def _unique_tensors(module: Any) -> list:
     seen: set[int] = set()
     out = []
@@ -7198,7 +7218,7 @@ def _apply_group_offload(
             def pin_mib(module: Any) -> int:
                 if _torchao_weight_classes(module):
                     return _host_price(module)
-                return _module_registered_mib(module)
+                return _module_offload_registered_mib(module)
 
         # Image loads: only the streamed encoders defer (registered pins, priced at weight bytes); torchao ones cannot.
         encoders_defer = (
@@ -7975,7 +7995,7 @@ def _apply_streaming_offload(
             def pin_mib(module: Any) -> int:
                 if _torchao_weight_classes(module):
                     return _host_price(module)
-                return _module_registered_mib(module)
+                return _module_offload_registered_mib(module)
 
         encoders_defer = not defer and prefetch and _encoder_background_pin_wanted(pipe)
 
