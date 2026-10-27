@@ -194,15 +194,11 @@ def _wait_for_transfers(value: Any) -> None:
 
 
 def _live_refs(transformer: Any, state: dict) -> dict:
-    """``state`` with every entry that IS a module parameter / buffer swapped for a read of that attribute at write
-    time. A held ``state_dict`` keeps resident offload groups' CUDA storage alive after the residency code moves them
-    back to host, so a background write would block that VRAM from being reclaimed until the whole file is written.
-    Anything else (a hook-built tensor) keeps the captured tensor. A live tensor that changed shape / dtype fails the
-    write (the temp file is dropped), never a corrupt entry."""
+    """``state`` with module params / buffers swapped for live reads at write time, so a held state_dict does not
+    pin offloaded CUDA storage; hook-built tensors stay captured, a shape / dtype change fails the write."""
     import torch
 
     def resolve(name: str) -> Any:
-        # The attribute the state_dict key names; a hook-built key resolves to nothing and keeps its captured tensor.
         prefix, _, attr = name.rpartition(".")
         owner = transformer.get_submodule(prefix) if prefix else transformer
         return getattr(owner, attr)

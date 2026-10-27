@@ -181,8 +181,7 @@ def test_a_weight_that_changes_shape_mid_write_leaves_no_entry(monkeypatch, base
 def test_a_host_weight_is_written_as_captured_even_if_it_is_onloaded_mid_write(
     monkeypatch, base_dir, cache_root
 ):
-    """A host-resident (offloaded) weight keeps its stable captured copy: an onload mid-write swaps ``param.data`` to a
-    tensor whose transfer may still be in flight, which must never reach the entry."""
+    """A host-resident weight keeps its captured copy, never an in-flight onload swapped in mid-write."""
     model = _native(base_dir)
     expected = {k: v.detach().clone() for k, v in model.state_dict().items()}
 
