@@ -1632,6 +1632,14 @@ def discover_training_pairs(
     )
 
 
+def training_fetch_repo(cfg: Any) -> Optional[str]:
+    """The repository the trainer downloads: DiT families load the resolved mirror, others the base model."""
+    family = (getattr(cfg, "resolved_family", None) or "sdxl").strip().lower()
+    if family in _DIT_TRAIN_FAMILIES:
+        return getattr(cfg, "fetch_base_model", None) or cfg.base_model
+    return cfg.base_model
+
+
 def _emit(on_event: Optional[EventCb], type_: str, **kw: Any) -> None:
     if on_event is not None:
         on_event({"type": type_, "ts": time.time(), **kw})
