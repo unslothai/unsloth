@@ -1780,6 +1780,93 @@ def test_load_wan_ti2v_5b_pipeline(fake_runtime):
     assert backend._state.pipe.vae.decoder.hooks == []
 
 
+def test_first_clip_seeds_floats_before_the_denoise_and_keeps_them_before_the_decode(
+    fake_runtime, monkeypatch
+):
+    """Seeds go in at denoise entry and are kept at decode entry."""
+    backend = VideoBackend()
+    backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    pipe = backend._state.pipe
+    events: list = []
+
+    class _Seeds:
+        def seed(self):
+            events.append("seed")
+
+        def keep(self):
+            events.append("keep")
+
+    asked: list = []
+    monkeypatch.setattr(
+        VideoBackend, "_inline_float_seeds", lambda self, state: asked.append(state) or _Seeds()
+    )
+    original_call = type(pipe).__call__
+
+    @functools.wraps(original_call)  # keeps the signature generate() gates its kwargs on
+    def _call(self, *args, **kwargs):
+        with self.progress_bar(total = 2):
+            events.append("denoiser")
+        return original_call(self, *args, **kwargs)
+
+    pipe.__class__ = type("_LoopPipe", (type(pipe),), {"__call__": _call})
+    pipe.progress_bar = lambda *a, **k: contextlib.nullcontext()
+    pipe.vae.on_decode = lambda: events.append("decode")
+    backend.generate(prompt = "a fox", steps = 2)
+    assert asked == [backend._state]
+    assert events[:2] == ["seed", "denoiser"]
+    assert events.index("keep") < events.index("decode")
+    assert events.count("keep") == 1
+
+
+def test_first_clip_seeds_floats_at_the_first_dit_forward_without_a_pipe_progress_bar(
+    fake_runtime, monkeypatch
+):
+    """H3 modular's progress bar is its loop wrapper's: the first DiT forward still seeds first."""
+    backend = VideoBackend()
+    backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    pipe = backend._state.pipe
+    events: list = []
+
+    class _Dit:
+        def __init__(self):
+            self.hooks = []
+
+        def register_forward_pre_hook(self, fn):
+            self.hooks.append(fn)
+            return types.SimpleNamespace(remove = lambda: self.hooks.remove(fn))
+
+        def __call__(self):
+            for hook in list(self.hooks):
+                hook(self, ())
+            events.append("denoiser")
+
+    dit = _Dit()
+
+    class _Seeds:
+        modules = [dit]
+
+        def seed(self):
+            if "seed" not in events:
+                events.append("seed")
+
+        def keep(self):
+            events.append("keep")
+
+    monkeypatch.setattr(VideoBackend, "_inline_float_seeds", lambda self, state: _Seeds())
+    original_call = type(pipe).__call__
+
+    @functools.wraps(original_call)
+    def _call(self, *args, **kwargs):
+        dit()
+        dit()
+        return original_call(self, *args, **kwargs)
+
+    pipe.__class__ = type("_ModularLikePipe", (type(pipe),), {"__call__": _call})
+    backend.generate(prompt = "a fox", steps = 2)
+    assert events[:3] == ["seed", "denoiser", "denoiser"]
+    assert dit.hooks == []
+
+
 def _fits_in_memory_snapshot(device):
     """A memory snapshot big enough that no load is ever refused for size, so a test forcing a
     device does not inherit the runner's own free memory as a precondition."""

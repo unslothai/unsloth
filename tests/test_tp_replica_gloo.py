@@ -254,7 +254,7 @@ def _case_save(rank, world, tmp):
     from peft import PeftModel
 
     base = build(LLAMA, lora = False)
-    reloaded = PeftModel.from_pretrained(base, tp_dir)
+    reloaded = PeftModel.from_pretrained(base, tp_dir, torch_device = "cpu")
     with torch.no_grad():
         out["reload_err"] = float(
             (reloaded(input_ids = ids).logits - ref(input_ids = ids).logits).abs().max()

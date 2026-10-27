@@ -10,6 +10,7 @@ import warnings
 
 import pytest
 import torch
+from real_accelerator import has_real_cuda
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_fsdp2_native_units import _load_native  # noqa: E402
@@ -92,7 +93,7 @@ def test_paged_local_shard_step_keeps_bitsandbytes_fences(sync_calls):
         assert torch.equal(a, b)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA side stream")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA side stream")
 def test_local_shard_step_on_a_side_stream_keeps_every_fence(monkeypatch):
     """Off the default stream the per-parameter fences stay; on it none are taken."""
     bnb = pytest.importorskip("bitsandbytes")
