@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { BrushCleaningIcon } from "@/lib/brush-cleaning-icon";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import {
   Sidebar,
@@ -128,7 +129,6 @@ import {
   Logout05Icon,
   MoreHorizontalIcon,
   MoreVerticalIcon,
-  PaintBrush02Icon,
   Search01Icon,
   PinIcon,
   PinOffIcon,
@@ -355,7 +355,7 @@ const SETTINGS_TAB_MENU_ITEMS: Record<
   { icon: typeof ZapIcon; labelKey: TranslationKey }
 > = {
   profile: { icon: UserCircleIcon, labelKey: "settings.tabs.profile" },
-  appearance: { icon: PaintBrush02Icon, labelKey: "settings.tabs.appearance" },
+  appearance: { icon: BrushCleaningIcon, labelKey: "settings.tabs.appearance" },
   resources: { icon: CpuIcon, labelKey: "settings.tabs.resources" },
   chat: { icon: MessageCircleIcon, labelKey: "settings.tabs.chat" },
   connections: { icon: CloudIcon, labelKey: "settings.tabs.connections" },
