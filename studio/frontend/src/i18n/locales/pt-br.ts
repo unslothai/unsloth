@@ -141,7 +141,7 @@ export const ptBR = {
     local: "Local",
     browserUse: {
       label: "Uso do navegador",
-      description: "Permite que o modelo abra páginas, clique e digite neste navegador enquanto responde.",
+      description: "Permite que o modelo controle o navegador integrado",
       unavailable: "Carregue um modelo que chame ferramentas para que ele use o navegador.",
     },
     suggested: "Sugestões",

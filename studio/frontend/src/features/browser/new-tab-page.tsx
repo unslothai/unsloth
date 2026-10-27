@@ -210,7 +210,7 @@ function BrowserUseToggle() {
     <label
       htmlFor={id}
       className={cn(
-        "flex min-w-0 items-center gap-3 rounded-xl bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] px-5 py-3",
+        "flex min-w-0 items-center gap-3 rounded-lg bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] px-5 py-3",
         disabled ? "cursor-default" : "cursor-pointer",
       )}
     >

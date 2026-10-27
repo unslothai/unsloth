@@ -141,7 +141,7 @@ export const fr = {
     local: "Local",
     browserUse: {
       label: "Utilisation du navigateur",
-      description: "Laisse le modèle ouvrir des pages, cliquer et saisir du texte dans ce navigateur pendant qu'il répond.",
+      description: "Laisser le modèle contrôler le navigateur intégré",
       unavailable: "Chargez un modèle capable d'appeler des outils pour qu'il utilise le navigateur.",
     },
     suggested: "Suggestions",

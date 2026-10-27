@@ -141,7 +141,7 @@ export const de = {
     local: "Lokal",
     browserUse: {
       label: "Browsernutzung",
-      description: "Das Modell darf beim Antworten in diesem Browser Seiten öffnen, klicken und tippen.",
+      description: "Das Modell den integrierten Browser steuern lassen",
       unavailable: "Lade ein Modell, das Tools aufrufen kann, damit es den Browser nutzen kann.",
     },
     suggested: "Vorschläge",

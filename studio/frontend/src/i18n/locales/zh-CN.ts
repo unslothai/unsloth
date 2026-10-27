@@ -141,7 +141,7 @@ export const zhCN = {
     local: "本地",
     browserUse: {
       label: "浏览器操作",
-      description: "允许模型在回答时于此浏览器中打开网页、点击和输入。",
+      description: "允许模型控制内置浏览器",
       unavailable: "请加载支持工具调用的模型，才能让它使用浏览器。",
     },
     suggested: "推荐",

@@ -142,7 +142,7 @@ export const ja = {
     local: "ローカル",
     browserUse: {
       label: "ブラウザ操作",
-      description: "応答中にモデルがこのブラウザでページを開き、クリックや入力を行えるようにします。",
+      description: "モデルに内蔵ブラウザを操作させる",
       unavailable: "ブラウザを使わせるには、ツールを呼び出せるモデルを読み込んでください。",
     },
     suggested: "おすすめ",
