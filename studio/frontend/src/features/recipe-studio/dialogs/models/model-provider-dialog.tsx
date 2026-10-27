@@ -74,7 +74,6 @@ export function ModelProviderDialog({
         onChange={(value) => onUpdate({ name: value })}
       />
 
-      {/* Model source toggle */}
       <div className="grid gap-1.5">
         <p className="text-sm font-semibold text-foreground">Model source</p>
         <div className="grid grid-cols-2 gap-2">
@@ -82,7 +81,7 @@ export function ModelProviderDialog({
             type="button"
             className={`rounded-xl border px-4 py-3 text-left transition-colors ${
               isLocal
-                ? "border-ring-strong bg-primary/5"
+                ? "border-ring-strong bg-wash-5"
                 : "border-border/60 bg-muted/10 hover:border-border"
             }`}
             onClick={() =>
@@ -105,7 +104,7 @@ export function ModelProviderDialog({
             type="button"
             className={`rounded-xl border px-4 py-3 text-left transition-colors ${
               !isLocal
-                ? "border-ring-strong bg-primary/5"
+                ? "border-ring-strong bg-wash-5"
                 : "border-border/60 bg-muted/10 hover:border-border"
             }`}
             onClick={() => onUpdate({ is_local: false })}

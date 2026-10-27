@@ -273,3 +273,190 @@ def test_managed_snapshot_files_of_its_training_dataset_still_decode(tmp_path, m
     other.write_bytes(_png((9, 9, 9)))
     with pytest.raises(PermissionError):
         _decode({"bytes": None, "path": str(other)}, {})
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "http://127.0.0.1:9/hf://datasets/other/private@main/secret.png",
+        "http://127.0.0.1:9/{endpoint}/datasets/other/private/resolve/main/secret.png",
+        "{endpoint}.example.invalid/datasets/other/private/resolve/main/secret.png",
+        "zip://secret.png::http://127.0.0.1:9/hf://datasets/other/private@main/a.zip",
+        "http://127.0.0.1:9/secret.png::hf://datasets/other/private@main/a.zip",
+        "hf://datasets/other/private@main/secret.png\nhttp://127.0.0.1:9/",
+    ],
+)
+def test_managed_url_merely_containing_a_hub_path_is_never_fetched(hub_fetches, path):
+    from datasets import config
+    with pytest.raises(PermissionError):
+        _decode({"bytes": None, "path": path.format(endpoint = config.HF_ENDPOINT)}, {})
+    assert hub_fetches == []
+
+
+def test_managed_archive_member_on_the_hub_keeps_its_token(hub_fetches):
+    path = "zip://a.png::hf://datasets/alice/own@main/images.zip"
+    _decode({"bytes": None, "path": path}, {"alice/own": "alice-token"})
+    assert hub_fetches == [(path, "alice-token")]
+
+
+@pytest.fixture
+def extracted_root(tmp_path, monkeypatch):
+    from datasets import config
+
+    from utils.security import dataset_media
+
+    root = tmp_path / "datasets-cache" / "downloads" / "extracted"
+    root.mkdir(parents = True)
+    monkeypatch.setattr(config, "EXTRACTED_DATASETS_PATH", str(root))
+    monkeypatch.setattr(dataset_media, "_extracted_sources", {}, raising = False)
+    return root
+
+
+def _zip(path, color):
+    import zipfile
+
+    path.parent.mkdir(parents = True, exist_ok = True)
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("member.png", _png(color))
+    return path
+
+
+def _extract(archive, account):
+    from datasets.utils.extract import ExtractManager
+    return run_as(account, ExtractManager().extract, str(archive))
+
+
+def test_managed_member_of_its_own_extracted_archive_still_decodes(extracted_root):
+    from utils.security import dataset_media
+
+    archive = run_as(
+        ALICE, lambda: _zip(storage_roots.dataset_uploads_root() / "own.zip", (5, 6, 7))
+    )
+    member = {"bytes": None, "path": str(extracted_root / _extract(archive, ALICE) / "member.png")}
+    assert _decode(member, {}).getpixel((0, 0)) == (5, 6, 7)
+    # A later process reads the record left beside the extraction.
+    getattr(dataset_media, "_extracted_sources", {}).clear()
+    assert _decode(member, {}).getpixel((0, 0)) == (5, 6, 7)
+
+
+def test_managed_member_of_another_accounts_extracted_archive_is_refused(extracted_root, tmp_path):
+    from utils.account_context import OWNER
+
+    from utils.security import dataset_media
+
+    archive = _zip(tmp_path / "owner-private" / "private.zip", (1, 1, 1))
+    member = {"bytes": None, "path": str(extracted_root / _extract(archive, OWNER) / "member.png")}
+    with pytest.raises(PermissionError):
+        _decode(member, {})
+    assert _decode(member, {}, OWNER).getpixel((0, 0)) == (1, 1, 1)
+    getattr(dataset_media, "_extracted_sources", {}).clear()
+    with pytest.raises(PermissionError):
+        _decode(member, {})
+
+    # An extraction nothing recorded (or whose record names a different archive) has no readable source.
+    unrecorded = extracted_root / ("0" * 64) / "member.png"
+    unrecorded.parent.mkdir()
+    unrecorded.write_bytes(_png((2, 2, 2)))
+    own = run_as(ALICE, lambda: _zip(storage_roots.dataset_uploads_root() / "own.zip", (3, 3, 3)))
+    (extracted_root / ("0" * 64 + ".unsloth-source")).write_text(str(own))
+    with pytest.raises(PermissionError):
+        _decode({"bytes": None, "path": str(unrecorded)}, {})
+
+
+def test_managed_extraction_record_is_read_once_per_process(extracted_root, monkeypatch):
+    from utils.security import dataset_media
+
+    archive = run_as(
+        ALICE, lambda: _zip(storage_roots.dataset_uploads_root() / "own.zip", (5, 6, 7))
+    )
+    member = {"bytes": None, "path": str(extracted_root / _extract(archive, ALICE) / "member.png")}
+    dataset_media._extracted_sources.clear()
+    reads = []
+    real_open = os.open
+
+    def counting_open(file, *args, **kwargs):
+        if str(file).endswith(".unsloth-source"):
+            reads.append(file)
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(dataset_media.os, "open", counting_open)
+    for _ in range(3):
+        assert _decode(member, {}).getpixel((0, 0)) == (5, 6, 7)
+    assert len(reads) == 1
+
+
+def test_managed_extraction_record_is_published_whole(extracted_root):
+    from utils.security import dataset_media
+
+    archive = run_as(
+        ALICE, lambda: _zip(storage_roots.dataset_uploads_root() / "own.zip", (5, 6, 7))
+    )
+    from datasets.utils.extract import ExtractManager
+
+    top = ExtractManager(cache_dir = None)._get_output_path(str(archive))
+    # A record left empty by an interrupted writer is replaced by the next extraction.
+    (extracted_root / (os.path.basename(top) + ".unsloth-source")).write_text("")
+    member = {"bytes": None, "path": str(extracted_root / _extract(archive, ALICE) / "member.png")}
+    dataset_media._extracted_sources.clear()
+    assert _decode(member, {}).getpixel((0, 0)) == (5, 6, 7)
+    assert not [p for p in os.listdir(extracted_root) if ".unsloth-source." in p]
+
+
+def test_managed_oversized_extraction_record_is_refused_unread(extracted_root, monkeypatch):
+    from utils.security import dataset_media
+
+    archive = run_as(
+        ALICE, lambda: _zip(storage_roots.dataset_uploads_root() / "own.zip", (5, 6, 7))
+    )
+    top = _extract(archive, ALICE)
+    member = {"bytes": None, "path": str(extracted_root / top / "member.png")}
+    sidecar = extracted_root / (top + ".unsloth-source")
+    # A record padded far past any path length is refused without being read whole.
+    sidecar.write_text(str(archive) + "\0" * (16 << 20))
+    dataset_media._extracted_sources.clear()
+    import tracemalloc
+
+    tracemalloc.start()
+    try:
+        assert dataset_media._extracted_source(member["path"]) == ""
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert peak < (1 << 20)
+    with pytest.raises(PermissionError):
+        _decode(member, {})
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason = "needs FIFOs")
+def test_managed_extraction_record_planted_as_fifo_is_refused_without_blocking(
+    extracted_root, monkeypatch
+):
+    import threading
+
+    from utils.security import dataset_media
+
+    archive = run_as(
+        ALICE, lambda: _zip(storage_roots.dataset_uploads_root() / "own.zip", (5, 6, 7))
+    )
+    top = _extract(archive, ALICE)
+    member = {"bytes": None, "path": str(extracted_root / top / "member.png")}
+    sidecar = extracted_root / (top + ".unsloth-source")
+    sidecar.unlink()
+    os.mkfifo(sidecar)
+    dataset_media._extracted_sources.clear()
+    result = []
+    reader = threading.Thread(
+        target = lambda: result.append(dataset_media._extracted_source(member["path"])),
+        daemon = True,
+    )
+    reader.start()
+    reader.join(5)
+    if reader.is_alive():
+        # Unblock the stuck open so the thread can end, then fail.
+        with open(sidecar, "wb"):
+            pass
+        reader.join(5)
+        pytest.fail("reading a FIFO extraction record blocked")
+    assert result == [""]
+    with pytest.raises(PermissionError):
+        _decode(member, {})

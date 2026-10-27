@@ -62,7 +62,6 @@ import {
   Archive03Icon,
   ArchiveRestoreIcon,
   Cancel01Icon,
-  CheckmarkSquare02Icon,
   Delete02Icon,
   Folder02Icon,
   FolderAddIcon,
@@ -72,6 +71,7 @@ import {
   PinIcon,
   PinOffIcon,
   PlusSignIcon,
+  CheckmarkCircle02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
@@ -92,6 +92,7 @@ import { CardGrid } from "../components/library-cards";
 import { LIST_ROW_GAP } from "../components/library-list";
 import type { LibraryView } from "../settings-store";
 import {
+  CHAT_CARD_ROW_MIN,
   ChatCard,
   ChatListHeader,
   type ChatDestination,
@@ -247,7 +248,6 @@ export interface FavoriteChatEntries {
   cards: { key: string; node: ReactNode }[];
 }
 
-/** The Chats tab. `embedded`: starred items only, for Favorites, with no header or filters. */
 export function ChatsLibrary({
   search,
   title,
@@ -268,10 +268,8 @@ export function ChatsLibrary({
   const navigate = useNavigate();
 
   const section: ChatsSection = search.chatSection ? "chats" : (search.chatView ?? "all");
-  // Open section page; `section` is the pill. Projects have no page here: they open in Chat.
   const openSectionId = search.chatSection ?? null;
 
-  // Metadata only, like the sidebar. The default reads every message.
   const {
     items,
     archivedItems,
@@ -286,7 +284,6 @@ export function ChatsLibrary({
   const unpinProject = usePinnedProjectsStore((s) => s.unpin);
   const alwaysDeleteChatFiles = useChatPreferencesStore((s) => s.alwaysDeleteChatFiles);
   const confirmDeleteChats = useChatPreferencesStore((s) => s.confirmDeleteChats);
-  // Shared with the sidebar: filing a chat here files it there.
   const sections = useSidebarOrganizationStore((s) => s.customSections);
   const sectionByChatId = useSidebarOrganizationStore((s) => s.sectionByChatId);
   const setChatsSection = useSidebarOrganizationStore((s) => s.setChatsSection);
@@ -331,7 +328,7 @@ export function ChatsLibrary({
   const [filters, setFilters] = useState<ChatFilters>(EMPTY_CHAT_FILTERS);
   const [selection, setSelectionState] = useState<Set<string>>(new Set());
   const selectionAnchor = useRef<string | null>(null);
-  // Clearing drops the shift-click anchor too, or the next range reaches a row no longer selected.
+  // Clearing drops the shift-click anchor too, or the next range targets an unselected row.
   const setSelection = useCallback((next: SetStateAction<Set<string>>) => {
     if (typeof next !== "function" && next.size === 0) selectionAnchor.current = null;
     setSelectionState(next);
@@ -340,7 +337,6 @@ export function ChatsLibrary({
   const [renaming, setRenaming] = useState<SidebarItem | null>(null);
   const [editing, setEditing] = useState<ProjectRecord | null>(null);
   const [creatingProject, setCreatingProject] = useState(false);
-  // Section a project made from its menu is filed in.
   const [newProjectSection, setNewProjectSection] = useState<string | null>(null);
   const newProjectInSection = (sectionId: string) => {
     setNewProjectSection(sectionId);
@@ -352,7 +348,7 @@ export function ChatsLibrary({
     chats: SidebarItem[];
     project?: ProjectRecord;
   } | null>(null);
-  // Just-created section: its store update lands a render after the page opens.
+  // Its store update lands a render after the page opens.
   const [awaitedSection, setAwaitedSection] = useState<string | null>(null);
   const [renamingSection, setRenamingSection] = useState<SidebarCustomSection | null>(null);
   if (awaitedSection !== null && sections.some((entry) => entry.id === awaitedSection)) {
@@ -408,7 +404,6 @@ export function ChatsLibrary({
   ];
   const ungrouped = embedded || section === "all";
   const groupBy = !ungrouped && groupOptions.includes(prefs.groupBy) ? prefs.groupBy : "none";
-  // Pinned chats get their own group; floating them within groups broke time order.
   const pinnedFirst = prefs.pinnedFirst && !archived && !embedded;
   const visibleChats = useMemo(() => {
     const matched = filterChats(scoped, listQuery, filters, context);
@@ -509,7 +504,6 @@ export function ChatsLibrary({
     () => groups.flatMap((group) => group.items.map((chat) => chat.id)),
     [groups],
   );
-  // Headings count all matches, not just the loaded page.
   const groupTotals = useMemo(
     () =>
       groupBy === "none"
@@ -547,7 +541,7 @@ export function ChatsLibrary({
     [openSectionId, projects, sections, allModelFacets, filters.models],
   );
 
-  // Drop ticked filters whose project, section or model is gone: they can't be unticked.
+  // Gone filters cannot be unticked, so drop them.
   if (loaded && projectsLoaded) {
     const liveProjects = [...filters.projects].filter((id) => id === NO_PROJECT || projectNames.has(id));
     const liveSections = [...filters.sections].filter(
@@ -610,7 +604,6 @@ export function ChatsLibrary({
     }
   };
 
-  /** Files the new chat on its first send; the sidebar watches for the mark set here. */
   const newChatInSection = (sectionId: string) => {
     const nonce = crypto.randomUUID();
     const runtime = useChatRuntimeStore.getState();
@@ -661,7 +654,6 @@ export function ChatsLibrary({
     );
   };
 
-  /** null unfiles. Filing unpins (Pinned would still show it) and unhides the section. */
   const fileInSection = (chats: SidebarItem[], sectionId: string | null, name?: string) => {
     const ids = chats.map((chat) => chat.id);
     setSelection(new Set());
@@ -793,7 +785,6 @@ export function ChatsLibrary({
           await deleteChatItems(target.chats, activeChatId(), () => {}, {
             deleteFiles: target.deleteFiles,
           });
-          // After the delete: a failed one restores the chats with their marks.
           const ids = target.chats.map((chat) => chat.id);
           setFavoriteChats(ids, false);
           setPinned(ids, false);
@@ -1009,7 +1000,7 @@ export function ChatsLibrary({
             action={
               <Button
                 variant="muted"
-                className="rounded-full px-5"
+                className="rounded-full"
                 onClick={() => newChatInSection(openSectionId)}
               >
                 {t("library.chats.toolbar.newChat")}
@@ -1024,7 +1015,7 @@ export function ChatsLibrary({
           title={t("library.chats.empty.chatsTitle")}
           description={t("library.chats.empty.chatsDescription")}
           action={
-            <Button variant="muted" className="rounded-full px-5" onClick={() => newChatIn(null)}>
+            <Button variant="muted" className="rounded-full" onClick={() => newChatIn(null)}>
               {t("library.chats.toolbar.newChat")}
             </Button>
           }
@@ -1061,6 +1052,7 @@ export function ChatsLibrary({
           showSection={showSection}
           locationColumn={locationColumn}
           times={{ bucket }}
+          showTile={shownEntries !== null}
         />
       ) : (
         <ChatCard
@@ -1070,6 +1062,8 @@ export function ChatsLibrary({
           showProject={showProject}
           showSection={showSection}
           times={{ bucket }}
+          // Only All mixes chats with projects and sections; elsewhere the tab names the kind.
+          showTile={shownEntries !== null}
         />
       );
     const entryRow = (entry: NonNullable<typeof shownEntries>[number]) => {
@@ -1116,7 +1110,7 @@ export function ChatsLibrary({
           list ? (
             <div className={cn("mt-1 flex flex-col", LIST_ROW_GAP)}>{shownEntries.map(entryRow)}</div>
           ) : (
-            <CardGrid equalRows>{shownEntries.map(entryRow)}</CardGrid>
+            <CardGrid minRowHeight={CHAT_CARD_ROW_MIN}>{shownEntries.map(entryRow)}</CardGrid>
           )
         ) : (
           groups.map((group) => (
@@ -1131,7 +1125,7 @@ export function ChatsLibrary({
                   {group.items.map((chat) => chatRow(chat, group.bucket?.kind))}
                 </div>
               ) : (
-                <CardGrid equalRows>{group.items.map((chat) => chatRow(chat, group.bucket?.kind))}</CardGrid>
+                <CardGrid minRowHeight={CHAT_CARD_ROW_MIN}>{group.items.map((chat) => chatRow(chat, group.bucket?.kind))}</CardGrid>
               )}
             </section>
           ))
@@ -1140,7 +1134,7 @@ export function ChatsLibrary({
           <div className="mt-6 flex justify-center">
             <Button
               variant="muted"
-              className="rounded-full px-5"
+              className="rounded-full"
               onClick={() => setVisibleCount((count) => count + PAGE_SIZE)}
             >
               {t("library.chats.list.showMore", { count: total - visibleCount })}
@@ -1168,7 +1162,7 @@ export function ChatsLibrary({
           action={
             <Button
               variant="dark"
-              className="rounded-full px-5"
+              className="rounded-full"
               onClick={() => setMovingIntoNew({ kind: "section", chats: [] })}
             >
               {t("shell.sections.newSection")}
@@ -1187,24 +1181,24 @@ export function ChatsLibrary({
           <SectionListHeader date={sectionDateColumn} />
           <div className={cn("mt-1 flex flex-col", LIST_ROW_GAP)}>
             {visibleSections.map((entry) => (
-              <SectionRow key={entry.id} section={entry} stats={sectionStatsById.get(entry.id)} />
+              <SectionRow key={entry.id} section={entry} stats={sectionStatsById.get(entry.id)} showTile={false} />
             ))}
           </div>
         </div>
       );
     }
     return (
-      <CardGrid equalRows>
+      <CardGrid minRowHeight={CHAT_CARD_ROW_MIN}>
         <button
           type="button"
           onClick={() => setMovingIntoNew({ kind: "section", chats: [] })}
-          className="flex aspect-[8/7] flex-col self-stretch items-center justify-center gap-2 rounded-2xl border border-dashed border-border text-ui-14 text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+          className="flex min-h-0 flex-col self-stretch items-center justify-center gap-2 rounded-2xl border border-dashed border-border text-ui-14 text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
         >
           <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.5} className="size-6" />
           {t("shell.sections.newSection")}
         </button>
         {visibleSections.map((entry) => (
-          <SectionCard key={entry.id} section={entry} stats={sectionStatsById.get(entry.id)} />
+          <SectionCard key={entry.id} section={entry} stats={sectionStatsById.get(entry.id)} showTile={false} />
         ))}
       </CardGrid>
     );
@@ -1236,13 +1230,13 @@ export function ChatsLibrary({
         {view === "list" ? (
           <div className={cn("flex flex-col", LIST_ROW_GAP)}>
             {sectionProjects.map((project) => (
-              <ProjectRow key={project.id} project={project} stats={stats.get(project.id)} />
+              <ProjectRow key={project.id} project={project} stats={stats.get(project.id)} showTile={false} />
             ))}
           </div>
         ) : (
-          <CardGrid equalRows>
+          <CardGrid minRowHeight={CHAT_CARD_ROW_MIN}>
             {sectionProjects.map((project) => (
-              <ProjectCard key={project.id} project={project} stats={stats.get(project.id)} />
+              <ProjectCard key={project.id} project={project} stats={stats.get(project.id)} showTile={false} />
             ))}
           </CardGrid>
         )}
@@ -1265,7 +1259,7 @@ export function ChatsLibrary({
           title={t("library.chats.empty.projectsTitle")}
           description={t("library.chats.empty.projectsDescription")}
           action={
-            <Button variant="dark" className="rounded-full px-5" onClick={() => setCreatingProject(true)}>
+            <Button variant="dark" className="rounded-full" onClick={() => setCreatingProject(true)}>
               {t("library.chats.toolbar.newProject")}
             </Button>
           }
@@ -1282,26 +1276,26 @@ export function ChatsLibrary({
           <ProjectListHeader date={projectDateColumn} />
           <div className={cn("mt-1 flex flex-col", LIST_ROW_GAP)}>
             {visibleProjects.map((project) => (
-              <ProjectRow key={project.id} project={project} stats={stats.get(project.id)} />
+              <ProjectRow key={project.id} project={project} stats={stats.get(project.id)} showTile={false} />
             ))}
           </div>
         </div>
       );
     }
     return (
-      <CardGrid equalRows>
+      <CardGrid minRowHeight={CHAT_CARD_ROW_MIN}>
         {!embedded && (
           <button
             type="button"
             onClick={() => setCreatingProject(true)}
-            className="flex aspect-[8/7] flex-col self-stretch items-center justify-center gap-2 rounded-2xl border border-dashed border-border text-ui-14 text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+            className="flex min-h-0 flex-col self-stretch items-center justify-center gap-2 rounded-2xl border border-dashed border-border text-ui-14 text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
           >
             <HugeiconsIcon icon={FolderAddIcon} strokeWidth={1.5} className="size-6" />
             {t("library.chats.toolbar.newProject")}
           </button>
         )}
         {visibleProjects.map((project) => (
-          <ProjectCard key={project.id} project={project} stats={stats.get(project.id)} />
+          <ProjectCard key={project.id} project={project} stats={stats.get(project.id)} showTile={false} />
         ))}
       </CardGrid>
     );
@@ -1340,7 +1334,7 @@ export function ChatsLibrary({
       onParent={() => go({ chatView: "sections" })}
       actions={
         <>
-          <Button variant="muted" className="rounded-full px-4" onClick={() => newChatInSection(currentSection.id)}>
+          <Button variant="muted" className="rounded-full" onClick={() => newChatInSection(currentSection.id)}>
             <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} className="size-4" />
             {t("library.chats.toolbar.newChat")}
           </Button>
@@ -1428,7 +1422,6 @@ export function ChatsLibrary({
       return {
         title: t("library.dialog.deleteTitle", { name: pendingDelete.project.name }),
         description: t("library.chats.dialog.deleteProjectDescription", {
-          // Archived chats are deleted with the project too.
           count:
             (stats.get(pendingDelete.project.id)?.chats ?? 0) +
             (stats.get(pendingDelete.project.id)?.archived ?? 0),
@@ -1560,7 +1553,7 @@ export function ChatsLibrary({
                 <button
                   type="button"
                   onClick={() => unarchiveChats(selectedChats)}
-                  className={cn(BAR_PILL, "bg-foreground text-background transition-opacity hover:opacity-85")}
+                  className={cn(BAR_PILL, "bg-action text-background transition-opacity hover:opacity-85")}
                 >
                   <HugeiconsIcon icon={ArchiveRestoreIcon} strokeWidth={1.75} className="size-4" />
                   {t("settings.data.library.unarchive")}
@@ -1590,7 +1583,7 @@ export function ChatsLibrary({
                 onClick={() => actions.remove(selectedChats)}
                 className={cn(
                   BAR_PILL,
-                  "bg-red-500/10 text-red-600 transition-colors hover:bg-red-500/15 dark:text-red-400",
+                  "bg-destructive/10 text-destructive transition-colors hover:bg-destructive/15",
                 )}
               >
                 <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-4" />
@@ -1611,7 +1604,7 @@ export function ChatsLibrary({
                     <DropdownMenuItem
                       onSelect={() => setSelection(new Set(shownChats.map((chat) => chat.id)))}
                     >
-                      <HugeiconsIcon icon={CheckmarkSquare02Icon} strokeWidth={1.75} className="size-icon" />
+                      <HugeiconsIcon icon={CheckmarkCircle02Icon} strokeWidth={1.75} className="size-icon" />
                       {t("settings.data.library.selectAll")}
                     </DropdownMenuItem>
                   )}

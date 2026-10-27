@@ -4,12 +4,13 @@
 """`optim = "adamw_flash"`: FlashAdamW from databricks/flashoptim (arXiv 2602.23349).
 
 bf16 / fp16 parameters keep a 16 bit error correction term in the optimizer state, so
-the effective master weight is fp32, and the Adam moments are stored in the parameter
-dtype: about 10 bytes per parameter (with bf16 grads) instead of 16 for bf16 weights
-plus fp32 master plus fp32 moments. This default tracked fp32 master AdamW on a real
-Qwen2.5-0.5B full finetune. optim_args = "quantize=True" stores the moments in 8 bits
-(about 8 bytes per parameter; with "master_weight_bits=24", flashoptim's own default,
-about 7), but its loss curve moved measurably away from AdamW there.
+the effective master weight is fp32. The momentum is stored in the parameter dtype and the
+bf16 variance in fp32 (a bf16 variance cannot decay at beta2 = 0.999): about 12 bytes per
+parameter (with bf16 grads) instead of 16 for bf16 weights plus fp32 master plus fp32
+moments. This default tracked fp32 master AdamW on a real Qwen2.5-0.5B full finetune.
+optim_args = "quantize=True" stores the moments in 8 bits (about 8 bytes per parameter;
+with "master_weight_bits=24", flashoptim's own default, about 7), but its loss curve moved
+measurably away from AdamW there.
 fp32 parameters (LoRA adapters) have no correction term; for them only quantize=True
 saves memory. Trainable fp16 parameters need quantize=True: unquantized fp16 moments
 underflow, so the optimizer refuses them.
@@ -39,6 +40,7 @@ FLASH_ADAMW_NAME = "adamw_flash"
 _FLASH_ADAMW_PLACEHOLDER = "adamw_torch"
 _FLASH_ADAMW_MARKER = "unsloth_adamw_flash"
 _FLASH_ADAMW_CLASS = None
+_VARIANCE_UPDATE_KERNEL = None
 _FLASH_ADAMW_MIN_VERSION = "0.1.4"
 _TRUE_VALUES = ("1", "true", "yes")
 _FALSE_VALUES = ("0", "false", "no")
@@ -168,6 +170,50 @@ def _get_flash_adamw_class():
                 self.__dict__.pop("quantized_state_spec", None)
                 _refuse_unquantized_fp16()
 
+        # A bf16 variance cannot move at beta2 = 0.999 (a step is under half an ulp), so it never
+        # decays and stalls near grad**2 / 3: the unquantized bf16 variance is kept in fp32.
+        def _ensure_state_initialized(self, p, hparams):
+            super()._ensure_state_initialized(p, hparams)
+            _widen_variance(self.state[p].get("exp_avg_sq"))
+
+        def _load_state_for_param(self, param, opt_state, hparams):
+            state = super()._load_state_for_param(param, opt_state, hparams)
+            _widen_variance(state.get("exp_avg_sq"))
+            return state
+
+        def load_state_dict(self, state_dict):
+            # torch.optim casts floating state to the param dtype: restore the fp32 variance.
+            saved_ids = [i for g in state_dict.get("param_groups", []) for i in g["params"]]
+            params = dict(zip(saved_ids, (p for g in self.param_groups for p in g["params"])))
+            fp32_vars = {
+                params[i]: v
+                for i, st in state_dict.get("state", {}).items()
+                if i in params
+                and torch.is_tensor(v := st.get("exp_avg_sq"))
+                and v.dtype == torch.float32
+            }
+            super().load_state_dict(state_dict)
+            for p, v in fp32_vars.items():
+                var = getattr(self.state.get(p, {}).get("exp_avg_sq"), "_data", None)
+                v = self._get_local_tensor(v)
+                if var is not None and var.dtype == torch.float32 and var.shape == v.shape:
+                    var.copy_(v)
+
+        def _do_step(self, param, grad, errors, param_state, hparams):
+            var = getattr(param_state.get("exp_avg_sq"), "_data", None)
+            if (
+                not self._fused
+                or var is None
+                or var.dtype != torch.float32
+                or param.dtype == torch.float32
+            ):
+                return super()._do_step(param, grad, errors, param_state, hparams)
+            # The fused kernel stores the variance rounded to the param dtype: keep an fp32 copy.
+            new_var = _variance_update(var, grad, hparams["betas"][1])
+            out = super()._do_step(param, grad, errors, param_state, hparams)
+            param_state["exp_avg_sq"]._data = new_var
+            return out
+
         # Every update goes through step_param: step() loops over it and gradient release calls
         # it per parameter. Checked there against the group's current quantize (load_state_dict
         # can restore an older group's quantize=False), so a frozen fp16 param unfrozen later is
@@ -192,12 +238,43 @@ def _get_flash_adamw_class():
     return _FLASH_ADAMW_CLASS
 
 
+def _variance_update(var, grad, beta2):
+    """fp32 `var * beta2 + grad**2 * (1 - beta2)`, as flashoptim's fused kernel computes it."""
+    global _VARIANCE_UPDATE_KERNEL
+    import triton
+
+    if _VARIANCE_UPDATE_KERNEL is None:
+        import triton.language as tl
+
+        @triton.jit
+        def kernel(var_ptr, grad_ptr, out_ptr, n, beta2, BLOCK: tl.constexpr):
+            offsets = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
+            mask = offsets < n
+            v = tl.load(var_ptr + offsets, mask = mask)
+            g = tl.load(grad_ptr + offsets, mask = mask).to(tl.float32)
+            tl.store(out_ptr + offsets, v * beta2 + g * g * (1.0 - beta2), mask = mask)
+
+        _VARIANCE_UPDATE_KERNEL = kernel
+    out = torch.empty_like(var)
+    n = var.numel()
+    _VARIANCE_UPDATE_KERNEL[(triton.cdiv(n, 1024),)](var, grad, out, n, beta2, BLOCK = 1024)
+    return out
+
+
+def _widen_variance(state):
+    # flashoptim's private _MaybeQuantizedTensor fields; absent ones leave its storage as is.
+    data = getattr(state, "_data", None)
+    if data is not None and data.dtype == torch.bfloat16 and hasattr(state, "_storage_dtype"):
+        state._storage_dtype = torch.float32
+        state._data = data.float()
+
+
 def _refuse_unquantized_fp16():
     raise ValueError(
-        "Unsloth: optim = 'adamw_flash' with quantize=False stores the Adam moments in "
-        "the parameter dtype, and float16 moments underflow (wrong updates). Found "
-        "trainable float16 parameters: cast them to float32 or bfloat16, or set "
-        "optim_args = 'quantize=True'."
+        "Unsloth: optim = 'adamw_flash' with quantize=False stores float16 Adam moments in "
+        "float16, where the variance underflows (wrong updates). Found trainable float16 "
+        "parameters: cast them to bfloat16 (its variance is kept in float32) or float32, or "
+        "set optim_args = 'quantize=True'."
     )
 
 

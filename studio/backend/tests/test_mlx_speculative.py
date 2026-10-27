@@ -184,3 +184,23 @@ def test_a_drafter_carrying_its_own_model_module_is_never_found_or_attached(cach
     assert spec.cached_drafters(_TARGET, {"vocab_size": 10}) == []
     assert not _resolve("auto").sources and not _resolve("dflash").sources
     assert _resolve("dflash", "a/Qwen3.5-4B-DFlash").reason == spec.DRAFTER_NOT_FOUND
+
+
+def test_the_built_in_head_is_found_by_the_zoos_detection_or_mlx_vlms_without_it(
+    monkeypatch, tmp_path
+):
+    import sys
+
+    found = lambda name: lambda path: str(path) == str(tmp_path / name)
+    zoo = SimpleNamespace(has_native_mtp_head = found("zoo"))
+    vlm = SimpleNamespace(detect_mtp_splitter = lambda path: found("vlm")(path) or None)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.speculative.drafters.mtp_split", vlm)
+    # An unsloth-zoo without has_native_mtp_head leaves detection to mlx-vlm.
+    for module, finder in ((zoo, "zoo"), (SimpleNamespace(), "vlm")):
+        monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.speculative", module)
+        heads = [spec.has_builtin_head(str(tmp_path / name)) for name in ("zoo", "vlm")]
+        assert heads == [finder == "zoo", finder == "vlm"]
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.speculative", zoo)
+    assert not spec.has_builtin_head(None)
+    monkeypatch.setattr(zoo, "has_native_mtp_head", lambda path: 1 / 0)
+    assert not spec.has_builtin_head(str(tmp_path / "zoo"))

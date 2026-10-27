@@ -4,10 +4,13 @@
 """One torch.compile region per decoder layer for training (stock forward: attention, MLP or MoE,
 norms, LoRA, NF4). UNSLOTH_BLOCK_COMPILE=0 or UNSLOTH_COMPILE_DISABLE turns it off."""
 
+import contextlib
 import functools
+import inspect
 import os
 import sys
 import types
+import weakref
 
 import torch
 
@@ -20,6 +23,117 @@ _COMPILE_OPTIONS = {
     "shape_padding": True,
     "triton.cudagraphs": False,
 }
+# Opt-in per-block CUDA graphs; only pays off for static shapes.
+if os.environ.get("UNSLOTH_BLOCK_CUDAGRAPHS", "0") == "1":
+    _COMPILE_OPTIONS["triton.cudagraphs"] = True
+# Shape cap: variable lengths recorded a graph set per length (3.5x slower, pool grew every step).
+# Past the cap graphs go off for the whole layer kind; admitted shapes alone still grew the pool.
+try:
+    _CUDAGRAPH_MAX_SHAPES = max(0, int(os.environ.get("UNSLOTH_BLOCK_CUDAGRAPHS_MAX_SHAPES", "8")))
+except ValueError:
+    _CUDAGRAPH_MAX_SHAPES = 8
+
+
+class _CloneGrad(torch.autograd.Function):
+    """Identity; backward copies the input gradient out of the CUDA graph pool."""
+
+    @staticmethod
+    def forward(ctx, x):
+        return x.view_as(x)
+
+    @staticmethod
+    def backward(ctx, grad):
+        return grad.clone()
+
+
+def _clone_outputs(out):
+    import torch.utils._pytree as pytree
+    return pytree.tree_map(lambda x: x.clone() if torch.is_tensor(x) else x, out)
+
+
+def _param_grads_out_of_pool(layer):
+    """A first .grad from a replayed backward is graph pool memory the next replay overwrites: copy it."""
+    if layer.__dict__.get("_unsloth_block_grad_hooks", False):
+        return
+    layer.__dict__["_unsloth_block_grad_hooks"] = True
+
+    def hook_for(param):
+        ref = weakref.ref(param)
+
+        def hook(grad):
+            p = ref()
+            if p is None or p.grad is not None:
+                return None
+            return grad.clone()
+
+        return hook
+
+    for param in layer.parameters():
+        if param.requires_grad:
+            param.register_hook(hook_for(param))
+
+
+def _in_nonreentrant_checkpoint():
+    """Non-reentrant checkpoint frees recomputed inputs mid graph recording, which cudagraph trees refuse."""
+    try:
+        hooks = torch._C._autograd._top_saved_tensors_default_hooks(False)
+    except Exception:
+        return False
+    return bool(hooks) and getattr(hooks[0], "__module__", None) == "torch.utils.checkpoint"
+
+
+def _ddp_optimizer_mode():
+    # optimize_ddp also takes "python_reducer" / "no_optimization" strings: only "ddp_optimizer"
+    # (or True) makes dynamo split graphs (convert_frame.py checks == "ddp_optimizer").
+    getter = getattr(torch._dynamo.utils, "get_optimize_ddp_mode", None) or getattr(
+        torch._dynamo.config, "_get_optimize_ddp_mode", None
+    )
+    if getter is not None:
+        return getter() == "ddp_optimizer"
+    return getattr(torch._dynamo.config, "optimize_ddp", False) is True
+
+
+try:
+    from torch.nn.parallel import DistributedDataParallel as _DDP
+except Exception:
+    _DDP = None
+
+
+def _no_ddp_graph_split():
+    """Inside DDP.forward dynamo hands a block's graph to DDPOptimizer, which splits it at gradient
+    bucket boundaries. A checkpoint recompute runs from backward, outside DDP.forward, so a block
+    graph compiled there is not split and saves a different number of tensors than the forward
+    (CheckpointError under DDP's non-reentrant checkpointing, DeepSeek-OCR). Each block is its own
+    region already, so its gradients still reach DDP's buckets block by block."""
+    try:
+        if _DDP is None or _DDP._get_active_ddp_module() is None or not _ddp_optimizer_mode():
+            return contextlib.nullcontext()
+    except Exception:
+        return contextlib.nullcontext()
+    return torch._dynamo.config.patch(optimize_ddp = False)
+
+
+def _isolate_supported():
+    # torch 2.13+: per-call recompile_limit and isolate_recompiles (own cache bucket per region).
+    try:
+        params = inspect.signature(torch.compile).parameters
+    except (TypeError, ValueError):
+        return False
+    return "isolate_recompiles" in params and "recompile_limit" in params
+
+
+_ISOLATE_RECOMPILES = _isolate_supported()
+
+
+def _region_recompile_limit(kinds):
+    """Graphs per block region before eager. Measured at most 4 per kind (Gemma3 GRPO: 20 for 2)."""
+    env = os.environ.get("UNSLOTH_BLOCK_COMPILE_RECOMPILE_LIMIT", "")
+    try:
+        if int(env) > 0:
+            return int(env)
+    except ValueError:
+        pass
+    return max(16 * kinds + 16, 32)
 
 
 # gpt-oss builds its flex mask inside attention: the block broke and recompiled per length.
@@ -140,6 +254,22 @@ def _mark_seq_dynamic(seq_len, obj):
     elif isinstance(obj, dict):
         for o in obj.values():
             _mark_seq_dynamic(seq_len, o)
+
+
+def _mark_batch_dynamic(batch, obj):
+    # Batch dim too: an uneven last training batch (size >= 2) otherwise recompiles every graph.
+    if isinstance(obj, torch.Tensor):
+        if obj.dim() >= 2 and obj.shape[0] == batch:
+            torch._dynamo.maybe_mark_dynamic(obj, 0)
+    elif isinstance(obj, (tuple, list)):
+        for o in obj:
+            _mark_batch_dynamic(batch, o)
+    elif isinstance(obj, dict):
+        for o in obj.values():
+            _mark_batch_dynamic(batch, o)
+
+
+_DYNAMIC_BATCH = os.environ.get("UNSLOTH_BLOCK_COMPILE_DYNAMIC_BATCH", "1") != "0"
 
 
 # fla's opaque op state: None until a GatedDeltaNet layer ran its self-check, then True / False.
@@ -562,6 +692,8 @@ def _precheck_band(layer, seq_len, args, kwargs):
 
 # Mode of the block being traced (_SPLIT: flex_attention outside); dynamo guards on it.
 _IN_BLOCK = [0]
+_PACKED_MODULE = "unsloth.utils.hf_packed_attention"
+_NO_PACKED = [False]
 _OFF, _FULL, _SPLIT = 0, 1, 2
 _DEMOTION = (_FULL, _SPLIT, _OFF)
 _FIRST_MODE = _SPLIT if os.environ.get("UNSLOTH_BLOCK_FLEX", "inside") == "outside" else _FULL
@@ -572,7 +704,8 @@ def _training_flex_options(options):
     (GQA, head_dim 256), demoting every block. A caller's explicit choice is kept."""
     if options is None:
         return {"FORCE_USE_FLEX_ATTENTION": True}
-    if isinstance(options, dict) and "FORCE_USE_FLEX_ATTENTION" not in options:
+    # torch 2.10+ rejects BACKEND together with the legacy FORCE_USE_FLEX_ATTENTION.
+    if isinstance(options, dict) and not ({"FORCE_USE_FLEX_ATTENTION", "BACKEND"} & options.keys()):
         return {**options, "FORCE_USE_FLEX_ATTENTION": True}
     return options
 
@@ -684,29 +817,89 @@ def _layer_kind(layer):
     )
 
 
-def _wrap(cls, compile_options):
+def _wrap(
+    cls,
+    compile_options,
+    kinds = 1,
+):
     original = cls.forward
     # Host-read packed lengths / PrefixGrouper segments stay stock.
     unsloth_forward = getattr(original, "__module__", "").startswith("unsloth.models.")
-    compiled = torch.compile(original, fullgraph = False, dynamic = None, options = compile_options)
+    try:
+        takes_kwargs = any(
+            p.kind is inspect.Parameter.VAR_KEYWORD
+            for p in inspect.signature(original).parameters.values()
+        )
+    except (TypeError, ValueError):
+        takes_kwargs = False
+    isolate = {}
+    if _ISOLATE_RECOMPILES:
+        isolate = dict(isolate_recompiles = True, recompile_limit = _region_recompile_limit(kinds))
+    compiled = torch.compile(
+        original, fullgraph = False, dynamic = None, options = compile_options, **isolate
+    )
     try:
         from unsloth_zoo.temporary_patches.utils import UNSLOTH_DECODE_COMPILE as inline_flag
     except Exception:
         inline_flag = [False]
+    try:
+        from unsloth_zoo.temporary_patches.misc import output_capture_scratch as capture_scratch
+    except Exception:
+        capture_scratch = contextlib.nullcontext
     # First call per grad mode compiles with errors raised: on failure retry with flex outside,
     # then the stock forward. The mode is per layer (a checkpoint recompute must not switch graph);
     # a failure is also the starting mode for later layers of the same kind.
     state = {"reported": set(), "start": {}}
+    # Under Unsloth checkpointing each block call is a new cudagraph generation: the next replay
+    # overwrites this block's outputs and gradients, so they are cloned out of the pool.
+    graphs = bool(compile_options.get("triton.cudagraphs"))
+    if graphs:
+        plain = torch.compile(
+            original,
+            fullgraph = False,
+            dynamic = None,
+            options = {**compile_options, "triton.cudagraphs": False},
+            **isolate,
+        )
+    graph_shapes = set()
+    graphs_off = [False]
 
     def run(self, hidden_states, args, kwargs, mode):
         previous = inline_flag[0]
         inline_flag[0] = True
         _IN_BLOCK[0] = mode
+        packed_module = sys.modules.get(_PACKED_MODULE)
+        packed = getattr(packed_module, "IN_COMPILED_BLOCK", _NO_PACKED)
+        packed_previous = packed[0]
+        packed[0] = True
         try:
-            return compiled(self, hidden_states, *args, **kwargs)
+            if (
+                takes_kwargs
+                and packed_module is not None
+                and kwargs.get("packed_seq_lengths") is not None
+            ):
+                varlen = packed_module.block_varlen_kwargs(self, hidden_states, kwargs)
+                if varlen is not None:
+                    kwargs = {**kwargs, packed_module.BLOCK_VARLEN_KWARG: varlen}
+            # Capture hooks (router_logits) append to empty scratch lists: no guard on the layer index.
+            with capture_scratch(), _no_ddp_graph_split():
+                if graphs and not graphs_off[0]:
+                    shape = tuple(hidden_states.shape)
+                    if shape not in graph_shapes:
+                        graph_shapes.add(shape)
+                        graphs_off[0] = len(graph_shapes) > _CUDAGRAPH_MAX_SHAPES
+                if graphs and (graphs_off[0] or _in_nonreentrant_checkpoint()):
+                    return plain(self, hidden_states, *args, **kwargs)
+                if graphs:
+                    _param_grads_out_of_pool(self)
+                    if hidden_states.requires_grad and torch.is_grad_enabled():
+                        hidden_states = _CloneGrad.apply(hidden_states)
+                    return _clone_outputs(compiled(self, hidden_states, *args, **kwargs))
+                return compiled(self, hidden_states, *args, **kwargs)
         finally:
             inline_flag[0] = previous
             _IN_BLOCK[0] = _OFF
+            packed[0] = packed_previous
 
     def _inline(self, hidden_states, args, kwargs, mode):
         previous = inline_flag[0]
@@ -751,6 +944,8 @@ def _wrap(cls, compile_options):
             _prepare_gdn(self, hidden_states)
         if hidden_states.dim() == 3 and hidden_states.shape[1] > 1:
             _mark_seq_dynamic(hidden_states.shape[1], (hidden_states, args, kwargs))
+            if _DYNAMIC_BATCH and hidden_states.shape[0] > 1:
+                _mark_batch_dynamic(hidden_states.shape[0], (hidden_states, args, kwargs))
             _precheck_band(self, hidden_states.shape[1], args, kwargs)
         bit = 2 if torch.is_grad_enabled() else 1
         checked = self.__dict__.get("_unsloth_block_checked", 0)
@@ -1057,7 +1252,9 @@ def patch_block_compile(model):
     kinds = {}
     for layer in compiled_layers:
         kinds.setdefault(type(layer), set()).add(_layer_kind(layer))
-    _raise_cache_limit(max(len(k) for k in kinds.values()))
+    if not _ISOLATE_RECOMPILES:
+        # Older torch: one global per-code-object limit. 2.13+ sets a limit per region in _wrap.
+        _raise_cache_limit(max(len(k) for k in kinds.values()))
     # The wrap is per class: instances outside the decoder lists (T5 encoder) stay stock.
     found = {id(layer) for layer, _ in layers}
     for module in model.modules():
@@ -1067,7 +1264,7 @@ def patch_block_compile(model):
     for cls in classes:
         if getattr(cls.forward, _MARK, False):
             continue
-        _wrap(cls, _COMPILE_OPTIONS)
+        _wrap(cls, _COMPILE_OPTIONS, len(kinds.get(cls, ())) or 1)
         wrapped.append(cls.__name__)
     if wrapped:
         print(f"Unsloth: compiling each transformer block as one region ({', '.join(wrapped)}).")

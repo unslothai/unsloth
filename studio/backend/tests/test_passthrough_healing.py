@@ -501,7 +501,7 @@ async def _drive_non_streaming(monkeypatch, payload, bodies):
     import routes.inference as inf_mod
 
     client = ScriptedClient(bodies)
-    monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: client)
+    monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
     response = await _openai_passthrough_non_streaming(
         _llama_backend(), payload, "gguf", monitor_id = None
     )
@@ -810,7 +810,7 @@ class TestNudgeRetryOpenai:
                 usage = {"prompt_tokens": 20, "completion_tokens": 5, "total_tokens": 25},
             )
             client = ScriptedClient([first, retry])
-            monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: client)
+            monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
 
             response = await _openai_passthrough_non_streaming(
                 _llama_backend(),

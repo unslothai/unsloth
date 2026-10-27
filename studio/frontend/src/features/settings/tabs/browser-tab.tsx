@@ -39,13 +39,13 @@ import { type TranslationKey, useLocale, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
-import { Cancel01Icon } from "@hugeicons/core-free-icons";
+import { ArrowUpRight01Icon, Cancel01Icon, Delete02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
-import { BrowserAgentSettings } from "./browser-agent-settings";
+import { BROWSER_USE_DOCS_URL, BrowserAgentSettings } from "./browser-agent-settings";
 
 const RETENTION_LABELS: Record<number, TranslationKey> = {
   0: "browser.retention.forever",
@@ -229,7 +229,20 @@ export function BrowserTab() {
   return (
     <div className="settings-page">
       <header className="flex flex-col gap-1">
-        <h1 className="text-xl font-semibold font-heading">{t("browser.settingsTitle")}</h1>
+        <div className="flex min-w-0 items-baseline gap-2">
+          <h1 className="text-xl font-semibold font-heading">{t("browser.settingsTitle")}</h1>
+          {/* title, not aria-label, so the accessible name stays the visible text. */}
+          <a
+            href={BROWSER_USE_DOCS_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={t("browser.agentSettings.docsLabel")}
+            className="inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            {t("browser.agentSettings.docs")}
+            <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
+          </a>
+        </div>
       </header>
 
       <BrowserAgentSettings />
@@ -543,7 +556,8 @@ export function BrowserTab() {
             native ? "browser.native.clearDataSettingDescription" : "browser.clearDataSettingDescription",
           )}
         >
-          <Button variant="outline" size="sm" onClick={() => setClearOpen(true)}>
+          <Button variant="destructive" size="sm" onClick={() => setClearOpen(true)}>
+            <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} data-icon="inline-start" />
             {t("browser.menu.clearData")}
           </Button>
         </SettingsRow>

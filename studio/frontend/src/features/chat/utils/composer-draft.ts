@@ -19,7 +19,6 @@ export function composerPasteDraftKey(): string {
   return PASTE_DRAFT_KEY;
 }
 
-// The names are not stored: a pasted file is named from its own text, so recreating it reproduces the name it had.
 export function readPasteDraft(key: string): string[] {
   let raw: string | null = null;
   try {
@@ -37,8 +36,7 @@ export function readPasteDraft(key: string): string[] {
   }
 }
 
-// A paste large enough to blow the storage quota throws here, leaving the text draft untouched,
-// which is why the two slots are written separately.
+// A quota error here leaves the text draft untouched, hence separate slots.
 export function writePasteDraft(key: string, pastes: readonly string[]): void {
   try {
     if (pastes.length > 0) {
@@ -51,8 +49,7 @@ export function writePasteDraft(key: string, pastes: readonly string[]): void {
   }
 }
 
-// All storage access is best-effort: localStorage throws when unavailable (private mode, blocked
-// storage) or full, so swallow failures.
+// localStorage throws when unavailable or full, so all access is best-effort.
 export function readComposerDraft(key: string): string | null {
   try {
     return window.localStorage.getItem(key);

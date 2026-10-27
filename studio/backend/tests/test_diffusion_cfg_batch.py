@@ -892,3 +892,120 @@ def test_the_verdict_store_is_keyed_on_the_card_and_skipped_off_cuda(monkeypatch
     pipe3, model3 = _fresh_load(type(model))
     assert _render(pipe3, model3)[4:10] == _TRIAL
     assert (tmp_path / "verdicts.json").read_text() == before
+
+
+def test_usable_free_does_not_count_graph_held_cache(monkeypatch):
+    import core.inference.diffusion_memory as dm
+
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device = None: (1000 * 2**20, 0))
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device = None: 600 * 2**20)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda device = None: 0)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(dm, "_user_budget_reserve_mib", lambda total_mib: 0)
+    monkeypatch.setattr(dm, "_graph_held_cache_bytes", lambda device = None: 500 * 2**20)
+    monkeypatch.setattr(cb, "_torch", lambda: torch)
+    assert cb._usable_free_mib(torch.device("cuda", 0)) == 1100
+
+
+class _QuantDen(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.config = {"num_layers": 2, "hidden": 64}
+        torch.manual_seed(0)
+        self.a = torch.nn.Linear(64, 64, dtype = torch.bfloat16)
+        self.b = torch.nn.Linear(64, 64, dtype = torch.bfloat16)
+
+
+def _torchao_loads():
+    import copy
+
+    tq = pytest.importorskip("torchao.quantization")
+    base = _QuantDen()
+    loads = {"bf16": base}
+    int8 = copy.deepcopy(base)
+    tq.quantize_(int8, tq.Int8DynamicActivationInt8WeightConfig())
+    loads["int8"] = int8
+    try:
+        from torchao.float8.inference import Float8MMConfig
+        for fast in (True, False):
+            fp8 = copy.deepcopy(base)
+            tq.quantize_(
+                fp8,
+                tq.Float8DynamicActivationFloat8WeightConfig(
+                    granularity = tq.PerRow(), mm_config = Float8MMConfig(use_fast_accum = fast)
+                ),
+            )
+            loads[f"fp8_fast{int(fast)}"] = fp8
+    except Exception:  # noqa: BLE001
+        pass
+    assert {str(m.a.weight.dtype) for m in loads.values()} == {"torch.bfloat16"}
+    return loads
+
+
+def test_the_verdict_key_tells_bf16_from_torchao_int8_and_fp8_loads():
+    loads = _torchao_loads()
+    keys = {name: cb._load_identity(m, "none", None) for name, m in loads.items()}
+    assert None not in keys.values()
+    assert len(set(keys.values())) == len(keys), keys
+
+
+def test_the_verdict_key_includes_the_engaged_transformer_quant():
+    model = _QuantDen()
+    keys = {q: cb._load_identity(model, "none", None, q) for q in (None, "int8", "fp8", "nvfp4")}
+    assert len(set(keys.values())) == len(keys)
+
+
+def test_the_same_load_gives_a_stable_verdict_key():
+    loads = _torchao_loads()
+    import copy
+
+    for name, model in loads.items():
+        again = copy.deepcopy(model)
+        assert cb._load_identity(model, "none", "default", "int8") == cb._load_identity(
+            again, "none", "default", "int8"
+        ), name
+    assert cb._load_identity(_QuantDen(), "none", None) == cb._load_identity(
+        _QuantDen(), "none", None
+    )
+
+
+def test_install_keys_the_router_on_the_engaged_quant(monkeypatch):
+    monkeypatch.setenv(cb.CFG_BATCH_ENV, "auto")
+    ids = set()
+    for quant in (None, "int8"):
+        pipe = _Pipe(_quiet_flux())
+        assert cb.install_cfg_batch(pipe, offload_policy = "none", transformer_quant = quant) is None
+        ids.add(cb.router_for(pipe).identity)
+    assert len(ids) == 2 and None not in ids
+
+
+def test_the_verdict_key_follows_the_live_attention_backend(monkeypatch):
+    monkeypatch.setenv(cb.CFG_BATCH_ENV, "auto")
+    monkeypatch.setattr(cb, "_card_name", lambda latent: "card")
+    pipe = _Pipe(_quiet_flux())
+    assert cb.install_cfg_batch(pipe, offload_policy = "none") is None
+    router = cb.router_for(pipe)
+    shape = cb._Shape("s")
+    keys = set()
+    for backend in (None, "native", "flash"):
+        pipe.transformer._unsloth_attention_backend = backend
+        keys.add(router._verdict_key(shape, None))
+    assert len(keys) == 3 and None not in keys
+
+
+def test_a_version_1_verdict_store_is_not_read(monkeypatch, tmp_path):
+    import json
+
+    from core.inference import diffusion_measured_peaks as peaks
+
+    path = tmp_path / "verdicts.json"
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_CFG_BATCH_VERDICTS_FILE", str(path))
+    entry = {"k": {"verdict": "plain", "reason": "old key"}}
+    path.write_text(json.dumps({"version": 1, "runtime": peaks.runtime_stamp(), "entries": entry}))
+    assert cb.stored_verdict("k") is None
+    path.write_text(
+        json.dumps(
+            {"version": cb._VERDICTS_VERSION, "runtime": peaks.runtime_stamp(), "entries": entry}
+        )
+    )
+    assert cb.stored_verdict("k") == entry["k"]

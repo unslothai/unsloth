@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import { useEffect, useMemo, useState, type ReactElement } from "react";
 import {
   CheckmarkCircle02Icon,
-  Copy01Icon,
   Key01Icon,
 } from "@hugeicons/core-free-icons";
-import {
-  ChevronRightIcon,
-} from "lucide-react";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Button } from "@/components/ui/button";
 import {
@@ -201,7 +199,7 @@ export function PublishExecutionDialog({
               <Button asChild={true}>
                 <a href={publishedUrl} target="_blank" rel="noreferrer">
                   Open repo
-                  <ChevronRightIcon className="ml-2 size-4" />
+                  <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-4" />
                 </a>
               </Button>
               <Button variant="ghost" onClick={() => onOpenChange(false)}>
@@ -340,7 +338,7 @@ export function PublishExecutionDialog({
               >
                 Cancel
               </Button>
-              <Button onClick={() => void handlePublish()} disabled={!canSubmit}>
+              <Button variant="dark" onClick={() => void handlePublish()} disabled={!canSubmit}>
                 {publishing ? "Publishing..." : "Publish to Hugging Face"}
               </Button>
             </DialogFooter>

@@ -21,7 +21,6 @@ export function ParamsRow({
   children: ReactNode;
 }): ReactElement {
   return (
-    // Match the tallest control so slider and select rows share one rhythm.
     <div className="flex min-h-9 items-center justify-between">
       <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
         {label}
