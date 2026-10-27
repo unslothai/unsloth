@@ -578,15 +578,6 @@ export const useDocStore = create<DocState>((set, get) => {
               )
             : [...graph.wireOrder, near.id, far.id];
           graph = { ...graph, wires, wireOrder };
-          if (plain) {
-            const edges = { ...graph.edges };
-            delete edges[plain.id];
-            graph = {
-              ...graph,
-              edges,
-              edgeOrder: graph.edgeOrder.filter((id) => id !== plain.id),
-            };
-          }
           graph = syncRerouteEdges(graph, s.graph.wireOrder);
         }
         return { graph };

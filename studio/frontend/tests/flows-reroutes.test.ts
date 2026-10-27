@@ -345,6 +345,24 @@ test("auto layout places reroutes in line and keeps them", () => {
   assert.deepEqual(plain(), ["e1:src.text->llm.prompt"]);
 });
 
+test("rerouting a wire into a multi input keeps its place in the edge order", () => {
+  fresh([
+    edge("a", "src", "text", "out", "value"),
+    edge("b", "num", "value", "out", "value"),
+    edge("c", "llm", "text", "out", "value"),
+  ]);
+  useDocStore.getState().addReroute({ id: "r1", pos: [300, 10] }, "b");
+  assert.deepEqual(
+    documentFromState(useDocStore.getState()).edges.map((e) => e.id),
+    ["a", "b", "c"],
+  );
+  useDocStore.getState().removeElements({ reroutes: ["r1"] });
+  assert.deepEqual(
+    documentFromState(useDocStore.getState()).edges.map((e) => e.id),
+    ["a", "b", "c"],
+  );
+});
+
 test("undo takes a reroute split back in one step", () => {
   fresh();
   useDocStore.getState().addReroute({ id: "r1", pos: [300, 10] }, "e1");

@@ -144,20 +144,24 @@ export function syncRerouteEdges<G extends RerouteGraph>(
 ): G {
   const stale = new Set<string>(previousWireIds);
   for (const id of graph.wireOrder) stale.add(id);
-  const derived = derivedEdges(graph);
+  const derived = new Map(derivedEdges(graph).map((edge) => [edge.id, edge]));
   const edges: Record<string, FlowEdge> = {};
   const edgeOrder: string[] = [];
-  for (const id of graph.edgeOrder) {
-    if (stale.has(id)) continue;
-    edges[id] = graph.edges[id];
-    edgeOrder.push(id);
-  }
-  for (const edge of derived) {
-    if (edges[edge.id]) continue;
+  const place = (edge: FlowEdge) => {
     const before = graph.edges[edge.id];
     edges[edge.id] = sameEdge(before, edge) ? before : edge;
     edgeOrder.push(edge.id);
+  };
+  // A derived edge keeps its place: multi inputs take their values in edge order.
+  for (const id of graph.edgeOrder) {
+    if (!stale.has(id)) {
+      edges[id] = graph.edges[id];
+      edgeOrder.push(id);
+    } else if (derived.has(id) && !edges[id]) {
+      place(derived.get(id) as FlowEdge);
+    }
   }
+  for (const edge of derived.values()) if (!edges[edge.id]) place(edge);
   const unchanged =
     edgeOrder.length === graph.edgeOrder.length &&
     edgeOrder.every(
