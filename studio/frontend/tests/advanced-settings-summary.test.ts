@@ -103,3 +103,27 @@ test("advanced settings summary distinguishes duplicate target modules", () => {
     1,
   );
 });
+
+test("advanced settings summary does not count automatic packing and assistant-only restrictions", () => {
+  assert.equal(
+    countNonDefaultAdvancedSettings({
+      ...defaultState,
+      isVisionModel: true,
+      isDatasetImage: true,
+      packing: false,
+    }),
+    0,
+  );
+  assert.equal(
+    countNonDefaultAdvancedSettings({
+      ...defaultState,
+      datasetStreaming: true,
+      trainOnCompletions: false,
+    }),
+    0,
+  );
+  assert.equal(
+    countNonDefaultAdvancedSettings({ ...defaultState, packing: false }),
+    1,
+  );
+});
