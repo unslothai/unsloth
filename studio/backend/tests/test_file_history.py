@@ -431,3 +431,19 @@ def test_a_file_past_the_download_card_walk_is_rewound(chat, monkeypatch):
 
     assert _route_rewind(monkeypatch, ["u1"])["restored"] == [missed]
     assert (workdir / missed).read_text(encoding = "utf-8") == "v1\n"
+
+
+def test_a_large_scratch_folder_does_not_hide_a_deletion(chat, monkeypatch):
+    workdir, history = chat
+    (workdir / "keep.txt").write_text("v1\n", encoding = "utf-8")
+    cache = workdir / tools._SANDBOX_TEMP_DIRNAME / "torchinductor_user" / "fx" / "ab" / "cd"
+    cache.mkdir(parents = True)
+    for i in range(60):
+        (cache / f"{i}.py").write_text("x\n", encoding = "utf-8")
+    monkeypatch.setattr(tools, "_MAX_HISTORY_FILES", 50)
+    assert _walk(str(workdir))[1] is True
+    file_history.set_turn("chat-1", "u1")
+    execute_tool("python", {"code": "import os; os.remove('keep.txt')"}, session_id = "s")
+
+    assert _rewind(history, ["u1"]).recreated == ["keep.txt"]
+    assert (workdir / "keep.txt").read_text(encoding = "utf-8") == "v1\n"

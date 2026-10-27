@@ -21030,8 +21030,10 @@ def _snapshot_workdir_files(workdir: str | None, history: bool = False) -> "dict
         if visited > max_dirs:
             return _CappedSnapshot(snapshot)
         # depth 0 is the workdir itself, whose files are one segment.
-        relative = base[len(workdir) :].strip(os.sep)
-        depth = len(_user_path_parts(relative.split(os.sep) if relative else []))
+        folder = base[len(workdir) :].strip(os.sep)
+        depth = len(_user_path_parts(folder.split(os.sep) if folder else []))
+        # os.path.relpath per file was a third of a 20,000-file walk.
+        prefix = folder.replace(os.sep, "/") + "/" if folder else ""
         # skip noisy dot directories except attachments; dot files like .gitignore remain valid artifacts.
         dirs[:] = (
             []
@@ -21042,6 +21044,8 @@ def _snapshot_workdir_files(workdir: str | None, history: bool = False) -> "dict
                 if (not d.startswith(".") or (base == workdir and d == _ATTACHMENTS_DIR))
                 and _servable_segment(d)
                 and not _snapshot_skips_dir(base, d)
+                # history drops scratch anyway; a torch.compile cache there would spend the whole budget.
+                and not (history and base == workdir and not file_history.tracked(d + "/", ()))
             ]
         )
         for name in names:
@@ -21056,7 +21060,7 @@ def _snapshot_workdir_files(workdir: str | None, history: bool = False) -> "dict
                 stat = os.lstat(path)
                 if not S_ISREG(stat.st_mode):
                     continue
-                relative = os.path.relpath(path, workdir).replace(os.sep, "/")
+                relative = prefix + name
                 content = None
                 if hash_budget and hash_budget >= stat.st_size:
                     content = _content_key(path, stat.st_size)
