@@ -57,7 +57,13 @@ export class RfDeriver {
   >();
   private edgeCache = new Map<
     string,
-    { source: FlowEdge; selected: boolean; portType: string; rf: RfEdge }
+    {
+      source: FlowEdge;
+      from: FlowNode | undefined;
+      selected: boolean;
+      portType: string;
+      rf: RfEdge;
+    }
   >();
   private lastNodes: RfNode[] = [];
   private lastEdges: RfEdge[] = [];
@@ -225,13 +231,23 @@ export class RfDeriver {
       const edge = graph.edges[id];
       const isSelected = selected.has(id);
       const cached = this.edgeCache.get(id);
-      if (cached && cached.source === edge && cached.selected === isSelected) {
+      // A recipe column's value type (its wire colour) follows its params.
+      const from = graph.nodes[edge.source];
+      if (
+        cached &&
+        cached.source === edge &&
+        cached.selected === isSelected &&
+        (cached.from === from || cached.portType === portTypeOf(edge))
+      ) {
+        cached.from = from;
         next.push(cached.rf);
         continue;
       }
       changed = true;
       const portType =
-        cached && cached.source === edge ? cached.portType : portTypeOf(edge);
+        cached && cached.source === edge && cached.from === from
+          ? cached.portType
+          : portTypeOf(edge);
       const handles = edgeHandles(edge);
       if (edge.kind === "data")
         handles.targetHandle = inHandle(columnTargetPort(edge, graph));
@@ -247,6 +263,7 @@ export class RfDeriver {
       };
       this.edgeCache.set(id, {
         source: edge,
+        from,
         selected: isSelected,
         portType,
         rf,

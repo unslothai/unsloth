@@ -320,3 +320,46 @@ test("editing a recipe note writes the markdown back into the recipe's ui notes"
   const edit = commitStudioEdit(next, columns, view, view.configs);
   assert.equal(edit.group, null, "an unrelated edit leaves the notes alone");
 });
+
+test("a deleted recipe note leaves the recipe's ui notes", () => {
+  const { group } = recipeGraph("text-to-sql");
+  const notes = [
+    { id: "recipe_note_1", text: "a", rect: [0, 0, 1, 1] as [number, number, number, number] },
+    { id: "recipe_note_2", text: "b", rect: [0, 0, 1, 1] as [number, number, number, number] },
+  ];
+  const both = withRecipeNotes(group, notes);
+  const one = withRecipeNotes(both, notes.slice(1));
+  assert.deepEqual(
+    (one.ui?.nodes as { id: string }[]).map((n) => n.id),
+    ["note_2"],
+  );
+});
+
+test("a reference wire is recoloured when its source column changes value type, and reused when not", async () => {
+  const { RfDeriver } = await import("../src/features/flows/editor/derive-rf.ts");
+  const { graph } = recipeGraph("text-to-python");
+  const deriver = new RfDeriver();
+  const portType = (edge: { source: string }) =>
+    columnLook(columnOf(graph.nodes[edge.source])).valueType;
+  const first = deriver.edges(graph, new Set(), portType);
+  const domain = byName(graph, "domain");
+  const wire = first.find((e) => e.source === domain.id);
+  assert.equal(wire?.data?.portType, "text");
+  assert.equal(wire?.targetHandle, `i:in@${domain.id}`);
+  graph.nodes[domain.id] = { ...domain, pos: [5, 5] };
+  const moved = deriver.edges(graph, new Set(), portType);
+  assert.equal(moved.find((e) => e.id === wire?.id), wire, "same colour, same edge object");
+  graph.nodes[domain.id] = {
+    ...domain,
+    params: {
+      column: {
+        ...columnOf(domain),
+        // biome-ignore lint/style/useNamingConvention: api schema
+        sampler_type: "uniform",
+        params: { low: 0, high: 1 },
+      },
+    },
+  };
+  const recoloured = deriver.edges(graph, new Set(), portType);
+  assert.equal(recoloured.find((e) => e.id === wire?.id)?.data?.portType, "number");
+});

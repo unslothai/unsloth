@@ -67,6 +67,7 @@ import {
   editAuxCard,
 } from "../recipe/recipe-column-node";
 import { COLUMN_TYPE, columnOf } from "../recipe/recipe-columns";
+import { noteRecipeGroup, withRecipeNotes } from "../recipe/recipe-notes";
 import { columnLook } from "../recipe/recipe-look";
 import { SelectedNodeToolbar } from "./node-toolbar";
 
@@ -442,6 +443,19 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
           ids.notes.push(node.id.slice(NOTE_PREFIX.length));
         else ids.nodes.push(node.id);
       }
+      // A deleted recipe note leaves the recipe's ui notes too.
+      const notes = new Set(ids.notes);
+      const remaining = graph.noteOrder
+        .filter((id) => !notes.has(id))
+        .map((id) => graph.notes[id]);
+      const touched = new Map<string, FlowGroup>();
+      for (const id of ids.notes) {
+        const group = noteRecipeGroup(graph, id);
+        if (group && !ids.groups.includes(group.id))
+          touched.set(group.id, withRecipeNotes(group, remaining));
+      }
+      if (touched.size)
+        useDocStore.getState().patchGraph({ groups: [...touched.values()] });
       useDocStore.getState().removeElements(ids);
       useUiStore.getState().setSelection([], []);
     },
