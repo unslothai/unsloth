@@ -15,6 +15,7 @@ const ROWS_URL = new URL(
 
 type Rows = {
   singleClearDescriptionKeys: (key: string) => string[];
+  presentCaches: (inventory: unknown) => { key: string; sizeBytes: number }[];
 };
 
 function loadRows(): Rows {
@@ -46,11 +47,36 @@ function loadRows(): Rows {
       loadCacheInventory: async () => null,
       purgeCaches: async () => null,
     },
+    "./hf-cache-model-clear": { HfCacheModelClear: "HfCacheModelClear" },
     "./storage-overview": { SettingsCardRow: noop },
   });
 }
 
 const SAFETY = "settings.resources.storage.caches.safety";
+
+test("cache rows show largest occupancy first with deterministic ties and no input mutation", () => {
+  const { presentCaches } = loadRows();
+  const entries = Object.freeze([
+    Object.freeze({ key: "uv", sizeBytes: 20, present: true }),
+    Object.freeze({ key: "triton", sizeBytes: 500, present: true }),
+    Object.freeze({ key: "hf_hub", sizeBytes: 500, present: true }),
+    Object.freeze({ key: "pip", sizeBytes: 900, present: false }),
+  ]);
+  const result = presentCaches({ caches: entries });
+  assert.deepEqual(
+    result.map((row) => row.key),
+    ["hf_hub", "triton", "uv"],
+  );
+  assert.deepEqual(
+    entries.map((row) => row.key),
+    ["uv", "triton", "hf_hub", "pip"],
+  );
+  assert.deepEqual(
+    presentCaches({ caches: [...entries].reverse() }).map((row) => row.key),
+    result.map((row) => row.key),
+  );
+  assert.deepEqual(presentCaches(null), []);
+});
 
 test("the model cache clear does not promise that models are untouched", () => {
   assert.ok(
@@ -167,6 +193,7 @@ function driveRows(options: {
       loadCacheInventory: options.load,
       purgeCaches: options.purge ?? (async () => ({})),
     },
+    "./hf-cache-model-clear": { HfCacheModelClear: "HfCacheModelClear" },
     "./storage-overview": { SettingsCardRow: "SettingsCardRow" },
   });
 

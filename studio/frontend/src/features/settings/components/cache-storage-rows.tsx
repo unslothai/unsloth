@@ -31,6 +31,7 @@ import {
   purgeCaches,
 } from "../api/caches";
 import { SettingsCardRow } from "./storage-overview";
+import { HfCacheModelClear } from "./hf-cache-model-clear";
 
 /** Decimal units, matching the Storage section's disk readings. */
 export function formatCacheSize(bytes: number): string {
@@ -92,9 +93,15 @@ export function singleClearDescriptionKeys(key: CacheKey): TranslationKey[] {
   return cost ? [cost, ...spared] : spared;
 }
 
-function presentCaches(inventory: CacheInventory | null): CacheEntry[] {
+export function presentCaches(inventory: CacheInventory | null): CacheEntry[] {
   if (!inventory) return [];
-  return inventory.caches.filter((entry) => entry.present);
+  return inventory.caches
+    .filter((entry) => entry.present)
+    .sort(
+      (first, second) =>
+        second.sizeBytes - first.sizeBytes ||
+        first.key.localeCompare(second.key),
+    );
 }
 
 export function useCacheStorage() {
@@ -200,7 +207,8 @@ const HF_REPO_PREFIX = /^(models|datasets|spaces)--/;
 export function HuggingFaceCacheFolders({
   entry,
   version,
-}: { entry: CacheEntry; version: CacheInventory | null }) {
+  disabled = false,
+}: { entry: CacheEntry; version: CacheInventory | null; disabled?: boolean }) {
   const t = useT();
   const [open, setOpen] = useState(false);
   const [rows, setRows] = useState<CacheBreakdownEntry[] | null>(null);
@@ -261,11 +269,26 @@ export function HuggingFaceCacheFolders({
                 className="flex min-w-0 justify-between gap-4"
               >
                 <span className="truncate font-mono">
-                  {row.name.replace(HF_REPO_PREFIX, "").replaceAll("--", "/")}
+                  {row.repoId ??
+                    row.name.replace(HF_REPO_PREFIX, "").replaceAll("--", "/")}
                 </span>
-                <span className="shrink-0 tabular-nums">
-                  {formatCacheSize(row.sizeBytes)}
-                </span>
+                <div className="flex shrink-0 items-center gap-2">
+                  <span className="tabular-nums">
+                    {formatCacheSize(row.sizeBytes)}
+                  </span>
+                  <span className="w-12">
+                    {row.deleteAllowed &&
+                    row.repoType === "model" &&
+                    row.repoId &&
+                    row.cachePath ? (
+                      <HfCacheModelClear
+                        repoId={row.repoId}
+                        cachePath={row.cachePath}
+                        disabled={disabled}
+                      />
+                    ) : null}
+                  </span>
+                </div>
               </div>
             ))
           )}
@@ -391,6 +414,7 @@ export function CacheStorageRows({ cache }: { cache: CacheStorage }) {
                     <HuggingFaceCacheFolders
                       entry={entry}
                       version={inventory}
+                      disabled={loading || clearing}
                     />
                   ) : null}
                 </div>

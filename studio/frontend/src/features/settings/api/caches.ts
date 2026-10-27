@@ -180,6 +180,10 @@ export type CacheBreakdownEntry = {
   name: string;
   path: string;
   sizeBytes: number;
+  repoId?: string;
+  repoType?: "model";
+  cachePath?: string;
+  deleteAllowed?: boolean;
 };
 
 export async function loadCacheBreakdown(
@@ -197,12 +201,20 @@ export async function loadCacheBreakdown(
       path: string;
       // biome-ignore lint/style/useNamingConvention: API schema
       size_bytes: number;
+      repo_id?: string;
+      repo_type?: "model";
+      cache_path?: string;
+      delete_allowed?: boolean;
     }[];
   };
   return result.entries.map((entry) => ({
     name: entry.name,
     path: entry.path,
     sizeBytes: entry.size_bytes,
+    repoId: entry.repo_id,
+    repoType: entry.repo_type,
+    cachePath: entry.cache_path,
+    deleteAllowed: entry.delete_allowed === true,
   }));
 }
 
