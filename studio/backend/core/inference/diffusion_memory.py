@@ -4528,6 +4528,15 @@ def _refine_plan_from_loaded_weights(
             measured_dense_bf16 = dense_bf16,
             measured_small_host_int8 = small_host_int8,
             measured_learned_cfg_off = bool(cfg_off_only and learned),
+            # tier / phase seed measured on text-to-image: unpriced references size flat (measured_request_extra_mib)
+            measured_omits_references = bool(
+                getattr(pipe, "_unsloth_unpriced_references", False)
+                and str(speed_mode or "") in _MEASURED_PEAK_SPEED_MODES
+                and (
+                    (dense_mib is not None and getattr(pipe, "_unsloth_dense_tier_seeds", False))
+                    or (dense_mib is None and getattr(pipe, "_unsloth_phase_seeds", False))
+                )
+            ),
             loaded_transformer_mib = dit,
             loaded_text_encoder_mib = encoders,
             loaded_other_mib = other,

@@ -2796,6 +2796,15 @@ def _measured_target(target: Any) -> bool:
         return False
 
 
+def _references_unpriced(fam: Any) -> bool:
+    """Reference images join the denoiser sequence unpriced by the request guard (FLUX.2 Klein; FLUX.3 charges them)."""
+    return bool(
+        getattr(fam, "reference", False)
+        and not tuple(getattr(fam, "reference_resolutions", ()) or ())
+        and not is_flux3_family(fam)
+    )
+
+
 def _calibrated_activation(
     fam: Any,
     target: Any,
@@ -2808,12 +2817,7 @@ def _calibrated_activation(
         return None
     # Measured without input images: references the guard cannot size (no reference_resolutions) would overflow.
     # FLUX.3 can: every reference is resized to 1 MP and the request guard charges those pixels on top.
-    if (
-        not unpriced_references_ok
-        and getattr(fam, "reference", False)
-        and not tuple(getattr(fam, "reference_resolutions", ()) or ())
-        and not is_flux3_family(fam)
-    ):
+    if not unpriced_references_ok and _references_unpriced(fam):
         return None
     # Measured at 16-bit only; fp32-promoted families (Z-Image pre-Ampere) do not qualify.
     compute = _resolve_diffusion_compute_dtype(fam, getattr(target, "dtype", None))
@@ -10098,6 +10102,13 @@ class DiffusionBackend:
                         logger = logger,
                     )
                     eager_patched = effective_speed != SPEED_OFF
+                    try:
+                        from .diffusion_eager_patches import fp16_rmsnorm_installed
+
+                        # class-level too: unload must restore it with the eager group
+                        eager_patched = eager_patched or fp16_rmsnorm_installed()
+                    except Exception:  # noqa: BLE001
+                        pass
                     autoopt.install_patches(
                         autoopt.STAGE_LOAD,
                         pipe = pipe,
@@ -10333,6 +10344,7 @@ class DiffusionBackend:
                         )
                         # the dense default / max tier seeds hold on the measured target only
                         pipe._unsloth_dense_tier_seeds = _measured_target(target)
+                        pipe._unsloth_unpriced_references = _references_unpriced(fam)
                         # a CFG-capable family may place from a peak recorded without CFG (``cfg:off``)
                         pipe._unsloth_peak_expects_cfg = bool(
                             getattr(fam, "uses_negative_prompt", False)
