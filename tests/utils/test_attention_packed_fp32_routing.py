@@ -232,8 +232,7 @@ def test_packed_fp32_cuda_parity(monkeypatch):
 
 
 def test_packed_fp32_reroute_keeps_fp32_output_on_sm100(native_packed_host, monkeypatch):
-    # sm_100+ downcasts fp32 for xformers' flash op; without autocast the per-segment SDPA this
-    # reroute replaces returned fp32, so an fp32 o_proj must still get fp32.
+    # sm_100+ downcasts fp32 for xformers; without autocast the output must stay fp32.
     monkeypatch.setattr(ad, "_xformers_rejects_fp32", lambda device: True)
     lengths = [3, 5]
     Q, K, V = _packed_qkv(torch.float32, lengths)
@@ -260,6 +259,5 @@ def test_packed_fp32_cuda_feeds_an_fp32_o_proj(monkeypatch):
     assert all(t.grad is not None and t.grad.dtype == torch.float32 for t in leaves)
     with torch.autocast("cuda", dtype = torch.bfloat16):
         out = _attend(*leaves, _seq_info(lengths, "cuda"), ad.select_attention_backend(True))
-    # Under autocast the per-segment SDPA returned bf16 as well: unchanged.
     if ad._xformers_rejects_fp32(leaves[0].device):
         assert out.dtype == torch.bfloat16

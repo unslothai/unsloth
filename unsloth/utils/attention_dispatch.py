@@ -1287,8 +1287,7 @@ def _run_attention(
     if backend == FLASH_VARLEN and context.seq_info is None:
         backend = FLASH_DENSE if HAS_FLASH_ATTENTION else SDPA
     xformers_fp32_unsupported = _xformers_rejects_fp32(Q.device)
-    # The per-segment SDPA this reroute replaces returned fp32 without autocast; an sm_100+
-    # downcast below must not hand bf16 to an fp32 o_proj.
+    # sm_100+ downcast below must not hand bf16 to an fp32 o_proj (old SDPA path returned fp32).
     packed_out_dtype = None
     if backend == SDPA and _packed_fp32_prefers_xformers(config, context, Q, K, V):
         backend = XFORMERS
