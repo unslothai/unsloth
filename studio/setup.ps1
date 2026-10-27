@@ -5125,8 +5125,11 @@ function Test-ManagedNodeOnPath {
     param([string]$InstallDir)
     $command = Get-Command node -ErrorAction SilentlyContinue
     if (-not $command -or -not $command.Path) { return $false }
-    return ((Get-CanonicalDir -Path (Split-Path -Parent $command.Path)) -eq
-            (Get-CanonicalDir -Path $InstallDir))
+    $parent = Split-Path -Parent $command.Path
+    if ((Get-CanonicalDir -Path $parent) -eq (Get-CanonicalDir -Path $InstallDir)) { return $true }
+    # A staged update or a moved Studio home puts $InstallDir elsewhere; the installer's
+    # metadata beside the Node on PATH still marks it as the one Unsloth manages.
+    return (Test-Path -LiteralPath (Join-Path $parent "UNSLOTH_NODE_PREBUILT_INFO.json") -PathType Leaf)
 }
 
 

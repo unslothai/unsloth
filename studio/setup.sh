@@ -2131,8 +2131,16 @@ if [ -n "$_SYS_NODE_VER" ]; then
     _SYS_NPM_VER="$_PROBED_VER"
 fi
 _NODE_ON_PATH_IS_MANAGED=0
-if [ "$(command -v node || true)" -ef "$NODE_DIR/bin/node" ]; then
+_node_on_path="$(command -v node || true)"
+if [ -n "$_node_on_path" ] && [ "$_node_on_path" -ef "$NODE_DIR/bin/node" ]; then
     _NODE_ON_PATH_IS_MANAGED=1
+elif [ -n "$_node_on_path" ]; then
+    # A staged update or a moved Studio home puts NODE_DIR elsewhere; the installer's
+    # metadata beside the Node on PATH still marks it as the one Unsloth manages.
+    _node_on_path_root="$(cd "$(dirname "$_node_on_path")/.." 2>/dev/null && pwd -P)" || _node_on_path_root=""
+    if [ -n "$_node_on_path_root" ] && [ -f "$_node_on_path_root/UNSLOTH_NODE_PREBUILT_INFO.json" ]; then
+        _NODE_ON_PATH_IS_MANAGED=1
+    fi
 fi
 NODE_SOURCE="$(decide_node_source "$_SYS_NODE_VER" "$_SYS_NPM_VER" "${UNSLOTH_SKIP_NODE_INSTALL:-0}" "$_NODE_ON_PATH_IS_MANAGED")"
 _FRONTEND_SKIP=false

@@ -98,8 +98,14 @@ try {
     $env:PATH = $managedDir
     Check 'managed command on PATH is recognized' (Test-ManagedNodeOnPath -InstallDir $managedDir)
     Check 'trailing separator still recognizes managed command' (Test-ManagedNodeOnPath -InstallDir ($managedDir + [IO.Path]::DirectorySeparatorChar))
+    # A staged update: the stage's install dir differs from the live managed Node on PATH.
+    $stageDir = Join-Path $nodeTestRoot 'stage node'
+    Check 'unmarked Node outside the install dir is not managed' (-not (Test-ManagedNodeOnPath -InstallDir $stageDir))
+    [System.IO.File]::WriteAllText((Join-Path $managedDir 'UNSLOTH_NODE_PREBUILT_INFO.json'), '{}')
+    Check 'staged update still recognizes the marked managed Node' (Test-ManagedNodeOnPath -InstallDir $stageDir)
     $env:PATH = $externalDir
     Check 'external command is not managed' (-not (Test-ManagedNodeOnPath -InstallDir $managedDir))
+    Check 'external Node is not managed during a staged update' (-not (Test-ManagedNodeOnPath -InstallDir $stageDir))
     $env:PATH = $nodeTestRoot
     Check 'missing command is not managed' (-not (Test-ManagedNodeOnPath -InstallDir $managedDir))
 } finally {
