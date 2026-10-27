@@ -17,25 +17,30 @@ _T = TypeVar("_T")
 
 # asyncio.to_thread copies the context, so worker threads of one scan share its dict.
 _scope: ContextVar[Optional[dict]] = ContextVar("studio_scan_memo", default = None)
+# Set when the scope ends: a task or thread that copied the context and outlives it stops using it.
+_CLOSED = object()
 
 
 @contextmanager
 def scan_memo() -> Iterator[None]:
     """Memoize lookups inside; a nested scope joins the outer one."""
-    if _scope.get() is not None:
+    current = _scope.get()
+    if current is not None and _CLOSED not in current:
         yield
         return
-    token = _scope.set({})
+    memo: dict = {}
+    token = _scope.set(memo)
     try:
         yield
     finally:
+        memo[_CLOSED] = True
         _scope.reset(token)
 
 
 def memoized(key: Hashable, compute: Callable[[], _T]) -> _T:
     """compute() once per scope for key; a raise is not cached."""
     memo = _scope.get()
-    if memo is None:
+    if memo is None or _CLOSED in memo:
         return compute()
     try:
         return memo[key]

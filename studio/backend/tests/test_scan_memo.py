@@ -71,6 +71,26 @@ def test_async_scope_reaches_to_thread_workers_and_closes():
     assert lookup() == 3
 
 
+def test_a_thread_that_outlives_the_scope_stops_using_it():
+    import contextvars
+
+    calls = []
+    compute = lambda: calls.append(1) or len(calls)
+    with scan_memo():
+        assert memoized("k", compute) == 1
+        leaked = contextvars.copy_context()
+    # A copied context still holds the dict, as a task or thread started in the scan would.
+    assert leaked.run(memoized, "k", compute) == 2
+    assert leaked.run(memoized, "k", compute) == 3
+
+    def new_scan():
+        with scan_memo():
+            return memoized("k", compute), memoized("k", compute)
+
+    # A scan begun from that context gets a fresh memo of its own.
+    assert leaked.run(new_scan) == (4, 4)
+
+
 def test_sync_decorator_keeps_name_and_result():
     @in_scan_memo
     def scan(value):
