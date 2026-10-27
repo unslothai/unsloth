@@ -589,8 +589,14 @@ def test_fifo_fairness_across_many_waiters(monkeypatch):
             order.append(i)
             return resp
 
-        tasks = [asyncio.create_task(_one(i)) for i in range(8)]
-        await asyncio.sleep(0.2)
+        # Admission now awaits prompt preparation first, so queue each waiter before starting the next:
+        # a fixed sleep let a loaded runner see 7 queued and an arrival order that is not the task order.
+        tasks = []
+        for i in range(8):
+            tasks.append(asyncio.create_task(_one(i)))
+            deadline = time.monotonic() + 5
+            while _snapshot().queued < i + 1 and time.monotonic() < deadline:
+                await asyncio.sleep(0.01)
         assert _snapshot().queued == 8
         held[0].release()
         await asyncio.wait_for(asyncio.gather(*tasks), timeout = 5)
