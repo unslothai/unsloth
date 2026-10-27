@@ -28352,12 +28352,9 @@ class LlamaCppBackend:
                             and not _draft_cpu_no_embedded
                             and not _tp_planned
                         ),
+                        # The automatic clamp, priced after the residency decision, replaces this.
                         "cache_ram_default_mib": int(
-                            _auto_cache_ram_mib
-                            if _auto_cache_ram_mib is not None
-                            else self._effective_prompt_cache_bytes(
-                                _cache_ram_in_force, server_caps
-                            )
+                            self._effective_prompt_cache_bytes(_cache_ram_in_force, server_caps)
                             // (1024 * 1024)
                         ),
                         "cache_ram_user_set": _cache_ram_in_force is not None,
@@ -28697,14 +28694,10 @@ class LlamaCppBackend:
                         ),
                         # Neither a CPU drafter nor checkpoints can be covered by free VRAM.
                         host_only_bytes = (_cpu_draft_fit_bytes or 0) + _ckpt_host_bytes,
-                        # Panel value, else llama-server's default; 0 for an old build or an explicit 0.
+                        # Panel value, else llama-server's default (the automatic clamp replaces it below);
+                        # 0 for an old build or an explicit 0.
                         prompt_cache_bytes = (
-                            self._effective_prompt_cache_bytes(
-                                _cache_ram_in_force
-                                if _auto_cache_ram_mib is None
-                                else _auto_cache_ram_mib,
-                                server_caps,
-                            )
+                            self._effective_prompt_cache_bytes(_cache_ram_in_force, server_caps)
                             if _planner_owns_fit
                             else 0
                         ),
@@ -28904,6 +28897,8 @@ class LlamaCppBackend:
                     _fit_load_mode = None
                     _managed_lazy_flags = None
                     _fit_lazy_auto_off = None
+                    # Nor is a --cache-ram clamp priced against the footprint that just failed.
+                    _auto_cache_ram_mib = None
                     _moe_cache_candidate = _moe_cache_ram_ok = False
                     # And a half-built snapshot is not a price either: the throw can
                     # land after the dict exists but before the later terms are added

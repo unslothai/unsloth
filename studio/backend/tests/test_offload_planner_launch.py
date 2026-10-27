@@ -226,6 +226,26 @@ def test_the_cache_ram_clamp_is_emitted_on_the_fallback_only_when_it_binds(tmp_p
     assert seen["inputs"]["cache_ram_default_mib"] == int(got)
 
 
+def test_a_failed_fit_drops_the_cache_ram_clamp_it_already_priced(tmp_path, monkeypatch):
+    """A throw after the clamp is priced falls back to --fit on; the clamp described the footprint
+    that failed, so the fallback keeps llama-server's own default like the rest of the pricing."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    real = LlamaCppBackend._fit_derived_load_mode
+
+    def boom(self, **kwargs):
+        if kwargs.get("announce", True):
+            raise RuntimeError("injected")
+        return real(self, **kwargs)
+
+    monkeypatch.setattr(LlamaCppBackend, "_fit_derived_load_mode", boom)
+    cmd, _b, _seen = _launch_with(
+        tmp_path, monkeypatch, Plan(reason = "declined"), avail_mib = 12 * 1024
+    )
+    assert _flag(cmd, "--fit") == "on"
+    assert "--cache-ram" not in cmd, cmd
+
+
 def test_a_load_mode_the_plan_chose_rides_the_fit_record(tmp_path, monkeypatch):
     """The pair reaches the argv only through _fit_load_mode_flags, so every retry that strips
     the fit's load mode strips the plan's too."""
