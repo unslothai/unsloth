@@ -180,6 +180,7 @@ def test_exporting_a_flow_drops_keys_stdio_servers_and_upload_paths():
     payload["recipe"]["seed_config"] = {
         "source": {"seed_type": "github_repo", "repos": ["a/b"], "token": "ghp_" + "x" * 30},
     }
+    payload["ui"]["seed_preview_rows"] = [{"title": "private-issue-body"}]
     doc = _flow(payload)
 
     async def no_media(_):
@@ -188,7 +189,7 @@ def test_exporting_a_flow_drops_keys_stdio_servers_and_upload_paths():
     raw, _, _ = asyncio.run(package.export_flow(doc, "json", no_media))
     text = raw.decode()
     _assert_shared(text)
-    assert "ghp_" not in text
+    assert "ghp_" not in text and "private-issue-body" not in text
     out = json.loads(text)
     config = out["groups"][0]["config"]
     assert [p["name"] for p in config["mcp_providers"]] == ["docs"]

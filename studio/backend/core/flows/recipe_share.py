@@ -89,7 +89,8 @@ def share_recipe(recipe: dict, ui: dict | None = None) -> tuple[dict, dict]:
             if "paths" in source:
                 source["paths"] = []
             seed.pop("resolved_paths", None)
-        if kind in ("hf", *_LOCAL_SEEDS):
+        # Preview rows hold the seed's contents (a private repo's issues, an uploaded file).
+        if kind in ("hf", "github_repo", *_LOCAL_SEEDS):
             ui.update(copy.deepcopy(_SEED_HINTS))
             ui.pop("seed_total_rows", None)
     return recipe, ui
