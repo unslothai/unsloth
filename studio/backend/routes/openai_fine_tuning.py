@@ -656,16 +656,33 @@ def _batch_key(entry: _Queued) -> Optional[tuple]:
     )
 
 
+_MOE_COUNT_KEYS = ("num_experts", "n_routed_experts", "num_local_experts")
+
+
+def _moe_config(config: dict) -> bool:
+    for cfg in (config, config.get("text_config") or {}):
+        count = next((cfg[k] for k in _MOE_COUNT_KEYS if cfg.get(k) is not None), None)
+        if count is not None:
+            return isinstance(count, int) and count > 0
+    return False
+
+
 async def _trains_alone(request: TrainingStartRequest) -> bool:
-    """Text-diffusion models (own denoising objective) and saved LoRA adapters (continued in place by the
-    single-job trainer) are outside what the batched trainer runs."""
+    """Outside what the batched trainer runs: text-diffusion models (own denoising objective), saved LoRA
+    adapters (continued in place alone) and MoE models (fused experts train via target_parameters alone)."""
     from utils.models.diffusion_lm import diffusion_lm_profile_for_model
-    from utils.models.model_config import get_base_model_from_lora_identifier
+    from utils.models.model_config import _read_raw_config_json, get_base_model_from_lora_identifier
 
     def probe() -> bool:
         if diffusion_lm_profile_for_model(request.model_name, request.hf_token):
             return True
-        return get_base_model_from_lora_identifier(request.model_name, request.hf_token) is not None
+        if get_base_model_from_lora_identifier(request.model_name, request.hf_token) is not None:
+            return True
+        try:
+            config = _read_raw_config_json(request.model_name, request.hf_token)
+        except Exception:
+            return True
+        return config is None or _moe_config(config)
 
     return await asyncio.to_thread(probe)
 

@@ -173,6 +173,23 @@ def _load_base(trainer, config: dict, hf_token, event_queue) -> Optional[bool]:
     return load_in_4bit
 
 
+def _is_moe(model) -> bool:
+    """unsloth.models._utils.is_moe_model, without importing unsloth's package root."""
+    config = getattr(model, "config", None)
+    for cfg in (config, getattr(config, "text_config", None)):
+        count = next(
+            (
+                getattr(cfg, k)
+                for k in ("num_experts", "n_routed_experts", "num_local_experts")
+                if getattr(cfg, k, None) is not None
+            ),
+            None,
+        )
+        if count is not None:
+            return isinstance(count, int) and count > 0
+    return False
+
+
 def _resolve_targets(model, target_modules) -> list[str]:
     """Leaf names as PEFT resolves them: an explicit list, the Studio default, or every linear layer
     except the output head for ``all-linear``."""
@@ -659,6 +676,11 @@ def _run(event_queue, stop_queue, config: dict, members: list) -> None:
     if getattr(trainer, "diffusion_lm_profile", None):
         raise RuntimeError(
             "Batched training does not support text-diffusion models; train these jobs one at a time."
+        )
+    if _is_moe(trainer.model):
+        # The single-job path trains fused experts through PEFT target_parameters; these layers cannot.
+        raise RuntimeError(
+            "Batched training does not support MoE models; train these jobs one at a time."
         )
     if getattr(trainer.model, "peft_config", None):
         # A saved LoRA loads as a PeftModel; the multi-LoRA layers would train fresh adapters and drop its weights.

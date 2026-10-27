@@ -1117,8 +1117,10 @@ def test_listing_pages_through_a_batch_that_is_still_loading(batch_queue):
     assert sorted(seen) == sorted(j.id for j in jobs) and len(seen) == 3
 
 
-@pytest.mark.parametrize("model_kind", ["diffusion", "lora_adapter"])
-def test_text_diffusion_and_adapter_jobs_never_batch(batch_queue, monkeypatch, model_kind):
+@pytest.mark.parametrize(
+    "model_kind", ["diffusion", "lora_adapter", "moe", "moe_text_config", "dense"]
+)
+def test_only_plain_dense_models_batch(batch_queue, monkeypatch, model_kind):
     import utils.models.diffusion_lm as diffusion_lm
     import utils.models.model_config as model_config
 
@@ -1134,6 +1136,15 @@ def test_text_diffusion_and_adapter_jobs_never_batch(batch_queue, monkeypatch, m
         "get_base_model_from_lora_identifier",
         lambda *a, **k: "unsloth/Qwen3-0.6B" if model_kind == "lora_adapter" else None,
     )
+    configs = {
+        "moe": {"model_type": "qwen3_moe", "num_experts": 128},
+        "moe_text_config": {"text_config": {"num_local_experts": 8}},
+    }
+    monkeypatch.setattr(
+        model_config,
+        "_read_raw_config_json",
+        lambda *a, **k: configs.get(model_kind, {"model_type": "qwen3", "num_experts": None}),
+    )
 
     async def flow():
         uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
@@ -1143,8 +1154,11 @@ def test_text_diffusion_and_adapter_jobs_never_batch(batch_queue, monkeypatch, m
         await openai_fine_tuning._drain_once()
 
     _run(flow())
-    assert calls["batch"] == []
-    assert [r.project_name for r in calls["start"]] == ["a"]
+    if model_kind == "dense":
+        assert len(calls["batch"]) == 1 and calls["start"] == []
+    else:
+        assert calls["batch"] == []
+        assert [r.project_name for r in calls["start"]] == ["a"]
 
 
 def test_mlx_jobs_never_batch(batch_queue, monkeypatch):

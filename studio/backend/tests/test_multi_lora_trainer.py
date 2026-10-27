@@ -438,6 +438,15 @@ def test_an_existing_lora_adapter_never_trains_batched(monkeypatch, tmp_path):
     assert "existing LoRA adapter" in events[-1]["error"]
 
 
+def test_a_moe_model_never_trains_batched(monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    config = copy.deepcopy(_base().config)
+    config.num_experts = 8
+    events, _model, _pristine = _run(monkeypatch, MEMBERS[:2], model_attrs = {"config": config})
+    assert [e["type"] for e in events if e.get("member_run_id")] == ["error", "error"]
+    assert "MoE" in events[-1]["error"]
+
+
 def test_pretokenized_assistant_masks_become_labels():
     ids = [[5, 6, 7, 8], [9, 10, 11]]
     info = {
