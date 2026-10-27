@@ -17787,12 +17787,9 @@ async def _managed_engine_request(request):
 
 
 def _managed_engine_unsupported_controls(payload, model_info = None) -> bool:
-    """A spelled-out ``{"type": "text"}`` response_format is the default, not structured output."""
     reasoning = (model_info or {}).get("reasoning_flags") is not None
     return bool(
         payload.use_adapter is not None
-        or _response_format_constrains_decoding(payload)
-        or payload.continue_final_message
         or (
             not reasoning
             and (
@@ -30313,7 +30310,8 @@ async def produce_openai_chat_completions(
             _explicit_studio_tool_loop_requested(payload)
             or not _tools_outrank_response_format(payload, payload.tools)
         ):
-            if not model_info.get("is_mlx"):
+            _engine_grammar = model_info.get("engine") in ("vllm", "sglang")
+            if not (model_info.get("is_mlx") or _engine_grammar):
                 _raise_unsupported_openai_parameter(
                     "response_format",
                     "response_format needs a grammar engine, and the transformers backend "
@@ -30333,9 +30331,10 @@ async def produce_openai_chat_completions(
                     "decoding starts a new document rather than continuing the text before "
                     "it. Send the turn without continue_final_message.",
                 )
-            await asyncio.get_running_loop().run_in_executor(
-                _SCHEMA_VALIDATION_EXECUTOR, _reject_unhonorable_response_format, payload
-            )
+            if not _engine_grammar:
+                await asyncio.get_running_loop().run_in_executor(
+                    _SCHEMA_VALIDATION_EXECUTOR, _reject_unhonorable_response_format, payload
+                )
 
         # ── Audio TTS path: auto-route to audio generation ────
         # Whisper is ASR, not TTS, so it skips this branch and is handled in the audio input path below.
@@ -32787,7 +32786,11 @@ async def produce_openai_chat_completions(
         if _managed_engine_unsupported_controls(payload, _sf_model_info):
             raise _reject(
                 400,
-                "This engine integration does not support adapters, structured output, continuation or reasoning controls.",
+                "This engine integration does not support adapters or reasoning controls.",
+            )
+        if _continue_final_message(payload, thought = True) and not _continue_final_message(payload):
+            raise _reject(
+                400, "This engine cannot resume a response that stopped mid-thought. Use Retry."
             )
         from routes.managed_engine_chat import managed_tool_chat
 

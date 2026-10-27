@@ -191,7 +191,7 @@ def test_reasoning_controls_are_refused_only_without_a_parser():
         payload, {"engine": "vllm", "reasoning_flags": {"supports_reasoning": True}}
     )
     payload = payload.model_copy(update = {"continue_final_message": True})
-    assert _managed_engine_unsupported_controls(
+    assert not _managed_engine_unsupported_controls(
         payload, {"engine": "vllm", "reasoning_flags": {"supports_reasoning": True}}
     )
 
@@ -272,7 +272,9 @@ class _Engine:
     engine = "vllm"
     context = 2048
     reasoning_parser = "qwen3"
+    opens_thought = False
     replay_reasoning = ManagedEngine.replay_reasoning
+    continue_final_message = ManagedEngine.continue_final_message
 
 
 def _tool_payload(**fields):
@@ -342,6 +344,191 @@ def test_tool_loop_keeps_and_replays_reasoning_when_preserving():
     assert drop.preserves_reasoning is False
     asyncio.run(run(drop))
     assert "reasoning" not in sent[-1]["messages"][1]
+
+
+def test_tool_loop_continues_only_the_turn_that_ends_on_the_partial():
+    import asyncio
+
+    from routes.managed_engine_chat import ManagedToolTransport
+
+    sent = []
+
+    class _Response:
+        status_code = 200
+
+        async def aiter_lines(self):
+            yield 'data: {"choices":[{"delta":{"reasoning_content":" upon a time"}}]}'
+
+        async def aclose(self):
+            return None
+
+    class _Stream:
+        async def __aenter__(self):
+            return _Response()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class _Client:
+        def stream(
+            self,
+            method,
+            url,
+            headers = None,
+            json = None,
+        ):
+            sent.append(json)
+            return _Stream()
+
+    engine = _Engine()
+    engine.base_url, engine.headers = "http://engine", {}
+    transport = ManagedToolTransport(_Client(), engine, {"model": "m"}, continuing = True)
+
+    async def run(messages):
+        lines = transport.stream(
+            messages = messages, tools = None, tool_choice = None, cancel_event = asyncio.Event()
+        )
+        return [json.loads(line[5:])["choices"][0]["delta"] async for line in lines]
+
+    partial = [{"role": "user", "content": "q"}, {"role": "assistant", "content": "Once"}]
+    assert asyncio.run(run(partial)) == [{"content": " upon a time"}]
+    assert sent[-1]["continue_final_message"] is True
+    assert sent[-1]["add_generation_prompt"] is False
+    later = [*partial, {"role": "tool", "tool_call_id": "c", "content": "r"}]
+    assert asyncio.run(run(later)) == [{"reasoning_content": " upon a time"}]
+    assert "continue_final_message" not in sent[-1]
+    assert "add_generation_prompt" not in sent[-1]
+
+
+@pytest.mark.parametrize(
+    "engine_name,parser",
+    [("vllm", "deepseek_r1"), ("vllm", "qwen3"), ("sglang", "deepseek-r1"), ("sglang", "qwen3")],
+)
+def test_a_continued_answer_stays_answer_under_a_forcing_parser(thinking_peer, engine_name, parser):
+    engine, requests = thinking_peer
+    engine.engine, engine.reasoning_parser = engine_name, parser
+    out = "".join(
+        engine.generate(
+            messages = [
+                {"role": "user", "content": "2+2?"},
+                {"role": "assistant", "content": "The sum is"},
+            ],
+            continue_final_message = True,
+            enable_thinking = True,
+        )
+    )
+    assert out == "two plus two\n\n4"
+    assert requests[-1]["continue_final_message"] is True
+
+
+_R1 = (
+    "{% for m in messages %}<｜User｜>{{ m['content'] }}{% endfor %}"
+    "{% if add_generation_prompt %}<｜Assistant｜><think>\n{% endif %}"
+)
+
+
+@pytest.mark.parametrize(
+    "template,opens",
+    [(_R1, True), (_QWEN3, False), ("<|im_start|>assistant\n", False), ("{% if %}<think>", False)],
+)
+def test_the_generation_prompt_opening_a_thought_is_read_off_the_template(template, opens):
+    from core.inference.managed_engine import generation_prompt_opens_thought
+    assert generation_prompt_opens_thought(template) is opens
+
+
+def test_only_sglang_records_a_generation_prompt_that_opens_a_thought(tmp_path):
+    assert validate_model(_model_dir(tmp_path, _R1), engine = "sglang")["opens_thought"] is True
+    assert "opens_thought" not in validate_model(_model_dir(tmp_path, _R1), engine = "vllm")
+    assert "opens_thought" not in validate_model(_model_dir(tmp_path, _QWEN3), engine = "sglang")
+
+
+@pytest.mark.parametrize(
+    "opens_thought,reasoning,expected",
+    [
+        # SGLang renders a fresh generation prompt, so R1's open <think> must be closed here.
+        (True, " Two plus two. ", "Two plus two.\n</think>\n\nThe sum is"),
+        # Raw SGLang text already carries the thought and its close (or is still inside it).
+        (True, None, "The sum is"),
+        (False, "Two plus two.", "<think>\nTwo plus two.\n</think>\n\nThe sum is"),
+        (False, None, "The sum is"),
+    ],
+)
+def test_sglang_prefills_the_finished_thought_before_the_partial(
+    thinking_peer, opens_thought, reasoning, expected
+):
+    engine, requests = thinking_peer
+    engine.engine, engine.reasoning_parser, engine.opens_thought = "sglang", None, opens_thought
+    partial = {"role": "assistant", "content": "The sum is"}
+    if reasoning is not None:
+        partial["reasoning_content"] = reasoning
+    list(
+        engine.generate(
+            messages = [{"role": "user", "content": "2+2?"}, partial], continue_final_message = True
+        )
+    )
+    assert requests[-1]["messages"][-1] == {"role": "assistant", "content": expected}
+    assert requests[-1]["continue_final_message"] is True
+
+
+def test_sglang_tool_loop_continuation_carries_the_thought_in_the_prefill():
+    import asyncio
+
+    from routes.managed_engine_chat import ManagedToolTransport
+
+    sent = []
+
+    class _Response:
+        status_code = 200
+
+        async def aiter_lines(self):
+            yield 'data: {"choices":[{"delta":{"content":" 4"}}]}'
+
+        async def aclose(self):
+            return None
+
+    class _Stream:
+        async def __aenter__(self):
+            return _Response()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class _Client:
+        def stream(
+            self,
+            method,
+            url,
+            headers = None,
+            json = None,
+        ):
+            sent.append(json)
+            return _Stream()
+
+    engine = _Engine()
+    engine.engine, engine.opens_thought = "sglang", True
+    engine.base_url, engine.headers = "http://engine", {}
+    transport = ManagedToolTransport(_Client(), engine, {"model": "m"}, continuing = True)
+    messages = [
+        {"role": "user", "content": "q"},
+        {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "The sum is"}],
+            "reasoning_content": "2+2",
+        },
+    ]
+
+    async def run():
+        lines = transport.stream(
+            messages = messages, tools = None, tool_choice = None, cancel_event = asyncio.Event()
+        )
+        return [line async for line in lines]
+
+    asyncio.run(run())
+    assert sent[-1]["messages"][-1] == {
+        "role": "assistant",
+        "content": "2+2\n</think>\n\nThe sum is",
+    }
+    assert messages[-1]["reasoning_content"] == "2+2"
 
 
 def test_tool_loop_turns_are_fitted_to_the_engine_window():
