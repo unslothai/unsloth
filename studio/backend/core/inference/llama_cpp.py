@@ -2538,11 +2538,19 @@ def _is_rehearsal_prefix(stripped: str, active_tools: list[dict]) -> bool:
 
 def _held_rehearsal_tail_len(text: str, active_tools: list[dict]) -> int:
     """Holds a trailing bare tool name back while its [ARGS] may still arrive, including a bare-Gemma call:NAME{ prefix that the signal scan misses until its brace."""
+    # A tail longer than every NAME[ARGS] cannot be a prefix, so the scan stops there (CJK has no spaces).
+    limit = max(
+        (len(name) for name in _gguf_active_tool_names(active_tools) if isinstance(name, str)),
+        default = 0,
+    ) + len("[ARGS]")
     i = len(text)
-    while i > 0 and not text[i - 1].isspace():
+    stop = max(0, i - limit - 1)
+    while i > stop and not text[i - 1].isspace():
         i -= 1
     tail = text[i:]
-    held = len(tail) if tail and _is_rehearsal_prefix(tail, active_tools) else 0
+    held = (
+        len(tail) if tail and len(tail) <= limit and _is_rehearsal_prefix(tail, active_tools) else 0
+    )
     return max(
         held, held_bare_gemma_tail_len(text, lambda: set(_gguf_active_tool_names(active_tools)))
     )
