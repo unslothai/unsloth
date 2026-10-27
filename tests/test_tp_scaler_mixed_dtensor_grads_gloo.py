@@ -163,4 +163,6 @@ def test_mixed_grads_unscale_float16_sparse_plain_grad(ranks):
         dense, sparse = got
         assert torch.equal(dense, torch.ones(4, 4)), dense
         # unscaled on the parameter itself, not on a stand-in's copy
-        assert torch.equal(sparse, torch.tensor([[2.0, 2.0], [0.0, 0.0], [1.0, 1.0], [0.0, 0.0]])), sparse
+        assert torch.equal(
+            sparse, torch.tensor([[2.0, 2.0], [0.0, 0.0], [1.0, 1.0], [0.0, 0.0]])
+        ), sparse
