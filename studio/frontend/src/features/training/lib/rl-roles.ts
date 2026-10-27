@@ -133,6 +133,26 @@ const RL_ROW_KEYS = new Set([
 
 /** Row 1 the way GRPO training hands it to a Python reward: mapped role columns included,
  *  values in their own types, and `answer` only when the dataset has an answer role. */
+/** The prompt cell as format_rl_dataset builds it: an Alpaca row's unmapped input joins the instruction. */
+export function alpacaPromptCell(
+  row: Record<string, unknown> | null,
+  mapping: Record<string, string>,
+  promptColumn: string | undefined,
+): unknown {
+  const cell = promptColumn ? row?.[promptColumn] : undefined;
+  const input = row?.input;
+  if (
+    promptColumn === "instruction" &&
+    !mapping.input &&
+    typeof cell === "string" &&
+    typeof input === "string" &&
+    input.trim()
+  ) {
+    return `${cell}\n\n${input}`;
+  }
+  return cell;
+}
+
 export function pythonRewardRow(
   row: Record<string, unknown>,
   answer: string | null,
