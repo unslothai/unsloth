@@ -1,31 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The auto tensor-split fallback across every host Unsloth Studio supports.
-
-``test_pr10884_auto_tensor_split_sim.py`` varies the ratio, the card count and
-the planner's answer. This file varies the HOST: the Cartesian product of
-{Linux, Windows, WSL, macOS} x {NVIDIA, AMD ROCm, AMD or Intel via Vulkan,
-CPU only}, because the code the PR changed sits upstream of every one of them
-and reads `sys.platform`, `_is_wsl` and torch's ROCm markers on the way to a
-launch.
-
-Everything is simulated on a CPU-only Linux host, and the simulation is
-deliberately at the lowest level the production code reads:
-
-* the OS is ``sys.platform`` plus ``_is_wsl``, which is what the module itself
-  branches on;
-* the vendor is a fake ``torch`` in ``sys.modules`` carrying (or not carrying)
-  ``version.hip``, which is exactly what ``_host_torch_is_rocm`` reads, plus
-  the Vulkan backend flag;
-* the cards are the ``(index, free, total)`` rows ``_get_gpu_memory`` returns.
-
-What this can and cannot say is worth stating. It proves the placement
-decision, the emitted argv and the child's device mask on each host. It does
-not prove that a real ROCm or Metal driver then behaves; only hardware can say
-that, and the NVIDIA half of the table is the half that has also been run on
-two real T4s.
-"""
+"""The auto tensor-split fallback across OS x vendor hosts, simulated via sys.platform and fake torch."""
 
 from __future__ import annotations
 
@@ -45,12 +21,9 @@ import core.inference.llama_cpp as llama_cpp  # noqa: E402
 
 GIB = 1024**3
 
-# (index, free_mib, total_mib). Two roomy cards: enough that the planner decides
-# an even share is safe and returns nothing, which is the branch the PR added.
 TWO_CARDS = [(0, 24_000, 24_000), (1, 24_000, 24_000)]
 
 OSES = {
-    # label: (sys.platform, _is_wsl)
     "linux": ("linux", False),
     "windows": ("win32", False),
     "wsl": ("linux", True),
@@ -61,13 +34,7 @@ VENDORS = ("nvidia", "rocm", "vulkan", "cpu")
 
 
 def _fake_torch(*, rocm: bool, device_count: int) -> types.ModuleType:
-    """Enough torch for the three things the launch path asks it.
-
-    ``_host_torch_is_rocm`` reads ``version.hip`` and ``__version__``;
-    ``_effective_gpu_count`` falls back to ``cuda.device_count()`` when the
-    caller pinned no ids. A real import is not wanted here: the point is to
-    put the host under test, not the host running the test.
-    """
+    """Fake torch carrying only what the launch path reads: version.hip, __version__ and device_count."""
     torch = types.ModuleType("torch")
     torch.__version__ = "2.11.0+rocm6.2" if rocm else "2.11.0+cu130"
     version = types.ModuleType("torch.version")
@@ -96,8 +63,6 @@ def host(monkeypatch):
         platform, is_wsl = OSES[os_label]
         monkeypatch.setattr(sys, "platform", platform)
         monkeypatch.setattr(llama_cpp, "_is_wsl", lambda: is_wsl, raising = False)
-        # A real Mac is never the paravirtual case unless it is a VM; that shape
-        # has its own test in the sibling file.
         monkeypatch.setattr(llama_cpp, "_metal_device_is_paravirtual", lambda: False, raising = False)
         visible = [] if vendor == "cpu" else cards
         monkeypatch.setitem(
@@ -140,8 +105,6 @@ def test_the_user_ratio_survives_every_host(tmp_path, host, os_label, vendor):
     cmd = captured["cmd"]
 
     if vendor == "cpu":
-        # Nothing to split. The mode is dropped before the emit block, and the
-        # new fallback must not resurrect it.
         assert _flag(cmd, "--tensor-split") is None
         return
 
@@ -152,16 +115,7 @@ def test_the_user_ratio_survives_every_host(tmp_path, host, os_label, vendor):
 @pytest.mark.parametrize("os_label", sorted(OSES))
 @pytest.mark.parametrize("vendor", VENDORS)
 def test_a_failed_plan_still_launches_on_every_host(tmp_path, host, os_label, vendor):
-    """The placement planner's except arm is a designed degradation: it drops
-    the plan, sets --fit on and launches anyway. The fallback must not turn
-    that into an exception on ANY host -- it was a KeyError on Vulkan and a
-    TypeError on CUDA and ROCm before this was gated.
-
-    Three cards, one of them below the tensor-parallel compute-buffer reserve,
-    because that is what makes the arm's rebuilt `gpu_indices` WIDER than the
-    `tp_gpus` the planner had filtered. Two equal cards never disagree, and a
-    version of this test that used them passed against the unfixed revision.
-    """
+    """A failed placement plan must still launch on every host, with no exception from the fallback."""
     cards = [(0, 24_000, 24_000), (1, 24_000, 24_000), (2, 200, 24_000)]
     backend, gguf, visible = host(os_label, vendor, cards = cards, tmp_path = tmp_path)
 
@@ -176,18 +130,7 @@ def test_a_failed_plan_still_launches_on_every_host(tmp_path, host, os_label, ve
 @pytest.mark.parametrize("os_label", sorted(OSES))
 @pytest.mark.parametrize("vendor", ("nvidia", "rocm", "vulkan"))
 def test_the_ratio_and_the_device_pin_agree_on_every_host(tmp_path, host, os_label, vendor):
-    """A split is positional over the devices the child can SEE, so the ratio
-    is meaningless unless it has one weight per pinned device. Each vendor
-    pins through a different channel, and the PR does not touch any of them
-    (the diff contains no mask line), so what is asserted here is the
-    AGREEMENT rather than a particular spelling:
-
-    * NVIDIA masks with ``CUDA_VISIBLE_DEVICES``;
-    * ROCm on Linux and WSL masks at the ROCr layer, re-indexing the CUDA mask
-      to the surviving ordinals; on Windows there is no ROCr, so it keeps the
-      HIP mask instead;
-    * Vulkan does not mask at all, it pins ``--device VulkanN`` on the argv.
-    """
+    """The tensor-split ratio and the device pin must agree on every host, since a split is positional."""
     backend, gguf, visible = host(os_label, vendor, tmp_path = tmp_path)
     captured = _auto_tp(backend, gguf, visible, tensor_split = [3, 1])
     env, cmd = captured["env"], captured["cmd"]
@@ -202,8 +145,7 @@ def test_the_ratio_and_the_device_pin_agree_on_every_host(tmp_path, host, os_lab
         assert "ROCR_VISIBLE_DEVICES" not in env, "ROCr does not exist on Windows"
     elif vendor == "rocm":
         pinned = env["ROCR_VISIBLE_DEVICES"].split(",")
-        # With ROCr masking, HIP honours the CUDA mask, which must carry the
-        # POST-mask ordinals or a non-zero pick points out of range.
+        # With ROCr masking, HIP honours the CUDA mask, which must carry post-mask ordinals.
         assert env["CUDA_VISIBLE_DEVICES"].split(",") == [
             str(i) for i in range(len(pinned))
         ], f"{os_label}/{vendor}"
@@ -226,13 +168,8 @@ def test_an_identical_request_reuses_the_server_on_every_host(
     from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
 
     backend, gguf, visible = host(os_label, vendor, tmp_path = tmp_path)
-    # The matcher asks the binary about MTP through a CLASSMETHOD, so the
-    # instance stub `_backend` installs does not cover it, and under a
-    # simulated `sys.platform = "win32"` the stdlib's own `shutil.which` then
-    # reaches into `_winapi`, which does not exist on this Linux host. That is
-    # this simulation's ceiling, not the product's: the real Windows answer is
-    # the windows-latest runner. Stub the probe so the axis under test is the
-    # only one being measured.
+    # The MTP probe is a classmethod the instance stub misses, and a simulated win32 sends
+    # shutil.which into _winapi; stub it so only the axis under test varies.
     monkeypatch.setattr(
         LlamaCppBackend, "probe_server_capabilities", staticmethod(lambda *a, **k: {})
     )

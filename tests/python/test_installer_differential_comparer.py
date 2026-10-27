@@ -230,6 +230,58 @@ def test_a_second_download_still_compares(tmp_path: Path) -> None:
     assert _run(base, head).returncode == 2
 
 
+def test_a_second_transfer_with_no_header_still_compares(tmp_path: Path) -> None:
+    """A partial frame between two full bars is a new transfer, not a redraw of the first."""
+    full = "  ██████████████████████████████  17.2 MB / 17.2 MB"
+    partial = "  ███████████████▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒  8.6 MB / 17.2 MB"
+    lines = BASELINE.split("\n")
+    base = _write(
+        tmp_path / "base", transcript = "\n".join(lines[:1] + [full, partial, full] + lines[1:])
+    )
+    head = _write(tmp_path / "head", transcript = "\n".join(lines[:1] + [full] + lines[1:]))
+    assert _run(base, head).returncode == 2
+
+
+def test_a_redraw_that_only_adds_a_colour_escape_is_still_a_redraw(tmp_path: Path) -> None:
+    """A style escape on one copy of the full bar does not make it a second download."""
+    full = "  ██████████████████████████████  17.2 MB / 17.2 MB"
+    styled = "\x1b[32m" + full + "\x1b[0m"
+    lines = BASELINE.split("\n")
+    base = _write(tmp_path / "base", transcript = "\n".join(lines[:1] + [full, styled] + lines[1:]))
+    head = _write(tmp_path / "head", transcript = "\n".join(lines[:1] + [full] + lines[1:]))
+    assert _run(base, head).returncode == 0
+
+
+def test_a_redraw_drawn_with_backspaces_is_still_a_redraw(tmp_path: Path) -> None:
+    """Backspaces the terminal used to redraw the finished bar do not make it a second download."""
+    full = "  ██████████████████████████████  17.2 MB / 17.2 MB"
+    redrawn = "\x08" * 4 + full
+    lines = BASELINE.split("\n")
+    base = _write(tmp_path / "base", transcript = "\n".join(lines[:1] + [full, redrawn] + lines[1:]))
+    head = _write(tmp_path / "head", transcript = "\n".join(lines[:1] + [full] + lines[1:]))
+    assert _run(base, head).returncode == 0
+
+
+def test_two_finished_downloads_of_different_sizes_still_compare(tmp_path: Path) -> None:
+    """Both bars normalise to <size> / <size>, but different raw sizes are two downloads."""
+    first = "  ██████████████████████████████  17.2 MB / 17.2 MB"
+    second = "  ██████████████████████████████  34.4 MB / 34.4 MB"
+    lines = BASELINE.split("\n")
+    base = _write(tmp_path / "base", transcript = "\n".join(lines[:1] + [first, second] + lines[1:]))
+    head = _write(tmp_path / "head", transcript = "\n".join(lines[:1] + [first] + lines[1:]))
+    assert _run(base, head).returncode == 2
+
+
+def test_two_finished_downloads_differing_only_in_units_still_compare(tmp_path: Path) -> None:
+    """`1.0 MB / 1.0 MB` then `1.0 GB / 1.0 GB` are two downloads, not a redraw."""
+    first = "  ██████████████████████████████  1.0 MB / 1.0 MB"
+    second = "  ██████████████████████████████  1.0 GB / 1.0 GB"
+    lines = BASELINE.split("\n")
+    base = _write(tmp_path / "base", transcript = "\n".join(lines[:1] + [first, second] + lines[1:]))
+    head = _write(tmp_path / "head", transcript = "\n".join(lines[:1] + [first] + lines[1:]))
+    assert _run(base, head).returncode == 2
+
+
 def test_a_download_that_never_finishes_still_compares(tmp_path: Path) -> None:
     """The full bar a finished download ends on is kept, so losing it is reported."""
     lines = BASELINE.split("\n")

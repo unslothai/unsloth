@@ -19,9 +19,4 @@ test("pinning the desktop sidebar never adds or removes a child of the sidebar w
     /className="contents"[\s\S]*?\{\(!sidebarShowing \|\| holding\) && \(\s*<PanelResizeHandle/,
     "the container stays mounted and only its handle comes and goes",
   );
-  assert.match(
-    readSrc("components/ui/sidebar.tsx"),
-    /md:peer-data-\[variant=inset\]:m-2/,
-    "<main>'s peer rules flag the wrapper for sibling changes, and with KaTeX's MathML on the page Chromium restyles everything below a flagged parent when a child is inserted before another",
-  );
 });

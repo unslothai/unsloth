@@ -25,6 +25,7 @@ from routes.rag import router as rag_router
 from routes.research_runs import router as research_runs_router
 from routes.chat_generation_runs import router as chat_generation_runs_router
 from routes.youtube import router as youtube_router
+from routes.openai_fine_tuning import router as openai_fine_tuning_router
 from routes.benchmarks import router as benchmarks_router
 
 __all__ = [
@@ -49,6 +50,7 @@ __all__ = [
     "research_runs_router",
     "chat_generation_runs_router",
     "youtube_router",
+    "openai_fine_tuning_router",
     "benchmarks_router",
 ]
 
@@ -60,5 +62,6 @@ _ = (
     research_runs_router,
     chat_generation_runs_router,
     youtube_router,
+    openai_fine_tuning_router,
     benchmarks_router,
 )

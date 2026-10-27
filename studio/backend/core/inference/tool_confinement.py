@@ -25,6 +25,10 @@ _SYS_LANDLOCK_RESTRICT_SELF = 446
 _LANDLOCK_CREATE_RULESET_VERSION = 1
 _LANDLOCK_RULE_PATH_BENEATH = 1
 _PR_SET_NO_NEW_PRIVS = 38
+_PR_CAPBSET_DROP = 24
+_LINUX_CAPABILITY_VERSION_3 = 0x20080522
+_EPERM = 1
+_EINVAL = 22
 
 _FS_EXECUTE = 1 << 0
 _FS_WRITE_FILE = 1 << 1
@@ -36,7 +40,9 @@ _FS_MAKE_SYM = 1 << 12
 _FS_REFER = 1 << 13  # ABI 2
 _FS_TRUNCATE = 1 << 14  # ABI 3
 _FS_IOCTL_DEV = 1 << 15  # ABI 5
-_SCOPE_SIGNAL = 1 << 1  # ABI 6: signals confined to the same domain
+# ABI 6: scope abstract AF_UNIX sockets and signals. Pathname sockets need ABI 9's RESOLVE_UNIX.
+_SCOPE_ABSTRACT_UNIX_SOCKET = 1 << 0
+_SCOPE_SIGNAL = 1 << 1
 _FS_ABI1_MASK = (1 << 13) - 1
 
 _SYSTEM_READ_ROOTS = (
@@ -55,8 +61,7 @@ _SYSTEM_READ_ROOTS = (
     "/proc",
     "/sys",
 )
-# Pseudo-devices every tool needs, then the accelerator nodes. The rest of /dev stays out: other
-# sessions' ptys, same-UID shm objects and, for a root-run Studio, every block and character device.
+# Pseudo-devices plus accelerator nodes; the rest of /dev stays out: other session ptys, same-UID shm, and block devices.
 _DEVICE_NODES = ("/dev/null", "/dev/zero", "/dev/full", "/dev/random", "/dev/urandom", "/dev/tty")
 _ACCELERATOR_NODES = (
     "/dev/nvidiactl",
@@ -69,7 +74,15 @@ _ACCELERATOR_NODES = (
 )
 
 # Readable by the service user, so DAC alone does not stop a tool. The rest of /run is readable.
-_PRIVATE_RUNTIME_ROOTS = ("/run/user", "/run/secrets", "/run/credentials")
+# /run/media, /run/mount and /run/host are user storage: removable drives, a container's host root.
+_PRIVATE_RUNTIME_ROOTS = (
+    "/run/user",
+    "/run/secrets",
+    "/run/credentials",
+    "/run/media",
+    "/run/mount",
+    "/run/host",
+)
 # Secrets a root-run Studio (the Docker image) could otherwise hand a managed tool; the rest of /etc
 # (ld.so.cache, nsswitch, hosts, resolv.conf, ssl/certs) is what tool processes need.
 _PRIVATE_SYSTEM_PATHS = (
@@ -271,6 +284,18 @@ class _PathBeneathAttr(ctypes.Structure):
     _fields_ = [("allowed_access", ctypes.c_uint64), ("parent_fd", ctypes.c_int32)]
 
 
+class _CapHeader(ctypes.Structure):
+    _fields_ = [("version", ctypes.c_uint32), ("pid", ctypes.c_int)]
+
+
+class _CapData(ctypes.Structure):
+    _fields_ = [
+        ("effective", ctypes.c_uint32),
+        ("permitted", ctypes.c_uint32),
+        ("inheritable", ctypes.c_uint32),
+    ]
+
+
 _libc = None
 if sys.platform == "linux":
     try:
@@ -351,6 +376,35 @@ def _landlock_rules(abi: int, sandbox_site_dir: str) -> list[tuple[str, int]]:
     return rules
 
 
+def _drop_capabilities() -> None:
+    """Runs in the forked child: a root-run Studio must not hand a managed tool its capabilities.
+
+    A process without capabilities (any non-root Studio) has nothing to drop and returns at once.
+    Otherwise the bounding set goes first where the server may change it (CAP_SETPCAP), then every
+    set. Clearing the sets is what matters (no_new_privs follows, so exec regains nothing), so a
+    capset failure raises and the tool never starts with the server's privileges.
+    """
+    libc = _libc
+    header = _CapHeader(_LINUX_CAPABILITY_VERSION_3, 0)
+    data = (_CapData * 2)()
+    if libc.capget(ctypes.byref(header), data) < 0:
+        raise OSError(ctypes.get_errno(), "capget failed")
+    if not any(d.effective or d.permitted or d.inheritable for d in data):
+        return
+    for cap in range(64):
+        if libc.prctl(_PR_CAPBSET_DROP, cap, 0, 0, 0) < 0:
+            err = ctypes.get_errno()
+            if err in (_EINVAL, _EPERM):
+                # Past the kernel's last capability, or no CAP_SETPCAP (a non-root server holding an
+                # ambient capability): the sets are still cleared below.
+                break
+            raise OSError(err, "PR_CAPBSET_DROP failed")
+    header = _CapHeader(_LINUX_CAPABILITY_VERSION_3, 0)
+    data = (_CapData * 2)()
+    if libc.capset(ctypes.byref(header), data) < 0:
+        raise OSError(ctypes.get_errno(), "capset failed")
+
+
 def _landlock_preexec(
     handled: int,
     rules: list[tuple[str, int]],
@@ -369,11 +423,8 @@ def _landlock_preexec(
             try:
                 parent_fd = os.open(path, os.O_PATH | os.O_CLOEXEC)
             except FileNotFoundError:
-                # The rules come from a directory walk, and a path can go between that walk and
-                # this open: a cache purge, a model delete, an account delete. Landlock denies by
-                # default, so dropping a grant only ever narrows the child, while raising here
-                # kills the whole tool call as "Exception occurred in preexec_fn", which names
-                # neither the path nor the reason.
+                # A path can vanish after the walk; Landlock denies by default, so skipping only narrows,
+                # while raising kills the call as an opaque preexec_fn error.
                 continue
             try:
                 beneath = _PathBeneathAttr(access & handled, parent_fd)
@@ -388,6 +439,8 @@ def _landlock_preexec(
                     raise OSError(ctypes.get_errno(), f"landlock_add_rule failed for {path}")
             finally:
                 os.close(parent_fd)
+        # After the rule opens, which may need the server's DAC rights on a root-run Studio.
+        _drop_capabilities()
         if libc.prctl(_PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0:
             raise OSError(ctypes.get_errno(), "PR_SET_NO_NEW_PRIVS failed")
         if libc.syscall(_SYS_LANDLOCK_RESTRICT_SELF, ruleset_fd, 0) < 0:
@@ -408,7 +461,9 @@ def _linux_confinement(sandbox_site_dir: str) -> Optional[Confinement]:
     rules = _landlock_rules(abi, sandbox_site_dir)
     return Confinement(
         mechanism = f"landlock-abi{abi}",
-        preexec = partial(_landlock_preexec, handled, rules, _SCOPE_SIGNAL),
+        preexec = partial(
+            _landlock_preexec, handled, rules, _SCOPE_SIGNAL | _SCOPE_ABSTRACT_UNIX_SOCKET
+        ),
     )
 
 
@@ -427,6 +482,56 @@ def _darwin_user_cache_dirs() -> tuple[str, ...]:
     return (bare, "/private" + bare)
 
 
+def _macos_system_rules(writable_roots) -> list[str]:
+    """The owner Seatbelt profile's filtered forms: IP networking, the account's own AF_UNIX
+    sockets and mDNSResponder, named sysctls, mach services and shm segments. An unfiltered
+    network grant would let a tool connect to any host socket (docker.sock, ssh-agent)."""
+    from core.inference.sandbox_macos import (
+        _MACH_SERVICES,
+        _MDNSRESPONDER_SOCKET,
+        _SYSCTL_NAMES,
+        _SYSCTL_PREFIXES,
+        _sbpl_string,
+    )
+
+    spellings: list[str] = []
+    for path in writable_roots:
+        spellings.append(path)
+        if path.startswith("/private/"):
+            spellings.append(path[len("/private") :])
+        elif path.startswith(("/var/", "/tmp/")):
+            spellings.append("/private" + path)
+    # One path filter per rule: combining paths breaks multiprocessing on macOS 15.
+    socket_roots = [f"(subpath {_sbpl(path)})" for path in dict.fromkeys(spellings)]
+    mdns = [
+        f"(literal {_sbpl(path)})" for path in (_MDNSRESPONDER_SOCKET, "/var/run/mDNSResponder")
+    ]
+    shm = "(allow ipc-posix-shm-read-data ipc-posix-shm-write-create ipc-posix-shm-write-data ipc-posix-shm-write-unlink "
+    return [
+        '(allow network-bind (local ip "*:*"))',
+        "(allow network-inbound)",
+        '(allow network-outbound (remote ip "*:*"))',
+        *(f"(allow network-bind (local unix-socket {root}))" for root in socket_roots),
+        *(f"(allow network-outbound (remote unix-socket {root}))" for root in socket_roots),
+        "(allow network-outbound " + " ".join(mdns) + ")",
+        *(f"(allow network-outbound (remote unix-socket {path}))" for path in mdns),
+        "(allow sysctl-read "
+        + " ".join(
+            (
+                *(f"(sysctl-name {_sbpl_string(name)})" for name in _SYSCTL_NAMES),
+                *(f"(sysctl-name-prefix {_sbpl_string(name)})" for name in _SYSCTL_PREFIXES),
+            )
+        )
+        + ")",
+        "(allow mach-lookup\n"
+        + "\n".join(f"  (global-name {_sbpl_string(name)})" for name in _MACH_SERVICES)
+        + ")",
+        shm + '(ipc-posix-name-regex #"^/__KMP_REGISTERED_LIB_[0-9]+$"))',
+        shm + '(ipc-posix-name-regex #"^/torch_[0-9]+_[0-9]+_[0-9]+$"))',
+        shm + '(ipc-posix-name-regex #"^/psm_[0-9a-f]+$"))',
+    ]
+
+
 def macos_profile(
     *,
     read_roots: list[str],
@@ -441,10 +546,8 @@ def macos_profile(
         "(allow process-fork)",
         "(allow process-exec)",
         "(allow signal (target same-sandbox))",
-        "(allow sysctl-read)",
-        "(allow mach-lookup)",
-        "(allow ipc-posix-shm)",
-        "(allow network*)",
+        # Network, mach, sysctl and shm grants filtered exactly as the owner's profile filters them.
+        *_macos_system_rules(writable_roots),
         "(allow file-read-metadata)",
         # Pseudo-devices only; the rest of /dev (other sessions' ttys, disks) stays denied.
         '(allow file-read* file-write* (literal "/dev/null") (literal "/dev/zero") (literal "/dev/random")'

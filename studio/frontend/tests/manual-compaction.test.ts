@@ -10,7 +10,6 @@ import {
   registerLiveThreadView,
   subscribeLiveThreadViews,
 } from "../src/features/chat/utils/live-thread-head.ts";
-import { deriveContextUsageBar } from "../src/features/chat/lib/context-usage-bar-state.ts";
 import {
   hasPreStreamRunReservation,
   releasePreStreamRunReservation,
@@ -509,32 +508,7 @@ test("the compact button waits for a directly issued assistant run", async () =>
   }
 });
 
-test("the compact menu ring follows the selected chat's current context usage", () => {
-  const select = menuCallback("usedPercent", {
-    menu: { item: { id: "ring-chat" } },
-    deriveContextUsageBar,
-  }) as (state: object) => number | null;
-  const state = {
-    activeThreadId: "ring-chat",
-    contextUsage: { contextTokens: 780, totalTokens: 900 },
-    contextUsageByThreadId: { "ring-chat": { totalTokens: 200 } },
-    loadedContextLength: 1000 as number | null,
-  };
-  assert.equal(select(state), 78);
-  state.contextUsage.contextTokens = 180;
-  assert.equal(select(state), 18);
-  state.contextUsage.contextTokens = 980;
-  assert.equal(select(state), 98);
-  state.activeThreadId = "another-chat";
-  assert.equal(select(state), 20);
-  state.contextUsageByThreadId = {} as typeof state.contextUsageByThreadId;
-  assert.equal(select(state), null);
-  state.contextUsageByThreadId = { "ring-chat": { totalTokens: 200 } };
-  state.loadedContextLength = null;
-  assert.equal(select(state), null);
-});
-
-test("the compact menu item binds its action, live ring and busy state", () => {
+test("the compact menu item binds its action, icon and busy state", () => {
   const source = ts.createSourceFile(
     "menu.tsx",
     readSrc("features/chat/components/chat-header-menu.tsx"),
@@ -543,7 +517,6 @@ test("the compact menu item binds its action, live ring and busy state", () => {
     ts.ScriptKind.TSX,
   );
   const items: ts.JsxElement[] = [];
-  const rings: ts.JsxSelfClosingElement[] = [];
   function visit(node: ts.Node) {
     if (ts.isJsxElement(node) && node.openingElement.tagName.getText(source) === "Item" &&
       node.getText(source).includes('t("chatMenu.compact")')) items.push(node);
@@ -565,11 +538,5 @@ test("the compact menu item binds its action, live ring and busy state", () => {
   assert.equal(disabled({ item: { type: "single" } }, false), false);
   assert.equal(disabled({ item: { type: "single" } }, true), true);
   assert.equal(disabled({ item: { type: "compare" } }, false), true);
-  function findRing(node: ts.Node) {
-    if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(source) === "UsageRing") rings.push(node);
-    ts.forEachChild(node, findRing);
-  }
-  findRing(item);
-  assert.equal(rings.length, 1);
-  assert.equal(expression(rings[0], "percent"), "usedPercent");
+  assert.equal(expression(item.openingElement, "icon"), "CollapseIcon");
 });

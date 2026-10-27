@@ -154,3 +154,121 @@ def test_sandbox_outside_the_project_is_not_read(home):
     os.symlink(home / "host/elsewhere", root / "sandbox")
     project = {"rootPath": str(root), "sandboxPath": str(root / "sandbox"), "archived": False}
     assert agents_md.agents_md_text(project) == ""
+
+
+def test_memory_save_is_idempotent_and_empty_removes_the_file(home):
+    path = home / "home/.unsloth/studio/AGENTS.md"
+    assert agents_md.read_memory() == ""
+    assert agents_md.write_memory("  I use uv.\r\nReply in British English.\n\n") == (
+        "I use uv.\nReply in British English.\n"
+    )
+    first = path.read_bytes()
+    agents_md.write_memory(agents_md.read_memory())
+    assert path.read_bytes() == first
+    assert agents_md.agents_md_text(None).endswith("I use uv.\nReply in British English.")
+    assert agents_md.write_memory("   ") == ""
+    assert not path.exists()
+    agents_md.write_memory("")
+    assert not path.exists()
+    assert not list(path.parent.glob(".AGENTS.md.*"))
+
+
+def test_memory_refuses_oversize_text_and_a_linked_file(home):
+    path = home / "home/.unsloth/studio/AGENTS.md"
+    with pytest.raises(ValueError, match = "32 KiB"):
+        agents_md.write_memory("x" * agents_md.MAX_AGENTS_MD_BYTES)
+    assert not path.exists()
+    if not hasattr(os, "symlink"):
+        return
+    target = home / "host/notes.md"
+    _write(target, "kept")
+    try:
+        os.symlink(target, path)
+    except OSError:
+        pytest.skip(
+            reason = "Windows without Developer Mode refuses os.symlink; the link refusal needs a real link"
+        )
+    assert agents_md.read_memory() == "kept"
+    with pytest.raises(ValueError, match = "link"):
+        agents_md.write_memory("new")
+    assert target.read_text(encoding = "utf-8") == "kept"
+
+
+def test_memory_switch_drops_only_the_global_file(home):
+    _write(home / "home/.unsloth/studio/AGENTS.md", "Be brief.")
+    _write(home / "proj/AGENTS.md", "Use pnpm.")
+    assert agents_md.memory_enabled() is True
+    assert agents_md.set_memory_enabled(False) is False
+    assert agents_md.agents_md_text(None) == ""
+    assert agents_md.agents_md_text(_project(home)) == (
+        f"# Source: {(home / 'proj/AGENTS.md').as_posix()}\n\nUse pnpm."
+    )
+    agents_md.set_memory_enabled(True)
+    assert agents_md.agents_md_text(None).endswith("Be brief.")
+    with pytest.raises(ValueError):
+        agents_md.set_memory_enabled("off")
+
+
+def test_memory_route_reads_writes_and_needs_a_ui_session(home):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from routes import settings
+
+    app = FastAPI()
+    app.include_router(settings.router)
+    app.dependency_overrides[settings.get_current_subject] = lambda: "owner"
+    via_key = {"value": False}
+    app.dependency_overrides[settings.authenticated_via_api_key] = lambda: via_key["value"]
+    client = TestClient(app, raise_server_exceptions = False)
+
+    body = client.get("/chat-memory").json()
+    assert body == {
+        "enabled": True,
+        "text": "",
+        "path": "~/.unsloth/studio/AGENTS.md",
+        "max_bytes": agents_md.MAX_AGENTS_MD_BYTES,
+        "locked_by_environment": False,
+    }
+    saved = client.put("/chat-memory", json = {"text": "I use uv.", "enabled": False}).json()
+    assert saved["text"] == "I use uv.\n" and saved["enabled"] is False
+    assert client.put("/chat-memory", json = {"enabled": True}).json()["text"] == "I use uv.\n"
+    too_big = client.put("/chat-memory", json = {"text": "x" * agents_md.MAX_AGENTS_MD_BYTES})
+    assert too_big.status_code == 400 and "32 KiB" in too_big.json()["detail"]
+    assert client.put("/chat-memory", json = {"enabled": "no"}).status_code == 422
+
+    via_key["value"] = True
+    assert client.put("/chat-memory", json = {"text": "planted"}).status_code == 403
+    assert agents_md.read_memory() == "I use uv.\n"
+
+
+def test_memory_editor_loads_a_hand_edited_file_whole_and_fails_closed(home, monkeypatch):
+    big = "note\n" * (agents_md.MAX_AGENTS_MD_BYTES // 5 + 100)
+    target = home / "home/.unsloth/studio/AGENTS.md"
+    target.parent.mkdir(parents = True, exist_ok = True)
+    # Bytes, not write_text: Windows text mode writes CRLF, and read_memory returns the file as it is.
+    target.write_bytes(big.encode("utf-8"))
+    # Chats still get the 32 KiB cut; the editor gets everything, so a save cannot drop the tail unseen.
+    assert agents_md.agents_md_text(None).endswith(agents_md.TRUNCATED_NOTE)
+    assert agents_md.read_memory() == big
+
+    import storage.studio_db as studio_db
+
+    def broken(*_args, **_kwargs):
+        raise OSError("database is unreadable")
+
+    monkeypatch.setattr(studio_db, "get_app_setting", broken)
+    assert agents_md.memory_enabled() is False
+    assert agents_md.agents_md_text(None) == ""
+
+
+def test_memory_save_refuses_to_recreate_a_retired_workspace(home, monkeypatch):
+    from utils.paths import storage_roots
+
+    def retired(path):
+        raise storage_roots.RetiredAccountError(f"refusing to recreate {path}")
+
+    monkeypatch.setattr(agents_md, "ensure_dir", retired)
+    with pytest.raises(storage_roots.RetiredAccountError):
+        agents_md.write_memory("late save")
+    assert not (home / "home/.unsloth/studio/AGENTS.md").exists()

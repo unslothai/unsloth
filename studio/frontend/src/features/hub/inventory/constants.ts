@@ -9,6 +9,7 @@ export const LOCAL_MODEL_SOURCE = {
   OLLAMA: "ollama",
   HERMES: "hermes",
   CUSTOM: "custom",
+  UNSLOTH: "unsloth",
 } as const;
 
 export const LOCAL_MODEL_SOURCES = [
@@ -19,6 +20,7 @@ export const LOCAL_MODEL_SOURCES = [
   LOCAL_MODEL_SOURCE.OLLAMA,
   LOCAL_MODEL_SOURCE.HERMES,
   LOCAL_MODEL_SOURCE.CUSTOM,
+  LOCAL_MODEL_SOURCE.UNSLOTH,
 ] as const;
 export type LocalSource = (typeof LOCAL_MODEL_SOURCES)[number];
 

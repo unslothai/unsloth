@@ -1,27 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Invariant: /api/liveness says whether the backend is still warming up, and stays cheap.
-
-The desktop health watchdog probes this route every 15s and kills the backend after 3
-consecutive misses. It cannot use /api/health for that -- health awaits hardware detection,
-so a probe is billed for the warm thread's `import torch` -- and it cannot treat one reply
-as "startup finished" either, because those C-extension imports hold the GIL and stall the
-next probes on a process that is perfectly healthy. So liveness carries a
-`torch_warm_in_progress` marker and the watchdog holds its startup grace open until a reply
-omits it. See studio/src-tauri/src/commands.rs.
-
-That marker tracks the whole coordinated warm, not hardware detection alone: detection is
-only the first of utils/torch_warmup.py's stages and the inference_backend, transformers,
-datasets and unsloth_zoo imports that follow it are the ones that stall a probe. The older
-`hardware_detecting` marker stays exactly what it was, a "this verdict is provisional"
-signal the frontend reads, and is still published beside it.
-
-The markers must not cost what health costs: liveness reads settled snapshots, it must
-never start detection or wait on it.
-
-CPU-only, no network, no GPU, no weights: the subprocess tests stub detection.
-"""
+"""torch_warm_in_progress covers the whole warm, not only detection, so the startup grace stays open."""
 
 from __future__ import annotations
 
@@ -31,7 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-_BACKEND_DIR = Path(__file__).resolve().parent.parent  # studio/backend
+_BACKEND_DIR = Path(__file__).resolve().parent.parent
 _COMMANDS_RS = _BACKEND_DIR.parent / "src-tauri" / "src" / "commands.rs"
 
 
@@ -178,14 +158,7 @@ def test_an_unsettled_verdict_is_published_as_still_warming_up():
 
 
 def test_a_late_warm_stage_still_holds_the_startup_grace_open():
-    """The regression: hardware detection is _STAGES[0], and inference_backend,
-    transformers, datasets and unsloth_zoo import after it.
-
-    So hardware_detecting is already gone while the warm is at its most expensive. A
-    watchdog reading only that marker ends its grace mid-warm and the next GIL stall,
-    which is exactly what the reported "torch warm finished in 8190.4ms" timeline shows
-    happening well after detection, is billed as three dead probes against a healthy
-    backend."""
+    """Detection is only the first warm stage, so hardware_detecting alone would end the grace too early."""
     result = _probe(settled = True, warm = "running")
 
     assert not result["has_detecting_key"], (
@@ -241,13 +214,7 @@ def test_a_warm_retired_mid_stage_is_not_reported_as_warming_forever():
 
 
 def _watchdog_probe_budget_s() -> float:
-    """The launcher's per-probe HTTP budget, read out of the Rust that owns it.
-
-    A ceiling on this route has to sit under the number the watchdog actually allows, or a
-    regression that makes /api/liveness block for most of a probe passes here while every
-    real probe times out. Derived rather than written down so the two cannot drift apart,
-    the way test_health_answers_within_probe_budget.py derives its own budget.
-    """
+    """Reads HEALTH_PROBE_TIMEOUT from the Rust launcher so the liveness ceiling cannot drift past it."""
     assert _COMMANDS_RS.is_file(), f"{_COMMANDS_RS} moved; update this guard"
     match = re.search(
         r"const HEALTH_PROBE_TIMEOUT: Duration = Duration::from_secs\((\d+)\)",
@@ -262,13 +229,6 @@ def test_liveness_answers_immediately_and_never_starts_detection():
     15s. The stub raises if detection is started, so returning at all proves it was not."""
     result = _probe(settled = False)
 
-    # Returning at all is most of the assertion: `must_not_run` raises if detection starts,
-    # and DETECTION_COMPLETE is cleared, so a route awaiting one never returns.
-    #
-    # Two bounds, as in test_liveness_reports_inference_active.py. The relative one is
-    # against a route in the same app that only returns a dict, so what is left after both
-    # pay the same interpreter and scheduler is the route's own work; the absolute one is
-    # the watchdog's, since a control that somehow took seconds would scale with it.
     relative = max(result["control"] * 40, 0.05)
     ceiling = min(relative, _watchdog_probe_budget_s() / 2)
     assert result["elapsed"] < ceiling, (
@@ -276,14 +236,7 @@ def test_liveness_answers_immediately_and_never_starts_detection():
         f"{result['control'] * 1000:.1f}ms to answer a route that does nothing, so it was "
         "waiting on something rather than reading the snapshot"
     )
-    # Still the full port-validation payload the launcher matches on. The key must be
-    # present because the launcher reads it; its value is environment-derived and is
-    # legitimately empty on a bare CI runner, so presence is what this asserts.
-    #
-    # Read it off has_root_id, not off `result`. The subprocess snippet builds `result`
-    # with `body.get("studio_root_id")`, so the key exists in `result` whether or not the
-    # reply carried it -- `"studio_root_id" in result` was true even with the field
-    # deleted from liveness_check(). Its two neighbours already use this indirection.
+    # check has_root_id: `result` always has the key via body.get(), so `in result` proves nothing
     assert result["has_root_id"], (
         "/api/liveness dropped studio_root_id; desktop_backend_owner.rs deserializes it "
         "into DesktopLiveness and rejects a sibling port without it"

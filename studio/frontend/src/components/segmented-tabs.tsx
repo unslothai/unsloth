@@ -2,8 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { cn } from "@/lib/utils";
-import type { ReactNode } from "react";
-import { SegmentedControlIndicator } from "./segmented-control";
+import { type ReactNode, useId } from "react";
+import { SegmentedPill } from "./segmented-control";
 import {
   type SegmentedSize,
   segmentedSegmentLabel,
@@ -34,11 +34,7 @@ export function SegmentedTabsList<T extends string>({
   size?: SegmentedSize;
   className?: string;
 }) {
-  const activeIndex = Math.max(
-    0,
-    options.findIndex((option) => option.value === value),
-  );
-
+  const pillId = useId();
   return (
     <TabsList
       unstyled={true}
@@ -49,11 +45,6 @@ export function SegmentedTabsList<T extends string>({
         className,
       )}
     >
-      <SegmentedControlIndicator
-        activeIndex={activeIndex}
-        optionCount={options.length}
-        className="inset-y-0"
-      />
       {options.map((option) => {
         const active = option.value === value;
         return (
@@ -61,9 +52,9 @@ export function SegmentedTabsList<T extends string>({
             key={option.value}
             value={option.value}
             disabled={option.disabled}
-            indicatorClassName="hidden"
+            indicator={<SegmentedPill group={`${pillId}-pill`} />}
             className={cn(
-              "relative z-10 h-full min-w-0 flex-1 cursor-pointer rounded-full border-0 py-0",
+              "relative h-full min-w-0 flex-1 cursor-pointer rounded-full border-0 py-0",
               segmentedSegmentLabel,
               active
                 ? "text-foreground"

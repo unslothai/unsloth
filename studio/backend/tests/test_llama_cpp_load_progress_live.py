@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Live, no-mock integration test for ``LlamaCppBackend.load_progress()``.
-
-The companion mocked tests patch ``builtins.open`` for synthetic VmRSS values;
-this one uses real subprocesses, file sizes, and ``/proc`` so format drift the
-mocks can't see (kernel ``/proc`` layout, stat vs getsize) gets caught. Skipped
-on non-Linux (no ``/proc``).
-"""
+"""Uses real subprocesses and /proc, not mocks, so kernel /proc layout drift is caught; Linux only."""
 
 from __future__ import annotations
 
@@ -19,8 +13,6 @@ import types as _types
 from pathlib import Path
 
 import pytest
-
-# Same stubs as the matrix file (self-contained for standalone + full-suite runs).
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
@@ -51,11 +43,8 @@ _httpx_stub.Client = type(
         "__exit__": lambda self, *a: None,
     },
 )
-# Only when the real library is absent. sys.modules holds what has been IMPORTED, not
-# what is installed, so setdefault does not defer to a real httpx that nothing in this
-# process has touched yet: the stub wins and shadows it for the whole session. This stub
-# has no Response, and starlette.testclient reads httpx.Response at import, so every
-# module collected afterwards that reaches fastapi.testclient or routes.inference dies.
+# Stub only if httpx is not installed: a stub without Response breaks later
+# starlette.testclient imports for the whole session.
 try:
     import httpx  # noqa: F401
 except ImportError:
@@ -82,15 +71,19 @@ def _make_backend(
     return inst
 
 
-def test_live_rss_matches_kernel_vmrss(tmp_path):
-    """Spawn a real child, let it allocate real bytes, confirm ``bytes_loaded``
-    tracks the kernel's VmRSS within a sane tolerance."""
-    # Child that allocates ~100 MB of zero'd bytes and then idles.
+def test_live_mapped_pages_count_and_allocations_do_not(tmp_path):
+    """Spawn a real child that pages in a mapped file and fills an allocation: ``bytes_loaded``
+    follows the mapped pages, not the allocation (a pinned upload buffer is one)."""
+    data = tmp_path / "weights.bin"
+    data.write_bytes(b"\1" * (100 * 1024 * 1024))
     script = tmp_path / "burn.py"
     script.write_text(
-        "import time, sys\n"
-        "buf = bytearray(100 * 1024 * 1024)\n"  # 100 MB
-        "# touch every page so RSS actually grows\n"
+        "import mmap, sys, time\n"
+        "f = open(sys.argv[1], 'rb')\n"
+        "m = mmap.mmap(f.fileno(), 0, access = mmap.ACCESS_READ)\n"
+        "# touch every page of the mapping and of the allocation so both are resident\n"
+        "seen = sum(m[i] for i in range(0, len(m), 4096))\n"
+        "buf = bytearray(200 * 1024 * 1024)\n"
         "for i in range(0, len(buf), 4096):\n"
         "    buf[i] = 1\n"
         "sys.stdout.write('ready\\n')\n"
@@ -98,33 +91,32 @@ def test_live_rss_matches_kernel_vmrss(tmp_path):
         "time.sleep(10)\n"
     )
     proc = subprocess.Popen(
-        [sys.executable, str(script)],
+        [sys.executable, str(script), str(data)],
         stdout = subprocess.PIPE,
         stderr = subprocess.PIPE,
     )
     try:
-        # Wait for the child to finish touching pages.
         ready = proc.stdout.readline()
         assert ready.strip() == b"ready"
 
-        # Fake 200 MB sparse gguf so bytes_total is concrete.
         gguf = tmp_path / "model.gguf"
         with open(gguf, "wb") as f:
-            f.truncate(200 * 1024 * 1024)
+            f.truncate(400 * 1024 * 1024)
 
         inst = _make_backend(proc.pid, str(gguf), healthy = False)
         out = inst.load_progress()
 
         assert out is not None, "load_progress returned None for live pid"
         assert out["phase"] == "mmap"
-        assert out["bytes_total"] == 200 * 1024 * 1024
-        # VmRSS for the Python child includes the interpreter + 100MB buffer,
-        # so a realistic floor is 50 MB and ceiling is 200 MB.
+        assert out["bytes_total"] == 400 * 1024 * 1024
+        # The 100 MB mapping plus the interpreter's own files; the 200 MB allocation is left out.
         assert (
-            out["bytes_loaded"] >= 50 * 1024 * 1024
+            out["bytes_loaded"] >= 90 * 1024 * 1024
         ), f"bytes_loaded unexpectedly low: {out['bytes_loaded']}"
-        assert out["bytes_loaded"] <= 200 * 1024 * 1024
-        assert 0.0 < out["fraction"] <= 1.0
+        assert (
+            out["bytes_loaded"] < 200 * 1024 * 1024
+        ), f"the allocation counted: {out['bytes_loaded']}"
+        assert 0.0 < out["fraction"] < 0.5
     finally:
         proc.terminate()
         try:
@@ -161,12 +153,11 @@ def test_live_dead_pid_returns_none(tmp_path):
 def test_live_shard_aggregation_counts_real_files(tmp_path):
     """With 4 real sibling shards on disk, ``bytes_total`` equals their summed
     size to the byte."""
-    shard_size = 7 * 1024 * 1024  # 7 MB each
+    shard_size = 7 * 1024 * 1024
     for i in range(1, 5):
         f = tmp_path / f"model-{i:05d}-of-00004.gguf"
         with open(f, "wb") as fh:
             fh.truncate(shard_size)
-    # Unrelated file in same dir -- must not be counted.
     with open(tmp_path / "config.json", "wb") as fh:
         fh.truncate(123)
 
@@ -197,5 +188,4 @@ def test_live_repeated_polling_stays_sane(tmp_path):
         assert 0.0 <= out["fraction"] <= 1.0
         seen.append(out["bytes_loaded"])
         time.sleep(0.01)
-    # RSS of a healthy Python process doesn't go below ~5 MB.
     assert min(seen) > 1 * 1024 * 1024

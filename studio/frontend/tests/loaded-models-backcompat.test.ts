@@ -1,16 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The browser SPA is served by the same process that answers /api, so it can
-// never be older than its backend. The desktop app can: it ships its own
-// frontend bundle, is versioned separately from the pip wheel, and adopts an
-// already-running server (commands.rs, start_managed_server). Against that, the
-// indicator is the widest reader in the app -- it touches four /status
-// endpoints, and /video/status plus the STT mtmd block are only days old.
-//
-// So every one of these is a real desktop-app-newer-than-backend shape, plus the
-// forward direction: a backend that grows a field must not break a frontend that
-// has never heard of it.
+// The desktop app ships its own frontend and may adopt an older backend, so these
+// shapes are real; newer backend fields must not break it either.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -25,14 +17,10 @@ import {
   sttEngineStatus,
 } from "../src/features/loaded-models/loaded-models-sources.ts";
 
-// A read that failed for any reason -- 404 on a route that did not exist yet,
-// 401/403 on an expired token, a 500, or the 10s timeout -- reaches the mappers
-// as null, because settled() collapses them all.
+// settled() collapses any failed read (404, 401, 500, timeout) to null.
 const UNREACHABLE = null;
 
 test("a backend with no video route at all still lists the other runtimes", () => {
-  // /api/inference/video/status landed 2026-08-04. Before that it 404s, which
-  // parseJson throws on and settled() turns into null.
   const rows = mergeLoadedModels([
     describeInferenceStatus({
       active_model: "unsloth/Qwen3-4B-GGUF",
@@ -61,8 +49,6 @@ test("every runtime unreachable is an empty list, never a crash", () => {
 });
 
 test("a pre-split dictation backend reports through the legacy fields", () => {
-  // Before 2026-07-23 there were no per-engine blocks: the resident Transformers
-  // model appeared only at the top level.
   const rows = describeSttStatus({
     loaded_model: "large-v3",
     device: "cuda",
@@ -74,8 +60,6 @@ test("a pre-split dictation backend reports through the legacy fields", () => {
 });
 
 test("a current backend does not double the dictation row", () => {
-  // Both the legacy top level and the engine block are present on every current
-  // server, and they hold the same model. The block must win.
   const rows = describeSttStatus({
     loaded_model: "large-v3",
     device: "cuda",
@@ -85,9 +69,7 @@ test("a current backend does not double the dictation row", () => {
 });
 
 test("the legacy fallback is transformers-only", () => {
-  // The top-level fields are the Transformers sidecar's, character for
-  // character -- not a "last engine used" -- so they must not stand in for the
-  // llama.cpp or whisper.cpp sidecars.
+  // Top-level fields belong to the Transformers sidecar only.
   const status = { loaded_model: "large-v3", device: "cuda" } as SttStatusResponse;
   assert.equal(sttEngineStatus(status, "transformers")?.loaded_model, "large-v3");
   assert.equal(sttEngineStatus(status, "mtmd"), null);
@@ -95,7 +77,6 @@ test("the legacy fallback is transformers-only", () => {
 });
 
 test("a dictation backend without the mtmd engine skips it", () => {
-  // The mtmd (Qwen3-ASR) block arrived 2026-08-04, after the other two.
   const rows = describeSttStatus({
     transformers: { loaded_model: null, device: null },
     gguf: { loaded_model: "ggml-base.en", device: "whisper.cpp" },
@@ -112,13 +93,11 @@ test("an engine block explicitly nulled is skipped, not read as legacy", () => {
     device: "cuda",
     transformers: null,
   } as SttStatusResponse);
-  // transformers: null means "no such block", so the legacy fallback applies.
   assert.equal(rows.length, 1);
   assert.equal(rows[0].name, "large-v3");
 });
 
 test("a chat payload missing every optional field still renders", () => {
-  // The oldest shape this has to survive: a name and nothing else.
   const rows = describeInferenceStatus({
     active_model: "unsloth/Qwen3-4B",
   } as never);
@@ -165,7 +144,6 @@ test("empty strings are dropped rather than printed as separators", () => {
 });
 
 test("fields a future backend adds are ignored, not rendered", () => {
-  // Forward compatibility: an old desktop bundle against a newer wheel.
   const rows = describeDiffusionStatus({
     loaded: true,
     repo_id: "x/y",
@@ -179,8 +157,6 @@ test("fields a future backend adds are ignored, not rendered", () => {
 });
 
 test("a backend with no gguf_variant field still reports the compute dtype", () => {
-  // gguf_variant is additive. An older wheel sends model_kind but not the quant, and the row must
-  // keep the line it has always shown rather than losing its precision part entirely.
   const rows = describeDiffusionStatus({
     loaded: true,
     repo_id: "unsloth/Z-Image-Turbo-GGUF",
@@ -193,8 +169,6 @@ test("a backend with no gguf_variant field still reports the compute dtype", () 
 });
 
 test("an unrecognised precision is passed through rather than dropped", () => {
-  // precisionLabel upper-cases anything it does not know, so a quant added
-  // later still tells the user something instead of vanishing.
   const rows = describeVideoStatus({
     loaded: true,
     repo_id: "x/y",
@@ -206,8 +180,6 @@ test("an unrecognised precision is passed through rather than dropped", () => {
 });
 
 test("a chat runtime caching past the active model marks the extras inactive", () => {
-  // Only the Transformers backend can do this, and only the active model is
-  // ejectable by the normal path -- the rest need naming directly.
   const rows = describeInferenceStatus({
     active_model: "unsloth/Qwen3-4B",
     loaded: ["unsloth/Qwen3-4B", "unsloth/Llama-3.2-3B"],

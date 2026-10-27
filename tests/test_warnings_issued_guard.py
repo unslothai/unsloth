@@ -343,12 +343,13 @@ def _rl_config_compat():
     return module
 
 
-def _wrapped_recording(trainer_base = None):
-    config_class = _sft_config()
+def _wrapped_recording(trainer_base = None, config_class = None):
+    config_class = config_class or _sft_config()
     ns = _load(
         "_ensure_warnings_issued",
         "_resolve_trainer_params",
         "_route_unknown_trainer_kwargs",
+        "_config_family",
         "_backwards_compatible_trainer",
     )
     if "trl" not in ns:
@@ -563,3 +564,49 @@ def test_auto_packing_failure_still_leaves_the_wrapper_installed():
             assert guarded, "_patch_sft_trainer_auto_packing must be wrapped in try/except"
             return
     raise AssertionError("_patch_trl_trainer not found")
+
+
+def test_a_plain_training_arguments_keeps_the_moved_kwargs(tmp_path):
+    """The old notebook shape: transformers.TrainingArguments plus SFT kwargs on the trainer. trl
+    rebuilds a plain TrainingArguments with SFTConfig(**args.to_dict()), which drops anything set
+    as an attribute, so packing, the text field and the length used to fall back to defaults."""
+    from transformers import TrainingArguments
+
+    Trainer, config_class = _wrapped_recording()
+    args = TrainingArguments(output_dir = str(tmp_path), report_to = [], hub_token = "hf_FAKE")
+
+    trainer = Trainer(
+        model = _Bare(),
+        args = args,
+        packing = True,
+        max_length = 4096,
+        dataset_text_field = "body",
+    )
+
+    seen = trainer.args
+    if not isinstance(seen, config_class):
+        # What trl's SFTTrainer does with a plain TrainingArguments.
+        rebuilt = seen.to_dict()
+        rebuilt["hub_token"] = seen.hub_token
+        seen = config_class(**rebuilt)
+    assert (seen.packing, seen.max_length, seen.dataset_text_field) == (True, 4096, "body")
+    assert seen.hub_token == "hf_FAKE"
+    assert seen.output_dir == str(tmp_path)
+
+
+def test_an_instance_of_the_displaced_trl_config_is_not_rebuilt(tmp_path):
+    """Unsloth swaps each trl config for a subclass; a config built from the pristine class before
+    that swap must keep the identity path. Rebuilding a GRPOConfig re-raises its post-init checks."""
+    pristine = _sft_config()
+
+    class Patched(pristine):
+        _unsloth_patched_rl_config = True
+
+    Patched.__name__ = pristine.__name__
+    Trainer, _ = _wrapped_recording(config_class = Patched)
+    config = pristine(output_dir = str(tmp_path), report_to = [], bf16 = False)
+
+    trainer = Trainer(model = _Bare(), args = config, packing = True)
+
+    assert trainer.args is config
+    assert trainer.args.packing is True

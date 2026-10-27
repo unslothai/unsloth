@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The effect re-runs on its own output, so what matters is that it settles, runnably.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
@@ -28,7 +26,6 @@ function powerset<T>(items: readonly T[]): T[][] {
   );
 }
 
-// Orderings are not enumerated: the frontend only filters the backend's order.
 const DETECTED_SETS = powerset(VISIBLE_AGENTS);
 
 function settle(
@@ -61,7 +58,6 @@ test("every reachable state settles, and settles in one step", () => {
     for (const start of VISIBLE_AGENTS) {
       for (const isGguf of [true, false]) {
         const { steps } = settle(detected, start, isGguf, VISIBLE_AGENTS);
-        // >1 step is a visible flip between paints, not just churn.
         assert.ok(
           steps <= 2,
           `took ${steps} steps: detected=${JSON.stringify(detected)} start=${start}`,
@@ -160,7 +156,6 @@ test("the pre-PR rule and the current rule differ only where Claude was unrunnab
 });
 
 test("UNIVERSAL_AGENT is an agent the panel actually offers", () => {
-  // Dropping opencode from CODING_AGENTS should break here, not in the UI.
   assert.ok(VISIBLE_AGENTS.includes(UNIVERSAL_AGENT));
   assert.ok(agentRunsOnActiveModel(UNIVERSAL_AGENT, false));
   assert.ok(agentRunsOnActiveModel(UNIVERSAL_AGENT, true));
@@ -168,8 +163,8 @@ test("UNIVERSAL_AGENT is an agent the panel actually offers", () => {
 
 test("fallbackAgent stays inside a narrowed offered list", () => {
   assert.equal(fallbackAgent(false, ["claude", "codex", "hermes"]), "hermes");
-  assert.equal(fallbackAgent(false, ["claude", "codex"]), null); // nothing offered runs
-  assert.equal(fallbackAgent(false, []), UNIVERSAL_AGENT); // caller had no list
+  assert.equal(fallbackAgent(false, ["claude", "codex"]), null);
+  assert.equal(fallbackAgent(false, []), UNIVERSAL_AGENT);
   assert.equal(fallbackAgent(true, ["claude", "codex"]), "claude");
   assert.equal(fallbackAgent(false, VISIBLE_AGENTS), UNIVERSAL_AGENT);
 });
@@ -187,32 +182,27 @@ test("a panel offering only GGUF-only agents leaves the pick alone", () => {
   }
 });
 
-// The two effects consume isGguf as a tri-state: null while /api/inference/status has not
-// resolved. These pin the sequences that reading null as `false` produced.
+// isGguf is tri-state: null until /api/inference/status resolves; null must not read as false.
 
 function browserSession(ggufAfterHydration: boolean) {
-  // Not Tauri, so detection never runs and detectedAgents stays empty for good.
   const detected: string[] = [];
   let agent = "claude"; // DEFAULT_AGENT
   const step = (isGguf: boolean | null) => {
-    if (isGguf === null) return; // the guard under test
+    if (isGguf === null) return;
     const next = pickCompatibleAgent(detected, agent, isGguf, VISIBLE_AGENTS);
     if (next !== null) agent = next;
   };
-  step(null); // first paint: store still holds its null defaults
-  step(ggufAfterHydration); // status lands
+  step(null);
+  step(ggufAfterHydration);
   return agent;
 }
 
 test("an unresolved model status never re-steers the pick", () => {
-  // Was: paint 1 read null as non-GGUF and moved claude -> opencode, then paint 2 could
-  // not move back, because pickCompatibleAgent([], "opencode", true) is null.
   assert.equal(browserSession(true), "claude");
   assert.equal(browserSession(false), "opencode");
 });
 
 test("reading an unresolved status as non-GGUF is a one-way trip", () => {
-  // The reason the guard has to be in the effect and not just in the helper.
   let agent = "claude";
   agent = pickCompatibleAgent([], agent, false, VISIBLE_AGENTS) ?? agent;
   assert.equal(agent, "opencode");
@@ -220,7 +210,6 @@ test("reading an unresolved status as non-GGUF is a one-way trip", () => {
 });
 
 function manualPick(clickedUnder: boolean, now: boolean, agent: string) {
-  // The revalidation guard: a hand-made pick survives until GGUF-ness changes under it.
   if (clickedUnder === now) return "kept";
   return agentRunsOnActiveModel(agent, now) ? "kept" : "corrected";
 }
@@ -232,9 +221,7 @@ test("a manual pick is revalidated when the model changes under it", () => {
   assert.equal(manualPick(false, true, "opencode"), "kept");
 });
 
-// An external chat selection freezes the local GGUF fields (use-chat-model-runtime stops
-// applying status while one is active) while the snippet keeps naming the resident model
-// from /v1/models, so the two can drift with no way back. Compatibility is unknown there.
+// An external chat selection freezes the local GGUF fields, so compatibility is unknown there.
 function ggufState(
   checkpoint: string,
   fields: { variant?: string; ctx?: number },
@@ -250,7 +237,6 @@ test("an external selection makes GGUF-ness unknown, not stale-true", () => {
     true,
   );
   assert.equal(ggufState("unsloth/Qwen3-1.7B", {}), false);
-  // Frozen fields from before the external switch must not read as a live verdict.
   assert.equal(
     ggufState("external::openai::gpt-5", { variant: "Q4_K_M" }),
     null,
@@ -261,19 +247,13 @@ test("an external selection makes GGUF-ness unknown, not stale-true", () => {
 test("unknown GGUF-ness leaves both the pick and the stored preference alone", () => {
   const state = ggufState("external::openai::gpt-5", { variant: "Q4_K_M" });
   assert.equal(state, null);
-  // Both effects bail on null, so nothing is re-steered and nothing is cleared.
   assert.equal(state === null, true);
 });
 
 test("a route that never mounts the chat runtime still learns the model kind", () => {
-  // The store fields and params.checkpoint are populated only by useChatModelRuntime,
-  // mounted on chat-page and hub-page alone, and local checkpoints are not persisted.
-  // Settings opens from every route (api-monitor-page has its own button into this
-  // panel), so a store-only reading left the gate permanently unknown there and the
-  // panel kept offering a GGUF-only agent for a safetensors model.
+  // The store fields are only populated on chat and hub pages, but Settings opens everywhere.
   assert.equal(resolveGgufCompatibility(null, false), false);
   assert.equal(resolveGgufCompatibility(null, true), true);
-  // With the answer available, the gate is live again on those routes.
   assert.equal(
     pickCompatibleAgent([], "claude", false, VISIBLE_AGENTS),
     UNIVERSAL_AGENT,
@@ -281,50 +261,36 @@ test("a route that never mounts the chat runtime still learns the model kind", (
 });
 
 test("the server wins over the store when both have an answer", () => {
-  // A swap made from another tab, the CLI, or an auto-switching API request is invisible
-  // to the store: useChatModelRuntime re-reads status on mount, on model-list changes and
-  // on tab focus, never on a timer. Reading the store first left the panel gating on the
-  // model that had already gone while the snippet already named the new one.
+  // External swaps are invisible to the store, so the server answer must win over it.
   assert.equal(resolveGgufCompatibility(true, false), false);
   assert.equal(resolveGgufCompatibility(false, true), true);
 });
 
 test("a switch made in this tab is not gated on the previous model", () => {
-  // The component tags each answer with the store's model identity and discards it once
-  // that identity changes, so the server's stale reading arrives here as null, not as a
-  // verdict about a model that is no longer loaded.
   assert.equal(resolveGgufCompatibility(true, null), true);
   assert.equal(resolveGgufCompatibility(false, null), false);
 });
 
 test("unknown from both sources stays unknown", () => {
-  // A server that omits is_gguf, or a probe that failed, is not evidence of "not GGUF".
   assert.equal(resolveGgufCompatibility(null, null), null);
 });
 
 test("an idle server decides nothing about a model it is not holding", () => {
-  // InferenceStatusResponse gives is_gguf a False default and active_model is Optional,
-  // so a server with nothing resident answers false while naming no model. Reading that
-  // as "not GGUF" cleared a saved Claude preference for a model that was never there.
+  // is_gguf defaults to False even with no resident model, so that pair means unknown.
   assert.equal(statusGgufVerdict(null, false), null);
   assert.equal(statusGgufVerdict(undefined, false), null);
   assert.equal(statusGgufVerdict(null, true), null);
-  // And an unknown verdict leaves the pick and the stored preference alone.
   assert.equal(pickCompatibleAgent([], "claude", true, VISIBLE_AGENTS), null);
 });
 
 test("a server that names what it holds still decides", () => {
   assert.equal(statusGgufVerdict("unsloth/Qwen3-1.7B", false), false);
   assert.equal(statusGgufVerdict("unsloth/Qwen3-1.7B-GGUF", true), true);
-  // Named, but the field is missing: an older server, so still unknown.
   assert.equal(statusGgufVerdict("unsloth/Qwen3-1.7B", undefined), null);
 });
 
 test("a verdict about one model never gates a different one", () => {
-  // The status poll and useExampleModelName's catalog poll run on separate timers, so a
-  // swap made from the CLI or another tab reaches one of them first. For up to a poll the
-  // panel would otherwise pair a newly named safetensors model with the previous GGUF
-  // verdict and go on offering a Claude command the CLI refuses.
+  // Status and catalog polls run on separate timers, so a swap can reach one first.
   assert.equal(
     verdictDescribesModel("unsloth/Qwen3-1.7B-GGUF", "unsloth/Qwen3-1.7B"),
     false,
@@ -336,8 +302,7 @@ test("a verdict about one model never gates a different one", () => {
 });
 
 test("the quant suffix is not part of the model's identity", () => {
-  // useExampleModelName appends ":quant" to pin the file on disk; the status route reports
-  // the repo. Treating that as a different model would discard every verdict.
+  // useExampleModelName appends ":quant"; the status route reports the bare repo.
   assert.equal(
     verdictDescribesModel(
       "unsloth/Qwen3-1.7B-GGUF",
@@ -355,15 +320,11 @@ test("the quant suffix is not part of the model's identity", () => {
 });
 
 test("nothing named on either side is not a contradiction", () => {
-  // An idle server names nothing, and the catalog names nothing until it answers. Neither
-  // is evidence that the verdict is about some other model.
   assert.equal(verdictDescribesModel(null, "unsloth/Qwen3-1.7B"), true);
   assert.equal(verdictDescribesModel("unsloth/Qwen3-1.7B", null), true);
   assert.equal(verdictDescribesModel(null, null), true);
 });
 
-// How the component composes the two: the status side is collapsed the way the backend
-// collapses it for /v1/models before the identities are compared.
 const statusMatchesCatalog = (resident: string | null, named: string | null) =>
   verdictDescribesModel(
     resident === null ? null : publicModelId(resident),
@@ -371,9 +332,7 @@ const statusMatchesCatalog = (resident: string | null, named: string | null) =>
   );
 
 test("a path-loaded model is compared on the identity the catalog publishes", () => {
-  // /api/inference/status reports backend.active_model_name raw; /v1/models passes it
-  // through public_model_id. Comparing them literally never matched for a local path, so
-  // the verdict was discarded for good and the gate went dead on routes with no store.
+  // Status reports active_model_name raw; /v1/models passes it through public_model_id.
   assert.equal(statusMatchesCatalog("/models/foo", "foo"), true);
   assert.equal(
     statusMatchesCatalog(
@@ -389,13 +348,10 @@ test("a path-loaded model is compared on the identity the catalog publishes", ()
     ),
     true,
   );
-  // Still a real mismatch once collapsed.
   assert.equal(statusMatchesCatalog("/models/foo", "bar"), false);
 });
 
 test("polls that name different models leave the question unknown", () => {
-  // The store is not a tiebreaker here: an external swap is precisely what it does not
-  // see, so reading it kept a Claude command on screen for a model that had been replaced.
   assert.equal(
     compatibilityFromSources(
       true,
@@ -423,13 +379,11 @@ test("an answer about the model on screen still decides, and the server wins", (
     ),
     false,
   );
-  // No answer for this store state: the store carries it.
   assert.equal(
     compatibilityFromSources(true, null, "unsloth/Qwen3-1.7B-GGUF"),
     true,
   );
   assert.equal(compatibilityFromSources(null, null, null), null);
-  // An idle server names nothing, so the store is left to answer.
   assert.equal(
     compatibilityFromSources(
       true,

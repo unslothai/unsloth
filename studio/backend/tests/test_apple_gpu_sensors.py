@@ -20,7 +20,6 @@ class TestFourcc:
             assert apple._fourcc_str(apple._fourcc(key)) == key
 
     def test_known_value(self):
-        # "flt " FourCC, same constant macmon uses.
         assert apple._fourcc("flt ") == 1718383648
 
 
@@ -67,7 +66,7 @@ class TestLiveSensors:
         assert 0.0 < temp <= 150.0
 
     def test_gpu_power_after_baseline(self):
-        apple.read_gpu_power_w()  # first call only sets the baseline
+        apple.read_gpu_power_w()
         time.sleep(0.3)
         power = apple.read_gpu_power_w()
         assert power is not None

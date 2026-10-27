@@ -115,6 +115,15 @@ test("the other families keep their recipes", () => {
     ["fusionx-lab/HunyuanVideo-1.5-Diffusers-480p_t2v", 20, 6],
     ["/models/FusionX/wan2.1-t2v-14b-Q4_K_M.gguf", 20, 6],
     ["/home/user/ComfyUI/models/diffusion_models/wan2.2_ti2v_5B_fp16.safetensors", 20, 5],
+    ["/models/ltx/Cosmos3-Nano", 35, 6],
+    ["/home/distilled/Cosmos3-Nano", 35, 6],
+    ["/data/fusionx/Cosmos3-Edge", 20, 6],
+    ["/models/a14b/Cosmos3-Edge", 20, 6],
+    ["/models/hunyuanvideo/Cosmos3-Nano", 35, 6],
+    ["cosmos3-nano-lab/HunyuanVideo-1.5-Diffusers-480p_t2v", 20, 6],
+    ["/home/cosmos3-nano/models/HunyuanVideo-1.5-Diffusers-480p_t2v", 20, 6],
+    ["/models/Cosmos3-Nano/wan2.1_t2v_14B_bf16.safetensors", 20, 6],
+    ["cosmos3-edge-lab/Wan2.1-T2V-1.3B-Diffusers", 30, 6],
   ];
   for (const [id, steps, guidance] of cases) {
     assert.deepEqual(defaultsFor(id), { steps, guidance }, id);
@@ -126,4 +135,38 @@ test("an explicit LTX-2.5 family still reads the variant from the file and repo 
   assert.deepEqual(defaultsFor("/models/LTX-dev-run/model.safetensors", "ltx-2.5"), { steps: 30, guidance: 3 });
   assert.deepEqual(defaultsFor("/models/opaque/model.safetensors", "ltx-2.5"), { steps: 8, guidance: 1 });
   assert.deepEqual(defaultsFor("/models/opaque/model.safetensors"), { steps: 8, guidance: 1 });
+});
+
+test("every Cosmos3 spelling seeds the recipe its backend family reports: Nano 35 steps, Edge 20, CFG 6", () => {
+  const families = readText("../../backend/core/inference/video_families.py");
+  const backend = (constant: string) => {
+    const row = families.slice(families.indexOf(`name = "${constant}",`));
+    const steps = row.match(/default_steps = (\d+),/);
+    const guidance = row.match(/default_guidance = ([\d.]+),/);
+    assert.ok(steps && guidance, constant);
+    return { steps: Number(steps[1]), guidance: Number(guidance[1]) };
+  };
+  const nano = backend("cosmos3-nano");
+  const edge = backend("cosmos3-edge");
+  // The cards' Diffusers examples (nvidia/Cosmos3-Nano@e59a53c2, nvidia/Cosmos3-Edge@344d602b).
+  assert.deepEqual([nano, edge], [{ steps: 35, guidance: 6 }, { steps: 20, guidance: 6 }]);
+  const spellings: Array<[string, typeof nano]> = [
+    ["nvidia/Cosmos3-Nano", nano],
+    ["NVIDIA/COSMOS3-NANO", nano],
+    ["someone/Cosmos3_Nano", nano],
+    ["Cosmos3 Nano", nano],
+    ["/home/me/.cache/huggingface/hub/models--nvidia--Cosmos3-Nano/snapshots/e59a53c25979a090fa8706c9acc0c254a6e89b92", nano],
+    ["/data/models/Cosmos3-Nano/", nano],
+    ["~/models/cosmos3_nano", nano],
+    ["cosmos3-nano", nano],
+    ["nvidia/Cosmos3-Edge", edge],
+    ["someone/cosmos3_edge", edge],
+    ["COSMOS3.EDGE", edge],
+    ["/home/u/.cache/huggingface/hub/models--nvidia--Cosmos3-Edge/snapshots/344d602b128d1bbdacb43b08d0a3626f46343e29", edge],
+    ["C:\\models\\Cosmos3-Edge", edge],
+    ["cosmos3-edge", edge],
+  ];
+  for (const [id, recipe] of spellings) {
+    assert.deepEqual(defaultsFor(id), recipe, id);
+  }
 });

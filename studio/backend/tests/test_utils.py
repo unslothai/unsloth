@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for utils/hardware and utils/utils: device detection, GPU memory, error formatting.
-
-Passes on any platform (NVIDIA/CUDA, Apple Silicon/MLX, CPU-only). No ML framework
-is imported at top level; tests needing torch/mlx internals skip when unavailable.
-"""
+"""No ML framework is imported at top level, so these run on CUDA, MLX and CPU-only hosts alike."""
 
 import platform
 import sys
@@ -15,7 +11,6 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-# --- Conditional framework imports ---
 try:
     import torch
     HAS_TORCH = True
@@ -44,9 +39,6 @@ import utils.hardware.hardware as _hw_module
 from utils.utils import format_error_message, is_hf_authentication_error
 
 
-# ========== Helpers ==========
-
-
 def _actual_device() -> str:
     """Return the real device string for the current machine."""
     if HAS_TORCH and torch.cuda.is_available():
@@ -60,9 +52,6 @@ def _reset_and_detect():
     """Reset the cached DEVICE global and re-run detection."""
     _hw_module.DEVICE = None
     return detect_hardware()
-
-
-# ========== get_device() ==========
 
 
 class TestGetDevice:
@@ -80,8 +69,6 @@ class TestGetDevice:
 
     def test_matches_actual_hardware(self):
         assert get_device().value == _actual_device()
-
-    # --- Mocked paths ---
 
     @needs_torch
     def test_returns_cuda_when_cuda_available(self):
@@ -142,9 +129,6 @@ class TestGetDevice:
             assert _reset_and_detect() == DeviceType.CPU
 
 
-# ========== is_apple_silicon() ==========
-
-
 class TestIsAppleSilicon:
     def test_returns_bool(self):
         assert isinstance(is_apple_silicon(), bool)
@@ -162,9 +146,6 @@ class TestIsAppleSilicon:
             mock_plat.system.return_value = system
             mock_plat.machine.return_value = machine
             assert is_apple_silicon() is expected
-
-
-# ========== clear_gpu_cache() ==========
 
 
 class TestClearGpuCache:
@@ -217,9 +198,6 @@ class TestClearGpuCache:
             mock_empty.assert_not_called()
 
 
-# ========== get_gpu_memory_info() ==========
-
-
 class TestGetGpuMemoryInfo:
     def test_returns_dict(self):
         result = get_gpu_memory_info()
@@ -237,8 +215,6 @@ class TestGetGpuMemoryInfo:
         from utils.hardware.hardware import _backend_label
         result = get_gpu_memory_info()
         assert result["backend"] == _backend_label(get_device())
-
-    # --- When a GPU IS available ---
 
     @pytest.mark.skipif(_actual_device() == "cpu", reason = "No GPU available on this machine")
     def test_gpu_available_fields(self):
@@ -308,10 +284,7 @@ class TestGetGpuMemoryInfo:
         assert abs(result["free_gb"] - 11.0) < 0.01
 
     def test_mlx_free_is_not_reduced_by_whole_device_gpu_use(self):
-        """The working set is a per-process budget, and the AGX counter behind
-        used_gb is whole-device and only the active subset, so charging one
-        against the other would let another app's GPU work pick the training
-        method."""
+        """The MLX working set is per-process, so other apps' GPU use must not reduce free memory."""
         busy = self._mlx_memory_info(available_gb = 6, recommended_gb = 11, used_gb = 8)
         idle = self._mlx_memory_info(available_gb = 6, recommended_gb = 11, used_gb = 0.4)
 
@@ -335,10 +308,7 @@ class TestGetGpuMemoryInfo:
         assert abs(result["free_gb"] - 6.0) < 0.01
 
     def test_mlx_utilization_device_publishes_the_same_free_as_the_summary(self):
-        """The Resources tab reads the per-device figure, and /api/system falls
-        back to total - used for any device that does not report free. On
-        unified memory that fallback is the 14.8 GB overstatement the tests
-        above reject, so this probe has to carry free itself."""
+        """Utilization must report free itself; total minus used overstates unified memory by 14.8 GB."""
         from utils.hardware.hardware import get_visible_gpu_utilization
 
         with self._mlx_machine(available_gb = 6, recommended_gb = 11):
@@ -348,8 +318,6 @@ class TestGetGpuMemoryInfo:
         assert abs(device["vram_free_gb"] - summary_free) < 0.01
         assert abs(device["vram_free_gb"] - 6.0) < 0.01
         assert device["vram_total_gb"] - device["vram_used_gb"] > 14.0
-
-    # --- CUDA-specific mocked test ---
 
     @needs_torch
     def test_cuda_path_returns_correct_fields(self):
@@ -436,8 +404,6 @@ class TestGetGpuMemoryInfo:
         assert abs(result["total_gb"] - 100.0) < 0.01
         assert abs(result["free_gb"] - 98.0) < 0.01
 
-    # --- XPU (Intel GPU) ---
-
     def _xpu_torch(self, mem_get_info):
         """A torch stub exposing only what the XPU branch touches."""
         props = types.SimpleNamespace(total_memory = 16 * (1024**3), name = "Intel Arc A770")
@@ -477,12 +443,10 @@ class TestGetGpuMemoryInfo:
         result = self._xpu_result(monkeypatch, None)
         assert abs(result["free_gb"] - 13.0) < 0.01
 
-    # --- MLX-specific mocked test ---
-
     @needs_mlx
     def test_mlx_path_returns_correct_fields(self):
         mock_psutil_mem = MagicMock()
-        mock_psutil_mem.total = 32 * (1024**3)  # 32 GB unified
+        mock_psutil_mem.total = 32 * (1024**3)
 
         mock_psutil = MagicMock()
         mock_psutil.virtual_memory.return_value = mock_psutil_mem
@@ -498,15 +462,11 @@ class TestGetGpuMemoryInfo:
         assert "Apple Silicon" in result["device_name"]
         assert abs(result["total_gb"] - 32.0) < 0.01
 
-    # --- CPU-only path ---
-
     def test_cpu_path_returns_unavailable(self):
         with patch("utils.hardware.hardware.get_device", return_value = DeviceType.CPU):
             result = get_gpu_memory_info()
         assert result["available"] is False
         assert result["backend"] == "cpu"
-
-    # --- Error resilience ---
 
     @needs_torch
     def test_cuda_error_returns_unavailable(self):
@@ -520,9 +480,6 @@ class TestGetGpuMemoryInfo:
             result = get_gpu_memory_info()
         assert result["available"] is False
         assert "error" in result
-
-
-# ========== log_gpu_memory() ==========
 
 
 class TestLogGpuMemory:
@@ -556,9 +513,6 @@ class TestLogGpuMemory:
 
         captured = capfd.readouterr()
         assert "No GPU available" in captured.out
-
-
-# ========== CUDA_DEVICE_ORDER pinning ==========
 
 
 class TestCudaDeviceOrder:
@@ -599,9 +553,6 @@ class TestCudaDeviceOrder:
 
     def test_import_respects_explicit_user_override(self):
         assert self._order_after_fresh_import("FASTEST_FIRST") == "FASTEST_FIRST"
-
-
-# ========== _print_cuda_device_list() ==========
 
 
 class TestPrintCudaDeviceList:
@@ -655,9 +606,6 @@ class TestPrintCudaDeviceList:
         assert "[0] AMD Instinct MI300X" in out
 
 
-# ========== format_error_message() ==========
-
-
 class TestFormatErrorMessage:
     def test_not_found(self):
         err = Exception("Repository not found for unsloth/test")
@@ -694,8 +642,6 @@ class TestFormatErrorMessage:
         rate_error.response = response
         assert is_hf_authentication_error(rate_error) is False
 
-    # --- OOM on CUDA ---
-
     @needs_torch
     def test_cuda_oom(self):
         err = Exception("CUDA out of memory")
@@ -705,8 +651,6 @@ class TestFormatErrorMessage:
         assert "big/model" not in msg
         assert "model" in msg
 
-    # --- OOM on MLX ---
-
     @needs_mlx
     def test_mlx_oom(self):
         err = Exception("MLX backend out of memory")
@@ -714,15 +658,11 @@ class TestFormatErrorMessage:
             msg = format_error_message(err, "unsloth/huge-model")
         assert "Apple Silicon" in msg
 
-    # --- OOM on CPU ---
-
     def test_cpu_oom(self):
         err = Exception("not enough memory to allocate")
         with patch("utils.hardware.get_device", return_value = DeviceType.CPU):
             msg = format_error_message(err, "any/model")
         assert "system" in msg.lower()
-
-    # --- Generic fallback ---
 
     def test_generic_error(self):
         err = Exception("Something completely unexpected")
@@ -774,11 +714,7 @@ class TestSafeErrorDetailNamesAMetalFailure:
 
 
 class TestAuthSafeRedirectHandler:
-    """A Hub token must not leave the origin the operator configured.
-
-    Origin cases run over loopback sockets; scheme cases go through redirect_request
-    directly, since a loopback TLS server would need a cert this suite does not carry.
-    """
+    """A Hub token must not follow a redirect off the configured origin; scheme cases skip sockets."""
 
     TOKEN = "Bearer hf_FAKE_TOKEN_FOR_TESTS"
 
@@ -790,8 +726,7 @@ class TestAuthSafeRedirectHandler:
 
         class _Recorder(http.server.BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.0"
-            # Defaults to None: a connection that sends nothing wedges serve_forever in
-            # readline(), and shutdown() waits on that loop with no timeout of its own.
+            # Default None: a silent connection wedges serve_forever and shutdown() has no timeout.
             timeout = 5
 
             def _handle(self):
@@ -805,8 +740,7 @@ class TestAuthSafeRedirectHandler:
                 self.send_header("Content-Length", "0")
                 self.end_headers()
 
-            # do_GET is NOT dead: 3.13 preserves HEAD across a redirect, 3.12 downgrades
-            # it to GET, so HEAD-only answers 501 on every 3.12 runner.
+            # do_GET is needed: 3.12 downgrades HEAD to GET across a redirect.
             do_GET = _handle
             do_HEAD = _handle
 
@@ -815,8 +749,7 @@ class TestAuthSafeRedirectHandler:
 
         class _Server(http.server.HTTPServer):
             def server_bind(self):
-                # HTTPServer.server_bind calls socket.getfqdn(), which conftest's network
-                # guard does not patch: a real PTR query on Windows, and it can stall.
+                # server_bind calls socket.getfqdn(), unpatched by conftest; it can stall on Windows.
                 import socketserver
 
                 socketserver.TCPServer.server_bind(self)
@@ -878,8 +811,6 @@ class TestAuthSafeRedirectHandler:
         assert second.seen and second.seen[0]["auth"] is None
         assert back and back[0]["auth"] is None
 
-    # --- scheme and host rules, at the handler ---
-
     def _redirect(
         self,
         start,
@@ -926,10 +857,7 @@ class TestAuthSafeRedirectHandler:
         assert req.headers.get("Authorization") == self.TOKEN
 
     def test_a_refused_redirect_reaches_the_caller_as_an_http_error(self):
-        """Stubs the refusal rather than driving it, since that needs an https origin.
-
-        Settles the caller contract only: returning None raises HTTPError on the 3xx.
-        """
+        """Returning None from the redirect handler raises HTTPError on the 3xx; the refusal is stubbed."""
         import urllib.error
         import urllib.request
 

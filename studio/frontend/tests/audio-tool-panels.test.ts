@@ -27,7 +27,6 @@ const ctx = (
   ...overrides,
 });
 
-// The panels the rail used to inline, in order, each with the kind and workflow it serves.
 const PANELS = [
   ...registry.matchAll(
     /instructionsPanel\("([^"]+)", "([^"]+)", "[^"]+", \[([^\]]*)\]\)/g,
@@ -72,7 +71,6 @@ test("a model gets the instruction field it always got, and nothing else", () =>
   );
   assert.deepEqual(shown("speak", ctx({ audioType: "snac" })), []);
   assert.deepEqual(shown("speak", ctx({ audioType: "csm" })), []);
-  // A music model resident while Speak is open does not put its description on Speak.
   assert.deepEqual(shown("speak", ctx({ audioType: "audiocpp_music" })), []);
 });
 

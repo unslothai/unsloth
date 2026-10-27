@@ -25,7 +25,7 @@ def nvidia_host(monkeypatch):
 
 @pytest.fixture(autouse = True)
 def visible_gpus(monkeypatch):
-    # CPU CI has no parent-visible GPUs; the mask itself is tested with the real resolver below.
+    # CPU CI has no parent-visible GPUs; the real resolver tests the mask below.
     from core.inference import managed_engine
     monkeypatch.setattr(
         managed_engine, "resolve_requested_gpu_ids", lambda ids: list(ids) if ids else [0]
@@ -42,12 +42,10 @@ def isolated(monkeypatch, tmp_path):
     return tmp_path
 
 
-# Studio installs and starts engines locally only on a Linux host (Windows uses the WSL guest,
-# macOS is refused); these fake its POSIX venv layout and process timing.
+# Studio runs engines locally only on Linux; these fake its POSIX venv layout and timing.
 _LOCAL_ENGINE_HOST = pytest.mark.skipif(
     sys.platform != "linux", reason = "local engine host is Linux only"
 )
-# fcntl only: the copy-on-write clone probe, and a test that holds a lease with fcntl directly.
 _POSIX_ENGINE_LOCKS = pytest.mark.skipif(sys.platform == "win32", reason = "uses fcntl")
 
 
@@ -234,8 +232,7 @@ def test_shared_engine_never_sees_studio_flashinfer(tmp_path):
 
 
 def test_shared_engine_keeps_its_own_nvidia_tree_first(tmp_path):
-    # Colab's site has a regular nvidia package, which hid the engine's crt headers from
-    # FlashInfer's JIT ("'__cudaLaunch' was not declared").
+    # Colab's regular nvidia package hid the engine's crt headers from FlashInfer's JIT.
     import subprocess
     import sys
 
@@ -282,8 +279,7 @@ def test_engine_cuda_home_is_the_locked_pip_nvcc(tmp_path, monkeypatch):
     assert (home / "lib64" / "libcudart.so").resolve() == studio_cuda / "lib" / "libcudart.so.13"
     cuda = install.cuda_environment({"path": str(env), "shared": True})
     assert cuda == {"CUDA_HOME": str(home), "CPATH": str(home / "include")}
-    # One tree: Studio's cuda_runtime.h sits beside the engine's crt/, so its quote includes of
-    # crt/ resolve to the engine's release (Colab ships a newer crt than its nvcc).
+    # One tree, so cuda_runtime.h's quote includes of crt/ resolve to the engine's release.
     (studio_cuda / "include" / "crt").mkdir()
     install.link_cuda_home(env, shared = True)
     assert (
@@ -296,7 +292,6 @@ def test_engine_cuda_home_is_the_locked_pip_nvcc(tmp_path, monkeypatch):
 @_LOCAL_ENGINE_HOST
 @pytest.mark.parametrize("engine", ["vllm", "sglang"])
 def test_glibc_floor_matches_the_lock_platform(engine, monkeypatch):
-    # Both locks resolve for x86_64-manylinux_2_34 (see the lock headers).
     assert "--python-platform x86_64-manylinux_2_34" in install.requirements(engine).read_text()
     monkeypatch.setattr(install.platform, "system", lambda: "Linux")
     monkeypatch.setattr(install.platform, "machine", lambda: "x86_64")
@@ -343,10 +338,8 @@ def test_shared_engine_reuses_studio_versions_its_dependencies_accept(
         install, "_compat", lambda engine: {"pillow": [">=11"], "flashinfer-python": []}
     )
     plan = install.install_plan("vllm")
-    # No dependent constrains it: Studio's own version serves the engine.
     assert plan["provided"]["bitsandbytes"] == "9.0.0"
     assert not any(line.startswith("bitsandbytes==") for line in plan["requirements"].splitlines())
-    # Rejected by a dependent, or its own requirement fails against the engine's numpy.
     assert "pillow" not in plan["provided"] and "scipy" not in plan["provided"]
     # Studio's NVFP4 FlashInfer is hidden from engines, so it can never stand in.
     assert "flashinfer-python" not in plan["provided"]
@@ -425,7 +418,6 @@ def test_release_follows_studio_torch(monkeypatch, engine, studio_torch, version
     chosen = install.profile(engine)
     assert chosen["version"] == version
     assert install._pins(engine)[engine][0] == version
-    # The chosen lock is built on that torch, so a matching Studio can share it.
     assert install._pins(engine)["torch"][0] == chosen["torch"]
 
 
@@ -577,7 +569,7 @@ def test_runtime_lease_blocks_removal(isolated):
     marker = active(isolated)
     with install.engine_lease("vllm"):
         assert install.status("vllm")["in_use"] is True
-        with pytest.raises(RuntimeError, match = "another Studio"):
+        with pytest.raises(RuntimeError, match = "another Unsloth"):
             install.remove("vllm")
     assert marker.exists()
     install.remove("vllm")
@@ -654,12 +646,55 @@ def test_installer_reuses_recorded_cache(monkeypatch, tmp_path):
     assert install.install_environment()["UV_CACHE_DIR"] == str(tmp_path / "explicit")
 
 
+@pytest.mark.parametrize("image_python", [False, True])
+def test_docker_engine_python_survives_image_replacement(isolated, monkeypatch, image_python):
+    import shutil
+
+    app = isolated / "app"
+    app.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_APP", str(app))
+    monkeypatch.delenv("UV_PYTHON_INSTALL_DIR", raising = False)
+    if image_python:
+        (app / "python").mkdir()
+        linked_python = isolated / "linked-python"
+        linked_python.symlink_to(app / "python", target_is_directory = True)
+        monkeypatch.setenv("UV_PYTHON_INSTALL_DIR", str(linked_python))
+
+    # Model uv's interpreter symlink with a small file, then discard the app layer.
+    python_home = Path(install.install_environment()["UV_PYTHON_INSTALL_DIR"])
+    python_home.mkdir(parents = True, exist_ok = True)
+    interpreter = python_home / "python3.13"
+    interpreter.touch()
+    for engine in ("vllm", "sglang"):
+        marker = active(isolated, engine)
+        python = marker.parent / "env-prior" / "bin" / "python"
+        python.unlink()
+        python.symlink_to(interpreter)
+    shutil.rmtree(app)
+    app.mkdir()
+    for engine in ("vllm", "sglang"):
+        assert install.installed(engine) is not None
+
+
+def test_docker_engine_python_respects_external_store(isolated, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_APP", str(isolated / "app"))
+    external = str(isolated / "persistent-python")
+    monkeypatch.setenv("UV_PYTHON_INSTALL_DIR", external)
+    assert install.install_environment()["UV_PYTHON_INSTALL_DIR"] == external
+
+
+def test_native_engine_python_keeps_uv_default(isolated, monkeypatch):
+    monkeypatch.delenv("UNSLOTH_STUDIO_APP", raising = False)
+    monkeypatch.delenv("UV_PYTHON_INSTALL_DIR", raising = False)
+    assert "UV_PYTHON_INSTALL_DIR" not in install.install_environment()
+
+
 @pytest.mark.parametrize("engine", ["vllm", "sglang"])
 def test_argv_owns_network_and_memory_settings(engine):
     argv = launch_arguments(engine, "/env/bin/python", "org/model", 45678, "private", 4096)
     assert argv[0:2] == ["/env/bin/python", "-I"]
     assert argv[argv.index("--host") + 1] == "127.0.0.1"
-    assert "private" not in argv  # the key travels in the environment (key_environment)
+    assert "private" not in argv
     assert "4096" in argv
     assert "--trust-remote-code" not in argv
 
@@ -998,7 +1033,7 @@ def test_busy_install_does_not_overwrite_another_job(isolated):
     job = {"state": "running", "phase": "installing", "message": "Downloading"}
     (isolated / "vllm.job.json").write_text(json.dumps(job))
     with install.engine_lease("vllm", exclusive = True):
-        with pytest.raises(RuntimeError, match = "another Studio"):
+        with pytest.raises(RuntimeError, match = "another Unsloth"):
             install.start_install("vllm")
         assert install.status("vllm")["job"] == job
 
@@ -1155,10 +1190,16 @@ def test_memory_budget_uses_selected_gpu_and_reserves_headroom(monkeypatch):
     monkeypatch.setattr(vram_budget_settings, "get_vram_budget_fraction", lambda: 0.97)
     assert engine_adapters.gpu_memory_fraction([1]) == 0.645
     assert commands[0][commands[0].index("--id") + 1] == "1"
-    # vLLM TorchAO weights overrun the reservation in sampler warmup: 6 GiB more stays free.
+    # vLLM TorchAO weights overrun the reservation in sampler warmup, so keep 6 GiB more free.
     assert engine_adapters.gpu_memory_fraction([1], 512 + 6144) == 0.395
-    monkeypatch.setattr(vram_budget_settings, "get_vram_budget_fraction", lambda: 0.5)
-    assert engine_adapters.gpu_memory_fraction([1]) == 0.5
+    monkeypatch.setattr(
+        engine_adapters.subprocess, "run", lambda *a, **kw: SimpleNamespace(stdout = "24576, 24000")
+    )
+    monkeypatch.setattr(vram_budget_settings, "get_vram_budget_fraction", lambda: 0.85)
+    assert engine_adapters.gpu_memory_fraction([1]) == 0.85
+    # A GGUF-only low budget must not shrink an engine that cannot offload to the CPU.
+    monkeypatch.setattr(vram_budget_settings, "get_vram_budget_fraction", lambda: 0.3)
+    assert engine_adapters.gpu_memory_fraction([1]) == engine_adapters.MANAGED_ENGINE_BUDGET_FLOOR
     monkeypatch.setattr(
         engine_adapters.subprocess, "run", lambda *a, **kw: SimpleNamespace(stdout = "24576, 256")
     )
@@ -1173,14 +1214,14 @@ def test_memory_reserve_grows_with_the_card(monkeypatch):
 
     monkeypatch.setattr(vram_budget_settings, "get_vram_budget_fraction", lambda: 0.97)
     share = engine_adapters.RESERVE_SHARE
-    # 96 GB RTX PRO 6000, idle: 3 GiB left vLLM's sampler warmup out of memory there.
+    # On an idle 96 GB RTX PRO 6000, a 3 GiB reserve left vLLM sampler warmup out of memory.
     monkeypatch.setattr(
         engine_adapters.subprocess, "run", lambda *a, **kw: SimpleNamespace(stdout = "97887, 97300")
     )
     fraction = engine_adapters.gpu_memory_fraction([0], 3072, share)
     assert 97887 * (1 - fraction) >= 0.06 * 97887 - 1
     assert fraction < engine_adapters.gpu_memory_fraction([0], 3072)
-    # A 24 GB L4 keeps the measured fixed reserve: 6% would be less than 3 GiB.
+    # A 24 GB L4 keeps the fixed reserve because 6% would be less than 3 GiB.
     monkeypatch.setattr(
         engine_adapters.subprocess, "run", lambda *a, **kw: SimpleNamespace(stdout = "23034, 22700")
     )
@@ -1236,7 +1277,7 @@ def test_server_outlives_short_lived_start_thread(isolated, monkeypatch, gpu_ids
         key_environment = lambda _: {},
     )
     errors = []
-    # Colab reaches libcuda only through LD_LIBRARY_PATH; a CUDA runtime there must not follow.
+    # Colab reaches libcuda only via LD_LIBRARY_PATH; a CUDA runtime there must not follow.
     driver, runtime = tmp_path / "lib64-nvidia", tmp_path / "cuda-12" / "lib64"
     for folder, library in ((driver, "libcuda.so.1"), (runtime, "libcudart.so.12")):
         folder.mkdir(parents = True)
@@ -1655,7 +1696,7 @@ def test_multi_gpu_memory_budget_uses_most_constrained_device(monkeypatch):
     [
         ({}, 2, True),
         ({}, 4, True),  # Two KV heads replicated over four ranks.
-        ({}, 3, False),  # Three ranks cannot shard or replicate two KV heads.
+        ({}, 3, False),
         ({"num_attention_heads": 7}, 2, False),
         ({"intermediate_size": 1537}, 2, False),
         ({"hidden_size": 769}, 2, False),
@@ -2239,8 +2280,7 @@ def test_only_vllm_torchao_loads_keep_extra_headroom(engine, options, reserve):
 
 @pytest.mark.parametrize(
     "engine, highest_passing",
-    # The fractions that passed chat, stream and a forced tool call on a Colab L4 (23034 MiB,
-    # 22564 free, Qwen2.5-0.5B); the old 512 MiB reserve gave 0.957, which failed on both.
+    # Highest passing on a Colab L4 (23034 MiB, Qwen2.5-0.5B); the old 512 MiB reserve gave 0.957.
     [("vllm", 0.912), ("sglang", 0.890)],
 )
 def test_a_24_gb_card_leaves_the_headroom_measured_on_an_l4(monkeypatch, engine, highest_passing):
@@ -2353,7 +2393,7 @@ def test_sglang_without_torchao_refuses_int8_and_int4(version):
 
 
 def test_legacy_load_in_4bit_is_validated_as_int4(monkeypatch):
-    # An older client's load_in_4bit becomes INT4; the SGLang refusal must see that before unloading.
+    # An older client's load_in_4bit becomes INT4, and the SGLang refusal must see it first.
     import asyncio
     from fastapi import HTTPException
     from core.inference import managed_engine

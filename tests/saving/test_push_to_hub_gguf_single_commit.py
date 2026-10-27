@@ -20,7 +20,7 @@ class _RecordingApi:
         def record(*args, **kwargs):
             if name == "create_commit":
                 readme = next(op for op in kwargs["operations"] if op.path_in_repo == "README.md")
-                kwargs["readme"] = open(readme.path_or_fileobj, encoding = "utf-8").read()
+                kwargs["readme"] = readme.path_or_fileobj.decode("utf-8")
             _RecordingApi.calls.append((name, kwargs))
             if name == "create_commit" and kwargs.get("create_pr"):
                 return SimpleNamespace(pr_url = "https://huggingface.co/u/my-model/discussions/1")
@@ -121,3 +121,21 @@ def test_datasets_go_in_the_same_commit(push, monkeypatch, datasets):
     expected = [datasets] if isinstance(datasets, str) else datasets
     assert card.data.datasets == expected
     assert "gguf" in card.data.tags
+
+
+def test_readme_is_not_written_into_the_save_directory(push, tmp_path, monkeypatch):
+    """For a non-PEFT model the returned save directory is the user's own checkpoint."""
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    (checkpoint / "README.md").write_text("my model card")
+
+    def _convert_reusing_checkpoint(**kwargs):
+        result = _fake_convert(**kwargs)
+        result["save_directory"] = str(checkpoint)
+        return result
+
+    monkeypatch.setattr(save_mod, "unsloth_save_pretrained_gguf", _convert_reusing_checkpoint)
+    calls = push()
+    commit = next(kw for name, kw in calls if name == "create_commit")
+    assert "Unsloth" in commit["readme"]
+    assert (checkpoint / "README.md").read_text() == "my model card"

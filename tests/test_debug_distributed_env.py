@@ -83,3 +83,69 @@ def test_existing_process_group_leaves_the_environment_untouched(monkeypatch, ca
     assert _module().apply_debug_distributed_env(env) == []
     assert env == {"UNSLOTH_DEBUG_DISTRIBUTED": "1"}
     assert "already exists" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("user_value", [None, "TRACE"])
+def test_nccl_debug_survives_zoo_logging_switches(user_value):
+    # unsloth_zoo sets NCCL_DEBUG=WARN on import under UNSLOTH_ENABLE_LOGGING / UNSLOTH_COMPILE_DEBUG.
+    mod = _module()
+    env = {"UNSLOTH_DEBUG_DISTRIBUTED": "1", "UNSLOTH_ENABLE_LOGGING": "1"}
+    if user_value is not None:
+        env["NCCL_DEBUG"] = user_value
+    mod.apply_debug_distributed_env(env)
+    restore = mod.keep_debug_nccl_env(env)
+    env["NCCL_DEBUG"] = "WARN"
+    restore()
+    assert env["NCCL_DEBUG"] == (user_value or "INFO")
+
+
+def test_keep_nccl_debug_is_a_no_op_when_off():
+    mod = _module()
+    env = {"UNSLOTH_ENABLE_LOGGING": "1"}
+    restore = mod.keep_debug_nccl_env(env)
+    env["NCCL_DEBUG"] = "WARN"
+    restore()
+    assert env["NCCL_DEBUG"] == "WARN"
+
+
+def test_gpu_init_restores_nccl_debug_around_zoo_import():
+    source = (_UNSLOTH / "_gpu_init.py").read_text(encoding = "utf-8")
+    zoo = source.index("\n    import unsloth_zoo\n")
+    keep = source.rfind("keep_debug_nccl_env()", 0, zoo)
+    restore = source.find("_restore_nccl_debug()", zoo)
+    assert keep != -1 and restore != -1
+    assert source.count("\n    import unsloth_zoo\n") == 1
+    assert restore < source.index("except PackageNotFoundError", zoo)
+
+
+@pytest.mark.parametrize("switch", ["UNSLOTH_ENABLE_LOGGING", "UNSLOTH_COMPILE_DEBUG"])
+def test_real_zoo_import_keeps_nccl_info(switch):
+    import os
+    import subprocess
+    import sys
+
+    if importlib.util.find_spec("unsloth_zoo") is None:
+        pytest.skip("unsloth_zoo not installed")
+    code = (
+        "import importlib.util, os, sys\n"
+        "spec = importlib.util.spec_from_file_location('dd', sys.argv[1])\n"
+        "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)\n"
+        "m.apply_debug_distributed_env()\n"
+        "restore = m.keep_debug_nccl_env()\n"
+        "try:\n"
+        "    import unsloth_zoo\n"
+        "except BaseException:\n"
+        "    pass\n"  # CPU hosts raise after the env block ran; only NCCL_DEBUG matters here.
+        "restore()\n"
+        "print('NCCL_DEBUG=' + os.environ.get('NCCL_DEBUG', ''))\n"
+    )
+    env = {k: v for k, v in os.environ.items() if k != "NCCL_DEBUG"}
+    env.update({"UNSLOTH_DEBUG_DISTRIBUTED": "1", switch: "1"})
+    out = subprocess.run(
+        [sys.executable, "-c", code, str(_UNSLOTH / "distributed_debug.py")],
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 600,
+    ).stdout
+    assert "NCCL_DEBUG=INFO" in out.splitlines()

@@ -4,10 +4,7 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
-/**
- * localStorage that cannot throw: private browsing, blocked cookies and opaque webview
- * origins all throw on access. Losing the preference is fine; losing the panel is not.
- */
+/** localStorage that cannot throw (private browsing, blocked cookies, opaque origins). */
 const safeStorage = {
   getItem: (name: string): string | null => {
     try {
@@ -33,27 +30,29 @@ const safeStorage = {
 };
 
 interface ApiMonitorOverlayState {
-  /** Whether the floating panel is on screen right now. Session state. */
   isOpen: boolean;
   /** Set on close so the panel does not pop back in the same burst. */
   suppressed: boolean;
   /** Persisted opt out: when false the panel never opens itself. */
   autoOpen: boolean;
+  focusRequestId: string | null;
   open: () => void;
   close: () => void;
   setAutoOpen: (autoOpen: boolean) => void;
+  focusRequest: (id: string | null) => void;
 }
 
-/** Only `autoOpen` persists; a dismissal lasts the sitting, not forever. */
 export const useApiMonitorOverlayStore = create<ApiMonitorOverlayState>()(
   persist(
     (set) => ({
       isOpen: false,
       suppressed: false,
       autoOpen: true,
+      focusRequestId: null,
       open: () => set({ isOpen: true, suppressed: false }),
       close: () => set({ isOpen: false, suppressed: true }),
       setAutoOpen: (autoOpen) => set({ autoOpen }),
+      focusRequest: (focusRequestId) => set({ focusRequestId }),
     }),
     {
       name: "unsloth_api_monitor_overlay",

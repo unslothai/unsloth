@@ -9,7 +9,6 @@ bitsandbytes Linear4bit layers (CPU backend) across 2 gloo ranks with FSDP2's fu
 
 import importlib.util
 import os
-import socket
 import sys
 from pathlib import Path
 
@@ -217,9 +216,8 @@ def test_nonfloat_guard_restores_parameter_new():
 
 
 def _free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    from tests._rendezvous_port import free_port
+    return free_port()
 
 
 def _worker(rank, world_size, port, case, queue):

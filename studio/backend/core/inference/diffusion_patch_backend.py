@@ -22,16 +22,13 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
-# Resolved ``unsloth_zoo.temporary_patches.utils`` helpers, memoised per process (None = tried and unavailable):
-# resolution can import ``unsloth``, far too heavy to repeat per call.
+# Memoised: resolution can import unsloth, too heavy per call.
 _HELPERS: Optional[dict] = None
 
 
 def _retry_could_help(exc: BaseException) -> bool:
-    """Whether importing ``unsloth`` could turn ``exc`` into a successful retry.
-
-    See ``_helpers`` for why each condition is here; the short version is that the import is
-    expensive and must not run where it cannot succeed."""
+    """Whether importing unsloth could fix exc; the import is costly, so only try it where it can
+    succeed."""
     import importlib.util
     import os
     import sys
@@ -55,29 +52,7 @@ def _retry_could_help(exc: BaseException) -> bool:
 
 
 def _helpers() -> Optional[dict]:
-    """``{"patch": patch_function, "restore": restore_original}``, or None when unavailable.
-
-    ``unsloth_zoo.__init__`` refuses to import unless ``UNSLOTH_IS_PRESENT`` is in the environment,
-    and that is set by ``unsloth`` itself. The Unsloth server imports ``unsloth`` at boot so this
-    always resolved there, but ANY process that reaches the patch backend first -- the test suite,
-    a worker subprocess -- got an ImportError and silently ran unpatched (every install returning
-    False). So on failure, import ``unsloth`` and retry once, which is also the import order Unsloth
-    documents.
-
-    The retry is gated, because it is not free: importing ``unsloth`` costs ~940 MB of RSS measured
-    in a process that had not already loaded torch, and on a host unsloth does not support it pays
-    that and fails anyway. Ungated it took two cross-platform CI runners down -- a Linux job that had
-    generated fine at ~900 s died 19 s in with SIGTERM and every ``if: always()`` step skipped (the
-    runner torn down, not a step failing), and a 7 GB macOS runner lost the server 26 s into a load.
-    So it runs only when it can actually succeed:
-
-      * ``torch`` is already imported -- true of the server and of anything patching a real module,
-        and the condition that stops the retry from being what loads torch,
-      * an accelerator ``unsloth`` supports is present (CUDA/ROCm or XPU; ``UNSLOTH_ALLOW_CPU``
-        overrides). MPS and plain CPU are not, and there the import raises after paying,
-      * ``unsloth`` is installed but not yet imported (if it were, the sentinel would be set and the
-        first attempt would have worked),
-      * and the first failure was the ImportError that guard raises."""
+    """Retries the unsloth import once, only with torch loaded and a supported accelerator; needed since UNSLOTH_IS_PRESENT gates zoo; importing costs ~940 MB."""
     global _HELPERS
     if _HELPERS is not None:
         return _HELPERS or None
@@ -114,12 +89,7 @@ def apply_patch(
     match_level: str = "relaxed",
     force: bool = False,
 ) -> bool:
-    """Patch ``target.attr -> new_fn`` via ``patch_function`` (original stashed for
-    ``revert_patch``). Returns True iff applied; False (never raises) if unsloth_zoo is
-    unavailable or ``can_safely_patch`` rejects it.
-
-    ``force=True`` skips the check -- only when new_fn is the SAME function transformed (e.g. a
-    ``torch.compile`` wrapper), where a fingerprint mismatch is expected."""
+    """Returns False instead of raising when unsloth_zoo is missing; force skips the fingerprint check."""
     patch_function = _helper("patch")
     if patch_function is None:
         return False

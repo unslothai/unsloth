@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// radix reports a toast click as outside the dialog, so a modal dialog closed under its action.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
@@ -17,7 +15,6 @@ type OutsideEvent = {
   preventDefault: () => void;
 };
 
-// depth-first search for the first element whose stub type matches
 function findByType(node: unknown, type: string): StubElement | null {
   if (Array.isArray(node)) {
     for (const child of node) {

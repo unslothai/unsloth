@@ -79,7 +79,7 @@ def test_restored_floor_gives_a_zero_row_a_finite_scale():
     unfloored = _choose_scale_float8(
         zero_rows, [1, 32], torch.float8_e4m3fn, hp_value_lb = tensor.act_quant_kwargs.hp_value_lb
     )
-    assert not bool((unfloored > 0).all())  # the black-frame failure: scale 0 for an all-zero row
+    assert not bool((unfloored > 0).all())
     pq._restore_fp8_activation_floor({"w": tensor})
     floored = _choose_scale_float8(
         zero_rows, [1, 32], torch.float8_e4m3fn, hp_value_lb = tensor.act_quant_kwargs.hp_value_lb
@@ -93,7 +93,7 @@ def test_krea2_pipeline_picks_seed_their_hosted_denoiser():
     from core.inference.diffusion_families import IDEOGRAM4_FAMILY_NAME, detect_family
 
     krea = detect_family("krea/Krea-2-Turbo")
-    assert krea is not None and dict(krea.prequant_repos)  # hosted int8 / fp8 artifacts exist
+    assert krea is not None and dict(krea.prequant_repos)
     assert pipeline_seed_supported(krea) is True
     from core.inference.diffusion_families import family_prequant_repo
 

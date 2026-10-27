@@ -22,9 +22,7 @@ RRF_K = int(os.environ.get("RAG_RRF_K", "60"))
 THREAD_WHOLE_DOC = os.environ.get("RAG_THREAD_WHOLE_DOC", "1") == "1"
 WHOLE_DOC_MAX_TOKENS = int(os.environ.get("RAG_WHOLE_DOC_MAX_TOKENS", "6000"))
 
-# Off, evicted turns are simply dropped and the recall reserve is not taken. Only applies once the
-# window evicts, itself opt-in per request via context_overflow="truncate_oldest"; the compaction
-# headroom and sticky boundary belong to the window (ROLLING_COMPACTION_HEADROOM_RATIO), not here.
+# Off: evicted turns are dropped, no recall reserve taken. Applies once the window evicts (opt-in: context_overflow truncate_oldest).
 CONVERSATION_ARCHIVE = os.environ.get("RAG_CONVERSATION_ARCHIVE", "1") == "1"
 CONVERSATION_ARCHIVE_TOP_K = int(os.environ.get("RAG_CONVERSATION_ARCHIVE_TOP_K", "4"))
 # Sized to CONVERSATION_ARCHIVE_TOP_K * CHUNK_TOKENS with slack for the wrapper text.
@@ -35,8 +33,7 @@ CONVERSATION_RECALL_RESERVE_TOKENS = int(
 CONVERSATION_QUERY_FOCUS = os.environ.get("RAG_CONVERSATION_QUERY_FOCUS", "1") == "1"
 # Presentation only: neither ordering changes which turns are selected.
 CONVERSATION_RECALL_ORDER = os.environ.get("RAG_CONVERSATION_RECALL_ORDER", "chronological")
-# Automatic recall only, never a search the model asked for; default 0.0 since a weak match is often
-# still the right turn.
+# Automatic recall only; 0.0 since a weak match is often still the right turn.
 CONVERSATION_FORCED_MIN_SCORE = float(os.environ.get("RAG_CONVERSATION_FORCED_MIN_SCORE", "0.0"))
 
 # Types parsers.parse handles; frontend and Rust parity tests read this literal.
@@ -112,8 +109,7 @@ FIGURE_TILE_OVERLAP = float(os.environ.get("RAG_FIGURE_TILE_OVERLAP", "0.12"))
 FIGURE_FULLPAGE = os.environ.get("RAG_FIGURE_FULLPAGE", "1") == "1"
 CAPTION_MAX_PAGES = int(os.environ.get("RAG_CAPTION_MAX_PAGES", "4"))
 
-# OCR uses the loaded vision model, falling back to local Tesseract language data.
-# MIN_CHARS is the text length below which a page is considered for transcription.
+# OCR uses the loaded vision model, else local Tesseract data; MIN_CHARS: pages under it get OCR.
 OCR_SCANNED = os.environ.get("RAG_OCR_SCANNED", "1") == "1"
 OCR_MIN_CHARS = int(os.environ.get("RAG_OCR_MIN_CHARS", "16"))
 OCR_MAX_PAGES = int(os.environ.get("RAG_OCR_MAX_PAGES", "20"))
@@ -146,12 +142,7 @@ def embedding_identity(
     gguf_repo: str | None = None,
     pooling: str | None = None,
 ) -> str:
-    """Tagged identity for ``documents.embedding_model``.
-
-    The configured model comes first so a row written before identities carried a tag
-    still compares equal on it. llama-server appends the GGUF repo it actually embeds
-    through, which is the part that can differ from the model's ST form, and any pooling
-    other than the CLS it once forced on every GGUF."""
+    """The model name comes first, so untagged rows written before the tag still compare equal on it."""
     model = _escape_identity_segment(model)
     if gguf_repo is None:
         return f"{backend}:{model}"
@@ -168,12 +159,7 @@ def embedding_identity_model(identity: str | None) -> str | None:
 
 
 def embedding_identity_matches(stored: str | None, current: str) -> bool:
-    """Whether ``stored``'s vectors can answer a query embedded under ``current``.
-
-    NULL is still assumed current. An untagged row predates the tag and we cannot know
-    which backend wrote it, so it matches on the model name alone, exactly as it did
-    before: dropping those would empty dense search over every corpus indexed so far.
-    They are reported instead (``store.count_untagged_documents``)."""
+    """Untagged rows match on the model name alone; dropping them would empty dense search. They are reported instead (store.count_untagged_documents)."""
     if stored is None:
         return True
     if embedding_identity_model(stored) is not None:
@@ -243,30 +229,19 @@ def default_gguf_repo() -> str:
 
 
 def effective_gguf_repo() -> str:
-    """GGUF repo for the llama-server backend, tracking the effective model.
-
-    An explicit ``RAG_EMBED_GGUF_REPO`` env always wins, then the repo the picker
-    resolved and stored for this model (which need not follow any naming rule),
-    then the ``-GGUF`` companion convention.
-    """
+    """RAG_EMBED_GGUF_REPO wins, then the repo stored for this model, then the -GGUF convention."""
     return effective_gguf_repo_for_embedding_model(effective_embedding_model())
 
 
 def effective_gguf_repo_for_embedding_model(model: str) -> str:
-    """GGUF repo the loader/identity use for ``model``.
-
-    The resolved repo is part of the vector space identity, not merely a load
-    location: two different conversions of the same source model need separate
-    tags or their document/query vectors can be mixed.
-    """
+    """Resolved repo is part of vector identity: two conversions of one model must not mix vectors."""
     if "RAG_EMBED_GGUF_REPO" in os.environ:
         return EMBED_GGUF_REPO
     try:
         from utils.embedding_model_settings import get_stored_gguf_repo, remembered_gguf_repo
         stored = get_stored_gguf_repo(model)
         if stored is None:
-            # One stored record, so saving another model would move a pinned job's derived identity mid-run and
-            # split one document set across two tags.
+            # One stored record: saving another model would move a pinned job's identity mid-run.
             stored = remembered_gguf_repo(model)
     except Exception:  # noqa: BLE001 - store unavailable: fall back to the convention
         stored = None
@@ -276,8 +251,7 @@ def effective_gguf_repo_for_embedding_model(model: str) -> str:
 # F16 over Q8_0: faster (no per-block dequant at this size) and exact, for ~30MB more on disk.
 EMBED_GGUF_REPO = os.environ.get("RAG_EMBED_GGUF_REPO", "unsloth/bge-small-en-v1.5-GGUF")
 EMBED_GGUF_VARIANT = os.environ.get("RAG_EMBED_GGUF_VARIANT", "F16")
-# "auto" differs per backend: llama-server offloads inside its own subprocess, while
-# sentence-transformers would pin a CUDA primary context (712 MiB on a B200), so it stays on CPU.
+# "auto": llama-server offloads in its subprocess; sentence-transformers stays on CPU (CUDA ctx cost).
 EMBED_DEVICE = os.environ.get("RAG_EMBED_DEVICE", "auto")
 
 
@@ -317,13 +291,7 @@ def embed_device_preference() -> str:
 
 
 def embed_device_requires_gpu() -> bool:
-    """True when a failed GPU start must raise instead of retrying on CPU.
-
-    Only the literal documented value is that hard a request, which is what it has
-    always meant. The spellings we newly began honoring above -- padding, or the
-    accelerator's own name -- used to fall through to ``auto``, and ``auto`` falls
-    back, so reading them as fatal would take RAG away from hosts it worked on. They
-    still opt into the GPU; they just do not insist on it."""
+    """Only literal gpu makes a failed GPU start raise, not retry on CPU. Newer spellings like xpu opt in but do not insist, else RAG is lost on those hosts."""
     return (EMBED_DEVICE or "").lower() == "gpu"
 
 

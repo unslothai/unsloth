@@ -141,6 +141,129 @@ def test_a_pulled_arrow_const_is_kept_like_a_function(tmp_path):
     assert "create(" not in resolved
 
 
+def test_an_eager_const_naming_a_half_resolved_helper_is_dropped(tmp_path):
+    """`TABLE = { v: g() }` and `NAMES = [g]` both reach `f`, which is missing a reference: both are dropped."""
+    module = tmp_path / "src" / "m.ts"
+    module.parent.mkdir(parents = True)
+    module.write_text(
+        'import { missing } from "./nowhere";\n'
+        "const f = () => missing();\n"
+        "const g = () => f();\n"
+        "const TABLE = { v: g() };\n"
+        "const NAMES = [g];\n"
+        "export function useIt() {\n  return [TABLE, NAMES];\n}\n"
+    )
+    resolved = resolve_dependencies("const used = useIt();\n", (module,), root = tmp_path / "src")
+    assert "const TABLE" not in resolved
+    assert "const NAMES" not in resolved
+    assert "const g = () => f();" in resolved
+
+
+@pytest.mark.parametrize(
+    "initializer",
+    [
+        "{ run: () => f() }",
+        "{ run() {\n  return f();\n} }",
+        "function () {\n  return f();\n}()",
+        "function () {\n  return f();\n}(Math.max(1, 2))",
+        "(() => f())()",
+        "{ v: f?.() }",
+        "!true && f()",
+        "alias",
+    ],
+)
+def test_any_eager_reference_to_a_half_resolved_helper_drops_the_const(tmp_path, initializer):
+    """Whether an initializer really calls `f` on load is not decided: a load-time crash costs more than a drop."""
+    module = tmp_path / "src" / "m.ts"
+    module.parent.mkdir(parents = True)
+    module.write_text(
+        'import { missing } from "./nowhere";\n'
+        "const f = () => missing();\n"
+        "const alias = f;\n"
+        f"const VALUE = {initializer};\n"
+        "export function read() {\n  return VALUE;\n}\n"
+    )
+    resolved = resolve_dependencies("const used = read();\n", (module,), root = tmp_path / "src")
+    assert "const VALUE" not in resolved
+
+
+def test_a_type_reexported_through_a_barrel_is_still_erased(tmp_path):
+    """`export type { Props } from "./types"` in a barrel names a type Node erases."""
+    module = tmp_path / "src" / "m.ts"
+    module.parent.mkdir(parents = True)
+    module.write_text(
+        'import { Props } from "./barrel";\n'
+        "const f = (p?: Props) => 1;\n"
+        "const TABLE = { v: f() };\n"
+        "export function useIt() {\n  return TABLE;\n}\n"
+    )
+    (module.parent / "barrel.ts").write_text('export type { Props } from "./view";\n')
+    (module.parent / "view.tsx").write_text("export interface Props {\n  on: boolean;\n}\n")
+    resolved = resolve_dependencies("const used = useIt();\n", (module,), root = tmp_path / "src")
+    assert "const TABLE" in resolved
+
+
+def test_an_inline_type_reexport_through_a_barrel_is_still_erased(tmp_path):
+    """`export { type Props, helper } from "./view"` names a type Node erases next to a value."""
+    module = tmp_path / "src" / "m.ts"
+    module.parent.mkdir(parents = True)
+    module.write_text(
+        'import { Props } from "./barrel";\n'
+        "const f = (p?: Props) => 1;\n"
+        "const TABLE = { v: f() };\n"
+        "export function useIt() {\n  return TABLE;\n}\n"
+    )
+    (module.parent / "barrel.ts").write_text('export { type Props, helper } from "./view";\n')
+    (module.parent / "view.tsx").write_text(
+        "export interface Props {\n  on: boolean;\n}\nexport function helper() {\n  return 1;\n}\n"
+    )
+    resolved = resolve_dependencies("const used = useIt();\n", (module,), root = tmp_path / "src")
+    assert "const TABLE" in resolved
+
+
+def test_an_asserted_function_expression_stays_lazy(tmp_path):
+    """`function () {...} as Fn` builds a function without calling it, so it is kept like one."""
+    module = tmp_path / "src" / "m.ts"
+    module.parent.mkdir(parents = True)
+    module.write_text(
+        'import { missing } from "./nowhere";\n'
+        "type Fn = () => unknown;\n"
+        "const f = function () {\n  return missing();\n} as Fn;\n"
+        "export function get() {\n  return f;\n}\n"
+    )
+    resolved = resolve_dependencies("const used = get();\n", (module,), root = tmp_path / "src")
+    assert "const f = function" in resolved
+
+
+def test_a_type_only_reference_does_not_make_a_helper_half_resolved(tmp_path):
+    """A type Node erases (here from a .tsx file, which is never lifted) is not a missing runtime value."""
+    module = tmp_path / "src" / "m.ts"
+    module.parent.mkdir(parents = True)
+    module.write_text(
+        'import { Props } from "./view";\n'
+        "const f = (p?: Props) => 1;\n"
+        "const TABLE = { v: f() };\n"
+        "export function useIt() {\n  return TABLE;\n}\n"
+    )
+    (module.parent / "view.tsx").write_text("export interface Props {\n  on: boolean;\n}\n")
+    resolved = resolve_dependencies("const used = useIt();\n", (module,), root = tmp_path / "src")
+    assert "const TABLE" in resolved
+
+
+def test_an_immediately_invoked_function_stays_eager(tmp_path):
+    """`const v = function () { ... }();` runs on load, so it is dropped when its body cannot be resolved."""
+    module = tmp_path / "src" / "m.ts"
+    module.parent.mkdir(parents = True)
+    module.write_text(
+        'import { store } from "./store";\n'
+        "const value = function () {\n  return store.getState();\n}();\n"
+        "export function read() {\n  return value;\n}\n"
+    )
+    (module.parent / "store.ts").write_text("export const store = create(() => ({ on: null }));\n")
+    resolved = resolve_dependencies("const used = read();\n", (module,), root = tmp_path / "src")
+    assert "const value" not in resolved
+
+
 def test_a_destructured_fixture_is_not_declared_twice(tmp_path):
     """``const { only, ...rest } = ...`` is a binding a declaration regex does not see."""
     module = tmp_path / "src" / "m.ts"

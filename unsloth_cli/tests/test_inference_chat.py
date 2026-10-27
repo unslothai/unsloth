@@ -378,6 +378,189 @@ def test_chatbackend_gguf_resolves_unset_sampling_but_keeps_explicit_values(monk
     }
 
 
+_QWEN_THINKING_ON = {"temperature": 0.6, "top_p": 0.95, "top_k": 20, "min_p": 0.0}
+_QWEN_THINKING_OFF = {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "min_p": 0.0}
+_QWEN3_TEMPLATE = (
+    "{%- if enable_thinking is defined and enable_thinking is false %}"
+    "<think>\n\n</think>\n\n{%- endif %}"
+)
+_ALWAYS_THINKING_TEMPLATE = "{{- '<|im_start|>assistant\n<think>\n' }}{# </think> #}"
+
+
+def _qwen_backend(
+    kind,
+    model_id,
+    template = None,
+    **flags,
+):
+    if kind == "gguf":
+        fake = _FakeGgufBackend()
+        fake.model_identifier = model_id
+        for name, value in flags.items():
+            setattr(fake, name, value)
+        return fake
+    fake = _FakeBackend()
+    fake.active_model_name = model_id
+    fake.models = {model_id: {"chat_template_info": {"template": template}}}
+    return fake
+
+
+def _qwen_sampling(monkeypatch, kind, fake, enable_thinking, **explicit):
+    _clear_sampling_pins(monkeypatch)
+    list(
+        ChatBackend(kind, fake).stream(
+            [{"role": "user", "content": "x"}],
+            **{**_STREAM_KWARGS, **_UNSET_SAMPLING, **explicit, "enable_thinking": enable_thinking},
+        )
+    )
+    call = fake.calls[0] if kind == "gguf" else fake.calls[0][2]
+    return {field: call[field] for field in _QWEN_THINKING_ON}
+
+
+_QWEN_REASONING_BACKENDS = [
+    ("gguf", "unsloth/Qwen3-4B-GGUF", "unsloth/Qwen3.5-4B-GGUF", {"supports_reasoning": True}),
+    ("unsloth", "unsloth/Qwen3-4B", "unsloth/Qwen3.5-4B", {"template": _QWEN3_TEMPLATE}),
+]
+
+
+@pytest.mark.parametrize("kind, qwen3, qwen35, flags", _QWEN_REASONING_BACKENDS)
+@pytest.mark.parametrize(
+    "family, enable_thinking, expected",
+    [
+        ("qwen3", False, _QWEN_THINKING_OFF),
+        ("qwen3", True, _QWEN_THINKING_ON),
+        ("qwen35", True, _QWEN_THINKING_ON),
+        ("qwen35", False, _QWEN_THINKING_OFF),
+    ],
+)
+def test_chatbackend_samples_qwen3_for_the_thinking_mode_of_the_turn(
+    monkeypatch, kind, qwen3, qwen35, flags, family, enable_thinking, expected
+):
+    fake = _qwen_backend(kind, {"qwen3": qwen3, "qwen35": qwen35}[family], **flags)
+    assert _qwen_sampling(monkeypatch, kind, fake, enable_thinking) == expected
+
+
+@pytest.mark.parametrize("kind, qwen3, _qwen35, flags", _QWEN_REASONING_BACKENDS)
+def test_chatbackend_explicit_temperature_keeps_the_rest_of_the_thinking_table(
+    monkeypatch, kind, qwen3, _qwen35, flags
+):
+    fake = _qwen_backend(kind, qwen3, **flags)
+    sampling = _qwen_sampling(monkeypatch, kind, fake, False, temperature = 0.3)
+    assert sampling == {**_QWEN_THINKING_OFF, "temperature": 0.3}
+
+
+@pytest.mark.parametrize(
+    "kind, model_id, flags",
+    [
+        (
+            "gguf",
+            "unsloth/Qwen3.5-4B-GGUF",
+            {"supports_reasoning": True, "reasoning_always_on": True},
+        ),
+        ("unsloth", "unsloth/Qwen3.5-4B", {"template": _ALWAYS_THINKING_TEMPLATE}),
+    ],
+)
+def test_chatbackend_always_on_reasoning_samples_as_thinking(monkeypatch, kind, model_id, flags):
+    fake = _qwen_backend(kind, model_id, **flags)
+    assert _qwen_sampling(monkeypatch, kind, fake, False) == _QWEN_THINKING_ON
+
+
+@pytest.mark.parametrize(
+    "kind, model_id, flags",
+    [
+        (
+            "gguf",
+            "unsloth/Qwen3.5-4B-GGUF",
+            {"supports_reasoning": True, "reasoning_style": "reasoning_effort"},
+        ),
+        (
+            "unsloth",
+            "unsloth/Qwen3.5-4B",
+            {
+                "template": "{%- if reasoning_effort == 'low' %}low{%- elif reasoning_effort == 'high' %}high{%- endif %}"
+            },
+        ),
+    ],
+)
+def test_chatbackend_effort_only_reasoning_samples_as_thinking(monkeypatch, kind, model_id, flags):
+    fake = _qwen_backend(kind, model_id, **flags)
+    assert _qwen_sampling(monkeypatch, kind, fake, False) == _QWEN_THINKING_ON
+
+
+@pytest.mark.parametrize("enable_thinking", [False, True])
+@pytest.mark.parametrize(
+    "kind, model_id, flags",
+    [
+        (
+            "gguf",
+            "unsloth/Qwen3-4B-Instruct-2507-GGUF",
+            {"supports_reasoning": True, "reasoning_always_on": True},
+        ),
+        ("unsloth", "unsloth/Qwen3-4B-Instruct-2507", {"template": _ALWAYS_THINKING_TEMPLATE}),
+    ],
+)
+def test_chatbackend_instruct_2507_samples_as_non_thinking(
+    monkeypatch, kind, model_id, flags, enable_thinking
+):
+    fake = _qwen_backend(kind, model_id, **flags)
+    assert _qwen_sampling(monkeypatch, kind, fake, enable_thinking) == _QWEN_THINKING_OFF
+
+
+@pytest.mark.parametrize(
+    "kind, model_id", [("gguf", "unsloth/Qwen3.5-4B-GGUF"), ("unsloth", "unsloth/Qwen3.5-4B")]
+)
+def test_chatbackend_without_reasoning_keeps_the_model_recommendation(monkeypatch, kind, model_id):
+    fake = _qwen_backend(kind, model_id, template = "{{ messages }}")
+    assert _qwen_sampling(monkeypatch, kind, fake, True) == _QWEN_THINKING_OFF
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        {"default": _QWEN3_TEMPLATE, "tool_use": "{{ messages }}"},
+        [{"name": "default", "template": _QWEN3_TEMPLATE}],
+    ],
+)
+def test_chatbackend_reads_reasoning_from_the_selected_named_template(monkeypatch, template):
+    fake = _qwen_backend("unsloth", "unsloth/Qwen3.5-4B", template = template)
+    assert _qwen_sampling(monkeypatch, "unsloth", fake, True) == _QWEN_THINKING_ON
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    [
+        ["--chat-template", "chatml"],
+        ["--chat-template-file=/tmp/custom.jinja"],
+        ["--chat_template", "chatml"],
+        ["--chat_template_file", "/tmp/custom.jinja"],
+        ["--no-jinja"],
+    ],
+)
+def test_chatbackend_gguf_template_override_keeps_the_model_recommendation(monkeypatch, extra_args):
+    fake = _qwen_backend(
+        "gguf", "unsloth/Qwen3.5-4B-GGUF", supports_reasoning = True, extra_args = extra_args
+    )
+    assert _qwen_sampling(monkeypatch, "gguf", fake, True) == _QWEN_THINKING_OFF
+
+
+def test_chat_think_toggle_switches_the_sampling_table(monkeypatch):
+    _clear_sampling_pins(monkeypatch)
+    fake = _qwen_backend("gguf", "unsloth/Qwen3-4B-GGUF", supports_reasoning = True)
+    monkeypatch.setattr(chatmod, "resolve_model_config", lambda *a, **k: _FakeConfig())
+    monkeypatch.setattr(chatmod, "_compare_needs_second_model", lambda: False)
+    monkeypatch.setattr(chatmod, "load_chat_backend", lambda *a, **k: ChatBackend("gguf", fake))
+
+    result = CliRunner().invoke(
+        _chat_app(), ["fake-model", "--no-server"], input = "q1\n/think\nq2\n/exit\n"
+    )
+
+    assert result.exit_code == 0, result.output
+    assert [{field: call[field] for field in _QWEN_THINKING_ON} for call in fake.calls] == [
+        _QWEN_THINKING_OFF,
+        _QWEN_THINKING_ON,
+    ]
+
+
 class _FakeStatsBackend:
     def __init__(self, stats):
         self._stats = stats
@@ -1012,7 +1195,7 @@ def test_find_studio_server_none_when_not_running(monkeypatch):
     def refuse(*a, **k):
         raise OSError("connection refused")
 
-    monkeypatch.setattr(urllib.request, "urlopen", refuse)
+    monkeypatch.setattr(_inference, "urlopen_local", refuse)
     assert _inference.find_studio_server() is None
 
 
@@ -1037,7 +1220,7 @@ def test_find_studio_server_falls_back_to_a_recorded_studio_port(monkeypatch, tm
             raise OSError("HTTP Error 404: File not found")
         return _HealthResponse()
 
-    monkeypatch.setattr(urllib.request, "urlopen", default_port_taken)
+    monkeypatch.setattr(_inference, "urlopen_local", default_port_taken)
     assert _inference.find_studio_server() == "http://127.0.0.1:8889"
     assert probed == ["http://127.0.0.1:8888/api/health", "http://127.0.0.1:8889/api/health"]
 
@@ -1071,7 +1254,7 @@ def test_find_studio_server_skips_a_recorded_pid_reused_by_another_process(monke
             raise OSError("connection refused")
         return _HealthResponse()
 
-    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(_inference, "urlopen_local", urlopen)
     assert _inference.find_studio_server() == "http://127.0.0.1:8889"
     assert probed == ["http://127.0.0.1:8888/api/health", "http://127.0.0.1:8889/api/health"]
 
@@ -1096,7 +1279,7 @@ def test_find_studio_server_probes_a_recorded_port_on_the_family_it_bound(monkey
         probed.append(request.full_url)
         raise OSError("connection refused")
 
-    monkeypatch.setattr(urllib.request, "urlopen", nothing_answers)
+    monkeypatch.setattr(_inference, "urlopen_local", nothing_answers)
     assert _inference.find_studio_server() is None
     assert probed == [
         "http://127.0.0.1:8888/api/health",
@@ -1126,8 +1309,81 @@ def test_find_studio_server_keeps_looking_past_a_stranger_on_the_default_port(
             return _HealthResponse(b'{"status": "healthy", "service": "some-other-app"}')
         return _HealthResponse()
 
-    monkeypatch.setattr(urllib.request, "urlopen", stranger_on_8888)
+    monkeypatch.setattr(_inference, "urlopen_local", stranger_on_8888)
     assert _inference.find_studio_server() == "http://127.0.0.1:8889"
+
+
+def test_loopback_requests_bypass_an_exported_proxy(monkeypatch):
+    import http.server
+    import threading
+    import urllib.request
+
+    from unsloth_cli import _inference
+
+    seen = []
+
+    class Studio(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen.append(self.headers.get("Authorization"))
+            body = b'{"status": "healthy", "service": "Unsloth UI Backend"}'
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Studio)
+    threading.Thread(target = server.serve_forever, daemon = True).start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        for name in ("http_proxy", "HTTP_PROXY"):
+            monkeypatch.setenv(name, "http://127.0.0.1:9")
+        for name in ("no_proxy", "NO_PROXY"):
+            monkeypatch.delenv(name, raising = False)
+        monkeypatch.setenv("UNSLOTH_STUDIO_URL", base)
+        assert _inference.find_studio_server(timeout = 2) == base
+        request = urllib.request.Request(
+            f"{base}/api/health", headers = {"Authorization": "Bearer sk-unsloth-test"}
+        )
+        with _inference.urlopen_no_redirect(request, timeout = 2) as response:
+            assert response.status == 200
+        assert seen[-1] == "Bearer sk-unsloth-test"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_find_studio_server_prefers_its_own_recorded_studio_over_a_foreign_default(
+    monkeypatch, tmp_path
+):
+    import importlib
+    import urllib.request
+
+    from unsloth_cli import _inference
+
+    studio = importlib.import_module("unsloth_cli.commands.studio")
+    monkeypatch.delenv("UNSLOTH_STUDIO_URL", raising = False)
+    monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path)
+    monkeypatch.setattr(studio, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(_inference, "urlopen_local", lambda *a, **k: _HealthResponse())
+    verified = []
+
+    def identity(base, timeout = 3.0):
+        verified.append(base)
+        return base.endswith(":8889")
+
+    monkeypatch.setattr(_inference, "verify_studio_identity", identity)
+    assert _inference.find_studio_server() == "http://127.0.0.1:8888"
+    assert verified == []
+
+    (tmp_path / "studio-8889-4343.pid").write_text("4343\n\n127.0.0.1", encoding = "utf-8")
+    assert _inference.find_studio_server() == "http://127.0.0.1:8889"
+    assert verified == ["http://127.0.0.1:8888"]
+
+    monkeypatch.setattr(_inference, "verify_studio_identity", lambda base, timeout = 3.0: True)
+    assert _inference.find_studio_server() == "http://127.0.0.1:8888"
 
 
 def test_find_studio_server_prefers_ipv4_loopback_for_localhost(monkeypatch):
@@ -1151,7 +1407,7 @@ def test_find_studio_server_prefers_ipv4_loopback_for_localhost(monkeypatch):
             raise OSError("connection refused")
         return _HealthResponse()
 
-    monkeypatch.setattr(urllib.request, "urlopen", only_ipv4)
+    monkeypatch.setattr(_inference, "urlopen_local", only_ipv4)
     assert _inference.find_studio_server() == "http://127.0.0.1:8888"
 
 

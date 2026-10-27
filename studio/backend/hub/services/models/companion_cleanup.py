@@ -201,7 +201,9 @@ def _delete_impact_blocking(
         )
 
     # companions become reclaimable only when no runnable checkpoint survives
-    removes_last_checkpoint = not any(_repo_holds_denoiser(repo) for repo in surviving)
+    removes_last_checkpoint = not any(
+        companion_assets.repo_is_install(repo, scans) for repo in surviving
+    )
     if variant:
         for repo_info in repos:
             if _remaining_main_gguf_variants(
@@ -232,8 +234,8 @@ def _delete_impact_blocking(
         # The SAME offerability test orphan_companions_response applies, since this row points at that list: a borrowed chat GGUF repo is a curated companion id but holds a denoiser, so advertising it sent the user to Free up space to remove a row that is never there.
         elif base_key in offerable and any(not _repo_holds_denoiser(r) for r in base_repos):
             freeable.append(entry)
-        # A base only a recorded link names: the orphan endpoint is table-only by design, so advertising it here pointed the user at a Free up space list it will never appear in.
 
+        # A base only a recorded link names: the orphan endpoint is table-only by design, so advertising it here pointed the user at a Free up space list it will never appear in.
     return {
         "repo_id": repo_id,
         "variant": variant,
@@ -374,14 +376,21 @@ def _orphan_companions_blocking() -> dict:
     by_id = _repos_by_id(scans)
     required = companion_assets.required_companion_bases(scans)
     known = companion_assets.known_companion_base_ids()
+    # An artifact mirror with a GGUF in ANY root is an installed model: a folders-only copy of it in another root is
+    # what that GGUF loads its companions from, never an orphan. The per-root denoiser check below cannot see that.
+    artifact_ggufs = cache_inventory._artifact_gguf_repo_ids(scans)
 
     orphans: list[dict] = []
     for base_key in sorted(known & set(by_id)):
-        if required.get(base_key):
+        if required.get(base_key) or base_key in artifact_ggufs:
             continue
         repos = by_id[base_key]
-        # exclude user-installed copies with denoisers; companion fetches omit transformer/ and orphan rows are per root
-        repos = [r for r in repos if not _repo_holds_denoiser(r)]
+        # exclude user-installed copies with denoisers; companion fetches omit transformer/ and orphan rows are per root.
+        # An artifact mirror is judged by its root checkpoints only (an FP8 mirror's checkpoint is installed): a
+        # pipeline load of its id is refused, so with no GGUF left (checked above) transformer/ shards a GGUF speed
+        # load left are no installed checkpoint.
+        folders = not cache_inventory._hosts_artifacts(base_key)
+        repos = [r for r in repos if not _repo_holds_denoiser(r, folders = folders)]
         if not repos:
             continue
         # One row per cache root: a delete is scoped to a single cache, so pooling copies from several would promise bytes one removal cannot deliver.

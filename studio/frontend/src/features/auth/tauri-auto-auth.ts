@@ -10,7 +10,7 @@ import {
   setMustChangePassword,
   storeAuthTokens,
 } from "./session";
-import { refreshSession } from "./api";
+import { refreshSession, refreshSessionOutcome } from "./api";
 import { setLoginMode } from "./login-client";
 import {
   OWNER_BROWSER_ACCOUNT,
@@ -25,8 +25,7 @@ type TauriAutoAuthOptions = {
   force?: boolean;
 };
 
-// Concurrency guard: multiple route guards can call tauriAutoAuth at once;
-// without this the first-launch password-change could race with itself.
+// Route guards can call this concurrently; dedupe so first-launch password change cannot race.
 let pending: { promise: Promise<boolean>; force: boolean } | null = null;
 let lastTauriAuthFailure: string | null = null;
 let tauriLoginRequired = false;
@@ -71,7 +70,6 @@ async function doTauriAutoAuth(options: TauriAutoAuthOptions): Promise<boolean> 
     return true;
   }
 
-  // Try refreshing an existing session.
   if (!options.force && hasRefreshToken()) {
     const refreshed = await refreshSession();
     if (refreshed && hasAuthToken() && !mustChangePassword()) {
@@ -86,13 +84,21 @@ async function doTauriAutoAuth(options: TauriAutoAuthOptions): Promise<boolean> 
     if ("login_required" in tokens) {
       tauriLoginRequired = true;
       // A managed account signs in in the document; do not discard the session it holds.
-      if (hasRefreshToken() && (await refreshSession()) && hasAuthToken()) {
+      const outcome = hasRefreshToken()
+        ? await refreshSessionOutcome()
+        : "rejected";
+      if (outcome === "ok" && hasAuthToken()) {
         clearTauriAuthFailure();
         if (mustChangePassword()) {
           const { router } = await import("@/app/router");
           await router.navigate({ to: "/change-password", replace: true });
         }
         return true;
+      }
+      // Keep the session; the forced startup probe still releases the startup screen.
+      if (outcome === "unavailable") {
+        clearTauriAuthFailure();
+        return options.force === true;
       }
       clearAuthTokens();
       clearTauriAuthFailure();

@@ -66,7 +66,6 @@ test("docking reserves the sidebar, scaled clearance, and rendered monitor width
     getFloatingMonitorLayout({ ...desktop, ...room, monitorWidth: 220 }),
     yielded,
   );
-  // A hand-resized monitor must not cover the collapsed web icon rail.
   assert.equal(
     dockedMonitorFits({ viewportWidth: 804, sidebarWidth: 48, settingsWidth: 272, monitorWidth: 500 }),
     false,
@@ -86,7 +85,6 @@ test("the dock inset follows every panel width and supported UI font scale", () 
       });
       assert.deepEqual(style, { zIndex: 9100, right: settingsWidth + clearance });
       assert.equal(floatingMonitorHandleClearance(uiSpaceScale), clearance);
-      // The monitor ends before the panel and its outward-facing resize handle.
       assert.ok(1440 - style.right < 1440 - settingsWidth);
     }
   }
@@ -121,8 +119,6 @@ test("a monitor fits at the exact dock boundary, but not one pixel below", () =>
     monitorWidth: 256,
     uiSpaceScale: 1,
   };
-  // Both the left inset (16px) and the resize-handle clearance (4px)
-  // count toward the required available width.
   const boundary = 280 + 272 + 256 + 16 + 4;
   assert.equal(dockedMonitorFits({ ...capacity, viewportWidth: boundary }), true);
   assert.equal(dockedMonitorFits({ ...capacity, viewportWidth: boundary - 1 }), false);
@@ -162,13 +158,12 @@ test("suppression retains layout but does not publish a phantom frame", () => {
 test("a net-zero docked drag must not discard the saved full-width X", () => {
   const update = layoutSource.slice(layoutSource.indexOf("function updateDrag"), layoutSource.indexOf("function finishDrag"));
   const finish = layoutSource.slice(layoutSource.indexOf("function finishDrag"));
-  // Intermediate pointer moves are provisional. Only a released horizontal
-  // displacement replaces the user's earlier full-width placement.
-  assert.doesNotMatch(update, /chosenLeftRef\.current = null/);
-  assert.match(finish, /if \(left !== baseLeft\) \{\s*hasDraggedLeftRef\.current = true;\s*chosenLeftRef\.current = narrowedRef\.current \? null : left;/);
-  assert.match(layoutSource, /restoreLeftRef\.current = chosenLeftRef\.current/);
-  assert.match(layoutSource, /if \(!narrowed\) \{\s*restoreLeftRef\.current = chosenLeftRef\.current;\s*reconcileRef\.current\?\.\(\);/);
-  assert.match(layoutSource, /place\(hasDraggedTopRef\.current, currentTop, maxTop\)/);
+  // Only a released drag replaces the stored spot, per axis.
+  assert.doesNotMatch(update, /intentRef\.current/);
+  assert.match(finish, /left: left !== baseLeft \? left : intent\.left,/);
+  assert.match(finish, /top: top !== baseTop \? top : intent\.top,/);
+  assert.match(layoutSource, /if \(!narrowed\) \{\s*reconcileRef\.current\?\.\(\);/);
+  assert.match(layoutSource, /placeAxis\(intentRef\.current\.top, maxTop\)/);
 });
 
 test("the panel width clamps to the same bounds used by docking", async () => {
@@ -204,7 +199,6 @@ test("spacing and the resize handle use the same live UI scale", () => {
 test("docking never remounts the monitor or loses its drag geometry", () => {
   assert.doesNotMatch(source, /key=\{`\$\{panelKey\}-/);
   assert.match(layoutSource, /useLayoutEffect\(\(\) => \{\s*if \(narrowedRef\.current === narrowed\)/);
-  assert.match(layoutSource, /const restoreTo = restoreLeftRef\.current;/);
-  assert.match(layoutSource, /place\(hasDraggedLeftRef\.current, currentLeft, maxLeft\)/);
+  assert.match(layoutSource, /placeAxis\(intentRef\.current\.left, maxLeft\)/);
   assert.match(source, /const unpinnedSidebarWidth = sidebarHoldsRail \? paintedSidebarWidth : 0/);
 });

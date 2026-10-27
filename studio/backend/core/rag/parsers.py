@@ -375,10 +375,7 @@ _SCAN_IMAGE_MIN_PIXELS = 1_000_000
 
 
 def _image_covers_a_corner(doc, number: int) -> bool:
-    """True when a scan-sized raster image overlaps one of the 10pt page corners pymupdf4llm
-    renders to guess the background colour. That render decodes the whole image in one C call
-    holding the GIL (~2 s per JPEG2000 scan page), starving the server's event loop until the
-    desktop watchdog kills it (#13094)."""
+    """True when a scan-sized image covers a corner pymupdf4llm samples, since that render holds the GIL."""
     try:
         import fitz
 
@@ -468,9 +465,7 @@ def _pdf(
             page = doc[page_number]
             plain = page.get_text("text") or ""
             candidate = md[i] if md else ""
-            # Prefer layout-aware Markdown (keeps tables/headings legible for retrieval), but drop to PyMuPDF's
-            # logical-order text when Markdown is off/empty or when pymupdf4llm mangled it (RTL/Indic) or
-            # dropped most of the page.
+            # Prefer Markdown; use PyMuPDF text if Markdown is empty, mangles RTL/Indic, or loses most text.
             if (
                 candidate
                 and not _markdown_corrupted(candidate)
@@ -479,8 +474,7 @@ def _pdf(
                 text = candidate
             else:
                 text = plain
-            # Markdown may contain image placeholders even when there is no text layer.
-            # Record scanned pages from the PDF itself; blank separator pages need no OCR.
+            # Scan detection uses the PDF, not Markdown: Markdown placeholders appear even without a text layer.
             images_on_page = page.get_image_info()
             needs_ocr = bool(images_on_page) and not plain.strip()
             for info in images_on_page:
@@ -523,12 +517,25 @@ def _pdf(
 
 
 def parse_pdf_bytes(data: bytes, *, max_pages: int | None = None) -> tuple[list[Page], int]:
-    """Extract PDF pages from an in-memory download using the ingestion parser.
-
-    Returns the (capped) pages plus the document's full page count, so a caller
-    that set ``max_pages`` can tell a fully-read short PDF from a truncated one."""
+    """Returns capped pages plus the full page count, so a max_pages cut differs from a short PDF."""
     pages, _images, total_pages = _pdf(data, want_images = False, max_pages = max_pages)
     return pages, total_pages
+
+
+def mupdf_document_text(path: str) -> str:
+    """Paragraph text of a reflowable e-book only MuPDF reads (.mobi, .fb2)."""
+    import pymupdf
+
+    with pymupdf.open(path) as doc:
+        # A tall page keeps paragraphs from splitting at page breaks.
+        doc.layout(width = 1000, height = 100000, fontsize = 11)
+        paragraphs = [
+            " ".join(block[4].split())
+            for page in doc
+            for block in page.get_text("blocks")
+            if block[6] == 0
+        ]
+    return "\n\n".join(p for p in paragraphs if p)
 
 
 def _merge_rects(boxes: list) -> list:
@@ -589,10 +596,7 @@ def pages_with_figures(
     min_side: float = 40.0,
     exclude_pages: set[int] | None = None,
 ) -> list[int]:
-    """1-based page numbers with a qualifying figure region, capped at ``max_pages``;
-    drives figure tiling. ``exclude_pages`` (1-based) are skipped: those are the pages
-    OCR already transcribed whole, so tiling them would duplicate the vision work. Any
-    failure yields []."""
+    """1-based pages with a figure region, for tiling; exclude_pages, already OCR'd whole, are skipped."""
     exclude = exclude_pages or set()
     try:
         import pymupdf
@@ -692,10 +696,7 @@ def render_pdf_pages(
     *,
     dpi: int = 150,
 ) -> dict[int, bytes]:
-    """Render whole PDF pages (given as 1-based numbers) to PNG bytes, keyed by
-    page number. Backs scanned-page OCR. Any failure yields ``{}`` (or skips that
-    page), never an exception.
-    """
+    """Renders whole 1-based pages to PNG for scanned-page OCR; failures skip the page, never raise."""
     wanted = {int(n) for n in page_numbers}
     if not wanted:
         return {}
@@ -737,6 +738,54 @@ _DOCX_MATH_ROWS = {
     "eqArr": ("e", "\n"),
     "m": ("mr", " \\\\ "),
     "mr": ("e", " & "),
+}
+# Symbol-font characters from 0x20, as mammoth (the + attachment reader) maps them.
+_DOCX_SYMBOL_FONTS = {
+    "symbol": (
+        " !∀#∃%&∍()*+,−./0123456789:;<=>?"
+        "≅ΑΒΧΔΕΦΓΗΙϑΚΛΜΝΟΠΘΡΣΤΥςΩΞΨΖ[∴]⊥_"
+        "‾αβχδεφγηιϕκλμνοπθρστυϖωξψζ{|}~\0"
+        "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        "€ϒ′≤⁄∞ƒ♣♦♥♠↔←↑→↓°±″≥×∝∂•÷≠≡≈…⏐⎯↵"
+        "ℵℑℜ℘⊗⊕∅∩∪⊃⊇⊄⊂⊆∈∉∠∇®©™∏√⋅¬∧∨⇔⇐⇑⇒⇓"
+        "◊〈®©™∑⎛⎜⎝⎡⎢⎣⎧⎨⎩⎪\0〉∫⌠⎮⌡⎞⎟⎠⎤⎥⎦⎫⎬⎭"
+    ),
+    "wingdings": (
+        " 🖉✂✁👓🕭🕮🕯🕿✆🖂🖃📪📫📬📭🗀🗁🗎🗏🗐🗄⌛🖮🖰🖲🖳🖴🖫🖬✇✍"
+        "🖎✌🖏👍👎☜☞☝☟🖐☺😐☹💣🕱🏳🏱✈☼🌢❄🕆✞🕈✠✡☪☯🕉☸♈♉"
+        "♊♋♌♍♎♏♐♑♒♓🙰🙵⚫🔾◼🞏🞐❑❒🞟⧫◆❖⬩⌧⮹⌘🏵🏶🙶🙷▯"
+        "🄋➀➁➂➃➄➅➆➇➈➉🄌➊➋➌➍➎➏➐➑➒➓🙢🙠🙡🙣🙞🙜🙝🙟∙•"
+        "⬝⭘🞆🞈🞊🞋🔿▪🞎🟁🟅★🟋🟏🟓🟑⯐⌖⯎⯏⯑✪✰🕐🕑🕒🕓🕔🕕🕖🕗🕘"
+        "🕙🕚🕛⮰⮱⮲⮳⮴⮵⮶⮷🙪🙫🙕🙔🙗🙖🙐🙑🙒🙓⌫⌦⮘⮚⮙⮛⮈⮊⮉⮋🡨"
+        "🡪🡩🡫🡬🡭🡯🡮🡸🡺🡹🡻🡼🡽🡿🡾⇦⇨⇧⇩⬄⇳⬁⬀⬃⬂🢬🢭🗶✓🗷🗹"
+    ),
+    "wingdings 2": (
+        " 🖊🖋🖌🖍✄✀🕾🕽🗅🗆🗇🗈🗉🗊🗋🗌🗍📋🗑🗔🖵🖶🖷🖸🖭🖯🖱🖒🖓🖘🖙"
+        "🖚🖛👈👉🖜🖝🖞🖟🖠🖡👆👇🖢🖣🖑🗴🗸🗵☑⮽☒⮾⮿🛇⦸🙱🙴🙲🙳‽🙹🙺"
+        "🙻🙦🙤🙥🙧🙚🙘🙙🙛⓪①②③④⑤⑥⑦⑧⑨⑩⓿❶❷❸❹❺❻❼❽❾❿\0"
+        "☉🌕☽☾⸿✝🕇🕜🕝🕞🕟🕠🕡🕢🕣🕤🕥🕦🕧🙨🙩⋅🞄⦁●○🞅🞇🞉⊙⦿🞌"
+        "🞍◾■□🞑🞒🞓🞔▣🞕🞖🞗🞘⬩⬥◇🞚◈🞛🞜🞝🞞⬪⬧◊🞠◖◗⯊⯋⯀⯁"
+        "⬟⯂⬣⬢⯃⯄🞡🞢🞣🞤🞥🞦🞧🞨🞩🞪🞫🞬🞭🞮🞯🞰🞱🞲🞳🞴🞵🞶🞷🞸🞹🞺"
+        "🞻🞼🞽🞾🞿🟀🟂🟄🟆🟉🟊✶🟌🟎🟐🟒✹🟃🟇✯🟍🟔⯌⯍※⁂"
+    ),
+    "wingdings 3": (
+        " ⭠⭢⭡⭣⭦⭧⭩⭨⭰⭲⭱⭳⭶⭸⭻⭽⭤⭥⭪⭬⭫⭭⭍⮠⮡⮢⮣⮤⮥⮦⮧"
+        "⮐⮑⮒⮓⮀⮃⭾⭿⮄⮆⮅⮇⮏⮍⮎⮌⭮⭯⎋⌤⌃⌥␣⍽⇪⮸🢠🢡🢢🢣🢤🢥"
+        "🢦🢧🢨🢩🢪🢫🡐🡒🡑🡓🡔🡕🡗🡖🡘🡙▲▼△▽◀▶◁▷◣◢◤◥🞀🞂🞁\0"
+        "🞃⯅⯆⯇⯈⮜⮞⮝⮟🠐🠒🠑🠓🠔🠖🠕🠗🠘🠚🠙🠛🠜🠞🠝🠟🠀🠂🠁🠃🠄🠆🠅"
+        "🠇🠈🠊🠉🠋🠠🠢🠤🠦🠨🠪🠬🢜🢝🢞🢟🠮🠰🠲🠴🠶🠸🠺🠹🠻🢘🢚🢙🢛🠼🠾🠽"
+        "🠿🡀🡂🡁🡃🡄🡆🡅🡇⮨⮩⮪⮫⮬⮭⮮⮯🡠🡢🡡🡣🡤🡥🡧🡦🡰🡲🡱🡳🡴🡵🡷"
+        "🡶🢀🢂🢁🢃🢄🢅🢇🢆🢐🢒🢑🢓🢔🢖🢕🢗"
+    ),
+    "webdings": (
+        " 🕷🕸🕲🕶🏆🎖🖇🗨🗩🗰🗱🌶🎗🙾🙼🗕🗖🗗⏴⏵⏶⏷⏪⏩⏮⏭⏸⏹⏺🗚🗳"
+        "🛠🏗🏘🏙🏚🏜🏭🏛🏠🏖🏝🛣🔍🏔👁👂🏞🏕🛤🏟🛳🕬🕫🕨🔈🎔🎕🗬🙽🗭🗪🗫"
+        "⮔✔🚲⬜🛡📦🛱⬛🚑🛈🛩🛰🟈🕴⬤🛥🚔🗘🗙❓🛲🚇🚍⛳⦸⊖🚭🗮⏐🗯🗲\0"
+        "🚹🚺🛉🛊🚼👽🏋⛷🏂🏌🏊🏄🏍🏎🚘🗠🛢💰🏷💳👪🗡🗢🗣✯🖄🖅🖃🖆🖹🖺🖻"
+        "🕵🕰🖽🖾📋🗒🗓🕮📚🗞🗟🗃🗂🖼🎭🎜🎘🎙🎧💿🎞📷🎟🎬📽📹📾📻🎚🎛📺💻"
+        "🖥🖦🖧🕹🎮🕻🕼📟🖁🖀🖨🖩🖿🖪🗜🔒🔓🗝📥📤🕳🌣🌤🌥🌦☁🌨🌧🌩🌪🌬🌫"
+        "🌜🌡🛋🛏🍽🍸🛎🛍Ⓟ♿🛆🖈🎓🗤🗥🗦🗧🛪🐿🐦🐟🐕🐈🙬🙮🙭🙯🗺🌍🌏🌎🕊"
+    ),
 }
 
 
@@ -803,7 +852,9 @@ def _docx_math_text(element) -> str:
     if tag in _DOCX_SKIP_RUNS_UNDER or _docx_placeholder(element):
         return ""
     if tag == _W + "r":
-        return element.text
+        return _docx_run_text(element)
+    if tag == _W + "sym":
+        return _docx_symbol(element)
     if tag == _M + "t":
         return element.text or ""
     name = tag[len(_M) :] if tag.startswith(_M) else ""
@@ -875,12 +926,30 @@ def _docx_checkbox(field) -> str:
     return "☒" if ticked else "☐"
 
 
+def _docx_symbol(sym) -> str:
+    try:
+        code = int(sym.get(_W + "char") or "", 16)
+    except ValueError:
+        return ""
+    table = _DOCX_SYMBOL_FONTS.get((sym.get(_W + "font") or "").lower())
+    if table is not None and code >> 8 in (0, 0xF0):
+        index = (code & 0xFF) - 0x20
+        code = ord(table[index]) if 0 <= index < len(table) else 0
+    return chr(code) if 0 <= code <= 0x10FFFF and chr(code).isprintable() else ""
+
+
 def _docx_run_text(run) -> str:
-    if run.find(f"{_W}fldChar/{_W}ffData/{_W}checkBox") is None:
+    if run.find(f"{_W}fldChar/{_W}ffData/{_W}checkBox") is None and run.find(_W + "sym") is None:
         return run.text
     return "".join(
-        _docx_checkbox(e) if e.tag == _W + "fldChar" else str(e)
-        for e in run.xpath("w:br | w:cr | w:noBreakHyphen | w:ptab | w:t | w:tab | w:fldChar")
+        _docx_checkbox(e)
+        if e.tag == _W + "fldChar"
+        else _docx_symbol(e)
+        if e.tag == _W + "sym"
+        else str(e)
+        for e in run.xpath(
+            "w:br | w:cr | w:noBreakHyphen | w:ptab | w:t | w:tab | w:fldChar | w:sym"
+        )
     )
 
 
@@ -1103,10 +1172,7 @@ def _docx_number_lists(document) -> None:
 
 
 def _docx_table_rows(table) -> list[str]:
-    """Each row as pipe-joined cell text (the locator splits anchors on pipes).
-    Columns stay aligned to the layout grid (merged cells fill their spanned slots,
-    skipped leading/trailing grid columns become empty fields). Cells are walked in
-    document order so a nested table, and any text after it, flattens in place."""
+    """Cells joined by pipes, aligned to the layout grid; the locator splits anchors on pipes."""
     from docx.table import Table
     from docx.text.paragraph import Paragraph
 
@@ -1116,14 +1182,12 @@ def _docx_table_rows(table) -> list[str]:
         cells: list[str] = [""] * getattr(row, "grid_cols_before", 0)
         trailing: list[str] = []
         for cell in row.cells:
-            # A merged cell shares one <w:tc> across its span: emit its text once, then placeholders, so columns
-            # and rows stay aligned.
+            # Merged cells share one <w:tc>: emit text once, then placeholders to keep alignment.
             if cell._tc in seen:
                 cells.append("")
                 continue
             seen.add(cell._tc)
-            # Paragraph text before the first nested table is the aligned field; the nested table and anything
-            # after it flatten below the row.
+            # Text before a nested table is the aligned field; the table and anything after it flatten below.
             field: list[str] = []
             after_table = False
             for item in _docx_blocks(cell._tc, cell):
@@ -1369,9 +1433,7 @@ def _decode_text(data: bytes, *, html: bool = False) -> str:
         match = results.best()
         if match is not None:
             guess = str(match)
-            # A tie is ambiguous ("ÜÖÄ" is also Cyrillic); a single-byte page decodes anything, so it needs
-            # language evidence and high-byte words, not lone accents ("À É È"); a CJK guess that paired
-            # no bytes is half-width katakana ("° ± µ").
+            # Ties are ambiguous; need high-byte words, not lone accents; unpaired CJK bytes mean katakana.
             tied = any(
                 other is not match
                 and (other.chaos, other.coherence) == (match.chaos, match.coherence)
@@ -1416,8 +1478,7 @@ def parse(path: str, *, want_images: bool = False):
         is_html = ext in (".html", ".htm")
         with open(path, "rb") as f:
             raw = _decode_text(f.read(), html = is_html)
-        # NUL never occurs in source text; a binary under a source extension (Fortran .mod, binary .plist) would
-        # otherwise embed as mojibake.
+        # NUL never appears in source text; catches binaries under source extensions.
         if ext in config.SOURCE_TEXT_EXTS and "\x00" in raw:
             raise ValueError(f"unsupported binary content in text file: {os.path.basename(path)}")
         # Universal newlines, as text-mode open() gave: the chunker splits on "\n\n".

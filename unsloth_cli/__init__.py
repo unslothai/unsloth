@@ -54,7 +54,7 @@ if _is_entry_point:
     _reconfigure_entry_point_streams()
 
 # Before typer and the command imports: notebooks run this right after `pip install --no-deps unsloth`.
-# `-m` alone could be a host package that imports us, so name the module it runs.
+# `-m` alone could be a host package importing us.
 _orig_argv = getattr(_sys, "orig_argv", [])
 _runs_unsloth_cli = "-munsloth_cli" in _orig_argv or any(
     a == "-m" and b == "unsloth_cli" for a, b in zip(_orig_argv, _orig_argv[1:])
@@ -71,9 +71,7 @@ if (_is_entry_point or (_entry_base == "-m" and _runs_unsloth_cli)) and _sys.arg
 
 from unsloth_cli._system_dir_guard import check_working_directory as _check_working_directory
 
-# Running from System32 or a subdir breaks commands; move out before the command imports, since
-# commands.studio resolves STUDIO_HOME at import time (issue #8510).
-# A relative UNSLOTH_STUDIO_HOME would otherwise resolve against System32.
+# Move out of System32 before command imports: STUDIO_HOME resolves at import, and a relative UNSLOTH_STUDIO_HOME would hit System32.
 _startup_guard = (
     _check_working_directory(_sys.argv[1:], _os.environ, _sys.platform) if _is_entry_point else None
 )
@@ -82,8 +80,7 @@ from unsloth_cli._ssl_keylog import (
     drop_unwritable_ssl_keylog_file as _drop_unwritable_ssl_keylog_file,
 )
 
-# After the move out of System32, so a relative path is judged where ssl will open it, and
-# before any command module builds an HTTPS client; the Studio backend's workers inherit it.
+# After the move, so a relative path is judged where ssl opens it; before any HTTPS client, since backend workers inherit it.
 if _is_entry_point:
     _drop_unwritable_ssl_keylog_file()
 
@@ -101,10 +98,12 @@ else:
     from unsloth_cli.commands.export import export, list_checkpoints
     from unsloth_cli.commands.eval import evaluate as eval_command
     from unsloth_cli.commands.doctor import doctor
+    from unsloth_cli.commands.mcp import mcp_app
     from unsloth_cli.commands.studio import (
         run as studio_run,
         studio_app,
         _expand_attached_np_short,
+        _LlamaPassthroughCommand,
     )
 
 
@@ -240,8 +239,11 @@ if not _windows_studio_mutation_entry:
     app.add_typer(
         start_app,
         name = "start",
-        help = "Start a coding agent (Claude, Codex, OpenClaw, OpenCode, Hermes, Pi, dsh, Vibe) "
-        "against Unsloth.",
+        help = "Start a coding agent (Claude, Codex, OpenClaw, OpenCode, Hermes, Pi, dsh, Vibe, "
+        "VS Code) against Unsloth.",
+    )
+    app.add_typer(
+        mcp_app, name = "mcp", help = "Connect coding agents to the Unsloth Studio MCP server."
     )
     # backwards-compatible hidden alias: `unsloth connect` routes to `unsloth start`.
     app.add_typer(
@@ -254,6 +256,7 @@ if not _windows_studio_mutation_entry:
     # top-level `unsloth run` aliases `unsloth studio run`; same context so unknown flags pass through to llama-server.
     app.command(
         "run",
+        cls = _LlamaPassthroughCommand,
         context_settings = {
             "allow_extra_args": True,
             "ignore_unknown_options": True,

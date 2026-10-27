@@ -19,17 +19,38 @@ import torch._dynamo.utils as dynamo_utils
 from unsloth.kernels import rms_layernorm
 from unsloth.kernels.rms_layernorm import fast_rms_layernorm
 
-if torch.version.hip:
-    pytest.skip("the multi-row kernels are off on ROCm", allow_module_level = True)
-
 BF16_OK = torch.cuda.get_device_capability()[0] >= 8
 DTYPES = [torch.float16, torch.float32] + ([torch.bfloat16] if BF16_OK else [])
 NARROW = [33, 64, 96, 100, 127, 128]
 _eager = rms_layernorm._eager_kernel
 
 
+def _replay_matches_device():
+    # ROCm arches whose tl.sum is the generic butterfly (RDNA1/2, CDNA1) fail the DPP replay; production stays
+    # one-row there through the self-check, but most tests below force the replay.
+    if not torch.version.hip:
+        return True
+    device = torch.device("cuda", torch.cuda.current_device())
+    saved, rms_layernorm._MULTIROW = rms_layernorm._MULTIROW, True
+    try:
+        settings = rms_layernorm._multirow_settings(128, device)
+    finally:
+        rms_layernorm._MULTIROW = saved
+    return settings is not None and rms_layernorm._multirow_self_check(
+        device, torch.float32, torch.float32, 128, 1e-6, False, settings
+    )
+
+
+REPLAY_OK = _replay_matches_device()
+
+
 @pytest.fixture
-def multirow(monkeypatch):
+def multirow(monkeypatch, request):
+    if (
+        not REPLAY_OK
+        and request.node.originalname != "test_rocm_without_the_dpp_order_stays_one_row"
+    ):
+        pytest.skip("this ROCm arch does not reduce in the replayed order")
     monkeypatch.setattr(rms_layernorm, "_MULTIROW", True)
     monkeypatch.setattr(rms_layernorm, "_MULTIROW_CHECKED", {})
     return monkeypatch
@@ -323,3 +344,12 @@ def test_multirow_launches_on_the_tensors_device(multirow, path):
             torch._dynamo.reset()
     assert torch.equal(_bits(ref), _bits(got))
     assert any(rms_layernorm._MULTIROW_CHECKED.values()) and rms_layernorm._MULTIROW
+
+
+@pytest.mark.skipif(REPLAY_OK, reason = "this device reduces in the replayed order")
+def test_rocm_without_the_dpp_order_stays_one_row(multirow):
+    """An arch the replay does not match never runs the multi-row kernels."""
+    X = torch.randn(64, 128, device = "cuda")
+    W = torch.randn(128, device = "cuda")
+    with pytest.warns(UserWarning, match = "self-check mismatch"):
+        assert rms_layernorm._multirow_checked(X, W, 1e-6, False) is None

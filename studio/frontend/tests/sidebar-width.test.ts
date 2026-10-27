@@ -6,7 +6,6 @@ import test from "node:test";
 
 import { readSrcAsync } from "./helpers/kit.ts";
 
-// Every localStorage key written by a panel width store.
 const PANEL_WIDTH_KEYS = ["sidebar_width", "chat_settings_width"];
 
 // The store reads window at import time, so stub it before importing.
@@ -32,7 +31,6 @@ const {
 } = await import("../src/hooks/use-sidebar-width.ts");
 
 test("the web keeps room for the collapse button beside search; desktop does not need it", async () => {
-  // The stub is a browser window, so this run takes the web floor.
   assert.equal(SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MIN_WEB);
   assert.ok(SIDEBAR_WIDTH_MIN_DESKTOP < SIDEBAR_WIDTH_MIN_WEB);
   const source = await readSrcAsync("hooks/use-sidebar-width.ts");
@@ -40,7 +38,6 @@ test("the web keeps room for the collapse button beside search; desktop does not
     source,
     /SIDEBAR_WIDTH_MIN = isTauri\s*\?\s*SIDEBAR_WIDTH_MIN_DESKTOP\s*:\s*SIDEBAR_WIDTH_MIN_WEB;/,
   );
-  // Off the desktop titlebar, or always in the mobile sheet.
   const sidebar = await readSrcAsync("components/app-sidebar.tsx");
   assert.match(sidebar, /\{\(isMobile \|\| !usesDesktopTitlebar\) && \(/);
 });
@@ -74,8 +71,7 @@ test("re-evaluates the cap per call, so a resize can re-clamp", () => {
 });
 
 test("a scaled browser caps against the window in layout px", async () => {
-  // The panel renders at width * scale, so its share of the window has to be
-  // taken from the window at that scale, as desktop webview zoom does.
+  // The panel renders at width * scale, so its share uses the window at that scale.
   const { setLayoutScale } = await import("../src/lib/layout-scale.ts");
   stubWindow.innerWidth = 1440;
   setLayoutScale(2);
@@ -88,8 +84,7 @@ test("a scaled browser caps against the window in layout px", async () => {
   assert.equal(clampSidebarWidth(SIDEBAR_WIDTH_MAX), SIDEBAR_WIDTH_MAX);
 });
 
-// The reset action promises to clear every stored preference, so a persisted
-// panel width that is missing from the list survives the reload.
+// Reset only clears keys it lists.
 test("persisted panel widths are cleared by the preference reset", async () => {
   const source = await readSrcAsync("features/settings/tabs/general-tab.tsx");
   const keys = source.slice(

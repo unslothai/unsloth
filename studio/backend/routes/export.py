@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 import structlog
 from loggers import get_logger
@@ -32,6 +32,7 @@ from auth.authentication import allow_ambient_hf_token, get_current_subject
 from hub.services.models import account_access
 from hub.utils.hf_tokens import HfTokenArg, hf_token_arg
 
+from utils.security.consent import managed_remote_code_refused
 from utils.utils import safe_error_detail
 
 try:
@@ -55,6 +56,7 @@ from models import (
     ExportDiffusionLoRARequest,
     LlmCompressorExportProbeResponse,
     ExportDecisionInfoResponse,
+    MoeInfoResponse,
 )
 
 router = APIRouter()
@@ -62,11 +64,7 @@ logger = get_logger(__name__)
 
 
 async def _ensure_export_supported() -> None:
-    """Reject a mutating export request up front (HTTP 400) when the host can't export. Keeps the
-    backend authoritative even if a client bypasses the UI gate. Read-only endpoints
-    (scan/status/logs) are intentionally NOT gated so the Export page can still render the reason.
-    Also refuses (409) while a latest-transformers install is swapping .venv_t5_latest: an export
-    worker spawned mid-swap could activate a half-replaced sidecar."""
+    """Reject mutating exports server-side (400 if unsupported; 409 during a .venv_t5_latest install, else half-swapped sidecar). Read-only endpoints stay ungated."""
     from utils.transformers_latest import is_install_in_progress
 
     if is_install_in_progress():
@@ -102,6 +100,9 @@ def _resolve_export_hf_token(
             status_code = 400,
             detail = "Hugging Face token is required to push to Hub when authenticated via API key.",
         )
+    # An empty token pushes with the operator's own login (hf auth login), never a managed account's.
+    if push_to_hub and token is None and account_access.managed_account():
+        return False
     return hf_token_arg(token, allow_ambient_token = allow_ambient)
 
 
@@ -110,10 +111,14 @@ def _authorized_adapter_base(checkpoint_path: str) -> Optional[str]:
     if not account_access.managed_account():
         return None
     from utils.models import get_base_model_from_lora
+    from core.export.decision import adapter_load_bases
 
-    base = get_base_model_from_lora(checkpoint_path)
-    if base:
-        account_access.require_model_access(base)
+    bases = adapter_load_bases(checkpoint_path)
+    base = get_base_model_from_lora(checkpoint_path) or next(iter(bases), None)
+    # The decision loader prefers its own config's base, so every base named is checked.
+    for name in dict.fromkeys([base, *bases]):
+        if name:
+            account_access.require_model_access(name)
     return base or None
 
 
@@ -138,8 +143,7 @@ async def load_checkpoint(
         # Unset lets the backend pick 16-bit for a full fine-tune.
         load_in_4bit = request.load_in_4bit if "load_in_4bit" in request.model_fields_set else None
         backend = get_export_backend()
-        # Run in a worker thread (spawns and waits on a subprocess, can take
-        # minutes) so the event loop stays free to serve the live log SSE stream.
+        # Worker thread: it waits on a subprocess that can take minutes, so the loop stays free for SSE.
         success, message = await asyncio.to_thread(
             backend.load_checkpoint,
             checkpoint_path = request.checkpoint_path,
@@ -147,7 +151,8 @@ async def load_checkpoint(
             max_seq_length = request.max_seq_length,
             load_in_4bit = load_in_4bit,
             offload_layers = request.offload_layers,
-            trust_remote_code = request.trust_remote_code,
+            # Downgraded, not refused: the Export tab always sends true for local models.
+            trust_remote_code = request.trust_remote_code and not managed_remote_code_refused(),
             approved_remote_code_fingerprint = request.approved_remote_code_fingerprint,
             hf_token = export_hf_token,
             # A supplied token cannot say whether it came from a session or an API key.
@@ -245,8 +250,7 @@ async def get_export_status(current_subject: str = Depends(get_current_subject))
     try:
         backend = get_export_backend()
         last_op = backend.get_last_op()
-        # Relativise the recovered output path the same way the per-op POST response
-        # does, so the success banner shows an identical path on either route.
+        # Relativise the recovered path like the per-op POST response, so both routes show the same path.
         last_op_output_path = None
         if last_op and last_op.get("output_path"):
             if getattr(backend, "decision", None):
@@ -297,8 +301,7 @@ async def get_export_logs(
     """
     try:
         backend = get_export_backend()
-        # No cursor on the first poll of a run: start from the run-start snapshot so the client gets every line since
-        # the run began (matches the SSE default), not the entire historical ring buffer.
+        # First poll starts at the run-start snapshot, not the whole ring buffer.
         if since is None:
             cursor = backend.get_run_start_seq()
         else:
@@ -433,6 +436,86 @@ async def get_decision_export_info(
     )
 
 
+@router.get("/moe-info", response_model = MoeInfoResponse)
+async def get_moe_info(
+    model: str = Query(
+        ..., max_length = 4096, description = "Local checkpoint / model folder or Hub id"
+    ),
+    hf_token: Optional[str] = Header(None, alias = "X-HF-Token"),
+    current_subject: str = Depends(get_current_subject),
+    allow_ambient: bool = Depends(allow_ambient_hf_token),
+):
+    """Routed-expert counts for the REAP option on the export page; null counts for a dense model.
+    The token (gated repos) comes in the X-HF-Token header, as for /api/models/export-size."""
+    from core.export.reap import (
+        MoeProbeError,
+        hub_adapter_has_mtp_head,
+        hub_file_exists,
+        moe_export_info,
+    )
+    from routes.models import _normalize_hf_token, _require_model_access_or_caller_token
+    from utils.paths import is_local_path
+
+    local = is_local_path(model)
+    token = _normalize_hf_token(hf_token)
+    adapter_base = None
+    if local:
+        validate_job_paths({"checkpoint_path": model})
+        # The probe follows a LoRA folder to its base, so that base is authorized as a load is.
+        adapter_base = await asyncio.to_thread(_authorized_adapter_base, model)
+        if adapter_base:
+            validate_job_paths({"base_model": adapter_base, "hf_token": token})
+    else:
+        await _require_model_access_or_caller_token(model, token)
+    probe_token = token or hf_token_arg(None, allow_ambient_token = allow_ambient)
+    # The export loader follows a Hub repo's adapter_config.json even when it also ships a
+    # config.json, so an adapter repo is probed through its base (and its MTP head) like a local one.
+    try:
+        hub_adapter = not local and await asyncio.to_thread(
+            hub_file_exists, model, "adapter_config.json", probe_token
+        )
+        # A local folder never reaches the network; a Hub id reads only its config.json.
+        info = (
+            None
+            if hub_adapter
+            else await asyncio.to_thread(
+                moe_export_info,
+                model,
+                probe_token,
+                local,
+                adapter_base = adapter_base,
+            )
+        )
+        if info is None and not local:
+            # A Hub LoRA repo publishes adapter_config.json, not config.json: probe its base, which is
+            # authorized first like the adapter.
+            from utils.models.model_config import get_base_model_from_lora_identifier
+
+            base = await asyncio.to_thread(get_base_model_from_lora_identifier, model, probe_token)
+            if hub_adapter and not base:
+                # A confirmed adapter whose base could not be read (a failed download after its
+                # retries): unknown, not dense.
+                raise MoeProbeError(f"Could not resolve the base model of the adapter '{model}'")
+            if (
+                base
+                and base != model
+                and await asyncio.to_thread(hub_adapter_has_mtp_head, model, probe_token)
+            ):
+                # Unsloth's loader re-attaches this adapter's trained MTP head, which REAP refuses.
+                base = None
+            if base and base != model:
+                base_local = is_local_path(base)
+                if base_local:
+                    validate_job_paths({"base_model": base, "hf_token": token})
+                else:
+                    await _require_model_access_or_caller_token(base, token)
+                info = await asyncio.to_thread(moe_export_info, base, probe_token, base_local)
+    except MoeProbeError as exc:
+        # Unknown is not dense: the page keeps a REAP export blocked and offers a retry.
+        raise HTTPException(status_code = 503, detail = str(exc)) from exc
+    return MoeInfoResponse(model = model, **(info or {}))
+
+
 @router.post("/export/merged", response_model = ExportOperationResponse)
 async def export_merged_model(
     request: ExportMergedModelRequest,
@@ -444,6 +527,8 @@ async def export_merged_model(
     Wraps ExportBackend.export_merged_model.
     """
     validate_job_paths(request.model_dump())
+    if request.reap and request.reap.dataset:
+        validate_job_paths({"hf_dataset": request.reap.dataset, "hf_token": request.hf_token})
     try:
         await _ensure_export_supported()
         backend = get_export_backend()
@@ -463,6 +548,7 @@ async def export_merged_model(
             install_missing_dependencies = request.install_missing_dependencies,
             expected_checkpoint = request.expected_checkpoint,
             op_id = request.op_id,
+            reap = request.reap.model_dump() if request.reap else None,
         )
 
         if not success:
@@ -510,6 +596,8 @@ async def export_base_model(
     Wraps ExportBackend.export_base_model.
     """
     validate_job_paths(request.model_dump())
+    if request.reap and request.reap.dataset:
+        validate_job_paths({"hf_dataset": request.reap.dataset, "hf_token": request.hf_token})
     try:
         await _ensure_export_supported()
         backend = get_export_backend()
@@ -527,6 +615,7 @@ async def export_base_model(
             base_model_id = request.base_model_id,
             expected_checkpoint = request.expected_checkpoint,
             op_id = request.op_id,
+            reap = request.reap.model_dump() if request.reap else None,
         )
 
         if not success:
@@ -565,6 +654,8 @@ async def export_gguf(
     Wraps ExportBackend.export_gguf.
     """
     validate_job_paths(request.model_dump())
+    if request.reap and request.reap.dataset:
+        validate_job_paths({"hf_dataset": request.reap.dataset, "hf_token": request.hf_token})
     try:
         await _ensure_export_supported()
         backend = get_export_backend()
@@ -586,6 +677,7 @@ async def export_gguf(
             npu_q4nx = request.npu_q4nx,
             expected_checkpoint = request.expected_checkpoint,
             op_id = request.op_id,
+            reap = request.reap.model_dump() if request.reap else None,
         )
 
         if not success:
@@ -774,9 +866,7 @@ async def export_lora_adapter(
         )
 
 
-# Live export log SSE. Same shape as stream_training_progress: id/event/data, a leading `retry:`, and
-# Last-Event-ID honoured on reconnect. Worker stdout/stderr reaches the orchestrator as log entries
-# (core/export/worker.py, orchestrator.py); shape follows routes/training.py.
+# SSE shape mirrors routes/training.py: id/event/data, leading retry:, Last-Event-ID.
 def _format_sse(
     data: str,
     event: str,
@@ -820,8 +910,7 @@ async def stream_export_logs(
     """
     backend = get_export_backend()
 
-    # Starting cursor: explicit `since` wins, then Last-Event-ID on reconnect, else the run-start snapshot so the
-    # client sees every line since the run began even if the SSE connection opened after the export-kickoff POST.
+    # Cursor: since, then Last-Event-ID, else the run-start snapshot, so a late SSE misses nothing.
     last_event_id = request.headers.get("last-event-id")
     if since is None and last_event_id is not None:
         try:

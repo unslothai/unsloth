@@ -14,11 +14,11 @@ const PLUGIN = readSrc("components/assistant-ui/code-plugin.ts");
 test("the speculator seeds the same cache key the demanded path reads, and only fences the main thread has warmed", () => {
   assert.match(DEFER, /eligible: \(gate\) => grammarsWarmed\.has\(grammarOf\(gate\)\),/);
   assert.match(DEFER, /enabled: \(\) =>\s*fenceMode\(\) !== "off" && highlightWorkerState\(\) !== "unavailable",/);
-  assert.match(DEFER, /busy: \(\) => streamActive\(\) \|\| highlightWorkerState\(\) === "stalled",/);
+  assert.match(DEFER, /busy: \(\) => streamActive\(\) \|\| highlightWorkerState\(\) === "stalled"\s*\|\| inputPointerHeld\(\) \|\| inputQuietIn\(\) > 0,/);
   assert.match(DEFER, /maxChars: MAX_HIGHLIGHT_CHARS,\s*budgetChars: MAX_CACHED_CHARACTERS \/ 2,\s*budgetFences: MAX_FENCES \/ 2,/);
   assert.match(DEFER, /budgetFences: MAX_FENCES \/ 2,\s*maxInFlight: SPECULATION_IN_FLIGHT,/, "a few requests stay queued in the worker so speculation is not paced by main-thread idle slots");
   assert.match(DEFER, /const SPECULATION_IN_FLIGHT = 3;/);
-  assert.match(DEFER, /busy: \(\) => streamActive\(\) \|\| highlightWorkerState\(\) === "stalled",/, "a worker that is late pauses speculation instead of dropping every candidate, so it resumes on the ready message");
+  assert.match(DEFER, /busy: \(\) => streamActive\(\) \|\| highlightWorkerState\(\) === "stalled"\s*\|\| inputPointerHeld\(\) \|\| inputQuietIn\(\) > 0,/, "a worker that is late pauses speculation instead of dropping every candidate, so it resumes on the ready message");
   assert.match(DEFER, /fenceMode\(\) !== "off" && highlightWorkerState\(\) !== "unavailable",/, "only a worker that failed turns speculation off");
   assert.match(DEFER, /const rect = gate\.node\.getBoundingClientRect\(\);/);
   assert.equal(DEFER.includes("gate.anchor"), false);
@@ -41,7 +41,7 @@ test("the grammar pre-warm runs once per session from the thread root, idle and 
   assert.match(THREAD, /let grammarPrewarm: GrammarPrewarm \| null = null;/);
   assert.match(THREAD, /if \(grammarPrewarm !== null\) return;/);
   assert.match(THREAD, /\(code, language, late\) => highlightFenceSource\(code, language, late\),/);
-  assert.match(THREAD, /quiet: \(\) =>\s*!streamActive\(\)\s*&& performance\.now\(\) - lastInputAt >= PREWARM_INPUT_QUIET_MS,/);
+  assert.match(THREAD, /quiet: \(\) =>\s*!streamActive\(\)\s*&& !inputPointerHeld\(\)\s*&& performance\.now\(\) - lastInputAt >= PREWARM_INPUT_QUIET_MS,/);
   assert.match(THREAD, /skip: grammarWarmed,/);
   assert.match(THREAD, /useEffect\(\(\) => \{\s*startGrammarPrewarm\(\);\s*\}, \[\]\);/);
   assert.match(MARKDOWN, /export const highlightFenceSource = \([\s\S]*?\): FenceTokens \| null =>\s*code\.highlight\(fenceHighlightOptions\(body, language\), late\);/);

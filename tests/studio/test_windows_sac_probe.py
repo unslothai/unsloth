@@ -575,7 +575,7 @@ def test_the_signature_audit_covers_every_windows_family():
 def test_the_readme_does_not_claim_the_release_tag_pins_a_run():
     body = _text(PROBE_DIR / "README.md")
     assert "read\nby the installer only" in body or "read by the installer only" in body
-    _has(body, "re-run the Studio installer", "$env:UNSLOTH_STUDIO_PASSWORD")
+    _has(body, "re-run the Unsloth Studio installer", "$env:UNSLOTH_STUDIO_PASSWORD")
 
 
 def test_a_padded_load_reply_is_read_for_its_deferred_error(s):
@@ -939,7 +939,7 @@ def test_installer_trees_under_a_custom_studio_home_are_recorded_for_revert():
 
 def test_trees_the_installer_created_are_recorded_even_when_the_install_fails():
     init = _init()
-    warning = "Write-Warning 'Studio still not found after the installer ran."
+    warning = "Write-Warning 'Unsloth Studio still not found after the installer ran."
     _before(init, "$created = @($absentBefore", warning)
     _before(init, "$b.StudioInstallRoots = @(", warning)
     # Ctrl+C mid-install skips a catch and the normal return, never a finally.
@@ -1211,7 +1211,7 @@ def test_a_studio_that_never_answered_fails_prepare():
     assert "if (-not (Start-Studio $python $Port $startLog)) {" in init
     assert "| Out-Null\n}" not in init.split(start)[-1]
     assert "if ($allowInstall) {" in init.split(start)[1]
-    assert 'throw "Studio did not answer on port $Port within 5 minutes' in init
+    assert 'throw "Unsloth Studio did not answer on port $Port within 5 minutes' in init
 
 
 def test_only_studio_is_treated_as_studio_on_the_port():
@@ -1284,7 +1284,7 @@ def test_an_installer_that_produced_no_interpreter_fails_prepare():
         tail,
         "if ($allowInstall) {",
         "throw 'the installer ran but produced no managed interpreter",
-        "Write-Warning 'Studio still not found after the installer ran.",
+        "Write-Warning 'Unsloth Studio still not found after the installer ran.",
     )
 
 

@@ -80,8 +80,6 @@ def test_a_purge_that_names_a_path_is_rejected(monkeypatch, client):
         "purge_caches",
         lambda keys: called.append(keys) or (_ for _ in ()).throw(ValueError("boom")),
     )
-    # No path field exists to send one through, and a path in the key list is
-    # simply not a key.
     response = client.post("/api/settings/caches/purge", json = {"paths": ["/"]})
     assert response.status_code == 422
     assert called == []
@@ -129,11 +127,8 @@ def test_recheck_asks_for_a_fresh_walk(monkeypatch, client):
 
 
 def test_an_api_key_caller_cannot_force_a_rescan(monkeypatch):
-    """A forced walk has no memo in front of it and takes seconds per cache.
-
-    It is the interactive Recheck button, so an API key gets the memoised read
-    and not the one that occupies an executor thread on demand.
-    """
+    """API key callers get the memoised read; a forced walk takes seconds per cache on an executor
+    thread."""
     app = FastAPI()
     app.include_router(settings_route.router, prefix = "/api/settings")
     app.dependency_overrides[get_current_subject] = lambda: "alice"
@@ -154,6 +149,5 @@ def test_an_api_key_caller_cannot_force_a_rescan(monkeypatch):
     remote = TestClient(app)
     assert remote.get("/api/settings/caches?refresh=true").status_code == 403
     assert asked == []
-    # ...and the ordinary read still answers it.
     assert remote.get("/api/settings/caches").status_code == 200
     assert asked == [False]

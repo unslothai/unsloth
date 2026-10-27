@@ -6,7 +6,6 @@ import test from "node:test";
 
 import { readSrcAsync } from "./helpers/kit.ts";
 
-// The desktop collapse state must not hide workflows in the mobile sheet.
 test("the Images workflow list treats the mobile sheet as expanded", async () => {
   const source = await readSrcAsync("components/app-sidebar.tsx");
 

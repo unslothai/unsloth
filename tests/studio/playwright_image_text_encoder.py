@@ -56,6 +56,10 @@ def main():
                 base_repo = "black-forest-labs/FLUX.2-klein-4B",
                 family = "flux.2-klein",
                 model_kind = "gguf",
+                # The real status echoes the loaded checkpoint file. Reapply reloads the page's last pick
+                # only while it still matches what status reports (engine-choice.ts reapplyTarget, #14232),
+                # so without it nothing reloads.
+                gguf_filename = loads[-1].get("gguf_filename"),
                 dtype = "bfloat16",
                 text_encoder_quant = value,
                 resolved = {
@@ -157,6 +161,9 @@ def main():
                     },
                 )
             elif path == "/api/inference/images/load":
+                # A GGUF pick always names its file, and the status stub echoes it as the backend's does.
+                if not payload.get("gguf_filename"):
+                    errors.append(f"a GGUF load without gguf_filename: {payload}")
                 loads.append(payload)
                 state["loaded"] = True
                 _json(route, status())

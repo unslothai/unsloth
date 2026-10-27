@@ -1,21 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Upgrade / version-skew guards for the studio-tools-on-every-provider change.
-
-These tests do not exercise the tool loop itself (``test_studio_tool_loop.py``
-owns that). They pin the contract at the seams where an *existing* install can
-break during an upgrade, because each of those seams is a place where the two
-halves of Unsloth are versioned independently:
-
-* the ``/api/providers/registry`` payload, read by a browser that may still be
-  running a JS bundle from before this capability existed (old FE + new BE);
-* the ``ProviderRegistryEntry`` schema, which a new bundle parses from a
-  backend that may predate the new fields (new FE + old BE);
-* the ``llm_providers`` sqlite schema, which this change must not migrate;
-* ``response_format``, newly forwarded on the OpenAI-compatible path, which
-  must stay opt-in because not every OpenAI-compatible server tolerates it.
-"""
+"""Upgrade-skew guards: registry payload and schema, no sqlite migration, opt-in response_format."""
 
 import asyncio
 import json
@@ -31,9 +17,6 @@ from core.inference.providers import (
     list_available_providers,
     provider_runs_local_tools,
 )
-
-
-# ── helpers ──────────────────────────────────────────────────────────
 
 
 def _drive(coro):
@@ -61,12 +44,10 @@ def _capturing_handler(captured: dict):
     return handler
 
 
-# The four self-hosted presets. They are ``hidden`` in the registry and are
-# surfaced by the UI through CUSTOM_PROVIDER_PRESETS rather than the dropdown.
+# hidden in the registry; the UI surfaces them via CUSTOM_PROVIDER_PRESETS
 SELF_HOSTED_PRESETS = ("custom", "vllm", "ollama", "llama_cpp")
 
-# Keys the pre-change bundle already read off every registry row. Dropping or
-# renaming any of them breaks a cached bundle even though the server is new.
+# keys old cached frontends read off every registry row; do not drop or rename
 LEGACY_REGISTRY_KEYS = frozenset(
     {
         "provider_type",
@@ -85,19 +66,8 @@ LEGACY_REGISTRY_KEYS = frozenset(
 )
 
 
-# ── 1a. old frontend + new backend ───────────────────────────────────
-
-
 def test_registry_default_still_hides_self_hosted_presets():
-    """The default payload is byte-for-byte the *set* the old bundle expected.
-
-    A browser holding a pre-change bundle filters the provider dropdown on a
-    hardcoded ``HIDDEN_PROVIDER_TYPES`` set that contains only ``qwen``; it has
-    no idea to filter on a ``hidden`` field. If the default response started
-    including the self-hosted presets, that bundle would render vLLM / Ollama /
-    llama.cpp / Custom as four extra dropdown entries duplicating the custom
-    presets it already lists above the separator. Hence: opt-in.
-    """
+    """Self-hosted presets stay hidden by default, since old bundles ignore the hidden field."""
     types = {entry["provider_type"] for entry in list_available_providers()}
     for preset in SELF_HOSTED_PRESETS:
         assert preset not in types, (
@@ -210,16 +180,8 @@ def test_registry_rows_keep_every_pre_change_key():
         assert not missing, f"{entry['provider_type']} lost legacy keys {missing}"
 
 
-# ── 1b. new frontend + old backend ───────────────────────────────────
-
-
 def test_registry_entry_schema_tolerates_a_pre_change_payload():
-    """A new bundle against an old backend gets no ``supports_studio_tools``.
-
-    The pydantic model must default it to False rather than reject the row, so
-    the capability degrades *closed*: pills stay off instead of arming a tool
-    loop the old backend cannot run.
-    """
+    """Missing supports_studio_tools defaults to False, so an old backend degrades closed."""
     from models.providers import ProviderRegistryEntry
 
     legacy_payload = {
@@ -234,9 +196,6 @@ def test_registry_entry_schema_tolerates_a_pre_change_payload():
     entry = ProviderRegistryEntry(**legacy_payload)
     assert entry.supports_studio_tools is False
     assert entry.hidden is False
-
-
-# ── capability allowlist ─────────────────────────────────────────────
 
 
 def test_anthropic_is_studio_tools_capable():
@@ -267,21 +226,8 @@ def test_capability_flag_agrees_with_the_registry_entry():
         assert entry["supports_studio_tools"] is provider_runs_local_tools(entry["provider_type"])
 
 
-# ── 1c. no DB migration ──────────────────────────────────────────────
-
-
 def test_llm_providers_schema_gains_no_column():
-    """Existing sqlite rows need no migration; the capability is not persisted.
-
-    It is derived from the registry at read time, so an install upgrading in
-    place keeps its ``llm_providers`` rows verbatim.
-
-    Asserted as "the pre-existing columns are all still there, and this change
-    added none of its own" rather than as an exact snapshot of the table. An
-    exact snapshot fails on any unrelated column main adds later (it already
-    would on ``max_output_tokens``), which says nothing about whether this
-    change needs a migration and would only train people to update the literal.
-    """
+    """llm_providers gains no column; the capability is derived at read time, not stored."""
     from storage import providers_db
 
     conn = sqlite3.connect(":memory:")
@@ -291,7 +237,6 @@ def test_llm_providers_schema_gains_no_column():
     finally:
         conn.close()
 
-    # Every column a pre-change row was written with must still be readable.
     assert columns >= {
         "id",
         "provider_type",
@@ -303,9 +248,7 @@ def test_llm_providers_schema_gains_no_column():
         "models_json",
         "available_models_json",
     }
-    # The capability must stay registry-derived. A column here would mean saved
-    # connections carry their own copy, which needs a migration story this
-    # change deliberately does not have.
+    # the capability must stay registry-derived; a column would need a migration
     assert not [
         column
         for column in columns
@@ -313,17 +256,8 @@ def test_llm_providers_schema_gains_no_column():
     ]
 
 
-# ── 4. response_format stays opt-in ──────────────────────────────────
-
-
 def test_response_format_is_omitted_when_the_caller_does_not_ask(monkeypatch):
-    """Not every OpenAI-compatible server tolerates ``response_format``.
-
-    TGI types it as a Rust enum with no ``text`` variant and 422s on the
-    OpenAI-default ``{"type": "text"}``; LM Studio before 0.3.18 400s on the
-    same. Unsloth talks to those through the ``custom`` preset, so the field has
-    to stay absent unless a caller explicitly asked for structured output.
-    """
+    """response_format stays absent unless asked; TGI and older LM Studio reject the text default."""
     captured: dict = {}
     _mock_http_client(monkeypatch, _capturing_handler(captured))
 
@@ -375,15 +309,8 @@ def test_response_format_is_forwarded_verbatim_when_requested(monkeypatch):
     assert captured["body"]["response_format"] == {"type": "json_object"}
 
 
-# ── 5. response_format reaches the native provider shapes ────────────
-
-
 def test_gemini_translates_response_format_to_a_response_mime_type(monkeypatch):
-    """Deep research plans on Gemini now, and its planning hop asks for JSON.
-
-    Gemini never sees ``response_format``; it is a generationConfig MIME type,
-    so dropping it left the planner parsing prose.
-    """
+    """Gemini maps response_format to a generationConfig MIME type, or the planner parses prose."""
     captured: dict = {}
     _mock_http_client(monkeypatch, _capturing_handler(captured))
 

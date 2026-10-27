@@ -124,6 +124,11 @@ def test_compiled_calls_never_use_fast_launch(monkeypatch, kind, width, gemma):
         fn = lambda x: rms_layernorm.fast_rms_layernorm(norm, x, gemma = gemma)
     else:
         fn = lambda x: layernorm.fast_layernorm(norm, x)
+    # The narrow-row self-check runs real eager kernels once per shape; on torch <= 2.12 Dynamo's
+    # fake-tensor pass reaches it with is_compiling() False. Run it first: only the graph is measured.
+    with torch.no_grad():
+        fn(torch.randn(4, 64, width, device = "cuda"))
+    calls.clear()
     torch._dynamo.reset()
     x = torch.randn(4, 64, width, device = "cuda", requires_grad = True)
     torch.compile(fn, fullgraph = True)(x).sum().backward()

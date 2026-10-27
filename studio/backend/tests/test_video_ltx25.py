@@ -108,7 +108,7 @@ def test_multi_digit_releases_are_refused_not_routed_to_ltx2(name, version):
 
     assert unsupported_ltx_version(name) == version
     assert ltx_family_by_name(name) is None
-    with pytest.raises(ValueError, match = f"LTX-{version}, which Studio does not support yet"):
+    with pytest.raises(ValueError, match = f"LTX-{version}, which Unsloth does not support yet"):
         _detect_load_family(name, None, None)
 
 
@@ -150,7 +150,7 @@ def test_later_releases_are_refused_by_name():
     from core.inference.video import _detect_load_family
 
     assert unsupported_ltx_version("ltx-2.6-test") == "2.6"
-    with pytest.raises(ValueError, match = "LTX-2.6, which Studio does not support"):
+    with pytest.raises(ValueError, match = "LTX-2.6, which Unsloth does not support"):
         _detect_load_family("someone/LTX-2.6-GGUF", "model.gguf", None)
     with pytest.raises(ValueError, match = "LTX-2.6"):
         assert_supported_ltx_version("/models/x", "ltx-2.6-22b.safetensors")
@@ -2189,7 +2189,9 @@ def _ltx25_pack_plan(monkeypatch, total_gib):
         # Companions alone exceed the card: the DiT and the encoder both stream; the worker never holds Gemma 4.
         (24, "group", True, True, False),
         # The DiT streams, the companions (Gemma 4 included) stay: the worker keeps it on the card.
+        # Whole-module misses: worker context beside the whole DiT is 47152 of 46504 MiB.
         (48, "group", False, True, True),
+        (50, "model", False, True, False),
         # The DiT fits once the encoder is not resident: the worker onloads only for an encode, when there is room.
         (80, "group", True, False, False),
         (180, "none", False, True, True),
@@ -2223,6 +2225,42 @@ def test_plan_counts_the_encoder_worker_per_card(
             else plan.estimates["group_floor_mib"]
         )
         assert floor <= budget and inputs["text_encoder_dense_mib"] <= floor
+    if policy == "model":
+        worker_mib = int(LTX25_WORKER_RESIDENT_GB * mib)
+        assert plan.estimates["whole_module_fits_mib"] >= int(42.0 * mib) + worker_mib
+        assert plan.estimates["whole_module_fits_mib"] <= plan.estimates["safe_device_budget_mib"]
+
+
+def test_whole_module_phases_count_the_always_resident_share():
+    import dataclasses
+
+    from core.inference import video as vid
+    from core.inference.diffusion_memory import (
+        DEFAULT_BASE_OVERHEAD_MIB,
+        MEMORY_MODE_AUTO,
+        OFFLOAD_GROUP,
+        OFFLOAD_MODEL,
+    )
+
+    @dataclasses.dataclass
+    class _Plan:
+        offload_policy: str = OFFLOAD_GROUP
+        stream_transformer: bool = True
+        stream_text_encoders: bool = False
+        requested_mode: str = MEMORY_MODE_AUTO
+        vae_tiling: bool = False
+        vae_slicing: bool = False
+        reasons: tuple = ()
+        estimates: dict = dataclasses.field(
+            default_factory = lambda: {"safe_device_budget_mib": 46504}
+        )
+
+    plan = _Plan()
+    kw = dict(denoiser_mib = 40054, text_encoder_mib = 22792, vae_mib = 8773, runtime_mib = 7839)
+    dit_phase = 40054 + 4096 + DEFAULT_BASE_OVERHEAD_MIB
+    assert dit_phase <= 46504 < dit_phase + 954
+    assert vid._video_prefer_whole_module(plan, **kw).offload_policy == OFFLOAD_MODEL
+    assert vid._video_prefer_whole_module(plan, **kw, resident_mib = 954) is plan
 
 
 class _DeviceTensor:
