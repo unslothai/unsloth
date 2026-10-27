@@ -363,9 +363,7 @@ _PIPELINE_INDEXES = ("model_index.json", "modular_model_index.json")
 
 
 def _staged_pipeline(repo) -> bool:
-    """A base copy a speed load runs from: a weight, or the pipeline index plus component configs, which is all
-    that is left once hosted denoiser, encoder and VAE files replace the dense shards. Callers also require a
-    cached hosted denoiser; a component that is neither cached nor hosted is refetched, so the copy is kept."""
+    """A speed-load base copy: a weight, or the pipeline index plus component configs (hosted files replace shards)."""
     names = [n.lower() for n in _snapshot_relative_names(repo)]
     if any(n.endswith(_WEIGHT_SUFFIXES) for n in names):
         return True
@@ -423,8 +421,7 @@ _VIDEO_COMPONENT_DIRS = frozenset(
 
 
 def _video_pick_names(repo_id: str, names: Iterable[str]) -> list[str]:
-    """Cached ``.safetensors`` a video ``single_file`` pick can name (any depth, as the loader accepts), resolved the
-    way ``video._resolve_load_family_with_source`` does offline: by the repo id, then ``<repo>/<file>``."""
+    """Cached ``.safetensors`` a video ``single_file`` pick can name, as ``video._resolve_load_family_with_source``."""
     try:
         from core.inference.video_families import detect_video_family
     except Exception:  # noqa: BLE001
@@ -757,8 +754,7 @@ def _cached_hosted_owners(table, cache_scans) -> dict[str, set[tuple[str, str, s
 
 
 def repo_is_install(repo, cache_scans) -> bool:
-    """:func:`repo_holds_denoiser`, or this copy is a speed-loaded base: a curated base holding weights while a
-    hosted denoiser of its family is cached (the pair is the install)."""
+    """:func:`repo_holds_denoiser`, or a curated base whose family's hosted denoiser is cached (a speed load)."""
     if repo_holds_denoiser(repo):
         return True
     try:
@@ -780,9 +776,7 @@ def repo_is_install(repo, cache_scans) -> bool:
 
 
 def _add_hosted_dependents(required, cache_scans, checkpoints, pick_names, ignored) -> None:
-    """Pin hosted components per cached FILE to installs whose loader reads them. A hosted DENOISER is read only
-    beside a curated base, so only a base identity pins one. A curated base with weights plus a cached hosted
-    denoiser is a speed load, so the base lists itself and Free up space never offers half of it."""
+    """Pin hosted components per cached FILE to installs that read them; only a curated base pins a hosted denoiser."""
     table = _hosted_component_table()
     if not table:
         return
@@ -793,8 +787,7 @@ def _add_hosted_dependents(required, cache_scans, checkpoints, pick_names, ignor
         (r, f) for owners in cached.values() for r, f, k in owners if k == _HOSTED_DENOISER
     }
     bases = _base_families()
-    # {key: (display id, families, whether hosted denoisers count)}, merged over every cached copy (each root can hold
-    # a different pick of the same repo).
+    # {key: (display id, families, reads hosted denoisers)}, merged across cache roots.
     dependents: dict[str, tuple[str, set[tuple[str, str]], bool]] = {}
 
     def depend(key: str, repo_id: str, families: set, reads_denoisers: bool) -> None:
