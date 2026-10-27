@@ -81,7 +81,7 @@ def test_direct_path_is_bitwise_equal_to_the_compiled_path(dtype):
         pytest.skip("this GPU does not use the scaled_mm rowwise backend")
     torch.manual_seed(0)
     with torch.no_grad():
-        for N, K in ((256, 512), (768, 2048), (512, 5120), (208, 4112)):
+        for N, K in ((256, 512), (768, 2048), (512, 5120), (208, 4112), (256, 16400)):
             w = (torch.randn(N, K, device = "cuda") * 0.5).to(torch.float8_e4m3fn)
             for s in (torch.rand(N, 1, device = "cuda") * 0.01 + 1e-3, (torch.rand(N, 1, device = "cuda") + 0.5).to(torch.bfloat16)):
                 for rows in (17, 64, 65, 300):

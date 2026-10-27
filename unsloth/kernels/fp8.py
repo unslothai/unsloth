@@ -2112,18 +2112,24 @@ def _fp8_act_quant_per_row_kernel(
     stride_xm,
     HAS_UB: tl.constexpr,
     BLOCK_K: tl.constexpr,
+    ONE_BLOCK: tl.constexpr,
 ):
     # _quantize_fp8_per_row in one launch, with the same fp32 math Inductor emits for it (bitwise equal).
     row = tl.program_id(0).to(tl.int64)
     x_row = x_ptr + row * stride_xm
     y_row = y_ptr + row * K
-    amax = tl.zeros((BLOCK_K,), dtype = tl.float32)
-    nans = tl.zeros((BLOCK_K,), dtype = tl.int32)
-    for k in range(0, K, BLOCK_K):
-        offs = k + tl.arange(0, BLOCK_K)
+    offs = tl.arange(0, BLOCK_K)
+    if ONE_BLOCK:
         x = tl.load(x_row + offs, mask = offs < K, other = 0.0).to(tl.float32)
-        amax = tl.maximum(amax, tl.abs(x))
-        nans += (x != x).to(tl.int32)
+        amax = tl.abs(x)
+        nans = (x != x).to(tl.int32)
+    else:
+        amax = tl.zeros((BLOCK_K,), dtype = tl.float32)
+        nans = tl.zeros((BLOCK_K,), dtype = tl.int32)
+        for k in range(0, K, BLOCK_K):
+            xk = tl.load(x_row + k + offs, mask = k + offs < K, other = 0.0).to(tl.float32)
+            amax = tl.maximum(amax, tl.abs(xk))
+            nans += (xk != xk).to(tl.int32)
     row_max = tl.max(amax, axis = 0)
     # torch.amax / clamp propagate NaN; tl.max and tl.maximum drop it by default.
     row_max = tl.where(tl.sum(nans, axis = 0) > 0, float("nan"), row_max)
@@ -2134,13 +2140,17 @@ def _fp8_act_quant_per_row_kernel(
     scale = tl.maximum(
         row_max / 448.0, 1.0 / (448.0 * 512.0), propagate_nan = tl.PropagateNan.ALL
     )
-    for k in range(0, K, BLOCK_K):
-        offs = k + tl.arange(0, BLOCK_K)
-        mask = offs < K
-        x = tl.load(x_row + offs, mask = mask, other = 0.0).to(tl.float32)
+    if ONE_BLOCK:
         y = tl.maximum(x / scale, -448.0, propagate_nan = tl.PropagateNan.ALL)
         y = tl.minimum(y, 448.0, propagate_nan = tl.PropagateNan.ALL)
-        tl.store(y_row + offs, y.to(tl.float8e4nv), mask = mask)
+        tl.store(y_row + offs, y.to(tl.float8e4nv), mask = offs < K)
+    else:
+        for k in range(0, K, BLOCK_K):
+            mask = k + offs < K
+            xk = tl.load(x_row + k + offs, mask = mask, other = 0.0).to(tl.float32)
+            y = tl.maximum(xk / scale, -448.0, propagate_nan = tl.PropagateNan.ALL)
+            y = tl.minimum(y, 448.0, propagate_nan = tl.PropagateNan.ALL)
+            tl.store(y_row + k + offs, y.to(tl.float8e4nv), mask = mask)
     tl.store(s_ptr + row, scale)
 
 
@@ -2215,7 +2225,8 @@ def _fp8_rowwise_direct(X, weight, weight_scale, bias, route):
         x_quantized = torch.empty((M, K), device = X.device, dtype = torch.float8_e4m3fn)
         x_scale = torch.empty((M, 1), device = X.device, dtype = torch.float32)
         scale_ub = getattr(weight, "input_scale_ub", None)
-        block_k = min(triton.next_power_of_2(K), 4096)
+        # One pass over the row up to K = 16384 (the loop only runs again past that).
+        block_k = min(triton.next_power_of_2(K), 16384)
         with _fp8_triton_device_context(X, static_device_count = True):
             _fp8_act_quant_per_row_kernel[(M,)](
                 x2,
@@ -2226,7 +2237,8 @@ def _fp8_rowwise_direct(X, weight, weight_scale, bias, route):
                 x2.stride(0),
                 HAS_UB = scale_ub is not None,
                 BLOCK_K = block_k,
-                num_warps = 8 if block_k <= 2048 else 16,
+                ONE_BLOCK = block_k >= K,
+                num_warps = 8 if block_k <= 4096 else 16,
             )
         output = torch._scaled_mm(
             x_quantized,
