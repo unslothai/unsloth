@@ -2675,13 +2675,13 @@ def _request_available_bytes(device_obj: Any, module: Any) -> int:
 
 
 def _h3_host_copy_follows(device: Any) -> bool:
-    """True when H3's prequant denoiser is copied off its host load before use: a discrete GPU (pinning allowed)."""
+    """True on a discrete GPU (pinning allowed): H3's prequant denoiser is copied off its host load."""
     if str(device or "").strip().lower() in ("", "cpu", "meta"):
         return False
     try:
         from .host_pinning import host_pinning_allowed
         return bool(host_pinning_allowed(device))
-    except Exception:  # noqa: BLE001 - unknown: read the checkpoint in full, as before
+    except Exception:  # noqa: BLE001
         return False
 
 
@@ -10485,8 +10485,6 @@ class VideoBackend:
                     # Config from this partition: reference loads stage transformer_ref/; else offline loads hit Hub.
                     config_subfolder = denoiser_component,
                     logger = logger,
-                    # On a discrete GPU every placement copies the weights off the host load (pinned slabs, a pinned
-                    # copy or the device), so the pickle is mapped instead of read whole into anonymous memory first.
                     host_copy_follows = _h3_host_copy_follows(device),
                 )
                 if transformer is None:

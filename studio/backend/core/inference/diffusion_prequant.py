@@ -318,10 +318,7 @@ _PREQUANT_MMAP_ENV = "UNSLOTH_DIFFUSION_PREQUANT_MMAP"
 
 def prequant_mmap_enabled(destination: Any, *, host_copy_follows: bool = False) -> bool:
     """Map only for a non-CPU destination: a host-placed module would keep the file open (Windows then cannot delete it).
-
-    ``host_copy_follows``: the caller places the module on the host but copies every weight off it before the first
-    render (MiniMax-H3: into pinned slabs, a pinned copy or the device), so on Linux the mapping is dropped there and
-    reading the whole file into anonymous memory first is a wasted 20 GB copy."""
+    ``host_copy_follows``: host-placed but copied off before first render, so Linux maps (avoids a 20 GB copy)."""
     import os
     import sys
 
@@ -2177,8 +2174,6 @@ def load_prequantized_transformer(
     host_copy_follows: bool = False,
 ) -> Optional[Any]:
     """Load the pre-quantized transformer described by ``source`` onto ``device``.
-
-    ``host_copy_follows``: see ``prequant_mmap_enabled``; a host-placed pickle is mapped instead of read in full.
 
     ``into``: an already-built DENSE transformer to load the checkpoint into instead of a fresh ``from_config``
     skeleton (the pipeline-quant path, whose denoiser came with the pipeline). Its key set must equal the

@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MiniMax-H3's hosted int8 denoiser is placed on the host (``device="cpu"``) and then copied off it before the first
-render (pinned slabs, a pinned copy or the device). Reading the 20 GB pickle in full into anonymous memory first was
-a wasted copy (12.8 s of a warm 61.5 s load on an A100 host): on Linux it is mapped instead. Same tensors, same
-bytes; ``UNSLOTH_DIFFUSION_PREQUANT_MMAP=0`` restores the full read."""
+"""H3's host-placed prequant pickle is mapped on Linux; ``UNSLOTH_DIFFUSION_PREQUANT_MMAP=0`` restores the full read."""
 
 import ast
 import inspect
@@ -24,7 +21,6 @@ def test_host_destination_maps_only_when_a_host_copy_follows_on_linux(monkeypatc
     assert pq.prequant_mmap_enabled("cpu", host_copy_follows = True)
     assert pq.prequant_mmap_enabled("cuda", host_copy_follows = False)
     monkeypatch.setattr("sys.platform", "win32")
-    # Windows keeps the file open under a mapping: the full read, as before
     assert not pq.prequant_mmap_enabled("cpu", host_copy_follows = True)
     monkeypatch.setattr("sys.platform", "linux")
     monkeypatch.setenv("UNSLOTH_DIFFUSION_PREQUANT_MMAP", "0")
@@ -98,6 +94,5 @@ def test_h3_host_copy_follows_only_on_a_discrete_gpu(monkeypatch):
     assert V._h3_host_copy_follows("cuda:1")
     assert not V._h3_host_copy_follows("cpu")
     assert not V._h3_host_copy_follows(None)
-    # integrated GPU / unified memory: nothing copies the host load off, so the full read stays
     monkeypatch.setattr(host_pinning, "device_is_integrated", lambda device = None: True)
     assert not V._h3_host_copy_follows("cuda")
