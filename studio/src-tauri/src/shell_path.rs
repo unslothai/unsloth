@@ -393,10 +393,12 @@ mod tests {
     }
 
     /// A job that writes to the inherited stdout without end cannot hold launch past the grace.
+    /// The writer is capped at 256 MiB so a regression to an unbounded queue fails without
+    /// taking the host's memory; backpressure keeps it writing through the whole grace.
     #[cfg(not(windows))]
     #[test]
     fn a_job_writing_nonstop_does_not_hold_launch() {
-        let (dir, shell) = fake_shell("spew", "yes &\nexit 0\n");
+        let (dir, shell) = fake_shell("spew", "yes | head -c 268435456 &\nexit 0\n");
         let started = std::time::Instant::now();
         let result = read_login_shell_path(&shell, &probe_command(&shell), PROBE_TIMEOUT);
         let elapsed = started.elapsed();
