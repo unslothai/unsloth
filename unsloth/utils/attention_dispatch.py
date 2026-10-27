@@ -243,13 +243,21 @@ def _cudnn_length_bucketed_sdpa(
         and not torch.compiler.is_compiling()
         # A replay must re-pad an updated static mask, and inference tensors have no version counter.
         and not torch.is_inference(attn_mask)
-        and not (torch.cuda.is_available() and torch.cuda.is_current_stream_capturing())
+        and not _mask_stream_capturing(attn_mask)
     ):
         padded = _shared_padded_mask(attn_mask, pad)
     else:
         padded = _padded_bucket_mask(attn_mask, pad)
     out = scaled_dot_product_attention(Q, K, V, attn_mask = padded, **kwargs)
     return out[..., :q_len, :]
+
+
+def _mask_stream_capturing(mask):
+    """CUDA graph capture on the mask's own device (the current device can be another one)."""
+    if not mask.is_cuda:
+        return False
+    with torch.cuda.device(mask.device):
+        return torch.cuda.is_current_stream_capturing()
 
 
 def _padded_bucket_mask(attn_mask, pad):

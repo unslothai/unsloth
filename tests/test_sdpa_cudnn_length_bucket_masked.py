@@ -551,8 +551,24 @@ def _cpu_bucketed_masks(
 def test_masked_bucket_skips_the_shared_mask_under_cuda_graph_capture(monkeypatch):
     """A captured graph must record the padding: a cached copy from warmup would freeze the static mask."""
     mask = torch.zeros(2, 1, 200, 200)
+    # Capture runs on the mask's device while another device is current.
+    current = ["cuda:0"]
+
+    class _device:
+        def __init__(self, device):
+            self.device = device
+
+        def __enter__(self):
+            current.append(str(self.device))
+
+        def __exit__(self, *exc):
+            current.pop()
+
+    monkeypatch.setattr(type(mask), "is_cuda", property(lambda self: True))
+    monkeypatch.setattr(type(mask), "device", property(lambda self: "cuda:1"))
+    monkeypatch.setattr(torch.cuda, "device", _device)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: True)
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: current[-1] == "cuda:1")
     seen = _cpu_bucketed_masks(monkeypatch, mask, 200)
     assert len({m.data_ptr() for m in seen}) == len(seen)
     assert mask not in ad._PADDED_ADDITIVE_MASKS
