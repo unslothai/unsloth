@@ -95,6 +95,7 @@ export function BenchmarkPage({ evals }: { evals: EvalsModel }) {
   const runBenchmark = useBenchmarkRuntimeStore((s) => s.run);
   const resetBenchmarkRun = useBenchmarkRuntimeStore((s) => s.reset);
   const isRunning = useBenchmarkRuntimeStore((s) => s.isRunning);
+  const runTask = useBenchmarkRuntimeStore((s) => s.task);
   const panelActive = useBenchmarkRuntimeStore(isBenchmarkPanelActive);
 
   useEffect(() => {
@@ -426,7 +427,7 @@ export function BenchmarkPage({ evals }: { evals: EvalsModel }) {
         <div className="flex min-w-0 flex-col gap-4">
           {showPanel && (
             <div>
-              <BenchmarkRunPanel task={selectedTask} onClose={handleClosePanel} />
+              <BenchmarkRunPanel task={runTask} onClose={handleClosePanel} />
               <div ref={panelEndRef} aria-hidden="true" className="h-px w-full" />
             </div>
           )}

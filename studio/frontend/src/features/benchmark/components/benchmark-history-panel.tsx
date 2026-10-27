@@ -51,6 +51,7 @@ import {
   listBenchmarkRuns,
 } from "../api/benchmark-api";
 import { GraphDialog } from "./benchmark-graph-dialog";
+import { useBenchmarkRuntimeStore } from "../stores/benchmark-runtime-store";
 
 const NON_METRIC_PATTERNS = new Set([
   "sample_len",
@@ -634,9 +635,12 @@ export function BenchmarkHistoryPanel() {
     }
   }, [t]);
 
+  // A finished run lands in the list, so read it again then (the scoreboard does the same).
+  const phase = useBenchmarkRuntimeStore((s) => s.phase);
   useEffect(() => {
+    if (phase === "running" || phase === "starting") return;
     fetchRuns();
-  }, [fetchRuns]);
+  }, [fetchRuns, phase]);
 
   const handleSelect = useCallback(
     async (runId: string) => {

@@ -98,6 +98,8 @@ interface BenchmarkRuntimeState {
   phase: BenchmarkPhase;
   isRunning: boolean;
   ownsRun: boolean;
+  /** Task of the run this tab started; null for a run it only attached to. */
+  task: string | null;
   logLines: BenchmarkLogEntry[];
   lastSeq: number | null;
   connected: boolean;
@@ -129,6 +131,7 @@ const initialState: BenchmarkRuntimeState = {
   phase: "idle",
   isRunning: false,
   ownsRun: false,
+  task: null,
   logLines: [],
   lastSeq: null,
   connected: false,
@@ -264,6 +267,7 @@ export const useBenchmarkRuntimeStore = create<BenchmarkRuntimeStore>()((set, ge
       runId,
       isRunning: true,
       ownsRun: true,
+      task: task ?? "mmlu",
       phase: "starting",
       stage: null,
       progressPercent: 0,
