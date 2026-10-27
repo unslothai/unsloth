@@ -105,10 +105,7 @@ function EditInputs({
             disabled={!sourceUsable || transcriber.transcribing || disabled}
             onClick={() => void transcriber.transcribe(source)}
           >
-            <HugeiconsIcon
-              icon={ClosedCaptionIcon}
-              className="size-3.5 -translate-y-px"
-            />
+            <HugeiconsIcon icon={ClosedCaptionIcon} className="size-[1em]" />
             {transcriber.transcribing ? "Transcribing…" : "Transcribe"}
           </Button>
         </div>
