@@ -4298,10 +4298,25 @@ def _request_mirostat_on(value) -> bool:
     return int(value) > 0
 
 
+# std::stof's strtof prefix, hex floats included ("-0x1p-1" is -0.5, not -0).
 _STOF_PREFIX = re.compile(
-    r"[ \t\n\v\f\r]*[+-]?(?:inf(?:inity)?|nan|(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)",
+    r"[ \t\n\v\f\r]*[+-]?(?:inf(?:inity)?|nan|"
+    r"0x(?:[0-9a-f]+\.?[0-9a-f]*|\.[0-9a-f]+)(?:p[+-]?[0-9]+)?|"
+    r"(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:e[+-]?[0-9]+)?)",
     re.IGNORECASE,
 )
+
+
+def _stof_prefix_value(value: str) -> Optional[float]:
+    """The float std::stof reads from ``value``; None when it would throw."""
+    match = _STOF_PREFIX.match(value)
+    if not match:
+        return None
+    text = match.group(0)
+    try:
+        return float.fromhex(text) if "x" in text.lower() else float(text)
+    except (OverflowError, ValueError):
+        return None
 
 
 def _launch_adaptive_target(
@@ -4327,19 +4342,15 @@ def _launch_adaptive_target(
         for name in ("*", "default"):
             value = ((sections or {}).get(name) or {}).get("adaptive-target")
             if value is not None:
-                match = _STOF_PREFIX.match(value)
-                if not match:
+                target = _stof_prefix_value(value)
+                if target is None:
                     return None
-                target = float(match.group(0))
     try:
         value = _last_flag_value(list(cmd), frozenset({"--adaptive-target"}))
     except Exception:
         return None
     if value is not None:
-        match = _STOF_PREFIX.match(value)
-        if not match:
-            return None
-        target = float(match.group(0))
+        target = _stof_prefix_value(value)
     return target
 
 

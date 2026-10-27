@@ -849,6 +849,37 @@ def test_launch_adaptive_target_reads_config_then_the_command(tmp_path):
     assert _launch_adaptive_target(["llama-server", "--adaptive-target", "x"], env, "linux") is None
 
 
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        ("-0x1p-1", -0.5),
+        ("0X1.8P1", 3.0),
+        (" -0x.8", -0.5),
+        ("0x1p", 1.0),
+        ("0x", 0.0),
+        ("-0.25e1x", -2.5),
+        ("1e", 1.0),
+        ("INFINITY", float("inf")),
+        ("0x1p99999", None),
+        ("١", None),
+    ],
+)
+def test_launch_adaptive_target_reads_floats_like_stof(tmp_path, value, expected):
+    # std::stof is strtof: hex floats parse ("-0x1p-1" is -0.5, so adaptive-p stays off), only
+    # ASCII digits count, and an out-of-range value throws.
+    from core.inference.llama_cpp import _launch_adaptive_target, _request_selects_stateful_sampler
+
+    env = {"XDG_CONFIG_HOME": str(tmp_path), "HOME": str(tmp_path)}
+    cmd = ["llama-server", "--adaptive-target", value]
+    assert _launch_adaptive_target(cmd, env, "linux") == expected
+    (tmp_path / "llama.cpp").mkdir()
+    (tmp_path / "llama.cpp" / "config.ini").write_text(f"adaptive-target = {value.strip()}\n")
+    assert _launch_adaptive_target(["llama-server"], env, "linux") == expected
+    if expected is not None:
+        body = {"prompt": "Hi", "temperature": 0.7, "samplers": ["adaptive_p"]}
+        assert _request_selects_stateful_sampler(body, expected) is not (expected < 0)
+
+
 def _sampled_draft_state(backend):
     return {
         "emitted": backend._spec_draft_sampling_emitted,
