@@ -48,7 +48,7 @@ type UseRecipePersistenceResult = {
   importOpen: boolean;
   setImportOpen: (open: boolean) => void;
   currentSignature: string;
-  persistRecipe: () => Promise<void>;
+  persistRecipe: () => Promise<boolean>;
   copyRecipe: () => Promise<void>;
   importRecipe: (value: string) => string | null;
 };
@@ -282,9 +282,9 @@ export function useRecipePersistence({
     resetRecipe,
   ]);
 
-  const persistRecipe = useCallback(async (): Promise<void> => {
+  const persistRecipe = useCallback(async (): Promise<boolean> => {
     if (saveLoading) {
-      return;
+      return false;
     }
     const nextName = normalizeNonEmptyName(workflowName, "Unnamed");
     if (nextName !== workflowName) {
@@ -302,6 +302,7 @@ export function useRecipePersistence({
       setFailedSignature(null);
       setSavedSignature(buildSignature(nextName, currentPayload));
       drainQueuedUploadCleanups(currentPayload);
+      return true;
     } catch (error) {
       console.error("Save recipe failed:", error);
       setFailedSignature(buildSignature(nextName, currentPayload));
@@ -309,6 +310,7 @@ export function useRecipePersistence({
         "Save failed",
         error instanceof Error ? error.message : "Could not save recipe.",
       );
+      return false;
     } finally {
       setSaveLoading(false);
     }
