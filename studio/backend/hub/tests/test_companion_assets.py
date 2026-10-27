@@ -216,8 +216,8 @@ def test_orphan_listing_reports_the_stranded_companions_once_the_quants_are_gone
     result = asyncio.run(companion_cleanup.orphan_companions_response())
     assert [c["repo_id"] for c in result["companions"]] == [BASE_REPO]
     assert result["total_bytes"] == COMPANION_BYTES
-    assert (
-        result["companions"][0]["cache_path"] == str(Path("/cache/models--black-forest-labs--FLUX.2-klein-4B"))
+    assert result["companions"][0]["cache_path"] == str(
+        Path("/cache/models--black-forest-labs--FLUX.2-klein-4B")
     )
 
 
@@ -867,7 +867,9 @@ def test_the_orphan_precondition_is_scoped_to_the_cache_being_deleted(monkeypatc
         _repo(dev, [("model_index.json", 460)], cache = "/c2"),
     )
     rows = asyncio.run(companion_cleanup.orphan_companions_response())["companions"]
-    assert [r["cache_path"] for r in rows] == [str(Path("/c2/models--black-forest-labs--FLUX.2-dev"))]
+    assert [r["cache_path"] for r in rows] == [
+        str(Path("/c2/models--black-forest-labs--FLUX.2-dev"))
+    ]
     try:
         deletion._delete_cached_model_blocking(
             dev, None, None, rows[0]["cache_path"], only_if_orphan = True
@@ -1040,11 +1042,13 @@ H3_ASSETS = [
 def test_h3_orphan_sidecars_are_offered_with_actual_blob_bytes(monkeypatch):
     _install(monkeypatch, _repo(H3_QUANT, H3_ASSETS))
     result = asyncio.run(companion_cleanup.orphan_companions_response())
-    assert result["companions"] == [{
-        "repo_id": H3_QUANT,
-        "size_bytes": 47_390_000_000,
-        "cache_path": str(Path("/cache/models--unsloth--MiniMax-H3-FP8")),
-    }]
+    assert result["companions"] == [
+        {
+            "repo_id": H3_QUANT,
+            "size_bytes": 47_390_000_000,
+            "cache_path": str(Path("/cache/models--unsloth--MiniMax-H3-FP8")),
+        }
+    ]
     assert result["total_bytes"] == 47_390_000_000
 
 
@@ -1052,11 +1056,15 @@ def test_h3_orphan_sidecars_are_offered_with_actual_blob_bytes(monkeypatch):
 def test_h3_speed_loaded_pipeline_protects_hosted_components_without_links(monkeypatch, base):
     # Only the VAEs land in the selected pipeline repo on a speed load. The DiT and TE
     # live in the FP8 repo; looking only for transformer/ wrongly calls them unused.
-    _install(monkeypatch, _repo(base, [("vae/diffusion_pytorch_model.safetensors", 11_100_000_000)]),
-             _repo(H3_QUANT, H3_ASSETS))
+    _install(
+        monkeypatch,
+        _repo(base, [("vae/diffusion_pytorch_model.safetensors", 11_100_000_000)]),
+        _repo(H3_QUANT, H3_ASSETS),
+    )
     assert companion_cleanup.companion_dependents(H3_QUANT) == [base]
     assert H3_QUANT not in {
-        row["repo_id"] for row in asyncio.run(companion_cleanup.orphan_companions_response())["companions"]
+        row["repo_id"]
+        for row in asyncio.run(companion_cleanup.orphan_companions_response())["companions"]
     }
     with pytest.raises(HTTPException) as excinfo:
         deletion._delete_cached_model_blocking(H3_QUANT, None, None)
@@ -1064,8 +1072,11 @@ def test_h3_speed_loaded_pipeline_protects_hosted_components_without_links(monke
 
 
 def test_h3_delete_preview_shows_sidecars_as_separate_reclaimable_assets(monkeypatch):
-    _install(monkeypatch, _repo(H3_BASE, [("vae/diffusion_pytorch_model.safetensors", 11_100_000_000)]),
-             _repo(H3_QUANT, H3_ASSETS))
+    _install(
+        monkeypatch,
+        _repo(H3_BASE, [("vae/diffusion_pytorch_model.safetensors", 11_100_000_000)]),
+        _repo(H3_QUANT, H3_ASSETS),
+    )
     result = asyncio.run(companion_cleanup.delete_impact_response(H3_BASE, None))
     assert result["reclaimed_bytes"] == 11_100_000_000
     assert result["retained_companions"] == []
@@ -1076,8 +1087,12 @@ def test_h3_delete_preview_shows_sidecars_as_separate_reclaimable_assets(monkeyp
 
 def test_h3_delete_preview_retains_sidecars_for_another_cached_checkpoint(monkeypatch):
     gguf = "unsloth/MiniMax-H3-GGUF"
-    _install(monkeypatch, _repo(H3_BASE, [("vae/diffusion_pytorch_model.safetensors", 11_100)]),
-             _repo(H3_QUANT, H3_ASSETS), _repo(gguf, [("MiniMax-H3-Q4_K_M.gguf", 99_000)]))
+    _install(
+        monkeypatch,
+        _repo(H3_BASE, [("vae/diffusion_pytorch_model.safetensors", 11_100)]),
+        _repo(H3_QUANT, H3_ASSETS),
+        _repo(gguf, [("MiniMax-H3-Q4_K_M.gguf", 99_000)]),
+    )
     result = asyncio.run(companion_cleanup.delete_impact_response(H3_BASE, None))
     assert result["freeable_companions"] == []
     assert result["retained_companions"] == [
@@ -1085,7 +1100,9 @@ def test_h3_delete_preview_retains_sidecars_for_another_cached_checkpoint(monkey
     ]
 
 
-@pytest.mark.parametrize("name", ["custom-model.safetensors", "transformer/model.safetensors", "custom/model.pt"])
+@pytest.mark.parametrize(
+    "name", ["custom-model.safetensors", "transformer/model.safetensors", "custom/model.pt"]
+)
 def test_h3_cleanup_preserves_unknown_weights_alongside_sidecars(monkeypatch, name):
     _install(monkeypatch, _repo(H3_QUANT, [*H3_ASSETS, (name, 90_000)]))
     assert asyncio.run(companion_cleanup.orphan_companions_response())["companions"] == []
@@ -1098,11 +1115,14 @@ def test_h3_metadata_only_pipeline_does_not_pin_orphan_sidecars(monkeypatch):
     _install(monkeypatch, _repo(H3_BASE, [("model_index.json", 400)]), _repo(H3_QUANT, H3_ASSETS))
     assert companion_cleanup.companion_dependents(H3_QUANT) == []
     assert H3_QUANT in {
-        row["repo_id"] for row in asyncio.run(companion_cleanup.orphan_companions_response())["companions"]
+        row["repo_id"]
+        for row in asyncio.run(companion_cleanup.orphan_companions_response())["companions"]
     }
 
 
 def test_h3_legacy_conditioner_copy_is_also_a_companion(monkeypatch):
     legacy = H3_ASSETS[1][0].replace("/official/", "/")
     _install(monkeypatch, _repo(H3_QUANT, [(legacy, 27_140_000_000)]))
-    assert asyncio.run(companion_cleanup.orphan_companions_response())["total_bytes"] == 27_140_000_000
+    assert (
+        asyncio.run(companion_cleanup.orphan_companions_response())["total_bytes"] == 27_140_000_000
+    )

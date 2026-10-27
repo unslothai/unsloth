@@ -516,7 +516,8 @@ def required_companion_bases(
         _normalise(str(getattr(repo, "repo_id", "") or ""))
         for scan in cache_scans or ()
         for repo in getattr(scan, "repos", ()) or ()
-        if str(getattr(repo, "repo_type", "")) == "model" and _holds_modular_pipeline_components(repo)
+        if str(getattr(repo, "repo_type", "")) == "model"
+        and _holds_modular_pipeline_components(repo)
     }
     required: dict[str, set[str]] = {}
     for repo_id in _cached_model_repo_ids(cache_scans):
