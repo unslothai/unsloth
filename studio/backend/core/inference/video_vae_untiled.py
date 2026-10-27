@@ -180,8 +180,7 @@ def _in_chain(fn: Any, target: Any) -> bool:
     return False
 
 
-# Under model CPU offload the denoiser is still on the card when vae.decode is entered: the VAE's offload hook moves it
-# off only inside the decode. "0" reads free memory before that hook, as before.
+# Under model CPU offload the denoiser is still on the card until the VAE's hook runs inside decode. "0" = old behaviour.
 FREE_AFTER_OFFLOAD_ENV = "UNSLOTH_VIDEO_VAE_FREE_AFTER_OFFLOAD"
 
 
@@ -203,11 +202,8 @@ def _on_device(module: Any) -> bool:
 
 
 def run_offload_hook_first(vae: Any, logger: Any = None) -> bool:
-    """Run the VAE's model offload pre-hook now, before the fit check reads free memory.
-
-    It offloads the previous component (the denoiser) and onloads the VAE, exactly what the decode's own
-    ``apply_forward_hook`` does a moment later (that call then finds both in place and moves nothing), so the check
-    sees the memory the decode will have instead of a resident denoiser. True when the hook ran."""
+    """Run the VAE's offload pre-hook before the fit check so it sees the decode's free memory (the decode's own hook
+    call then moves nothing). True when the hook ran."""
     if not _free_after_offload_enabled():
         return False
     hook = getattr(vae, "_hf_hook", None)

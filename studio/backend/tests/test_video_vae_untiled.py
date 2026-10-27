@@ -203,8 +203,6 @@ def test_free_bytes_does_not_count_graph_held_cache(monkeypatch):
 
 
 class CpuOffload:
-    """accelerate's model offload hook as the fit check sees it: pre_forward offloads the previous component."""
-
     def __init__(
         self,
         prev_model,
@@ -225,8 +223,6 @@ class CpuOffload:
 
 
 class HookedVAE(FakeVAE):
-    """FakeVAE whose decode runs its offload hook first, as diffusers' apply_forward_hook does."""
-
     def parameters(self):
         return self.decoder.parameters()
 
