@@ -54,6 +54,7 @@ from storage import library_db
 from utils.paths import relocations, storage_roots
 from utils.paths.path_utils import is_path_within, same_path
 from utils.paths.storage_roots import account_path
+from utils.scan_memo import in_scan_memo
 
 logger = get_logger(__name__)
 
@@ -1218,6 +1219,7 @@ _SOURCES = (
 )
 
 
+@in_scan_memo
 def list_items() -> list[dict]:
     """Every item with its overlay applied, newest activity first. A failing source is skipped so
     one broken store cannot empty the whole Library."""

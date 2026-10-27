@@ -1,0 +1,65 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Memo for lookups a model inventory scan repeats per repo (root path resolves, the Hugging Face
+cache setting, registered scan folders). Scoped to one scan, never kept across requests, so a
+change is seen on the next one; outside a scope every lookup runs as before."""
+
+from __future__ import annotations
+
+import functools
+import inspect
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Any, Callable, Hashable, Iterator, Optional, TypeVar
+
+_T = TypeVar("_T")
+
+# asyncio.to_thread copies the context, so worker threads of one scan share its dict.
+_scope: ContextVar[Optional[dict]] = ContextVar("studio_scan_memo", default = None)
+
+
+@contextmanager
+def scan_memo() -> Iterator[None]:
+    """Memoize lookups inside; a nested scope joins the outer one."""
+    if _scope.get() is not None:
+        yield
+        return
+    token = _scope.set({})
+    try:
+        yield
+    finally:
+        _scope.reset(token)
+
+
+def memoized(key: Hashable, compute: Callable[[], _T]) -> _T:
+    """compute() once per scope for key; a raise is not cached."""
+    memo = _scope.get()
+    if memo is None:
+        return compute()
+    try:
+        return memo[key]
+    except KeyError:
+        pass
+    value = compute()
+    memo[key] = value
+    return value
+
+
+def in_scan_memo(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Run a sync or async function inside scan_memo()."""
+    if inspect.iscoroutinefunction(fn):
+
+        @functools.wraps(fn)
+        async def run_async(*args, **kwargs):
+            with scan_memo():
+                return await fn(*args, **kwargs)
+
+        return run_async
+
+    @functools.wraps(fn)
+    def run(*args, **kwargs):
+        with scan_memo():
+            return fn(*args, **kwargs)
+
+    return run

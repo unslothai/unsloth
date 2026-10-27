@@ -17,6 +17,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Awaitable, Callable, Hashable, NamedTuple, Optional, TypeVar
 
 from loggers import get_logger
+from utils.scan_memo import in_scan_memo
 
 logger = get_logger(__name__)
 
@@ -398,6 +399,7 @@ def _with_repos_dropped_by_scan(
         return scan
 
 
+@in_scan_memo
 def _compute_all_hf_cache_scans() -> list:
     from huggingface_hub import HFCacheInfo, scan_cache_dir
 

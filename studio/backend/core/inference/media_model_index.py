@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from loggers import get_logger
+from utils.scan_memo import in_scan_memo
 
 logger = get_logger(__name__)
 
@@ -269,6 +270,7 @@ def _loadable_directory(load_dir: Path) -> bool:
     return sole is not None and _loader_can_open(str(load_dir), sole)
 
 
+@in_scan_memo
 def _build_index(task: str) -> dict[str, MediaModelPick]:
     """Map every name a downloaded *task* model answers to onto its load spec."""
     from routes.models import _local_model_task, collect_local_models

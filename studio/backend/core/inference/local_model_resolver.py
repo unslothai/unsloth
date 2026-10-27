@@ -22,6 +22,7 @@ from typing import Optional
 
 from core.inference.model_ids import public_model_id
 from loggers import get_logger
+from utils.scan_memo import in_scan_memo
 from utils.account_context import (
     AccountContext,
     account_thread,
@@ -780,6 +781,7 @@ def local_load_dir(path: Optional[str]) -> Optional[str]:
         return path
 
 
+@in_scan_memo
 def _build_index() -> dict[str, _LocalGgufEntry]:
     """Scans the model picker's roots; Ollama manifests are read only, since load materializes the .gguf."""
     # Lazy import: routes.models imports core.inference.
