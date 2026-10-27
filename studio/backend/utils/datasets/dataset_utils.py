@@ -400,6 +400,10 @@ def format_dataset(dataset, *args, **kwargs):
             "requires_manual_mapping": False,
             "warnings": [],
         }
+    if info["final_format"] in ("chatml_messages", "chatml_conversations") and info["chat_column"]:
+        info["dataset"] = normalize_chatml_roles(
+            info["dataset"], info["chat_column"], bound.arguments["batch_size"]
+        )
     return info
 
 
@@ -555,7 +559,7 @@ def _format_dataset(
 
         elif detected["format"] == "chatml" and detected.get("chat_column"):
             return {
-                "dataset": normalize_chatml_roles(dataset, detected["chat_column"], batch_size),
+                "dataset": dataset,
                 "detected_format": _chatml_detected_format_label(detected["chat_column"]),
                 "final_format": _chatml_final_format(detected["chat_column"]),
                 "chat_column": detected["chat_column"],
@@ -789,7 +793,7 @@ def _format_dataset(
 
         elif detected["format"] == "chatml" and detected.get("chat_column"):
             return {
-                "dataset": normalize_chatml_roles(dataset, detected["chat_column"], batch_size),
+                "dataset": dataset,
                 "detected_format": _chatml_detected_format_label(detected["chat_column"]),
                 "final_format": _chatml_final_format(detected["chat_column"]),
                 "chat_column": detected["chat_column"],

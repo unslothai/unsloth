@@ -55,3 +55,28 @@ def test_chatml_role_names_reach_the_template_in_lowercase(column, format_type, 
 
     assert _render([_conversation(*roles)], column, format_type) == expected
     assert "<|im_start|>assistant\n4" in expected[0]
+
+
+@pytest.mark.parametrize("mapping", [None, {"prompt": "user", "completion": "assistant"}])
+def test_mapped_message_columns_reach_the_template_in_lowercase(mapping):
+    def render(user, assistant):
+        result = format_and_template_dataset(
+            Dataset.from_dict(
+                {
+                    "prompt": [[{"role": user, "content": "What is 2+2?"}]],
+                    "completion": [[{"role": assistant, "content": "4"}]],
+                }
+            ),
+            model_name = "Qwen3ForCausalLM",
+            tokenizer = _Tokenizer(),
+            format_type = "chatml" if mapping else "auto",
+            custom_format_mapping = mapping,
+            batch_size = 1,
+            num_proc = 1,
+        )
+        assert result["success"] is True
+        return list(result["dataset"]["text"])
+
+    expected = render("user", "assistant")
+    assert render("User", " Assistant ") == expected
+    assert "<|im_start|>assistant\n4" in expected[0]
