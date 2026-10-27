@@ -20,8 +20,7 @@ export function createChatPinsApi(sessionSignal: AbortSignal) {
   async function bounded<T>(
     run: (signal: AbortSignal) => Promise<T>,
   ): Promise<T> {
-    // The supported Safari/WebKit floor predates AbortSignal.any. Dispose both
-    // the listener and timer after each request instead of retaining them all session.
+    // The supported WebKit floor lacks AbortSignal.any; release listener and timer per request.
     const controller = new AbortController();
     const abort = () => controller.abort();
     sessionSignal.addEventListener("abort", abort);
@@ -132,8 +131,7 @@ export function createChatPinsApi(sessionSignal: AbortSignal) {
           (await bounded((signal) => getChatSettings({ signal })))
             .pinnedChatIds,
         );
-        // An intermediate backend with the setting but no tombstones cannot
-        // safely merge stale browser lists. Its existing canonical list wins.
+        // A backend with the setting but no tombstones cannot merge stale browser lists.
         if (current !== undefined) return current;
         return (await compareAndSet(undefined, ids)).pinnedIds;
       }

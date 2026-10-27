@@ -188,8 +188,7 @@ export async function saveChatSettingsPatchIfCurrent(
         : {}),
     }),
   });
-  // 404 (--api-only) or 405 (browser SPA catch-all) means an older backend: report not applied,
-  // unless the caller has its own compatibility path (requireSupport).
+  // 404 (--api-only) or 405 (browser SPA catch-all) means an older backend: report not applied.
   if (
     !options.requireSupport &&
     (response.status === 404 || response.status === 405)

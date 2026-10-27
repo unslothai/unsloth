@@ -22,8 +22,7 @@ function scope(): string {
     : getApiBase() || window.location.origin;
   let mark = localStorage.getItem(AUTH_SESSION_MARK_KEY);
   if (!mark) {
-    // Sessions created before auth marks existed receive one on token refresh.
-    // Establish it now so that refresh cannot strand a durable pin journal.
+    // Pre-mark sessions get one on token refresh, stranding the journal: set it now.
     mark = crypto.randomUUID();
     localStorage.setItem(AUTH_SESSION_MARK_KEY, mark);
   }
@@ -34,8 +33,7 @@ function createRuntime(sessionScope: string) {
   const controller = new AbortController();
   const journal = createPinnedChatsJournal(localStorage, sessionScope);
   const legacy = readLegacyPinnedChatIds(localStorage);
-  // Legacy chat import runs independently. Reconcile again on refresh so IDs
-  // imported after the initial read are not lost. Server tombstones preserve unpins.
+  // Re-sent every refresh: legacy import may create rows later; tombstones keep unpins.
   const readLegacy = () => legacy;
   const api = createChatPinsApi(controller.signal);
   const transport = createPinnedChatsTransport({

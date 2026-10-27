@@ -723,8 +723,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    # Remember explicit unpins independently of browser migration. These are sidebar
-    # IDs, including comparison pair IDs, so they cannot reference one thread row.
+    # Sidebar IDs (incl. comparison pair IDs), so no foreign key to one thread row.
     conn.execute("CREATE TABLE IF NOT EXISTS chat_pin_tombstones (id TEXT NOT NULL PRIMARY KEY)")
     conn.execute("CREATE TABLE IF NOT EXISTS chat_pin_deletions (id TEXT NOT NULL PRIMARY KEY)")
     conn.execute("CREATE TABLE IF NOT EXISTS chat_pin_operations (id TEXT NOT NULL PRIMARY KEY)")
@@ -2813,8 +2812,7 @@ def lift_chat_thread_tombstones(thread_ids: Iterable[str]) -> None:
 
 def _tombstone_chat_threads(conn: sqlite3.Connection, thread_ids: Iterable[str]) -> None:
     thread_ids = set(thread_ids)
-    # Comparison sidebar rows use pair IDs. Remember their deletion separately
-    # from unpins so a queued pin cannot wait forever for a deleted comparison.
+    # Recorded apart from unpins so a queued pin never waits forever on a deleted comparison.
     pairs = {
         row["pair_id"]
         for row in conn.execute("SELECT id, pair_id FROM chat_threads WHERE pair_id IS NOT NULL")
@@ -5634,8 +5632,7 @@ def get_chat_pins() -> Optional[list[str]]:
     try:
         pins, dirty = _load_chat_pins_in_conn(conn)
         if dirty:
-            # Healthy polling is read-only. Re-read under the write lock before repairing
-            # so a pin committed since the initial read is never overwritten.
+            # Re-read under the write lock so a pin committed since the first read survives.
             conn.execute("BEGIN IMMEDIATE")
             pins, _ = _load_chat_pins_in_conn(conn, repair = True)
             conn.commit()
@@ -5686,8 +5683,7 @@ def _record_chat_pin_change(
 ) -> None:
     old = set(_normalized_chat_pin_ids(previous))
     present = set(ids)
-    # A browser may unpin before legacy chat import creates the server row. Record
-    # that intent even though it removes nothing from today's canonical pin list.
+    # An unpin can predate legacy import creating the row; record it though it removes nothing.
     removed = (old - present) | set(explicit_unpins)
     conn.executemany(
         "INSERT OR IGNORE INTO chat_pin_tombstones (id) VALUES (?)",
@@ -5876,8 +5872,7 @@ def upsert_chat_settings_merge_if_current(
             ).fetchone()
             is not None
         ):
-            # The earlier response may have been lost. Acknowledging its operation
-            # must not replay it over another browser's more recent unpin.
+            # A replay after a lost response: acknowledge, never re-apply over a newer unpin.
             conn.commit()
             return current, True
         matches_expected = _chat_settings_match_expected(current, expected)
@@ -5907,8 +5902,7 @@ def upsert_chat_settings_merge_if_current(
             requested = updates[_CHAT_PINS_KEY]
             existing = _existing_chat_pin_ids(conn, requested)
             missing = set(requested) - set(existing)
-            # A visible browser-only chat may still be waiting for legacy import.
-            # Leave its operation unacknowledged so the durable client journal retries.
+            # A chat still awaiting legacy import: leave unacknowledged so the journal retries.
             deleted = set()
             chunk_size = _SQLITE_IN_CHUNK_SIZE // 2
             for start in range(0, len(requested), chunk_size):

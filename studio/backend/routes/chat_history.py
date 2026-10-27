@@ -526,8 +526,7 @@ class ChatResearchMcpSource(BaseModel):
 class ChatSettingsPayload(BaseModel):
     model_config = ConfigDict(extra = "forbid", allow_inf_nan = False)
 
-    # Sidebar IDs include comparison pair IDs, so pins belong to the installation's
-    # settings rather than individual thread rows. Omitted means no change; [] unpins all.
+    # Sidebar IDs (incl. comparison pair IDs), not thread rows. Omitted = no change; [] unpins all.
     pinnedChatIds: list[
         Annotated[str, Field(strict = True, min_length = 1, max_length = MAX_PINNED_CHAT_ID_LENGTH)]
     ] = Field(default_factory = list, max_length = MAX_PINNED_CHAT_IDS)

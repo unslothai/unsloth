@@ -175,8 +175,7 @@ export function createPinnedChatsSync(options: PinnedChatsSyncOptions) {
     if (options.migrateLegacy) {
       result = await options.migrateLegacy(legacy);
     } else if (ids === undefined) {
-      // Compatibility for callers without the merge endpoint. Fresh browsers
-      // must not claim an empty setting before legacy pins can be imported.
+      // No merge endpoint: never claim an empty setting before importing legacy pins.
       result = (await options.compareAndSet(undefined, legacy)).pinnedIds;
     } else {
       return ids;

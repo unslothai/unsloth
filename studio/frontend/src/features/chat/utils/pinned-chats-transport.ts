@@ -54,8 +54,7 @@ function isUnsupported(error: unknown): boolean {
       rejectsPinField = true;
       return true;
     }
-    // Initial migration also names the new field in expectedAbsent. Older
-    // backends reject that precondition alongside the unknown patch field.
+    // Older backends also reject the migration's expectedAbsent naming the new field.
     return (
       type === "value_error" &&
       loc.length === 1 &&
@@ -155,8 +154,7 @@ export function createPinnedChatsTransport(options: PinnedChatsTransportOptions)
       if (!applied) throw new Error("Pinned chats changed in another browser. Please try again.");
     }
     assertCurrent(epoch);
-    // Keep stable operation IDs until every write is acknowledged. An interrupted
-    // replay is safe to retry because the server deduplicates those IDs.
+    // Cleared only once every write is acknowledged; the server deduplicates a retried replay.
     options.writeFallback(undefined);
     localOnly = false;
     lastRemote = current?.slice();
@@ -207,8 +205,7 @@ export function createPinnedChatsTransport(options: PinnedChatsTransportOptions)
       const epoch = generation;
       const state = readFallback();
       if (state) return state.pinnedIds;
-      // load() just replayed the original baseline and explicit offline changes.
-      // Reimporting the current legacy cache would duplicate that migration.
+      // load() just replayed the baseline and offline changes; reimporting would duplicate them.
       if (recoveredOnLoad) return lastRemote?.slice();
       try {
         const current = await remoteMigration(validatePinnedIds(ids)!, lastRemote, epoch);

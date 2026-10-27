@@ -95,8 +95,7 @@ export function createPinnedChatsJournal(storage: Storage, scope: string) {
       lastOrder = Math.max(Date.now(), lastOrder + 1);
       storage.setItem(key, JSON.stringify({ baseIds, order: lastOrder }));
     }
-    // Only acknowledge entries this instance has seen. Another tab may have
-    // appended an intent while the network request was in flight.
+    // Only acknowledge entries seen here: another tab may have appended one mid-request.
     for (const key of observed[kind]) {
       if (!keep.has(key)) {
         storage.removeItem(key);
