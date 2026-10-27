@@ -160,6 +160,18 @@ def _case_units(rank, world, tmp):
     tp_env._LAYOUT = tp_env.TPEnvLayout(1, 1, 2, False, 2)
     tp_env._LAYOUT._mesh = object()  # the refusal comes from the model, not the mesh
     out["moe"] = _raised(lambda: moe("m", load_in_4bit = False))
+    # Hidden states sent between stages: float32 for a model Unsloth trains in float32 (Gemma 3 on a T4).
+    import types
+
+    from unsloth.models import pp_native
+
+    parts = types.SimpleNamespace(embed = types.SimpleNamespace(weight = torch.zeros(1, dtype = torch.float16)))
+    plain, forced = torch.nn.Linear(1, 1), torch.nn.Linear(1, 1)
+    forced._unsloth_forced_float32 = True
+    out["act_dtype"] = (
+        pp_native._default_activation_dtype(plain, parts),
+        pp_native._default_activation_dtype(forced, parts),
+    )
     return out
 
 
@@ -530,6 +542,7 @@ def test_pp_env_layout_and_refusals():
         assert res["sft"] is None, res["sft"]
         assert "packing" in (res["packing"] or ""), res["packing"]
     assert "mixture-of-experts" in (res["moe"] or "") and "UNSLOTH_PP_SIZE=2: unset it" in res["moe"], res["moe"]
+    assert res["act_dtype"] == (torch.float16, torch.float32), res["act_dtype"]
 
 
 @needs_pipelining

@@ -1498,6 +1498,19 @@ class PipelineParallel:
             dist.barrier(group = self.group)
 
 
+def _default_activation_dtype(model, parts):
+    """The input embedding dtype, except for a model Unsloth trains in float32 because its activations overflow
+    float16 (Gemma 3, gpt-oss: UNSLOTH_FORCE_FLOAT32, stamped `_unsloth_forced_float32` by from_pretrained): its
+    hidden states are float32 while the embedding may stay 16-bit, and a float16 send would turn them to inf."""
+    dtype = parts.embed.weight.dtype
+    if dtype not in (torch.float16, torch.bfloat16):
+        return dtype
+    stamps = [getattr(level, "_unsloth_forced_float32", None) for level in _model_chain(model)]
+    stamps = [s for s in stamps if s is not None]
+    forced = any(stamps) if stamps else os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1"
+    return torch.float32 if forced else dtype
+
+
 def _sync_trainable(model, group, src):
     import torch.distributed as dist
     with torch.no_grad():
@@ -1572,7 +1585,7 @@ def apply_pipeline_parallel(
     tuple_format = _layer_call_format(parts.decoder, parts.layers_name) == "tuple"
     bounds = derive_pp_split(model, pp, config)
     _refuse_shared_across_stages(parts, bounds)
-    dtype = config.activation_dtype or parts.embed.weight.dtype
+    dtype = config.activation_dtype or _default_activation_dtype(model, parts)
     rank = pp_mesh.get_local_rank()
     if config.sync_trainable and pp > 1:
         _sync_trainable(model, pp_mesh.get_group(), dist.get_global_rank(pp_mesh.get_group(), 0))
