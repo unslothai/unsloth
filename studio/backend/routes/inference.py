@@ -37477,19 +37477,12 @@ async def llama_tokenize(request: Request, current_subject: str = Depends(get_cu
     if not isinstance(body, dict):
         raise HTTPException(status_code = 400, detail = "Request body must be a JSON object")
 
-    target_url = f"{llama_backend.base_url}/tokenize"
-    _client = _cancelable_nonstreaming_client()
+    # Through _LlamaUpstream: the child's key, plus one respawn if llama-server died mid-eval.
     try:
-        _resp = await _client.post(
-            target_url,
-            json = body,
-            headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend),
-            timeout = 30,
-        )
+        async with _LlamaUpstream(llama_backend, "/tokenize") as upstream:
+            _resp = await upstream.post(body, timeout = 30)
     except httpx.RequestError as _exc:
         raise HTTPException(status_code = 502, detail = _friendly_error(_exc))
-    finally:
-        await _client.aclose()
     if _resp.status_code != 200:
         raise _openai_passthrough_error(_resp.status_code, _resp.text)
     return Response(
