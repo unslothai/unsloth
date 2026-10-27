@@ -8,6 +8,8 @@ export type PinOperation = {
   kind: "pin";
   ids: string[];
   pinned: boolean;
+  /** Queued pins this unpin superseded; the server acknowledges them without applying. */
+  cancels?: string[];
 };
 
 export interface PinnedChatsSyncOptions {
@@ -72,12 +74,14 @@ export function validatePinOperation(value: unknown): PinOperation {
   }
   if (operation.kind === "pin" && typeof operation.pinned === "boolean") {
     const ids = validatePinnedIds(operation.ids);
+    const cancels = validatePinnedIds(operation.cancels);
     if (ids) {
       return {
         kind: "pin",
         operationId: operation.operationId,
         ids,
         pinned: operation.pinned,
+        ...(cancels?.length ? { cancels } : {}),
       };
     }
   }
@@ -343,26 +347,30 @@ export function createPinnedChatsSync(options: PinnedChatsSyncOptions) {
   function mutate(intent: Omit<PinOperation, "operationId">): Promise<void> {
     try {
       restore();
-      const operation = validatePinOperation({
+      let operation = validatePinOperation({
         ...intent,
         operationId: createNavigationNonce(),
       });
       // An unpin removes those chats from earlier queued pins, so a pin the server can never
       // place (a comparison deleted before import) cannot block the queue. The unpin still goes.
       const cancelled = new Set(operation.pinned ? [] : operation.ids);
-      const next = [
-        ...pending.flatMap((entry) => {
-          if (!entry.pinned) return [entry];
-          const ids = entry.ids.filter((id) => !cancelled.has(id));
-          if (ids.length === entry.ids.length) return [entry];
-          // A changed intent needs a new ID: journal entries are immutable and the server
-          // deduplicates by ID.
-          return ids.length === 0
-            ? []
-            : [{ ...entry, ids, operationId: createNavigationNonce() }];
-        }),
-        operation,
-      ];
+      const superseded: string[] = [];
+      const kept = pending.flatMap((entry) => {
+        if (!entry.pinned) return [entry];
+        const ids = entry.ids.filter((id) => !cancelled.has(id));
+        if (ids.length === entry.ids.length) return [entry];
+        // Another tab may already have sent it: the unpin fences its ID on the server.
+        superseded.push(entry.operationId);
+        // A changed intent needs a new ID: journal entries are immutable and the server
+        // deduplicates by ID.
+        return ids.length === 0
+          ? []
+          : [{ ...entry, ids, operationId: createNavigationNonce() }];
+      });
+      if (superseded.length > 0) {
+        operation = validatePinOperation({ ...operation, cancels: superseded });
+      }
+      const next = [...kept, operation];
       if (next.length > 10_000) {
         throw new PinnedChatsValidationError("Too many pending pin changes");
       }

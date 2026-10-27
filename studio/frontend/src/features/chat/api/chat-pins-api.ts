@@ -100,6 +100,9 @@ export function createChatPinsApi(sessionSignal: AbortSignal) {
             supportsOperationId && operation && !operation.pinned
               ? operation.ids
               : undefined,
+          cancelledOperationIds: supportsOperationId
+            ? operation?.cancels
+            : undefined,
         },
       ),
     );

@@ -25,6 +25,7 @@ def _save_if_current(
     expected_absent = False,
     operation_id = None,
     unpinned_ids = (),
+    cancelled_operation_ids = (),
 ):
     return chat_history.compare_and_set_settings(
         {
@@ -33,6 +34,7 @@ def _save_if_current(
             "patch": {"pinnedChatIds": pins},
             "operationId": operation_id,
             "unpinnedChatIds": list(unpinned_ids),
+            "cancelledOperationIds": list(cancelled_operation_ids),
         },
         current_subject = "test-user",
     )
@@ -597,3 +599,28 @@ def test_invalid_unicode_operation_id_is_rejected_before_sqlite(operation_id):
         _save_if_current({}, [], expected_absent = True, operation_id = operation_id)
     assert error.value.status_code == 400
     assert studio_db.list_chat_settings() == {}
+
+
+def test_a_delayed_pin_an_unpin_cancelled_is_acknowledged_without_applying():
+    _seed("chat")
+    _save_if_current({}, [], expected_absent = True)
+    unpin = _save_if_current(
+        {"pinnedChatIds": []},
+        [],
+        operation_id = "unpin-op",
+        unpinned_ids = ["chat"],
+        cancelled_operation_ids = ["pin-op"],
+    )
+    assert unpin.applied
+    delayed = _save_if_current({"pinnedChatIds": []}, ["chat"], operation_id = "pin-op")
+    assert delayed.applied
+    assert _pins() == {"pinnedIds": []}
+
+
+def test_cancelled_operation_ids_require_a_pin_only_patch():
+    with pytest.raises(HTTPException) as error:
+        chat_history.compare_and_set_settings(
+            {"expected": {}, "patch": {"autoTitle": False}, "cancelledOperationIds": ["op"]},
+            current_subject = "test-user",
+        )
+    assert error.value.status_code == 400

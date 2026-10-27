@@ -5854,6 +5854,7 @@ def upsert_chat_settings_merge_if_current(
     expected_absent_paths: Iterable[Iterable[str]] = (),
     operation_id: Optional[str] = None,
     unpinned_chat_ids: Iterable[str] = (),
+    cancelled_operation_ids: Iterable[str] = (),
 ) -> tuple[dict[str, Any], bool]:
     """Atomically merge ``updates`` only if ``expected`` still matches. Expected is a recursive subset
     so legacy keys omitted by the current client do not prevent a guarded migration. Any field the
@@ -5940,6 +5941,10 @@ def upsert_chat_settings_merge_if_current(
         )
         if operation_id is not None:
             conn.execute("INSERT INTO chat_pin_operations (id) VALUES (?)", (operation_id,))
+        conn.executemany(
+            "INSERT OR IGNORE INTO chat_pin_operations (id) VALUES (?)",
+            [(id,) for id in cancelled_operation_ids],
+        )
         conn.commit()
         return merged, True
     except CorruptSettingsError:

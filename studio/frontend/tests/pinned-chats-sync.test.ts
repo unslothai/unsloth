@@ -805,3 +805,29 @@ test("a 401 from a transient token-refresh failure keeps the queued pin for a la
   assert.equal(isRetryablePinError(new ChatSettingsRequestError("Bad request", 400, null)), false);
 });
 
+test("an unpin that cancels a queued pin sends that pin's ID so a delayed copy is fenced", async () => {
+  let value: string[] = [];
+  const sent: PinOperation[] = [];
+  let offline = true;
+  const sync = createPinnedChatsSync({
+    load: async () => value.slice(),
+    compareAndSet: async (expected, next, operation) => {
+      if (offline) throw new Error("offline");
+      if (operation) sent.push(operation);
+      if (JSON.stringify(expected ?? []) !== JSON.stringify(value)) return { applied: false, pinnedIds: value.slice() };
+      value = next.slice();
+      return { applied: true, pinnedIds: value.slice() };
+    },
+    readLegacy: () => [],
+    publish: () => undefined,
+  });
+  await sync.refresh();
+  await assert.rejects(sync.setPinned(["chat"], true));
+  offline = false;
+  await sync.setPinned(["chat"], false);
+  const unpin = sent.find((op) => !op.pinned);
+  assert.ok(unpin?.cancels?.length === 1);
+  assert.ok(!sent.some((op) => op.pinned));
+  assert.deepEqual(validatePinOperation(unpin).cancels, unpin.cancels);
+});
+

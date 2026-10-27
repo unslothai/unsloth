@@ -171,6 +171,7 @@ export async function saveChatSettingsPatchIfCurrent(
     requireSupport?: boolean;
     operationId?: string;
     unpinnedChatIds?: string[];
+    cancelledOperationIds?: string[];
   } = {},
 ): Promise<{ settings: PersistedChatSettings; applied: boolean }> {
   const response = await authFetch("/api/chat/settings/compare-and-set", {
@@ -185,6 +186,9 @@ export async function saveChatSettingsPatchIfCurrent(
       ...(options.operationId ? { operationId: options.operationId } : {}),
       ...(options.unpinnedChatIds
         ? { unpinnedChatIds: options.unpinnedChatIds }
+        : {}),
+      ...(options.cancelledOperationIds?.length
+        ? { cancelledOperationIds: options.cancelledOperationIds }
         : {}),
     }),
   });

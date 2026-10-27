@@ -644,7 +644,12 @@ class ConditionalChatSettingsPayload(BaseModel):
         Annotated[str, Field(strict = True, min_length = 1, max_length = MAX_PINNED_CHAT_ID_LENGTH)]
     ] = Field(default_factory = list, max_length = MAX_PINNED_CHAT_IDS)
 
-    @field_validator("unpinnedChatIds")
+    # Queued pins this unpin superseded: acknowledged here so a delayed one is never applied.
+    cancelledOperationIds: list[
+        Annotated[str, Field(strict = True, min_length = 1, max_length = 128)]
+    ] = Field(default_factory = list, max_length = MAX_PINNED_CHAT_IDS)
+
+    @field_validator("unpinnedChatIds", "cancelledOperationIds")
     @classmethod
     def _unique_unpinned_ids(cls, value: list[str]) -> list[str]:
         return ChatSettingsPayload._unique_pinned_chat_ids(value)
@@ -659,7 +664,9 @@ class ConditionalChatSettingsPayload(BaseModel):
     @model_validator(mode = "after")
     def _operation_is_pin_only(self):
         if (
-            self.operationId is not None or "unpinnedChatIds" in self.model_fields_set
+            self.operationId is not None
+            or "unpinnedChatIds" in self.model_fields_set
+            or "cancelledOperationIds" in self.model_fields_set
         ) and self.patch.model_fields_set != {"pinnedChatIds"}:
             raise ValueError("Pin operation metadata requires a pinnedChatIds-only patch")
         if set(self.unpinnedChatIds).intersection(self.patch.pinnedChatIds):
@@ -1935,6 +1942,7 @@ def compare_and_set_settings(
             parsed.expectedAbsentPaths,
             operation_id = parsed.operationId,
             unpinned_chat_ids = parsed.unpinnedChatIds,
+            cancelled_operation_ids = parsed.cancelledOperationIds,
         )
         return ConditionalChatSettingsResponse(settings = settings, applied = applied)
     except CorruptSettingsError as exc:
