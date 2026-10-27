@@ -165,15 +165,9 @@ _HOSTED_COMPANION = "companion"
 
 
 def _hosted_component_table() -> dict[str, dict[str, set[tuple[str, str, str]]]]:
-    """``{repo_id_lower: {filename_lower: {(registry, family, kind), ...}}}`` for every hosted quantized component
-    the image and video loaders fetch by name: ``prequant_repos`` / ``prequant_variant_repos`` denoisers (FP8, INT8,
-    INT8-ConvRot, NVFP4, every MoE / partition row, ComfyUI twins), ``te_prequant_repos`` / variant text encoders and
-    their INT8-ConvRot files, hosted bf16 VAEs, MiniMax-H3's conditioner and LTX-2.5's encoder. Read from the loader's
-    own tables and name resolvers, so a name the loader would not request is not here, and a cached file that is not
-    here counts as unknown. Keyed per FILE because each one is a single ``hf_hub_download`` at that path: one repo can
-    hold several families' files (``unsloth/Qwen-Image-FP8`` serves four families' encoder), and only the families
-    whose files are actually cached depend on it. Repos that are also a curated IMAGE base or mirror are left out:
-    those are pipeline installs the image derivation already accounts for, root checkpoints included."""
+    """``{repo_id_lower: {filename_lower: {(registry, family, kind)}}}`` for every hosted quantized component the
+    loaders fetch by name, read from the loaders' own tables. Keyed per FILE: one repo can serve several families
+    (``unsloth/Qwen-Image-FP8``). Curated image bases/mirrors are excluded: the image derivation covers them."""
     table: dict[str, dict[str, set[tuple[str, str, str]]]] = {}
 
     def add(repo_id, names, owner, kind) -> None:
@@ -296,10 +290,8 @@ def _hosted_names(table, repo_id: str) -> Optional[set[str]]:
 
 
 def _base_families() -> dict[str, set[tuple[str, str]]]:
-    """``{base_id_lower: {(registry, family)}}``: every curated base a hosted component is loaded beside, under every
-    identity it can be cached as (upstream, ungated mirror, repack). A speed load caches that base minus the denoiser
-    and takes the denoiser from the hosted repo, so only these ids can stand in for an installed checkpoint; an
-    arbitrary VAE repo never becomes a dependent by filename."""
+    """``{base_id_lower: {(registry, family)}}``: every identity of a curated base a hosted component is loaded
+    beside. Only these ids pin a hosted denoiser; an arbitrary VAE repo never becomes a dependent by filename."""
     out: dict[str, set[tuple[str, str]]] = {}
     for registry, module in (
         ("image", "core.inference.diffusion_families"),
@@ -353,9 +345,8 @@ def _hosted_repo_owners(table, repo) -> set[tuple[str, str, str]]:
 
 
 def _hosted_holds_unknown(table, repo) -> bool:
-    """Whether a hosted component repo holds anything the loaders never fetch there: a weight the table does not
-    name, or, for a repo that is also a base mirror, any file inside a folder. Either may be a model the user
-    installed, so the copy is preserved even when it shares the repo with curated components."""
+    """Whether a hosted repo holds a weight the table does not name (or, if also a base mirror, any foldered
+    file): that may be a user install, so it is preserved."""
     key = _normalise(str(getattr(repo, "repo_id", "") or ""))
     names = _hosted_names(table, key) or set()
     try:
@@ -381,8 +372,7 @@ def repo_holds_denoiser(repo, *, folders: bool = True) -> bool:
     repo_id = str(getattr(repo, "repo_id", "") or "")
     hosted = _hosted_component_table()
     if _normalise(repo_id) in hosted:
-        # A hosted component repo is never an install of its own (a pipeline pick of it is refused): only what the
-        # table cannot name keeps it.
+        # Never an install of its own: only files the table cannot name keep it.
         return _hosted_holds_unknown(hosted, repo)
     if _normalise(repo_id) in _component_only_repo_ids():
         return False
@@ -618,8 +608,7 @@ def known_companion_base_ids() -> set[str]:
         bases |= set(sd_cpp_companion_only_repo_ids())
     except Exception as exc:  # noqa: BLE001 -- one missing table never hides the rest
         logger.debug("sd.cpp companion table unavailable: %s", exc)
-    # Hosted component repos by their own id only: a video -FP8 repo is also its base's mirror, and expanding it would
-    # make the upstream base itself offerable.
+    # Own id only: expanding a video -FP8 repo's mirrors would make the upstream base offerable.
     return {_normalise(b) for b in _with_mirrors(bases)} | set(_hosted_component_table())
 
 
@@ -697,14 +686,9 @@ def required_companion_bases(
 
 
 def _add_hosted_dependents(required, cache_scans, checkpoints, pick_names, ignored) -> None:
-    """Hosted quantized components, per cached FILE. A cached hosted repo is needed by an installed model whose loader
-    reads one of the curated files it holds; a repo outside the scan (a single-repo preview) is listed for every
-    family whose table names it, since only cached repos are ever shown. A hosted DENOISER is read only beside a
-    curated base (a GGUF or dense pick brings its own), so only a base identity pins one; encoders and VAEs are read
-    by every install of the family. A curated base holding weights while a hosted denoiser of its family is cached is
-    a speed load: the base minus its denoiser plus the hosted file IS the install, so the base also lists itself and
-    Free up space never offers half of it (the delete guard ignores the repo being deleted, so its own delete stays
-    open)."""
+    """Pin hosted components per cached FILE to installs whose loader reads them. A hosted DENOISER is read only
+    beside a curated base, so only a base identity pins one. A curated base with weights plus a cached hosted
+    denoiser is a speed load, so the base lists itself and Free up space never offers half of it."""
     table = _hosted_component_table()
     if not table:
         return
@@ -724,7 +708,6 @@ def _add_hosted_dependents(required, cache_scans, checkpoints, pick_names, ignor
         (r, f) for owners in cached.values() for r, f, k in owners if k == _HOSTED_DENOISER
     }
     bases = _base_families()
-    # {checkpoint repo id: (families, whether hosted denoisers count)}
     dependents: dict[str, tuple[set[tuple[str, str]], bool]] = {}
     for scan in cache_scans or ():
         for repo in getattr(scan, "repos", ()) or ():

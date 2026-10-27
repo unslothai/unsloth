@@ -628,8 +628,7 @@ def test_a_vae_only_prequant_fetch_is_not_a_dependent(monkeypatch):
 
 
 def test_a_speed_loaded_base_and_its_hosted_checkpoint_are_one_install(monkeypatch):
-    """A root prequant checkpoint is half of a speed load: the base it loads beside stays out of Free up space, yet the
-    base's own On Device delete is not refused by a hosted repo that has no row of its own."""
+    """The base stays out of Free up space, yet its own delete is not refused by the hosted repo."""
     prequant = "unsloth/Qwen-Image-2.1-FP8"
     base = "Qwen/Qwen-Image-2.1"
     _install(
@@ -1065,8 +1064,7 @@ def test_h3_orphan_sidecars_are_offered_with_actual_blob_bytes(monkeypatch):
 
 @pytest.mark.parametrize("base", [H3_BASE, "MiniMaxAI/MiniMax-H3"])
 def test_h3_speed_loaded_pipeline_protects_hosted_components_without_links(monkeypatch, base):
-    # Only the VAEs land in the selected pipeline repo on a speed load. The DiT and TE
-    # live in the FP8 repo; looking only for transformer/ wrongly calls them unused.
+    # Speed load: only VAEs land in the pipeline repo; DiT and TE live in the FP8 repo.
     _install(
         monkeypatch,
         _repo(base, [("vae/diffusion_pytorch_model.safetensors", 11_100_000_000)]),
@@ -1139,8 +1137,7 @@ def test_h3_legacy_conditioner_copy_is_also_a_companion(monkeypatch):
     )
 
 
-# Hosted quantized components across families: (hosted repo, its cached curated files, the install that reads them,
-# that install's files, a SECOND install that reads a shared file in the same repo).
+# (hosted repo, its cached files, reading install, its files, a second install sharing a file in the repo)
 _VAE = [("vae/diffusion_pytorch_model.safetensors", 300_000)]
 HOSTED_CASES = {
     "image-prequant": (
