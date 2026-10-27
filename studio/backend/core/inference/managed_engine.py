@@ -575,15 +575,15 @@ def generation_prompt_opens_thought(template) -> bool:
 
 def sglang_prefill(message: dict, opens_thought: bool) -> dict:
     """SGLang drops the trailing assistant turn, renders a fresh generation prompt and appends only
-    its string content, so the finished thought and its closing tag must travel in that content."""
+    its string content, so a separately sent thought must travel in that content. Without one the
+    content goes as is: where the prompt opens <think>, SGLang's raw text already holds any close."""
     content = message.get("content")
     if isinstance(content, list):
         content = "".join(part.get("text") or "" for part in content if isinstance(part, dict))
     thought = (message.get("reasoning_content") or message.get("reasoning") or "").strip()
-    if opens_thought:
-        content = f"{thought}\n</think>\n\n{content or ''}"
-    elif thought:
-        content = f"<think>\n{thought}\n</think>\n\n{content or ''}"
+    if thought:
+        opener = "" if opens_thought else "<think>\n"
+        content = f"{opener}{thought}\n</think>\n\n{content or ''}"
     rest = {k: v for k, v in message.items() if k not in ("reasoning", "reasoning_content")}
     return {**rest, "content": content}
 

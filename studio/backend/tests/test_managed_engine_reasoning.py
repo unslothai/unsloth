@@ -423,7 +423,8 @@ def test_only_sglang_records_a_generation_prompt_that_opens_a_thought(tmp_path):
     [
         # SGLang renders a fresh generation prompt, so R1's open <think> must be closed here.
         (True, " Two plus two. ", "Two plus two.\n</think>\n\nThe sum is"),
-        (True, None, "\n</think>\n\nThe sum is"),
+        # Raw SGLang text already carries the thought and its close (or is still inside it).
+        (True, None, "The sum is"),
         (False, "Two plus two.", "<think>\nTwo plus two.\n</think>\n\nThe sum is"),
         (False, None, "The sum is"),
     ],
