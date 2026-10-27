@@ -952,14 +952,16 @@ function AdvancedTextField({
         {hint && <InfoHint>{hint}</InfoHint>}
       </span>
       {multiline ? (
+        // One line at the selects' 36px that grows with each file. No resize grip or inner scrollbar: WebKit paints
+        // both square over the 18px corners.
         <Textarea
           aria-label={label}
-          rows={2}
+          rows={1}
           spellCheck={false}
           placeholder={placeholder}
           value={value}
           onChange={(e) => onValueChange(e.target.value)}
-          className="min-h-0 resize-y font-mono text-xs"
+          className="min-h-9 overflow-hidden rounded-[18px] py-[calc((var(--spacing)*9-2px-1lh)/2)] font-mono text-xs leading-5"
         />
       ) : (
         <Input
@@ -968,7 +970,7 @@ function AdvancedTextField({
           placeholder={placeholder}
           value={value}
           onChange={(e) => onValueChange(e.target.value)}
-          className="h-8 font-mono text-xs"
+          className="h-9 font-mono text-xs"
         />
       )}
     </div>
