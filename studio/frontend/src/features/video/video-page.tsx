@@ -1155,6 +1155,9 @@ function VideoGenerator({
   // Controlled so the body-portaled selector force-closes when off-tab.
   const [selectorOpen, setSelectorOpen] = useState(false);
   const [pageMode, setPageMode] = useState<"create" | "train">("create");
+  // Mounted on first visit, then hidden rather than unmounted, so switching to Create keeps the training form.
+  const [trainMounted, setTrainMounted] = useState(false);
+  if (pageMode === "train" && !trainMounted) setTrainMounted(true);
   const [trainFamilies, setTrainFamilies] = useState<TrainFamilyOption[]>([]);
   const [trainFamilyName, setTrainFamilyName] = useState("flux.1");
   const [trainBaseChoice, setTrainBaseChoice] = useState("");
@@ -3872,23 +3875,26 @@ function VideoGenerator({
         </div>
       </div>
 
-      {pageMode === "train" ? (
-        <DiffusionTrainPanel
-          active={active && pageMode === "train"}
-          loadedFamily={null}
-          loadedBaseRepo={null}
-          onTrainingComplete={() => useImageWorkflowStore.getState().noteTrainingComplete()}
-          onDeploy={(args) => {
-            useImageWorkflowStore.getState().requestDeploy(args);
-            void navigateToImages({ to: "/images" });
-          }}
-          familyName={trainFamilyName}
-          onFamilyNameChange={setTrainFamilyName}
-          baseChoice={trainBaseChoice}
-          onBaseChoiceChange={setTrainBaseChoice}
-          onFamiliesChange={setTrainFamilies}
-        />
-      ) : (
+      {trainMounted && (
+        <div className={pageMode === "train" ? "contents" : "hidden"} inert={pageMode !== "train" || undefined}>
+          <DiffusionTrainPanel
+            active={active && pageMode === "train"}
+            loadedFamily={null}
+            loadedBaseRepo={null}
+            onTrainingComplete={() => useImageWorkflowStore.getState().noteTrainingComplete()}
+            onDeploy={(args) => {
+              useImageWorkflowStore.getState().requestDeploy(args);
+              void navigateToImages({ to: "/images" });
+            }}
+            familyName={trainFamilyName}
+            onFamilyNameChange={setTrainFamilyName}
+            baseChoice={trainBaseChoice}
+            onBaseChoiceChange={setTrainBaseChoice}
+            onFamiliesChange={setTrainFamilies}
+          />
+        </div>
+      )}
+      {pageMode !== "train" && (
       /* overflow-x-hidden: an unset overflow-x computes to auto beside overflow-y-auto, letting a
           wide row pan the page sideways on a phone. */
       <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden @[50rem]:flex-row @[50rem]:overflow-hidden">

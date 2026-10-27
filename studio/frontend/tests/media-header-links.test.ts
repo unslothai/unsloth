@@ -46,7 +46,7 @@ test("API, Library, then the other media page with an arrow, at the chat header'
 test("Video has Create and Train, Train being Images' trainer", () => {
   assert.match(VIDEO, /dataTour="video-mode"/);
   assert.match(VIDEO, /\{ value: "train", label: "Train"/);
-  assert.match(VIDEO, /\{pageMode === "train" \? \(\s*<DiffusionTrainPanel/);
+  assert.match(VIDEO, /\{trainMounted && \(\s*<div className=\{pageMode === "train" \? "contents" : "hidden"\}[^>]*>\s*<DiffusionTrainPanel/);
   assert.match(VIDEO, /\{pageMode === "train" \? \(\s*<TrainBaseSelector/);
   assert.match(
     VIDEO,

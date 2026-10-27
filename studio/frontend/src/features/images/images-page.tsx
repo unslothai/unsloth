@@ -1765,6 +1765,9 @@ export function ImagesPage({
   );
   // Page mode: "create" is the generation workspace, "train" the LoRA training workspace.
   const pageMode = useImageWorkflowStore((s) => s.pageMode);
+  // Mounted on first visit, then hidden rather than unmounted, so switching to Create keeps the training form.
+  const [trainMounted, setTrainMounted] = useState(false);
+  if (pageMode === "train" && !trainMounted) setTrainMounted(true);
   const setPageMode = useImageWorkflowStore((s) => s.setPageMode);
   const tourSteps = useMemo(
     () => buildImagesTourSteps({ pageMode }),
@@ -5974,23 +5977,26 @@ export function ImagesPage({
           </div>
         </div>
       </div>
-      {pageMode === "train" ? (
-        <DiffusionTrainPanel
-          active={active && pageMode === "train"}
-          loadedFamily={status?.family ?? null}
-          loadedBaseRepo={
-            // For a GGUF load repo_id is a checkpoint path, not a trainable base.
-            status?.base_repo ?? status?.repo_id ?? null
-          }
-          onTrainingComplete={() => setLoraRefreshKey((k) => k + 1)}
-          onDeploy={handleDeployAdapter}
-          familyName={trainFamilyName}
-          onFamilyNameChange={setTrainFamilyName}
-          baseChoice={trainBaseChoice}
-          onBaseChoiceChange={setTrainBaseChoice}
-          onFamiliesChange={setTrainFamilies}
-        />
-      ) : (
+      {trainMounted && (
+        <div className={pageMode === "train" ? "contents" : "hidden"} inert={pageMode !== "train" || undefined}>
+          <DiffusionTrainPanel
+            active={active && pageMode === "train"}
+            loadedFamily={status?.family ?? null}
+            loadedBaseRepo={
+              // For a GGUF load repo_id is a checkpoint path, not a trainable base.
+              status?.base_repo ?? status?.repo_id ?? null
+            }
+            onTrainingComplete={() => setLoraRefreshKey((k) => k + 1)}
+            onDeploy={handleDeployAdapter}
+            familyName={trainFamilyName}
+            onFamilyNameChange={setTrainFamilyName}
+            baseChoice={trainBaseChoice}
+            onBaseChoiceChange={setTrainBaseChoice}
+            onFamiliesChange={setTrainFamilies}
+          />
+        </div>
+      )}
+      {pageMode !== "train" && (
       /* Settings column + preview canvas. Structural borders stay edge-to-edge; spacing belongs inside each pane.
          The same 50rem page-container breakpoint drives this body and the header above. */
       <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden @[50rem]:flex-row @[50rem]:overflow-hidden">

@@ -41,3 +41,16 @@ test("Images re-reads its model status when returning from Train to Create", () 
     /if \(pageMode === "train"\) \{\s*leftForTrain\.current = true;\s*return;\s*\}\s*if \(!active \|\| !leftForTrain\.current\) return;\s*leftForTrain\.current = false;\s*void refreshStatus\(\);\s*\}, \[active, pageMode, refreshStatus\]\);/,
   );
 });
+
+for (const page of ["features/images/images-page.tsx", "features/video/video-page.tsx"]) {
+  test(`${page} hides the Train panel instead of unmounting it`, () => {
+    const src = readSrc(page);
+    assert.match(src, /if \(pageMode === "train" && !trainMounted\) setTrainMounted\(true\);/);
+    assert.match(
+      src,
+      /\{trainMounted && \(\s*<div className=\{pageMode === "train" \? "contents" : "hidden"\} inert=\{pageMode !== "train" \|\| undefined\}>\s*<DiffusionTrainPanel/,
+    );
+    assert.match(src, /\/>\s*<\/div>\s*\)\}\s*\{pageMode !== "train" && \(/);
+    assert.doesNotMatch(src, /\{pageMode === "train" \? \(\s*<DiffusionTrainPanel/);
+  });
+}
