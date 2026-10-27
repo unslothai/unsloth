@@ -89,18 +89,24 @@ def _mode(**attrs):
         "env": {},
     }
     for key, value in attrs.items():
-        if key in ("extra_args", "env", "server_caps", "is_vulkan_backend", "gpu_indices"):
+        if key in (
+            "extra_args",
+            "env",
+            "server_caps",
+            "is_vulkan_backend",
+            "gpu_indices",
+            "auto_resolves_off",
+        ):
             call[key] = value
         else:
             setattr(stub, key, value)
     return stub._studio_lazy_mode(**call)
 
 
-@pytest.mark.parametrize("arch", ["gemma4", "qwen4exp"])
-def test_emitted_on_for_the_two_lazy_archs(arch):
-    """models/gemma4.cpp:llama_model_gemma4::load_arch_tensors and
-    models/qwen4exp.cpp:llama_model_qwen4exp::load_arch_tensors are the only two that pass
-    TENSOR_READ_LAZY for per_layer_token_embd."""
+@pytest.mark.parametrize("arch", ["gemma4", "qwen4exp", "deepseek41"])
+def test_emitted_on_for_the_lazy_archs(arch):
+    """The archs lookup_tables.LAZY_READ_TENSORS lists pass TENSOR_READ_LAZY for
+    per_layer_token_embd (gemma4, qwen4exp, and deepseek41's Engram table)."""
     assert _mode(_architecture = arch) == "on"
 
 
@@ -239,3 +245,24 @@ def test_a_launch_the_planner_does_not_own_carries_no_studio_lazy_mode(
         assert cmd[cmd.index("-lzm") + 1] == "on", cmd
     else:
         assert "-lzm" not in cmd and "--lazy-mode" not in cmd, cmd
+
+
+def test_the_lazy_archs_follow_the_shared_lookup_table_registry():
+    """DeepSeek-V4.1's Engram table is read lazily too (lookup_tables.LAZY_READ_TENSORS); a
+    second hand-kept list priced it resident in the plan."""
+    from core.inference.lookup_tables import LAZY_READ_TENSORS
+    for arch in LAZY_READ_TENSORS:
+        assert _per_layer_embd_read_lazily(arch, 103 * GIB, supports_lazy_mode = True, env = {})
+
+
+@pytest.mark.parametrize(
+    "device_mode, auto_off, expected",
+    [("on", False, "on"), ("on", True, None), ("off", True, "off"), ("off", False, None)],
+)
+def test_the_emitted_mode_must_agree_with_the_fit_auto_resolution(device_mode, auto_off, expected):
+    """The fit resolves auto for the child's real device order, split mode and env. A mode from
+    the raw selection that disagrees (an unused iGPU under -sm none, a different order) would
+    hold or stream the table against what the fit priced, so auto is left alone instead."""
+    attrs = {"integrated_cuda": device_mode == "off"}
+    assert _mode(**attrs) == device_mode
+    assert _mode(auto_resolves_off = auto_off, **attrs) == expected

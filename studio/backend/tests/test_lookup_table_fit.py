@@ -388,11 +388,32 @@ def test_a_stale_spelling_from_another_build_is_not_the_users_choice(
     assert _lazy_values(_flash_next_launch(tmp_path)[1]) == ["off"]
 
 
-def test_the_resident_table_is_charged_once_in_the_load_mode_fit(tmp_path, _moe_cache_host):
-    """After the resident verdict the table moves from the pooled weights to host-only RAM."""
+@pytest.mark.parametrize("smart_offload", [False, True])
+def test_the_resident_table_is_charged_once_in_the_load_mode_fit(
+    tmp_path, _moe_cache_host, monkeypatch, smart_offload
+):
+    """After the resident verdict the table moves from the pooled weights to host-only RAM. With
+    the planner on, the fit already carries a prompt-cache term; the residency check replaces it
+    rather than adding a second one."""
+    if smart_offload:
+        monkeypatch.setenv("UNSLOTH_SMART_OFFLOAD", "1")
+    else:
+        monkeypatch.delenv("UNSLOTH_SMART_OFFLOAD", raising = False)
     _backend, cmd = _flash_next_launch(tmp_path, ram_gib = 72)
     assert _lazy_values(cmd) == ["off"], cmd
     assert _arg(cmd, "--load-mode") == "none", cmd
+
+
+def test_the_auto_cache_ram_clamp_counts_the_host_pinned_table_once(
+    tmp_path, _moe_cache_host, monkeypatch
+):
+    """model_size_fit already leaves the host-pinned inputs out, so subtracting the streamed
+    table again priced 25+ GiB of spilled weights on a 28 GiB host as room for the default
+    8 GiB prompt cache."""
+    monkeypatch.setenv("UNSLOTH_SMART_OFFLOAD", "1")
+    _backend, cmd = _flash_next_launch(tmp_path, ram_gib = 28)
+    assert _lazy_values(cmd) == [], cmd
+    assert _arg(cmd, "--cache-ram") == "0", cmd
 
 
 def test_a_retry_hands_the_table_back_to_llama_cpp():

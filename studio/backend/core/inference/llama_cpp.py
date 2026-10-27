@@ -5257,10 +5257,10 @@ def _flash_attn_enabled_from_args(
 
 # Archs whose per_layer_token_embd llama.cpp creates TENSOR_READ_LAZY (gemma4.cpp, qwen4exp.cpp
 # load_arch_tensors); gemma3n passes flag 0 and stays resident.
-_LAZY_PER_LAYER_EMBD_ARCHS = frozenset({"gemma4", "qwen4exp"})
+_LAZY_PER_LAYER_EMBD_ARCHS = frozenset(_LOOKUP_LAZY_READ_TENSORS)
 
 # --lazy-mode auto declines at or below this (llama-model-loader.cpp lazy_read::add).
-_LAZY_MODE_AUTO_MIN_BYTES = 4 * 1024**3
+_LAZY_MODE_AUTO_MIN_BYTES = _LOOKUP_LAZY_READ_AUTO_MIN_BYTES
 
 
 def _lazy_mode_from_args(
@@ -12029,6 +12029,7 @@ class LlamaCppBackend:
         is_vulkan_backend: bool = False,
         extra_args: Optional[Iterable[str]] = None,
         env: Optional[Mapping[str, str]] = None,
+        auto_resolves_off: Optional[bool] = None,
     ) -> Optional[str]:
         """The ``--lazy-mode`` Studio emits for this launch, or None to emit nothing.
 
@@ -12075,7 +12076,7 @@ class LlamaCppBackend:
         if is_vulkan_backend:
             if not self._vulkan_selection_types_known(binary, gpu_indices):
                 return None
-            return (
+            mode = (
                 "on"
                 if self._selected_devices_can_mmap(
                     binary = binary,
@@ -12084,13 +12085,19 @@ class LlamaCppBackend:
                 )
                 else "off"
             )
-        indices = list(gpu_indices)
-        if not indices:
+        else:
+            indices = list(gpu_indices)
+            if not indices:
+                return None
+            all_shared = self._integrated_cuda_selection_is_all_shared(indices) or all(
+                self._amd_apu_wants_unified_memory([idx]) for idx in indices
+            )
+            mode = "off" if all_shared else "on"
+        # The fit priced auto for the child's real device order, split mode and env
+        # (_lazy_auto_resolves_off); on a disagreement leave auto, which that price describes.
+        if auto_resolves_off is not None and (mode == "off") != bool(auto_resolves_off):
             return None
-        all_shared = self._integrated_cuda_selection_is_all_shared(indices) or all(
-            self._amd_apu_wants_unified_memory([idx]) for idx in indices
-        )
-        return "off" if all_shared else "on"
+        return mode
 
     def _weights_in_host_memory(
         self,
@@ -24751,6 +24758,7 @@ class LlamaCppBackend:
                 # flags above: the except path falls through to the launch, which reads it.
                 _fit_load_mode: Optional[str] = None
                 _managed_lazy_flags: Optional[list[str]] = None
+                _fit_lazy_auto_off: Optional[bool] = None
                 _host_input_embd = 0
                 # Layer-fallback min GPUs; raised below on a tensor downgrade. Bound
                 # before the try so the --fit-on except path still has it (no UnboundLocal).
@@ -28644,32 +28652,6 @@ class LlamaCppBackend:
                         env = _fit_env,
                         auto_resolves_off = _fit_lazy_auto_off,
                     )
-                    if (
-                        _planner_owns_fit
-                        and _cache_ram_in_force is None
-                        and server_caps.get("supports_cache_ram")
-                    ):
-                        _auto_cache_ram_mib = self._clamped_cache_ram_mib(
-                            self._available_system_memory_mib(),
-                            max(
-                                0.0,
-                                max(
-                                    0,
-                                    model_size_fit
-                                    - _fit_lazy_bytes
-                                    + kv_cache_bytes
-                                    + _mtp_reserve_bytes
-                                    + _cc_bytes(effective_ctx, _spill_n_gpus),
-                                )
-                                / (1024 * 1024)
-                                - sum(
-                                    max(0.0, _gpu_usable(_g, _pin_fraction)) for _g in (gpus or ())
-                                ),
-                            )
-                            + _host_only_fit_bytes / (1024 * 1024),
-                        )
-                        if _auto_cache_ram_mib is not None:
-                            _spill_inputs["cache_ram_default_mib"] = int(_auto_cache_ram_mib)
                     _spill_inputs["host_ram_unpriced_bytes"] = max(
                         0,
                         int(_cpu_draft_spill_bytes or 0)
@@ -28792,8 +28774,9 @@ class LlamaCppBackend:
                                         "lazy_read_bytes": table,
                                         "host_only_bytes": _fit_load_mode_kwargs["host_only_bytes"]
                                         + table
-                                        + _lazy_prompt_cache
                                         + int(table * _LAZY_RESIDENT_MARGIN_FRAC),
+                                        # Replaces, not adds to, the planner's own prompt-cache term.
+                                        "prompt_cache_bytes": _lazy_prompt_cache,
                                         "announce": False,
                                     }
                                 )
@@ -28818,6 +28801,38 @@ class LlamaCppBackend:
                         _fit_load_mode_kwargs["lazy_read_bytes"] = 0
                         _fit_lazy_bytes = 0
                     _spill_inputs["lazy_read_bytes"] = _fit_lazy_bytes
+                    # After the residency decision: model_size_fit already excludes the host-pinned
+                    # inputs, and only their streamed share leaves host RAM.
+                    if (
+                        _planner_owns_fit
+                        and _cache_ram_in_force is None
+                        and server_caps.get("supports_cache_ram")
+                    ):
+                        _auto_cache_ram_mib = self._clamped_cache_ram_mib(
+                            self._available_system_memory_mib(),
+                            max(
+                                0.0,
+                                max(
+                                    0,
+                                    model_size_fit
+                                    - max(0, _fit_lazy_bytes - _host_input_embd)
+                                    + kv_cache_bytes
+                                    + _mtp_reserve_bytes
+                                    + _cc_bytes(effective_ctx, _spill_n_gpus),
+                                )
+                                / (1024 * 1024)
+                                - sum(
+                                    max(0.0, _gpu_usable(_g, _pin_fraction)) for _g in (gpus or ())
+                                ),
+                            )
+                            + (_host_only_fit_bytes + max(0, _host_input_embd - _fit_lazy_bytes))
+                            / (1024 * 1024),
+                        )
+                        if _auto_cache_ram_mib is not None:
+                            _spill_inputs["cache_ram_default_mib"] = int(_auto_cache_ram_mib)
+                            _fit_load_mode_kwargs["prompt_cache_bytes"] = (
+                                self._effective_prompt_cache_bytes(_auto_cache_ram_mib, server_caps)
+                            )
                     _fit_load_mode = self._fit_derived_load_mode(**_fit_load_mode_kwargs)
                     if _moe_cache_candidate:
                         _moe_cache_switch = _moe_switch(_MOE_CACHE_ENV)
@@ -28888,6 +28903,7 @@ class LlamaCppBackend:
                     # Same reasoning: an unpriced load keeps llama.cpp's default.
                     _fit_load_mode = None
                     _managed_lazy_flags = None
+                    _fit_lazy_auto_off = None
                     _moe_cache_candidate = _moe_cache_ram_ok = False
                     # And a half-built snapshot is not a price either: the throw can
                     # land after the dict exists but before the later terms are added
@@ -29289,6 +29305,7 @@ class LlamaCppBackend:
                         is_vulkan_backend = is_vulkan_backend,
                         extra_args = extra_args,
                         env = os.environ,
+                        auto_resolves_off = _fit_lazy_auto_off,
                     )
                     if _planner_owns_fit and not _managed_lazy_flags
                     else None
