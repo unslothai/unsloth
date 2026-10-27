@@ -2490,6 +2490,7 @@ export const sv = {
       liveMonitor: {
         title: "Direktövervakning",
         apiTitle: "API-övervakning",
+        apiDescription: "Se vad andra appar skickar till den här serverns API när det kommer in.",
         summary: "Begäranden, fel och tokenanvändning i realtid",
         status: "{active} aktiva · {recent} senaste · {model}",
         noModelLoaded: "ingen modell inläst",

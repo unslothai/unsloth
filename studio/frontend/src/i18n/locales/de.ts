@@ -2345,6 +2345,7 @@ export const de = {
       liveMonitor: {
         title: "Live-Monitor",
         apiTitle: "API-Monitor",
+        apiDescription: "Sieh, was andere Apps an die API dieses Servers senden, sobald es ankommt.",
         summary: "Aktive Anfragen, Fehler und Token-Nutzung",
         status: "Aktiv: {active} · kürzlich: {recent} · {model}",
         noModelLoaded: "kein Modell geladen",

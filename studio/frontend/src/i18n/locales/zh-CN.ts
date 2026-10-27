@@ -2287,6 +2287,7 @@ export const zhCN = {
       liveMonitor: {
         title: "实时监控",
         apiTitle: "API 监控",
+        apiDescription: "实时查看其他应用发送到此服务器 API 的内容。",
         summary: "实时请求、错误和 token 用量",
         status: "{active} 个进行中 · {recent} 个近期请求 · {model}",
         noModelLoaded: "未加载模型",

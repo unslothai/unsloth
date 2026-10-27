@@ -2249,6 +2249,7 @@ export const it = {
       liveMonitor: {
         title: "Monitor in tempo reale",
         apiTitle: "Monitor API",
+        apiDescription: "Guarda cosa inviano le altre app all'API di questo server non appena arriva.",
         summary: "Richieste attive, errori e utilizzo dei token",
         status: "{active} attive · {recent} recenti · {model}",
         noModelLoaded: "nessun modello caricato",

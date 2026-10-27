@@ -2321,6 +2321,7 @@ export const hi = {
       liveMonitor: {
         title: "लाइव मॉनिटर",
         apiTitle: "API मॉनिटर",
+        apiDescription: "देखें कि दूसरे ऐप इस सर्वर के API को क्या भेजते हैं, जैसे ही वह आता है।",
         summary: "सक्रिय अनुरोध, त्रुटियाँ और टोकन उपयोग",
         status: "{active} सक्रिय · {recent} हाल के · {model}",
         noModelLoaded: "कोई मॉडल लोड नहीं है",

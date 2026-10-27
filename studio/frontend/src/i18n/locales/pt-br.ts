@@ -2329,6 +2329,7 @@ export const ptBR = {
       liveMonitor: {
         title: "Monitor ao vivo",
         apiTitle: "Monitor da API",
+        apiDescription: "Veja o que outros apps enviam para a API deste servidor assim que chega.",
         summary: "Solicitações ativas, erros e uso de tokens",
         status: "{active} ativas · {recent} recentes · {model}",
         noModelLoaded: "nenhum modelo carregado",
