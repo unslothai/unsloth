@@ -196,6 +196,114 @@ def test_normal_weight_index_is_clean(tmp_path):
     assert escaping_weight_references(folder) == []
 
 
+@symlinks
+@pytest.mark.parametrize(
+    "files",
+    [
+        {"model.safetensors.index.json": {"weight_map": {"w": "bridge/../model.safetensors"}}},
+        {"config.json": {"transformers_weights": "bridge/../model.safetensors"}},
+        {
+            "modules.json": [{"idx": 0, "name": "0", "path": "0_Transformer"}],
+            "0_Transformer/model.safetensors.index.json": {
+                "weight_map": {"w": "../bridge/../model.safetensors"}
+            },
+        },
+        {"modules.json": [{"idx": 0, "name": "0", "path": "bridge/../nested"}]},
+    ],
+    ids = ["index", "transformers_weights", "module_index", "module_path"],
+)
+def test_a_dotdot_after_a_linked_directory_is_judged_where_it_lands(tmp_path, files):
+    from utils.security.file_security import escaping_weight_references
+
+    victim = tmp_path / "victim"
+    (victim / "nested").mkdir(parents = True)
+    (victim / "model.safetensors").write_text("victim")
+    folder = _write(tmp_path / "m", files)
+    (folder / "bridge").symlink_to(victim / "nested", target_is_directory = True)
+    assert escaping_weight_references(folder)
+
+
+@symlinks
+def test_links_that_do_not_change_where_dotdot_lands_still_pass(tmp_path):
+    from utils.security.file_security import escaping_weight_references
+
+    real = tmp_path / "real-model"
+    _write(
+        real,
+        {
+            "model.safetensors.index.json": {
+                "weight_map": {
+                    "a": "model-00001-of-00002.safetensors",
+                    "b": "sub/../sub/model-00002-of-00002.safetensors",
+                    "c": "inner/model-00003-of-00003.safetensors",
+                }
+            },
+        },
+    )
+    (real / "sub").mkdir()
+    (real / "inner").symlink_to(real / "sub", target_is_directory = True)
+    linked = tmp_path / "linked-model"
+    linked.symlink_to(real, target_is_directory = True)
+    assert escaping_weight_references(real) == []
+    assert escaping_weight_references(linked) == []
+
+
+@symlinks
+@pytest.mark.parametrize(
+    "files",
+    [
+        {"model.safetensors.index.json": {"weight_map": {"w": "alias/../model.safetensors"}}},
+        {"config.json": {"transformers_weights": "alias/../model.safetensors"}},
+        {"modules.json": [{"idx": 0, "name": "0", "path": "alias/../more"}]},
+    ],
+    ids = ["index", "transformers_weights", "module_path"],
+)
+def test_a_dotdot_through_a_link_that_stays_in_the_folder_passes(tmp_path, files):
+    # alias/../x opens actual/x: not where the text says, but still inside the model.
+    from utils.security.file_security import escaping_weight_references
+
+    folder = _write(tmp_path / "m", files)
+    (folder / "actual" / "nested").mkdir(parents = True)
+    (folder / "actual" / "more").mkdir()
+    (folder / "actual" / "model.safetensors").write_text("w")
+    (folder / "alias").symlink_to(folder / "actual" / "nested", target_is_directory = True)
+    assert escaping_weight_references(folder) == []
+    # The same layout with the link pointing out of the folder is still flagged.
+    victim = tmp_path / "victim"
+    (victim / "nested").mkdir(parents = True)
+    (folder / "alias").unlink()
+    (folder / "alias").symlink_to(victim / "nested", target_is_directory = True)
+    assert escaping_weight_references(folder)
+
+
+@symlinks
+def test_a_hub_cache_snapshot_with_blob_links_passes(tmp_path):
+    from utils.security.file_security import escaping_weight_references
+
+    repo = tmp_path / "hub" / "models--org--name"
+    snapshot = repo / "snapshots" / "abc123"
+    blobs = repo / "blobs"
+    (snapshot / "sub").mkdir(parents = True)
+    blobs.mkdir()
+    index = {
+        "weight_map": {
+            "a": "model-00001-of-00002.safetensors",
+            "b": "sub/../sub/model-00002-of-00002.safetensors",
+        }
+    }
+    for name, blob, payload in (
+        ("config.json", "c0", json.dumps({"model_type": "llama"})),
+        ("model.safetensors.index.json", "i0", json.dumps(index)),
+        ("model-00001-of-00002.safetensors", "w1", "w1"),
+        ("sub/model-00002-of-00002.safetensors", "w2", "w2"),
+    ):
+        (blobs / blob).write_text(payload)
+        depth = "../" * (name.count("/") + 2)
+        (snapshot / name).symlink_to(f"{depth}blobs/{blob}")
+    assert (snapshot / "sub/../sub/model-00002-of-00002.safetensors").read_text() == "w2"
+    assert escaping_weight_references(snapshot) == []
+
+
 # Export: what loads is what was checked.
 
 

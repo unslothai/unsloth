@@ -84,9 +84,7 @@ logger = get_logger(__name__)
 _DISABLE_TOKENS = frozenset({"0", "off", "false", "no"})
 _ENABLE_TOKENS = frozenset({"1", "on", "true", "yes"})
 
-# Resolved device backend -> the prebuilt sd-cli accelerator to install, used only for a force-native load on a GPU
-# host: without it the installer defaults to "cpu" and a forced ROCm/Intel generation silently runs on CPU. Unknown ->
-# "auto".
+# Force-native GPU loads only: without it the installer defaults to "cpu" and runs on CPU.
 _INSTALL_ACCELERATOR = {"rocm": "rocm", "cuda": "cuda", "xpu": "vulkan"}
 
 
@@ -240,6 +238,31 @@ def _accessible_render_vendors(vendors) -> set:
     return found
 
 
+def _reachable_intel_arc_render_node() -> bool:
+    """True when this process can open the render node of an Intel Arc itself (PCI class per node), not
+    only some Intel node: beside a UHD iGPU, a container may mount the iGPU's node alone."""
+    import glob
+
+    from utils.hardware.hardware import _intel_pci_device_is_xpu_class
+
+    for node in glob.glob("/dev/dri/renderD*"):
+        if not os.access(node, os.R_OK | os.W_OK):
+            continue
+        device = f"/sys/class/drm/{os.path.basename(node)}/device"
+        try:
+            with open(f"{device}/vendor", encoding = "utf-8") as f:
+                if _RENDER_NODE_VENDORS.get(f.read().strip().lower()) != "intel":
+                    continue
+        except OSError:
+            continue
+        try:
+            if _intel_pci_device_is_xpu_class(device) is True:
+                return True
+        except Exception:  # noqa: BLE001 -- unknown class: not proof the Arc is reachable
+            continue
+    return False
+
+
 def _vulkan_gpu_for_cpu_torch() -> bool:
     """True when torch is CPU-only but the host has a GPU the Vulkan sd.cpp build can render on:
     an AMD card (Vega, RDNA1 and Polaris get no ROCm wheel) or an Intel Arc. Never beside NVIDIA,
@@ -251,7 +274,7 @@ def _vulkan_gpu_for_cpu_torch() -> bool:
     # ggml reads this one itself; anything but a list of ordinals selects nothing or throws. Its
     # ordinals index the raw Vulkan list, so it never vouches for which card a mixed host gets.
     vk_mask = os.environ.get("GGML_VK_VISIBLE_DEVICES")
-    if vk_mask is not None and not re.fullmatch(r"\s*\d+\s*(,\s*\d+\s*)*", vk_mask):
+    if vk_mask is not None and not re.fullmatch(r"\s*\d+(?:[\s,]+\d+)*[\s,]*", vk_mask):
         return False
     inventory = _physical_inventory()
     if inventory.get("unknown") or "nvidia" in (inventory.get("unanswered") or ()):
@@ -278,12 +301,23 @@ def _vulkan_gpu_for_cpu_torch() -> bool:
         reachable = _accessible_render_vendors({d.get("vendor") for d in gpus})
         gpus = [d for d in gpus if d.get("vendor") in reachable]
     masked = _masked_vendors()
-    # Unpinned sd.cpp takes the first Vulkan device, which may be a UHD iGPU beside the card.
     if not gpus or any(d.get("vendor") in masked for d in gpus):
         return False
-    if not all(_renders(d) for d in gpus):
-        return False
-    return _hardware_vulkan_driver({d.get("vendor") for d in gpus}) and _vulkan_loader_loads()
+    rendering = [d for d in gpus if _renders(d)]
+    if len(rendering) < len(gpus):
+        # Unpinned sd.cpp takes a discrete GPU before an iGPU (get_default_backend_name); a mask's ordinals may name the iGPU.
+        if vk_mask is not None or not rendering:
+            return False
+        if any(d.get("vendor") != "intel" for d in gpus if not _renders(d)):
+            return False
+        # The vendor-level node check cannot tell an Arc's node from the iGPU's: an unopenable Arc vouches for nothing.
+        if sys.platform != "win32" and not _reachable_intel_arc_render_node():
+            rendering = [d for d in rendering if d.get("vendor") != "intel"]
+            if not rendering:
+                return False
+    # The driver must belong to a card that renders: beside an AMD card, an Intel-only ICD drives just the iGPU.
+    rendering_vendors = {d.get("vendor") for d in rendering}
+    return _hardware_vulkan_driver(rendering_vendors) and _vulkan_loader_loads()
 
 
 # The ICD manifests that drive each vendor's cards (RADV as radeon_icd or radv_icd, AMDVLK /
@@ -674,9 +708,7 @@ def active_engine_name() -> str:
 def _activate(name: str, reason: Optional[str]) -> Any:
     global _active_engine_name, _fallback_reason
     with _transition_lock:
-        # Switching engines: unload the deactivated one first, else its model stays resident but unreachable (the
-        # evictor only targets the active engine), leaking 10+ GB. The unload is slow, so resolve under _lock but run
-        # unload() OUTSIDE it.
+        # Unload the old engine first (else it leaks VRAM), outside _lock since unload is slow.
         engine_to_unload = None
         old_name = None
         with _lock:
@@ -702,10 +734,7 @@ def _activate(name: str, reason: Optional[str]) -> Any:
             try:
                 engine_to_unload.unload()
             except Exception as exc:
-                # Do NOT publish the new engine after a failed teardown. The old model (or the resident sd-server)
-                # still holds its memory, and flipping the name would hide it from get_active_diffusion_engine(),
-                # which the evictor, /images/unload and the next load all resolve through, so the leak would be
-                # permanent. Leaving the old engine active keeps it reclaimable and lets the caller retry.
+                # Do not publish after a failed teardown: the old model would leak, hidden from the evictor.
                 logger.error("failed to unload previous engine %s: %s", old_name, exc)
                 raise RuntimeError(
                     f"Could not switch the diffusion engine to {name}: unloading the current "
@@ -725,15 +754,7 @@ def _activate(name: str, reason: Optional[str]) -> Any:
 
 
 def begin_load_on(expected_engine: Any, start: Callable[[], Any]) -> Any:
-    """Run ``start`` under the transition lock, refusing if the engine changed since selection.
-
-    A load route selects its engine, then yields (device probe, arbiter acquire) before it
-    registers the load. A second /images/load picking the OTHER engine can transition in that
-    gap and unload the still-idle engine this request captured, which would then load a model
-    nothing can reach: generate / status / unload and the arbiter's evictor all resolve through
-    get_active_diffusion_engine(). Re-checking under the same lock the switch takes makes
-    selection and registration one operation.
-    """
+    """Re-checks the engine under the transition lock; a second load can switch engines in the start gap."""
     with _transition_lock:
         if expected_engine is not get_active_diffusion_engine():
             raise RuntimeError(
@@ -894,11 +915,7 @@ def select_and_activate_engine(
         )
         if off_torch is not None:
             install_accelerator = preferred_accelerator(off_torch.accelerator, selected_card)
-        # Probe the resident sd-server FIRST (the backend prefers it): a server-only install must still route to
-        # native and should not pay an sd-cli download. Install the accelerator-matched build so a forced-native GPU
-        # load gets the GPU server.
-        # Offline an ensure hands back the condemned ROCm build, so a substitute is refused; a
-        # DEFERRED upgrade keeps native for the teardown to land.
+        # Offline an ensure returns the condemned ROCm build; a deferred upgrade keeps native.
         upgrade_is_deferred = _managed_tree_in_use() and _install_allowed()
 
         def _accept(candidate):
@@ -930,9 +947,7 @@ def select_and_activate_engine(
             # Held for the single recorder below.
             unlaunchable_server = server_binary
             server_binary = None
-        # sd-cli is the one-shot fallback: always LOCATE an existing binary, but auto-INSTALL only when there is no
-        # usable server. Probe runnability first, else a present but non-runnable binary passes as available and fails
-        # inside the background load.
+        # Probe runnability first, else a non-runnable binary fails inside the background load.
         binary = _accept(
             ensure_sd_cpp_binary(
                 allow_install = _install_allowed() and server_binary is None,
@@ -945,18 +960,11 @@ def select_and_activate_engine(
             unlaunchable_cli = binary
             binary = None
         if binary is None and server_binary is None and (unlaunchable_cli or unlaunchable_server):
-            # One strike per bundle, only when NEITHER executable runs: one failing alone says
-            # nothing about the accelerator, and two strikes from one install event would divert.
-            # Here, not in the load, because a build the router rejects never reaches the load.
+            # One strike per bundle, only when neither executable runs.
             note_unlaunchable_accelerator_build(
                 unlaunchable_cli or unlaunchable_server, card = selected_card
             )
-        # Runnable is not the same as capable. A build installed before this family's architecture
-        # existed upstream is reused untouched -- nothing upgrades a runnable build of the right
-        # accelerator -- and sd-cli only discovers it cannot read the model deep inside the load,
-        # which for the server means a failed load and for the one-shot path a backend that
-        # reported ready and dies on the first generation. Diffusers can run it, so drop the
-        # incapable binary here and let the fallback below say why.
+        # Runnable is not capable: an old build is never upgraded and fails late on new families.
         for name, candidate in (("sd-server", server_binary), ("sd-cli", binary)):
             if candidate and not sd_cpp_binary_runs_family(candidate, fam):
                 incapable_build = True
@@ -1042,18 +1050,8 @@ def refuse_engine_pick(
 def native_binary_installed(
     *, gpu_ordinal: Optional[int] = None, fam: Optional[DiffusionFamily] = None
 ) -> bool:
-    """Whether a RUNNABLE sd.cpp binary is already on disk, installing nothing to find out.
-
-    Separated from the prediction because the two answers differ where it matters: prediction
-    counts an absent binary as available whenever installing one is allowed, and a caller that
-    must know whether selection could still fall back to diffusers needs the unassumed answer.
-
-    Filters exactly as selection does, card included, or the plan stages the wrong engine's files.
-    Given ``fam``, that includes selection's architecture gate: a build that cannot run this family
-    is not a native route for it, and a prediction that says otherwise stages sd-cli's companion
-    VAE and text encoder for a load that goes to diffusers. Without ``fam`` the question is the
-    older one, "is there a binary at all".
-    """
+    """Answers whether a runnable sd.cpp binary exists on disk, never installing one, unlike the
+    prediction."""
     backend = resolve_diffusion_device_target().backend
     off_torch = off_torch_sd_cpp_device(backend)
     if off_torch is not None:

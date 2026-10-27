@@ -71,14 +71,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
-# UNSLOTH_DIFFUSION_COMPILE_CACHE: auto (default) | 0 | 1. auto loads a matching bundle and saves one after the first
-# compiled generation; 1 also re-saves on a hit; 0 disables it. Measured on Qwen-Image (B200): compile hitch 29.1 ->
-# 22.2 s, bit-identical, 7.9 MB bundle. The rest is dynamo tracing + guards, which Mega-cache does not capture.
-# UNSLOTH_DIFFUSION_COMPILE_CACHE_DIR: root dir for bundles (default under the workspace).
-# UNSLOTH_DIFFUSION_COMPILE_CACHE_SAVE: 0 disables the auto save (load-only); 1 keeps it.
-# UNSLOTH_DIFFUSION_COMPILE_CACHE_SYNC: 1 makes save_async write inline on the calling thread, as it did before the
-# background worker existed. For tests and for debugging a save that looks like it never ran.
-# UNSLOTH_DIFFUSION_COMPILE_CACHE_MAX_GB: cache root budget in GB (default 20); 0 disables eviction.
+# UNSLOTH_DIFFUSION_COMPILE_CACHE: auto (default) | 0 | 1; 1 also re-saves on a hit.
+# _DIR root, _SAVE=0 load-only, _SYNC=1 save inline, _MAX_GB budget (default 20, 0 = no eviction).
 _ENV_MODE = "UNSLOTH_DIFFUSION_COMPILE_CACHE"
 _ENV_DIR = "UNSLOTH_DIFFUSION_COMPILE_CACHE_DIR"
 _ENV_SAVE = "UNSLOTH_DIFFUSION_COMPILE_CACHE_SAVE"
@@ -89,8 +83,7 @@ _DEFAULT_MAX_GB = 20.0
 _LEGACY_ROOT = Path.home() / ".cache" / "unsloth" / "diffusion_compile_cache"
 
 _MANIFEST_NAME = "manifest.json"
-# The pre-content-addressing bundle name. Still read (a manifest without a "bundle" key names it, which is every
-# bundle written before this scheme) and still collected once a newer pair supersedes it, never written.
+# Legacy bundle name: still read and collected, never written.
 _BUNDLE_NAME = "cache.bin"
 _BUNDLE_PREFIX = "bundle-"
 _BUNDLE_SUFFIX = ".bin"
@@ -104,9 +97,7 @@ _TOUCH_INTERVAL_SECONDS = 600.0
 _EVICT_GRACE_SECONDS = 3600.0
 _TOMBSTONE_SUFFIX = ".evicting"
 
-# A bundle file this new is NOT collectable even when the manifest does not name it: another process may have just
-# published it and not yet committed its manifest, and the whole point of the split is that the loser of that race
-# keeps a loadable pair. Only ever delays a delete.
+# An unnamed bundle this new may be another process's, published before its manifest.
 _GC_GRACE_SECONDS = 60.0
 
 
@@ -162,12 +153,7 @@ def _portable_mode() -> bool:
 
 
 def _toolchain_path_unparseable(value: str) -> bool:
-    """storage_roots' test, imported per call like _default_root's.
-
-    The fallback repeats the whole rule rather than narrowing to whitespace, or one path would
-    be refused or accepted depending only on whether studio/backend was on sys.path.
-    test_the_import_fallback_matches_the_resolver sweeps both over every printable character.
-    """
+    """Repeats the storage_roots rule in full, so the verdict never depends on sys.path."""
     try:
         from utils.paths.storage_roots import toolchain_path_unparseable
     except ImportError:
@@ -214,20 +200,13 @@ def cache_root() -> Path:
 
 
 def legacy_cache_root() -> Optional[Path]:
-    """The pre-relocation root, when it is still worth READING old bundles from.
-
-    Read-only on purpose: returning it as the write root would pin an upgraded install to the home
-    directory forever. Skipped under an explicit dir override (it names one exact directory) and
-    in portable mode (the host's home is not part of the install).
-    """
+    """Read-only pre-relocation root for reads; never a write root, so an upgrade does not pin home."""
     if os.environ.get(_ENV_DIR) or _portable_mode():
         return None
     # Equal when storage_roots is unavailable and the default IS the legacy root.
     if _LEGACY_ROOT == _default_root():
         return None
-    # This root is the HOST's home, not the install, so it is the one that may be on a mount the
-    # new cache does not depend on. Path.exists raises for EACCES and EIO before 3.14, and an
-    # optional migration source we cannot inspect is a miss, never a failed generation.
+    # Instance-level wrap of pipe.encode_prompt: dies with the pipe, never mutates the class; no-op (False) if env knob unset, no encode_prompt, or setup fails.
     try:
         if not _LEGACY_ROOT.exists():
             return None
@@ -253,11 +232,7 @@ def _diffusers_version() -> Optional[str]:
 
 
 def environment_fingerprint() -> dict[str, Any]:
-    """HARD-portability dimensions: any difference invalidates a bundle.
-
-    Mirrors what torch's inductor cache keys on (torch + triton + CUDA + GPU type) plus
-    diffusers (the graph source), surfaced explicitly so the manifest is self-describing.
-    """
+    """Hard portability fields; any change invalidates a bundle, mirroring torch's inductor cache key."""
     fp: dict[str, Any] = {
         "format": _FORMAT_VERSION,
         "torch": None,
@@ -273,9 +248,7 @@ def environment_fingerprint() -> dict[str, Any]:
         fp["torch"] = str(torch.__version__)
         fp["torch_cuda"] = str(torch.version.cuda)
         if torch.cuda.is_available():
-            # The CURRENT device, not 0: a load pinned to another card compiles for that architecture, and keying the
-            # bundle by GPU 0 lets two cards share or overwrite each other's supposedly architecture-specific
-            # artifacts.
+            # Current device, not 0: artifacts are architecture-specific.
             index = torch.cuda.current_device()
             fp["gpu_name"] = torch.cuda.get_device_name(index)
             cap = torch.cuda.get_device_capability(index)
@@ -484,11 +457,8 @@ def model_fingerprint(
     shape_bucket: Any = None,
     reduction_filter: bool = False,
 ) -> dict[str, Any]:
-    """MODEL-graph dimensions that change the compiled artifact.
-
-    Reads ``transformer``'s class name + ``_repeated_blocks`` so the key tracks exactly
-    what gets compiled.
-    """
+    """Model-graph key: the transformer class and its repeated blocks, so the key tracks what is
+    compiled."""
     blocks = list(getattr(transformer, "_repeated_blocks", []) or [])
     if not blocks and transformer is not None:
         from .diffusion_regional_compile import verified_repeated_blocks
@@ -565,14 +535,9 @@ class CacheContext:
     prev_inductor_dir: Optional[str] = None
     prev_inductor_dir_set: bool = False
     shapes: set = dataclasses.field(default_factory = set)
-    # Bumped by every ``register_shape`` that dirties the context. A background save clears ``saved`` -> True only
-    # when this still reads what it read before it started, so a shape registered WHILE that save ran cannot be
-    # marked persisted by it.
+    # Lets a background save avoid marking a concurrently registered shape persisted.
     dirty_seq: int = 0
-    # A bundle this context LOADED and rejected on its checksum. The save below must overwrite that
-    # file rather than take its exists() shortcut: the recompiled artifacts usually hash to the same
-    # digest, so the shortcut would leave the corrupt bytes in place under a manifest that names
-    # them, and every future start would reject the cache again with no way back.
+    # Recompiled artifacts often hash the same, so overwrite instead of the exists() shortcut.
     rejected_bundle: Optional[str] = None
     last_touch: float = 0.0
 
@@ -589,11 +554,7 @@ def begin(
     logger: Any = None,
     reduction_filter: bool = False,
 ) -> Optional[CacheContext]:
-    """Point inductor at a per-key dir and load a matching bundle, BEFORE compile.
-
-    Returns a ``CacheContext`` for ``save``/``restore``, or ``None`` when disabled or torch
-    lacks the Mega-cache API. Never raises.
-    """
+    """Points inductor at a per-key dir and loads a matching bundle before compile; never raises."""
     mode = cache_mode()
     if mode == "off":
         return None
@@ -642,15 +603,9 @@ def begin(
     try:
         cdir.mkdir(parents = True, exist_ok = True)
         inductor_dir = str(cdir / "inductor")
-        # Startup applies this same test before pinning TORCHINDUCTOR_CACHE_DIR, and this
-        # assignment used to overwrite whatever it decided, so a Studio root the builders cannot
-        # parse came back on the first compiled diffusion run after looking fine at launch. The
-        # bundle still lives under cdir either way; only the Inductor pin is withheld.
+        # Startup applies the same test before pinning TORCHINDUCTOR_CACHE_DIR.
         if _toolchain_path_unparseable(inductor_dir):
-            # Leaving the pin alone is not neutral: startup publishes ONE parseable fallback for
-            # the process, so keeping it here would have save_cache_artifacts serialise that
-            # shared cache into every fingerprinted bundle. Ask for one keyed on THIS cdir so the
-            # per-key isolation survives; if none can be had safely the pin stays as it was.
+            # Keeping the shared fallback would serialise it into every bundle; isolate per cdir.
             isolated = _parseable_cache_fallback("TORCHINDUCTOR_CACHE_DIR", inductor_dir)
             if isolated is None:
                 _warn(
@@ -670,8 +625,7 @@ def begin(
     except Exception as exc:  # noqa: BLE001
         _warn(logger, f"could not set TORCHINDUCTOR_CACHE_DIR: {exc}")
 
-    # The MANIFEST decides which bundle is live: it is published last and only ever names a bundle that was
-    # completely written, so an interrupted save leaves the previous pair addressed and loadable.
+    # The manifest is the commit point and only names a fully written bundle.
     published = _read_manifest(ctx.manifest_path)
     if published is not None:
         ctx.bundle = _manifest_bundle(cdir, published)
@@ -679,17 +633,10 @@ def begin(
     _register_live(cdir)
     _touch_last_used(ctx)
 
-    # Collect here as well as after a save, because the grace window can otherwise leak a bundle for
-    # good: two saves for one key inside 60 s leave the first one too young to collect, and the
-    # second save is the last thing that ever looks. By the time this key is opened again that
-    # orphan is minutes or days old, the live bundle is spared by name, and anything a concurrent
-    # process is mid-save on is still inside its grace, so the same two rules decide it.
+    # Also collect here: two saves inside the grace window would leak the first bundle.
     _collect_superseded(cdir, logger)
 
-    # Try an exact-match load. A miss/mismatch is normal and non-fatal.
-    # Guarded like _load_from_legacy's probe: Path.exists() raises rather than returning False when a parent denies
-    # traversal, and this branch moves the write root to a directory the process may not own. Unguarded, that
-    # exception left begin() before the legacy fallback below could run.
+    # Path.exists() raises when a parent denies traversal.
     try:
         pair_present = published is not None and ctx.bundle.exists()
     except OSError as exc:
@@ -713,11 +660,7 @@ def begin(
 
 
 def _load_from_legacy(ctx: CacheContext, logger: Any) -> bool:
-    """Load the same key's bundle from the pre-relocation root, then migrate it.
-
-    The key already covers every portability dimension, so a legacy bundle under it is the same
-    artifact this run would have written. The copy stops the read fallback becoming permanent.
-    Best-effort, and skipped when saving is off, since that mode promises a read-only cache."""
+    """Copies a same-key legacy bundle forward, so the read fallback does not become permanent."""
     root = legacy_cache_root()
     if root is None:
         return False
@@ -755,18 +698,12 @@ def _load_from_legacy(ctx: CacheContext, logger: Any) -> bool:
 
 
 def register_shape(ctx: Optional[CacheContext], shape: Any, *, static: bool) -> None:
-    """Record a generation's (width, height, batch) against the bundle coverage.
-
-    Only meaningful for a STATIC compile: each new shape triggers its own compile, so the
-    existing bundle lacks those artifacts -- clear ``saved`` so the next ``save`` rewrites
-    the enriched set. Dynamic compiles reuse one artifact and never dirty the context.
-    Never raises."""
+    """Static compiles only: a new shape clears saved so the next save rewrites the bundle with it."""
     if ctx is None or not static:
         return
     try:
         key = tuple(shape)
-        # Under the dirty lock so a background save cannot read dirty_seq, lose the race to this block, and then
-        # publish saved = True over the clear below.
+        # Under the dirty lock so a background save cannot publish saved = True over this clear.
         with _dirty_lock:
             if key not in ctx.shapes:
                 ctx.shapes.add(key)
@@ -806,10 +743,7 @@ def _try_load(
         _warn(logger, f"compile-cache: unreadable manifest: {exc}")
         return False
 
-    # A manifest that decoded but is not an object. json.loads happily returns [] or null, and
-    # the .get() below would then raise AttributeError out of a function whose whole contract is
-    # that a bad cache entry is a miss. The legacy root makes this reachable: the bundle being
-    # validated was written by an older build, on a disk this run has never checked.
+    # json.loads may return [] or null; a bad entry must be a miss.
     if not isinstance(manifest, dict):
         _warn(logger, "compile-cache: manifest is not an object; ignoring")
         return False
@@ -851,14 +785,7 @@ def _try_load(
 
 
 def _atomic_write(path: Path, data: bytes) -> None:
-    """Write ``data`` to ``path`` via a temp file in the SAME directory plus ``os.replace``.
-
-    A save runs on a daemon thread, so interpreter exit can kill it anywhere. Renaming a
-    fully written temp file into place means a half-written file is never visible under a
-    name anything reads. Paired with the content-addressed bundle names above, that is
-    what makes an interrupted save leave a matching manifest/bundle pair rather than a
-    good bundle the sha256 check has to reject.
-    """
+    """Temp file in the same directory plus os.replace, so a killed save never exposes a partial file."""
     tmp: Optional[str] = None
     try:
         fd, tmp = tempfile.mkstemp(
@@ -879,14 +806,7 @@ def _atomic_write(path: Path, data: bytes) -> None:
 
 
 def _atomic_copy(src: Path, dst: Path) -> None:
-    """``shutil.copyfile`` into a temp file in *dst*'s directory, then ``os.replace``.
-
-    Same rule and same reason as _atomic_write: a plain copyfile onto the live name is visible
-    while it is still partial, and the migration below runs on the same interruptible path as a
-    save. A torn manifest costs only a miss, but a miss here means the cold compile the migration
-    exists to avoid, and two backends migrating one key would otherwise interleave their writes
-    into a single destination file.
-    """
+    """Copy via a same-directory temp file and os.replace, so a torn migrated manifest is never visible."""
     tmp: Optional[str] = None
     try:
         fd, tmp = tempfile.mkstemp(dir = str(dst.parent), prefix = f".{dst.name}.", suffix = _TEMP_SUFFIX)
@@ -903,16 +823,7 @@ def _atomic_copy(src: Path, dst: Path) -> None:
 
 
 def _collect_superseded(cdir: Path, logger: Any) -> list[str]:
-    """Delete bundles no manifest names any more. Returns the names removed. Never raises.
-
-    Two rules keep this from deleting a bundle somebody is about to need:
-
-    1. The live name is re-read from the manifest ON DISK, not from the context that just wrote it, so a manifest
-       another process committed in between decides what survives rather than our stale idea of it.
-    2. A file younger than the grace window is spared regardless. Between a racing process publishing its bundle
-       and committing its manifest, that bundle is named by nothing; deleting it there would hand the loser of the
-       race exactly the broken pair this whole scheme exists to prevent.
-    """
+    """Re-reads the on-disk manifest before deleting, and spares bundles inside the grace window."""
     removed: list[str] = []
     try:
         manifest = _read_manifest(cdir / _MANIFEST_NAME)
@@ -925,10 +836,7 @@ def _collect_superseded(cdir: Path, logger: Any) -> list[str]:
             if not (
                 name == _BUNDLE_NAME
                 or (name.startswith(_BUNDLE_PREFIX) and name.endswith(_BUNDLE_SUFFIX))
-                # An _atomic_write that the interpreter killed mid-write leaves its temp file
-                # behind: the finally that removes it does not run when the daemon save thread is
-                # torn down inside fh.write, and the file can be gigabytes. The same grace window
-                # covers it, so a write actually in flight is never the one taken.
+                # A killed save leaves a temp file (can be GB); the grace window never takes an in-flight write
                 or (name.startswith(".") and name.endswith(_TEMP_SUFFIX))
             ):
                 continue
@@ -1001,8 +909,7 @@ def _write_bundle(ctx: CacheContext, logger: Any) -> bool:
     """The save itself. Runs on the caller's thread (``save``) or the worker (``save_async``)."""
     if not _save_enabled(ctx.mode) or ctx.saved:
         return False
-    # Read BEFORE the artifacts are collected: anything registered from here on is not in `data`, and iterating the
-    # live set while the request thread adds to it is a "set changed size during iteration" away from failing.
+    # Snapshot before collecting: the request thread may add to the set.
     with _dirty_lock:
         seq = ctx.dirty_seq
         shapes = sorted(list(s) for s in ctx.shapes)
@@ -1038,10 +945,7 @@ def _write_bundle(ctx: CacheContext, logger: Any) -> bool:
             # Static-compile shape coverage (register_shape); unused by dynamic compiles.
             "shapes": shapes,
         }
-        # Bundle first, under its own name, THEN the manifest: the manifest is the single commit point, and it only
-        # ever names a bundle already fully on disk. An exit between the two leaves the OLD manifest still naming
-        # the OLD bundle, which is untouched, so the previous warm start survives and the new file is just an
-        # orphan the next successful save collects.
+        # Bundle then manifest: the manifest is the single commit point.
         if not bundle.exists() or bundle.name == ctx.rejected_bundle:
             _atomic_write(bundle, data)
         _atomic_write(
@@ -1052,8 +956,7 @@ def _write_bundle(ctx: CacheContext, logger: Any) -> bool:
         _collect_superseded(ctx.dir, logger)
         evict(logger = logger)
         with _dirty_lock:
-            # A shape registered while this ran is NOT in the bundle just written, so leave the context dirty for
-            # the save its own register_shape queued.
+            # Per-slot layout codes for _flatten/_unflatten (leading int64 tensor): -1 None, -2 a bare tensor, n >= 0 a list of n tensors
             if ctx.dirty_seq == seq:
                 ctx.saved = True
         _info(logger, f"compile-cache: saved bundle ({len(data)} bytes) for key {ctx.key}")
@@ -1064,31 +967,20 @@ def _write_bundle(ctx: CacheContext, logger: Any) -> bool:
 
 
 def save(ctx: Optional[CacheContext], *, logger: Any = None) -> bool:
-    """Persist compiled artifacts to the bundle + manifest, AFTER a warmup forward.
-
-    No-op unless save is enabled and the context is dirty: a bundle HIT starts clean
-    (rewriting the just-loaded artifacts costs ~0.5 s for no change); a new static-compile
-    shape re-dirties via ``register_shape`` so the bundle grows to cover every shape used.
-    Returns True if a bundle was written. Synchronous: the write has happened when this
-    returns. ``save_async`` is what the generate path uses.
-    """
+    """Synchronous bundle write; no-op unless the context is dirty, since a bundle hit starts clean."""
     if ctx is None:
         return False
     return _write_bundle(ctx, logger)
 
 
-# One daemon worker for the whole process, created on first use. Saves are serialised through it, so no two threads
-# ever touch the same context and two contexts cannot interleave their save_cache_artifacts() calls.
+# Single daemon worker serialises all saves.
 _dirty_lock = threading.RLock()
 _worker_cv = threading.Condition(threading.Lock())
 _worker_thread: Optional[threading.Thread] = None
 _worker_queue: list[tuple[CacheContext, Any]] = []
 _worker_active: Optional[CacheContext] = None
 
-# How long restore()/begin() will wait for an in-flight save before going ahead anyway. The worst save measured on a
-# B200 was 0.19 s for a 71 MB bundle (~2.6 ms/MB), so this is ~150x the observed cost and still covers a multi-GB
-# bundle; past it, an unload that keeps blocking reads to a user as a wedged app, which is worse than a bundle that
-# lands a moment late (the rename keeps whatever it writes atomic either way).
+# ~150x the worst measured save (0.19 s / 71 MB on B200); longer looks wedged.
 _SAVE_JOIN_TIMEOUT = 30.0
 
 
@@ -1121,13 +1013,7 @@ def _start_worker_locked() -> None:
 
 
 def save_async(ctx: Optional[CacheContext], *, logger: Any = None) -> bool:
-    """Queue ``save`` on the shared worker and return at once. Never raises.
-
-    Returns True when a save was queued (or, under the SYNC env, written). Already queued
-    is False: the pending save reads the context when it runs, so it covers every shape
-    registered up to that point. A context whose save is IN FLIGHT does get queued again,
-    since the running save cannot contain what was registered after it started.
-    """
+    """Queue save on the worker; an in-flight save is re-queued since it cannot include later shapes."""
     if ctx is None:
         return False
     note_use(ctx)
@@ -1167,9 +1053,7 @@ def restore(ctx: Optional[CacheContext], *, logger: Any = None) -> None:
     _unregister_live(ctx.dir)
     if not ctx.prev_inductor_dir_set:
         return
-    # Before the env var moves: save_cache_artifacts() reads the inductor cache this load pointed at, so a save
-    # still running when the dir is handed back would be collecting against a directory that is about to mean
-    # something else, and the unload below goes on to tear that directory's owner down.
+    # Before the env var moves: a running save reads the inductor dir being repointed.
     if not wait_for_saves():
         _warn(
             logger,

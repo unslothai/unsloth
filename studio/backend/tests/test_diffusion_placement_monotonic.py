@@ -379,3 +379,182 @@ def test_unmeasured_denoisers_keep_the_streamed_plan(monkeypatch, family, quant)
     plan = _plan(12544, 24 * GIB, flat, family = family, torchao = torchao, compute = compute)
     assert plan.offload_policy == dm.OFFLOAD_GROUP and plan.stream_transformer
     assert "whole_module_kept_below_floor_mib" not in plan.estimates
+
+
+# (GiB/s, TFLOPS) probes reproducing measured klein-4B bf16 1024^2 per-step transfer / compute.
+KLEIN_DIT_MIB = 7393
+CARDS = {
+    "b200": (0.142, 0.0296),
+    "a100": (0.541, 0.150),
+    "rtx_pro_6000": (0.1415, 0.0985),
+}
+
+
+def _card_probe(card):
+    transfer, compute = CARDS[card]
+    flops = 2.0 * KLEIN_DIT_MIB * 2**20 / 2.0 * (1024 // 16) ** 2
+    return (KLEIN_DIT_MIB / 1024.0 / transfer, dm._DIT_COMPUTE_EFFICIENCY * flops / compute / 1e12)
+
+
+def _klein_above_floor(monkeypatch, *, compute = None):
+    q8, dense, encoders, vae = FAMILIES["flux.2-klein"]
+    te = sum(encoders.values())
+    loaded = {
+        "transformer": (KLEIN_DIT_MIB, "dit"),
+        "text_encoder": (te, "text_encoder"),
+        "vae": (vae, "other"),
+    }
+    _patch_weights(monkeypatch, loaded, torchao = False, compute = compute)
+    flat = dict(
+        model_dense_mib = KLEIN_DIT_MIB + te + vae,
+        companion_dense_mib = te + vae,
+        text_encoder_dense_mib = te,
+        runtime_headroom_mib = dm.estimate_image_runtime_mib(
+            width = None, height = None, family = "flux.2-klein"
+        ),
+    )
+    return flat
+
+
+def _priced(
+    monkeypatch,
+    free_mib,
+    flat,
+    *,
+    steps,
+    card,
+    compute = None,
+):
+    import torch
+
+    monkeypatch.setattr(dm, "_offload_cost_measurements", lambda: _card_probe(card))
+    plan = dm.plan_diffusion_memory(
+        target = types.SimpleNamespace(supports_model_cpu_offload = True),
+        device_memory = _discrete(free_mib, 24 * GIB),
+        **flat,
+    )
+    dtype = torch.float16 if compute == 2 else torch.bfloat16
+    pipe = types.SimpleNamespace(transformer = types.SimpleNamespace(dtype = dtype))
+    refined = dm.refine_plan_from_loaded_weights(
+        pipe, plan, family = "flux.2-klein", speed_mode = "default"
+    )
+    return refined, dm.prefer_whole_module_offload(pipe, refined, steps = steps)
+
+
+@pytest.mark.parametrize(
+    "card, steps, whole",
+    [
+        ("b200", 2, True),
+        ("b200", 4, True),
+        ("b200", 8, True),
+        ("a100", 4, True),
+        ("a100", 8, True),
+        ("rtx_pro_6000", 2, False),
+        ("rtx_pro_6000", 4, False),
+        ("rtx_pro_6000", 8, True),
+    ],
+)
+def test_whole_module_offload_is_kept_only_where_it_is_cheaper(monkeypatch, card, steps, whole):
+    """B200 0.336 vs 0.595 s and A100 2.336 vs 3.429 s at 4 steps (whole-module faster); RTX PRO 6000 0.762 vs 0.743 s
+    at 4 steps (streamed faster), 1.022 vs 1.181 s at 8, 0.561 vs 0.458 s at 2."""
+    flat = _klein_above_floor(monkeypatch)
+    refined, plan = _priced(monkeypatch, 12544, flat, steps = steps, card = card)
+    assert refined.offload_policy == dm.OFFLOAD_GROUP and refined.stream_transformer
+    model_s, group_s = plan.estimates["whole_module_cost_s"], plan.estimates["streamed_cost_s"]
+    assert (model_s < group_s) is whole
+    if whole:
+        assert plan.offload_policy == dm.OFFLOAD_MODEL
+        assert plan.estimates["whole_module_kept_below_floor_mib"] == 10400
+    else:
+        assert plan.offload_policy == dm.OFFLOAD_GROUP
+        assert "whole_module_kept_below_floor_mib" not in plan.estimates
+        assert replace_fields(plan) == replace_fields(refined)
+        assert any("streaming kept over whole-module offload" in r for r in plan.reasons)
+
+
+def replace_fields(plan):
+    return dm.replace(plan, reasons = (), estimates = {})
+
+
+def test_cost_model_fits_the_measured_crossovers():
+    """Per-card crossover of whole-module vs streamed (steps where they cost the same): RTX PRO 6000 measured 4.2-4.35."""
+
+    def crossover(card):
+        h2d, tflops = _card_probe(card)
+        (w1, s1), (w2, _) = (
+            dm._whole_module_offload_costs(
+                KLEIN_DIT_MIB, steps = n, h2d_gib_s = h2d, bf16_tflops = tflops
+            )
+            for n in (1, 2)
+        )
+        compute = w2 - w1
+        return (w1 - compute) / (s1 - compute)
+
+    assert crossover("b200") <= 2.0
+    assert crossover("a100") <= 4.0
+    assert 4.0 < crossover("rtx_pro_6000") < 5.0
+
+
+def test_unpriced_or_kill_switch_keep_their_meaning(monkeypatch):
+    """No steps or no measurement: the unconditional switch (#15129). ``1`` always switches, ``0`` never does."""
+    flat = _klein_above_floor(monkeypatch)
+    _, unpriced = _priced(monkeypatch, 12544, flat, steps = None, card = "rtx_pro_6000")
+    assert unpriced.offload_policy == dm.OFFLOAD_MODEL
+    assert "whole_module_cost_s" not in unpriced.estimates
+    monkeypatch.setattr(dm, "_offload_cost_measurements", lambda: None)
+    q8, dense, encoders, vae = FAMILIES["flux.2-klein"]
+    import torch
+
+    pipe = types.SimpleNamespace(transformer = types.SimpleNamespace(dtype = torch.bfloat16))
+    plan = dm.plan_diffusion_memory(
+        target = types.SimpleNamespace(supports_model_cpu_offload = True),
+        device_memory = _discrete(12544, 24 * GIB),
+        **flat,
+    )
+    refined = dm.refine_plan_from_loaded_weights(
+        pipe, plan, family = "flux.2-klein", speed_mode = "default"
+    )
+    assert dm.prefer_whole_module_offload(pipe, refined, steps = 4).offload_policy == dm.OFFLOAD_MODEL
+    monkeypatch.setenv(dm.WHOLE_MODULE_OFFLOAD_ENV, "1")
+    _, forced = _priced(monkeypatch, 12544, flat, steps = 4, card = "rtx_pro_6000")
+    assert (
+        forced.offload_policy == dm.OFFLOAD_MODEL and "whole_module_cost_s" not in forced.estimates
+    )
+    monkeypatch.setenv(dm.WHOLE_MODULE_OFFLOAD_ENV, "0")
+    refined, off = _priced(monkeypatch, 12544, flat, steps = 4, card = "b200")
+    assert off is refined
+
+
+@pytest.mark.parametrize("card", sorted(CARDS))
+@pytest.mark.parametrize("steps", (2, 4, 8))
+def test_plans_outside_the_window_are_unchanged_by_pricing(monkeypatch, card, steps):
+    """Below the floor, at the resident tiers and on an fp16 denoiser the priced call returns the same plan."""
+    for compute in (None, 2):
+        flat = _klein_above_floor(monkeypatch, compute = compute)
+        for free in range(4 * GIB, 24 * GIB + 1, STEP_MIB):
+            refined, priced = _priced(
+                monkeypatch, free, flat, steps = steps, card = card, compute = compute
+            )
+            import torch
+
+            dtype = torch.float16 if compute == 2 else torch.bfloat16
+            pipe = types.SimpleNamespace(transformer = types.SimpleNamespace(dtype = dtype))
+            unpriced = dm.prefer_whole_module_offload(pipe, refined)
+            if "whole_module_kept_below_floor_mib" not in unpriced.estimates:
+                assert priced == unpriced == refined, (free, compute)
+
+
+@pytest.mark.parametrize(
+    "probe, decisions",
+    [
+        # real probe readings: B200, and RTX PRO 6000 (measured streamed at 2 and 4 steps, whole at 8)
+        ((51.5, 1490.0), {2: True, 4: True, 8: True}),
+        ((52.97, 309.0), {2: False, 4: False, 8: True}),
+    ],
+)
+def test_real_probe_readings_make_the_measured_call(probe, decisions):
+    for steps, whole in decisions.items():
+        model_s, group_s = dm._whole_module_offload_costs(
+            7438, steps = steps, h2d_gib_s = probe[0], bf16_tflops = probe[1]
+        )
+        assert (model_s < group_s) is whole, (probe, steps, model_s, group_s)

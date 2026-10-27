@@ -148,11 +148,8 @@ if ! flock -n 9; then
     exit 1
 fi
 
-# Leftovers of a run killed outright (no trap ran): .src-prev.* and .src-update.* beside
-# src. The kept package record is the one marker of an uncommitted update: with it, a
-# previous tree goes back over the unverified one and the packages are reinstalled;
-# without it a previous tree is scratch. No src at all means the kill landed between
-# the two moves, and the lone previous tree goes back either way.
+# Leftovers of a killed run: with the kept record, restore the previous tree and
+# packages; without it, previous trees are scratch. No src means restore either way.
 shopt -s nullglob
 _prev=("$SRC_DIR"/.src-prev.*)
 if [ "${#_prev[@]}" = "1" ] && [ -d "${_prev[0]}" ]; then

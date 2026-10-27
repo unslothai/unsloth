@@ -63,8 +63,7 @@ def retire_account_roots(account: AccountContext):
     account_access.retire_resident_shares(account.account_id)
     from core.inference.external_provider import retire_account_clients
 
-    # Its provider clients hold a cookie jar and idle sockets, and the cache they sit in is
-    # keyed by account, so nothing else would ever drop them.
+    # Cache is keyed by account, so nothing else would drop these clients.
     retire_account_clients(account.account_id)
     from core.inference.mcp_client import close_mcp_sessions, invalidate_tool_cache
     from core.training.account_jobs import retire_account_jobs
@@ -169,11 +168,14 @@ def set_account_active(account_id: str, payload: AccountActiveRequest):
             restore_account_clients(account_id)
             active_generations.lift_fence(account_id)
         else:
+            from core.scheduled_tasks.scheduler import cancel_account_runs
             from routes.inference import retire_account_loads
 
             # Fence first, so a request registering after the sweep is cancelled too.
             active_generations.fence(account_id)
             active_generations.cancel_all(account_id)
+            # A scheduled run still waiting for the model gate has not registered yet.
+            cancel_account_runs(account_id)
             retire_account_loads(account_id)
             account_access.retire_resident_shares(account_id)
         return result

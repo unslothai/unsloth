@@ -48,8 +48,7 @@ _ENV_QUANTIZE_ALL = "UNSLOTH_FP8_TO_NF4_QUANTIZE_16BIT"
 
 # None outside a load; True / False once the outermost from_pretrained has looked at its call.
 _EXPLICIT_4BIT = contextvars.ContextVar("unsloth_explicit_load_in_4bit", default = None)
-# Configs armed inside the outermost from_pretrained; disarmed when it returns or raises, so an
-# exception before the load's own restore (prefetch, device-map planning) cannot leak a stripped config.
+# Disarmed on return or raise, so an early exception cannot leak a stripped config.
 _ARMED_CONFIGS = contextvars.ContextVar("unsloth_fp8_to_nf4_armed_configs", default = None)
 
 _FP8_DTYPES = tuple(
@@ -572,8 +571,7 @@ def _build_classes():
         ):
             self.generic = generic
             self.stack = stack
-            # (patterns in merge order, concat dim): replaces MergeModulelist + Concatenate by writing
-            # each expert straight into the final stack, the only 16-bit tensor ever held.
+            # (patterns in merge order, concat dim): replaces MergeModulelist + Concatenate by writing each expert into the final stack, the only 16-bit tensor held.
             self.fuse = fuse
 
         def _fused(
@@ -1009,9 +1007,7 @@ def install_fp8_to_nf4_quantizer() -> bool:
         _unsloth_fp8_kept = 0
 
         def __init__(self, quantization_config, **kwargs):
-            # The device-map planner builds this from the rewritten config without `pre_quantized`
-            # (transformers' own load always passes it). An armed load quantizes at runtime, so size
-            # its expert merges in the load dtype, not as packed 4bit (a 4x smaller transient).
+            # The planner omits `pre_quantized`; an armed load quantizes at runtime, so size in load dtype.
             if "pre_quantized" not in kwargs and _ARMED_CONFIGS.get():
                 kwargs["pre_quantized"] = False
             super().__init__(quantization_config, **kwargs)

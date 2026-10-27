@@ -76,8 +76,7 @@ def normalize_attention_backend(value: Optional[str]) -> Optional[str]:
     return normalized
 
 
-# Backends diffusers validates by package at set time but whose kernels need a specific CUDA arch at run time. Gate by a
-# (min, max-exclusive) capability range: FA3 is Hopper-SM90 only, FA4 is Blackwell+.
+# Kernels that need a specific CUDA arch at run time: (min, max-exclusive) capability.
 _ARCH_CAPABILITY: dict[str, tuple[tuple[int, int], Optional[tuple[int, int]]]] = {
     "_flash_3_hub": ((9, 0), (10, 0)),  # Hopper (SM90) only
     "flash_4_hub": (
@@ -118,20 +117,14 @@ def _is_cuda_nvidia(target: Any) -> bool:
     try:
         import torch
 
-        # Shared with the stub installer: torch.version.hip alone misreads AMD wheels that only tag __version__,
-        # dropping aiter and pointing cuDNN/xformers (stubbed there) at a ROCm card.
+        # Shared with stub installer; torch.version.hip alone misreads AMD wheels that tag only __version__.
         from core._torchao_stub import _module_is_rocm
         return not _module_is_rocm(torch)
     except Exception:  # noqa: BLE001
         return False
 
 
-# What the native SDPA dispatch can actually run (#8225). torch's ``flash_sdp_enabled()`` /
-# ``mem_efficient_sdp_enabled()`` report the USER TOGGLE, not whether a kernel exists for this device. On the ROCm
-# build in #8225 (gfx1200, torch 2.11+rocm7) both answer True while every dispatch to them raises "No available
-# kernel. Aborting execution.", so the dispatcher degrades silently to MATH -- the one backend that materialises the
-# whole B x heads x N x N score matrix, which is how a 3.4 GB Q4_K_M video model asked a 16 GB card for a single 66.54
-# GiB allocation. Probe actual execution first, then intersect that capability with the current process flags.
+# flash_sdp_enabled reports the user toggle, not a working kernel, so probe actual execution.
 SDPA_FLASH = "flash"
 SDPA_MEM_EFFICIENT = "mem_efficient"
 SDPA_CUDNN = "cudnn"
@@ -360,8 +353,7 @@ def _sdpa_capability(target: Any) -> tuple[str, ...]:
         try:
             import torch
 
-            # fp16 rather than fp32: the fused kernels are half-precision only, so probing at fp32 would report "math
-            # only" on hardware where flash is perfectly healthy.
+            # Fused kernels are half-precision only.
             dtype = torch.float16
         except Exception:  # noqa: BLE001
             return ()
@@ -374,8 +366,7 @@ def _sdpa_capability(target: Any) -> tuple[str, ...]:
         available = _probe_sdpa_kernels(device, dtype)
     except Exception:  # noqa: BLE001 - a probe is a diagnostic; it may never fail a load
         available = ()
-    # memoize only an ANSWER: an empty result means the probe itself could not complete (a transient allocator failure
-    # while the device was full, exactly when this warning matters most)
+    # Memoize only an answer: empty means the probe itself failed (transient).
     if not available:
         return ()
     with _SDPA_PROBE_LOCK:
@@ -620,8 +611,7 @@ def select_attention_backend(
         backend = _ALIASES[alias]
         if backend == "native":
             return None
-        # AITER is the AMD ROCm kernel: honor it on a ROCm target, else the NVIDIA-only guard below drops the one
-        # backend that works there
+        # AITER is the ROCm kernel; the NVIDIA-only guard below would drop it.
         if backend == "aiter":
             if getattr(target, "device", None) == "cuda" and not _is_cuda_nvidia(target):
                 return backend
@@ -984,6 +974,21 @@ _ROCM_FLASH_GATE_LOCK = threading.Lock()
 # The native SDPA baseline the in-memory verdicts were timed against; when it moves (a later load re-enables or disables
 # the fused SDPA kernels), both in-memory caches are dropped and the disk cache, keyed on it, decides again.
 _ROCM_FLASH_BASELINE: list = [None]
+# ``torch.fx.experimental.symbolic_shapes.statically_known_true`` when this torch's Dynamo traces it in graph (no
+# guard), else None. Resolved outside tracing, when the dispatch guard installs.
+_ROCM_FLASH_STATICALLY_KNOWN_TRUE: list = [None]
+
+
+def _resolve_statically_known_true() -> None:
+    try:
+        from torch._dynamo import trace_rules
+        from torch.fx.experimental.symbolic_shapes import statically_known_true
+
+        name = "torch.fx.experimental.symbolic_shapes.statically_known_true"
+        if name in trace_rules.manual_torch_name_rule_map:
+            _ROCM_FLASH_STATICALLY_KNOWN_TRUE[0] = statically_known_true
+    except Exception:  # noqa: BLE001 - older torch: the direct comparison stays
+        pass
 
 
 def _sync_rocm_flash_baseline() -> None:
@@ -1060,7 +1065,11 @@ def _rocm_flash_length_reason(query: Any, key: Any) -> Optional[str]:
             return None
         h, d, geometries = match[0][2], match[0][3], tuple(sorted(match[1]))
         b_bucket = _rocm_flash_batch_bucket(batch)
-        joint = kv == seq  # self / joint attention: one symbol, so no guard
+        # Self / joint attention: keys and queries share one length symbol. ``statically_known_true`` answers that
+        # without a guard, so cross attention (an independent key length) never specialises on the query length.
+        # A torch whose Dynamo cannot trace it (2.6) compares directly, which guards.
+        known = _ROCM_FLASH_STATICALLY_KNOWN_TRUE[0]
+        joint = known(kv == seq) if known is not None else kv == seq
         kv_bucket = None if joint else _rocm_flash_bucket(kv)
         # Guard only where the route changes, so neighbouring same-verdict buckets reuse this graph.
         segments = _rocm_flash_traced_segments(
@@ -1861,10 +1870,7 @@ def _run_sage_probe(
     head_dim: int = 128,
     sageattn: Any = None,
 ) -> str:
-    """Empty when ``sageattn`` matches fp32 SDPA at ``head_dim``, else why not. Raises when unaskable (import, OOM).
-
-    ``sageattn`` defaults to the pip package's. Random inputs with a per-channel K offset like real keys: a zero tensor
-    proves the launch, not the numbers."""
+    """Empty when sageattn matches fp32 SDPA at head_dim, else the reason; raises if unaskable."""
     import torch
 
     if sageattn is None:
@@ -1972,8 +1978,7 @@ def _runs_in_float32(target: Any) -> bool:
     return name in ("float32", "fp32", "float")
 
 
-# Calls Sage cannot take (attn_mask, head_dim > 128, dtype) run native instead of raising mid-generation. The checks
-# read only shapes, dtypes and mask presence, so torch.compile specialises on them without a graph break.
+# Calls Sage cannot take run native; the checks read only shapes/dtypes/mask, so no graph break.
 _SAGE_GUARD_ATTR = "_unsloth_sage_guard"
 _SAGE_ROUTED: dict[str, int] = {}
 _SAGE_ROUTED_LOGGED: set[str] = set()
@@ -2028,8 +2033,7 @@ def _note_sage_reroute(reason: str) -> None:
     _note_reroute("SageAttention", reason, _SAGE_ROUTED, _SAGE_ROUTED_LOGGED)
 
 
-# sageattn() reads the arch via torch.cuda calls Dynamo cannot trace, so a fullgraph compile failed and the load ran
-# eager. An opaque custom op keeps the block compiled.
+# sageattn reads arch via untraceable torch.cuda calls: opaque op keeps the block compiled.
 _SAGE_OP_NAME = "unsloth_studio::sage_attention_nhd"
 # Own op for the hub build, so a pip SageAttention 2 installed later never runs through it.
 _SAGE_HUB_OP_NAME = "unsloth_studio::sage_hub_attention_nhd"
@@ -2197,6 +2201,7 @@ def _rocm_flash_reroute_reason(query: Any, key: Any, value: Any, attn_mask: Any)
 
 
 def _install_rocm_flash_dispatch_guard() -> bool:
+    _resolve_statically_known_true()
     try:
         import torch
         torch.compiler.assume_constant_result(_rocm_flash_traced_reason)
@@ -2614,9 +2619,8 @@ def _sage_usable(
     return True
 
 
-# PyPI has no SageAttention 2 (only 1.0.6, which diffusers refuses), so ``sage`` without a pip SageAttention 2 runs the
-# kernels-hub build (sm80 / 89 / 90) via diffusers' ``sage_hub``. diffusers 0.40 asks for version 1 builds, which stop
-# at torch 2.10, so version 2 (torch 2.9 to 2.12) is fetched first.
+# PyPI has only SageAttention 1 (diffusers refuses it), so sage uses the kernels-hub build.
+# Version 2 first: the version 1 builds diffusers asks for stop at torch 2.10.
 SAGE_HUB_BACKEND = "sage_hub"
 _SAGE_HUB_REPO = "kernels-community/sage-attention"
 _SAGE_HUB_VERSIONS = (2, 1)
@@ -2980,16 +2984,14 @@ def _ensure_fa4_python_deps(logger: Any = None) -> Optional[str]:
     return None
 
 
-# Optional kernels installable on demand: dispatcher name -> (probe module, pip package). Wheels only
-# (--only-binary=:all:), since a source build needs a CUDA toolchain the host may lack.
+# Wheels only (--only-binary=:all:): source builds need a CUDA toolchain the host may lack.
 _INSTALLABLE_BACKENDS: dict[str, tuple[str, str]] = {
     # Never ``sageattention`` from PyPI (only SageAttention 1 there): the hub build is the installable one.
     "sage": ("kernels", "kernels"),
     "flash": ("flash_attn", "flash-attn"),
     "_flash_3_hub": ("kernels", "kernels"),  # FA3/FA4 from the HF kernels hub
     "flash_4_hub": ("kernels", "kernels"),
-    # Never handed to pip as a name -- see _MATCHED_WHEEL_BACKENDS below; the package string survives only for logging
-    # and for the _INSTALL_ATTEMPTED bookkeeping.
+    # Never passed to pip by name; see _MATCHED_WHEEL_BACKENDS.
     "xformers": ("xformers", "xformers"),
 }
 
@@ -2997,14 +2999,10 @@ _INSTALLABLE_BACKENDS: dict[str, tuple[str, str]] = {
 # when a gated backend is requested; 0 never installs and falls back to native.
 _ATTENTION_INSTALL_ENV = "UNSLOTH_DIFFUSION_ATTENTION_INSTALL"
 
-# Packages a pip install was already attempted for in THIS process. The loader pre-installs outside its locks, so a
-# recorded attempt stops apply re-running the 600s install under _generate_lock.
+# A recorded attempt stops the in-lock apply re-running the 600s install under _generate_lock.
 _INSTALL_ATTEMPTED: set[str] = set()
 
-# Backends whose wheel must be resolved against the RUNNING torch build instead of handed to pip as a name. Only
-# DETERMINISTIC answers are memoised (a URL, or a refusal that depends purely on the resident torch, which cannot change
-# under a running interpreter). A probe timeout is transient and is NOT cached: caching it would turn one loaded-machine
-# hiccup into "no xFormers for the rest of this Unsloth session".
+# Wheel resolved against the running torch; probe timeouts are transient and not cached.
 _MATCHED_WHEEL_BACKENDS = frozenset({"xformers"})
 _XFORMERS_WHEEL_TARGET: Optional[tuple[Optional[str], Optional[str]]] = None
 _XFORMERS_WHEEL_LOCK = threading.Lock()
@@ -3015,11 +3013,7 @@ _URL_IN_TEXT = re.compile(r"[a-zA-Z][a-zA-Z0-9+.\-]*://[^\s'\"<>]+")
 
 
 def _redacted_for_log(text: str) -> str:
-    """Every URL in ``text``, stripped of userinfo / query / fragment.
-
-    Takes free text, not just a URL, because pip echoes the URL it was handed back in its
-    stderr -- redacting only the name in the log line would leave the secret in the body.
-    """
+    """Redacts every URL in free text, stripping userinfo, query and fragment; pip echoes URLs in stderr."""
     try:
         from utils.wheel_utils import redact_url_credentials
     except Exception:  # noqa: BLE001 -- redaction must never be the thing that breaks a log
@@ -3028,24 +3022,7 @@ def _redacted_for_log(text: str) -> str:
 
 
 def _xformers_wheel_target() -> tuple[Optional[str], Optional[str]]:
-    """Resolve the xFormers wheel built for the resident torch: (URL, refusal reason).
-
-    xformers' compiled extension is linked against ONE exact (torch, CUDA) pair, and next to any
-    other pair ``torch.ops.load_library`` raises -- which xformers/_cpp_lib.py then downgrades to a
-    log warning, so the import "succeeds" with memory-efficient attention, SwiGLU and the sparse ops
-    silently gone. That is invisible to ``find_spec`` and to pip, and PyPI publishes only the
-    CUDA-12.8 flavour, so a plain ``pip install xformers`` beside a cu130 torch installs the broken
-    combination every time.
-
-    So resolve the exact download.pytorch.org wheel instead, and when no wheel matches return a
-    reason rather than a URL: installing nothing leaves the caller on torch SDPA, which is strictly
-    better than an extension that cannot load.
-
-    The URL is not HEAD-checked here. This can run under ``_generate_lock`` (the video loader has no
-    out-of-lock pre-install hop), so it must not add network round trips to a path that already
-    blocks unload/cancel; a wrong row surfaces as a pip failure instead, and the matrix has a
-    live-URL test behind it.
-    """
+    """Exact xFormers wheel for this torch+CUDA pair, or a refusal: a mismatch loads silently broken."""
     global _XFORMERS_WHEEL_TARGET
     with _XFORMERS_WHEEL_LOCK:
         if _XFORMERS_WHEEL_TARGET is not None:
@@ -3085,27 +3062,12 @@ def _xformers_wheel_target() -> tuple[Optional[str], Optional[str]]:
         return target
 
 
-# The huggingface_hub floor the current `kernels` wheels declare (kernels >= 0.14.1 requires huggingface-hub >= 1.10.0).
-# A (major, minor) pair, compared against the resident hub below.
+# kernels >= 0.14.1 requires huggingface-hub >= 1.10.0.
 _KERNELS_HUB_FLOOR = (1, 10)
 
 
 def _kernels_hub_compatible() -> bool:
-    """Whether installing the ``kernels`` package is SAFE next to the resident huggingface_hub.
-
-    Current ``kernels`` wheels declare ``huggingface_hub >= 1.10`` and build their dependency tables
-    against that API, and with an older hub the breakage is NOT contained to the requested backend:
-    ``import kernels`` raises at module scope, and diffusers imports ``kernels`` whenever it is
-    installed, so EVERY later pipeline import in every process fails until the package is
-    uninstalled. Measured with kernels 0.16.0: hub 1.0.0-1.2.4 raise
-    ``StrictDataclassFieldValidationError`` on ``import kernels``, and 1.3-1.9 merely happen to work
-    today, below the floor kernels supports. The whole 1.x range under 1.10 is therefore refused
-    rather than trusted, since the install is unpinned. An undeterminable hub version allows the
-    install, keeping the previous behaviour.
-
-    A ``--no-deps`` install cannot self-correct here: pip writes the wheel without ever reading its
-    ``Requires-Dist``, so this predicate is the only thing enforcing that floor.
-    """
+    """False for hub under 1.10; unknown hub allows install; --no-deps leaves this the only floor check."""
     try:
         import re
         from importlib.metadata import version
@@ -3147,17 +3109,7 @@ def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> Opt
 
 
 def _ensure_backend_package(backend: str, logger: Any = None) -> Optional[str]:
-    """Best-effort wheel-only install of the package ``backend`` needs, when allowed.
-
-    Called after arch gating, so only for a backend that could work here. Failure is swallowed: the
-    subsequent set_attention_backend raises on the missing package and falls back to native.
-
-    Returns the reason the install was REFUSED (a policy decision, e.g. no CUDA-matched xFormers
-    wheel exists for the resident torch), or None when nothing stood in the way -- the install ran,
-    was skipped as already present, or merely failed. Every refusal is also logged at warning level;
-    the return value is there so a caller that wants to surface the reason can, and both current
-    callers deliberately ignore it.
-    """
+    """Best-effort wheel-only install; returns the policy refusal reason, or None, and never raises."""
     import importlib.util
     import os
     import sys
@@ -3181,9 +3133,7 @@ def _ensure_backend_package(backend: str, logger: Any = None) -> Optional[str]:
                 reason,
             )
         return reason
-    # Refusing is a POLICY decision, not a failed attempt, so it is checked before the _INSTALL_ATTEMPTED memo below and
-    # records nothing: a later request on a fixed environment must still be able to install. Scoped to kernels (which
-    # sage and flash3 / flash4 install); the flash-attn / xformers wheels do not import huggingface_hub at module scope.
+    # Policy refusal, checked before _INSTALL_ATTEMPTED so a fixed env can still install.
     if package == "kernels" and not _kernels_hub_compatible():
         if logger is not None:
             logger.warning(
@@ -3196,12 +3146,7 @@ def _ensure_backend_package(backend: str, logger: Any = None) -> Optional[str]:
         return "the resident huggingface_hub is too old for the kernels package"
     try:
         if importlib.util.find_spec(module) is not None:
-            # Present is present, including a MISMATCHED xformers: find_spec sees the package, so nothing below runs and
-            # the wrong-CUDA build stays. That is deliberate here. Repairing means reinstalling a package the user may
-            # have built or pinned, and this can run under _generate_lock, so a 100 MB download would block unload and
-            # cancel. install.ps1 is where the repair belongs -- it compares cpp_lib.json against the resident torch and
-            # passes --reinstall-package, outside any request. What this branch prevents is Unsloth CREATING the
-            # mismatch, which is how it got made in the first place.
+            # Deliberately leave a mismatched xformers alone: install.ps1 repairs it outside any request.
             return None
     except Exception:  # noqa: BLE001 - a broken install probes as missing; try the install
         pass
@@ -3217,11 +3162,7 @@ def _ensure_backend_package(backend: str, logger: Any = None) -> Optional[str]:
                 _ROCM_FLASH_HINT,
             )
         return reason
-    # XFormers ships a compiled extension tied to one exact (torch, CUDA) pair, so the name `xformers` is not a safe
-    # thing to hand pip: PyPI serves only the CUDA-12.8 build and --no-deps below stops pip from ever reading its
-    # `Requires-Dist: torch==X`. Resolve the matching wheel URL instead, and REFUSE when there is none -- like the
-    # kernels gate above this is policy, so it is checked before the _INSTALL_ATTEMPTED memo and records nothing there
-    # (a refused backend never burns its one install attempt).
+    # xformers binds one exact (torch, CUDA) pair: resolve a matching wheel URL or refuse.
     if backend in _MATCHED_WHEEL_BACKENDS:
         wheel_url, refusal = _xformers_wheel_target()
         if wheel_url is None:
@@ -3237,12 +3178,9 @@ def _ensure_backend_package(backend: str, logger: Any = None) -> Optional[str]:
                 )
             return refusal
         package = wheel_url
-    # What pip gets and what the log gets are not the same string. UNSLOTH_PYTORCH_MIRROR may carry userinfo or a
-    # token for a private index, and it is baked into the wheel URL, so logging the URL verbatim writes that secret
-    # into the backend log.
+    # Pip gets the real URL; the log gets a redacted one, since the mirror URL may carry a token.
     display = _redacted_for_log(package)
-    # attempt each install once per process, else the in-lock apply re-runs it under _generate_lock and blocks
-    # unload/cancel
+    # Once per process, else the in-lock apply re-runs it under _generate_lock.
     if package in _INSTALL_ATTEMPTED:
         return None
     _INSTALL_ATTEMPTED.add(package)
@@ -3254,10 +3192,7 @@ def _ensure_backend_package(backend: str, logger: Any = None) -> Optional[str]:
         )
     try:
         subprocess.run(
-            # --no-deps: install ONLY this kernel wheel, since xformers/flash-attn pin an exact torch and normal
-            # resolution would replace the running one. It also means pip never reads the wheel's `Requires-Dist:
-            # torch==X`, so nothing here would catch an ABI mismatch -- for xformers, whose mismatch is SILENT, the
-            # URL was resolved against the running torch above precisely so there is nothing left to catch.
+            # --no-deps: wheels pin an exact torch that would replace the running one; no ABI check here.
             [
                 sys.executable,
                 "-m",
@@ -3507,19 +3442,7 @@ def apply_attention_backend(
     logger: Any = None,
     target: Any = None,
 ) -> Optional[str]:
-    """Set ``backend`` on EVERY denoiser DiT via the diffusers dispatcher.
-
-    Returns the backend engaged, or None when left at native (``backend`` was None or the kernel
-    was unavailable -> graceful fallback, never a load failure).
-
-    ``target`` is the resolved device target. Given, and only when the result is native, the SDPA
-    backends are probed and a math-only device is reported here rather than discovered as a
-    six-figure-MiB allocation mid-generation (#8225). Optional so existing callers are unaffected.
-
-    diffusers keeps a process-wide active backend that ``set_attention_backend`` also updates, and
-    a fresh transformer's processors follow it (default None). So a load wanting native must
-    restore it explicitly, else it inherits a backend an earlier load pinned (e.g. cuDNN under a
-    speed profile), breaking the ``off`` guarantee. Best-effort."""
+    """Sets the backend on every DiT (None means native, set explicitly so an earlier pin cannot leak)."""
     if target is not None:
         try:
             guard_rocm_fused_sdpa(target, logger)
@@ -3532,9 +3455,7 @@ def apply_attention_backend(
         if callable(s)
     ]
     if not setters:
-        # A U-Net pipeline (SDXL) exposes no dispatcher setter, so there is no backend to set -- but its attention still
-        # runs through torch SDPA, so the math-only diagnosis applies exactly as it does to a DiT. Report it here or an
-        # SDXL load gets no warning at all.
+        # SDXL U-Net has no backend setter but still runs SDPA: report the math-only diagnosis.
         if target is not None:
             _configure_native_attention(pipe, target, logger)
         return None
@@ -3708,23 +3629,9 @@ def _warn(logger: Any, what: str, exc: Exception) -> None:
         logger.warning("diffusion.attention: %s unavailable (%s); using default", what, exc)
 
 
-# HunyuanVideo-1.5 joint-attention padding trim (accuracy-exact speed win). HunyuanVideo15AttnProcessor2_0 runs a
-# JOINT [video ; text] self-attention and, on every block and step, materialises a dense [B,1,N,N] boolean mask so the
-# video never attends to padded text. A dense bool attn_mask costs most of what the fused kernels are for: at the
-# production shape (N~=50k, 121 frames 480p, B200) the SAME attention is 296 ms with the dense mask against 15 ms with
-# attn_mask=None, and end to end a 121-frame 832x480 10-step render goes 353.8s -> 33.9s. The text is ~99.5% padding
-# (a t2v prompt fills ~9 of ~1985 slots). The fix is exact: the model already masks the padded text and DISCARDS its
-# attention output (only the video split feeds proj_out), so removing the padded tokens before attention changes
-# nothing for the video. "Exact" means no information is discarded, NOT bit-reproducible: swapping masked for fused
-# SDPA perturbs each step at bf16 rounding scale and 10 denoising steps amplify that, so the finished video is a
-# different sample. That is intrinsic to the kernel change, not to the trim, since rendering the SAME dense-mask path
-# under two different exact SDPA kernels diverges more. Whole-video LPIPS cannot judge a kernel change at this step
-# count; the single-forward relative error can. scripts/sdpa_mask_backend_probe.py re-measures all of it. Done in an
-# eager forward pre-hook (outside the compiled blocks): drop the all-zero image stream (t2v), trim the mllm/byt5
-# streams to their globally-valid columns, and, when nothing partially-padded remains, flag the DiT so the processor
-# skips the dense mask and runs the fused path. Mixed-padding batches fall back to the stock dense mask. SHAPE NOTE:
-# trimmed length varies per prompt; safe because ``max`` compiles with dynamic=None (one generalising recompile). A
-# static (dynamic=False) compile would recompile per prompt length and hit dynamo's recompile limit under fullgraph.
+# HunyuanVideo-1.5: trim padded text before joint attention so fused SDPA runs without a dense mask
+# (no information lost, though not bit-identical; ~10x faster). Trimmed length varies per
+# prompt, so compile must stay dynamic=None.
 _HUNYUAN15_TRANSFORMER_CLS = "HunyuanVideo15Transformer3DModel"
 _HUNYUAN15_PROCESSOR_CLS = "HunyuanVideo15AttnProcessor2_0"
 _NULL_ATTN_FLAG = "_unsloth_null_attn_mask"
@@ -3752,10 +3659,7 @@ def _hunyuan_null_mask_state(module: Any) -> bool:
 
 
 def _null_mask_processor_cls():
-    """Build (once, lazily) a HunyuanVideo15AttnProcessor2_0 subclass whose ``__call__`` runs
-    attn_mask=None when the DiT is flagged (padding already removed by the pre-hook); otherwise it
-    delegates to the stock processor, so a mixed-padding batch and future diffusers changes stay
-    correct."""
+    """Skips attn_mask only when the DiT is flagged; otherwise delegates to the stock processor."""
     cached = _NULL_PROCESSOR_CACHE.get("cls")
     if cached is not None:
         return cached
@@ -3775,8 +3679,7 @@ def _null_mask_processor_cls():
             attention_mask = None,
             image_rotary_emb = None,
         ):
-            # Fast path only when the pre-hook removed all padding (attn_mask redundant); a constant python bool so
-            # torch.compile const-folds the branch (no graph break).
+            # Fast path only if the pre-hook removed all padding; a constant bool so torch.compile folds it.
             if not getattr(attn, _NULL_ATTN_FLAG, False):
                 return super().__call__(
                     attn,
@@ -3847,8 +3750,7 @@ def _null_mask_processor_cls():
                 if getattr(attn, "to_add_out", None) is not None:
                     encoder_hidden_states = attn.to_add_out(encoder_hidden_states)
 
-            # Always the 2-tuple, matching the stock processor's return contract (it returns (hidden_states,
-            # encoder_hidden_states) outside its own `if`), so the calling block unpacks identically on either path.
+            # Always the 2-tuple, matching the stock processor's return contract.
             return hidden_states, encoder_hidden_states
 
     _NULL_PROCESSOR_CACHE["cls"] = _HunyuanNullMaskProcessor
@@ -3877,17 +3779,12 @@ _TRIM_MEMO_ATTR = "_unsloth_trim_memo"
 
 
 def _trim_plan(module: Any, kwargs: dict) -> dict:
-    """The trim decisions for this call's image / mask tensors: the host reads (``_trim_stream``'s) made once per
-    set of inputs. A pipeline hands the SAME prompt tensors to every step, so a step after the first reuses the plan
-    and makes no host wait (a CUDA-graph replay of the step then runs without one). Keyed on the tensors themselves,
-    held here, and their version counters, so new or edited inputs plan afresh."""
+    """Trim plan per input set, reused across steps; keyed on tensors and versions, so edits replan."""
     import torch
 
     names = ("image_embeds", "encoder_attention_mask", "encoder_attention_mask_2")
     srcs = tuple(kwargs.get(n) for n in names)
-    # An inference tensor (renders run under torch.inference_mode) has no version counter and reading one raises;
-    # it is keyed on identity alone. It cannot be written outside inference mode, and the pipeline hands every step
-    # the encoder's own outputs, which nothing edits in place.
+    # Inference tensors have no version counter: keyed on identity alone.
     versions = tuple(
         ("inference" if t.is_inference() else t._version) if torch.is_tensor(t) else None
         for t in srcs
@@ -3929,28 +3826,7 @@ def _apply_trim(states: Any, mask: Any, decided: tuple) -> tuple:
 
 
 def _hunyuan_trim_pre_hook(module, args, kwargs):
-    """Eager forward pre-hook: strip padded text tokens so the joint attention runs fused.
-
-    - Drop the image stream when it is entirely zero (t2v): those ~729 tokens are pure padding. This
-    is upstream's own t2v sentinel (``is_t2v = torch.all(image_embeds == 0)``), and ``torch.all`` of
-    an empty tensor is vacuously True, so emptying the axis keeps it True.
-
-    - Trim the mllm/byt5 text streams to their globally-valid columns.
-
-    - Flag every block's attention so the null-mask processor skips the dense mask when nothing
-    partially-padded remains; otherwise leave the flag False and the stock dense-mask path handles
-    the residual padding.
-
-    This hook is the correctness choke point: the null-mask flag is valid only because the padding
-    was removed HERE, on the same call. It fires on ``module(...)`` (``__call__``), which the
-    pipeline/guider/cache_context/compile all use. Do NOT invoke a hooked DiT via
-    ``module.forward(...)`` directly: that skips pre-hooks, so a stale True flag would null the mask
-    over un-trimmed padding and corrupt the output.
-
-    The three ``.item()`` reads below are host syncs, but this hook runs eagerly outside the
-    compiled blocks (~3 syncs against a ~1.3 s forward), so they must stay here and not be folded
-    into the graph. Best-effort: any anomaly leaves the inputs untouched and the flag False.
-    """
+    """Strips padding so attention runs fused; call the module, never module.forward, which skips it."""
     import torch
 
     original = dict(kwargs)
@@ -3960,17 +3836,14 @@ def _hunyuan_trim_pre_hook(module, args, kwargs):
         plan = _trim_plan(module, kwargs)
         image = kwargs.get("image_embeds")
         if plan["t2v"]:
-            # All-zero image == "no image" (t2v). Emptying the token axis removes the 729 padded image tokens; is_t2v
-            # stays True in forward (all() of empty is vacuously True).
+            # is_t2v stays True in forward: all() of an empty tensor is True.
             kwargs["image_embeds"] = image[:, :0]
 
         for skey, mkey, required in (
             ("encoder_hidden_states", "encoder_attention_mask", True),
             ("encoder_hidden_states_2", "encoder_attention_mask_2", False),
         ):
-            # Only touch streams passed by keyword (the pipeline always does); never write back an absent key (a
-            # positional encoder_hidden_states would collide). An absent REQUIRED primary stream drops the fast path;
-            # an absent optional byt5 is fine.
+            # Only keyword streams: a positional encoder_hidden_states would collide.
             if skey not in kwargs:
                 null_ok = null_ok and not required
                 continue
@@ -3979,8 +3852,7 @@ def _hunyuan_trim_pre_hook(module, args, kwargs):
             kwargs[mkey] = mask
             null_ok = null_ok and all_valid
 
-        # The primary mllm stream flows through the TokenRefiner's own attention, whose pooling divides by the mask sum;
-        # never hand it a 0-length sequence (pathological empty prompt). Revert and take the stock dense-mask path.
+        # The TokenRefiner pooling divides by the mask sum: never pass a 0-length sequence.
         primary = kwargs.get("encoder_hidden_states")
         if primary is not None and primary.dim() == 3 and primary.shape[1] == 0:
             kwargs.clear()
@@ -3990,8 +3862,7 @@ def _hunyuan_trim_pre_hook(module, args, kwargs):
         _set_hunyuan_null_mask(module, null_ok)
         return args, kwargs
     except Exception:  # noqa: BLE001 - optimisation only; never break the forward
-        # We may have trimmed some kwargs before failing. Restore the caller's untrimmed inputs so the stock dense-mask
-        # path (flag False) runs on exactly what it expects.
+        # Different arch, not a refreshed Qwen-Image: 14.2 GB DiT, a larger Qwen3-VL 8B encoder; bf16, so resident equals on-disk; sizes from Hub metadata
         kwargs.clear()
         kwargs.update(original)
         _set_hunyuan_null_mask(module, False)
@@ -3999,10 +3870,7 @@ def _hunyuan_trim_pre_hook(module, args, kwargs):
 
 
 def _hunyuan_trim_post_hook(module, _args, output):
-    """Clear the null-mask flag after each hooked forward, scoping the authorisation to exactly the
-    call whose pre-hook removed the padding. Registered with ``always_call=True`` so the flag is
-    also cleared when the forward raises -- otherwise a latched True would null the mask over
-    un-trimmed padding on any later direct ``module.forward(...)``. Returns the output unchanged."""
+    """Clears the null-mask flag after every forward, including ones that raise, so it cannot latch on."""
     _set_hunyuan_null_mask(module, False)
     return output
 
@@ -4045,16 +3913,7 @@ def install_hunyuan_attention_trim(
     *,
     logger: Any = None,
 ) -> bool:
-    """HunyuanVideo-1.5 only: make the joint attention skip padded text tokens (see module note).
-
-    Installs a null-mask processor on every denoiser DiT block plus an eager pre-hook that trims the
-    padded text/image streams each forward. Exact for the video output (the fused-vs-masked SDPA
-    swap is the only numeric change). Returns True when engaged; No-op (False) for any other family,
-    an unexpected class, or any failure -- the stock dense-mask path stays, so correctness never
-    depends on this. Call BEFORE apply_attention_backend so the kernel pins onto the new processor.
-
-    The caller must NOT install this when the denoiser blocks are compiled with static shapes: the
-    trimmed text length varies per prompt (see the SHAPE NOTE in the module header)."""
+    """HunyuanVideo-1.5 only; call before apply_attention_backend, and not under static-shape compile."""
     if getattr(family, "transformer_class", None) != _HUNYUAN15_TRANSFORMER_CLS:
         return False
     engaged = False
@@ -4071,8 +3930,7 @@ def install_hunyuan_attention_trim(
             pre_handle = None
             try:
                 pre_handle = dit.register_forward_pre_hook(_hunyuan_trim_pre_hook, with_kwargs = True)
-                # always_call: clear the flag even when the forward raises, so an exception can never leave the
-                # null-mask authorisation latched for a later direct forward.
+                # always_call: never leave the null-mask flag latched after a raise.
                 post_handle = dit.register_forward_hook(_hunyuan_trim_post_hook, always_call = True)
                 dit._unsloth_trim_hook = (pre_handle, post_handle)
             except Exception as exc:  # noqa: BLE001 - optimisation only

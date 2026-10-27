@@ -13,9 +13,7 @@ import os, importlib.util, platform, sys
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
-# Opt into ROCm AOTriton kernels PyTorch still gates as experimental; it keeps its own hardware
-# checks and reads this lazily at the SDPA probe, so no torch import here. `setdefault` preserves
-# an explicit override, including "0".
+# Opt into ROCm AOTriton kernels torch still gates as experimental; setdefault keeps an explicit "0".
 os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
 
 # Before anything can create a process group: c10d and NCCL read these at init.
@@ -42,13 +40,10 @@ try:
 except Exception:
     pass
 
-# Transformers 4.x imports TensorFlow / Flax merely because they are installed (processing_utils
-# -> image_transforms); it reads these variables once at its own import, so they have to land
-# first. An explicit opt-in still wins, and 5.x ignores all of this.
+# Transformers 4.x imports TF/Flax if installed and reads these vars once at import, so set them first; explicit opt-ins still win.
 if "transformers" not in sys.modules:
     _TRUE = {"1", "ON", "YES", "TRUE"}
-    # Overwrite, not `setdefault`: unset means AUTO ("enable if installed"), but an already-imported
-    # backend is in use, so opting it out breaks a `from_tf` load.
+    # Overwrite, not setdefault (unset means AUTO); skip backends already imported, since opting one out breaks from_tf loads.
     for _var, _modules, _opt_ins in (
         ("USE_TF", ("tensorflow",), ("USE_TF", "FORCE_TF_AVAILABLE")),
         ("USE_FLAX", ("flax", "jax"), ("USE_FLAX",)),
@@ -60,9 +55,7 @@ if "transformers" not in sys.modules:
         os.environ[_var] = "0"
     del _TRUE, _var, _modules, _opt_ins
 else:
-    # Transformers derives _tf_available / _flax_available from find_spec alone, and being in
-    # sys.modules does not mean its body ran, so clear the cached flags AND write the variables:
-    # inert once read, decisive in that window, unconditional since waiting deadlocks.
+    # Transformers derives flags from find_spec: clear cached flags AND set the vars unconditionally, since waiting for the body deadlocks.
     _TRUE = {"1", "ON", "YES", "TRUE"}
     _import_utils = sys.modules.get("transformers.utils.import_utils")
     for _var, _flag, _const, _modules, _opt_ins, _cached in (
@@ -87,14 +80,12 @@ else:
             continue
         if any(os.environ.get(_v, "").upper() in _TRUE for _v in _opt_ins):
             continue
-        # An opt-in can be consumed and then restored, so read the snapshot Transformers used. Env USE_FLAX
-        # lands in the constant USE_JAX.
+        # An opt-in can be consumed then restored, so read the snapshot Transformers used; env USE_FLAX lands in the constant USE_JAX.
         if any(str(getattr(_import_utils, _v, "")).upper() in _TRUE for _v in _cached):
             continue
         os.environ[_var] = "0"
         try:
-            # import_utils copies the env into USE_TF / USE_JAX (lines 102-104) and derives the flags at
-            # 264 / 355, so mid-body only the constant works.
+            # Mid-body, import_utils already copied the env into USE_TF / USE_JAX; only the constant works.
             if hasattr(_import_utils, _const):
                 setattr(_import_utils, _const, "0")
             # Absent on 5.x, and a module proxy can refuse the write.
@@ -104,13 +95,11 @@ else:
             pass
     del _TRUE, _import_utils, _var, _flag, _const, _modules, _opt_ins, _cached
 
-# Relax Metal's context-store timeout before MLX modules can initialize Metal; an explicit user
-# value stays authoritative.
+# Relax Metal's context-store timeout before MLX initializes Metal; an explicit user value wins.
 if platform.system() == "Darwin" and platform.machine() == "arm64":
     os.environ.setdefault("AGX_RELAX_CDM_CTXSTORE_TIMEOUT", "1")
 
-# Legacy Windows consoles (cp1252) cannot encode Unsloth's emoji/box-drawing glyphs and crash with
-# UnicodeEncodeError; errors="replace" guarantees no crash on an unencodable glyph.
+# Legacy cp1252 consoles cannot encode Unsloth's glyphs; errors="replace" avoids UnicodeEncodeError.
 # ── Windows console UTF-8 safety ─────────────────────────────────────────────
 if platform.system() == "Windows":
     import sys as _sys
@@ -150,8 +139,7 @@ def _bytes_to_gb(value):
 
 
 def _is_mlx_available():
-    # Transitional import barrier: keep non-Apple-Silicon imports from touching unsloth_zoo until
-    # unsloth_zoo.mlx is import-safe on GPU hosts.
+    # Transitional: keep non-Apple-Silicon imports off unsloth_zoo until unsloth_zoo.mlx is GPU-host safe.
     if (
         os.environ.get("UNSLOTH_FORCE_GPU_PATH", "0") == "1"
         or platform.system() != "Darwin"
@@ -170,20 +158,15 @@ def _is_mlx_available():
 _IS_MLX = _is_mlx_available()
 
 if _IS_MLX:
-    # Same reason again, and first because it is what turns the bare AttributeError into a
-    # diagnosis: this branch imports transformers below, so an Apple Silicon host carrying the
-    # old-torch/new-transformers pair hits #8933 here exactly as a CUDA host does, and
-    # _gpu_init.py, the only other installation site, is never reached on this path. The
-    # triton shim check is deliberately NOT mirrored: it is a CUDA/ROCm/XPU driver shim and
-    # there is no triton on this platform to inspect.
+    # Run this first: it turns the bare AttributeError into a diagnosis, and _gpu_init.py never runs on this path.
+    # The triton shim check is deliberately not mirrored: it is a CUDA/ROCm/XPU driver shim and Apple Silicon has no triton.
     try:
         from .import_fixes import patch_torch_missing_attribute_error as _patch_torch_attr
         _patch_torch_attr()
         del _patch_torch_attr
     except Exception:
         pass
-    # _gpu_init does this on the GPU path and the MLX path never reaches it, so torchao 0.18 + torch <
-    # 2.10 dies on `ScalingType`.
+    # _gpu_init does this on the GPU path only; torchao 0.18 + torch < 2.10 dies on ScalingType.
     try:
         from .import_fixes import fix_torchao_torch_symbol_skew as _fix_torchao
         _fix_torchao()
@@ -217,17 +200,14 @@ if _IS_MLX:
     except Exception:
         pass
     try:
-        # Same reason: this branch imports transformers itself further down, so a --no-deps floor miss would
-        # surface here with the same wrong remedy.
+        # This branch imports transformers itself, so a --no-deps floor miss surfaces here with the same wrong remedy.
         from .import_fixes import check_transformers_dependency_versions as _check_tf_deps
         _check_tf_deps()
         del _check_tf_deps
     except Exception:
         pass
     try:
-        # Same reason: remote code reaches transformers' get_class_in_module on this platform
-        # too, and the wrap is what restores the image helpers transformers 5 stopped
-        # re-exporting. Costs nothing until a checkpoint's own modeling file is loaded.
+        # Restores image helpers transformers 5 stopped re-exporting for remote code; lazy.
         from .import_fixes import (
             fix_transformers5_image_processing_reexports as _fix_image_reexports,
         )
@@ -236,8 +216,7 @@ if _IS_MLX:
     except Exception:
         pass
     try:
-        # Same reason: 4.x remote configs are built here too, and their validators read plain RoPE
-        # as rope_scaling None. is_torch_fx_available is left to unsloth_zoo.mlx.loader.
+        # 4.x remote configs are built here too, and read plain RoPE as rope_scaling None.
         from .import_fixes import (
             fix_transformers_remote_rope_scaling_none as _fix_remote_rope_scaling,
         )
@@ -272,8 +251,7 @@ if _IS_MLX:
             "Unsloth: MLX support requires `unsloth-zoo` with MLX modules. "
             "Reinstall with `pip install unsloth-zoo` or rerun install.sh."
         ) from _e
-    # An older unsloth-zoo satisfies `import unsloth_zoo` but lacks the mlx.trainer / mlx.loader
-    # submodules; surface an install hint instead of a raw ImportError.
+    # An older unsloth-zoo lacks mlx.trainer / mlx.loader; surface an install hint instead.
     try:
         from unsloth_zoo.mlx.trainer import (
             MLXTrainer,
@@ -296,8 +274,7 @@ if _IS_MLX:
     import types as _types
     import warnings as _warnings
 
-    # unsloth_zoo is a different distribution, pinned >=, so borrowing its number reported neither the
-    # installed core nor the latest zoo. `_version` imports nothing, so this stays torch-free.
+    # Own version, not unsloth_zoo's; `_version` imports nothing, so this stays torch-free.
     from ._version import __version__
 
     DEVICE_TYPE = "mlx"
@@ -352,8 +329,7 @@ if _IS_MLX:
             target = kwargs.get("device", device)
             if _is_mlx_cuda_device_target(target):
                 return self
-            # device given by keyword: do not also pass the positional None, or the original raises "multiple
-            # values for 'device'".
+            # Device given by keyword: also passing positional None raises "multiple values for 'device'".
             if "device" in kwargs:
                 return original_to(self, *args, **kwargs)
             return original_to(self, device, *args, **kwargs)
@@ -364,8 +340,7 @@ if _IS_MLX:
 
     _patch_mlx_batch_encoding_to_cuda()
 
-    # Load raw_text helpers without executing dataprep/__init__.py, which imports synthetic.py -> torch
-    # and would defeat the torch-free MLX path.
+    # Load raw_text without dataprep/__init__.py, which imports torch via synthetic.py.
     from pathlib import Path as _Path
 
     _raw_text_path = _Path(__file__).resolve().parent / "dataprep" / "raw_text.py"
@@ -490,11 +465,8 @@ if _IS_MLX:
         if clear_cache is None and hasattr(mx, "metal"):
             clear_cache = getattr(mx.metal, "clear_cache", None)
         if callable(clear_cache):
-            # MLX pins buffers a live command buffer reads, but not a dropped output array.
-            # Generation runs on its own streams, which a no-argument mx.synchronize()
-            # would not wait on. Best effort: this helper is torch.cuda.empty_cache() on
-            # MLX, called from finally arms on any thread, and synchronizing a stream
-            # bound on another thread raises (mlx 0.31.2 made encoders thread local).
+            # Generation runs on its own streams, which a bare mx.synchronize() does not wait on. Best effort:
+            # synchronizing a stream bound on another thread raises (mlx 0.31.2 thread-local encoders).
             _synchronize = getattr(mx, "synchronize", None)
             if callable(_synchronize):
                 _drained = []
@@ -1568,8 +1540,7 @@ if _IS_MLX:
 
     def train_on_responses_only(*args, **kwargs):
         """Mask non-response tokens through the shared zoo dataset helper."""
-        # Prefer the chat_templates export, which bounds the zoo's dataset.map() worker count (#2693); it is
-        # None on a torch-free host, so fall back and let the zoo raise its own ImportError.
+        # Prefer the chat_templates export, which bounds the zoo's map() workers; it is None without torch.
         from .chat_templates import train_on_responses_only as _train_on_responses_only
 
         if _train_on_responses_only is None:
@@ -1593,8 +1564,7 @@ if _IS_MLX:
                 safe_exports.append(name)
         return safe_exports
 
-    # Stub the trl trainers with no MLX implementation yet, so an unmigrated GRPO/DPO/ORPO notebook
-    # fails with a clear message instead of crashing deep inside the real torch/CUDA trainer.
+    # Stub trl trainers with no MLX implementation so they fail clearly instead of deep in torch code.
     _MLX_UNSUPPORTED_TRL_TRAINERS = (
         "GRPOTrainer",
         "DPOTrainer",
@@ -1648,13 +1618,9 @@ if _IS_MLX:
 
         _trl.SFTTrainer = UnslothTrainer
         _trl.SFTConfig = _MLXSFTConfig
-        # Only retarget trainers the installed trl actually exposes; idempotent, so re-importing unsloth is a no-op.
-        # Names come from trl's __all__ and already materialized attrs, never a getattr probe: resolving
-        # one triggers trl's lazy trainer import and pulls torch, breaking `import unsloth` on MLX.
+        # Names come from trl's __all__, never a getattr probe: that triggers trl's lazy import and pulls torch.
         _trl_exports = set(getattr(_trl, "__all__", ()) or ())
-        # Stub every non-SFT trainer trl exposes, not just a fixed list, so newer trainers (RLOOTrainer, ...)
-        # also fail with a clear MLX message instead of importing the real torch trainer. Names come from
-        # __all__ so we never resolve them (that would trigger trl's lazy import and pull torch).
+        # Stub every non-SFT trl trainer so newer ones fail clearly too; take names from __all__ and never resolve them, since that pulls torch.
         _unsupported = set(_MLX_UNSUPPORTED_TRL_TRAINERS) | {
             _n for _n in _trl_exports if _n.endswith("Trainer") and _n != "SFTTrainer"
         }
@@ -1725,6 +1691,13 @@ else:
     _install_native_trainer_init()
     del _install_native_trainer_init
 
+    if os.environ.get("UNSLOTH_TP_SIZE", "").strip() not in ("", "1"):
+        from .models.tp_env import (
+            install_tensor_parallel_env_trainer_init as _install_tp_trainer_init,
+        )
+        _install_tp_trainer_init()
+        del _install_tp_trainer_init
+
     def get_gpu_memory_stats():
         """Return CUDA/ROCm/XPU/NPU device stats, peak memory, and total memory in GiB."""
         try:
@@ -1773,9 +1746,7 @@ else:
             pass
 
 
-# A `pip install --target` / PYTHONPATH layout makes dill pickle whole modules by value, and every
-# training path here builds a datasets.Dataset, which fingerprints through dill. See
-# import_fixes.fix_dill_module_by_value_pickling.
+# A pip --target / PYTHONPATH layout makes dill pickle modules by value, breaking dataset fingerprints.
 try:
     from .import_fixes import fix_dill_module_by_value_pickling as _fix_dill
     _fix_dill()

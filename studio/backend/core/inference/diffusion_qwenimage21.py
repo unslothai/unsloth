@@ -266,20 +266,12 @@ def _cached_step(
 
 
 # ---------------------------------------------------------------------------------------------- CUDA graph step
-#
-# ``diffusion_cuda_graph.GraphedForward`` records one call into static buffers keyed by every input's shape. The
-# stock call cannot be recorded: the pipeline hands the prefix K/V over as a ``QwenImage21KVCache`` object (an opaque
-# leaf to the graph layer) and step 0 fills that cache from Python. ``graph_plan`` turns a decode step into a call
-# whose every input is a tensor or a constant: the per-layer K/V, the layout's index and RoPE tensors, latents,
-# timestep and text mask. Step 0 (the prefill) stays eager.
-#
-# The K/V, RoPE and index inputs only change when a new render (or a new layout) starts, so they are "sticky": the
-# replay copies one into its static buffer only when the caller passes a different tensor object than last time.
+# CUDA graph step: graph_plan makes a decode step all-tensor inputs; step 0 stays eager.
+# K/V, RoPE and index inputs are sticky: copied only when a different tensor is passed.
 
 GRAPH_STICKY = ("text_positions", "vlm_text", "rotary_emb", "modulation_mask", "kv")
 
-# A graph keeps its own copy of the prefix K/V (one per graph, up to the per-module cap). Text-only prefixes stay far
-# below this; a 1 MP condition image is ~2.2 GiB at 32 blocks, and those steps run eager rather than pin that twice.
+# Each graph copies the prefix K/V; large image prefixes run eager to avoid pinning it twice.
 GRAPH_KV_MAX_BYTES = 1 << 30
 
 
@@ -322,9 +314,7 @@ def _graph_step(
     return (output,)
 
 
-# Under block offload the graph wrapper sits in the forward slot under the offload hooks, which onload the top-level
-# weights: a planned step enters through the hooked forward as ``kv_cache_mode = GRAPH_STEP_MODE`` with the plan as
-# ``kv_cache`` (the forward's signature stays the pipeline's).
+# Under block offload a planned step enters via the hooked forward with GRAPH_STEP_MODE.
 GRAPH_STEP_MODE = "unsloth_graph_step"
 
 

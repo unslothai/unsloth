@@ -106,11 +106,7 @@ def _git_branch(repo_root: Path) -> str | None:
 
 
 def get_studio_version(repo_root: Path | None = None) -> str:
-    """Return the installed Unsloth release tag for display, or ``dev``.
-
-    Intentionally separate from the PyPI ``unsloth`` package version used by
-    update checks. Never performs network requests.
-    """
+    """Display version only, kept separate from the PyPI version that update checks use; no network."""
     resolved_repo_root = repo_root or _repo_root()
 
     if _is_source_checkout(resolved_repo_root):

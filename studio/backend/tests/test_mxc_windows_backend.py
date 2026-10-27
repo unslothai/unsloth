@@ -113,6 +113,21 @@ def test_unavailable_capability_names_the_host_prep_command(monkeypatch, tmp_pat
     assert "install_mxc_prebuilt.py" in capability.remediation or not advised
 
 
+def test_an_inconclusive_host_prep_check_is_asked_again(monkeypatch):
+    from core.inference import mxc_probe
+
+    monkeypatch.setattr(mxc_probe, "_host_prep_cache", {})
+    monkeypatch.setattr(mxc_probe.mxc_runtime, "installation_identity", lambda: "runner")
+    answers = [None, ("prepare-null-device",)]
+    monkeypatch.setattr(
+        mxc_probe.mxc_runtime, "probe_host_prep_steps", lambda **_kwargs: answers.pop(0)
+    )
+    assert mxc_probe.host_prep_remediation() is None
+    assert "prepare-null-device" in mxc_probe.host_prep_remediation()
+    assert "prepare-null-device" in mxc_probe.host_prep_remediation()
+    assert answers == []
+
+
 def test_host_prep_is_not_advised_without_the_dacl_opt_in(monkeypatch, tmp_path):
     from core.inference import mxc_probe, sandbox_windows_mxc
 

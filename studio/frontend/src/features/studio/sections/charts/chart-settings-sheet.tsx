@@ -65,7 +65,13 @@ function SettingRow({
           <p className="mt-1 text-xs text-muted-foreground">{description}</p>
         ) : null}
       </div>
-      <div className="shrink-0">{control}</div>
+      <div
+        className={
+          description ? "mt-[var(--ui-title-cap-inset)] shrink-0" : "shrink-0"
+        }
+      >
+        {control}
+      </div>
     </div>
   );
 }

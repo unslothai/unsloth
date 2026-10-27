@@ -39,12 +39,14 @@ function loadRows(): Rows {
     "@/features/hub/stores/inventory-events": { useInventoryVersion: () => 0 },
     "@/i18n": { useT: () => (key: string) => key },
     "@/lib/toast": { toast: {} },
+    "@hugeicons/core-free-icons": { Delete02Icon: {} },
+    "@hugeicons/react": { HugeiconsIcon: noop },
     "../api/caches": {
       bulkPurgeKeys: () => [],
       loadCacheInventory: async () => null,
       purgeCaches: async () => null,
     },
-    "./settings-row": { SettingsRow: noop },
+    "./storage-overview": { SettingsCardRow: noop },
   });
 }
 
@@ -130,7 +132,10 @@ function driveRows(options: {
     },
   };
 
-  const rows = loadWithStubs<{ CacheStorageRows: () => unknown }>(ROWS_URL, {
+  const rows = loadWithStubs<{
+    CacheStorageRows: (props: { cache: unknown }) => unknown;
+    useCacheStorage: () => unknown;
+  }>(ROWS_URL, {
     react,
     "react/jsx-runtime": stubJsxRuntime(),
     "@/components/ui/button": { Button: "Button" },
@@ -155,19 +160,21 @@ function driveRows(options: {
         error: () => undefined,
       },
     },
+    "@hugeicons/core-free-icons": { Delete02Icon: {} },
+    "@hugeicons/react": { HugeiconsIcon: "HugeiconsIcon" },
     "../api/caches": {
       bulkPurgeKeys: () => ["uv"],
       loadCacheInventory: options.load,
       purgeCaches: options.purge ?? (async () => ({})),
     },
-    "./settings-row": { SettingsRow: "SettingsRow" },
+    "./storage-overview": { SettingsCardRow: "SettingsCardRow" },
   });
 
   return () => {
     stateCursor = 0;
     refCursor = 0;
     callbackCursor = 0;
-    const tree = rows.CacheStorageRows();
+    const tree = rows.CacheStorageRows({ cache: rows.useCacheStorage() });
     const effect = pending;
     pending = null;
     effect?.();
