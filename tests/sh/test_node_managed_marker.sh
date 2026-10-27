@@ -42,5 +42,9 @@ assert_eq 'staged update: the skip flag still keeps the managed Node' system \
     "$(source_for "$WORK/live/node" "$WORK/stage/node" 1)"
 assert_eq 'same dir: the managed Node gets the pin check' bundled \
     "$(source_for "$WORK/live/node" "$WORK/live/node" 0)"
+# A user's own Node linked in at the managed location has no installer metadata: never replaced.
+ln -s "$WORK/external/node" "$WORK/linked"
+assert_eq 'a user Node linked in at NODE_DIR stays read-only' system \
+    "$(source_for "$WORK/linked" "$WORK/linked" 0)"
 
 summary

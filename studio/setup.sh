@@ -2130,12 +2130,11 @@ if [ -n "$_SYS_NODE_VER" ]; then
     _probe_system_node_tool npm
     _SYS_NPM_VER="$_PROBED_VER"
 fi
+# Only the installer's metadata marks a PATH Node as managed (also when a staged update or a moved
+# home puts NODE_DIR elsewhere); a location match alone could be a user's Node linked in.
 _NODE_ON_PATH_IS_MANAGED=0
 _node_on_path="$(command -v node || true)"
-if [ -n "$_node_on_path" ] && [ "$_node_on_path" -ef "$NODE_DIR/bin/node" ]; then
-    _NODE_ON_PATH_IS_MANAGED=1
-elif [ -n "$_node_on_path" ]; then
-    # Staged update / moved home: installer metadata beside the PATH Node marks it managed.
+if [ -n "$_node_on_path" ]; then
     _node_on_path_root="$(cd "$(dirname "$_node_on_path")/.." 2>/dev/null && pwd -P)" || _node_on_path_root=""
     if [ -n "$_node_on_path_root" ] && [ -f "$_node_on_path_root/UNSLOTH_NODE_PREBUILT_INFO.json" ]; then
         _NODE_ON_PATH_IS_MANAGED=1

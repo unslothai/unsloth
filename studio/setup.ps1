@@ -5122,12 +5122,11 @@ function Get-NodeDecision {
 
 
 function Test-ManagedNodeOnPath {
-    param([string]$InstallDir)
+    # Only the installer's metadata marks it managed (also for a staged update or a moved home);
+    # a location match alone could be a user's Node linked in.
     $command = Get-Command node -ErrorAction SilentlyContinue
     if (-not $command -or -not $command.Path) { return $false }
     $parent = Split-Path -Parent $command.Path
-    if ((Get-CanonicalDir -Path $parent) -eq (Get-CanonicalDir -Path $InstallDir)) { return $true }
-    # Staged update / moved home: installer metadata beside the PATH Node marks it managed.
     return (Test-Path -LiteralPath (Join-Path $parent "UNSLOTH_NODE_PREBUILT_INFO.json") -PathType Leaf)
 }
 
@@ -5189,7 +5188,7 @@ if (-not $IsPipInstall) {
     # Under Stop a bare `node -v` throws past 2>$null.
     $SysNodeVersion = try { if (Get-Command node -ErrorAction SilentlyContinue) { (node -v 2>$null) } else { "" } } catch { "" }
     $SysNpmVersion = try { if (Get-Command npm -ErrorAction SilentlyContinue) { (npm -v 2>$null) } else { "" } } catch { "" }
-    $NodeOnPathIsManaged = Test-ManagedNodeOnPath -InstallDir $NodeDir
+    $NodeOnPathIsManaged = Test-ManagedNodeOnPath
     $NodeSource = Get-NodeDecision -NodeVersion "$SysNodeVersion" -NpmVersion "$SysNpmVersion" `
         -SkipInstall "$($env:UNSLOTH_SKIP_NODE_INSTALL)" -ManagedOnPath $NodeOnPathIsManaged
 }

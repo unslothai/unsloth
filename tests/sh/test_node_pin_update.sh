@@ -57,6 +57,7 @@ run_case() {
     cp "$WORK/template.sh" "$root/setup.sh"
     printf '%s\n' old > "$root/node_prebuilt_pins.json"
     printf '%s\n' old > "$root/node/installed-pin"
+    echo '{}' > "$root/node/UNSLOTH_NODE_PREBUILT_INFO.json" # the installer always writes it
     printf '%s\n' "$target" > "$root/next-pin"
     for bin in "$root/node/bin" "$root/external/bin"; do
         printf '#!/bin/sh\necho v24.18.0\n' > "$bin/node"

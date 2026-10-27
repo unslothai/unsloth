@@ -75,7 +75,7 @@ Check "managed on PATH -> bundled" ((Get-NodeDecision -NodeVersion 'v24.18.0' -N
 Check "managed + skip -> read-only" ((Get-NodeDecision -NodeVersion 'v24.18.0' -NpmVersion '11.0.0' -ManagedOnPath $true -SkipInstall '1') -eq 'system')
 Check "broken managed + skip -> skip" ((Get-NodeDecision -NodeVersion '' -NpmVersion '' -ManagedOnPath $true -SkipInstall '1') -eq 'skip')
 
-foreach ($name in @('Test-ManagedNodeOnPath', 'Get-CanonicalDir', 'Get-PathState', 'Test-AccessDeniedError')) {
+foreach ($name in @('Test-ManagedNodeOnPath', 'Get-PathState', 'Test-AccessDeniedError')) {
     $helper = @($ast.FindAll({ param($n)
         $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name
     }, $true))
@@ -96,18 +96,14 @@ try {
         if (-not $windowsHost) { & chmod +x $exe }
     }
     $env:PATH = $managedDir
-    Check 'managed command on PATH is recognized' (Test-ManagedNodeOnPath -InstallDir $managedDir)
-    Check 'trailing separator still recognizes managed command' (Test-ManagedNodeOnPath -InstallDir ($managedDir + [IO.Path]::DirectorySeparatorChar))
-    # A staged update: the stage's install dir differs from the live managed Node on PATH.
-    $stageDir = Join-Path $nodeTestRoot 'stage node'
-    Check 'unmarked Node outside the install dir is not managed' (-not (Test-ManagedNodeOnPath -InstallDir $stageDir))
+    # A user's own Node linked into the managed location carries no installer metadata.
+    Check 'unmarked Node, even in the install dir, is not managed' (-not (Test-ManagedNodeOnPath))
     [System.IO.File]::WriteAllText((Join-Path $managedDir 'UNSLOTH_NODE_PREBUILT_INFO.json'), '{}')
-    Check 'staged update still recognizes the marked managed Node' (Test-ManagedNodeOnPath -InstallDir $stageDir)
+    Check 'marked managed command on PATH is recognized' (Test-ManagedNodeOnPath)
     $env:PATH = $externalDir
-    Check 'external command is not managed' (-not (Test-ManagedNodeOnPath -InstallDir $managedDir))
-    Check 'external Node is not managed during a staged update' (-not (Test-ManagedNodeOnPath -InstallDir $stageDir))
+    Check 'external command is not managed' (-not (Test-ManagedNodeOnPath))
     $env:PATH = $nodeTestRoot
-    Check 'missing command is not managed' (-not (Test-ManagedNodeOnPath -InstallDir $managedDir))
+    Check 'missing command is not managed' (-not (Test-ManagedNodeOnPath))
 } finally {
     $env:PATH = $oldPath
     Remove-Item -LiteralPath $nodeTestRoot -Recurse -Force

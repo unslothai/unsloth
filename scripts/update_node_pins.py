@@ -173,7 +173,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     for line in changes or ["Node pin is current."]:
         print(line)
     if changes and args.write:
-        args.pins.write_text(json.dumps(new_pins, indent = 2) + "\n", encoding = "utf-8")
+        # Replace atomically so an interrupted run never leaves a truncated pins file.
+        tmp = args.pins.with_name(args.pins.name + ".tmp")
+        tmp.write_text(json.dumps(new_pins, indent = 2) + "\n", encoding = "utf-8")
+        os.replace(tmp, args.pins)
     return 1 if changes and args.check else 0
 
 
