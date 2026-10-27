@@ -37,6 +37,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from core.training.diffusion_load_progress import report_model_load_progress
 from core._torchao_stub import is_stubbed, torch_is_rocm
 from core.training.diffusion_train_common import (
     AUTO_FLOW_SHIFT_FAMILIES,
@@ -2395,7 +2396,11 @@ def run_dit_lora_training(
             cfg.resume_from_checkpoint, identity = identity, target_steps = cfg.train_steps
         )
     _emit(
-        on_event, "model_load_started", num_images = len(pairs), fetch_repo = training_fetch_repo(cfg)
+        on_event,
+        "model_load_started",
+        stage = "conditioning",
+        num_images = len(pairs),
+        fetch_repo = training_fetch_repo(cfg),
     )
     if _check_stop():
         out_dir = Path(cfg.output_dir).expanduser()
@@ -2512,15 +2517,22 @@ def _train_dit(
     if caption_embeds is not None and sample_texts:
         # Warm conditioning skips the VAE and encoders, but previews need the VAE and their own embeddings. RNG-isolated:
         # a run without previews never makes this load, so it must not move the training streams.
-        _emit(on_event, "model_load_started", fetch_repo = training_fetch_repo(cfg))
+        _emit(
+            on_event,
+            "model_load_started",
+            stage = "conditioning",
+            fetch_repo = training_fetch_repo(cfg),
+        )
         with isolated_sampling(device, False):
-            pipe, vae = spec.load_conditioners(fetch_cfg, device, weight_dtype)
+            with report_model_load_progress(on_event):
+                pipe, vae = spec.load_conditioners(fetch_cfg, device, weight_dtype)
             encoded = _encode_prompts_cached(spec, pipe, sample_texts, device, pcache)
         sample_embeds = dict(zip(sample_texts, encoded))
         _free_text_encoders(pipe)
     if caption_embeds is None:
         latent_cache = None
-        pipe, vae = spec.load_conditioners(fetch_cfg, device, weight_dtype)
+        with report_model_load_progress(on_event):
+            pipe, vae = spec.load_conditioners(fetch_cfg, device, weight_dtype)
         extra = [t for t in sample_texts if t not in to_encode]
         encoded = _encode_prompts_cached(spec, pipe, to_encode + extra, device, pcache)
         caption_embeds = {cap: emb for cap, emb in zip(to_encode, encoded)}
@@ -2586,9 +2598,17 @@ def _train_dit(
     variant_rng = random.Random(cfg.seed + 1)
 
     # Transformer loads last, at resolved precision: nf4 by default, 'auto' picks from free VRAM.
-    _emit(on_event, "model_load_started", fetch_repo = training_fetch_repo(cfg))
     base_precision = _resolve_base_precision(cfg, spec, device)
-    transformer = spec.load_transformer(fetch_cfg, device, weight_dtype, base_precision)
+    _emit(
+        on_event,
+        "model_load_started",
+        stage = "quantizing"
+        if base_precision == "nf4" and not repo_is_prequantized(fetch_cfg.base_model)
+        else "transformer",
+        fetch_repo = training_fetch_repo(cfg),
+    )
+    with report_model_load_progress(on_event):
+        transformer = spec.load_transformer(fetch_cfg, device, weight_dtype, base_precision)
     base_is_bnb = base_precision == "nf4"
 
     transformer.requires_grad_(False)

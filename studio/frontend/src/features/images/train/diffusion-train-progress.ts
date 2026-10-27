@@ -13,6 +13,8 @@ type Status = Pick<
   | "message"
   | "preparation"
   | "download_progress"
+  | "model_load_stage"
+  | "model_load_progress"
 >;
 
 const PHASE_MESSAGE =
@@ -71,6 +73,29 @@ export function diffusionTrainingProgress(status: Status | null) {
         percent: known
           ? Math.min(100, ((done as number) / (total as number)) * 100)
           : null,
+      };
+    }
+    const load = status?.model_load_progress;
+    const stage = status?.model_load_stage;
+    // Active transfers are displayed by the shared download manager. Do not present
+    // a retained tensor count as current progress while another file is downloading.
+    const downloading = status?.download_progress != null;
+    const measured = status?.in_model_load && !downloading && load &&
+      Number.isFinite(load.done) && Number.isFinite(load.total) &&
+      load.done >= 0 && load.total > 0 && load.done <= load.total;
+    if (status?.in_model_load && !downloading && (measured || stage)) {
+      return {
+        preparing: true,
+        title: stage === "quantizing" ? "Loading weights and converting to 4-bit"
+          : stage === "conditioning" ? "Loading text encoders and image encoder"
+          : "Loading training model weights",
+        detail: note ?? (measured
+          ? `${load.label} · ${load.done.toLocaleString()} / ${load.total.toLocaleString()} ${load.unit} loaded${stage === "quantizing" ? ". Includes 4-bit conversion; downloaded weights are reused." : "."}`
+          : stage === "quantizing"
+            ? "Downloaded weights are reused. The 4-bit conversion runs in memory each time."
+            : "Waiting for the model loader to report progress. Training has not started yet."),
+        count: measured ? `${Math.floor(load.done / load.total * 100)}%` : null,
+        percent: measured ? load.done / load.total * 100 : null,
       };
     }
     return {
