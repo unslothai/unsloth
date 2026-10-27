@@ -149,7 +149,8 @@ def test_ppo_train_rewrite_applies_to_installed_trl():
     ast.parse("class A:\n" + new)
     for needle in (
         "_unsloth_ppo_route = _unsloth_ppo_route_of(self)",
-        "batch_generation if _unsloth_ppo_route is None else _unsloth_ppo_batch_generation",
+        "query_responses, logitss = _unsloth_ppo_batch_generation(",
+        "if _unsloth_ppo_route is not None and logitss is None:",
         "logprob = _unsloth_ppo_policy_logprobs(",
         "ref_output = _unsloth_ppo_forward(",
         "output, vpred_temp = _unsloth_ppo_forward(",
@@ -269,17 +270,134 @@ def test_ppo_bf16_training_logps_error_not_worse_than_stock():
     assert err_fused <= err_stock + 1e-6, (err_fused, err_stock)
 
 
-def test_ppo_generation_without_scores_matches_trl():
-    module = _ppo_module()
+def _batch_generation(module):
     batch_generation = getattr(module, "batch_generation", None)
     if batch_generation is None:
         from trl.trainer.utils import batch_generation
+    return batch_generation
+
+
+def test_ppo_generation_without_generate_helpers_keeps_trl():
+    module = _ppo_module()
+    batch_generation = _batch_generation(module)
     policy = _Policy()
+    route, trainer = _route(_wrapper(module, policy))
     queries = _query_responses(B = 5, L = 4)
     want, logitss = batch_generation(policy, queries, 2, 0, None)
-    got, none = frl.ppo_batch_generation(policy, queries, 2, 0, None)
-    assert none is None and logitss.shape[-1] == V
+    got, scores = frl.ppo_batch_generation(route, batch_generation, policy, queries, 2, 0, None)
+    assert scores is not None and scores.shape == logitss.shape
     torch.testing.assert_close(got, want)
+    assert (
+        "generation logits processors besides temperature" in trainer._unsloth_ppo_fused_fallbacks
+    )
+    got, scores = frl.ppo_batch_generation(None, batch_generation, policy, queries, 2, 0, None)
+    assert scores is not None
+
+
+def _hidden_gpt2():
+    from transformers import GPT2Config, GPT2LMHeadModel
+
+    class _HiddenGPT2(GPT2LMHeadModel):
+        # position_ids in the signature: generate then derives them from the left-padded attention mask.
+        def forward(
+            self,
+            input_ids = None,
+            attention_mask = None,
+            position_ids = None,
+            **kwargs,
+        ):
+            hidden = os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES") == "1"
+            if hidden:
+                kwargs["output_hidden_states"] = True
+            out = super().forward(
+                input_ids = input_ids,
+                attention_mask = attention_mask,
+                position_ids = position_ids,
+                **kwargs,
+            )
+            if hidden:
+                out.logits = out.hidden_states[-1]
+            return out
+
+    torch.manual_seed(42)
+    config = GPT2Config(
+        vocab_size = 41,
+        n_embd = 16,
+        n_layer = 1,
+        n_head = 2,
+        n_positions = 64,
+        resid_pdrop = 0,
+        embd_pdrop = 0,
+        attn_pdrop = 0,
+        bos_token_id = 1,
+        eos_token_id = None,
+        pad_token_id = 0,
+    )
+    return _HiddenGPT2(config).double().eval()
+
+
+@pytest.mark.parametrize(
+    "inherited",
+    [{}, {"repetition_penalty": 2.0}, {"no_repeat_ngram_size": 2}, {"suppress_tokens": [3, 5]}],
+)
+def test_ppo_rollout_logprobs_match_trl_generation_scores(inherited):
+    # TRL's old log-probs are the generation scores, i.e. after every logits processor generate applies, including
+    # ones inherited from model.generation_config. Only tempered logits may be recomputed by a forward.
+    from transformers import GenerationConfig
+
+    module = _ppo_module()
+    batch_generation = _batch_generation(module)
+    model = _hidden_gpt2()
+    for key, value in inherited.items():
+        setattr(model.generation_config, key, value)
+    T = 0.7 + 1e-7
+    generation_config = GenerationConfig(
+        max_new_tokens = 6, temperature = T, top_k = 0.0, top_p = 1.0, do_sample = True
+    )
+    trainer = SimpleNamespace(
+        model = SimpleNamespace(policy = model),
+        accelerator = SimpleNamespace(unwrap_model = lambda m, **k: m),
+        is_fsdp_enabled = False,
+        is_deepspeed_enabled = False,
+    )
+    route = frl.ppo_route(trainer)
+    assert route is not None
+    queries = torch.tensor([[1, 2, 3, 4], [1, 5, 6, 7], [0, 1, 8, 9]])
+    torch.manual_seed(123)
+    want, trl_scores = batch_generation(model, queries, 2, 0, generation_config)
+    torch.manual_seed(123)
+    got, scores = frl.ppo_batch_generation(
+        route, batch_generation, model, queries, 2, 0, generation_config
+    )
+    torch.testing.assert_close(got, want)
+    responses = want[:, queries.shape[1] :]
+    trl_old = module.selective_log_softmax(trl_scores, responses)
+    if scores is None:
+        calls = fused_linear.CALLS["logprobs"]
+        old = frl.ppo_policy_logprobs(
+            route,
+            module.forward,
+            module.selective_log_softmax,
+            trainer.model,
+            want,
+            responses,
+            queries.shape[1],
+            0,
+            T,
+        )
+        assert fused_linear.CALLS["logprobs"] > calls
+    else:
+        old = module.selective_log_softmax(scores, responses)
+    torch.testing.assert_close(old, trl_old, atol = 1e-5, rtol = 1e-5)
+    fallbacks = getattr(trainer, "_unsloth_ppo_fused_fallbacks", {})
+    if inherited:
+        assert (
+            scores is not None and "generation logits processors besides temperature" in fallbacks
+        )
+        tempered = module.forward(model, want, 0).logits[:, queries.shape[1] - 1 : -1] / T
+        assert (module.selective_log_softmax(tempered, responses) - trl_old).abs().max() > 1e-3
+    else:
+        assert scores is None and not fallbacks
 
 
 def test_ppo_kill_switch_keeps_trl(monkeypatch):
