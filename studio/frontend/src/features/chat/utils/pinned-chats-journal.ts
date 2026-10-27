@@ -9,6 +9,7 @@ import {
 } from "./pinned-chats-sync.ts";
 import type { PinnedChatsFallbackState } from "./pinned-chats-transport.ts";
 import { PIN_JOURNAL_PREFIX } from "../stores/pinned-chats-store.ts";
+import { createNavigationNonce } from "../../../lib/navigation-nonce.ts";
 
 export { PIN_JOURNAL_PREFIX };
 
@@ -21,7 +22,7 @@ interface Entry {
 /** One immutable key per intent prevents tabs from overwriting each other's queues. */
 export function createPinnedChatsJournal(storage: Storage, scope: string) {
   const prefix = `${PIN_JOURNAL_PREFIX}${encodeURIComponent(scope)}:`;
-  const seedKey = `${prefix}fallback:seed:${crypto.randomUUID()}`;
+  const seedKey = `${prefix}fallback:seed:${createNavigationNonce()}`;
   const observed = { pending: new Set<string>(), fallback: new Set<string>() };
   let lastOrder = 0;
 

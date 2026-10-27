@@ -455,17 +455,17 @@ test("retryable failure retains durable intent and later actions wait in FIFO or
   await assert.rejects(a.sync.setPinned(["new"], true));
   assert.deepEqual(a.visible, ["new", "old"]);
   assert.equal(disk.read().length, 1);
-  await assert.rejects(a.sync.setPinned(["new", "old"], false));
+  await assert.rejects(a.sync.setPinned(["old"], false));
   assert.equal(disk.read().length, 2);
-  assert.deepEqual(a.visible, []);
+  assert.deepEqual(a.visible, ["new"]);
   assert.deepEqual(backend.value, ["old"]);
   offline = false;
   await a.sync.refresh();
   assert.deepEqual(
     backend.calls.map((call) => call.next),
-    [["new", "old"], []],
+    [["new", "old"], ["new"]],
   );
-  assert.deepEqual(backend.value, []);
+  assert.deepEqual(backend.value, ["new"]);
   assert.deepEqual(disk.read(), []);
 });
 
@@ -737,3 +737,47 @@ test("IDs reject lone UTF-16 surrogates while preserving valid Unicode", () => {
     "chat-\u00e9",
   ]);
 });
+
+test("pins save on a plain-HTTP origin, where crypto.randomUUID does not exist", async () => {
+  const original = Object.getOwnPropertyDescriptor(globalThis.crypto, "randomUUID");
+  Object.defineProperty(globalThis.crypto, "randomUUID", { value: undefined, configurable: true });
+  try {
+    const backend = server(["old"]);
+    const a = client(backend);
+    await a.sync.refresh();
+    await a.sync.setPinned(["new"], true);
+    assert.deepEqual(backend.value, ["new", "old"]);
+  } finally {
+    if (original) Object.defineProperty(globalThis.crypto, "randomUUID", original);
+    else delete (globalThis.crypto as { randomUUID?: unknown }).randomUUID;
+  }
+});
+
+test("unpinning a chat the server cannot place yet cancels its queued pin instead of waiting behind it", async () => {
+  let value: string[] = [];
+  const operations: PinOperation[] = [];
+  let visible: string[] = [];
+  const sync = createPinnedChatsSync({
+    load: async () => value.slice(),
+    compareAndSet: async (expected, next, operation) => {
+      if (operation) operations.push(operation);
+      // A comparison deleted before its legacy import: the server never acknowledges its pin.
+      if (next.includes("pair") || JSON.stringify(expected) !== JSON.stringify(value)) {
+        return { applied: false, pinnedIds: value.slice() };
+      }
+      value = next.slice();
+      return { applied: true, pinnedIds: value.slice() };
+    },
+    readLegacy: () => [],
+    publish: (ids) => { visible = ids; },
+  });
+  await sync.refresh();
+  const blocked = sync.setPinned(["pair"], true).catch(() => undefined);
+  await sync.setPinned(["pair"], false);
+  await sync.setPinned(["chat"], true);
+  await blocked;
+  assert.deepEqual(value, ["chat"]);
+  assert.deepEqual(visible, ["chat"]);
+  assert.ok(operations.some((op) => !op.pinned && op.ids.includes("pair")));
+});
+

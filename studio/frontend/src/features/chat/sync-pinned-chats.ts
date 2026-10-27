@@ -4,6 +4,7 @@
 import { toast } from "sonner";
 import { AUTH_SESSION_MARK_KEY, hasAuthToken } from "@/features/auth";
 import { getApiBase, isTauri } from "@/lib/api-base";
+import { createNavigationNonce } from "@/lib/navigation-nonce";
 import { createChatPinsApi } from "./api/chat-pins-api";
 import {
   setPinnedChatsActions,
@@ -26,7 +27,7 @@ function scope(): string {
   let mark = localStorage.getItem(AUTH_SESSION_MARK_KEY);
   if (!mark) {
     // Pre-mark sessions get one on token refresh, stranding the journal: set it now.
-    mark = crypto.randomUUID();
+    mark = createNavigationNonce();
     localStorage.setItem(AUTH_SESSION_MARK_KEY, mark);
   }
   return `${server}|${mark}`;

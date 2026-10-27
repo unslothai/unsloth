@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { createNavigationNonce } from "../../../lib/navigation-nonce.ts";
+
 export type PinOperation = {
   operationId: string;
   kind: "pin";
@@ -330,9 +332,18 @@ export function createPinnedChatsSync(options: PinnedChatsSyncOptions) {
       restore();
       const operation = validatePinOperation({
         ...intent,
-        operationId: crypto.randomUUID(),
+        operationId: createNavigationNonce(),
       });
-      const next = [...pending, operation];
+      // An unpin cancels earlier queued pins of only those chats, so a pin the server can never
+      // place (a comparison deleted before import) cannot block the queue. The unpin still goes.
+      const cancelled = new Set(operation.pinned ? [] : operation.ids);
+      const next = [
+        ...pending.filter(
+          (entry) =>
+            !(entry.pinned && entry.ids.every((id) => cancelled.has(id))),
+        ),
+        operation,
+      ];
       if (next.length > 10_000) {
         throw new PinnedChatsValidationError("Too many pending pin changes");
       }
