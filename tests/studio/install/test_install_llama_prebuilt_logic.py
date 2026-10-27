@@ -3898,7 +3898,7 @@ def test_runtime_overlay_cannot_overwrite_main_archive_payload(tmp_path: Path) -
 def test_linux_overlay_keeps_llama_bench_executable_when_bundled(
     tmp_path: Path, ships_bench: bool
 ) -> None:
-    # Bundle members are not executable; the Benchmarks page launches llama-bench directly.
+    # Bundle members are not executable; llama-bench is launched directly.
     import hashlib
     import shutil as _shutil
 

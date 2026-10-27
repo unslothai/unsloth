@@ -2566,6 +2566,8 @@ export const ru = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "Время работы",
         processMemory: "Память процесса",
         notInstalled: "Не установлено",
@@ -3320,6 +3322,7 @@ export const ru = {
       desktopAppVersionUnavailable: "Недоступно",
       llamaCppVersion: "Версия llama.cpp",
       audioCppVersion: "Версия audio.cpp",
+      mlxVersion: "Версия MLX",
       whisperCppVersion: "Версия whisper.cpp",
       engines: {
         title: "Движки",

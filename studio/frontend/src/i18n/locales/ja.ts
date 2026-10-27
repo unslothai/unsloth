@@ -2536,6 +2536,8 @@ export const ja = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "稼働時間",
         processMemory: "プロセスメモリ",
         notInstalled: "未インストール",
@@ -3275,6 +3277,7 @@ export const ja = {
       desktopAppVersionUnavailable: "利用できません",
       llamaCppVersion: "llama.cpp バージョン",
       audioCppVersion: "audio.cpp バージョン",
+      mlxVersion: "MLX バージョン",
       whisperCppVersion: "whisper.cpp バージョン",
       engines: {
         title: "エンジン",

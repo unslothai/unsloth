@@ -1272,6 +1272,34 @@ def _handle_resolve_prompt(backend, cmd: dict, resp_queue: Any) -> None:
     _send_response(resp_queue, reply)
 
 
+_PROMPT_CACHE_RESUME_METHODS = {
+    "save_prompt_cache": ("save_prompt_cache_for_resume", "directory"),
+    "restore_prompt_cache": ("restore_prompt_cache_for_resume", "manifest"),
+}
+
+
+def _handle_prompt_cache_resume(
+    backend,
+    cmd: dict,
+    resp_queue: Any,
+    busy: bool = False,
+) -> None:
+    """Every outcome answers: the parent otherwise waits out its timeout."""
+    method, argument = _PROMPT_CACHE_RESUME_METHODS[cmd["type"]]
+    reply = {"type": f"{cmd['type']}_response", "request_id": cmd.get("request_id")}
+    run = getattr(backend, method, None)
+    if busy:
+        reply["error"] = "A generation is in progress."
+    elif not callable(run):
+        reply["error"] = "The loaded backend keeps no prompt cache."
+    else:
+        try:
+            reply["result"] = run(cmd.get(argument))
+        except Exception as exc:
+            reply["error"] = str(exc)
+    _send_response(resp_queue, reply)
+
+
 def _handle_count_tokens(backend, cmd: dict, resp_queue: Any) -> None:
     """Count prompt tokens for the loaded model and reply with the total."""
     try:
@@ -2272,6 +2300,10 @@ def run_inference_process(
                         _handle_count_tokens(backend, cmd, resp_queue)
                 elif cmd_type == "resolve_prompt":
                     _handle_resolve_prompt(backend, cmd, resp_queue)
+                elif cmd_type in _PROMPT_CACHE_RESUME_METHODS:
+                    _handle_prompt_cache_resume(
+                        backend, cmd, resp_queue, busy = bool(batch.rows_in_flight)
+                    )
                 elif cmd_type == "share_object":
                     _handle_share_object(backend, cmd, resp_queue)
                 elif cmd_type == "load":
@@ -2523,6 +2555,9 @@ def run_inference_process(
 
             elif cmd_type == "resolve_prompt":
                 _handle_resolve_prompt(backend, cmd, resp_queue)
+
+            elif cmd_type in _PROMPT_CACHE_RESUME_METHODS:
+                _handle_prompt_cache_resume(backend, cmd, resp_queue)
 
             elif cmd_type == "share_object":
                 _handle_share_object(backend, cmd, resp_queue)

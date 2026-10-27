@@ -28,6 +28,7 @@ _MAX_CONSECUTIVE_FAILURES = 3
 _RETIRE_JOIN_SECONDS = 10.0
 
 _jobs: dict = {}
+_checked: set = set()
 _lock = threading.Lock()
 
 
@@ -36,8 +37,10 @@ class _Stopped(Exception):
 
 
 class _Job:
-    def __init__(self) -> None:
+    def __init__(self, identity: str | None = None) -> None:
         self.id = str(uuid.uuid4())
+        # Set on automatic jobs: they write this vector space only and stop on a model switch or fallback.
+        self.identity = identity
         self.status = "running"
         self.done = 0
         self.failed = 0
@@ -121,6 +124,8 @@ def _reembed_document(job: _Job, doc: dict, model: str) -> bool:
         job.current = done / total
 
     vectors, identity = ingestion._embed_all(texts, model, on_progress)
+    if job.identity is not None and identity != job.identity:
+        raise _Stopped
     conn = rag_db.get_connection()
     try:
         swapped = store.replace_document_vectors(
@@ -160,6 +165,8 @@ def _run(job: _Job) -> None:
                 raise _Stopped
             model = config.effective_embedding_model()
             identity = embeddings.embedding_identity(model)
+            if job.identity is not None and identity != job.identity:
+                raise _Stopped
             conn = rag_db.get_connection()
             try:
                 pending = [
@@ -170,6 +177,8 @@ def _run(job: _Job) -> None:
                 ]
             finally:
                 conn.close()
+            if job.identity is not None and not _upgraded_from_llama(pending, job.identity):
+                raise _Stopped
             job.remaining = len(pending)
             if not pending:
                 job.status = "completed"
@@ -207,7 +216,7 @@ def _run(job: _Job) -> None:
         job.current = 0.0
 
 
-def start() -> dict:
+def start(identity: str | None = None) -> dict:
     """Start re-embedding this account's stale documents, or return the job already running."""
     if account_is_retired():
         raise RuntimeError("Account is retired")
@@ -215,8 +224,11 @@ def start() -> dict:
     with _lock:
         job = _jobs.get(key)
         if job is not None and job.status == "running":
+            if identity is None:
+                # A Re-embed click adopts an automatic job, which then follows the current model.
+                job.identity = None
             return job.snapshot()
-        job = _Job()
+        job = _Job(identity)
         job.remaining = sum(stale_counts().values())
         job.thread = account_thread(target = _run, args = (job,), daemon = True)
         _jobs[key] = job
@@ -225,6 +237,38 @@ def start() -> dict:
         # Under the lock, so retirement never finds a registered job it cannot join yet.
         job.thread.start()
     return started
+
+
+def _upgraded_from_llama(stale: list[dict], identity: str) -> bool:
+    """Every stale document is this identity's model written by llama-server."""
+    model = config.embedding_identity_model(identity)
+    return all(
+        d["embedding_model"].startswith("llama-server:")
+        and config.embedding_identity_model(d["embedding_model"]) == model
+        for d in stale
+    )
+
+
+def start_after_backend_change(identity: str) -> None:
+    """Re-embed on its own only after an upgrade moved the same model from llama-server to
+    sentence-transformers; a runtime fallback the other way must not overwrite the ST vectors."""
+    if not identity.startswith("sentence-transformers:"):
+        return
+    key = account_key("reembed")
+    with _lock:
+        if (key, identity) in _checked or key in _jobs:
+            return
+        _checked.add((key, identity))
+    model = config.embedding_identity_model(identity)
+    if model != config.effective_embedding_model():
+        return
+    conn = rag_db.get_connection()
+    try:
+        stale = _stale_documents(conn, identity)
+    finally:
+        conn.close()
+    if stale and _upgraded_from_llama(stale, identity):
+        start(identity)
 
 
 def status() -> dict | None:
