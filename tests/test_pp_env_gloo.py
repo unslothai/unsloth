@@ -308,7 +308,62 @@ def _case_env(
     return res
 
 
-CASES = {"units": _case_units, "env": _case_env}
+def _case_resume(rank, world, tmp, ckpt, bs = 2):
+    """save_strategy = "steps" checkpoints (the 1-GPU adapter + per-rank optimizer state) and an exact resume."""
+    error = _import_checkout_unsloth()
+    if error is not None:
+        return {"skip": error}
+    import transformers
+    from peft import LoraConfig, get_peft_model
+    from transformers import AutoModelForCausalLM
+
+    from unsloth.models import tp_env
+    from unsloth.models._utils import patch_gradient_accumulation_fix
+
+    patch_gradient_accumulation_fix(transformers.Trainer)
+    layout = tp_env.env_layout()
+    dp = layout.dp if layout is not None else 1
+
+    class SequentialTrainer(transformers.Trainer):
+        def _get_train_sampler(self, *args, **kwargs):
+            return torch.utils.data.SequentialSampler(self.train_dataset)
+
+    load = tp_env.tensor_parallel_env_load(
+        lambda name, load_in_4bit = True: AutoModelForCausalLM.from_pretrained(
+            name, torch_dtype = torch.float32, attn_implementation = "eager"
+        )
+    )
+
+    def fresh():
+        torch.manual_seed(1)
+        config = LoraConfig(r = 4, lora_alpha = 8, target_modules = "all-linear", init_lora_weights = False)
+        return get_peft_model(load(ckpt, load_in_4bit = False), config)
+
+    g = torch.Generator().manual_seed(1)
+    data = _Rows(list(torch.randint(0, 1000, (4 * 2 * bs * dp, 9), generator = g)))
+
+    def run(out):
+        args = _trainer_args(
+            os.path.join(tmp, out), bs, max_steps = 4, adam_epsilon = _ADAM_EPS, save_strategy = "steps", save_steps = 2
+        )
+        return SequentialTrainer(model = fresh(), args = args, train_dataset = data)
+
+    def summary(trainer):
+        logs = [h for h in trainer.state.log_history if "loss" in h]
+        return {"steps": [h["step"] for h in logs], "losses": [h["loss"] for h in logs], "norms": [h["grad_norm"] for h in logs]}
+
+    a = run("a")
+    a.train()
+    ckpt2 = os.path.join(tmp, "a", "checkpoint-2")
+    files = sorted(os.listdir(ckpt2)) + sorted(os.listdir(os.path.join(ckpt2, "unsloth_tp")))
+    b = run("b")
+    b.train(resume_from_checkpoint = ckpt2)
+    state_a = {n: p.detach().clone() for n, p in a.model.named_parameters() if p.requires_grad}
+    state_b = {n: p.detach().clone() for n, p in b.model.named_parameters() if p.requires_grad}
+    return {"a": summary(a), "b": summary(b), "files": files, "same": all(torch.equal(state_a[k], state_b[k]) for k in state_a)}
+
+
+CASES = {"units": _case_units, "env": _case_env, "resume": _case_resume}
 
 
 def _worker(rank, world, port, case, tmp, env, kwargs):
@@ -341,7 +396,7 @@ def _spawn(case, world = 1, env = None, **kwargs):
     ctx = multiprocessing.get_context("spawn")
     port = _free_port()
     with tempfile.TemporaryDirectory() as tmp:
-        if case == "env":
+        if case in ("env", "resume"):
             kwargs["ckpt"] = _checkpoint(tmp, kwargs.pop("arch", "llama"))
         procs = [
             ctx.Process(target = _worker, args = (r, world, port, case, tmp, env or {}, kwargs))
@@ -494,3 +549,14 @@ def test_pp_env_gradient_accumulation_and_microbatches(ga, bs, mb):
     for rank, res in enumerate(_spawn("env", 2, env, bs = bs, ga = ga, evaluate = False, post = False)):
         _close(res, ref, what = rank)
         _same_tensors(res["adapter"] or ref["adapter"], ref["adapter"])
+
+
+@needs_pipelining
+@pytest.mark.parametrize("world", [2, 4], ids = ["pp2", "pp2_x_ddp2"])
+def test_pp_env_checkpoint_resume_equals_uninterrupted(world):
+    for rank, res in enumerate(_spawn("resume", world, {"UNSLOTH_PP_SIZE": "2"})):
+        a, b = res["a"], res["b"]
+        assert a["steps"] == [1, 2, 3, 4] and b["steps"] == [1, 2, 3, 4], (a, b)
+        assert "adapter_model.safetensors" in res["files"] and f"rank{rank:05d}.pt" in res["files"], res["files"]
+        assert b["losses"][2:] == a["losses"][2:] and b["norms"][2:] == a["norms"][2:], (rank, a, b)
+        assert res["same"], rank

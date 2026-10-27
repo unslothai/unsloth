@@ -6206,7 +6206,7 @@ def _is_env_pipeline_parallel(model):
 def _refuse_pipeline_parallel_for_trainer(model):
     if _is_unsloth_pipeline_parallel(model) and not _is_env_pipeline_parallel(model):
         raise RuntimeError(
-            "Unsloth: a pipeline parallel model split with apply_pipeline_parallel cannot be trained by the "
+            "Unsloth: a pipeline parallel model (apply_pipeline_parallel) cannot be trained by the "
             "Trainer: each rank holds one stage, and a stage cannot run a forward alone. Use a custom "
             "training loop with PipelineParallel.step (unsloth/models/pp_native.py), or launch the unchanged "
             "script with UNSLOTH_PP_SIZE (the Trainer then splits the model and runs the pipeline itself)."
