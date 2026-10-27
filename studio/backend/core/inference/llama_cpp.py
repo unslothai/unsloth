@@ -29431,7 +29431,7 @@ class LlamaCppBackend:
                             flash_attn = planned_flash_attn,
                         )
                         self._pending_plan_mib = _gpu_plan_mib(
-                            gguf_size + mmproj_size + _restored_kv,
+                            max(1, gguf_size - _host_input_embd) + mmproj_size + _restored_kv,
                             list(self._pending_plan_mib),
                             gpus,
                         )

@@ -534,6 +534,7 @@ def _cache_crash_launch(
     *,
     memory,
     healthy = None,
+    **load_kw,
 ):
     """First launch dies allocating the MoE cache; the uncached retry comes up unless
     ``healthy(cmd)`` says otherwise."""
@@ -587,7 +588,7 @@ def _cache_crash_launch(
         return {"cmd": spawned[-1]}
 
     monkeypatch.setattr(placement, "_launch", launch)
-    backend, _cmd = _load(tmp_path, memory = memory)
+    backend, _cmd = _load(tmp_path, memory = memory, **load_kw)
     return backend, spawned
 
 
@@ -603,6 +604,43 @@ def test_a_cache_only_cut_gives_the_slots_back_when_the_cache_retry_drops_it(
     assert _flag(retry, "--parallel") == "4", retry
     assert backend.effective_parallel_slots == 4
     assert not backend._slots_cut_for_drafter
+
+
+def test_slots_given_back_for_the_cache_keep_host_lookup_tables_off_the_vram_plan(
+    tmp_path, _moe_cache_host, monkeypatch
+):
+    """The restored slots reprice the plan other loads place against; a lookup table
+    llama.cpp streams from the host stays out of it, as at the first plan."""
+    monkeypatch.setenv("UNSLOTH_MOE_CACHE", "on")
+    make = placement._moe_backend
+
+    def big_drafter(*args, **kwargs):
+        # A drafter large enough to spill experts that would fit beside the table.
+        backend, gguf = make(*args, **kwargs)
+        backend._estimate_mtp_overhead_bytes = lambda _ctx, *a, n_parallel = None, **k: int(
+            15.5 * _GIB + 0.25 * _GIB * int(n_parallel or 1)
+        )
+        return backend, gguf
+
+    monkeypatch.setattr(placement, "_moe_backend", big_drafter)
+    backend, spawned = _cache_crash_launch(
+        tmp_path,
+        monkeypatch,
+        memory = [(0, 24_576, 24_576)],
+        size_gib = 40,
+        expert_gib = 10,
+        arch = "qwen4exp",
+        lazy = {
+            "per_layer_token_embd.weight": 26 * _GIB,
+            "token_embd.weight": _GIB // 2,
+            "output.weight": _GIB // 2,
+        },
+    )
+
+    first, retry = spawned[0], spawned[-1]
+    assert _flag(first, "--parallel") == "2" and _flag(retry, "--parallel") == "4", spawned
+    # 40 GiB less 26.5 GiB of host tables, plus the 0.25 GiB KV stub.
+    assert backend._planned_vram_mib == {0: 14_080}, backend._planned_vram_mib
 
 
 def test_a_shallow_cut_survives_the_cache_retry(tmp_path, _moe_cache_host, monkeypatch):
@@ -889,8 +927,6 @@ def test_a_vulkan_with_no_device_starts_on_cpu_at_the_asked_count(
     """The zero-device probe routes a load to --device none after the cut was priced."""
     from core.inference.llama_cpp import LlamaCppBackend
 
-    if not hasattr(LlamaCppBackend, "_vulkan_probe_outcome"):
-        pytest.skip("the zero-device CPU route lands with main's #14521")
     monkeypatch.setattr(
         LlamaCppBackend, "_vulkan_prebuilt_was_auto_selected", staticmethod(lambda _binary: True)
     )
@@ -984,8 +1020,6 @@ def test_a_cpu_replay_that_cannot_stage_leaves_the_gpu_ladder_at_the_cut(
     rungs, which must still launch and report the cut count."""
     from core.inference.llama_cpp import LlamaCppBackend
 
-    if not hasattr(LlamaCppBackend, "_vulkan_probe_outcome"):
-        pytest.skip("the Vulkan stall replay lands with main's #14521")
     _vulkan_cpu_host(monkeypatch, staged = False)
     monkeypatch.setattr(
         LlamaCppBackend, "_vulkan_probe_outcome", staticmethod(lambda _binary = None: "timeout")
@@ -1015,8 +1049,6 @@ def test_a_cpu_start_at_the_asked_count_is_not_retried_as_a_cut(
     has no cut to retry at: no identical relaunch."""
     from core.inference.llama_cpp import LlamaCppBackend
 
-    if not hasattr(LlamaCppBackend, "_vulkan_probe_outcome"):
-        pytest.skip("the zero-device CPU route lands with main's #14521")
     _vulkan_cpu_host(monkeypatch)
     monkeypatch.setattr(
         LlamaCppBackend, "_vulkan_probe_outcome", staticmethod(lambda _binary = None: "none")
