@@ -11,7 +11,7 @@ import tempfile
 import time
 from importlib.metadata import PackageNotFoundError, version
 from importlib.util import find_spec
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import List, Optional, Tuple
 
 import typer
@@ -443,6 +443,16 @@ def _render_results(results: dict) -> None:
     Console().print(table)
 
 
+def _run_dir_name(model: str) -> str:
+    # Mirrors utils.paths.default_run_dir_name, which cannot be imported here: the Studio backend fails on Python 3.9.
+    raw = model.strip()
+    is_path = (
+        "\\" in raw or raw.startswith(("/", "~", ".")) or os.path.isabs(raw) or raw[1:2] == ":"
+    )
+    base = PureWindowsPath(raw).name if is_path else raw.replace("/", "_")
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", base)[:200].strip("._-") or "model"
+
+
 def _fail(message: str, code: int = 2):
     typer.echo(f"Error: {message}", err = True)
     raise typer.Exit(code = code)
@@ -544,12 +554,7 @@ def evaluate(
     if max_seq_length <= 0:
         _fail("--max-seq-length must be a positive integer.")
     if output_dir is None:
-        from unsloth_cli._inference import ensure_studio_backend_path
-
-        ensure_studio_backend_path(seed_cache_env = False)
-        from utils.paths import default_run_dir_name
-
-        run_name, stamp = default_run_dir_name(model), int(time.time())
+        run_name, stamp = _run_dir_name(model), int(time.time())
     # find_spec, not import: lm_eval imports transformers, which must come after unsloth
     if "lm_eval" not in sys.modules and find_spec("lm_eval") is None:
         _fail("evaluation requires lm-eval. Install it with `pip install unsloth[eval]`.", code = 1)
