@@ -74,7 +74,6 @@ def _fresh_then_readback(tmp_path, monkeypatch, scheme_name):
 
 def _int8_cpu_quantizable_and_flattenable() -> bool:
     import core.inference.prequant_safetensors as PS
-
     try:
         from torchao.quantization import quantize_
 
