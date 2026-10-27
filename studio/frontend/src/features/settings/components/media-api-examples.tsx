@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { usePlatformStore } from "@/config/env";
+import { useIsAccountOwner } from "@/features/auth";
 import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { Image01Icon } from "@hugeicons/core-free-icons";
@@ -16,6 +17,7 @@ import {
   subscribeOpenAIAutoSwitchSettings,
 } from "../api/openai-auto-switch";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
+import { MediaAutoSwitchRow } from "./model-auto-switch-section";
 import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
 import {
   ExampleCodeBox,
@@ -46,8 +48,10 @@ export function MediaApiExamples({
   useTunnel,
   keylessScope = "off",
   keylessExposure = null,
+  showHeading = true,
 }: {
   apiKey?: string | null;
+  showHeading?: boolean;
   useTunnel: boolean;
   keylessScope?: KeylessApiAccessScope;
   keylessExposure?: KeylessApiAccessExposure | null;
@@ -80,7 +84,8 @@ export function MediaApiExamples({
   }, [mediaApiRequested]);
 
   useEffect(() => {
-    if (scrollTarget !== "api-keys-media-api") return;
+    // The API page's copy (no heading) must not answer, or the dialog's never scrolls.
+    if (!showHeading || scrollTarget !== "api-keys-media-api") return;
     const section = sectionRef.current;
     if (!section) return;
     const pin = () => section.scrollIntoView({ block: "start" });
@@ -102,7 +107,7 @@ export function MediaApiExamples({
       window.clearTimeout(timer);
       for (const name of events) window.removeEventListener(name, release);
     };
-  }, [scrollTarget]);
+  }, [scrollTarget, showHeading]);
 
   useEffect(() => {
     let cancelled = false;
@@ -151,6 +156,7 @@ export function MediaApiExamples({
     if (stored) setStoredLang(stored);
   };
 
+  const isOwner = useIsAccountOwner();
   return (
     <section
       ref={sectionRef}
@@ -158,14 +164,21 @@ export function MediaApiExamples({
       className="flex min-w-0 max-w-full scroll-mt-6 flex-col gap-4"
     >
       <div className="flex flex-col gap-1">
-        <h2 className="settings-heading flex items-center gap-2 text-base font-semibold font-heading">
-          <HugeiconsIcon icon={Image01Icon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground" />
-          {t("settings.apiKeys.mediaApi.title")}
-        </h2>
+        {showHeading && (
+          <h2 className="settings-heading flex items-center gap-2 text-base font-semibold font-heading">
+            <HugeiconsIcon icon={Image01Icon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground" />
+            {t("settings.apiKeys.mediaApi.title")}
+          </h2>
+        )}
         <p className="text-xs leading-relaxed text-muted-foreground">
           {t("settings.apiKeys.mediaApi.description")}
         </p>
       </div>
+      {isOwner ? (
+        <div className="-my-3">
+          <MediaAutoSwitchRow />
+        </div>
+      ) : null}
       <ExampleToggle
         label={t("settings.apiKeys.exampleKind")}
         variant="toggle"

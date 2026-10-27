@@ -82,8 +82,7 @@ def tol_ok() -> float:
     return _TOL_OK
 
 
-# A diff at or above TOL_KILL means a broken mask/isolation, so the structure is permanently unsafe;
-# between tol_ok and TOL_KILL, fall back for this shape but keep trying others.
+# TOL_KILL or above means broken mask or isolation: unsafe forever. Between tol_ok and TOL_KILL, fall back for this shape only.
 TOL_KILL = 1.5
 
 
@@ -118,8 +117,7 @@ class GroupLayout:
     ) -> torch.Tensor:
         """hidden: [1, T, Hdim] (pre-lm_head hidden states, UNSLOTH_RETURN_HIDDEN_STATES=1).
         Returns [total_rows, W] float32, byte-compatible with the packed path result."""
-        # In a sharded model hidden may live on the lm-head device, so move the small index maps to
-        # hidden.device before indexing.
+        # In a sharded model hidden may live on the lm-head device.
         device = hidden.device
         pred_h = hidden[0, self.tgt_pred.to(device), :].unsqueeze(0)  # [1, N, Hdim]
         tgt_ids = self.flat_ids[0, self.tgt_flat].to(device).unsqueeze(0)  # [1, N]
@@ -234,8 +232,7 @@ def build_group_layout(
     cstart = ((L - logits_to_keep) - left_pad_tokens_per_prompt).to(torch.long)
     cstart_cpu = cstart.tolist()
     ids_cpu = input_ids.tolist()
-    # Per-row real (non-pad) columns: GRPO rows are one contiguous real run, so derive [first, first+n)
-    # on GPU; the O(B*L) scan is only a non-contiguous fallback.
+    # GRPO rows are one contiguous real run; the O(B*L) scan is only a fallback.
     n_real = keep.sum(dim = 1)
     first = torch.argmax(keep.to(torch.int8), dim = 1)
     ar = torch.arange(L, device = device)
@@ -284,8 +281,7 @@ def build_group_layout(
         flat_src_rows.extend([r0] * P)
         flat_src_cols.extend(prefix_cols)
         pos_list.extend(range(P))
-        # Suffixes: every suffix token is a completion-region target, scattered like the packed path, with
-        # completion_mask hiding prompt-tail positions.
+        # Every suffix token is a completion-region target, scattered like the packed path; completion_mask hides prompt-tail positions.
         for i, r in enumerate(rows):
             cols = gm["suf_cols"][i]
             r_i = len(cols)
@@ -311,8 +307,7 @@ def build_group_layout(
     max_left_pad = int(left_pad_tokens_per_prompt.max().item()) if total_rows else 0
     W = logits_to_keep + max_left_pad
 
-    # Self-verify cache key: the mask/index-map/scatter logic is structural, so key on (num_groups,
-    # group_sizes), not exact lengths.
+    # The logic is structural, so key on (num_groups, group_sizes), not exact lengths.
     grp_sizes = tuple(sorted(len(gm["R_list"]) for gm in groups))
     sig = (len(groups), grp_sizes)
 

@@ -8,7 +8,7 @@ import type { HubModelRunSelection } from "../lib/model-run-selection";
 import { formatBytes } from "../lib/format";
 import { useHfTokenStore } from "../stores/hf-token-store";
 import { DotTag } from "./dot-tag";
-import { CardDivider, ModelRunActionButton } from "./download-card";
+import { ModelRunActionButton } from "./download-card";
 
 export function MlxPrecisionCard({
   repoId,
@@ -82,24 +82,21 @@ export function MlxPrecisionCard({
         ))}
       </div>
       {onRun && (
-        <>
-          <CardDivider />
-          <div className="flex items-center justify-end">
-            <ModelRunActionButton
-              label={`Configure and run ${repoId} ${chosen.quant}`}
-              loading={runPending}
-              onClick={() =>
-                onRun({
-                  ggufVariant: chosen.quant,
-                  ggufFilename: chosen.filename,
-                  expectedBytes: chosen.size_bytes,
-                  precisionFolder: true,
-                  downloaded: chosen.downloaded === true,
-                })
-              }
-            />
-          </div>
-        </>
+        <div className="flex items-center justify-end">
+          <ModelRunActionButton
+            label={`Configure and run ${repoId} ${chosen.quant}`}
+            loading={runPending}
+            onClick={() =>
+              onRun({
+                ggufVariant: chosen.quant,
+                ggufFilename: chosen.filename,
+                expectedBytes: chosen.size_bytes,
+                precisionFolder: true,
+                downloaded: chosen.downloaded === true,
+              })
+            }
+          />
+        </div>
       )}
     </div>
   );

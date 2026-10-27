@@ -471,7 +471,6 @@ def _install_locked(
 
 
 # The fork prints these once per process / shape.
-
 _LOADED_RE = re.compile(r"cuDNN (\d+) loaded from \S+ for attention")
 _PLAN_RE = re.compile(r"cuDNN SDPA plan b=\d+ hq=\d+ hk=\d+ sq=(\d+) skv=(\d+) d=(\d+)")
 _NO_PLAN_RE = re.compile(r"no cuDNN SDPA plan for")

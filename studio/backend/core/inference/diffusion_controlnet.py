@@ -55,8 +55,7 @@ class ResolvedControlNet:
     is_local: bool
 
 
-# Curated, family-tagged catalog. Union models (one model, many modes) are the default picks; local dirs and a bare
-# ``owner/name`` repo id also work.
+# Key naming mirrors the adaLN curve contract (adaln_form, curve_dim, curve_grid): a form tag plus the parameters needed to reproduce the form
 _CURATED: tuple[ControlNetCatalogEntry, ...] = (
     ControlNetCatalogEntry(
         id = "flux-union-pro",
@@ -94,11 +93,8 @@ def sanitize_id(raw: str) -> str:
 
 
 def _has_controlnet_weights(p: Path) -> bool:
-    """True when ``p`` holds a loadable diffusers ControlNet weight (or shard index).
-
-    Guards against advertising a config-only folder (interrupted download) that then fails deep in
-    ``from_pretrained``. Accepts the standard single-file weights, a shard index, or any
-    ``.safetensors`` shard."""
+    """Needs real weights, not only config, so an interrupted download is rejected before
+    from_pretrained."""
     names = (
         "diffusion_pytorch_model.safetensors",
         "diffusion_pytorch_model.bin",
@@ -159,14 +155,8 @@ def _catalog_by_id() -> dict[str, ControlNetCatalogEntry]:
 
 
 def resolve_controlnet(spec_id: str, *, family: Optional[str] = None) -> ResolvedControlNet:
-    """Resolve a ControlNet id to a loadable repo id / local dir.
-
-    Accepts a catalog/local id or a bare HF repo id (``owner/name``); the backend loads it with
-    ``from_pretrained``. Raises on an unknown id (caller maps to 400).
-
-    ``family`` enforces compatibility: a ControlNet is architecture-specific, so an entry tagged
-    for another family is rejected here rather than loaded through the wrong pipeline later.
-    """
+    """Refuses a ControlNet tagged for another family; it is architecture-specific and would load
+    wrongly."""
     entry = _catalog_by_id().get(spec_id)
     if entry is None:
         entry = next((e for e in _CURATED if e.repo_id and e.repo_id == spec_id), None)
@@ -209,11 +199,7 @@ _UNION_CONTROL_MODES: dict[str, int] = {
 
 
 def union_control_mode(spec_id: str, control_type: str) -> Optional[int]:
-    """The integer ``control_mode`` for a union ControlNet, or None.
-
-    A union model requires a concrete mode. A known mode maps to its index; ``passthrough`` (or
-    empty) defaults to 0 (canny head). An unknown/typo'd type raises ValueError so the route
-    returns a 400 instead of running the wrong head. A non-union entry returns None."""
+    """A typo'd control type raises so the route returns 400, never running the wrong union head."""
     entry = _catalog_by_id().get(spec_id)
     if entry is None:
         # match on repo_id too (the catalog is keyed by short id), else the union runs the wrong head
@@ -232,11 +218,7 @@ def union_control_mode(spec_id: str, control_type: str) -> Optional[int]:
 
 
 def preprocess_control(image: Any, control_type: str) -> Any:
-    """Turn a source image into a control map.
-
-    ``passthrough`` returns the image unchanged. ``canny`` derives a dependency-free gradient edge
-    map (a rough stand-in for true Canny). Unknown types pass through so a new type never fails.
-    """
+    """Unknown control types pass through unchanged, so a new type never fails the request."""
     ct = (control_type or "passthrough").strip().lower()
     if ct != "canny":
         return image
@@ -248,8 +230,7 @@ def preprocess_control(image: Any, control_type: str) -> Any:
     mag = np.hypot(gx, gy)
     peak = float(mag.max())
     if peak <= 1e-6:
-        # A flat image has no edges, so the map is all black; returning the source would condition the ControlNet on raw
-        # luminance.
+        # Returning the source would condition on raw luminance.
         return Image.new("RGB", image.size, (0, 0, 0))
     mag = mag / peak * 255.0
     edges = (mag > 40.0).astype(np.uint8) * 255  # white edges on black (ControlNet convention)
@@ -264,11 +245,7 @@ def supports_controlnet(
     model_kind: Optional[str],
     transformer_quant: Optional[str],
 ) -> bool:
-    """Whether the loaded model can apply a ControlNet.
-
-    diffusers only. Requires the family to declare a ControlNet pipeline. Blocked for the GGUF
-    path and torchao fp8/int8 dense (same as LoRA): they can't host the extra conditioning cleanly.
-    """
+    """Blocked for GGUF and torchao fp8/int8 dense, which cannot host the extra conditioning cleanly."""
     if not family or not has_controlnet_pipeline:
         return False
     if engine != "diffusers":

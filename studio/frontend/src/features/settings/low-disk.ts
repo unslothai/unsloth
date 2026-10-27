@@ -1,12 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * When to say the disk is filling up, and how often. A level is announced on CROSSING and
- * re-armed only once free space clears it by REARM_MARGIN_GB, so a disk on the line does not
- * toast every reading. Thresholds are absolute: a percentage would nag on a 4 TB disk with
- * 400 GB free.
- */
+/** Announced on crossing, re-armed past REARM_MARGIN_GB. Absolute, since a percentage nags on
+ * large disks. */
 
 export const LOW_DISK_FREE_GB = 20;
 export const CRITICAL_DISK_FREE_GB = 5;
@@ -15,13 +11,11 @@ export const REARM_MARGIN_GB = 5;
 export type DiskPressure = "ok" | "low" | "critical";
 
 export type DiskReading = {
-  /** Decimal GB, as /api/system reports it. */
   free_gb: number | null | undefined;
   total_gb: number | null | undefined;
 };
 
 export type LowDiskState = {
-  /** Highest level already announced, until free space re-arms it. */
   notified: DiskPressure;
 };
 
@@ -41,7 +35,6 @@ function isReadable(value: number | null | undefined): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
-/** null when the host did not report a usable disk reading. */
 export function diskPressure(disk: DiskReading): DiskPressure | null {
   if (!isReadable(disk.free_gb) || !isReadable(disk.total_gb)) return null;
   // A zero total is psutil having failed, not a full disk.
@@ -56,13 +49,12 @@ export type LowDiskDecision = {
   notify: Exclude<DiskPressure, "ok"> | null;
 };
 
-/** Announce only an escalation; forget a level only past its re-arm margin. */
 export function nextLowDiskNotice(
   state: LowDiskState,
   disk: DiskReading,
 ): LowDiskDecision {
   const pressure = diskPressure(disk);
-  // An unreadable disk is not a recovery: leave the state exactly as it was.
+  // An unreadable disk is not a recovery: leave the state unchanged.
   if (pressure === null) return { state, notify: null };
   if (pressure !== "ok" && RANK[pressure] > RANK[state.notified]) {
     return { state: { notified: pressure }, notify: pressure };
@@ -79,9 +71,7 @@ export function nextLowDiskNotice(
   return { state, notify: null };
 }
 
-/** The highest level still armed at *free*. Instantaneous pressure would drop a level the disk
- * has not cleared: 21 GB clears critical's re-arm point but not low's, earning a second low
- * warning on the next dip. */
+/** Instantaneous pressure would drop a level the disk has not cleared by its margin. */
 function forgetRearmedLevels(
   notified: DiskPressure,
   free: number,

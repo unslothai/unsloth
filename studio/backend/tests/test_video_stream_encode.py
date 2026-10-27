@@ -199,6 +199,22 @@ def test_engagement_gates(monkeypatch):
     assert vse.open_stream_encode(pipe, 8, engage = True) is None
 
 
+def test_an_offloaded_vae_engages_when_the_pipeline_executes_on_cuda(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    pipe = _Pipe(_vae())
+    assert vse.open_stream_encode(pipe, 8, engage = True) is None
+    pipe._execution_device = torch.device("cpu")
+    assert vse.open_stream_encode(pipe, 8, engage = True) is None
+    pipe._execution_device = torch.device("cuda", 0)
+    session = vse.open_stream_encode(pipe, 8, engage = True)
+    try:
+        assert isinstance(session, vse.StreamEncode)
+    finally:
+        session.close()
+    monkeypatch.setenv(vse.STREAM_ENCODE_ENV, "0")
+    assert vse.open_stream_encode(pipe, 8, engage = True) is None
+
+
 def test_a_streamed_file_that_does_not_hold_the_clip_is_never_used(monkeypatch):
     pipe = _Pipe(_vae())
     session = vse.StreamEncode(pipe.vae, pipe.video_processor, 8)

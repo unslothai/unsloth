@@ -6,6 +6,7 @@ import json
 import math
 import sys
 import types
+import warnings
 from pathlib import Path
 
 import pytest
@@ -30,6 +31,9 @@ from unsloth.models.decision import (
     _laya,
     _target,
 )
+
+# torch < 2.3 has only the CUDA scaler.
+GRAD_SCALER = getattr(torch.amp, "GradScaler", None) or torch.cuda.amp.GradScaler
 
 laya = _laya()
 # Every word the states, questions and options use, so the toy task below is learnable.
@@ -886,7 +890,7 @@ def test_rope_parameters_build_the_trained_rope_on_every_transformers(tmp_path):
     assert not torch.allclose(outputs[0], outputs[2], atol = 1e-2)
 
 
-TINY_QWEN3_5 = "trl-internal-testing/tiny-Qwen3_5ForConditionalGeneration"
+TINY_QWEN3_5 = "trl-internal-testing/tiny-Qwen3_5ForConditionalGeneration-NoThink"
 CLEF_HEAD = {
     "hidden_size": 16,
     "width": 32,
@@ -1412,8 +1416,12 @@ def test_clef_trains_in_float16_and_bfloat16(clef_checkpoint, tmp_path, dtype):
         callbacks = [Grads()],
     )
     assert trainer.args.fp16 is False and trainer.args.bf16 == (dtype == torch.bfloat16)
+    assert isinstance(trainer.accelerator.scaler, GRAD_SCALER) == (dtype == torch.float16)
     trainer.train()
-    assert grads and all(math.isfinite(loss) and math.isfinite(g) and g > 0 for loss, g in grads)
+    assert grads and all(math.isfinite(loss) for loss, _ in grads)
+    # The scaler skips the steps that overflow while it calibrates; they log a nan grad norm.
+    stepped = [g for _, g in grads if math.isfinite(g)]
+    assert len(stepped) * 2 >= len(grads) and all(g > 0 for g in stepped), grads
     assert math.isfinite(FastDecisionModel.evaluate(model, processor, items)["loss"])
 
 
@@ -1522,6 +1530,65 @@ def test_clef_trains_under_the_autocast_it_evaluates_in(tmp_path, monkeypatch, f
     assert args.bf16 == (not forced) and not args.fp16, (args.bf16, args.fp16)
     assert decision.os.environ["ACCELERATE_MIXED_PRECISION"] == expected
     assert getattr(args, "mixed_precision", expected) == expected
+
+
+@pytest.mark.parametrize(
+    "case, wants",
+    [
+        ("float32_path", True),
+        ("deepspeed", False),
+        ("fsdp", False),
+        ("cpu", False),
+        ("not_forced", False),
+    ],
+)
+def test_clef_loss_scaler_only_on_the_float32_path(tmp_path, case, wants):
+    device = torch.device("cpu" if case == "cpu" else "cuda")
+    model = types.SimpleNamespace(
+        parameters = lambda: iter([types.SimpleNamespace(device = device)]),
+        _unsloth_forced_float32 = case != "not_forced",
+    )
+    args = _args(tmp_path)
+    if case == "deepspeed":
+        args.deepspeed = {"zero_optimization": {"stage": 2}}
+    if case == "fsdp":
+        args.fsdp = ["full_shard"]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # GradScaler warns when this host has no CUDA
+        scaler = decision._clef_loss_scaler(model, args)
+    assert isinstance(scaler, GRAD_SCALER) == wants
+
+
+def test_clef_loss_scaler_on_torch_without_torch_amp_grad_scaler(tmp_path, monkeypatch):
+    monkeypatch.delattr(torch.amp, "GradScaler", raising = False)
+    made = []
+    monkeypatch.setattr(torch.cuda.amp, "GradScaler", lambda: made.append(1) or "legacy")
+    for device, wants in (("cuda", "legacy"), ("xpu", None)):
+        model = types.SimpleNamespace(
+            parameters = lambda device = device: iter(
+                [types.SimpleNamespace(device = torch.device(device))]
+            ),
+            _unsloth_forced_float32 = True,
+        )
+        assert decision._clef_loss_scaler(model, _args(tmp_path)) == wants
+    assert made == [1]
+
+
+def test_clef_loss_scaler_unscales_once_before_clipping():
+    # A prior fp16 Trainer in the process can leave Accelerate on native fp16, which unscales itself.
+    calls = []
+    scaler = types.SimpleNamespace(unscale_ = lambda optimizer: calls.append(("unscale", optimizer)))
+    for native, wants in ((False, [("unscale", "opt"), "clip"]), (True, ["clip"])):
+        calls.clear()
+        accelerator = types.SimpleNamespace(
+            native_amp = native,
+            mixed_precision = "fp16" if native else "no",
+            clip_grad_norm_ = lambda p, m, n = 2: calls.append("clip"),
+        )
+        decision._install_clef_loss_scaler(accelerator, scaler, lambda: "opt")
+        assert accelerator.scaler is scaler
+        accelerator.clip_grad_norm_([], 1.0)
+        assert calls == wants
 
 
 def test_clef_trains_under_fp16_autocast_on_a_gpu_without_bf16(tmp_path, monkeypatch):

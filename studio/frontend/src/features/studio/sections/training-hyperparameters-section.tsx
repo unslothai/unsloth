@@ -114,7 +114,7 @@ export function TrainingHyperparametersSection({
       setRandomSeed: state.setRandomSeed,
     })),
   );
-  // Only mounted in advanced mode, so start expanded when the user switches to it.
+  // Only mounted in advanced mode, so start expanded.
   const [open, setOpen] = useState(true);
   const isMac = platformDeviceType === "mac";
   const optimizerOptions = isMac ? MLX_OPTIMIZER_OPTIONS : OPTIMIZER_OPTIONS;

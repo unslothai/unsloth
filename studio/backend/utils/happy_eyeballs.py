@@ -199,8 +199,7 @@ def happy_eyeballs_connection(
         exceptions.append(socket.timeout("timed out"))
     if all_errors and _HAS_EXCEPTION_GROUP:
         raise ExceptionGroup("create_connection failed", exceptions)  # novermin
-    # Like the stdlib, the last address in resolver order decides the error:
-    # hf_tcp_reachable reads ECONNREFUSED as "the endpoint answered".
+    # Like the stdlib, the last address decides the error; hf_tcp_reachable reads ECONNREFUSED as up.
     raise failed.get(infos[-1][4]) or socket.timeout("timed out")
 
 

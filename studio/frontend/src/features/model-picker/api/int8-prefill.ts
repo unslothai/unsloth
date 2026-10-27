@@ -3,8 +3,7 @@
 
 import { authFetch } from "@/features/auth";
 
-/** Whether a load of this MLX model could run int8 prefill. Any failure reads as unavailable, which
- *  only hides the setting: a stored choice is kept, and the load-time check guards it. */
+/** Failure only hides the setting: a stored choice is kept and the load-time check guards it. */
 export async function fetchInt8PrefillAvailable(
   modelPath: string,
   hfToken: string | null,

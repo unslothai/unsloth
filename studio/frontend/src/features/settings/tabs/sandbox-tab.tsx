@@ -8,17 +8,19 @@ import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { useIsAccountOwner } from "@/features/auth";
 import {
-  PermissionModeDropdown,
+  FullAccessConfirmDialog,
   SandboxSetupDialog,
   type SandboxSetupJob,
   type SandboxSetupOperation,
   forgetSandboxCapability,
   loadSandboxSetup,
   pickSandboxLevel,
+  SANDBOX_DOCS_URL,
   sandboxSwitchState,
   startSandboxSetup,
   useActivePermissionMode,
   useChatRuntimeStore,
+  usePermissionModeChoice,
   useSandboxCapability,
 } from "@/features/chat";
 import { type TranslationKey, useT } from "@/i18n";
@@ -79,9 +81,8 @@ function ToolRow({
   label: string;
   tool: SandboxToolStatus;
   shell?: SandboxStatus["terminalShell"];
-  /** The setup row below already says why and what to run; repeating it per tool is noise. */
   quiet?: boolean;
-  /** Off on Windows: the generic MXC remediation repeats what the Windows section offers. */
+  /** Off on Windows: the generic MXC remediation repeats the Windows section. */
   withRemediation?: boolean;
 }) {
   const t = useT();
@@ -191,7 +192,7 @@ function MemoryLimitRow({
             onKeyDown={(event) => {
               if (event.key === "Enter") submit();
             }}
-            className="h-8 w-24"
+            className="h-control w-24"
           />
           <span className="text-xs font-medium text-muted-foreground">
             GB
@@ -227,22 +228,15 @@ function SelectedOptionDescription({ name, detail }: { name: string; detail: str
   );
 }
 
+// Drops the edge-to-edge glyph to the label's cap line.
+const ROW_ICON_CLASS =
+  "me-1.5 mt-[calc(0.1875rem*var(--ui-font-scale,1))] size-[calc(20px*var(--ui-space-scale,1))]";
+
 /** Per account, so every account sees it; the OS sandbox sections below are the owner's. */
 function PermissionsSection() {
   const t = useT();
   const permissionsRef = useRef<HTMLElement | null>(null);
-  const activePermission = useActivePermissionMode();
-  const sandboxLevel = useChatRuntimeStore((s) => s.sandboxLevel);
-  const setSandboxLevel = useChatRuntimeStore((s) => s.setSandboxLevel);
-  const capability = useSandboxCapability(sandboxLevel === "high");
-  const { checked, disabled } = sandboxSwitchState(
-    sandboxLevel,
-    activePermission.value,
-    capability,
-  );
-  const [setupOpen, setSetupOpen] = useState(false);
-  const levelDescriptionId = useId();
-  const pillId = useId();
+  const choice = usePermissionModeChoice();
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
   const consumeScrollTarget = useSettingsDialogStore((s) => s.consumeScrollTarget);
 
@@ -255,29 +249,59 @@ function PermissionsSection() {
     return () => window.cancelAnimationFrame(frame);
   }, [consumeScrollTarget, scrollTarget]);
 
+  return (
+    <SettingsSection
+      ref={permissionsRef}
+      title={t("settings.general.permissions.sectionTitle")}
+    >
+      {/* Exclusive: switching the active one off is a no-op. */}
+      {choice.options.map((option) => (
+        <SettingsRow
+          key={option.value}
+          icon={<option.icon className={ROW_ICON_CLASS} strokeWidth={1.75} />}
+          iconAlign="top"
+          label={t(`settings.general.permissions.names.${option.value}`)}
+          description={t(`settings.general.permissions.details.${option.value}`)}
+        >
+          <Switch
+            aria-label={t(`settings.general.permissions.names.${option.value}`)}
+            checked={choice.permissionMode === option.value}
+            onCheckedChange={(on) => {
+              if (on) choice.choose(option.value);
+            }}
+          />
+        </SettingsRow>
+      ))}
+      <FullAccessConfirmDialog open={choice.confirmOpen} onOpenChange={choice.setConfirmOpen} />
+    </SettingsSection>
+  );
+}
+
+function SandboxLevelSection() {
+  const t = useT();
+  const activePermission = useActivePermissionMode();
+  const sandboxLevel = useChatRuntimeStore((s) => s.sandboxLevel);
+  const setSandboxLevel = useChatRuntimeStore((s) => s.setSandboxLevel);
+  const capability = useSandboxCapability(sandboxLevel === "high");
+  const { checked, disabled } = sandboxSwitchState(
+    sandboxLevel,
+    activePermission.value,
+    capability,
+  );
+  const [setupOpen, setSetupOpen] = useState(false);
+  const levelDescriptionId = useId();
+  const pillId = useId();
+
   // Full access turns the sandbox off: show Disabled and lock Low and High.
   const activeLevel = disabled ? "off" : checked ? "high" : "low";
   const levels = disabled ? (["off", "low", "high"] as const) : (["low", "high"] as const);
 
   return (
     <SettingsSection
-      ref={permissionsRef}
-      title={t("settings.general.permissions.sectionTitle")}
-      description={t("settings.sandbox.permissionsIntro")}
+      title={t("settings.sandbox.levelLabel")}
     >
       <SettingsRow
-        label={t("settings.sandbox.permissionLabel")}
-        description={
-          <SelectedOptionDescription
-            name={t(`settings.general.permissions.names.${activePermission.value}`)}
-            detail={t(`settings.general.permissions.details.${activePermission.value}`)}
-          />
-        }
-      >
-        <PermissionModeDropdown sandboxControls={false} />
-      </SettingsRow>
-      <SettingsRow
-        label={t("settings.sandbox.levelLabel")}
+        label={t("settings.sandbox.levelRowLabel")}
         description={
           <span id={levelDescriptionId}>
             <SelectedOptionDescription
@@ -326,8 +350,6 @@ function PermissionsSection() {
   );
 }
 
-const SANDBOX_DOCS_URL = "https://unsloth.ai/docs/new/studio/sandboxing-in-unsloth";
-
 export function SandboxTab() {
   const t = useT();
   const isOwner = useIsAccountOwner();
@@ -361,6 +383,7 @@ export function SandboxTab() {
         </p>
       </header>
       <PermissionsSection />
+      <SandboxLevelSection />
       {/* Not mounted for managed accounts, so none of the owner-only sandbox routes are called. */}
       {isOwner ? (
         <OsSandboxSections />
@@ -379,17 +402,16 @@ function OsSandboxSections() {
   const [status, setStatus] = useState<SandboxStatus | null>(null);
   const [job, setJob] = useState<HostPrepJob | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // Save and prepare failures sit with the Windows controls, e.g. the remote-browser refusal.
   const [actionError, setActionError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [restored, setRestored] = useState<number | null>(null);
   const [absent, setAbsent] = useState(false);
-  // The Linux install and the Windows runtime install; the Windows prepare step keeps `job`.
+  // Linux install and Windows runtime install use setupJob; the Windows prepare step keeps job.
   const [setupJob, setSetupJob] = useState<SandboxSetupJob | null>(null);
   const [setupError, setSetupError] = useState<string | null>(null);
   const mounted = useRef(true);
-  // Bumped by every read and save: an older status read must not overwrite a newer answer.
+  // Bumped by every read and save so an older read cannot overwrite a newer answer.
   const statusGeneration = useRef(0);
 
   useEffect(() => {
@@ -443,7 +465,7 @@ function OsSandboxSections() {
 
   useEffect(() => {
     void refresh(false);
-    // A job started from another window, or before this tab was reopened, keeps reporting here.
+    // A job started elsewhere keeps reporting here.
     void loadHostPreparation(t("settings.sandbox.prepareError"))
       .then((current) => {
         if (!mounted.current || current.state === "idle") return;
@@ -484,7 +506,6 @@ function OsSandboxSections() {
     return () => window.clearTimeout(timer);
   }, [setupJob, refresh, t]);
 
-  // Poll while the elevated helper runs; the status is re-read once it finishes.
   useEffect(() => {
     if (!shouldPollJob(job)) return;
     const timer = window.setTimeout(() => {
@@ -599,7 +620,6 @@ function OsSandboxSections() {
 
   const windows = status?.windows ?? null;
   const view = windows ? windowsView(windows, job, saving) : null;
-  // The runtime-only install reports under its own row; the setup row keeps the other operations.
   const runtimeJob = setupJob?.operation === "windows-runtime" ? setupJob : null;
   const runtimeRunning = runtimeJob?.state === "running";
   const runtimeFailed = jobResult(runtimeJob) === "failed";

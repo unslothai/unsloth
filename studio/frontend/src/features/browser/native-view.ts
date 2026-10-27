@@ -310,8 +310,11 @@ function onNativeEvent(event: NativeEvent): void {
 // A page at work in a chat off screen opens its popups there, not over this chat's tabs.
 function openPopup(tab: BrowserTab, url: string): void {
   const store = useBrowserStore.getState();
-  if (tab.chat !== store.chat) store.openTabIn(tab.chat, url, { from: shownUrl(tab), background: true });
-  else store.openUrl(url, { newTab: true, from: shownUrl(tab) });
+  if (tab.chat !== store.chat) {
+    // The opener's temporary flag, not the shown chat's: a temporary page's popups stay out of history.
+    const temporary = pageTemporary(tab.id, currentEntry(tab));
+    store.openTabIn(tab.chat, url, { from: shownUrl(tab), background: true, temporary });
+  } else store.openUrl(url, { newTab: true, from: shownUrl(tab) });
 }
 
 function promptPopup(tab: BrowserTab, url: string): void {
@@ -355,8 +358,7 @@ function prompt(message: string, action: { label: string; onClick: () => void })
   toast(message, { id: PROMPT_ID, action });
 }
 
-/** Keyed by the entry the view holds, not the tab's current one, which may not have loaded yet.
- *  Web addresses only: a blob: or data: page goes with the view that made it. */
+/** Keyed by the entry the view holds; blob: and data: pages are not remembered. */
 function remember(tabId: string, url: string): void {
   const entry = views.get(tabId);
   if (entry !== undefined && /^https?:/i.test(url)) resume.set(tabId, { entry, url });
@@ -366,8 +368,6 @@ function shownUrl(tab: BrowserTab): string {
   return tab.displayUrl ?? currentEntryUrl(tab);
 }
 
-/** Once the view moves off the address the tab was opened for, opening that address again
- *  opens it rather than focusing this tab. */
 function leftOpenedPage(tab: BrowserTab, url: string): { openKey?: null } {
   return tab.openKey?.startsWith("url:") && tab.openKey !== `url:${url}` ? { openKey: null } : {};
 }
@@ -1041,8 +1041,7 @@ async function applyView(desired: Desired): Promise<void> {
   recency = [...recency.filter((id) => id !== tabId), tabId];
 }
 
-// One call in flight, across mounts; meanwhile only the newest state waits, so a drag can't queue
-// a backlog of stale bounds for the native view to replay.
+// One call in flight; only the newest state waits, so a drag cannot queue stale bounds.
 let running = false;
 let pending: { desired: Desired } | null = null;
 

@@ -25,7 +25,6 @@ import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-# Scratch root for the per-arm `datasets` cache; no machine-specific layout.
 WORKSPACE = Path(os.environ.get("UNSLOTH_WORKSPACE") or tempfile.gettempdir())
 
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
@@ -38,7 +37,6 @@ sys.path.insert(0, str(REPO))
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--arm", choices = ("eager", "online"), required = True)
-    # No default path: it would only exist on one machine.
     parser.add_argument(
         "--dataset",
         required = True,
@@ -54,8 +52,7 @@ def main() -> int:
     parser.add_argument("--no-fresh-cache", dest = "fresh_cache", action = "store_false")
     args = parser.parse_args()
 
-    # Fresh cache per run, else the eager arm just reads the other arm's
-    # tokenize map out of Arrow and measures a cache hit real users never get.
+    # Fresh cache per run, else the eager arm measures a cache hit real users never get.
     if args.fresh_cache:
         cache = WORKSPACE / "unsloth_ab_cache" / f"{args.arm}_{int(time.time())}"
         cache.mkdir(parents = True, exist_ok = True)
@@ -107,8 +104,7 @@ def main() -> int:
         return 1
     mark("model_ready")
 
-    # `local_datasets` resolves its entries to files and rejects anything without a supported extension, so a Hub id has
-    # to go through `dataset_source` instead.
+    # local_datasets rejects paths without a supported extension, so Hub ids use dataset_source.
     local_split = os.path.exists(args.dataset) or Path(args.dataset).suffix.lower() in (
         ".json",
         ".jsonl",
@@ -169,7 +165,7 @@ def main() -> int:
     started = trainer.start_training(
         dataset = dataset,
         eval_dataset = eval_dataset,
-        output_dir = f"ab_{args.arm}",  # resolved under Unsloth's outputs root
+        output_dir = f"ab_{args.arm}",
         num_epochs = 1,
         max_steps = args.max_steps,
         batch_size = args.batch_size,
@@ -194,7 +190,6 @@ def main() -> int:
     error = getattr(progress, "error", None)
 
     decision = getattr(trainer, "_online_prewarm_batches", 0)
-    # What the trainer actually got configured with, read off the object.
     observed = {}
     sft = getattr(trainer, "trainer", None)
     if sft is not None:
@@ -222,11 +217,9 @@ def main() -> int:
         "step_times": probe.step_times,
         "prewarm_batches": decision,
         "observed": observed,
-        # Unsloth's chat-template render, which BOTH arms do eagerly.
         "format_seconds": round(
             marks.get("dataset_formatted", 0.0) - marks.get("model_ready", 0.0), 4
         ),
-        # Trainer construction: TRL's tokenizing map on the eager arm, nothing online.
         "prep_seconds": round(
             marks.get("trainer_built", 0.0) - marks.get("dataset_formatted", 0.0), 4
         ),

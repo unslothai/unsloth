@@ -16,7 +16,7 @@ import type { TranslationKey } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
-import { Copy01Icon } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type CSSProperties,
@@ -41,6 +41,9 @@ const OS_OPTIONS: { id: ExampleOs; labelKey: TranslationKey }[] = [
 // The btn-fill grey (index.css), so a selected pill matches a standard filled button.
 const LIGHT_FILL_PILL =
   "[html:not(.dark)_&]:bg-[color-mix(in_srgb,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)] [html:not(.dark)_&]:shadow-none";
+// Dark: the --accent pill nearly matches the example box's 5% white.
+const DARK_FILL_PILL =
+  "[html.dark_&]:!bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))]";
 
 // Lines that fit the example box's starting height (h-46); longer ones start there and scroll.
 const START_LINES = 8;
@@ -151,7 +154,9 @@ export function ExampleToggle<T extends string>({
                 group={pillId}
                 // With no track behind them, the pills take a filled button's grey in light mode, not a
                 // white lifted pill.
-                className={toggle ? undefined : LIGHT_FILL_PILL}
+                className={
+                  toggle ? undefined : cn(LIGHT_FILL_PILL, DARK_FILL_PILL)
+                }
               />
             )}
             <span className="relative truncate">{option.label}</span>
