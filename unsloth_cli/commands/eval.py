@@ -747,14 +747,17 @@ def evaluate(
 
     _render_results(results)
     if output_dir is None:
+        # Parent first: on Windows a leaf mkdir under a stray eval_results file raises FileExistsError too.
+        Path("eval_results").mkdir(exist_ok = True)
         while True:
             output_dir = Path("eval_results") / f"{run_name}_{stamp}"
             try:
-                output_dir.mkdir(parents = True)
+                output_dir.mkdir()
                 break
             except FileExistsError:
                 stamp += 1
-    output_dir.mkdir(parents = True, exist_ok = True)
+    else:
+        output_dir.mkdir(parents = True, exist_ok = True)
     results_path = output_dir / "results.json"
     results_path.write_text(json.dumps(results, indent = 2, default = _json_default), encoding = "utf-8")
     typer.echo(f"Saved results to: {results_path}")
