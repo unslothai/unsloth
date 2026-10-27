@@ -70,6 +70,17 @@ def _contain_installer_venv_root(tmp_path_factory, monkeypatch):
     contain_installer_venv_root(monkeypatch, tmp_path_factory)
 
 
+@pytest.fixture(autouse = True)
+def _no_deleted_torch_config_entries():
+    """A test that leaves a dynamo / inductor config entry deleted errors at its own teardown; see
+    tests/_shared/torch_config_guard.py."""
+    from torch_config_guard import check_after_test, install_delete_recorder
+
+    install_delete_recorder()
+    yield
+    check_after_test()
+
+
 def _has_real_accelerator() -> bool:
     """Calls the probe before any spoof; the name is pinned by a test that reads this file's AST."""
     from real_accelerator import has_real_accelerator

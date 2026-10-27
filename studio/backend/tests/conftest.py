@@ -99,6 +99,17 @@ def _no_vae_structural_verdict_cache(monkeypatch):
 
 
 @pytest.fixture(autouse = True)
+def _no_deleted_torch_config_entries():
+    """A test that leaves a dynamo / inductor config entry deleted errors at its own teardown; see
+    tests/_shared/torch_config_guard.py."""
+    from torch_config_guard import check_after_test, install_delete_recorder
+
+    install_delete_recorder()
+    yield
+    check_after_test()
+
+
+@pytest.fixture(autouse = True)
 def _zoo_without_gdn_decode_kernel(monkeypatch):
     # Whether Qwen3.5 / Qwen3-Next ask for causal-conv1d depends on the installed unsloth_zoo; pin the
     # older-zoo answer so results do not follow the host. Tests of the newer zoo patch it back.
