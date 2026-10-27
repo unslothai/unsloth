@@ -80,6 +80,34 @@ def _run(optim, inf_rank = None):
     return out
 
 
+def _sparse_fp16():
+    """A float16 sparse plain grad (nn.Embedding(sparse = True)) beside a DTensor grad: upstream coalesces
+    it and assigns the result back to param.grad, so that assignment has to reach the real parameter."""
+    from torch.distributed.device_mesh import init_device_mesh
+    from torch.distributed.tensor import Shard, distribute_tensor
+
+    native = _load_native()
+    trainer = types.SimpleNamespace(
+        accelerator = types.SimpleNamespace(
+            scaler = torch.amp.GradScaler("cpu", init_scale = _SCALE), scaler_handler = _Handler()
+        )
+    )
+    assert native._scaler_for_native(trainer) is True
+    scaler = trainer.accelerator.scaler
+    mesh = init_device_mesh("cpu", (2,), mesh_dim_names = ("tp",))
+    sharded = torch.nn.Parameter(distribute_tensor(torch.zeros(8, 4), mesh, [Shard(0)]))
+    embed = torch.nn.Parameter(torch.zeros(4, 2, dtype = torch.float16))
+    opt = torch.optim.SGD([sharded, embed], lr = 1e-2)
+    scaler.scale(torch.zeros(()))
+    sharded.grad = distribute_tensor(torch.full((8, 4), _SCALE), mesh, [Shard(0)])
+    # rows 0, 0, 2: uncoalesced, row 0 sums to 2 * _SCALE
+    embed.grad = torch.sparse_coo_tensor(
+        torch.tensor([[0, 0, 2]]), torch.full((3, 2), _SCALE, dtype = torch.float16), (4, 2)
+    )
+    scaler.unscale_(opt)
+    return sharded.grad.to_local().clone(), embed.grad.to_dense().float().clone()
+
+
 def _worker(rank, world, port, out):
     os.environ.update(MASTER_ADDR = "127.0.0.1", MASTER_PORT = str(port))
     torch.distributed.init_process_group("gloo", rank = rank, world_size = world)
@@ -91,6 +119,10 @@ def _worker(rank, world, port, out):
                     res[optim, inf_rank] = _run(optim, inf_rank)
                 except Exception as e:  # recorded, asserted in the parent
                     res[optim, inf_rank] = f"{type(e).__name__}: {e}"
+        try:
+            res["sparse_fp16"] = _sparse_fp16()
+        except Exception as e:  # recorded, asserted in the parent
+            res["sparse_fp16"] = f"{type(e).__name__}: {e}"
         torch.save(res, os.path.join(out, f"rank{rank}.pt"))
     finally:
         torch.distributed.destroy_process_group()
@@ -122,3 +154,13 @@ def test_mixed_dtensor_and_plain_grads_unscale_and_skip(ranks, optim, inf_rank):
     torch.testing.assert_close(
         ranks[0][optim, inf_rank]["params"][1], ranks[1][optim, inf_rank]["params"][1]
     )
+
+
+def test_mixed_grads_unscale_float16_sparse_plain_grad(ranks):
+    for res in ranks:
+        got = res["sparse_fp16"]
+        assert not isinstance(got, str), got
+        dense, sparse = got
+        assert torch.equal(dense, torch.ones(4, 4)), dense
+        # unscaled on the parameter itself, not on a stand-in's copy
+        assert torch.equal(sparse, torch.tensor([[2.0, 2.0], [0.0, 0.0], [1.0, 1.0], [0.0, 0.0]])), sparse

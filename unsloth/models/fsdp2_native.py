@@ -3365,10 +3365,11 @@ def _local_grads_if_mixed(optimizer):
             grad = p.grad
             if isinstance(grad, DTensor):
                 dtensor = True
-                grad = grad._local_tensor
+                p = types.SimpleNamespace(grad = grad._local_tensor)
             elif grad is not None:
                 plain = True
-            params.append(types.SimpleNamespace(grad = grad))
+            # Plain grads keep their parameter: upstream reassigns a coalesced float16 sparse grad to it.
+            params.append(p)
         groups.append({"params": params})
     if not (dtensor and plain):
         return optimizer
