@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The tensor parallel Trainer installs its float16 scaler through _tp_scaler. With a fused AdamW and no
-gradient clipping (max_grad_norm = 0) GradScaler.step never calls unscale_: the fused kernel unscales and
-GradScaler.step reads _check_inf_per_device. An inf in one tp rank's gradient shard must still skip the
-step on every rank, or the ranks' weights and loss scales drift apart. Gloo CPU world of 2, tp = 2, a tiny Qwen3 LoRA model through apply_tensor_parallel."""
+"""TP fused AdamW without clipping: an inf in one rank's shard must skip the step on every rank."""
 
 import multiprocessing
 import os
@@ -54,7 +51,7 @@ def _run(fused, unscale):
         scaler.scale(out.loss).backward()
         if step == 1 and rank == 1:
             sharded.grad.to_local().view(-1)[0] = float("inf")  # only rank 1's shard overflows
-        if unscale:  # gradient clipping; without it a fused step() never calls unscale_
+        if unscale:
             scaler.unscale_(opt)
         scaler.step(opt)
         scaler.update()
@@ -72,7 +69,7 @@ def _worker(rank, world, port, out):
             for unscale in (False, True):
                 try:
                     res[fused, unscale] = _run(fused, unscale)
-                except Exception as e:  # recorded, asserted in the parent
+                except Exception as e:
                     res[fused, unscale] = repr(e)
         torch.save(res, os.path.join(out, f"rank{rank}.pt"))
     finally:

@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Native FSDP2 float16 scaler with one fused AdamW over CPU and CUDA parameters (cpu_offload shards next
-to replicated ignored_params). GradScaler.step hands a fused optimizer the SUM of the per-device found_inf
-flags and the kernels skip only on found_inf == 1: both devices overflowing gave 2, and the step wrote
-non-finite weights and stepped the counts to -1."""
+"""Fused AdamW over CPU + CUDA params: both overflowing summed found_inf to 2, so the step was not skipped."""
 
 import os
 import sys
@@ -111,7 +108,7 @@ def test_late_device_to_host_copies_keep_the_step_right(world_of_one, explicit_u
     if overflow == "none":
         ref_cpu.grad = torch.ones_like(ref_cpu)
         ref_opt.step()
-        torch.testing.assert_close(on_cpu.detach(), ref_cpu.detach())  # unscaled by the right scale
+        torch.testing.assert_close(on_cpu.detach(), ref_cpu.detach())
         assert scaler.get_scale() == 2.0**8
     else:
         for p, b in zip((on_cpu, on_cuda), before):

@@ -55,7 +55,7 @@ def _run(
         scaler.scale(loss).backward()
         if step == 1 and (both or rank == 1):
             model.weight.grad[0, 0] = float("inf")  # one rank (or every rank) overflows: all skip
-        if unscale:  # gradient clipping; without it step() unscales (fused: in the kernel)
+        if unscale:
             scaler.unscale_(opt)
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         scaler.step(opt)
@@ -158,9 +158,7 @@ def test_fused_adamw_steps_through_the_native_fp16_scaler(ranks, both):
 
 @pytest.mark.parametrize("both", [False, True], ids = ["one_rank_inf", "every_rank_inf"])
 def test_overflow_skips_on_every_rank_without_explicit_unscale(ranks, both):
-    # No clipping (max_grad_norm = 0): GradScaler.step runs _check_inf_per_device for a fused optimizer
-    # instead of unscale_, which is where ShardedGradScaler all-reduces. Before the fix, one_rank_inf
-    # left rank 0 at 3 steps and scale 2**8 while rank 1 skipped (2 steps, 2**7).
+    # Fused step() without unscale_; before the fix one_rank_inf left ranks at 3 vs 2 steps.
     for res in ranks:
         for fused in (False, True):
             out = res[fused, both, "no_unscale"]

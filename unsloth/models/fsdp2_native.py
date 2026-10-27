@@ -3330,7 +3330,6 @@ def install_native_fsdp2_hooks():
 
 
 def _has_cpu_tensors(optimizer, grads = False):
-    """Any (grad of a) parameter of this optimizer on the CPU (cpu_offload shards)."""
     for group in optimizer.param_groups:
         for p in group["params"]:
             t = p.grad if grads else p
@@ -3364,10 +3363,8 @@ def _scaler_for_native(trainer):
             self._one_flag(optimizer)
 
         def _check_inf_per_device(self, optimizer):
-            # GradScaler.step() on a fused optimizer (its own unscaling) calls this instead of
-            # unscale_ when unscale_ was not called (no gradient clipping), and ShardedGradScaler
-            # does not all-reduce here: one rank skipped an overflow step the others took, and the
-            # loss scales diverged. Agree over ranks as unscale_ does.
+            # Fused step() without unscale_ (no clipping) lands here; ShardedGradScaler does not
+            # all-reduce here, so ranks diverged on overflow skips. Agree over ranks.
             super()._check_inf_per_device(optimizer)
             state = self._per_optimizer_states[id(optimizer)]
             works, copies = [], []
@@ -3391,17 +3388,13 @@ def _scaler_for_native(trainer):
             found_inf,
             allow_fp16 = True,
         ):
-            # The replicator hands CPU grads (cpu_offload shards) copies of a CUDA inv_scale / found_inf
-            # made with non_blocking=True: the CPU kernel can read the pinned buffer before the copy
-            # lands, unscaling by garbage and losing the overflow flag. Start from host copies.
+            # CPU grads get non_blocking copies of CUDA inv_scale / found_inf, read before they land.
             if inv_scale.device.type != "cpu" and _has_cpu_tensors(optimizer, grads = True):
                 inv_scale, found_inf = inv_scale.cpu(), found_inf.cpu()
             return super()._unscale_grads_(optimizer, inv_scale, found_inf, allow_fp16)
 
         def step(self, optimizer, *args, **kwargs):
-            # A fused optimizer moves GradScaler's CUDA grad_scale / found_inf to each parameter device
-            # with non_blocking=True; on CPU its kernel can read them before they land (skip missed,
-            # wrong unscale). Hand it host copies when it steps CPU parameters.
+            # Same race for a fused optimizer's grad_scale / found_inf on CPU parameters: use host copies.
             if not (
                 self.is_enabled()
                 and self._device != "cpu"
@@ -3430,11 +3423,8 @@ def _scaler_for_native(trainer):
                     del optimizer.step
 
         def _one_flag(self, optimizer):
-            # The all-reduce SUMS found_inf (the number of ranks that overflowed), and GradScaler.step
-            # hands a fused optimizer the SUM over devices; fused kernels skip only on found_inf == 1
-            # (and subtract it from their step counts), so 2+ ranks, or CPU-offloaded and replicated
-            # parameters both overflowing, stepped on inf / NaN gradients. One 0 / 1 flag in total:
-            # on the first device, zeros on the others (every consumer sums them).
+            # found_inf is summed over ranks and devices, but fused kernels skip only on == 1.
+            # One 0 / 1 flag on the first device, zeros elsewhere (consumers sum them).
             state = self._per_optimizer_states[id(optimizer)]
             found = state["found_inf_per_device"]
             if not found:
