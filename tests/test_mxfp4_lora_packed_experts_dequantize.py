@@ -43,6 +43,16 @@ def _dequantize_branch():
     return found[0]
 
 
+def _branch_bindings():
+    """Assignments the dequantize branch reads that are made just before it (the FP8 full finetuning flag)."""
+    return [
+        node
+        for node in ast.walk(TREE)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "_fp8_full_finetune" for t in node.targets)
+    ]
+
+
 class _Mxfp4Config:
     def __init__(
         self,
@@ -197,7 +207,7 @@ def _run_branch(
         "auto_config": types.SimpleNamespace(num_hidden_layers = 24),
     }
     node = _dequantize_branch()
-    code = ast.Module(body = [node], type_ignores = [])
+    code = ast.Module(body = [*_branch_bindings(), node], type_ignores = [])
     ast.fix_missing_locations(code)
     exec(compile(code, str(VISION), "exec"), ns)
     return ns["quantizer_kwargs"].get("dequantize", False)
