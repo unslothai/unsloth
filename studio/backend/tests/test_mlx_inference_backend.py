@@ -7760,6 +7760,7 @@ def test_a_vision_row_times_its_prefill_wherever_the_batch_runs_it(monkeypatch, 
     monkeypatch.setattr(engine, "GenerationRequest", SimpleNamespace, raising = False)
     monkeypatch.setattr(engine, "SamplingParams", dict, raising = False)
     monkeypatch.setattr(engine, "BatchRowRefused", RuntimeError, raising = False)
+    monkeypatch.setattr(engine, "vlm_batch_adds_special_tokens", lambda *a: True, raising = False)
     backend = _vlm_backend(monkeypatch, markers = None)
     plan = SimpleNamespace(
         prompt = "hi",
