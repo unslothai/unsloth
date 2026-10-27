@@ -870,7 +870,7 @@ test("an unpin over an original and its trimmed copy fences their shared server 
   let journal = structuredClone(queued);
   const sync = createPinnedChatsSync({
     load: async () => [],
-    compareAndSet: async (_expected, next, operation) => {
+    compareAndSet: async (_expected, _next, operation) => {
       if (operation) sent.push(operation);
       return { applied: false, pinnedIds: [] };
     },
