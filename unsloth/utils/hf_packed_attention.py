@@ -694,9 +694,7 @@ def _varlen_in_graph_eager(device_index, dtype, head_dim, n_heads, n_kv_heads, w
 def _varlen_in_graph_probe(device_index, dtype, head_dim, n_heads, n_kv_heads, window):
     """aten's flash varlen takes this shape on this device: one real forward and backward (a build
     that refuses at run time would otherwise fail inside the compiled graph)."""
-    # The verdict is cached for every grad mode, but the first trace often runs under no_grad (the
-    # forward of a reentrant / Unsloth offloaded checkpoint) or inference_mode, where the backward
-    # below raises and would turn the varlen path off for the whole run.
+    # Cached for all grad modes; first trace may be no_grad (reentrant checkpoint), where backward raises.
     with torch.inference_mode(False), torch.enable_grad():
         try:
             from .flash_impl import flash_impl_allows

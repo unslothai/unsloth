@@ -1526,8 +1526,7 @@ def test_block_varlen_runs_inside_the_graph_and_matches_dense_sdpa(monkeypatch, 
 
 @pytest.mark.parametrize("mode", ["no_grad", "inference_mode"])
 def test_varlen_in_graph_probe_runs_its_backward_with_grad_enabled(monkeypatch, mode):
-    """The probe's verdict is cached for every grad mode, and the first trace of a block usually runs
-    in a reentrant checkpoint's no_grad forward: the probe must still run (and check) a backward."""
+    """Probe under no_grad must still run and check a backward (verdict is cached for all modes)."""
     seen = []
 
     def torch_varlen(device):
@@ -1546,8 +1545,7 @@ def test_varlen_in_graph_probe_runs_its_backward_with_grad_enabled(monkeypatch, 
 @_TORCH_VARLEN_HOST
 @pytest.mark.parametrize("mode", ["no_grad", "inference_mode"])
 def test_varlen_in_graph_verdict_does_not_depend_on_the_first_grad_mode(monkeypatch, mode):
-    """Real probe: first asked under no_grad / inference_mode it gives the grad-enabled answer, and
-    that is what later grad-enabled traces read from the cache."""
+    """Real probe under no_grad / inference_mode caches the grad-enabled answer."""
     if hpa._torch_varlen(torch.device("cuda", 0)) is None:
         pytest.skip(
             reason = "varlen kernel needs torch's varlen_attn with window_size (CUDA torch >= 2.11)"
@@ -1566,8 +1564,7 @@ def test_varlen_in_graph_verdict_does_not_depend_on_the_first_grad_mode(monkeypa
 @_CUDA
 @_TORCH_VARLEN_HOST
 def test_reentrant_checkpoint_first_trace_keeps_the_block_varlen_path(monkeypatch):
-    """A block compiled first inside a reentrant checkpoint (Unsloth's offloaded checkpointing): its
-    no_grad forward and its grad-enabled recompute both run the in-graph varlen kernel."""
+    """First compiled inside a reentrant checkpoint: forward and recompute both run varlen."""
     if hpa._torch_varlen(torch.device("cuda", 0)) is None:
         pytest.skip(
             reason = "varlen kernel needs torch's varlen_attn with window_size (CUDA torch >= 2.11)"
