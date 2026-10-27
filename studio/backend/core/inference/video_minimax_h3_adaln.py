@@ -42,9 +42,7 @@ from __future__ import annotations
 import types
 from typing import Any, Optional
 
-# Video, text and audio rows each get their own modulation row, so one projection emits three blocks of six chunks.
-# Mirrors diffusers' MINIMAX_H3_MODALITY_NUM; hardcoded rather than imported so this module stays importable (and
-# unit-testable) without diffusers.
+# Three modalities x six chunks; mirrors MINIMAX_H3_MODALITY_NUM, hardcoded to avoid diffusers.
 MINIMAX_H3_MODALITY_NUM = 3
 
 # Metadata keys the offline prequant builder bakes into a curve-form checkpoint.
@@ -52,18 +50,12 @@ ADALN_FORM_KEY = "adaln_form"
 ADALN_CURVE_FORM = "curve"
 CURVE_DIM_KEY = "curve_dim"
 CURVE_GRID_KEY = "curve_grid"
-# The dtype of the block stack the modulation feeds, recorded by the builder. See `_curve_modulation_forward` for why
-# the chunks have to be cast to it.
+# Dtype of the block stack; see `_curve_modulation_forward` for why chunks are cast to it.
 ADALN_OUT_DTYPE_KEY = "adaln_out_dtype"
 
 
 def _resolve_torch_dtype(name: Any) -> Any:
-    """``"bfloat16"`` -> ``torch.bfloat16``; None for anything unrecognised.
-
-    A missing or unknown value must NOT fall back to a guess: the cast it drives changes the block
-    stack's precision, and silently picking the wrong one would be a quality regression no test
-    would catch. None simply leaves the chunks at the projection's own dtype, which is the
-    pre-existing behaviour."""
+    """Maps bfloat16 to torch.bfloat16; unknown names return None rather than guess a precision."""
     if not isinstance(name, str) or not name:
         return None
     import torch
@@ -73,12 +65,7 @@ def _resolve_torch_dtype(name: Any) -> Any:
 
 
 def is_curve_checkpoint(metadata: Any) -> bool:
-    """True when ``metadata`` describes a pruned (curve-form) adaLN checkpoint.
-
-    Keyed on the recorded form rather than on the presence of ``time_embedder.table``: a checkpoint
-    that carries the table but does not declare the form is one this code has not been validated
-    against, and silently reshaping the model for it would load mismatched weights under
-    ``strict = True`` only to produce noise."""
+    """True only for a curve-form checkpoint that declares its form; a table alone is not enough."""
     if not isinstance(metadata, dict):
         return False
     if metadata.get(ADALN_FORM_KEY) != ADALN_CURVE_FORM:
@@ -88,23 +75,7 @@ def is_curve_checkpoint(metadata: Any) -> bool:
 
 
 def _curve_modulation_forward(self: Any, temb: Any) -> tuple:
-    """``MiniMaxH3AdaLayerNormModulation.forward`` for the curve form: no SiLU, then cast down.
-
-    ``temb`` already holds the interpolated curve coordinates, i.e. the projection of the dense
-    path's post-activation embedding onto the fitted basis. The view/chunk tail is byte-identical to
-    the dense module, so the row layout the block's ``adaln_indices`` addresses is unchanged.
-
-    The pruned modulation is stored FLOAT32 (the rank-8 curve is a small, precision-sensitive
-    signal), while the dense checkpoint's projections are bfloat16. The block's forward multiplies
-    the normed hidden states by these chunks WITHOUT casting, so leaving them float32 promotes the
-    whole block stack to float32 and the very first quantized matmul dies with
-    "expected mat1 and mat2 to have the same dtype". The reference casts modulation to the hidden
-    stream's dtype at the point of use for exactly this reason; ``adaln_out_dtype`` is the dtype the
-    offline builder recorded for that stream, so honour it here where the chunks are produced.
-
-    Cast while the modality axis is explicit: with ``temb``'s rows unbacked, torch 2.12-2.14 Inductor
-    indexes the bias of a single ``(rows, 18 * hidden) -> (3 * rows, 6 * hidden)`` view as ``row``, not
-    ``row % 3``, and reads past it from the second denoising step (illegal memory access)."""
+    """Curve-form adaLN, no SiLU; cast chunks to stream dtype (float32 breaks matmul) while modality axis is explicit (torch 2.12-2.14 Inductor illegal access)."""
     temb = self.linear(temb.to(self.linear.weight.dtype))
     temb = temb.view(-1, MINIMAX_H3_MODALITY_NUM, 6 * self.hidden_size)
     out_dtype = getattr(self, "_unsloth_adaln_out_dtype", None)
@@ -115,11 +86,7 @@ def _curve_modulation_forward(self: Any, temb: Any) -> tuple:
 
 
 def _curve_norm_out_forward(self: Any, hidden_states: Any, temb: Any, timestep_indices: Any) -> Any:
-    """``MiniMaxH3AdaLayerNormOut.forward`` for the curve form: no SiLU, same indexing.
-
-    No cast down here, unlike the block modulation: the reference's final layer also consumes its
-    shift/scale at their own precision, and the model's forward sends this result straight into the
-    float32 output heads, so promoting is what the dense path effectively does too."""
+    """Curve-form final adaLN, no SiLU; no cast down, as the float32 output heads expect promotion."""
     shift, scale = self.linear(temb.to(self.linear.weight.dtype)).chunk(2, dim = -1)
     hidden_states = self.norm(hidden_states)
     return hidden_states * (1.0 + scale.index_select(0, timestep_indices)) + shift.index_select(
@@ -128,26 +95,16 @@ def _curve_norm_out_forward(self: Any, hidden_states: Any, temb: Any, timestep_i
 
 
 def _build_curve_time_embedder(curve_grid: int, curve_dim: int) -> Any:
-    """The module replacing ``TimestepEmbedding`` on a curve-form model.
-
-    Holds the fitted table under the checkpoint's own ``time_embedder.table`` key and turns a raw
-    timestep into curve coordinates by linear interpolation between the two neighbouring grid rows,
-    matching the reference exactly (clamp to ``[0, 1]``, then clamp the lower index to
-    ``grid - 2`` so ``t == 1.0`` lands on the last interval instead of reading past the table)."""
+    """Curve-form timestep embedder: interpolates the table, clamping so t=1.0 stays in bounds."""
     import torch
     from torch import nn
 
     class _MiniMaxH3CurveTimeEmbedder(nn.Module):
         def __init__(self) -> None:
             super().__init__()
-            # Persistent: this IS the checkpoint's `time_embedder.table` entry, assigned by load_state_dict. float32
-            # like the reference; the curve is a smooth low-amplitude signal whose differences drive every block's
-            # modulation.
+            # Persistent: this IS the checkpoint's `time_embedder.table`; float32 like the reference.
             self.register_buffer("table", torch.empty(curve_grid, curve_dim, dtype = torch.float32))
-            # The model's forward reads `self.time_embedder.linear_1.weight.dtype` to decide what to cast the timestep
-            # to. The dense module has that Linear; this one does not, so expose a NON-PERSISTENT stand-in carrying only
-            # the dtype. Non-persistent keeps it out of the state dict, so `strict = True` still matches the checkpoint
-            # exactly.
+            # Forward reads linear_1.weight.dtype; a non-persistent stand-in keeps strict=True exact.
             self.linear_1 = nn.Module()
             self.linear_1.register_buffer(
                 "weight", torch.zeros(1, dtype = torch.float32), persistent = False
@@ -165,11 +122,8 @@ def _build_curve_time_embedder(curve_grid: int, curve_dim: int) -> Any:
 
 
 def _passthrough_time_proj() -> Any:
-    """Replaces ``Timesteps`` so the raw timestep reaches the curve embedder.
-
-    The dense path feeds ``time_proj``'s Fourier features to the time embedder; the curve table is
-    indexed by the timestep itself. ``Timesteps`` is parameter-free, so swapping it changes no
-    state-dict key."""
+    """Feeds the raw timestep to the curve embedder; Timesteps is parameter-free, so no state keys
+    change."""
     from torch import nn
 
     class _MiniMaxH3RawTimestep(nn.Module):
@@ -184,16 +138,7 @@ def apply_h3_adaln_curve(
     metadata: Any,
     logger: Any = None,
 ) -> bool:
-    """Reshape a freshly built ``MiniMaxH3Transformer3DModel`` to the pruned adaLN form, in place.
-
-    Call between ``from_config`` and ``load_state_dict``: it swaps ``time_proj`` / ``time_embedder``
-    and re-shapes every ``adaln_proj.linear`` plus ``norm_out.linear`` from ``time_embed_dim`` inputs
-    to ``curve_dim``, so the hosted checkpoint then loads under ``strict = True``.
-
-    Returns True when the model was converted, False when ``metadata`` does not describe a
-    curve-form checkpoint (a dense checkpoint must be left exactly as it was). Raises on a
-    structurally unexpected model, so the prequant loader's caller falls back to dense rather than
-    generating from a half-converted model."""
+    """Must run between from_config and load_state_dict; an odd model raises rather than half-converting."""
     if not is_curve_checkpoint(metadata):
         return False
 
@@ -211,10 +156,7 @@ def apply_h3_adaln_curve(
         )
 
     def _reshape(linear: Any, where: str) -> Any:
-        # Rebuild rather than resize: the replacement is a plain float32 Linear (the hosted checkpoints store the
-        # pruned adaLN in float32) whose weights load_state_dict then overwrites via assign=True. Built on the real
-        # device, never meta, so the module is well-formed even if the checkpoint were to omit it and strict=True
-        # caught that instead.
+        # Rebuild as a float32 Linear on the real device (not meta); assign=True then fills it.
         if not isinstance(linear, nn.Linear):
             raise ValueError(f"MiniMax-H3 curve conversion expected a Linear at {where}.")
         import torch
@@ -230,11 +172,9 @@ def apply_h3_adaln_curve(
         if proj is None:
             raise ValueError(f"MiniMax-H3 curve conversion: block {index} has no `adaln_proj`.")
         proj.linear = _reshape(proj.linear, f"transformer_blocks.{index}.adaln_proj.linear")
-        # Plain attribute, not a buffer: it must not reach the state dict, and `.to(device)` on the module must not
-        # try to move it.
+        # Plain attribute, not a buffer: keep it out of the state dict and `.to(device)`.
         proj._unsloth_adaln_out_dtype = out_dtype
-        # Bind the SiLU-free forward per instance: the dense class is shared with dense loads in the same process, so
-        # patching the CLASS would corrupt them.
+        # Bind per instance: the dense class is shared with dense loads in the same process.
         proj.forward = types.MethodType(_curve_modulation_forward, proj)
         converted += 1
 
@@ -257,11 +197,7 @@ def apply_h3_adaln_curve(
 
 
 def h3_prepare_prequant_model(logger: Any = None) -> Any:
-    """A ``prepare_model`` callback for ``load_prequantized_transformer``.
-
-    The loader builds the model from the base repo's DENSE transformer config, so a curve-form
-    hosted checkpoint has to reshape it before ``load_state_dict``; this adapts
-    ``apply_h3_adaln_curve`` to the callback's ``(transformer, metadata)`` shape."""
+    """Reshapes a curve-form model before load_state_dict; the loader builds it from the dense config."""
 
     def _prepare(transformer: Any, metadata: Optional[dict]) -> None:
         apply_h3_adaln_curve(transformer, metadata, logger = logger)

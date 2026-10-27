@@ -135,6 +135,129 @@ def test_one_group_larger_than_the_window_still_progresses():
     assert pf.stats["forwards"] == 2 and pf.inflight_bytes == 0
 
 
+class _FrozenGpu:
+    """Card whose events complete only when the host waits; tracks pinned staging buffers whose copy has not run."""
+
+    def __init__(self):
+        self.outstanding = 0
+        self.peak = 0
+        self.unattributed = 0
+        self.waits = 0
+        gpu = self
+
+        class Event:
+            def __init__(self):
+                self.staged = 0
+                self.done = False
+
+            def record(self, stream = None):
+                self.staged, gpu.unattributed = gpu.unattributed, 0
+
+            def query(self):
+                return self.done
+
+            def synchronize(self):
+                gpu.waits += 1
+                if not self.done:
+                    self.done = True
+                    gpu.outstanding -= self.staged
+
+        class HostTensor:
+            def __init__(
+                self,
+                nbytes: int,
+                pinned: bool = False,
+            ):
+                self.nbytes = nbytes
+                self.pinned = pinned
+
+            def is_pinned(self):
+                return self.pinned
+
+            def numel(self):
+                return self.nbytes
+
+            def element_size(self):
+                return 1
+
+            def pin_memory(self):
+                gpu.outstanding += self.nbytes
+                gpu.unattributed += self.nbytes
+                gpu.peak = max(gpu.peak, gpu.outstanding)
+                return HostTensor(self.nbytes, pinned = True)
+
+            def to(
+                self,
+                device,
+                non_blocking = False,
+            ):
+                return self
+
+        self.Event = Event
+        self.HostTensor = HostTensor
+
+
+class _Param:
+    data = None
+
+
+def _frozen_gpu_prefetcher(
+    monkeypatch,
+    pinned: bool,
+    groups_n: int = 10,
+    tensors: int = 3,
+):
+    import contextlib
+
+    gpu = _FrozenGpu()
+    monkeypatch.setattr(torch.cuda, "Event", gpu.Event)
+    monkeypatch.setattr(torch.cuda, "stream", lambda s: contextlib.nullcontext())
+    monkeypatch.setattr(op, "_go", lambda: types.SimpleNamespace())
+    groups = []
+    for _ in range(groups_n):
+        params = [_Param() for _ in range(tensors)]
+        groups.append(
+            types.SimpleNamespace(
+                modules = [],
+                parameters = params,
+                buffers = [],
+                cpu_param_dict = {p: gpu.HostTensor(100, pinned) for p in params},
+                stream = object(),
+            )
+        )
+    pf = op.GroupPrefetcher(None, groups, "cpu", depth = 1)
+    return pf, groups, gpu
+
+
+def test_unpinned_staging_stays_in_the_window_on_a_slow_card(monkeypatch):
+    """Host a whole forward ahead of the card: unbounded, staging held the whole denoiser in pinned RAM."""
+    pf, groups, gpu = _frozen_gpu_prefetcher(monkeypatch, pinned = False)
+    group_bytes = 300
+    assert pf.window == 2 * group_bytes
+    for g in groups:
+        pf._issue(g)
+    assert gpu.peak <= pf.window, (gpu.peak, pf.window)
+    assert gpu.waits > 0
+    assert pf.stats["copies"] == len(groups)
+    assert all(p.data is not None for g in groups for p in g.parameters)
+
+
+def test_landed_copies_free_staging_without_a_wait(monkeypatch):
+    pf, groups, gpu = _frozen_gpu_prefetcher(monkeypatch, pinned = False)
+    for g in groups:
+        pf._issue(g)
+        for event, _n in list(pf.staged):
+            event.done = True
+    assert gpu.waits == 0
+
+
+def test_pinned_host_copies_never_wait(monkeypatch):
+    pf, groups, gpu = _frozen_gpu_prefetcher(monkeypatch, pinned = True)
+    for g in groups:
+        pf._issue(g)
+    assert gpu.waits == 0 and gpu.peak == 0
+
+
 def test_resident_groups_are_skipped_and_not_counted():
     pf, groups, log = _cpu_prefetcher("abcdef", depth = 2)
     _forward(pf, groups)
@@ -494,6 +617,35 @@ def test_unpinned_host_copies_stream_bit_identical(monkeypatch):
         for _ in range(3):
             assert torch.equal(net(x), want)
     assert op.module_prefetcher(net).stats["prefetched"] > 0
+
+
+def test_slow_gpu_unpinned_staging_stays_in_the_window(monkeypatch):
+    """Unpinned host copies on a card slower than the host thread: pinned staging is capped, outputs bit-identical."""
+    _cuda()
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_GROUP_OFFLOAD_PIN", "0")
+    monkeypatch.setenv(op.PREFETCH_DEPTH_ENV, "1")
+    torch.manual_seed(0)
+    # ~0.1 s per block on any card: the host queues the whole forward before the first blocks have run
+    net = _Net(width = 2048, blocks = 12, sleep_cycles = 200_000_000)
+    ref = copy.deepcopy(net).cuda()
+    _streamed(net, stream_text_encoders = True)
+    pf = op.module_prefetcher(net)
+    x = torch.randn(4, 64, device = "cuda")
+    with torch.no_grad():
+        want = ref(x)
+        net(x)
+        torch.cuda.synchronize()
+        torch.cuda.reset_peak_host_memory_stats()
+        before = torch.cuda.host_memory_stats().get("allocated_bytes.current", 0)
+        got = net(x)
+        host_ahead = not torch.cuda.current_stream().query()
+        torch.cuda.synchronize()
+    peak = torch.cuda.host_memory_stats().get("allocated_bytes.peak", 0) - before
+    assert torch.equal(got, want)
+    assert host_ahead
+    block_bytes = 2048 * 2048 * 4 + 2048 * 4
+    # window (2 groups) + the group being staged; unbounded it was every block of the forward
+    assert peak <= pf.window + 2 * block_bytes, (peak, pf.window)
 
 
 @pytest.mark.parametrize("version", [None, 2])

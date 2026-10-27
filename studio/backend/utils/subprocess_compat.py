@@ -8,11 +8,7 @@ import sys
 
 
 def windows_hidden_subprocess_kwargs() -> dict[str, object]:
-    """Windows-only subprocess kwargs that suppress console windows.
-
-    Empty dict off Windows, so callers can always unpack via
-    ``**windows_hidden_subprocess_kwargs()``.
-    """
+    """Empty off Windows, so callers can always unpack it without a platform check."""
     if sys.platform != "win32":
         return {}
 

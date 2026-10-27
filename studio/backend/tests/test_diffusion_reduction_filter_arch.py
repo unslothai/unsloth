@@ -1,13 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""FLUX.1, Z-Image and Qwen-Image pin inductor's reduction-config filter on sm120, sm80 and sm89, so one seed renders
-one image in every fresh server there.
+"""FLUX.1, Z-Image and Qwen-Image pin inductor's reduction-config filter on sm120, sm80, sm89 and B200 (sm100), so one
+seed renders one image in every fresh server there.
 
 A few of their norm reductions get several configs that sum in different orders, and a cold-cache server benchmarks
 them in its own process on near-equal timings: fresh servers rendered 2-4 variants per seed on an RTX PRO 6000, A100
-and L4. B200 servers were deterministic for FLUX.1 but not Qwen-Image or Z-Image, so the opt-in is per (family,
-compute capability)."""
+and L4, and on B200 for all three. The opt-in is per (family, compute capability)."""
 
 from __future__ import annotations
 
@@ -16,15 +15,22 @@ import types
 import pytest
 
 torch = pytest.importorskip("torch")
+from torch.torch_version import TorchVersion  # noqa: E402
+
 
 from core.inference import diffusion_compile_config as cc  # noqa: E402
 from core.inference import diffusion_speed as ds  # noqa: E402
+
+# A CUDA build's version tag: Studio reads ROCm from the "+rocm" tag too (AMD SDK / Radeon wheels leave
+# torch.version.hip unset), so a test that fakes NVIDIA clears both.
+_CUDA_TORCH_VERSION = TorchVersion(str(torch.__version__).split("+")[0] + "+cu130")
 
 _SM120 = (12, 0)
 _MEASURED_ARCHS = ((8, 0), (8, 9), (12, 0))
 _IMAGE_FAMILIES = ("flux.1", "z-image", "qwen-image", "flux.1-kontext", "qwen-image-edit")
 _QWEN_FAMILIES = ("qwen-image", "qwen-image-edit", "qwen-image-layered")
-_B200_PINNED = (*_QWEN_FAMILIES, "z-image")
+_FLUX1_FAMILIES = ("flux.1", "flux.1-kontext")
+_B200_PINNED = (*_QWEN_FAMILIES, "z-image", *_FLUX1_FAMILIES)
 
 
 def _family(name):
@@ -70,17 +76,20 @@ def test_the_race_families_share_one_arch_list():
 
     for name in _IMAGE_FAMILIES:
         expected = (
-            diffusion_families._QWEN_REDUCTION_RACE_ARCHS
+            diffusion_families._FLUX1_REDUCTION_RACE_ARCHS
+            if name in _FLUX1_FAMILIES
+            else diffusion_families._QWEN_REDUCTION_RACE_ARCHS
             if name in _B200_PINNED
             else diffusion_families._REDUCTION_RACE_ARCHS
         )
         assert tuple(_family(name).filter_reduction_configs_archs) == tuple(expected)
     assert set(diffusion_families._REDUCTION_RACE_ARCHS) == set(_MEASURED_ARCHS)
     assert set(diffusion_families._QWEN_REDUCTION_RACE_ARCHS) == {*_MEASURED_ARCHS, (10, 0)}
+    assert set(diffusion_families._FLUX1_REDUCTION_RACE_ARCHS) == {*_MEASURED_ARCHS, (10, 0)}
 
 
 @pytest.mark.parametrize("name", _B200_PINNED)
-def test_qwen_image_also_pins_on_b200(monkeypatch, name):
+def test_b200_race_families_also_pin_on_b200(monkeypatch, name):
     _on(monkeypatch, (10, 0))
     fam = _family(name)
     assert cc.family_filters_reductions(fam) is True
@@ -91,7 +100,9 @@ def test_qwen_image_also_pins_on_b200(monkeypatch, name):
 @pytest.mark.parametrize("name", _IMAGE_FAMILIES)
 def test_image_family_keeps_inductor_pick_elsewhere(monkeypatch, name, cap):
     if cap == (10, 0) and name in _B200_PINNED:
-        pytest.skip("Qwen-Image and Z-Image pin on B200 (test_qwen_image_also_pins_on_b200)")
+        pytest.skip(
+            "FLUX.1, Qwen-Image and Z-Image pin on B200 (test_b200_race_families_also_pin_on_b200)"
+        )
     _on(monkeypatch, cap)
     fam = _family(name)
     assert cc.family_filters_reductions(fam) is False
@@ -125,6 +136,7 @@ def test_no_family_or_plain_object(monkeypatch):
 def test_capability_query_never_raises(monkeypatch):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", _CUDA_TORCH_VERSION, raising = False)
 
     def boom(*a, **k):
         raise RuntimeError("no device")
@@ -147,3 +159,50 @@ def test_load_paths_key_the_bundle_on_the_same_decision():
     assert src.count("reduction_filter = family_filters_reductions(") == 2
     assert 'getattr(fam, "filter_reduction_configs"' not in src
     assert 'getattr(state.family, "filter_reduction_configs"' not in src
+
+
+@pytest.mark.parametrize("cap", [(7, 5), (8, 0), (8, 6), (8, 9), (9, 0), (10, 0), (12, 0), None])
+@pytest.mark.parametrize(
+    "repo", ["black-forest-labs/FLUX.2-klein-4B", "black-forest-labs/FLUX.2-klein-9B"]
+)
+def test_klein_pins_the_reduction_filter_on_every_arch(monkeypatch, repo, cap):
+    from core.inference.diffusion_families import detect_family
+
+    fam = detect_family(repo)
+    assert fam is not None and fam.name == "flux.2-klein"
+    _on(monkeypatch, cap)
+    assert cc.family_filters_reductions(fam) is True
+    assert _filter_reaching_compile(monkeypatch, fam) is True
+
+
+def test_klein_filter_kill_switch(monkeypatch):
+    _on(monkeypatch, (7, 5))
+    monkeypatch.setenv(cc.DYNAMIC_SCALE_RBLOCK_ENV, "1")
+    assert cc.reduction_config_filter_available() is False
+
+
+@pytest.mark.parametrize("cap", [(7, 5), (8, 0), (8, 6), (8, 9), (9, 0), (10, 0), (12, 0), None])
+@pytest.mark.parametrize(
+    "repo", ["Qwen/Qwen-Image-2.1", "unsloth/Qwen-Image-2.1", "Qwen/Qwen-Image-2.1-Turbo"]
+)
+def test_qwen_image_21_pins_the_reduction_filter_on_every_arch(monkeypatch, repo, cap):
+    from core.inference.diffusion_families import detect_family
+
+    fam = detect_family(repo)
+    assert fam is not None and fam.name == "qwen-image-2.1"
+    _on(monkeypatch, cap)
+    assert cc.family_filters_reductions(fam) is True
+    assert _filter_reaching_compile(monkeypatch, fam) is True
+
+
+def test_qwen_image_21_filter_kill_switch(monkeypatch):
+    from core.inference.diffusion_families import detect_family
+
+    _on(monkeypatch, (8, 9))
+    monkeypatch.setenv(cc.DYNAMIC_SCALE_RBLOCK_ENV, "1")
+    assert cc.reduction_config_filter_available() is False
+    # The family still asks, but no pinned option reaches torch.compile.
+    assert cc.family_filters_reductions(detect_family("Qwen/Qwen-Image-2.1")) is True
+    kwargs = {"options": {}}
+    assert ds.pin_reduction_configs(kwargs) is False
+    assert ds.REDUCTION_FILTER_OPTION not in kwargs["options"]

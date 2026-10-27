@@ -154,6 +154,14 @@ test("a known reason for the CPU wins over the counts", () => {
   assert.equal(warning?.titleSuffix, " on CPU");
   assert.match(warning?.description ?? "", /Vulkan backend crashed/);
   assert.doesNotMatch(warning?.description ?? "", /smaller quantization/);
+  for (const [reason, text] of [
+    ["vulkan_no_device", /No usable Vulkan GPU was found/],
+    ["vulkan_startup_stall", /stopped responding during startup/],
+  ] as const) {
+    const other = offloadWarning({ offloaded: 0, total: 60, cpuFallbackReason: reason });
+    assert.equal(other?.titleSuffix, " on CPU");
+    assert.match(other?.description ?? "", text);
+  }
   assert.equal(
     offloadWarning({ offloaded: 0, total: 60, cpuFallbackReason: "something" }),
     null,

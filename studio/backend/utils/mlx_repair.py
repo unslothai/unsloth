@@ -40,15 +40,7 @@ MLX_PACKAGES = tuple(f"{name}{spec}" for name, spec in _MLX_INSTALL_SPECS.items(
 
 
 def _zoo_declared_specifier(package: str) -> str:
-    """The version range the INSTALLED unsloth-zoo declares for `package`, or "".
-
-    The specs above track the zoo in the repository, but the self-heal runs against whatever zoo is on
-    the machine, and it never upgrades it. mlx-vlm 0.7.1 passes `cache` to `gated_delta_update`, which a
-    zoo predating that keyword does not accept, so admitting 0.7.1 next to an older zoo raises TypeError
-    at the first Qwen3.5 VLM training step, after mlx_stack_available() has already cleared the
-    chat-only gate. Reading the installed zoo's own requirement is what keeps the two in step without
-    naming a zoo version here: it widens on its own the moment a zoo that declares 0.7.1 is installed.
-    """
+    """The range the installed zoo declares: mlx-vlm 0.7.1 passes cache, which older zoos reject with TypeError at the first training step, past the chat-only gate."""
     try:
         from importlib.metadata import requires
     except ImportError:  # pragma: no cover - importlib.metadata is stdlib on every supported Python
@@ -241,8 +233,7 @@ def mlx_repair_in_flight() -> bool:
         return False
     if not is_apple_silicon():
         return False
-    # A --no-torch install declines the self-heal like the kill switch, so no repair is
-    # coming and the verdict settles now instead of after the pre-start grace.
+    # A --no-torch install declines the self-heal, so the verdict settles now.
     if _installed_without_torch():
         return False
     with _attempted_lock:
@@ -475,8 +466,7 @@ def start_mlx_autorepair_if_needed() -> bool:
             )
         return False
     if opted_out:
-        # Measured unusable and nothing will reinstall it, so a --no-torch host's verdict
-        # settles as the opt-out it is instead of staying a repairable mlx_unavailable.
+        # Nothing reinstalls it: --no-torch hosts with unusable MLX settle as opt-out, not repairable.
         if no_torch and _hw.settle_the_no_torch_verdict(epoch):
             logger.info(
                 "MLX stack measures unusable on a --no-torch install; Train/Export stay "

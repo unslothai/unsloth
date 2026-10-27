@@ -16,6 +16,12 @@ import pytest
 from core.inference import video_wan_fused as wf
 
 torch = pytest.importorskip("torch")
+from torch.torch_version import TorchVersion  # noqa: E402
+
+# A CUDA build's version tag: Studio reads ROCm from the "+rocm" tag too (AMD SDK / Radeon wheels leave
+# torch.version.hip unset), so a test that fakes NVIDIA clears both.
+_CUDA_TORCH_VERSION = TorchVersion(str(torch.__version__).split("+")[0] + "+cu130")
+
 transformer_wan = pytest.importorskip("diffusers.models.transformers.transformer_wan")
 WanTransformerBlock = transformer_wan.WanTransformerBlock
 
@@ -37,6 +43,7 @@ def _fake_kernels(monkeypatch):
     # install logic without a GPU; on ROCm torch wanted() refuses HIP, so pretend a CUDA build too
     monkeypatch.setattr(wf, "_kernels", lambda: {"modnorm": None})
     monkeypatch.setattr(torch.version, "hip", None)
+    monkeypatch.setattr(torch, "__version__", _CUDA_TORCH_VERSION, raising = False)
 
 
 def test_stock_block_matches_the_fingerprint():

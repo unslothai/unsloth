@@ -181,7 +181,7 @@ test("frontend, backend, and Rust accept the same native dataset extensions", ()
   );
 });
 
-test("training document redirects match Data Recipes", () => {
+test("Data Recipes document types match the backend and cover training redirects", () => {
   const backendSource = readText("../../backend/routes/data_recipe/seed.py");
   const recipeSource = readSrc(
     "features/recipe-studio/dialogs/seed/unstructured-drop-zone.tsx",
@@ -197,6 +197,20 @@ test("training document redirects match Data Recipes", () => {
   const training = [...TRAINING_DOCUMENT_REDIRECT_EXTENSIONS].sort();
 
   assert.deepEqual(training, [".docx", ".md", ".pdf", ".txt"]);
-  assert.deepEqual(training, backend);
-  assert.deepEqual(training, recipe);
+  assert.deepEqual(recipe, backend);
+  // The Training page redirects only the common types; Data Recipes takes every one it can extract.
+  for (const extension of training) {
+    assert.ok(backend.includes(extension), extension);
+  }
+  for (const extension of [
+    ".epub",
+    ".mobi",
+    ".doc",
+    ".xlsx",
+    ".pptx",
+    ".odt",
+    ".rtf",
+  ]) {
+    assert.ok(recipe.includes(extension), extension);
+  }
 });

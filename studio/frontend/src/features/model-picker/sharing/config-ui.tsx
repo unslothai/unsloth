@@ -2,7 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
-import { ChevronDown } from "lucide-react";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { Share01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import type { ModelPickTarget } from "../components/model-selector/types";
 import type { PerModelConfig } from "../model-config/per-model-config";
@@ -57,13 +59,19 @@ export function SharedRunConfigActions({
     <>
       <Button
         type="button"
-        size="sm"
+        size="icon-sm"
         variant="outline"
         className={className}
+        aria-label="Share"
+        title="Share"
         disabled={!ready || disabled}
         onClick={() => setSharing(true)}
       >
-        Share
+        <HugeiconsIcon
+          icon={Share01Icon}
+          strokeWidth={1.75}
+          className="size-[calc(1rem*var(--ui-space-scale,1))]"
+        />
       </Button>
       {sharing && (
         <ShareRunConfigDialog
@@ -148,7 +156,8 @@ export function SharedRunConfigReview({
             </span>
           )}
         </span>
-        <ChevronDown
+        <HugeiconsIcon
+          icon={ChevronDownStandardIcon}
           aria-hidden="true"
           className="size-3.5 shrink-0 -rotate-90 text-muted-foreground transition-transform duration-200 group-open:rotate-0 group-hover:text-foreground motion-reduce:transition-none"
         />

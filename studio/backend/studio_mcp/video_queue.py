@@ -43,8 +43,9 @@ PROGRESS = "/api/inference/video/generate-progress"
 class QueuedVideo:
     id: str
     account_id: str
-    caller: Caller = field(repr = False)
-    body: dict = field(repr = False)
+    # Dropped once settled: the body can carry ~40 MiB of reference images and the caller its token.
+    caller: Optional[Caller] = field(repr = False)
+    body: Optional[dict] = field(repr = False)
     hints: Optional[dict] = field(default = None, repr = False)
     # queued, submitted, failed or cancelled.
     status: str = "queued"
@@ -143,6 +144,8 @@ def _settle(
     if waiting and item in waiting:
         waiting.remove(item)
     item.status, item.error, item.posting = status, error, False
+    # Only _submit reads these, and only while queued; a settled record answers get_job alone.
+    item.body, item.hints, item.caller = None, None, None
 
 
 async def _wait_for_running(caller: Caller) -> None:

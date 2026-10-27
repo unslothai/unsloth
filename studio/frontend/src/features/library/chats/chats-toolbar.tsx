@@ -21,7 +21,6 @@ import {
   PencilEdit02Icon,
   PinIcon,
   Search01Icon,
-  Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowDownUpIcon, Columns2Icon, GitBranchIcon } from "lucide-react";
@@ -37,6 +36,7 @@ import {
   NO_SECTION,
   chatFiltersActive,
 } from "./model";
+import { Tick02Icon } from "@/lib/tick-icon";
 
 const ICON = "size-icon";
 const MENU_LABEL = "px-3 pb-1 pt-2 text-muted-foreground font-normal";
@@ -275,7 +275,6 @@ export function SortMenu<K extends string>({
             key={option.value}
             label={t(option.label)}
             checked={option.value === value}
-            // Name defaults to A-Z, times to newest first; re-picking keeps the direction.
             onSelect={() =>
               onChange(option.value, option.value === value ? desc : option.value !== "name")
             }
@@ -337,7 +336,7 @@ function NewMenu({
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          className="flex h-9 shrink-0 items-center gap-1.5 rounded-full bg-foreground pl-4 pr-3 font-medium text-ui-14 text-background outline-none transition-opacity hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring"
+          className="flex shrink-0 items-center gap-1.5 rounded-full bg-action pl-[calc(15px*var(--ui-space-scale,1))] pr-[calc(14px*var(--ui-space-scale,1))] py-2 font-medium text-ui-14 text-background [&_svg]:-my-2 outline-none transition-opacity hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring"
         >
           {t("common.new")}
           <HugeiconsIcon icon={ChevronDownStandardIcon} strokeWidth={2} className="size-4" />
@@ -406,7 +405,6 @@ export function ChatsToolbar({
           <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-5" />
         </button>
       ))}
-      {/* Sized by the header row (cqw), not the window, as in LibraryToolbar. */}
       <label className="relative ml-2 flex h-9 w-[clamp(10rem,calc(100cqw-30rem),min(15rem,24vw))] min-w-40 items-center rounded-full border border-border px-4 focus-within:border-ring dark:border-transparent dark:bg-card dark:focus-within:border-ring">
         <HugeiconsIcon
           icon={Search01Icon}

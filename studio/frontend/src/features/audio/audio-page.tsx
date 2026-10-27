@@ -17,8 +17,11 @@ import { useSidebar } from "@/components/ui/sidebar";
 import { usePlatformStore } from "@/config/env";
 import {
   type InferenceStatusResponse,
+  buildExternalModelId,
   getInferenceStatus,
+  isDecisionConnection,
   syncKeepModelsLoaded,
+  useExternalProvidersStore,
 } from "@/features/chat";
 import { useHubInventory } from "@/features/hub";
 import { useInventoryVersion } from "@/features/hub/stores/inventory-events";
@@ -26,7 +29,11 @@ import { ModelSelector } from "@/features/model-picker/components/model-selector
 import { ggufQuantLabel } from "@/features/model-picker/model-config/model-identity";
 import { AUDIO_CATALOG } from "@/features/model-picker/components/model-selector/model-catalog";
 import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
-import type { ModelOption } from "@/features/model-picker/components/model-selector/types";
+import type {
+  ExternalModelOption,
+  ModelOption,
+} from "@/features/model-picker/components/model-selector/types";
+import { useVoiceSettingsStore } from "@/features/settings";
 import { sttModelSize } from "@/features/settings/stores/stt-model-catalog";
 import { usePersistedChoice } from "@/hooks/use-persisted-choice";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
@@ -121,7 +128,12 @@ import type { AudioSourceStatus } from "./hooks/audio-source-state";
 import { useAlignerDownload } from "./hooks/use-aligner-download";
 import { useTranscribeCapabilities } from "./hooks/use-transcribe-capabilities";
 import { useAudioTranscribeStore } from "./stores/audio-transcribe-store";
-import { SPEAKERS_MODEL_NAME, transcribeSwitches } from "./transcribe-capabilities";
+import {
+  SPEAKERS_MODEL_NAME,
+  connectionTranscribeModels,
+  connectionTranscribeSwitches,
+  transcribeSwitches,
+} from "./transcribe-capabilities";
 import {
   transcribeLanguageFor,
   transcribeLanguagesFor,
@@ -188,8 +200,7 @@ function reuseConvertInputs(clip: AudioGalleryClip) {
         durationS: null,
       }
     : null;
-  // An upload expires within a day; the clip kept what it converted, so upload that copy again.
-  // Empty until the live id lands (the old id let Generate race the upload); expired on failure.
+  // An upload expires within a day; re-upload the clip's kept copy. Empty until the live id lands.
   reuseSeq += 1;
   if (!clip.source_clip_id && clip.source_saved && sourceId) {
     const seq = reuseSeq;
@@ -257,7 +268,6 @@ export function AudioPage({
   onInitialReady?: () => void;
 }) {
   const initialReadySent = useRef(false);
-  // Clear the floating sidebar toggle on mobile.
   const isMobileShell = useIsMobileShell();
   const { pinned } = useSidebar();
   const [mode, setMode] = useState<CreateMode>("speak");
@@ -428,6 +438,7 @@ export function AudioPage({
     srcById,
     peaksById,
     ensureClipSrc,
+    retryClipSrc,
     refreshGallery,
     loadMore,
     selectClip,
@@ -486,8 +497,7 @@ export function AudioPage({
     refreshSttStatus,
   ]);
 
-  // Activation alone is not enough: the loaded-models indicator can eject the TTS model out from
-  // under a page that stays active, leaving Generate enabled against an empty slot.
+  // The loaded-models indicator can eject the model while the page stays active.
   useEffect(() => {
     if (!active) return;
     return subscribeModelLifecycle(({ runtime, loading }) => {
@@ -1024,7 +1034,6 @@ export function AudioPage({
       }
       if (target.workflow === "transcribe") {
         if (!transitionWorkflow("transcribe")) return;
-        // A stem is a history clip, so it goes in by id like any other.
         useAudioTranscribeStore.setState({
           source: {
             kind: "clip",
@@ -1431,18 +1440,52 @@ export function AudioPage({
     string | null
   >(null);
   const transcribeRepo = (selectedSttRepo ?? lastSttRepo) || null;
+  const connections = useExternalProvidersStore((s) => s.providers);
+  const connectionsEnabled = useExternalProvidersStore(
+    (s) => s.connectionsEnabled,
+  );
+  const dictationProviderId = useVoiceSettingsStore((s) => s.sttProviderId);
+  const dictationModel = useVoiceSettingsStore((s) => s.sttProviderModel);
+  const transcribeExternalModels = useMemo<ExternalModelOption[]>(
+    () =>
+      connectionsEnabled
+        ? connections
+            .filter((c) => !isDecisionConnection(c))
+            .flatMap((c) =>
+              connectionTranscribeModels(
+                c,
+                c.id === dictationProviderId ? dictationModel.trim() : undefined,
+              ).map((model) => ({
+                id: buildExternalModelId(c.id, model),
+                name: model,
+                providerId: c.id,
+                providerName: c.name,
+                providerType: c.providerType,
+              })),
+            )
+        : [],
+    [connections, connectionsEnabled, dictationProviderId, dictationModel],
+  );
+  const connectionModel = useAudioTranscribeStore(
+    (state) => state.connectionModel,
+  );
+  const transcribeConnection =
+    transcribeExternalModels.find((model) => model.id === connectionModel) ??
+    null;
   const transcribeCaps = useTranscribeCapabilities(
-    transcribeRepo,
+    transcribeConnection ? null : transcribeRepo,
     transcribeRepo ? sttEngineFor(transcribeRepo) : null,
   );
-  const transcribeOptions = transcribeSwitches(
-    transcribeCaps.caps,
-    transcribePrefs,
-    { loading: transcribeCaps.loading, hasModel: transcribeRepo !== null },
-  );
-  const transcribeModelName = transcribeRepo?.split("/").pop() ?? "";
+  const transcribeOptions = transcribeConnection
+    ? connectionTranscribeSwitches(transcribePrefs, transcribeConnection.name)
+    : transcribeSwitches(transcribeCaps.caps, transcribePrefs, {
+        loading: transcribeCaps.loading,
+        hasModel: transcribeRepo !== null,
+      });
+  const transcribeModelName =
+    transcribeConnection?.name ?? transcribeRepo?.split("/").pop() ?? "";
   const transcribeLoadsFirst = Boolean(
-    transcribeRepo && !(sttSelected && sttReady),
+    !transcribeConnection && transcribeRepo && !(sttSelected && sttReady),
   );
   const transcribeNotice = !transcribeLoadsFirst
     ? transcribeOptions.notice
@@ -1453,7 +1496,7 @@ export function AudioPage({
           .filter(Boolean)
           .join(" ");
   const transcribeLanguages = transcribeLanguagesFor(
-    audioCppModelFor(transcribeRepo)?.languages,
+    transcribeConnection ? null : audioCppModelFor(transcribeRepo)?.languages,
   );
   const transcribeLanguage = transcribeLanguageFor(
     transcribePrefs.language,
@@ -1482,15 +1525,18 @@ export function AudioPage({
     transcribeCaps.refresh,
     transcribeOptions.request.timestamps,
   );
+  // A connection never uses the local aligner, so its download does not hold Transcribe.
   const alignerBlocks =
-    alignerDownload.staging && transcribeOptions.request.timestamps;
+    !transcribeConnection &&
+    alignerDownload.staging &&
+    transcribeOptions.request.timestamps;
   const transcribeBlocker: GenerateBlocker | null = alignerBlocks
     ? { reason: "Downloading the timing aligner…" }
     : busy === "loading"
       ? { reason: "Waiting for the model to finish loading." }
       : busy !== null
         ? null
-        : !transcribeRepo
+        : !transcribeRepo && !transcribeConnection
           ? {
               reason: "Pick a speech-to-text model to transcribe.",
               actions: [chooseModelAction, ...recommendedSttActions],
@@ -1529,7 +1575,13 @@ export function AudioPage({
   const canTranscribe =
     mode === "transcribe" && busy === null && transcribeBlocker === null;
   const startTranscription = (source: AudioSourceSelection) => {
-    const { request } = transcribeOptions;
+    const request = {
+      ...transcribeOptions.request,
+      connection: transcribeConnection && {
+        providerId: transcribeConnection.providerId,
+        modelId: transcribeConnection.name,
+      },
+    };
     void runTranscription(
       source,
       { language: transcribeLanguage, ...request },
@@ -1538,23 +1590,28 @@ export function AudioPage({
         transcribeSourceHandle.current?.markExpired();
       },
     ).then(() => {
-      // A timestamped run may have downloaded the aligner.
       if (request.timestamps) transcribeCaps.refresh();
     });
   };
   const startTranscriptionRef = useRef(startTranscription);
+  const transcribeTarget = transcribeConnection?.id ?? transcribeRepo;
+  const transcribeTargetRef = useRef(transcribeTarget);
   useEffect(() => {
     startTranscriptionRef.current = startTranscription;
+    transcribeTargetRef.current = transcribeTarget;
   });
   const handleTranscribe = () => {
     const source = useAudioTranscribeStore.getState().source;
     if (!source) return;
+    const target = transcribeTarget;
     alignerDownload.runWithAligner(transcribeOptions.request.timestamps, () => {
-      // The download can outlast the click: run only while Transcribe still shows the same audio.
+      // The download can outlast the click: run only while Transcribe still shows the same audio
+      // and model, so a connection picked meanwhile never receives audio nobody sent it.
       if (
         !activeRef.current ||
         modeRef.current !== "transcribe" ||
-        useAudioTranscribeStore.getState().source?.id !== source.id
+        useAudioTranscribeStore.getState().source?.id !== source.id ||
+        transcribeTargetRef.current !== target
       )
         return;
       // A run would be refused while a model loads or another task runs: say so instead of dropping it.
@@ -1662,13 +1719,17 @@ export function AudioPage({
     (id: string, meta: Parameters<typeof handleModelSelect>[1]) => {
       if (meta.source === "external") {
         if (busyRef.current === null) {
-          invalidatePendingTtsSelection();
-          setSpeakConnectionId(id);
+          if (modeRef.current === "transcribe") {
+            useAudioTranscribeStore.setState({ connectionModel: id });
+          } else {
+            invalidatePendingTtsSelection();
+            setSpeakConnectionId(id);
+          }
         }
         return;
       }
       if (modeRef.current === "speak") setSpeakConnectionId(null);
-      handleModelSelect(id, withCatalogPipelineTag(audioCatalog.byId, id, meta));
+      return handleModelSelect(id, withCatalogPipelineTag(audioCatalog.byId, id, meta));
     },
     [
       audioCatalog.byId,
@@ -1761,11 +1822,13 @@ export function AudioPage({
                 : ttsWorkflow === "convert"
                   ? "No voice conversion model loaded."
                   : "No TTS model loaded."
-      : sttSelected
-        ? audioCapabilityLine("stt", sttReady ? "ready" : "loading")
-        : transcribeRepo
-          ? `${transcribeModelName} is not loaded. It loads when you transcribe.`
-          : "No transcription model selected.";
+      : transcribeConnection
+        ? `Transcribes through ${transcribeConnection.providerName}.`
+        : sttSelected
+          ? audioCapabilityLine("stt", sttReady ? "ready" : "loading")
+          : transcribeRepo
+            ? `${transcribeModelName} is not loaded. It loads when you transcribe.`
+            : "No transcription model selected.";
 
   return (
     <div
@@ -1774,7 +1837,6 @@ export function AudioPage({
       ref={pageRootRef}
       className="@container relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]"
     >
-      {/* Page-level, so the handle covers the divider through the header too. */}
       <MediaRailResizeHandle kind="audio" placement="page" className="hidden @[50rem]:block" />
       {/* Portals to body, and this page stays mounted off-route, so gate it like the composer. */}
       {active && <GuidedTour {...tour.tourProps} />}
@@ -1830,9 +1892,11 @@ export function AudioPage({
                     )
               }
               externalModels={
-                mode === "speak" && ttsWorkflow === "speak"
-                  ? speakConnection.models
-                  : undefined
+                mode === "transcribe"
+                  ? transcribeExternalModels
+                  : mode === "speak" && ttsWorkflow === "speak"
+                    ? speakConnection.models
+                    : undefined
               }
               rowFilter={selectorRowFilter}
               moreModels={selectorMoreModels}
@@ -1853,7 +1917,11 @@ export function AudioPage({
                     ? false
                     : undefined
               }
-              value={(connection && speakConnection.modelId) || selectorValue}
+              value={
+                mode === "transcribe" && transcribeConnection
+                  ? transcribeConnection.id
+                  : (connection && speakConnection.modelId) || selectorValue
+              }
               onValueChange={selectModel}
               onEject={
                 !connection &&
@@ -1874,8 +1942,7 @@ export function AudioPage({
               // Separate runs audio-to-audio models, which the speak picker's tasks leave out.
               hubTask={pageWorkflow === "separate" ? "audio-to-audio" : undefined}
               catalog={AUDIO_CATALOG}
-              // TTS/ASR come from the checkpoint's own tokenizer, not a curated recipe, so any publisher's
-              // audio repo loads here.
+              // TTS/ASR use the checkpoint's own tokenizer, so any publisher's audio repo loads.
               communityModelPolicy="search-only"
               hubCapability="audio"
               placeholder="Select audio model"
@@ -1925,7 +1992,7 @@ export function AudioPage({
           </div>
           <div className="pointer-events-none col-start-3 flex min-w-0 items-start justify-end pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
             <div className="pointer-events-auto flex min-w-0 items-center gap-2">
-              {connection ? null : (
+              {connection || (mode === "transcribe" && transcribeConnection) ? null : (
                 <UseViaApiButton
                   workflow={pageWorkflow}
                   model={selectorValue ?? null}
@@ -1940,8 +2007,7 @@ export function AudioPage({
           </div>
         </div>
       </div>
-      {/* Below 50rem the panes stack and the page scrolls as one column, matching Images and Video:
-          side by side, the rail plus a usable preview needs more width. */}
+      {/* Below 50rem the panes stack and the page scrolls as one column, as on Images and Video. */}
       <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden @[50rem]:flex-row @[50rem]:overflow-hidden">
         <div
           data-tour="audio-settings"
@@ -1951,7 +2017,7 @@ export function AudioPage({
             ref={attachSettingsScroll}
             onScroll={onSettingsScroll}
             className={cn(
-              "hover-scrollbar flex min-h-0 flex-1 flex-col gap-4 px-10 max-sm:px-5 pt-9 pb-6 @[50rem]:overflow-y-auto",
+              "hover-scrollbar flex min-h-0 flex-1 flex-col gap-4 px-10 max-sm:px-5 pt-9 pb-6 @[50rem]:overflow-y-auto @[50rem]:[scrollbar-gutter:stable] @[50rem]:pr-[calc(var(--spacing)*10-var(--classic-scrollbar-width,0px))]",
               mode === "speak"
                 ? "panel-scroll-fade-action"
                 : "panel-scroll-fade",
@@ -2097,7 +2163,7 @@ export function AudioPage({
           </div>
           {mode === "speak" ? (
             /* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */
-            <div className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-4">
+            <div className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-3">
               {ttsWorkflow === "edit" ? (
                 <EditFooter
                   busy={busy}
@@ -2176,7 +2242,7 @@ export function AudioPage({
               )}
             </div>
           ) : (
-            <div className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-4">
+            <div className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-3">
               <TranscribeFooter
                 busy={busy}
                 blocker={transcribeBlocker}
@@ -2260,6 +2326,7 @@ export function AudioPage({
                   clips: visibleClips,
                   selectedClip,
                   selectedClipSrc,
+                  retryClipSrc,
                   srcById,
                   handleDownloadClip,
                   handleDeleteClip,

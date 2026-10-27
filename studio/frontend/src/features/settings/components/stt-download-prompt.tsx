@@ -144,6 +144,7 @@ export function SttDownloadPrompt() {
         <AlertDialogFooter>
           <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
           <AlertDialogAction
+            variant="dark"
             onClick={(event) => {
               event.preventDefault();
               const request = pending;
