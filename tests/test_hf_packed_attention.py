@@ -1415,6 +1415,33 @@ def test_block_varlen_kwargs_honours_the_sdpa_policy_each_step(monkeypatch):
         assert got is None if wants_sdpa else got == (cu, 5)
 
 
+def test_block_varlen_kwargs_rechecks_the_sdpa_policy_on_reused_tensors(monkeypatch):
+    """A cache hit must still refuse cached metadata once the sdpa policy flips."""
+    hpa._ORIG_SDPA[0] = _plain_sdpa
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
+    monkeypatch.setattr(hpa, "_torch_varlen", lambda device: object())
+    monkeypatch.setattr(hpa, "_BLOCK_PREP", {})
+    lengths = [3, 5]
+    cu = torch.tensor([0, 3, 8], dtype = torch.int32)
+    monkeypatch.setattr(
+        "unsloth.utils.packing.get_packed_info_from_kwargs",
+        lambda kwargs, device: (torch.tensor(lengths), cu, 5),
+    )
+    policy = [False]
+    monkeypatch.setattr(hpa, "_sdpa_policy_requested", lambda *args: policy[0])
+    hidden = torch.randn(1, 8, 8)
+    kwargs = {"packed_seq_lengths": torch.tensor(lengths), "attention_mask": _block_causal(lengths)}
+    layer = _block_layer()
+    assert hpa.block_varlen_kwargs(layer, hidden, kwargs) == (cu, 5)
+    assert hpa.block_varlen_kwargs(layer, hidden, kwargs) == (cu, 5)
+    policy[0] = True
+    assert hpa.block_varlen_kwargs(layer, hidden, kwargs) is None
+    assert hpa.block_varlen_kwargs(layer, hidden, kwargs) is None
+    policy[0] = False
+    assert hpa.block_varlen_kwargs(layer, hidden, kwargs) == (cu, 5)
+
+
 @pytest.mark.parametrize("in_graph", [True, False])
 def test_traced_block_varlen_call_stays_in_the_graph(monkeypatch, in_graph):
     """With prepared metadata the traced wrapper calls the varlen op without a graph break; when the
