@@ -533,7 +533,7 @@ def _scan_models_dir(
                 )
 
     # Several loose checkpoints: one row per file (the folder rescue below needs exactly one).
-    from core.inference.diffusion import resolve_local_single_file
+    from core.inference.diffusion_local_files import resolve_local_single_file
     from hub.utils.comfy_models import loose_diffusion_checkpoints
 
     sole = resolve_local_single_file(str(models_dir)) if not (found or loose_files) else None

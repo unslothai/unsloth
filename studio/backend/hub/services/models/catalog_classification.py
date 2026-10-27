@@ -513,7 +513,7 @@ def _local_name_needles(model) -> list[Optional[str]]:
 def _local_family_needles(model) -> tuple[str, ...]:
     needles = _local_name_needles(model)
     try:
-        from core.inference.diffusion import resolve_local_single_file
+        from core.inference.diffusion_local_files import resolve_local_single_file
         single = resolve_local_single_file(model.path)
         if single:
             needles.append(single)
