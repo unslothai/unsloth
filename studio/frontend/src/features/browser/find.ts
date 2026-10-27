@@ -24,7 +24,6 @@ function activeTab(): BrowserTab | undefined {
   return tabs.find((tab) => tab.id === activeTabId);
 }
 
-/** A web page, not a PDF or other document shown in its place; a loading one is searched once loaded. */
 function searchable(tab: BrowserTab | undefined): tab is BrowserTab {
   return Boolean(tab && currentEntry(tab).kind === "web" && !tab.documentType);
 }

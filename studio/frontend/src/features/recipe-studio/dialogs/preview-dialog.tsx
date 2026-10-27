@@ -343,7 +343,7 @@ function RunDialogBody({
         <div className="grid grid-cols-2 gap-2">
           <Button
             type="button"
-            variant={kind === "preview" ? "default" : "outline"}
+            variant={kind === "preview" ? "dark" : "outline"}
             className="corner-squircle min-h-10 justify-center whitespace-normal px-3 text-center"
             aria-pressed={kind === "preview"}
             onClick={() => onKindChange("preview")}
@@ -352,7 +352,7 @@ function RunDialogBody({
           </Button>
           <Button
             type="button"
-            variant={kind === "full" ? "default" : "outline"}
+            variant={kind === "full" ? "dark" : "outline"}
             className="corner-squircle min-h-10 justify-center whitespace-normal px-3 text-center"
             aria-pressed={kind === "full"}
             onClick={() => onKindChange("full")}
@@ -430,7 +430,7 @@ function RunDialogBody({
               title="Batching"
               description="Use batches when you want to split a larger run into smaller pieces."
             >
-              <div className="flex items-center justify-between gap-3 text-sm">
+              <div className="flex items-start justify-between gap-3 text-sm">
                 <div className="space-y-0.5">
                   <span className="font-medium">Enable batching</span>
                   <p className="text-xs text-muted-foreground">
@@ -438,6 +438,7 @@ function RunDialogBody({
                   </p>
                 </div>
                 <Switch
+                  className="mt-[var(--ui-title-cap-inset)]"
                   checked={settings.batchEnabled}
                   onCheckedChange={(checked) =>
                     onSettingsChange({ batchEnabled: Boolean(checked) })
@@ -523,7 +524,7 @@ function RunDialogBody({
                       )
                     }
                   />
-                  <div className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-background/60 px-3 py-2 text-sm text-foreground">
+                  <div className="flex items-start justify-between gap-3 rounded-lg border border-border/60 bg-background/60 px-3 py-2 text-sm text-foreground">
                     <div className="space-y-0.5">
                       <p className="font-medium">Merge batches into one file</p>
                       <p className="text-xs text-muted-foreground">
@@ -531,6 +532,7 @@ function RunDialogBody({
                       </p>
                     </div>
                     <Switch
+                      className="mt-[var(--ui-title-cap-inset)]"
                       checked={settings.mergeBatches}
                       onCheckedChange={(checked) =>
                         onSettingsChange({ mergeBatches: Boolean(checked) })
@@ -622,7 +624,7 @@ function RunDialogBody({
                   )
                 }
               />
-              <div className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-background/60 px-3 py-2 text-sm text-foreground md:col-span-2">
+              <div className="flex items-start justify-between gap-3 rounded-lg border border-border/60 bg-background/60 px-3 py-2 text-sm text-foreground md:col-span-2">
                 <div className="space-y-0.5">
                   <p className="font-medium">Keep running through failures</p>
                   <p className="text-xs text-muted-foreground">
@@ -631,6 +633,7 @@ function RunDialogBody({
                   </p>
                 </div>
                 <Switch
+                  className="mt-[var(--ui-title-cap-inset)]"
                   checked={settings.disableEarlyShutdown}
                   onCheckedChange={(checked) =>
                     onSettingsChange({
@@ -693,6 +696,7 @@ function RunDialogBody({
           {validateLoading ? "Checking..." : "Check recipe"}
         </Button>
         <Button
+          variant="dark"
           type="button"
           onClick={onRun}
           disabled={loading || isFullRunNameMissing}

@@ -40,7 +40,7 @@ export const RECIPE_STUDIO_WARNING_ICON_TONE =
   "text-amber-600 dark:text-amber-400";
 
 export const RECIPE_STUDIO_ONBOARDING_SURFACE_TONE =
-  "border-primary/20 bg-primary/[0.045]";
+  "border-wash-20 bg-wash-5";
 
 export const RECIPE_STUDIO_ONBOARDING_ICON_TONE =
   "bg-primary/10 text-primary";

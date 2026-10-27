@@ -193,6 +193,7 @@ FRONTEND_SHIPPED_SIDEBAR_NAV = [
     ("recipes", False),
     ("export", False),
     ("api", False),
+    ("tasks", False),
     ("benchmarks", False),
 ]
 
@@ -232,6 +233,7 @@ def test_customization_sidebar_nav_preserves_order_and_normalizes():
         ("recipes", False),
         ("export", False),
         ("api", False),
+        ("tasks", False),
         ("benchmarks", False),
     ]
 
@@ -516,6 +518,7 @@ def test_personalization_route_roundtrip_real_shape(monkeypatch):
                     {"id": "recipes", "pinned": False},
                     {"id": "export", "pinned": False},
                     {"id": "api", "pinned": False},
+                    {"id": "tasks", "pinned": False},
                     {"id": "benchmarks", "pinned": False},
                 ],
                 "sidebarNavAuto": [],

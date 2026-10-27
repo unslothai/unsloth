@@ -39,6 +39,8 @@ def _load(*names, **env):
     namespace = {
         "raise_if_merging_mistral_format_view": lambda model, save_method: None,
         "lora_relative_to_original_base": lambda model: contextlib.nullcontext(),
+        # Unmerges FSDP2 streamed layers when a save raises; these fixtures never stream.
+        "_unmerge_flags_on_error": lambda streamed: contextlib.nullcontext(),
         "nullcontext": contextlib.nullcontext,
         # Full saves add bare Params4bit quant state (fused 4-bit experts); none in these fixtures.
         "PeftModel": type("PeftModel", (), {}),
@@ -216,6 +218,9 @@ _GENERIC_SAVE_STUBBED_HELPERS = frozenset(
         "_internal_mtp_save",
         "_stitch_mtp_head",
         "_mtp_head_tensor_names",
+        "_unmerge_flags_on_error",
+        # Decorator factory; _load strips decorators.
+        "_model_parallel_refuses_save",
     }
 )
 

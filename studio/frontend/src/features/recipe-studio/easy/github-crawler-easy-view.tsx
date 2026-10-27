@@ -3,13 +3,14 @@
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { GithubIcon, PlayCircleIcon } from "@hugeicons/core-free-icons";
+import { GithubIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useEffect, useMemo, useState } from "react";
 import { LocalRecipeModelSelector } from "../dialogs/models/local-recipe-model-selector";
 import { GithubRepoSeedForm } from "../dialogs/seed/seed-dialog";
 import { FieldLabel } from "../dialogs/shared/field-label";
 import type { ModelConfig, NodeConfig, SeedConfig } from "../types";
+import { PlayIcon } from "lucide-react";
 
 type GithubCrawlerEasyViewProps = {
   configs: Record<string, NodeConfig>;
@@ -61,10 +62,8 @@ export function GithubCrawlerEasyView({
   const localModelValue =
     modelValue.trim().toLowerCase() === "local" ? "" : modelValue;
 
-  // Local buffer for the Rows input so the user can hold transient invalid state (empty while
-  // backspacing, partial digits, etc.) without the parent snapping them back to 1 on every
-  // keystroke. The canonical ``rows`` value only advances when the buffer parses to a valid
-  // positive integer; on blur we clamp back to a sane default if the user left it empty.
+  // Local buffer so the field can sit empty or partial while typing; rows only advances on a
+  // valid positive integer, and blur restores a default when left empty.
   const [rowsText, setRowsText] = useState(String(rows));
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- keep the draft input in sync when the parent resets rows.
@@ -159,9 +158,7 @@ export function GithubCrawlerEasyView({
               className="nodrag"
               value={rowsText}
               onChange={(event) => {
-                // Allow empty / partial strings while the user is editing.
-                // type="text" avoids the browser's number spinner and the
-                // related backspace quirks; we still parse + clamp below.
+                // type=text avoids number-spinner backspace quirks; still parsed and clamped.
                 const raw = event.target.value.replace(/[^0-9]/g, "");
                 setRowsText(raw);
                 const next = Number.parseInt(raw, 10);
@@ -231,8 +228,8 @@ export function GithubCrawlerEasyView({
         >
           Advanced (drag and drop canvas)
         </button>
-        <Button type="button" size="lg" onClick={onRun} disabled={runLoading}>
-          <HugeiconsIcon icon={PlayCircleIcon} className="size-4" />
+        <Button variant="dark" type="button" size="lg" onClick={onRun} disabled={runLoading}>
+          <PlayIcon className="size-4" />
           {runLoading ? "Running..." : "Run"}
         </Button>
       </div>

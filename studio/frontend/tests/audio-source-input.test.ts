@@ -225,10 +225,7 @@ test("the whole card is the drop target, with every way in", () => {
   for (const tab of ["Upload", "Record", "From history", "Saved voice"]) {
     assert.ok(card.includes(`label: "${tab}"`), tab);
   }
-  assert.match(
-    card,
-    /corner-squircle grid gap-3 rounded-2xl bg-card p-4 ring-1/,
-  );
+  assert.doesNotMatch(section, /bg-card|ring-1/);
   assert.doesNotMatch(card, /shadow-/);
   assert.ok(
     hook.indexOf('void drawBlob("local", file)') <

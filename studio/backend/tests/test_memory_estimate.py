@@ -4967,8 +4967,10 @@ def test_a_real_checkpoint_is_fitted_to_the_byte(budget_gib, fitted):
 
 
 @_NEEDS_MLX
-def test_a_companion_drafter_adds_its_stored_weights_and_a_cache_to_the_load():
+def test_a_companion_drafter_adds_its_stored_weights_and_a_cache_to_the_load(monkeypatch):
     _on_bfloat16_chip()
+    # unsloth-zoo otherwise loads a bf16 DFlash drafter at 4 bits, and sizes it so.
+    monkeypatch.setenv("UNSLOTH_MLX_DRAFTER_BITS", "0")
     target = _local_snapshot("mlx-community/Qwen3.5-4B-4bit")
     drafter = _local_snapshot("z-lab/Qwen3.5-4B-DFlash")
     stored = 0

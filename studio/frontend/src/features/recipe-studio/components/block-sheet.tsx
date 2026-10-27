@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -24,7 +25,6 @@ import {
 } from "@hugeicons/core-free-icons";
 import {
   ArrowLeftIcon,
-  ChevronRightIcon,
 } from "lucide-react";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -232,7 +232,8 @@ function BlockSheetButton({
         </p>
       </div>
       {trailing === "chevron" ? (
-        <ChevronRightIcon
+        <HugeiconsIcon
+          icon={ChevronRightStandardIcon}
           className="size-3.5 text-muted-foreground"
         />
       ) : trailing === "drag" ? (

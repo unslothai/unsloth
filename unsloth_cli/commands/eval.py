@@ -362,8 +362,7 @@ def resolve_tasks(
         elif suffix in _DATASET_SUFFIXES:
             if not path.exists():
                 raise FileNotFoundError(f"Dataset file not found: {entry}")
-            # an include-path task overrides a registered one of the same name, so keep clear of
-            # names requested alongside (gsm8k,./gsm8k.jsonl)
+            # An include-path task overrides a registered one of the same name, so avoid names requested alongside (gsm8k,./gsm8k.jsonl).
             name, counter = path.stem, 2
             while name in names or name in plain:
                 name, counter = f"{path.stem}_{counter}", counter + 1

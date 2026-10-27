@@ -185,6 +185,29 @@ def test_parallelism_config_and_tp_models_are_refused(native_env, monkeypatch):
         native.native_fsdp2_trainer_setup(
             model = model, phase = "pre", training_args = types.SimpleNamespace(**BASE_ARGS)
         )
+    # transformers expert parallelism (DistributedConfig(tp_size = N, enable_expert_parallel = True)):
+    # refused with a message that names it.
+    for tp_size in (2, 4):
+        for dc in (
+            types.SimpleNamespace(enable_expert_parallel = True, tp_size = tp_size),
+            {"enable_expert_parallel": True, "tp_size": tp_size},
+        ):
+            model = _tiny_llama()
+            model._tp_size = tp_size
+            model.config.distributed_config = dc
+            with pytest.raises(RuntimeError, match = "expert parallelism") as e:
+                native.native_fsdp2_trainer_setup(
+                    model = model, phase = "pre", training_args = types.SimpleNamespace(**BASE_ARGS)
+                )
+            assert "UNSLOTH_FSDP2_BACKEND=accelerate with" not in str(e.value)
+            assert not native.is_native_fsdp2(model)
+    # Expert parallelism off, or a stale flag on a model that was not distributed: not refused.
+    for enable in (False, True):
+        model = _tiny_llama()
+        model.config.distributed_config = types.SimpleNamespace(
+            enable_expert_parallel = enable, tp_size = 1
+        )
+        native._refuse_tensor_parallel_model(model)
 
 
 # ---- 4. torch 2.4 / 2.5 layout ----------------------------------------------------------------

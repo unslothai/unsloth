@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronLeftStandardIcon } from "@/lib/chevron-icons";
 import { SegmentedPill } from "@/components/segmented-control";
 import { useVllmAvailable, useVllmPlatform } from "@/features/model-picker";
 import {
@@ -25,9 +26,6 @@ import {
   Refresh01Icon,
   ViewSidebarLeftIcon,
 } from "@hugeicons/core-free-icons";
-import {
-  ChevronLeftIcon,
-} from "lucide-react";
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactNode, memo, useId, useMemo } from "react";
@@ -50,7 +48,6 @@ export const RESULT_GRID_HEIGHT_PX = 64;
 export const RESULT_GRID_ROW_GAP_PX = 8;
 export const RESULT_GRID_ROW_HEIGHT_PX =
   RESULT_GRID_HEIGHT_PX + RESULT_GRID_ROW_GAP_PX;
-// Compact rows for the split-view master pane.
 export const RESULT_SPLIT_HEIGHT_PX = 56;
 export const RESULT_SPLIT_ROW_HEIGHT_PX =
   RESULT_SPLIT_HEIGHT_PX + RESULT_ROW_GAP_PX;
@@ -134,11 +131,10 @@ export function HubListHeader({
             type="button"
             onClick={onBack}
             aria-label="Back to feed"
-            // Pull the button left so the inset chevron lines up with the
-            // avatars below, just inside the row hover's left edge.
             className="hub-section-chevron -ml-3 inline-flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground"
           >
-            <ChevronLeftIcon
+            <HugeiconsIcon
+              icon={ChevronLeftStandardIcon}
               strokeWidth={2}
               className="size-4"
             />
@@ -163,7 +159,6 @@ export function HubListHeader({
                 type="button"
                 aria-label="Refresh"
                 onClick={onRefresh}
-                // Tiny drop so the icon aligns with the heading text.
                 className="inline-flex size-7 shrink-0 translate-y-px cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
               >
                 <HugeiconsIcon

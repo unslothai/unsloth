@@ -82,10 +82,7 @@ def scrub_env(env: Mapping[str, str]) -> dict[str, str]:
     }
 
 
-# Filesystem pointers a downloaded binary could follow to on-disk credential stores. Dropped, not repointed: the offline
-# inference server needs none.
-# Those pointers are token caches under $HF_HOME, ~/.netrc and XDG config. Mirrors the cred-location list of the tools
-# bypass env (core/inference/tools.py).
+# Credential-store pointers (HF_HOME, ~/.netrc, XDG config) are dropped, not repointed; mirrors the cred list in core/inference/tools.py.
 CRED_LOCATION_ENV_NAMES = frozenset(
     {
         "HF_HOME",

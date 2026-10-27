@@ -137,9 +137,9 @@ export function StartTrainingCta() {
       <Button
         size="lg"
         className={cn(
-          "h-11 w-full justify-center rounded-full text-ui-13p5 font-semibold tracking-tight",
-          "bg-primary text-primary-foreground shadow-sm",
-          "hover:bg-primary/90",
+          "w-full justify-center rounded-full text-ui-13p5 font-semibold tracking-tight",
+          "bg-action text-background shadow-sm",
+          "hover:opacity-90",
           "disabled:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] disabled:text-muted-foreground disabled:shadow-none dark:disabled:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]",
           "transition-colors duration-200",
         )}

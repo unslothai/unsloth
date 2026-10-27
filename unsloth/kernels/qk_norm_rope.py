@@ -9,7 +9,7 @@ import triton
 import triton.language as tl
 import torch
 from typing import Tuple
-from .utils import torch_gpu_device
+from .utils import torch_gpu_device, DEVICE_TYPE
 from .rms_layernorm import (
     _BF16_TRACEABLE,
     _TRACEABLE,
@@ -26,7 +26,19 @@ __all__ = [
     "decode_qk_norm_rope",
 ]
 
-QK_NORM_ROPE_ENABLED = os.environ.get("UNSLOTH_FUSED_QKNORM_ROPE", "0") == "1"
+
+def _qk_norm_rope_default():
+    # UNSLOTH_FUSED_QKNORM_ROPE=0 keeps the unfused path, =1 forces the fused one. Unset: on for
+    # NVIDIA CUDA; ROCm keeps the unfused training path until its backward is measured there.
+    flag = os.environ.get("UNSLOTH_FUSED_QKNORM_ROPE", "").strip().lower()
+    if flag in ("0", "false", "no", "off"):
+        return False
+    if flag in ("1", "true", "yes", "on"):
+        return True
+    return DEVICE_TYPE == "cuda"
+
+
+QK_NORM_ROPE_ENABLED = _qk_norm_rope_default()
 
 
 @triton.jit
@@ -176,8 +188,10 @@ def _norm_rope_bwd_block(
     rowsum = tl.sum(g0 * n0, axis = 1) + tl.sum(g1 * n1, axis = 1)
     scale = (inv / HEAD_DIM)[:, None]
     dx_ptr = dX + (row * n_heads + hoff) * HEAD_DIM + cols[None, :]
-    tl.store(dx_ptr, scale * (HEAD_DIM * g0 - n0 * rowsum[:, None]), mask = mask)
-    tl.store(dx_ptr + HALF, scale * (HEAD_DIM * g1 - n1 * rowsum[:, None]), mask = mask)
+    # HEAD_DIM * g - n * rowsum with the contraction pinned (HEAD_DIM * g is exact): left to the backend
+    # the eager and the Inductor build contract it differently on ROCm, and fp16 dX lands 1 ulp apart.
+    tl.store(dx_ptr, scale * tl.fma(-n0, rowsum[:, None], HEAD_DIM * g0), mask = mask)
+    tl.store(dx_ptr + HALF, scale * tl.fma(-n1, rowsum[:, None], HEAD_DIM * g1), mask = mask)
 
 
 @triton.jit
@@ -442,7 +456,7 @@ def fast_qk_norm_rope(
             position_ids = position_ids.reshape(1, seq_len).expand(batch, seq_len)
         if position_ids.numel() != batch * seq_len:
             return _unfused(q_norm, k_norm, Q, K, cos, sin, position_ids)
-        rope_indices = position_ids.reshape(-1).to(dtype = torch.int32, device = Q.device)
+        rope_indices = position_ids.reshape(-1).to(dtype = torch.int32, device = Q.device).contiguous()
     else:
         if seq_len > cos2.shape[0]:
             return _unfused(q_norm, k_norm, Q, K, cos, sin, position_ids)

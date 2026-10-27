@@ -91,7 +91,9 @@ def test_every_float32_near_a_rounding_boundary():
 
 @pytest.mark.parametrize("bad", [float("nan"), 1.5, -0.25])
 @pytest.mark.parametrize("output_type", ["np", "pil"])
-def test_out_of_range_takes_the_original_postprocess(bad, output_type):
+def test_out_of_range_takes_the_original_postprocess(bad, output_type, monkeypatch):
+    # NaN is refused by default (test_video_nonfinite_every_family); with the check off it keeps the original path.
+    monkeypatch.setenv("UNSLOTH_VIDEO_NONFINITE_CHECK", "0")
     vp = VideoProcessor(vae_scale_factor = 8, do_normalize = False)
     video = _clip(torch.float32, normalized = False)
     video[0, 0, 1, 2, 3] = bad

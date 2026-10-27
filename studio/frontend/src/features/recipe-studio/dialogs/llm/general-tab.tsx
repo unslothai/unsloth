@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import {
   Collapsible,
   CollapsibleContent,
@@ -33,9 +35,6 @@ import { CollapsibleSectionTriggerButton } from "../shared/collapsible-section-t
 import { AvailableVariables } from "../shared/available-variables";
 import { FieldLabel } from "../shared/field-label";
 import { NameField } from "../shared/name-field";
-import {
-  ChevronRightIcon,
-} from "lucide-react";
 
 const CODE_LANG_OPTIONS = [
   "python",
@@ -187,7 +186,8 @@ export function LlmGeneralTab({
           <div className="mt-2 space-y-1.5">
             {!hasModelProviders && (
               <p className="flex items-start gap-2">
-                <ChevronRightIcon
+                <HugeiconsIcon
+                  icon={ChevronRightStandardIcon}
                   className="mt-0.5 size-3.5 shrink-0 text-primary"
                 />
                 <span>Add a Provider connection step in AI generation → Setup.</span>
@@ -195,7 +195,8 @@ export function LlmGeneralTab({
             )}
             {!hasModelConfigs && (
               <p className="flex items-start gap-2">
-                <ChevronRightIcon
+                <HugeiconsIcon
+                  icon={ChevronRightStandardIcon}
                   className="mt-0.5 size-3.5 shrink-0 text-primary"
                 />
                 <span>Add a Model preset step, connect it, then choose it below.</span>

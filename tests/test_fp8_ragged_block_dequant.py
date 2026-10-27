@@ -31,6 +31,14 @@ class _Quantizer:
 def _op_cls(patched):
     # A subclass, so patching never leaks into the real class other tests use.
     cls = type("Fp8DequantizeUnderTest", (fp8.Fp8Dequantize,), {})
+    # An in-process fp8 load earlier in the session (test_fp8_16bit_text_loader_dequant) patches
+    # the real class; unwrap it so the unpatched case is transformers' own op.
+    for attr in ("_dequantize_one", "convert"):
+        fn = getattr(cls, attr, None)
+        while getattr(fn, "_unsloth_ragged_blocks", False):
+            fn = fn.__wrapped__
+        if fn is not None:
+            setattr(cls, attr, fn)
     if patched:
         _import_fixes()._pad_fp8_dequantize_ragged_blocks(cls)
     return cls

@@ -480,6 +480,74 @@ def test_a_model_that_fits_nowhere_beside_the_others_replaces_the_active_one(bac
     assert primary.model_identifier == "org/C-GGUF" and primary.is_loaded
 
 
+def _short_load_fakes(monkeypatch, errors):
+    monkeypatch.setattr(inf, "release_chat_gpu_claim", lambda: None)
+    seen = []
+
+    async def load(request, *args, **kwargs):
+        seen.append(request)
+        if errors and not request.force_alongside:
+            raise errors.pop(0)
+        llama = inf.get_llama_cpp_backend()
+        llama.model_identifier, llama.hf_variant = request.model_path, request.gguf_variant
+        llama.is_loaded = llama.is_active = True
+        return LoadResponse.model_construct(status = "loaded", model = request.model_path)
+
+    monkeypatch.setattr(inf, "_run_tracked_load_model_impl", load)
+    return seen
+
+
+def test_idle_kept_models_go_with_the_active_one_when_only_together_they_make_room(
+    backends, monkeypatch
+):
+    # B and C alone free 12 of the 14 GB D is short; with A they cover it.
+    primary, extra = backends
+    primary._planned_vram_mib = {0: 6000}
+    extra.request, extra.last_used = LoadRequest(model_path = "org/B-GGUF"), 1.0
+    extra.llama._planned_vram_mib = {0: 6000}
+    other = _slot("org/C-GGUF", last_used = 2.0)
+    other.llama._planned_vram_mib = {0: 6000}
+    model_slots.slots.append(other)
+    monkeypatch.setattr(inf, "_unload_primary", lambda: primary.unload_model())
+    _short_load_fakes(monkeypatch, [GpuMemoryShortError("short", short_mib = 14000)])
+    request = LoadRequest(model_path = "org/D-GGUF", alongside = True)
+    response = asyncio.run(inf.load_model_gated(request, None, "s"))
+    assert response.evicted == ["org/B-GGUF", "org/C-GGUF", "org/A-GGUF"]
+    assert model_slots.slots == [] and not extra.llama.is_active and not other.llama.is_active
+    assert primary.model_identifier == "org/D-GGUF"
+
+
+def test_idle_kept_models_stay_when_the_active_one_alone_makes_room(backends, monkeypatch):
+    primary, extra = backends
+    primary._planned_vram_mib = {0: 16000}
+    extra.request = LoadRequest(model_path = "org/B-GGUF")
+    extra.llama._planned_vram_mib = {0: 6000}
+    monkeypatch.setattr(inf, "_unload_primary", lambda: primary.unload_model())
+    _short_load_fakes(monkeypatch, [GpuMemoryShortError("short", short_mib = 14000)])
+    request = LoadRequest(model_path = "org/D-GGUF", alongside = True)
+    assert asyncio.run(inf.load_model_gated(request, None, "s")).evicted == ["org/A-GGUF"]
+    assert model_slots.slots == [extra] and extra.llama.is_active
+
+
+def test_a_host_ram_spill_evicts_an_idle_kept_model_under_when_they_fit(backends, monkeypatch):
+    _, extra = backends
+    extra.request = LoadRequest(model_path = "org/B-GGUF")
+    monkeypatch.setattr(multi_model_settings, "get_multi_model_mode", lambda: "fit")
+    _short_load_fakes(monkeypatch, [GpuMemoryShortError("spills", host = True)])
+    request = LoadRequest(model_path = "org/C-GGUF", alongside = True)
+    assert asyncio.run(inf.load_model_gated(request, None, "s")).evicted == ["org/B-GGUF"]
+    assert [s.llama.model_identifier for s in model_slots.slots] == ["org/C-GGUF"]
+
+
+def test_a_host_ram_spill_loads_beside_the_others_under_always(backends, monkeypatch):
+    _, extra = backends
+    monkeypatch.setattr(multi_model_settings, "get_multi_model_mode", lambda: "always")
+    seen = _short_load_fakes(monkeypatch, [GpuMemoryShortError("spills", host = True)])
+    request = LoadRequest(model_path = "org/C-GGUF", alongside = True)
+    assert not asyncio.run(inf.load_model_gated(request, None, "s")).evicted
+    assert seen[-1].force_alongside and extra.llama.is_active
+
+
 def test_a_capped_context_is_taken_only_once_nothing_is_left_to_evict(backends, monkeypatch):
     _, extra = backends
     extra.request = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0")
@@ -519,6 +587,28 @@ def test_a_load_prices_the_vram_the_other_servers_hold():
         assert c._other_planned_vram_mib() == {}
     finally:
         for backend in (a, b, c):
+            llama_cpp.unregister_serving_backend(backend)
+
+
+def test_a_kept_server_that_died_no_longer_holds_vram(monkeypatch):
+    from core.inference import gpu_residency
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setattr(gpu_residency, "media_held_mib", lambda: {})
+    a, c = (LlamaCppBackend(manages_processes = False) for _ in range(2))
+    for backend in (a, c):
+        llama_cpp.register_serving_backend(backend)
+    try:
+        a._planned_vram_mib = {0: 12000}
+        a._process = SimpleNamespace(poll = lambda: None)
+        assert c._other_planned_vram_mib() == {0: 12000} and c._other_servers_running()
+        a._process = SimpleNamespace(poll = lambda: -9)
+        assert c._other_planned_vram_mib() == {} and not c._other_servers_running()
+        monkeypatch.setattr(gpu_residency, "media_held_mib", lambda: {0: 2048})
+        assert c._other_servers_running()
+    finally:
+        a._process = None
+        for backend in (a, c):
             llama_cpp.unregister_serving_backend(backend)
 
 

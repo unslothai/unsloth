@@ -87,6 +87,7 @@ export function McpImageMappings({
           </span>
         </span>
         <Switch
+          className="mt-[var(--ui-title-cap-inset)]"
           id="mcp-image-attachments"
           checked={enabled}
           disabled={disabled}

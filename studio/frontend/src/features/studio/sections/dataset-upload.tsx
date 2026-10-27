@@ -18,9 +18,10 @@ import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
   Cancel01Icon,
-  CloudUploadIcon,
   FileAttachmentIcon,
   InformationCircleIcon,
+  PlusSignIcon,
+  Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useRef } from "react";
@@ -77,7 +78,7 @@ export function DatasetUploadField({ uploads }: { uploads: DatasetUploads }) {
           <Spinner className="size-3.5 text-muted-foreground" />
         ) : (
           <HugeiconsIcon
-            icon={CloudUploadIcon}
+            icon={PlusSignIcon}
             strokeWidth={1.5}
             className="size-3.5 text-muted-foreground"
           />
@@ -172,7 +173,7 @@ export function EvaluationDatasetUpload({
             {uploads.isUploading ? (
               <Spinner className="size-3.5" />
             ) : (
-              <HugeiconsIcon icon={CloudUploadIcon} className="size-3.5" />
+              <HugeiconsIcon icon={Upload01Icon} className="size-3.5" />
             )}
             {uploads.isUploading
               ? t("studio.dataset.uploading")
