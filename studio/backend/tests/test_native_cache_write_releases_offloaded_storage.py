@@ -197,6 +197,28 @@ def test_a_host_weight_is_written_as_captured_even_if_it_is_onloaded_mid_write(
         assert torch.equal(got[k], v), k
 
 
+def test_an_onload_right_after_the_sync_does_not_reach_the_written_bytes(monkeypatch, base_dir, cache_root):
+    _as_if_on_the_accelerator(monkeypatch)
+    model = _native(base_dir)
+    expected = {k: v.detach().clone() for k, v in model.state_dict().items()}
+    by_ptr = {t.data_ptr(): t for t in _live_tensors(model) if t.is_floating_point()}
+
+    def sync_then_onload(value):
+        # a stream onload swapping in a buffer whose copy is still in flight, just after the writer's sync
+        owner = by_ptr.pop(value.data_ptr(), None)
+        if owner is not None:
+            owner.data = torch.full_like(owner.data, 7)
+
+    monkeypatch.setattr(NC, "_wait_for_transfers", sync_then_onload)
+    fam = detect_video_family("Wan-AI/Wan2.1-T2V-1.3B-Diffusers", override = FAMILY)
+    spec = NC.native_spec("int8", FAMILY, act_int8 = True)
+    path = NC.save(model, fam, spec, base_repo = base_dir, component = "transformer")
+    assert path is not None
+    got = _entry_tensors(path)
+    for k, v in expected.items():
+        assert torch.equal(got[k], v), k
+
+
 @pytest.mark.gpu
 @pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA GPU")
 def test_cuda_storage_is_reclaimed_while_the_write_is_in_flight(monkeypatch, base_dir):

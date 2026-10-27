@@ -208,6 +208,8 @@ def _live_refs(transformer: Any, state: dict) -> dict:
             value = resolve(name)
             if value is None or value.dtype != dtype or tuple(value.shape) != shape:
                 raise RuntimeError(f"native cache write: {name} changed during the write")
+            # Detach before the sync: a later `param.data =` onload must not swap in a buffer still being copied.
+            value = value.detach()
             _wait_for_transfers(value)
             return value
 
