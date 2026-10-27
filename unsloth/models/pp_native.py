@@ -59,6 +59,7 @@ import torch.nn as nn
 
 from .pp_schedules import (
     SCHEDULE_NAMES,
+    allow_split_backward,
     non_reentrant_checkpointing_only,
     resolve_stages_per_rank,
     schedule_spec,
@@ -1601,6 +1602,7 @@ def apply_pipeline_parallel(
     if config.sync_trainable and pp > 1:
         _sync_trainable(model, pp_mesh.get_group(), dist.get_global_rank(pp_mesh.get_group(), 0))
 
+    donated_off = props["split_backward"] and allow_split_backward()
     pp_stage = PipelineParallel(
         model,
         pp_mesh,
@@ -1679,6 +1681,12 @@ def apply_pipeline_parallel(
             f"{n_microbatches} micro-batches, {parts.source} parts): decoder layers per stage "
             f"{[e - s for s, e in bounds]}"
             + (", tied embeddings kept on the first and last stage" if parts.tied else "")
+            + (
+                "; compiled backward graphs built without donated buffers (zero bubble runs autograd.grad "
+                "with retain_graph)"
+                if donated_off
+                else ""
+            )
             + "."
         )
     return pp_stage

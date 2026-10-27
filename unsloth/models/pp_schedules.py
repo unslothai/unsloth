@@ -216,3 +216,19 @@ def non_reentrant_checkpointing_only(model) -> Optional[bool]:
     if not found and bool(getattr(model, "is_gradient_checkpointing", False)):
         return False
     return True if found else None
+
+
+def allow_split_backward():
+    """Zero-bubble schedules run each micro-batch's backward as torch.autograd.grad(..., retain_graph = True)
+    for the inputs, then again for the weights. A compiled backward (Unsloth compiles every decoder block)
+    that AOTAutograd built with donated buffers refuses retain_graph ("compiled with non-empty donated
+    buffers", seen on T4 with torch 2.14), so compile without them for this process. Returns True if the setting
+    was changed. Blocks compiled before this call keep their buffers: apply the split before the first forward."""
+    try:
+        import torch._functorch.config as functorch_config
+    except ImportError:
+        return False
+    if getattr(functorch_config, "donated_buffer", False):
+        functorch_config.donated_buffer = False
+        return True
+    return False
