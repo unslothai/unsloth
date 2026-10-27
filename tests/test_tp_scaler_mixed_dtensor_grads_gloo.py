@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""float16 under tensor parallel with DTensor and plain grads in one optimizer (Qwen3-VL under UNSLOTH_TP_SIZE=2:
-TP-sharded language model LoRA beside the unsharded vision tower). The native ShardedGradScaler unscaled
-them in one foreach call and raised "got mixed torch.Tensor and DTensor" at the first step. On a gloo CPU
-world of 2: unscale_ divides both kinds by the scale, an inf on one rank skips the step on both, and the
-replicated parameter stays equal over ranks."""
+"""float16 TP with DTensor and plain grads in one optimizer (Qwen3-VL, UNSLOTH_TP_SIZE=2) on a gloo CPU world of 2."""
 
 import multiprocessing
 import os
@@ -50,7 +46,6 @@ def _run(optim, inf_rank = None):
     torch.manual_seed(0)
     sharded = torch.nn.Parameter(distribute_tensor(torch.randn(8, 4), mesh, [Shard(0)]))
     plain = torch.nn.Parameter(torch.randn(4, 4))
-    # Per-tensor steps: torch's foreach / fused kernels take one tensor kind per call as well.
     if optim == "adamw":
         opt = torch.optim.AdamW([sharded, plain], lr = 1e-2, foreach = False)
     else:
@@ -63,7 +58,6 @@ def _run(optim, inf_rank = None):
             plain.grad[0, 0] = float("inf")
         scaler.unscale_(opt)
         if step == 0:
-            # d/dx x^2 = 2x: both kinds back at one GPU's gradient
             out["unscaled"] = (
                 torch.allclose(sharded.grad.to_local(), 2 * sharded.detach().to_local()),
                 torch.allclose(plain.grad, 2 * plain.detach()),
@@ -117,11 +111,11 @@ def _worker(rank, world, port, out):
             for inf_rank in (None, 1, "all"):
                 try:
                     res[optim, inf_rank] = _run(optim, inf_rank)
-                except Exception as e:  # recorded, asserted in the parent
+                except Exception as e:
                     res[optim, inf_rank] = f"{type(e).__name__}: {e}"
         try:
             res["sparse_fp16"] = _sparse_fp16()
-        except Exception as e:  # recorded, asserted in the parent
+        except Exception as e:
             res["sparse_fp16"] = f"{type(e).__name__}: {e}"
         torch.save(res, os.path.join(out, f"rank{rank}.pt"))
     finally:
@@ -150,7 +144,6 @@ def test_mixed_dtensor_and_plain_grads_unscale_and_skip(ranks, optim, inf_rank):
             )  # an overflow on any rank skips it on every rank
             assert got["steps"] == (expected, expected), got["steps"]
         assert all(torch.isfinite(p).all() for p in got["params"])
-    # The plain (replicated) parameter took the same steps on both ranks.
     torch.testing.assert_close(
         ranks[0][optim, inf_rank]["params"][1], ranks[1][optim, inf_rank]["params"][1]
     )

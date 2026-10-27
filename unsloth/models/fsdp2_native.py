@@ -3348,12 +3348,8 @@ def _has_cpu_tensors(optimizer, grads = False):
 
 
 def _local_grads_if_mixed(optimizer):
-    """`optimizer`, or a stand-in whose DTensor grads are their local shards when DTensor and plain grads mix.
-
-    One foreach unscale takes one kind: a tensor parallel language model (DTensor LoRA grads) beside an
-    unsharded vision tower (plain grads) raised "got mixed torch.Tensor and DTensor" in every float16
-    step. The unscale is elementwise, so the local shard (same storage) is the same result; found_inf is
-    all-reduced over the scaler's process group afterwards, which covers the DTensor mesh."""
+    """Swap DTensor grads for their local shards when DTensor and plain grads mix: one foreach unscale
+    takes one tensor kind ("got mixed torch.Tensor and DTensor"). Elementwise, so the shard result is the same."""
     try:
         from torch.distributed.tensor import DTensor
     except ImportError:
