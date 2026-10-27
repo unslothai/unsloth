@@ -268,7 +268,6 @@ def _padded_bucket_mask(attn_mask, pad):
 # the same mask, so its padded copy is built once, dropped with the source mask.
 try:
     from torch.utils.weak import WeakIdKeyDictionary as _WeakIdKeyDictionary
-
     _PADDED_ADDITIVE_MASKS = _WeakIdKeyDictionary()
 except Exception:
     _PADDED_ADDITIVE_MASKS = None
@@ -296,6 +295,7 @@ def _rerouted_sdpa(*args, **kwargs):
 # Module level: reading SDPBackend's attributes while traced breaks the graph.
 try:
     from torch.nn.attention import SDPBackend as _SDPBackend, sdpa_kernel as _sdpa_kernel
+
     _XFORMERS_LIKE_BACKENDS = [
         _SDPBackend.FLASH_ATTENTION,
         _SDPBackend.EFFICIENT_ATTENTION,

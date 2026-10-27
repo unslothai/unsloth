@@ -331,7 +331,6 @@ _ALL_BACKENDS = ("FLASH_ATTENTION", "EFFICIENT_ATTENTION", "MATH", "CUDNN_ATTENT
 
 def _policy(names):
     from torch.nn.attention import SDPBackend
-
     return [getattr(SDPBackend, n) for n in names]
 
 
@@ -360,7 +359,9 @@ def test_decode_pin_keeps_caller_backend_policy(monkeypatch, policy):
         cuda.cudnn_sdp_enabled(),
     )
     seen = []
-    monkeypatch.setattr(F, "scaled_dot_product_attention", lambda q, *a, **k: seen.append(flags()) or q)
+    monkeypatch.setattr(
+        F, "scaled_dot_product_attention", lambda q, *a, **k: seen.append(flags()) or q
+    )
     monkeypatch.setattr(ad, "_decode_picks_cudnn", lambda *a: True)
     q = torch.randn(2, 4, 1, 64, device = "cuda", dtype = torch.bfloat16)
     kv = torch.randn(2, 4, 300, 64, device = "cuda", dtype = torch.bfloat16)
@@ -436,7 +437,12 @@ def test_decode_picks_cudnn_cache_keys_on_every_backend_flag(monkeypatch):
     q = torch.randn(2, 4, 1, 64, device = "cuda", dtype = torch.bfloat16)
     kv = torch.randn(2, 4, 300, 64, device = "cuda", dtype = torch.bfloat16)
     policies = (
-        [SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH, SDPBackend.CUDNN_ATTENTION],
+        [
+            SDPBackend.FLASH_ATTENTION,
+            SDPBackend.EFFICIENT_ATTENTION,
+            SDPBackend.MATH,
+            SDPBackend.CUDNN_ATTENTION,
+        ],
         [SDPBackend.MATH, SDPBackend.CUDNN_ATTENTION],
         [SDPBackend.EFFICIENT_ATTENTION, SDPBackend.CUDNN_ATTENTION],
         [SDPBackend.FLASH_ATTENTION, SDPBackend.CUDNN_ATTENTION],
@@ -448,7 +454,13 @@ def test_decode_picks_cudnn_cache_keys_on_every_backend_flag(monkeypatch):
     ad._DECODE_PICKS_CUDNN.clear()
 
 
-def _bucketed_masks(monkeypatch, mask, q_len, grad, layers = 3):
+def _bucketed_masks(
+    monkeypatch,
+    mask,
+    q_len,
+    grad,
+    layers = 3,
+):
     """The padded masks _cudnn_length_bucketed_sdpa hands SDPA over `layers` calls with one mask."""
     seen = []
     real = ad.scaled_dot_product_attention
@@ -507,7 +519,10 @@ def test_masked_bucket_additive_mask_saved_once_on_cudnn():
         return t
 
     outs = []
-    with sdpa_kernel([SDPBackend.CUDNN_ATTENTION]), torch.autograd.graph.saved_tensors_hooks(pack, lambda t: t):
+    with (
+        sdpa_kernel([SDPBackend.CUDNN_ATTENTION]),
+        torch.autograd.graph.saved_tensors_hooks(pack, lambda t: t),
+    ):
         for i in range(layers):
             q, k, v = _qkv(2, 4, 4, q_len, 64, False, seed = i)
             outs.append(ad._cudnn_length_bucketed_sdpa(q, k, v, attn_mask = mask))
