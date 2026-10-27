@@ -20,6 +20,7 @@ VARIABLE = (
     "QwenImage21Transformer2DModel",
     "ZImageTransformer2DModel",
     "MiniMaxH3Transformer3DModel",
+    "Cosmos3OmniTransformer",
     "MOSSImageTransformer",
 )
 

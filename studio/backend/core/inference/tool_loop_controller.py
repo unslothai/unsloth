@@ -25,8 +25,7 @@ from core.inference.llama_tool_schema import unrelaxed
 from core.inference.mcp_images import is_image_tool, split_images as split_mcp_images
 from core.inference.media_chat_tools import MEDIA_CHAT_TOOLS
 
-# Stamped by mcp_client on every tool it registers; the provenance the envelope
-# is trusted on.
+# Provenance the envelope is trusted on; stamped by mcp_client.
 MCP_TOOL_PREFIX = "mcp__"
 # tools.MCP_TOOL_SEARCH_NAME; tools imports this module.
 MCP_TOOL_SEARCH_NAME = "mcp_tool_search"
@@ -40,14 +39,11 @@ _CANONICAL_HEAL_ARG = {
     "python": "code",
     "terminal": "command",
     "render_html": "code",
-    # Not derivable: web_search declares no REQUIRED argument, because a call carrying only `url` fetches that page
-    # without searching. A bare string is still a query, which is what the old catch-all default got right for this tool
-    # and only this one.
+    # web_search declares no required argument (a `url`-only call fetches), but a bare string is a query.
     "web_search": "query",
 }
 
-# Where a bare string lands when the tool it was sent to has no argument that could hold it. Read by `execute_tool`,
-# which answers with what actually went wrong instead of letting the tool report a missing key it was never given.
+# Read by `execute_tool` to report the real problem instead of a missing key.
 UNPARSED_ARGUMENTS_KEY = "__unsloth_unparsed_arguments__"
 
 
@@ -65,17 +61,7 @@ _STRICT_JSON_DECODER = json.JSONDecoder(parse_constant = _reject_json_constant)
 
 
 def _looks_like_broken_json(raw: str) -> bool:
-    """Whether this text was MEANT to be a JSON object and stopped before finishing.
-
-    Opening with a bracket is necessary but not sufficient, and treating it as sufficient
-    was wrong in both directions: `{not json at all` is a bare string a model sent for a
-    single-argument tool, and healing it into that argument is the right answer, while
-    `{"code":"html = ...` is a call cut off mid-stream that must not become the program.
-
-    What separates them is WHERE the decode fails. A call that was cut off runs out of
-    input -- either inside a string that never closes, or at the very end of what arrived.
-    Text that merely opens with a brace fails earlier, with input still to go.
-    """
+    """A cut-off call runs out of input; text that merely starts with a brace fails with input left."""
     text = raw.strip()
     if not text.startswith(("{", "[")):
         return False
@@ -84,15 +70,11 @@ def _looks_like_broken_json(raw: str) -> bool:
     except json.JSONDecodeError as error:
         if error.msg.startswith("Unterminated string") or error.pos >= len(text):
             return True
-        # A value cut mid-token reports at the token's START, not at the end of input, so the two tests above miss
-        # `{"flag":tru` (Expecting value) and `{"n":1e` (Expecting ',' delimiter). What they share is that everything
-        # from the failure to the end is one unfinished token: no delimiter, no quote, no space. Excluded: a bad
-        # PROPERTY NAME. After `{` a bare word is malformed rather than cut off, which is what keeps `{oops` and `{not
-        # json at all` healable.
+        # A token cut mid-way reports at its start, so check that the rest is one unfinished token.
+        # A bad property name is malformed, not truncated, and stays healable.
         if error.msg.startswith("Expecting property name"):
             return False
-        # Excluded for the opposite reason: a COMPLETE document with something after it. `{"a": 1} trailing` decodes
-        # fully and then finds junk, so nothing was lost.
+        # A complete document with trailing junk lost nothing.
         if error.msg.startswith("Extra data"):
             return False
         remainder = text[error.pos :]
@@ -126,15 +108,7 @@ def _single_string_argument(function: Mapping) -> "str | None":
 
 
 def _healable_keys_from_schemas() -> "dict[str, str]":
-    """Built-in tool -> its single required string argument, for the tools that have one.
-
-    Derived from the schemas rather than hand-listed. The map above was hand-kept, so it
-    silently went stale the moment a tool was added: `edit_file` landed with three
-    required arguments and no entry, and every unparseable call to it was healed into a
-    "query" key that only exists on the search tools. A schema-derived answer cannot rot
-    the same way -- a new tool is either single-string and healable, or it is not and says
-    so.
-    """
+    """Derived from the schemas, so a new tool cannot silently go stale in a hand-kept map."""
     try:
         from core.inference.tools import ALL_TOOLS  # noqa: PLC0415 -- cycle at import time
     except Exception:  # noqa: BLE001 -- healing must never break a chat
@@ -161,13 +135,7 @@ _HEAL_ARG_CACHE: "dict[str, str] | None" = None
 
 
 def _heal_arg_key(tool_name: str, tool_schemas = None) -> "str | None":
-    """The argument a bare string should become, or None when there isn't one.
-
-    ``tool_schemas`` is the REQUEST's tool array. MCP tools are discovered at runtime and
-    so are absent from `ALL_TOOLS`; without them an MCP tool with one required string
-    argument lost the auto-healing every other single-string tool has, and a bare string
-    reached `execute_tool` as the unparsed sentinel instead.
-    """
+    """MCP tools are absent from ALL_TOOLS, so the request's tool_schemas must also be read."""
     global _HEAL_ARG_CACHE
     if tool_name in _CANONICAL_HEAL_ARG:
         return _CANONICAL_HEAL_ARG[tool_name]
@@ -176,18 +144,12 @@ def _heal_arg_key(tool_name: str, tool_schemas = None) -> "str | None":
     key = _HEAL_ARG_CACHE.get(tool_name)
     if key is not None or not tool_schemas:
         return key
-    # Not cached: the request's tools belong to the request, and caching them by name would let one chat's MCP server
-    # decide another chat's healing.
+    # Not cached: one chat's MCP tools must not decide another chat's healing.
     return _healable_keys_from(tool_schemas).get(tool_name)
 
 
 def _unreadable_arguments_summary(fragment: str) -> dict[str, str]:
-    """What stands in for a call whose arguments never finished arriving.
-
-    Small and parseable on purpose. The replayed `arguments` of an assistant tool call is
-    read as JSON by the server rendering the template, so anything that does not parse
-    fails the whole request rather than just that call.
-    """
+    """Must stay parseable JSON: a replayed arguments field that does not parse fails the whole request."""
     return {
         "error": (f"arguments were cut off after {len(fragment)} characters and could not be read")
     }
@@ -208,11 +170,7 @@ class CoercedArguments:
 
 
 def canonical_arguments_text(arguments: Any) -> str:
-    """The one JSON encoding of an argument mapping, so the card and the replay agree.
-
-    Not sorted: the replay must match the token sequence already in the prompt cache (#10791).
-    `canonical_tool_call_key` keeps its own sorted key for dedup.
-    """
+    """Not sorted on purpose: the replay must match the token sequence already in the prompt cache."""
     return json.dumps(arguments, ensure_ascii = False, sort_keys = False, separators = (",", ":"))
 
 
@@ -224,8 +182,7 @@ class ToolCallDecision:
     tool_name: str
     arguments: dict[str, Any]
     tool_call_id: str = ""
-    # The id the card carries on screen. For an id-less call that is the spelling the client minted, not the id the
-    # conversation replays; otherwise the two are the same.
+    # For an id-less call this is the client-minted spelling, not the replayed id.
     card_call_id: str = ""
     key: str = ""
     provenance: dict[str, Any] = field(default_factory = dict)
@@ -254,21 +211,15 @@ class ToolCallDecision:
 
     @property
     def unparsed_fragment(self) -> "str | None":
-        """The raw text of a call whose JSON could not be read, if this is one.
-
-        `UNPARSED_ARGUMENTS_KEY` is plumbing between the coercion and `execute_tool`, and
-        it escaped into both places a caller looks: the tool card showed the user
-        `{"__unsloth_unparsed_arguments__": ...}`, and the replayed assistant turn taught
-        the model a key no tool declares. Both boundaries go through here instead.
-        """
+        """Internal UNPARSED_ARGUMENTS_KEY must not leak to the card or replay, so both boundaries
+        use this."""
         if isinstance(self.arguments, Mapping) and UNPARSED_ARGUMENTS_KEY in self.arguments:
             return str(self.arguments.get(UNPARSED_ARGUMENTS_KEY) or "")
         return None
 
     def tool_start_payload(self) -> dict[str, Any]:
         fragment = self.unparsed_fragment
-        # `raw` is the shape this module already uses for arguments it could not read into a schema, so the card shows
-        # the model's own text under a name that means something rather than an internal sentinel.
+        # Use `raw` for unparsed arguments so the card shows the model's own text, not an internal sentinel.
         arguments = {"raw": fragment} if fragment is not None else self.arguments
         return {
             "tool_name": self.tool_name,
@@ -298,11 +249,7 @@ class ToolCallDecision:
             "type": "function",
             "function": {
                 "name": self.tool_name,
-                # Whatever goes here MUST parse as JSON. llama-server parses it while rendering the template and answers
-                # 500 otherwise, which is what replaying the fragment verbatim caused: it is unparseable by definition,
-                # that being why it is here. So the replay is a short valid object that says the call was cut off, and
-                # the tool result carries the detail. The fragment itself is not worth resending -- it is the content
-                # that overflowed the window.
+                # Must parse as JSON: llama-server 500s while rendering the template otherwise.
                 "arguments": json.dumps(_unreadable_arguments_summary(fragment))
                 if fragment is not None
                 else canonical_arguments_text(self.arguments),
@@ -323,8 +270,7 @@ class ToolCallCompletion:
     executed: bool = False
 
     def tool_end_payload(self) -> dict[str, Any]:
-        # Not only in model_message(): the frontend PERSISTS this payload and serializes it back
-        # into a role="tool" message on the next turn, so an unmasked key is replayed then.
+        # Mask here too, not only in model_message: the frontend persists this payload and replays it.
         result = self.result
         return {
             "tool_name": self.decision.tool_name,
@@ -343,13 +289,7 @@ class ToolCallCompletion:
         return self.model_message()
 
     def model_message(self) -> dict[str, Any]:
-        """Return the internal message appended before the next generation.
-
-        Executed calls keep the existing OpenAI-compatible ``role=tool``
-        continuation. No-op controller decisions are not real tool output, so
-        they are fed back as a hidden user nudge rather than a normal tool
-        result.
-        """
+        """No-op decisions are not tool output, so they return as a hidden user nudge, not role=tool."""
         if not self.executed:
             return {"role": "user", "content": self.result}
 
@@ -366,12 +306,7 @@ class ToolCallCompletion:
         return message
 
     def mcp_images(self) -> list[dict]:
-        """Images returned by an MCP server or the sandbox image viewer.
-
-        The envelope is a plain suffix, so any tool whose output happens to end in
-        one -- terminal output, a fetched page -- would otherwise have its bytes
-        decoded and attached as model image input.
-        """
+        """Only MCP and image-viewer tools yield images; a plain suffix elsewhere would attach bytes."""
         if not self.executed or not is_image_tool(self.decision.tool_name):
             return []
         return split_mcp_images(self.result)[1]
@@ -409,9 +344,8 @@ _DECODE_ERRORS = (ValueError, RecursionError)
 _LITERAL_ERRORS = (*_DECODE_ERRORS, SyntaxError, MemoryError)
 
 
-# A JSON string, open or closed; group 1 is the closing quote, which `endswith` cannot stand in for because an open
-# string can end on an escaped one. The `\?$` tail stops a started match from ever failing, which would send
-# `finditer` back over every later quote.
+# Group 1 is the closing quote. The `\?$` tail stops a started match failing, which would make
+# `finditer` rescan every later quote.
 _JSON_STRING_RE = re.compile(r'"(?:[^"\\]|\\.)*(?:(")|\\?$)', re.S)
 _JSON_CLOSER = {"[": "]", "{": "}"}
 
@@ -522,10 +456,7 @@ def _readable(spec: Any) -> bool:
 
 
 def _read_schema(spec: Any) -> "tuple[Any, str | None, bool]":
-    """The subschema to read against, its one declared type, and whether it admits null;
-    ``(None, ...)`` leaves it alone. A union collapses to its single non-null branch, so
-    every branch must name one: reading the integer branch of ``anyOf: [{integer}, {$ref}]``
-    would turn ``"001"`` into 1."""
+    """A union reads only if every branch names a type; else an integer branch would turn "001" into 1."""
     spec = unrelaxed(spec)
     if not _readable(spec):
         return None, None, False
@@ -587,8 +518,7 @@ def _coerce_declared_value(text: str, declared: str, repair: bool) -> Any:
             number = float(stripped)
         except (ValueError, OverflowError):
             return text
-        # "nan"/"inf" parse, but json.dumps writes them bare and the client rejects that. Exactness is unguarded:
-        # float64 IS JSON's number type, so a JSON call agrees.
+        # "nan"/"inf" parse, but json.dumps writes them bare and the client rejects that.
         if math.isfinite(number) and (declared == "number" or number.is_integer()):
             return number
     elif declared == "array":
@@ -646,8 +576,7 @@ def _coerce_by_property(value: Any, spec: Any, depth: int, repair: bool) -> Any:
         if declared is None:
             return value
         value = _coerce_declared_value(value, declared, repair)
-    # Descent needs the SAME declaration the conversion needs: without one a text value is not decoded, so descending
-    # into an already-decoded one would make the syntaxes disagree.
+    # Descend only with the same declaration the conversion needs, or the syntaxes disagree.
     if declared == "object" and isinstance(value, Mapping):
         nested = spec.get("properties")
         nested = nested if isinstance(nested, Mapping) else {}
@@ -679,13 +608,7 @@ def coerce_arguments_by_schema(
     *,
     repair: bool = False,
 ) -> dict:
-    """Arguments with each string value that declares a non-string type read as that type.
-
-    A tool-call parser is given tool NAMES, never schemas, so an XML-form parameter is stored
-    as raw text: ``replace_all`` reaches the tool as ``"false"``, and ``bool("false")`` is
-    True. A container's text IS its JSON; a scalar's carries no type, so it is read only
-    where its spelling names the declared type. Anything else keeps its text.
-    """
+    """XML values arrive as raw text, so "false" is read per the schema; bool("false") is True."""
     if not isinstance(properties, Mapping) or not properties:
         return dict(arguments)
     return {k: _coerce_by_property(v, properties.get(k), 0, repair) for k, v in arguments.items()}
@@ -732,11 +655,7 @@ def coerce_tool_arguments(
     tool_name: str = "",
     tool_schemas = None,
 ) -> CoercedArguments:
-    """Normalize model-emitted ``function.arguments`` to a dictionary.
-
-    Typing against ``tool_schemas`` is not gated on ``heal``: healing invents structure the
-    model never sent, while reading a value as its schema declares it is the tool's contract.
-    """
+    """Schema typing is not gated on heal: healing invents structure, the schema is the tool's contract."""
     properties = _declared_properties(tool_name, tool_schemas) if tool_name else None
     if isinstance(raw_args, Mapping):
         return CoercedArguments(
@@ -754,13 +673,8 @@ def coerce_tool_arguments(
             # Must not raise: this runs before the budget gate, so a raise aborts the whole turn.
             pass
         if heal:
-            # Healing exists for a model that sends its ONE argument as a bare string instead of an object. Text that
-            # opens like JSON and fails to parse is not that -- it is a broken object, usually one cut off mid-stream,
-            # and wrapping it whole becomes the argument's value. Observed on `python`, which has a single `code`
-            # argument and so was healable: a truncated call arrived as `{"code":"html = ...`, the entire fragment was
-            # passed as the PROGRAM, and the model read its own file back as `{"code":"html = ...` and spent the rest of
-            # the turn convinced the sandbox had mangled it. Same defect `edit_file` had; having a single string
-            # argument only hid it.
+            # Text that opens like JSON but fails to parse is a truncated object, not a bare string;
+            # wrapping it whole would pass the fragment as the argument value.
             key = (
                 None
                 if _looks_like_broken_json(raw_args)
@@ -768,10 +682,7 @@ def coerce_tool_arguments(
             )
             if key is not None:
                 return CoercedArguments({key: raw_args}, True)
-            # No single argument this text could be. Inventing one used to default to "query", which edit_file -- three
-            # required arguments, none of them a query -- then reported as "'old_string' and 'new_string' must both be
-            # strings": a type error blaming the model for a key it never sent, on a call whose real problem was that
-            # its JSON never finished arriving.
+            # No single argument fits; do not invent one, since an invented key gets blamed on the model as a type error.
             return CoercedArguments({UNPARSED_ARGUMENTS_KEY: raw_args}, False)
         return CoercedArguments({"raw": raw_args}, False)
     return CoercedArguments({}, False)
@@ -820,15 +731,13 @@ def status_for_tool(tool_name: str, arguments: Mapping[str, Any]) -> str:
     if tool_name == "web_search":
         url = str(arguments.get("url") or "").strip()
         if url:
-            # bare hosts are fetched as https, so normalize first or the badge stays generic for exactly the URLs the
-            # fetch layer accepts
+            # Bare hosts are fetched as https, so normalize first.
             from core.inference.tools import _normalize_url_scheme
 
             try:
                 parsed = urlparse(_normalize_url_scheme(url))
             except ValueError:
-                # Runs in prepare_call, outside the fetch's exception handler: raising here kills the turn instead of
-                # returning "Blocked:".
+                # Outside the fetch's exception handler: raising here kills the turn.
                 return "Reading page..."
             if parsed.scheme in ("http", "https") and parsed.hostname:
                 host = parsed.hostname
@@ -926,11 +835,7 @@ def _browser_status(tool_name: str, arguments: Mapping[str, Any]) -> str:
 
 
 def awaiting_approval_status(tool_name: str) -> str:
-    """Status text for a call parked on the approval prompt.
-
-    It has not started, so reporting "Running ..." with a climbing timer reads
-    as a hang.
-    """
+    """Not started yet, so a Running status with a climbing timer would read as a hang."""
     if tool_name == "python":
         return "Waiting for approval: Python"
     if tool_name == "terminal":
@@ -1015,11 +920,7 @@ def _strip_mcp_ui_suffix(result: str) -> str:
 
 
 def _strip_files_sentinel(result: str) -> str:
-    """Drop a trailing ``__FILES__`` envelope, and only that.
-
-    Validated rather than split on sight: a tool whose own output contains the
-    literal text would otherwise lose everything after it.
-    """
+    """Validated, not split on sight, so a tool quoting the marker does not lose the rest."""
     marker = "\n__FILES__:"
     start = result.rfind(marker)
     if start == -1:
@@ -1032,8 +933,7 @@ def _strip_files_sentinel(result: str) -> str:
         entries = json.loads(result[payload_start:end])
     except (ValueError, TypeError, RecursionError):
         return result
-    # Every entry, not just the list: the executor emits {"name": str, "size": int | None}, and anything else is a tool
-    # that happened to print the marker.
+    # Validate every entry: anything else is a tool that happened to print the marker.
     if not isinstance(entries, list) or not all(_is_file_entry(e) for e in entries):
         return result
     return result[:start] + result[end:]
@@ -1049,22 +949,7 @@ def _is_file_entry(entry: object) -> bool:
 
 
 def _strip_images_sentinel(result: str) -> str:
-    """Drop the trailing ``__IMAGES__`` envelopes, and only those.
-
-    Validated rather than split on sight, like the two above and like
-    ``studio_tool_loop._carries_image_sentinel``: a tool whose own output quotes
-    the marker would otherwise lose everything after it while the card the user
-    reads still shows the whole result.
-
-    Every envelope, not just the last: a Gemini ``code_execution`` turn that drew
-    two figures stacks one per ``inlineData`` part, and stopping after the last
-    would replay the earlier plot's whole base64 data URI to the model.
-
-    Walked by index and cut once at the end. Re-partitioning the shortened string
-    each time copies it again, which is quadratic in the number of markers, and an
-    MCP server answering with 80,000 of them is 1.3 MB of text that held this
-    thread for seconds.
-    """
+    """Validated envelopes only; every one is stripped, and cut once so long MCP output stays linear."""
     marker = "\n__IMAGES__:"
     end = len(result)
     cut = -1
@@ -1086,18 +971,7 @@ def _strip_images_sentinel(result: str) -> str:
 
 
 def _strip_rag_sources_sentinel(result: str) -> str:
-    """Drop a trailing ``__RAG_SOURCES__`` source map, and only that.
-
-    The retrieval tools append ``RAG_SOURCES_SENTINEL`` plus a JSON list; a
-    result that merely mentions the marker is text.
-
-    Deliberately unbounded, like the walk above. Each source record repeats its whole
-    chunk, and ``search_knowledge_base`` takes the model's ``top_k`` without a ceiling,
-    so a real map has no size worth calling suspicious -- and one refused for being big
-    is a frontend-only blob left in the model's context, which ``_fit_result_to_room``
-    would then truncate into malformed JSON. What keeps unbounded MCP text away from
-    this decode is the gate on the emitting tools, not a length.
-    """
+    """Deliberately unbounded: size is no guard, since the gate on the emitting tools keeps MCP text out."""
     head, sep, payload = result.rpartition("\n__RAG_SOURCES__:")
     if not sep:
         return result
@@ -1110,8 +984,7 @@ def _strip_rag_sources_sentinel(result: str) -> str:
     return head.rstrip()
 
 
-# Only these emit the file envelope, and only their output is defused first. An MCP tool or a fetched page ending in a
-# well-formed __FILES__ line is content, not an envelope, and stripping it would take that line away from the model.
+# Only these emit the file envelope; an MCP tool or fetched page ending in __FILES__ is content.
 _SANDBOX_TOOLS = frozenset({"python", "terminal"})
 # edit_file emits it too, for a file it created, and the media tools for the file they rendered.
 _FILE_SENTINEL_TOOLS = _SANDBOX_TOOLS | {"edit_file"} | MEDIA_CHAT_TOOLS
@@ -1141,10 +1014,7 @@ def _reruns_after_new_work(tool_name: Any) -> bool:
 # the way to the model, which is where it would leave the machine. The mask carries neither prefix,
 # so re-running is a no-op.
 _STUDIO_API_KEY_RE = re.compile(
-    # 8, not 32: a result cut to fit the window ends mid-key, and half a key is still one. Bare
-    # `sk-unsloth-` (prose about the format) still reads through.
-    # Hex, not alphanumeric: the token is `token_hex`, and the wider alphabet rewrote this repo's
-    # own `sk-unsloth-internal-workflow` to `[redacted]-workflow`.
+    # 8, not 32: a truncated result can end mid-key. Hex only, so `sk-unsloth-internal-...` survives.
     r"sk-unsloth-[0-9a-fA-F]{8,}"
     # `desktop-` + token_urlsafe(48); the floor keeps "desktop-app" out of it.
     r"|desktop-[A-Za-z0-9_-]{40,}"
@@ -1153,8 +1023,7 @@ _STUDIO_SECRET_MASK = "[redacted]"
 
 
 def redact_studio_credentials(text: str) -> str:
-    """Mask any Unsloth Studio credential in text bound for the model/provider."""
-    # Two substring scans first: the alternation has no literal to anchor on and costs ~20x per MB.
+    """Two substring scans run first: the regex alternation has no literal to anchor on, so most text skips it."""
     if "sk-unsloth-" not in text and "desktop-" not in text:
         return text
     return _STUDIO_API_KEY_RE.sub(_STUDIO_SECRET_MASK, text)
@@ -1166,19 +1035,11 @@ def strip_result_for_model(
     *,
     redact: bool = True,
 ) -> str:
-    """Remove frontend-only sentinels (image paths, RAG source map) and mask Studio credentials
-    before feeding the result back to the model.
-
-    ``redact = False`` is for the one caller that needs the strip to stay suffix-only
-    (`tools._split_frontend_suffix` re-derives the removed envelope from `startswith`); masking
-    rewrites bytes inside the body, which that comparison cannot survive. That path feeds the model
-    through `model_message` afterwards, so the mask is applied either way."""
+    """redact=False keeps the strip suffix-only for _split_frontend_suffix, which masking would break; the mask still applies later in model_message."""
     if tool_name is None or tool_name == "web_search":
         from .search_images import strip_images_suffix
         result = strip_images_suffix(result)
-    # Always, whoever produced it: these bytes run to megabytes and the model must
-    # never be shown them as text. Provenance decides whether they become IMAGE
-    # input, which is a separate question answered in mcp_images._promote.
+    # Always strip image bytes; provenance only decides whether they become image input.
     result = split_mcp_images(result)[0]
     # After the image strip, which leaves the UI envelope as the tail.
     if tool_name is None or tool_name.startswith(_MCP_TOOL_PREFIX):
@@ -1193,20 +1054,12 @@ def strip_result_for_model(
 
 
 def deferred_nudge_text(msgs: Sequence[dict]) -> str:
-    """Join a batch's no-op nudges into one deduped body.
-
-    Callers that keep the feedback inside the tool exchange need the text
-    without the ``role=user`` wrapper, so both forms stay in sync here.
-    """
+    """Body text without the role=user wrapper, so the in-exchange and user-message forms stay in sync."""
     return "\n\n".join(dict.fromkeys(msg["content"] for msg in msgs))
 
 
 def append_deferred_nudges(conversation: list, msgs: Sequence[dict]) -> None:
-    """Append a batch's no-op nudges as one deduped ``role=user`` message.
-
-    Deferred to after the batch's tool results so a no-op never splits an
-    assistant's ``tool_calls`` from their ``role=tool`` results.
-    """
+    """Appended after the tool results, so a nudge never splits tool_calls from their role=tool replies."""
     if msgs:
         conversation.append({"role": "user", "content": deferred_nudge_text(msgs)})
 
@@ -1433,11 +1286,7 @@ class ToolLoopController:
         provisional: bool = False,
         allowed_tool_names: Collection[str] | None = None,
     ) -> ToolCallDecision:
-        """Reclassify a call after a pre-execution normalizer changed its arguments.
-
-        The decision's replay, status and duplicate key must all describe the arguments that
-        execute. A second preparation keeps the ordinary controller rules as the source of truth.
-        """
+        """Replay, status and duplicate key must describe the arguments that actually execute."""
         tool_call = decision.as_assistant_tool_call()
         if decision.card_call_id:
             tool_call["card_id"] = decision.card_call_id

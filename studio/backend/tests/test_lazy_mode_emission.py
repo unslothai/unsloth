@@ -193,9 +193,11 @@ def test_load_model_emits_the_mode_it_priced():
     source = inspect.getsource(LlamaCppBackend.load_model)
     assert source.count("_studio_lazy_mode(") == 1
     assert 'cmd.extend(["-lzm", _emitted_lazy_mode])' in source
-    assert '_spill_inputs["emitted_lazy_mode"] = _emitted_lazy_mode' in source
+    assert '_spill_inputs["emitted_lazy_mode"] = (' in source
+    assert '"off" if _managed_lazy_flags else _emitted_lazy_mode' in source
     seam = inspect.getsource(LlamaCppBackend._planned_tensor_spill)
-    assert 'emitted_mode = inputs.get("emitted_lazy_mode")' in seam
+    assert '_emitted_lazy = inputs.get("emitted_lazy_mode")' in seam
+    assert "emitted_mode = _emitted_lazy," in seam
 
 
 @pytest.mark.parametrize(

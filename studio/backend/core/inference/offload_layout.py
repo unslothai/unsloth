@@ -17,18 +17,15 @@ from enum import Enum
 from typing import Optional
 import os
 
+from core.inference.lookup_tables import is_per_layer_embedding
+
 logger = logging.getLogger(__name__)
 
 # Hybrid Mamba-2 archs storing head_count_kv (and on Bolt expert_used_count) per layer.
 _NEMOTRON_H_ARCHS = frozenset({"nemotron_h", "nemotron_h_moe"})
 _BLOCK_RE = re.compile(r"^blk\.(\d+)\.(.+)$")
 
-# Sparse MoE experts: only expert_used_count of expert_count read per token, so host traffic is a small fraction of
-# their size. The cheap thing to spill. Fused (ffn_gate_up_exps, cohere2moe/deepseek2/dots3note) and chunked
-# (ffn_*_chexps, grovemoe) spellings are experts too: created per expert and dispatched with GGML_OP_MUL_MAT_ID, so read
-# just as sparsely as the split form. NOT ffn_routed_up/down: kimi-k3 creates it {n_embd, n_embd_latent} with no expert
-# axis and plain GGML_OP_MUL_MAT, so every token crosses it -- spilling it would send a hot tensor to the host at the
-# rate reserved for cold ones.
+# Sparse experts incl. fused/chunked forms; NOT ffn_routed_*: kimi-k3 reads it every token
 _MOE_EXPERT_RE = re.compile(r"^ffn_(up|gate|down|gate_up)_(exps|chexps)\.weight$")
 # Dense FFN. Fully activated: every byte crosses the bus every token.
 _DENSE_FFN_RE = re.compile(r"^ffn_(up|gate|down)\.weight$")
@@ -123,9 +120,8 @@ class ModelLayout:
     # Rides the layer list at index n_layer_all, so it is GPU-resident for any -ngl >= 1 and can only be moved with an
     # explicit override.
     lm_head_bytes: int = 0
-    # dev_input is CPU-pinned: host RAM only.
+    # llama.cpp pins dev_input to CPU: never VRAM, but charged to host RAM
     token_embd_bytes: int = 0
-    # Slice of token_embd_bytes, not a second charge: gemma4/qwen4exp create it TENSOR_READ_LAZY.
     per_layer_embd_bytes: int = 0
     # Every tensor's bytes, excluded blocks included; the file size less its metadata.
     tensor_bytes: int = 0
@@ -137,20 +133,12 @@ class ModelLayout:
     recurrent_bytes: int = 0
     n_ctx_train: int = 0
     is_moe: bool = False
+    # Offloaded MoE experts move only expert_used/expert_count per token; a dense FFN moves all of it.
     n_expert: int = 0
     n_expert_used: int = 0
-    # ``blocks`` drops the trailing nextn/MTP blk.<N> tensors: block_count counts them (llama-model.cpp reads it into
-    # n_layer_all) but the target does not use them. They are real blk.<N>.ffn_* weights (models/qwen35moe.cpp,
-    # load_block_mtp), so an unbounded ^blk\.\d+\. spill pattern WOULD match them once a draft is loaded. The planner
-    # uses this to stay bounded.
+    # Trailing nextn/MTP blocks dropped; an unbounded ^blk\.\d+\. pattern would match them
     has_excluded_blocks: bool = False
-    # Total bytes of those dropped blocks, so a caller that knows a draft WILL engage can charge them back. Dropping
-    # them suits the ordinary load: every trailing block gets TENSOR_SKIP unless load_mtp is set
-    # (models/glm4-moe.cpp:42-44, the same gate in every embedded-MTP arch) and TENSOR_SKIP returns before the tensor
-    # exists (llama-model-loader.cpp:1123-1131). But ``--spec-type draft-mtp`` sets load_mtp on the TARGET's own params
-    # (common/common.cpp:1713), so the block is materialised at its layer's buffer type, and i_gpu_start counting back
-    # from n_layer_all (llama-model.cpp:1449) puts those blocks on a GPU FIRST. llama.cpp's own fitter widens its
-    # offloadable-layer count the same way (common/fit.cpp:139-142). Zero when nothing was dropped.
+    # Dropped block bytes: --spec-type draft-mtp loads them on the target, GPU first
     excluded_block_bytes: int = 0
     # Sliding-window attention: some layers keep a window-sized cache, some the full context
     # (llama-kv-cache-iswa.cpp:69-104). Not visible in n_attention_layers; multi-device abstains.
@@ -446,10 +434,7 @@ def _layout_from_reader(reader, *, build: Optional[int] = None) -> ModelLayout:
 def _layout_from_readers(readers, *, build: Optional[int] = None) -> ModelLayout:
     """One reader per shard, the first carrying the metadata."""
     reader = readers[0]
-    # Split GGUF: llama.cpp loads every sibling shard (llama-model-loader.cpp:590-618), but GGUFReader memmaps only the
-    # ONE path it was given. Shard 1 still carries the metadata, so the layout would look complete while undercounting
-    # resident and spillable by most of the model -- an overstated fit, too few -ot patterns, and a startup OOM with
-    # --fit off. Abstain unless every shard was handed over; the seam then reproduces --fit on exactly.
+    # Split GGUF: GGUFReader maps one shard, so a partial read undercounts and can OOM under --fit off; abstain unless every shard is given
     if (int(_field(reader, "split.count") or 0) or 1) != len(readers):
         return ModelLayout()
 
@@ -534,6 +519,7 @@ def _layout_from_readers(readers, *, build: Optional[int] = None) -> ModelLayout
         )
         kv_per_token += int(n_attention) * (k_width + v_width) * 2
 
+    # Full context on every layer is safe for TOTAL but cannot show which layers hold the big caches.
     has_swa = bool(_field(reader, f"{arch}.attention.sliding_window") or 0)
     # Both MLA head lengths, never kv_lora_rank: llama-hparams.cpp:llama_hparams::is_mla.
     has_mla = bool(_field(reader, f"{arch}.attention.key_length_mla") or 0) and bool(
@@ -630,7 +616,8 @@ def _layout_from_readers(readers, *, build: Optional[int] = None) -> ModelLayout
                     tname = getattr(tensor, "tensor_type", None)
                     tb[cls] = (nbytes, getattr(tname, "name", "") or "")
             continue
-        if name.startswith("per_layer_token_embd"):
+        # Before the token_embd substring below, which would otherwise swallow the per-layer table.
+        if is_per_layer_embedding(name):
             per_layer_embd += nbytes
         # token_embd_norm is a repeating-layer tensor, not a host-pinned input embedding.
         elif "token_embd" in name and not name.startswith("token_embd_norm"):
@@ -643,12 +630,11 @@ def _layout_from_readers(readers, *, build: Optional[int] = None) -> ModelLayout
     if not spill and not resident:
         return ModelLayout()
 
-    # Tied embeddings: llama.cpp duplicates token_embd as the output tensor on dev_output
-    # (llama-model-loader.cpp:1113, 1309, 1318), a second full VRAM matrix named token_embd.weight.
+    # Tied embeddings: llama.cpp allocates a second full matrix on the output device; count it resident, else the lm_head rung credits a spill that moves nothing
     if not lm_head and token_embd:
         other_resident += token_embd
 
-    # nextn/MTP blocks load only with a draft: measured, spilling them frees nothing.
+    # Trailing nextn/MTP blocks are not loaded without a draft: spilling them frees nothing
     all_block_indices = set(spill) | set(resident)
     block_indices = sorted(i for i in all_block_indices if i < n_layers)
     has_excluded = any(i >= n_layers for i in all_block_indices)
@@ -682,7 +668,7 @@ def _layout_from_readers(readers, *, build: Optional[int] = None) -> ModelLayout
         recurrent_rows = recurrent_rows,
         blocks = blocks,
         lm_head_bytes = lm_head,
-        token_embd_bytes = token_embd + per_layer_embd,
+        token_embd_bytes = token_embd,
         per_layer_embd_bytes = per_layer_embd,
         tensor_bytes = sum(int(t.n_bytes) for r in readers for t in r.tensors),
         other_resident_bytes = other_resident,
@@ -699,15 +685,8 @@ def _layout_from_readers(readers, *, build: Optional[int] = None) -> ModelLayout
 
 
 def spill_pattern_for(layout: ModelLayout, indices: Optional[list[int]] = None) -> str:
-    """The anchored ``-ot`` pattern matching the spillable FFN of ``indices``.
-
-    Anchored because llama.cpp matches with ``std::regex_search``: an unanchored
-    ``output\\.weight`` also matches every ``blk.N.attn_output.weight``, which
-    silently moves 16 attention projections nobody asked to move. The trailing
-    ``\\.weight$`` likewise keeps ``ffn_(up|gate|down)\\.`` from matching
-    ``ffn_gate_inp.weight``.
-    """
-    # same set _MOE_EXPERT_RE selected, or the plan credits itself bytes the emitted pattern never moves
+    """Anchored: llama.cpp uses regex_search, so an unanchored pattern also moves attention tensors."""
+    # Must match _MOE_EXPERT_RE, or the plan credits bytes the pattern never moves
     body = "ffn_(up|gate|down|gate_up)_(exps|chexps)" if layout.is_moe else "ffn_(up|gate|down)"
     if indices is None:
         block = r"\d+"

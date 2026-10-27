@@ -159,3 +159,50 @@ def test_load_paths_key_the_bundle_on_the_same_decision():
     assert src.count("reduction_filter = family_filters_reductions(") == 2
     assert 'getattr(fam, "filter_reduction_configs"' not in src
     assert 'getattr(state.family, "filter_reduction_configs"' not in src
+
+
+@pytest.mark.parametrize("cap", [(7, 5), (8, 0), (8, 6), (8, 9), (9, 0), (10, 0), (12, 0), None])
+@pytest.mark.parametrize(
+    "repo", ["black-forest-labs/FLUX.2-klein-4B", "black-forest-labs/FLUX.2-klein-9B"]
+)
+def test_klein_pins_the_reduction_filter_on_every_arch(monkeypatch, repo, cap):
+    from core.inference.diffusion_families import detect_family
+
+    fam = detect_family(repo)
+    assert fam is not None and fam.name == "flux.2-klein"
+    _on(monkeypatch, cap)
+    assert cc.family_filters_reductions(fam) is True
+    assert _filter_reaching_compile(monkeypatch, fam) is True
+
+
+def test_klein_filter_kill_switch(monkeypatch):
+    _on(monkeypatch, (7, 5))
+    monkeypatch.setenv(cc.DYNAMIC_SCALE_RBLOCK_ENV, "1")
+    assert cc.reduction_config_filter_available() is False
+
+
+@pytest.mark.parametrize("cap", [(7, 5), (8, 0), (8, 6), (8, 9), (9, 0), (10, 0), (12, 0), None])
+@pytest.mark.parametrize(
+    "repo", ["Qwen/Qwen-Image-2.1", "unsloth/Qwen-Image-2.1", "Qwen/Qwen-Image-2.1-Turbo"]
+)
+def test_qwen_image_21_pins_the_reduction_filter_on_every_arch(monkeypatch, repo, cap):
+    from core.inference.diffusion_families import detect_family
+
+    fam = detect_family(repo)
+    assert fam is not None and fam.name == "qwen-image-2.1"
+    _on(monkeypatch, cap)
+    assert cc.family_filters_reductions(fam) is True
+    assert _filter_reaching_compile(monkeypatch, fam) is True
+
+
+def test_qwen_image_21_filter_kill_switch(monkeypatch):
+    from core.inference.diffusion_families import detect_family
+
+    _on(monkeypatch, (8, 9))
+    monkeypatch.setenv(cc.DYNAMIC_SCALE_RBLOCK_ENV, "1")
+    assert cc.reduction_config_filter_available() is False
+    # The family still asks, but no pinned option reaches torch.compile.
+    assert cc.family_filters_reductions(detect_family("Qwen/Qwen-Image-2.1")) is True
+    kwargs = {"options": {}}
+    assert ds.pin_reduction_configs(kwargs) is False
+    assert ds.REDUCTION_FILTER_OPTION not in kwargs["options"]

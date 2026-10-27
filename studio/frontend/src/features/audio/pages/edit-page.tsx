@@ -6,7 +6,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ParamSlider } from "@/features/chat";
 import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
 import type { ModelOption } from "@/features/model-picker/components/model-selector/types";
-import { SpeechToTextIcon } from "@hugeicons/core-free-icons";
+import { ClosedCaptionIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ComponentProps, useEffect, useState } from "react";
 import { type AudioGalleryClip, fetchAudioBlob } from "../api";
@@ -38,7 +38,6 @@ type RailProps = Omit<
   | "claimedOptions"
 >;
 
-/** Selects ②'s last word so typing replaces it. */
 function selectLastWord(field: HTMLTextAreaElement | null) {
   if (!field) return;
   const match = /([\p{L}\p{N}'’-]+)[^\p{L}\p{N}]*$/u.exec(field.value);
@@ -106,7 +105,7 @@ function EditInputs({
             disabled={!sourceUsable || transcriber.transcribing || disabled}
             onClick={() => void transcriber.transcribe(source)}
           >
-            <HugeiconsIcon icon={SpeechToTextIcon} className="size-3.5" />
+            <HugeiconsIcon icon={ClosedCaptionIcon} className="size-[1em]" />
             {transcriber.transcribing ? "Transcribing…" : "Transcribe"}
           </Button>
         </div>

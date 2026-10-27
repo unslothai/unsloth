@@ -1034,7 +1034,9 @@ def test_the_layout_reader_totals_every_tensor_from_a_real_gguf(tmp_path):
     layout = layout_from_gguf(str(path))
     assert layout.complete
     assert layout.tensor_bytes == 4 * (16 + 1024 + 4096 + 256 + 64)
-    assert layout.token_embd_bytes == 4 * (1024 + 4096)
+    assert layout.token_embd_bytes == 4 * 1024
+    assert layout.per_layer_embd_bytes == 4 * 4096
+    assert layout.other_resident_bytes == 4 * (16 + 1024)
 
 
 @pytest.mark.parametrize("endianess", ["LITTLE", "BIG"])
@@ -3074,8 +3076,8 @@ def test_a_windowed_cache_across_devices_is_not_shrunk_on_a_stale_layer_vector()
     assert one.priced and one.n_ctx < 65536, one.reason
 
 
-def test_the_per_layer_embeddings_are_their_own_bucket_inside_token_embd():
-    """A slice, not a second charge: the seam has to take the PLE back out of the host side
+def test_the_per_layer_embeddings_are_their_own_bucket_beside_token_embd():
+    """Its own bucket, not a slice of token_embd: the seam takes the PLE out of the host side
     without the tied-output duplicate going with it."""
     fields = {k.replace("llama.", "gemma4."): v for k, v in _shard_fields().items()}
     fields["general.architecture"] = "gemma4"
@@ -3090,17 +3092,16 @@ def test_the_per_layer_embeddings_are_their_own_bucket_inside_token_embd():
     layout = _layout_from_reader(reader)
     assert layout.complete
     assert layout.per_layer_embd_bytes == 5 * GIB
-    assert layout.token_embd_bytes == 6 * GIB
+    assert layout.token_embd_bytes == GIB
 
 
 def _ple_layout(ple_bytes):
-    """``q4_layout`` with ``ple_bytes`` of per-layer embeddings inside token_embd."""
+    """``q4_layout`` with ``ple_bytes`` of per-layer embeddings beside token_embd."""
     base = q4_layout()
     return ModelLayout(
         **{
             **base.__dict__,
             "arch": "gemma4",
-            "token_embd_bytes": base.token_embd_bytes + ple_bytes,
             "per_layer_embd_bytes": ple_bytes,
         }
     )

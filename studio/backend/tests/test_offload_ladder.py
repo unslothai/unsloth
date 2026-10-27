@@ -425,7 +425,7 @@ def tied_embedding_layout(vocab: int, per_layer: int) -> ModelLayout:
         n_attention_layers = 35,
         blocks = blocks,
         lm_head_bytes = 0,
-        token_embd_bytes = vocab + per_layer,
+        token_embd_bytes = vocab,
         per_layer_embd_bytes = per_layer,
         other_resident_bytes = vocab,
         kv_bytes_per_token_f16 = 0.615 * GIB / 9216,
@@ -436,13 +436,12 @@ def tied_embedding_layout(vocab: int, per_layer: int) -> ModelLayout:
 
 
 def test_the_tied_embedding_duplicate_is_the_vocabulary_not_the_per_layer_embeddings():
-    """``per_layer_token_embd`` lands in the same host-resident bucket as ``token_embd``, so
-    adding that WHOLE bucket to ``other_resident_bytes`` charged VRAM several times the vocabulary
-    matrix it meant to."""
+    """``per_layer_token_embd`` is host-resident like ``token_embd``, so adding both buckets to
+    ``other_resident_bytes`` charged VRAM several times the vocabulary matrix it meant to."""
     vocab, per_layer = 264 * 1024**2, 1540 * 1024**2
     layout = tied_embedding_layout(vocab, per_layer)
     assert layout.other_resident_bytes == vocab
-    assert layout.token_embd_bytes == vocab + per_layer
+    assert layout.token_embd_bytes == vocab and layout.per_layer_embd_bytes == per_layer
     from core.inference.offload_planner import all_resident_bytes
 
     resident = all_resident_bytes(layout, 9216, kv_bytes_floor = 48 * 1024**2)

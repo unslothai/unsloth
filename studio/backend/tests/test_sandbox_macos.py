@@ -76,6 +76,10 @@ def test_profile_is_deny_default(profile):
     assert "(allow default)" not in profile
 
 
+def test_the_fd_directory_is_listable_so_spawning_never_brute_forces_closes(profile):
+    assert '(allow file-read* (literal "/dev/fd"))' in profile.splitlines()
+
+
 def test_every_rule_is_a_balanced_s_expression(profile):
     depth = 0
     in_string = False
@@ -409,6 +413,60 @@ def test_profile_compiles_under_sandbox_exec(tmp_path):
         assert result.returncode == 0, result.stderr
     finally:
         prepared.cleanup()
+
+
+@_darwin_only
+def test_a_child_spawns_promptly_under_an_unlimited_fd_limit(tmp_path):
+    """Before /dev/fd was listable, this spawn spun forever at 100% CPU, unkillable by its parent's timeout."""
+    import resource
+    import signal
+
+    _soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if hard != resource.RLIM_INFINITY:
+        pytest.skip("needs an unlimited hard RLIMIT_NOFILE to raise the soft limit to")
+
+    def unlimited():
+        resource.setrlimit(resource.RLIMIT_NOFILE, (resource.RLIM_INFINITY, hard))
+
+    workdir = tmp_path / "session"
+    workdir.mkdir()
+    spawn = (
+        "import subprocess, time\n"
+        "start = time.monotonic()\n"
+        "subprocess.run(['/usr/bin/true'], check = True)\n"
+        "print(time.monotonic() - start)\n"
+    )
+    prepared = backend.prepare(
+        ToolLaunchPlan(
+            argv = (sys.executable, "-I", "-S", "-c", spawn),
+            workdir = str(workdir),
+            env = {"PATH": "/usr/bin:/bin"},
+            preexec_fn = unlimited,
+        )
+    )
+    proc = subprocess.Popen(
+        prepared.argv,
+        env = prepared.env,
+        stdout = subprocess.PIPE,
+        stderr = subprocess.PIPE,
+        text = True,
+        preexec_fn = prepared.preexec_fn,
+        start_new_session = True,
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout = 30)
+    except subprocess.TimeoutExpired:
+        pytest.fail("spawning a child inside the sandbox did not finish within 30s")
+    finally:
+        if proc.returncode is None:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError:
+                pass
+        proc.wait()
+        prepared.cleanup()
+    assert proc.returncode == 0, stderr
+    assert float(stdout.strip()) < 5.0
 
 
 @_darwin_only

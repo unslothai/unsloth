@@ -192,11 +192,12 @@ class PlanOptions:
     fitter_vram_bytes_per_device: tuple[int, ...] = ()
     fitter_outside_layout_bytes: Optional[int] = None
     fitter_drops_draft: bool = False
+    lazy_read_bytes: int = 0
 
 
 @dataclass(frozen = True)
 class Plan:
-    """What to launch with, and why."""
+    """False means emit nothing new: the planner abstained or the load needs no help; llama.cpp defaults then apply, always safe"""
 
     changed: bool = False
     n_ctx: int = 0
@@ -1065,36 +1066,7 @@ def _plan_placement(
     split_weights_per_device: Sequence[int] = (),
     kv_layer_weights: Sequence[int] = (),
 ) -> Plan:
-    """Decide the placement for one launch.
-
-    ``split_weights_per_device`` is the RAW free VRAM llama.cpp will size its row
-    ranges from, in the same device order as ``vram_bytes_per_device``. It is a
-    different quantity from the budget by construction -- the budget subtracts a
-    per-card reserve -- so the two must not be conflated when modelling the
-    split. Empty falls back to the budget, which is right whenever the caller has
-    applied no per-card adjustment at all.
-
-    ``kv_layer_weights`` is each layer's RELATIVE cache size, scaled to the total
-    the planner already trusts: it PLACES the cache, never re-sizes it. Empty
-    means the caller cannot say, and the per-device check then abstains.
-
-    ``kv_bytes_floor`` is an attention-cache size the caller has already computed
-    byte-accurately for this launch. The planner never reserves less than it; see
-    :func:`cache_bytes` for why the layout's own f16 product is not enough on its
-    own. 0 (the default) keeps the pure-layout arithmetic.
-
-    Ladder, cheapest first, measured on a dense 27B at 128K:
-      rung 0  nothing spilled                    75.37 t/s
-      rung 1  FFN to host                        13.63 t/s
-      rung 2  FFN + lm_head                      11.39 t/s
-      never   -ngl or --no-kv-offload            ~1.03 t/s
-
-    The order is confirmed by the cost model rather than assumed, and is stated
-    in TIME. Ranking on percentage loss is wrong: lm_head reads "43% alone, 16%
-    on top of FFN", which looks sub-additive, while the same 0.97 GiB costs
-    10.206 ms/token alone and 14.428 on top -- 41% MORE, not less. Percentages
-    of different baselines are not commensurable; milliseconds are.
-    """
+    """Rungs ordered in ms per token, not percent (percent losses use different baselines); split_weights_per_device is raw free VRAM, not the budget"""
     opts = opts or PlanOptions()
 
     if not layout.complete or not vram_bytes_per_device:
@@ -2384,9 +2356,14 @@ def _finish(
         if kv_on_host
         else 0
     )
-    ple_lazy_bytes = layout.per_layer_embd_bytes if opts.ple_read_lazily else 0
+    ple_lazy_bytes = (
+        layout.per_layer_embd_bytes
+        if opts.ple_read_lazily
+        else min(max(0, int(opts.lazy_read_bytes or 0)), layout.per_layer_embd_bytes)
+    )
     host_side = (
         layout.token_embd_bytes
+        + layout.per_layer_embd_bytes
         - ple_lazy_bytes
         + spilled_weight_bytes
         + mmproj_host_bytes

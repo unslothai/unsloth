@@ -1381,8 +1381,8 @@ def test_a_reconciliation_still_strips_a_non_layer_split_mode_env():
     """Reachability anchor for the decline above: if load_model ever stops
     scrubbing the inherited mode, the env form becomes plannable again and this is
     the test that should fail and say so."""
-    src = inspect.getsource(LlamaCppBackend.load_model)
-    compact = "".join(src.split())
+    assert "self._reconcile_split_mode_env(env" in inspect.getsource(LlamaCppBackend.load_model)
+    compact = "".join(inspect.getsource(LlamaCppBackend._reconcile_split_mode_env).split())
     assert 'if_inherited_smand_inherited_sm!="layer":' in compact
     assert 'env.pop("LLAMA_ARG_SPLIT_MODE",None)' in compact
     assert 'env.pop("LLAMA_ARG_SPLIT_MODE",None)env.pop("LLAMA_ARG_TENSOR_SPLIT",None)' in compact
@@ -2736,7 +2736,6 @@ class _PleStub(_Stub):
             **{
                 **base.__dict__,
                 "arch": self.arch,
-                "token_embd_bytes": base.token_embd_bytes + self.ple_bytes,
                 "per_layer_embd_bytes": self.ple_bytes,
             }
         )
@@ -2819,6 +2818,45 @@ def test_the_price_follows_the_lazy_mode_load_model_emitted(monkeypatch):
     assert _ple_lazily(monkeypatch, _ple_stub(), emitted_lazy_mode = "off") is False
     assert _ple_lazily(monkeypatch, _ple_stub(), emitted_lazy_mode = None) is True
     assert _ple_lazily(monkeypatch, _ple_stub(ple_bytes = 0)) is False
+
+
+def test_the_fit_lazy_read_price_decides_when_no_mode_was_emitted(monkeypatch):
+    """load_model's fit hands down the bytes llama.cpp will read lazily (lookup tables, an iGPU
+    where auto resolves off, a resident-table --lazy-mode off it emits). With no -lzm of its own
+    the seam prices that figure, not a bare auto guess; an emitted -lzm still decides, and an
+    emitted ``off`` charges the whole table."""
+
+    def opts_for(**kw):
+        return _captured_opts(
+            monkeypatch, _ple_stub(), free_mib = 14 * 1024, supports_lazy_mode = True, **kw
+        )[0]
+
+    streamed = opts_for(lazy_read_bytes = 8 * GIB)
+    assert (streamed.ple_read_lazily, streamed.lazy_read_bytes) == (False, 8 * GIB)
+    resident = opts_for(lazy_read_bytes = 0)
+    assert (resident.ple_read_lazily, resident.lazy_read_bytes) == (False, 0)
+    forced = opts_for(lazy_read_bytes = 0, emitted_lazy_mode = "on")
+    assert forced.ple_read_lazily is True
+    held = opts_for(lazy_read_bytes = 8 * GIB, emitted_lazy_mode = "off")
+    assert (held.ple_read_lazily, held.lazy_read_bytes) == (False, 0)
+
+
+def test_a_resident_table_keeps_its_host_charge_in_the_plan():
+    """Main's --lazy-mode off reaches the planner as lazy_read_bytes = 0: the table is host RAM."""
+    from core.inference.offload_planner import PlanOptions, plan_placement
+
+    layout = _ple_layout_for_charge(8 * GIB)
+    charged = plan_placement(layout, [12 * GIB], 200 * GIB, 8192, opts = PlanOptions())
+    streamed = plan_placement(
+        layout, [12 * GIB], 200 * GIB, 8192, opts = PlanOptions(lazy_read_bytes = 8 * GIB)
+    )
+    assert charged.host_bytes - streamed.host_bytes == 8 * GIB
+
+
+def _ple_layout_for_charge(ple_bytes):
+    from test_offload_planner import q4_layout
+    base = q4_layout()
+    return ModelLayout(**{**base.__dict__, "arch": "gemma4", "per_layer_embd_bytes": ple_bytes})
 
 
 def _deepseek_backend(**extra):
