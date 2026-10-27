@@ -27014,6 +27014,7 @@ def _fit_external_context(
     tools: Optional[list[dict]] = None,
     branch: Optional[list[dict]] = None,
     tool_loop: bool = False,
+    fit_attachments: bool = True,
 ) -> tuple[list[dict], Optional[dict], Optional[int]]:
     """``branch`` is the client's request when ``messages`` is a tool loop's conversation, so recall
     queries the user's turn rather than a controller re-prompt the loop appended."""
@@ -27088,6 +27089,7 @@ def _fit_external_context(
         sticky_dropped = sticky,
         sticky_is_checkpoint = sticky_is_checkpoint,
         estimate_message = estimate_message_tokens_without_unpriced_media,
+        fit_attachments = fit_attachments,
         **_compaction_fit_kwargs(policy, ratio),
     )
     if truncation and _records_boundary(truncation):
