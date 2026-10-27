@@ -2274,6 +2274,11 @@ html[data-chat-font] .aui-root {
 	.sidebar-header-action:hover {
 		background-color: var(--nav-surface-hover);
 	}
+	/* Even-sized glyphs keep the inset inside the 20px circle on whole pixels. */
+	.sidebar-header-action > svg {
+		width: round(nearest, var(--icon-size), 2px);
+		height: round(nearest, var(--icon-size), 2px);
+	}
 	@media (pointer: coarse) {
 		.sidebar-header-action {
 			@apply opacity-100 pointer-events-auto;
