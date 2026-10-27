@@ -632,7 +632,9 @@ test("an empty model config does not invent a modified target-modules setting", 
       }),
     ),
   );
-  useTrainingConfigStore.getState().selectTrainingModel("org/no-defaults", "text");
+  useTrainingConfigStore
+    .getState()
+    .selectTrainingModel("org/no-defaults", "text");
   await waitForModelDefaults("org/no-defaults");
 
   const inCpt = useTrainingConfigStore.getState();
@@ -909,7 +911,7 @@ test("leaving CPT while the new model's defaults are loading does not restore th
   assert.equal(useTrainingConfigStore.getState().trainOnCompletions, false);
 });
 
-test("an image dataset picked inside CPT keeps train on completions off for a vision model", async () => {
+test("an image dataset picked inside CPT restores assistant-only training for a vision model", async () => {
   useTrainingConfigStore.getState().reset();
   setAuthFetchHandler((input, init) => {
     if (input === "/api/hub/datasets/check-format") {
@@ -954,7 +956,7 @@ test("an image dataset picked inside CPT keeps train on completions off for a vi
   assert.equal(useTrainingConfigStore.getState().isDatasetImage, true);
 
   useTrainingConfigStore.getState().setTrainingMethod("qlora");
-  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, false);
+  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, true);
 });
 
 const completionDefaults = (id: string, isAudio: boolean) =>
@@ -1152,7 +1154,7 @@ async function settleStore(): Promise<void> {
   throw new Error("store did not settle");
 }
 
-test("a model found to be vision inside CPT keeps completions off for an image dataset", async () => {
+test("a model found to be vision inside CPT restores completions for an image dataset", async () => {
   useTrainingConfigStore.getState().reset();
   let isVision = false;
   setAuthFetchHandler((input) =>
@@ -1178,7 +1180,7 @@ test("a model found to be vision inside CPT keeps completions off for an image d
   assert.equal(useTrainingConfigStore.getState().isVisionModel, true);
 
   useTrainingConfigStore.getState().setTrainingMethod("qlora");
-  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, false);
+  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, true);
 });
 
 test("an opt-out made while defaults load survives a CPT round trip", async () => {
@@ -1203,7 +1205,7 @@ test("an opt-out made while defaults load survives a CPT round trip", async () =
   assert.equal(useTrainingConfigStore.getState().trainOnCompletions, false);
 });
 
-test("an image split picked inside CPT keeps completions off after manual toggles", async () => {
+test("an image split picked inside CPT preserves the assistant-only choice after manual toggles", async () => {
   useTrainingConfigStore.getState().reset();
   setAuthFetchHandler((input, init) =>
     input === "/api/hub/datasets/check-format"
@@ -1223,7 +1225,7 @@ test("an image split picked inside CPT keeps completions off after manual toggle
   assert.equal(useTrainingConfigStore.getState().isDatasetImage, true);
 
   useTrainingConfigStore.getState().setTrainingMethod("qlora");
-  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, false);
+  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, true);
 });
 
 test("a manual toggle on the previous model does not decide the next model's CPT restore", async () => {
@@ -1282,4 +1284,62 @@ test("a config imported while defaults load survives entering and leaving CPT", 
 
   useTrainingConfigStore.getState().setTrainingMethod("qlora");
   assert.equal(useTrainingConfigStore.getState().trainOnCompletions, false);
+});
+
+test("image and audio VLM datasets keep assistant-only defaults for arbitrary model families", async () => {
+  for (const modality of ["image", "audio"] as const) {
+    for (const datasetFirst of [true, false]) {
+      useTrainingConfigStore.getState().reset();
+      setAuthFetchHandler((input) =>
+        input === "/api/hub/datasets/check-format"
+          ? Response.json({
+              columns: ["messages"],
+              detected_format: "chatml",
+              is_audio: modality === "audio",
+              is_image: modality === "image",
+              requires_manual_mapping: false,
+            })
+          : Response.json({
+              id: "custom/new-architecture",
+              config: { training: { train_on_completions: true } },
+              is_vision: true,
+              is_audio: modality === "audio",
+              audio_type_known: true,
+              model_type: "vision",
+            }),
+      );
+      if (datasetFirst) {
+        useTrainingConfigStore.getState().setDataset("custom/conversations");
+        for (let attempt = 0; attempt < 100; attempt += 1) {
+          if (!useTrainingConfigStore.getState().isCheckingDataset) break;
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+      }
+      useTrainingConfigStore
+        .getState()
+        .selectTrainingModel("custom/new-architecture", "vision");
+      await settleStore();
+      if (!datasetFirst) {
+        useTrainingConfigStore.getState().setDataset("custom/conversations");
+        await settleStore();
+      }
+      assert.equal(useTrainingConfigStore.getState().trainOnCompletions, true);
+
+      // Explicit choices win over modality detection and repeated model probes.
+      useTrainingConfigStore.getState().setTrainOnCompletions(false);
+      useTrainingConfigStore
+        .getState()
+        .setDataset("custom/other-conversations");
+      await settleStore();
+      assert.equal(useTrainingConfigStore.getState().trainOnCompletions, false);
+      useTrainingConfigStore.getState().applyConfigPatch({
+        training: { train_on_completions: false },
+      });
+      useTrainingConfigStore
+        .getState()
+        .setDataset("custom/imported-conversations");
+      await settleStore();
+      assert.equal(useTrainingConfigStore.getState().trainOnCompletions, false);
+    }
+  }
 });

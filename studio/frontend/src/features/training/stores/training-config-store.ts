@@ -423,15 +423,10 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                 : LR_DEFAULT_FULL;
             }
 
-            if (modelDetails.is_vision && get().isDatasetImage === true) {
-              modelDefaultsPatch.trainOnCompletions = false;
-            }
-
+            // Chat VLM collators support assistant masking too; only standalone speech
+            // objectives lack assistant turns and keep their existing default.
             const isAudio = !!modelDetails.is_audio;
             if (isAudio && !modelDetails.is_vision) {
-              modelDefaultsPatch.trainOnCompletions = false;
-            }
-            if (isAudio && modelDetails.is_vision && get().isDatasetAudio) {
               modelDefaultsPatch.trainOnCompletions = false;
             }
 
@@ -811,13 +806,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             };
             if (!_trainOnCompletionsManuallySet) {
               const { isVisionModel, isAudioModel } = current;
-              if (isVisionModel && isImage) {
-                updates.trainOnCompletions = false;
-              }
               if (isAudioModel && !isVisionModel) {
-                updates.trainOnCompletions = false;
-              }
-              if (isAudioModel && isVisionModel && isAudio) {
                 updates.trainOnCompletions = false;
               }
               if (updates.trainOnCompletions === false) {
