@@ -146,6 +146,11 @@ def test_a_loop_or_a_lost_group_fails_on_the_generate_step():
         )
     assert compiler.validate(doc)["ok"], compiler.validate(doc)
     doc = _flow()
+    doc["nodes"].remove(_column(doc, "domain"))
+    with pytest.raises(CompileError) as caught:
+        compile_flow(doc)
+    assert any("follows the category 'domain'" in i["message"] for i in caught.value.issues)
+    doc = _flow()
     extra = copy.deepcopy(next(n for n in doc["nodes"] if n["type"] == GENERATE_TYPE))
     extra["id"] = "extra_generate"
     doc["nodes"].append(extra)
@@ -187,6 +192,12 @@ def test_seed_tokens_stay_out_and_local_seed_paths_stay_on_this_machine():
     for mode in ("json", "package", "baked"):
         out, _, _ = asyncio.run(package.export_flow(doc, mode, None))
         assert b"private page" not in out and b"up1" not in out and b"a.pdf" not in out
+    payload = copy.deepcopy(SQL)
+    payload["recipe"]["seed_config"] = {"source": {"seed_type": "hf", "path": "me/private"}}
+    payload["ui"] = {"seed_preview_rows": [{"text": "private row"}]}
+    doc, _ = flow_from_recipe(payload, name = "SQL")
+    out, _, _ = asyncio.run(package.export_flow(doc, "json", None))
+    assert b"private row" not in out and b"me/private" in out
 
 
 def test_importing_strips_tool_servers_and_keys_and_says_so():
