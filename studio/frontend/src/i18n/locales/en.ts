@@ -138,7 +138,7 @@ export const en = {
     local: "Local",
     browserUse: {
       label: "Browser use",
-      description: "Let model control the in-built browser",
+      description: "Let models control the in-built browser",
       unavailable: "Load a model that can call tools to let it use the browser.",
     },
     suggested: "Suggested",

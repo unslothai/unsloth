@@ -141,7 +141,7 @@ export const fr = {
     local: "Local",
     browserUse: {
       label: "Utilisation du navigateur",
-      description: "Laisser le modèle contrôler le navigateur intégré",
+      description: "Laisser les modèles contrôler le navigateur intégré",
       unavailable: "Chargez un modèle capable d'appeler des outils pour qu'il utilise le navigateur.",
     },
     suggested: "Suggestions",

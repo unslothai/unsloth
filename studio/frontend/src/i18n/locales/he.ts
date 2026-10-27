@@ -142,7 +142,7 @@ export const he = {
     local: "מקומי",
     browserUse: {
       label: "שימוש בדפדפן",
-      description: "אפשר למודל לשלוט בדפדפן המובנה",
+      description: "אפשר למודלים לשלוט בדפדפן המובנה",
       unavailable: "טען מודל שיכול לקרוא לכלים כדי שיוכל להשתמש בדפדפן.",
     },
     suggested: "מוצעים",

@@ -139,7 +139,7 @@ export const sv = {
     local: "Lokal",
     browserUse: {
       label: "Webbläsaranvändning",
-      description: "Låt modellen styra den inbyggda webbläsaren",
+      description: "Låt modeller styra den inbyggda webbläsaren",
       unavailable: "Läs in en modell som kan anropa verktyg för att låta den använda webbläsaren.",
     },
     suggested: "Förslag",

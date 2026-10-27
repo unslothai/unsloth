@@ -140,7 +140,7 @@ export const it = {
     local: "Locale",
     browserUse: {
       label: "Uso del browser",
-      description: "Consenti al modello di controllare il browser integrato",
+      description: "Consenti ai modelli di controllare il browser integrato",
       unavailable: "Carica un modello in grado di chiamare strumenti per fargli usare il browser.",
     },
     suggested: "Suggeriti",
