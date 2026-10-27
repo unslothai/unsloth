@@ -77,13 +77,8 @@ _CA_BUNDLE_VARIABLES = ("SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "
 
 
 def _point_tls_at_studio_ca_bundle(child_env: dict[str, str]) -> None:
-    """Have the engine verify TLS against Studio's own certifi bundle.
-
-    The engine locks are hash-pinned, so an engine venv keeps the certifi it was installed with
-    (2026.7.22 still trusts the revoked emSign roots) until the user updates the engine. Studio's
-    venv carries the current certifi, and httpx, requests and huggingface_hub in the engine all
-    read these variables. A bundle the user chose is left alone.
-    """
+    """Engines verify TLS with Studio's current certifi unless the user chose a bundle: their
+    hash-pinned venvs keep an old certifi (2026.7.22 still trusts the revoked emSign roots)."""
     if any(child_env.get(name) for name in _CA_BUNDLE_VARIABLES):
         return
     try:
