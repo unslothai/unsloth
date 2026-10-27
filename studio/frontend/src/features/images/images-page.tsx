@@ -952,14 +952,15 @@ function AdvancedTextField({
         {hint && <InfoHint>{hint}</InfoHint>}
       </span>
       {multiline ? (
+        // One line at the selects' 36px, still resizable for several files; 18px corners match the pills.
         <Textarea
           aria-label={label}
-          rows={2}
+          rows={1}
           spellCheck={false}
           placeholder={placeholder}
           value={value}
           onChange={(e) => onValueChange(e.target.value)}
-          className="min-h-0 resize-y font-mono text-xs"
+          className="h-9 min-h-9 resize-y rounded-[18px] py-2 font-mono text-xs leading-5"
         />
       ) : (
         <Input
@@ -968,7 +969,7 @@ function AdvancedTextField({
           placeholder={placeholder}
           value={value}
           onChange={(e) => onValueChange(e.target.value)}
-          className="h-8 font-mono text-xs"
+          className="h-9 font-mono text-xs"
         />
       )}
     </div>
