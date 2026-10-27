@@ -989,8 +989,7 @@ def native_quant_scheme(
         offload and scheme in NATIVE_OFFLOAD_SCHEMES and native_offload_host(target)
     ):
         return None
-    # MPS stores fp8 but cannot cast to it before torch 2.15, and quantizing bf16 to fp8 adds ~3x int8's error for
-    # no gain over int8; a checkpoint's fp8 codes take fp8 storage (``diffusion_comfy_quant.comfy_fp8_storage``).
+    # MPS cannot cast to fp8 before torch 2.15; checkpoint fp8 codes take ``comfy_fp8_storage`` instead.
     if _mps_bf16(target) and scheme != TQ_INT8:
         return None
     if _family_denied(family, scheme):

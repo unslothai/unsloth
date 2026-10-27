@@ -513,7 +513,6 @@ def _video_comfy_backends(
         }
     offload = priced_offload or not _video_comfy_resident(plan, bf16_plan)
     name = getattr(fam, "name", None)
-    # MPS never offloads: there a plan past the resident margin is what makes storage pay
     store_pays = offload or mps_plan_tight(plan)
     storage = _video_fp8_storage(fam, target, store_pays, widened_mib = widened_mib)
     return {
