@@ -142,3 +142,26 @@ def test_idle_thread_does_not_keep_a_dropped_generator_alive():
     gc.collect()
     # The idle worker waits up to _IDLE_EXIT_S, but must not hold the generator meanwhile.
     assert closed.wait(2)
+
+
+def test_dropping_a_stepper_frees_its_thread_before_the_idle_timeout():
+    import gc
+
+    def workers():
+        return [t for t in threading.enumerate() if t.name == "studio-gen-step"]
+
+    before = len(workers())
+
+    async def run():
+        steppers = [ThreadStepper(iter(range(3))) for _ in range(32)]
+        assert [await stepper.next(None) for stepper in steppers] == [0] * 32
+        assert len(workers()) >= before + 32
+        steppers.clear()
+
+    asyncio.run(run())
+    gc.collect()
+    # _IDLE_EXIT_S is 30 s; a dropped stepper's worker is woken instead of left to wait it out.
+    deadline = time.monotonic() + 5
+    while len(workers()) > before and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert len(workers()) <= before, len(workers())

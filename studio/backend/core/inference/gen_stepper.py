@@ -24,12 +24,17 @@ def _resolve(future: asyncio.Future, result, error) -> None:
         future.set_exception(error)
 
 
+def _waker(requests: queue.SimpleQueue):
+    # SimpleQueue.put is reentrant, so this is safe from a weakref callback run by the GC.
+    return lambda _ref: requests.put(None)
+
+
 def _work(ref, requests: queue.SimpleQueue) -> None:
     # Holds the stepper (so the generator) only while a step runs: a dropped stream's generator is
     # finalized as soon as its consumer lets go, as with a thread pool.
     while True:
         try:
-            loop, future, context, default = requests.get(timeout = _IDLE_EXIT_S)
+            request = requests.get(timeout = _IDLE_EXIT_S)
         except queue.Empty:
             stepper = ref()
             if stepper is None:
@@ -40,6 +45,9 @@ def _work(ref, requests: queue.SimpleQueue) -> None:
                     return
             del stepper
             continue
+        if request is None:
+            return  # the stepper was dropped: its stream is over, so this thread is not kept idle
+        loop, future, context, default = request
         stepper = ref()
         if stepper is None:
             return  # nobody can await this step any more
@@ -52,7 +60,7 @@ def _work(ref, requests: queue.SimpleQueue) -> None:
             loop.call_soon_threadsafe(_resolve, future, result, error)
         except RuntimeError:
             pass  # loop closed: nobody is waiting
-        del loop, future, context, default, result, error
+        del request, loop, future, context, default, result, error
 
 
 class ThreadStepper:
@@ -79,7 +87,7 @@ class ThreadStepper:
             if not self._running:
                 threading.Thread(
                     target = _work,
-                    args = (weakref.ref(self), self._requests),
+                    args = (weakref.ref(self, _waker(self._requests)), self._requests),
                     name = "studio-gen-step",
                     daemon = True,
                 ).start()
