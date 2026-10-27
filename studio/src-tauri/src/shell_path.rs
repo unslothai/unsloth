@@ -51,32 +51,141 @@ fn env_block_path(stdout: &[u8]) -> Option<Option<String>> {
     )
 }
 
-/// `None` when the shell rejected `command`; `Some(None)` when it ran without PATH.
+/// A login shell slower than this leaves PATH as inherited, rather than holding the window back.
 #[cfg(not(windows))]
-fn read_login_shell_path(shell: &str, command: &str) -> Option<Option<String>> {
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// After the shell exits, how long its last output may take to drain when something it started
+/// still holds stdout open.
+#[cfg(not(windows))]
+const DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
+#[cfg(not(windows))]
+#[derive(Debug, PartialEq)]
+struct TimedOut;
+
+/// Stdout of `shell -ilc command`; `Ok(None)` when it could not start or exited non-zero.
+/// Reads like `Command::output()`, except a background job an rc file leaves holding stdout
+/// cannot keep launch waiting, and a shell that never finishes is killed at `timeout`.
+#[cfg(not(windows))]
+fn run_login_shell(
+    shell: &str,
+    command: &str,
+    timeout: std::time::Duration,
+) -> Result<Option<Vec<u8>>, TimedOut> {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::sync::mpsc::{self, RecvTimeoutError};
+    use std::time::{Duration, Instant};
+
     let mut cmd = std::process::Command::new(shell);
     cmd.arg("-ilc")
         .arg(command)
         // Oh My Zsh's auto-update prompt can block the shell forever.
-        .env("DISABLE_AUTO_UPDATE", "true");
+        .env("DISABLE_AUTO_UPDATE", "true")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
     if let Some(home) = dirs::home_dir() {
         cmd.current_dir(home);
     }
-    let out = cmd.output().ok()?;
-    if !out.status.success() {
-        return None;
+    let Ok(mut child) = cmd.spawn() else {
+        return Ok(None);
+    };
+    let Some(mut stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Ok(None);
+    };
+    let (sender, chunks) = mpsc::channel::<Vec<u8>>();
+    std::thread::spawn(move || {
+        let mut buffer = [0u8; 8192];
+        loop {
+            match stdout.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(read) => {
+                    if sender.send(buffer[..read].to_vec()).is_err() {
+                        break;
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => break,
+            }
+        }
+    });
+
+    let deadline = Instant::now() + timeout;
+    let mut out = Vec::new();
+    let mut status = None;
+    let mut drain_until = None;
+    let mut eof = false;
+    loop {
+        if status.is_none() {
+            status = child.try_wait().ok().flatten();
+            if status.is_some() {
+                drain_until = Some(Instant::now() + DRAIN_GRACE);
+            }
+        }
+        if status.is_some() && (eof || env_block_complete(&out)) {
+            break;
+        }
+        let now = Instant::now();
+        if drain_until.is_some_and(|until| now >= until) {
+            break;
+        }
+        if status.is_none() && now >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(TimedOut);
+        }
+        if eof {
+            std::thread::sleep(Duration::from_millis(1));
+            continue;
+        }
+        match chunks.recv_timeout(Duration::from_millis(20)) {
+            Ok(chunk) => out.extend_from_slice(&chunk),
+            Err(RecvTimeoutError::Disconnected) => eof = true,
+            Err(RecvTimeoutError::Timeout) => {}
+        }
     }
-    env_block_path(&out.stdout)
+    // Whatever arrived between the last poll and exit.
+    out.extend(chunks.try_iter().flatten());
+    Ok(status.is_some_and(|status| status.success()).then_some(out))
+}
+
+/// Both delimiters are in: the block `env_block_path` reads is whole.
+#[cfg(not(windows))]
+fn env_block_complete(stdout: &[u8]) -> bool {
+    let delimiter = DELIMITER.as_bytes();
+    stdout
+        .windows(delimiter.len())
+        .filter(|window| *window == delimiter)
+        .nth(1)
+        .is_some()
+}
+
+/// `Ok(None)` when the shell rejected `command`; `Ok(Some(None))` when it ran without PATH.
+#[cfg(not(windows))]
+fn read_login_shell_path(
+    shell: &str,
+    command: &str,
+    timeout: std::time::Duration,
+) -> Result<Option<Option<String>>, TimedOut> {
+    Ok(run_login_shell(shell, command, timeout)?.and_then(|stdout| env_block_path(&stdout)))
 }
 
 /// Old command only if the shell rejected the probe (Plan 9 rc, a renamed fish); a probe
-/// that ran without PATH (`export -n PATH`) must not rerun the history-rewriting one.
+/// that ran without PATH (`export -n PATH`) must not rerun the history-rewriting one, and a
+/// shell that timed out is not given a second wait.
 #[cfg(not(windows))]
-fn login_shell_path(shell: &str) -> Option<String> {
+fn login_shell_path(shell: &str, timeout: std::time::Duration) -> Option<String> {
     let probe = probe_command(shell);
-    match read_login_shell_path(shell, &probe) {
+    match read_login_shell_path(shell, &probe, timeout).ok()? {
         Some(path) => path,
-        None if probe != env_command() => read_login_shell_path(shell, &env_command()).flatten(),
+        None if probe != env_command() => read_login_shell_path(shell, &env_command(), timeout)
+            .ok()
+            .flatten()
+            .flatten(),
         None => None,
     }
 }
@@ -98,7 +207,7 @@ pub fn fix_path() {
             "/bin/sh"
         };
         let shell = std::env::var("SHELL").unwrap_or_else(|_| default_shell.into());
-        if let Some(path) = login_shell_path(&shell) {
+        if let Some(path) = login_shell_path(&shell, PROBE_TIMEOUT) {
             std::env::set_var("PATH", path);
         }
     }
@@ -154,9 +263,15 @@ mod tests {
         .unwrap();
         std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
         let shell = shell.to_str().unwrap();
-        assert_eq!(read_login_shell_path(shell, &probe_command(shell)), None);
-        assert_eq!(read_login_shell_path(shell, "true"), None);
-        let path = login_shell_path(shell).unwrap_or_default();
+        assert_eq!(
+            read_login_shell_path(shell, &probe_command(shell), PROBE_TIMEOUT),
+            Ok(None)
+        );
+        assert_eq!(
+            read_login_shell_path(shell, "true", PROBE_TIMEOUT),
+            Ok(None)
+        );
+        let path = login_shell_path(shell, PROBE_TIMEOUT).unwrap_or_default();
         let _ = std::fs::remove_dir_all(&dir);
         assert!(path.starts_with("/from/fallback:"), "{path:?}");
     }
@@ -175,11 +290,78 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let path = login_shell_path(shell.to_str().unwrap());
+        let path = login_shell_path(shell.to_str().unwrap(), PROBE_TIMEOUT);
         let calls = std::fs::read_to_string(dir.join("nopath.calls")).unwrap_or_default();
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(path, None);
         assert_eq!(calls.lines().count(), 1, "{calls:?}");
+    }
+
+    #[cfg(not(windows))]
+    fn fake_shell(name: &str, body: &str) -> (std::path::PathBuf, String) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("unsloth-shell-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let shell = dir.join(name);
+        std::fs::write(
+            &shell,
+            format!("#!/bin/sh\necho run >> \"$0.calls\"\n{body}"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let shell = shell.to_str().unwrap().to_owned();
+        (dir, shell)
+    }
+
+    /// An rc file that starts a background job keeps stdout open after the shell exits; PATH
+    /// still arrives as soon as the shell is done, not when that job ends.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_background_job_holding_stdout_does_not_hold_launch() {
+        let (dir, shell) = fake_shell(
+            "agent",
+            "sleep 30 &\nPATH=/from/rc:$PATH exec /bin/sh -c \"$2\"\n",
+        );
+        let started = std::time::Instant::now();
+        let path = login_shell_path(&shell, PROBE_TIMEOUT).unwrap_or_default();
+        let elapsed = started.elapsed();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(path.starts_with("/from/rc:"), "{path:?}");
+        assert!(elapsed < std::time::Duration::from_secs(10), "{elapsed:?}");
+    }
+
+    /// A shell that never finishes is killed at the timeout, PATH is left alone, and the old
+    /// command is not given a second wait.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_shell_that_never_finishes_times_out_once() {
+        let (dir, shell) = fake_shell("hang", "exec sleep 30\n");
+        let timeout = std::time::Duration::from_millis(300);
+        let started = std::time::Instant::now();
+        assert_eq!(
+            read_login_shell_path(&shell, &probe_command(&shell), timeout),
+            Err(TimedOut)
+        );
+        let path = login_shell_path(&shell, timeout);
+        let elapsed = started.elapsed();
+        let calls = std::fs::read_to_string(format!("{shell}.calls")).unwrap_or_default();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(path, None);
+        assert_eq!(calls.lines().count(), 2, "{calls:?}");
+        assert!(elapsed < std::time::Duration::from_secs(10), "{elapsed:?}");
+    }
+
+    /// A shell that exits non-zero while a job holds stdout still counts as rejecting the probe.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_rejecting_shell_with_a_held_stdout_still_falls_back() {
+        let (dir, shell) = fake_shell(
+            "heldfb",
+            "sleep 30 &\ncase \"$2\" in if*) exit 2 ;; esac\nPATH=/from/fallback:$PATH exec /bin/sh -c \"$2\"\n",
+        );
+        let path = login_shell_path(&shell, PROBE_TIMEOUT).unwrap_or_default();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(path.starts_with("/from/fallback:"), "{path:?}");
     }
 
     #[cfg(not(windows))]
