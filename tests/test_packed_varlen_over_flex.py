@@ -219,7 +219,9 @@ def test_long_flattened_rows_keep_flex(routed, monkeypatch, batch, max_length, s
     "eval_dataset,eval_batch,pad_multiple,switched",
     [(None, 8, None, True), ([1], 8, None, False), ([1], 1, None, True), (None, 8, 8, False)],
 )
-def test_eval_rows_and_aligned_tails_keep_flex(routed, monkeypatch, eval_dataset, eval_batch, pad_multiple, switched):
+def test_eval_rows_and_aligned_tails_keep_flex(
+    routed, monkeypatch, eval_dataset, eval_batch, pad_multiple, switched
+):
     # Eval batches flatten into one row too; a padded-to-multiple tail is declined by the varlen wrapper.
     from unsloth.utils import packing
 

@@ -241,7 +241,12 @@ def _enable_hf_packed_attention(model = None, trainer = None) -> None:
         # A collator padding the flattened row to a multiple leaves a tail the varlen wrapper declines.
         pad_multiple = getattr(getattr(trainer, "data_collator", None), "pad_to_multiple_of", None)
         aligned_tail = isinstance(pad_multiple, int) and pad_multiple > 1
-        if enable_hf_packed_attention() and model is not None and not outer_compile and not aligned_tail:
+        if (
+            enable_hf_packed_attention()
+            and model is not None
+            and not outer_compile
+            and not aligned_tail
+        ):
             from ..models._utils import use_sdpa_for_packed_head_dim_flex
             use_sdpa_for_packed_head_dim_flex(
                 model, _longest_document(model, trainer), _packed_row_tokens(model, trainer)
