@@ -56,14 +56,14 @@ def _fit(messages, **kwargs):
 
 @pytest.mark.parametrize("checkpoint_boundary", [True, False])
 def test_recount_cannot_deepen_an_existing_compaction_boundary(monkeypatch, checkpoint_boundary):
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
     def unexpected():
         pytest.fail("Recounting must not probe or modify the archive")
 
-    monkeypatch.setattr(llama_cpp, "_archive_is_degraded", unexpected)
+    monkeypatch.setattr(chat_compaction, "_archive_is_degraded", unexpected)
     messages = _thread(pad = 12)
-    fitted, truncation = llama_cpp._fit_context(
+    fitted, truncation = chat_compaction._fit_context(
         messages,
         context_length = 1200,
         max_tokens = 200,
@@ -86,12 +86,14 @@ def test_recount_cannot_deepen_an_existing_compaction_boundary(monkeypatch, chec
 def test_recount_replays_the_block_wording_generation_renders(
     monkeypatch, can_reset, write_failed, searchable
 ):
-    from core.inference import checkpoint, llama_cpp
+    from core.inference import chat_compaction, checkpoint
     from core.rag import conversation_archive
 
-    monkeypatch.setattr(llama_cpp, "_archive_is_degraded", lambda: pytest.fail("no live probe"))
+    monkeypatch.setattr(
+        chat_compaction, "_archive_is_degraded", lambda: pytest.fail("no live probe")
+    )
     monkeypatch.setattr(conversation_archive, "degraded", lambda: write_failed)
-    fitted, _ = llama_cpp._fit_context(
+    fitted, _ = chat_compaction._fit_context(
         _thread(pad = 12),
         context_length = 1200,
         max_tokens = 200,
@@ -482,25 +484,25 @@ def test_a_reset_needs_both_an_archive_and_a_tool_capable_model(monkeypatch, sup
     """Both refusals are about not lying: a reset with no archive makes history
     unreachable while the notice says it is searchable, and a model that cannot take tools
     would be offered a memory it can never reach."""
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
     monkeypatch.setattr("core.rag.conversation_archive.enabled", lambda: True)
     monkeypatch.setattr("core.rag.conversation_archive.can_archive", lambda thread_id: True)
 
-    assert llama_cpp._can_reset_epoch("thread-1", supports_tools) is supports_tools
-    assert llama_cpp._can_reset_epoch(None, True) is False
+    assert chat_compaction._can_reset_epoch("thread-1", supports_tools) is supports_tools
+    assert chat_compaction._can_reset_epoch(None, True) is False
 
 
 def test_no_archive_means_no_reset(monkeypatch):
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
     monkeypatch.setattr("core.rag.conversation_archive.enabled", lambda: False)
 
-    assert llama_cpp._can_reset_epoch("thread-1", True) is False
+    assert chat_compaction._can_reset_epoch("thread-1", True) is False
 
 
 def test_the_fit_falls_back_to_rolling_when_the_request_may_not_reset(monkeypatch):
     """`_fit_context` is the only place that chooses, so every call site inherits it."""
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
     seen = {}
 
@@ -508,8 +510,8 @@ def test_the_fit_falls_back_to_rolling_when_the_request_may_not_reset(monkeypatc
         seen["rolling"] = True
         return messages, None
 
-    monkeypatch.setattr(llama_cpp, "fit_rolling_context", _rolling)
-    llama_cpp._fit_context(
+    monkeypatch.setattr(chat_compaction, "fit_rolling_context", _rolling)
+    chat_compaction._fit_context(
         [{"role": "user", "content": "hi"}],
         context_length = 4096,
         max_tokens = 128,
@@ -616,20 +618,20 @@ def test_a_restated_instruction_does_not_crowd_out_every_other_rule():
 
 def test_a_process_with_tools_disabled_still_resets(monkeypatch):
     """`--disable-tools` keeps checkpoint resets; a per-context hard-off still refuses them."""
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
     from state.tool_policy import tools_force_disabled
 
     monkeypatch.setattr("core.rag.conversation_archive.enabled", lambda: True)
     monkeypatch.setattr("core.rag.conversation_archive.can_archive", lambda thread_id: True)
 
     monkeypatch.setattr("state.tool_policy._tool_policy", None)
-    assert llama_cpp._can_reset_epoch("thread-1", True) is True
+    assert chat_compaction._can_reset_epoch("thread-1", True) is True
 
     monkeypatch.setattr("state.tool_policy._tool_policy", False)
-    assert llama_cpp._can_reset_epoch("thread-1", True) is True
+    assert chat_compaction._can_reset_epoch("thread-1", True) is True
 
     with tools_force_disabled():
-        assert llama_cpp._can_reset_epoch("thread-1", True) is False
+        assert chat_compaction._can_reset_epoch("thread-1", True) is False
 
 
 def test_disable_tools_reopens_the_loop_for_recall_only(monkeypatch):
@@ -839,16 +841,16 @@ def test_can_reset_false_replays_an_epoch_but_never_starts_one():
 
 def test_an_unreachable_archive_stops_the_epoch_on_the_TURN_IT_BREAKS(monkeypatch):
     """Probe archive reachability before the reset; degraded() only reflects the previous write."""
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
     from core.rag import conversation_archive
 
     monkeypatch.setattr(conversation_archive, "degraded", lambda: False)
 
     monkeypatch.setattr(conversation_archive, "reachable", lambda: True)
-    assert llama_cpp._archive_is_degraded() is False
+    assert chat_compaction._archive_is_degraded() is False
 
     monkeypatch.setattr(conversation_archive, "reachable", lambda: False)
-    assert llama_cpp._archive_is_degraded() is True
+    assert chat_compaction._archive_is_degraded() is True
 
 
 def test_the_reachability_probe_is_no_for_an_embedder_that_cannot_initialize(monkeypatch):
@@ -884,12 +886,12 @@ def test_the_reachability_probe_is_no_for_a_store_that_cannot_be_opened(monkeypa
 
 def test_a_degraded_archive_stops_a_NEW_epoch_but_keeps_the_one_in_force(monkeypatch):
     """A degraded archive downgrades a new reset to replay, keeping the epoch already in force."""
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
-    monkeypatch.setattr(llama_cpp, "_archive_is_degraded", lambda: True)
+    monkeypatch.setattr(chat_compaction, "_archive_is_degraded", lambda: True)
     messages = _thread() + [{"role": "user", "content": "continue"}]
 
-    _, replayed = llama_cpp._fit_context(
+    _, replayed = chat_compaction._fit_context(
         messages,
         context_length = 1200,
         max_tokens = 200,
@@ -901,7 +903,7 @@ def test_a_degraded_archive_stops_a_NEW_epoch_but_keeps_the_one_in_force(monkeyp
     assert replayed["carried_forward_chars"] > 0
     assert replayed["checkpoint_started"] is False
 
-    _, fresh = llama_cpp._fit_context(
+    _, fresh = chat_compaction._fit_context(
         messages,
         context_length = 1200,
         max_tokens = 200,
@@ -915,12 +917,12 @@ def test_a_degraded_archive_stops_a_NEW_epoch_but_keeps_the_one_in_force(monkeyp
 
 
 def test_a_healthy_archive_still_starts_an_epoch(monkeypatch):
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
-    monkeypatch.setattr(llama_cpp, "_archive_is_degraded", lambda: False)
+    monkeypatch.setattr(chat_compaction, "_archive_is_degraded", lambda: False)
     messages = _thread() + [{"role": "user", "content": "continue"}]
 
-    _, truncation = llama_cpp._fit_context(
+    _, truncation = chat_compaction._fit_context(
         messages,
         context_length = 1200,
         max_tokens = 200,
@@ -961,14 +963,14 @@ def test_only_a_checkpoint_fitted_request_is_told_the_conversation_was_reset():
 
 def test_a_request_that_withdrew_the_tool_loop_never_resets(monkeypatch):
     """tool_choice none withdraws search_conversation for that request, so a reset must not fire then."""
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
     monkeypatch.setattr("core.rag.conversation_archive.enabled", lambda: True)
     monkeypatch.setattr("core.rag.conversation_archive.can_archive", lambda thread_id: True)
     monkeypatch.setattr("state.tool_policy.get_tool_policy", lambda: None)
 
-    assert llama_cpp._can_reset_epoch("thread-1", True) is True
-    assert llama_cpp._can_reset_epoch("thread-1", True, tools_withheld = True) is False
+    assert chat_compaction._can_reset_epoch("thread-1", True) is True
+    assert chat_compaction._can_reset_epoch("thread-1", True, tools_withheld = True) is False
 
 
 def test_the_gguf_route_tells_the_gate_when_tool_choice_none_withdrew_the_loop():
@@ -996,29 +998,29 @@ def test_a_tool_loop_request_whose_catalogue_lacks_the_memory_tool_never_resets(
     """A request that NAMED its tools is the live case, on either surface: both paths
     return the caller's list verbatim, so such a request would reset an epoch behind a tool
     absent on every turn."""
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
     monkeypatch.setattr("core.rag.conversation_archive.has_archive", lambda thread_id: True)
 
     search = [{"type": "function", "function": {"name": "search_conversation"}}]
     other = [{"type": "function", "function": {"name": "bash"}}]
 
-    assert llama_cpp._memory_tool_withheld("thread-1", other) is True
-    assert llama_cpp._memory_tool_withheld("thread-1", search + other) is False
-    assert llama_cpp._memory_tool_withheld("thread-1", []) is True
-    assert llama_cpp._memory_tool_withheld(None, other) is False
+    assert chat_compaction._memory_tool_withheld("thread-1", other) is True
+    assert chat_compaction._memory_tool_withheld("thread-1", search + other) is False
+    assert chat_compaction._memory_tool_withheld("thread-1", []) is True
+    assert chat_compaction._memory_tool_withheld(None, other) is False
 
 
 def test_the_first_compaction_is_not_refused_for_lacking_a_tool_that_cannot_exist_yet(monkeypatch):
     """The archive is written DURING the first compaction, so on the turn that resets for
     the first time `search_conversation` legitimately is not in the catalogue yet. Reading
     its absence as a refusal there would mean no thread could ever start an epoch."""
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
     monkeypatch.setattr("core.rag.conversation_archive.has_archive", lambda thread_id: False)
 
     assert (
-        llama_cpp._memory_tool_withheld(
+        chat_compaction._memory_tool_withheld(
             "thread-1",
             [
                 {"type": "function", "function": {"name": "bash"}},
@@ -1060,7 +1062,7 @@ def test_identical_retry_siblings_do_not_let_one_of_them_claim_the_branch(monkey
     import sys
     import types
 
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
     from routes import inference as inference_routes
 
     reply = "Done."
@@ -1108,8 +1110,8 @@ def test_identical_retry_siblings_do_not_let_one_of_them_claim_the_branch(monkey
 
     _install(_rows(True))
     assert inference_routes._thread_has_checkpoint("t1", branch) is False
-    assert llama_cpp._sticky_compaction_boundary("t1", branch) == 0
-    assert llama_cpp._sticky_compaction_boundary("t1", branch, context_policy = "rolling") == 0
+    assert chat_compaction._sticky_compaction_boundary("t1", branch) == 0
+    assert chat_compaction._sticky_compaction_boundary("t1", branch, context_policy = "rolling") == 0
 
     _install(_rows(False))
     assert inference_routes._thread_has_checkpoint("t1", branch) is False
@@ -1117,7 +1119,7 @@ def test_identical_retry_siblings_do_not_let_one_of_them_claim_the_branch(monkey
 
 def test_a_protected_message_does_not_let_the_next_turn_un_compact_the_epoch():
     """Boundaries must count evictions past pinned messages, or the next turn un-compacts the epoch."""
-    from core.inference.llama_cpp import _branch_boundary
+    from core.inference.chat_compaction import _branch_boundary
 
     pinned = {
         "role": "user",
@@ -1170,7 +1172,7 @@ def test_the_final_answer_pass_never_starts_an_epoch_behind_the_tools_it_does_no
     """The epoch gate must check the request's own tools, since the final answer sends none."""
     import inspect
 
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction, llama_cpp
 
     source = inspect.getsource(llama_cpp)
     final_pass = source[source.index("# Final streaming pass with the full conversation") :]
@@ -1181,7 +1183,7 @@ def test_the_final_answer_pass_never_starts_an_epoch_behind_the_tools_it_does_no
     assert (
         final_pass.count("tools_withheld = True") == 2
     ), "both final-pass fits (preflight and respawn refit) must declare the withheld loop"
-    assert llama_cpp._can_reset_epoch("thread-1", True, tools_withheld = True) is False
+    assert chat_compaction._can_reset_epoch("thread-1", True, tools_withheld = True) is False
 
 
 def test_a_reasoning_models_saved_reply_is_still_recognised_as_on_branch():
@@ -1212,12 +1214,12 @@ def test_a_reasoning_models_saved_reply_is_still_recognised_as_on_branch():
 
 def test_an_epoch_that_may_not_reset_keeps_its_block_instead_of_being_trimmed_away(monkeypatch):
     """An epoch that cannot reset must keep its block, not fall through to rolling that drops it."""
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
     monkeypatch.setattr("core.rag.conversation_archive.reachable", lambda: True)
 
     messages = _thread() + [{"role": "user", "content": "continue"}]
-    _, first = llama_cpp._fit_context(
+    _, first = chat_compaction._fit_context(
         messages,
         context_length = 1200,
         max_tokens = 200,
@@ -1226,7 +1228,7 @@ def test_an_epoch_that_may_not_reset_keeps_its_block_instead_of_being_trimmed_aw
         sticky_dropped = 0,
     )
 
-    fitted, truncation = llama_cpp._fit_context(
+    fitted, truncation = chat_compaction._fit_context(
         messages,
         context_length = 1200,
         max_tokens = 200,
@@ -1314,7 +1316,7 @@ def test_only_truncate_oldest_is_a_policy_that_can_reset(requested, expected, mo
 
 def test_a_request_can_force_rolling_when_checkpoint_is_the_process_default(monkeypatch):
     """Studio's sliding-window control must not need UNSLOTH_CONTEXT_POLICY=rolling."""
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
     seen = {}
 
@@ -1324,8 +1326,8 @@ def test_a_request_can_force_rolling_when_checkpoint_is_the_process_default(monk
         return messages, None
 
     monkeypatch.setattr("core.inference.checkpoint.enabled", lambda: True)
-    monkeypatch.setattr(llama_cpp, "fit_rolling_context", _rolling)
-    llama_cpp._fit_context(
+    monkeypatch.setattr(chat_compaction, "fit_rolling_context", _rolling)
+    chat_compaction._fit_context(
         [{"role": "user", "content": "hi"}],
         context_length = 4096,
         max_tokens = 128,
@@ -1411,12 +1413,12 @@ def test_a_checkpoint_request_override_still_admits_the_memory_tool(monkeypatch)
 
 def test_a_degraded_archive_stops_the_block_promising_a_lookup_that_returns_nothing(monkeypatch):
     """A degraded archive must stop the block promising search_conversation lookups that return nothing."""
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
     messages = _thread() + [{"role": "user", "content": "continue"}]
 
-    monkeypatch.setattr(llama_cpp, "_archive_is_degraded", lambda: True)
-    fitted, truncation = llama_cpp._fit_context(
+    monkeypatch.setattr(chat_compaction, "_archive_is_degraded", lambda: True)
+    fitted, truncation = chat_compaction._fit_context(
         messages,
         context_length = 1200,
         max_tokens = 200,
@@ -1429,8 +1431,8 @@ def test_a_degraded_archive_stops_the_block_promising_a_lookup_that_returns_noth
     assert checkpoint._NOT_SEARCHABLE in fitted[0]["content"]
     assert checkpoint._SEARCHABLE not in fitted[0]["content"]
 
-    monkeypatch.setattr(llama_cpp, "_archive_is_degraded", lambda: False)
-    healthy, started = llama_cpp._fit_context(
+    monkeypatch.setattr(chat_compaction, "_archive_is_degraded", lambda: False)
+    healthy, started = chat_compaction._fit_context(
         messages,
         context_length = 1200,
         max_tokens = 200,
@@ -1469,7 +1471,7 @@ def _checkpoint_metadata(boundary, **extra):
 
 def test_a_wire_shaped_tool_branch_restores_the_stored_rows_boundary(monkeypatch):
     """Stored rows expand to call, result and reply on the wire, so match parent chains, not text."""
-    from core.inference import checkpoint, llama_cpp
+    from core.inference import chat_compaction, checkpoint
     from routes import inference as inference_routes
 
     call = {
@@ -1532,14 +1534,14 @@ def test_a_wire_shaped_tool_branch_restores_the_stored_rows_boundary(monkeypatch
     _stub_studio_db(monkeypatch, rows)
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
 
-    assert llama_cpp._sticky_compaction_state("t1", rows[:3]) == (4, True)
-    assert llama_cpp._sticky_compaction_state("t1", branch) == (4, True)
+    assert chat_compaction._sticky_compaction_state("t1", rows[:3]) == (4, True)
+    assert chat_compaction._sticky_compaction_state("t1", branch) == (4, True)
     assert inference_routes._thread_has_checkpoint("t1", branch) is True
 
 
 def test_parent_linked_identical_retry_siblings_keep_the_smaller_boundary(monkeypatch):
     """A full text match is not proof when two stored leaves are indistinguishable."""
-    from core.inference import checkpoint, llama_cpp
+    from core.inference import chat_compaction, checkpoint
     from routes import inference as inference_routes
 
     def _reply(identifier, boundary):
@@ -1557,10 +1559,10 @@ def test_parent_linked_identical_retry_siblings_keep_the_smaller_boundary(monkey
     _stub_studio_db(monkeypatch, rows)
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
 
-    assert llama_cpp._sticky_compaction_state("t1", branch) == (6, True)
+    assert chat_compaction._sticky_compaction_state("t1", branch) == (6, True)
     assert inference_routes._thread_has_checkpoint("t1", branch) is True
 
-    assert llama_cpp._sticky_compaction_state("t1", branch[:1]) == (0, False)
+    assert chat_compaction._sticky_compaction_state("t1", branch[:1]) == (0, False)
     assert inference_routes._thread_has_checkpoint("t1", branch[:1]) is False
 
     rows[2]["metadata"]["custom"]["contextTruncation"].pop("checkpoint")
@@ -1569,7 +1571,7 @@ def test_parent_linked_identical_retry_siblings_keep_the_smaller_boundary(monkey
 
 def test_repeated_text_on_one_parent_chain_uses_only_the_newest_state(monkeypatch):
     """Identical replies are chronological when durable ancestry identifies one chain."""
-    from core.inference import checkpoint, llama_cpp
+    from core.inference import chat_compaction, checkpoint
     from routes import inference as inference_routes
 
     rows = [
@@ -1583,13 +1585,13 @@ def test_repeated_text_on_one_parent_chain_uses_only_the_newest_state(monkeypatc
     _stub_studio_db(monkeypatch, rows)
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
 
-    assert llama_cpp._sticky_compaction_state("t1", branch) == (5, True)
+    assert chat_compaction._sticky_compaction_state("t1", branch) == (5, True)
     assert inference_routes._thread_has_checkpoint("t1", branch) is True
 
 
 def test_authoritative_ancestry_stops_before_an_unmatched_stored_descendant(monkeypatch):
     """An edited request proves its common prefix, not the old branch after the edit."""
-    from core.inference import checkpoint, llama_cpp
+    from core.inference import chat_compaction, checkpoint
     from core.rag import conversation_archive
     from routes import inference as inference_routes
 
@@ -1617,7 +1619,7 @@ def test_authoritative_ancestry_stops_before_an_unmatched_stored_descendant(monk
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
 
     assert conversation_archive._active_chain(rows, branch) == rows
-    assert llama_cpp._sticky_compaction_state("t1", branch) == (0, False)
+    assert chat_compaction._sticky_compaction_state("t1", branch) == (0, False)
     assert inference_routes._thread_has_checkpoint("t1", branch) is False
 
 
@@ -1675,7 +1677,7 @@ def test_authoritative_ancestry_stops_before_an_unmatched_stored_descendant(monk
 )
 def test_the_newest_authoritative_state_controls_the_old_epoch(monkeypatch, metadata, expected):
     """Only active or aborted boundary-less placeholders defer to the prior epoch."""
-    from core.inference import checkpoint, llama_cpp
+    from core.inference import chat_compaction, checkpoint
     from routes import inference as inference_routes
 
     rows = [
@@ -1698,13 +1700,13 @@ def test_the_newest_authoritative_state_controls_the_old_epoch(monkeypatch, meta
     _stub_studio_db(monkeypatch, rows)
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
 
-    assert llama_cpp._sticky_compaction_state("t1", branch) == expected
+    assert chat_compaction._sticky_compaction_state("t1", branch) == expected
     assert inference_routes._thread_has_checkpoint("t1", branch) is expected[1]
 
 
 def test_a_cancelled_epoch_boundary_is_found_through_its_stored_descendant(monkeypatch):
     """A cancelled reply can be absent from wire history and remain on the parent chain."""
-    from core.inference import checkpoint, llama_cpp
+    from core.inference import chat_compaction, checkpoint
     from core.rag import conversation_archive
     from routes import inference as inference_routes
 
@@ -1742,13 +1744,13 @@ def test_a_cancelled_epoch_boundary_is_found_through_its_stored_descendant(monke
     _stub_studio_db(monkeypatch, rows)
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
 
-    assert llama_cpp._sticky_compaction_state("t1", branch) == (12, True)
+    assert chat_compaction._sticky_compaction_state("t1", branch) == (12, True)
     assert inference_routes._thread_has_checkpoint("t1", branch) is True
 
 
 def test_retrying_the_newest_turn_twice_still_resolves_the_proved_branch(monkeypatch):
     """Siblings forking below the proved branch are not a tie, or the thread drops to the text path."""
-    from core.inference import checkpoint, llama_cpp
+    from core.inference import chat_compaction, checkpoint
     from routes import inference as inference_routes
 
     rows = [
@@ -1785,13 +1787,13 @@ def test_retrying_the_newest_turn_twice_still_resolves_the_proved_branch(monkeyp
 
     for retry in range(3):
         rows.append(_row(id = f"fu{retry}", parentId = "a1", content = f"A retried follow-up {retry}."))
-        assert llama_cpp._sticky_compaction_state("t1", branch) == (4, True)
+        assert chat_compaction._sticky_compaction_state("t1", branch) == (4, True)
         assert inference_routes._thread_has_checkpoint("t1", branch) is True
 
 
 def test_the_unstored_newest_turn_cannot_move_the_request_to_a_sibling(monkeypatch):
     """The newest turn is unstored until its reply completes, so it must not match a sibling's text."""
-    from core.inference import checkpoint, llama_cpp
+    from core.inference import chat_compaction, checkpoint
 
     def _reply(identifier, boundary):
         return _turn(id = identifier, parentId = "u1", metadata = _checkpoint_metadata(boundary))
@@ -1810,12 +1812,12 @@ def test_the_unstored_newest_turn_cannot_move_the_request_to_a_sibling(monkeypat
     _stub_studio_db(monkeypatch, rows)
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
 
-    assert llama_cpp._sticky_compaction_state("t1", branch) == (6, True)
+    assert chat_compaction._sticky_compaction_state("t1", branch) == (6, True)
 
 
 def test_an_indistinguishable_placeholder_twin_is_not_dropped_from_the_vote(monkeypatch):
     """An indistinguishable placeholder twin must stay in the vote, or the abandoned sibling decides."""
-    from core.inference import checkpoint, llama_cpp
+    from core.inference import chat_compaction, checkpoint
     from routes import inference as inference_routes
 
     for status in ("cancelled", "running"):
@@ -1831,13 +1833,13 @@ def test_an_indistinguishable_placeholder_twin_is_not_dropped_from_the_vote(monk
         _stub_studio_db(monkeypatch, rows)
         monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
 
-        assert llama_cpp._sticky_compaction_state("t1", branch) == (0, False)
+        assert chat_compaction._sticky_compaction_state("t1", branch) == (0, False)
         assert inference_routes._thread_has_checkpoint("t1", branch) is False
 
 
 def test_a_rewound_turn_does_not_match_an_assistant_reply_of_the_same_text(monkeypatch):
     """The text match must agree on role, or a rewound turn adopts an abandoned reply's boundary."""
-    from core.inference import checkpoint, llama_cpp
+    from core.inference import chat_compaction, checkpoint
     from routes import inference as inference_routes
 
     rows = [
@@ -1854,13 +1856,13 @@ def test_a_rewound_turn_does_not_match_an_assistant_reply_of_the_same_text(monke
     _stub_studio_db(monkeypatch, rows)
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
 
-    assert llama_cpp._sticky_compaction_state("t1", branch) == (0, False)
+    assert chat_compaction._sticky_compaction_state("t1", branch) == (0, False)
     assert inference_routes._thread_has_checkpoint("t1", branch) is False
 
 
 def test_a_chain_that_skips_past_the_settled_proof_is_refused(monkeypatch):
     """Rows past the settled tip must carry text the request sent; an empty-render row proves nothing."""
-    from core.inference import checkpoint, llama_cpp
+    from core.inference import chat_compaction, checkpoint
     from routes import inference as inference_routes
 
     rows = [
@@ -1878,14 +1880,14 @@ def test_a_chain_that_skips_past_the_settled_proof_is_refused(monkeypatch):
     _stub_studio_db(monkeypatch, rows)
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
 
-    assert llama_cpp._archive_branch_chain(rows, branch) is None
-    assert llama_cpp._sticky_compaction_state("t1", branch) == (0, False)
+    assert chat_compaction._archive_branch_chain(rows, branch) is None
+    assert chat_compaction._sticky_compaction_state("t1", branch) == (0, False)
     assert inference_routes._thread_has_checkpoint("t1", branch) is False
 
 
 def test_a_repeated_text_earlier_in_the_request_cannot_admit_an_abandoned_row(monkeypatch):
     """Post-tip rows are justified only by unstored turns, not by text earlier in the request."""
-    from core.inference import checkpoint, llama_cpp
+    from core.inference import chat_compaction, checkpoint
     from routes import inference as inference_routes
 
     rows = [
@@ -1903,14 +1905,14 @@ def test_a_repeated_text_earlier_in_the_request_cannot_admit_an_abandoned_row(mo
     _stub_studio_db(monkeypatch, rows)
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
 
-    assert llama_cpp._archive_branch_chain(rows, branch) is None
-    assert llama_cpp._sticky_compaction_state("t1", branch) == (0, False)
+    assert chat_compaction._archive_branch_chain(rows, branch) is None
+    assert chat_compaction._sticky_compaction_state("t1", branch) == (0, False)
     assert inference_routes._thread_has_checkpoint("t1", branch) is False
 
 
 def test_a_research_row_is_recognised_under_custom_metadata(monkeypatch):
     """The archive accepts the research keys in either place, so this must too."""
-    from core.inference import checkpoint, llama_cpp
+    from core.inference import chat_compaction, checkpoint
 
     rows = [
         {"id": "u1", "parentId": None, "role": "user", "content": "First question."},
@@ -1940,12 +1942,12 @@ def test_a_research_row_is_recognised_under_custom_metadata(monkeypatch):
     _stub_studio_db(monkeypatch, rows)
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
 
-    assert llama_cpp._sticky_compaction_state("t1", branch) == (6, True)
+    assert chat_compaction._sticky_compaction_state("t1", branch) == (6, True)
 
 
 def test_a_boundary_is_not_replayed_after_the_context_policy_changes(monkeypatch):
     """A boundary must not be replayed after the context policy changes; rolling must compute its own."""
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
     stored = [
         {"role": "user", "content": "q"},
@@ -1966,35 +1968,35 @@ def test_a_boundary_is_not_replayed_after_the_context_policy_changes(monkeypatch
     _stub_studio_db(monkeypatch, stored)
 
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
-    assert llama_cpp._sticky_compaction_boundary("t1") == 18
-    assert llama_cpp._sticky_compaction_boundary("t1", context_policy = "checkpoint") == 18
+    assert chat_compaction._sticky_compaction_boundary("t1") == 18
+    assert chat_compaction._sticky_compaction_boundary("t1", context_policy = "checkpoint") == 18
     assert (
-        llama_cpp._sticky_compaction_boundary("t1", context_policy = "rolling") == 0
+        chat_compaction._sticky_compaction_boundary("t1", context_policy = "rolling") == 0
     ), "a request that forces rolling must not replay a reset-sized checkpoint cut"
 
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "rolling")
     assert (
-        llama_cpp._sticky_compaction_boundary("t1") == 0
+        chat_compaction._sticky_compaction_boundary("t1") == 0
     ), "a reset-sized boundary was replayed under rolling, which rebuilds no block"
 
     stored[1]["metadata"]["custom"]["contextTruncation"] = {
         "fits": True,
         "boundary_messages": 6,
     }
-    assert llama_cpp._sticky_compaction_boundary("t1") == 6
-    assert llama_cpp._sticky_compaction_boundary("t1", context_policy = "rolling") == 6
+    assert chat_compaction._sticky_compaction_boundary("t1") == 6
+    assert chat_compaction._sticky_compaction_boundary("t1", context_policy = "rolling") == 6
     assert (
-        llama_cpp._sticky_compaction_boundary("t1", context_policy = "checkpoint") == 0
+        chat_compaction._sticky_compaction_boundary("t1", context_policy = "checkpoint") == 0
     ), "a checkpoint request must start a new epoch instead of reusing a rolling boundary"
 
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
-    switched_boundary = llama_cpp._sticky_compaction_boundary("t1")
+    switched_boundary = chat_compaction._sticky_compaction_boundary("t1")
     assert (
         switched_boundary == 0
     ), "a rolling boundary must not suppress the first checkpoint reset and recall"
 
-    monkeypatch.setattr(llama_cpp, "_archive_is_degraded", lambda: False)
-    _, truncation = llama_cpp._fit_context(
+    monkeypatch.setattr(chat_compaction, "_archive_is_degraded", lambda: False)
+    _, truncation = chat_compaction._fit_context(
         _thread() + [{"role": "user", "content": "continue"}],
         context_length = 1200,
         max_tokens = 200,
@@ -2008,7 +2010,7 @@ def test_a_boundary_is_not_replayed_after_the_context_policy_changes(monkeypatch
 
 def test_a_request_that_cannot_reset_still_replays_its_rolling_boundary(monkeypatch):
     """A rolling boundary stays replayable unless the fit would read it as an epoch in force."""
-    from core.inference import checkpoint, llama_cpp
+    from core.inference import chat_compaction, checkpoint
 
     stored = [
         {"role": "user", "content": "q"},
@@ -2022,10 +2024,10 @@ def test_a_request_that_cannot_reset_still_replays_its_rolling_boundary(monkeypa
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
 
     assert (
-        llama_cpp._sticky_compaction_boundary("t1", can_reset = False) == 6
+        chat_compaction._sticky_compaction_boundary("t1", can_reset = False) == 6
     ), "a fit that stays rolling must replay the boundary rolling recorded"
     assert (
-        llama_cpp._sticky_compaction_boundary("t1", can_reset = True) == 0
+        chat_compaction._sticky_compaction_boundary("t1", can_reset = True) == 0
     ), "a fit that may reset must start a new epoch instead of reusing a rolling boundary"
 
     stored[1]["metadata"]["custom"]["contextTruncation"] = {
@@ -2034,16 +2036,16 @@ def test_a_request_that_cannot_reset_still_replays_its_rolling_boundary(monkeypa
         "checkpoint": True,
     }
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "rolling")
-    assert llama_cpp._sticky_compaction_boundary("t1", can_reset = False) == 0
-    assert llama_cpp._sticky_compaction_boundary("t1", can_reset = True) == 0
+    assert chat_compaction._sticky_compaction_boundary("t1", can_reset = False) == 0
+    assert chat_compaction._sticky_compaction_boundary("t1", can_reset = True) == 0
 
 
 def test_a_rolling_boundary_never_reaches_the_checkpoint_replay(monkeypatch):
     """A rolling-origin count must never reach the checkpoint replay, which would read it as an epoch."""
-    from core.inference import checkpoint, llama_cpp
+    from core.inference import chat_compaction, checkpoint
 
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
-    monkeypatch.setattr(llama_cpp, "_archive_is_degraded", lambda: False)
+    monkeypatch.setattr(chat_compaction, "_archive_is_degraded", lambda: False)
 
     messages = [{"role": "system", "content": "standing instruction " * 20}]
     for index in range(20):
@@ -2052,7 +2054,7 @@ def test_a_rolling_boundary_never_reaches_the_checkpoint_replay(monkeypatch):
     messages.append({"role": "user", "content": "latest question"})
 
     def _fit(sticky_is_checkpoint):
-        _, truncation = llama_cpp._fit_context(
+        _, truncation = chat_compaction._fit_context(
             list(messages),
             context_length = 1800,
             max_tokens = 100,
@@ -2076,7 +2078,7 @@ def test_a_rolling_boundary_never_reaches_the_checkpoint_replay(monkeypatch):
 
 
 def test_the_boundary_reader_reports_which_fitter_recorded_it(monkeypatch):
-    from core.inference import checkpoint, llama_cpp
+    from core.inference import chat_compaction, checkpoint
 
     stored = [
         {"role": "user", "content": "q"},
@@ -2088,22 +2090,22 @@ def test_the_boundary_reader_reports_which_fitter_recorded_it(monkeypatch):
     ]
     _stub_studio_db(monkeypatch, stored)
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
-    assert llama_cpp._sticky_compaction_state("t1", can_reset = False) == (6, False)
+    assert chat_compaction._sticky_compaction_state("t1", can_reset = False) == (6, False)
 
     stored[1]["metadata"]["custom"]["contextTruncation"] = {
         "fits": True,
         "boundary_messages": 18,
         "checkpoint": True,
     }
-    assert llama_cpp._sticky_compaction_state("t1", can_reset = False) == (18, True)
-    assert llama_cpp._sticky_compaction_state("t1", can_reset = True) == (18, True)
+    assert chat_compaction._sticky_compaction_state("t1", can_reset = False) == (18, True)
+    assert chat_compaction._sticky_compaction_state("t1", can_reset = True) == (18, True)
 
-    assert llama_cpp._sticky_compaction_state(None) == (0, False)
+    assert chat_compaction._sticky_compaction_state(None) == (0, False)
 
 
 def test_changing_the_extra_trim_discards_the_old_boundary(monkeypatch):
     """Changing the extra-trim ratio must discard the saved boundary, or phase one replays it unchanged."""
-    from core.inference import checkpoint, llama_cpp
+    from core.inference import chat_compaction, checkpoint
 
     stored = [
         {"role": "user", "content": "q"},
@@ -2124,21 +2126,21 @@ def test_changing_the_extra_trim_discards_the_old_boundary(monkeypatch):
     _stub_studio_db(monkeypatch, stored)
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "rolling")
 
-    assert llama_cpp._sticky_compaction_boundary("t1", compaction_headroom_ratio = 0.25) == 12
+    assert chat_compaction._sticky_compaction_boundary("t1", compaction_headroom_ratio = 0.25) == 12
     assert (
-        llama_cpp._sticky_compaction_boundary("t1", compaction_headroom_ratio = 0.05) == 0
+        chat_compaction._sticky_compaction_boundary("t1", compaction_headroom_ratio = 0.05) == 0
     ), "a boundary cut with more extra trim than this request wants must be recomputed"
     assert (
-        llama_cpp._sticky_compaction_boundary("t1", compaction_headroom_ratio = 0.0) == 0
+        chat_compaction._sticky_compaction_boundary("t1", compaction_headroom_ratio = 0.0) == 0
     ), "no extra trim has to hand back what the 25% cut took"
 
     # A deeper ratio is equally inert if the old boundary stands, so a ratio change refuses it.
-    assert llama_cpp._sticky_compaction_boundary("t1", compaction_headroom_ratio = 0.5) == 0
+    assert chat_compaction._sticky_compaction_boundary("t1", compaction_headroom_ratio = 0.5) == 0
 
-    assert llama_cpp._sticky_compaction_boundary("t1", compaction_headroom_ratio = 0.25) == 12
+    assert chat_compaction._sticky_compaction_boundary("t1", compaction_headroom_ratio = 0.25) == 12
 
     del stored[1]["metadata"]["custom"]["contextTruncation"]["boundary_headroom_ratio"]
-    assert llama_cpp._sticky_compaction_boundary("t1", compaction_headroom_ratio = 0.0) == 12
+    assert chat_compaction._sticky_compaction_boundary("t1", compaction_headroom_ratio = 0.0) == 12
 
     # A checkpoint reset spends headroom only on the turn in progress, which its depth never
     # counts, so that depth is never refused over the ratio.
@@ -2149,23 +2151,25 @@ def test_changing_the_extra_trim_discards_the_old_boundary(monkeypatch):
         "checkpoint": True,
     }
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
-    assert llama_cpp._sticky_compaction_boundary("t1", compaction_headroom_ratio = 0.0) == 12
+    assert chat_compaction._sticky_compaction_boundary("t1", compaction_headroom_ratio = 0.0) == 12
 
 
 def test_the_recorded_boundary_carries_the_ratio_that_cut_it():
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
     before = [{"role": "user", "content": f"q{i}"} for i in range(6)]
     fitted = before[4:]
 
-    assert llama_cpp._boundary_metadata(fitted, before)["boundary_headroom_ratio"] == 0.25
-    assert llama_cpp._boundary_metadata(fitted, before, 0.05)["boundary_headroom_ratio"] == 0.05
-    assert llama_cpp._boundary_metadata(fitted, before, 5.0)["boundary_headroom_ratio"] == 0.9
+    assert chat_compaction._boundary_metadata(fitted, before)["boundary_headroom_ratio"] == 0.25
+    assert (
+        chat_compaction._boundary_metadata(fitted, before, 0.05)["boundary_headroom_ratio"] == 0.05
+    )
+    assert chat_compaction._boundary_metadata(fitted, before, 5.0)["boundary_headroom_ratio"] == 0.9
 
 
 def test_a_rescued_boundary_is_recorded_but_never_replayed(monkeypatch):
     """A rescued boundary is recorded but never replayed, since a missed reply reserve makes it unsafe."""
-    from core.inference import checkpoint, llama_cpp
+    from core.inference import chat_compaction, checkpoint
 
     stored = [
         {"role": "user", "content": "q"},
@@ -2178,14 +2182,14 @@ def test_a_rescued_boundary_is_recorded_but_never_replayed(monkeypatch):
     _stub_studio_db(monkeypatch, stored)
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "rolling")
 
-    assert llama_cpp._sticky_compaction_boundary("t1") == 6
+    assert chat_compaction._sticky_compaction_boundary("t1") == 6
 
     stored[1]["metadata"]["custom"]["contextTruncation"] = {
         "fits": False,
         "dropped_messages": 6,
         "boundary_messages": 6,
     }
-    assert llama_cpp._sticky_compaction_boundary("t1") == 0
+    assert chat_compaction._sticky_compaction_boundary("t1") == 0
 
 
 def test_the_tool_loop_reopens_only_where_an_epoch_actually_happened(monkeypatch):
@@ -2418,7 +2422,7 @@ def test_the_archive_probe_is_not_paid_by_a_conversation_that_fits():
 
 def test_a_non_prefix_eviction_survives_being_persisted_and_replayed(monkeypatch):
     """The boundary count and anchor must agree, or persistence clamps a mid-list pin's count back down."""
-    from core.inference import checkpoint, llama_cpp
+    from core.inference import chat_compaction, checkpoint
 
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
 
@@ -2453,8 +2457,8 @@ def test_a_non_prefix_eviction_survives_being_persisted_and_replayed(monkeypatch
     ]
     assert any("Section 7" in str(message["content"]) for message in evicted)
 
-    recorded = llama_cpp._branch_boundary(fitted, branch)
-    anchor = llama_cpp._branch_boundary_anchor(fitted, branch)
+    recorded = chat_compaction._branch_boundary(fitted, branch)
+    anchor = chat_compaction._branch_boundary_anchor(fitted, branch)
     reply = {"role": "assistant", "content": "Carrying on."}
     _stub_studio_db(
         monkeypatch,
@@ -2478,7 +2482,7 @@ def test_a_non_prefix_eviction_survives_being_persisted_and_replayed(monkeypatch
     )
 
     later = branch + [reply, {"role": "user", "content": "and now the second half"}]
-    replayed_boundary = llama_cpp._sticky_compaction_boundary("t1", later)
+    replayed_boundary = chat_compaction._sticky_compaction_boundary("t1", later)
     assert (
         replayed_boundary == recorded
     ), f"the persisted boundary shrank from {recorded} to {replayed_boundary} on read-back"
@@ -2493,7 +2497,7 @@ def test_a_non_prefix_eviction_survives_being_persisted_and_replayed(monkeypatch
 
 def test_the_boundary_projection_hands_the_anchor_back_unchanged():
     """The anchor must round-trip through _as_wire unchanged, or raw image and audio clients lose it."""
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
     for text in (
         '<audio-player src="data:audio/wav;base64,QUJDRA==" />',
         "here [[img:aabbccddeeff]]",
@@ -2505,10 +2509,12 @@ def test_the_boundary_projection_hands_the_anchor_back_unchanged():
             {"role": "user", "content": "next"},
         ]
 
-        written = llama_cpp._branch_boundary_anchor(branch[1:], branch)
+        written = chat_compaction._branch_boundary_anchor(branch[1:], branch)
         read_back = [
-            llama_cpp._anchor_text(message)
-            for message in llama_cpp._branch_non_system(llama_cpp._archive_as_wire(branch))
+            chat_compaction._anchor_text(message)
+            for message in chat_compaction._branch_non_system(
+                chat_compaction._archive_as_wire(branch)
+            )
         ]
 
         assert written and written in read_back, text
@@ -3165,7 +3171,7 @@ def test_every_epoch_the_writer_records_carries_a_count_the_reader_can_use():
 
 def test_a_cancelled_reply_that_reached_text_is_still_validated(monkeypatch):
     """A cancelled reply that reached text must still be validated, as clients re-send it."""
-    from core.inference import checkpoint, llama_cpp
+    from core.inference import chat_compaction, checkpoint
     from routes import inference as inference_routes
 
     rows = [
@@ -3192,14 +3198,14 @@ def test_a_cancelled_reply_that_reached_text_is_still_validated(monkeypatch):
     _stub_studio_db(monkeypatch, rows)
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
 
-    assert llama_cpp._archive_branch_chain(rows, branch) is None
-    assert llama_cpp._sticky_compaction_state("t1", branch) == (0, False)
+    assert chat_compaction._archive_branch_chain(rows, branch) is None
+    assert chat_compaction._sticky_compaction_state("t1", branch) == (0, False)
     assert inference_routes._thread_has_checkpoint("t1", branch) is False
 
 
 def test_storage_order_does_not_prove_ancestry_between_indistinguishable_rows(monkeypatch):
     """Rows without parentId must not be chained by storage order, which is not ancestry."""
-    from core.inference import checkpoint, llama_cpp
+    from core.inference import chat_compaction, checkpoint
     from routes import inference as inference_routes
 
     twin = "The same reply, twice."
@@ -3216,14 +3222,14 @@ def test_storage_order_does_not_prove_ancestry_between_indistinguishable_rows(mo
     _stub_studio_db(monkeypatch, rows)
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
 
-    assert llama_cpp._archive_branch_chain(rows, branch) is None
-    assert llama_cpp._sticky_compaction_state("t1", branch) == (7, True)
+    assert chat_compaction._archive_branch_chain(rows, branch) is None
+    assert chat_compaction._sticky_compaction_state("t1", branch) == (7, True)
     assert inference_routes._thread_has_checkpoint("t1", branch) is True
 
 
 def test_a_stored_reply_is_not_justified_by_a_user_turn_of_the_same_words(monkeypatch):
     """A stored assistant reply must not be justified by a live user turn with the same words."""
-    from core.inference import checkpoint, llama_cpp
+    from core.inference import chat_compaction, checkpoint
     from routes import inference as inference_routes
 
     rows = [
@@ -3242,14 +3248,14 @@ def test_a_stored_reply_is_not_justified_by_a_user_turn_of_the_same_words(monkey
     _stub_studio_db(monkeypatch, rows)
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
 
-    assert llama_cpp._archive_branch_chain(rows, branch) is None
-    assert llama_cpp._sticky_compaction_state("t1", branch) == (0, False)
+    assert chat_compaction._archive_branch_chain(rows, branch) is None
+    assert chat_compaction._sticky_compaction_state("t1", branch) == (0, False)
     assert inference_routes._thread_has_checkpoint("t1", branch) is False
 
 
 def test_a_completed_tool_turn_past_the_tip_is_validated_by_its_results(monkeypatch):
     """A completed tool turn past the tip is validated by its results; only cancelled calls are exempt."""
-    from core.inference import checkpoint, llama_cpp
+    from core.inference import chat_compaction, checkpoint
 
     def _call(identifier, *, result):
         part = {
@@ -3282,13 +3288,13 @@ def test_a_completed_tool_turn_past_the_tip_is_validated_by_its_results(monkeypa
     _stub_studio_db(monkeypatch, rows)
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
 
-    assert llama_cpp._archive_branch_chain(rows, branch) is None
-    assert llama_cpp._sticky_compaction_state("t1", branch) == (0, False)
+    assert chat_compaction._archive_branch_chain(rows, branch) is None
+    assert chat_compaction._sticky_compaction_state("t1", branch) == (0, False)
 
 
 def test_a_replayed_row_that_renders_no_text_is_refused_rather_than_trusted(monkeypatch):
     """An image-only reply is re-sent but has nothing to compare, so it proves nothing."""
-    from core.inference import checkpoint, llama_cpp
+    from core.inference import chat_compaction, checkpoint
 
     rows = [
         {"id": "u1", "parentId": None, "role": "user", "content": "Start."},
@@ -3310,13 +3316,13 @@ def test_a_replayed_row_that_renders_no_text_is_refused_rather_than_trusted(monk
     _stub_studio_db(monkeypatch, rows)
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
 
-    assert llama_cpp._archive_branch_chain(rows, branch) is None
-    assert llama_cpp._sticky_compaction_state("t1", branch) == (0, False)
+    assert chat_compaction._archive_branch_chain(rows, branch) is None
+    assert chat_compaction._sticky_compaction_state("t1", branch) == (0, False)
 
 
 def test_a_second_explicit_root_is_not_wired_onto_the_branch_before_it(monkeypatch):
     """A second explicit root must not be wired onto the earlier branch by storage order."""
-    from core.inference import checkpoint, llama_cpp
+    from core.inference import chat_compaction, checkpoint
     from routes import inference as inference_routes
 
     rows = [
@@ -3337,15 +3343,15 @@ def test_a_second_explicit_root_is_not_wired_onto_the_branch_before_it(monkeypat
     _stub_studio_db(monkeypatch, rows)
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
 
-    chain = llama_cpp._archive_branch_chain(rows, branch)
+    chain = chat_compaction._archive_branch_chain(rows, branch)
     assert chain is not None and [row["id"] for row in chain] == ["u2", "a2"]
-    assert llama_cpp._sticky_compaction_state("t1", branch) == (0, False)
+    assert chat_compaction._sticky_compaction_state("t1", branch) == (0, False)
     assert inference_routes._thread_has_checkpoint("t1", branch) is False
 
 
 def test_a_completed_reasoning_only_reply_is_replayed_so_it_must_match(monkeypatch):
     """A completed reasoning-only reply is replayed, so it must match the branch and is not dropped."""
-    from core.inference import checkpoint, llama_cpp
+    from core.inference import chat_compaction, checkpoint
 
     rows = [
         {"id": "u1", "parentId": None, "role": "user", "content": "Start."},
@@ -3367,10 +3373,10 @@ def test_a_completed_reasoning_only_reply_is_replayed_so_it_must_match(monkeypat
     _stub_studio_db(monkeypatch, rows)
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
 
-    assert llama_cpp._archive_branch_chain(rows, branch) is None
-    assert llama_cpp._sticky_compaction_state("t1", branch) == (0, False)
+    assert chat_compaction._archive_branch_chain(rows, branch) is None
+    assert chat_compaction._sticky_compaction_state("t1", branch) == (0, False)
     rows[2]["metadata"] = {"incomplete": {"reason": "cancelled"}, **_checkpoint_metadata(30)}
-    assert llama_cpp._sticky_compaction_state("t1", branch) == (30, True)
+    assert chat_compaction._sticky_compaction_state("t1", branch) == (30, True)
 
 
 def _image_turn(text, *, payload = 30000):
@@ -3493,7 +3499,7 @@ def _cut_metadata(boundary):
 )
 def test_a_continuation_that_could_not_fit_keeps_the_epoch_it_resumed(monkeypatch, case, resolved):
     """Only an earlier Max Tokens cut this row extends (or repeats) was resumed."""
-    from core.inference import checkpoint, llama_cpp
+    from core.inference import chat_compaction, checkpoint
     from routes import inference as inference_routes
 
     partial = "Here is the Rust version:\n\nfn main() {"
@@ -3527,7 +3533,7 @@ def test_a_continuation_that_could_not_fit_keeps_the_epoch_it_resumed(monkeypatc
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
 
     assert inference_routes._thread_has_checkpoint("t1", branch) is resolved
-    assert llama_cpp._sticky_compaction_state("t1", branch) == (
+    assert chat_compaction._sticky_compaction_state("t1", branch) == (
         (4, True) if resolved else (0, False)
     )
 
@@ -3535,7 +3541,7 @@ def test_a_continuation_that_could_not_fit_keeps_the_epoch_it_resumed(monkeypatc
 def test_resolving_refused_continuations_stays_linear(monkeypatch):
     import time
 
-    from core.inference import checkpoint, llama_cpp
+    from core.inference import chat_compaction, checkpoint
 
     rows = [_row(id = "user-1", content = "q")]
     rows += [
@@ -3551,7 +3557,7 @@ def test_resolving_refused_continuations_stays_linear(monkeypatch):
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
 
     started = time.perf_counter()
-    llama_cpp._compaction_branch_states(
+    chat_compaction._compaction_branch_states(
         rows, [{"role": "user", "content": "q"}, {"role": "assistant", "content": "same text"}]
     )
     assert time.perf_counter() - started < 2.0
@@ -3590,13 +3596,13 @@ def test_a_retry_sibling_is_not_mistaken_for_the_reply_a_refusal_resumed(monkeyp
 
 def test_a_reset_on_a_request_without_the_recall_tool_does_not_name_it(monkeypatch):
     """The first reset never carries the tool: the archive is written during it."""
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
     messages = _thread() + [{"role": "user", "content": "continue"}]
-    monkeypatch.setattr(llama_cpp, "_archive_is_degraded", lambda: False)
+    monkeypatch.setattr(chat_compaction, "_archive_is_degraded", lambda: False)
 
     def _header(**kwargs):
-        fitted, truncation = llama_cpp._fit_context(
+        fitted, truncation = chat_compaction._fit_context(
             messages,
             context_length = 1200,
             max_tokens = 200,
@@ -3618,7 +3624,7 @@ def test_a_reset_on_a_request_without_the_recall_tool_does_not_name_it(monkeypat
 @pytest.mark.parametrize(("dropped", "admitted"), [(4, True), (0, False)])
 def test_a_rescued_reset_still_offers_recall_but_is_never_replayed(monkeypatch, dropped, admitted):
     """A rescue archived what it dropped; a refusal dropped nothing."""
-    from core.inference import checkpoint, llama_cpp
+    from core.inference import chat_compaction, checkpoint
     from routes import inference as inference_routes
 
     rows = [
@@ -3645,7 +3651,7 @@ def test_a_rescued_reset_still_offers_recall_but_is_never_replayed(monkeypatch, 
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
 
     assert inference_routes._thread_has_checkpoint("t1", branch) is admitted
-    assert llama_cpp._sticky_compaction_state("t1", branch) == (0, False)
+    assert chat_compaction._sticky_compaction_state("t1", branch) == (0, False)
 
 
 CONTRACT = "1. The seller delivers the goods within thirty days of the order. " * 900

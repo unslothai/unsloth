@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from core.inference import checkpoint, llama_cpp, prefix_boundary
+from core.inference import chat_compaction, checkpoint, prefix_boundary
 from routes import inference as routes
 
 
@@ -49,7 +49,9 @@ def _cut_body(messages, dropped):
 
 
 def _fit(messages):
-    return llama_cpp._fit_context(messages, context_length = 4096, max_tokens = 512, count_tokens = count)
+    return chat_compaction._fit_context(
+        messages, context_length = 4096, max_tokens = 512, count_tokens = count
+    )
 
 
 def _first_kept(fitted):
@@ -99,7 +101,7 @@ def test_a_thread_with_its_own_boundary_is_not_touched(monkeypatch):
     calls = []
     monkeypatch.setattr(prefix_boundary, "recall", lambda *a, **k: calls.append(a) or 0)
 
-    llama_cpp._fit_context(
+    chat_compaction._fit_context(
         _transcript(40),
         context_length = 4096,
         max_tokens = 512,

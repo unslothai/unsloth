@@ -5950,7 +5950,7 @@ def _thread_has_checkpoint(thread_id, branch_messages = None) -> bool:
     if not thread_id:
         return False
     try:
-        from core.inference.llama_cpp import _compaction_branch_states
+        from core.inference.chat_compaction import _compaction_branch_states
         from storage import studio_db
 
         # As dicts: the completions path sends `ChatMessage`, the resolver uses `.get`.
@@ -27647,7 +27647,7 @@ def _fit_external_context(
         prompt_budget,
         retrieval_budget,
     )
-    from core.inference.llama_cpp import (
+    from core.inference.chat_compaction import (
         _archive_and_recall,
         _boundary_metadata,
         _compaction_fit_kwargs,
@@ -41058,7 +41058,7 @@ def _count_model_id(model_id, via_api_key):
 
 
 def _count_chat_context_tokens(backend, payload, messages, tools, template_kwargs):
-    from core.inference.llama_cpp import (
+    from core.inference.chat_compaction import (
         _can_reset_epoch,
         _compaction_fit_kwargs,
         _fit_with_instruction_pins,

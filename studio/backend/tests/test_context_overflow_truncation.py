@@ -1427,7 +1427,7 @@ def test_a_pin_is_charged_for_everything_it_holds():
 
 def test_a_pinned_fit_that_only_missed_the_reserve_keeps_its_pins():
     """The pinless retry fires only on a refusal; a rescued fit is servable, so it keeps its pins."""
-    from core.inference import instruction_pin, llama_cpp
+    from core.inference import chat_compaction, instruction_pin
 
     instruction = _instruction("A" * 300)
     messages = [
@@ -1446,18 +1446,18 @@ def test_a_pinned_fit_that_only_missed_the_reserve_keeps_its_pins():
 
     calls = []
     # Captured before the patch, or the spy calls itself.
-    original = llama_cpp._fit_context
+    original = chat_compaction._fit_context
 
     def _spy(msgs, **kwargs):
         calls.append(kwargs.get("protected_message_ids"))
         return original(msgs, **kwargs)
 
     original_pins = instruction_pin.pinned_instruction_ids
-    llama_cpp._fit_context = _spy
+    chat_compaction._fit_context = _spy
     # Stubbed: pin selection has its own tests; this covers the fitter once something is pinned.
     instruction_pin.pinned_instruction_ids = lambda *_a, **_k: {id(instruction)}
     try:
-        fitted, info = llama_cpp._fit_with_instruction_pins(
+        fitted, info = chat_compaction._fit_with_instruction_pins(
             messages,
             anchor_ids = None,
             context_length = 1000,
@@ -1465,7 +1465,7 @@ def test_a_pinned_fit_that_only_missed_the_reserve_keeps_its_pins():
             count_tokens = counter,
         )
     finally:
-        llama_cpp._fit_context = original
+        chat_compaction._fit_context = original
         instruction_pin.pinned_instruction_ids = original_pins
 
     assert info is not None and info["fits"] is False
@@ -1535,7 +1535,7 @@ def test_a_pin_is_not_charged_for_a_tool_exchange_it_does_not_hold():
 
 
 def test_a_date_note_that_would_overflow_the_fit_is_not_moved():
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
     kept = {"role": "user", "content": "C" * 200}
     messages = [
@@ -1550,7 +1550,7 @@ def test_a_date_note_that_would_overflow_the_fit_is_not_moved():
         + 400 * str(message.get("content", "")).count("[Current date:")
         for message in candidate
     )
-    fitted, info = llama_cpp._fit_with_instruction_pins(
+    fitted, info = chat_compaction._fit_with_instruction_pins(
         messages, context_length = 700, max_tokens = 64, count_tokens = counter
     )
 

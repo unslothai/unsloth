@@ -27,7 +27,7 @@ from core.inference.llama_cpp import (
 from core.inference.tool_call_parser import NUDGE_TOOL_CALLS_STATUS
 from state import tool_approvals
 from state.tool_approvals import TOOL_REJECTED_MESSAGE, resolve_tool_decision
-from core.inference import llama_cpp
+from core.inference import chat_compaction, llama_cpp
 from core.inference.llama_cpp import _should_suppress_forced_no_tool_output as suppress
 import httpx
 
@@ -3644,7 +3644,7 @@ def test_media_compaction_recall_recount_uses_the_stripped_view(monkeypatch, wit
 def test_a_respawn_refit_that_misses_its_target_still_archives_and_reports(monkeypatch):
     """A rescued respawn refit archives its evictions and emits metadata."""
     # Captured once: the second pass would otherwise wrap the first pass's spy.
-    real_archive = llama_cpp._archive_and_recall
+    real_archive = chat_compaction._archive_and_recall
 
     for max_tool_iterations in (1, 0):
         payloads: list[dict] = []
@@ -3868,7 +3868,7 @@ def test_a_respawn_refit_archives_what_it_evicts(monkeypatch):
     archived: list = []
 
     def fake_archive(conversation, before, **kwargs):
-        archived.append(llama_cpp.evicted_messages(before, conversation))
+        archived.append(chat_compaction.evicted_messages(before, conversation))
         return {"conversation": conversation, "events": [], "counts": {}, "recalled": False}
 
     monkeypatch.setattr(llama_cpp, "_archive_and_recall", fake_archive)
