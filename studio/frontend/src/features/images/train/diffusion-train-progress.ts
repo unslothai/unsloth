@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { formatBytesGiB } from "../../../lib/memory/format.ts";
 import type { DiffusionTrainingStatus } from "../api.ts";
 
 type Status = Pick<
@@ -72,18 +71,6 @@ export function diffusionTrainingProgress(status: Status | null) {
         percent: known
           ? Math.min(100, ((done as number) / (total as number)) * 100)
           : null,
-      };
-    }
-    const download = status?.download_progress;
-    if (download && Number.isFinite(download.bytes_done) && download.bytes_done >= 0 &&
-        Number.isFinite(download.bytes_total) && download.bytes_total > 0) {
-      const done = Math.min(download.bytes_done, download.bytes_total);
-      return {
-        preparing: true,
-        title: "Downloading training model",
-        detail: `${download.label || "Model files"}. Progress covers the current downloads; additional files may follow.`,
-        count: `${formatBytesGiB(done)} / ${formatBytesGiB(download.bytes_total)} (current files)`,
-        percent: Math.min(100, done / download.bytes_total * 100),
       };
     }
     return {

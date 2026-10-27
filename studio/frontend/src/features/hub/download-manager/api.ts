@@ -63,6 +63,7 @@ export interface DownloadStartResult {
 }
 
 export interface ActiveModelDownload {
+  owner?: string | null;
   repo_id?: string;
   variant: string | null;
   transport?: TransportMode | null;
@@ -118,6 +119,7 @@ export interface TransportStatus {
 }
 
 export interface DownloadProgressResponse {
+  progress_scope?: "active_files" | null;
   downloaded_bytes: number;
   completed_bytes: number;
   complete_on_disk: boolean;

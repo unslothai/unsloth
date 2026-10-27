@@ -168,6 +168,7 @@ export interface JobRuntime {
 }
 
 export interface ProgressLike {
+  progress_scope?: "active_files" | null;
   downloaded_bytes: number;
   completed_bytes?: number;
   complete_on_disk?: boolean;

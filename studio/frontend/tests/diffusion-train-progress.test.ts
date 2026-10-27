@@ -156,14 +156,13 @@ test("encoded captions alone do not read as prepared training data", () => {
 });
 
 
-test("active model downloads show byte progress before the first training step", () => {
+test("download bytes belong to the global manager, not the inline preparation bar", () => {
   const progress = diffusionTrainingProgress({ ...running, download_progress: {
     bytes_done: 2 * 1024 ** 3, bytes_total: 4 * 1024 ** 3, label: "model.safetensors",
   } });
-  assert.equal(progress.title, "Downloading training model");
-  assert.equal(progress.percent, 50);
-  assert.equal(progress.count, "2.00 GiB / 4.00 GiB (current files)");
-  assert.match(progress.detail!, /additional files may follow/);
+  assert.equal(progress.title, "Loading training model");
+  assert.equal(progress.percent, null);
+  assert.equal(progress.count, null);
 });
 
 test("download progress yields to preparation and actual training", () => {
