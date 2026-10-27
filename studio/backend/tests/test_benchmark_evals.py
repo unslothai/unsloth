@@ -552,3 +552,15 @@ def test_tokenize_passthrough_sends_llama_server_key(monkeypatch):
     res = TestClient(app).post("/v1/tokenize", json = {"content": "hi"})
     assert res.status_code == 200, res.text
     assert seen == ["Bearer llama-key"]
+
+
+def test_a_new_run_does_not_start_with_the_last_runs_progress(monkeypatch):
+    backend = _orchestrator(monkeypatch, lambda params: {"results": {}})
+    orch._report_progress(1318, 1319, "Running generate_until requests", "11:13", "00:00")
+    assert benchmark_routes._live_progress(backend) is None  # idle: nothing to show
+    seq = backend.try_begin()
+    assert seq is not None
+    assert backend.get_latest_progress() is None
+    orch._report_progress(21, 400, "Running loglikelihood requests", "00:01", "00:15")
+    assert benchmark_routes._live_progress(backend)["current"] == 21
+    backend.release(seq)

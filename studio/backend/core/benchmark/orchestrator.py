@@ -267,6 +267,8 @@ class BenchmarkOrchestrator:
             # A fresh event per run: clearing a shared one would let a Run issued
             # right after Stop un-cancel the run being stopped.
             self._cancel_event = threading.Event()
+            # The last run's final progress would otherwise show on this run's card.
+            clear_progress()
             return self._op_seq
 
     def release(self, op_seq: int) -> None:

@@ -583,6 +583,12 @@ async def get_benchmark_status(current_subject: str = Depends(get_current_subjec
         )
 
 
+def _live_progress(backend) -> Optional[dict]:
+    """Progress of the run in flight; none while idle, so a stream opened just
+    before ``/run`` lands doesn't show the previous run's last count."""
+    return backend.get_latest_progress() if backend.is_active() else None
+
+
 @router.get("/logs/stream")
 async def stream_benchmark_logs(
     request: Request,
@@ -672,7 +678,7 @@ async def stream_benchmark_logs(
                         last_yield = now
 
                 # Surface lm_eval tqdm progress as a dedicated SSE event.
-                progress = backend.get_latest_progress()
+                progress = _live_progress(backend)
                 if (
                     progress is not None
                     and progress != last_progress
