@@ -314,7 +314,6 @@ def mlx_chat_identity(orchestrator):
 
 
 def _chat_saver():
-    """``(identity, save)`` for the resident chat model whose KV a swap can keep, else None."""
     from core.inference.llama_keepwarm import _loaded_identity
     from routes.inference import get_llama_cpp_backend
 
