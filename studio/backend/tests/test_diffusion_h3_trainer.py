@@ -1460,7 +1460,12 @@ def _stub_training_stack(monkeypatch):
             monkeypatch.setitem(sys.modules, name, module)
 
 
-def _h3_cache_run(monkeypatch, *, num_clips: int, on_event = None):
+def _h3_cache_run(
+    monkeypatch,
+    *,
+    num_clips: int,
+    on_event = None,
+):
     """Drive _train_h3 through phase 2 with a sentinel _load_transformer, so reaching it is observable."""
     import torch
 
@@ -1525,7 +1530,8 @@ def test_h3_resumes_model_download_progress_after_latent_preparation(monkeypatch
     monitor.poll()
     assert any(event["type"] == "preparing" for event in events)
     assert [event["type"] for event in events[-2:]] == [
-        "model_load_started", "model_download_progress",
+        "model_load_started",
+        "model_download_progress",
     ]
 
 
