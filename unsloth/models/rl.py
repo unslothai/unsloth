@@ -2511,6 +2511,9 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
 
     # TRL 0.26+: resolve thin wrappers (trl.trainer shims forwarding to trl.experimental) to their parent class, and only when that parent really lives in a trl.experimental module.
     _trainer_resolved_module = None
+    _trainer_src = _config_src = None
+    _trainer_src_of = RLTrainer
+    _config_src_of = RLConfig
     try:
         _trainer_src = inspect.getsource(RLTrainer)
         _trainer_module = inspect.getmodule(RLTrainer)
@@ -2550,8 +2553,13 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     except Exception:
         pass
 
-    old_RLTrainer_source = inspect.getsource(RLTrainer)
-    old_RLConfig_source = inspect.getsource(RLConfig)
+    # Reuse the probe reads above unless they failed or the class was swapped for its parent.
+    if _trainer_src is None or RLTrainer is not _trainer_src_of:
+        _trainer_src = inspect.getsource(RLTrainer)
+    old_RLTrainer_source = _trainer_src
+    if _config_src is None or RLConfig is not _config_src_of:
+        _config_src = inspect.getsource(RLConfig)
+    old_RLConfig_source = _config_src
 
     if _trainer_resolved_module is not None:
         all_imports = dir(_trainer_resolved_module)
@@ -3677,7 +3685,12 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         )
 
     RLTrainer_extras = patch_functions(
-        RLTrainer, trainer_file, RLTrainer_name, all_imports, imports
+        RLTrainer,
+        trainer_file,
+        RLTrainer_name,
+        all_imports,
+        imports,
+        RLTrainer_source = old_RLTrainer_source,
     )
     if RLTrainer_extras is None:
         RLTrainer_extras = f"_Unsloth{RLTrainer_name} = {RLTrainer_name}"
@@ -4094,7 +4107,14 @@ def _allow_list_train_dataset(function, source, trainer_file):
     return source
 
 
-def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, imports):
+def patch_functions(
+    RLTrainer,
+    trainer_file,
+    RLTrainer_name,
+    all_imports,
+    imports,
+    RLTrainer_source = None,
+):
     init = inspect.getsource(RLTrainer.__init__)
     old_init = init
 
@@ -4275,7 +4295,8 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
         init = init.replace(vllm_part, new_vllm_part)
 
     functions = dir(RLTrainer)
-    RLTrainer_source = inspect.getsource(RLTrainer)
+    if RLTrainer_source is None:
+        RLTrainer_source = inspect.getsource(RLTrainer)
     functions = [x for x in functions if f"def {x}" in RLTrainer_source]
 
     changed = {
