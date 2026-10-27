@@ -10427,6 +10427,11 @@ async def _require_named_model_access(
     except HTTPException as refusal:
         if refusal.status_code != 404:
             raise
+    trained = await asyncio.to_thread(_trained_run_dir, named_model)
+    if trained is not None:
+        # the account catalog lists no training outputs; authorize the run folder itself
+        await asyncio.to_thread(account_access.require_model_access, trained)
+        return
     from core.inference.openai_auto_download import split_model_ref
 
     alias = (split_model_ref(named_model)[0] or "").strip().lower()
@@ -17069,7 +17074,10 @@ async def load_model(
     trained = _trained_run_dir(request.model_path)
     if trained:
         from hub.utils.host_paths import note_resolved_handle
+
         note_resolved_handle(request.model_path, trained)
+        # keeps the job's name as the served id, so chat and /v1/models answer to it
+        request._advertised_id = request._advertised_id or request.model_path
         request.model_path = trained
     return await _tunnel_safe_json(
         load_model_gated(request, fastapi_request, current_subject, user_initiated = True),

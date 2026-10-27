@@ -84,7 +84,7 @@ def test_loading_a_fine_tuned_model_by_name_loads_its_run_folder(monkeypatch):
     loaded = []
 
     async def _impl(request, *_args, **_kwargs):
-        loaded.append(request.model_path)
+        loaded.append((request.model_path, request._advertised_id))
         return {"status": "loaded", "model": request.model_path}
 
     monkeypatch.setattr(inference_route, "_raise_if_sidecar_swap_in_progress", lambda: None)
@@ -101,7 +101,7 @@ def test_loading_a_fine_tuned_model_by_name_loads_its_run_folder(monkeypatch):
         for model_path in (RUN, BASE)
     ]
 
-    assert loaded == [str(run_dir), BASE]
+    assert loaded == [(str(run_dir), RUN), (BASE, None)]
     assert [answer["model"] for answer in answers] == [RUN, BASE]
 
 
@@ -164,3 +164,30 @@ def test_switch_by_request_never_fetches_a_checkpoint_name_from_the_hub(monkeypa
     assert excinfo.value.status_code == 404
     assert _switch(str(checkpoint_dir)) is None
     assert downloads == []
+
+
+def test_a_managed_account_may_name_its_own_run(monkeypatch):
+    run_dir = _run_dir()
+    checked = []
+
+    def _require(model):
+        checked.append(model)
+        if model != str(run_dir):
+            raise HTTPException(status_code = 404, detail = "Model not found")
+
+    async def _no_catalog():
+        return None
+
+    async def _no_token(*_args):
+        return False
+
+    monkeypatch.setattr(inference_route.account_access, "require_model_access", _require)
+    monkeypatch.setattr(inference_route, "_cached_local_catalog", _no_catalog)
+    monkeypatch.setattr(inference_route, "_own_local_model_for_alias", lambda _alias: None)
+    monkeypatch.setattr(inference_route, "_caller_token_authorizes_download", _no_token)
+
+    asyncio.run(inference_route._require_named_model_access(RUN))
+    assert checked == [RUN, str(run_dir)]
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route._require_named_model_access("someone-elses-run"))
+    assert excinfo.value.status_code == 404
