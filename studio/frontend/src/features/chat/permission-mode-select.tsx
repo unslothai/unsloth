@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { Hand, ShieldCheck } from "lucide-react";
+import { Hand, type LucideProps, ShieldCheck } from "lucide-react";
 import { DropdownMenu as DropdownMenuPrimitive } from "radix-ui";
 import type { ComponentType } from "react";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
@@ -57,6 +57,11 @@ import {
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 
+/** The hand reads larger than the shields; scale keeps its box. */
+function ApprovalHandIcon({ className, ...props }: LucideProps) {
+  return <Hand className={cn("scale-[0.92]", className)} {...props} />;
+}
+
 /** Full access stays last: it disables approval prompts and the sandbox. */
 export const PERMISSION_MODE_OPTIONS: readonly {
   value: PermissionMode;
@@ -68,7 +73,7 @@ export const PERMISSION_MODE_OPTIONS: readonly {
     value: "ask",
     label: "Ask for approval",
     description: "Ask before using tools or the internet",
-    icon: Hand,
+    icon: ApprovalHandIcon,
   },
   {
     value: "auto",
@@ -381,6 +386,25 @@ export function PermissionModeMenuItems({
 
 export function useActivePermissionMode() {
   return permissionModeOption(useAccountPermissionMode().permissionMode);
+}
+
+export function usePermissionModeChoice() {
+  const { permissionMode, fullAccessAllowed } = useAccountPermissionMode();
+  const setPermissionMode = useChatRuntimeStore((s) => s.setPermissionMode);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  return {
+    permissionMode,
+    options: PERMISSION_MODE_OPTIONS.filter(
+      (option) => fullAccessAllowed || option.value !== "full",
+    ),
+    choose: (mode: PermissionMode) => {
+      if (mode === permissionMode) return;
+      if (mode === "full") setConfirmOpen(true);
+      else setPermissionMode(mode);
+    },
+    confirmOpen,
+    setConfirmOpen,
+  };
 }
 
 function lastFocusOutsideMenus(): HTMLElement | null {
