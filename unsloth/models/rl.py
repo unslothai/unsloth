@@ -126,21 +126,25 @@ def _strip_vllm_weight_loads(function, source, trainer_file):
     # and TRL's own vLLM (colocate or server) needs these lines to receive the trainer weights.
     if trainer_file == "grpo_trainer" and function in _GRPO_VLLM_SYNC_FUNCTIONS:
         return source
-    source = re.sub(
-        r"(\n[\s]{4,}).+?model_executor\.driver_worker.+?\n",
-        r"\n\1pass\n",
-        source,
-    )
-    source = re.sub(
-        r"(\n[\s]{4,}).+?load_weights\(.+?\n",
-        r"\n\1pass\n",
-        source,
-    )
-    source = re.sub(
-        r"\.state_dict\(\)",
-        r"",
-        source,
-    )
+    # Each pattern needs its literal; the line-anchored scans are slow on long sources.
+    if "model_executor.driver_worker" in source:
+        source = re.sub(
+            r"(\n[\s]{4,}).+?model_executor\.driver_worker.+?\n",
+            r"\n\1pass\n",
+            source,
+        )
+    if "load_weights(" in source:
+        source = re.sub(
+            r"(\n[\s]{4,}).+?load_weights\(.+?\n",
+            r"\n\1pass\n",
+            source,
+        )
+    if ".state_dict()" in source:
+        source = re.sub(
+            r"\.state_dict\(\)",
+            r"",
+            source,
+        )
     return source
 
 
