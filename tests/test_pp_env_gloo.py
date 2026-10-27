@@ -204,7 +204,7 @@ def _case_env(
         # Uneven token counts per micro-batch / replica, the same per row however the rows are batched.
         batch["labels"][batch["labels"] % 5 == 0] = -100
         seen.append(batch["input_ids"].sum().item())
-        return batch
+        return transformers.BatchEncoding(batch)  # what tokenizer-based collators return (a Mapping)
 
     def load(model_name, load_in_4bit = True, **kwargs):  # FastLanguageModel.from_pretrained's flags
         return AutoModelForCausalLM.from_pretrained(
@@ -540,12 +540,19 @@ def test_pp_env_trainer_matches_one_process(world, env, ref_bs):
 
 
 @needs_pipelining
-@pytest.mark.parametrize("ga,bs,mb", [(1, 4, None), (4, 2, None), (2, 4, "1")], ids = ["ga1_bs4", "ga4_bs2", "mb1"])
-def test_pp_env_gradient_accumulation_and_microbatches(ga, bs, mb):
+@pytest.mark.parametrize(
+    "ga,bs,mb,schedule",
+    [(1, 4, None, None), (4, 2, None, None), (2, 4, "1", None), (2, 1, None, "1f1b")],
+    ids = ["ga1_bs4", "ga4_bs2", "mb1", "bs1_1f1b_padded"],
+)
+def test_pp_env_gradient_accumulation_and_microbatches(ga, bs, mb, schedule):
+    # bs1_1f1b_padded: 1F1B needs 2 micro-batches, so the 1-row batch gets a fully masked filler row.
     ref = _ref(bs, ga = ga, evaluate = False, post = False)
     env = {"UNSLOTH_PP_SIZE": "2"}
     if mb:
         env["UNSLOTH_PP_MICROBATCHES"] = mb
+    if schedule:
+        env["UNSLOTH_PP_SCHEDULE"] = schedule
     for rank, res in enumerate(_spawn("env", 2, env, bs = bs, ga = ga, evaluate = False, post = False)):
         _close(res, ref, what = rank)
         _same_tensors(res["adapter"] or ref["adapter"], ref["adapter"])

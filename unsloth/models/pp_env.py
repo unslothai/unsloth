@@ -23,6 +23,7 @@
 
 from __future__ import annotations
 
+import collections.abc
 import functools
 import gc
 import os
@@ -128,32 +129,80 @@ def pipeline_parallel_env_apply(model, layout):
     return stage
 
 
+@functools.lru_cache(maxsize = None)
+def _gpipe_needs_stage_count():
+    """torch 2.10's single-stage schedules (GPipe too) refuse fewer micro-batches than stages; later ones
+    only 1F1B."""
+    import inspect
+
+    from torch.distributed.pipelining import ScheduleGPipe
+
+    for cls in ScheduleGPipe.__mro__:
+        init = cls.__dict__.get("__init__")
+        if init is None:
+            continue
+        try:
+            if "must be greater than" in inspect.getsource(init):
+                return True
+        except (OSError, TypeError):
+            continue
+    return False
+
+
 def resolve_microbatches(stage, batch_size, train = True):
-    """n_microbatches for a batch of `batch_size` rows: UNSLOTH_PP_MICROBATCHES must divide it; the default
-    (2 x pp) is lowered to the largest divisor of the batch (1F1B needs at least pp micro-batches)."""
+    """(n_microbatches, padded rows) for a batch of `batch_size` rows. UNSLOTH_PP_MICROBATCHES must divide it;
+    the default (2 x pp) is lowered to the largest divisor of the batch. A schedule that needs at least pp
+    micro-batches (1F1B; GPipe on torch 2.10) gets fully masked filler rows (labels -100: no loss, no gradient)
+    when the batch has fewer rows than that."""
     layout = getattr(stage, "env_layout", None)
     explicit = layout.microbatches if layout is not None else None
     want = int(explicit or stage.n_microbatches)
+    floor = stage.num_stages if (stage.schedule == "1f1b" and train) or _gpipe_needs_stage_count() else 1
     if batch_size % want == 0:
-        return want
+        return want, 0
     if explicit is not None and train:
         raise ValueError(
             f"Unsloth: UNSLOTH_PP_MICROBATCHES={explicit} must divide the Trainer batch size ({batch_size} rows "
             "per device): set per_device_train_batch_size to a multiple of it, or unset UNSLOTH_PP_MICROBATCHES."
         )
     m = max(d for d in range(1, min(want, batch_size) + 1) if batch_size % d == 0)
-    if train and stage.schedule == "1f1b" and m < stage.num_stages:
-        raise ValueError(
-            f"Unsloth: UNSLOTH_PP_SCHEDULE=1f1b needs at least {stage.num_stages} micro-batches, but a batch of "
-            f"{batch_size} rows splits into {m}; raise per_device_train_batch_size or use the gpipe schedule."
-        )
+    pad = 0
+    if m < floor:
+        m = floor
+        pad = -batch_size % floor
     if train and not stage.__dict__.get("_unsloth_mb_note"):
         stage.__dict__["_unsloth_mb_note"] = True
-        _print_rank0(
-            f"Unsloth: pipeline parallel: {m} micro-batch(es) of {batch_size // m} row(s) per step (batch of "
-            f"{batch_size}; UNSLOTH_PP_MICROBATCHES sets the count)."
+        rows = batch_size + pad
+        note = (
+            f", padded with {pad} fully masked row(s) (this schedule needs {floor} micro-batches; a "
+            f"per_device_train_batch_size of {floor} or more avoids the extra compute)"
+            if pad
+            else ""
         )
-    return m
+        _print_rank0(
+            f"Unsloth: pipeline parallel: {m} micro-batch(es) of {rows // m} row(s) per step (batch of "
+            f"{batch_size}{note}; UNSLOTH_PP_MICROBATCHES sets the count)."
+        )
+    return m, pad
+
+
+def _pad_rows(input_ids, labels, extra, pad):
+    """`pad` copies of the first row with every label ignored (attention on, so no fully masked row)."""
+    if not pad:
+        return input_ids, labels, extra
+    rows = input_ids.shape[0]
+
+    def take(t):
+        return t[:1].expand(pad, *t.shape[1:])
+
+    out = {}
+    for key, value in extra.items():
+        if isinstance(value, torch.Tensor) and value.dim() and value.shape[0] == rows:
+            filler = torch.ones_like(take(value)) if key == "attention_mask" else take(value)
+            value = torch.cat([value, filler])
+        out[key] = value
+    labels = torch.cat([labels, torch.full_like(take(labels), -100)])
+    return torch.cat([input_ids, take(input_ids)]), labels, out
 
 
 # ------------------------------------------------------------------------- the other stages, kept on the CPU
@@ -511,7 +560,7 @@ def _dp_info(stage):
 
 
 def _batch(stage, inputs):
-    if not isinstance(inputs, dict):
+    if not isinstance(inputs, collections.abc.Mapping):  # dict, BatchEncoding
         raise RuntimeError(
             f"Unsloth: {_env_vars(stage)} (pipeline parallel) needs dict batches from the Trainer's collator, "
             f"got {type(inputs).__name__}.{_hint()}"
@@ -568,7 +617,8 @@ def _pp_training_step(self, model, inputs, num_items_in_batch = None, *args, **k
         scale = 1.0 / max(int(getattr(self, "current_gradient_accumulation_steps", 0) or self.args.gradient_accumulation_steps), 1)
     scaler = getattr(self.accelerator, "scaler", None)
     scaler = scaler if scaler is not None and scaler.is_enabled() else None
-    m = resolve_microbatches(stage, input_ids.shape[0])
+    m, pad = resolve_microbatches(stage, input_ids.shape[0])
+    input_ids, labels, extra = _pad_rows(input_ids, labels, extra, pad)
     loss = stage.step(
         input_ids,
         labels,
@@ -592,8 +642,10 @@ def _pp_prediction_step(self, model, inputs, prediction_loss_only, ignore_keys =
         )
     inputs = self._prepare_inputs(inputs)
     input_ids, labels, extra = _batch(stage, inputs)
-    m = resolve_microbatches(stage, input_ids.shape[0], train = False)
-    loss = stage.eval_loss(input_ids, labels, n_microbatches = m, **extra)
+    m, pad = resolve_microbatches(stage, input_ids.shape[0], train = False)
+    count = int((labels[:, 1:] != -100).sum())
+    input_ids, labels, extra = _pad_rows(input_ids, labels, extra, pad)
+    loss = stage.eval_loss(input_ids, labels, num_items_in_batch = count, n_microbatches = m, **extra)
     return (loss.detach().to(self.args.device), None, None)
 
 

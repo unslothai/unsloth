@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import ast
 import collections
+import os
 import dataclasses
 import inspect
 import math
@@ -423,21 +424,65 @@ def _refuse_shared_across_stages(parts, bounds):
         )
 
 
+def _forward_candidates(inner):
+    """The forward and the functions it wraps (__wrapped__, and closure cells of wrappers that drop it)."""
+    first = inner.__dict__.get("forward") or type(inner).forward
+    out, todo, seen = [], [getattr(first, "__func__", first)], set()
+    while todo and len(out) < 12:
+        fn = todo.pop(0)
+        fn = getattr(fn, "__func__", fn)
+        if id(fn) in seen:
+            continue
+        seen.add(id(fn))
+        out.append(fn)
+        wrapped = getattr(fn, "__wrapped__", None)
+        if wrapped is not None:
+            todo.append(wrapped)
+        for cell in getattr(fn, "__closure__", None) or ():
+            try:
+                value = cell.cell_contents
+            except ValueError:
+                continue
+            if inspect.isfunction(value) or inspect.ismethod(value):
+                todo.append(value)
+    return out
+
+
+def _is_unsloth_function(fn):
+    module = getattr(fn, "__module__", None) or ""
+    filename = os.path.basename(getattr(getattr(fn, "__code__", None), "co_filename", "") or "")
+    return (
+        module.split(".")[0] in ("unsloth", "unsloth_zoo")
+        or module.startswith("unsloth_compiled")
+        or filename.startswith("unsloth_compiled")
+    )
+
+
 def _check_loss_normalization(inner):
     """PipelineParallel sums the micro-batch losses, each normalised by the token count of the whole batch
     (num_items_in_batch). A causal LM forward that drops num_items_in_batch takes a per-micro-batch mean, so the
-    sum would be n_microbatches times the one-process loss (BART / Whisper / TrOCR decoders)."""
-    try:
-        source = inspect.getsource(_forward_function(inner))
-    except (OSError, TypeError):
-        source = ""
-    passes_kwargs = re.search(r"loss_function\([^()]*(?:\([^()]*\)[^()]*)*\*\*\s*\w+", source)
-    if "num_items_in_batch" in source or passes_kwargs:
-        return
+    sum would be n_microbatches times the one-process loss (BART / Whisper / TrOCR decoders). Unsloth's own
+    forwards (patched / compiled, the gradient accumulation fix) always take it."""
+    candidates = _forward_candidates(inner)
+    for fn in candidates:
+        try:
+            source = inspect.getsource(fn)
+        except (OSError, TypeError):
+            source = ""
+        passes_kwargs = re.search(r"loss_function\([^()]*(?:\([^()]*\)[^()]*)*\*\*\s*\w+", source)
+        if "num_items_in_batch" in source or passes_kwargs:
+            return
+        if _is_unsloth_function(fn):
+            return
+    names = ", ".join(
+        f"{getattr(fn, '__qualname__', type(fn).__name__)}"
+        f" ({getattr(getattr(fn, '__code__', None), 'co_filename', '?')})"
+        for fn in candidates[:3]
+    )
     raise ValueError(
         f"Unsloth: pipeline parallelism v1 needs the {type(inner).__name__} loss to take num_items_in_batch "
         "(self.loss_function(..., **kwargs)); this forward computes a per-micro-batch mean, so micro-batches "
-        "cannot be summed like gradient accumulation."
+        f"cannot be summed like gradient accumulation (forward: {names})."
     )
 
 
