@@ -301,6 +301,33 @@ def test_resume_scores_with_the_stored_python_reward_code():
     assert _stored_reward_specs(stored) == {"len": py}
 
 
+def test_python_rewards_get_the_row_tools_grpo_rendering_drops():
+    from datasets import Dataset
+
+    from core.training.rewards import TOOLS_COLUMN
+
+    class Tok:
+        chat_template = "{{ messages }}"
+
+        def apply_chat_template(self, messages, tokenize, add_generation_prompt, **kw):
+            return str(messages)
+
+    tool = {"type": "function", "function": {"name": "add", "parameters": {"type": "object"}}}
+    ds = Dataset.from_list([{"prompt": [{"role": "user", "content": "q"}], "tools": [tool]}])
+    out, rendered = rl.render_grpo_prompts(ds, Tok(), None, keep_turns = True)
+    assert rendered and "tools" not in out.column_names
+    seen = {}
+
+    class Worker:
+        def score(self, names, prompts, completions, kwargs):
+            seen.update(kwargs)
+            return {names[0]: [1.0]}
+
+    (fn,) = python_rewards.make_python_reward_funcs([{"name": "r"}], Worker())
+    fn(prompts = [out[0]["prompt"]], completions = ["x"], **{TOOLS_COLUMN: [out[0][TOOLS_COLUMN]]})
+    assert seen == {"tools": [[tool]]}
+
+
 def test_reward_funcs_keep_spec_order_and_accept_plain_strings(tmp_path, monkeypatch):
     monkeypatch.setattr(rewards, "_user_root", lambda: tmp_path / "rewards")
     specs = [

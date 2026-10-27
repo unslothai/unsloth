@@ -396,9 +396,14 @@ def render_grpo_prompts(
         text_only and "tools" in columns and any(_row_tools({"tools": t}) for t in dataset["tools"])
     )
     drop = ["tools"] if "tools" in columns else []
+    from core.training.rewards import PREFILL_COLUMN, PROMPT_TURNS_COLUMN, TOOLS_COLUMN
+
+    # Python rewards may read the schemas; JSON, as Arrow would pad them.
+    keep_tools = keep_turns and bool(drop)
     if not (thinking or nulls or tools or _has_tool_ended_prompts(dataset)):
+        if keep_tools:
+            dataset = dataset.map(lambda row: {TOOLS_COLUMN: json.dumps(_row_tools(row))})
         return (dataset.remove_columns(drop) if drop else dataset), False
-    from core.training.rewards import PREFILL_COLUMN, PROMPT_TURNS_COLUMN
 
     kwargs = {"enable_thinking": bool(enable_thinking)} if thinking else {}
     # TRL continues an assistant-ended prompt and puts it back in front of the completion before
@@ -436,6 +441,8 @@ def render_grpo_prompts(
             # Python rewards read roles and the last user turn, as Try it gives them. JSON, since
             # Arrow would pad the cleaned turns again.
             out[PROMPT_TURNS_COLUMN] = json.dumps(messages, default = str)
+        if keep_tools:
+            out[TOOLS_COLUMN] = json.dumps(row_tools)
         return out
 
     map_kwargs = {"num_proc": num_proc} if num_proc and num_proc > 1 else {}
