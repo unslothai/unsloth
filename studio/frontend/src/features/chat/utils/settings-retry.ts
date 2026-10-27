@@ -24,8 +24,7 @@ export function isTerminalSettingsRejection(error: unknown): boolean {
   return status >= 400 && status < 500;
 }
 
-/** Pin intents survive a 401: authFetch keeps the session through a transient refresh failure,
- *  and sign-out discards the queue itself. */
+/** A 401 may be a transient token-refresh failure; sign-out discards the pin queue itself. */
 export function isRetryablePinError(error: unknown): boolean {
   return (
     !isTerminalSettingsRejection(error) ||

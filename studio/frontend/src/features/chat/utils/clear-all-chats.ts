@@ -28,8 +28,7 @@ export async function clearAllChats(options: { deleteFiles?: boolean } = {}) {
   const pinnedBefore = usePinnedChatsStore.getState().pinnedIds;
   const result = await clearStoredChats(options);
   if (result.backend === "cleared") {
-    // Unpin what the clear removed, so a queued pin for a never-imported legacy comparison
-    // (no row to record its deletion) is cancelled rather than blocking later pin saves.
+    // Unpin what was cleared, so a never-imported comparison's queued pin cannot block later saves.
     const failed = new Set(result.failedThreadIds);
     const removed = pinnedBefore.filter((id) => !failed.has(id));
     if (removed.length > 0) usePinnedChatsStore.getState().setPinned(removed, false);

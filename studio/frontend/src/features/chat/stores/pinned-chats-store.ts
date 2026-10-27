@@ -19,8 +19,7 @@ export interface PinnedChatsState extends PinnedChatsActions {
 
 let actions: PinnedChatsActions | null = null;
 
-// Edits made while the lazy sync runtime is still loading, kept across a reload and replayed
-// when it binds. Storage-free environments (tests) fall back to memory.
+// Edits made before the lazy runtime binds; they survive a reload. Memory when storage is absent.
 const UNBOUND_KEY = "unsloth_chat_pin_unbound";
 let unboundMemory: Array<[string[], boolean]> = [];
 

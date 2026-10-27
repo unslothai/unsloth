@@ -67,8 +67,7 @@ function createRuntime(sessionScope: string) {
         id: "pinned-chats-sync-error",
       }),
   });
-  // Any delete path (the Library's included) unpins what it removed, so a queued pin for a
-  // never-imported legacy comparison is cancelled instead of blocking later pin saves.
+  // Every delete path unpins what it removed, so a never-imported comparison's pin cannot block.
   const stopWatchingDeletes = onChatThreadsDeleted((threadIds, pairIds) => {
     const pinned = new Set(usePinnedChatsStore.getState().pinnedIds);
     const removed = [...threadIds, ...pairIds].filter((id) => pinned.has(id));

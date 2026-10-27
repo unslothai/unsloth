@@ -81,8 +81,7 @@ function isUnsupported(error: unknown): boolean {
   return onlyUnsupportedPins && rejectsPinField;
 }
 
-/** Drop pins a later entry unpins: the server cannot place a chat deleted while offline. The
- *  unpin fences each dropped pin's ID, so another tab's delayed replay of it is never applied. */
+/** Drop pins a later entry unpins; that unpin fences each dropped pin's server ID. */
 function compactReplay(operations: PinOperation[]): PinOperation[] {
   const unpinFor = new Map<string, PinOperation & { cancels: string[] }>();
   const kept: PinOperation[] = [];
@@ -101,8 +100,7 @@ function compactReplay(operations: PinOperation[]): PinOperation[] {
     const serverId = operation.serverId ?? operation.operationId;
     unpinFor.get(fenceId)!.cancels.push(serverId);
     const ids = operation.ids.filter((id) => !unpinFor.has(id));
-    // The remainder keeps the original's server ID (it replays before the fencing unpin), so a
-    // copy that already committed is acknowledged instead of re-pinning what was since unpinned.
+    // Same server ID, replayed before the fence: an already-committed copy is just acknowledged.
     if (ids.length > 0) kept.push({ ...operation, ids, serverId });
   }
   return kept
@@ -249,8 +247,7 @@ export function createPinnedChatsTransport(options: PinnedChatsTransportOptions)
           (error instanceof Error && ["AbortError", "TimeoutError"].includes(error.name)) ||
           (error instanceof ChatSettingsRequestError &&
             (error.status >= 500 || error.status === 429 || error.status === 408));
-        // A replay the server keeps refusing (a chat still awaiting import) keeps the saved
-        // view usable, so a later unpin can join the journal and compact that pin away.
+        // A refused replay keeps the saved view, so a later unpin can compact that pin away.
         if (state && (transient || error instanceof ReplayConflictError)) return state.pinnedIds;
         return fallback(error, epoch).pinnedIds;
       }

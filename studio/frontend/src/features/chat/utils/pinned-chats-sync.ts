@@ -10,8 +10,7 @@ export type PinOperation = {
   pinned: boolean;
   /** Queued pins this unpin superseded; the server acknowledges them without applying. */
   cancels?: string[];
-  /** Server replay identity when it differs from the journal's (a trimmed intent keeps its
-   *  original's, so a remainder of an already-committed pin is acknowledged, not reapplied). */
+  /** Server replay ID when it differs from the journal's: a trimmed intent keeps its original's. */
   serverId?: string;
 };
 
@@ -138,8 +137,7 @@ export function createPinnedChatsSync(options: PinnedChatsSyncOptions) {
       throw new PinnedChatsValidationError("Invalid pending pin operations");
     }
     const operations = saved.map(validatePinOperation);
-    // The journal is the queue: an intent missing from it was acknowledged or cancelled by
-    // another tab, and its order (not discovery order) keeps an older intent ahead of a newer one.
+    // The journal is the queue, in its order: a missing intent was acknowledged/cancelled elsewhere.
     const next = [
       ...new Map(operations.map((entry) => [entry.operationId, entry])).values(),
     ];
@@ -361,8 +359,7 @@ export function createPinnedChatsSync(options: PinnedChatsSyncOptions) {
         ...intent,
         operationId: createNavigationNonce(),
       });
-      // An unpin removes those chats from earlier queued pins, so a pin the server can never
-      // place (a comparison deleted before import) cannot block the queue. The unpin still goes.
+      // An unpin strips its chats from earlier queued pins, so an unplaceable pin cannot block.
       const cancelled = new Set(operation.pinned ? [] : operation.ids);
       const superseded: string[] = [];
       const kept = pending.flatMap((entry) => {
@@ -372,8 +369,7 @@ export function createPinnedChatsSync(options: PinnedChatsSyncOptions) {
         const serverId = entry.serverId ?? entry.operationId;
         // Another tab may already have sent it: the unpin fences its ID on the server.
         superseded.push(serverId);
-        // Journal entries are immutable, so the remainder needs a new journal ID; it keeps the
-        // server one, and runs before this unpin, so the fence never swallows it.
+        // New journal ID (entries are immutable), same server ID; it runs before the fencing unpin.
         return ids.length === 0
           ? []
           : [{ ...entry, ids, operationId: createNavigationNonce(), serverId }];

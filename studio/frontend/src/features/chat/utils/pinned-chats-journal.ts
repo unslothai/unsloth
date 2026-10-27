@@ -89,8 +89,7 @@ export function createPinnedChatsJournal(storage: Storage, scope: string) {
       if (order === undefined) {
         // Seen here and gone now: another tab acknowledged or cancelled it. Never recreate it.
         if (observed[kind].has(key)) return;
-        // A replacement (a trimmed pin) keeps its queue position: it must replay before the
-        // unpin that fences its server ID, so it slots between its stored neighbours.
+        // A trimmed pin keeps its slot: it must replay before the unpin fencing its server ID.
         let next: number | undefined;
         for (const later of operations.slice(index + 1)) {
           next = storedOrder(keyOf(later));
