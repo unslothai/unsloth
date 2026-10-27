@@ -6,13 +6,19 @@
 In training (no cache) transformers' Mamba mixers hand ``self.x_proj.weight``, ``self.dt_proj.weight``
 and ``self.out_proj.weight`` (Mamba2-style mixers: ``self.out_proj.weight``) straight to
 ``mamba_inner_fn`` / ``mamba_split_conv1d_scan_combined``, so a PEFT adapter wrapped around those
-modules never runs and gets no gradient. When one of them carries an active adapter we route that
-call to the mixer's own non-fused path, which calls the modules; otherwise the fused path is unchanged.
+modules never runs and gets no gradient.
+
+When every such adapter is plain LoRA (one active adapter, no dropout, no DoRA / variant, no LoRA
+bias, dense ``nn.Linear`` base) the fused kernel is kept and receives ``W + delta`` instead of ``W``,
+with ``delta`` from PEFT's own ``get_delta_weight`` built inside autograd, so lora_A / lora_B get
+exact gradients at fused-kernel memory and speed. Any other adapter routes that call to the mixer's
+own non-fused path, which calls the modules. Mixers without raw-weight adapters are unchanged.
 """
 
 import functools
 import inspect
 import sys
+import warnings
 
 import torch
 
@@ -20,7 +26,8 @@ __all__ = ["patch_mamba_fused_lora"]
 
 # Mixer leaves a fused kernel reads as `.weight` instead of calling the module.
 _RAW_WEIGHT_LEAVES = ("x_proj", "dt_proj", "out_proj")
-# transformers 5 fused entry points; each mixer falls back to its torch path when one returns None.
+# Fused entry points in the modeling modules; in transformers 5 each mixer falls back to its torch
+# path when one returns None.
 _FUSED_FNS = (
     "mamba_inner_fn",
     "mamba_split_conv1d_scan_combined",
@@ -28,6 +35,9 @@ _FUSED_FNS = (
 )
 _MARK = "_unsloth_mamba_fused_lora"
 _force_slow = [0]
+# Stack of {id(base weight): (base weight, merged weight)} for the mixer forward in flight.
+_merged_stack = []
+_warned_dt_proj = [False]
 
 
 def _has_active_adapter(module):
@@ -52,6 +62,65 @@ def mamba_raw_weight_adapters(mixer):
     return [name for name in _RAW_WEIGHT_LEAVES if _has_active_adapter(mixer._modules.get(name))]
 
 
+def _merged_weight(module):
+    """``W + delta`` when that is exactly what the LoRA module computes, else None."""
+    try:
+        from peft.tuners.lora import Linear as LoraLinear
+    except Exception:
+        return None
+    if not isinstance(module, LoraLinear):
+        return None
+    active = [name for name in module.active_adapters if name in module.lora_A]
+    if len(active) != 1:
+        return None
+    # Other adapter layers (embedding LoRA, a mixed tuner) for the active adapter are not covered.
+    for layer_name in module.adapter_layer_names:
+        if layer_name not in ("lora_A", "lora_B"):
+            layer = getattr(module, layer_name, None)
+            if layer is not None and active[0] in layer:
+                return None
+    name = active[0]
+    if name in getattr(module, "lora_variant", {}) or getattr(module, "use_dora", {}).get(name):
+        return None
+    if getattr(module, "fan_in_fan_out", False):
+        return None
+    if getattr(module.lora_B[name], "bias", None) is not None:
+        return None
+    dropout = module.lora_dropout[name]
+    if not isinstance(dropout, (torch.nn.Identity, torch.nn.Dropout)):
+        return None
+    if isinstance(dropout, torch.nn.Dropout) and dropout.training and dropout.p > 0:
+        return None
+    base = module.get_base_layer()
+    # Exact nn.Linear only: bitsandbytes / other quantized subclasses do not hold a dense weight.
+    if type(base) is not torch.nn.Linear:
+        return None
+    weight = base.weight
+    if not weight.is_floating_point() or weight.is_meta:
+        return None
+    return weight + module.get_delta_weight(name).to(weight.dtype)
+
+
+def _merged_weights(mixer, leaves):
+    merged = {}
+    for leaf in leaves:
+        module = mixer._modules[leaf]
+        weight = _merged_weight(module)
+        if weight is None:
+            return None
+        base = module.get_base_layer().weight
+        merged[id(base)] = (base, weight)
+    return merged
+
+
+def _swap(value, merged):
+    if isinstance(value, torch.Tensor):
+        entry = merged.get(id(value))
+        if entry is not None and entry[0] is value:
+            return entry[1]
+    return value
+
+
 def _gate(fn):
     if getattr(fn, _MARK, False):
         return fn
@@ -60,6 +129,10 @@ def _gate(fn):
     def gated(*args, **kwargs):
         if _force_slow[0]:
             return None
+        if _merged_stack:
+            merged = _merged_stack[-1]
+            args = tuple(_swap(value, merged) for value in args)
+            kwargs = {key: _swap(value, merged) for key, value in kwargs.items()}
         return fn(*args, **kwargs)
 
     setattr(gated, _MARK, True)
@@ -99,13 +172,34 @@ def _patch_class(cls):
         legacy = True
     else:
         # transformers 5: one forward whose fused branch short-circuits unless the kernel returns None.
-        module_globals = getattr(sys.modules.get(cls.__module__), "__dict__", {})
-        names = [name for name in _FUSED_FNS if callable(module_globals.get(name))]
-        if not names or not _calls_fused(forward):
+        if not _calls_fused(forward):
             return False
-        for name in names:
-            module_globals[name] = _gate(module_globals[name])
         legacy = False
+    # Both lines look the fused function up in the modeling module's globals at call time.
+    module_globals = getattr(sys.modules.get(cls.__module__), "__dict__", {})
+    names = [name for name in _FUSED_FNS if callable(module_globals.get(name))]
+    if not names and not legacy:
+        return False
+    for name in names:
+        module_globals[name] = _gate(module_globals[name])
+
+    def non_fused(self, hidden_states, *args, **kwargs):
+        if legacy:
+            return slow(self, hidden_states, *args, **kwargs)
+        if "dt_proj" in mamba_raw_weight_adapters(self) and not _warned_dt_proj[0]:
+            # transformers 5's torch path reads dt_proj.weight raw as well.
+            _warned_dt_proj[0] = True
+            warnings.warn(
+                "Unsloth: a dt_proj LoRA adapter that uses dropout, DoRA, several active adapters "
+                "or a quantized base is not applied by transformers' Mamba torch path; use "
+                "lora_dropout = 0 or leave dt_proj out of target_modules.",
+                stacklevel = 3,
+            )
+        _force_slow[0] += 1
+        try:
+            return forward(self, hidden_states, *args, **kwargs)
+        finally:
+            _force_slow[0] -= 1
 
     @functools.wraps(forward)
     def forward_keep_adapters(self, hidden_states, *args, **kwargs):
@@ -114,14 +208,17 @@ def _patch_class(cls):
                 cache_params = kwargs["cache_params"]
             else:
                 cache_params = args[cache_index] if 0 <= cache_index < len(args) else None
-            if cache_params is None and mamba_raw_weight_adapters(self):
-                if legacy:
-                    return slow(self, hidden_states, *args, **kwargs)
-                _force_slow[0] += 1
+            leaves = mamba_raw_weight_adapters(self) if cache_params is None else None
+            if leaves:
+                merged = _merged_weights(self, leaves) if names else None
+                if merged is None:
+                    return non_fused(self, hidden_states, *args, **kwargs)
+                # Fused kernel kept; it receives W + delta in place of each adapted W.
+                _merged_stack.append(merged)
                 try:
                     return forward(self, hidden_states, *args, **kwargs)
                 finally:
-                    _force_slow[0] -= 1
+                    _merged_stack.pop()
         return forward(self, hidden_states, *args, **kwargs)
 
     setattr(forward_keep_adapters, _MARK, True)
@@ -130,7 +227,7 @@ def _patch_class(cls):
 
 
 def patch_mamba_fused_lora(model):
-    """Route Mamba mixers whose raw-weight projections carry adapters off the fused kernel."""
+    """Keep LoRA on Mamba mixers whose fused kernels read x_proj / dt_proj / out_proj raw."""
     if not isinstance(model, torch.nn.Module):
         return model
     seen = set()
