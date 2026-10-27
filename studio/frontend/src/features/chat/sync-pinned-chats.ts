@@ -19,6 +19,7 @@ import { createPinnedChatsJournal } from "./utils/pinned-chats-journal";
 import { createPinnedChatsSync } from "./utils/pinned-chats-sync";
 import { createPinnedChatsTransport } from "./utils/pinned-chats-transport";
 import { isRetryablePinError } from "./utils/settings-retry";
+import { onChatThreadsDeleted } from "./utils/chat-thread-tombstones";
 
 function scope(): string {
   // Desktop's backend port changes between launches of the same installation.
@@ -66,6 +67,13 @@ function createRuntime(sessionScope: string) {
         id: "pinned-chats-sync-error",
       }),
   });
+  // Any delete path (the Library's included) unpins what it removed, so a queued pin for a
+  // never-imported legacy comparison is cancelled instead of blocking later pin saves.
+  const stopWatchingDeletes = onChatThreadsDeleted((threadIds, pairIds) => {
+    const pinned = new Set(usePinnedChatsStore.getState().pinnedIds);
+    const removed = [...threadIds, ...pairIds].filter((id) => pinned.has(id));
+    if (removed.length > 0) void sync.setPinned(removed, false).catch(() => undefined);
+  });
   setPinnedChatsActions({
     setPinned: (ids, pinned) => {
       void sync.setPinned(ids, pinned).catch(() => undefined);
@@ -76,6 +84,7 @@ function createRuntime(sessionScope: string) {
     refresh: sync.refresh,
     reset(clearPending: boolean) {
       controller.abort();
+      stopWatchingDeletes();
       transport.reset();
       sync.reset();
       setPinnedChatsActions(null);
