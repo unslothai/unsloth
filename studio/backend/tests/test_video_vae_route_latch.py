@@ -139,3 +139,23 @@ def test_wide_plan_bytes_matches_the_planner_price():
     price = U.wide_plan_bytes(FIVE_B, LATENT, 16, plan, itemsize = 2)
     assert price * U._MARGIN + U._MARGIN_BYTES <= free
     assert U.wide_plan_bytes("unknown-family", LATENT, 16, plan) is None
+
+
+def test_stock_first_then_room_for_untiled_upgrades_and_stays(monkeypatch):
+    # Render 1 short of memory (a compile in flight): stock. Room later: untiled, then kept inside the margin.
+    need = U.untiled_decode_bytes(FIVE_B, LATENT, itemsize = 2)
+    squeezed = int(need * U._MARGIN + U._MARGIN_BYTES) - GiB
+    vae = _install(monkeypatch, (int(2.6 * GiB), 100 * GiB, squeezed, squeezed))
+    _render(vae, 4)
+    assert vae.seen[0] == (256, 192, 256, 192)
+    assert vae.seen[1:] == [("untiled",)] * 3
+
+
+def test_narrow_wide_first_then_room_for_a_wider_plan_relatches(monkeypatch):
+    vae = _install(monkeypatch, (_mib(6577), _mib(10695), _mib(6577), _mib(6577)))
+    _render(vae, 4)
+    narrow, wider = vae.seen[0], vae.seen[1]
+    assert narrow[0] * narrow[2] < wider[0] * wider[2] and wider[0] == 704 and wider[2] == 704
+    assert (
+        vae.seen[2:] == [wider] * 2
+    )  # the wider plan is the latch now: no fall back to the narrow one

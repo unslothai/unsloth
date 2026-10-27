@@ -249,7 +249,7 @@ def install_untiled_decode(
     # Smallest estimates that OOMed, never retried (untiled / wide).
     oom_need: list = []
     oom_wide: list = []
-    # (latent shape, decoder itemsize) -> "untiled" / "stock" / a wide plan: the route its first decode took.
+    # (latent shape, decoder itemsize) -> "untiled" / "stock" / a wide plan: the route this shape last settled on.
     routes: dict = {}
     warned: set = set()
 
@@ -257,29 +257,29 @@ def install_untiled_decode(
         if _route_latch_enabled():
             routes.setdefault(key, route)
 
-    def latched_route(key: tuple, need: Optional[int], free: Optional[int], ratio: int) -> Any:
-        """The route this shape decoded with first while it still fits (25% margin, no fixed headroom: it already ran
-        on this load), else None (pick from free memory as the first decode did)."""
-        route = routes.get(key) if _route_latch_enabled() else None
-        if route is None or route == "stock":
-            return route
+    def rank(route: Any) -> tuple:
+        """untiled > wide (larger tile area first) > stock: fewer blend seams and fewer tiles."""
         if route == "untiled":
-            price = need if not (oom_need and need is not None and need >= oom_need[0]) else None
+            return (2, 0)
+        if route == "stock":
+            return (0, 0)
+        return (1, int(route[0]) * int(route[2]))
+
+    def kept_fits(
+        key: tuple, route: Any, need: Optional[int], free: Optional[int], ratio: int
+    ) -> bool:
+        """``route`` still fits (25% margin, no fixed headroom: it already ran on this load)."""
+        if route == "stock":
+            return True
+        if route == "untiled":
+            if oom_need and need is not None and need >= oom_need[0]:
+                return False
+            price = need
         elif _wide_tiles_enabled() and not (oom_wide and need is not None and need >= oom_wide[0]):
             price = wide_plan_bytes(family, key[0], ratio, route, itemsize = key[1])
         else:
-            price = None
-        if price is not None and free is not None and price * _MARGIN <= free:
-            return route
-        if logger is not None and key not in warned:
-            warned.add(key)
-            logger.warning(
-                "video.vae_untiled: this shape's first route (%s) no longer fits (%s MiB free); this decode picks "
-                "from free memory and its frames can differ from earlier renders",
-                route if isinstance(route, str) else "wide tiles",
-                "?" if free is None else int(free / 2**20),
-            )
-        return None
+            return False
+        return price is not None and free is not None and price * _MARGIN <= free
 
     def gated(z: Any, *args: Any, **kwargs: Any) -> Any:
         if not getattr(vae, "use_tiling", False):
@@ -290,40 +290,63 @@ def install_untiled_decode(
         need = untiled_decode_bytes(family, shape, itemsize = itemsize)
         free = _free_bytes(_decode_device(vae, z))
         ratio = int(getattr(vae, "spatial_compression_ratio", 0) or 0)
-        latched = latched_route(key, need, free, ratio)
-        if latched is not None:
-            fits = latched == "untiled"
+        # What free memory alone picks (the per-call rule, with its fixed headroom).
+        if (
+            need is not None
+            and free is not None
+            and need * _MARGIN + _MARGIN_BYTES <= free
+            and not (oom_need and need >= oom_need[0])
+        ):
+            fresh: Any = "untiled"
         else:
-            fits = (
-                need is not None
+            fresh = None
+            if (
+                _wide_tiles_enabled()
                 and free is not None
-                and need * _MARGIN + _MARGIN_BYTES <= free
-                and not (oom_need and need >= oom_need[0])
-            )
+                and hasattr(vae, "tile_sample_min_height")
+            ):
+                fresh = wide_tile_plan(family, shape, ratio, free, itemsize = itemsize)
+            if fresh is None or (oom_wide and need is not None and need >= oom_wide[0]):
+                fresh = "stock"
+            else:
+                fresh = tuple(fresh)
+        # The latch only blocks downgrades: a better pick is taken (and latched), a kept route that still fits stays.
+        latched = routes.get(key) if _route_latch_enabled() else None
+        note = ""
+        if latched is None:
+            route = fresh
+        elif rank(fresh) > rank(latched):
+            route = fresh
+            routes.pop(key, None)
+            note = ", better than this shape's earlier route"
+        elif kept_fits(key, latched, need, free, ratio):
+            route = latched
+            note = ", this shape's earlier route" if latched != fresh else ""
+        else:
+            route = fresh
+            if logger is not None and key not in warned:
+                warned.add(key)
+                logger.warning(
+                    "video.vae_untiled: this shape's earlier route (%s) no longer fits (%s MiB free); this decode "
+                    "picks from free memory and its frames can differ from earlier renders",
+                    latched if isinstance(latched, str) else "wide tiles",
+                    "?" if free is None else int(free / 2**20),
+                )
+        fits = route == "untiled"
         if logger is not None:
             logger.info(
                 "video.vae_untiled: decode %s (untiled needs ~%s MiB with margin, %s MiB free)%s",
                 "untiled" if fits else "tiled",
                 "?" if need is None else int((need * _MARGIN + _MARGIN_BYTES) / 2**20),
                 "?" if free is None else int(free / 2**20),
-                "" if latched is None else ", the route of this shape's first decode",
+                note,
             )
         if not fits:
             stats["tiled"] += 1
-            wide = None
-            if latched is not None:
-                wide = None if latched == "stock" else latched
-            elif (
-                _wide_tiles_enabled()
-                and free is not None
-                and hasattr(vae, "tile_sample_min_height")
-            ):
-                wide = wide_tile_plan(family, shape, ratio, free, itemsize = itemsize)
-            if wide is None or (
-                latched is None and oom_wide and need is not None and need >= oom_wide[0]
-            ):
+            if route == "stock":
                 remember(key, "stock")
                 return decode(z, *args, **kwargs)
+            wide = route
             stock = (
                 vae.tile_sample_min_height,
                 vae.tile_sample_stride_height,
