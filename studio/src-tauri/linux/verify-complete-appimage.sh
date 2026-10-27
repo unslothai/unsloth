@@ -251,7 +251,17 @@ if grep -aFq 'usr/bin/host/unsloth-studio' "${launchers[@]}"; then
     echo "Complete AppImage launcher runs a missing host-mode executable: $host_copy" >&2
     exit 1
   }
-  cmp -s "$appdir/usr/bin/unsloth-studio" "$host_copy" || {
+  # Minimal images (fedora:44) ship no diffutils; sha256sum is coreutils. Fail closed.
+  same_bytes() {
+    if command -v cmp >/dev/null 2>&1; then
+      cmp -s "$1" "$2"
+    else
+      local left right
+      left="$(sha256sum <"$1")" && right="$(sha256sum <"$2")" &&
+        [[ -n "$left" && "$left" == "$right" ]]
+    fi
+  }
+  same_bytes "$appdir/usr/bin/unsloth-studio" "$host_copy" || {
     echo "Complete AppImage host-mode executable differs from usr/bin/unsloth-studio" >&2
     exit 1
   }

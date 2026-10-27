@@ -1133,6 +1133,42 @@ def _verify(appdir: Path):
     )
 
 
+def _path_without(tmp_path: Path, missing: str) -> str:
+    """A PATH holding every executable on the current one except ``missing``."""
+    shadow = tmp_path / f"path-without-{missing}"
+    shadow.mkdir()
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        if not directory or not os.path.isdir(directory):
+            continue
+        for entry in os.scandir(directory):
+            target = shadow / entry.name
+            if entry.name == missing or target.exists():
+                continue
+            if entry.is_file() and os.access(entry.path, os.X_OK):
+                target.symlink_to(entry.path)
+    return str(shadow)
+
+
+def test_complete_appimage_verifier_compares_the_host_copy_without_cmp(tmp_path):
+    # fedora:44 has no diffutils, so cmp is absent there.
+    env = {**os.environ, "PATH": _path_without(tmp_path, "cmp")}
+    appdir = _host_capable_appdir(tmp_path / "same")
+    result = subprocess.run(
+        [VERIFIER, "--appdir", appdir], check = False, capture_output = True, text = True, env = env
+    )
+    assert result.returncode == 0, result.stderr
+    assert "cmp: command not found" not in result.stderr
+
+    differing = _host_capable_appdir(tmp_path / "differs")
+    with open(differing / "usr/bin/host/unsloth-studio", "ab") as handle:
+        handle.write(b"x")
+    result = subprocess.run(
+        [VERIFIER, "--appdir", differing], check = False, capture_output = True, text = True, env = env
+    )
+    assert result.returncode != 0
+    assert "differs from usr/bin/unsloth-studio" in result.stderr
+
+
 def test_complete_appimage_verifier_accepts_a_host_capable_runtime_and_the_shipped_layout(tmp_path):
     result = _verify(_host_capable_appdir(tmp_path / "host"))
     assert result.returncode == 0, result.stderr
