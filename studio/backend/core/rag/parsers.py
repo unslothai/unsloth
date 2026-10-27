@@ -441,8 +441,13 @@ def _pdf_markdown(doc, pages: range | None = None) -> list[str] | None:
 def _pdf_form_field_lines(page) -> list[str]:
     import fitz
 
+    try:
+        widgets = list(page.widgets())
+    except Exception as exc:  # noqa: BLE001 - a malformed field must not fail the whole PDF
+        logger.warning("skipping form fields on PDF page %d: %s", page.number + 1, exc)
+        return []
     fields = {}
-    for widget in page.widgets():
+    for widget in widgets:
         shown = dict(c for c in widget.choice_values or [] if isinstance(c, (list, tuple)))
         value = widget.field_value
         value = ", ".join(
