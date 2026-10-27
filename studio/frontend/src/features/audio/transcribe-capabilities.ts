@@ -103,16 +103,15 @@ export function connectionTranscribeModels(
   return [...new Set(ids)].filter((id) => !allowed || allowed.has(id));
 }
 
-const OPENAI_UNTIMED_MODELS = new Set([
-  "gpt-4o-transcribe",
-  "gpt-4o-mini-transcribe",
-]);
+// OpenAI takes timestamp_granularities from whisper-1 only, so every GPT transcription model is untimed:
+// the aliases, their dated snapshots (gpt-4o-mini-transcribe-2025-12-15), gpt-transcribe and -diarize.
+const OPENAI_UNTIMED_MODEL = /^gpt-(?:[\w.]+-)*transcribe(?:-[\w-]+)?$/i;
 
 export function connectionTranscribeSwitches(
   prefs: { timestamps: boolean },
   model: string,
 ): TranscribeSwitches {
-  const untimed = OPENAI_UNTIMED_MODELS.has(model);
+  const untimed = OPENAI_UNTIMED_MODEL.test(model);
   return {
     timestamps: untimed
       ? {

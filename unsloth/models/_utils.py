@@ -8227,15 +8227,27 @@ def _copy_embedding_subclass_state(dst: torch.nn.Module, src: torch.nn.Module) -
 def _call_with_fake_quantized_weight(module: torch.nn.Module, fn, *args, **kwargs):
     """Run fn with module.weight swapped for its fake quantized value, so a class forward that reads self.weight
     directly (unsloth_zoo's float32 Gemma forward) trains against the quantized weight.
-    Re-entrant: inside the scope weight is a plain tensor, not the Parameter, so it is quantized once."""
+    Re-entrant via a flag, not the weight's type: FSDP1 / functional_call install plain tensors that still need quantizing."""
     fake_quantizer = getattr(module, "weight_fake_quantizer", None)
-    weight = module.weight
-    if fake_quantizer is None or not isinstance(weight, torch.nn.Parameter):
+    if fake_quantizer is None or vars(module).get("_unsloth_weight_fake_quantized", False):
         return fn(*args, **kwargs)
     from torch.nn.utils.stateless import _reparametrize_module
 
-    with _reparametrize_module(module, {"weight": fake_quantizer(weight)}):
-        return fn(*args, **kwargs)
+    weight = module.weight
+    fake_quantized = fake_quantizer(weight)
+    module._unsloth_weight_fake_quantized = True
+    try:
+        if "weight" in vars(module):
+            # FSDP1's view in the instance dict shadows the registered Parameter; swap the view itself.
+            vars(module)["weight"] = fake_quantized
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                vars(module)["weight"] = weight
+        with _reparametrize_module(module, {"weight": fake_quantized}):
+            return fn(*args, **kwargs)
+    finally:
+        del module._unsloth_weight_fake_quantized
 
 
 def _is_accelerate_forward(module: torch.nn.Module, forward) -> bool:
