@@ -103,6 +103,18 @@ def test_a_descendant_exiting_mid_walk_is_skipped(tmp_path, monkeypatch):
 
 
 @linux_only
+def test_a_thread_vanishing_mid_walk_defers_to_psutil(tmp_path, monkeypatch):
+    # Thread 7 was listed, then exited before its children file was read; its live children may have
+    # moved to thread 1, already read, so the walk cannot vouch for a complete answer.
+    root = tmp_path / "1" / "task"
+    (root / "1").mkdir(parents = True)
+    (root / "1" / "children").write_text("2", encoding = "utf-8")
+    (root / "7").mkdir()
+    monkeypatch.setattr(process_tree, "_PROC", str(tmp_path))
+    assert process_tree.linux_descendant_pids(1) is None
+
+
+@linux_only
 def test_tree_memory_uses_the_walk_and_falls_back_to_psutil(tree, monkeypatch):
     import main
 

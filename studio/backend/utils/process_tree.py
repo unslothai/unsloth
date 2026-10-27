@@ -18,7 +18,8 @@ _PROC = "/proc"
 def linux_descendant_pids(pid: int) -> Optional[list[int]]:
     """Every descendant of ``pid``, or None when the fast path cannot answer (not Linux, a kernel
     without CONFIG_PROC_CHILDREN, the root gone, any unexpected error): callers then ask psutil.
-    A descendant that exits mid-walk is skipped, as psutil skips it."""
+    A descendant whose task directory is gone is skipped, as psutil skips it; a task that vanishes
+    while its children are read gives None, since its children may have moved to a task already read."""
     if not sys.platform.startswith("linux"):
         return None
     try:
@@ -40,7 +41,9 @@ def linux_descendant_pids(pid: int) -> Optional[list[int]]:
                     with open(f"{_PROC}/{parent}/task/{tid}/children", "rb") as handle:
                         listed = handle.read().split()
                 except (FileNotFoundError, ProcessLookupError):
-                    continue
+                    # A thread that exits mid-walk reparents its live children to a sibling task whose
+                    # file may already be read, so this walk could miss them: psutil answers instead.
+                    return None
                 for raw in listed:
                     child = int(raw)
                     if child not in seen:
