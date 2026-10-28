@@ -93,14 +93,27 @@ def _mask_is_block_causal(
     return verdict
 
 
-def _autocast_dtype_differs(query) -> bool:
+def _autocast_dtype(device_type):
     try:
-        enabled = torch.is_autocast_enabled(query.device.type)
-        dtype = torch.get_autocast_dtype(query.device.type) if enabled else None
+        enabled = torch.is_autocast_enabled(device_type)
+        return torch.get_autocast_dtype(device_type) if enabled else None
     except (AttributeError, TypeError):
-        enabled = torch.is_autocast_enabled()
-        dtype = torch.get_autocast_gpu_dtype() if enabled else None
-    return enabled and dtype != query.dtype
+        return torch.get_autocast_gpu_dtype() if torch.is_autocast_enabled() else None
+
+
+def _autocast_dtype_differs(query) -> bool:
+    dtype = _autocast_dtype(query.device.type)
+    return dtype is not None and dtype != query.dtype
+
+
+def _autocast_float32(query, key, value):
+    """Cast fp32 Q / K / V to the autocast dtype as SDPA would (fp32 q_norm / k_norm in full finetuning)."""
+    if not (query.dtype == key.dtype == value.dtype == torch.float32):
+        return query, key, value
+    dtype = _autocast_dtype(query.device.type)
+    if dtype not in (torch.float16, torch.bfloat16):
+        return query, key, value
+    return query.to(dtype), key.to(dtype), value.to(dtype)
 
 
 _NO_WINDOW = object()
@@ -424,6 +437,10 @@ def _sdpa_packed_varlen(
             HF_PACKED_ATTENTION_STATS["fallback"] += 1
         return orig(module, query, key, value, attention_mask, *args, **named, **kwargs)
     block_varlen = kwargs.pop(BLOCK_VARLEN_KWARG, None)
+    # Fallback gets the uncast Q / K / V so GQA's dK / dV reduce in fp32 after repeat_kv.
+    given = (query, key, value)
+    if kwargs.get("packed_seq_lengths") is not None and not _disabled():
+        query, key, value = _autocast_float32(query, key, value)
     # Before any counter while tracing: Dynamo would guard on it and recompile every forward.
     if block_varlen is not None and torch.compiler.is_compiling() and not _disabled():
         window = _static_window(module, query, key, value, dropout, is_causal, kwargs)
@@ -458,9 +475,7 @@ def _sdpa_packed_varlen(
     ):
         return _sdpa_packed_varlen_eager(
             module,
-            query,
-            key,
-            value,
+            *given,
             attention_mask,
             dropout = dropout,
             scaling = scaling,
@@ -470,9 +485,7 @@ def _sdpa_packed_varlen(
     if kwargs.get("packed_seq_lengths") is None or _disabled() or torch.compiler.is_compiling():
         return orig(
             module,
-            query,
-            key,
-            value,
+            *given,
             attention_mask,
             dropout = dropout,
             scaling = scaling,
@@ -527,9 +540,7 @@ def _sdpa_packed_varlen(
         HF_PACKED_ATTENTION_STATS["fallback"] += 1
         return orig(
             module,
-            query,
-            key,
-            value,
+            *given,
             attention_mask,
             dropout = dropout,
             scaling = scaling,
@@ -558,9 +569,7 @@ def _sdpa_packed_varlen(
             HF_PACKED_ATTENTION_STATS["fallback"] += 1
             return orig(
                 module,
-                query,
-                key,
-                value,
+                *given,
                 attention_mask,
                 dropout = dropout,
                 scaling = scaling,
@@ -587,9 +596,7 @@ def _sdpa_packed_varlen(
             HF_PACKED_ATTENTION_STATS["fallback"] += 1
             return orig(
                 module,
-                query,
-                key,
-                value,
+                *given,
                 attention_mask,
                 dropout = dropout,
                 scaling = scaling,
@@ -812,7 +819,12 @@ def _block_varlen_prepare(
     n_kv_heads = getattr(config, "num_key_value_heads", None) or n_heads
     if not all(isinstance(n, int) for n in (head_dim, n_heads, n_kv_heads)):
         return None
-    policy_args = (hidden_states.device, hidden_states.dtype, head_dim, n_heads, n_kv_heads)
+    # SDPA runs in the autocast dtype when autocast casts fp32 activations (_autocast_float32).
+    dtype = hidden_states.dtype
+    if dtype == torch.float32:
+        dtype = _autocast_dtype(hidden_states.device.type) or dtype
+        dtype = dtype if dtype in (torch.float16, torch.bfloat16, torch.float32) else torch.float32
+    policy_args = (hidden_states.device, dtype, head_dim, n_heads, n_kv_heads)
     wants_sdpa = _sdpa_policy_requested(*policy_args)
     if policy is not None:
         policy.append((policy_args, wants_sdpa))

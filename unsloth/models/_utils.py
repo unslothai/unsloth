@@ -499,17 +499,32 @@ def _unsloth_reset_stray_compile_cache(self):
         _m["seen"] = False
 
 
+def _smart_gradient_checkpointing_patched():
+    return (
+        getattr(torch.utils.checkpoint.CheckpointFunction, "__name__", "")
+        == "UnslothCheckpointFunction"
+    )
+
+
 def apply_unsloth_gradient_checkpointing(use_gradient_checkpointing, max_seq_length, dtype):
-    """Apply gradient checkpointing with smart heuristics, returning the effective ``use_gradient_checkpointing`` (which may change from "unsloth" to True). Below seq 512 the "unsloth" offloading overhead is not worth it and standard gc is faster."""
+    """Apply gradient checkpointing with smart heuristics, returning the effective ``use_gradient_checkpointing`` (which may change from "unsloth" to True). Below seq 512 the "unsloth" offloading overhead is not worth it and standard gc is faster. Smart offloading is a process-wide patch, so unpatching affects every loaded model."""
     if use_gradient_checkpointing == "unsloth":
         # Offloading is not worth it below ~512; standard gc is faster (crossover ~384-512).
         if max_seq_length < 512:
+            # Keep an earlier model's offloading; returning True would make later steps unpatch it.
+            if _smart_gradient_checkpointing_patched():
+                return "unsloth"
             unpatch_unsloth_smart_gradient_checkpointing()
             return True
         else:
             patch_unsloth_smart_gradient_checkpointing(dtype = dtype)
             return "unsloth"
     elif use_gradient_checkpointing in (True, False):
+        if _smart_gradient_checkpointing_patched():
+            print(
+                f"Unsloth: use_gradient_checkpointing = {use_gradient_checkpointing} turns off smart "
+                'offloading for every model in this process, including ones loaded with "unsloth" earlier.'
+            )
         unpatch_unsloth_smart_gradient_checkpointing()
         return use_gradient_checkpointing
     return use_gradient_checkpointing

@@ -93,7 +93,8 @@ async def shared_scan(
     return await asyncio.shield(flight)
 
 
-def invalidate_hf_cache_scans() -> None:
+def invalidate_hf_cache_scans(*, sizes: bool = True) -> None:
+    """``sizes=False`` is for a Settings purge, which has already forgotten the caches it cleared."""
     global _hf_cache_scans_result, _hf_cache_scans_cached_at, _hf_cache_scans_epoch
     with _hf_cache_scans_lock:
         _hf_cache_scans_result = None
@@ -101,12 +102,13 @@ def invalidate_hf_cache_scans() -> None:
         _hf_cache_scans_epoch += 1
         invalidate_scan_memos()
     # Settings may answer a slow cache from its last walk; a download or delete must not show the old size.
-    try:
-        from utils.cache_inventory import invalidate_cache_size
-        for key in ("hf_hub", "hf_xet", "hf_datasets", "hf_assets"):
-            invalidate_cache_size(key)
-    except Exception:  # noqa: BLE001 - the Settings sizes are best effort
-        pass
+    if sizes:
+        try:
+            from utils.cache_inventory import invalidate_cache_size
+            for key in ("hf_hub", "hf_xet", "hf_datasets", "hf_assets"):
+                invalidate_cache_size(key)
+        except Exception:  # noqa: BLE001 - the Settings sizes are best effort
+            pass
     try:
         from core.inference.audio_cpp_models import forget
     except Exception:  # noqa: BLE001 - no audio.cpp support, nothing memoized

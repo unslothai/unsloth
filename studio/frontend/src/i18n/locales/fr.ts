@@ -629,6 +629,38 @@ export const fr = {
     compactEmpty: "Rien à compacter pour le moment",
     compactUnsupported: "Le compactage nécessite un modèle GGUF ou MLX prenant en charge les outils",
   },
+  halloween: {
+    navLabel: "Un bonbon ou un sort…",
+    title: "Un bonbon ou un sort ?!",
+    description:
+      "Nous avons concocté quelques frayeurs pour Unsloth, jusqu’à la fin d’octobre.",
+    chooseTheme: "Choisissez un thème effrayant",
+    spookyGreetings: "Salutations effrayantes",
+    spookyGreetingsDescription:
+      "Le paresseux accueille les nouvelles discussions avec une frayeur.",
+    decorations: "Araignées et chauves-souris",
+    decorationsDescription:
+      "Des toiles dans les coins, et de temps en temps une araignée ou une chauve-souris avec un thème d’Halloween.",
+    surprise: "Un bonbon ou un sort !",
+    surpriseDescription: "Laissez le paresseux choisir un thème pour vous.",
+    themesTitle: "Thèmes effrayants",
+    back: "Retour",
+    footer: "Unsloth redevient normal à minuit le 1er novembre.",
+    removeNow: "Retirer maintenant",
+    hideFromSidebar: "Masquer de la barre latérale",
+    greeting: {
+      pumpkins: "Les citrouilles sont sculptées. Et ensuite ?",
+      brewing: "Préparons la potion",
+      trickOrTreat: "Un bonbon ou un sort ?",
+      manor: "Bienvenue au manoir",
+      manorName: "Bienvenue au manoir, {name}",
+      happyHalloween: "Joyeux Halloween",
+      happyHalloweenName: "Joyeux Halloween, {name}",
+      spirits: "Les esprits écoutent…",
+      mysteries: "Quels mystères allons-nous percer ce soir ?",
+      conjure: "Que puis-je faire apparaître pour vous ?",
+    },
+  },
   welcome: {
     goodToSeeYou: "Ravi de vous voir",
     goodToSeeYouName: "Ravi de vous voir, {name}",
@@ -2214,6 +2246,12 @@ export const fr = {
         classic: "Classique",
         minimal: "Minimale",
         moreThemes: "Plus de thèmes",
+        halloween: "Halloween",
+      },
+      trickOrTreat: {
+        label: "Un bonbon ou un sort",
+        description:
+          "Thèmes d’Halloween et salutations effrayantes, jusqu’au 1er novembre.",
       },
       custom: {
         chatWidth: {
@@ -2538,6 +2576,10 @@ export const fr = {
           hideDetailsAction: "Masquer les détails",
           clearAction: "Vider les caches",
           clearOneAction: "Vider",
+          showFolders: "Afficher les dossiers",
+          hideFolders: "Masquer les dossiers",
+          previousLocations: "Inclut les emplacements précédents. Le bouton Vider principal concerne le dossier de cache actuel. Les boutons de modèle ne vident que la copie sélectionnée.",
+          clearModelDescription: "Cela supprime uniquement cette copie en cache. Elle sera téléchargée à nouveau si nécessaire.",
           clearingAction: "Vidage en cours...",
           confirmTitle: "Vider les fichiers en cache ?",
           confirmDescription: "Cela libère environ {size}.",
@@ -4288,8 +4330,6 @@ export const fr = {
       terminalStart: "> l'entraînement unsloth démarre...",
       preparingResources: "> Préparation du modèle et du jeu de données...",
       gettingReady: "> Nous préparons tout pour votre entraînement...",
-      waitingForFirstStep:
-        "> {message} | en attente de la première étape... ({step})",
       resumingTraining: "Reprise de l'entraînement...",
       startingTraining: "démarrage de l'entraînement...",
       dataset: "Jeu de données",

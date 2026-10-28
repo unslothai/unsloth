@@ -133,11 +133,6 @@ def _list_hf_repo_files(*, dataset_name: str, token: HfTokenArg) -> list[str]:
         return []
 
 
-def _list_hf_data_files(*, dataset_name: str, token: HfTokenArg) -> list[str]:
-    repo_files = _list_hf_repo_files(dataset_name = dataset_name, token = token)
-    return [file for file in repo_files if file.lower().endswith(DATA_EXTS)]
-
-
 def _list_hf_dataset_configs(*, dataset_name: str, token: HfTokenArg) -> list[dict[str, Any]]:
     """Read configs from the card's configs block; config names need not match folder names."""
     try:

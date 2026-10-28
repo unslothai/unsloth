@@ -629,6 +629,38 @@ export const es = {
     compactEmpty: "Aún no hay nada que compactar",
     compactUnsupported: "La compactación requiere un modelo GGUF o MLX compatible con herramientas",
   },
+  halloween: {
+    navLabel: "Truco o trato…",
+    title: "¡¿Truco o trato?!",
+    description:
+      "Hemos preparado algunos sustos para Unsloth, disponibles hasta finales de octubre.",
+    chooseTheme: "Elige un tema terrorífico",
+    spookyGreetings: "Saludos terroríficos",
+    spookyGreetingsDescription:
+      "El perezoso recibe los chats nuevos con un susto.",
+    decorations: "Arañas y murciélagos",
+    decorationsDescription:
+      "Telarañas en las esquinas y alguna araña o murciélago de vez en cuando con un tema de Halloween.",
+    surprise: "¡Truco o trato!",
+    surpriseDescription: "Deja que el perezoso elija un tema por ti.",
+    themesTitle: "Temas terroríficos",
+    back: "Atrás",
+    footer: "Unsloth vuelve a la normalidad a medianoche del 1 de noviembre.",
+    removeNow: "Quitar ahora",
+    hideFromSidebar: "Ocultar de la barra lateral",
+    greeting: {
+      pumpkins: "Las calabazas ya están talladas. ¿Qué sigue?",
+      brewing: "¡A preparar la poción!",
+      trickOrTreat: "¿Truco o trato?",
+      manor: "Te damos la bienvenida a la mansión",
+      manorName: "Te damos la bienvenida a la mansión, {name}",
+      happyHalloween: "¡Feliz Halloween!",
+      happyHalloweenName: "¡Feliz Halloween, {name}!",
+      spirits: "Los espíritus están escuchando…",
+      mysteries: "¿Qué misterios descubriremos esta noche?",
+      conjure: "¿Qué puedo conjurar para ti?",
+    },
+  },
   welcome: {
     goodToSeeYou: "Me alegra verte",
     goodToSeeYouName: "Me alegra verte, {name}",
@@ -2210,6 +2242,12 @@ export const es = {
         classic: "Clásica",
         minimal: "Minimalista",
         moreThemes: "Más temas",
+        halloween: "Halloween",
+      },
+      trickOrTreat: {
+        label: "Truco o trato",
+        description:
+          "Temas de Halloween y saludos terroríficos, hasta el 1 de noviembre.",
       },
       custom: {
         chatWidth: {
@@ -2534,6 +2572,10 @@ export const es = {
           hideDetailsAction: "Ocultar detalles",
           clearAction: "Borrar cachés",
           clearOneAction: "Borrar",
+          showFolders: "Mostrar carpetas",
+          hideFolders: "Ocultar carpetas",
+          previousLocations: "Incluye ubicaciones anteriores. El botón Borrar principal afecta a la carpeta de caché actual. Los botones de modelo borran solo la copia seleccionada.",
+          clearModelDescription: "Esto elimina solo esta copia en caché. Se volverá a descargar cuando sea necesario.",
           clearingAction: "Borrando...",
           confirmTitle: "¿Borrar los archivos en caché?",
           confirmDescription: "Esto libera unos {size}.",
@@ -4275,8 +4317,6 @@ export const es = {
       preparingResources: "> Preparando modelo y conjunto de datos...",
       gettingReady:
         "> Estamos dejando todo listo para tu ejecución...",
-      waitingForFirstStep:
-        "> {message} | esperando el primer paso... ({step})",
       resumingTraining: "Reanudando entrenamiento...",
       startingTraining: "iniciando entrenamiento...",
       dataset: "Conjunto de datos",

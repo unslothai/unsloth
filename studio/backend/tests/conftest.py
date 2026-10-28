@@ -182,6 +182,21 @@ def _forget_mcp_discovery_state():
 
 
 @pytest.fixture(autouse = True)
+def _forget_queued_media_requests():
+    def _forget():
+        video_routes = sys.modules.get("routes.video")
+        if video_routes is not None:
+            video_routes._VIDEO_QUEUE.clear()
+        batching = sys.modules.get("core.inference.image_request_batching")
+        if batching is not None:
+            batching._OPEN.clear()
+
+    _forget()
+    yield
+    _forget()
+
+
+@pytest.fixture(autouse = True)
 def _forget_load_budget_snapshots():
     def _forget():
         for name, module in list(sys.modules.items()):
@@ -483,14 +498,23 @@ def _forget_the_cached_owner_identity():
 def _isolate_wal_keepers():
     """Close the WAL keepers a test opened, so a later test's assertion on _wal_keepers sees only
     its own."""
-    from storage import studio_db
+    from storage import rag_db, studio_db
 
     before = set(studio_db._wal_keepers)
     unsupported = set(studio_db._wal_unsupported)
+    rag_before = set(rag_db._wal_keepers)
+    rag_enabled = rag_db._wal_keepers_enabled
+    rag_db.start_wal_keepers()
     yield
     for path in set(studio_db._wal_keepers) - before:
         studio_db.close_wal_keeper_for(path)
     studio_db._wal_unsupported.intersection_update(unsupported)
+    for path in set(rag_db._wal_keepers) - rag_before:
+        rag_db.close_wal_keeper_for(path)
+    if rag_enabled:
+        rag_db.start_wal_keepers()
+    else:
+        rag_db.close_wal_keeper()
 
 
 @pytest.fixture(autouse = True)

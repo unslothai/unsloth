@@ -5615,13 +5615,18 @@ def _full_access_tip(code_tools: list[str]) -> str:
 
 # Avoid the word 'greetings': small models then greet instead of researching.
 _TOOL_RESEARCH_TIP = (
-    "Deep Research is turned on for this conversation. For any question about the world "
-    "-- facts, events, laws, products, papers, prices, comparisons, anything that may have "
-    "changed since your training -- call deep_research instead of answering from memory, "
-    "even when you think you know the answer: the user asked for a researched, cited "
-    "report and your knowledge has a cutoff. If a message has no question in it, such as a "
-    "hello, a thanks, or a remark about you, reply normally. If a topic is too vague to "
-    "research well, ask one short clarifying question first."
+    "Deep Research is turned on for this conversation. For factual questions or requests "
+    "to investigate a topic, compare information, or write a research report, call "
+    "deep_research before drafting an answer, outline, or report, even if you know the "
+    "answer. A research request may be a command or a brief in pasted text or an "
+    "attachment; it does not need to be phrased as a question. Hand off the whole request "
+    "in one concise, self-contained research question covering its main topics and requested "
+    "outputs. Summarize the brief in a few sentences rather than copying it or answering it. "
+    "The research workflow gathers sources and "
+    "writes the report; do not use it only to fill gaps in an answer you write from memory. "
+    "Reply normally to a hello, thanks, or a remark about you, and to requests only to "
+    "rewrite or transform supplied text without outside research. If the topic is too "
+    "vague to research well, ask one short clarifying question first."
 )
 
 _TOOL_ARTIFACT_TIP = (
@@ -10844,6 +10849,7 @@ async def _maybe_auto_switch_model(
         model_load_gate,
         note_admitted_inference,
         preview_swapped_since_entry,
+        stash_is_mlx,
     )
 
     generation_cancel_event = getattr(
@@ -10979,6 +10985,7 @@ async def _maybe_auto_switch_model(
         resolved = None
         repo_level_companion_resolution = False
         stashed_gguf_companion_roots: tuple[str, ...] = ()
+        stashed_mlx = False
         if auto_switch_on and not reload_only:
             # audio.cpp GGUFs load via the audio worker, not llama-server; the HF cache resolves them.
             resolved = await asyncio.to_thread(_audio_cpp_switch_target, requested_model)
@@ -11035,6 +11042,7 @@ async def _maybe_auto_switch_model(
             else:  # pre-3-tuple stash: fall back to the path as the override key
                 target_id, variant = last
                 override_id = target_id
+            stashed_mlx = stash_is_mlx(last)
             # Held-back keyless callers may restore only the model they named; check before loading.
             if keyless_held_back and not reload_only:
                 requested_base, requested_variant = split_model_ref(requested_model)
@@ -11059,8 +11067,11 @@ async def _maybe_auto_switch_model(
         # Not inferred from the quant; audio.cpp GGUFs are read only by audiocpp_server.
         from core.inference.audio_cpp_models import looks_like_audio_cpp
 
-        target_is_gguf = not looks_like_audio_cpp(target_id) and await asyncio.to_thread(
-            local_target_is_gguf, target_id, override_id
+        # A cold resolver index reads an unknown repo id as GGUF, so trust the stash's own format.
+        target_is_gguf = (
+            not stashed_mlx
+            and not looks_like_audio_cpp(target_id)
+            and await asyncio.to_thread(local_target_is_gguf, target_id, override_id)
         )
         gguf_companion_roots: tuple[str, ...] = ()
         if target_is_gguf:
@@ -17520,6 +17531,9 @@ async def load_model_gated(
                 _note_activity()
         # Record provenance once resident, here so the fast paths are covered; outside the gate. Preview keeps False: only an explicit UI load pins.
         get_llama_cpp_backend()._loaded_by_user_action = user_initiated
+        standard = _peek_inference_backend()
+        if getattr(standard, "active_model_name", None):
+            standard._loaded_by_user_action = user_initiated
         # Every other model this load unloaded is listed too, under its model id: idle kept models,
         # kept models a vLLM/SGLang load retired and media a chat load freed.
         evicted += [
@@ -21135,6 +21149,15 @@ async def cancel_inference(request: Request, current_subject: str = Depends(get_
 async def confirm_tool_call(
     request: ToolConfirmRequest, current_subject: str = Depends(get_current_subject)
 ):
+    full_access = request.permission_mode == "full"
+    if full_access and (
+        not auth_policy.full_access_permitted() or auth_policy.api_full_access_refused()
+    ):
+        raise HTTPException(
+            status_code = 403,
+            detail = "Full access is only available to the installation owner in the Unsloth UI "
+            "(API callers require UNSLOTH_STUDIO_ALLOW_API_FULL_ACCESS=1).",
+        )
     # Approving a host-path call unsandboxes it: like Full access, the UI's choice, not an API key's. Deny stays open.
     if (
         request.decision == "allow"
@@ -21151,10 +21174,12 @@ async def confirm_tool_call(
         request.approval_id,
         request.decision,
         session_id = request.session_id,
+        full_access = full_access,
     )
     if not matched:
         raise HTTPException(status_code = 404, detail = "No pending tool call confirmation")
-    return {"resolved": True}
+    # An older backend ignores the new request field; clients require this acknowledgement.
+    return {"resolved": True, **({"full_access_granted": True} if full_access else {})}
 
 
 @studio_router.post("/browser-action-result")
@@ -31293,6 +31318,9 @@ async def produce_openai_chat_completions(
 
             def gguf_generate_with_tools():
                 from core.inference.skill_mentions import load_mentioned_skills
+                from state.tool_approvals import LiveToolPermissions
+
+                gguf_live_permissions = LiveToolPermissions(payload.session_id, cancel_event)
 
                 skill_instruction_ids = set()
                 yield from load_mentioned_skills(
@@ -31309,8 +31337,10 @@ async def produce_openai_chat_completions(
                     context_length = llama_backend.context_length,
                     continue_final_message = _continue_final_message(payload, thought = True),
                     protected_message_ids = skill_instruction_ids,
+                    permission_upgrade = gguf_live_permissions,
                 )
                 yield from llama_backend.generate_chat_completion_with_tools(
+                    live_permissions = gguf_live_permissions,
                     instruction_anchor_ids = skill_instruction_ids,
                     messages = gguf_messages,
                     replayed_image_parts = tuple(_gguf_replayed_image_parts),
@@ -50112,6 +50142,105 @@ def _image_generation_defaults(status: dict) -> tuple[int, float]:
     )
 
 
+async def _batched_openai_images(
+    backend: Any,
+    status: dict,
+    body: ImageGenerationRequest,
+    width: int,
+    height: int,
+    steps: int,
+    guidance: float,
+    expected_load: Any,
+) -> Optional[dict]:
+    from core.inference import image_request_batching
+    from core.inference.diffusion_engine_router import ENGINE_DIFFUSERS, active_engine_name
+    from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+    from core.inference.diffusion_flux3 import FLUX3_FAMILY_NAMES
+    from core.inference.generation_ticket import (
+        GenerationTicket,
+        TicketStopEvent,
+        generation_ticket,
+    )
+
+    holder = getattr(backend, "generation_holder", None)
+    if (
+        holder is None
+        or active_engine_name() != ENGINE_DIFFUSERS
+        or status.get("family") in FLUX3_FAMILY_NAMES
+    ):
+        return None
+
+    ticket = GenerationTicket()
+    stopped = TicketStopEvent(ticket)
+
+    # Wait only for the generation found on arrival, so a later one taking the slot cannot starve the batch.
+    arrived_behind: list = []
+
+    def busy() -> bool:
+        if stopped.is_set():
+            raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+        try:
+            current = holder()
+        except Exception:  # noqa: BLE001 -- no busy signal; render individually
+            return False
+        if current is None:
+            return False
+        if not arrived_behind:
+            arrived_behind.append(current)
+        return current is arrived_behind[0]
+
+    async def run_batch(prompts: list[str], seeds: list[int]) -> dict:
+        with generation_ticket(ticket):
+            try:
+                return await asyncio.to_thread(
+                    backend.generate,
+                    prompt = prompts[0],
+                    negative_prompt = body.negative_prompt,
+                    width = width,
+                    height = height,
+                    steps = steps,
+                    guidance = guidance,
+                    prompts = prompts,
+                    seeds = seeds,
+                    batch_size = len(seeds),
+                    expected_load = expected_load,
+                )
+            except Exception as exc:
+                # An engine Stop sets the bound event, not ``stopped``: no member may retry alone.
+                if ticket.cancelled() and not cancelled(exc):
+                    raise RuntimeError(DIFFUSION_CANCELLED_MSG) from exc
+                raise
+
+    key = (
+        current_account_id(),
+        expected_load,
+        width,
+        height,
+        steps,
+        guidance,
+        body.negative_prompt or None,
+    )
+
+    def cancelled(exc: BaseException) -> bool:
+        return isinstance(exc, RuntimeError) and str(exc) == DIFFUSION_CANCELLED_MSG
+
+    waiter = getattr(backend, "generation_waiter", None)
+    with waiter(stopped) if waiter is not None else nullcontext():
+        result = await image_request_batching.generate(
+            key,
+            body.prompt,
+            body.n,
+            body.seed,
+            busy = busy,
+            run_batch = run_batch,
+            shared_outcome = cancelled,
+        )
+        # A Stop recorded while the batch ran is final: never fall back to rendering alone or retry.
+        if result is None and stopped.is_set():
+            raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+        return result
+
+
 # Split out so the monitor row can wrap the whole handler without reindenting it.
 async def _generate_openai_images(
     body: ImageGenerationRequest,
@@ -50171,23 +50300,28 @@ async def _generate_openai_images(
         steps, guidance = await asyncio.to_thread(_image_generation_defaults, status)
         steps = steps if body.steps is None else body.steps
         guidance = guidance if body.guidance is None else body.guidance
+        expected_load = load_identity(
+            status.get("repo_id"), status.get("base_repo"), status.get("family")
+        )
         reset_media_generation_progress("image")
         try:
             with account_access.media_generation("diffusion"):
-                result = await asyncio.to_thread(
-                    backend.generate,
-                    prompt = body.prompt,
-                    negative_prompt = body.negative_prompt,
-                    width = width,
-                    height = height,
-                    steps = steps,
-                    guidance = guidance,
-                    seed = body.seed,
-                    batch_size = body.n,
-                    expected_load = load_identity(
-                        status.get("repo_id"), status.get("base_repo"), status.get("family")
-                    ),
+                result = await _batched_openai_images(
+                    backend, status, body, width, height, steps, guidance, expected_load
                 )
+                if result is None:
+                    result = await asyncio.to_thread(
+                        backend.generate,
+                        prompt = body.prompt,
+                        negative_prompt = body.negative_prompt,
+                        width = width,
+                        height = height,
+                        steps = steps,
+                        guidance = guidance,
+                        seed = body.seed,
+                        batch_size = body.n,
+                        expected_load = expected_load,
+                    )
             break
         except DiffusionModelReplacedError:
             if attempt > 0:
@@ -50245,7 +50379,6 @@ async def _generate_openai_images(
         "workflow": result.get("workflow"),
         "created_at": float(created),
     }
-    # The diffusers batch shares one seed; the native batch uses a distinct seed per image, so record each image's own seed.
     per_image_seeds = result.get("seeds")
 
     def _persist() -> list[ImageGenerationData]:

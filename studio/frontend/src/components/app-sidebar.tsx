@@ -96,6 +96,12 @@ import {
 } from "@/features/audio/workflows";
 /* eslint-enable no-restricted-imports */
 import { cn } from "@/lib/utils";
+import {
+  hideTrickOrTreatRow,
+  useHalloweenSeasonEnd,
+  useTrickOrTreatVisible,
+} from "@/features/halloween/halloween-store";
+import { TrickOrTreatDialog } from "@/features/halloween/trick-or-treat-dialog";
 import { createNavigationNonce } from "@/lib/navigation-nonce";
 import { copyToClipboardFrom } from "@/lib/copy-to-clipboard";
 import { isTauri } from "@/lib/api-base";
@@ -108,6 +114,7 @@ import { NAV_FLYOUT_INTENT, NAV_TOOLTIP_INTENT } from "@/lib/hover-intent";
 import {
   Archive03Icon,
   Cancel01Icon,
+  CandyIcon,
   BadgeInfoIcon,
   ChefHatIcon,
   CloudIcon,
@@ -123,7 +130,7 @@ import {
   Folder02Icon,
   FlimSlateIcon,
   HelpCircleIcon,
-  Image03Icon,
+  Image01Icon,
   InformationCircleIcon,
   LibrariesIcon,
   Logout05Icon,
@@ -1323,6 +1330,9 @@ export function AppSidebar() {
   const settingsShortcutLabel = useShortcutLabel("openSettings");
   const keyboardShortcutsLabel = useShortcutLabel("openKeyboardShortcuts");
   const isOwner = useIsAccountOwner();
+  const showTrickOrTreat = useTrickOrTreatVisible();
+  const [trickOrTreatOpen, setTrickOrTreatOpen] = useState(false);
+  useHalloweenSeasonEnd();
   const { pathname, search, href } = useRouterState({
     select: (s) => ({
       pathname: s.location.pathname,
@@ -3380,7 +3390,7 @@ export function AppSidebar() {
       },
     },
     images: {
-      icon: Image03Icon,
+      icon: Image01Icon,
       label: t("shell.navigation.images"),
       active: pathname === "/images" || pathname.startsWith("/images/"),
       onClick: () => {
@@ -6226,6 +6236,35 @@ export function AppSidebar() {
                   </NavItem>
                 );
               })}
+              {showTrickOrTreat && (
+                <NavItem
+                  icon={CandyIcon}
+                  label={t("halloween.navLabel")}
+                  active={trickOrTreatOpen}
+                  testId="nav-row-trick-or-treat"
+                  className="group/halloween-item relative"
+                  onClick={() => setTrickOrTreatOpen(true)}
+                >
+                  <button
+                    type="button"
+                    aria-label={t("halloween.hideFromSidebar")}
+                    data-testid="nav-row-trick-or-treat-hide"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      hideTrickOrTreatRow();
+                    }}
+                    className="sidebar-row-action pr-2.5! group-hover/halloween-item:opacity-100 group-hover/halloween-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto group-data-[collapsible=icon]:hidden"
+                  >
+                    <span className="sidebar-row-action-glyph">
+                      <HugeiconsIcon
+                        icon={Cancel01Icon}
+                        strokeWidth={1.75}
+                        className="size-4"
+                      />
+                    </span>
+                  </button>
+                </NavItem>
+              )}
               {/* Unpinned destinations, behind one row. */}
               {overflowNavIds.length > 0 && (
                 <SidebarMenuItem>
@@ -6390,6 +6429,10 @@ export function AppSidebar() {
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
+        <TrickOrTreatDialog
+          open={trickOrTreatOpen}
+          onOpenChange={setTrickOrTreatOpen}
+        />
 
         {/* Pinned, the user's sections and Projects, in the order they were dragged into.
             Recents stays last, under them all. */}

@@ -280,10 +280,7 @@ test("text and lines head away from whatever they are drawn on", () => {
       "a surface scope leaves body text on the other surface's target",
     );
   }
-  assert.match(
-    CSS,
-    /html\[data-contrast-adjust\]:not\(\.dark\) \.diffusion-surface \{\s*--border: color-mix\(in oklab, var\(--border-base\), var\(--contrast-target\) var\(--contrast-line-mix\)\);\s*--input: color-mix\(in oklab, var\(--input-base\), var\(--contrast-target\) var\(--contrast-control-mix\)\);/,
-  );
+  assert.doesNotMatch(CSS, /\.diffusion-surface \{\s*--border-base/);
 });
 
 test("the sidebar section labels follow the slider", () => {

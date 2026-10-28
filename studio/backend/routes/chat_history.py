@@ -353,8 +353,16 @@ class ChatProjectPatch(BaseModel):
     updatedAt: Optional[SqliteInt] = None
 
 
+# Advertised on the thread lists so the title repair skips fetching /openapi.json (older backends still need it).
+_THREAD_PATCH_GUARD_FIELDS = ("expectedTitle", "expectedOpeningMessageId")
+THREAD_PATCH_GUARDS = all(
+    name in ChatThreadPatch.model_fields for name in _THREAD_PATCH_GUARD_FIELDS
+)
+
+
 class ChatThreadListResponse(BaseModel):
     threads: list[ChatThread]
+    threadPatchGuards: bool = False
 
 
 class ChatProjectListResponse(BaseModel):
@@ -397,6 +405,7 @@ class ChatSidebarRowsResponse(BaseModel):
     nextCursor: Optional[str] = None
     hasMore: bool
     total: int
+    threadPatchGuards: bool = False
 
 
 class ChatSidebarThreadRowsResponse(BaseModel):
@@ -762,7 +771,10 @@ def list_threads(
         project_id = project_id,
         include_archived = include_archived,
     )
-    return ChatThreadListResponse(threads = [thread_from_row(t) for t in threads])
+    return ChatThreadListResponse(
+        threads = [thread_from_row(t) for t in threads],
+        threadPatchGuards = THREAD_PATCH_GUARDS,
+    )
 
 
 @router.post(
@@ -788,7 +800,7 @@ def list_sidebar_rows(
         )
     except SidebarCursorError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
-    return ChatSidebarRowsResponse(**page)
+    return ChatSidebarRowsResponse(**page, threadPatchGuards = THREAD_PATCH_GUARDS)
 
 
 _SIDEBAR_THREAD_ROWS_MAX = 500

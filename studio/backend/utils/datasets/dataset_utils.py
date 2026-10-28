@@ -18,6 +18,7 @@ from .format_conversion import (
     convert_to_vlm_format,
     convert_llava_to_vlm_format,
     convert_sharegpt_with_images_to_vlm_format,
+    normalize_chatml_roles,
 )
 from .chat_templates import (
     _custom_prompt_template_error,
@@ -399,6 +400,10 @@ def format_dataset(dataset, *args, **kwargs):
             "requires_manual_mapping": False,
             "warnings": [],
         }
+    if info["final_format"] in ("chatml_messages", "chatml_conversations") and info["chat_column"]:
+        info["dataset"] = normalize_chatml_roles(
+            info["dataset"], info["chat_column"], bound.arguments["batch_size"]
+        )
     return info
 
 

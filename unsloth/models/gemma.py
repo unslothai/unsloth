@@ -11,6 +11,7 @@
 
 from .llama import *
 from .llama import _get_rope_theta, _LazyDeviceScratch, _PerDeviceRopeCache
+from .._gc_passes import collect_garbage
 from ._utils import __version__
 from ._utils import move_to_device, per_layer_device, embedding_applies_scale
 from ._utils import refresh_moved_layer_devices
@@ -406,9 +407,5 @@ class FastGemmaModel(FastLlamaModel):
                 if not hasattr(module, "variance_epsilon"):
                     module.variance_epsilon = module.eps  # Gemma doesn't use variance_epsilon
 
-        import gc
-
-        for _ in range(3):
-            gc.collect()
-            clean_gpu_cache()
+        collect_garbage(after = clean_gpu_cache)
         return model, tokenizer

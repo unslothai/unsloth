@@ -765,6 +765,13 @@ async def _trains_alone(request: TrainingStartRequest) -> bool:
     from utils.models.model_config import _read_raw_config_json, get_base_model_from_lora_identifier
 
     def probe() -> bool:
+        from core.training.account_jobs import account_path
+
+        # Path guard first: a managed account's share path must not be touched (SMB sign-in); start_training refuses it.
+        try:
+            account_path(request.model_name, reference = True)
+        except HTTPException:
+            return True
         if diffusion_lm_profile_for_model(request.model_name, request.hf_token):
             return True
         if get_base_model_from_lora_identifier(request.model_name, request.hf_token) is not None:
@@ -824,7 +831,7 @@ async def _start_queued(entry: _Queued) -> bool:
         if _training_busy():
             return False
         group = _batch_for(entry)
-        if len(group) > 1 and await _trains_alone(entry.request):
+        if len(group) > 1 and await arun_as(entry.account, _trains_alone(entry.request)):
             group = [entry]
         if len(group) > 1:
             outcome = await _start_batch(group)

@@ -461,7 +461,7 @@ def test_disabled_adapter_keeps_raw_weights(monkeypatch, arch):
 
 def test_post_patch_model_installs_the_routing():
     # FastModel.from_pretrained and get_peft_model both end in FastBaseModel.post_patch_model.
-    tree = ast.parse((_ROOT / "unsloth" / "models" / "vision.py").read_text())
+    tree = ast.parse((_ROOT / "unsloth" / "models" / "vision.py").read_text(encoding = "utf-8"))
     post = next(
         node
         for node in ast.walk(tree)

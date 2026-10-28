@@ -629,6 +629,38 @@ export const ptBR = {
     compactEmpty: "Ainda não há nada para compactar",
     compactUnsupported: "A compactação requer um modelo GGUF ou MLX com suporte a ferramentas",
   },
+  halloween: {
+    navLabel: "Doces ou travessuras…",
+    title: "Doces ou travessuras?!",
+    description:
+      "Preparamos alguns sustos para o Unsloth, disponíveis até o fim de outubro.",
+    chooseTheme: "Escolha um tema assustador",
+    spookyGreetings: "Saudações assustadoras",
+    spookyGreetingsDescription:
+      "A preguiça recebe os novos chats com um susto.",
+    decorations: "Aranhas e morcegos",
+    decorationsDescription:
+      "Teias nos cantos e, de vez em quando, uma aranha ou um morcego com um tema de Halloween.",
+    surprise: "Doces ou travessuras!",
+    surpriseDescription: "Deixe a preguiça escolher um tema para você.",
+    themesTitle: "Temas assustadores",
+    back: "Voltar",
+    footer: "O Unsloth volta ao normal à meia-noite de 1º de novembro.",
+    removeNow: "Remover agora",
+    hideFromSidebar: "Ocultar da barra lateral",
+    greeting: {
+      pumpkins: "As abóboras estão esculpidas. E agora?",
+      brewing: "Vamos preparar a poção",
+      trickOrTreat: "Doces ou travessuras?",
+      manor: "Boas-vindas à mansão",
+      manorName: "Boas-vindas à mansão, {name}",
+      happyHalloween: "Feliz Halloween",
+      happyHalloweenName: "Feliz Halloween, {name}",
+      spirits: "Os espíritos estão ouvindo…",
+      mysteries: "Que mistérios vamos desvendar esta noite?",
+      conjure: "O que posso conjurar para você?",
+    },
+  },
   welcome: {
     goodToSeeYou: "Que bom ver você",
     goodToSeeYouName: "Que bom ver você, {name}",
@@ -2202,6 +2234,12 @@ export const ptBR = {
         classic: "Clássico",
         minimal: "Minimalista",
         moreThemes: "Mais temas",
+        halloween: "Halloween",
+      },
+      trickOrTreat: {
+        label: "Doces ou travessuras",
+        description:
+          "Temas de Halloween e saudações assustadoras, até 1º de novembro.",
       },
       custom: {
         chatWidth: {
@@ -2522,6 +2560,10 @@ export const ptBR = {
           hideDetailsAction: "Ocultar detalhes",
           clearAction: "Limpar caches",
           clearOneAction: "Limpar",
+          showFolders: "Mostrar pastas",
+          hideFolders: "Ocultar pastas",
+          previousLocations: "Inclui locais anteriores. O botão Limpar principal afeta a pasta de cache atual. Os botões de modelo limpam apenas a cópia selecionada.",
+          clearModelDescription: "Isso remove apenas esta cópia em cache. Ela será baixada novamente quando necessário.",
           clearingAction: "Limpando...",
           confirmTitle: "Limpar os arquivos em cache?",
           confirmDescription: "Isso libera cerca de {size}.",
@@ -4237,7 +4279,6 @@ export const ptBR = {
       terminalStart: "> treinamento do unsloth iniciado...",
       preparingResources: "> Preparando modelo e dataset...",
       gettingReady: "> Estamos deixando tudo pronto para a sua execução...",
-      waitingForFirstStep: "> {message} | aguardando o primeiro passo... ({step})",
       resumingTraining: "Retomando treinamento...",
       startingTraining: "iniciando treinamento...",
       dataset: "Dataset",
