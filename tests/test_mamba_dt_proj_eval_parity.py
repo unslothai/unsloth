@@ -513,7 +513,11 @@ def _adapted_mixer(monkeypatch, arch):
     return model, helpers._mixers(model)[0]
 
 
-def _compiled_no_grad(mixer, hidden, fullgraph = True):
+def _compiled_no_grad(
+    mixer,
+    hidden,
+    fullgraph = True,
+):
     torch._dynamo.reset()
     try:
         compiled = torch.compile(mixer, backend = "aot_eager", fullgraph = fullgraph)
