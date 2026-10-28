@@ -20,7 +20,8 @@ sys.path.insert(0, backend)
 from utils.worker_stderr import install_worker_stderr_mirror
 
 def raw_name(stream):
-    return type(getattr(getattr(stream, "buffer", None), "raw", None)).__name__
+    buffer = getattr(stream, "buffer", None)
+    return type(getattr(buffer, "raw", buffer)).__name__
 
 def write_stderr(text):
     try:
@@ -47,11 +48,17 @@ os._exit(0)
 """
 
 
-def _run_child(tmp_path, **popen_kwargs) -> dict:
+def _run_child(
+    tmp_path,
+    unbuffered = False,
+    **popen_kwargs,
+) -> dict:
     out = tmp_path / "result.json"
     env = dict(os.environ)
-    env.pop("PYTHONLEGACYWINDOWSSTDIO", None)
-    env.pop("PYTHONIOENCODING", None)
+    for key in ("PYTHONLEGACYWINDOWSSTDIO", "PYTHONIOENCODING", "PYTHONUNBUFFERED"):
+        env.pop(key, None)
+    if unbuffered:
+        env["PYTHONUNBUFFERED"] = "1"
     subprocess.run(
         [sys.executable, "-c", _CHILD, _BACKEND_DIR, str(out), str(tmp_path)],
         env = env,
@@ -63,13 +70,15 @@ def _run_child(tmp_path, **popen_kwargs) -> dict:
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason = "a Windows console is Windows only")
-def test_a_console_stderr_keeps_working_while_the_mirror_owns_fd_2(tmp_path):
+@pytest.mark.parametrize("unbuffered", [False, True], ids = ["buffered", "unbuffered"])
+def test_a_console_stderr_keeps_working_while_the_mirror_owns_fd_2(tmp_path, unbuffered):
     startupinfo = subprocess.STARTUPINFO()
     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     startupinfo.wShowWindow = 0  # SW_HIDE
     # No std handles passed: the child gets the new console's, as a worker spawned from `unsloth studio` in a terminal.
     result = _run_child(
         tmp_path,
+        unbuffered = unbuffered,
         creationflags = subprocess.CREATE_NEW_CONSOLE,
         startupinfo = startupinfo,
     )
@@ -83,8 +92,9 @@ def test_a_console_stderr_keeps_working_while_the_mirror_owns_fd_2(tmp_path):
     assert result["error_after_stop"] is None, result
 
 
-def test_a_stderr_that_is_not_a_console_is_left_as_it_was(tmp_path):
-    result = _run_child(tmp_path, stderr = subprocess.DEVNULL)
+@pytest.mark.parametrize("unbuffered", [False, True], ids = ["buffered", "unbuffered"])
+def test_a_stderr_that_is_not_a_console_is_left_as_it_was(tmp_path, unbuffered):
+    result = _run_child(tmp_path, unbuffered = unbuffered, stderr = subprocess.DEVNULL)
 
     assert result["raw_before"] != "_WindowsConsoleIO", result
     assert result["installed"] is True, result

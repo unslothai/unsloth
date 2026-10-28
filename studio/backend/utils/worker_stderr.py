@@ -529,7 +529,9 @@ def _tail_sink_to_stderr(
 
 def _is_windows_console(stream) -> bool:
     """A console stream calls WriteConsoleW on whatever fd 2 is now, so on the sink every write fails with WinError 6 (#15583)."""
-    raw = getattr(getattr(stream, "buffer", None), "raw", None)
+    buffer = getattr(stream, "buffer", None)
+    # Under -u / PYTHONUNBUFFERED the buffer IS the raw console object.
+    raw = getattr(buffer, "raw", buffer)
     return type(raw).__name__ == "_WindowsConsoleIO"
 
 
