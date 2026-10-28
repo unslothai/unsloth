@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Features covering every row of local JSON / JSON Lines files.
-
-datasets types a JSON file from its first block, so a later row whose object
-carries a key the first rows lack (an optional ``weight`` or ``tool_calls`` on
-some messages) fails the whole load with DatasetGenerationError, while the
-preview, which reads only the first rows, looks fine.
-"""
+"""datasets types a JSON file from its first block, so a later row adding a key fails the whole load."""
 
 import json
 

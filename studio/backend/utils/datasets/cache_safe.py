@@ -14,8 +14,7 @@ On Windows, huggingface_hub's concurrent symlink capability probe can also
 publish a brief false positive and raise WinError 1314; only then, retry in
 its regular-file cache mode for this worker.
 
-A local JSON load whose later rows carry keys the first block lacks is retried
-once with a schema covering every row (see ``json_rows``).
+A local JSON load whose later rows add keys is retried with a schema covering every row.
 """
 
 import logging
