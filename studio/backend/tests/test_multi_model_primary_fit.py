@@ -297,9 +297,11 @@ def test_media_on_target_gpus(monkeypatch, held, placement, expected):
     assert inf._media_on_target_gpus(placement) is expected
 
 
-def test_mlx_chat_need_prices_one_row_the_prompt_cache_and_a_kv_cache_per_extra_row(monkeypatch):
+def test_mlx_chat_need_prices_one_row_the_prompt_cache_and_a_batch_row_per_extra_slot(monkeypatch):
     gib = 1024**3
-    breakdown = SimpleNamespace(total_bytes = 3 * gib, weights_bytes = gib, kv_bytes = gib // 2)
+    breakdown = SimpleNamespace(
+        total_bytes = 3 * gib, weights_bytes = gib, kv_bytes = gib // 2, compute_bytes = gib // 4
+    )
     estimate = inf._MlxLoadEstimate(breakdown, None, (), True)
     monkeypatch.setattr(inf, "_mlx_load_estimate", lambda *a: (None, estimate))
     monkeypatch.setattr(
@@ -309,7 +311,7 @@ def test_mlx_chat_need_prices_one_row_the_prompt_cache_and_a_kv_cache_per_extra_
     assert inf._mlx_chat_need(None, mlx, "m") is None  # not on Metal
     monkeypatch.setattr(inf, "_unified_metal_host", lambda: True)
     need, growth = inf._mlx_chat_need(None, mlx, "m", 4)
-    assert (need, growth) == (4096 + 3 * 512, {"mib": 3072, "row_kv_mib": 512})
+    assert (need, growth) == (4096 + 3 * 768, {"mib": 3072, "row_mib": 768, "slots": 4})
 
 
 def test_chat_fit_kwargs(monkeypatch):

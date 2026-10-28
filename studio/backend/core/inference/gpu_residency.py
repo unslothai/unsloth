@@ -576,8 +576,9 @@ def _orch_unallocated_mib(orch) -> Optional[int]:
             growth = entry.get("mlx_growth")
             if growth is None:
                 return None
-            rows = max(1, int(orch.effective_parallel_slots))
-            priced = growth["mib"] + (rows - 1) * growth["row_kv_mib"]
+            # A lowered setting skips the reload, and batches already running keep the width they were admitted at.
+            rows = max(1, int(orch.effective_parallel_slots), int(growth.get("slots", 1)))
+            priced = growth["mib"] + (rows - 1) * growth["row_mib"]
             at_load, now = growth.get("footprint_mib"), mlx_worker_footprint_mib(orch)
             grown = now - at_load if at_load is not None and now is not None else 0
             total += max(0, priced - max(0, grown))

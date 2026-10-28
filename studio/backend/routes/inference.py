@@ -14747,7 +14747,8 @@ def _mlx_chat_need(
     slots: int = 1,
 ) -> Optional[tuple[int, dict]]:
     """``(need MiB, growth)`` of an MLX chat load on Apple Silicon serving ``slots`` rows, or None if unpriceable.
-    ``growth`` is what one row grows past its weights and what each further row's KV cache adds."""
+    ``growth`` is what one row grows past its weights and what each further row adds: rows prefill as one batch,
+    so each brings its compute as well as its KV cache."""
     if getattr(config, "is_gguf", False) or not _unified_metal_host():
         return None
     try:
@@ -14768,12 +14769,14 @@ def _mlx_chat_need(
         return None
     mib = 1024 * 1024
     one_row = -(-(int(estimate.breakdown.total_bytes) + reserve) // mib)
-    row_kv = -(-int(estimate.breakdown.kv_bytes) // mib)
+    row = -(-int(estimate.breakdown.kv_bytes + estimate.breakdown.compute_bytes) // mib)
+    slots = max(1, slots)
     growth = {
         "mib": max(0, one_row - int(estimate.breakdown.weights_bytes) // mib),
-        "row_kv_mib": row_kv,
+        "row_mib": row,
+        "slots": slots,
     }
-    return one_row + (max(1, slots) - 1) * row_kv, growth
+    return one_row + (slots - 1) * row, growth
 
 
 def _mlx_estimate_available() -> bool:

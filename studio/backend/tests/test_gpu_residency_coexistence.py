@@ -408,11 +408,13 @@ class TestCanLoadAlongside(_ArbiterResetMixin, unittest.TestCase):
             ):
                 return gr._mlx_chat_unallocated_mib()
 
-        g = {"mib": 512, "row_kv_mib": 100, "footprint_mib": 2000}
+        g = {"mib": 512, "row_mib": 100, "footprint_mib": 2000}
         self.assertEqual(total({}, orch(g, 4, 7), orch({**g, "mib": 256}, 1, 8)), 1068)
         self.assertEqual(total({7: 2300}, orch(g, 4, 7), orch(False, 1, 9)), 512)
         self.assertEqual(total({7: 1900}, orch(g, 4, 7)), 812)
         self.assertEqual(total({7: 9000}, orch(g, 4, 7)), 0)
+        # Lowered to 1 slot after loading at 4: the running batch keeps its admitted width.
+        self.assertEqual(total({}, orch({**g, "slots": 4}, 1, 7)), 812)
         with patch.object(llama_cpp.LlamaCppBackend, "_darwin_rusage", return_value = (1, 3 * MIB)):
             self.assertEqual(gr.mlx_worker_footprint_mib(orch(g, 1, 7)), 3)
         with patch.object(model_slots, "resident", side_effect = RuntimeError):
@@ -420,7 +422,7 @@ class TestCanLoadAlongside(_ArbiterResetMixin, unittest.TestCase):
         self.assertIsNone(total({}, orch(g, 1, 7), orch(None, 1, 8)))
 
     def test_a_replaced_mlx_model_credits_its_worker_and_reserved_growth(self):
-        g = {"mib": 512, "row_kv_mib": 100, "footprint_mib": 2000}
+        g = {"mib": 512, "row_mib": 100, "footprint_mib": 2000}
 
         def orch(entry, rows = 2):
             return SimpleNamespace(
