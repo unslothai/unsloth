@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Bounded reads of a log file for the Settings > Logs viewer.
-
-The active session log is never rotated and only pruned at startup (run.py
-retains the newest 20 files), so it can be many GB by the time someone opens
-this. Everything here seeks from the end and reads a bounded window, so cost
-does not scale with file size.
-
-read_tail and read_since return REDACTED lines. The raw reader is private so a
-later caller cannot forget.
-"""
+"""Bounded log-tail reads that seek from the end, so cost ignores file size; output is redacted."""
 
 from __future__ import annotations
 

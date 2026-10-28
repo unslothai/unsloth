@@ -2,6 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { AUTH_SESSION_CLEARED_EVENT, AUTH_SESSION_STORED_EVENT } from "@/features/auth/session-events";
+import {
+  revokeChatFullAccess,
+  withChatFullAccess,
+  type ChatFullAccessGrant,
+  type ChatFullAccessGrants,
+} from "../utils/chat-full-access.ts";
 import { forgetThreadReads } from "../api/thread-read-cache.ts";
 import type { ImageDisclosure } from "../api/mcp-image";
 import {
@@ -1051,11 +1058,16 @@ function pendingSnapshotReadsLive(key: ClampedPillKey): boolean {
   );
 }
 
+// Connections keep their own defaults in chat-page: hosted search and code execution are billed.
+function pillDefault(key: ClampedPillKey): boolean {
+  return key === "toolsEnabled" || key === "codeToolsEnabled";
+}
+
 function pillPreference(key: ClampedPillKey): boolean {
   return (
     pillOnRecord(key) ??
     loadOptionalBool(MIRRORED_SETTINGS[key].storageKey) ??
-    false
+    pillDefault(key)
   );
 }
 
@@ -1978,6 +1990,22 @@ export function codeToolsOn(
   );
 }
 
+function chatFullAccessPermissionPatch(
+  state: ChatRuntimeStore,
+  grants: ChatFullAccessGrants,
+  threadId: string | null,
+) {
+  const permissions = withChatFullAccess(state, grants, threadId);
+  return {
+    permissionMode: permissions.permissionMode,
+    bypassPermissions: permissions.bypassPermissions,
+    confirmToolCalls: permissions.confirmToolCalls,
+    chatFullAccessPreviousMode: permissions.chatFullAccessPreviousMode,
+    deepResearchEnabled: permissions.deepResearchEnabled,
+  };
+}
+
+
 function loadString(key: string, fallback: string): string {
   return readStorageValue(key) ?? fallback;
 }
@@ -2406,6 +2434,13 @@ type ChatRuntimeStore = {
   bypassPermissions: boolean;
   /** Source of truth; bypassPermissions and confirmToolCalls mirror it. */
   permissionMode: PermissionMode;
+  /** A newer explicit permission choice wins over a delayed approval response. */
+  chatPermissionChoiceVersion: number;
+  chatFullAccessPreviousMode: Exclude<PermissionMode, "full"> | null;
+  /** In-memory grants only: never saved in defaults, thread snapshots or browser storage. */
+  chatFullAccessGrants: ChatFullAccessGrants;
+  chatFullAccessPendingRunId: string | null;
+  chatFullAccessThreadByRunId: Record<string, string>;
   sandboxLevel: SandboxLevel;
   /** Whether the bypass warning dialog is open. Lifted out of the composer menu so confirming
    *  it does not leave the menu frozen. */
@@ -2423,6 +2458,7 @@ type ChatRuntimeStore = {
       autoAllowKey: string;
       threadId: string;
       imageDisclosure?: ImageDisclosure;
+      runId?: string;
     }
   >;
   webFetchToolsEnabled: boolean;
@@ -2639,6 +2675,10 @@ type ChatRuntimeStore = {
   setConfirmToolCalls: (enabled: boolean) => void;
   setBypassPermissions: (enabled: boolean) => void;
   setPermissionMode: (mode: PermissionMode) => void;
+  grantChatFullAccess: (grant: ChatFullAccessGrant) => void;
+  adoptChatFullAccessRun: (runId: string, threadId: string) => void;
+  clearUnadoptedChatFullAccessRun: (runId: string) => void;
+  clearChatFullAccessGrants: () => void;
   setSandboxLevel: (level: SandboxLevel) => void;
   setBypassConfirmOpen: (open: boolean) => void;
   allowToolAlways: (sessionId: string, toolName: string) => void;
@@ -2649,6 +2689,7 @@ type ChatRuntimeStore = {
     autoAllowKey: string,
     threadId: string,
     imageDisclosure?: ImageDisclosure,
+    runId?: string,
   ) => void;
   clearToolConfirmation: (toolCallId: string) => void;
   setWebFetchToolsEnabled: (enabled: boolean) => void;
@@ -4156,11 +4197,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   supportsBuiltinCodeExecution: false,
   supportsBuiltinImageGeneration: false,
   supportsBuiltinWebFetch: false,
-  toolsEnabled: loadBool(CHAT_TOOLS_ENABLED_KEY, false),
+  toolsEnabled: loadBool(CHAT_TOOLS_ENABLED_KEY, pillDefault("toolsEnabled")),
   keepModelsLoaded: false,
   localImageModelReady: false,
   localVideoModelReady: false,
-  codeToolsEnabled: loadBool(CHAT_CODE_TOOLS_ENABLED_KEY, false),
+  codeToolsEnabled: loadBool(CHAT_CODE_TOOLS_ENABLED_KEY, pillDefault("codeToolsEnabled")),
   codeToolsDeclinedUnderFullAccess: false,
   imageToolsEnabled: loadBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false),
   deepResearchEnabled: loadBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false),
@@ -4180,6 +4221,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   // no stored bypass: sandbox and gate removal needs a warning each session.
   bypassPermissions: false,
   permissionMode: INITIAL_PERMISSION_MODE,
+  chatPermissionChoiceVersion: 0,
+  chatFullAccessPreviousMode: null,
+  chatFullAccessGrants: {},
+  chatFullAccessPendingRunId: null,
+  chatFullAccessThreadByRunId: {},
   sandboxLevel: loadSandboxLevel(),
   bypassConfirmOpen: false,
   alwaysAllowToolsBySession: new Map<string, Set<string>>(),
@@ -4902,7 +4948,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         ? (state.contextUsageByThreadId[activeThreadId] ?? null)
         : null;
       return {
+        ...chatFullAccessPermissionPatch(state, state.chatFullAccessGrants, activeThreadId),
         activeThreadId,
+        chatFullAccessPendingRunId: null,
         activeThreadEpoch: state.activeThreadEpoch + 1,
         contextUsage:
           own && own.modelId && own.modelId !== state.params.checkpoint ? null : own,
@@ -5016,7 +5064,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
             stored?.permissionMode ??
             globalThreadScopedDefaults?.permissionMode ??
             loadPermissionMode();
-          if (underneath !== "full") applied[key] = underneath;
+          if (underneath !== "full") {
+            applied[key] = underneath;
+            if (state.chatFullAccessPreviousMode !== null) nextState.chatFullAccessPreviousMode = underneath;
+          }
           continue;
         }
         // A key the snapshot omits falls back to the defaults, not to the outgoing chat's value.
@@ -5388,6 +5439,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
             webFetchToolsEnabled: false,
             bypassPermissions: false,
             permissionMode,
+            chatFullAccessPreviousMode: null,
+            chatPermissionChoiceVersion: state.chatPermissionChoiceVersion + 1,
+            chatFullAccessPendingRunId: null,
+            chatFullAccessGrants: revokeChatFullAccess(state.chatFullAccessGrants, state.activeThreadId, state.chatFullAccessPendingRunId),
             confirmToolCalls:
               permissionMode === "ask" || permissionMode === "auto",
             queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
@@ -5465,6 +5520,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       if (state.permissionMode === "full") {
         return {
           confirmToolCalls,
+          chatPermissionChoiceVersion: state.chatPermissionChoiceVersion + 1,
           queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
         };
       }
@@ -5473,6 +5529,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return {
         confirmToolCalls,
         permissionMode,
+        chatPermissionChoiceVersion: state.chatPermissionChoiceVersion + 1,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),
@@ -5489,10 +5546,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
         return {
           permissionMode,
+          chatFullAccessPreviousMode: null,
           bypassPermissions: true,
           confirmToolCalls: false,
           deepResearchEnabled: false,
           codeToolsDeclinedUnderFullAccess: codeDeclinedOnEnteringFullAccess(state),
+          chatPermissionChoiceVersion: state.chatPermissionChoiceVersion + 1,
           queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
         };
       }
@@ -5501,9 +5560,13 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       saveBool(CHAT_CONFIRM_TOOL_CALLS_KEY, confirmToolCalls);
       return {
         permissionMode,
+        chatFullAccessPreviousMode: null,
+        chatFullAccessPendingRunId: null,
+        chatFullAccessGrants: revokeChatFullAccess(state.chatFullAccessGrants, state.activeThreadId, state.chatFullAccessPendingRunId),
         bypassPermissions: false,
         confirmToolCalls,
         codeToolsDeclinedUnderFullAccess: false,
+        chatPermissionChoiceVersion: state.chatPermissionChoiceVersion + 1,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),
@@ -5515,9 +5578,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         return {
           bypassPermissions,
           permissionMode: "full" as PermissionMode,
+          chatFullAccessPreviousMode: null,
           confirmToolCalls: false,
           deepResearchEnabled: false,
           codeToolsDeclinedUnderFullAccess: codeDeclinedOnEnteringFullAccess(state),
+          chatPermissionChoiceVersion: state.chatPermissionChoiceVersion + 1,
           queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
         };
       }
@@ -5526,8 +5591,77 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return {
         bypassPermissions,
         permissionMode,
+        chatFullAccessPreviousMode: null,
+        chatFullAccessPendingRunId: null,
+        chatFullAccessGrants: revokeChatFullAccess(state.chatFullAccessGrants, state.activeThreadId, state.chatFullAccessPendingRunId),
         confirmToolCalls: permissionMode === "ask" || permissionMode === "auto",
         codeToolsDeclinedUnderFullAccess: false,
+        chatPermissionChoiceVersion: state.chatPermissionChoiceVersion + 1,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
+    }),
+  grantChatFullAccess: (grant) =>
+    set((state) => {
+      if (!grant.runId || !grant.sessionId) return state;
+      grant = {
+        ...grant,
+        threadId: grant.threadId || state.chatFullAccessThreadByRunId[grant.runId] || "",
+        choiceVersion: state.chatPermissionChoiceVersion,
+      };
+      const grants = { ...state.chatFullAccessGrants, [grant.runId]: grant };
+      return {
+        chatFullAccessGrants: grants,
+        chatFullAccessPendingRunId: !grant.threadId && state.activeThreadId === null
+          ? grant.runId : state.chatFullAccessPendingRunId,
+        ...chatFullAccessPermissionPatch(state, grants, state.activeThreadId),
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
+    }),
+  adoptChatFullAccessRun: (runId, threadId) =>
+    set((state) => {
+      if (!runId || !threadId || threadId === "__default") return state;
+      const grant = state.chatFullAccessGrants[runId];
+      const recorded = state.chatFullAccessThreadByRunId[runId];
+      if (recorded && recorded !== threadId) return state;
+      const runThreads = recorded
+        ? state.chatFullAccessThreadByRunId
+        : { ...state.chatFullAccessThreadByRunId, [runId]: threadId };
+      if (!grant || grant.threadId) return recorded ? state : { chatFullAccessThreadByRunId: runThreads };
+      const grants = { ...state.chatFullAccessGrants };
+      if (grant.choiceVersion === state.chatPermissionChoiceVersion) grants[runId] = { ...grant, threadId };
+      else delete grants[runId];
+      return {
+        chatFullAccessGrants: grants,
+        chatFullAccessThreadByRunId: runThreads,
+        chatFullAccessPendingRunId: state.chatFullAccessPendingRunId === runId ? null : state.chatFullAccessPendingRunId,
+        ...chatFullAccessPermissionPatch(state, grants, state.activeThreadId),
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
+    }),
+  clearUnadoptedChatFullAccessRun: (runId) =>
+    set((state) => {
+      // The run's thread mapping stays: a first-turn upgrade acknowledged after the run ended binds through it.
+      const grant = state.chatFullAccessGrants[runId];
+      if (!grant || grant.threadId) return state;
+      const grants = { ...state.chatFullAccessGrants };
+      delete grants[runId];
+      return {
+        chatFullAccessGrants: grants,
+        chatFullAccessPendingRunId: state.chatFullAccessPendingRunId === runId
+          ? null : state.chatFullAccessPendingRunId,
+      };
+    }),
+  clearChatFullAccessGrants: () =>
+    set((state) => {
+      const permissions = withChatFullAccess(state, {}, state.activeThreadId);
+      return {
+        chatFullAccessGrants: {},
+        chatFullAccessPendingRunId: null,
+        chatFullAccessThreadByRunId: {},
+        permissionMode: permissions.permissionMode,
+        bypassPermissions: permissions.bypassPermissions,
+        confirmToolCalls: permissions.confirmToolCalls,
+        chatFullAccessPreviousMode: null,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),
@@ -5548,6 +5682,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     autoAllowKey,
     threadId,
     imageDisclosure,
+    runId,
   ) =>
     set((state) => ({
       toolConfirmations: {
@@ -5558,6 +5693,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           autoAllowKey,
           threadId,
           imageDisclosure,
+          runId,
         },
       },
     })),
@@ -6005,9 +6141,19 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     }),
 }));
 
+const clearChatFullAccessOnAuthChange = () => useChatRuntimeStore.getState().clearChatFullAccessGrants();
+if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+  window.addEventListener(AUTH_SESSION_CLEARED_EVENT, clearChatFullAccessOnAuthChange);
+  window.addEventListener(AUTH_SESSION_STORED_EVENT, clearChatFullAccessOnAuthChange);
+}
+
 const unsubscribeHfTokenMirror = mirrorHfTokenInto(useChatRuntimeStore);
 if (import.meta.hot) {
   import.meta.hot.dispose(unsubscribeHfTokenMirror);
+  import.meta.hot.dispose(() => {
+    window.removeEventListener(AUTH_SESSION_CLEARED_EVENT, clearChatFullAccessOnAuthChange);
+    window.removeEventListener(AUTH_SESSION_STORED_EVENT, clearChatFullAccessOnAuthChange);
+  });
 }
 
 export function resolveSpeculativeSettingsForLoad({

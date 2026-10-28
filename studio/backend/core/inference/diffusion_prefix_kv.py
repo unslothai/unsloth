@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Inductor lowers a prefix KV cache's ``k[:, :prefix].clone()`` to a view of the full K/V buffer, pinning
-it for the render; a hook copies the cached tensors out after the prefill forward."""
+"""Prefix KV clone is copied out after prefill: Inductor makes it a view that pins the K/V buffer."""
 
 from __future__ import annotations
 

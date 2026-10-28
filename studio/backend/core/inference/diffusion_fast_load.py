@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Cold-start I/O for the image load path, byte-for-byte neutral: ``start_load_prefetch`` warms the page
-cache with the files the load reads next (parallel slice reads beat mmap page faults); ``fast_upload``
-moves plain host tensors (and the inner tensors of torchao-style wrapper subclasses) through a pinned
-ring and hands them to the existing ``.to`` via a ``TorchFunctionMode``, so placement semantics stay
-the module's own. Kill switches
-``UNSLOTH_DIFFUSION_PREFETCH=0`` / ``UNSLOTH_DIFFUSION_FAST_UPLOAD=0``.
-"""
+"""Byte-neutral image-load I/O. Off: UNSLOTH_DIFFUSION_PREFETCH=0, UNSLOTH_DIFFUSION_FAST_UPLOAD=0."""
 
 from __future__ import annotations
 

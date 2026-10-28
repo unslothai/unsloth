@@ -426,8 +426,25 @@ export const BUDGET = {
   // Cosmos3 video families (#14554): +466 B raw / +218 B transfer. Raised by that.
   // Lookup-table pricing (#14465): +1,517 B raw / +470 B transfer on top of the lines above (measured merged with
   // 4db3eaeb55, Node 24, 99 chunks).
-  transferBytes: 2_101_185,
-  rawBytes: 6_973_555,
+  // Chat pins synced through the server (#15293): the sync runtime is a lazy chunk, but the modules it shares
+  // with startup code (chat-settings-api, sidebar-organization-keys) split into their own eager chunks, plus the
+  // mount hook and store wiring: +3,074 B raw / +2,025 B transfer (6,958,762 -> 6,961,836 B raw, 2,099,260 ->
+  // 2,101,285 B transfer against 9c397197e0, Node 24, 106 -> 109 chunks). Raised by that growth.
+  // Mermaid, node-forge and js-yaml load on first use: -998.5 KB raw / -260.1 KB transfer against 4e673d32e.
+  // Lowered by that, so the headroom stays what it was and a regression of that size fails here.
+  // Full Access from a tool approval card (#15485: per-chat grant store and the card's confirm dialog) adds
+  // 5,293 B raw / 1,953 B transfer to the eager chat chunk (5,940,337 -> 5,945,630 B raw, 1,835,497 ->
+  // 1,837,450 B transfer against 8222149ee, Node 24, 85 chunks). Raised by that growth.
+  // The Trick or treat row (#15678) merged in between, unmeasured, and adds 29,984 B raw / 10,952 B transfer
+  // (5,942,150 -> 5,972,134 B raw, 1,836,750 -> 1,847,702 B transfer, ed9857c0c3 -> 39b8a6ce13, Node 24,
+  // 85 chunks): its color themes are read by the theme store at startup, and loading its dialog on first
+  // open saves 3 KB transfer but adds five startup chunks. Raised by that growth.
+  // The GPU rendering setting (#15482) adds 1,948 B raw / 637 B transfer (5,977,895 -> 5,979,843 B raw,
+  // 1,849,311 -> 1,849,948 B transfer against b80df648bf, one machine and build, Node 22, 85 chunks both): the app
+  // provider reports a ready renderer through the setting's API module at startup, plus the setting's strings in
+  // the eager English catalog and its search rows. Raised by that.
+  transferBytes: 1_850_410,
+  rawBytes: 5_991_390,
 };
 
 // Chunk count is not budgeted: splitting a page out raises it while lowering bytes.

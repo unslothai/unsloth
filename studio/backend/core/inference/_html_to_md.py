@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Minimal HTML-to-Markdown converter using only the standard library.
-
-Replaces the external ``html2text`` (GPL-3.0) dependency with a ~250-line
-``html.parser.HTMLParser`` subclass. Covers headings, links, bold/italic,
-lists, tables, blockquotes, code blocks, and entity decoding.
-
-``main_content=True`` also applies a readability-style heuristic: scope
-conversion to the page's ``<article>`` (else ``<main>``) subtree when it
-carries substantial text, and strip known boilerplate fragments (skip-links,
-error placeholders, session banners, cookie prompts) from the result.
-"""
+"""Stdlib HTML-to-Markdown (replaces GPL html2text); main_content=True scopes to article/main."""
 
 from __future__ import annotations
 
@@ -809,6 +798,7 @@ class _MarkdownRenderer(HTMLParser):
         page_span_limit: int | None = None,
     ):
         super().__init__(convert_charrefs = False)
+        self._record: list | None = None
         # parser positions of buttons that carry their heading title, found by _TitleButtonScan
         self.title_buttons: frozenset[tuple[int, int]] = frozenset()
         self._title_scan: _TitleButtonScan | None = None
@@ -1577,6 +1567,8 @@ class _MarkdownRenderer(HTMLParser):
                 self._close_rendered_tag(section[1])
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if self._record is not None:
+            self._record.append((0, (tag, tuple(attrs), *self.getpos())))
         tag = tag.lower()
         if self._title_scan is not None:
             self._title_scan.starttag(tag, attrs, self.getpos())
@@ -1768,6 +1760,8 @@ class _MarkdownRenderer(HTMLParser):
             return
 
     def handle_endtag(self, tag: str) -> None:
+        if self._record is not None:
+            self._record.append((1, tag))
         tag = tag.lower()
         if self._title_scan is not None:
             self._title_scan.endtag(tag)
@@ -1958,6 +1952,8 @@ class _MarkdownRenderer(HTMLParser):
         return self._scope_tags is not None and self._scope_depth == 0
 
     def handle_data(self, data: str) -> None:
+        if self._record is not None:
+            self._record.append((2, data))
         if self._title_scan is not None:
             self._title_scan.data(data)
         if self._text_suppressed():
@@ -1984,6 +1980,8 @@ class _MarkdownRenderer(HTMLParser):
         self._emit(text)
 
     def handle_entityref(self, name: str) -> None:
+        if self._record is not None:
+            self._record.append((3, name))
         text = html.unescape(f"&{name};")
         if self._title_scan is not None:
             self._title_scan.data(text)
@@ -1993,6 +1991,8 @@ class _MarkdownRenderer(HTMLParser):
         self._emit(text)
 
     def handle_charref(self, name: str) -> None:
+        if self._record is not None:
+            self._record.append((4, name))
         text = html.unescape(f"&#{name};")
         if self._title_scan is not None:
             self._title_scan.data(text)
@@ -2000,6 +2000,22 @@ class _MarkdownRenderer(HTMLParser):
             return
         self._count_header_text(text)
         self._emit(text)
+
+    def replay(self, events: list) -> None:
+        """Re-run recorded handler calls in order, restoring ``getpos()`` at each start tag."""
+        start, end, data = self.handle_starttag, self.handle_endtag, self.handle_data
+        for kind, arg in events:
+            if kind == 2:
+                data(arg)
+            elif kind == 0:
+                tag, attrs, self.lineno, self.offset = arg
+                start(tag, list(attrs))
+            elif kind == 1:
+                end(arg)
+            elif kind == 3:
+                self.handle_entityref(arg)
+            else:
+                self.handle_charref(arg)
 
     def flush_pending(self) -> None:
         """Flush open side-buffers into ``_out`` after close(), recovering truncated HTML."""
@@ -2145,6 +2161,19 @@ def _strip_boilerplate_lines(text: str, site_links: SiteLinks | None = None) -> 
     return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
 
 
+class _TokenLog:
+    """Handler calls of one document, recorded by the first fed pass and replayed by later ones.
+    Sound only while the renderer overrides just these five handlers and reads parser state only
+    via ``getpos()`` in ``handle_starttag``."""
+
+    __slots__ = ("events", "armed")
+
+    def __init__(self, armed: bool) -> None:
+        self.events: list | None = None
+        # record only when html_to_markdown knows another pass follows
+        self.armed = armed
+
+
 def _new_renderer(
     source_html: str,
     scope_tags: frozenset[str] | None,
@@ -2152,6 +2181,7 @@ def _new_renderer(
     site_links: SiteLinks | None = None,
     span_char_limit: int | None = None,
     header_decisions: list[bool] | None = None,
+    tokens: _TokenLog | None = None,
 ) -> _MarkdownRenderer:
     def build(
         title_buttons: frozenset[tuple[int, int]], scan: _TitleButtonScan | None
@@ -2166,8 +2196,16 @@ def _new_renderer(
         )
         renderer.title_buttons = title_buttons
         renderer._title_scan = scan
-        renderer.feed(source_html)
-        renderer.close()
+        if tokens is None:
+            renderer.feed(source_html)
+            renderer.close()
+        elif tokens.events is None:
+            renderer._record = [] if tokens.armed else None
+            renderer.feed(source_html)
+            renderer.close()
+            tokens.events, renderer._record = renderer._record, None
+        else:
+            renderer.replay(tokens.events)
         renderer.flush_pending()
         return renderer
 
@@ -2202,6 +2240,7 @@ def _select_main_scope_render(
     tag: str,
     site_links: SiteLinks | None,
     span_char_limit: int | None = None,
+    tokens: _TokenLog | None = None,
 ) -> tuple[int, str, int, int]:
     """return the best eligible score, subtree, count, and visible length; cap header credit at retained prose."""
     renderer = _new_renderer(
@@ -2210,6 +2249,7 @@ def _select_main_scope_render(
         strip_header = True,
         site_links = site_links,
         span_char_limit = span_char_limit,
+        tokens = tokens,
     )
     # generated span cells must not lift a scope past the content gate or rank; only span pages pay this second pass
     scoring = (
@@ -2219,6 +2259,7 @@ def _select_main_scope_render(
             strip_header = True,
             span_char_limit = 0,
             header_decisions = renderer.header_decisions,
+            tokens = tokens,
         )
         if renderer._has_generated_spans
         else renderer
@@ -2228,7 +2269,11 @@ def _select_main_scope_render(
     best_visible = 0
     for i, seg in enumerate(renderer.scope_segments):
         rendered = _strip_boilerplate_lines(_cleanup(seg), site_links)
-        scored = _strip_boilerplate_lines(_cleanup(scoring.scope_segments[i]), site_links)
+        scored = (
+            rendered
+            if scoring is renderer
+            else _strip_boilerplate_lines(_cleanup(scoring.scope_segments[i]), site_links)
+        )
         if site_links is not None:
             scored = site_links.clean(scored)
         visible = _visible_chars(scored)
@@ -2249,9 +2294,12 @@ def _select_main_scope_render(
 
 
 def _render_main_document(
-    source_html: str, site_links: SiteLinks | None, span_char_limit: int
+    source_html: str,
+    site_links: SiteLinks | None,
+    span_char_limit: int,
+    tokens: _TokenLog | None = None,
 ) -> tuple[int, str]:
-    renderer = _new_renderer(source_html, None, True, site_links, span_char_limit)
+    renderer = _new_renderer(source_html, None, True, site_links, span_char_limit, tokens = tokens)
     rendered = _strip_boilerplate_lines(_cleanup("".join(renderer._out)), site_links)
     scoring = (
         _new_renderer(
@@ -2260,11 +2308,16 @@ def _render_main_document(
             True,
             span_char_limit = 0,
             header_decisions = renderer.header_decisions,
+            tokens = tokens,
         )
         if renderer._has_generated_spans
         else renderer
     )
-    scored = _strip_boilerplate_lines(_cleanup("".join(scoring._out)), site_links)
+    scored = (
+        rendered
+        if scoring is renderer
+        else _strip_boilerplate_lines(_cleanup("".join(scoring._out)), site_links)
+    )
     if site_links is not None:
         scored = site_links.clean(scored)
     return _visible_chars(scored), rendered
@@ -2289,6 +2342,8 @@ def _visible_len(line: str) -> int:
     """Length of *line* without Markdown link destinations. A tracking URL is not
     prose: a card holding one [Read](/x?<300 bytes>) otherwise scored 339 visible
     characters off 4 and displaced the article. Scanned, so no backtracking."""
+    if "[" not in line and "\\" not in line:
+        return len(line)
     total, i, n = 0, 0, len(line)
     open_bracket = False
     while i < n:
@@ -2323,6 +2378,9 @@ def _visible_len(line: str) -> int:
 
 # Scoped conversions shorter than this are rejected as main content, e.g. an empty article stub
 _MIN_MAIN_CONTENT_CHARS = 200
+# absent text = no such tag can tokenize, so that scope finds nothing
+_ARTICLE_START = re.compile(r"<article", re.IGNORECASE)
+_MAIN_START = re.compile(r"<main", re.IGNORECASE)
 
 
 def html_to_markdown(
@@ -2340,16 +2398,22 @@ def html_to_markdown(
     rendered = ""
     full_rendered = ""
     if main_content:
+        tokens = _TokenLog(armed = _ARTICLE_START.search(source_html) is None)
         length, rendered, articles, article_visible = _select_main_scope_render(
-            source_html, "article", site_links, span_limit
+            source_html, "article", site_links, span_limit, tokens
         )
         if length < _MIN_MAIN_CONTENT_CHARS or articles > 1:
+            # no <main> = main scope scores 0, so the whole-page pass below runs
+            tokens.armed = _MAIN_START.search(source_html) is None and (
+                articles > 2 or length < _MIN_MAIN_CONTENT_CHARS
+            )
             main_length, main_rendered, _, main_visible = _select_main_scope_render(
-                source_html, "main", site_links, span_limit
+                source_html, "main", site_links, span_limit, tokens
             )
             if articles > 2 and main_length < _MIN_MAIN_CONTENT_CHARS:
+                tokens.armed = False
                 main_length, full_rendered = _render_main_document(
-                    source_html, site_links, span_limit
+                    source_html, site_links, span_limit, tokens
                 )
                 main_rendered = full_rendered
                 main_visible = main_length
@@ -2359,7 +2423,10 @@ def html_to_markdown(
                 length, rendered = main_length, main_rendered
         if length < _MIN_MAIN_CONTENT_CHARS:
             if not full_rendered:
-                _, full_rendered = _render_main_document(source_html, site_links, span_limit)
+                tokens.armed = False
+                _, full_rendered = _render_main_document(
+                    source_html, site_links, span_limit, tokens
+                )
             rendered = full_rendered
     else:
         rendered = _render(source_html, None, site_links = site_links, span_char_limit = span_limit)

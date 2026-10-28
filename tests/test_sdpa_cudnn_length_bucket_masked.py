@@ -309,9 +309,11 @@ def test_decode_sdpa_pins_only_where_torch_picks_cudnn(monkeypatch, masked):
     real = ad._sdpa_kernel
     monkeypatch.setattr(ad, "_sdpa_kernel", lambda b: entered.append(1) or real(b))
     monkeypatch.setattr(ad, "_NO_CUDNN_DECODE", frozenset({q.device.index}))
-    for picks in (False, True):
-        monkeypatch.setattr(ad, "_decode_picks_cudnn", lambda *a, p = picks: p)
-        ad.decode_scaled_dot_product_attention(q, kv, kv, attn_mask = mask)
+    # torch's default policy (importing vLLM disables cuDNN SDPA process wide).
+    with real(_policy(_ALL_BACKENDS)):
+        for picks in (False, True):
+            monkeypatch.setattr(ad, "_decode_picks_cudnn", lambda *a, p = picks: p)
+            ad.decode_scaled_dot_product_attention(q, kv, kv, attn_mask = mask)
     assert entered == [1]
 
 
@@ -322,3 +324,131 @@ def test_decode_no_cudnn_devices(monkeypatch):
         assert ad._decode_no_cudnn_devices() == frozenset({1, 2})
     monkeypatch.setenv("UNSLOTH_SDPA_DECODE_CUDNN", "1")
     assert ad._decode_no_cudnn_devices() == frozenset()
+
+
+_ALL_BACKENDS = ("FLASH_ATTENTION", "EFFICIENT_ATTENTION", "MATH", "CUDNN_ATTENTION")
+
+
+def _policy(names):
+    from torch.nn.attention import SDPBackend
+    return [getattr(SDPBackend, n) for n in names]
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [
+        None,  # torch's default: every backend enabled
+        ("MATH",),
+        ("MATH", "CUDNN_ATTENTION"),
+        ("EFFICIENT_ATTENTION", "CUDNN_ATTENTION"),
+        ("CUDNN_ATTENTION",),
+    ],
+)
+def test_decode_pin_keeps_caller_backend_policy(monkeypatch, policy):
+    """The decode pin only removes cuDNN from the caller's backends: it never enables a backend the
+    caller's sdpa_kernel disabled, and a cuDNN-only policy is left as is."""
+    if not torch.cuda.is_available() or ad._CUDNN_CHOICE is None:
+        pytest.skip("needs CUDA and torch's cuDNN SDPA backend")
+    from torch.nn.attention import sdpa_kernel
+
+    cuda = torch.backends.cuda
+    flags = lambda: (
+        cuda.flash_sdp_enabled(),
+        cuda.mem_efficient_sdp_enabled(),
+        cuda.math_sdp_enabled(),
+        cuda.cudnn_sdp_enabled(),
+    )
+    seen = []
+    monkeypatch.setattr(
+        F, "scaled_dot_product_attention", lambda q, *a, **k: seen.append(flags()) or q
+    )
+    monkeypatch.setattr(ad, "_decode_picks_cudnn", lambda *a: True)
+    q = torch.randn(2, 4, 1, 64, device = "cuda", dtype = torch.bfloat16)
+    kv = torch.randn(2, 4, 300, 64, device = "cuda", dtype = torch.bfloat16)
+    monkeypatch.setattr(ad, "_NO_CUDNN_DECODE", frozenset({q.device.index}))
+    with sdpa_kernel(_policy(policy or _ALL_BACKENDS)):
+        caller = flags()
+        ad.decode_scaled_dot_product_attention(q, kv, kv)
+    if policy == ("CUDNN_ATTENTION",):
+        assert seen == [caller]
+    else:
+        assert seen == [(*caller[:3], False)]
+
+
+def _attention_ops(fn, *args):
+    fn(*args)
+    with torch.profiler.profile(activities = [torch.profiler.ProfilerActivity.CPU]) as prof:
+        fn(*args)
+    keys = {e.key for e in prof.key_averages()}
+    return {k for k in keys if k.startswith("aten::_scaled_dot_product_") or k == "aten::bmm"}
+
+
+@pytest.mark.parametrize("policy", [None, ("MATH",), ("MATH", "CUDNN_ATTENTION")])  # None: all
+def test_compiled_decode_keeps_caller_backend_policy(monkeypatch, policy):
+    """Traced decode reads the caller's policy at trace time (as SDPA's own pick does): a math-only
+    policy runs math in a fullgraph, dynamic=True graph, with no graph break."""
+    import torch._dynamo
+    import torch._inductor.config as inductor_config
+    from torch._dynamo.utils import counters
+    from torch.nn.attention import sdpa_kernel
+
+    if not torch.cuda.is_available() or ad._CUDNN_CHOICE is None:
+        pytest.skip("needs CUDA and torch's cuDNN SDPA backend")
+
+    q = torch.randn(2, 4, 1, 64, device = "cuda", dtype = torch.float16)
+    monkeypatch.setattr(ad, "_NO_CUDNN_DECODE", frozenset({q.device.index}))
+    torch._dynamo.reset()
+    counters.clear()
+    compiled = torch.compile(ad.decode_scaled_dot_product_attention, fullgraph = True, dynamic = True)
+    # A cached graph from another policy would hide the trace-time read.
+    no_cache = dict(fx_graph_cache = False)
+    if hasattr(inductor_config, "autograd_cache"):
+        no_cache["autograd_cache"] = False
+    with inductor_config.patch(no_cache), sdpa_kernel(_policy(policy or _ALL_BACKENDS)):
+        for L in (128, 300):
+            kv = torch.randn(2, 4, L, 64, device = "cuda", dtype = torch.float16)
+            ops = _attention_ops(compiled, q, kv, kv)
+            torch.testing.assert_close(
+                compiled(q, kv, kv), F.scaled_dot_product_attention(q, kv, kv), atol = 2e-3, rtol = 2e-3
+            )
+            assert "aten::_scaled_dot_product_cudnn_attention" not in ops, ops
+            if policy is None:
+                assert "aten::bmm" not in ops, ops  # default policy: a fused kernel, as on main
+            else:
+                assert ops == {"aten::bmm"}, ops
+    assert not counters["graph_break"], dict(counters["graph_break"])
+    assert counters["stats"]["unique_graphs"] == 1, dict(counters["stats"])
+
+
+def test_decode_picks_cudnn_cache_keys_on_every_backend_flag(monkeypatch):
+    """A later sdpa_kernel toggle of flash / efficient / math or the priority order re-probes."""
+    if not torch.cuda.is_available() or ad._CUDNN_CHOICE is None:
+        pytest.skip("needs CUDA and torch's cuDNN SDPA backend")
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+
+    probed = []
+
+    def probe(*args, **kwargs):
+        probed.append(args[9])
+        return ad._CUDNN_CHOICE, ad._CUDNN_CHOICE
+
+    monkeypatch.setattr(ad, "_sdpa_gqa_choices", probe)
+    ad._DECODE_PICKS_CUDNN.clear()
+    q = torch.randn(2, 4, 1, 64, device = "cuda", dtype = torch.bfloat16)
+    kv = torch.randn(2, 4, 300, 64, device = "cuda", dtype = torch.bfloat16)
+    policies = (
+        [
+            SDPBackend.FLASH_ATTENTION,
+            SDPBackend.EFFICIENT_ATTENTION,
+            SDPBackend.MATH,
+            SDPBackend.CUDNN_ATTENTION,
+        ],
+        [SDPBackend.MATH, SDPBackend.CUDNN_ATTENTION],
+        [SDPBackend.EFFICIENT_ATTENTION, SDPBackend.CUDNN_ATTENTION],
+        [SDPBackend.FLASH_ATTENTION, SDPBackend.CUDNN_ATTENTION],
+    )
+    for backends in policies * 2:
+        with sdpa_kernel(backends):
+            ad._decode_picks_cudnn(q, kv, None, False)
+    assert len(probed) == len(policies) and len(set(probed)) == len(policies), probed
+    ad._DECODE_PICKS_CUDNN.clear()

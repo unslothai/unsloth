@@ -273,3 +273,16 @@ def test_object_tool_result_renders_its_fields(name):
     assert out.endswith(
         '<|tool_response>response:get_weather{sky:<|"|>sunny<|"|>,temperature:18}<tool_response|>'
     )
+
+
+@pytest.mark.parametrize("key", ["reasoning_content", "reasoning"])
+def test_final_turn_reasoning_becomes_the_thought_channel(key):
+    msgs = [
+        {"role": "user", "content": "2+2?"},
+        {"role": "assistant", "content": "4", "reasoning_content": "first"},
+        {"role": "user", "content": "3+3?"},
+        {"role": "assistant", "content": "6", key: "3+3=6"},
+    ]
+    out = _render("gemma4_template", msgs)
+    assert "first" not in out
+    assert out.endswith("<|turn>model\n<|channel>thought\n3+3=6\n<channel|>6<turn|>\n")

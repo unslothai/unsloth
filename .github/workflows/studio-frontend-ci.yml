@@ -22,6 +22,9 @@ on:
       - 'tests/studio/playwright_chat_autoscroll.py'
       - 'tests/studio/playwright_research_freeze.py'
       - 'tests/studio/playwright_research_review.py'
+      - 'tests/studio/playwright_pinned_chat_persistence.py'
+      - 'studio/backend/routes/chat_history.py'
+      - 'studio/backend/storage/studio_db.py'
       - 'tests/studio/playwright_heavy_thread.py'
       - 'tests/studio/probe_dismiss_guard.py'
       - 'tests/studio/playwright_nonmodal_menus.py'
@@ -64,6 +67,9 @@ on:
       - 'tests/studio/playwright_chat_autoscroll.py'
       - 'tests/studio/playwright_research_freeze.py'
       - 'tests/studio/playwright_research_review.py'
+      - 'tests/studio/playwright_pinned_chat_persistence.py'
+      - 'studio/backend/routes/chat_history.py'
+      - 'studio/backend/storage/studio_db.py'
       - 'tests/studio/playwright_heavy_thread.py'
       - 'tests/studio/probe_dismiss_guard.py'
       - 'tests/studio/playwright_nonmodal_menus.py'
@@ -110,6 +116,9 @@ jobs:
   build:
     name: Frontend build + bundle sanity
     runs-on: ubuntu-latest
+    env:
+      # A release published mid-run puts an update card over the controls the scripts click.
+      UNSLOTH_DISABLE_UPDATE_CHECK: '1'
     # Must stay above the browser install step's own 33m bound so the step timeout fires first.
     timeout-minutes: 40
     defaults:
@@ -481,6 +490,13 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: python3 tests/studio/playwright_research_freeze.py
 
+      - name: Browser regression for pinned chat persistence
+        working-directory: ${{ github.workspace }}
+        timeout-minutes: 3
+        run: |
+          python3 -m pip install fastapi httpx pyjwt argon2-cffi cryptography huggingface_hub python-multipart structlog
+          python3 tests/studio/playwright_pinned_chat_persistence.py
+
       # A gate, not a measurement. The released and streamdown variants are positive controls
       # that MUST flicker: a run where neither collapses means the detector stopped seeing, not
       # that the flicker stopped. Chromium only on a PR, the engine whose content-visibility
@@ -583,6 +599,9 @@ jobs:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Frontend unit tests (Windows)
     runs-on: windows-latest
+    env:
+      # A release published mid-run puts an update card over the controls the scripts click.
+      UNSLOTH_DISABLE_UPDATE_CHECK: '1'
     # The steps measured ~15m30s, so 15 always cut off the Firefox step.
     timeout-minutes: 30
     defaults:

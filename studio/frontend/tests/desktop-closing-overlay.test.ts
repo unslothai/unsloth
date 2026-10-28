@@ -146,14 +146,21 @@ test("the overlay is presentation only, with no way out of a wedged reap", async
   assert.doesNotMatch(body, /setTimeout|useState/);
 });
 
-test("a quit with no window on screen raises no overlay", async () => {
+// Since #15723 the quit covers the backend reap by hiding the main window on every platform;
+// Rust no longer emits app-closing, so the overlay above is unreachable until it is removed.
+test("a quit with no window on screen leaves it hidden", async () => {
   const rust = readText("../../src-tauri/src/main.rs");
+  const hide = rust.slice(
+    rust.indexOf("fn hide_main_window_for_quit("),
+    rust.indexOf("fn main_window_on_screen("),
+  );
 
   assert.match(
-    rust,
-    /fn quit_raises_the_overlay\(/,
-    "the overlay is raised without asking whether anything is on screen",
+    hide,
+    /let hide = main_window_on_screen\(app\);/,
+    "the quit hides the window without asking whether anything is on screen",
   );
+  assert.match(hide, /app\.get_window\("main"\)\.filter\(\|_\| hide\)/);
   assert.match(
     rust,
     /app\.get_window\("main"\)\s*\.map\(\|window\| window\.is_visible\(\)/,
@@ -169,17 +176,22 @@ test("the overlay names the wait it is covering", async () => {
   assert.match(body, /<Spinner className="size-6 text-primary" \/>/);
 });
 
-test("both sides agree on the event names", async () => {
+test("the quit hides the window after the confirmations and before the reap", async () => {
   const rust = readText("../../src-tauri/src/main.rs");
-
-  assert.match(
-    rust,
-    new RegExp(`const APP_CLOSING_EVENT: &str = "${APP_CLOSING_EVENT}";`),
+  const sequence = rust.slice(
+    rust.indexOf("fn quit_sequence("),
+    rust.indexOf("\n}\n", rust.indexOf("fn quit_sequence(")),
   );
-  assert.match(
+  const confirm = sequence.indexOf("if !confirm()");
+  const hide = sequence.indexOf("hide()");
+  const reap = sequence.indexOf("reap();");
+
+  assert.ok(confirm >= 0 && hide >= 0 && reap >= 0, "quit_sequence lost a step");
+  assert.ok(confirm < hide, "a declined quit would already have hidden the window");
+  assert.ok(hide < reap, "the window stays up for the whole backend reap");
+  assert.doesNotMatch(
     rust,
-    new RegExp(
-      `const APP_CLOSING_CANCELLED_EVENT: &str = "${APP_CLOSING_CANCELLED_EVENT}";`,
-    ),
+    /emit\("app-closing/,
+    "Rust raises the overlay again: wire it back into these tests or remove it",
   );
 });
