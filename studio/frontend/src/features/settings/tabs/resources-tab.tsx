@@ -7,7 +7,6 @@ import {
   formatTemperature,
   gpuTelemetryRows,
   selectedDetailMetrics,
-  temperatureLevel,
 } from "@/components/monitor-details";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -71,17 +70,8 @@ import {
 } from "../components/storage-overview";
 import { useMonitorOverlayStore } from "../stores/monitor-overlay-store";
 import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
-import {
-  ArrowUpRight01Icon,
-  CpuIcon,
-  DashboardSpeed01Icon,
-  FlashIcon,
-  GpuIcon,
-  HardDriveIcon,
-  RamMemoryIcon,
-  TemperatureIcon,
-} from "@hugeicons/core-free-icons";
-import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
+import { ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { LayersIcon } from "lucide-react";
 
 const POLL_MS = 3000;
@@ -104,7 +94,7 @@ function usageIndicatorClass(percent: number): string {
 function usageTextClass(percent: number): string {
   if (percent >= 90) return "text-destructive";
   if (percent >= 70) return "text-amber-600 dark:text-amber-400";
-  return "text-foreground";
+  return "text-primary";
 }
 
 function formatGb(value: number | null | undefined): string {
@@ -157,9 +147,15 @@ function formatUptime(seconds: number | null | undefined): string {
 const METER_TRACK_CLASS =
   "h-1.5 rounded-full bg-muted dark:bg-[rgb(0_0_0_/_calc(0.4*var(--contrast-wash-gain,1)))]";
 
+// The readings + meter block is the GPU device rows' 392px one, so every meter starts on one edge.
+const METER_BLOCK_CLASS =
+  "flex w-[min(calc(392px*var(--ui-space-scale,1)),100%)] shrink-0 flex-col items-stretch gap-2.5 max-[992px]:w-full";
+
+const CARD_ROW_CLASS =
+  "flex min-w-0 flex-wrap items-start justify-between gap-x-6 gap-y-2 border-border/60 py-3.5 not-first:border-t max-[992px]:flex-col max-[992px]:items-stretch";
+
 function MetricTile({
   label,
-  icon,
   value,
   detail,
   percent,
@@ -167,7 +163,6 @@ function MetricTile({
   extraDetail,
 }: {
   label: string;
-  icon: IconSvgElement;
   value: string;
   detail: string;
   // null = unknown (e.g. Windows ROCm perf counter); show a dash, not 0%.
@@ -178,92 +173,45 @@ function MetricTile({
   const percentKnown = isFiniteNumber(percent);
   const safePercent = clampPercent(percent);
   return (
-    <div className="flex min-w-0 flex-col gap-3 rounded-xl border border-border/60 bg-muted/20 p-4 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]">
-      <div className="flex min-w-0 items-center gap-2 text-muted-foreground">
-        <HugeiconsIcon icon={icon} className="size-4 shrink-0" />
-        <span className="truncate text-xs font-medium">{label}</span>
-      </div>
-      {/* Wraps the reading under the percentage before it would truncate. */}
-      <div className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-3 gap-y-1.5">
-        {showUsage ? (
-          <span
-            className={cn(
-              "shrink-0 text-2xl leading-none font-semibold tabular-nums",
-              percentKnown
-                ? usageTextClass(safePercent)
-                : "text-muted-foreground",
-            )}
-          >
-            {percentKnown ? formatPercent(safePercent) : "--"}
-          </span>
-        ) : null}
-        <span
-          title={value}
-          className={cn(
-            "min-w-0 truncate tabular-nums text-foreground",
-            showUsage
-              ? "text-sm font-medium"
-              : "text-lg leading-none font-semibold",
-          )}
-        >
-          {value}
-        </span>
-      </div>
-      {showUsage && (
-        <Progress
-          value={percentKnown ? safePercent : 0}
-          aria-label={label}
-          className={METER_TRACK_CLASS}
-          indicatorClassName={usageIndicatorClass(safePercent)}
-        />
-      )}
-      <div className="flex min-w-0 flex-col gap-0.5 text-xs text-muted-foreground">
-        <span title={detail} className="truncate">
+    <div data-settings-label={label} className={CARD_ROW_CLASS}>
+      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <span className="text-sm font-medium text-foreground">{label}</span>
+        <span title={detail} className="truncate text-xs text-muted-foreground">
           {detail}
         </span>
         {extraDetail ? (
-          <span className="whitespace-pre-line">{extraDetail}</span>
+          <span className="whitespace-pre-line text-xs text-muted-foreground">
+            {extraDetail}
+          </span>
         ) : null}
+      </div>
+      <div className={METER_BLOCK_CLASS}>
+        <div className="flex items-center justify-between gap-3 font-mono text-ui-11 tabular-nums text-muted-foreground">
+          <span title={value} className="min-w-0 truncate">
+            {value}
+          </span>
+          {showUsage ? (
+            <span
+              className={cn(
+                "shrink-0",
+                percentKnown ? usageTextClass(safePercent) : undefined,
+              )}
+            >
+              {percentKnown ? formatPercent(safePercent) : "--"}
+            </span>
+          ) : null}
+        </div>
+        {showUsage && (
+          <Progress
+            value={percentKnown ? safePercent : 0}
+            aria-label={label}
+            className={METER_TRACK_CLASS}
+            indicatorClassName={usageIndicatorClass(safePercent)}
+          />
+        )}
       </div>
     </div>
   );
-}
-
-function TelemetryChip({
-  icon,
-  label,
-  value,
-  showLabel = false,
-  className,
-}: {
-  icon: IconSvgElement;
-  label: string;
-  value: string;
-  showLabel?: boolean;
-  className?: string;
-}) {
-  return (
-    <span
-      title={label}
-      className={cn(
-        "inline-flex h-6 shrink-0 items-center gap-1 rounded-full bg-muted px-2 text-xs tabular-nums text-muted-foreground",
-        className,
-      )}
-    >
-      <HugeiconsIcon icon={icon} className="size-3.5" />
-      <span className={showLabel ? undefined : "sr-only"}>{label}</span>
-      {value}
-    </span>
-  );
-}
-
-function temperatureChipClass(celsius: number): string | undefined {
-  const level = temperatureLevel(celsius);
-  if (level === "hot") return "bg-destructive/10 text-destructive";
-  if (level === "warm") {
-    return "bg-amber-500/10 text-amber-600 dark:text-amber-400";
-  }
-  return undefined;
 }
 
 function InfoRow({
@@ -276,11 +224,13 @@ function InfoRow({
   detail?: string;
 }) {
   return (
-    <div className="flex min-w-0 flex-col gap-1 rounded-lg bg-muted/40 px-3 py-2.5 dark:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))]">
-      <span className="truncate text-xs text-muted-foreground">{label}</span>
+    <div className="flex min-w-0 items-center justify-between gap-4 py-2.5">
+      <span className="min-w-0 truncate text-sm font-medium text-foreground">
+        {label}
+      </span>
       <span
         title={detail ?? value}
-        className="truncate text-sm font-medium tabular-nums text-foreground"
+        className="min-w-0 max-w-[60%] truncate text-right font-mono text-xs tabular-nums text-muted-foreground"
       >
         {detail ? `${value} (${detail})` : value}
       </span>
@@ -728,11 +678,9 @@ export function ResourcesTab() {
       </header>
 
       <SettingsSection title={t("settings.resources.liveMonitor.title")}>
-        {/* An odd tile out spans the row, so the grid never ends on a hole. */}
-        <div className="grid gap-3 py-3 sm:grid-cols-2 sm:[&>:last-child:nth-child(odd)]:col-span-2">
+        <SettingsCard>
           <MetricTile
             label={t("settings.resources.liveMonitor.cpu")}
-            icon={CpuIcon}
             value={hostReading(cpuFrequencyLabel ?? cpuCoresLabel)}
             detail={
               hostUnread
@@ -745,7 +693,6 @@ export function ResourcesTab() {
           />
           <MetricTile
             label={t("settings.resources.liveMonitor.ram")}
-            icon={RamMemoryIcon}
             value={hostReading(
               `${formatGiB(metrics.ramUsed)} / ${formatGiB(metrics.ramTotal)}`,
             )}
@@ -764,7 +711,6 @@ export function ResourcesTab() {
                 ? "settings.resources.gpu.memory"
                 : "settings.resources.liveMonitor.vram",
             )}
-            icon={GpuIcon}
             value={
               gpuUnknown
                 ? unknownLabel
@@ -815,7 +761,6 @@ export function ResourcesTab() {
           />
           <MetricTile
             label={t("settings.resources.liveMonitor.disk")}
-            icon={HardDriveIcon}
             value={hostReading(
               `${formatDiskSize(metrics.diskUsed)} / ${formatDiskSize(metrics.diskTotal)}`,
             )}
@@ -831,7 +776,6 @@ export function ResourcesTab() {
           {metrics.modelsDisk && (
             <MetricTile
               label={t("settings.resources.liveMonitor.modelsDisk")}
-              icon={HardDriveIcon}
               value={hostReading(
                 `${formatDiskSize(metrics.modelsDiskUsed)} / ${formatDiskSize(metrics.modelsDisk.total_gb)}`,
               )}
@@ -845,7 +789,7 @@ export function ResourcesTab() {
               percent={hostUnread ? null : metrics.modelsDiskPercent}
             />
           )}
-        </div>
+        </SettingsCard>
         <SettingsRow
           label={t("settings.resources.liveMonitor.detailedView")}
           description={t(
@@ -1011,7 +955,7 @@ export function ResourcesTab() {
           </div>
         )}
         {hasGpu ? (
-          <div className="flex flex-col gap-3 py-3">
+          <SettingsCard>
             {metrics.devices.map((device, index) => {
               const ordinal = deviceOrdinal(device);
               // Preserve null (unknown); 0 would render a fabricated reading.
@@ -1046,83 +990,75 @@ export function ResourcesTab() {
               return (
                 <div
                   key={`${device.index ?? index}-${device.name ?? "gpu"}`}
-                  className="flex min-w-0 flex-col gap-3 rounded-xl border border-border/60 p-4"
+                  className={CARD_ROW_CLASS}
                 >
-                  <div className="flex min-w-0 flex-wrap items-start justify-between gap-x-4 gap-y-2">
-                    {/* basis-60: the telemetry chips wrap below before the name truncates. */}
-                    <div className="flex min-w-0 flex-1 basis-60 items-start gap-3">
-                      <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
-                        <HugeiconsIcon icon={GpuIcon} className="size-4" />
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex min-w-0 items-center gap-2">
-                          <span className="truncate text-sm font-medium text-foreground">
-                            {device.name ??
-                              t("settings.resources.gpu.unknownDevice")}
-                          </span>
-                        </div>
-                        <div className="mt-0.5 truncate text-xs text-muted-foreground">
-                          {ordinal === undefined
-                            ? backendLabel
-                            : `${t("settings.resources.gpu.deviceWithIndex", {
-                                index: ordinal,
-                              })} · ${backendLabel}`}
-                          {hasSharedMemoryHeadroom(device)
-                            ? ` · ${t("settings.resources.gpu.sharedWithSystemRam")}`
-                            : null}
-                        </div>
-                        {sharedSplit && !hasSharedMemoryHeadroom(device) ? (
-                          <div className="mt-0.5 text-xs text-muted-foreground">
-                            {sharedSplit.dedicated > 0
-                              ? t(
-                                  "settings.resources.environment.vramWithShared",
-                                  {
-                                    vram: formatGiB(sharedSplit.dedicated),
-                                    shared: formatGiB(sharedSplit.shared),
-                                  },
-                                )
-                              : t("settings.resources.gpu.sharedWithSystemRam")}
-                          </div>
-                        ) : null}
-                      </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-medium text-foreground">
+                      {device.name ?? t("settings.resources.gpu.unknownDevice")}
                     </div>
+                    <div className="mt-1 flex min-w-0 items-center gap-2">
+                      <span className="truncate text-xs text-muted-foreground">
+                        {ordinal === undefined
+                          ? backendLabel
+                          : `${t("settings.resources.gpu.deviceWithIndex", {
+                              index: ordinal,
+                            })}, ${backendLabel}`}
+                      </span>
+                      {/* Same accent pill as the New tags, which stays legible
+                        on the light background. */}
+                      {hasSharedMemoryHeadroom(device) ? (
+                        <span className="text-xs text-muted-foreground">
+                          {t("settings.resources.gpu.sharedWithSystemRam")}
+                        </span>
+                      ) : sharedSplit ? (
+                        <span className="shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold tabular-nums text-control-accent">
+                          {percentText}
+                        </span>
+                      ) : (
+                        <span className="shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold tabular-nums text-control-accent">
+                          {percentText}{" "}
+                          {t("settings.resources.gpu.vramUtilization")}
+                        </span>
+                      )}
+                    </div>
+                    {/* Own line: beside the pill it truncates the backend label first. */}
+                    {sharedSplit && !hasSharedMemoryHeadroom(device) ? (
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        {sharedSplit.dedicated > 0
+                          ? t("settings.resources.environment.vramWithShared", {
+                              vram: formatGiB(sharedSplit.dedicated),
+                              shared: formatGiB(sharedSplit.shared),
+                            })
+                          : t("settings.resources.gpu.sharedWithSystemRam")}
+                      </div>
+                    ) : null}
                     {telemetry ? (
-                      <div className="flex shrink-0 flex-wrap items-center gap-1.5">
-                        {telemetry.loadPct !== null ? (
-                          <TelemetryChip
-                            icon={DashboardSpeed01Icon}
-                            label={t("settings.resources.liveMonitor.gpuLoad")}
-                            value={formatPercent(telemetry.loadPct)}
-                            showLabel={true}
-                          />
-                        ) : null}
-                        {telemetry.temperatureC !== null ? (
-                          <TelemetryChip
-                            icon={TemperatureIcon}
-                            label={t(
-                              "settings.resources.liveMonitor.temperature",
-                            )}
-                            value={formatTemperature(telemetry.temperatureC)}
-                            className={temperatureChipClass(
-                              telemetry.temperatureC,
-                            )}
-                          />
-                        ) : null}
-                        {telemetry.powerDrawW !== null ? (
-                          <TelemetryChip
-                            icon={FlashIcon}
-                            label={t("settings.resources.liveMonitor.power")}
-                            value={formatPower(
-                              telemetry.powerDrawW,
-                              telemetry.powerLimitW,
-                            )}
-                          />
-                        ) : null}
+                      <div className="mt-1 truncate text-xs tabular-nums text-muted-foreground">
+                        {[
+                          telemetry.loadPct !== null
+                            ? `${t("settings.resources.liveMonitor.gpuLoad")} ${formatPercent(telemetry.loadPct)}`
+                            : null,
+                          telemetry.temperatureC !== null
+                            ? formatTemperature(telemetry.temperatureC)
+                            : null,
+                          telemetry.powerDrawW !== null
+                            ? formatPower(
+                                telemetry.powerDrawW,
+                                telemetry.powerLimitW,
+                              )
+                            : null,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
                       </div>
                     ) : null}
                   </div>
+                  {/* Meter under the figures, so it spans their width instead of
+                    being squeezed into the gap beside them. Below 992px the
+                    dialog stops filling its 960px cap and the device name would
+                    truncate, so the row stacks instead. */}
                   {hasSharedMemoryHeadroom(device) ? (
-                    <div className="text-xs text-muted-foreground">
+                    <div className="text-xs font-mono text-muted-foreground">
                       {t("settings.resources.gpu.estimatedAvailable", {
                         value:
                           sharedMemoryAvailableGb([device]) === null
@@ -1131,33 +1067,32 @@ export function ResourcesTab() {
                       })}
                     </div>
                   ) : (
-                    <div className="flex flex-col gap-2">
+                    <div className="flex w-[min(calc(392px*var(--ui-space-scale,1)),100%)] shrink-0 flex-col items-stretch gap-2.5 max-[992px]:w-full">
+                      {/* Ruled between the three readings: run together they are
+                      easy to misread as one number. */}
                       {/* min-w-0 on each reading, or truncate cannot fire: a flex
-                          item defaults to min-width:auto and the longest locales
-                          would push past the row instead of ellipsizing. */}
-                      <div className="flex min-w-0 items-baseline justify-between gap-3 text-xs tabular-nums">
-                        <span className="flex min-w-0 items-center gap-2">
-                          <span className="min-w-0 truncate font-medium text-foreground">
-                            {t("settings.resources.gpu.used", {
-                              value: usedText,
-                            })}
-                          </span>
-                          {sharedSplit ? (
-                            <span className="shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold tabular-nums text-control-accent">
-                              {percentText}
-                            </span>
-                          ) : (
-                            <span className="shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold tabular-nums text-control-accent">
-                              {percentText}{" "}
-                              {t("settings.resources.gpu.vramUtilization")}
-                            </span>
-                          )}
+                      item defaults to min-width:auto and the longest locales
+                      would push past the block instead of ellipsizing. */}
+                      <div className="flex items-center justify-between gap-3 font-mono text-ui-11 tabular-nums text-muted-foreground">
+                        <span className="min-w-0 truncate">
+                          {t("settings.resources.gpu.used", {
+                            value: usedText,
+                          })}
                         </span>
-                        <span className="min-w-0 truncate text-muted-foreground">
+                        <span
+                          aria-hidden
+                          className="h-3 w-px shrink-0 bg-border"
+                        />
+                        <span className="min-w-0 truncate">
                           {t("settings.resources.gpu.free", {
                             value: freeText,
                           })}
-                          {" · "}
+                        </span>
+                        <span
+                          aria-hidden
+                          className="h-3 w-px shrink-0 bg-border"
+                        />
+                        <span className="min-w-0 truncate">
                           {t("settings.resources.gpu.total", {
                             value: totalText,
                           })}
@@ -1174,7 +1109,7 @@ export function ResourcesTab() {
                 </div>
               );
             })}
-          </div>
+          </SettingsCard>
         ) : gpuMismatch ? (
           // Not "no visible GPU": the unusable cards are listed above.
           <div className="py-3 text-sm text-muted-foreground">
@@ -1307,50 +1242,48 @@ export function EnvironmentSection({
     systemInfo.status !== "ready" ? unknownLabel : value;
   return (
     <SettingsSection title={t("settings.resources.environment.title")}>
-      <div className="grid grid-cols-2 gap-2 py-3 sm:grid-cols-4">
+      <InfoRow
+        label={t("settings.resources.environment.backend")}
+        value={hostReading(backendLabel)}
+      />
+      <InfoRow
+        label={t("settings.resources.environment.python")}
+        value={systemInfo.python_version}
+      />
+      <InfoRow
+        label={t("settings.resources.environment.torch")}
+        value={hostReading(
+          systemInfo.ml_packages.torch ??
+            t("settings.resources.environment.notInstalled"),
+        )}
+      />
+      <InfoRow
+        label={t("settings.resources.environment.transformers")}
+        value={hostReading(
+          systemInfo.ml_packages.transformers ??
+            t("settings.resources.environment.notInstalled"),
+        )}
+      />
+      {systemInfo.ml_packages.mlx_lm ? (
         <InfoRow
-          label={t("settings.resources.environment.backend")}
-          value={hostReading(backendLabel)}
+          label={t("settings.resources.environment.mlxLm")}
+          value={hostReading(systemInfo.ml_packages.mlx_lm)}
         />
+      ) : null}
+      {systemInfo.ml_packages.mlx_vlm ? (
         <InfoRow
-          label={t("settings.resources.environment.python")}
-          value={systemInfo.python_version}
+          label={t("settings.resources.environment.mlxVlm")}
+          value={hostReading(systemInfo.ml_packages.mlx_vlm)}
         />
-        <InfoRow
-          label={t("settings.resources.environment.torch")}
-          value={hostReading(
-            systemInfo.ml_packages.torch ??
-              t("settings.resources.environment.notInstalled"),
-          )}
-        />
-        <InfoRow
-          label={t("settings.resources.environment.transformers")}
-          value={hostReading(
-            systemInfo.ml_packages.transformers ??
-              t("settings.resources.environment.notInstalled"),
-          )}
-        />
-        {systemInfo.ml_packages.mlx_lm ? (
-          <InfoRow
-            label={t("settings.resources.environment.mlxLm")}
-            value={hostReading(systemInfo.ml_packages.mlx_lm)}
-          />
-        ) : null}
-        {systemInfo.ml_packages.mlx_vlm ? (
-          <InfoRow
-            label={t("settings.resources.environment.mlxVlm")}
-            value={hostReading(systemInfo.ml_packages.mlx_vlm)}
-          />
-        ) : null}
-        <InfoRow
-          label={t("settings.resources.environment.uptime")}
-          value={hostReading(formatUptime(systemInfo.uptime_seconds))}
-        />
-        <InfoRow
-          label={t("settings.resources.environment.processMemory")}
-          value={hostReading(formatMb(systemInfo.memory?.process_used_mb))}
-        />
-      </div>
+      ) : null}
+      <InfoRow
+        label={t("settings.resources.environment.uptime")}
+        value={hostReading(formatUptime(systemInfo.uptime_seconds))}
+      />
+      <InfoRow
+        label={t("settings.resources.environment.processMemory")}
+        value={hostReading(formatMb(systemInfo.memory?.process_used_mb))}
+      />
     </SettingsSection>
   );
 }
