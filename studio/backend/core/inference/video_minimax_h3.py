@@ -992,7 +992,7 @@ def stage_h3_references(
     images: list[str] = []
     for index, image in enumerate(references.images):
         path = scratch / f"ref-image-{index:02d}.png"
-        # Scratch files sd-cli decodes once: zlib level 1 is lossless and ~2.5x faster than Pillow's 6.
+        # Scratch files sd-cli decodes once: zlib level 1 is lossless and faster than Pillow's default.
         image.save(path, format = "PNG", compress_level = 1)
         images.append(str(path))
 

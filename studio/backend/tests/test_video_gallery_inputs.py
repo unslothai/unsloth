@@ -147,8 +147,7 @@ def test_a_silent_video_has_no_audio_track_to_extract():
 
 
 def test_a_frame_png_keeps_pillows_default_encoding(monkeypatch, tmp_path):
-    # MCP previews and inputs gate on these bytes (INLINE_CAP, MAX_IMAGE_BYTES), so a faster but
-    # larger zlib level could flip an inline preview to a link. The gallery level must not apply.
+    # MCP gates on these bytes (INLINE_CAP, MAX_IMAGE_BYTES): a larger encoding could flip an inline preview to a link.
     from core.inference import image_gallery
 
     av = pytest.importorskip("av")
