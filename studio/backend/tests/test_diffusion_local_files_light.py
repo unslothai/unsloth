@@ -13,11 +13,6 @@ from pathlib import Path
 _BACKEND = Path(__file__).resolve().parent.parent
 
 
-def test_diffusion_re_exports_the_same_function():
-    from core.inference import diffusion, diffusion_local_files
-    assert diffusion.resolve_local_single_file is diffusion_local_files.resolve_local_single_file
-
-
 def _probe(tmp_path, call: str) -> list:
     (tmp_path / "model.safetensors").write_bytes(b"")
     probe = (

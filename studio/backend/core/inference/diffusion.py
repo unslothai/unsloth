@@ -509,7 +509,6 @@ from .diffusion_transformer_quant import (
     transformer_is_quantised,
 )
 from .diffusion_native_quant import native_quant_reason
-from .diffusion_local_files import resolve_local_single_file  # noqa: F401 -- re-exported
 from utils.paths.path_utils import (
     any_not_appledouble_metadata,
     is_appledouble_metadata,

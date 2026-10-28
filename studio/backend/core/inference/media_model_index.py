@@ -255,7 +255,7 @@ def _add_gguf_picks(
 
 def _loadable_directory(load_dir: Path) -> bool:
     """Only a full pipeline or one checkpoint is loadable: several with no index is ambiguous."""
-    from core.inference.diffusion import resolve_local_single_file
+    from core.inference.diffusion_local_files import resolve_local_single_file
 
     try:
         if any(
