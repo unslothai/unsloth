@@ -140,7 +140,13 @@ def test_a_rows_to_dataset_output_still_opens_after_a_restart(client):
     from hub.utils import host_paths
 
     class Ctx:
-        async def call(self, method, path, files = None, **_):
+        async def call(
+            self,
+            method,
+            path,
+            files = None,
+            **_,
+        ):
             name, body, _type = files["file"]
             stored = dataset_uploads_root() / f"0123abcd_{name}"
             stored.parent.mkdir(parents = True, exist_ok = True)
