@@ -1135,7 +1135,6 @@ def _build_sft_trainer(
                     # Every member's window is shorter here (an epoch end); the step keeps its size.
                     samples.append({"multi_lora_empty": torch.zeros(1)})
                     continue
-                # Once any member packs, every micro-batch is one padding-free row; members never share a document.
                 batch = (
                     _collate_packed(rows, slots, lengths)
                     if packed
