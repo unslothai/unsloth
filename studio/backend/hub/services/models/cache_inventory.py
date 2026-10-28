@@ -1475,8 +1475,7 @@ def artifact_folder_bytes(*repo_paths: Path) -> int:
 
 
 def artifact_mirror_delete_id(repo_id: str, cache_path: Optional[str]) -> Optional[str]:
-    """The quant-free artifact mirror copy a delete of base *repo_id* removes (the one ``_scan_cached_models`` lists
-    under the base id), else None."""
+    """Quant-free artifact mirror copy listed under base *repo_id*, else None."""
     try:
         from core.inference.diffusion_families import mirror_repo
 

@@ -955,8 +955,7 @@ _CASED_ARTIFACT_MIRRORS = sorted(m for _u, m in df._MIRROR_PAIRS if df.mirror_ho
 def test_a_base_pipeline_cached_in_an_artifact_mirror_lists_as_the_base(
     monkeypatch, tmp_path, repo, root_checkpoint
 ):
-    """A bf16 pick of Qwen/Qwen-Image-2.1-Turbo caches the whole pipeline in unsloth/Qwen-Image-2.1-Turbo-FP8: one
-    row under the base id, loading like that pick, sized and deleted as the mirror copy."""
+    """A cached base pipeline in the FP8 mirror lists, loads, sizes and deletes as the base."""
     files = {**_FOLDERS, **_DENOISER, **(_FP8_ROOT if root_checkpoint else {})}
     cached = _cache_repo(tmp_path, repo, files)
     rows = _scan_rows(monkeypatch, [cached], tmp_path)
@@ -973,7 +972,6 @@ def test_a_base_pipeline_cached_in_an_artifact_mirror_lists_as_the_base(
 def test_a_base_pipeline_in_a_mirror_outside_the_active_cache_pins_its_snapshot(
     monkeypatch, tmp_path
 ):
-    """In a non-active cache root the row pins its snapshot, as every such row does."""
     cached = _cache_repo(tmp_path / "old", _FP8_REPO, {**_FOLDERS, **_DENOISER})
     rows = _scan_rows(monkeypatch, [cached], tmp_path / "live")
     assert [r["repo_id"] for r in rows] == ["Qwen/Qwen-Image-2.1-Turbo"]
@@ -989,7 +987,6 @@ def test_an_artifact_mirror_without_the_denoiser_keeps_its_checkpoint_row(monkey
 
 
 def test_deleting_the_base_row_targets_the_artifact_mirror_copy(monkeypatch, tmp_path):
-    """The base row's delete reaches the mirror copy only when the path is that mirror and it holds no quant."""
     from types import SimpleNamespace
 
     from hub.services.models import cache_inventory
