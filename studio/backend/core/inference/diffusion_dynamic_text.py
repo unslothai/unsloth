@@ -28,8 +28,13 @@ _QWEN_IMAGE_21_SOURCES: tuple[str, ...] = (
     "L['layer_cache'].v",
     "L['cache_write_slice'].stop",
     "L['segments'][0][1]",
-    r"L\['segments'\]\[\d+\]\[1\]$",
-    r"L\['segments'\]\[[1-9]\d*\]\[0\]$",
+    # Suffix regexes: under group offload hooks (16 GB) the block frame reads ``L['kwargs'][...]`` and, after the
+    # eager hook's graph break, ``___stack0[1][...]``; unmatched, the first new prompt length recompiled every block.
+    r".*\['(hidden_states|rotary_emb|target_token_mask|key_valid|attention_mask)'\]$",
+    r".*\['layer_cache'\]\.[kv]$",
+    r".*\['cache_write_slice'\]\.stop$",
+    r".*\['segments'\]\[\d+\]\[1\]$",
+    r".*\['segments'\]\[[1-9]\d*\]\[0\]$",
 )
 
 # Suffix regexes cover FBCache hook paths: ``L['kwargs'][...]`` and, after a graph break, ``___stack0[1][...]``.
