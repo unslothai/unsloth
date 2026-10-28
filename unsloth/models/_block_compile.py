@@ -407,7 +407,11 @@ def _graphs_unsafe_moe(layer, note = True):
     return moe
 
 
-def _flex_block_mask_call(args, kwargs, note = True):
+def _flex_block_mask_call(
+    args,
+    kwargs,
+    note = True,
+):
     """BlockMask index tensors are static graph inputs rebuilt every step, so the graph re-records
     each call (StaticInputIdxMismatch is outside the re-record limit); Gemma3 was slower with graphs."""
     for value in (*args, *kwargs.values()):
@@ -457,6 +461,7 @@ def _auto_platform_reason():
     if getattr(torch.version, "hip", None):
         return "ROCm"
     from packaging.version import Version
+
     if Version(torch.__version__.split("+")[0]) < Version(_AUTO_MIN_TORCH):
         return f"torch < {_AUTO_MIN_TORCH}"
     return None
@@ -1455,7 +1460,9 @@ def _wrap(
                             # A leaf's .grad outlives the generation (trainable inputs_embeds); a
                             # checkpoint's backward recomputes (a new generation) before reading it.
                             hidden_states = _CloneGrad.apply(hidden_states)
-                        return _graphed_call(graphed(), device, self, hidden_states, *args, **kwargs)
+                        return _graphed_call(
+                            graphed(), device, self, hidden_states, *args, **kwargs
+                        )
                     if hidden_states.requires_grad and torch.is_grad_enabled():
                         hidden_states = _CloneGrad.apply(hidden_states)
                     return _clone_outputs(

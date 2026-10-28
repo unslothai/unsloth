@@ -64,7 +64,13 @@ def test_mode_from_environment(monkeypatch, value, mode):
         _load()
 
 
-def _harness(monkeypatch, host = 3e-3, gpu = 1e-3, free_gb = 40.0, static = None):
+def _harness(
+    monkeypatch,
+    host = 3e-3,
+    gpu = 1e-3,
+    free_gb = 40.0,
+    static = None,
+):
     calls = []
     compiles = []
 
@@ -104,7 +110,13 @@ def _harness(monkeypatch, host = 3e-3, gpu = 1e-3, free_gb = 40.0, static = None
     return layers, calls, compiles, timed
 
 
-def _step(layers, calls, L = 16, checkpoint = False, **kwargs):
+def _step(
+    layers,
+    calls,
+    L = 16,
+    checkpoint = False,
+    **kwargs,
+):
     calls.clear()
     x = torch.randn(2, L, 8, requires_grad = True)
     h = x
