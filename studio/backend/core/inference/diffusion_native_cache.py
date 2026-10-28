@@ -234,7 +234,6 @@ def _live_refs(transformer: Any, state: dict) -> dict:
     return out
 
 
-
 def _live_state(transformer: Any, state: dict) -> dict:
     """``_live_refs`` of ``state``; an offload that moved weights after the capture left captured accelerator
     tensors no live attribute matches, so capture once more (same layout) rather than pin them through the write.
@@ -247,11 +246,12 @@ def _live_state(transformer: Any, state: dict) -> dict:
         return refs
     state = refs = None  # drop the stale references before the recapture
     fresh = transformer.state_dict()
-    if {
-        k: (v.dtype, tuple(v.shape)) for k, v in fresh.items()
-    } != layout or any(type(v) not in (torch.Tensor, torch.nn.Parameter) for v in fresh.values()):
+    if {k: (v.dtype, tuple(v.shape)) for k, v in fresh.items()} != layout or any(
+        type(v) not in (torch.Tensor, torch.nn.Parameter) for v in fresh.values()
+    ):
         raise RuntimeError("native cache write: the weights changed during the write")
     return _live_refs(transformer, fresh)
+
 
 def save(
     transformer: Any,
