@@ -421,7 +421,6 @@ test("chat, project and section cards are square like folder and file cards, dat
     readSrc("features/library/surface.ts"),
     /CARD_MIN_HEIGHT =\s*"calc\(var\(--spacing\) \* 26 \+ 2\.75 \* var\(--text-ui-13\) \+ 3 \* var\(--text-ui-11p5\)\)"/,
   );
-  // Folder, file and non-image preview cards take the same floor, so no card but an image is shorter.
   assert.equal(
     readSrc("features/library/components/library-cards.tsx").split("minHeight: CARD_MIN_HEIGHT").length - 1,
     3,
@@ -521,7 +520,6 @@ test("every library toolbar's search narrows with the header row, so it never re
 
 test("a library toolbar too wide for the row stacks under the title instead of covering it", () => {
   const header = readSrc("features/library/components/library-header.tsx");
-  // Measured from the unwrapped tools, so the wrapped stacked toolbar cannot flip it back.
   assert.match(header, /setStacked\(needed \+ GAP_PX \+ titleRoom > bar\.clientWidth\)/);
   assert.match(header, /\{stacked \? \[heading, bar\] : \[bar, heading\]\}/);
   assert.match(header, /reserve=\{covered && !stacked \? controlsWidth \+ GAP_PX : 0\}/);

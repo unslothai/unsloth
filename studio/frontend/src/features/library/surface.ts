@@ -22,6 +22,6 @@ export const GLASS_SURFACE = `bg-white text-neutral-900 ${CONTROL_EDGE} dark:bg-
 
 export const GLASS_CONTROL = `${GLASS_SURFACE} hover:bg-neutral-100 hover:text-neutral-900 dark:hover:bg-neutral-600 dark:hover:text-white`;
 
-/** Fits the fullest card (tile, two-line title, two-line footer, +1 unit for its icon); every card but an image is max(this, its width). */
+/** Fits the fullest card: tile, two-line title, two-line footer. */
 export const CARD_MIN_HEIGHT =
   "calc(var(--spacing) * 26 + 2.75 * var(--text-ui-13) + 3 * var(--text-ui-11p5))";

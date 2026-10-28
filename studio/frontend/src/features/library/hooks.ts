@@ -181,8 +181,7 @@ export function useSeen(ref: RefObject<Element | null>): boolean {
   return seen;
 }
 
-/** `baseGap` is the container's gap at 100%: the measured gap over it scales `minColumnWidth` with the
- * interface zoom and text size, which grow the cards' text and spacing but not a px minimum. */
+/** `baseGap` is the gap at 100%, so `minColumnWidth` scales with interface zoom and text size. */
 export function useColumnCount(
   ref: RefObject<HTMLElement | null>,
   minColumnWidth = 200,

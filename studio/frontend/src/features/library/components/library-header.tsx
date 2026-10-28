@@ -191,7 +191,7 @@ export function LibraryHeader({
       const needed =
         tools.reduce((sum, tool) => sum + tool.offsetWidth, 0) +
         toolGap * Math.max(0, tools.length - 1);
-      // Room for the title's first ~6em; a longer folder name truncates rather than stacking.
+      // ~6em of title; a longer name truncates instead of stacking.
       const heading = titleNode.firstElementChild as HTMLElement | null;
       const titleRoom = heading
         ? Math.min(heading.scrollWidth, 6 * Number.parseFloat(getComputedStyle(heading).fontSize))
@@ -199,7 +199,6 @@ export function LibraryHeader({
       setStacked(needed + GAP_PX + titleRoom > bar.clientWidth);
       const top = row.getBoundingClientRect().top;
       setCovered(top < controlsNode.getBoundingClientRect().bottom);
-      // The title, or the toolbar once it stacks under it.
       const above = (row.previousElementSibling as HTMLElement | null) ?? titleNode;
       const gap = top - above.getBoundingClientRect().bottom;
       setStuck(gap > Number.parseFloat(getComputedStyle(row).marginTop) + 1);
@@ -221,7 +220,7 @@ export function LibraryHeader({
     };
   }, []);
 
-  // Keyed so stacking moves the toolbar under the title instead of remounting it (and its search box).
+  // Keyed: stacking moves the toolbar instead of remounting its search box.
   const bar = (
     <div
       key="bar"

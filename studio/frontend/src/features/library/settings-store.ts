@@ -58,8 +58,7 @@ export const DEFAULT_LIBRARY_SETTINGS: LibrarySettings = {
 
 export const SUGGESTED_LIMITS = [20, 40, 80] as const;
 
-/** `max` per row while cards are at least `minWidth`; past it only once every card can be `wideMinWidth`,
- * so a normal window keeps 6 / 5 / 4 and only a really wide one gets more. */
+/** `max` per row down to `minWidth`; more only once every card can be `wideMinWidth`. */
 export const CARD_COLUMNS: Record<
   LibrarySettings["cardSize"],
   { minWidth: number; max: number; wideMinWidth: number }

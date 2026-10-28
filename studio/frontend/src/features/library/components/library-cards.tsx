@@ -235,7 +235,6 @@ export function ItemCard({ item }: { item: LibraryItem }) {
     >
       {thumb ? (
         <>
-          {/* Only images keep their own shape; video and other previews are square like every other card. */}
           <ImageThumb item={item} square={square || fileKind(item) !== "image"} />
           {showTime && (
             <span
@@ -362,7 +361,6 @@ export function CardGrid({
   minRowHeight,
 }: {
   children: ReactNode;
-  /** Rows are max(this, the column width): square, like folder and file cards. */
   minRowHeight?: string;
 }) {
   const container = useRef<HTMLDivElement>(null);
