@@ -148,7 +148,7 @@ test("a lower mode chosen before first-turn adoption is not undone by the adopti
   assert.equal(Object.keys(state().chatFullAccessGrants).length, 0);
 });
 
-test("finished runs that never used the shortcut leave nothing behind", async () => {
+test("runs that never used the shortcut do not churn queued settings", async () => {
   const { state } = await boot("chat-full-run-cleanup");
   state().setActiveThreadId("chat-a");
   const epoch = state().queuedSettingsEpoch;
@@ -156,6 +156,16 @@ test("finished runs that never used the shortcut leave nothing behind", async ()
     state().adoptChatFullAccessRun(`run-${i}`, "chat-a");
     state().clearUnadoptedChatFullAccessRun(`run-${i}`);
   }
-  assert.deepEqual(state().chatFullAccessThreadByRunId, {});
   assert.equal(state().queuedSettingsEpoch, epoch);
+  assert.deepEqual(state().chatFullAccessGrants, {});
+});
+
+test("a first-turn upgrade acknowledged after its run ended still binds to the adopted chat", async () => {
+  const { state } = await boot("chat-full-late-ack-after-run");
+  state().adoptChatFullAccessRun("run-late", "chat-a");
+  state().clearUnadoptedChatFullAccessRun("run-late");
+  state().grantChatFullAccess({ runId: "run-late", threadId: "", sessionId: "project-shared" });
+  assert.equal(state().chatFullAccessGrants["run-late"]!.threadId, "chat-a");
+  state().setActiveThreadId("chat-a");
+  assert.equal(state().permissionMode, "full");
 });

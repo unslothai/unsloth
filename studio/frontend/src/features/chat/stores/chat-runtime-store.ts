@@ -5635,16 +5635,13 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     }),
   clearUnadoptedChatFullAccessRun: (runId) =>
     set((state) => {
+      // The run's thread mapping stays: a first-turn upgrade acknowledged after the run ended binds through it.
       const grant = state.chatFullAccessGrants[runId];
-      const dropGrant = !!grant && !grant.threadId;
-      if (!dropGrant && !Object.hasOwn(state.chatFullAccessThreadByRunId, runId)) return state;
-      const runThreads = { ...state.chatFullAccessThreadByRunId };
-      delete runThreads[runId];
+      if (!grant || grant.threadId) return state;
       const grants = { ...state.chatFullAccessGrants };
-      if (dropGrant) delete grants[runId];
+      delete grants[runId];
       return {
         chatFullAccessGrants: grants,
-        chatFullAccessThreadByRunId: runThreads,
         chatFullAccessPendingRunId: state.chatFullAccessPendingRunId === runId
           ? null : state.chatFullAccessPendingRunId,
       };
