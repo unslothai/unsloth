@@ -63,6 +63,54 @@ def _base():
     return Qwen3ForCausalLM(config).float()
 
 
+def _qwen3_5(moe: bool):
+    """Tiny Qwen3.5 text model: one Gated DeltaNet (linear attention) layer, one full attention layer; ``moe``
+    swaps the MLPs for fused experts plus a shared expert, as in Qwen3.6-35B-A3B."""
+    import transformers
+
+    torch.manual_seed(0)
+    common = dict(
+        vocab_size = 64,
+        hidden_size = 32,
+        num_hidden_layers = 2,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        head_dim = 8,
+        max_position_embeddings = 128,
+        use_cache = False,
+        tie_word_embeddings = False,
+        layer_types = ["linear_attention", "full_attention"],
+        linear_num_key_heads = 2,
+        linear_num_value_heads = 4,
+        linear_key_head_dim = 8,
+        linear_value_head_dim = 8,
+        linear_conv_kernel_dim = 4,
+    )
+    if moe:
+        config = transformers.Qwen3_5MoeTextConfig(
+            **common,
+            num_experts = 4,
+            num_experts_per_tok = 2,
+            moe_intermediate_size = 16,
+            shared_expert_intermediate_size = 16,
+        )
+        return transformers.Qwen3_5MoeForCausalLM(config).float()
+    config = transformers.Qwen3_5TextConfig(**common, intermediate_size = 64)
+    return transformers.Qwen3_5ForCausalLM(config).float()
+
+
+def _kind_targets(kind):
+    # Lone runs train fused experts for the default targets; a bare "all-linear" string reaches no experts there.
+    return {"target_modules": []} if kind == "moe" else {}
+
+
+def _kind_base(kind):
+    if kind == "dense":
+        return _base()
+    pytest.importorskip("transformers", minversion = "5.2")
+    return _qwen3_5(moe = kind == "moe")
+
+
 def _texts(n, seed):
     g = torch.Generator().manual_seed(seed)
     out = []
@@ -129,9 +177,10 @@ def _run(
     trainer_attrs = None,
     datasets = None,
     model_attrs = None,
+    base = None,
     **extra,
 ):
-    base = _base()
+    base = _base() if base is None else base
     for name, value in (model_attrs or {}).items():
         setattr(base, name, value)
     pristine = copy.deepcopy(base)
@@ -528,3 +577,77 @@ def test_batched_member_trains_as_it_would_alone(batched_run, monkeypatch):
     assert batched_loss[1:] == pytest.approx(alone_loss[1:], rel = 1e-4)
     for key in alone:
         torch.testing.assert_close(batched[key], alone[key], atol = 1e-5, rtol = 1e-4)
+
+
+@pytest.mark.parametrize("kind", ["dense", "hybrid", "moe"])
+def test_a_neighbour_never_moves_a_members_training(monkeypatch, tmp_path, kind):
+    """Job B batched beside A, then beside a different A (data, rate, rank, seed): B's losses and adapter match."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    other = dict(MEMBERS[0], rows = 10, lr = 3e-2, r = 2, alpha = 2, seed = 99)
+    runs = []
+    for neighbour in (MEMBERS[0], other):
+        events, _, _ = _run(
+            monkeypatch, [neighbour, MEMBERS[1]], base = _kind_base(kind), **_kind_targets(kind)
+        )
+        mine = _member_events(events, "job_b")
+        losses = [e["loss"] for e in mine if e["type"] == "progress"]
+        runs.append(
+            (losses, load_file(os.path.join(mine[0]["output_dir"], "adapter_model.safetensors")))
+        )
+    (loss_1, adapter_1), (loss_2, adapter_2) = runs
+    assert len(loss_1) == EXPECTED_STEPS["job_b"] + 1
+    assert loss_2 == pytest.approx(loss_1, rel = 1e-5)
+    assert adapter_1.keys() == adapter_2.keys()
+    for key in adapter_1:
+        torch.testing.assert_close(adapter_2[key], adapter_1[key], atol = 1e-6, rtol = 1e-5)
+
+
+@pytest.mark.parametrize("kind", ["hybrid", "moe"])
+def test_a_hybrid_or_moe_member_trains_as_it_would_alone(monkeypatch, tmp_path, kind):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    batched, _, _ = _run(monkeypatch, MEMBERS[:2], base = _kind_base(kind), **_kind_targets(kind))
+    alone, _, _ = _run(monkeypatch, [MEMBERS[1]], base = _kind_base(kind), **_kind_targets(kind))
+    out = {}
+    for name, events in (("batched", batched), ("alone", alone)):
+        mine = _member_events(events, "job_b")
+        assert mine[-1]["type"] == "complete"
+        out[name] = (
+            [e["loss"] for e in mine if e["type"] == "progress"],
+            load_file(os.path.join(mine[0]["output_dir"], "adapter_model.safetensors")),
+            json.load(open(os.path.join(mine[0]["output_dir"], "adapter_config.json"))),
+        )
+    assert out["batched"][0][1:] == pytest.approx(out["alone"][0][1:], rel = 1e-4)
+    for key, value in out["alone"][1].items():
+        torch.testing.assert_close(out["batched"][1][key], value, atol = 1e-5, rtol = 1e-4)
+    if kind == "moe":
+        config = out["batched"][2]
+        assert sorted(config["target_parameters"]) == [
+            "mlp.experts.down_proj",
+            "mlp.experts.gate_up_proj",
+        ]
+        experts = [
+            k for k in out["batched"][1] if ".mlp.experts." in k and k.endswith("lora_B.weight")
+        ]
+        assert len(experts) == 4 and all(out["batched"][1][k].abs().max() > 0 for k in experts)
+    else:
+        # Gated DeltaNet projections train exactly when all-linear asks for them, as alone.
+        assert any(".linear_attn.in_proj_qkv." in k for k in out["batched"][1])
+
+
+def test_an_allowlisted_moe_with_a_router_aux_loss_trains_alone(monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    pytest.importorskip("transformers", minversion = "5.2")
+    base = _qwen3_5(moe = True)
+    base.config.output_router_logits = True
+    events, _, _ = _run(monkeypatch, MEMBERS[:2], base = base, target_modules = [])
+    assert [e["type"] for e in events if e.get("member_run_id")] == ["error", "error"]
+    assert "auxiliary loss" in events[-1]["error"]
+
+
+def test_a_state_space_model_trains_alone(monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    base = _base()
+    base.model.layers[0].mixer = type("MambaMixer", (torch.nn.Module,), {})()
+    events, _, _ = _run(monkeypatch, MEMBERS[:2], base = base)
+    assert [e["type"] for e in events if e.get("member_run_id")] == ["error", "error"]
+    assert "state-space" in events[-1]["error"]
