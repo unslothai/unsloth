@@ -43,10 +43,10 @@ _MODEL_RE = re.compile(r"#\s*Model defaults for\s+(\S+)", re.IGNORECASE)
 _CATEGORY_RULES = (
     # GRPO, DPO and ORPO import onto the Fine-tune node; other RL recipes stay Colab-only.
     ("grpo", ("grpo", "gspo")),
-    ("rl", ("reinforcement_learning", "nemo_gym", "_ppo")),
+    ("rl", ("reinforcement_learning", "nemo_gym", "_ppo", "_kto")),
     # Decision fine-tunes need the Train page's decision wiring, which a Flow Fine-tune block does not have yet.
     ("decision", ("_decision",)),
-    ("preference", ("_dpo", "_orpo", "_kto")),
+    ("preference", ("_dpo", "_orpo")),
     # Continued pretraining trains on raw text, an objective the Flow Fine-tune block does not run.
     ("cpt", ("_cpt", "continued_pretraining", "text_completion")),
     ("vision", ("vision", "_vl_", "ocr", "pixtral")),

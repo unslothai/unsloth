@@ -75,6 +75,7 @@ def test_grpo_recipes_import_onto_the_fine_tune_node(name):
         "gpt_oss_(20B)_Reinforcement_Learning_2048_Game.ipynb",
         "NeMo-Gym-Sudoku.ipynb",
         "Llama3.2_(1B)-PPO.ipynb",
+        "Llama3_(8B)-KTO.ipynb",
     ],
 )
 def test_other_rl_recipes_stay_colab_only(name):

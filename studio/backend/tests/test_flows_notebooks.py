@@ -579,3 +579,14 @@ def test_two_rl_stages_are_refused():
     )
     doc, report = notebook_import.read_notebook(nb, "Qwen3_(4B)-GRPO.ipynb")
     assert doc is None and any("more than one RL stage" in line for line in report["unsupported"])
+
+
+def test_two_stages_of_the_same_rl_objective_are_refused():
+    nb = _nb(
+        "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/Qwen3-4B-Base')",
+        "dataset = load_dataset('openai/gsm8k', 'main', split = 'train')",
+        "trainer = GRPOTrainer(model = model, reward_funcs = [check_answer], args = GRPOConfig(max_steps = 9))",
+        "trainer = GRPOTrainer(model = model, reward_funcs = [check_answer], args = GRPOConfig(max_steps = 9))",
+    )
+    doc, report = notebook_import.read_notebook(nb, "Qwen3_(4B)-GRPO.ipynb")
+    assert doc is None and any("GRPO and GRPO" in line for line in report["unsupported"])
