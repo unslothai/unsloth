@@ -169,8 +169,7 @@ def test_scan_is_amortized_not_quadratic(monkeypatch):
         text += "word "
         assert stripper.strip(text) == text
     overlap = tool_call_parser._SENTINEL_MAX_LEN
-    # Resuming reads each character about once plus an overlap per token (~13k here); rescanning from
-    # the start every token would read about len(text) ** 2 / 10 (3.6M).
+    # Rescanning from the start every token would read about len(text) ** 2 / 10 (3.6M).
     assert sum(scanned) <= len(text) + 1200 * overlap, sum(scanned)
 
 

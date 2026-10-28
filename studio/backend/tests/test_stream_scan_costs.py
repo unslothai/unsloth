@@ -102,8 +102,7 @@ def test_held_tail_does_not_rewalk_spaceless_text():
     """CJK prose has no spaces, so walking back to the last one per chunk made a reply quadratic."""
     tools = _TOOLS[:3]
 
-    # Counts characters read by index, not time: the old walk read every one, and the C-level
-    # rfind / regex scans that remain are not reads, so the count is the same on every runner.
+    # A count of indexed reads, not a timing, so it is the same on every runner.
     class CountingStr(str):
         reads = 0
 
