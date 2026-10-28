@@ -164,8 +164,16 @@ def _spawn(
         ]
 
 
+def _torch_below_2_7():
+    from packaging.version import Version
+
+    return Version(torch.__version__.split("+")[0]) < Version("2.7")
+
+
 @pytest.mark.parametrize("dp, tp", [(1, 2), (2, 2)])
 def test_trainer_evaluates_a_tensor_parallel_model_like_one_process(dp, tp):
+    if dp > 1 and _torch_below_2_7():
+        pytest.skip("torch < 2.7: tensor parallel x FSDP2 is refused (no fully_shard(ignored_params))")
     ref = _spawn("eval", 1, dp = dp, tp = 1)[0]
     if "skip" in ref:
         pytest.skip(f"import unsloth failed on this host: {ref['skip']}")

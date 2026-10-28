@@ -370,6 +370,17 @@ def _torchao():
     return True
 
 
+def _skip_unsupported_qat(kind):
+    """Older torchao (0.13) cannot QATConfig-prepare every scheme (IntxWeightOnlyConfig, ...): skip there."""
+    from torchao.quantization import quantize_
+    from torchao.quantization.qat import QATConfig
+
+    try:
+        quantize_(torch.nn.Sequential(torch.nn.Linear(32, 32)), QATConfig(_qat_config(kind), step = "prepare"))
+    except Exception as e:
+        pytest.skip(f"this torchao cannot QAT-prepare {kind}: {type(e).__name__}: {e}")
+
+
 @pytest.mark.skipif(not _torchao(), reason = "torchao QAT not installed")
 @pytest.mark.parametrize(
     "kind,lora,kv_heads",
@@ -384,6 +395,7 @@ def _torchao():
     ],
 )
 def test_tp2_qat_weight_only_matches_one_process(kind, lora, kv_heads):
+    _skip_unsupported_qat(kind)
     with tempfile.TemporaryDirectory() as tmp:
         results = _spawn("qat", 2, tmp = tmp, kind = kind, lora = lora, kv_heads = kv_heads)
     for rank, res in enumerate(results):
@@ -413,6 +425,7 @@ def test_tp2_qat_weight_only_matches_one_process(kind, lora, kv_heads):
     ],
 )
 def test_tp2_qat_inexact_schemes_are_refused(kind, needle):
+    _skip_unsupported_qat(kind)
     with tempfile.TemporaryDirectory() as tmp:
         results = _spawn("qat", 2, tmp = tmp, kind = kind, lora = False)
     for res in results:
