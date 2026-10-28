@@ -127,15 +127,6 @@ export function subscribeDraft(source: symbol, listener: (text: string) => void)
   return () => draftListeners.delete(wrapped);
 }
 
-const SEEDED = Symbol("seeded");
-
-// Text from outside the composer, like a `/chat?q=` link: saved as the shared draft so the composer
-// that mounts next restores it, and published so the one already on screen shows it now.
-export function seedComposerDraft(text: string): void {
-  writeComposerDraft(DRAFT_KEY, text);
-  publishDraft(text, SEEDED);
-}
-
 if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
   window.addEventListener("storage", (event) => {
     if (event.key === DRAFT_KEY) publishDraft(event.newValue ?? "", OTHER_TAB);

@@ -163,7 +163,7 @@ def _require_frontend_toolchain() -> None:
     )
 
 
-def start_vite(port: int, *, host: str = "127.0.0.1") -> subprocess.Popen[str]:
+def start_vite(port: int, *, host: str = "127.0.0.1", preview: bool = False) -> subprocess.Popen[str]:
     """Refuses an occupied port, so the readiness poll cannot be answered by another server."""
     if _port_is_taken(port, host):
         raise RuntimeError(
@@ -178,7 +178,7 @@ def start_vite(port: int, *, host: str = "127.0.0.1") -> subprocess.Popen[str]:
     # CreateProcess cannot run a bare "npm" on Windows; shutil.which resolves npm.cmd.
     npm = shutil.which("npm") or "npm"
     proc = subprocess.Popen(
-        [npm, "run", "dev", "--", "--host", host, "--port", str(port), "--strictPort"],
+        [npm, "run", "preview" if preview else "dev", "--", "--host", host, "--port", str(port), "--strictPort"],
         cwd = FRONTEND,
         stdout = subprocess.PIPE,
         stderr = subprocess.STDOUT,

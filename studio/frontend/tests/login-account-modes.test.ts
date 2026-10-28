@@ -60,11 +60,13 @@ function mountForm(
   },
   switched = false,
   failTransitionOnce = false,
+  q?: string,
 ) {
   const state: unknown[] = [];
   let cursor = 0;
   const effects: (() => void)[] = [];
   const routes: string[] = [];
+  const searches: ({ q?: string } | undefined)[] = [];
   const transitions: string[] = [];
   const api = loadWithStubs<{
     AuthForm: (props: { mode: string }) => StubElement | null;
@@ -129,10 +131,12 @@ function mountForm(
     "@/components/ui/label": { Label: "Label" },
     "@tanstack/react-router": {
       Link: "Link",
+      useSearch: () => ({ q }),
       useNavigate:
         () =>
-        ({ to }: { to: string }) => {
+        ({ to, search }: { to: string; search?: { q?: string } }) => {
           routes.push(to);
+          searches.push(search);
         },
     },
     "lucide-react": { Eye: "Eye", EyeOff: "EyeOff" },
@@ -167,6 +171,7 @@ function mountForm(
   return {
     render,
     routes,
+    searches,
     transitions,
     initialize: async (mode = "login") => {
       render(mode);
@@ -666,3 +671,22 @@ test("a rejected refresh during a password change still drops the stored session
   assert.equal(session.clears, 1);
   assert.ok(requests.some((path) => path.endsWith("/api/auth/login")));
 });
+
+for (const switched of [false, true]) {
+  test(`query survives login with account replacement=${switched}`, async (t) => {
+    environment(t);
+    globalThis.fetch = async (path) => String(path).endsWith("/status")
+      ? Response.json({ initialized: true, requires_password_change: false, login_mode: "multi" })
+      : Response.json({ ...token, must_change_password: true });
+    const q = 'literal {"x":1} & more';
+    const form = mountForm(client(), { access: null, change: false }, switched, false, q);
+    let tree = await form.initialize();
+    const change = elements(tree).find((element) => element.props.id === "username")?.props.onChange as (event: unknown) => void;
+    change({ target: { value: "alice" } });
+    tree = form.render();
+    const submit = elements(tree).find((element) => element.type === "form")?.props.onSubmit as (event: unknown) => Promise<void>;
+    await submit({ preventDefault() {} });
+    assert.deepEqual(form.transitions, [`alice@a1:/change-password?q=${encodeURIComponent(q)}`]);
+    assert.deepEqual(form.searches, switched ? [] : [{ q }]);
+  });
+}

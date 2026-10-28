@@ -26,16 +26,7 @@ const store = new Map<string, string>();
 const { chatQueryParam } = await import(
   "../src/features/chat/utils/chat-query-param.ts"
 );
-const {
-  composerDraftKey,
-  latestDraft,
-  readComposerDraft,
-  seedComposerDraft,
-  subscribeDraft,
-} = await import("../src/features/chat/utils/composer-draft.ts");
-
 const page = readText("../src/features/chat/chat-page.tsx");
-const root = readText("../src/app/routes/__root.tsx");
 const index = readText("../src/app/routes/index.tsx");
 
 test("a query is read back as the text that was typed", () => {
@@ -54,37 +45,16 @@ test("a blank or non-text query is no query", () => {
   assert.equal(chatQueryParam(["a"]), undefined);
 });
 
-test("a seeded draft reaches the composer on screen and the next one to mount", () => {
-  const composer = Symbol("composer");
-  const seen: string[] = [];
-  const unsubscribe = subscribeDraft(composer, (text) => seen.push(text));
-  seedComposerDraft("explain qlora");
-  unsubscribe();
-  assert.deepEqual(seen, ["explain qlora"]);
-  assert.equal(readComposerDraft(composerDraftKey()), "explain qlora");
-  assert.equal(latestDraft(), "explain qlora");
-});
-
-test("the chat route accepts q", () => {
+test("the chat route consumes a query before the composer mounts, without sending", () => {
+  const route = readText("../src/app/routes/chat.tsx");
   assert.match(page, /q: chatQueryParam\(search\.q\),/);
-  assert.match(root, /const rawQuery = chatQueryParam\(rawSearch\?\.q\);/);
-  assert.match(root, /q: rawQuery,/);
-});
-
-test("a query opens a new chat with the query in the composer, unsent", () => {
-  const effect = page.slice(
-    page.indexOf("// `/chat?q=...`"),
-    page.indexOf("const [modelSelectorOpen, setModelSelectorOpen]"),
-  );
-  assert.match(effect, /if \(!\(active && search\.q\)\) return;/);
-  assert.match(effect, /seedComposerDraft\(query\);/);
-  // A fresh chat, and the query leaves the URL so a reload does not seed it again.
   assert.match(
-    effect,
-    /search: \{ new: crypto\.randomUUID\(\) \},\s*replace: true,/,
+    route,
+    /if \(preload \|\| abortController.signal.aborted\) return;/,
   );
-  // Never sent from here.
-  assert.doesNotMatch(effect, /\.send\(|append\(|runPrompt/);
+  assert.match(route, /createQueryDraft\(search\.q, store\.incognito\)/);
+  assert.match(route, /search: \{ new: nonce \}, replace: true/);
+  assert.doesNotMatch(route, /\.send\(|append\(|runPrompt/);
 });
 
 test("the root URL carries the query on to the chat", () => {

@@ -289,7 +289,7 @@ import {
 } from "./utils/compare-pane-threads";
 import { isChatThreadDeleted } from "./utils/chat-thread-tombstones";
 import { chatQueryParam } from "./utils/chat-query-param";
-import { seedComposerDraft } from "./utils/composer-draft";
+import { getQueryDraft } from "./query-draft-context";
 import {
   getStoredChatThread,
   isExpectedBackgroundChatStorageError,
@@ -2746,27 +2746,6 @@ export function ChatPage({
     };
   }, [active, navigate, search.thread]);
 
-  // `/chat?q=...`, the URL a browser search-engine shortcut opens: a new chat with the query in the
-  // composer. It is left there to send, not sent: any page can link here, and an automatic send would
-  // run whatever a link says, with the chat's tools. The URL drops the query, so a reload or Back
-  // does not seed it again.
-  useEffect(() => {
-    if (!(active && search.q)) return;
-    // The router reads `?q=42` as a number; the raw URL keeps the text exactly as typed.
-    const query =
-      chatQueryParam(new URLSearchParams(window.location.search).get("q")) ??
-      search.q;
-    seedComposerDraft(query);
-    const store = useChatRuntimeStore.getState();
-    store.setActiveThreadId(null);
-    store.setActiveProjectId(null);
-    navigate({
-      to: "/chat",
-      search: { new: crypto.randomUUID() },
-      replace: true,
-    });
-  }, [active, navigate, search.q]);
-
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
   // Controlled, so the chord can open the switcher and not just its trigger.
   const [projectPickerOpen, setProjectPickerOpen] = useState(false);
@@ -5044,6 +5023,7 @@ export function ChatPage({
             <BrowserOverlaidContext.Provider value={baseBackgrounded}>
             <ChatActiveContext.Provider value={active && !baseBackgrounded}>
               <ChatRuntimeProvider
+                queryDraft={getQueryDraft(baseView.mode === "single" ? baseView.newThreadNonce : undefined, incognito)}
                 modelType="base"
                 projectId={baseView.projectId}
                 initialThreadId={

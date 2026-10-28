@@ -5,6 +5,7 @@ import { Link, createRouter, useRouterState } from "@tanstack/react-router";
 import { Button } from "@/components/ui/button";
 import { MascotImg } from "@/components/mascot-img";
 import { useT } from "@/i18n";
+import { parseSearch, stringifySearch } from "./router-search";
 import { Route as rootRoute } from "./routes/__root";
 import { Route as apiMonitorRoute } from "./routes/api";
 import { Route as dataRecipesRoute } from "./routes/data-recipes";
@@ -66,6 +67,8 @@ function DefaultNotFound() {
 
 export const router = createRouter({
   routeTree,
+  parseSearch,
+  stringifySearch,
   defaultNotFoundComponent: DefaultNotFound,
 });
 

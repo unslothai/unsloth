@@ -350,8 +350,12 @@ export const BUDGET = {
   // 2,071,626 B transfer against 4df9ce74f, one machine and build, Node 24, 97 chunks). Raised by that.
   // The NPU setup card (#14524): +439 B raw / +122 B transfer against fc91656ff (Node 24, 97 chunks), where main
   // was already 1 B transfer over; transfer set to the measured build, raw raised by the growth.
-  transferBytes: 2_071_816,
-  rawBytes: 6_879_589,
+  // Query links (#14570) defer draft persistence to a 722 B on-use chunk. Literal URL parsing, auth
+  // continuation and isolated composer wiring add 2,789 B raw / 1,149 B transfer against 5ab80ffdb4:
+  // 6,879,345 -> 6,882,134 B raw; 2,071,823 -> 2,072,972 B transfer (Node 24, same lockfile, 97 chunks).
+  // The base is already 7 B over its transfer limit. Set to the measured build plus the same 160/189 B margin.
+  transferBytes: 2_073_161,
+  rawBytes: 6_882_294,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

@@ -22,7 +22,6 @@ import {
 import {
   ChatPage,
   type ChatSearch,
-  chatQueryParam,
   hydrateModelDisclaimerPreference,
   openFolderAsProject,
   startLlamaCppAutoReload,
@@ -386,16 +385,14 @@ function RootLayout() {
   const rawNew = typeof rawSearch?.new === "string" ? rawSearch.new : undefined;
   const rawProject =
     typeof rawSearch?.project === "string" ? rawSearch.project : undefined;
-  const rawQuery = chatQueryParam(rawSearch?.q);
   const liveChatSearch = useMemo<ChatSearch>(
     () => ({
       thread: rawThread,
       compare: rawCompare,
       new: rawNew,
       project: rawProject,
-      q: rawQuery,
     }),
-    [rawThread, rawCompare, rawNew, rawProject, rawQuery],
+    [rawThread, rawCompare, rawNew, rawProject],
   );
   // Freeze the last /chat search and latch "mounted" via render-phase setState (React's "adjust
   // state during render" pattern), avoiding effects/refs. Empty until /chat is visited:

@@ -11,12 +11,12 @@ export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
   beforeLoad: async ({ location }) => {
-    await requireAuth();
-    const to = getPostAuthRoute();
     // `/?q=...` is the shorter search-engine URL; carry the query on to the chat it opens.
     const q = chatQueryParam(
       (location.search as Record<string, unknown> | undefined)?.q,
     );
+    await requireAuth(q);
+    const to = getPostAuthRoute();
     if (to === "/chat" && q) {
       throw redirect({ to, search: { q } });
     }
