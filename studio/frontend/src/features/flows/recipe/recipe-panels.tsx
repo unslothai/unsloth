@@ -1,71 +1,54 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Inspector sections for a recipe group: a column, and the Recipe Dataset step that stands for the whole recipe.
+// Inspector sections for a recipe group: what a column reads and made, and the Recipe Dataset step that stands
+// for the whole recipe.
 
-import { useState } from "react";
-import { useDocStore } from "../stores/doc-store";
-import { IDLE_RUNTIME, useRuntimeStore } from "../stores/runtime-store";
-import { type RecipeEditorTarget, useUiStore } from "../stores/ui-store";
-import type { FlowNode } from "../types";
-import { commitRecipe } from "./recipe-actions";
+import { Button } from "@/components/ui/button";
 import {
-  type RecipeColumn,
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import { Input } from "@/components/ui/input";
+import { CollapsibleSectionTriggerButton } from "@/features/recipe-studio/dialogs/shared/collapsible-section-trigger";
+import { FieldLabel } from "@/features/recipe-studio/dialogs/shared/field-label";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { Suspense, lazy, useState } from "react";
+import { toast } from "sonner";
+import { exportRecipe } from "../api";
+import { NodeIconTile } from "../editor/node-card";
+import { downloadBlob, runToNode } from "../editor/node-actions";
+import { documentFromState, useDocStore } from "../stores/doc-store";
+import { IDLE_RUNTIME, useRuntimeStore } from "../stores/runtime-store";
+import { useUiStore } from "../stores/ui-store";
+import type { FlowNode } from "../types";
+import {
+  checkRecipeGroup,
+  openAddBlock,
+  runRecipeGroup,
+} from "./recipe-group-actions";
+import { recipeFileName } from "./recipe-io";
+import {
   columnName,
   columnOf,
   columnReferences,
-  columnSummary,
   groupColumns,
   groupGenerate,
-  groupPayload,
 } from "./recipe-columns";
+import { columnBlock, setupLook } from "./recipe-kinds";
+import { recipeSetup } from "./recipe-setup";
 
-const ADD_COLUMN: { kind: string; type: string; label: string }[] = [
-  { kind: "llm", type: "text", label: "AI text" },
-  { kind: "llm", type: "structured", label: "AI structured data" },
-  { kind: "llm", type: "code", label: "AI code" },
-  { kind: "llm", type: "judge", label: "AI scorer" },
-  { kind: "sampler", type: "category", label: "Category" },
-  { kind: "sampler", type: "subcategory", label: "Subcategory" },
-  { kind: "sampler", type: "uniform", label: "Random number" },
-  { kind: "sampler", type: "gaussian", label: "Bell-curve number" },
-  { kind: "sampler", type: "bernoulli", label: "Yes/no value" },
-  { kind: "sampler", type: "datetime", label: "Date and time" },
-  { kind: "sampler", type: "timedelta", label: "Time offset" },
-  { kind: "sampler", type: "uuid", label: "Unique ID" },
-  { kind: "sampler", type: "person", label: "Synthetic person" },
-  { kind: "expression", type: "expression", label: "Formula" },
-  { kind: "validator", type: "validator_python", label: "Python check" },
-  { kind: "validator", type: "validator_sql", label: "SQL check" },
-  { kind: "validator", type: "validator_json", label: "JSON check" },
-];
+const ProcessorsForm = lazy(() =>
+  import("./recipe-forms").then((m) => ({ default: m.ProcessorsForm })),
+);
 
-const ADD_SEED: { type: string; label: string }[] = [
-  { type: "seed_hf", label: "Hugging Face dataset" },
-  { type: "seed_local", label: "CSV or JSON file" },
-  { type: "seed_unstructured", label: "Document file" },
-  { type: "seed_github", label: "GitHub repositories" },
-];
-
-const BUTTON =
-  "rounded-md border border-white/10 px-2 py-1 text-[12px] hover:bg-white/5";
-const HEADING =
-  "text-[11px] font-semibold uppercase tracking-wider text-zinc-500";
-
-function names(list: unknown, key: string): string[] {
-  return Array.isArray(list)
-    ? list.flatMap((item) =>
-        item &&
-        typeof item === "object" &&
-        typeof (item as Record<string, unknown>)[key] === "string"
-          ? [(item as Record<string, string>)[key]]
-          : [],
-      )
-    : [];
-}
-
-function edit(target: RecipeEditorTarget) {
-  useUiStore.getState().setRecipeEditor(target);
+function Heading({ children }: { children: string }) {
+  return (
+    <h3 className="text-xs font-semibold uppercase text-muted-foreground">
+      {children}
+    </h3>
+  );
 }
 
 /** Column values from the latest run of its group, so a column shows what it made. */
@@ -89,301 +72,293 @@ export function useColumnSamples(node: FlowNode, limit = 3): string[] {
   });
 }
 
+/** What a column reads and is read by, and what it made in the last run. */
 export function ColumnPanel({ node }: { node: FlowNode }) {
-  const column = columnOf(node);
   const graph = useDocStore((s) => s.graph);
   const columns = node.group ? groupColumns(graph, node.group) : [];
   const all = new Set(columns.map(columnName));
-  const reads = columnReferences(column, all);
+  const reads = columnReferences(columnOf(node), all);
   const readBy = columns
     .filter((other) =>
       columnReferences(columnOf(other), all).includes(columnName(node)),
     )
     .map(columnName);
-  const { badge, line } = columnSummary(column);
   const samples = useColumnSamples(node);
-  const setDrop = (drop: boolean) => {
-    const next: RecipeColumn = { ...column, drop };
-    commitRecipe(
-      node.group as string,
-      [{ ...node, params: { ...node.params, column: next } }],
-      null,
-    );
-  };
+  if (!reads.length && !readBy.length && !samples.length) return null;
   return (
-    <section className="flex flex-col gap-3 px-4 py-3">
-      <div className="flex items-center gap-2">
-        <span className="rounded bg-sky-500/15 px-1.5 py-0.5 text-[11px] text-sky-300">
-          {badge}
-        </span>
-        <span className="truncate font-mono text-[12px] text-zinc-300">
-          {columnName(node)}
-        </span>
-      </div>
-      {line && (
-        <p className="line-clamp-4 whitespace-pre-wrap text-[12px] text-zinc-400">
-          {line}
+    <div className="flex flex-col gap-2 border-border/60 border-t pt-3">
+      {reads.length > 0 && (
+        <p className="text-xs text-muted-foreground">
+          Reads <span className="text-foreground">{reads.join(", ")}</span>
         </p>
       )}
-      <button
-        type="button"
-        onClick={() =>
-          node.group && edit({ groupId: node.group, nodeId: node.id })
-        }
-        className="rounded-md bg-sky-600/80 px-2 py-1.5 text-[12px] hover:bg-sky-500"
-        data-testid="recipe-column-edit"
-      >
-        Edit column
-      </button>
-      <label className="flex items-center justify-between gap-2 text-[12px] text-zinc-300">
-        Keep out of the final dataset
-        <input
-          type="checkbox"
-          checked={column.drop === true}
-          onChange={(e) => setDrop(e.target.checked)}
-        />
-      </label>
-      {(reads.length > 0 || readBy.length > 0) && (
-        <div className="flex flex-col gap-1 text-[12px] text-zinc-400">
-          {reads.length > 0 && <p>Reads {reads.join(", ")}</p>}
-          {readBy.length > 0 && <p>Read by {readBy.join(", ")}</p>}
-        </div>
+      {readBy.length > 0 && (
+        <p className="text-xs text-muted-foreground">
+          Read by <span className="text-foreground">{readBy.join(", ")}</span>
+        </p>
       )}
       {samples.length > 0 && (
-        <div className="flex flex-col gap-1">
-          <h3 className={HEADING}>Last run</h3>
+        <>
+          <Heading>Last run</Heading>
           {samples.map((value, i) => (
             <p
               // biome-ignore lint/suspicious/noArrayIndexKey: rows have no id
               key={i}
-              className="line-clamp-3 whitespace-pre-wrap rounded bg-white/5 px-2 py-1 text-[11.5px] text-zinc-300"
+              className="line-clamp-3 whitespace-pre-wrap rounded-md border border-border/60 bg-muted/40 px-2 py-1 text-xs text-foreground"
             >
               {value}
             </p>
           ))}
-        </div>
+        </>
       )}
-    </section>
+    </div>
   );
 }
 
-function ConfigList({
-  groupId,
-  title,
-  items,
-  addLabel,
-  add,
-}: {
-  groupId: string;
-  title: string;
-  items: string[];
-  addLabel: string;
-  add: { kind: string; type: string };
-}) {
-  return (
-    <div className="flex flex-col gap-1">
-      <span className="text-[11.5px] font-medium text-zinc-400">{title}</span>
-      {items.map((name) => (
-        <button
-          key={name}
-          type="button"
-          onClick={() => edit({ groupId, configName: name })}
-          className="truncate rounded-md bg-white/5 px-2 py-1 text-left text-[12px] hover:bg-white/10"
-        >
-          {name}
-        </button>
-      ))}
-      <button
-        type="button"
-        onClick={() => edit({ groupId, add })}
-        className={`${BUTTON} self-start`}
-      >
-        + {addLabel}
-      </button>
-    </div>
-  );
+async function exportGroup(groupId: string, how: "copy" | "download") {
+  try {
+    const recipe = await exportRecipe(
+      documentFromState(useDocStore.getState()),
+      groupId,
+    );
+    const text = JSON.stringify(recipe, null, 2);
+    if (how === "download") {
+      downloadBlob(
+        new Blob([text], { type: "application/json" }),
+        recipeFileName(useDocStore.getState().graph.groups[groupId]?.label),
+      );
+    } else if (await copyToClipboard(text)) {
+      toast.success("Recipe JSON copied", {
+        description: "Paste it into Data Recipes' import or another flow.",
+      });
+    } else {
+      throw new Error("Clipboard not available");
+    }
+  } catch (error) {
+    toast.error(
+      error instanceof Error ? error.message : "Could not export the recipe",
+    );
+  }
 }
 
 type Check =
   | { state: "idle" | "checking" }
   | { state: "done"; errors: string[] };
 
+function ListRow({
+  icon,
+  tone,
+  title,
+  detail,
+  onClick,
+}: {
+  icon: Parameters<typeof NodeIconTile>[0]["icon"];
+  tone: string;
+  title: string;
+  detail: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex w-full items-center gap-2.5 rounded-lg px-2 py-1 text-left transition hover:bg-muted/50"
+    >
+      <NodeIconTile icon={icon} tone={tone} />
+      <span className="min-w-0 flex-1 truncate text-sm">{title}</span>
+      <span className="shrink-0 text-ui-11 text-muted-foreground">
+        {detail}
+      </span>
+    </button>
+  );
+}
+
+/** The Recipe Dataset step's inspector: the whole recipe at a glance, and how to run and share it. */
 export function RecipePanel({ node }: { node: FlowNode }) {
   const groupId = node.group ?? "";
-  const group = useDocStore((s) => s.graph.groups[groupId]);
   const graph = useDocStore((s) => s.graph);
-  const columns = groupColumns(graph, groupId);
+  const group = graph.groups[groupId];
   const [check, setCheck] = useState<Check>({ state: "idle" });
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   if (group?.kind !== "recipe") {
     return (
-      <p className="mx-4 my-3 rounded bg-amber-500/10 px-2 py-1.5 text-[12px] text-amber-300">
+      <p className="mx-4 my-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
         Put this step inside a Data Recipe group; dropped on an empty spot it
         makes one.
       </p>
     );
   }
-  const config = group.config ?? {};
-  const seed = config.seed_config as Record<string, unknown> | undefined;
-  const seedType = (seed?.source as Record<string, unknown> | undefined)
-    ?.seed_type;
+  const columns = groupColumns(graph, groupId);
+  const setup = recipeSetup(graph, group).cards;
+  const seedType = (
+    group.config?.seed_config as { source?: { seed_type?: string } } | undefined
+  )?.source?.seed_type;
+  const ui = useUiStore.getState();
   const runCheck = async () => {
     setCheck({ state: "checking" });
-    try {
-      const { validateRecipe } = await import("@/features/recipe-studio/api");
-      const result = await validateRecipe({
-        recipe: groupPayload(group, columns).recipe,
-      });
-      setCheck({
-        state: "done",
-        errors: (result.errors ?? []).map((e) => e.message),
-      });
-    } catch (error) {
-      setCheck({
-        state: "done",
-        errors: [error instanceof Error ? error.message : String(error)],
-      });
-    }
+    setCheck({ state: "done", errors: await checkRecipeGroup(groupId) });
   };
   return (
-    <section
-      className="flex flex-col gap-3 border-white/10 border-t px-4 py-3"
+    <div
+      className="flex flex-col gap-4 border-border/60 border-t px-4 py-3"
       data-testid="recipe-panel"
     >
-      <div className="flex flex-col gap-1">
-        <span className="text-[11.5px] font-medium text-zinc-400">
-          Recipe name
-        </span>
-        <input
+      <div className="grid gap-1.5">
+        <FieldLabel label="Recipe name" />
+        <Input
           value={group.label}
           onChange={(e) =>
             useDocStore
               .getState()
               .upsertGroup({ ...group, label: e.target.value || "Data Recipe" })
           }
-          className="rounded-md border border-white/10 bg-zinc-900 px-2 py-1 text-[12.5px] outline-none"
         />
       </div>
       <div className="flex flex-col gap-1">
-        <h3 className={HEADING}>Columns</h3>
-        {columns.map((column) => (
-          <button
-            key={column.id}
-            type="button"
-            onClick={() => {
-              useUiStore.getState().setSelection([column.id], []);
-              edit({ groupId, nodeId: column.id });
-            }}
-            className="flex items-center justify-between gap-2 rounded-md bg-white/5 px-2 py-1 text-left text-[12px] hover:bg-white/10"
-          >
-            <span className="truncate font-mono">{columnName(column)}</span>
-            <span className="shrink-0 text-[10.5px] text-zinc-500">
-              {columnSummary(columnOf(column)).badge}
-            </span>
-          </button>
-        ))}
-        <select
-          value=""
-          onChange={(e) => {
-            const pick = ADD_COLUMN[Number(e.target.value)];
-            if (pick)
-              edit({ groupId, add: { kind: pick.kind, type: pick.type } });
-          }}
-          className="mt-1 rounded-md border border-white/10 bg-zinc-900 px-2 py-1 text-[12px]"
-          aria-label="Add a column"
-        >
-          <option value="">+ Add a column…</option>
-          {ADD_COLUMN.map((item, i) => (
-            <option key={`${item.kind}:${item.type}`} value={i}>
-              {item.label}
-            </option>
-          ))}
-        </select>
-      </div>
-      <div className="flex flex-wrap items-center gap-1.5">
-        <button
+        <Heading>{`Columns (${columns.length})`}</Heading>
+        {columns.map((column) => {
+          const block = columnBlock(columnOf(column));
+          return (
+            <ListRow
+              key={column.id}
+              icon={block.icon}
+              tone={block.tone}
+              title={columnName(column)}
+              detail={block.label}
+              onClick={() => {
+                ui.setSelection([column.id], []);
+                ui.openInspector(column.id);
+              }}
+            />
+          );
+        })}
+        <Button
           type="button"
-          onClick={() => void runCheck()}
-          className={BUTTON}
-          disabled={check.state === "checking"}
+          variant="outline"
+          size="xs"
+          className="mt-1 self-start"
+          onClick={(e) => {
+            const rect = e.currentTarget.getBoundingClientRect();
+            openAddBlock(groupId, { x: rect.left, y: rect.bottom + 4 });
+          }}
+          data-testid="recipe-add-column"
         >
-          {check.state === "checking" ? "Checking…" : "Check recipe"}
-        </button>
+          + Add to recipe
+        </Button>
+      </div>
+      {setup.length > 0 && (
+        <div className="flex flex-col gap-1">
+          <Heading>Seed, models and tools</Heading>
+          {setup.map((card) => (
+            <ListRow
+              key={card.id}
+              {...setupLook(card.kind, seedType)}
+              title={card.title}
+              detail={card.subtitle}
+              onClick={() =>
+                ui.setRecipeSetup({
+                  groupId,
+                  kind: card.kind,
+                  name: card.name,
+                })
+              }
+            />
+          ))}
+        </div>
+      )}
+      <div className="flex flex-col gap-2">
+        <Heading>Run</Heading>
+        <div className="flex flex-wrap gap-1.5">
+          <Button
+            type="button"
+            variant="dark"
+            size="xs"
+            onClick={() => runRecipeGroup(groupId, runToNode)}
+          >
+            Run
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="xs"
+            onClick={() => ui.setRecipeEditor({ groupId, runSettings: true })}
+            data-testid="recipe-run-settings"
+          >
+            Run settings
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="xs"
+            disabled={check.state === "checking"}
+            onClick={() => void runCheck()}
+          >
+            {check.state === "checking" ? "Checking…" : "Check"}
+          </Button>
+          {(["preview", "runs"] as const).map((view) => (
+            <Button
+              key={view}
+              type="button"
+              variant="outline"
+              size="xs"
+              className="capitalize"
+              onClick={() => ui.setRecipeRuns({ groupId, view })}
+            >
+              {view}
+            </Button>
+          ))}
+        </div>
         {check.state === "done" && check.errors.length === 0 && (
-          <span className="text-[12px] text-emerald-300">Ready to run</span>
+          <p className="text-xs text-emerald-700 dark:text-emerald-300">
+            Ready to run
+          </p>
+        )}
+        {check.state === "done" && check.errors.length > 0 && (
+          <ul className="flex flex-col gap-1 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+            {check.errors.slice(0, 6).map((message) => (
+              <li key={message}>{message}</li>
+            ))}
+          </ul>
         )}
       </div>
-      {check.state === "done" && check.errors.length > 0 && (
-        <ul className="flex flex-col gap-1 rounded bg-red-500/10 px-2 py-1.5 text-[12px] text-red-300">
-          {check.errors.slice(0, 6).map((message) => (
-            <li key={message}>{message}</li>
-          ))}
-        </ul>
-      )}
-      <details>
-        <summary className="cursor-pointer select-none text-[11.5px] font-medium text-zinc-400 hover:text-zinc-200">
-          Models, seed and processors
-        </summary>
-        <div className="mt-3 flex flex-col gap-3">
-          <ConfigList
-            groupId={groupId}
-            title="Providers"
-            items={names(config.model_providers, "name")}
-            addLabel="Provider connection"
-            add={{ kind: "llm", type: "model_provider" }}
-          />
-          <ConfigList
-            groupId={groupId}
-            title="Models"
-            items={names(config.model_configs, "alias")}
-            addLabel="Model preset"
-            add={{ kind: "llm", type: "model_config" }}
-          />
-          <div className="flex flex-col gap-1">
-            <span className="text-[11.5px] font-medium text-zinc-400">
-              Seed data
-            </span>
-            {seed ? (
-              <button
-                type="button"
-                onClick={() => edit({ groupId, seed: true })}
-                className="rounded-md bg-white/5 px-2 py-1 text-left text-[12px] hover:bg-white/10"
-              >
-                {String(seedType ?? "seed")} seed
-              </button>
-            ) : (
-              <select
-                value=""
-                onChange={(e) =>
-                  e.target.value &&
-                  edit({ groupId, add: { kind: "seed", type: e.target.value } })
-                }
-                className="rounded-md border border-white/10 bg-zinc-900 px-2 py-1 text-[12px]"
-                aria-label="Add seed data"
-              >
-                <option value="">+ Start from data…</option>
-                {ADD_SEED.map((item) => (
-                  <option key={item.type} value={item.type}>
-                    {item.label}
-                  </option>
-                ))}
-              </select>
-            )}
-            <span className="text-[11px] text-zinc-500">
-              A dataset wired into Seed dataset replaces it.
-            </span>
-          </div>
-          <button
+      <div className="flex flex-col gap-2">
+        <Heading>Share</Heading>
+        <div className="flex flex-wrap gap-1.5">
+          <Button
             type="button"
-            onClick={() => edit({ groupId, processors: true })}
-            className={`${BUTTON} self-start`}
+            variant="outline"
+            size="xs"
+            onClick={() => void exportGroup(groupId, "copy")}
+            data-testid="recipe-copy-json"
           >
-            Processors
-          </button>
-          <p className="text-[11px] leading-snug text-zinc-500">
-            Tool servers stay on the Data Recipes page; flows do not run them.
-          </p>
+            Copy recipe JSON
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="xs"
+            onClick={() => void exportGroup(groupId, "download")}
+          >
+            Download
+          </Button>
         </div>
-      </details>
-    </section>
+        <p className="text-ui-11 text-muted-foreground">
+          Sharing drops keys, tokens and local tool servers.
+        </p>
+      </div>
+      <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
+        <CollapsibleTrigger asChild={true}>
+          <CollapsibleSectionTriggerButton
+            label="Advanced"
+            open={advancedOpen}
+          />
+        </CollapsibleTrigger>
+        <CollapsibleContent className="mt-3">
+          <Suspense fallback={null}>
+            <ProcessorsForm groupId={groupId} />
+          </Suspense>
+        </CollapsibleContent>
+      </Collapsible>
+    </div>
   );
 }

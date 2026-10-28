@@ -47,6 +47,7 @@ import {
 import { useEditorShortcuts } from "./use-editor-shortcuts";
 
 const RecipeEditor = lazy(() => import("../recipe/recipe-editor"));
+const RecipeRuns = lazy(() => import("../recipe/recipe-runs"));
 
 type LoadState =
   | { status: "loading" }
@@ -61,6 +62,7 @@ function EditorBody({
   const paletteOpen = useUiStore((s) => s.paletteOpen);
   const drawerOpen = useUiStore((s) => s.drawerOpen);
   const recipeEditorOpen = useUiStore((s) => s.recipeEditor !== null);
+  const recipeRunsOpen = useUiStore((s) => s.recipeRuns !== null);
   const runStatus = useRuntimeStore((s) => s.runStatus);
   const { screenToFlowPosition } = useReactFlow();
   useEditorShortcuts(!readOnly);
@@ -148,6 +150,11 @@ function EditorBody({
       {recipeEditorOpen && (
         <Suspense fallback={null}>
           <RecipeEditor />
+        </Suspense>
+      )}
+      {recipeRunsOpen && (
+        <Suspense fallback={null}>
+          <RecipeRuns />
         </Suspense>
       )}
     </div>

@@ -1497,6 +1497,10 @@ def learning_recipe(stem: str, title: str, description: str) -> B:
         "Dataset for its models, seed and rows.",
         tags = ["data", "data recipe", "dataset"],
     )
+    columns = payload["recipe"]["columns"]
+    if any(str(c.get("column_type", "")).startswith("llm-") for c in columns):
+        # OCR's columns read an image, so its chat model has to see.
+        b.need("vision" if "multi_modal_context" in json.dumps(columns) else "chat")
     doc, _ = flow_from_recipe(payload, name = title)
     _place_recipe(b, doc, 0, 0, preview = True)
     b.doc["meta"]["learning_recipe"] = stem

@@ -9,7 +9,8 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { applyConfigPatch, commitStudioEdit, studioView } = await import(
+const { applyConfigPatch, clientErrors, commitStudioEdit, studioView } =
+  await import(
   "../src/features/flows/recipe/recipe-adapter.ts"
 );
 const {
@@ -121,7 +122,7 @@ test("a recipe-level edit lands on the group config, not on the columns", () => 
   >[];
   assert.equal(providers[0].endpoint, "http://127.0.0.1:8000/v1");
   assert.equal("columns" in (edit.group?.config ?? {}), false);
-  assert.equal("mcp_providers" in (edit.group?.config ?? {}), false);
+  assert.deepEqual(edit.group?.config?.mcp_providers, []);
 });
 
 test("reference wires follow the prompts, like the backend import", () => {
@@ -200,12 +201,18 @@ test("a column node shows its kind and what it says", () => {
   const { nodes } = sqlGroup();
   assert.deepEqual(
     columnSummary(nodes[0].params.column as Record<string, unknown>).badge,
-    "category sampler",
+    "Category",
   );
   assert.equal(
     columnSummary(byName(nodes, "sql").params.column as Record<string, unknown>)
       .badge,
-    "LLM code",
+    "AI code",
+  );
+  assert.equal(
+    columnSummary(
+      byName(nodes, "sql-validator").params.column as Record<string, unknown>,
+    ).badge,
+    "SQL check",
   );
 });
 
@@ -284,4 +291,152 @@ test("Quick Add of a Recipe Dataset from a dataset output wires that dataset int
   assert.ok(
     edges.some((e) => e.source === "hf" && e.target === generate.id && e.target_port === "seed"),
   );
+});
+
+test("every Recipe Studio column can be added, and its card names the block it is", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { addRecipeBlock } = await import("../src/features/flows/recipe/recipe-blocks.ts");
+  const { COLUMN_BLOCKS, columnBlock } = await import(
+    "../src/features/flows/recipe/recipe-kinds.ts"
+  );
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { group, nodes } = sqlGroup();
+  assert.deepEqual(
+    COLUMN_BLOCKS.filter((b) => b.kind === "validator").map((b) => b.label),
+    ["Python check", "SQL check", "JS/TS check", "JSON check", "Markdown check"],
+  );
+  for (const block of COLUMN_BLOCKS) {
+    useDocStore.getState().load({ ...doc(nodes), groups: [group] });
+    addRecipeBlock("recipe", block.kind, block.type);
+    const graph = useDocStore.getState().graph;
+    const added = graph.nodeOrder
+      .map((id) => graph.nodes[id])
+      .find((n) => n.type === COLUMN_TYPE && !nodes.some((m) => m.id === n.id));
+    assert.ok(added, block.type);
+    assert.equal(added.group, "recipe");
+    assert.equal(
+      columnBlock(added.params.column as Record<string, unknown>).type,
+      block.type,
+      block.label,
+    );
+  }
+});
+
+test("a seed, model preset and provider show as cards; a shared file seed says to load it first", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { recipeSetup } = await import("../src/features/flows/recipe/recipe-setup.ts");
+  const { missingSeed } = await import(
+    "../src/features/flows/recipe/recipe-group-actions.ts"
+  );
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { group, nodes } = sqlGroup();
+  const shared = {
+    ...group,
+    config: {
+      ...group.config,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      seed_config: { source: { seed_type: "local", path: "" } },
+    },
+  };
+  useDocStore.getState().load({ ...doc(nodes), groups: [shared] });
+  const { cards, links } = recipeSetup(useDocStore.getState().graph, shared);
+  assert.deepEqual(
+    cards.map((c) => c.kind),
+    ["seed", "model_provider", "model_config"],
+  );
+  assert.equal(cards[0].warning, "Load the seed first");
+  assert.match(missingSeed(shared) ?? "", /^Load the seed first/);
+  assert.equal(missingSeed(group), null);
+  const sql = byName(nodes, "sql");
+  assert.ok(links.some((l) => l.source === cards[2].id && l.target === sql.id));
+});
+
+test("a starter recipe lands in free space, not on top of what is there", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { insertStarterRecipe } = await import(
+    "../src/features/flows/recipe/recipe-actions.ts"
+  );
+  const { doc, node } = await import("./flows-editor-fixtures.ts");
+  useDocStore.getState().load(doc([{ ...node("a", "input.text"), pos: [0, 0] }]));
+  const generate = insertStarterRecipe([10, 10], { rows: 5 });
+  const graph = useDocStore.getState().graph;
+  const group = graph.groups[generate.group as string];
+  assert.ok(group.rect[1] > 100, `frame at ${group.rect}`);
+  useDocStore.getState().load(doc([]));
+  const alone = insertStarterRecipe([10, 10], { rows: 5 });
+  assert.deepEqual(useDocStore.getState().graph.groups[alone.group as string].rect.slice(0, 2), [-30, -50]);
+});
+
+test("a tool profile added without a server yet stays as a card and can be removed", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { addRecipeBlock, removeSetup } = await import(
+    "../src/features/flows/recipe/recipe-blocks.ts"
+  );
+  const { recipeSetup } = await import("../src/features/flows/recipe/recipe-setup.ts");
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { group, nodes } = sqlGroup();
+  useDocStore.getState().load({ ...doc(nodes), groups: [group] });
+  addRecipeBlock("recipe", "llm", "tool_config");
+  const graph = useDocStore.getState().graph;
+  const tools = recipeSetup(graph, graph.groups.recipe).cards.filter(
+    (c) => c.kind === "tool_config",
+  );
+  assert.equal(tools.length, 1);
+  assert.equal(tools[0].warning, "Add a tool server");
+  removeSetup({ groupId: "recipe", kind: "tool_config", name: tools[0].name });
+  const after = useDocStore.getState().graph;
+  assert.equal(
+    recipeSetup(after, after.groups.recipe).cards.some((c) => c.kind === "tool_config"),
+    false,
+  );
+});
+
+test("Check flags an empty endpoint and model the way Recipe Studio does, before the server", () => {
+  const { group, nodes } = sqlGroup();
+  const config = group.config as {
+    model_providers: Record<string, unknown>[];
+    model_configs: Record<string, unknown>[];
+  };
+  // The learning recipe ships both blank; Recipe Studio refuses it until they are set.
+  config.model_providers[0].endpoint = "";
+  config.model_configs[0].model = "";
+  const errors = clientErrors(group, nodes);
+  assert.ok(errors.some((e) => /endpoint is required/.test(e)), errors.join("; "));
+  assert.ok(errors.some((e) => /model is required/.test(e)), errors.join("; "));
+});
+
+test("Check leaves disabled columns and a disabled Recipe Dataset out, like the compiler", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { runColumns } = await import(
+    "../src/features/flows/recipe/recipe-group-actions.ts"
+  );
+  const { groupGenerate } = await import("../src/features/flows/recipe/recipe-columns.ts");
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { group, nodes } = sqlGroup();
+  (group.config as { model_providers: Record<string, unknown>[] }).model_providers[0].endpoint =
+    "http://localhost:8000/v1";
+  // The only columns using the preset with no model are switched off.
+  const off = new Set(["sql_prompt", "sql", "sql-validator"]);
+  const columns = nodes.map((n) =>
+    off.has(columnName(n)) ? { ...n, disabled: true } : n,
+  );
+  const step = (id: string, disabled: boolean): FlowNode => ({
+    id,
+    type: GENERATE_TYPE,
+    v: 1,
+    params: { rows: 5, mode: "preview" },
+    pos: [0, 400],
+    group: "recipe",
+    disabled,
+  });
+  useDocStore.getState().load({
+    ...doc([...columns, step("old_step", true), step("live_step", false)]),
+    groups: [group],
+  });
+  const graph = useDocStore.getState().graph;
+  assert.equal(groupGenerate(graph, "recipe")?.id, "live_step");
+  const checked = runColumns(graph, "recipe");
+  assert.ok(checked.every((n) => !off.has(columnName(n))));
+  assert.deepEqual(clientErrors(group, checked), []);
+  assert.ok(clientErrors(group, columns).some((e) => /model is required/.test(e)));
 });

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -9,10 +10,15 @@ import {
 } from "@/features/recipe-studio/components/rf-ui/base-node";
 import { type NodeProps, NodeResizer } from "@xyflow/react";
 import { Suspense, lazy, memo, useState } from "react";
-import { groupGenerate } from "../recipe/recipe-columns";
+import { toast } from "sonner";
+import {
+  checkRecipeGroup,
+  openAddBlock,
+  runRecipeGroup,
+} from "../recipe/recipe-group-actions";
 import { useDocStore } from "../stores/doc-store";
-import { useUiStore } from "../stores/ui-store";
 import type { RfNode } from "./derive-rf";
+import { runToNode } from "./node-actions";
 
 const MarkdownPreview = lazy(() =>
   import("@/components/markdown/markdown-preview").then((m) => ({
@@ -32,6 +38,57 @@ const RESIZER = {
 /** Mixes a hex into the frame surface, so tints read on both themes. */
 function tint(color: string, percent: number): string {
   return `color-mix(in oklab, ${color} ${percent}%, transparent)`;
+}
+
+function RecipeFrameActions({ groupId }: { groupId: string }) {
+  const [checking, setChecking] = useState(false);
+  return (
+    <div className="nodrag ml-auto flex shrink-0 items-center gap-1">
+      <Button
+        type="button"
+        variant="ghost"
+        size="xs"
+        title="Add a column, seed, model or tool profile"
+        onClick={(e) => {
+          const rect = e.currentTarget.getBoundingClientRect();
+          openAddBlock(groupId, { x: rect.left, y: rect.bottom + 4 });
+        }}
+        data-testid="recipe-frame-add"
+      >
+        + Add
+      </Button>
+      <Button
+        type="button"
+        variant="outline"
+        size="xs"
+        disabled={checking}
+        title="Check the recipe the way Recipe Studio does before a run"
+        onClick={() => {
+          setChecking(true);
+          void checkRecipeGroup(groupId)
+            .then((errors) =>
+              errors.length
+                ? toast.error("The recipe is not ready", {
+                    description: errors.slice(0, 3).join("\n"),
+                  })
+                : toast.success("Ready to run"),
+            )
+            .finally(() => setChecking(false));
+        }}
+      >
+        {checking ? "Checking…" : "Check"}
+      </Button>
+      <Button
+        type="button"
+        variant="dark"
+        size="xs"
+        onClick={() => runRecipeGroup(groupId, runToNode)}
+        data-testid="recipe-frame-run"
+      >
+        Run
+      </Button>
+    </div>
+  );
 }
 
 function GroupFrameImpl({ data, selected }: NodeProps<RfNode>) {
@@ -92,22 +149,7 @@ function GroupFrameImpl({ data, selected }: NodeProps<RfNode>) {
             {group.label}
           </span>
         )}
-        {group.kind === "recipe" && (
-          <button
-            type="button"
-            className="nodrag ml-auto shrink-0 rounded px-1.5 py-0.5 text-[11px] hover:bg-white/10"
-            style={{ color, background: `${color}22` }}
-            title="Models, seed, rows and columns of this recipe"
-            onClick={() => {
-              const step = groupGenerate(useDocStore.getState().graph, group.id);
-              if (!step) return;
-              useUiStore.getState().setSelection([step.id], []);
-              useUiStore.getState().openInspector(step.id);
-            }}
-          >
-            Data Recipe
-          </button>
-        )}
+        {group.kind === "recipe" && <RecipeFrameActions groupId={group.id} />}
       </div>
     </div>
   );

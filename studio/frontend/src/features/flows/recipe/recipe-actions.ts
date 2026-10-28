@@ -141,11 +141,37 @@ export function insideRecipeGroup(
   return null;
 }
 
-/** A new Data Recipe group at `pos`: a starter sampler and LLM column wired into a Recipe Dataset step. */
-export function insertStarterRecipe(
+type Box = [number, number, number, number];
+
+const overlaps = (a: Box, b: Box) =>
+  a[0] < b[0] + b[2] && b[0] < a[0] + a[2] && a[1] < b[1] + b[3] && b[1] < a[1] + a[3];
+
+/** `pos` if a `size` box there covers nothing on the canvas, else the same x below everything. */
+export function freeSpot(
+  graph: DocGraph,
+  pos: [number, number],
+  size: [number, number],
+  margin: [number, number] = [40, 60],
+): [number, number] {
+  const boxes: Box[] = [
+    ...graph.nodeOrder.map((id): Box => {
+      const node = graph.nodes[id];
+      return [node.pos[0], node.pos[1], COLUMN_SIZE[0] - 40, COLUMN_SIZE[1] - 40];
+    }),
+    ...graph.groupOrder.map((id) => graph.groups[id].rect as Box),
+    ...graph.noteOrder.map((id) => graph.notes[id].rect as Box),
+  ];
+  const want: Box = [pos[0] - margin[0], pos[1] - margin[1], size[0], size[1]];
+  if (!boxes.some((box) => overlaps(want, box))) return pos;
+  const bottom = Math.max(...boxes.map((box) => box[1] + box[3]));
+  return [pos[0], Math.round(bottom + margin[1] + 80)];
+}
+
+/** A starter recipe group at `pos`: a topic sampler and an LLM column wired into a Recipe Dataset step. */
+export function starterRecipeGraph(
   pos: [number, number],
   generateParams: Record<string, unknown>,
-): FlowNode {
+): { group: FlowGroup; nodes: FlowNode[]; generate: FlowNode } {
   const groupId = newId("recipe");
   const { config, columns } = starterRecipe();
   const nodes: FlowNode[] = columns.map((column, i) => ({
@@ -168,7 +194,6 @@ export function insertStarterRecipe(
   const group: FlowGroup = {
     id: groupId,
     label: "Data Recipe",
-    color: "#3b82f6",
     rect: [
       pos[0] - 40,
       pos[1] - 60,
@@ -179,26 +204,51 @@ export function insertStarterRecipe(
     config,
     run: { rows: 5 },
   };
-  useDocStore
-    .getState()
-    .patchGraph({ groups: [group], nodes: [...nodes, generate] });
-  commitRecipe(groupId, [], null);
+  return { group, nodes: [...nodes, generate], generate };
+}
+
+/** A starter recipe group at `at`, or the nearest free space below it. */
+export function insertStarterRecipe(
+  at: [number, number],
+  generateParams: Record<string, unknown>,
+): FlowNode {
+  const graph = useDocStore.getState().graph;
+  const columns = starterRecipe().columns.length;
+  const pos = freeSpot(graph, at, [
+    (columns + 1) * COLUMN_SIZE[0] + 40,
+    COLUMN_SIZE[1] + 60,
+  ]);
+  const { group, nodes, generate } = starterRecipeGraph(pos, generateParams);
+  useDocStore.getState().patchGraph({ groups: [group], nodes });
+  commitRecipe(group.id, [], null);
   return generate;
 }
 
-/** Where the next column of a group goes: right of its columns, grown into the group frame. */
+/** Where the next column of a group goes: the first free cell of the frame's column grid, else a new row
+ *  below its columns, the frame grown to hold it. The Recipe Dataset step's lane stays clear for its cards. */
 export function nextColumnSlot(
   graph: DocGraph,
   groupId: string,
 ): { pos: [number, number]; group: FlowGroup } {
   const group = graph.groups[groupId];
-  const columns = groupColumns(graph, groupId);
+  const members = graph.nodeOrder
+    .map((id) => graph.nodes[id])
+    .filter((n) => n.group === groupId);
+  const step = members.find((n) => n.type === GENERATE_TYPE);
   const [x, y, w, h] = group.rect;
-  const bottom = columns.reduce(
-    (max, n) => Math.max(max, n.pos[1]),
-    y + 60 - COLUMN_SIZE[1],
-  );
-  const pos: [number, number] = [x + 40, bottom + COLUMN_SIZE[1]];
-  const height = Math.max(h, pos[1] - y + COLUMN_SIZE[1]);
+  const [cw, ch] = COLUMN_SIZE;
+  const taken = (cx: number, cy: number) =>
+    (step && Math.abs(cx - step.pos[0]) < cw && cy >= step.pos[1] - ch / 2) ||
+    members.some(
+      (n) => Math.abs(n.pos[0] - cx) < cw - 20 && Math.abs(n.pos[1] - cy) < ch - 20,
+    );
+  for (let cy = y + 60; cy + ch - 40 <= y + h; cy += ch)
+    for (let cx = x + 40; cx + cw - 40 <= x + w; cx += cw)
+      if (!taken(cx, cy)) return { pos: [cx, cy], group };
+  const bottom = members
+    .filter((n) => n.type === COLUMN_TYPE)
+    .reduce((max, n) => Math.max(max, n.pos[1]), y + 60 - ch);
+  const pos: [number, number] = [x + 40, bottom + ch];
+  const height = Math.max(h, pos[1] - y + ch);
   return { pos, group: { ...group, rect: [x, y, w, height] } };
 }

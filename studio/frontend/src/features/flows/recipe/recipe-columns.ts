@@ -7,6 +7,7 @@
 import { removeRef } from "@/features/recipe-studio/utils/refs";
 import type { DocGraph } from "../stores/doc-store";
 import type { FlowEdge, FlowGroup, FlowNode } from "../types";
+import { columnBlock } from "./recipe-kinds";
 
 export const COLUMN_TYPE = "recipe.column";
 export const GENERATE_TYPE = "recipe.generate";
@@ -37,13 +38,15 @@ export function groupColumns(graph: DocGraph, groupId: string): FlowNode[] {
     .filter((n) => n?.type === COLUMN_TYPE && n.group === groupId);
 }
 
+/** The group's Recipe Dataset step: the enabled one, as the compiler runs it, else the first. */
 export function groupGenerate(
   graph: DocGraph,
   groupId: string,
 ): FlowNode | undefined {
-  return graph.nodeOrder
+  const steps = graph.nodeOrder
     .map((id) => graph.nodes[id])
-    .find((n) => n?.type === GENERATE_TYPE && n.group === groupId);
+    .filter((n) => n?.type === GENERATE_TYPE && n.group === groupId);
+  return steps.find((n) => !n.disabled) ?? steps[0];
 }
 
 const NAME = /[A-Za-z_][A-Za-z0-9_-]*/g;
@@ -148,6 +151,20 @@ export function referenceEdgeDiff(
   return { add: want.filter((e) => !have.has(key(e))), remove };
 }
 
+/** Tool profiles kept only as ui nodes: added but with no tool server yet. */
+export function pendingToolProfiles(group: FlowGroup): string[] {
+  const nodes = Array.isArray(group.ui?.nodes) ? group.ui.nodes : [];
+  const saved = new Set(
+    (Array.isArray(group.config?.tool_configs) ? group.config.tool_configs : []).map(
+      (t) => (t as { tool_alias?: string }).tool_alias,
+    ),
+  );
+  return nodes.flatMap((node) => {
+    const n = node as { node_type?: string; id?: string };
+    return n.node_type === "tool_config" && n.id && !saved.has(n.id) ? [n.id] : [];
+  });
+}
+
 /** The recipe JSON a group stands for: its config plus its columns in canvas order. */
 export function groupPayload(group: FlowGroup, columns: FlowNode[]) {
   return {
@@ -202,26 +219,11 @@ export function withoutReference(
   return next;
 }
 
-const KIND_LABEL: Record<string, string> = {
-  "llm-text": "LLM text",
-  "llm-structured": "LLM structured",
-  "llm-code": "LLM code",
-  "llm-judge": "LLM judge",
-  expression: "Expression",
-  validation: "Validator",
-};
-
-/** A short badge and line for a column node on the canvas. */
+/** A short badge and line for a column in a list. */
 export function columnSummary(column: RecipeColumn): {
   badge: string;
   line: string;
 } {
-  const type = String(column.column_type ?? "");
-  const sampler = String(column.sampler_type ?? "");
-  const badge =
-    type === "sampler"
-      ? `${sampler.replace(/_/g, " ") || "sampler"} sampler`
-      : (KIND_LABEL[type] ?? type);
   const params = (column.params ?? {}) as Record<string, unknown>;
   let line = "";
   if (typeof column.prompt === "string") line = column.prompt;
@@ -230,7 +232,10 @@ export function columnSummary(column: RecipeColumn): {
   else if (Array.isArray(column.target_columns))
     line = `checks ${column.target_columns.join(", ")}`;
   line = line.replace(/\s+/g, " ").trim();
-  return { badge, line: line.length > 90 ? `${line.slice(0, 90)}…` : line };
+  return {
+    badge: columnBlock(column).label,
+    line: line.length > 90 ? `${line.slice(0, 90)}…` : line,
+  };
 }
 
 /** A starter recipe: a topic sampler, one LLM column and the Chat model as its provider. */

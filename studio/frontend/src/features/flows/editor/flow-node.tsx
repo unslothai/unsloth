@@ -11,9 +11,8 @@ import {
   type NodeRuntime,
   useRuntimeStore,
 } from "../stores/runtime-store";
-import { COLUMN_TYPE, columnOf, columnSummary } from "../recipe/recipe-columns";
-import { useColumnSamples } from "../recipe/recipe-panels";
 import type { FlowNode, NodeSpec, PortSpec } from "../types";
+import { isDatasetValue } from "../dataset/dataset-value";
 import {
   FLOW_IN_HANDLE,
   flowOutHandle,
@@ -21,6 +20,7 @@ import {
   outHandle,
 } from "./connection-rules";
 import type { RfNode } from "./derive-rf";
+import { DatasetOutput } from "./dataset-output";
 import { nodeIcon } from "./icons";
 import { MediaThumb, isMediaValue } from "./media";
 import {
@@ -63,10 +63,6 @@ function nodeFields(
   node: FlowNode,
   spec: NodeSpec,
 ): { rows: FieldRow[]; long: { label: string; text: string }[] } {
-  if (node.type === COLUMN_TYPE) {
-    const { badge, line } = columnSummary(columnOf(node));
-    return { rows: [{ label: badge, value: line ? shortText(line) : "" }], long: [] };
-  }
   const rows: FieldRow[] = [];
   const long: { label: string; text: string }[] = [];
   for (const param of spec.params) {
@@ -143,7 +139,11 @@ function OutputValues({
   outputs,
   spec,
 }: { outputs: Record<string, unknown>; spec: NodeSpec }) {
-  for (const port of spec.outputs) {
+  // A Preview node declares no outputs; what it shows is the value it received.
+  const ports = spec.outputs.length
+    ? spec.outputs
+    : Object.keys(outputs).map((id) => ({ id }));
+  for (const port of ports) {
     const value = outputs[port.id];
     if (isMediaValue(value)) {
       return (
@@ -171,9 +171,10 @@ function OutputValues({
       );
     }
   }
-  for (const port of spec.outputs) {
+  for (const port of ports) {
     const value = outputs[port.id];
     if (value === undefined || value === null) continue;
+    if (isDatasetValue(value)) return <DatasetOutput value={value} compact />;
     if (isStructuredValue(value)) return <StructuredBadge value={value} />;
     if (typeof value === "string") {
       return (
@@ -207,17 +208,6 @@ function OutputValues({
     );
   }
   return null;
-}
-
-/** The value this column got in the first row of its recipe's last run. */
-function ColumnSample({ node }: { node: FlowNode }) {
-  const [sample] = useColumnSamples(node, 1);
-  if (!sample) return null;
-  return (
-    <p className="flow-detail mx-3 line-clamp-3 whitespace-pre-wrap rounded bg-emerald-500/10 px-2 py-1 text-[11px] leading-snug text-emerald-700 dark:text-emerald-100/90">
-      {sample}
-    </p>
-  );
 }
 
 function FlowNodeViewImpl({ id }: NodeProps<RfNode>) {
@@ -314,7 +304,6 @@ function FlowNodeViewImpl({ id }: NodeProps<RfNode>) {
           )}
           {flowOuts.length > 0 && <NodePorts inputs={[]} outputs={flowOuts} />}
           {Body ? <Body node={node} /> : null}
-          {node.type === COLUMN_TYPE && <ColumnSample node={node} />}
           {fields && <NodeFieldRows rows={fields.rows} />}
           {fields && <NodeDisclosure sections={fields.long} />}
           {!look.ownsOutputs &&

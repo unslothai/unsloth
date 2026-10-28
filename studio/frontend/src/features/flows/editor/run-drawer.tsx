@@ -10,6 +10,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useReactFlow } from "@xyflow/react";
 import { memo, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { GENERATE_TYPE } from "../recipe/recipe-columns";
 import { useCatalogStore } from "../stores/catalog-store";
 import { useDocStore } from "../stores/doc-store";
 import {
@@ -18,7 +19,9 @@ import {
   useRuntimeStore,
 } from "../stores/runtime-store";
 import { useUiStore } from "../stores/ui-store";
-import type { MediaValue } from "../types";
+import { isDatasetValue } from "../dataset/dataset-value";
+import type { DatasetValue, MediaValue } from "../types";
+import { DatasetOutput } from "./dataset-output";
 import { ArrowDown01Icon } from "./icon-data";
 import { MediaThumb, isMediaValue } from "./media";
 import { StructuredOutput, isStructuredValue } from "./value-viewers";
@@ -83,6 +86,9 @@ function Timeline() {
           rt={rt}
           now={rt.startedAt && rt.finishedAt == null ? now : 0}
           fitView={fitView}
+          recipeGroup={
+            node.type === GENERATE_TYPE ? (node.group ?? undefined) : undefined
+          }
         />
       ))}
     </ul>
@@ -95,15 +101,17 @@ const TimelineRow = memo(function TimelineRow({
   rt,
   now,
   fitView,
+  recipeGroup,
 }: {
   id: string;
   title: string;
   rt: NodeRuntime;
   now: number;
   fitView: ReturnType<typeof useReactFlow>["fitView"];
+  recipeGroup?: string;
 }) {
   return (
-    <li>
+    <li className="flex items-center hover:bg-muted/40">
       <button
         type="button"
         onClick={() => {
@@ -111,7 +119,7 @@ const TimelineRow = memo(function TimelineRow({
           useUiStore.getState().openInspector(id);
           void fitView({ nodes: [{ id }], duration: 300, maxZoom: 1.2 });
         }}
-        className="flex w-full items-center gap-3 px-4 py-1.5 text-left text-xs transition hover:bg-muted/35"
+        className="flex min-w-0 flex-1 items-center gap-3 px-4 py-1.5 text-left text-xs transition hover:bg-muted/35"
       >
         <span
           className={`h-2 w-2 shrink-0 rounded-full ${
@@ -150,6 +158,21 @@ const TimelineRow = memo(function TimelineRow({
           {duration(rt, now)}
         </span>
       </button>
+      {recipeGroup &&
+        (["preview", "runs"] as const).map((view) => (
+          <button
+            key={view}
+            type="button"
+            onClick={() =>
+              useUiStore
+                .getState()
+                .setRecipeRuns({ groupId: recipeGroup, view })
+            }
+            className="mr-2 rounded px-1.5 py-0.5 text-[11.5px] capitalize text-sky-700 hover:bg-muted dark:text-sky-300"
+          >
+            {view}
+          </button>
+        ))}
     </li>
   );
 });
@@ -234,14 +257,33 @@ function Outputs() {
     }
     return items.slice(0, 12);
   }, [runtimeOutputs]);
-  if (!media.length && !structured.length)
+  const datasets = useMemo(() => {
+    const items: { key: string; label: string; value: DatasetValue }[] = [];
+    const seen = new Set<string>();
+    for (const [id, outputs] of runtimeOutputs) {
+      for (const [port, value] of Object.entries(outputs ?? {})) {
+        if (!isDatasetValue(value) || seen.has(value.ref)) continue;
+        seen.add(value.ref);
+        items.push({ key: `${id}:${port}`, label: `${id} / ${port}`, value });
+      }
+    }
+    return items.slice(0, 12);
+  }, [runtimeOutputs]);
+  if (!media.length && !structured.length && !datasets.length)
     return (
       <DrawerEmpty>
-        Images, audio, video, tables and charts from the run appear here.
+        Images, audio, video, tables, charts and datasets from the run appear
+        here.
       </DrawerEmpty>
     );
   return (
     <div className="flex flex-col gap-3 p-3">
+      {datasets.map((item) => (
+        <section key={item.key} className="flex max-w-xl flex-col gap-1">
+          <h4 className="font-mono text-ui-11 text-muted-foreground">{item.label}</h4>
+          <DatasetOutput value={item.value} compact />
+        </section>
+      ))}
       {structured.map((item) => (
         <section key={item.key} className="flex flex-col gap-1">
           <h4 className="font-mono text-ui-11 text-muted-foreground">{item.label}</h4>

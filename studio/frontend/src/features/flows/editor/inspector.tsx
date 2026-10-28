@@ -10,19 +10,20 @@ import {
 import { CollapsibleSectionTriggerButton } from "@/features/recipe-studio/dialogs/shared/collapsible-section-trigger";
 import { FieldLabel } from "@/features/recipe-studio/dialogs/shared/field-label";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { memo, useCallback, useState } from "react";
+import { Suspense, lazy, memo, useCallback, useState } from "react";
 import { loopMembers } from "../app/app-form";
 import { useCatalogStore } from "../stores/catalog-store";
 import { cloneFragment, useDocStore } from "../stores/doc-store";
 import { IDLE_RUNTIME, useRuntimeStore } from "../stores/runtime-store";
 import { useUiStore } from "../stores/ui-store";
-import { commitRecipe, removeNodes } from "../recipe/recipe-actions";
+import { removeNodes } from "../recipe/recipe-actions";
 import {
   COLUMN_TYPE,
   GENERATE_TYPE,
   columnName,
 } from "../recipe/recipe-columns";
 import { ColumnPanel, RecipePanel } from "../recipe/recipe-panels";
+import { SetupInspector } from "../recipe/recipe-setup-inspector";
 import type { NodeSpec, ParamSpec } from "../types";
 import {
   Cancel01Icon,
@@ -33,12 +34,17 @@ import {
 } from "./icon-data";
 import { nodeIcon } from "./icons";
 import { NodeIconTile } from "./node-card";
+import { NODE_LOOKS } from "./node-looks";
 import { NodeHistory } from "./node-history";
 import { rerollNode, runToNode } from "./node-actions";
 import { OutputValue } from "./output-value";
 import { ParamField } from "./param-fields";
 import { CATEGORY_TONES } from "./node-tones";
 import { TriggerPanel } from "./trigger-panel";
+
+const ColumnForm = lazy(() =>
+  import("../recipe/recipe-forms").then((m) => ({ default: m.ColumnForm })),
+);
 
 function InspectorHeading({ children }: { children: string }) {
   return (
@@ -130,17 +136,6 @@ function InspectorImpl() {
   const setParam = useCallback(
     (paramId: string, value: unknown) => {
       if (!nodeId) return;
-      const current = useDocStore.getState().graph.nodes[nodeId];
-      if (current?.type === COLUMN_TYPE && current.group) {
-        // Raw column JSON: redraw the reference wires it implies.
-        commitRecipe(
-          current.group,
-          [{ ...current, params: { ...current.params, [paramId]: value } }],
-          null,
-          `param:${nodeId}:${paramId}`,
-        );
-        return;
-      }
       useDocStore
         .getState()
         .updateParams(
@@ -152,8 +147,9 @@ function InspectorImpl() {
     [nodeId],
   );
 
-  if (!nodeId || !node || !spec) return null;
+  if (!nodeId || !node || !spec) return <SetupInspector />;
   const isColumn = node.type === COLUMN_TYPE;
+  const look = NODE_LOOKS[node.type];
 
   return (
     <aside
@@ -162,8 +158,8 @@ function InspectorImpl() {
     >
       <header className="flex items-start gap-2.5 border-border/60 border-b px-4 py-3">
         <NodeIconTile
-          icon={nodeIcon(spec.icon)}
-          tone={CATEGORY_TONES[spec.category]}
+          icon={look?.icon?.(node) ?? nodeIcon(spec.icon)}
+          tone={look?.tone ? look.tone(node) : CATEGORY_TONES[spec.category]}
           accent={color}
         />
         <div className="min-w-0 flex-1">
@@ -173,7 +169,7 @@ function InspectorImpl() {
             readOnly={isColumn}
             title={
               isColumn
-                ? "Rename a column in its editor; references follow"
+                ? "Rename it in Column name below; references follow"
                 : undefined
             }
             placeholder={spec.title}
@@ -185,7 +181,9 @@ function InspectorImpl() {
             className="-mx-1.5 w-[calc(100%+0.75rem)] rounded-md bg-transparent px-1.5 py-0.5 font-semibold text-sm outline-none placeholder:text-foreground hover:bg-muted focus:bg-muted"
           />
           <p className="mt-0.5 text-ui-11 leading-snug text-muted-foreground">
-            {spec.description}
+            {isColumn
+              ? `${look?.subtitle?.(node, spec) ?? "Column"} column of a Data Recipe`
+              : spec.description}
           </p>
         </div>
         <Button
@@ -279,48 +277,57 @@ function InspectorImpl() {
         </Button>
       </div>
       <div className="flex-1 overflow-y-auto">
-        {isColumn && <ColumnPanel node={node} />}
-        <section className="flex flex-col gap-4 px-4 py-3">
-          {spec.params.length === 0 && (
-            <p className="text-xs text-muted-foreground">
-              This node has no settings.
-            </p>
-          )}
-          {spec.params
-            .filter((param) => !param.advanced)
-            .map((param) => (
-              <ParamRow
-                key={param.id}
-                param={param}
-                bound={param.bindable === true && boundParams.has(param.id)}
-                value={node.params[param.id]}
-                onChange={(value) => setParam(param.id, value)}
-              />
-            ))}
-          {spec.params.some((param) => param.advanced) && (
-            <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
-              <CollapsibleTrigger asChild={true}>
-                <CollapsibleSectionTriggerButton
-                  label="Advanced"
-                  open={advancedOpen}
+        {isColumn && (
+          <section className="flex flex-col gap-4 px-4 py-3">
+            <Suspense fallback={null}>
+              <ColumnForm key={node.id} node={node} />
+            </Suspense>
+            <ColumnPanel node={node} />
+          </section>
+        )}
+        {!isColumn && (
+          <section className="flex flex-col gap-4 px-4 py-3">
+            {spec.params.length === 0 && (
+              <p className="text-xs text-muted-foreground">
+                This node has no settings.
+              </p>
+            )}
+            {spec.params
+              .filter((param) => !param.advanced)
+              .map((param) => (
+                <ParamRow
+                  key={param.id}
+                  param={param}
+                  bound={param.bindable === true && boundParams.has(param.id)}
+                  value={node.params[param.id]}
+                  onChange={(value) => setParam(param.id, value)}
                 />
-              </CollapsibleTrigger>
-              <CollapsibleContent className="mt-3 flex flex-col gap-4">
-                {spec.params
-                  .filter((param) => param.advanced)
-                  .map((param) => (
-                    <ParamRow
-                      key={param.id}
-                      param={param}
-                      bound={param.bindable === true && boundParams.has(param.id)}
-                      value={node.params[param.id]}
-                      onChange={(value) => setParam(param.id, value)}
-                    />
-                  ))}
-              </CollapsibleContent>
-            </Collapsible>
-          )}
-        </section>
+              ))}
+            {spec.params.some((param) => param.advanced) && (
+              <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
+                <CollapsibleTrigger asChild={true}>
+                  <CollapsibleSectionTriggerButton
+                    label="Advanced"
+                    open={advancedOpen}
+                  />
+                </CollapsibleTrigger>
+                <CollapsibleContent className="mt-3 flex flex-col gap-4">
+                  {spec.params
+                    .filter((param) => param.advanced)
+                    .map((param) => (
+                      <ParamRow
+                        key={param.id}
+                        param={param}
+                        bound={param.bindable === true && boundParams.has(param.id)}
+                        value={node.params[param.id]}
+                        onChange={(value) => setParam(param.id, value)}
+                      />
+                    ))}
+                </CollapsibleContent>
+              </Collapsible>
+            )}
+          </section>
+        )}
         {node.type === GENERATE_TYPE && <RecipePanel node={node} />}
         {spec.type.startsWith("trigger.") && (
           <TriggerPanel nodeId={node.id} kind={spec.type} />
