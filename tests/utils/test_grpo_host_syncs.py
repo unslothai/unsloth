@@ -247,3 +247,27 @@ def test_flush_never_converts_to_float64_on_device(monkeypatch):
     for dt in targets:
         assert targets[dt] == expected[dt]
         assert all(type(x) is type(y) for x, y in zip(targets[dt], expected[dt]))
+
+
+def test_deferred_metrics_do_not_keep_the_trainer_alive():
+    # The instance-level log wrapper must not form a reference cycle: `del trainer` (no gc.collect) has to
+    # free the trainer and what it owns (optimizer state, accelerator) exactly as it did before deferral.
+    import gc
+    import weakref
+
+    class _Owner(_Trainer):
+        pass
+
+    gc.disable()
+    try:
+        t = _Owner()
+        target = []
+        rr._unsloth_grpo_defer_metric(t, target, torch.tensor(1.5))
+        t.log({})
+        assert target == [1.5]
+        rr._unsloth_grpo_defer_metric(t, target, torch.tensor(2.5))  # pending again
+        ref = weakref.ref(t)
+        del t
+        assert ref() is None
+    finally:
+        gc.enable()

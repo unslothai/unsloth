@@ -4873,12 +4873,21 @@ def _unsloth_grpo_defer_metric(trainer, target, value):
         pending = trainer._unsloth_pending_metrics = []
         # An instance-level log is kept; otherwise resolve the class's at call time (it may be patched later).
         _instance_log = trainer.__dict__.get("log")
+        # The wrapper lives in trainer.__dict__, so a strong reference here would be a cycle that keeps the
+        # trainer (optimizer state included) alive after `del trainer` until the cyclic gc runs.
+        import weakref
+
+        try:
+            _trainer_ref = weakref.ref(trainer)
+        except TypeError:
+            _trainer_ref = lambda: trainer  # noqa: E731  objects without weakref support
 
         def log(*args, **kwargs):
-            _unsloth_grpo_flush_metrics(trainer)
+            owner = _trainer_ref()
+            _unsloth_grpo_flush_metrics(owner)
             if _instance_log is not None:
                 return _instance_log(*args, **kwargs)
-            return type(trainer).log(trainer, *args, **kwargs)
+            return type(owner).log(owner, *args, **kwargs)
 
         trainer.log = log
     pending.append((target, value.detach()))
