@@ -275,7 +275,7 @@ def _routed_modules(model):
     """The modules a forward calls: dense LoRA layers and expert containers (their stacks are not modules)."""
     from unsloth.kernels import multi_lora
 
-    # An installed Unsloth older than the expert kernel still batches dense jobs.
+    # Unsloth releases before the expert kernel still batch dense jobs.
     kinds = tuple(
         k for k in (multi_lora.MultiLoraLinear, getattr(multi_lora, "MultiLoraExperts", None)) if k
     )
@@ -1037,7 +1037,7 @@ def _run(event_queue, stop_queue, config: dict, members: list) -> None:
             use_rslora = use_rslora,
         )
     except ValueError as exc:
-        # Expert-only targets (e.g. just gate_up_proj on fused experts): the single job trains no dense layer either.
+        # Expert-only targets (just gate_up_proj): the single job trains no dense layer either.
         if not expert_targets or "No linear layers named" not in str(exc):
             raise
         injected = []
