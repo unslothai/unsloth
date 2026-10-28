@@ -40769,6 +40769,12 @@ class LlamaCppBackend:
                     except CountAborted:
                         # Not a template failure. Must precede the generic except.
                         raise
+                    except httpx.TimeoutException:
+                        # Not a template failure either: a long prompt outlasted the timeout.
+                        if strict:
+                            raise RuntimeError(
+                                "llama-server timed out counting the prompt"
+                            ) from None
                     except Exception:
                         pass
                     return None, False

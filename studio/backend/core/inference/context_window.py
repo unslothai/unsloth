@@ -337,6 +337,42 @@ def prompt_budget(context_length: int, max_tokens: Optional[int]) -> int:
     return context_length - min(requested, max(1, context_length // 4))
 
 
+# Rendering and tokenizing a transcript many windows long can outlast the count's timeout, and a
+# fit whose first count fails sends the transcript unfitted (#15800). So a slice of the newest turns
+# is counted first, this many thresholds by estimate, doubling while it is not yet over: the
+# estimate can be off by more than 1.5x either way.
+_OVER_PROOF_THRESHOLDS = 2
+
+
+def bounded_prompt_count(
+    messages: list[dict],
+    count_tokens: Callable[[list[dict]], int],
+    threshold: int,
+    *,
+    estimate_message: Callable[[dict], int] = estimate_message_tokens,
+) -> int:
+    """The exact count, or for a transcript estimated far past ``threshold``, its newest turns'
+    count scaled to the whole. Scaled only once that exact count of a subset already exceeds
+    ``threshold``, so comparing the result against ``threshold`` stays exact while the value itself
+    is approximate."""
+    if threshold > 0:
+        estimate = sum(estimate_message(message) for message in messages)
+        keep = threshold * _OVER_PROOF_THRESHOLDS
+        # Only while the slice is at most half the transcript; past that, count the whole.
+        while keep * 2 <= estimate:
+            newest, dropped = truncate_oldest_messages(
+                messages, keep / estimate, estimate_message = estimate_message
+            )
+            if not dropped:
+                break
+            counted = count_tokens(newest)
+            if counted > threshold:
+                kept = sum(estimate_message(message) for message in newest)
+                return max(counted, int(counted * estimate / max(1, kept)))
+            keep *= 2
+    return count_tokens(list(messages))
+
+
 _RETRIEVAL_BUDGET_SHARE = 0.5
 
 # Small on purpose: missing the reserve is survivable, so this only rules out the stub-answer end.
@@ -906,7 +942,10 @@ def fit_rolling_context(
 
     prompt_target = prompt_budget(context_length, max_tokens)
     fitted = list(messages)
-    initial_tokens = count_tokens(fitted)
+    # Against the window, not the target: the rescue below compares this to context_length.
+    initial_tokens = bounded_prompt_count(
+        fitted, count_tokens, context_length, estimate_message = estimate_message
+    )
     current_tokens = initial_tokens
     dropped_total = 0
 
@@ -923,7 +962,10 @@ def fit_rolling_context(
         if dropped:
             fitted = candidate
             dropped_total = dropped
-            current_tokens = count_tokens(fitted)
+            # A boundary saved long ago can leave most of the transcript in place.
+            current_tokens = bounded_prompt_count(
+                fitted, count_tokens, context_length, estimate_message = estimate_message
+            )
 
     if replay_only:
         return fitted, {
@@ -1119,7 +1161,7 @@ def fit_oversized_attachments(
     budget = prompt_budget(context_length, max_tokens)
     # The margin sizes a cut; it never decides one, or a file that fits would lose its end.
     target = int(budget * (1 - _ATTACHMENT_FIT_MARGIN))
-    if count_tokens(messages) <= budget:
+    if bounded_prompt_count(messages, count_tokens, budget) <= budget:
         return messages
     latest = max(index for index, message in enumerate(messages) if message.get("role") == "user")
     base = [message for message in messages if message.get("role") == "system"]

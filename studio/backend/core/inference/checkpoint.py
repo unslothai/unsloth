@@ -34,6 +34,7 @@ from typing import Any, Optional
 
 from core.inference.context_window import (
     _COMPACTION_HEADROOM_RATIO,
+    bounded_prompt_count,
     clamp_compaction_headroom_ratio,
     estimate_message_tokens,
     group_turns,
@@ -394,7 +395,9 @@ def fit_checkpoint_context(
         return messages, None
 
     prompt_target = prompt_budget(context_length, max_tokens)
-    initial_tokens = count_tokens(list(messages))
+    initial_tokens = bounded_prompt_count(
+        messages, count_tokens, prompt_target, estimate_message = estimate_message
+    )
     if initial_tokens <= prompt_target and sticky_dropped <= 0 and not force_reset:
         return messages, None
 
@@ -448,7 +451,13 @@ def fit_checkpoint_context(
 
     if replay_only:
         projected, block = _project(fitted) if dropped else (messages, "")
-        current_tokens = count_tokens(projected) if dropped else initial_tokens
+        current_tokens = (
+            bounded_prompt_count(
+                projected, count_tokens, prompt_target, estimate_message = estimate_message
+            )
+            if dropped
+            else initial_tokens
+        )
         return projected, {
             "dropped_messages": dropped,
             "prompt_tokens_before": initial_tokens,
@@ -461,7 +470,10 @@ def fit_checkpoint_context(
         }
 
     projected, block = _project(fitted)
-    current_tokens = count_tokens(projected)
+    # With nothing replayed this is still the whole transcript.
+    current_tokens = bounded_prompt_count(
+        projected, count_tokens, prompt_target, estimate_message = estimate_message
+    )
     # What `current_tokens` prices, tracked separately because `projected` is rebound below on a path that does not
     # re-count. The refusal reports the pair together.
     measured = projected
