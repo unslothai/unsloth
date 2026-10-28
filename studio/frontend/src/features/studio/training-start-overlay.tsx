@@ -429,15 +429,16 @@ export function TrainingStartOverlay({
           <AnimatedSpan className="my-2">
             <pre className="whitespace-pre text-muted-foreground inline-block">{`==((====))==\n   \\\\   /|\nO^O/ \\_/ \\\n\\        /\n "-____-"`}</pre>
           </AnimatedSpan>
+          {/* Direct children: Terminal sequences by child and a Fragment never reports done. */}
           {!trainingLoopStarted && (
-            <>
-              <TypingAnimation duration={44}>
-                {t("studio.trainingStart.preparingResources")}
-              </TypingAnimation>
-              <TypingAnimation duration={44}>
-                {t("studio.trainingStart.gettingReady")}
-              </TypingAnimation>
-            </>
+            <TypingAnimation duration={44}>
+              {t("studio.trainingStart.preparingResources")}
+            </TypingAnimation>
+          )}
+          {!trainingLoopStarted && (
+            <TypingAnimation duration={44}>
+              {t("studio.trainingStart.gettingReady")}
+            </TypingAnimation>
           )}
           <AnimatedSpan className="mt-2 text-muted-foreground">
             &gt; {displayMessage}
