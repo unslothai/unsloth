@@ -3398,8 +3398,9 @@ fi
 
 if [ "$_SKIP_PYTHON_DEPS" = false ]; then
     install_python_stack
-    _SETUP_VENV_CHANGED=true
     _setup_rerun_if_replaced
+    # After the handoff: a replaced copy precompiles on UNSLOTH_SETUP_RERUN, this one on the flag.
+    _SETUP_VENV_CHANGED=true
 else
     step "python" "dependencies up to date"
     verbose_substep "python deps check: installed=$_PKG_NAME@${INSTALLED_VER:-unknown} latest=${LATEST_VER:-unknown}"
