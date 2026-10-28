@@ -2259,7 +2259,6 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
     if function_name != "_generate_and_score_completions":
         return function
 
-    # Keep the loss mask consistent with the truncation metrics in _generate.
     function = function.replace(
         "ids[-1] not in eos_and_pad",
         "len(ids) >= self.max_completion_length and ids[-1] not in eos_and_pad",
