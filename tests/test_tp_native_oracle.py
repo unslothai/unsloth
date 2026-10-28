@@ -427,7 +427,8 @@ def test_shard_slice_unpermute_round_trip():
     [
         (LLAMA, {"num_attention_heads": 4, "num_key_value_heads": 4}, 3, "num_attention_heads = 4"),
         (QWEN3, {"num_attention_heads": 6, "num_key_value_heads": 3}, 2, "num_key_value_heads = 3"),
-        (GEMMA3, {}, 2, "larger than num_key_value_heads = 1"),
+        # num_key_value_heads < tp is replicated (test_tp_kv_replicated_gloo.py) only when tp is a multiple of it.
+        (GEMMA3, {"num_attention_heads": 12, "num_key_value_heads": 3}, 4, "not a multiple of it"),
         (MISTRAL, {}, 2, "intermediate_size = 37"),
         (OLMO2, {}, 2, "normalizes .* features, not one head"),
         (QWEN3_MOE, {}, 2, "mixture-of-experts"),

@@ -213,7 +213,8 @@ def _full_params4bit(weight, base, group, device, keep):
     blocksize = state.blocksize
     out_local, in_local = state.shape
     codes = weight.data.reshape(-1).view(torch.uint8).view(out_local, in_local // 2)
-    col = style == tpn.COLWISE
+    kv = style == tpn.KV_REPLICATED
+    col = style == tpn.COLWISE or kv
     dim = 0 if col else 1
     codes = _gather_cat(codes, dim, group, tp)
     full_state = getattr(weight, "_unsloth_tp_quant_state", None)
@@ -222,6 +223,12 @@ def _full_params4bit(weight, base, group, device, keep):
         absmax = _gather_cat(
             state.absmax.float().view(out_local, in_local // blocksize), dim, group, tp
         )
+    if kv:
+        # Replicated key / value heads: tp / num_key_value_heads consecutive ranks hold the same head's rows.
+        step = tp // (sum(parts) // out_local)
+        codes = torch.cat(codes.split(out_local)[::step])
+        absmax = None if absmax is None else torch.cat(absmax.split(out_local)[::step])
+        tp = 1
     if not keep:
         return None
     if col:

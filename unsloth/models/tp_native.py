@@ -79,6 +79,9 @@ COLWISE = "colwise"
 ROWWISE = "rowwise"
 HEAD_NORM = "replicated_with_grad_allreduce"
 ELEMENTWISE = "elementwise_replicated"  # scalar-parameter activations inside an MLP
+# A key / value projection when num_key_value_heads < tp: kept whole on every rank (Replicate DTensors, 4-bit:
+# the rows of this rank's key / value head), each rank computing the one key / value head its query heads use.
+KV_REPLICATED = "kv_replicated"
 
 # transformers TP styles (4.5x and 5.x names) -> what this module does with them.
 _STYLES = {
@@ -164,7 +167,7 @@ class TPConfig:
 class _Proj:
     name: str
     module: nn.Module
-    style: str  # COLWISE / ROWWISE
+    style: str  # COLWISE / ROWWISE / KV_REPLICATED
     parts: tuple  # output (colwise) part sizes; one part unless fused / packed
     from_plan: bool = False
 
@@ -179,6 +182,7 @@ class _Region:
     heads: int = 0
     kv_heads: int = 0
     head_dim: int = 0
+    kv_replicated: bool = False  # num_key_value_heads < tp: k / v projections replicated
 
 
 @dataclasses.dataclass
@@ -513,11 +517,9 @@ def _region(path, module, kind, compiled, text, tp):
         region.heads, region.kv_heads, region.head_dim = heads, kv_heads, head_dim
         _check_divisible("num_attention_heads", heads, tp, path)
         if kv_heads < tp:
-            raise ValueError(
-                f"Unsloth: tensor parallel size {tp} is larger than num_key_value_heads = {kv_heads} "
-                f"({path}); replicating KV heads is not supported in v1. Use tp <= {kv_heads}."
-            )
-        _check_divisible("num_key_value_heads", kv_heads, tp, path)
+            _replicate_kv_heads(region, path, tp)
+        else:
+            _check_divisible("num_key_value_heads", kv_heads, tp, path)
         for name, norm in norms:
             weight = norm._parameters.get("weight")
             numel = (
@@ -536,6 +538,9 @@ def _region(path, module, kind, compiled, text, tp):
     for proj in projs:
         weight, base = _weight(proj.module)
         out_features, in_features = _logical_shape(weight, base)
+        if proj.style == KV_REPLICATED:
+            proj.parts = (out_features,)
+            continue
         if proj.style == ROWWISE:
             _check_divisible(f"{proj.name} in_features", in_features, tp, path)
             proj.parts = (out_features,)
@@ -559,6 +564,36 @@ def _region(path, module, kind, compiled, text, tp):
             what = "intermediate_size" if kind == "mlp" else f"{proj.name} out_features"
             _check_divisible(what, size, tp, path)
     return region
+
+
+def _replicate_kv_heads(region, path, tp):
+    """num_key_value_heads < tp: every rank keeps the key / value projections whole and computes the one key /
+    value head its query heads read (rank r: head r // (tp / num_key_value_heads)). Their gradients are partial
+    sums over tp (each rank backpropagates its own query heads only), reduced like any replicated factor."""
+    kv_heads = region.kv_heads
+    if kv_heads < 1 or tp % kv_heads:
+        raise ValueError(
+            f"Unsloth: tensor parallel size {tp} is larger than num_key_value_heads = {kv_heads} ({path}) and not "
+            f"a multiple of it, so the query heads of one rank would read several key / value heads. Use a tp "
+            f"size that divides or is a multiple of {kv_heads}."
+        )
+    names = {p.name for p in region.projs}
+    fused = names.intersection(_FUSED_QKV)
+    if fused:
+        raise ValueError(
+            f"Unsloth: tensor parallel size {tp} is larger than num_key_value_heads = {kv_heads} ({path}) and the "
+            f"key / value heads are fused into '{sorted(fused)[0]}'; replicating them needs separate key / value "
+            f"projections. Use tp <= {kv_heads}."
+        )
+    kv = [p for p in region.projs if p.name in _K + _V]
+    if not any(p.name in _K for p in kv) or not any(p.name in _V for p in kv):
+        raise ValueError(
+            f"Unsloth: tensor parallel size {tp} is larger than num_key_value_heads = {kv_heads} ({path}), and "
+            f"no separate key and value projections ({_K + _V}) were found to replicate."
+        )
+    for proj in kv:
+        proj.style = KV_REPLICATED
+    region.kv_replicated = True
 
 
 def _logical_shape(weight, base):
@@ -744,8 +779,17 @@ def _tp_lora_parameters(proj, bias = False):
     W = _local(weight)
     W_quant = getattr(W, "quant_state", None)
     b = None
-    if bias and proj.__dict__.get("_unsloth_tp_style") == COLWISE and base.bias is not None:
+    rows = proj.__dict__.get("_unsloth_tp_kv_rows")
+    if rows is not None and not _is_params4bit(W):
+        W = W.narrow(0, *rows)
+    if (
+        bias
+        and proj.__dict__.get("_unsloth_tp_style") in (COLWISE, KV_REPLICATED)
+        and base.bias is not None
+    ):
         b = _local(base.bias)
+        if rows is not None:
+            b = b.narrow(0, *rows)
     lora_A = proj._modules.get("lora_A")
     adapter = None
     if lora_A is not None and not (
@@ -759,11 +803,12 @@ def _tp_lora_parameters(proj, bias = False):
     if adapter is None:
         out = (W, W_quant, None, None, None)
     else:
+        B = _local(proj.lora_B[adapter].weight)
         out = (
             W,
             W_quant,
             _local(lora_A[adapter].weight),
-            _local(proj.lora_B[adapter].weight),
+            B if rows is None else B.narrow(0, *rows),
             proj.scaling[adapter],
         )
     return out + (b,) if bias else out
@@ -1096,9 +1141,15 @@ def _tp_projection_forward(self, x, *args, **kwargs):
     weight, base = _weight(self)
     W = _local(weight)
     bias = (
-        base.bias if self._unsloth_tp_style == COLWISE else None
+        base.bias if self._unsloth_tp_style != ROWWISE else None
     )  # row bias: once, after the reduce
     bias = None if bias is None else _local(bias)
+    rows = self.__dict__.get("_unsloth_tp_kv_rows")  # KV_REPLICATED: this rank's key / value head
+    if rows is not None:
+        if not _is_params4bit(W):  # a 4-bit weight already holds only these rows
+            W = W.narrow(0, *rows)
+        if bias is not None:
+            bias = bias.narrow(0, *rows)
     input_dtype = x.dtype
     if _is_params4bit(W):
         import bitsandbytes as bnb
@@ -1118,6 +1169,8 @@ def _tp_projection_forward(self, x, *args, **kwargs):
             continue
         A = _local(lora_A[adapter].weight)
         B = _local(self.lora_B[adapter].weight)
+        if rows is not None:
+            B = B.narrow(0, *rows)
         scaling = self.scaling[adapter]
         x_lora = x if torch.is_autocast_enabled() else x.to(A.dtype)
         x_lora = self.lora_dropout[adapter](x_lora)
@@ -1247,7 +1300,8 @@ def _sync_trainable(model, group, src):
 
 
 def _set_local_heads(module, region, tp):
-    heads, kv_heads = region.heads // tp, region.kv_heads // tp
+    heads = region.heads // tp
+    kv_heads = 1 if region.kv_replicated else region.kv_heads // tp
     # What tp_replica puts back while a whole replica is gathered.
     module.__dict__["_unsloth_tp_saved_attrs"] = {
         name: module.__dict__.get(name, _MISSING)
@@ -1256,6 +1310,7 @@ def _set_local_heads(module, region, tp):
             "num_key_value_heads",
             "num_attention_heads",
             "num_kv_heads",
+            "num_key_value_groups",
             "config",
         )
     }
@@ -1269,6 +1324,9 @@ def _set_local_heads(module, region, tp):
     ):
         if always or isinstance(module.__dict__.get(name), int):
             module.__dict__[name] = value
+    if isinstance(getattr(module, "num_key_value_groups", None), int):
+        # repeat_kv / GQA grouping: local query heads per local key / value head (changes when KV is replicated).
+        module.__dict__["num_key_value_groups"] = heads // kv_heads
     config = module.__dict__.get("config")
     if config is None:
         return
@@ -1396,9 +1454,56 @@ def apply_tensor_parallel(
                 if tp_plan.replicated_layers
                 else ""
             )
+            + _kv_replicated_note(tp_plan)
             + "."
         )
     return model
+
+
+def _kv_replicated_note(tp_plan):
+    regions = [r for r in tp_plan.regions if r.kv_replicated]
+    if not regions:
+        return ""
+    kv = sorted({r.kv_heads for r in regions})
+    return (
+        f", key / value heads replicated in {len(regions)} attention regions (num_key_value_heads = "
+        f"{'/'.join(map(str, kv))} < tp {tp_plan.tp_size})"
+    )
+
+
+def _shard_kv_replicated(region, proj, mesh, rank, tp):
+    """KV_REPLICATED: weight / bias / LoRA kept whole (Replicate); the forward narrows to this rank's head."""
+    module = proj.module
+    weight, base = _weight(module)
+    path = f"{region.path}.{proj.name}"
+    if _preloaded(weight) is not None or _preloaded(base.bias) is not None:
+        raise ValueError(
+            f"Unsloth: '{path}' was sliced by sharded_loading, but its key / value heads are replicated "
+            "(num_key_value_heads < tp); pass the same plan and tp mesh to both."
+        )
+    out_features = proj.parts[0]
+    kv_heads = region.kv_heads
+    if out_features != kv_heads * region.head_dim:
+        raise ValueError(
+            f"Unsloth: '{path}' has {out_features} outputs, not num_key_value_heads * head_dim = "
+            f"{kv_heads * region.head_dim}; its key / value heads cannot be replicated."
+        )
+    head = rank // (tp // kv_heads)
+    if _is_params4bit(weight):
+        # The rows of this rank's head (bitwise a slice of the 1-GPU codes); tp_replica regathers the whole.
+        _shard_params4bit(path, base, weight, COLWISE, (out_features,), head, kv_heads)
+        base.weight._unsloth_tp_layout = (KV_REPLICATED, (out_features,), rank, tp)
+    else:
+        _set_dtensor(base, "weight", weight, mesh, "replicate")
+    if base.bias is not None:
+        _set_dtensor(base, "bias", base.bias, mesh, "replicate")
+    lora_A = module._modules.get("lora_A")
+    if lora_A is not None:
+        for adapter in lora_A.keys():
+            A, B = lora_A[adapter], module.lora_B[adapter]
+            _set_dtensor(A, "weight", A.weight, mesh, "replicate")
+            _set_dtensor(B, "weight", B.weight, mesh, "replicate")
+    module.__dict__["_unsloth_tp_kv_rows"] = (head * region.head_dim, region.head_dim)
 
 
 def _shard_projection(region, proj, mesh, rank, tp):
@@ -1407,7 +1512,9 @@ def _shard_projection(region, proj, mesh, rank, tp):
     col = proj.style == COLWISE
     parts = proj.parts
     in_parts = (_logical_shape(weight, base)[1],)
-    if _preloaded(weight) is not None:
+    if proj.style == KV_REPLICATED:
+        _shard_kv_replicated(region, proj, mesh, rank, tp)
+    elif _preloaded(weight) is not None:
         _wrap_preloaded(base, "weight", weight, mesh, 0 if col else 1)
     elif _is_params4bit(weight):
         _shard_params4bit(f"{region.path}.{proj.name}", base, weight, proj.style, parts, rank, tp)
@@ -1423,7 +1530,7 @@ def _shard_projection(region, proj, mesh, rank, tp):
             rank,
             tp,
         )
-    if base.bias is not None:
+    if base.bias is not None and proj.style != KV_REPLICATED:
         if col:
             if _preloaded(base.bias) is not None:
                 _wrap_preloaded(base, "bias", base.bias, mesh, 0)
@@ -1436,7 +1543,7 @@ def _shard_projection(region, proj, mesh, rank, tp):
     if guard is not None:
         guard.remove()
     lora_A = module._modules.get("lora_A")
-    if lora_A is not None:
+    if lora_A is not None and proj.style != KV_REPLICATED:
         for adapter in lora_A.keys():
             A, B = lora_A[adapter], module.lora_B[adapter]
             if col:
@@ -2139,6 +2246,8 @@ def _materialize_sharded(model, name, kwargs, mesh, plan, device):
     shards = {}
     for region in tp_plan.regions:
         for proj in region.projs:
+            if proj.style == KV_REPLICATED:
+                continue  # read whole: every rank keeps the replicated key / value projections
             weight, base = _weight(proj.module)
             col = proj.style == COLWISE
             shards[id(weight)] = (proj, 0 if col else 1, proj.parts if col else (weight.shape[1],))
