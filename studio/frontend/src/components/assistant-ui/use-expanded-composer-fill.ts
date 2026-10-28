@@ -8,11 +8,42 @@ const EDGE_GAP_PX = 16;
 // Covers the welcome screen's 280ms padding-top transition, which moves the composer without resizing it.
 const SETTLE_MS = 400;
 
-/**
- * While expanded, sizes the editor so the whole composer (attachments, queue and toolbar included)
- * fills the chat area from below the header to the bottom edge. The welcome composer grows down
- * from where it sits; the thread's footer composer grows up from its bottom edge.
- */
+function cssPx(
+  el: HTMLElement | null | undefined,
+  prop: "paddingTop" | "paddingBottom",
+): number {
+  return el ? Number.parseFloat(getComputedStyle(el)[prop]) || 0 : 0;
+}
+
+/** Room for the whole composer: the welcome one grows down from its top, the footer one up from its bottom. */
+function availableHeight(
+  root: HTMLElement,
+  area: HTMLElement | null,
+  welcome: boolean,
+): number {
+  const areaRect = area?.getBoundingClientRect() ?? {
+    top: 0,
+    bottom: window.innerHeight,
+  };
+  const rootRect = root.getBoundingClientRect();
+  if (welcome) {
+    // Unscrolled top: a too-tall frame scrolls the welcome page, which would read as more room.
+    // Its bottom padding (added with attachments) must fit too, or the page still scrolls.
+    const page = root.closest<HTMLElement>(".aui-thread-viewport");
+    return (
+      Math.min(areaRect.bottom, window.innerHeight) -
+      Math.max(EDGE_GAP_PX, cssPx(page, "paddingBottom")) -
+      (rootRect.top + (page?.scrollTop ?? 0))
+    );
+  }
+  const headerOffset = cssPx(
+    area?.querySelector<HTMLElement>(".aui-thread-viewport"),
+    "paddingTop",
+  );
+  return rootRect.bottom - (areaRect.top + headerOffset + EDGE_GAP_PX);
+}
+
+/** While expanded, sizes the editor so the whole composer (attachments, queue and toolbar included) fills the chat area. */
 export function useExpandedComposerFill(
   editorRef: RefObject<HTMLElement | null>,
   expanded: boolean,
@@ -27,37 +58,12 @@ export function useExpandedComposerFill(
     const area = root.closest<HTMLElement>("[data-chat-content-root]");
     const welcome = root.closest(".aui-thread-welcome-center") !== null;
     const measure = () => {
-      const areaRect = area?.getBoundingClientRect() ?? {
-        top: 0,
-        bottom: window.innerHeight,
-      };
-      const rootRect = root.getBoundingClientRect();
-      const chrome = rootRect.height - editor.getBoundingClientRect().height;
-      let available: number;
-      if (welcome) {
-        // Unscrolled top: a too-tall frame scrolls the welcome page, which would read as more room.
-        // Its bottom padding (added with attachments) must fit too, or the page still scrolls.
-        const page = root.closest<HTMLElement>(".aui-thread-viewport");
-        const padBottom = page
-          ? Number.parseFloat(getComputedStyle(page).paddingBottom) || 0
-          : 0;
-        available =
-          Math.min(areaRect.bottom, window.innerHeight) -
-          Math.max(EDGE_GAP_PX, padBottom) -
-          (rootRect.top + (page?.scrollTop ?? 0));
-      } else {
-        const viewport = area?.querySelector<HTMLElement>(
-          ".aui-thread-viewport",
-        );
-        const headerOffset = viewport
-          ? Number.parseFloat(getComputedStyle(viewport).paddingTop) || 0
-          : 0;
-        available =
-          rootRect.bottom - (areaRect.top + headerOffset + EDGE_GAP_PX);
-      }
-      const next = Math.max(0, Math.floor(available - chrome));
-      if (root.style.getPropertyValue(FILL_VAR) !== `${next}px`) {
-        root.style.setProperty(FILL_VAR, `${next}px`);
+      const chrome =
+        root.getBoundingClientRect().height -
+        editor.getBoundingClientRect().height;
+      const next = `${Math.max(0, Math.floor(availableHeight(root, area, welcome) - chrome))}px`;
+      if (root.style.getPropertyValue(FILL_VAR) !== next) {
+        root.style.setProperty(FILL_VAR, next);
       }
     };
     measure();
