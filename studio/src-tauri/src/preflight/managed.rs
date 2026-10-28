@@ -1092,9 +1092,16 @@ pub(crate) fn start_launch_cli_probe() {
 
 pub(super) fn install_launch_cli_probe(bin: PathBuf) {
     let probe_bin = bin.clone();
-    let started = Instant::now();
     let handle =
         tauri::async_runtime::spawn(async move { run_cli_probe(&probe_bin, &["-h"]).await });
+    install_launch_cli_probe_task(bin, handle);
+}
+
+pub(super) fn install_launch_cli_probe_task(
+    bin: PathBuf,
+    handle: tauri::async_runtime::JoinHandle<Result<bool, String>>,
+) {
+    let started = Instant::now();
     if let Ok(mut slot) = LAUNCH_CLI_PROBE.lock() {
         *slot = Some(LaunchCliProbe {
             bin,
@@ -1106,15 +1113,25 @@ pub(super) fn install_launch_cli_probe(bin: PathBuf) {
 
 /// `true` only for a passing launch `-h` on this CLI, taken once and recent; anything else is
 /// `false` and the caller runs `-h` itself.
+///
+/// A launch probe for any CLI is taken and awaited, not only this one's: its spawn holds the
+/// runtime launch guard, so a preflight spawning beside it would read the guard as busy.
 async fn launch_cli_probe_passed(bin: &Path) -> bool {
     let probe = match LAUNCH_CLI_PROBE.lock() {
-        Ok(mut slot) if slot.as_ref().is_some_and(|probe| probe.bin == bin) => slot.take(),
-        _ => None,
+        Ok(mut slot) => slot.take(),
+        Err(_) => None,
     };
     let Some(probe) = probe else {
         return false;
     };
     let passed = matches!(probe.handle.await, Ok(Ok(true)));
+    if probe.bin != bin {
+        info!(
+            "Managed preflight: launch -h probe was for {:?}, not {:?}; not reused",
+            probe.bin, bin
+        );
+        return false;
+    }
     let age = probe.started.elapsed();
     let fresh = age <= LAUNCH_CLI_PROBE_MAX_AGE;
     info!(

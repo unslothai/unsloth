@@ -25,7 +25,7 @@ pub(crate) use version::{
 #[cfg(test)]
 use backend::{backend_desktop_auth_status, backend_health};
 #[cfg(test)]
-use managed::install_launch_cli_probe;
+use managed::{install_launch_cli_probe, install_launch_cli_probe_task};
 #[cfg(test)]
 use managed::probe_managed_bin;
 #[cfg(test)]
@@ -1037,6 +1037,45 @@ exit 1
         assert!(matches!(probe_managed_bin(bin.clone()).await, ManagedProbe::Ready { .. }));
         assert_eq!(fs::read_to_string(&calls).unwrap(), "-h\n");
         assert!(matches!(probe_managed_bin(other.bin.clone()).await, ManagedProbe::Stale { .. }));
+
+        remove_managed_capability_cache();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_preflight_waits_for_a_launch_probe_holding_the_runtime_launch_guard() {
+        let _cache_guard = MANAGED_CAPABILITY_CACHE_TEST_LOCK.lock().await;
+        let _cache_home = ManagedCapabilityCacheHome::new("launch-guard");
+        remove_managed_capability_cache();
+        let fake = fake_cli(
+            "launch-guard",
+            r#"#!/bin/sh
+if [ "$1" = "-h" ]; then exit 0; fi
+if [ "$1" = "studio" ] && [ "$2" = "desktop-capabilities" ] && [ "$3" = "--json" ]; then
+  printf '{"desktop_protocol_version":1,"desktop_manageability_version":2,"supports_api_only":true,"supports_provision_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_install_ok":true,"version":"2026.8.4"}'
+  exit 0
+fi
+exit 1
+"#,
+        );
+        let other = fake_cli("launch-guard-other", "#!/bin/sh\nexit 0\n");
+
+        // A launch probe (here for another CLI) is mid-spawn, holding the guard, when the
+        // preflight starts: the preflight waits for it instead of reading the guard as busy.
+        let (acquired_tx, acquired_rx) = tokio::sync::oneshot::channel();
+        let handle = tauri::async_runtime::spawn_blocking(move || {
+            crate::process::with_studio_runtime_launch_guard(|| {
+                let _ = acquired_tx.send(());
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                Ok(true)
+            })
+        });
+        acquired_rx.await.unwrap();
+        install_launch_cli_probe_task(other.bin.clone(), handle);
+        match probe_managed_bin(fake.bin.clone()).await {
+            ManagedProbe::Ready { .. } => {}
+            other => panic!("expected Ready, got {other:?}"),
+        }
 
         remove_managed_capability_cache();
     }
