@@ -85,3 +85,25 @@ def test_large_text_small_budget():
     assert tools._dense_prefix_chars(text, 1e9) == len(text)
     escaped = text[:3999] + "%41" + text
     assert tools._dense_prefix_chars(escaped, 1000.0) == _reference(escaped, 1000.0) == 3999
+
+
+class _CountingStr(str):
+    """Counts per-character indexing, which only the scanning loop does."""
+
+    reads = 0
+
+    def __getitem__(self, key):
+        type(self).reads += 1
+        return str.__getitem__(self, key)
+
+
+def test_ascii_text_is_answered_without_a_per_character_scan():
+    _CountingStr.reads = 0
+    text = _CountingStr("a" * 10_000)
+    assert tools._dense_prefix_chars(text, 1_000.0) == 4_000
+    assert tools._dense_prefix_chars(text, 1e9) == 10_000
+    assert _CountingStr.reads == 0
+    # An escape before the cut still takes the loop, and the loop still reads characters.
+    escaped = _CountingStr("a%41" + "a" * 100)
+    assert tools._dense_prefix_chars(escaped, 10.0) == _reference(str(escaped), 10.0)
+    assert _CountingStr.reads > 0
