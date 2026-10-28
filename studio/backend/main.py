@@ -3143,9 +3143,7 @@ class _TunnelOnlyFrontend:
 
 
 def _match_assets_before_api_routes(app: FastAPI) -> None:
-    """Move the just-appended /assets mount ahead of the API routes, behind any earlier /assets mount.
-
-    No API route matches /assets/..., so only asset requests change: they stop walking every API route."""
+    """Move the new /assets mount first (after earlier ones); no API route matches /assets/..."""
     from starlette.routing import Mount
 
     routes = app.router.routes
