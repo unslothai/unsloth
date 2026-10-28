@@ -159,8 +159,10 @@ export interface ColumnFacts {
   fields: { label: string; value: string }[];
 }
 
-function range(low: unknown, high: unknown, unit = ""): string {
-  return `${low ?? "?"} – ${high ?? "?"}${unit ? ` ${unit}` : ""}`;
+function range(low: unknown, high: unknown, unit = ""): string[] {
+  const show = (v: unknown) => (v === undefined || v === null ? "" : String(v).trim());
+  if (!show(low) && !show(high)) return [];
+  return [`${show(low) || "?"} – ${show(high) || "?"}${unit ? ` ${unit}` : ""}`];
 }
 
 /** The two or three things worth seeing on a column's card. */
@@ -179,15 +181,15 @@ export function columnFacts(column: RecipeColumn): ColumnFacts {
       chips.push(
         ...new Set(Object.values(record(params.values)).flat().map(String)),
       );
-    } else if (sampler === "uniform") chips.push(range(params.low, params.high));
+    } else if (sampler === "uniform") chips.push(...range(params.low, params.high));
     else if (sampler === "gaussian")
       chips.push(`mean ${params.mean ?? "?"}`, `sd ${params.stddev ?? "?"}`);
     else if (sampler === "bernoulli") chips.push(`p ${params.p ?? "?"}`);
-    else if (sampler === "datetime") chips.push(range(params.start, params.end));
+    else if (sampler === "datetime") chips.push(...range(params.start, params.end));
     else if (sampler === "timedelta") {
       if (text(params.reference_column_name))
         fields.push({ label: "From", value: text(params.reference_column_name) });
-      chips.push(range(params.dt_min, params.dt_max, text(params.unit)));
+      chips.push(...range(params.dt_min, params.dt_max, text(params.unit)));
     } else if (sampler === "person" || sampler === "person_from_faker") {
       chips.push(text(params.locale) || "any locale");
       if (text(params.city)) chips.push(text(params.city));
