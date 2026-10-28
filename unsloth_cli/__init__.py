@@ -85,26 +85,15 @@ if _is_entry_point:
     _drop_unwritable_ssl_keylog_file()
 
 import typer
+from collections.abc import MutableMapping as _MutableMapping
 from importlib.metadata import version as package_version, PackageNotFoundError
 
 
-if _windows_studio_mutation_entry:
-    from unsloth_cli.commands.studio import studio_app, _expand_attached_np_short
-else:
-    from unsloth_cli.commands.train import train
-    from unsloth_cli.commands.inference import inference
-    from unsloth_cli.commands.chat import chat
-    from unsloth_cli.commands.start import start_app
-    from unsloth_cli.commands.export import export, list_checkpoints
-    from unsloth_cli.commands.eval import evaluate as eval_command
-    from unsloth_cli.commands.doctor import doctor
-    from unsloth_cli.commands.mcp import mcp_app
-    from unsloth_cli.commands.studio import (
-        run as studio_run,
-        studio_app,
-        _expand_attached_np_short,
-        _LlamaPassthroughCommand,
-    )
+from unsloth_cli._argv import _expand_attached_np_short
+
+# Eager on purpose: Desktop's `unsloth -h` preflight must keep proving that the module
+# behind `unsloth studio run` imports. Every other command module loads on first use.
+from unsloth_cli.commands.studio import studio_app
 
 
 _entry_point_prepared = False
@@ -150,7 +139,7 @@ def show_version(value: bool):
 _ARGV_META_KEY = "unsloth.invocation_args"
 
 try:
-    from typer.core import TyperGroup as _TyperGroup
+    from typer.core import TyperCommand as _TyperCommand, TyperGroup as _TyperGroup
 except Exception:  # pragma: no cover - a typer without the public group class
     _TyperGroup = None
 
@@ -165,9 +154,38 @@ if _TyperGroup is not None:
         arguments rather than by the host's argv.
         """
 
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.commands = _LazyCommands(self.commands, _ACTIVE_LAZY_COMMANDS)
+            self._listing = 0
+
         def parse_args(self, ctx, args):
             ctx.meta.setdefault(_ARGV_META_KEY, list(args))
             return super().parse_args(ctx, args)
+
+        def list_commands(self, ctx):
+            # Names only: typer's version walks .items(), which would load every command.
+            return list(self.commands)
+
+        def get_command(self, ctx, cmd_name):
+            # Help and completion only read name, help and hidden: answer them from the table.
+            if self._listing and self.commands.pending(cmd_name):
+                help_text, hidden = _LAZY_COMMANDS[cmd_name]
+                return _TyperCommand(name = cmd_name, help = help_text, hidden = hidden)
+            return super().get_command(ctx, cmd_name)
+
+        def _list_from_table(self, render, *args):
+            self._listing += 1
+            try:
+                return render(*args)
+            finally:
+                self._listing -= 1
+
+        def format_help(self, ctx, formatter):
+            return self._list_from_table(super().format_help, ctx, formatter)
+
+        def shell_complete(self, ctx, incomplete):
+            return self._list_from_table(super().shell_complete, ctx, incomplete)
 
 else:  # pragma: no cover
     _ArgvCapturingGroup = None
@@ -227,42 +245,185 @@ def main(
         raise typer.Exit(code = 1)
 
 
-app.add_typer(studio_app, name = "studio", help = "Unsloth Studio commands.")
-if not _windows_studio_mutation_entry:
-    app.command()(train)
-    app.command()(inference)
-    app.command()(chat)
-    app.command()(export)
-    app.command("eval")(eval_command)
-    app.command("list-checkpoints")(list_checkpoints)
-    app.command("doctor")(doctor)
-    app.add_typer(
-        start_app,
-        name = "start",
-        help = "Start a coding agent (Claude, Codex, OpenClaw, OpenCode, Hermes, Pi, dsh, Vibe, "
-        "VS Code) against Unsloth.",
-    )
-    app.add_typer(
-        mcp_app, name = "mcp", help = "Connect coding agents to the Unsloth Studio MCP server."
-    )
-    # backwards-compatible hidden alias: `unsloth connect` routes to `unsloth start`.
-    app.add_typer(
-        start_app,
-        name = "connect",
-        hidden = True,
-        help = "Deprecated alias for `unsloth start`.",
-    )
+# The other command modules load on first use, so `unsloth -h`, `unsloth --version`
+# and `unsloth studio run` import only studio. The help listing and shell completion
+# read this table instead of the modules; test_cli_lazy_commands pins every row
+# (order, help, hidden) to the command the module really builds.
+_START_HELP = (
+    "Start a coding agent (Claude, Codex, OpenClaw, OpenCode, Hermes, Pi, dsh, Vibe, "
+    "VS Code) against Unsloth."
+)
+_LAZY_COMMANDS = {
+    "train": ("Launch training using the existing Unsloth training backend.", False),
+    "inference": ("Run a single inference using the specified model.", False),
+    "chat": ("Start an interactive chat with a model (loads once, stays warm).", False),
+    "export": ("Export a checkpoint to various formats (merged, GGUF, LoRA adapter).", False),
+    "eval": ("Evaluate a checkpoint or LoRA adapter using lm-eval-harness.", False),
+    "list-checkpoints": ("List checkpoints detected in the outputs directory.", False),
+    "doctor": (
+        "Preflight checks for this machine. Exit status 1 means a problem was found.",
+        False,
+    ),
+    "run": ("Alias for `unsloth studio run`.", False),
+    "start": (_START_HELP, False),
+    "mcp": ("Connect coding agents to the Unsloth Studio MCP server.", False),
+    "connect": ("Deprecated alias for `unsloth start`.", True),
+}
+# typer lists commands before sub-apps, each in registration order.
+_COMMAND_ORDER = (
+    "train",
+    "inference",
+    "chat",
+    "export",
+    "eval",
+    "list-checkpoints",
+    "doctor",
+    "run",
+    "install-kernels",
+    "studio",
+    "start",
+    "mcp",
+    "connect",
+)
+# A Windows `studio setup` / `studio update` registers studio alone, as before.
+_ACTIVE_LAZY_COMMANDS = () if _windows_studio_mutation_entry else tuple(_LAZY_COMMANDS)
 
-    # top-level `unsloth run` aliases `unsloth studio run`; same context so unknown flags pass through to llama-server.
-    app.command(
-        "run",
-        cls = _LlamaPassthroughCommand,
-        context_settings = {
-            "allow_extra_args": True,
-            "ignore_unknown_options": True,
-        },
-        help = "Alias for `unsloth studio run`.",
-    )(studio_run)
+
+def _register_command(app, name):
+    """Register the top-level command *name* on *app*, importing only its module."""
+    if name == "train":
+        from unsloth_cli.commands.train import train
+        app.command()(train)
+    elif name == "inference":
+        from unsloth_cli.commands.inference import inference
+        app.command()(inference)
+    elif name == "chat":
+        from unsloth_cli.commands.chat import chat
+        app.command()(chat)
+    elif name == "export":
+        from unsloth_cli.commands.export import export
+        app.command()(export)
+    elif name == "eval":
+        from unsloth_cli.commands.eval import evaluate as eval_command
+        app.command("eval")(eval_command)
+    elif name == "list-checkpoints":
+        from unsloth_cli.commands.export import list_checkpoints
+        app.command("list-checkpoints")(list_checkpoints)
+    elif name == "doctor":
+        from unsloth_cli.commands.doctor import doctor
+        app.command("doctor")(doctor)
+    elif name == "start":
+        from unsloth_cli.commands.start import start_app
+        app.add_typer(start_app, name = "start", help = _LAZY_COMMANDS["start"][0])
+    elif name == "mcp":
+        from unsloth_cli.commands.mcp import mcp_app
+        app.add_typer(mcp_app, name = "mcp", help = _LAZY_COMMANDS["mcp"][0])
+    elif name == "connect":
+        from unsloth_cli.commands.start import start_app
+
+        # backwards-compatible hidden alias: `unsloth connect` routes to `unsloth start`.
+        app.add_typer(
+            start_app,
+            name = "connect",
+            hidden = True,
+            help = _LAZY_COMMANDS["connect"][0],
+        )
+    elif name == "run":
+        from unsloth_cli.commands.studio import run as studio_run, _LlamaPassthroughCommand
+
+        # top-level `unsloth run` aliases `unsloth studio run`; same context so unknown flags pass through to llama-server.
+        app.command(
+            "run",
+            cls = _LlamaPassthroughCommand,
+            context_settings = {
+                "allow_extra_args": True,
+                "ignore_unknown_options": True,
+            },
+            help = _LAZY_COMMANDS["run"][0],
+        )(studio_run)
+    else:
+        raise KeyError(name)
+
+
+def _load_command(name):
+    """Build the click command for *name* exactly as typer does for an eagerly registered one."""
+    scratch = typer.Typer(add_completion = False)
+    _register_command(scratch, name)
+    return typer.main.get_group(scratch).commands[name]
+
+
+_PENDING = object()
+
+
+class _LazyCommands(_MutableMapping):
+    """`group.commands` whose lazy entries build on first lookup; names and order need no import."""
+
+    def __init__(self, eager, lazy_names):
+        self._commands = {}
+        for name in _COMMAND_ORDER:
+            if name in eager:
+                self._commands[name] = eager[name]
+            elif name in lazy_names:
+                self._commands[name] = _PENDING
+        for name, command in eager.items():
+            self._commands.setdefault(name, command)
+
+    def pending(self, name):
+        return self._commands.get(name) is _PENDING
+
+    def __getitem__(self, name):
+        command = self._commands[name]
+        if command is _PENDING:
+            command = self._commands[name] = _load_command(name)
+        return command
+
+    def __setitem__(self, name, command):
+        self._commands[name] = command
+
+    def __delitem__(self, name):
+        del self._commands[name]
+
+    def __contains__(self, name):
+        return name in self._commands
+
+    def __iter__(self):
+        return iter(self._commands)
+
+    def __len__(self):
+        return len(self._commands)
+
+
+app.add_typer(studio_app, name = "studio", help = "Unsloth Studio commands.")
+if _ArgvCapturingGroup is None:  # pragma: no cover - no group class to defer through
+    for _name in _COMMAND_ORDER:
+        if _name in _ACTIVE_LAZY_COMMANDS:
+            _register_command(app, _name)
+
+
+# Names this module used to import eagerly, for callers that still read them here.
+_LAZY_ATTRIBUTES = {
+    "train": ("unsloth_cli.commands.train", "train"),
+    "inference": ("unsloth_cli.commands.inference", "inference"),
+    "chat": ("unsloth_cli.commands.chat", "chat"),
+    "start_app": ("unsloth_cli.commands.start", "start_app"),
+    "export": ("unsloth_cli.commands.export", "export"),
+    "list_checkpoints": ("unsloth_cli.commands.export", "list_checkpoints"),
+    "eval_command": ("unsloth_cli.commands.eval", "evaluate"),
+    "doctor": ("unsloth_cli.commands.doctor", "doctor"),
+    "mcp_app": ("unsloth_cli.commands.mcp", "mcp_app"),
+    "studio_run": ("unsloth_cli.commands.studio", "run"),
+    "studio_app": ("unsloth_cli.commands.studio", "studio_app"),
+    "_LlamaPassthroughCommand": ("unsloth_cli.commands.studio", "_LlamaPassthroughCommand"),
+}
+
+
+def __getattr__(name):
+    try:
+        module_name, attribute = _LAZY_ATTRIBUTES[name]
+    except KeyError:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+    import importlib
+    return getattr(importlib.import_module(module_name), attribute)
 
 
 @app.command(
