@@ -191,10 +191,8 @@ def _count_scans(monkeypatch):
 @pytest.mark.parametrize(
     "text",
     [
-        # Openers with no closer after them: the parser skips them without a scan.
         "[TOOL_CALLS]f" + "python[ARGS]{" * 2000,
         "[TOOL_CALLS]python{" * 2000,
-        # Nameless [ARGS]{ inside a quoted argument is no rehearsal call, closer or not.
         '[TOOL_CALLS]python{"query": "' + "[ARGS]{" * 2000 + "}",
     ],
     ids = ["rehearsal_no_closer", "bracket_no_closer", "nameless_quoted"],
