@@ -512,7 +512,7 @@ function ParamFieldImpl({ spec, value, onChange }: FieldProps) {
     case "select":
       return (
         <Select
-          value={String(value ?? "")}
+          value={String(value ?? spec.default ?? "")}
           onValueChange={(next) => onChange(next)}
         >
           <SelectTrigger className={`${FIELD} w-full`}>
