@@ -742,8 +742,7 @@ class _Q21HookedTransformer(torch.nn.Module):
 
 
 def test_qwen_image_21_under_group_offload_hooks_keeps_one_graph_per_block():
-    """At 16 GB the resident transformer takes diffusers group offload hooks per request: the compiled block frame
-    then starts in the hook, so the first prompt of a new token length recompiled every block."""
+    """An edit request at 16 GB hooks the resident transformer; a new prompt length then recompiled every block."""
     hooks = pytest.importorskip("diffusers.hooks")
     from torch._dynamo.utils import counters
 
