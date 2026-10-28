@@ -70,7 +70,7 @@ function IconButton({
       onClick={onClick}
       className={
         active
-          ? "bg-background text-foreground shadow-sm"
+          ? "bg-background text-foreground shadow-sm dark:bg-input/30"
           : "text-muted-foreground"
       }
     >

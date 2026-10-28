@@ -5953,6 +5953,10 @@ html.force-reduced-motion .sidebar-section-drop-line {
 .dark .flows-editor {
 	--flows-port-mix: 100%;
 }
+/* A Nodes panel item is armed: the pane places it on click. */
+.flows-armed .react-flow__pane {
+	cursor: copy;
+}
 
 /* Radix hides the select viewport scrollbar (the viewport is the scroller
    so menu corners stay rounded); restore the app's thin one. The inline

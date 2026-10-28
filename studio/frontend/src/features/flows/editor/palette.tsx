@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { CollapsibleSectionTriggerButton } from "@/features/recipe-studio/dialogs/shared/collapsible-section-trigger";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { memo, useDeferredValue, useMemo, useState } from "react";
+import { memo, useDeferredValue, useMemo, useRef, useState } from "react";
 import { useCatalogStore } from "../stores/catalog-store";
 import { useUiStore } from "../stores/ui-store";
 import type { NodeSpec } from "../types";
@@ -14,27 +14,81 @@ import { Cancel01Icon, Search01Icon } from "./icon-data";
 import { nodeIcon } from "./icons";
 import { NodeIconTile } from "./node-card";
 import { CATEGORY_TONES } from "./node-tones";
-import { NODE_DRAG_MIME } from "./node-factory";
+import { stopPlacement, togglePlacement, usePlacement } from "./placement";
 
-/** Recipe Studio's block sheet row (BlockSheetButton), at palette density. */
+type Ghost = { spec: NodeSpec; color: string; x: number; y: number };
+const DRAG_SLOP = 5;
+
+/** Recipe Studio's block sheet row (BlockSheetButton), at palette density. Click arms it for
+ *  placing; a drag drops one. Pointer events, not HTML5 drag, which Tauri's macOS webview eats. */
 function PaletteItem({
   spec,
   color,
-  onAdd,
-}: { spec: NodeSpec; color: string; onAdd: (type: string) => void }) {
+  armed,
+  onGhost,
+  onDrop,
+}: {
+  spec: NodeSpec;
+  color: string;
+  armed: boolean;
+  onGhost: (ghost: Ghost | null) => void;
+  onDrop: (type: string, x: number, y: number) => void;
+}) {
+  const press = useRef<{ x: number; y: number; dragging: boolean } | null>(
+    null,
+  );
+  const dragged = useRef(false);
   return (
     <button
       type="button"
-      draggable={true}
-      onDragStart={(e) => {
-        e.dataTransfer.setData(NODE_DRAG_MIME, spec.type);
-        e.dataTransfer.effectAllowed = "move";
+      onPointerDown={(e) => {
+        if (e.button !== 0) return;
+        press.current = { x: e.clientX, y: e.clientY, dragging: false };
+        e.currentTarget.setPointerCapture(e.pointerId);
       }}
-      onClick={() => onAdd(spec.type)}
+      onPointerMove={(e) => {
+        const p = press.current;
+        if (!p) return;
+        if (
+          !p.dragging &&
+          Math.hypot(e.clientX - p.x, e.clientY - p.y) < DRAG_SLOP
+        )
+          return;
+        p.dragging = true;
+        onGhost({ spec, color, x: e.clientX, y: e.clientY });
+      }}
+      onPointerUp={(e) => {
+        const p = press.current;
+        press.current = null;
+        if (!p?.dragging) return;
+        dragged.current = true;
+        onGhost(null);
+        onDrop(spec.type, e.clientX, e.clientY);
+      }}
+      onPointerCancel={() => {
+        press.current = null;
+        onGhost(null);
+      }}
+      onClick={() => {
+        if (dragged.current) {
+          dragged.current = false;
+          return;
+        }
+        togglePlacement(spec.type);
+      }}
+      aria-pressed={armed}
       title={spec.description}
       data-testid={`palette-${spec.type}`}
-      className="flex w-full cursor-grab items-center gap-2.5 border-l-2 border-transparent bg-background px-3 py-1.5 text-left transition hover:border-border/60 hover:bg-muted/35 active:cursor-grabbing"
+      className={`flex w-full touch-none select-none items-center gap-2.5 border-l-2 px-3 py-1.5 text-left transition ${armed ? "border-primary bg-muted" : "border-transparent bg-background hover:border-border/60 hover:bg-muted/35"}`}
     >
+      <PaletteRowBody spec={spec} color={color} />
+    </button>
+  );
+}
+
+function PaletteRowBody({ spec, color }: { spec: NodeSpec; color: string }) {
+  return (
+    <>
       <NodeIconTile
         icon={nodeIcon(spec.icon)}
         tone={CATEGORY_TONES[spec.category]}
@@ -55,11 +109,15 @@ function PaletteItem({
           {spec.description}
         </p>
       </div>
-    </button>
+    </>
   );
 }
 
-function PaletteImpl({ onAdd }: { onAdd: (type: string) => void }) {
+function PaletteImpl({
+  onDrop,
+}: { onDrop: (type: string, x: number, y: number) => void }) {
+  const armed = usePlacement((s) => s.armed);
+  const [ghost, setGhost] = useState<Ghost | null>(null);
   const catalog = useCatalogStore((s) => s.catalog);
   const [query, setQuery] = useState("");
   const deferred = useDeferredValue(query.trim().toLowerCase());
@@ -86,7 +144,9 @@ function PaletteImpl({ onAdd }: { onAdd: (type: string) => void }) {
     <div
       className="flex h-full w-64 shrink-0 flex-col border-border border-r bg-background"
       onKeyDown={(e) => {
-        if (e.key === "Escape") useUiStore.getState().togglePalette();
+        if (e.key !== "Escape") return;
+        if (usePlacement.getState().armed) stopPlacement();
+        else useUiStore.getState().togglePalette();
       }}
     >
       <div className="flex items-center justify-between pt-2 pr-1.5 pl-4">
@@ -139,7 +199,9 @@ function PaletteImpl({ onAdd }: { onAdd: (type: string) => void }) {
                     key={spec.type}
                     spec={spec}
                     color={category.color}
-                    onAdd={onAdd}
+                    armed={armed === spec.type}
+                    onGhost={setGhost}
+                    onDrop={onDrop}
                   />
                 ))}
             </div>
@@ -152,8 +214,17 @@ function PaletteImpl({ onAdd }: { onAdd: (type: string) => void }) {
         )}
       </div>
       <p className="border-border border-t px-3 py-2 text-ui-11 leading-snug text-muted-foreground">
-        Drag onto the canvas, or double-click the canvas to search.
+        Click a node, then click the canvas to place it (Esc to stop). Drag
+        to drop one, or double-click the canvas to search.
       </p>
+      {ghost && (
+        <div
+          className="pointer-events-none fixed z-[1000] flex w-56 items-center gap-2.5 rounded-xl border border-border bg-card px-3 py-1.5 opacity-90 shadow-md"
+          style={{ left: ghost.x + 8, top: ghost.y + 8 }}
+        >
+          <PaletteRowBody spec={ghost.spec} color={ghost.color} />
+        </div>
+      )}
     </div>
   );
 }

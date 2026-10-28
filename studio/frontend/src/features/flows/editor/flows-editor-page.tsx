@@ -32,6 +32,7 @@ import { CapabilityBanner } from "./capability-banner";
 import { Inspector } from "./inspector";
 import { addNodeConnected } from "./node-factory";
 import { Palette } from "./palette";
+import { placementPosition } from "./placement";
 import { QuickAdd } from "./quick-add";
 import { detachRun, hydrateRuntime } from "./run-controller";
 import { RunDrawer } from "./run-drawer";
@@ -87,26 +88,15 @@ function EditorBody({
   }, []);
   useAutosave(!readOnly);
 
-  const addAtCenter = useCallback(
-    (type: string) => {
-      const pane = document
-        .querySelector('[data-testid="flows-canvas"]')
-        ?.getBoundingClientRect();
-      const center = pane
-        ? screenToFlowPosition({
-            x: pane.left + pane.width / 2,
-            y: pane.top + pane.height / 2,
-          })
-        : { x: 0, y: 0 };
-      const jitter = () => Math.round((Math.random() - 0.5) * 60);
-      const node = addNodeConnected(type, [
-        Math.round(center.x - 130 + jitter()),
-        Math.round(center.y - 60 + jitter()),
-      ]);
-      if (node) {
-        useUiStore.getState().setSelection([node.id], []);
-        useUiStore.getState().openInspector(node.id);
-      }
+  const dropAt = useCallback(
+    (type: string, x: number, y: number) => {
+      const target = document.elementFromPoint(x, y);
+      if (!target?.closest('[data-testid="flows-canvas"]')) return;
+      const snap = useUiStore.getState().snapToGrid;
+      addNodeConnected(
+        type,
+        placementPosition(screenToFlowPosition({ x, y }), snap),
+      );
     },
     [screenToFlowPosition],
   );
@@ -141,7 +131,7 @@ function EditorBody({
       )}
       {!readOnly && <CapabilityBanner flowId={flowId} />}
       <div className="flex min-h-0 flex-1">
-        {paletteOpen && !readOnly && <Palette onAdd={addAtCenter} />}
+        {paletteOpen && !readOnly && <Palette onDrop={dropAt} />}
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="relative min-h-0 flex-1">
             <FlowCanvas readOnly={readOnly} />

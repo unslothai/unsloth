@@ -34,7 +34,9 @@ function tint(color: string, percent: number): string {
 }
 
 // Studio surfaces: groups and default notes are neutral; the group colour is its dot.
-const GROUP_FILL = "color-mix(in oklab, var(--muted) 40%, transparent)";
+// Studio Card's edge (components/ui/card.tsx), no fill: cards inside read against the canvas.
+const GROUP_EDGE =
+  "color-mix(in oklab, var(--foreground) calc(10% * var(--contrast-edge-gain, 1)), transparent)";
 const NOTE_STYLE = { background: "var(--muted)", borderColor: "var(--border)" };
 // Recipe Studio's and the examples' default note yellow reads as "no colour picked".
 const DEFAULT_NOTE = "#fde68a";
@@ -49,10 +51,9 @@ function GroupFrameImpl({ data, selected }: NodeProps<RfNode>) {
   const color = group.color ?? "#8b5cf6";
   return (
     <div
-      className="corner-squircle h-full w-full rounded-2xl border shadow-sm"
+      className="corner-squircle h-full w-full rounded-2xl border"
       style={{
-        borderColor: selected ? "var(--ring-select)" : "var(--border)",
-        background: GROUP_FILL,
+        borderColor: selected ? "var(--ring-select)" : GROUP_EDGE,
       }}
     >
       <NodeResizer
@@ -69,7 +70,7 @@ function GroupFrameImpl({ data, selected }: NodeProps<RfNode>) {
       />
       <div
         className="flow-group-drag flex cursor-grab items-center gap-2 border-b px-3 py-2 active:cursor-grabbing"
-        style={{ borderColor: "var(--border)" }}
+        style={{ borderColor: GROUP_EDGE }}
         onDoubleClick={() => setEditing(true)}
       >
         <span

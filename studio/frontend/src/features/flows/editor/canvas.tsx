@@ -485,7 +485,7 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
           variant={BackgroundVariant.Dots}
           gap={20}
           size={1.2}
-          color="color-mix(in oklab, var(--foreground) 28%, transparent)"
+          color="color-mix(in oklab, var(--foreground) 14%, transparent)"
         />
         <CanvasControls readOnly={readOnly} />
         <SelectedNodeToolbar readOnly={readOnly} />
