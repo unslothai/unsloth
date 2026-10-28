@@ -2398,6 +2398,9 @@ export const fr = {
         used: "Utilisé : {value}",
         free: "Disponible : {value}",
         total: "{value} au total",
+        usedOf: "{used} utilisés sur {total}",
+        segmentUsed: "Utilisée",
+        segmentOtherApps: "Autres apps",
       },
       llamaBackend: {
         title: "Moteur d'inférence GGUF",

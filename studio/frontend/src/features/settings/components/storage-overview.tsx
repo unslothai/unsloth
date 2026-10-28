@@ -46,17 +46,36 @@ export function StorageOverview({
   totalBytes?: number;
   footer?: ReactNode;
 }) {
-  const sum = segments.reduce(
-    (acc, segment) => acc + Math.max(0, segment.bytes),
-    0,
-  );
-  const scale = Math.max(totalBytes ?? sum, sum);
   return (
     <div data-settings-label={label} className="flex flex-col gap-4 py-3">
       <div className="flex min-h-8 items-center justify-between gap-3">
         <p className="text-sm font-semibold text-foreground">{heading}</p>
         {action}
       </div>
+      <StorageBar segments={segments} totalBytes={totalBytes} />
+      {footer ? (
+        <div className="text-xs text-muted-foreground">{footer}</div>
+      ) : null}
+    </div>
+  );
+}
+
+/** The segmented bar and its legend, shared by the disk and GPU memory overviews. */
+export function StorageBar({
+  segments,
+  totalBytes,
+}: {
+  segments: StorageSegment[];
+  /** Width of the whole bar; defaults to the sum, so the slices fill it. */
+  totalBytes?: number;
+}) {
+  const sum = segments.reduce(
+    (acc, segment) => acc + Math.max(0, segment.bytes),
+    0,
+  );
+  const scale = Math.max(totalBytes ?? sum, sum);
+  return (
+    <>
       {/* A rounded rectangle, not a pill, by design. */}
       <div className="flex h-6 overflow-hidden rounded-sm bg-muted">
         {scale > 0
@@ -86,10 +105,7 @@ export function StorageOverview({
           </div>
         ))}
       </div>
-      {footer ? (
-        <div className="text-xs text-muted-foreground">{footer}</div>
-      ) : null}
-    </div>
+    </>
   );
 }
 

@@ -2337,6 +2337,9 @@ export const zhCN = {
         used: "已用 {value}",
         free: "{value} 可用",
         total: "共 {value}",
+        usedOf: "已用 {used}，共 {total}",
+        segmentUsed: "已用",
+        segmentOtherApps: "其他应用",
       },
       llamaBackend: {
         title: "GGUF 推理引擎",

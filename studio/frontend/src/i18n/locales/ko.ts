@@ -2361,6 +2361,9 @@ export const ko = {
         used: "{value} 사용 중",
         free: "{value} 여유",
         total: "총 {value}",
+        usedOf: "{total} 중 {used} 사용 중",
+        segmentUsed: "사용 중",
+        segmentOtherApps: "다른 앱",
       },
       llamaBackend: {
         title: "GGUF 추론 엔진",

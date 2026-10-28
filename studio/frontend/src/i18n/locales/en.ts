@@ -2430,6 +2430,9 @@ export const en = {
         used: "{value} used",
         free: "{value} free",
         total: "{value} total",
+        usedOf: "{used} used of {total}",
+        segmentUsed: "In use",
+        segmentOtherApps: "Other apps",
       },
       llamaBackend: {
         title: "GGUF inference engine",

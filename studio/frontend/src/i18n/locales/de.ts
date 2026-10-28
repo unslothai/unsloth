@@ -2399,6 +2399,9 @@ export const de = {
         used: "{value} belegt",
         free: "{value} frei",
         total: "{value} gesamt",
+        usedOf: "{used} von {total} belegt",
+        segmentUsed: "Belegt",
+        segmentOtherApps: "Andere Apps",
       },
       llamaBackend: {
         title: "GGUF-Inferenz-Engine",
