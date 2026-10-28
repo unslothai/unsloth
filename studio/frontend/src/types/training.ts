@@ -25,6 +25,8 @@ export function isTrainingObjective(
   return TRAINING_OBJECTIVES.includes(value as TrainingObjective);
 }
 
+/** "required" refuses Python rewards without an OS sandbox; "auto" falls back to software safeguards. */
+export type GrpoPythonRewardIsolation = "required" | "auto";
 export type GrpoVariant = "dapo" | "dr_grpo" | "bnpo" | "grpo" | "gspo";
 
 export const GRPO_VARIANTS: readonly GrpoVariant[] = [

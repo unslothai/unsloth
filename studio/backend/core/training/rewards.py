@@ -688,16 +688,18 @@ def preview_scores(
     python_isolation: str = "required",
     system_prompt: Optional[str] = None,
 ) -> tuple[list[dict], Optional[dict]]:
-    """Scores in ``specs`` order, plus the isolation the Python ones ran under (None if none did)."""
+    """Scores in ``specs`` order, plus the isolation the Python ones ran under (None if none did).
+    A Python reward that fails carries its own ``error``; the rest still score."""
     python = [s for s in specs if s.get("kind") == "python"]
     python_scores: dict = {}
+    python_errors: dict = {}
     isolation = None
     if python:
         from core.training.python_rewards import PythonRewardError, preview_python_scores
         if row is None and reference is not None:
             row = {"answer": reference}
         try:
-            python_scores, isolation = preview_python_scores(
+            python_scores, isolation, python_errors = preview_python_scores(
                 python,
                 text,
                 row or {},
@@ -707,15 +709,18 @@ def preview_scores(
                 system_prompt = system_prompt,
             )
         except PythonRewardError as exc:
-            raise RewardError(str(exc)) from exc
+            # No worker (no sandbox, a busy preview): every Python reward shares the reason.
+            python_errors = {s["name"]: str(exc) for s in python}
     out = []
     for s in specs:
+        error = None
         if s.get("kind") == "python":
             score = python_scores.get(s["name"])
+            error = python_errors.get(s["name"])
         else:
             # Training reads the rule's compare_to column (make_reward_func), so the preview does too.
             column = s["rule"].get("compare_to")
             ref = row[column] if row and column in row else reference
             score = score_rule(s["rule"], text, ref)
-        out.append({"name": s["name"], "score": score})
+        out.append({"name": s["name"], "score": score, "error": error})
     return out, isolation

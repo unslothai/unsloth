@@ -4,6 +4,7 @@
 import { Button } from "@/components/ui/button";
 import {
   type StartValidationResult,
+  usePythonRewardRefusal,
   useTrainingActions,
   useTrainingConfigStore,
   useTrainingReadiness,
@@ -28,6 +29,7 @@ function resolveStartTrainingError(input: {
   hasDataset: boolean;
   datasetSource: DatasetSource;
   configValidation: StartValidationResult;
+  pythonRewardRefusal: string | null;
 }): string | null {
   const {
     t,
@@ -41,6 +43,7 @@ function resolveStartTrainingError(input: {
     hasDataset,
     datasetSource,
     configValidation,
+    pythonRewardRefusal,
   } = input;
   if (isIncompatible) {
     return !isAudioModel && isDatasetAudio === true
@@ -58,6 +61,9 @@ function resolveStartTrainingError(input: {
   }
   if (!configValidation.ok) {
     return t(configValidation.errorKey);
+  }
+  if (pythonRewardRefusal) {
+    return pythonRewardRefusal;
   }
   if (startError) {
     return startError;
@@ -96,8 +102,9 @@ export function StartTrainingCta() {
   } = useTrainingReadiness();
   const { startError, startBlocked, stopRequested, startTrainingRun } =
     useTrainingActions();
+  const pythonRewardRefusal = usePythonRewardRefusal();
 
-  const disabled = startBlocked || !isReady;
+  const disabled = startBlocked || !isReady || pythonRewardRefusal !== null;
   const buttonLabel = t(
     resolveStartTrainingButtonLabelKey({
       stopRequested,
@@ -120,6 +127,7 @@ export function StartTrainingCta() {
     hasDataset,
     datasetSource,
     configValidation,
+    pythonRewardRefusal,
   });
   const isWarning =
     !(startError || isIncompatible || !configValidation.ok) &&

@@ -315,6 +315,8 @@ export function buildTrainingStartPayload(
     grpo_mask_truncated_completions:
       objective === "grpo" && config.grpoMaskTruncatedCompletions,
     grpo_epsilon_high: objective === "grpo" ? config.grpoEpsilonHigh : null,
+    grpo_python_reward_isolation:
+      objective === "grpo" ? config.grpoPythonRewardIsolation : "required",
     grpo_rewards: objective === "grpo" ? config.grpoRewards : [],
     finetune_vision_layers: config.finetuneVisionLayers,
     finetune_language_layers: config.finetuneLanguageLayers,

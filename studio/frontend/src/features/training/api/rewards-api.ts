@@ -2,7 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
-import type { GrpoRewardSelection } from "@/types/training";
+import type {
+  GrpoPythonRewardIsolation,
+  GrpoRewardSelection,
+} from "@/types/training";
 
 export interface RewardRecord {
   name: string;
@@ -18,7 +21,13 @@ export interface RewardRecord {
 }
 
 export interface RewardPreviewResponse {
-  scores: { name: string; score: number | null; weighted: number | null }[];
+  scores: {
+    name: string;
+    score: number | null;
+    weighted: number | null;
+    /** Why this reward did not score; the others still did. */
+    error?: string | null;
+  }[];
   total: number;
   isolation: { backend: string; os_isolation: boolean } | null;
 }
@@ -79,6 +88,7 @@ export async function previewRewards(
   row: Record<string, unknown> | null = null,
   prompt: string | Record<string, unknown>[] | null = null,
   systemPrompt: string | null = null,
+  pythonRewardIsolation: GrpoPythonRewardIsolation = "required",
 ): Promise<RewardPreviewResponse> {
   return readJson(
     await authFetch("/api/rewards/preview", {
@@ -91,6 +101,7 @@ export async function previewRewards(
         row,
         prompt,
         system_prompt: systemPrompt,
+        python_reward_isolation: pythonRewardIsolation,
       }),
     }),
   );
@@ -120,4 +131,14 @@ export async function getRlSamples(
     await authFetch(`/api/train/rl-samples?${params}`),
   );
   return body.samples;
+}
+
+/** What Start would be refused with for Python rewards on this host, or null. */
+export async function pythonRewardIsolationRefusal(
+  mode: GrpoPythonRewardIsolation,
+): Promise<string | null> {
+  const body = await readJson<{ refusal: string | null }>(
+    await authFetch(`/api/rewards/python-isolation?mode=${mode}`),
+  );
+  return body.refusal;
 }

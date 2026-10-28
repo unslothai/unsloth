@@ -95,6 +95,19 @@ test("GRPO sends the loss variant and its clip/mask options; DPO drops them", ()
   assert.equal(dpo.grpo_epsilon_high, null);
 });
 
+test("GRPO sends the Python reward isolation; other objectives keep the default", () => {
+  const grpo = buildTrainingStartPayload(
+    { ...BASE, trainingObjective: "grpo", grpoPythonRewardIsolation: "auto" },
+    null,
+  );
+  assert.equal(grpo.grpo_python_reward_isolation, "auto");
+  const dpo = buildTrainingStartPayload(
+    { ...BASE, trainingObjective: "dpo", grpoPythonRewardIsolation: "auto" },
+    null,
+  );
+  assert.equal(dpo.grpo_python_reward_isolation, "required");
+});
+
 test("DPO does not send GRPO-only fields", () => {
   const payload = buildTrainingStartPayload(
     { ...BASE, trainingObjective: "dpo", grpoMaxCompletionLength: 512 },
@@ -152,7 +165,10 @@ test("image and audio datasets always start as SFT", async () => {
 });
 
 test("the drafter is sent for SFT only: its phase reads tokenized SFT rows", () => {
-  const sft = buildTrainingStartPayload({ ...BASE, drafterEnabled: true }, null);
+  const sft = buildTrainingStartPayload(
+    { ...BASE, drafterEnabled: true },
+    null,
+  );
   assert.ok(sft.drafter);
   for (const trainingObjective of ["dpo", "orpo", "grpo"] as const) {
     const payload = buildTrainingStartPayload(
