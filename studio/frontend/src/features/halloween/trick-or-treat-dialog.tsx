@@ -167,7 +167,7 @@ export function TrickOrTreatDialog({
               <span className="mb-1 flex size-14 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-[0_0_32px_-4px_var(--primary)]">
                 <HugeiconsIcon
                   icon={PumpkinIcon}
-                  strokeWidth={1.25}
+                  strokeWidth={1.36}
                   className="size-9"
                 />
               </span>
