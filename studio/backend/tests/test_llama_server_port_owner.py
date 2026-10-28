@@ -71,9 +71,22 @@ def _urllib_get(
         raise llama_cpp.httpx.ConnectError(str(e))
 
 
+class _UrllibProbeClient:
+    """The health wait's probe client, answering each get through urllib."""
+
+    cookies = SimpleNamespace(clear = lambda: None)
+
+    def get(self, url, **kw):
+        return _urllib_get(url, **kw)
+
+    def close(self):
+        pass
+
+
 @pytest.fixture
 def probe(monkeypatch):
     monkeypatch.setattr(llama_cpp.httpx, "get", _urllib_get)
+    monkeypatch.setattr(llama_cpp, "_health_probe_client", _UrllibProbeClient)
 
 
 @pytest.fixture

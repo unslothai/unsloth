@@ -384,6 +384,24 @@ def test_a_cancel_during_the_stall_never_spawns_the_replay(monkeypatch, tmp_path
     assert sink["fallback_sources"] == []
 
 
+class _ProbeClient:
+    """Stands in for the one client a health wait probes through; each get goes to ``get``."""
+
+    def __init__(self, get):
+        self._get = get
+        self.cookies = SimpleNamespace(clear = lambda: None)
+
+    def get(self, url, **kw):
+        return self._get(url, **kw)
+
+    def close(self):
+        pass
+
+
+def _route_health_probes(monkeypatch, get):
+    monkeypatch.setattr(llama_cpp, "_health_probe_client", lambda: _ProbeClient(get))
+
+
 class _Clock:
     def __init__(self):
         self.now = 0.0
@@ -417,7 +435,7 @@ def _wait(
             return SimpleNamespace(status_code = 200)
         raise llama_cpp.httpx.ConnectError("refused")
 
-    monkeypatch.setattr(llama_cpp.httpx, "get", _no_server)
+    _route_health_probes(monkeypatch, _no_server)
     cpu = {"t": 0.0}
 
     def _sample(cls, _process):
@@ -536,9 +554,8 @@ def test_a_child_exiting_at_the_deadline_is_a_crash_not_a_stall(monkeypatch):
         polls["n"] += 1
         return None if clock.now < 30.0 else -11
 
-    monkeypatch.setattr(
-        llama_cpp.httpx,
-        "get",
+    _route_health_probes(
+        monkeypatch,
         lambda *a, **k: (_ for _ in ()).throw(llama_cpp.httpx.ConnectError("refused")),
     )
     monkeypatch.setattr(

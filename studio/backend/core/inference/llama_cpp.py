@@ -7998,6 +7998,21 @@ _SIGKILL_REAP_TIMEOUT_S = 30
 _QUIT_SIGNAL_EXIT_GRACE_S = 2
 
 
+def _health_probe_client() -> "httpx.Client":
+    """The client one ``_wait_for_health`` probes /health through.
+
+    Same settings a top-level ``httpx.get(url, timeout = 2.0, trust_env = False)`` uses,
+    plus no idle keep-alive, so each probe still opens and closes its own connection.
+    """
+    return httpx.Client(
+        timeout = 2.0,
+        # trust_env=False: an HTTP proxy can 503 for 127.0.0.1 and hang the load.
+        trust_env = False,
+        # httpx's default pool size; only the idle keep-alive is turned off.
+        limits = httpx.Limits(max_connections = 100, max_keepalive_connections = 0),
+    )
+
+
 class LlamaCppBackend:
     """Held across the teardown check and publish, never a health wait; class-level for __new__ doubles."""
 
@@ -35072,98 +35087,116 @@ class LlamaCppBackend:
         # No teardown reset here: _torn_down_process is matched by identity.
         process = None  # the child this wait last looked at, read again after the loop
 
-        while (now := time.monotonic()) < deadline:
-            # Durable, unlike the per-process marker below: once teardown begins,
-            # every later iteration sees it.
-            if getattr(self, "_shutting_down", False):
-                logger.info("llama-server was torn down while waiting for it to become healthy")
-                self._health_wait_cancelled = True
-                return False
-            # unload_model() blocks on self._lock, which the load holds across this wait.
-            if cancelled is not None and cancelled():
-                logger.info("llama-server startup cancelled before it became healthy")
-                self._health_wait_cancelled = True
-                return False
-            # Cleared before probing so output during the request stays latched for
-            # the fallback wait below.
-            health_probe_event.clear()
-            # Read once: shutdown clears the reference from another thread (#10353).
-            process = self._process
-            if process is None:
-                logger.info("llama-server was torn down while waiting for it to become healthy")
-                # Legacy path stays silent at llama.cpp's default, so an untouched slider adds no flag.
-                self._health_wait_cancelled = True
-                return False
-            # Process crashed?
-            if process.poll() is not None:
-                # A teardown holds the reference, so this child exiting is deliberate.
-                if getattr(self, "_torn_down_process", None) is process:
+        # One client per wait, built at the first probe: later probes skip the client and
+        # TLS context setup a top-level httpx.get pays each time. No idle keep-alive, so
+        # every probe still opens and closes its own connection, as before.
+        probe_client = None
+        try:
+            while (now := time.monotonic()) < deadline:
+                # Durable, unlike the per-process marker below: once teardown begins,
+                # every later iteration sees it.
+                if getattr(self, "_shutting_down", False):
                     logger.info("llama-server was torn down while waiting for it to become healthy")
                     self._health_wait_cancelled = True
                     return False
-                # Let the drain thread collect final output.
-                if self._stdout_thread is not None:
-                    self._stdout_thread.join(timeout = 2)
-                output = "\n".join(self._stdout_lines[-50:])
-                # Keep the tail: crash details print after the long startup banner.
-                _log_hint = (
-                    f" Full log: {self._llama_log_path}"
-                    if getattr(self, "_llama_log_path", None)
-                    else ""
-                )
-                logger.error(
-                    f"llama-server exited with code {process.returncode}. "
-                    f"Output (tail): {output[-2000:]}{_log_hint}"
-                )
-                return False
-
-            if work_checked_at is None or now - work_checked_at >= self._STARTUP_PROGRESS_SAMPLE_S:
-                work_checked_at = now
-                sample = self._startup_work_sample(process)
-                if sample is not None:
-                    if work_sample is not None and self._made_startup_progress(
-                        work_sample,
-                        sample,
-                        now - work_sampled_at,
-                        cpu_counts = cpu_counts_as_progress,
-                    ):
-                        deadline = now + timeout
-                        if ceiling is not None and deadline > ceiling:
-                            deadline = ceiling
-                            clipped_by_ceiling = True
-                    peak = sample[1] if work_sample is None else max(work_sample[1], sample[1])
-                    work_sample = (sample[0], peak, sample[2], sample[3])
-                    work_sampled_at = now
-
-            try:
-                # trust_env=False: an HTTP proxy can 503 for 127.0.0.1 and hang the load.
-                resp = httpx.get(url, timeout = 2.0, trust_env = False)
-                if resp.status_code == 200:
-                    # A cancel during the 2s probe must not publish the dropped model.
-                    if cancelled is not None and cancelled():
-                        logger.info("llama-server became healthy after the load was cancelled")
+                # unload_model() blocks on self._lock, which the load holds across this wait.
+                if cancelled is not None and cancelled():
+                    logger.info("llama-server startup cancelled before it became healthy")
+                    self._health_wait_cancelled = True
+                    return False
+                # Cleared before probing so output during the request stays latched for
+                # the fallback wait below.
+                health_probe_event.clear()
+                # Read once: shutdown clears the reference from another thread (#10353).
+                process = self._process
+                if process is None:
+                    logger.info("llama-server was torn down while waiting for it to become healthy")
+                    # Legacy path stays silent at llama.cpp's default, so an untouched slider adds no flag.
+                    self._health_wait_cancelled = True
+                    return False
+                # Process crashed?
+                if process.poll() is not None:
+                    # A teardown holds the reference, so this child exiting is deliberate.
+                    if getattr(self, "_torn_down_process", None) is process:
+                        logger.info(
+                            "llama-server was torn down while waiting for it to become healthy"
+                        )
                         self._health_wait_cancelled = True
                         return False
-                    # A 200 arriving as shutdown began must not publish _healthy.
-                    if getattr(self, "_shutting_down", False):
-                        logger.info("llama-server became healthy while the app was shutting down")
-                        self._health_wait_cancelled = True
-                        return False
-                    if not self._health_listener_is_ours(process, getattr(self, "_port", None)):
-                        self._stdout_lines.append(_PORT_OWNER_REFUSED_MARKER)
-                        return False
-                    return True
-            except (
-                httpx.ConnectError,
-                httpx.TimeoutException,
-                # TCP RST while binding (Windows WinError 10054).
-                httpx.ReadError,
-                httpx.RemoteProtocolError,
-                httpx.WriteError,
-            ):
-                pass
+                    # Let the drain thread collect final output.
+                    if self._stdout_thread is not None:
+                        self._stdout_thread.join(timeout = 2)
+                    output = "\n".join(self._stdout_lines[-50:])
+                    # Keep the tail: crash details print after the long startup banner.
+                    _log_hint = (
+                        f" Full log: {self._llama_log_path}"
+                        if getattr(self, "_llama_log_path", None)
+                        else ""
+                    )
+                    logger.error(
+                        f"llama-server exited with code {process.returncode}. "
+                        f"Output (tail): {output[-2000:]}{_log_hint}"
+                    )
+                    return False
 
-            health_probe_event.wait(interval)
+                if (
+                    work_checked_at is None
+                    or now - work_checked_at >= self._STARTUP_PROGRESS_SAMPLE_S
+                ):
+                    work_checked_at = now
+                    sample = self._startup_work_sample(process)
+                    if sample is not None:
+                        if work_sample is not None and self._made_startup_progress(
+                            work_sample,
+                            sample,
+                            now - work_sampled_at,
+                            cpu_counts = cpu_counts_as_progress,
+                        ):
+                            deadline = now + timeout
+                            if ceiling is not None and deadline > ceiling:
+                                deadline = ceiling
+                                clipped_by_ceiling = True
+                        peak = sample[1] if work_sample is None else max(work_sample[1], sample[1])
+                        work_sample = (sample[0], peak, sample[2], sample[3])
+                        work_sampled_at = now
+
+                try:
+                    if probe_client is None:
+                        probe_client = _health_probe_client()
+                    # Fresh cookie jar per probe, as a top-level httpx.get has.
+                    probe_client.cookies.clear()
+                    resp = probe_client.get(url)
+                    if resp.status_code == 200:
+                        # A cancel during the 2s probe must not publish the dropped model.
+                        if cancelled is not None and cancelled():
+                            logger.info("llama-server became healthy after the load was cancelled")
+                            self._health_wait_cancelled = True
+                            return False
+                        # A 200 arriving as shutdown began must not publish _healthy.
+                        if getattr(self, "_shutting_down", False):
+                            logger.info(
+                                "llama-server became healthy while the app was shutting down"
+                            )
+                            self._health_wait_cancelled = True
+                            return False
+                        if not self._health_listener_is_ours(process, getattr(self, "_port", None)):
+                            self._stdout_lines.append(_PORT_OWNER_REFUSED_MARKER)
+                            return False
+                        return True
+                except (
+                    httpx.ConnectError,
+                    httpx.TimeoutException,
+                    # TCP RST while binding (Windows WinError 10054).
+                    httpx.ReadError,
+                    httpx.RemoteProtocolError,
+                    httpx.WriteError,
+                ):
+                    pass
+
+                health_probe_event.wait(interval)
+        finally:
+            if probe_client is not None:
+                probe_client.close()
 
         if cancelled is not None and cancelled():
             logger.info("llama-server startup cancelled at the health-check deadline")

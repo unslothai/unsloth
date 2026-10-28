@@ -44,6 +44,25 @@ for _exc_name in (
         setattr(httpx, _exc_name, type(_exc_name, (Exception,), {}))
 
 
+class _ProbeClient:
+    """Stands in for the one client a health wait probes through; each get goes to ``get``."""
+
+    def __init__(self, get):
+        self._get = get
+        self.cookies = _types.SimpleNamespace(clear = lambda: None)
+
+    def get(self, url, **kw):
+        return self._get(url, **kw)
+
+    def close(self):
+        pass
+
+
+def _route_health_probes(monkeypatch, get):
+    import core.inference.llama_cpp as _llama_cpp
+    monkeypatch.setattr(_llama_cpp, "_health_probe_client", lambda: _ProbeClient(get))
+
+
 def _make_backend(port: int = 12345) -> LlamaCppBackend:
     """Barebones LlamaCppBackend with only the attributes _wait_for_health touches (bypasses __init__)."""
     b = LlamaCppBackend.__new__(LlamaCppBackend)
@@ -59,7 +78,7 @@ class TestWaitForHealthResilience:
         b = _make_backend()
         b._process.poll.return_value = None
         ok_resp = mock.Mock(status_code = 200)
-        monkeypatch.setattr(httpx, "get", lambda *a, **kw: ok_resp)
+        _route_health_probes(monkeypatch, lambda *a, **kw: ok_resp)
         assert b._wait_for_health(timeout = 1.0, interval = 0.01) is True
 
     def test_timeout_records_marker_for_classification(self, monkeypatch):
@@ -67,7 +86,7 @@ class TestWaitForHealthResilience:
         classified as a /health timeout, not a bad GGUF (#5740)."""
         b = _make_backend()
         b._process.poll.return_value = None
-        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock.Mock(status_code = 503))
+        _route_health_probes(monkeypatch, lambda *a, **kw: mock.Mock(status_code = 503))
         assert b._wait_for_health(timeout = 0.02, interval = 0.01) is False
         assert any("health check timed out" in ln for ln in b._stdout_lines)
 
@@ -85,7 +104,7 @@ class TestWaitForHealthResilience:
                 b._process = None
             return mock.Mock(status_code = 503)
 
-        monkeypatch.setattr(httpx, "get", probe)
+        _route_health_probes(monkeypatch, probe)
         assert b._wait_for_health(timeout = 30.0, interval = 0.01) is False
         assert len(probes) == 2
         assert not any("health check timed out" in ln for ln in b._stdout_lines)
@@ -94,7 +113,7 @@ class TestWaitForHealthResilience:
     def test_a_teardown_before_the_first_probe_is_still_not_a_crash(self, monkeypatch):
         b = _make_backend()
         b._process = None
-        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock.Mock(status_code = 200))
+        _route_health_probes(monkeypatch, lambda *a, **kw: mock.Mock(status_code = 200))
         assert b._wait_for_health(timeout = 30.0, interval = 0.01) is False
         assert b._health_wait_cancelled is True
 
@@ -103,7 +122,7 @@ class TestWaitForHealthResilience:
         it reads the cleared reference and raises one frame up, and respawns."""
         b = _make_backend()
         b._process = None
-        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock.Mock(status_code = 503))
+        _route_health_probes(monkeypatch, lambda *a, **kw: mock.Mock(status_code = 503))
         assert b._wait_for_health(timeout = 30.0, interval = 0.01) is False
         assert b._health_wait_cancelled is True
         assert (
@@ -116,14 +135,14 @@ class TestWaitForHealthResilience:
         b = _make_backend()
         b._process.poll.return_value = 1
         b._process.returncode = 1
-        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock.Mock(status_code = 503))
+        _route_health_probes(monkeypatch, lambda *a, **kw: mock.Mock(status_code = 503))
         assert b._wait_for_health(timeout = 1.0, interval = 0.01) is False
         assert b._health_wait_cancelled is False
 
     def test_a_teardown_marker_does_not_leak_into_the_next_load(self, monkeypatch):
         b = _make_backend()
         b._process = None
-        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock.Mock(status_code = 200))
+        _route_health_probes(monkeypatch, lambda *a, **kw: mock.Mock(status_code = 200))
         assert b._wait_for_health(timeout = 30.0, interval = 0.01) is False
         assert b._health_wait_cancelled is True
         b._process = mock.Mock()
@@ -144,7 +163,7 @@ class TestWaitForHealthResilience:
             cleared.wait(2.0)
             return mock.Mock(status_code = 503)
 
-        monkeypatch.setattr(httpx, "get", probe)
+        _route_health_probes(monkeypatch, probe)
 
         def shutdown():
             in_probe.wait(2.0)
@@ -171,7 +190,7 @@ class TestWaitForHealthResilience:
             b._process.returncode = -15
             return mock.Mock(status_code = 503)
 
-        monkeypatch.setattr(httpx, "get", probe)
+        _route_health_probes(monkeypatch, probe)
         with mock.patch("core.inference.llama_cpp.logger") as log:
             assert b._wait_for_health(timeout = 1.0, interval = 0.01) is False
         assert b._health_wait_cancelled is True
@@ -184,7 +203,7 @@ class TestWaitForHealthResilience:
         b._torn_down_process = b._process
         b._process.poll.return_value = -15
         b._process.returncode = -15
-        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock.Mock(status_code = 503))
+        _route_health_probes(monkeypatch, lambda *a, **kw: mock.Mock(status_code = 503))
         with mock.patch("core.inference.llama_cpp.logger") as log:
             assert b._wait_for_health(timeout = 1.0, interval = 0.01) is False
         assert b._health_wait_cancelled is True
@@ -200,7 +219,7 @@ class TestWaitForHealthResilience:
             b._shutting_down = True
             return mock.Mock(status_code = 503)
 
-        monkeypatch.setattr(httpx, "get", probe)
+        _route_health_probes(monkeypatch, probe)
         assert b._wait_for_health(timeout = 30.0, interval = 0.01) is False
         assert b._health_wait_cancelled is True
         assert not any("health check timed out" in ln for ln in b._stdout_lines)
@@ -296,7 +315,7 @@ class TestWaitForHealthResilience:
             b._shutting_down = True
             return mock.Mock(status_code = 200)
 
-        monkeypatch.setattr(httpx, "get", probe)
+        _route_health_probes(monkeypatch, probe)
         assert b._wait_for_health(timeout = 5.0, interval = 0.01) is False
         assert b._health_wait_cancelled is True
 
@@ -310,7 +329,7 @@ class TestWaitForHealthResilience:
             b._torn_down_process = b._process
             return mock.Mock(status_code = 503)
 
-        monkeypatch.setattr(httpx, "get", probe)
+        _route_health_probes(monkeypatch, probe)
         assert b._wait_for_health(timeout = 0.02, interval = 0.01) is False
         assert b._health_wait_cancelled is True
         assert not any("health check timed out" in ln for ln in b._stdout_lines)
@@ -320,7 +339,7 @@ class TestWaitForHealthResilience:
         b = _make_backend()
         b._process.poll.return_value = None
         b._torn_down_process = mock.Mock()
-        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock.Mock(status_code = 503))
+        _route_health_probes(monkeypatch, lambda *a, **kw: mock.Mock(status_code = 503))
         assert b._wait_for_health(timeout = 0.02, interval = 0.01) is False
         assert b._health_wait_cancelled is False
         assert any("health check timed out" in ln for ln in b._stdout_lines)
@@ -332,7 +351,7 @@ class TestWaitForHealthResilience:
         b._torn_down_process = mock.Mock()
         b._process.poll.return_value = 1
         b._process.returncode = 1
-        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock.Mock(status_code = 503))
+        _route_health_probes(monkeypatch, lambda *a, **kw: mock.Mock(status_code = 503))
         with mock.patch("core.inference.llama_cpp.logger") as log:
             assert b._wait_for_health(timeout = 1.0, interval = 0.01) is False
         assert b._health_wait_cancelled is False, "a stale teardown aborted a live load"
@@ -370,7 +389,7 @@ class TestWaitForHealthResilience:
         b._process.poll.return_value = 1
         b._process.returncode = 1
         b._stdout_lines = ["ROCm error: out of memory"]
-        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock.Mock(status_code = 503))
+        _route_health_probes(monkeypatch, lambda *a, **kw: mock.Mock(status_code = 503))
         with mock.patch("core.inference.llama_cpp.logger") as log:
             assert b._wait_for_health(timeout = 1.0, interval = 0.01) is False
         assert any("exited with code 1" in str(c) for c in log.error.call_args_list)
@@ -380,7 +399,7 @@ class TestWaitForHealthResilience:
         b._process.poll.return_value = None
         b._cancel_event = threading.Event()
         b._cancel_event.set()
-        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock.Mock(status_code = 503))
+        _route_health_probes(monkeypatch, lambda *a, **kw: mock.Mock(status_code = 503))
         started = time.monotonic()
         assert b._wait_for_health(timeout = 30.0, interval = 0.01) is False
         assert time.monotonic() - started < 1.0
@@ -398,7 +417,7 @@ class TestWaitForHealthResilience:
                 b._cancel_event.set()
             return mock.Mock(status_code = 503)
 
-        monkeypatch.setattr(httpx, "get", probe)
+        _route_health_probes(monkeypatch, probe)
         assert b._wait_for_health(timeout = 30.0, interval = 0.01) is False
         assert len(probes) == 3
 
@@ -410,7 +429,7 @@ class TestWaitForHealthResilience:
         b._health_probe_event.wait.side_effect = lambda _interval: b._cancel_event.set()
         ticks = iter((0.0, 0.0, 1.0))
         monkeypatch.setattr(time, "monotonic", lambda: next(ticks))
-        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock.Mock(status_code = 503))
+        _route_health_probes(monkeypatch, lambda *a, **kw: mock.Mock(status_code = 503))
 
         assert b._wait_for_health(timeout = 0.5, interval = 0.5) is False
         assert b._health_wait_cancelled is True
@@ -425,7 +444,7 @@ class TestWaitForHealthResilience:
         b._cancel_event = threading.Event()
         scoped = threading.Event()
         scoped.set()
-        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock.Mock(status_code = 503))
+        _route_health_probes(monkeypatch, lambda *a, **kw: mock.Mock(status_code = 503))
         started = time.monotonic()
         assert b._wait_for_health(timeout = 30.0, interval = 0.01, cancelled = scoped.is_set) is False
         assert time.monotonic() - started < 1.0
@@ -443,7 +462,7 @@ class TestWaitForHealthResilience:
             scoped.set()
             return mock.Mock(status_code = 200)
 
-        monkeypatch.setattr(httpx, "get", probe)
+        _route_health_probes(monkeypatch, probe)
         assert b._wait_for_health(timeout = 30.0, interval = 0.01, cancelled = scoped.is_set) is False
 
     def test_read_error_loops_to_subprocess_poll(self, monkeypatch):
@@ -456,7 +475,7 @@ class TestWaitForHealthResilience:
         def raise_read_error(*a, **kw):
             raise httpx.ReadError("WinError 10054")
 
-        monkeypatch.setattr(httpx, "get", raise_read_error)
+        _route_health_probes(monkeypatch, raise_read_error)
         assert b._wait_for_health(timeout = 5.0, interval = 0.01) is False
         assert b._process.poll.call_count >= 2
 
@@ -470,7 +489,7 @@ class TestWaitForHealthResilience:
         def raise_rpe(*a, **kw):
             raise httpx.RemoteProtocolError("partial response")
 
-        monkeypatch.setattr(httpx, "get", raise_rpe)
+        _route_health_probes(monkeypatch, raise_rpe)
         assert b._wait_for_health(timeout = 5.0, interval = 0.01) is False
         assert b._process.poll.call_count >= 2
 
@@ -484,7 +503,7 @@ class TestWaitForHealthResilience:
         def raise_we(*a, **kw):
             raise httpx.WriteError("connection broken on write")
 
-        monkeypatch.setattr(httpx, "get", raise_we)
+        _route_health_probes(monkeypatch, raise_we)
         assert b._wait_for_health(timeout = 5.0, interval = 0.01) is False
         assert b._process.poll.call_count >= 2
 
@@ -502,7 +521,7 @@ class TestWaitForHealthResilience:
                 raise httpx.ConnectError("not yet")
             return ok_resp
 
-        monkeypatch.setattr(httpx, "get", cycling)
+        _route_health_probes(monkeypatch, cycling)
         assert b._wait_for_health(timeout = 5.0, interval = 0.01) is True
         assert calls["n"] >= 3
 
@@ -518,7 +537,7 @@ class TestWaitForHealthResilience:
                 raise httpx.ConnectError("not yet")
             return mock.Mock(status_code = 200)
 
-        monkeypatch.setattr(httpx, "get", becomes_healthy)
+        _route_health_probes(monkeypatch, becomes_healthy)
         wake = threading.Timer(0.02, b._health_probe_event.set)
         wake.start()
         start = time.monotonic()
@@ -556,7 +575,7 @@ class TestWaitForHealthResilience:
             called["n"] += 1
             raise AssertionError("httpx.get must not run when subprocess is dead")
 
-        monkeypatch.setattr(httpx, "get", should_not_be_called)
+        _route_health_probes(monkeypatch, should_not_be_called)
         assert b._wait_for_health(timeout = 5.0, interval = 0.01) is False
         assert called["n"] == 0
 
@@ -745,7 +764,7 @@ class TestCancelledWaitEndsTheLoad:
             _kill()
             return mock.Mock(status_code = 503)
 
-        monkeypatch.setattr(httpx, "get", probe)
+        _route_health_probes(monkeypatch, probe)
 
         assert (
             b.load_model(
@@ -1253,7 +1272,7 @@ def test_the_deadline_asks_the_durable_flag_too(monkeypatch):
         b._shutting_down = True
         return mock.Mock(status_code = 503)
 
-    monkeypatch.setattr(httpx, "get", probe)
+    _route_health_probes(monkeypatch, probe)
 
     assert b._wait_for_health(timeout = 0.01, interval = 0.05) is False
     assert b._health_wait_cancelled is True, "a teardown was recorded as a timeout"
@@ -1550,7 +1569,7 @@ class TestHealthWaitMeasuresStalls:
                 return mock.Mock(status_code = 200)
             return mock.Mock(status_code = 503)
 
-        monkeypatch.setattr(httpx, "get", probe)
+        _route_health_probes(monkeypatch, probe)
         try:
             ok = b._wait_for_health(timeout = timeout, interval = 0.02)
             elapsed = time.monotonic() - started

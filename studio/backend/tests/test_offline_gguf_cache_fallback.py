@@ -2559,11 +2559,7 @@ class TestWaitForHealthRetriesOnReadError:
 
         calls = {"n": 0}
 
-        def fake_get(
-            url,
-            timeout = None,
-            trust_env = None,
-        ):
+        def fake_get(url):
             calls["n"] += 1
             if calls["n"] == 1:
                 raise httpx.ReadError("WinError 10054")
@@ -2577,7 +2573,16 @@ class TestWaitForHealthRetriesOnReadError:
 
             return _OK()
 
-        monkeypatch.setattr("core.inference.llama_cpp.httpx.get", fake_get)
+        class _ProbeClient:
+            cookies = _types.SimpleNamespace(clear = lambda: None)
+
+            def get(self, url):
+                return fake_get(url)
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr("core.inference.llama_cpp._health_probe_client", _ProbeClient)
         assert backend._wait_for_health(timeout = 5.0, interval = 0.01) is True
         assert calls["n"] == 4, (
             f"_wait_for_health should retry past ReadError/RemoteProtocol/Write; "
