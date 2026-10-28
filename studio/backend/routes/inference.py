@@ -14691,8 +14691,7 @@ def _mlx_estimate_drafter(
         target_name = model_identifier,
         allowed = _discoverable_drafters(model_identifier),
     )
-    first = None
-    for index, source in enumerate(resolution.sources):
+    for source in resolution.sources:
         attaches, fitted = mlx_drafter_fit(
             model_dir,
             ceiling,
@@ -14705,10 +14704,8 @@ def _mlx_estimate_drafter(
         )
         if attaches:
             return (source.path, source.builtin), fitted, True
-        if not index:
-            first = attaches
-    # Like the load: a chosen mode with none that fits attaches its first drafter, if it was sized.
-    if mode != "auto" and first is False:
+    # Like the load: a chosen mode with none that fits attaches its first drafter.
+    if mode != "auto" and resolution.sources:
         source = resolution.sources[0]
         return (source.path, source.builtin), None, True
     return None, None, True
@@ -20667,14 +20664,18 @@ async def estimate_memory(
             mlx_priced_ctx = mlx_named_ctx or mlx_fitted_ctx or _mlx_estimate_ceiling(model_dir)
             if not mlx_priced_ctx:
                 return EstimateMemoryResponse(available = False, reason = "unsizable")
-            mlx_breakdown = mlx_memory_breakdown(
-                model_dir,
+            mlx_priced = dict(
                 n_ctx = mlx_priced_ctx,
                 kv_bits = mlx_kv_bits,
                 load_in_4bit = mlx_load_in_4bit,
                 **mlx_route,
-                **({} if mlx_drafter is None else {"drafter": mlx_drafter}),
             )
+            mlx_breakdown = mlx_memory_breakdown(
+                model_dir, **mlx_priced, **({} if mlx_drafter is None else {"drafter": mlx_drafter})
+            )
+            if mlx_breakdown is None and mlx_drafter is not None:
+                # A chosen drafter attaches even where it cannot be sized: price the rest of the load.
+                mlx_breakdown = mlx_memory_breakdown(model_dir, **mlx_priced)
             if mlx_breakdown is None:
                 return EstimateMemoryResponse(available = False, reason = "unsizable")
             return EstimateMemoryResponse(

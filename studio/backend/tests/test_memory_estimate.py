@@ -826,7 +826,7 @@ class TestEstimateMemoryRoute:
             "mlx_drafter_fit",
             lambda d, ceiling, pinned, source, **_: (
                 None
-                if fit == "unsized" or (fit == "mixed" and source.path == "/big")
+                if fit in ("unpriced", "unsizable")
                 else source.path == "/ok" and (pinned or 0) <= 8192 and not fit,
                 None if pinned else 12288,
             ),
@@ -840,7 +840,11 @@ class TestEstimateMemoryRoute:
             mlx_memory,
             "mlx_memory_breakdown",
             lambda d, *, n_ctx, **kw: priced.append((n_ctx, kw.get("drafter"), kw.get("vision")))
-            or mlx_memory.MlxMemoryBreakdown(1, 0, 0, 1, 1, n_ctx = n_ctx),
+            or (
+                None
+                if fit == "unsizable" and kw.get("drafter")
+                else mlx_memory.MlxMemoryBreakdown(1, 0, 0, 1, 1, n_ctx = n_ctx)
+            ),
         )
         assert _estimate(model_path = "org/model", speculative_type = "mtp").context_fitted == 12288
         for pinned in (4096, 65536):
@@ -851,9 +855,11 @@ class TestEstimateMemoryRoute:
         _estimate(model_path = "org/model", spec_draft_model = "org/d")  # named under Auto
         fit = "unfit"
         assert _estimate(model_path = "org/model", speculative_type = "mtp").context_fitted == 24576
-        for fit in ("unsized", "mixed"):
-            _estimate(model_path = "org/model", speculative_type = "mtp")
-        assert [route for *_, route in priced] == [True] * 3 + [None] * 2 + [True] * 5
+        fit = "unpriced"  # no fit to go on: the drafter the load attaches is still charged
+        _estimate(model_path = "org/model", speculative_type = "mtp")
+        fit = "unsizable"  # one the breakdown cannot size leaves the rest of the load priced
+        assert _estimate(model_path = "org/model", speculative_type = "mtp").available
+        assert [route for *_, route in priced] == [True] * 3 + [None] * 2 + [True] * 6
         assert [row[:2] for row in priced[:6] + priced[7:]] == [
             (12288, ("/ok", False)),
             (4096, ("/ok", False)),
@@ -862,7 +868,8 @@ class TestEstimateMemoryRoute:
             (20480, None),
             (24576, None),
             (24576, ("/big", True)),
-            (24576, None),
+            (24576, ("/big", True)),
+            (24576, ("/big", True)),
             (24576, None),
         ]
 
