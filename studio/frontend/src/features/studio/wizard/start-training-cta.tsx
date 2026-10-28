@@ -11,7 +11,7 @@ import {
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import type { DatasetSource } from "@/types/training";
-import { Refresh01Icon, Rocket01Icon } from "@hugeicons/core-free-icons";
+import { PlayIcon, Refresh01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useShallow } from "zustand/react/shallow";
 import { resolveStartTrainingButtonLabelKey } from "./start-training-cta-state";
@@ -149,7 +149,7 @@ export function StartTrainingCta() {
         disabled={disabled}
       >
         <HugeiconsIcon
-          icon={Rocket01Icon}
+          icon={PlayIcon}
           strokeWidth={1.75}
           className="size-4"
         />

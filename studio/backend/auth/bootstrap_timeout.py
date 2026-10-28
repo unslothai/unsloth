@@ -1,17 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Auto-shutdown for an exposed first-run Unsloth whose admin password is unchanged.
-
-On a fresh install the seeded bootstrap admin password stays a valid login credential until first login changes
-it. When the web UI is put on the network (``--secure`` / ``0.0.0.0``) and nobody completes that first-login
-change within a deadline, tear Unsloth down so a fresh, unconfigured instance does not stay publicly reachable
-indefinitely. If the password was changed, Unsloth keeps running.
-
-Scope: web UI launches only (never ``--api-only``, which authenticates by API key rather than the admin
-password, and never Colab). Configurable via ``UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT`` (seconds; default 3600; ``0``
-disables).
-"""
+"""Shuts down an exposed UI still on its bootstrap password after a deadline; web UI only, never
+--api-only or Colab; UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT (default 3600, 0 disables)."""
 
 import os
 import sys

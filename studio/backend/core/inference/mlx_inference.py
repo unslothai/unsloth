@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""MLX inference backend for Apple Silicon. Drop-in replacement for InferenceBackend, same
-interface, using mlx-lm/mlx-vlm instead of torch/transformers for model loading and generation."""
+"""MLX inference backend for Apple Silicon; drop-in InferenceBackend replacement using mlx-lm/mlx-vlm."""
 
 import copy
 import difflib

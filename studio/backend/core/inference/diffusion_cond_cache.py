@@ -1,34 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Persistent prompt-conditioning cache for the diffusion INFERENCE path.
-
-The inference sibling of the trainers' ``cond_cache_dir`` (see
-``diffusion_train_common.DiffusionLoraConfig``), reusing the SAME on-disk store
-(``diffusion_train_extras.PersistentConditioningCache``): one safetensors file
-per encoded prompt, keyed by content hash + family. Enabled by pointing
-``UNSLOTH_DIFFUSION_COND_CACHE_DIR`` at a directory -- unset/blank means off,
-exactly like the trainer knob, so the default render path stays untouched.
-
-When enabled, the loaded pipeline's ``encode_prompt`` is wrapped per-instance:
-a repeated prompt returns the stored embeddings and never runs the text-encoder
-forward, so under an offload policy the multi-GB encoders stay OFF the GPU for
-warm prompts entirely. Verified bit-identical on the 32-image eval suites
-(FLUX.1-schnell / FLUX.2-klein / Qwen-Image-2512): renders from cached
-embeddings match inline-encoded renders exactly, and warm runs load the whole
-pipeline with no text encoder resident (8-18s load, ~7B-VL VRAM saved on
-Qwen-Image).
-
-Safety gates: the wrapper only caches calls whose arguments are all plain
-JSON-safe values (a tensor argument such as pre-supplied ``prompt_embeds``
-passes straight through), keys on everything that changes the embedding
-numerics (family, checkpoint repo, the companion base repo that supplies the
-text encoders, dtype, text-encoder quant, diffusers version, and the full
-argument set minus device/generator), and bypasses entirely while LoRA
-adapters are attached (an adapter may target the text encoders). Best-effort
-throughout: any cache failure falls back to the real encode. torch is imported
-lazily so this stays importable in a no-torch runtime.
-"""
+"""Prompt-embedding cache, off unless UNSLOTH_DIFFUSION_COND_CACHE_DIR is set; bypassed while LoRA
+adapters are attached; best-effort, any cache failure falls back to the real encode; torch
+imported lazily"""
 
 from __future__ import annotations
 

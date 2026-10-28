@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Local cache of native (torchao-free) runtime-quantized denoisers, one entry per component.
-
-Shares ``diffusion_prequant_cache``'s root, locks, manifest and eviction; the key adds the native build spec so an
-entry is only served to the identical native build.
-"""
+"""Native torchao-free denoiser cache, sharing diffusion_prequant_cache's root; key adds build spec."""
 
 from __future__ import annotations
 

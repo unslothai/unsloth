@@ -112,7 +112,8 @@ def _train(native, model, layout, rank):
         opt.zero_grad(set_to_none = True)
         losses.append(float(loss.detach()))
         gathered.append(_gathered(model))
-    return {"losses": losses, "gathered": gathered}
+    graphs_off = sum(bool(m.__dict__.get("_unsloth_block_graphs_off")) for m in model.modules())
+    return {"losses": losses, "gathered": gathered, "graphs_off_blocks": graphs_off}
 
 
 def _worker(rank, world, port, out, path):
@@ -125,6 +126,11 @@ def _worker(rank, world, port, out, path):
             for graphs in (False, True)
         }
         res["full", "no_blocks"] = _run(native, "full", True, blocks = False)
+        os.environ["UNSLOTH_BLOCK_CUDAGRAPHS_FSDP2_KEEP_GB"] = "0"
+        try:
+            res["full", "over_budget"] = _run(native, "full", True)
+        finally:
+            os.environ.pop("UNSLOTH_BLOCK_CUDAGRAPHS_FSDP2_KEEP_GB", None)
         torch.save(res, f"{path}.rank{rank}")
         out.put("ok")
     except Exception as exc:
@@ -181,3 +187,20 @@ def test_without_graphs_the_gathered_weights_are_freed(ranks, layout):
     for res in ranks:
         snap = res[layout, False]["gathered"][-1]
         assert any(size == 0 for _, size, _ in snap), snap
+
+
+def test_over_the_keep_budget_nothing_is_kept_and_those_blocks_skip_graphs(ranks):
+    """A sharded full finetune kept every block weight gathered in fp32 (T4 Qwen3-0.6B: 1.64 GiB
+    per rank) for graphs that measured no faster: over the budget keep nothing, run no graphs."""
+    for res in ranks:
+        run = res["full", "over_budget"]
+        blocks = [g for g in run["gathered"][-1] if g[0]]
+        assert blocks and any(size == 0 for _, size, _ in blocks), blocks
+        assert run["graphs_off_blocks"] > 0
+        assert run["losses"] == res["full", False]["losses"]
+
+
+@pytest.mark.parametrize("layout", ["lora", "full"])
+def test_within_the_keep_budget_blocks_keep_their_graphs(ranks, layout):
+    for res in ranks:
+        assert res[layout, True]["graphs_off_blocks"] == 0

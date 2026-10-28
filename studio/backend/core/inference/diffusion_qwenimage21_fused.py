@@ -1,16 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Qwen-Image-2.1 ConvRot int8: one rotation + one act quant per shared input (QKV, SwiGLU gate/value) in the compile.
-
-Rotation is on the shared input axis and int8 scales are per row, so fused outputs equal the separate rotated ones bit
-for bit. The fused QKV Linear: only where ``diffusion_int8_gemm`` leaves rotated Linears on the stock path (e.g. sm86,
-sm90, sm100), resident only; there the rotation and the act quant run as one ``rotq_h16`` kernel on a card that passed
-``diffusion_convrot_quant.unlisted_device_ok``, else as the rotation GEMM + act quant. Where it swaps them, the
-patched helper routes Q / K / V through ``diffusion_int8_gemm.shared_rotq_linears`` (Inductor does not merge the
-opaque kernel); resident or streamed.
-Kill switch: ``UNSLOTH_DIFFUSION_Q21_CONVROT_FUSED=0``.
-"""
+"""Fused ConvRot rotation and act quant per shared input, bit-identical to separate ops; fused QKV
+Linear only where diffusion_int8_gemm leaves rotated Linears on stock path, resident only; kill
+UNSLOTH_DIFFUSION_Q21_CONVROT_FUSED=0"""
 
 from __future__ import annotations
 

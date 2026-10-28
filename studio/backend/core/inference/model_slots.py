@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Models kept loaded alongside the primary one, each with its own llama-server and orchestrator.
-A task naming one sets ``routed_slot``, so the usual backend getters answer with that slot."""
+"""Models kept loaded beside the primary, each with its own llama-server; routed_slot selects one."""
 
 import asyncio
 import atexit

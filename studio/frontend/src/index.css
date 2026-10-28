@@ -3,7 +3,7 @@
 
 @import "tailwindcss";
 @import "tw-animate-css";
-@import "shadcn/tailwind.css";
+@import "./shadcn-tailwind.css";
 @import "streamdown/styles.css";
 @import "./features/hub/hub.css";
 @import "@fontsource-variable/figtree";
@@ -2882,11 +2882,11 @@ html[data-chat-font] .aui-root {
 		background-color: rgb(255 255 255 / calc(0.1 * var(--contrast-wash-gain, 1)));
 	}
 
-	/* Elevated cards sink the shared track; the API page's buttons lift above them instead. */
-	html.dark .api-monitor-page .elevated-card .btn-fill {
+	/* Elevated cards sink the shared track; their buttons lift above it. */
+	html.dark :is(.api-monitor-page .elevated-card, .section-box) .btn-fill {
 		background-color: rgb(255 255 255 / calc(0.06 * var(--contrast-wash-gain, 1)));
 	}
-	html.dark .api-monitor-page .elevated-card .btn-fill:hover {
+	html.dark :is(.api-monitor-page .elevated-card, .section-box) .btn-fill:hover {
 		background-color: rgb(255 255 255 / calc(0.1 * var(--contrast-wash-gain, 1)));
 	}
 
@@ -3300,14 +3300,14 @@ html[data-chat-font] .aui-root {
 		--composer-fade-bottom: calc(1rem * var(--ui-space-scale, 1));
 	}
 
-	/* max(): at 480px tall the clamp is 192px, under the twelve-row compact
-	   height, so expanding would clip. svh, since dvh tracks Safari's bar. */
-	/* Either composer root: the thread's form or compare's wrapper. */
+	/* --composer-fill-height: useExpandedComposerFill; the clamp is the first-frame fallback. */
 	[data-writing-expanded="true"] .unsloth-composer-editor {
 		height: max(
 			var(--composer-editor-height, calc(40px * var(--ui-space-scale, 1))),
-			clamp(8rem, calc(80svh - 12rem), 42rem)
+			var(--composer-fill-height, clamp(8rem, calc(80svh - 12rem), 42rem))
 		);
+		/* Instant: easing in read as the bottom edge creeping. */
+		transition: none;
 	}
 
 	.aui-thread-welcome-center {
@@ -3316,15 +3316,9 @@ html[data-chat-font] .aui-root {
 
 	.aui-thread-welcome-center:has([data-writing-expanded="true"]) {
 		padding-top: calc(1rem * var(--ui-space-scale, 1));
+		transition: none;
 	}
 
-	/* Welcome: grows by the pt-[27.5dvh] given up, so the bottom edge stays put and it expands upward. */
-	.aui-thread-welcome-center:not(:has(.unsloth-files-panel)) [data-writing-expanded="true"] .unsloth-composer-editor {
-		height: calc(
-			var(--composer-editor-height, calc(40px * var(--ui-space-scale, 1))) + 27.5dvh - 1rem *
-				var(--ui-space-scale, 1)
-		);
-	}
 
 	.unsloth-composer-plus {
 		@apply relative flex size-9 shrink-0 cursor-pointer items-center justify-center rounded-full text-foreground transition-colors hover:bg-muted-foreground/15 disabled:cursor-not-allowed disabled:opacity-40;

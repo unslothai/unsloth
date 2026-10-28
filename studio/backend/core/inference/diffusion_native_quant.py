@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Torchao-free weight-only int8 / fp8 for the diffusion transformer (ROCm, Windows torchao stub).
-
-Plain buffers, unlike torchao tensors, survive the offload hooks' ``Module.to()``; torch imported lazily.
-"""
+"""Torchao-free int8/fp8 weight-only quant for ROCm and Windows; plain buffers survive offload
+hooks' Module.to(); torch imported lazily"""
 
 from __future__ import annotations
 

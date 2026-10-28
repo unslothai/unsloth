@@ -1,19 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Centralised HuggingFace endpoint configuration.
-
-Backend code that constructs HF URLs directly (i.e. *outside* of
-``huggingface_hub`` calls) should use :func:`get_hf_endpoint` instead of
-hard-coding ``https://huggingface.co``. The value is read through
-:func:`utils.utils.hf_endpoint_url` — the single source of truth for
-``HF_ENDPOINT`` parsing — so both entry points stay in lockstep.
-
-The datasets-server base URL is independent from the Hub mirror: most Hub
-mirrors do not proxy the datasets-server API, so a mirrored ``HF_ENDPOINT``
-never implicitly redirects datasets-server traffic.  Operators who do run a
-mirrored datasets-server must set ``HF_DATASETS_SERVER`` explicitly.
-"""
+"""Build URLs via get_hf_endpoint; datasets-server ignores HF_ENDPOINT, so only an operator running
+a mirrored datasets-server needs HF_DATASETS_SERVER set"""
 
 from __future__ import annotations
 

@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Async HTTP client proxying chat completions to external LLM providers. Most use OpenAI-compatible
-/v1/chat/completions; Anthropic uses the native Messages API, translated here."""
+"""Async HTTP client for external LLM providers: /v1/chat/completions, Anthropic Messages translated"""
 
 import asyncio
 import base64
