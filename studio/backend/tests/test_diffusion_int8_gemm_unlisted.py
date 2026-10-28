@@ -179,6 +179,28 @@ def test_rotated_linears_swap_only_with_both_kernels(monkeypatch, gemm, rot, swa
     assert len(fake.timed) <= 1
 
 
+@pytest.mark.parametrize("timing", [{"fused": 10.0, "stock": 20.0}, {"fused": 30.0, "stock": 20.0}])
+def test_gate_takes_no_int8_fused_lock(monkeypatch, timing):
+    """``diffusion_int8_fused._finalize`` asks ``rotated_ff`` (so this gate) while holding its lock: a gate that
+    took it (``arm_rotated``) hung every load whose fused GEMM stayed off."""
+    import threading
+
+    from core.inference import diffusion_int8_fused as f8
+
+    _Fake(monkeypatch, (8, 6), timing = timing)
+    monkeypatch.setattr(f8, "_act_quant_device_ok", lambda index: True)
+    monkeypatch.setattr(f8, "_act_quant_op", lambda: "actq")
+    seen = []
+    monkeypatch.setattr(cq, "unlisted_device_ok", lambda index, stock = None: seen.append(stock) or True)
+    out = []
+    with f8._LOCK:
+        t = threading.Thread(target = lambda: out.append(g8.rotated_swapped(0)), daemon = True)
+        t.start()
+        t.join(10)
+    assert not t.is_alive() and out == [timing["fused"] <= timing["stock"]]
+    assert seen == ["actq"]
+
+
 @pytest.mark.parametrize("cap", [(8, 0), (8, 9), (12, 0)])
 def test_listed_archs_keep_the_static_gate(monkeypatch, cap):
     _Fake(monkeypatch, cap)

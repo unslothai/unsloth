@@ -1023,10 +1023,18 @@ def _gates(capability: Optional[tuple]) -> tuple:
 
 
 def _unlisted_rotated(index: int) -> bool:
-    """Unlisted card: ``rotq_h16`` armed for it (probe + its own latency check, ``arm_rotated``)."""
+    """Unlisted card: ``rotq_h16`` armed for it (probe + its own latency check). Takes no ``diffusion_int8_fused``
+    lock: its SwiGLU fusion reaches this through ``rotated_ff`` while holding it."""
+    if not convrot_enabled():
+        return False
     try:
-        from .diffusion_int8_fused import arm_rotated
-        return bool(convrot_enabled() and arm_rotated(index))
+        from . import diffusion_convrot_quant as cq
+        from .diffusion_int8_fused import _act_quant_device_ok, _act_quant_op
+
+        actq = None
+        if (index, cq.unlisted_mode()) not in cq._UNLISTED_DEVICE:
+            actq = _act_quant_op() if _act_quant_device_ok(index) else None
+        return bool(cq.unlisted_device_ok(index, actq))
     except Exception:  # noqa: BLE001
         return False
 
