@@ -49990,7 +49990,6 @@ async def _batched_openai_images(
     guidance: float,
     expected_load: Any,
 ) -> Optional[dict]:
-    """Diffusers only: sd.cpp/MLX lack prompt lists; FLUX.3 renders one image per call."""
     from core.inference import image_request_batching
     from core.inference.diffusion_engine_router import ENGINE_DIFFUSERS, active_engine_name
     from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
@@ -50009,7 +50008,6 @@ async def _batched_openai_images(
     ):
         return None
 
-    # Also stops the ticket generate() binds to, so a Stop after the wait still lands.
     ticket = GenerationTicket()
     stopped = TicketStopEvent(ticket)
 

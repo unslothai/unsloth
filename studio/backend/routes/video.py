@@ -2044,7 +2044,6 @@ async def openai_create_video(
     current_subject: str = Depends(get_current_subject),
     hf_token: Optional[str] = Depends(get_hf_token),
 ):
-    """Create a video job; start immediately or join the FIFO queue."""
     # The body must be parsed before the monitor row can name the model.
     from routes.inference import _monitored_media_request
 
@@ -2077,7 +2076,6 @@ class _VideoCreateInputs:
 async def _validated_video_inputs(
     body: VideoJobCreateRequest, reference: Optional[str]
 ) -> _VideoCreateInputs:
-    """Validate model-independent inputs before starting or queueing a video."""
     try:
         size = _parse_openai_video_size(body.size)
     except ValueError as exc:
@@ -2152,7 +2150,6 @@ async def _create_openai_video(
     current_subject: str,
     hf_token: Optional[str],
 ):
-    """Start immediately or return 409 when busy (chat tool path)."""
     inputs = await _validated_video_inputs(body, reference)
     return await _start_openai_video(
         body,
@@ -2383,7 +2380,6 @@ VIDEO_QUEUE_POLL_S = 2.0
 VIDEO_QUEUE_MAX = 64
 VIDEO_QUEUE_MAX_PER_ACCOUNT = 32
 VIDEO_QUEUE_IDLE_CONFLICTS = 12
-# Retry these refusals after the current work finishes.
 _VIDEO_WAIT_CODES = ("model_busy", "model_loading", "gpu_busy")
 
 
@@ -2445,7 +2441,6 @@ def _refusal_error(exc: BaseException) -> dict:
 
 
 def _video_wait(exc: BaseException) -> Optional[str]:
-    """Classify retryable refusals as 'busy' or 'conflict'; return None otherwise."""
     from core.inference.gpu_arbiter import GpuBusyForAnotherAccountError
     from core.inference.video_families import VIDEO_GENERATION_BUSY_MSG
 
@@ -2641,7 +2636,6 @@ def _queued_account_active(account: AccountContext) -> bool:
 
 
 async def _start_queued_video(entry: _QueuedVideo) -> bool:
-    """Start the queue head as its account; return False to retry later."""
     async with _video_start_lock():
         if entry not in _VIDEO_QUEUE:
             return True

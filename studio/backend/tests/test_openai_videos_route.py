@@ -118,7 +118,6 @@ def backend(monkeypatch, tmp_path):
     monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.VIDEO, lambda: None)
     monkeypatch.setattr(gallery_module, "gallery_dir", lambda: tmp_path)
     monkeypatch.setattr(video_routes, "_jobs", {})
-    # Per-request event loops require manual queue draining.
     monkeypatch.setattr(video_routes, "_VIDEO_QUEUE", [])
     monkeypatch.setattr(video_routes, "_ensure_video_drainer", lambda: None)
     return backend

@@ -142,7 +142,6 @@ def test_a_video_deleted_while_its_start_is_in_flight_is_deleted_once_started(
 
     async def _start_then_delete(*args, **kwargs):
         job = await real_start(*args, **kwargs)
-        # The DELETE arrives before the start returns, so it waits for it and then deletes the job.
         pending.append(await asyncio.to_thread(_delete_in_background, client, queued["id"]))
         return job
 
@@ -264,7 +263,6 @@ def test_a_delete_while_a_refused_start_is_recorded_leaves_no_failed_job(
     pending = []
 
     def _fail_with_a_delete(entry, exc):
-        # The DELETE arrives while the failed job is written, so it waits and then deletes that record.
         pending.append(_delete_in_background(client, queued["id"]))
         real_fail(entry, exc)
 
@@ -299,7 +297,6 @@ def test_a_delete_during_a_start_that_does_not_settle_is_refused_rather_than_rep
 def test_a_queued_video_of_a_disabled_account_never_starts(client, backend):
     first = _render_one(client, backend)
     client.post("/v1/videos", json = {"prompt": "theirs"})
-    # Account not enabled here, as after an admin disables it.
     video_routes._VIDEO_QUEUE[0].account = _OTHER
     backend.gate.set()
     _wait_terminal(client, first["id"])

@@ -14438,7 +14438,6 @@ class DiffusionBackend:
 
     @contextmanager
     def generation_waiter(self, cancel: threading.Event):
-        """Register an outside waiter so a Stop during a model change sets ``cancel``."""
         with self._generation_cancel_lock:
             self._queued_generate_cancels.add(cancel)
         try:

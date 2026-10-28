@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Batch compatible waiting requests to ``POST /v1/images/generations``.
-
-Idle requests run immediately. Failed batches fall back to individual requests;
-cancellation ends the batch. Per-image seeds are preserved, but batch size can
-affect numerical results (see ``diffusion_batched``).
-"""
+"""Batches waiting /v1/images/generations requests; pixels vary with batch size (diffusion_batched)."""
 
 from __future__ import annotations
 
@@ -56,13 +51,11 @@ def batch_max() -> int:
 
 
 def request_seeds(seed: Optional[int], n: int) -> list[int]:
-    """Derive seeds from a supplied or random base, wrapping at SEED_MASK."""
     base = seed if seed is not None else secrets.randbelow(SEED_MASK + 1)
     return [(base + i) & SEED_MASK for i in range(n)]
 
 
 def _split(result: dict[str, Any], members: list[_Member]) -> list[dict[str, Any]]:
-    """Split images and seeds by request, restoring each request's base seed."""
     images = list(result.get("images") or [])
     seeds = list(result.get("seeds") or [])
     wanted = sum(len(member.seeds) for member in members)
@@ -85,7 +78,6 @@ def _split(result: dict[str, Any], members: list[_Member]) -> list[dict[str, Any
 
 
 def _share(exc: BaseException, members: list[_Member]) -> None:
-    """Raise ``exc`` in each waiting member too, each with its own copy."""
     for member in members:
         if not member.future.done():
             member.future.set_exception(type(exc)(*exc.args))
@@ -133,7 +125,6 @@ async def generate(
             while busy():
                 await asyncio.sleep(POLL_S)
         except Exception as exc:
-            # A cancel while waiting (a Stop during a model change) ends every request collected so far.
             if shared_outcome(exc):
                 _share(exc, batch.members[1:])
             raise

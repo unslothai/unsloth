@@ -23,8 +23,6 @@ from utils.api_errors import install_api_error_handlers
 
 
 class _Backend:
-    """Fake diffusers backend with a controllable busy flag."""
-
     def __init__(self) -> None:
         self.rendering = False
         self.fail_lists = False
@@ -33,7 +31,6 @@ class _Backend:
         self.waiters: list = []
         self.before_generate = None
         self.is_loaded = True
-        # Stands for the generation holding the slot; a new object is a new generation.
         self.holder = object()
 
     def status(self) -> dict:
@@ -76,7 +73,6 @@ class _Backend:
     ) -> dict:
         if self.before_generate is not None:
             self.before_generate()
-        # As the real engine: bind cancel to the ticket, then refuse if set.
         import threading
 
         from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
@@ -254,7 +250,6 @@ def test_a_stop_while_a_batch_waits_cancels_every_request_in_it(studio):
 
 def test_a_stop_after_the_batch_stops_waiting_still_cancels_its_generation(studio):
     app, backend, saved = studio
-    # The Stop lands once the batch has stopped waiting, before generate() has bound its own cancel.
     backend.before_generate = backend.stop_during_a_model_change
     bodies = [_b64({"prompt": "a fox"}), _b64({"prompt": "a cat"})]
     responses = _post_while_rendering(app, backend, bodies, waiting = 2)
@@ -297,7 +292,6 @@ def test_a_stop_while_a_failed_batch_unwinds_keeps_its_requests_from_rendering_a
         try:
             return real_generate(**kwargs)
         finally:
-            # The shared call has failed; a Stop lands before that failure reaches the handlers.
             if kwargs.get("prompts") is not None:
                 backend.stop_during_a_model_change()
 
@@ -311,7 +305,6 @@ def test_a_stop_while_a_failed_batch_unwinds_keeps_its_requests_from_rendering_a
 
 
 def test_a_batch_stops_waiting_when_the_generation_it_queued_behind_ends(studio):
-    # A later slot holder must not keep the batch waiting (starvation).
     app, backend, saved = studio
 
     async def run():
