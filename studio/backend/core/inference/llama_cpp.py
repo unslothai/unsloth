@@ -38654,8 +38654,7 @@ class LlamaCppBackend:
                             yield _meta
                         return
 
-                # A healed XML tail can be valid JSON yet hold half a shell rewrite, so reject
-                # every call of a cut turn, complete siblings included, before approval.
+                # A cut turn runs no call, siblings included: a healed tail may be half a rewrite.
                 if _iter_finish_reason in ("length", "content_filter"):
                     for _pid, _pname in provisional_started_tool_calls.items():
                         if _pid not in resolved_provisional_tool_call_ids:
