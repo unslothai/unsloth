@@ -746,6 +746,9 @@ class ExportBackend:
         self._audio_type = None
         self.decision = None
         self.diffusion_lm_profile = None
+        # Set once a load starts; a backend that never loaded since its last cleanup has no
+        # garbage or cached GPU blocks of its own for cleanup_memory to free.
+        self._gpu_cache_dirty = False
 
     def _diffusion_refusal(self, method: str) -> Optional[str]:
         profile = getattr(self, "diffusion_lm_profile", None)
@@ -761,6 +764,13 @@ class ExportBackend:
             logger.info("Starting memory cleanup...")
 
             model_names = list(self.inference_backend.models.keys())
+            # Read before the resets below; a stub without the flag (tests) always clears.
+            needs_clear = (
+                bool(model_names)
+                or self.current_model is not None
+                or self.current_tokenizer is not None
+                or getattr(self, "_gpu_cache_dirty", True)
+            )
             for model_name in model_names:
                 self.inference_backend.unload_model(model_name)
 
@@ -772,7 +782,11 @@ class ExportBackend:
             self._audio_type = None
             self.decision = None
 
-            clear_gpu_cache()
+            # Skipped only when nothing was loaded since the last clear (a fresh worker, or the
+            # load right after the worker's own cleanup): a full gc pass there frees nothing.
+            if needs_clear:
+                clear_gpu_cache()
+                self._gpu_cache_dirty = False
 
             logger.info("Memory cleanup completed successfully")
             return True
@@ -833,6 +847,7 @@ class ExportBackend:
             logger.info(f"Loading checkpoint: {checkpoint_path}")
 
             self.cleanup_memory()
+            self._gpu_cache_dirty = True
             self.diffusion_lm_profile = None
 
             # Before the base / audio / vision probes: a decision run never reaches the chat loaders.
