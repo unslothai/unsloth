@@ -337,14 +337,27 @@ jobs:
           kill "${STUDIO_PID}" 2>/dev/null || true
           sleep 2
 
-      - name: Cross-browser permission controls
+      # A background step: both suites are API-only and need no model, so they run on their own
+      # ports and UNSLOTH_STUDIO_HOME (the scripts wipe auth/ per boot) while the extra UI and
+      # update banner suites run, as in studio-ui-smoke.yml's indicator step. Started after the
+      # chat UI, which ran ~2x slower when sharing the runner. Collected before the tab smoke.
+      - name: Cross-browser permission controls + loaded-models indicator (WebKit)
+        id: webkit_lane
+        background: true
         run: |
-          bash .github/scripts/run-studio-permission-browser.sh 18895 webkit
-
-      # WKWebView is what the desktop app embeds; status reads are stubbed.
-      - name: Loaded-models indicator (WebKit)
-        run: |
-          bash .github/scripts/run-studio-indicator-browser.sh 18899 webkit
+          installed_home="$HOME/.unsloth/studio"
+          test -x "$installed_home/unsloth_studio/bin/python" \
+            || { echo "::error::no studio venv under $installed_home"; exit 1; }
+          home="${{ github.workspace }}/.studio-webkit-lane"
+          mkdir -p "$home"
+          ln -sfn "$installed_home/unsloth_studio" "$home/unsloth_studio"
+          export UNSLOTH_STUDIO_HOME="$home"
+          # Both run so one failure does not hide the other.
+          rc=0
+          bash .github/scripts/run-studio-permission-browser.sh 18895 webkit || rc=1
+          # WKWebView is what the desktop app embeds; status reads are stubbed.
+          bash .github/scripts/run-studio-indicator-browser.sh 18899 webkit || rc=1
+          exit "$rc"
 
       - name: Reset auth + boot Unsloth for extra UI tests (port 18897)
         run: |
@@ -437,6 +450,10 @@ jobs:
         run: |
           kill "${STUDIO_EXTRA_PID}" 2>/dev/null || true
           sleep 2
+
+      # Before the tab smoke: its cold boot keeps the runner to itself, as before.
+      - name: Wait for the permission controls + loaded-models indicator
+        wait: webkit_lane
 
       # ---------------------------------------------------------------
       # Own cold-port boot with no health wait: a settled backend is the wrong start state.
