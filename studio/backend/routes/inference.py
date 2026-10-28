@@ -21144,6 +21144,15 @@ async def cancel_inference(request: Request, current_subject: str = Depends(get_
 async def confirm_tool_call(
     request: ToolConfirmRequest, current_subject: str = Depends(get_current_subject)
 ):
+    full_access = request.permission_mode == "full"
+    if full_access and (
+        not auth_policy.full_access_permitted() or auth_policy.api_full_access_refused()
+    ):
+        raise HTTPException(
+            status_code = 403,
+            detail = "Full access is only available to the installation owner in the Unsloth UI "
+            "(API callers require UNSLOTH_STUDIO_ALLOW_API_FULL_ACCESS=1).",
+        )
     # Approving a host-path call unsandboxes it: like Full access, the UI's choice, not an API key's. Deny stays open.
     if (
         request.decision == "allow"
@@ -21160,10 +21169,12 @@ async def confirm_tool_call(
         request.approval_id,
         request.decision,
         session_id = request.session_id,
+        full_access = full_access,
     )
     if not matched:
         raise HTTPException(status_code = 404, detail = "No pending tool call confirmation")
-    return {"resolved": True}
+    # An older backend ignores the new request field; clients require this acknowledgement.
+    return {"resolved": True, **({"full_access_granted": True} if full_access else {})}
 
 
 @studio_router.post("/browser-action-result")
@@ -31302,6 +31313,9 @@ async def produce_openai_chat_completions(
 
             def gguf_generate_with_tools():
                 from core.inference.skill_mentions import load_mentioned_skills
+                from state.tool_approvals import LiveToolPermissions
+
+                gguf_live_permissions = LiveToolPermissions(payload.session_id, cancel_event)
 
                 skill_instruction_ids = set()
                 yield from load_mentioned_skills(
@@ -31318,8 +31332,10 @@ async def produce_openai_chat_completions(
                     context_length = llama_backend.context_length,
                     continue_final_message = _continue_final_message(payload, thought = True),
                     protected_message_ids = skill_instruction_ids,
+                    permission_upgrade = gguf_live_permissions,
                 )
                 yield from llama_backend.generate_chat_completion_with_tools(
+                    live_permissions = gguf_live_permissions,
                     instruction_anchor_ids = skill_instruction_ids,
                     messages = gguf_messages,
                     replayed_image_parts = tuple(_gguf_replayed_image_parts),
