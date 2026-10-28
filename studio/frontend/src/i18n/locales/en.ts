@@ -1470,7 +1470,7 @@ export const en = {
       installingRuntime: "Installing…",
       installRuntimeFailed: "The runtime install failed.",
       installRuntimeError: "Could not start the runtime install.",
-      unsupportedArch: "The Windows sandbox (MXC) runs on x64 and ARM64 Windows, so it is not available on this PC.",
+      unsupportedArch: "The Windows sandbox (MXC) only runs on x64 and ARM64 Windows, so it is not available on this PC.",
       builtinNeedsUpdate: "Windows' built-in container needs build {required} or newer, and this PC runs {current}. Install the latest Windows update to use it without an administrator step, or turn on the fallback below.",
       unsupportedBuild: "The Windows sandbox (MXC) needs Windows 11 24H2 (build 26100) or newer, so it is not available on this PC.",
       permissionLabel: "Tool permissions",

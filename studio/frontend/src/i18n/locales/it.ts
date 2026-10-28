@@ -1318,7 +1318,7 @@ export const it = {
       installingRuntime: "Installazione…",
       installRuntimeFailed: "Installazione del runtime non riuscita.",
       installRuntimeError: "Impossibile avviare l'installazione del runtime.",
-      unsupportedArch: "La sandbox di Windows (MXC) funziona solo su Windows x64, quindi non è disponibile su questo PC.",
+      unsupportedArch: "La sandbox di Windows (MXC) funziona solo su Windows x64 e ARM64, quindi non è disponibile su questo PC.",
       builtinNeedsUpdate: "Il container integrato di Windows richiede la build {required} o successiva, e questo PC esegue {current}. Installa l'ultimo aggiornamento di Windows per usarlo senza un passaggio da amministratore, oppure attiva la sandbox di riserva qui sotto.",
       unsupportedBuild: "La sandbox di Windows (MXC) richiede Windows 11 24H2 (build 26100) o successivo, quindi non è disponibile su questo PC.",
       permissionLabel: "Autorizzazioni strumenti",
