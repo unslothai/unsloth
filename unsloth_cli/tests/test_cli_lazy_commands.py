@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Top-level commands other than studio load on first use, but only on a real dispatch.
-
-Desktop runs `unsloth -h` as its health probe, so help, version and completion must keep
-importing and building every command module: a broken module has to fail them exactly as
-before. `unsloth studio run`, which Desktop starts the backend with, must not import train,
-the pydantic config, start, mcp, chat, inference, eval, export or doctor. A library import
-stays eager too.
-"""
+"""Only a real dispatch loads command modules lazily; help, version (Desktop's probe) and library imports stay eager."""
 
 from __future__ import annotations
 
@@ -80,19 +73,18 @@ def _run_console_script(
     )
     return subprocess.run(
         [sys.executable, "-c", probe],
-        capture_output = True,
-        text = True,
+        capture_output=True,
+        text=True,
         # The CLI writes UTF-8 on Windows (rich box drawing in help); the locale codec is cp1252 there.
-        encoding = "utf-8",
-        errors = "replace",
-        cwd = str(_REPO_ROOT),
-        env = {**__import__("os").environ, "NO_COLOR": "1", "COLUMNS": "80"},
+        encoding="utf-8",
+        errors="replace",
+        cwd=str(_REPO_ROOT),
+        env={**__import__("os").environ, "NO_COLOR": "1", "COLUMNS": "80"},
     )
 
 
 def _modules_after(args: list[str], *, stop_studio_run: bool = False) -> set[str]:
-    """Report which watched modules a console-script run loaded."""
-    result = _run_console_script(args, stop_studio_run = stop_studio_run)
+    result = _run_console_script(args, stop_studio_run=stop_studio_run)
     assert result.returncode == 0, result.stderr
     return set(json.loads(result.stdout.strip().splitlines()[-1]))
 
@@ -100,11 +92,10 @@ def _modules_after(args: list[str], *, stop_studio_run: bool = False) -> set[str
 def _pydantic_preloaded() -> bool:
     result = subprocess.run(
         [sys.executable, "-c", "import sys, typer, rich; print('pydantic' in sys.modules)"],
-        capture_output = True,
-        text = True,
-        # The CLI writes UTF-8 on Windows (rich box drawing in help); the locale codec is cp1252 there.
-        encoding = "utf-8",
-        errors = "replace",
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     return result.stdout.strip() == "True"
 
@@ -134,17 +125,16 @@ def test_help_and_version_still_import_every_command_module(args):
 @pytest.mark.parametrize("broken", ["unsloth_cli.commands.train", "unsloth_cli.commands.mcp"])
 def test_a_broken_command_module_still_fails_help_and_version(args, broken):
     """Desktop's `unsloth -h` health probe relies on this to start its repair flow."""
-    result = _run_console_script(args, broken = broken)
+    result = _run_console_script(args, broken=broken)
     assert result.returncode == 1
     assert f"ImportError: deliberately broken: {broken}" in result.stderr
 
 
 def test_a_broken_unrelated_module_does_not_block_studio_run():
-    """Documented change: a real dispatch imports only the module it runs."""
     result = _run_console_script(
         ["studio", "run", "--model", "x"],
-        stop_studio_run = True,
-        broken = "unsloth_cli.commands.train",
+        stop_studio_run=True,
+        broken="unsloth_cli.commands.train",
     )
     assert result.returncode == 0, result.stderr
 
@@ -163,7 +153,7 @@ def test_a_library_import_builds_every_command():
 
 @pytest.mark.parametrize("args", [["studio", "run", "--model", "x"], ["run", "--model", "x"]])
 def test_studio_run_body_starts_without_other_command_modules(args):
-    loaded = _modules_after(args, stop_studio_run = True)
+    loaded = _modules_after(args, stop_studio_run=True)
     if _pydantic_preloaded():
         loaded.discard("pydantic")
     assert loaded == set()

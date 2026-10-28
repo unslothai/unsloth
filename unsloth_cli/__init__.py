@@ -44,7 +44,7 @@ def _reconfigure_entry_point_streams():
         _stream = getattr(_sys, _name, None)
         try:
             if "utf" not in (_stream.encoding or "").lower():
-                _stream.reconfigure(encoding = "utf-8" if _to_utf8 else None, errors = "replace")
+                _stream.reconfigure(encoding="utf-8" if _to_utf8 else None, errors="replace")
         except Exception:
             pass
 
@@ -108,12 +108,8 @@ _COMMAND_ORDER = (
     "connect",
 )
 
-# Only a real command dispatch from the console script (or `python -m unsloth_cli`) loads its
-# command module on first use. Help, version, completion, a bare or unknown command and any
-# import as a library keep importing and building every command up front, exactly as before:
-# Desktop's `unsloth -h` health probe must still fail when any command module is broken, so
-# its repair flow still triggers. A Windows `studio setup` / `studio update` keeps loading
-# studio alone, as before.
+# Only a real dispatch loads command modules on first use; help, version, completion and library
+# imports stay eager so Desktop's `unsloth -h` probe still fails when any command module is broken.
 _EAGER_TOKENS = frozenset(
     ("-h", "--help", "-V", "--version", "--install-completion", "--show-completion")
 )
@@ -205,8 +201,7 @@ if _TyperGroup is not None:
             super().__init__(*args, **kwargs)
             self.commands = _LazyCommands(self.commands, _ACTIVE_LAZY_COMMANDS)
             if _load_every_command:
-                # Build every command now, as typer does for eagerly registered ones, so a
-                # command that typer cannot build still fails `unsloth -h` and `--version`.
+                # A command typer cannot build must still fail `unsloth -h` and `--version`.
                 for _name in list(self.commands):
                     self.commands[_name]
 
@@ -219,8 +214,8 @@ else:  # pragma: no cover
 
 
 app = typer.Typer(
-    help = "Command-line interface for Unsloth training, inference, and export.",
-    context_settings = {"help_option_names": ["-h", "--help"]},
+    help="Command-line interface for Unsloth training, inference, and export.",
+    context_settings={"help_option_names": ["-h", "--help"]},
     **({"cls": _ArgvCapturingGroup} if _ArgvCapturingGroup is not None else {}),
 )
 
@@ -249,9 +244,9 @@ def main(
         None,
         "--version",
         "-V",
-        callback = show_version,
-        is_eager = True,
-        help = "Show version and exit.",
+        callback=show_version,
+        is_eager=True,
+        help="Show version and exit.",
     ),
 ):
     # Consume the import-time result once: a host can chdir between repeated app() calls.
@@ -263,13 +258,13 @@ def main(
             _invocation_args(ctx),
             _os.environ,
             _sys.platform,
-            relocate = False,
+            relocate=False,
         )
     _message, _colour, _fatal = _guard
     if _message is not None:
-        typer.secho(_message, fg = _colour, err = True)
+        typer.secho(_message, fg=_colour, err=True)
     if _fatal:
-        raise typer.Exit(code = 1)
+        raise typer.Exit(code=1)
 
 
 _LAZY_COMMANDS = (
@@ -285,45 +280,52 @@ _LAZY_COMMANDS = (
     "mcp",
     "connect",
 )
-# A Windows `studio setup` / `studio update` registers studio alone, as before.
 _ACTIVE_LAZY_COMMANDS = () if _windows_studio_mutation_entry else _LAZY_COMMANDS
 
 
 def _register_command(app, name):
-    """Register the top-level command *name* on *app*, importing only its module."""
     if name == "train":
         from unsloth_cli.commands.train import train
+
         app.command()(train)
     elif name == "inference":
         from unsloth_cli.commands.inference import inference
+
         app.command()(inference)
     elif name == "chat":
         from unsloth_cli.commands.chat import chat
+
         app.command()(chat)
     elif name == "export":
         from unsloth_cli.commands.export import export
+
         app.command()(export)
     elif name == "eval":
         from unsloth_cli.commands.eval import evaluate as eval_command
+
         app.command("eval")(eval_command)
     elif name == "list-checkpoints":
         from unsloth_cli.commands.export import list_checkpoints
+
         app.command("list-checkpoints")(list_checkpoints)
     elif name == "doctor":
         from unsloth_cli.commands.doctor import doctor
+
         app.command("doctor")(doctor)
     elif name == "start":
         from unsloth_cli.commands.start import start_app
+
         app.add_typer(
             start_app,
-            name = "start",
-            help = "Start a coding agent (Claude, Codex, OpenClaw, OpenCode, Hermes, Pi, dsh, Vibe, "
+            name="start",
+            help="Start a coding agent (Claude, Codex, OpenClaw, OpenCode, Hermes, Pi, dsh, Vibe, "
             "VS Code) against Unsloth.",
         )
     elif name == "mcp":
         from unsloth_cli.commands.mcp import mcp_app
+
         app.add_typer(
-            mcp_app, name = "mcp", help = "Connect coding agents to the Unsloth Studio MCP server."
+            mcp_app, name="mcp", help="Connect coding agents to the Unsloth Studio MCP server."
         )
     elif name == "connect":
         from unsloth_cli.commands.start import start_app
@@ -331,9 +333,9 @@ def _register_command(app, name):
         # backwards-compatible hidden alias: `unsloth connect` routes to `unsloth start`.
         app.add_typer(
             start_app,
-            name = "connect",
-            hidden = True,
-            help = "Deprecated alias for `unsloth start`.",
+            name="connect",
+            hidden=True,
+            help="Deprecated alias for `unsloth start`.",
         )
     elif name == "run":
         from unsloth_cli.commands.studio import run as studio_run, _LlamaPassthroughCommand
@@ -341,20 +343,19 @@ def _register_command(app, name):
         # top-level `unsloth run` aliases `unsloth studio run`; same context so unknown flags pass through to llama-server.
         app.command(
             "run",
-            cls = _LlamaPassthroughCommand,
-            context_settings = {
+            cls=_LlamaPassthroughCommand,
+            context_settings={
                 "allow_extra_args": True,
                 "ignore_unknown_options": True,
             },
-            help = "Alias for `unsloth studio run`.",
+            help="Alias for `unsloth studio run`.",
         )(studio_run)
     else:
         raise KeyError(name)
 
 
 def _load_command(name):
-    """Build the click command for *name* exactly as typer does for an eagerly registered one."""
-    scratch = typer.Typer(add_completion = False)
+    scratch = typer.Typer(add_completion=False)
     _register_command(scratch, name)
     return typer.main.get_group(scratch).commands[name]
 
@@ -363,7 +364,7 @@ _PENDING = object()
 
 
 class _LazyCommands(_MutableMapping):
-    """`group.commands` whose lazy entries build on first lookup; names and order need no import."""
+    """`group.commands` whose pending entries build on first lookup."""
 
     def __init__(self, eager, lazy_names):
         self._commands = {}
@@ -400,7 +401,7 @@ class _LazyCommands(_MutableMapping):
         return len(self._commands)
 
 
-app.add_typer(studio_app, name = "studio", help = "Unsloth Studio commands.")
+app.add_typer(studio_app, name="studio", help="Unsloth Studio commands.")
 if _ArgvCapturingGroup is None:  # pragma: no cover - no group class to defer through
     for _name in _COMMAND_ORDER:
         if _name in _ACTIVE_LAZY_COMMANDS:
@@ -430,19 +431,21 @@ def __getattr__(name):
     except KeyError:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
     import importlib
+
     return getattr(importlib.import_module(module_name), attribute)
 
 
 @app.command(
     "install-kernels",
-    context_settings = {
+    context_settings={
         "allow_extra_args": True,
         "ignore_unknown_options": True,
         "help_option_names": [],
     },
-    help = "Install prebuilt xformers / flash-attn / causal_conv1d / mamba_ssm wheels matching the installed torch (all by default).",
+    help="Install prebuilt xformers / flash-attn / causal_conv1d / mamba_ssm wheels matching the installed torch (all by default).",
 )
 def install_kernels(ctx: typer.Context):
     # Listed for `unsloth --help`; the console script dispatches before typer is imported.
     from unsloth_cli._install_kernels import main as _install_kernels_main
-    raise typer.Exit(code = _install_kernels_main(ctx.args))
+
+    raise typer.Exit(code=_install_kernels_main(ctx.args))
