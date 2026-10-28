@@ -134,7 +134,6 @@ export function useTauriBackend() {
   const stoppingRef = useRef(false);
   const mountedRef = useRef(false);
   const portRef = useRef<number | null>(null);
-  // Wakes the startup wait on server-port instead of at its next poll tick.
   const portWakeRef = useRef(createPortWakeSignal());
   // commands.rs's watchdog kills a timed-out backend ~30 s later with a payload-free server-crashed;
   // this keeps the timeout's log tail on screen.

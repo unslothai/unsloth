@@ -28,7 +28,6 @@ test("server-port ends the startup wait at once, not at the next poll tick", asy
     signal.notify();
   }, 20);
   assert.deepEqual(await result, { status: "ready", port: 8888 });
-  // The old loop slept a whole poll interval before it looked again.
   assert.ok(
     performance.now() - started < MANAGED_STARTUP_POLL_MS - 200,
     "the wait should not run out the poll interval",
