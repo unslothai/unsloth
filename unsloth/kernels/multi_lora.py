@@ -864,15 +864,17 @@ class MultiLoraExperts(nn.Module):
     def _run(self, adapter: Optional[int], args) -> torch.Tensor:
         if adapter is None:
             return self.base_layer(*args)
-        if self.mode != "fold":
-            out = self._run_stash(adapter, args)
-            if out is not None:
-                self.mode = "stash"
-                return out
-            if self.mode == "stash":
-                raise RuntimeError("The experts' forward stopped reading the LoRA stash mid-run.")
-            self.mode = "fold"
-        return self._run_fold(adapter, args)
+        if self.mode is None:
+            # Probe on one token without autograd, so a checkpointed forward and its recompute run the same ops.
+            with torch.no_grad():
+                probe = self._run_stash(adapter, tuple(a[:1] for a in args))
+            self.mode = "fold" if probe is None else "stash"
+        if self.mode == "fold":
+            return self._run_fold(adapter, args)
+        out = self._run_stash(adapter, args)
+        if out is None:
+            raise RuntimeError("The experts' forward stopped reading the LoRA stash mid-run.")
+        return out
 
     def forward(self, hidden_states: torch.Tensor, *args):
         batch = next(iter(self.adapters.values())).batch
@@ -882,13 +884,26 @@ class MultiLoraExperts(nn.Module):
             )
         groups = _adapter_groups(batch)
         if len(groups) == 1:
-            return self._run(groups[0][0], (hidden_states, *args))
-        out = None
-        for u, rows in groups:
-            y = self._run(u, (hidden_states[rows], *(a[rows] for a in args)))
-            if out is None:
-                out = y.new_zeros((hidden_states.shape[0], *y.shape[1:]))
-            out = out.index_copy(0, rows, y)
+            out = self._run(groups[0][0], (hidden_states, *args))
+        else:
+            out = None
+            for u, rows in groups:
+                y = self._run(u, (hidden_states[rows], *(a[rows] for a in args)))
+                if out is None:
+                    out = y.new_zeros((hidden_states.shape[0], *y.shape[1:]))
+                out = out.index_copy(0, rows, y)
+        present = {u for u, _ in groups}
+        absent = [u for u in range(self.num_adapters) if u not in present]
+        if absent and torch.is_grad_enabled():
+            # Absent adapters stay in the graph with zero gradient, as the dense layers' do: default DDP needs
+            # every trainable parameter used; drop_absent_adapter_grads_ clears them before the step.
+            zero = sum(
+                (A[u].sum() + B[u].sum()) * 0
+                for adapter in self.adapters.values()
+                for A, B in ((adapter.lora_A, adapter.lora_B),)
+                for u in absent
+            )
+            out = out + zero.to(out.dtype)
         return out
 
 
