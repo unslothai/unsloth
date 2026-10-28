@@ -4120,7 +4120,7 @@ function ThreadBackendAutosave({
   }, []);
 
   const saveThread = useCallback(
-    async (threadId: string): Promise<void> => {
+    async (threadId: string, replyOnly = false): Promise<void> => {
       const runtime = aui.threads().__internal_getAssistantRuntime?.();
       if (!runtime) {
         return;
@@ -4138,7 +4138,7 @@ function ThreadBackendAutosave({
         return;
       }
       await ensureStoredChatThread(remoteId);
-      await syncExportedRepositoryToBackend(remoteId, exported);
+      await syncExportedRepositoryToBackend(remoteId, exported, { replyOnly });
       if (isChatThreadDeleted(remoteId)) {
         await deleteStoredChatThreads([remoteId]);
         return;
@@ -4166,12 +4166,12 @@ function ThreadBackendAutosave({
   );
 
   const queueSave = useCallback(
-    (threadId: string): Promise<void> => {
+    (threadId: string, replyOnly = false): Promise<void> => {
       const queued = saveChainRef.current
         .catch(() => {})
         .then(async () => {
           await pendingFirstSavesRef.current.get(threadId);
-          await saveThread(threadId);
+          await saveThread(threadId, replyOnly);
         })
         .catch(reportAutosaveError);
       saveChainRef.current = queued;
@@ -4228,7 +4228,7 @@ function ThreadBackendAutosave({
       (threadId) =>
         threadHasLiveGenerationRun(threadId)
           ? Promise.resolve()
-          : queueSaveRef.current(threadId),
+          : queueSaveRef.current(threadId, true),
       {
         isActive: (threadId) => isRunActiveRef.current(threadId),
         isBounded: (threadId) => threadHasDurableGenerationRun(threadId),
