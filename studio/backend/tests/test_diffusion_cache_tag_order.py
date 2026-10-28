@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The FP8 and NVFP4 cache tags compose to one string whatever order they were set in.
-
-Each setter used to drop its own token and append it, so the same two patches gave
-``fp8;nvfp4`` in one process and ``nvfp4;fp8`` in another. torch keys every FX graph and
-AOTAutograd entry on ``cache_key_tag``, so the second process missed them all.
-"""
+"""FP8 + NVFP4 cache tags compose to one string whatever order they were set in (torch keys its caches on it)."""
 
 from __future__ import annotations
 
