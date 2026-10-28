@@ -53,7 +53,13 @@ def _file_workers(mode: str) -> int:
         return 1
     try:
         from hub.utils.hf_cache_state import hf_partials_are_resumable
+        from hub.utils.resumable_partials import LAST_STOCK_RESUMABLE_VERSION, _hub_version
+
         if not hf_partials_are_resumable():
+            return 1
+        # Past 1.17 only the writer restored at import resumes. The probe is re-run here and is not cached when it fails, so a probe that failed at import and passes now would otherwise overlap files on the stock writer, whose partials cannot resume.
+        version = _hub_version()
+        if not version or (version > LAST_STOCK_RESUMABLE_VERSION and not _PARTIALS_RESUMABLE):
             return 1
     except Exception:  # noqa: BLE001 - an unanswerable probe keeps the serial writer
         return 1
