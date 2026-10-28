@@ -66,7 +66,7 @@ class _HistoryRows:
                     """
                 SELECT model_name, output_dir, started_at
                 FROM training_runs
-                WHERE output_dir IS NOT NULL
+                WHERE +output_dir IS NOT NULL
                 ORDER BY started_at DESC
                 """
                 )
@@ -152,7 +152,7 @@ def _infer_base_model_from_history(
                 """
                 SELECT model_name
                 FROM training_runs
-                WHERE output_dir IN (?, ?)
+                WHERE +output_dir IN (?, ?)
                 ORDER BY started_at DESC
                 """,
                 exact_dirs,
