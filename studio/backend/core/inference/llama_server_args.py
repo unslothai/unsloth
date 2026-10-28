@@ -1313,10 +1313,19 @@ def no_reserve_requires_dio(*, supports_load_mode: bool, gpu_offload_confirmed: 
     return sys.platform == "win32" and supports_load_mode and gpu_offload_confirmed
 
 
+def load_mode_support(server_caps: Mapping[str, object]) -> Optional[bool]:
+    """--load-mode support from a --help probe; None when the probe failed or listed nothing."""
+    if server_caps.get("supports_load_mode"):
+        return True
+    if server_caps.get("help_probe_ok") and server_caps.get("flags"):
+        return False
+    return None
+
+
 def resolve_launch_load_mode(
     extra_args: Optional[Iterable[str]],
     *,
-    supports_load_mode: bool,
+    supports_load_mode: Optional[bool],
     weights_in_host_memory: bool,
     gpu_offload_confirmed: bool,
     requested_load_mode: Optional[str],
@@ -1411,7 +1420,7 @@ def apply_model_memory_policy(
 def apply_load_mode_policy(
     extra_args: Optional[Iterable[str]],
     *,
-    supports_load_mode: bool = False,
+    supports_load_mode: Optional[bool] = False,
     weights_in_host_memory: bool = True,
     requested_load_mode: Optional[str] = None,
     settings: Optional[tuple[bool, bool]] = None,
@@ -1441,6 +1450,10 @@ def apply_load_mode_policy(
             "Model Memory: 'Don't reserve system RAM' drops the requested load mode %r.",
             mode,
         )
+        return [], tokens
+    if supports_load_mode is None:
+        # Newer builds exit on the legacy flags, so an unknown build gets none.
+        logger.info("llama-server --help probe was inconclusive; skipping the requested %r mode.", mode)
         return [], tokens
     if not supports_load_mode:
         # A build predating the enum understands the spellings it replaced, and only for the values that had one.
