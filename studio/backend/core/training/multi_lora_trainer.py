@@ -286,6 +286,15 @@ def _check_routed(model, device) -> None:
         )
 
 
+def _text_tokenizer(tokenizer):
+    """A vision model's processor reads a text-only call's first argument as images; the single job unwraps it."""
+    from transformers import ProcessorMixin
+
+    if isinstance(tokenizer, ProcessorMixin) and hasattr(tokenizer, "tokenizer"):
+        return tokenizer.tokenizer
+    return tokenizer
+
+
 def _member_tokenizer(tokenizer, model_name: str, final_format: str):
     from utils.datasets.chat_templates import get_training_chat_template
     if getattr(tokenizer, "chat_template", None) or final_format not in (
@@ -486,7 +495,27 @@ def _packs(model) -> bool:
     return True
 
 
-def _pack_rows(rows: list, max_length: int) -> tuple[list, list]:
+def _pack_num_proc(tokenizer) -> Optional[int]:
+    """The single job's packing workers: TRL packs each worker's shard on its own, so the count moves the rows."""
+    from core.training.trainer import _tokenizer_blocks_map_workers
+    from utils.hardware import dataset_map_num_proc
+
+    try:
+        from unsloth_zoo.dataset_num_proc import get_dataset_num_proc
+    except ImportError:
+        from unsloth.dataset_num_proc import get_dataset_num_proc
+    return get_dataset_num_proc(
+        dataset_map_num_proc(
+            1 if _tokenizer_blocks_map_workers(tokenizer) else None, serial_as_none = False
+        )
+    )
+
+
+def _pack_rows(
+    rows: list,
+    max_length: int,
+    num_proc: Optional[int] = None,
+) -> tuple[list, list]:
     """The single job's packing (TRL's default strategy) of one member's documents into rows of max_length."""
     import dataclasses
     import inspect
@@ -501,9 +530,11 @@ def _pack_rows(rows: list, max_length: int) -> tuple[list, list]:
             (f.default for f in dataclasses.fields(SFTConfig) if f.name == "packing_strategy"),
             "bfd",
         )
-        packed = pack_dataset(dataset, max_length, strategy = strategy)
+        packed = pack_dataset(
+            dataset, max_length, strategy = strategy, map_kwargs = {"num_proc": num_proc}
+        )
     else:
-        packed = pack_dataset(dataset, max_length)
+        packed = pack_dataset(dataset, max_length, map_kwargs = {"num_proc": num_proc})
     ids = [list(x) for x in packed["input_ids"]]
     # Wrapped packing (TRL < 0.20, or packing_strategy="wrapped") keeps no boundaries: each row is one
     # sequence, as the single job then trains it.
@@ -771,7 +802,8 @@ def _run(event_queue, stop_queue, config: dict, members: list) -> None:
         )
     trainer.load_in_4bit = load_in_4bit
     trainer.is_cpt = False
-    model, tokenizer = trainer.model, trainer.tokenizer
+    model, processor = trainer.model, trainer.tokenizer
+    tokenizer = _text_tokenizer(processor)
     max_length = int(config.get("max_seq_length") or 2048)
     model_cap = getattr(model, "max_seq_length", None)
     if isinstance(model_cap, int) and 0 < model_cap < max_length:
@@ -780,7 +812,7 @@ def _run(event_queue, stop_queue, config: dict, members: list) -> None:
     _send_status(event_queue, "Tokenizing datasets...")
     from utils.datasets.pretokenized import PRETOKENIZED_FORMAT
 
-    packs = None
+    packs = pack_workers = None
     for member in members:
         if member.done:
             continue
@@ -789,7 +821,7 @@ def _run(event_queue, stop_queue, config: dict, members: list) -> None:
             final_format = (
                 str(info.get("final_format", "")).lower() if isinstance(info, dict) else ""
             )
-            member.tokenizer, member.rows = _tokenize_member(
+            member_tok, member.rows = _tokenize_member(
                 info,
                 tokenizer,
                 member.config,
@@ -797,12 +829,18 @@ def _run(event_queue, stop_queue, config: dict, members: list) -> None:
                 max_length,
                 vocab_size = int(model.get_input_embeddings().num_embeddings),
             )
+            # Saved as the single job saves it: the full processor (preprocessor_config.json for export).
+            member.tokenizer = processor if member_tok is tokenizer else member_tok
             # The single job turns packing off for pre-tokenized rows, whose labels packing would drop.
             if member.config.get("packing") and final_format != PRETOKENIZED_FORMAT:
-                packs = _packs(model) if packs is None else packs
+                if packs is None:
+                    packs = _packs(model)
+                    pack_workers = _pack_num_proc(processor) if packs else None
                 if packs:
                     documents = len(member.rows)
-                    member.rows, member.seq_lengths = _pack_rows(member.rows, max_length)
+                    member.rows, member.seq_lengths = _pack_rows(
+                        member.rows, max_length, pack_workers
+                    )
                     logger.info(
                         "Batched training: %s packs %d documents into %d rows",
                         member.run_id,
