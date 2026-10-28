@@ -666,6 +666,7 @@ def test_forward_calling_compiled_function_refused_for_split_backward(monkeypatc
             ppn._check_schedule(block_calling(target), spec, split)
         monkeypatch.setattr(ppn, "split_backward_keeps_function_nodes", lambda: True)
         ppn._check_schedule(block_calling(target), spec, split)  # torch >= 2.13: allowed
+
     # A compiled helper captured from an enclosing scope (a closure, not a global) is found too.
     def closure_forward(self, x):
         return compiled(self, x)
