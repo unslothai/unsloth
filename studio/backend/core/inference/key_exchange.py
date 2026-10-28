@@ -49,8 +49,7 @@ def _generate_private_key() -> rsa.RSAPrivateKey:
 
 
 def start_key_pair():
-    """Generate the key pair on a thread and return the step that installs it, which waits for it and
-    raises what generation raised. Key generation releases the GIL, so startup work can overlap it."""
+    """Generate the key on a thread (keygen releases the GIL); the returned step joins, re-raises, installs."""
     result = {}
 
     def _generate():

@@ -2429,8 +2429,7 @@ def run_server(
 
     import gc
 
-    # The import builds ~330k long-lived objects; at the default threshold the cyclic GC runs ~270 times over them,
-    # two of them full, and finds little garbage. A threshold of 0 (GC switched off) is left alone.
+    # The import builds ~330k long-lived objects the default threshold rescans ~270 times; 0 (GC off) is left alone.
     _gc_threshold = gc.get_threshold()
     if _gc_threshold[0]:
         gc.set_threshold(max(_gc_threshold[0], 100_000), *_gc_threshold[1:])

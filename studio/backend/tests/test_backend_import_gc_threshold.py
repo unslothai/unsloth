@@ -1,10 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""run_server imports main with a raised GC threshold: the import only builds long-lived objects, and
-at the default threshold the collector rescans them ~270 times. The caller's thresholds come back
-even when the import fails."""
-
 from __future__ import annotations
 
 import ast
@@ -42,5 +38,4 @@ def test_the_threshold_is_raised_before_the_import_and_only_when_gc_runs():
     raised = src.index("gc.set_threshold(max(_gc_threshold[0], 100000)")
     assert src.index("_gc_threshold = gc.get_threshold()") < raised
     assert src.index("if _gc_threshold[0]:") < raised < src.index("from main import app")
-    # Only the import window: nothing else in run_server touches the thresholds.
     assert src.count("gc.set_threshold(") == 2
