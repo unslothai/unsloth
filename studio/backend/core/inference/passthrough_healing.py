@@ -283,8 +283,7 @@ def _closed_signal_span(buffer: str) -> Optional[tuple[int, int]]:
     return min(spans, key = lambda span: span[0]) if spans else None
 
 
-# A strict (allow_incomplete=False) parse result needs one of these: a JSON/Gemma call its close tag, an XML call
-# </function>. Without them only a Mistral/rehearsal bracket call can parse, and that needs a balanced close.
+# A strict parse needs a JSON/Gemma close tag or </function>; else only a balanced Mistral/rehearsal bracket call parses.
 _STRICT_CLOSE_TOKENS = ("</tool_call>", "<|end_message|>", "<tool_call|>", "</function>")
 _CALLS_TAG = "[TOOL_CALLS]"
 _ARGS_TAG = "[ARGS]"
@@ -396,7 +395,7 @@ class _StrictParseGate:
                 pos = buffer.find(tag, pos + len(tag))
         if not self._calls and not self._args:
             return False
-        # Every opener _iter_bracket_spans can try: regexes rerun per tag, since a tail match can still change.
+        # Every opener _iter_bracket_spans can try; regexes rerun since a tail match can still change.
         opens = []
         for pos in self._calls:
             m = _MISTRAL_BRACKET_RE.match(buffer, pos)
