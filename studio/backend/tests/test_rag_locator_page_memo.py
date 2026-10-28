@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""pdf_regions_for_chunks reads each page's words once per run of chunks on that page,
-and the regions match locating every chunk on its own."""
+"""pdf_regions_for_chunks reads each page once per run and matches per-chunk location."""
 
 import random
 
