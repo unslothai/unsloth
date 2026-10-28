@@ -442,6 +442,9 @@ def _sdpa_packed_varlen(
             HF_PACKED_ATTENTION_STATS["fallback"] += 1
         return orig(module, query, key, value, attention_mask, *args, **named, **kwargs)
     block_varlen = kwargs.pop(BLOCK_VARLEN_KWARG, None)
+    # The wrapped sdpa gets Q / K / V as given: autocast casts them there after transformers' repeat_kv,
+    # so GQA's dK / dV reduce in fp32. Only the varlen kernels take the autocast dtype copies.
+    given = (query, key, value)
     if kwargs.get("packed_seq_lengths") is not None and not _disabled():
         query, key, value = _autocast_float32(query, key, value)
     # Before any counter while tracing: Dynamo would guard on it and recompile every forward.
@@ -478,9 +481,7 @@ def _sdpa_packed_varlen(
     ):
         return _sdpa_packed_varlen_eager(
             module,
-            query,
-            key,
-            value,
+            *given,
             attention_mask,
             dropout = dropout,
             scaling = scaling,
@@ -490,9 +491,7 @@ def _sdpa_packed_varlen(
     if kwargs.get("packed_seq_lengths") is None or _disabled() or torch.compiler.is_compiling():
         return orig(
             module,
-            query,
-            key,
-            value,
+            *given,
             attention_mask,
             dropout = dropout,
             scaling = scaling,
@@ -547,9 +546,7 @@ def _sdpa_packed_varlen(
         HF_PACKED_ATTENTION_STATS["fallback"] += 1
         return orig(
             module,
-            query,
-            key,
-            value,
+            *given,
             attention_mask,
             dropout = dropout,
             scaling = scaling,
@@ -578,9 +575,7 @@ def _sdpa_packed_varlen(
             HF_PACKED_ATTENTION_STATS["fallback"] += 1
             return orig(
                 module,
-                query,
-                key,
-                value,
+                *given,
                 attention_mask,
                 dropout = dropout,
                 scaling = scaling,
@@ -607,9 +602,7 @@ def _sdpa_packed_varlen(
             HF_PACKED_ATTENTION_STATS["fallback"] += 1
             return orig(
                 module,
-                query,
-                key,
-                value,
+                *given,
                 attention_mask,
                 dropout = dropout,
                 scaling = scaling,

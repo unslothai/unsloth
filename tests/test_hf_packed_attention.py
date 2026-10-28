@@ -1738,10 +1738,44 @@ def test_packed_fp32_rows_under_autocast_run_in_the_autocast_dtype(
     with context:
         out, _ = hpa._sdpa_packed_varlen(module, q, k, v, mask, scaling = 0.25, **kwargs)
         ref = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask = mask, scale = 0.25)
-    assert seen == [(expected, expected, expected)]
-    # The wrapped sdpa computes what it computed before: autocast cast the same inputs to the same dtype.
+    # A row the varlen kernels do not take (CPU here) reaches the wrapped sdpa exactly as given.
+    assert seen == [(dtype, dtype, dtype)]
     assert out.dtype == ref.dtype
     torch.testing.assert_close(out, ref, atol = 0, rtol = 0)
+    # The varlen checks of a packed row see the dtype SDPA runs in.
+    if packed:
+        with context:
+            assert {t.dtype for t in hpa._autocast_float32(q, k, v)} == {expected}
+
+
+@pytest.mark.parametrize("autocast", [torch.bfloat16, torch.float16])
+@pytest.mark.parametrize("n_kv", [2, 8])
+def test_packed_fp32_fallback_rows_keep_their_gradients(monkeypatch, autocast, n_kv):
+    """A packed fp32 row that still falls back (no varlen kernel: CPU, a window or shape varlen refuses)
+    trains exactly as before: transformers repeats GQA's K / V heads before autocast casts them, so dK / dV
+    reduce over the head groups in fp32. Casting first would round that reduction to fp16 / bf16."""
+    from transformers.integrations.sdpa_attention import sdpa_attention_forward
+
+    hpa._ORIG_SDPA[0] = sdpa_attention_forward
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    torch.manual_seed(0)
+    lengths = [37, 100, 2, 5, 56]
+    T, H, D = sum(lengths), 8, 64
+    module = types.SimpleNamespace(is_causal = True, num_key_value_groups = H // n_kv, training = True)
+    q = torch.randn(1, H, T, D, requires_grad = True)
+    k = torch.randn(1, n_kv, T, D, requires_grad = True)
+    v = torch.randn(1, n_kv, T, D, requires_grad = True)
+    mask, psl = _block_causal(lengths), torch.tensor(lengths, dtype = torch.int32)
+    with torch.autocast("cpu", dtype = autocast):
+        out, _ = hpa._sdpa_packed_varlen(module, q, k, v, mask, scaling = 0.125, packed_seq_lengths = psl)
+        ref, _ = sdpa_attention_forward(module, q, k, v, mask, scaling = 0.125)
+    g = torch.randn_like(ref)
+    got = torch.autograd.grad(out, (q, k, v), g)
+    want = torch.autograd.grad(ref, (q, k, v), g)
+    torch.testing.assert_close(out, ref, atol = 0, rtol = 0)
+    for a, b in zip(got, want):
+        assert a.dtype == b.dtype == torch.float32
+        torch.testing.assert_close(a, b, atol = 0, rtol = 0)
 
 
 @_CUDA
