@@ -267,21 +267,60 @@ def split_backward_keeps_function_nodes() -> bool:
 
 def compiled_blocks(model):
     """Names of submodules of `model` that run through torch.compile: Unsloth's block compile (class forward
-    marked _unsloth_block_compiled), nn.Module.compile(), torch.compile(module) wrappers and torch.compile'd
-    forwards. Their backward is an AOTAutograd CompiledFunctionBackward node."""
+    marked _unsloth_block_compiled), nn.Module.compile(), torch.compile(module) wrappers, torch.compile'd
+    forwards and forwards calling a compiled function (unsloth_zoo's compiled modules). Their backward is an
+    AOTAutograd CompiledFunctionBackward node."""
     found = []
+    calls = {}  # per class forward: does it call a compiled function
     for name, module in model.named_modules():
         cls_forward = getattr(type(module), "forward", None)
         inst_forward = module.__dict__.get("forward")
+        if id(cls_forward) not in calls:
+            calls[id(cls_forward)] = _calls_compiled(cls_forward)
         if (
             getattr(cls_forward, "_unsloth_block_compiled", False)
             or module.__dict__.get("_compiled_call_impl") is not None
             or type(module).__name__ == "OptimizedModule"
             or hasattr(_unwrap_callable(inst_forward), "_torchdynamo_orig_callable")
             or hasattr(inst_forward, "_torchdynamo_orig_callable")
+            or calls[id(cls_forward)]
+            or (inst_forward is not None and _calls_compiled(inst_forward))
         ):
             found.append(name or type(module).__name__)
     return found
+
+
+def _is_compiled(value):
+    try:
+        return (
+            hasattr(value, "_torchdynamo_orig_callable")
+            or hasattr(value, "_unsloth_compiled_func")
+            or type(value).__name__ == "OptimizedModule"
+        )
+    except Exception:
+        return False
+
+
+def _calls_compiled(forward):
+    """True if `forward` calls, by global name, a torch.compile'd function: unsloth_zoo's generated
+    unsloth_compiled_module_* files keep each module's class forward eager and have it call a module-level
+    compiled function (`Gemma3MLP.forward` -> `Gemma3MLP_forward`, torch_compile_with_fallback, whose wrapper
+    keeps the compiled markers). Its backward is a CompiledFunctionBackward node like a compiled block's."""
+    fn = _unwrap_callable(forward)
+    code = getattr(fn, "__code__", None)
+    scope = getattr(fn, "__globals__", None)
+    if code is None or not isinstance(scope, dict):
+        return False
+    if any(_is_compiled(scope.get(name)) for name in code.co_names if name in scope):
+        return True
+    for cell in getattr(fn, "__closure__", None) or ():  # a compiled helper captured from an enclosing scope
+        try:
+            value = cell.cell_contents
+        except ValueError:  # empty cell
+            continue
+        if _is_compiled(value):
+            return True
+    return False
 
 
 _SINGLE_BACKWARD_MODULES = ("unsloth.kernels.fast_lora",)

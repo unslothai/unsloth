@@ -968,7 +968,7 @@ def _check_schedule(model, spec, props):
                 f"pass, which torch {torch.__version__} cannot run over torch.compile'd blocks ({shown}): its "
                 "weight pass reads _input_metadata of the compiled (AOTAutograd) backward nodes after their graph "
                 "root is released, which needs torch >= 2.13. Use schedule = 'interleaved1f1b' (or 'loopedbfs', "
-                "a non zero-bubble schedule), disable the compiled blocks (UNSLOTH_BLOCK_COMPILE=0, no "
+                "a non zero-bubble schedule), disable the compiled blocks (UNSLOTH_BLOCK_COMPILE=0, UNSLOTH_COMPILE_DISABLE=1, no "
                 "module.compile()), or upgrade torch. The model was not modified."
             )
     if props["split_backward"] and non_reentrant_checkpointing_only(model) is False:
