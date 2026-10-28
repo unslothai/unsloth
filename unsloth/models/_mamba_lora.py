@@ -135,7 +135,12 @@ def _merged_weight(module, allow_multiple = False):
 
 def _cache_key(module):
     base = module.get_base_layer().weight
-    key = [tuple(module.active_adapters), id(base), base._version, torch.is_inference_mode_enabled()]
+    key = [
+        tuple(module.active_adapters),
+        id(base),
+        base._version,
+        torch.is_inference_mode_enabled(),
+    ]
     for name in module.active_adapters:
         if name in module.lora_A:
             a, b = module.lora_A[name].weight, module.lora_B[name].weight

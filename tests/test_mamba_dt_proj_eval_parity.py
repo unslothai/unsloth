@@ -38,7 +38,13 @@ ALL = ["in_proj", "x_proj", "dt_proj"]
 # transformers 4.x: the test models always dispatch to cuda_kernels_forward, which outside fused
 # training reads dt_proj.weight raw. Its mamba_ssm / causal_conv1d ops get their reference math here
 # so prefill and cached decode run on CPU.
-def _causal_conv1d_ref(x, weight, bias = None, activation = None, **kwargs):
+def _causal_conv1d_ref(
+    x,
+    weight,
+    bias = None,
+    activation = None,
+    **kwargs,
+):
     seq_len = x.shape[-1]
     out = F.conv1d(x, weight.unsqueeze(1), bias, padding = weight.shape[-1] - 1, groups = x.shape[1])
     out = out[..., :seq_len]
@@ -79,7 +85,14 @@ def _selective_scan_ref(
     return (y, state) if return_last_state else y
 
 
-def _causal_conv1d_update_ref(x, conv_state, weight, bias = None, activation = None, **kwargs):
+def _causal_conv1d_update_ref(
+    x,
+    conv_state,
+    weight,
+    bias = None,
+    activation = None,
+    **kwargs,
+):
     conv_state.copy_(torch.roll(conv_state, shifts = -1, dims = -1))
     conv_state[:, :, -1] = x
     out = (conv_state * weight).sum(-1)
@@ -89,7 +102,17 @@ def _causal_conv1d_update_ref(x, conv_state, weight, bias = None, activation = N
 
 
 def _selective_state_update_ref(
-    state, x, dt, A, B, C, D = None, z = None, dt_bias = None, dt_softplus = False, **kwargs
+    state,
+    x,
+    dt,
+    A,
+    B,
+    C,
+    D = None,
+    z = None,
+    dt_bias = None,
+    dt_softplus = False,
+    **kwargs,
 ):
     dt = dt.float()
     if dt_bias is not None:
