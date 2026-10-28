@@ -38,7 +38,7 @@ test("audio Optional and Required tags are grey, smaller and unbracketed", () =>
   const field = readSrc("features/audio/components/field.tsx");
   assert.match(
     field,
-    /<span className="ml-1\.5 text-ui-12 font-normal text-muted-foreground">/,
+    /<span className="ml-1\.5 text-ui-11p5 font-normal text-muted-foreground\/70">/,
   );
   for (const file of tsxFiles(AUDIO_DIR)) {
     assert.doesNotMatch(

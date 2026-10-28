@@ -35,7 +35,7 @@ export function FieldLabel({
 /** "Optional" / "Required" after a field title. */
 export function FieldTag({ children }: { children: ReactNode }) {
   return (
-    <span className="ml-1.5 text-ui-12 font-normal text-muted-foreground">
+    <span className="ml-1.5 text-ui-11p5 font-normal text-muted-foreground/70">
       {children}
     </span>
   );
