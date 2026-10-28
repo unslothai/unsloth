@@ -348,12 +348,13 @@ test("a scaled media rail leaves the preview its minimum", () => {
     "features/video/video-page.tsx",
   ]) {
     const source = readSrc(file);
+    const minimum = file.includes("/audio/") ? "13rem" : "var(--media-header-min-width)";
     assert.ok(
-      source.includes(`@[50rem]:w-[min(${rail},calc(100%-13rem))]`),
+      source.includes(`@[50rem]:w-[min(${rail},calc(100%-${minimum}))]`),
       `${file} rail can outgrow its split`,
     );
     assert.ok(
-      source.includes(`grid-cols-[minmax(0,${rail})_minmax(13rem,1fr)]`),
+      source.includes(`grid-cols-[minmax(0,${rail})_minmax(${minimum},1fr)]`),
       `${file} header column drifts from its rail`,
     );
   }

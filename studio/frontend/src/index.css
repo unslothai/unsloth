@@ -55,6 +55,19 @@
 }
 
 @layer components {
+	.media-header-layout {
+		/* Keep the header, settings rail and resize handle on the same boundary. */
+		--media-header-min-width: calc(14rem * var(--ui-space-scale, 1) + var(--studio-chat-header-right-inset, var(--studio-window-control-inset, 0px)));
+	}
+
+	.media-header-controls {
+		container: media-header / inline-size;
+		/* Exclude native window controls from the space tested by the queries. */
+		padding-right: var(--studio-chat-header-right-inset, var(--studio-window-control-inset, 0px));
+		/* Query ems follow the UI scale, and measure only the room beside the rail. */
+		font-size: calc(1rem * var(--ui-space-scale, 1));
+	}
+
 	/* The custom Windows/Linux titlebar stays above modal backdrops so native
 	   window actions remain usable. Repeat the standard backdrop over the surface
 	   and page navigation. Window controls paint above it, keeping their glyphs

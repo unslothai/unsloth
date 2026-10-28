@@ -73,12 +73,12 @@ test("the sibling link keeps its icon where the square button puts it and trails
   );
   assert.match(
     LINK,
-    /\{iconArrow && \(\s*<>[\s\S]{0,200}<span className="hidden min-w-0 truncate text-ui-13 font-medium @\[50rem\]:inline">\s*\{label\}\s*<\/span>\s*<ArrowRightIcon className="size-3\.5 shrink-0 opacity-60" \/>/,
+    /\{iconArrow && \(\s*<>[\s\S]{0,200}<span className="hidden min-w-0 truncate text-ui-13 font-medium @\[36em\]\/media-header:inline">\s*\{label\}\s*<\/span>\s*<ArrowRightIcon className="size-3\.5 shrink-0 opacity-60" \/>/,
   );
   for (const page of [IMAGES, VIDEO]) {
     assert.match(
       page,
-      /justify-end pr-\[calc\(var\(--thread-scrollbar-gutter,10px\)\+0\.5rem\*var\(--ui-space-scale,1\)\+var\(--studio-chat-header-right-inset,var\(--studio-window-control-inset,0px\)\)\)\]/,
+      /justify-end pr-\[calc\(var\(--thread-scrollbar-gutter,10px\)\+0\.5rem\*var\(--ui-space-scale,1\)\)\]/,
     );
   }
 });
@@ -95,9 +95,9 @@ test("Library's empty Images and Videos offer Upload and Generate", () => {
   );
 });
 
-test("Create and Train get roomy tabs on Images and Video", () => {
+test("Create and Train expand with the space beside the media rail", () => {
   for (const page of [IMAGES, VIDEO]) {
-    assert.match(page, /\[&>button\]:px-7 @\[68rem\]:\[&>button\]:px-14/);
+    assert.match(page, /@\[30em\]\/media-header:\[&>button\]:px-7 @\[48em\]\/media-header:\[&>button\]:px-14/);
   }
 });
 
