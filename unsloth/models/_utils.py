@@ -4255,19 +4255,37 @@ else:
     torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = DEVICE_TYPE_TORCH)
 
 
-from transformers.utils import is_openai_available
+import transformers.utils
 
-if is_openai_available():
-    try:
-        from openai import OpenAI
-    except:
-        print("Unsloth: OpenAI failed to import - ignoring for now.")
-        import transformers.utils
 
-        def _is_openai_available():
-            return False
+def _lazy_openai_import_check(is_available):
+    # transformers only reads openai's package metadata, so a broken install (seen on Databricks)
+    # still reports True and crashes callers that then import it, e.g. trl's judges. Try the real
+    # import on the first True answer rather than at `import unsloth` (0.4 to 0.6 s of openai).
+    import_ok = []
 
-        transformers.utils.is_openai_available = _is_openai_available
+    def is_openai_available():
+        available = is_available()
+        if not available:
+            return available
+        if not import_ok:
+            try:
+                from openai import OpenAI  # noqa: F401
+            except Exception:
+                print("Unsloth: OpenAI failed to import - ignoring for now.")
+                import_ok.append(False)
+            else:
+                import_ok.append(True)
+        return available if import_ok[0] else False
+
+    is_openai_available._unsloth_lazy_openai_check = True
+    return is_openai_available
+
+
+if not getattr(transformers.utils.is_openai_available, "_unsloth_lazy_openai_check", False):
+    transformers.utils.is_openai_available = _lazy_openai_import_check(
+        transformers.utils.is_openai_available
+    )
 
 from transformers import AutoTokenizer
 from transformers.utils.import_utils import _is_package_available
