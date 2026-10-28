@@ -1499,6 +1499,24 @@ def _refuse_block_swap(model):
         )
 
 
+def _frozen_weights_are_vllm_engine_storage(model):
+    """True when the model was loaded with fast_inference: Unsloth's vLLM load builds the HF weights as views
+    of the engine's (unsloth_zoo convert_vllm_to_huggingface, `llm.shared_weights`), so the engine keeps that
+    storage alive. The engine sits on the loaded model; a PeftModel holds it under base_model.model."""
+    seen = set()
+    stack = [model]
+    while stack:
+        m = stack.pop()
+        if m is None or id(m) in seen or not isinstance(m, torch.nn.Module):
+            continue
+        seen.add(id(m))
+        if getattr(m.__dict__.get("vllm_engine"), "shared_weights", False):
+            return True
+        modules = m.__dict__.get("_modules", {})
+        stack.extend(modules.get(name) for name in ("base_model", "model"))
+    return False
+
+
 def shard_model(model, config: Optional[FSDP2Config] = None):
     """fully_shard each unit of `find_shard_units`, then the root (embeddings, final norm, lm_head,
     leftovers). Pass the outermost module the loop calls (the PeftModel for LoRA). Idempotent."""
@@ -1546,6 +1564,18 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
                 f"(fully_shard(ignored_params), torch 2.7+); this is torch {torch.__version__}."
             )
         config = dataclasses.replace(config, shard_frozen = False)
+    if config.shard_frozen is None and _frozen_weights_are_vllm_engine_storage(model):
+        from .fsdp2_perf import _env_tristate as _replicate_env
+
+        if _replicate_env("UNSLOTH_FSDP2_REPLICATE_FROZEN") is None:
+            # fast_inference: the frozen weights are views of the vLLM engine's own weights, which the engine
+            # keeps alive. Sharding them frees nothing and allocates every rank's shard on top (half of a 16-bit
+            # 3B model on 2 ranks, which no longer fits a T4 beside vLLM), so keep them replicated like DDP.
+            config = dataclasses.replace(config, shard_frozen = False)
+            _print_rank0(
+                "Unsloth: native FSDP2 keeps the frozen weights replicated: they are the vLLM engine's "
+                "weights (fast_inference), so sharding them would copy them, not free them."
+            )
     device = _shard_device(model, config.device)
     dist = _ensure_process_group(device, config.backend, config.timeout)
     if device.type == "cuda":
