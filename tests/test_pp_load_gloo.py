@@ -407,7 +407,6 @@ def test_sharded_loading_matches_full_load_then_split(arch, world, schedule, v, 
     if init in ("mica", "lora_ga"):
         import peft as peft_module
         from peft.tuners.lora.layer import LoraLayer
-
         if not hasattr(LoraLayer, f"{init}_init"):
             pytest.skip(f"peft {peft_module.__version__} has no {init} initialization")
     with tempfile.TemporaryDirectory() as ckpt:
