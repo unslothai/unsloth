@@ -307,17 +307,10 @@ export function previewSignature(body: PromptUpsamplerPreviewRequest): string {
   return JSON.stringify([body.prompt.trim(), body.variant ?? null, refs]);
 }
 
-/** Non-blocking notice after a run that asked for enhancement and did not get it, else null. */
+/** Notice when the upsampler failed, else null; "unavailable" stays silent. */
 export function enhancementNotice(
   outcome: string | null | undefined,
 ): { title: string; description: string } | null {
-  if (outcome === "unavailable") {
-    return {
-      title: "Prompt used as typed",
-      description:
-        "The prompt upsampler could not run (not downloaded yet, or llama.cpp is unavailable), so the prompt ran unchanged.",
-    };
-  }
   if (outcome === "failed") {
     return {
       title: "Prompt used as typed",

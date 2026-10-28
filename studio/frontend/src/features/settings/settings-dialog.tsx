@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { BrushCleaningIcon } from "@/lib/brush-cleaning-icon";
 import { useIsAccountOwner } from "@/features/auth";
 import { resolveSettingsTab, settingsTabVisible } from "./settings-tab-visibility";
 import { Button } from "@/components/ui/button";
@@ -32,7 +33,6 @@ import {
   HelpCircleIcon,
   HomeWifiIcon,
   LibrariesIcon,
-  PaintBrush02Icon,
   Search01Icon,
   Settings02Icon,
   UserCircleIcon,
@@ -196,7 +196,7 @@ const TABS: TabDef[] = [
   {
     id: "appearance",
     labelKey: "settings.tabs.appearance",
-    icon: PaintBrush02Icon,
+    icon: BrushCleaningIcon,
   },
   {
     id: "resources",

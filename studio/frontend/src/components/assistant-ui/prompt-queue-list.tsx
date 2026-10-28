@@ -53,6 +53,8 @@ type PromptQueueListProps = {
 };
 
 const MENU_OR_TRIGGER = "[data-slot='dropdown-menu-content'], [data-queue-menu]";
+// A focused row button shows its label below it, over the next 32px row; it must not take that row's clicks.
+const ROW_TOOLTIP_CLASS = "prompt-queue-option-tooltip pointer-events-none";
 
 export function PromptQueueList({
   entry,
@@ -305,6 +307,7 @@ export function PromptQueueList({
                     <TooltipIconButton
                       type="button"
                       tooltip={t("promptQueue.dragTooltip")}
+                      tooltipClassName={ROW_TOOLTIP_CLASS}
                       aria-label={t("promptQueue.reorderLabel", {
                         position,
                         total: items.length,
@@ -358,6 +361,7 @@ export function PromptQueueList({
                     <TooltipIconButton
                       type="button"
                       tooltip={t("promptQueue.steerTooltip")}
+                      tooltipClassName={ROW_TOOLTIP_CLASS}
                       aria-label={t("promptQueue.steerLabel", { position })}
                       disabled={!item.canEdit || !item.canRemove}
                       className="h-7 w-auto shrink-0 gap-1.5 px-2 font-normal text-muted-foreground hover:text-foreground pointer-coarse:h-11"
@@ -377,6 +381,7 @@ export function PromptQueueList({
                     <TooltipIconButton
                       type="button"
                       tooltip={t("promptQueue.removeTooltip")}
+                      tooltipClassName={ROW_TOOLTIP_CLASS}
                       aria-label={t("promptQueue.removeLabel", { position })}
                       disabled={!item.canRemove}
                       className="size-7 shrink-0 text-muted-foreground hover:text-destructive pointer-coarse:size-11"
@@ -392,6 +397,7 @@ export function PromptQueueList({
                         <TooltipIconButton
                           ref={triggerRef}
                           tooltip={t("promptQueue.moreTooltip")}
+                          tooltipClassName={ROW_TOOLTIP_CLASS}
                           data-queue-menu
                           aria-label={t("promptQueue.moreLabel", { position })}
                           className="size-7 shrink-0 text-muted-foreground hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground pointer-coarse:size-11"

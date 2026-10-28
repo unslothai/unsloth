@@ -2125,6 +2125,75 @@ def fix_transformers_flash_attention_mrope_packed_sequence():
     )
 
 
+_PACKED_ROWS_PATCH_FLAG = "_unsloth_patched_mrope_packed_rows"
+_PACKED_ROWS_CHECKED = [None, None, False]
+
+
+def _packed_row_varlen_kwargs(query, attention_mask, kwargs):
+    """cu_seqlens from an Unsloth packed row whose layers got mRoPE ids, else None."""
+    if kwargs.get("packed_seq_lengths") is None:
+        return None
+    import torch
+
+    position_ids = kwargs.get("position_ids")
+    if (
+        attention_mask is not None
+        or kwargs.get("cu_seq_lens_q") is not None
+        or not isinstance(position_ids, torch.Tensor)
+        or position_ids.dim() <= 2
+        or query.dim() != 4
+        or query.shape[0] != 1
+    ):
+        return None
+    from .utils.packing import get_packed_info_from_kwargs
+
+    info = get_packed_info_from_kwargs(kwargs, query.device)
+    if info is None:
+        return None
+    _, cu_seqlens, max_seqlen = info
+    # One host read per batch, not per layer: rows that do not cover the query keep the original path.
+    if not torch.compiler.is_compiling():
+        checked = _PACKED_ROWS_CHECKED
+        if checked[0] is not cu_seqlens or checked[1] != query.shape[1]:
+            checked[:] = [cu_seqlens, query.shape[1], int(cu_seqlens[-1]) == query.shape[1]]
+        if not checked[2]:
+            return None
+    return {
+        "cu_seq_lens_q": cu_seqlens,
+        "cu_seq_lens_k": cu_seqlens,
+        "max_length_q": max_seqlen,
+        "max_length_k": max_seqlen,
+    }
+
+
+def fix_transformers_flash_attention_mrope_packed_rows():
+    """Qwen3.5 / Qwen3.5-MoE on transformers 5.3 give decoder layers 3-row mRoPE ids, which cannot mark
+    document starts: take a packed row's boundaries from `packed_seq_lengths` instead."""
+    try:
+        from transformers.integrations import flash_attention as fa_integration
+    except Exception:
+        return
+    current = getattr(fa_integration, "_flash_attention_forward", None)
+    if current is None or getattr(current, _PACKED_ROWS_PATCH_FLAG, False):
+        return
+
+    @functools.wraps(current)
+    def _flash_attention_forward(
+        query_states, key_states, value_states, attention_mask, *args, **kwargs
+    ):
+        varlen = _packed_row_varlen_kwargs(query_states, attention_mask, kwargs)
+        if varlen is not None:
+            kwargs.update(varlen)
+        return current(query_states, key_states, value_states, attention_mask, *args, **kwargs)
+
+    setattr(_flash_attention_forward, _PACKED_ROWS_PATCH_FLAG, True)
+    fa_integration._flash_attention_forward = _flash_attention_forward
+    logger.info(
+        "Unsloth: Patching transformers flash attention so packed rows with mRoPE layer "
+        "position ids keep their documents apart"
+    )
+
+
 _CHUNKED_MASK_PATCH_FLAG = "_unsloth_patched_chunked_block_sequence_ids"
 _BLOCK_SEQUENCE_IDS = "block_sequence_ids"
 
@@ -2915,23 +2984,48 @@ def _rope_theta_snapshot(config):
     return snapshot or None
 
 
-def _carry_per_layer_rope_theta(config, parameters, carried):
+def _rope_labels_naming_no_base(config, value):
+    """Labels of a NESTED incoming ``rope_scaling`` whose entry states no ``rope_theta``.
+
+    Read before the upstream setter runs: from transformers 5.21.0 that setter calls
+    ``standardize_rope_params``, which ``setdefault``s the ONE global ``rope_theta`` into
+    every nested entry in place, so afterwards a filled-in default looks caller-stated.
+    """
+    if not isinstance(value, dict) or not _rope_parameters_are_per_layer(config, value):
+        return None
+    return frozenset(
+        label
+        for label, entry in value.items()
+        if isinstance(entry, dict) and entry.get("rope_theta", None) is None
+    )
+
+
+def _carry_per_layer_rope_theta(
+    config,
+    parameters,
+    carried,
+    unnamed = None,
+):
     """Put each layer type's base back into a per-layer replacement that lost it.
 
     A top-level ``rope_theta`` would make the dict read as flat, so the base goes back
     into each nested entry. Copies throughout, never the caller's dicts in place. An
-    entry naming its own base is left alone. ``None`` means nothing was written -- no nested
-    snapshot, OR every entry already named its base, OR refused; never "fall through as scalar".
+    entry naming its own base is left alone; ``unnamed`` lists the labels the caller gave
+    no base, so a global default transformers filled in there is not mistaken for one.
+    ``None`` means nothing was written -- no nested snapshot, OR every entry already named
+    its base, OR refused; never "fall through as scalar".
     """
     if not isinstance(carried, dict) or not carried:
         return None
+    unnamed = unnamed or ()
     replacement = {}
     changed = False
     for layer_type, entry in parameters.items():
         if (
             isinstance(entry, dict)
-            and entry.get("rope_theta", None) is None
+            and (entry.get("rope_theta", None) is None or layer_type in unnamed)
             and carried.get(layer_type, None) is not None
+            and entry.get("rope_theta", None) != carried[layer_type]
         ):
             entry = dict(entry)
             entry["rope_theta"] = carried[layer_type]
@@ -2946,7 +3040,11 @@ def _carry_per_layer_rope_theta(config, parameters, carried):
     return carried
 
 
-def _carry_rope_theta_across_assignment(config, carried):
+def _carry_rope_theta_across_assignment(
+    config,
+    carried,
+    unnamed = None,
+):
     """Keep the RoPE base frequency across a ``rope_scaling`` replacement.
 
     Separated from the wrapper so every parameter shape is testable without a live
@@ -2972,7 +3070,7 @@ def _carry_rope_theta_across_assignment(config, carried):
     per_layer = _rope_parameters_are_per_layer(config, parameters)
     if per_layer:
         # Per-layer rope bases are restored from the nested snapshot; the global attribute is used only when none exists.
-        restored = _carry_per_layer_rope_theta(config, parameters, carried)
+        restored = _carry_per_layer_rope_theta(config, parameters, carried, unnamed)
         if restored is not None:
             return restored
         if isinstance(carried, dict):
@@ -3815,9 +3913,13 @@ def fix_transformers_rope_scaling_drops_theta():
             carried = _rope_theta_snapshot(self)
         except Exception:
             carried = None
+        try:
+            unnamed = _rope_labels_naming_no_base(self, value)
+        except Exception:
+            unnamed = None
         result = original(self, value)
         try:
-            _carry_rope_theta_across_assignment(self, carried)
+            _carry_rope_theta_across_assignment(self, carried, unnamed)
         except Exception:
             pass
         return result
@@ -7073,7 +7175,9 @@ def _key_inductor_caches_on_readback_barrier(inductor_config, custom_graph_pass)
             return self.inner(graph, *args, **kwargs)
 
         def uuid(self):
-            return (marker, self.inner.uuid())
+            # None is the inner pass opting out of the FX cache: keep it, never key a stale graph.
+            inner_uuid = self.inner.uuid()
+            return None if inner_uuid is None else (marker, inner_uuid)
 
     inductor_config.post_grad_custom_post_pass = ReadbackBarrierKeyedPass(existing)
 
@@ -7619,6 +7723,113 @@ def fix_cudnn_sdpa_d256_masked_backward():
     logger.info(
         "Unsloth: SM100 GPU found; masked head_dim 256 SDPA training will avoid cuDNN attention "
         f"(devices {sorted(sm100_devices)})"
+    )
+
+
+_SDPA_GRAD_LAYOUT_FLAG = "_unsloth_gives_sdpa_backward_the_output_layout"
+_SDPA_GRAD_LAYOUT_FUNCTION = []
+# Eager outputs whose backward is cuDNN's; flash / efficient / math outputs stay untouched.
+_SDPA_GRAD_LAYOUT_NODES = frozenset(("ScaledDotProductCudnnAttentionBackward0",))
+
+
+def _cudnn_sdpa_backward_cache_ignores_grad_layout(torch_version, cudnn_version):
+    """torch 2.6 - 2.13 key the cuDNN backward plan without grad_output strides (fixed in
+    pytorch/pytorch#191576); cuDNN < 9.5.1 always copies grad_output to the output layout."""
+    try:
+        torch_version = TrueVersion(TrueVersion(str(torch_version)).base_version)
+    except Exception:
+        return False
+    if not (TrueVersion("2.6") <= torch_version < TrueVersion("2.14")):
+        return False
+    return cudnn_version is not None and int(cudnn_version) >= 90501
+
+
+def _sdpa_grad_to_layout(stride, grad):
+    if grad.stride() == stride:
+        return grad
+    return grad.new_empty_strided(grad.size(), stride).copy_(grad)
+
+
+def _sdpa_grad_layout_function():
+    if _SDPA_GRAD_LAYOUT_FUNCTION:
+        return _SDPA_GRAD_LAYOUT_FUNCTION[0]
+    import torch
+
+    try:
+        import torch._dynamo.config as dynamo_config
+
+        # torch 2.6 Dynamo bans grad.stride() in a traced backward: a graph break per SDPA call.
+        stride_banned = "stride" in dynamo_config._autograd_backward_strict_mode_banned_ops
+    except Exception:
+        stride_banned = False
+
+    class _GradInOutputLayout(torch.autograd.Function):
+        # setup_context + generate_vmap_rule: torch.func.grad / vmap / jacrev keep working.
+        generate_vmap_rule = True
+
+        @staticmethod
+        def forward(out):
+            # Not a view: view outputs reject in-place consumers; Inductor drops the clone.
+            return out.clone()
+
+        @staticmethod
+        def setup_context(ctx, inputs, output):
+            ctx.out_stride = inputs[0].stride()
+
+        @staticmethod
+        def backward(ctx, grad):
+            if stride_banned and torch.compiler.is_compiling():
+                return grad.new_empty_strided(grad.size(), ctx.out_stride).copy_(grad)
+            return _sdpa_grad_to_layout(ctx.out_stride, grad)
+
+    _SDPA_GRAD_LAYOUT_FUNCTION.append(_GradInOutputLayout)
+    return _GradInOutputLayout
+
+
+def fix_cudnn_sdpa_backward_grad_layout():
+    """Force SDPA grad_output into the output's layout, which the plan key does cover, so two
+    same-shape backwards with different grad layouts cannot share a stale plan (wrong grads)."""
+    if os.environ.get("UNSLOTH_SKIP_CUDNN_SDPA_GRAD_LAYOUT_FIX", "0") == "1":
+        return
+    try:
+        import torch
+        import torch.nn.functional as F
+
+        if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
+            return
+        if not _cudnn_sdpa_backward_cache_ignores_grad_layout(
+            torch.__version__, torch.backends.cudnn.version()
+        ):
+            return
+        grad_in_output_layout = _sdpa_grad_layout_function()
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the cuDNN SDPA backward layout fix ({e})")
+        return
+    if getattr(F.scaled_dot_product_attention, _SDPA_GRAD_LAYOUT_FLAG, False):
+        return
+
+    original = F.scaled_dot_product_attention
+
+    @functools.wraps(original)
+    def scaled_dot_product_attention(*args, **kwargs):
+        out = original(*args, **kwargs)
+        # Plain tensors only: a DTensor gradient cannot be copied into a plain empty_strided buffer.
+        if type(out) is torch.Tensor and out.requires_grad and out.is_cuda and not out.is_nested:
+            if torch.compiler.is_compiling():
+                # Dynamo graph-breaks on a hook on an intermediate; the Function traces inline.
+                return grad_in_output_layout.apply(out)
+            if type(out.grad_fn).__name__ in _SDPA_GRAD_LAYOUT_NODES:
+                # A hook keeps out a plain tensor: a Function output is a view, so in-place
+                # ops on it would raise.
+                out.register_hook(functools.partial(_sdpa_grad_to_layout, out.stride()))
+        return out
+
+    scaled_dot_product_attention.__wrapped__ = original
+    setattr(scaled_dot_product_attention, _SDPA_GRAD_LAYOUT_FLAG, True)
+    F.scaled_dot_product_attention = scaled_dot_product_attention
+    logger.info(
+        f"Unsloth: torch {torch.__version__} reuses cuDNN SDPA backward plans across gradient "
+        "layouts; SDPA gradients are given the output's layout"
     )
 
 

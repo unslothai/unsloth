@@ -1322,6 +1322,17 @@ class EstimateMemoryResponse(BaseModel):
         description = "True when --n-cpu-moe is set: experts move per-tensor, not "
         "per-block, so the GPU/host split above ignores it and reads high.",
     )
+    lookup_table_bytes: int = Field(
+        0,
+        description = "Lookup-only tables (per-layer embeddings / Engram) in the model "
+        "file. Never in gpu_bytes; excluded from weights_bytes and total_bytes when "
+        "lookup_table_on_disk is true.",
+    )
+    lookup_table_on_disk: bool = Field(
+        False,
+        description = "True when llama.cpp streams those tables from disk (its default "
+        "lazy mode), so only the rows in use are paged in.",
+    )
     mlx_offload: Optional[MlxOffloadEstimate] = Field(
         None,
         description = "MLX: what the load reads from disk instead of memory, priced in "
@@ -1433,6 +1444,12 @@ class MemoryEstimate(BaseModel):
     gpu_layers: Optional[int] = Field(None, description = "Layers placed on the GPU, when known")
     moe_offload_unmodelled: bool = Field(
         False, description = "--n-cpu-moe is set, so the GPU figure reads high"
+    )
+    lookup_table_bytes: int = Field(
+        0, description = "Lookup-only tables in the model file, never charged to the GPU"
+    )
+    lookup_table_on_disk: bool = Field(
+        False, description = "Those tables are streamed from disk, not resident"
     )
     mlx_offload: Optional[MlxOffloadEstimate] = Field(
         None, description = "MLX: what the load reads from disk; null when not MLX"
@@ -3557,6 +3574,13 @@ class ToolConfirmRequest(BaseModel):
     session_id: Optional[str] = None
     approval_id: Optional[str] = None
     decision: Literal["allow", "deny"] = "deny"
+    permission_mode: Optional[Literal["full"]] = None
+
+    @model_validator(mode = "after")
+    def _check_full_access_upgrade(self):
+        if self.permission_mode == "full" and (self.decision != "allow" or not self.session_id):
+            raise ValueError("A Full access upgrade requires Allow and the exact chat session")
+        return self
 
 
 class BrowserActionResultRequest(BaseModel):

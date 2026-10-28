@@ -424,8 +424,19 @@ export const BUDGET = {
   // model picker (6,960,469 -> 6,960,551 B raw, 2,100,277 -> 2,100,453 B transfer against c9ddc5ab5e, one machine and
   // build, Node 26, 105 chunks). Raised by that growth.
   // Cosmos3 video families (#14554): +466 B raw / +218 B transfer. Raised by that.
-  transferBytes: 2_100_715,
-  rawBytes: 6_972_038,
+  // Lookup-table pricing (#14465): +1,517 B raw / +470 B transfer on top of the lines above (measured merged with
+  // 4db3eaeb55, Node 24, 99 chunks).
+  // Chat pins synced through the server (#15293): the sync runtime is a lazy chunk, but the modules it shares
+  // with startup code (chat-settings-api, sidebar-organization-keys) split into their own eager chunks, plus the
+  // mount hook and store wiring: +3,074 B raw / +2,025 B transfer (6,958,762 -> 6,961,836 B raw, 2,099,260 ->
+  // 2,101,285 B transfer against 9c397197e0, Node 24, 106 -> 109 chunks). Raised by that growth.
+  // Mermaid, node-forge and js-yaml load on first use: -998.5 KB raw / -260.1 KB transfer against 4e673d32e.
+  // Lowered by that, so the headroom stays what it was and a regression of that size fails here.
+  // Full Access from a tool approval card (#15485: per-chat grant store and the card's confirm dialog) adds
+  // 5,293 B raw / 1,953 B transfer to the eager chat chunk (5,940,337 -> 5,945,630 B raw, 1,835,497 ->
+  // 1,837,450 B transfer against 8222149ee, Node 24, 85 chunks). Raised by that growth.
+  transferBytes: 1_838_821,
+  rawBytes: 5_959_458,
 };
 
 // Chunk count is not budgeted: splitting a page out raises it while lowering bytes.

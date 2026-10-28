@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Rebuild the loaded scheduler at ComfyUI's static sigma shift (shipped schedulers differ, e.g.
-Qwen-Image dynamic ~2.0 + terminal stretch vs 3.1), unless the checkpoint ships its own sampling
-grid. No torch/diffusers imports."""
+"""Rebuilds the loaded scheduler at ComfyUI static sigma shift unless the checkpoint ships its own
+grid; no torch or diffusers imports."""
 
 from __future__ import annotations
 

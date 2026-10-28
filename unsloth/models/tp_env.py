@@ -1,23 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Tensor parallelism from the environment, for unmodified training scripts.
-
-    UNSLOTH_TP_SIZE=2 torchrun --nproc-per-node 2 train.py                    # tp 2
-    UNSLOTH_TP_SIZE=2 torchrun --nproc-per-node 4 train.py                    # dp 2 (DDP-style) x tp 2
-    UNSLOTH_TP_SIZE=2 UNSLOTH_FSDP2=1 torchrun --nproc-per-node 4 train.py    # dp 2 (native FSDP2) x tp 2
-
-The layout is read once. The world splits into dp x tp ranks (tp the inner dimension, as in
-init_device_mesh(..., (dp, tp), ("dp", "tp"))). The script's own calls apply it:
-- FastLanguageModel / FastModel.from_pretrained: 16-bit checkpoints load through sharded_loading (each rank
-  reads its slices of the attention / MLP projections); 4-bit loads in full and is sharded at get_peft_model.
-- get_peft_model: apply_tensor_parallel over mesh["tp"] once LoRA is attached (full-size LoRA, 1-GPU init).
-- Trainer.__init__: tensor parallel if get_peft_model did not apply it; native FSDP2 shards over mesh["dp"]
-  (UNSLOTH_FSDP2=1), otherwise gradients are averaged over mesh["dp"] before clipping and the optimizer step.
-So the order is always split (pipeline parallel, not from the environment yet) -> tp -> FSDP2.
-
-UNSLOTH_TP_SHARDED_LOAD=0 loads 16-bit checkpoints in full on every rank instead (then shards them).
-"""
+"""UNSLOTH_TP_SIZE sets tp from the env (layout read once); order tp then FSDP2 (UNSLOTH_FSDP2=1)
+over dp, else dp grads averaged before clipping and the optimizer step."""
 
 from __future__ import annotations
 
@@ -31,6 +16,7 @@ __all__ = [
     "TPEnvLayout",
     "env_layout",
     "env_hint",
+    "install_tensor_parallel_env_trainer_init",
     "tensor_parallel_env_load",
     "tensor_parallel_env_peft",
     "tensor_parallel_env_trainer_pre",
@@ -258,7 +244,7 @@ def tensor_parallel_env_load(fn):
         mesh = layout.tp_mesh
         _DEPTH["load"] += 1
         try:
-            if _four_bit(values, fn) or not layout.sharded_loading:
+            if _four_bit(values, fn) or not layout.sharded_loading or _is_adapter(values):
                 return fn(
                     *args, **kwargs
                 )  # full load; get_peft_model shards it (Params4bit included)
@@ -283,7 +269,43 @@ def tensor_parallel_env_load(fn):
             _DEPTH["load"] -= 1
 
     from_pretrained._unsloth_tp_env = True
-    return from_pretrained
+    return _marks_world_save(from_pretrained)
+
+
+def _marks_world_save(from_pretrained):
+    @functools.wraps(from_pretrained)
+    def wrapper(*args, **kwargs):
+        out = from_pretrained(*args, **kwargs)
+        return out if env_layout() is None else _mark_world_save(out)
+
+    return wrapper
+
+
+def _mark_world_save(out):
+    """The tokenizer / processor of a tensor parallel run saves once per world (rank 0 writes, save.py)."""
+    if isinstance(out, (tuple, list)) and len(out) > 1 and hasattr(out[1], "__dict__"):
+        from .tp_replica import mark_world_save
+        try:
+            mark_world_save(out[1])
+        except Exception:
+            pass
+    return out
+
+
+def _is_adapter(values):
+    """A LoRA adapter directory / repo (a reload cell): loaded in full on every rank, nothing to shard."""
+    name = values.get("model_name", values.get("pretrained_model_name_or_path"))
+    if not isinstance(name, str):
+        return False
+    if os.path.isdir(name):
+        return os.path.isfile(os.path.join(name, "adapter_config.json"))
+    if os.path.exists(name) or name.count("/") != 1:
+        return False
+    try:
+        from huggingface_hub import file_exists
+        return bool(file_exists(name, "adapter_config.json", token = values.get("token")))
+    except Exception:
+        return False
 
 
 def _model_of(out):
@@ -330,6 +352,25 @@ def _levels(model):
         return _tp_chain(model)
     except Exception:
         return [model]
+
+
+def parallel_env_requested():
+    return any(
+        str(os.environ.get(name, "")).strip() not in ("", "1")
+        for name in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE")
+    )
+
+
+def install_tensor_parallel_env_trainer_init():
+    """Wrap Trainer.__init__ at import: model_init loads and non-Fast* models (encoders) would else train as plain DDP."""
+    if not parallel_env_requested():
+        return False
+    from transformers import Trainer
+
+    from ._utils import patch_gradient_accumulation_fix
+
+    patch_gradient_accumulation_fix(Trainer)
+    return True
 
 
 def tensor_parallel_env_trainer_pre(model):

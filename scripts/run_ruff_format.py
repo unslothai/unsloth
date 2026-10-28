@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""Run `ruff-unsloth format`, then the string-merge / redundant-pass post-pass.
-
-ruff-unsloth (https://github.com/unslothai/ruff) is ruff 0.6.9 patched to write the
-repo's kwarg spacing, def-signature and short-assert magic-comma rules and the
-nested-import blank-line rule itself, so the only Python left is
-scripts/enforce_kwargs_spacing.py --residual, which skips every file that cannot
-need it."""
+"""Runs ruff-unsloth format, then enforce_kwargs_spacing.py --residual, which skips unneeded files."""
 
 from __future__ import annotations
 

@@ -51,6 +51,11 @@ for _up in Path(__file__).resolve().parents:
             sys.path.insert(0, str(_repo_shared))
         break
 
+# pytest 9.2's monkeypatch deletes a torch config entry on undo instead of restoring it; see torch_config_guard.py.
+from torch_config_guard import install_monkeypatch_fix  # noqa: E402
+
+install_monkeypatch_fix()
+
 # Let the diffusion patch backend lazily import unsloth_zoo on a CPU-only test host: unsloth_zoo runs accelerator
 # detection at import and raises without a GPU unless this is set. setdefault so an explicit override wins.
 os.environ.setdefault("UNSLOTH_ALLOW_CPU", "1")
@@ -98,6 +103,24 @@ def _no_vae_structural_verdict_cache(monkeypatch):
     monkeypatch.setenv("UNSLOTH_VAE_FUSED_STRUCTURAL_CACHE", "0")
 
 
+@pytest.hookimpl(trylast = True)
+def pytest_collection_modifyitems(config, items):
+    """After xdist tags grouped tests; see tests/_shared/xdist_group_check.py."""
+    from xdist_group_check import check
+    check(config, items)
+
+
+@pytest.fixture(autouse = True)
+def _no_deleted_torch_config_entries():
+    """A test that leaves a dynamo / inductor config entry deleted errors at its own teardown; see
+    tests/_shared/torch_config_guard.py."""
+    from torch_config_guard import check_after_test, install_delete_recorder
+
+    install_delete_recorder()
+    yield
+    check_after_test()
+
+
 @pytest.fixture(autouse = True)
 def _zoo_without_gdn_decode_kernel(monkeypatch):
     # Whether Qwen3.5 / Qwen3-Next ask for causal-conv1d depends on the installed unsloth_zoo; pin the
@@ -109,6 +132,11 @@ def _zoo_without_gdn_decode_kernel(monkeypatch):
         except Exception:
             return
     monkeypatch.setattr(ssm_runtime, "_zoo_gdn_decode_kernel_present", lambda: False, raising = False)
+
+
+@pytest.fixture(autouse = True)
+def _sd_cpp_windows_rocm_ignores_the_host_dlls(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_SD_CPP_WINDOWS_ROCM", "1")
 
 
 @pytest.fixture(autouse = True)
@@ -133,12 +161,35 @@ def _forget_hub_unreachable_verdict():
 @pytest.fixture(autouse = True)
 def _forget_mcp_discovery_state():
     # Discovered tools and failed-probe cool-offs are keyed by server id, and most tests reuse "s1": a cool-off
-    # one test records made a later test on the worker skip discovery for its own "s1".
+    # one test records made a later test on the worker skip discovery for its own "s1". A scoped HTTP session a
+    # test leaves cached is the same: test_mcp_http_sessions asserts the cache is empty after its own calls.
     def _forget():
         client = sys.modules.get("core.inference.mcp_client")
         if client is not None:
             client._tool_cache.clear()
             client._probe_cooloff_until.clear()
+            if client._mcp_sessions:
+                try:
+                    client.close_mcp_sessions(all_accounts = True)
+                except AttributeError:
+                    # A test's monkeypatched stand-in sessions (SimpleNamespace) have no close(); its own
+                    # monkeypatch puts the real dict back.
+                    pass
+
+    _forget()
+    yield
+    _forget()
+
+
+@pytest.fixture(autouse = True)
+def _forget_queued_media_requests():
+    def _forget():
+        video_routes = sys.modules.get("routes.video")
+        if video_routes is not None:
+            video_routes._VIDEO_QUEUE.clear()
+        batching = sys.modules.get("core.inference.image_request_batching")
+        if batching is not None:
+            batching._OPEN.clear()
 
     _forget()
     yield
@@ -447,14 +498,23 @@ def _forget_the_cached_owner_identity():
 def _isolate_wal_keepers():
     """Close the WAL keepers a test opened, so a later test's assertion on _wal_keepers sees only
     its own."""
-    from storage import studio_db
+    from storage import rag_db, studio_db
 
     before = set(studio_db._wal_keepers)
     unsupported = set(studio_db._wal_unsupported)
+    rag_before = set(rag_db._wal_keepers)
+    rag_enabled = rag_db._wal_keepers_enabled
+    rag_db.start_wal_keepers()
     yield
     for path in set(studio_db._wal_keepers) - before:
         studio_db.close_wal_keeper_for(path)
     studio_db._wal_unsupported.intersection_update(unsupported)
+    for path in set(rag_db._wal_keepers) - rag_before:
+        rag_db.close_wal_keeper_for(path)
+    if rag_enabled:
+        rag_db.start_wal_keepers()
+    else:
+        rag_db.close_wal_keeper()
 
 
 @pytest.fixture(autouse = True)

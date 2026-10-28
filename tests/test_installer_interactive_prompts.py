@@ -39,6 +39,7 @@ SCANNED_SCRIPTS = ENTRY_POINTS + (
     "studio/install_sd_cpp_prebuilt.py",
     "studio/install_whisper_prebuilt.py",
     "studio/nvidia_probe.py",
+    "studio/precompile_bytecode.py",
     "studio/backend/requirements/single-env/patch_metadata.py",
     "studio/systemd/install_user_service.sh",
 )

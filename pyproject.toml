@@ -243,13 +243,12 @@ huggingface = [
 # studio/backend/requirements/no-torch-runtime.txt, not plain pip resolution.
 # Kept byte-identical to main so the two branches can be diffed for drift.
 huggingfacenotorch = [
-    "unsloth_zoo>=2026.10.9",
+    "unsloth_zoo>=2026.10.10",
     "wheel>=0.42.0",
     "packaging",
     "numpy",
     "tqdm",
     "psutil",
-    "tyro",
     "protobuf",
     "sentencepiece>=0.2.0",
     "datasets>=3.4.1,!=4.0.*,!=4.1.0,!=4.4.*,!=4.5.0,<5.0.0",
@@ -774,9 +773,8 @@ colab-ampere-torch220 = [
     "unsloth[flashattention]",
 ]
 colab-new = [
-    "unsloth_zoo>=2026.10.9",
+    "unsloth_zoo>=2026.10.10",
     "packaging",
-    "tyro",
     "transformers>=4.52.4,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.17.0",
     "datasets>=3.4.1,!=4.0.*,!=4.1.0,!=4.4.*,!=4.5.0,<5.0.0",
     "sentencepiece>=0.2.0",

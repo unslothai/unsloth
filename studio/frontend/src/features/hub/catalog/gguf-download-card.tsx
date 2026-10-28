@@ -33,7 +33,11 @@ import {
 import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
-import { type GgufFitClass, classifyGgufVariantFit } from "@/lib/gguf-fit";
+import {
+  type GgufFitClass,
+  classifyGgufVariantFit,
+  ggufVariantLookupTableBytes,
+} from "@/lib/gguf-fit";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
@@ -145,6 +149,12 @@ const FIT_BADGE: Record<GgufFitClass, FitBadgeMeta> = {
       "No GPU VRAM detected. This GGUF may run with system RAM and CPU offload. Inference will be slower.",
     iconClassName: "text-sky-600 dark:text-sky-400",
   },
+  streamed: {
+    label: "Fits (lookup tables streamed from disk)",
+    tooltip:
+      "Fits with its lookup tables streamed from disk, llama.cpp's default for them. Prefill and decode can be slower and vary with disk speed.",
+    iconClassName: "text-sky-600 dark:text-sky-400",
+  },
   oom: {
     label: "Does not fit",
     // Not "won't fit": llama-server never refuses on size, it uses --fit. Matches the chat picker.
@@ -162,12 +172,14 @@ const CHIP_DEFAULT =
 function QuantBadge({
   quant,
   fit,
+  lookupTableBytes = 0,
   showFit = true,
   variant = "trigger",
   tooltipMode = "eager",
 }: {
   quant: string;
   fit: GgufFitClass;
+  lookupTableBytes?: number;
   showFit?: boolean;
   variant?: "trigger" | "menu";
   tooltipMode?: "eager" | "lazy" | "none";
@@ -237,6 +249,13 @@ function QuantBadge({
       </TooltipTrigger>
       <TooltipContent side="top" sideOffset={4}>
         {meta.tooltip}
+        {lookupTableBytes > 0 && (
+          <span className="mt-1 block text-muted-foreground">
+            Lookup tables: {formatFootprintBytes(lookupTableBytes)}
+            {/* Streamed only when RAM cannot hold them; otherwise the load keeps them resident. */}
+            {fit === "streamed" ? ", read from disk" : ", kept in RAM when it fits"}
+          </span>
+        )}
       </TooltipContent>
     </Tooltip>
   );
@@ -248,6 +267,7 @@ interface GgufVariantMenuItem {
   quant: string;
   label: string;
   fit: GgufFitClass;
+  lookupTableBytes: number;
   downloaded: boolean;
   partial: boolean;
   downloadSizeLabel: string;
@@ -347,6 +367,7 @@ function createGgufVariantMenuItems(
     quant: variant.quant,
     label: ggufVariantDisplayLabel(variant),
     fit: classifyGgufVariantFit(variant, resources),
+    lookupTableBytes: ggufVariantLookupTableBytes(variant),
     downloaded: Boolean(variant.downloaded),
     partial: Boolean(variant.partial),
     downloadSizeLabel: ggufVariantTransferLabel(variant),
@@ -580,6 +601,7 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
         <QuantBadge
           quant={item.label}
           fit={item.fit}
+          lookupTableBytes={item.lookupTableBytes}
           showFit={showFitInfo}
           variant="menu"
           tooltipMode="lazy"
@@ -1144,6 +1166,7 @@ export function GgufDownloadCard({
                   <QuantBadge
                     quant={selectedLabel ?? selected.quant}
                     fit={selectedFit ?? "oom"}
+                    lookupTableBytes={ggufVariantLookupTableBytes(selected)}
                     showFit={showFitInfo}
                   />
                 ) : (
@@ -1359,6 +1382,7 @@ export function GgufDownloadCard({
           repoId={repoId}
           quant={selected.quant}
           sizeBytes={selected.size_bytes}
+          lookupTableBytes={ggufVariantLookupTableBytes(selected)}
           gpuGb={gpuGb}
           showReadout={true}
           className="px-1"

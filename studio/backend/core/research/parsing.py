@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Reading structured decisions out of a local model's free-form output.
-
-Plans, agent actions, research state, and the synthesis audit arrive as JSON that a small
-model routinely wraps in prose, truncates, or emits from its reasoning channel instead. Every
-parser here recovers what it can and validates the result against what the run actually holds.
-"""
+"""Recovers JSON from prose-wrapped or truncated small-model output, checked against the run state."""
 
 from __future__ import annotations
 

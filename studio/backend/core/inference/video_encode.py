@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""diffusers' ``encode_video`` stream (libx264 defaults, yuv420p, same audio helpers) with x264 frame threads:
-PyAV opens codecs with ``thread_type = SLICE``, so every frame waits for its slowest slice.
-``UNSLOTH_STUDIO_VIDEO_FRAME_THREADS=0`` restores the diffusers call."""
+"""Frame-threaded x264 encode (SLICE stalls each frame); UNSLOTH_STUDIO_VIDEO_FRAME_THREADS=0 reverts."""
 
 from __future__ import annotations
 

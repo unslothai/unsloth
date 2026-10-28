@@ -99,15 +99,17 @@ export function GuidedTour({
     let raf = 0;
     let t = 0;
 
-    function findTarget(): HTMLElement | null {
-      const found = document.querySelector(sel);
-      if (!(found instanceof HTMLElement)) return null;
-      return found;
-    }
-
     function isUsableTarget(candidate: HTMLElement): boolean {
       const r = candidate.getBoundingClientRect();
       return r.width >= 6 && r.height >= 6;
+    }
+
+    // First visible match: Images and Video share Train targets, and a hidden page stays mounted earlier in the DOM.
+    function findTarget(): HTMLElement | null {
+      const found = [...document.querySelectorAll(sel)].filter(
+        (c): c is HTMLElement => c instanceof HTMLElement,
+      );
+      return found.find(isUsableTarget) ?? found[0] ?? null;
     }
 
     function rectChanged(a: Rect | null, b: Rect): boolean {

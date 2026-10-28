@@ -1,19 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Native FSDP2 for every Unsloth model, built directly on `torch.distributed.fsdp.fully_shard`.
-
-    for unit in find_shard_units(model): fully_shard(unit, mp_policy = mp)
-    fully_shard(model, mp_policy = mp)
-
-with `MixedPrecisionPolicy(param_dtype = compute dtype, reduce_dtype = float32)`. Neither accelerate's
-nor transformers' FSDP code wraps the model: Unsloth shards it before the optimizer exists and the
-Trainer / accelerate only see an already sharded `FSDPModule` (no second wrap, no DDP).
-
-Opt in with `UNSLOTH_FSDP2=1` (or `native`) under torchrun (WORLD_SIZE > 1).
-`UNSLOTH_FSDP2_BACKEND=accelerate` (or an `accelerate launch` FSDP config) keeps the accelerate
-path in `unsloth/models/fsdp2.py`. Nothing changes without the flag.
-"""
+"""Native fully_shard FSDP2 for all Unsloth models, applied before the optimizer exists; opt-in
+UNSLOTH_FSDP2=1 under torchrun; no second wrap, no DDP; UNSLOTH_FSDP2_BACKEND=accelerate keeps
+accelerate path."""
 
 from __future__ import annotations
 
@@ -23,6 +13,7 @@ import functools
 import math
 import os
 import sys
+import types
 from typing import Callable, Optional, Union
 
 import torch
@@ -1019,8 +1010,20 @@ def _skip_free_unsharded_param():
     return None
 
 
-def _compiled_block_modules(model):
-    """ids of every module inside a decoder block _block_compile wrapped (and did not turn off)."""
+def _block_never_graphed(module):
+    """MoE blocks never record graphs; keeping their gathered weights would hold every expert unsharded."""
+    block_compile = sys.modules.get(f"{__package__}._block_compile") if __package__ else None
+    unsafe_moe = getattr(block_compile, "_graphs_unsafe_moe", None)
+    if not callable(unsafe_moe):
+        return False
+    try:
+        return bool(unsafe_moe(module))
+    except Exception:
+        return False
+
+
+def _compiled_block_modules(model, roots = None):
+    """ids of modules inside graph-capable blocks _block_compile wrapped; `roots` collects id -> block."""
     inside = set()
     for module in model.modules():
         if id(module) in inside or not getattr(
@@ -1029,21 +1032,43 @@ def _compiled_block_modules(model):
             continue
         if module.__dict__.get("_unsloth_block_mode", 1) == 0:
             continue
-        inside.update(id(m) for m in module.modules())
+        if _block_never_graphed(module):
+            continue
+        for m in module.modules():
+            inside.add(id(m))
+            if roots is not None:
+                roots[id(m)] = module
     return inside
+
+
+def _block_cudagraphs_keep_budget():
+    """Per rank bytes of gathered block weights kept for block CUDA graphs. LoRA keeps only the
+    adapters (T4 Qwen3-0.6B: 0.04 GiB); a sharded full finetune keeps every block weight in fp32
+    (1.64 GiB per rank there) for graphs that measured no faster."""
+    try:
+        return float(os.environ.get("UNSLOTH_BLOCK_CUDAGRAPHS_FSDP2_KEEP_GB", "0.5")) * 2**30
+    except ValueError:
+        return 0.5 * 2**30
+
+
+def _gib(nbytes):
+    # LoRA adapters are tens of MiB: "0.00 GiB" read as nothing kept.
+    return f"{nbytes / 2**30:.2f} GiB" if nbytes >= 2**30 / 10 else f"{nbytes / 2**20:.1f} MiB"
 
 
 def _keep_unsharded_for_block_cudagraphs(model):
     """FSDP2 frees gathered params at reshard, moving their addresses so block CUDA graphs re-record every
     step (2 x T4 Qwen3 LoRA: 6 records, 0 replays). Keep the storage; the next all-gather refills it in place.
-    Only weights inside compiled blocks: the rest (embeddings, head, final norm) never enter a block graph."""
+    Only weights inside compiled blocks: the rest (embeddings, head, final norm) never enter a block graph.
+    Over the budget nothing is kept and those blocks run without graphs (never recorded)."""
     if not _block_cudagraphs_requested():
         return 0
-    blocks = _compiled_block_modules(model)
+    roots = {}
+    blocks = _compiled_block_modules(model, roots)
     if not blocks:
         return 0
     FSDPModule = _fsdp_module_class()
-    kept, nbytes = 0, 0
+    candidates, nbytes = [], 0
     for module in model.modules():
         if not isinstance(module, FSDPModule):
             continue
@@ -1055,25 +1080,44 @@ def _keep_unsharded_for_block_cudagraphs(model):
             if getattr(fsdp_param, "_unsloth_keep_unsharded", False):
                 continue
             info = getattr(fsdp_param, "_module_info", None)
-            if id(getattr(info, "module", None)) not in blocks:
+            owner = id(getattr(info, "module", None))
+            if owner not in blocks:
                 continue
             if not callable(getattr(type(fsdp_param), "free_unsharded_param", None)):
-                return kept  # a torch without this FSDP2 internal: graphs re-record as before
-            fsdp_param.free_unsharded_param = _skip_free_unsharded_param
-            fsdp_param._unsloth_keep_unsharded = True
-            kept += 1
+                return 0  # a torch without this FSDP2 internal: graphs re-record as before
+            candidates.append((fsdp_param, roots[owner]))
             try:
-                dtype = getattr(fsdp_param, "param_dtype", None) or fsdp_param.orig_dtype
+                # param_dtype / orig_dtype are set at FSDP2's lazy init (first forward), after this.
+                dtype = (
+                    getattr(fsdp_param, "param_dtype", None)
+                    or getattr(getattr(group, "mp_policy", None), "param_dtype", None)
+                    or fsdp_param.sharded_param.dtype
+                )
                 nbytes += fsdp_param._orig_size.numel() * dtype.itemsize
             except Exception:
                 pass
-    if kept:
+    if not candidates:
+        return 0
+    budget = _block_cudagraphs_keep_budget()
+    if nbytes > budget:
+        layers = {id(block): block for _, block in candidates}
+        for block in layers.values():
+            block.__dict__["_unsloth_block_graphs_off"] = True
         _print_rank0(
-            f"Unsloth: UNSLOTH_BLOCK_CUDAGRAPHS=1 under native FSDP2 keeps the gathered weights of "
-            f"{kept} parameters allocated ({nbytes / 2**30:.2f} GiB per rank) so the block CUDA graphs "
-            "replay instead of re-recording every step."
+            f"Unsloth: UNSLOTH_BLOCK_CUDAGRAPHS=1 under native FSDP2 would keep {_gib(nbytes)} "
+            f"per rank of gathered block weights allocated (budget {_gib(budget)}, "
+            f"UNSLOTH_BLOCK_CUDAGRAPHS_FSDP2_KEEP_GB); {len(layers)} blocks run without CUDA graphs."
         )
-    return kept
+        return 0
+    for fsdp_param, _ in candidates:
+        fsdp_param.free_unsharded_param = _skip_free_unsharded_param
+        fsdp_param._unsloth_keep_unsharded = True
+    _print_rank0(
+        f"Unsloth: UNSLOTH_BLOCK_CUDAGRAPHS=1 under native FSDP2 keeps the gathered weights of "
+        f"{len(candidates)} parameters allocated ({_gib(nbytes)} per rank) so the block CUDA graphs "
+        "replay instead of re-recording every step."
+    )
+    return len(candidates)
 
 
 def _post_shard(
@@ -1265,11 +1309,15 @@ _FLOAT8 = tuple(
 )
 
 
-def _is_torchao_weight(t):
-    """A torchao tensor subclass weight (load_in_fp8's Float8Tensor, other torchao quantized tensors). It
-    reports the high precision dtype (bfloat16), not float8, and implements only the ops its linear needs:
-    fully_shard's sharding (aten.new_zeros) and DDP's flattening broadcast (reshape to [-1]) fail on it."""
-    return any(c.__module__.split(".")[0] == "torchao" for c in type(t).__mro__)
+def _is_torchao_float8_weight(t):
+    """A torchao inference weight that fully_shard cannot shard: load_in_fp8's Float8Tensor, and likewise
+    Int8Tensor / IntxUnpackedToInt8Tensor / AffineQuantizedTensor / MX / NVFP4. They report the high
+    precision dtype, implement only the ops their linear needs (fully_shard's aten.new_zeros / slice fail),
+    and implement no FSDP2 all-gather extension. torchao subclasses that do implement it (NF4Tensor, the
+    int8 / BitNet quantized training weights, torchao.float8's training weights) go to fully_shard."""
+    if not any(c.__module__.split(".")[0] == "torchao" for c in type(t).__mro__):
+        return False
+    return not hasattr(type(t), "fsdp_pre_all_gather")
 
 
 def _float8_params(model):
@@ -1282,7 +1330,7 @@ def _float8_params(model):
         # torchao's Float8 training weights (torchao.float8, enable_fsdp_float8_all_gather) implement
         # FSDP2's all-gather hooks, so fully_shard keeps them.
         if p.dtype in _FLOAT8
-        or (_is_torchao_weight(p) and not type(p).__module__.startswith("torchao.float8"))
+        or (_is_torchao_float8_weight(p) and not type(p).__module__.startswith("torchao.float8"))
     ]
     trainable = [n for n, p in found if p.requires_grad]
     if trainable:
@@ -1494,6 +1542,22 @@ def _refuse_block_swap(model):
         )
 
 
+def _frozen_weights_are_vllm_engine_storage(model):
+    """True if weights are views of a vLLM engine's (`llm.shared_weights`), found on the model or base_model.model."""
+    seen = set()
+    stack = [model]
+    while stack:
+        m = stack.pop()
+        if m is None or id(m) in seen or not isinstance(m, torch.nn.Module):
+            continue
+        seen.add(id(m))
+        if getattr(m.__dict__.get("vllm_engine"), "shared_weights", False):
+            return True
+        modules = m.__dict__.get("_modules", {})
+        stack.extend(modules.get(name) for name in ("base_model", "model"))
+    return False
+
+
 def shard_model(model, config: Optional[FSDP2Config] = None):
     """fully_shard each unit of `find_shard_units`, then the root (embeddings, final norm, lm_head,
     leftovers). Pass the outermost module the loop calls (the PeftModel for LoRA). Idempotent."""
@@ -1541,6 +1605,19 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
                 f"(fully_shard(ignored_params), torch 2.7+); this is torch {torch.__version__}."
             )
         config = dataclasses.replace(config, shard_frozen = False)
+    if (
+        config.shard_frozen is None
+        and _supports_ignored_params(fully_shard)
+        and _frozen_weights_are_vllm_engine_storage(model)
+    ):
+        from .fsdp2_perf import _env_tristate as _replicate_env
+        if _replicate_env("UNSLOTH_FSDP2_REPLICATE_FROZEN") is None:
+            # Sharding engine-owned weights frees nothing and adds a shard per rank (3B GRPO OOMs on a T4).
+            config = dataclasses.replace(config, shard_frozen = False)
+            _print_rank0(
+                "Unsloth: native FSDP2 keeps the frozen weights replicated: they are the vLLM engine's "
+                "weights (fast_inference), so sharding them would copy them, not free them."
+            )
     device = _shard_device(model, config.device)
     dist = _ensure_process_group(device, config.backend, config.timeout)
     if device.type == "cuda":
@@ -1995,10 +2072,11 @@ def native_fsdp2_unsharded(model):
     saved = {}
     try:
         _rebind_swapped_modules(root, units)
-        for unit in units:
-            saved[id(unit)] = _reshard_after_forward_off(unit)
+        # Unshard before clearing reshard_after_forward: FSDP2 all-gathers a post-forward sharded unit over that mesh.
         for unit in units:
             unit.unshard()
+        for unit in units:
+            saved[id(unit)] = _reshard_after_forward_off(unit)
         yield model
     finally:
         root.__dict__["_unsloth_unsharded_depth"] = 0
@@ -2353,11 +2431,18 @@ def native_save_optimizer(
     from .fsdp2_save import _dist, _wait_for_writer, mesh_writer_rank
 
     writer_rank = mesh_writer_rank(model)
-    state = get_optimizer_state_dict(
-        model,
-        optimizer,
-        options = StateDictOptions(full_state_dict = writer_rank == 0, cpu_offload = writer_rank == 0),
-    )
+    export = contextlib.nullcontext()
+    if writer_rank == 0:
+        from .fsdp2_bnb_optim import full_cpu_state_export
+        export = full_cpu_state_export(optimizer)
+    with export:
+        state = get_optimizer_state_dict(
+            model,
+            optimizer,
+            options = StateDictOptions(
+                full_state_dict = writer_rank == 0, cpu_offload = writer_rank == 0
+            ),
+        )
     if writer_rank != 0:
         state = _gather_to_writer(state, writer_rank)
     dist = _dist()
@@ -3284,6 +3369,23 @@ def _install_trainer_hooks():
 
         Trainer._load_best_model = _load_best_model
 
+    original_mixed_mesh = getattr(Trainer, "_has_mixed_mesh_grads", None)
+    if original_mixed_mesh is not None:
+
+        @functools.wraps(original_mixed_mesh)
+        def _has_mixed_mesh_grads(self, model):
+            # _mixed_mesh_grad_norm skips our clip + fp16 unscale and sums 16-bit norms in 16 bits;
+            # native FSDP2 mixes replicated and sharded grads, so stay on the accelerator path.
+            if (
+                is_native_fsdp2(model)
+                or is_native_fsdp2(getattr(self, "model", None))
+                or _native_models(getattr(self, "accelerator", None))
+            ):
+                return False
+            return original_mixed_mesh(self, model)
+
+        Trainer._has_mixed_mesh_grads = _has_mixed_mesh_grads
+
     original_create_accelerator = getattr(Trainer, "create_accelerator_and_postprocess", None)
     if original_create_accelerator is not None:
 
@@ -3325,6 +3427,40 @@ def install_native_fsdp2_hooks():
     return a and t
 
 
+def _has_cpu_tensors(optimizer, grads = False):
+    for group in optimizer.param_groups:
+        for p in group["params"]:
+            t = p.grad if grads else p
+            if t is not None and t.device.type == "cpu":
+                return True
+    return False
+
+
+def _local_grads_if_mixed(optimizer):
+    """Swap DTensor grads for their local shards when DTensor and plain grads mix: one foreach unscale
+    takes one tensor kind ("got mixed torch.Tensor and DTensor"). Elementwise, so the shard result is the same."""
+    try:
+        from torch.distributed.tensor import DTensor
+    except ImportError:
+        return optimizer
+    groups, dtensor, plain = [], False, False
+    for group in optimizer.param_groups:
+        params = []
+        for p in group["params"]:
+            grad = p.grad
+            if isinstance(grad, DTensor):
+                dtensor = True
+                p = types.SimpleNamespace(grad = grad._local_tensor)
+            elif grad is not None:
+                plain = True
+            # Plain grads keep their parameter: upstream reassigns a coalesced float16 sparse grad to it.
+            params.append(p)
+        groups.append({"params": params})
+    if not (dtensor and plain):
+        return optimizer
+    return types.SimpleNamespace(param_groups = groups)
+
+
 def _scaler_for_native(trainer):
     """float16: the GradScaler's inf check must agree over ranks, or one rank skips a step the
     others take. ShardedGradScaler all-reduces it."""
@@ -3333,6 +3469,7 @@ def _scaler_for_native(trainer):
     if scaler is None:
         return False
     try:
+        import torch.distributed as dist
         from torch.distributed.fsdp.sharded_grad_scaler import ShardedGradScaler
     except ImportError:
         return False
@@ -3346,12 +3483,82 @@ def _scaler_for_native(trainer):
             super().unscale_(optimizer)
             if not self.is_enabled():
                 return
-            # The all-reduce SUMS found_inf: it is the number of ranks that overflowed. Fused
-            # optimizers skip the step only on found_inf == 1 (and subtract it from their step
-            # counts), so 2+ ranks overflowing stepped on inf / NaN gradients. Clamp to 0 / 1.
+            self._one_flag(optimizer)
+
+        def _check_inf_per_device(self, optimizer):
+            # Fused step() without unscale_ (no clipping) lands here; ShardedGradScaler does not
+            # all-reduce here, so ranks diverged on overflow skips. Agree over ranks.
+            super()._check_inf_per_device(optimizer)
             state = self._per_optimizer_states[id(optimizer)]
+            works, copies = [], []
+            for found_inf in state["found_inf_per_device"].values():
+                if self._device != "cpu" and found_inf.device.type == "cpu":
+                    on_device = found_inf.to(self._device)
+                    copies.append((found_inf, on_device))
+                    found_inf = on_device
+                works.append(dist.all_reduce(found_inf, async_op = True, group = self.process_group))
+            for work in works:
+                work.wait()
+            for found_inf, on_device in copies:
+                found_inf.copy_(on_device)
+            self._one_flag(optimizer)
+            return state["found_inf_per_device"]
+
+        def _unscale_grads_(
+            self,
+            optimizer,
+            inv_scale,
+            found_inf,
+            allow_fp16 = True,
+        ):
+            # CPU grads get non_blocking copies of CUDA inv_scale / found_inf, read before they land.
+            if inv_scale.device.type != "cpu" and _has_cpu_tensors(optimizer, grads = True):
+                inv_scale, found_inf = inv_scale.cpu(), found_inf.cpu()
+            return super()._unscale_grads_(
+                _local_grads_if_mixed(optimizer), inv_scale, found_inf, allow_fp16
+            )
+
+        def step(self, optimizer, *args, **kwargs):
+            # Same race for a fused optimizer's grad_scale / found_inf on CPU parameters: use host copies.
+            if not (
+                self.is_enabled()
+                and self._device != "cpu"
+                and getattr(optimizer, "_step_supports_amp_scaling", False)
+                and _has_cpu_tensors(optimizer)
+            ):
+                return super().step(optimizer, *args, **kwargs)
+            had = "step" in optimizer.__dict__
+            previous = optimizer.__dict__.get("step")
+            real = optimizer.step
+
+            def step_with_host_flags(*a, **k):
+                for name in ("grad_scale", "found_inf"):
+                    t = getattr(optimizer, name, None)
+                    if isinstance(t, torch.Tensor) and t.device.type != "cpu":
+                        setattr(optimizer, name, t.cpu())
+                return real(*a, **k)
+
+            optimizer.step = step_with_host_flags
+            try:
+                return super().step(optimizer, *args, **kwargs)
+            finally:
+                if had:
+                    optimizer.step = previous
+                else:
+                    del optimizer.step
+
+        def _one_flag(self, optimizer):
+            # found_inf is summed over ranks and devices, but fused kernels skip only on == 1.
+            # One 0 / 1 flag on the first device, zeros elsewhere (consumers sum them).
+            state = self._per_optimizer_states[id(optimizer)]
+            found = state["found_inf_per_device"]
+            if not found:
+                return
+            first = next(iter(found.values()))
+            total = sum(t.reshape(()).to(first.device) for t in found.values()).clamp(max = 1.0)
             state["found_inf_per_device"] = {
-                d: t.clamp(max = 1.0).reshape(()) for d, t in state["found_inf_per_device"].items()
+                d: total if i == 0 else torch.zeros((), dtype = t.dtype, device = t.device)
+                for i, (d, t) in enumerate(found.items())
             }
 
     kwargs = {}

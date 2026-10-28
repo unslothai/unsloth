@@ -201,14 +201,30 @@ def fsdp2_keeps_fused_lora():
     return fsdp2_requested()
 
 
+def _zoo_gathers_fsdp2_lora():
+    """unsloth_zoo hands vLLM whole adapters from FSDP2 DTensor shards (older ones pass the shards)."""
+    try:
+        from unsloth_zoo import vllm_utils
+    except Exception:
+        return False
+    return hasattr(vllm_utils, "_lora_state_dict")
+
+
 def raise_if_fast_inference_under_fsdp2(fast_inference):
-    """Unsupported combination: refuse it before vLLM loads instead of failing mid-run (unsloth#3551)."""
-    if fast_inference and fsdp2_requested():
-        raise NotImplementedError(
-            "Unsloth: `fast_inference = True` (vLLM) is not supported with FSDP2.\n"
-            "Load the model with `fast_inference = False` to train with FSDP2, "
-            "or launch without FSDP2 to use vLLM."
-        )
+    """Refuse vLLM under accelerate's FSDP2 early (unsloth#3551); native FSDP2 keeps it (one engine per rank)."""
+    if not fast_inference or not fsdp2_requested():
+        return
+    from ..fsdp2_launch import unsloth_fsdp2_native_requested
+
+    if unsloth_fsdp2_native_requested() and _zoo_gathers_fsdp2_lora():
+        return
+    raise NotImplementedError(
+        "Unsloth: `fast_inference = True` (vLLM) is not supported with accelerate's FSDP2, or with an "
+        "unsloth_zoo that cannot gather FSDP2 adapters for vLLM (update unsloth_zoo).\n"
+        "Load the model with `fast_inference = False` to train with FSDP2, launch with "
+        "`UNSLOTH_FSDP2=1 torchrun ...` (Unsloth's native FSDP2 keeps vLLM), "
+        "or launch without FSDP2 to use vLLM."
+    )
 
 
 def prepare_device_map():
@@ -4174,6 +4190,26 @@ def _hub_live_commit(
         return None
 
 
+_ESCAPING_WEIGHTS_FILENAME = object()
+
+
+def _explicit_weights_filename(transformers_weights):
+    """File transformers loads instead of standard names; None if unused, sentinel if it escapes the model dir."""
+    if not isinstance(transformers_weights, str) or not transformers_weights.endswith(
+        (".safetensors", ".safetensors.index.json")
+    ):
+        return None
+    base = os.path.abspath("model_dir")
+    try:
+        contained = (
+            os.path.commonpath([base, os.path.abspath(os.path.join(base, transformers_weights))])
+            == base
+        )
+    except ValueError:
+        contained = False
+    return transformers_weights if contained else _ESCAPING_WEIGHTS_FILENAME
+
+
 def _checkpoint_tensor_dtypes(
     model_name,
     token = None,
@@ -4183,10 +4219,14 @@ def _checkpoint_tensor_dtypes(
     local_files_only = False,
     variant = None,
     use_safetensors = None,
+    transformers_weights = None,
 ):
     """{tensor name: dtype} (dtype only for fused experts) without downloading weights; mirrors transformers'
-    file order, `variant` and `use_safetensors`. Raises _UnreadableCheckpointNames for an unreadable lone .bin."""
+    file order, `variant`, `use_safetensors` and `transformers_weights`. Raises _UnreadableCheckpointNames for an unreadable lone .bin."""
     if not isinstance(model_name, str) or not model_name:
+        return None
+    explicit = _explicit_weights_filename(transformers_weights)
+    if explicit is _ESCAPING_WEIGHTS_FILENAME:
         return None
     st_index, st_single = (
         _with_variant(f, variant) for f in ("model.safetensors.index.json", "model.safetensors")
@@ -4198,6 +4238,13 @@ def _checkpoint_tensor_dtypes(
         st_index = st_single = None
     elif use_safetensors:
         bin_index = bin_single = None
+    if explicit is not None:
+        # Loaded verbatim (no variant / use_safetensors) with no fallback to standard names.
+        bin_index = bin_single = None
+        if explicit.endswith(".safetensors.index.json"):
+            st_index, st_single = explicit, None
+        else:
+            st_index, st_single = None, explicit
     index_files = [f for f in (st_index, bin_index) if f]
 
     def _local_shard_dtypes(path, names):
@@ -4242,7 +4289,13 @@ def _checkpoint_tensor_dtypes(
                     raise _UnreadableCheckpointNames(path)
             return None
 
-        if not local_files_only and not subfolder and not variant and st_single:
+        if (
+            not local_files_only
+            and not subfolder
+            and not variant
+            and st_single
+            and explicit is None
+        ):
             try:
                 from huggingface_hub import get_safetensors_metadata
 
@@ -4376,6 +4429,7 @@ def gpt_oss_checkpoint_has_fused_experts(
     quant_method = getattr(quant_method, "value", quant_method)
     if str(quant_method).lower() != "bitsandbytes":
         return False
+    hub_kwargs.setdefault("transformers_weights", getattr(config, "transformers_weights", None))
     try:
         dtypes = _checkpoint_tensor_dtypes(model_name, **hub_kwargs)
     except _UnreadableCheckpointNames as exc:
@@ -4423,13 +4477,16 @@ def quantization_config_is_bnb_4bit(quantization_config):
     return quantization_config_selects_bnb_4bit(quantization_config)
 
 
-def refuse_gpt_oss_fused_4bit_float16(dtype):
-    """Fused 4-bit experts compute in the model dtype and overflow float16 (split classes keep down_projs fp32)."""
-    if dtype != torch.float16:
+def refuse_gpt_oss_fused_4bit_float16(dtype, supports_bfloat16 = True):
+    """Fused 4-bit experts compute in the model dtype and overflow float16 (split classes keep down_projs fp32).
+    Without bfloat16, dtype = torch.float32 still computes in float16: gpt-oss is a FORCE_FLOAT32 family, whose
+    float32 request there becomes the float16 weights + float32 islands recipe."""
+    if dtype != torch.float16 and (supports_bfloat16 or dtype != torch.float32):
         return
     raise NotImplementedError(
         "Unsloth: this gpt-oss checkpoint stores fused experts, and in float16 (this GPU has no bfloat16, "
-        "or dtype = torch.float16) its fused 4-bit experts would overflow. Use the pre-quantized "
+        "or dtype = torch.float16) its fused 4-bit experts would overflow. dtype = torch.float32 does not "
+        "help on a GPU without bfloat16, since gpt-oss then still computes in float16. Use the pre-quantized "
         "unsloth/gpt-oss-20b-unsloth-bnb-4bit (or -120b), or a GPU with bfloat16."
     )
 
@@ -4570,14 +4627,47 @@ def _is_tensor_subclass_weight(t):
         return False
 
 
+def _holds_float8(t, depth = 0):
+    """True when a tensor, or a tensor subclass's inner tensors (__tensor_flatten__), stores float8."""
+    if "float8" in str(t.dtype):
+        return True
+    if depth > 3 or not hasattr(t, "__tensor_flatten__"):
+        return False
+    try:
+        names = t.__tensor_flatten__()[0]
+    except Exception:
+        return False
+    for name in names:
+        inner = getattr(t, name, None)
+        if isinstance(inner, torch.Tensor) and _holds_float8(inner, depth + 1):
+            return True
+    return False
+
+
+def _ddp_can_flatten(t):
+    """DDP's start-up broadcast flattens every parameter (_flatten_dense_tensors); probe that on the weight."""
+    try:
+        torch._utils._flatten_dense_tensors([t.detach()])
+        return True
+    except Exception:
+        return False
+
+
 def _frozen_tensor_subclass_names_for_ddp(model, refuse_trainable = False):
     """Frozen tensor subclass weights (load_in_fp8's Float8Tensor) stay out of DDP: every rank loads and
     quantizes the same checkpoint, so there is nothing to broadcast, and a frozen weight has no gradient to
     reduce. A trainable one would need both, which DDP cannot do for it: refused when asked."""
     frozen, trainable = [], []
     for name, p in model.named_parameters():
-        if _is_tensor_subclass_weight(p):
-            (trainable if p.requires_grad else frozen).append(name)
+        if not _is_tensor_subclass_weight(p):
+            continue
+        if not p.requires_grad:
+            frozen.append(name)
+        elif _holds_float8(p) or not _ddp_can_flatten(p):
+            # FP8 storage, and weights DDP's broadcast cannot flatten (Int8Tensor, AffineQuantizedTensor),
+            # are refused: trainable subclasses that flatten (torchao's int8 mixed precision training
+            # weight, NF4Tensor) train as before.
+            trainable.append(name)
     if trainable and refuse_trainable:
         raise NotImplementedError(
             f"Unsloth: DDP cannot train the {type(model.get_parameter(trainable[0])).__name__} weight "

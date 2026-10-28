@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 """Packed rows on the transformers modeling path run varlen attention, and nothing else changes."""
 
+import contextlib
 import inspect
 import types
 
@@ -1415,6 +1416,33 @@ def test_block_varlen_kwargs_honours_the_sdpa_policy_each_step(monkeypatch):
         assert got is None if wants_sdpa else got == (cu, 5)
 
 
+def test_block_varlen_kwargs_rechecks_the_sdpa_policy_on_reused_tensors(monkeypatch):
+    """A cache hit must still refuse cached metadata once the sdpa policy flips."""
+    hpa._ORIG_SDPA[0] = _plain_sdpa
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
+    monkeypatch.setattr(hpa, "_torch_varlen", lambda device: object())
+    monkeypatch.setattr(hpa, "_BLOCK_PREP", {})
+    lengths = [3, 5]
+    cu = torch.tensor([0, 3, 8], dtype = torch.int32)
+    monkeypatch.setattr(
+        "unsloth.utils.packing.get_packed_info_from_kwargs",
+        lambda kwargs, device: (torch.tensor(lengths), cu, 5),
+    )
+    policy = [False]
+    monkeypatch.setattr(hpa, "_sdpa_policy_requested", lambda *args: policy[0])
+    hidden = torch.randn(1, 8, 8)
+    kwargs = {"packed_seq_lengths": torch.tensor(lengths), "attention_mask": _block_causal(lengths)}
+    layer = _block_layer()
+    assert hpa.block_varlen_kwargs(layer, hidden, kwargs) == (cu, 5)
+    assert hpa.block_varlen_kwargs(layer, hidden, kwargs) == (cu, 5)
+    policy[0] = True
+    assert hpa.block_varlen_kwargs(layer, hidden, kwargs) is None
+    assert hpa.block_varlen_kwargs(layer, hidden, kwargs) is None
+    policy[0] = False
+    assert hpa.block_varlen_kwargs(layer, hidden, kwargs) == (cu, 5)
+
+
 @pytest.mark.parametrize("in_graph", [True, False])
 def test_traced_block_varlen_call_stays_in_the_graph(monkeypatch, in_graph):
     """With prepared metadata the traced wrapper calls the varlen op without a graph break; when the
@@ -1514,7 +1542,9 @@ def test_block_varlen_runs_inside_the_graph_and_matches_dense_sdpa(monkeypatch, 
         out = fn(q, k, v, mask, torch.tensor(lengths, dtype = torch.int32), (cu, max(lengths)))
         grad = torch.randn_like(out)
         got = torch.autograd.grad(out, (q, k, v), grad)
-        ref_out, _ = sdpa_attention_forward(module, q, k, v, mask, scaling = 0.11)
+        # Math reference: cuDNN on torch 2.6 - 2.13 can reuse a stale backward plan (wrong grads).
+        with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
+            ref_out, _ = sdpa_attention_forward(module, q, k, v, mask, scaling = 0.11)
         ref = torch.autograd.grad(ref_out, (q, k, v), grad)
         torch.testing.assert_close(out.float(), ref_out.float(), atol = 2e-2, rtol = 2e-2)
         for g, r in zip(got, ref):
@@ -1522,3 +1552,259 @@ def test_block_varlen_runs_inside_the_graph_and_matches_dense_sdpa(monkeypatch, 
     assert sum(torch._dynamo.utils.counters["graph_break"].values()) == 0
     # max_seqlen specializes once, then is dynamic: at most two graphs for four layouts.
     assert torch._dynamo.utils.counters["stats"]["unique_graphs"] <= 2
+
+
+@pytest.mark.parametrize("mode", ["no_grad", "inference_mode"])
+def test_varlen_in_graph_probe_runs_its_backward_with_grad_enabled(monkeypatch, mode):
+    """Probe under no_grad must still run and check a backward (verdict is cached for all modes)."""
+    seen = []
+
+    def torch_varlen(device):
+        seen.append((torch.is_grad_enabled(), torch.is_inference_mode_enabled()))
+        return None
+
+    monkeypatch.setattr(hpa, "_torch_varlen", torch_varlen)
+    context = torch.no_grad() if mode == "no_grad" else torch.inference_mode()
+    with context:
+        assert hpa._varlen_in_graph_probe(0, torch.bfloat16, 64, 8, 2, None) is False
+        assert torch.is_grad_enabled() is False  # the caller's mode is restored
+    assert seen == [(True, False)]
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+def test_varlen_in_graph_probe_inside_a_nonreentrant_checkpoint(monkeypatch, compiled):
+    """First trace inside a non-reentrant checkpoint (VLMs under DDP): the probe's own backward must
+    not go through the checkpoint's saved-tensor hooks, and the outer backward must still recompute."""
+    from torch.utils.checkpoint import checkpoint
+
+    seen = []
+
+    def torch_varlen(device):
+        # Stands in for the probe's kernel forward and backward (CUDA only).
+        try:
+            q = torch.zeros(4, 4, requires_grad = True)
+            (q @ q).sin().sum().backward()
+            seen.append(q.grad is not None)
+        except Exception as error:
+            seen.append(repr(error))
+        return None
+
+    monkeypatch.setattr(hpa, "_torch_varlen", torch_varlen)
+    monkeypatch.setattr(hpa, "_VARLEN_IN_GRAPH", {})
+
+    def block(x):
+        if hpa._varlen_in_graph(0, torch.bfloat16, 64, 8, 2, None):
+            return (x * 3).cos()
+        return (x * 2).sin()
+
+    if compiled:
+        # Dynamo calls the assume_constant_result probe eagerly while tracing, hooks still live.
+        torch._dynamo.reset()
+        block = torch.compile(block, backend = "eager", fullgraph = True)
+    x = torch.randn(4, 4, requires_grad = True)
+    checkpoint(block, x, use_reentrant = False).sum().backward()
+    assert seen == [True]
+    torch.testing.assert_close(x.grad, 2 * torch.cos(2 * x.detach()))
+
+
+@_CUDA
+@_TORCH_VARLEN_HOST
+@pytest.mark.parametrize("mode", ["no_grad", "inference_mode"])
+def test_varlen_in_graph_verdict_does_not_depend_on_the_first_grad_mode(monkeypatch, mode):
+    """Real probe under no_grad / inference_mode caches the grad-enabled answer."""
+    if hpa._torch_varlen(torch.device("cuda", 0)) is None:
+        pytest.skip(
+            reason = "varlen kernel needs torch's varlen_attn with window_size (CUDA torch >= 2.11)"
+        )
+    key = (0, torch.bfloat16, 64, 8, 2, None)
+    expected = hpa._varlen_in_graph_probe(*key)
+    if not expected:
+        pytest.skip(reason = "this build's flash varlen does not take a 64-wide GQA row")
+    monkeypatch.setattr(hpa, "_VARLEN_IN_GRAPH", {})
+    context = torch.no_grad() if mode == "no_grad" else torch.inference_mode()
+    with context:
+        assert hpa._varlen_in_graph_eager(*key) is expected
+    assert hpa._varlen_in_graph_eager(*key) is expected
+
+
+@_CUDA
+@_TORCH_VARLEN_HOST
+def test_reentrant_checkpoint_first_trace_keeps_the_block_varlen_path(monkeypatch):
+    """First compiled inside a reentrant checkpoint: forward and recompute both run varlen."""
+    if hpa._torch_varlen(torch.device("cuda", 0)) is None:
+        pytest.skip(
+            reason = "varlen kernel needs torch's varlen_attn with window_size (CUDA torch >= 2.11)"
+        )
+    from torch.utils.checkpoint import checkpoint
+    from transformers.integrations.sdpa_attention import sdpa_attention_forward
+
+    def _dense(*args, **kwargs):
+        raise AssertionError("packed row fell back to SDPA over the dense mask")
+
+    hpa._ORIG_SDPA[0] = _dense
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    monkeypatch.setattr(hpa, "_VARLEN_IN_GRAPH", {})
+    H, n_kv, D = 8, 2, 64
+    module = types.SimpleNamespace(
+        is_causal = True, num_key_value_groups = H // n_kv, training = True, sliding_window = None
+    )
+    lengths = [37, 100, 2, 5, 230]
+    T = sum(lengths)
+    mask = _block_causal(lengths, "cuda")
+    psl = torch.tensor(lengths, dtype = torch.int32)
+    cu = _cu(lengths, "cuda")
+    fn = torch.compile(
+        lambda q, k, v: hpa._sdpa_packed_varlen(
+            module,
+            q,
+            k,
+            v,
+            mask,
+            scaling = 0.11,
+            packed_seq_lengths = psl,
+            **{hpa.BLOCK_VARLEN_KWARG: (cu, max(lengths))},
+        )[0],
+        fullgraph = True,
+    )
+    torch._dynamo.reset()
+    torch.manual_seed(0)
+    q, k, v = (
+        torch.randn(1, h, T, D, device = "cuda", dtype = torch.bfloat16, requires_grad = True)
+        for h in (H, n_kv, n_kv)
+    )
+    out = checkpoint(fn, q, k, v, use_reentrant = True)
+    grad = torch.randn_like(out)
+    out.backward(grad)  # reentrant checkpoint refuses autograd.grad
+    got = (q.grad, k.grad, v.grad)
+    # Math reference: the dense-mask backend sdpa picks can change with earlier tests in this file.
+    with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
+        ref_out, _ = sdpa_attention_forward(module, q, k, v, mask, scaling = 0.11)
+    ref = torch.autograd.grad(ref_out, (q, k, v), grad)
+    torch.testing.assert_close(out.float(), ref_out.float(), atol = 2e-2, rtol = 2e-2)
+    for g, r in zip(got, ref):
+        torch.testing.assert_close(g.float(), r.float(), atol = 3e-2, rtol = 3e-2)
+
+
+def _dtype_seen():
+    seen = []
+
+    def orig(
+        module,
+        q,
+        k,
+        v,
+        mask,
+        dropout = 0.0,
+        scaling = None,
+        is_causal = None,
+        **kwargs,
+    ):
+        seen.append((q.dtype, k.dtype, v.dtype))
+        return torch.nn.functional.scaled_dot_product_attention(
+            q, k, v, attn_mask = mask, scale = scaling
+        ), None
+
+    return seen, orig
+
+
+@pytest.mark.parametrize(
+    "case, autocast, dtype, packed, expected",
+    [
+        # Full finetuning: fp32 q_norm / k_norm leave Q and K in fp32 under bf16 autocast.
+        ("fp32_under_bf16_autocast", torch.bfloat16, torch.float32, True, torch.bfloat16),
+        ("fp32_under_fp16_autocast", torch.float16, torch.float32, True, torch.float16),
+        ("fp32_without_autocast", None, torch.float32, True, torch.float32),
+        ("bf16_under_fp16_autocast", torch.float16, torch.bfloat16, True, torch.bfloat16),
+        ("unpacked_fp32_under_autocast", torch.bfloat16, torch.float32, False, torch.float32),
+    ],
+)
+def test_packed_fp32_rows_under_autocast_run_in_the_autocast_dtype(
+    monkeypatch, case, autocast, dtype, packed, expected
+):
+    """Packed fp32 Q / K / V under autocast reach the varlen checks in the dtype SDPA runs in."""
+    seen, orig = _dtype_seen()
+    hpa._ORIG_SDPA[0] = orig
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    lengths = [3, 5]
+    q, k, v = (torch.randn(1, 2, 8, 16, dtype = dtype) for _ in range(3))
+    kwargs = {"packed_seq_lengths": torch.tensor(lengths, dtype = torch.int32)} if packed else {}
+    module = types.SimpleNamespace(is_causal = True)
+    mask = _block_causal(lengths)
+    context = (
+        torch.autocast("cpu", dtype = autocast) if autocast is not None else contextlib.nullcontext()
+    )
+    with context:
+        out, _ = hpa._sdpa_packed_varlen(module, q, k, v, mask, scaling = 0.25, **kwargs)
+        ref = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask = mask, scale = 0.25)
+    assert seen == [(dtype, dtype, dtype)]
+    assert out.dtype == ref.dtype
+    torch.testing.assert_close(out, ref, atol = 0, rtol = 0)
+    if packed:
+        with context:
+            assert {t.dtype for t in hpa._autocast_float32(q, k, v)} == {expected}
+
+
+@pytest.mark.parametrize("autocast", [torch.bfloat16, torch.float16])
+@pytest.mark.parametrize("n_kv", [2, 8])
+def test_packed_fp32_fallback_rows_keep_their_gradients(monkeypatch, autocast, n_kv):
+    """Fallback rows must get uncast Q / K / V: GQA's dK / dV reduce in fp32 after repeat_kv."""
+    from transformers.integrations.sdpa_attention import sdpa_attention_forward
+
+    hpa._ORIG_SDPA[0] = sdpa_attention_forward
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    torch.manual_seed(0)
+    lengths = [37, 100, 2, 5, 56]
+    T, H, D = sum(lengths), 8, 64
+    module = types.SimpleNamespace(is_causal = True, num_key_value_groups = H // n_kv, training = True)
+    q = torch.randn(1, H, T, D, requires_grad = True)
+    k = torch.randn(1, n_kv, T, D, requires_grad = True)
+    v = torch.randn(1, n_kv, T, D, requires_grad = True)
+    mask, psl = _block_causal(lengths), torch.tensor(lengths, dtype = torch.int32)
+    with torch.autocast("cpu", dtype = autocast):
+        out, _ = hpa._sdpa_packed_varlen(
+            module, q, k, v, mask, scaling = 0.125, packed_seq_lengths = psl
+        )
+        ref, _ = sdpa_attention_forward(module, q, k, v, mask, scaling = 0.125)
+    g = torch.randn_like(ref)
+    got = torch.autograd.grad(out, (q, k, v), g)
+    want = torch.autograd.grad(ref, (q, k, v), g)
+    torch.testing.assert_close(out, ref, atol = 0, rtol = 0)
+    for a, b in zip(got, want):
+        assert a.dtype == b.dtype == torch.float32
+        torch.testing.assert_close(a, b, atol = 0, rtol = 0)
+
+
+@_CUDA
+@_TORCH_VARLEN_HOST
+@pytest.mark.parametrize("autocast", [torch.bfloat16, torch.float16])
+def test_packed_fp32_rows_under_autocast_take_varlen(monkeypatch, autocast):
+    if hpa._torch_varlen(torch.device("cuda", 0)) is None:
+        pytest.skip("this torch has no window_size varlen_attn")
+    from transformers.integrations.sdpa_attention import sdpa_attention_forward
+
+    hpa._ORIG_SDPA[0] = sdpa_attention_forward
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    torch.manual_seed(0)
+    lengths = [37, 100, 2, 5, 230]
+    T, H, n_kv, D = sum(lengths), 8, 2, 64
+    module = types.SimpleNamespace(is_causal = True, num_key_value_groups = H // n_kv, training = True)
+    q = torch.randn(1, H, T, D, device = "cuda", requires_grad = True)
+    k = torch.randn(1, n_kv, T, D, device = "cuda", requires_grad = True)
+    v = torch.randn(1, n_kv, T, D, device = "cuda", requires_grad = True)
+    mask, psl = _block_causal(lengths, "cuda"), torch.tensor(lengths, dtype = torch.int32)
+    before = dict(hpa.HF_PACKED_ATTENTION_STATS)
+    with torch.autocast("cuda", dtype = autocast):
+        fast, _ = hpa._sdpa_packed_varlen(
+            module, q, k, v, mask, scaling = 0.11, packed_seq_lengths = psl
+        )
+        ref, _ = sdpa_attention_forward(module, q, k, v, mask, scaling = 0.11)
+    assert hpa.HF_PACKED_ATTENTION_STATS["fast"] == before["fast"] + 1
+    assert hpa.HF_PACKED_ATTENTION_STATS["fallback"] == before["fallback"]
+    assert fast.dtype == ref.dtype == autocast and fast.shape == ref.shape
+    torch.testing.assert_close(fast.float(), ref.float(), atol = 2e-2, rtol = 2e-2)
+    g = torch.randn_like(ref)
+    grads_fast = torch.autograd.grad(fast, (q, k, v), g)
+    grads_ref = torch.autograd.grad(ref, (q, k, v), g)
+    for a, b in zip(grads_fast, grads_ref):
+        assert a.dtype == torch.float32
+        torch.testing.assert_close(a, b, atol = 5e-2, rtol = 5e-2)
