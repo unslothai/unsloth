@@ -9,6 +9,7 @@ import test from "node:test";
 import {
   formatAxisMetric,
   formatMetric,
+  rewardLogLabel,
 } from "../src/features/studio/sections/charts/utils.ts";
 
 test("a large metric keeps every digit", () => {
@@ -82,4 +83,12 @@ test("no formatted metric is shorter than its integer part", () => {
       }
     }
   }
+});
+
+test("reward series use the reward's id, as the Rewards card spells it", () => {
+  assert.equal(
+    rewardLogLabel("rewards/answer_length_bonus/mean"),
+    "answer-length-bonus",
+  );
+  assert.equal(rewardLogLabel("rewards/exact_answer"), "exact-answer");
 });
