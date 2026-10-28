@@ -822,3 +822,17 @@ def test_pack_rows_packs_each_worker_shard_as_the_single_job_does():
     assert len(packed) == len(single) == 4
     assert [ids for ids, _ in packed] == [list(x) for x in single["input_ids"]]
     assert lengths == [list(x) for x in single["seq_lengths"]]
+
+
+def test_packing_is_refused_where_packed_documents_see_each_other(monkeypatch, tmp_path):
+    import transformers.masking_utils as masking_utils
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    assert mlt._packed_forward_isolated(_base().eval())
+    # Attention that ignores the document boundaries, as Qwen3.5's full attention did on transformers 5.3.
+    monkeypatch.setattr(masking_utils, "find_packed_sequence_indices", lambda position_ids: None)
+    assert not mlt._packed_forward_isolated(_base().eval())
+    seen = _spy_packed(monkeypatch)
+    events, _, _ = _run(monkeypatch, PACKED[:2], max_seq_length = 24)
+    assert seen == []
+    assert all(_member_events(events, m["run_id"])[-1]["type"] == "complete" for m in PACKED[:2])
