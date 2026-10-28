@@ -3415,6 +3415,9 @@ export const it = {
     spookyGreetingsDescription:
       "Il bradipo accoglie le nuove chat con uno spavento.",
     surprise: "Dolcetto o scherzetto!",
+    surpriseDescription: "Lascia che il bradipo scelga un tema per te.",
+    themesTitle: "Temi da brivido",
+    back: "Indietro",
     footer: "Unsloth torna alla normalità alla mezzanotte del 1° novembre.",
     removeNow: "Rimuovi ora",
     greeting: {

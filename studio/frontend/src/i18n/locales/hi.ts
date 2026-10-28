@@ -638,6 +638,9 @@ export const hi = {
     spookyGreetings: "डरावने अभिवादन",
     spookyGreetingsDescription: "स्लॉथ नई चैट का स्वागत एक डर के साथ करता है।",
     surprise: "ट्रिक या ट्रीट!",
+    surpriseDescription: "स्लॉथ को आपके लिए थीम चुनने दें।",
+    themesTitle: "डरावनी थीम",
+    back: "वापस",
     footer: "Unsloth 1 नवंबर की आधी रात को सामान्य हो जाएगा।",
     removeNow: "अभी हटाएँ",
     greeting: {

@@ -639,6 +639,9 @@ export const es = {
     spookyGreetingsDescription:
       "El perezoso recibe los chats nuevos con un susto.",
     surprise: "¡Truco o trato!",
+    surpriseDescription: "Deja que el perezoso elija un tema por ti.",
+    themesTitle: "Temas terroríficos",
+    back: "Atrás",
     footer: "Unsloth vuelve a la normalidad a medianoche del 1 de noviembre.",
     removeNow: "Quitar ahora",
     greeting: {

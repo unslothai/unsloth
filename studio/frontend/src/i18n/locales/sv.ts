@@ -742,6 +742,9 @@ export const sv = {
     spookyGreetingsDescription:
       "Sengångaren hälsar nya chattar med en liten skräck.",
     surprise: "Bus eller godis!",
+    surpriseDescription: "Låt sengångaren välja ett tema åt dig.",
+    themesTitle: "Läskiga teman",
+    back: "Tillbaka",
     footer: "Unsloth återgår till det normala vid midnatt den 1 november.",
     removeNow: "Ta bort nu",
     greeting: {

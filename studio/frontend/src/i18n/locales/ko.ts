@@ -637,6 +637,9 @@ export const ko = {
     spookyGreetings: "오싹한 인사말",
     spookyGreetingsDescription: "새 채팅을 시작하면 나무늘보가 깜짝 놀래 줘요.",
     surprise: "트릭 오어 트릿!",
+    surpriseDescription: "나무늘보가 테마를 골라 드려요.",
+    themesTitle: "오싹한 테마",
+    back: "뒤로",
     footer: "Unsloth는 11월 1일 자정에 원래대로 돌아가요.",
     removeNow: "지금 제거",
     greeting: {

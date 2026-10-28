@@ -638,6 +638,9 @@ export const ar = {
     spookyGreetings: "تحيات مخيفة",
     spookyGreetingsDescription: "يستقبل الكسلان المحادثات الجديدة بإخافة.",
     surprise: "حلوى أم خدعة!",
+    surpriseDescription: "دع الكسلان يختار سمة لك.",
+    themesTitle: "سمات مخيفة",
+    back: "رجوع",
     footer: "يعود Unsloth إلى طبيعته عند منتصف ليل 1 نوفمبر.",
     removeNow: "إزالة الآن",
     greeting: {

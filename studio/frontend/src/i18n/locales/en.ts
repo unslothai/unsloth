@@ -692,6 +692,9 @@ export const en = {
     spookyGreetings: "Spooky greetings",
     spookyGreetingsDescription: "The sloth greets new chats with a scare.",
     surprise: "Trick or treat!",
+    surpriseDescription: "Let the sloth pick a theme for you.",
+    themesTitle: "Frightful themes",
+    back: "Back",
     footer: "Unsloth returns to normal at midnight on November 1.",
     removeNow: "Remove now",
     greeting: {

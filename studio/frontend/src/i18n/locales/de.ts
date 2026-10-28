@@ -639,6 +639,9 @@ export const de = {
     spookyGreetingsDescription:
       "Das Faultier begrüßt neue Chats mit einem Schreck.",
     surprise: "Süßes oder Saures!",
+    surpriseDescription: "Das Faultier sucht ein Design für dich aus.",
+    themesTitle: "Schaurige Designs",
+    back: "Zurück",
     footer: "Unsloth wird am 1. November um Mitternacht wieder normal.",
     removeNow: "Jetzt entfernen",
     greeting: {

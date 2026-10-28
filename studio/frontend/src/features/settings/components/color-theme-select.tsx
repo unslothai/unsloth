@@ -30,7 +30,7 @@ import {
 } from "../lib/color-themes";
 import { usePalette, useTheme } from "../stores/theme-store";
 
-export function ThemeChip({
+function ThemeChip({
   colors,
 }: {
   colors: { background: string; accent: string } | null;

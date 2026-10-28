@@ -638,6 +638,9 @@ export const ru = {
     spookyGreetings: "Жуткие приветствия",
     spookyGreetingsDescription: "Ленивец встречает новые чаты страшилкой.",
     surprise: "Сладость или гадость!",
+    surpriseDescription: "Пусть ленивец выберет тему за вас.",
+    themesTitle: "Жуткие темы",
+    back: "Назад",
     footer: "Unsloth вернётся к обычному виду в полночь 1 ноября.",
     removeNow: "Убрать сейчас",
     greeting: {
