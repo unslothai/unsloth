@@ -681,6 +681,70 @@ def test_pack_rows_keeps_each_documents_labels_with_its_tokens():
     assert docs == sorted(rows)
 
 
+def _force_member_loss_scale(monkeypatch, poison = None):
+    """fp16's per-member loss scale on this CPU run; ``poison`` = (slot, call) overflows that member there."""
+    monkeypatch.setattr(mlt, "_fp16_loss_scale", lambda fp16, n: mlt._MemberLossScale(n))
+    if poison is None:
+        return
+    real, calls = mlt._MemberLossScale.unscale_, []
+
+    def unscale_(self, slot, params):
+        if slot == poison[0]:
+            calls.append(slot)
+            if len(calls) == poison[1]:
+                for p in params:
+                    if p.grad is not None:
+                        p.grad.fill_(float("inf"))
+        return real(self, slot, params)
+
+    monkeypatch.setattr(mlt._MemberLossScale, "unscale_", unscale_)
+
+
+def test_member_loss_scale_trains_as_unscaled(batched_run, monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    events, _, _ = batched_run
+    _force_member_loss_scale(monkeypatch)
+    scaled, _, _ = _run(monkeypatch, MEMBERS)
+    for m in MEMBERS:
+        losses, state = _final(events, m["run_id"])
+        scaled_losses, scaled_state = _final(scaled, m["run_id"])
+        assert scaled_losses == pytest.approx(losses, rel = 1e-5)
+        for key in state:
+            torch.testing.assert_close(scaled_state[key], state[key], atol = 1e-6, rtol = 1e-5)
+
+
+def test_an_fp16_overflow_skips_only_that_members_step(monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    _force_member_loss_scale(monkeypatch)
+    clean, _, _ = _run(monkeypatch, MEMBERS)
+    _force_member_loss_scale(monkeypatch, poison = (0, 1))
+    hit, _, _ = _run(monkeypatch, MEMBERS)
+    for run_id in ("job_b", "job_c"):
+        losses, state = _final(clean, run_id)
+        hit_losses, hit_state = _final(hit, run_id)
+        assert hit_losses == losses
+        for key in state:
+            torch.testing.assert_close(hit_state[key], state[key], atol = 0, rtol = 0)
+    a = [e for e in _member_events(hit, "job_a") if e["type"] == "progress" and e["step"] > 0]
+    # Its first step was skipped: no gradient norm, and the next step trains at the rate it would have used.
+    assert a[0]["grad_norm"] is None and a[1]["grad_norm"] is not None
+    assert a[1]["learning_rate"] == a[0]["learning_rate"]
+    hit_a, clean_a = _final(hit, "job_a")[1], _final(clean, "job_a")[1]
+    assert any(not torch.equal(hit_a[k], clean_a[k]) for k in clean_a)
+
+
+def test_member_loss_scale_follows_grad_scaler_rules():
+    scale = mlt._MemberLossScale(2, init_scale = 8.0, growth_interval = 2)
+    p = torch.nn.Parameter(torch.zeros(3))
+    for _ in range(2):
+        p.grad = torch.full((3,), 16.0)
+        assert scale.unscale_(1, [p]) and torch.equal(p.grad, torch.full((3,), 2.0))
+    assert scale.scale == [8.0, 16.0]
+    p.grad = torch.tensor([1.0, float("nan"), 0.0])
+    assert not scale.unscale_(0, [p]) and p.grad is None
+    assert scale.scale == [4.0, 16.0] and scale.good_steps == [0, 2 % 2]
+
+
 def test_pack_rows_on_trl_without_packing_strategies(monkeypatch):
     import trl.data_utils
 

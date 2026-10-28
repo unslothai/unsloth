@@ -447,6 +447,8 @@ class _PerMemberLR:
     def __init__(self, optimizer, schedulers: list):
         self.optimizer = optimizer
         self.schedulers = schedulers
+        # fp16 members that overflowed keep their rate, as the single job's skipped step does.
+        self.skip = set()
         self._apply()
 
     def _apply(self) -> None:
@@ -454,8 +456,9 @@ class _PerMemberLR:
             group["lr"] = scheduler.get_last_lr()[0]
 
     def step(self) -> None:
-        for scheduler in self.schedulers:
-            scheduler.step()
+        for slot, scheduler in enumerate(self.schedulers):
+            if slot not in self.skip:
+                scheduler.step()
         self._apply()
 
     def get_last_lr(self) -> list:
@@ -466,6 +469,57 @@ class _PerMemberLR:
 
     def load_state_dict(self, state: dict) -> None:
         pass
+
+
+class _MemberLossScale:
+    """Per-member fp16 loss scale with GradScaler's rules: a shared one lets one member's overflow skip every step."""
+
+    def __init__(
+        self,
+        members: int,
+        init_scale: float = 2.0**16,
+        growth_interval: int = 2000,
+    ):
+        self.scale = [init_scale] * members
+        self.good_steps = [0] * members
+        self.growth_interval = growth_interval
+
+    def scale_backward(self, logits, adapter_ids):
+        """GradScaler's loss scaling per token, in fp32: a logit's gradient comes only from its member's loss."""
+        import torch
+
+        scale = torch.tensor(self.scale, dtype = torch.float32, device = logits.device)
+        per_token = scale[adapter_ids.to(logits.device).clamp_min(0)]
+        per_token = per_token[:, None, None] if per_token.dim() == 1 else per_token[..., None]
+        logits.register_hook(lambda grad: grad * per_token)
+        return logits
+
+    def unscale_(self, slot: int, params: list) -> bool:
+        """Unscales the member's gradients; False (and its gradients dropped) when any is not finite."""
+        import torch
+
+        grads = [p.grad for p in params if p.grad is not None]
+        finite = True
+        if grads:
+            torch._foreach_mul_(grads, 1.0 / self.scale[slot])
+            # One host read per member, not one per tensor.
+            flags = [torch.isfinite(g).all().to(grads[0].device) for g in grads]
+            finite = bool(torch.stack(flags).all())
+        if finite:
+            self.good_steps[slot] += 1
+            if self.good_steps[slot] == self.growth_interval:
+                self.scale[slot] *= 2.0
+                self.good_steps[slot] = 0
+        else:
+            self.scale[slot] *= 0.5
+            self.good_steps[slot] = 0
+            for p in params:
+                p.grad = None
+        return finite
+
+
+def _fp16_loss_scale(fp16: bool, members: int) -> Optional[_MemberLossScale]:
+    return _MemberLossScale(members) if fp16 else None
 
 
 def _packs(model) -> bool:
@@ -1082,6 +1136,11 @@ def _build_sft_trainer(
             self.round = []
             self.round_losses = torch.zeros(U)
             self.member_norms = torch.zeros(U)
+            self.skipped = set()
+            # Replaces accelerate's one GradScaler: members share no trainable weight.
+            self.loss_scale = _fp16_loss_scale(fp16, U)
+            if self.loss_scale is not None:
+                self.accelerator.scaler = None
             self.step_lrs = [float(m.config.get("learning_rate", 2e-4)) for m in live]
             self.start = time.time()
 
@@ -1189,6 +1248,8 @@ def _build_sft_trainer(
                     attention_mask = inputs["attention_mask"],
                     use_cache = False,
                 ).logits
+            if self.loss_scale is not None:
+                logits = self.loss_scale.scale_backward(logits.float(), ids)
             loss, per = per_adapter_loss(
                 logits,
                 inputs["labels"],
@@ -1210,7 +1271,14 @@ def _build_sft_trainer(
             # The rate this step uses, as a lone job reports it (read before the scheduler moves).
             self.step_lrs = [group["lr"] for group in self.optimizer.param_groups]
             drop_absent_adapter_grads_(self.model)
-            self.accelerator.unscale_gradients()
+            self.skipped = set()
+            if self.loss_scale is None:
+                self.accelerator.unscale_gradients()
+            else:
+                for member in self.round:
+                    if not self.loss_scale.unscale_(member.slot, member.params):
+                        self.skipped.add(member.slot)
+                self.lr_scheduler.skip = self.skipped
             self.member_norms = clip_grad_norm_per_adapter_(self.model, max_norm).float().cpu()
             return self.member_norms.norm()
 
@@ -1245,7 +1313,7 @@ def _build_sft_trainer(
                 self.progress(
                     member,
                     float(self.round_losses[member.slot]),
-                    float(self.member_norms[member.slot]),
+                    None if member.slot in self.skipped else float(self.member_norms[member.slot]),
                     elapsed,
                     self.step_lrs[member.slot],
                 )
