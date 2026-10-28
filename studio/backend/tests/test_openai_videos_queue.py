@@ -130,6 +130,46 @@ def test_cancelling_a_queued_video_by_id_keeps_it_from_starting(client, backend)
     assert backend.last_generate_kwargs["prompt"] == "first"
 
 
+def test_a_stop_by_id_while_a_queued_start_waits_on_admission_stops_its_render(
+    client, backend, monkeypatch
+):
+    import threading
+
+    from core.inference import media_keepwarm
+
+    first = _render_one(client, backend)
+    queued = client.post("/v1/videos", json = {"prompt": "stopped"}).json()
+    backend.gate.set()
+    _wait_terminal(client, first["id"])
+    backend.gate.clear()
+    real_begin = media_keepwarm.begin_request
+    result = {}
+    threads = []
+
+    async def _stop_during_admission(*args, **kwargs):
+        thread = threading.Thread(
+            target = lambda: result.update(
+                response = client.post(
+                    "/api/inference/video/generate/cancel", json = {"video_id": queued["id"]}
+                )
+            )
+        )
+        thread.start()
+        threads.append(thread)
+        await asyncio.sleep(0.2)
+        return await real_begin(*args, **kwargs)
+
+    monkeypatch.setattr(media_keepwarm, "begin_request", _stop_during_admission)
+    try:
+        _drain()
+        threads[0].join(10)
+        assert result["response"].status_code == 200, result["response"].json()
+        assert result["response"].json() == {"cancelled": True}
+        assert _wait_terminal(client, queued["id"])["status"] == "failed"
+    finally:
+        backend.gate.set()
+
+
 def test_a_video_deleted_while_its_start_is_in_flight_is_deleted_once_started(
     client, backend, monkeypatch
 ):
@@ -303,6 +343,48 @@ def test_a_queued_video_of_a_disabled_account_never_starts(client, backend):
     _drain()
     assert video_routes._VIDEO_QUEUE == []
     assert backend.last_generate_kwargs["prompt"] == "first"
+
+
+def _disable_while(monkeypatch, module, name) -> dict:
+    live = {"active": True}
+    real = getattr(module, name)
+
+    async def _wait_then_disable(*args, **kwargs):
+        live["active"] = False
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(video_routes, "_queued_account_active", lambda account: live["active"])
+    monkeypatch.setattr(module, name, _wait_then_disable)
+    return live
+
+
+def _assert_disabled_mid_start_never_renders(client, backend, queued) -> None:
+    _drain()
+    assert video_routes._VIDEO_QUEUE == []
+    assert backend.last_generate_kwargs["prompt"] == "first"
+    assert client.get(f"/v1/videos/{queued['id']}").status_code == 404
+
+
+def test_an_account_disabled_during_the_admission_wait_never_starts(client, backend, monkeypatch):
+    from core.inference import media_keepwarm
+
+    first = _render_one(client, backend)
+    queued = client.post("/v1/videos", json = {"prompt": "theirs"}).json()
+    backend.gate.set()
+    _wait_terminal(client, first["id"])
+    _disable_while(monkeypatch, media_keepwarm, "begin_request")
+    _assert_disabled_mid_start_never_renders(client, backend, queued)
+
+
+def test_an_account_disabled_during_an_auto_switch_never_starts(client, backend, monkeypatch):
+    from core.inference import media_auto_switch
+
+    first = _render_one(client, backend)
+    queued = client.post("/v1/videos", json = {"prompt": "theirs"}).json()
+    backend.gate.set()
+    _wait_terminal(client, first["id"])
+    _disable_while(monkeypatch, media_auto_switch, "maybe_auto_switch_media_model")
+    _assert_disabled_mid_start_never_renders(client, backend, queued)
 
 
 def test_the_account_check_reads_the_accounts_current_state(monkeypatch):

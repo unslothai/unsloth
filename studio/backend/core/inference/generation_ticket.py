@@ -29,6 +29,11 @@ class GenerationTicket:
         if stopped:
             event.set()
 
+    def cancelled(self) -> bool:
+        """True once a Stop reached the ticket or any generation bound to it."""
+        with self._lock:
+            return self._stopped or any(event.is_set() for event in self._events)
+
     def stop(self) -> None:
         with self._lock:
             self._stopped = True

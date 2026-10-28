@@ -884,7 +884,12 @@ async def cancel_video_generation(
 
     video_id = await _cancel_video_id(request)
     queued = _own_queued_video(video_id) if video_id is not None else None
-    if queued is not None and not queued.starting:
+    if queued is not None and queued.starting:
+        # Not reserved by the engine yet: let the start settle, then stop what it leaves.
+        if not await _await_queued_start(queued):
+            raise HTTPException(status_code = 409, detail = "The video is starting; retry shortly.")
+        queued = _own_queued_video(video_id)
+    if queued is not None:
         _drop_queued_video(queued)
         return {"cancelled": True}
     backend = get_video_backend()
@@ -2215,6 +2220,17 @@ def _refuse_family_inputs(
     )
 
 
+class _QueuedAccountDisabled(Exception):
+    pass
+
+
+def _begin_video_generate(backend, queued_account: Optional[AccountContext], kwargs: dict):
+    # A queued start may have waited on admission or a switch since its account was checked.
+    if queued_account is not None and not _queued_account_active(queued_account):
+        raise _QueuedAccountDisabled()
+    return backend.begin_generate(**kwargs)
+
+
 async def _start_openai_video(
     body: VideoJobCreateRequest,
     reference: Optional[str],
@@ -2225,6 +2241,7 @@ async def _start_openai_video(
     video_id: str,
     seed: int,
     created_at: Optional[int] = None,
+    queued_account: Optional[AccountContext] = None,
 ):
     from core.inference.gpu_arbiter import VIDEO
     from core.inference.media_auto_switch import (
@@ -2334,7 +2351,9 @@ async def _start_openai_video(
             generate_kwargs.update({k: v for k, v in controls.items() if v is not None})
             if expected_state is not None:
                 generate_kwargs["expected_state"] = expected_state
-            resolved = await asyncio.to_thread(backend.begin_generate, **generate_kwargs)
+            resolved = await asyncio.to_thread(
+                _begin_video_generate, backend, queued_account, generate_kwargs
+            )
         except VideoShapeError as exc:
             raise _openai_video_error(400, str(exc), param = _shape_error_param(exc, body))
         except ValueError as exc:
@@ -2682,6 +2701,13 @@ async def _settle_failed_queued_video(entry: _QueuedVideo, exc: BaseException) -
         entry.starting = False
 
 
+async def _await_queued_start(entry: _QueuedVideo) -> bool:
+    deadline = _time.monotonic() + _DELETE_SETTLE_TIMEOUT_S
+    while entry.starting and _time.monotonic() < deadline:
+        await asyncio.sleep(0.05)
+    return not entry.starting
+
+
 def _queued_account_active(account: AccountContext) -> bool:
     if account.is_owner:
         return True
@@ -2728,9 +2754,15 @@ async def _start_queued_video(entry: _QueuedVideo) -> bool:
                     video_id = entry.id,
                     seed = entry.seed,
                     created_at = entry.created_at,
+                    queued_account = entry.account,
                 ),
             )
             started = True
+        except _QueuedAccountDisabled:
+            logger.info("openai_videos.queued_account_disabled: %s", entry.id)
+            _drop_queued_video(entry)
+            entry.starting = False
+            return True
         except Exception as exc:  # noqa: BLE001 -- settle failures and continue draining
             wait = _video_wait(exc)
             if wait == "conflict":
@@ -2881,10 +2913,7 @@ async def openai_delete_video(video_id: str, current_subject: str = Depends(get_
     queued = _own_queued_video(video_id)
     if queued is not None and queued.starting:
         # A start, or the record of its refusal, is in flight: wait, then delete what it leaves.
-        deadline = _time.monotonic() + _DELETE_SETTLE_TIMEOUT_S
-        while queued.starting and _time.monotonic() < deadline:
-            await asyncio.sleep(0.05)
-        if queued.starting:
+        if not await _await_queued_start(queued):
             raise _openai_video_error(
                 409,
                 "The video is starting; retry the delete shortly.",

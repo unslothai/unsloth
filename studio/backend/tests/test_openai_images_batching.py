@@ -32,6 +32,7 @@ class _Backend:
         self.before_generate = None
         self.is_loaded = True
         self.holder = object()
+        self.active_cancel = None
 
     def status(self) -> dict:
         return {
@@ -78,7 +79,7 @@ class _Backend:
         from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
         from core.inference.generation_ticket import bind_generation_cancel
 
-        cancel = threading.Event()
+        cancel = self.active_cancel = threading.Event()
         bind_generation_cancel(cancel)
         if cancel.is_set():
             raise RuntimeError(DIFFUSION_CANCELLED_MSG)
@@ -326,6 +327,29 @@ def test_a_stop_while_a_failed_batch_unwinds_keeps_its_requests_from_rendering_a
     assert saved == []
     assert all(r.status_code >= 400 for r in responses)
     assert responses[0].status_code == responses[1].status_code
+
+
+def test_an_engine_stop_acknowledged_as_a_shared_call_fails_keeps_every_request_from_retrying(
+    studio,
+):
+    app, backend, saved = studio
+    backend.fail_lists = True
+    real_generate = backend.generate
+
+    def _fail_as_the_engine_cancels(**kwargs):
+        try:
+            return real_generate(**kwargs)
+        finally:
+            if kwargs.get("prompts") is not None:
+                backend.active_cancel.set()  # what DiffusionBackend.cancel_generate() sets
+
+    backend.generate = _fail_as_the_engine_cancels
+    bodies = [_b64({"prompt": "a fox"}), _b64({"prompt": "a cat"})]
+    responses = _post_while_rendering(app, backend, bodies, waiting = 2)
+    assert [call["prompts"] is not None for call in backend.calls] == [True]
+    assert saved == []
+    assert all(r.status_code >= 400 for r in responses)
+    assert responses[0].json() == responses[1].json()
 
 
 def test_a_batch_stops_waiting_when_the_generation_it_queued_behind_ends(studio):

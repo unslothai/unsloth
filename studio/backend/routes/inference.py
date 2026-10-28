@@ -50029,19 +50029,25 @@ async def _batched_openai_images(
 
     async def run_batch(prompts: list[str], seeds: list[int]) -> dict:
         with generation_ticket(ticket):
-            return await asyncio.to_thread(
-                backend.generate,
-                prompt = prompts[0],
-                negative_prompt = body.negative_prompt,
-                width = width,
-                height = height,
-                steps = steps,
-                guidance = guidance,
-                prompts = prompts,
-                seeds = seeds,
-                batch_size = len(seeds),
-                expected_load = expected_load,
-            )
+            try:
+                return await asyncio.to_thread(
+                    backend.generate,
+                    prompt = prompts[0],
+                    negative_prompt = body.negative_prompt,
+                    width = width,
+                    height = height,
+                    steps = steps,
+                    guidance = guidance,
+                    prompts = prompts,
+                    seeds = seeds,
+                    batch_size = len(seeds),
+                    expected_load = expected_load,
+                )
+            except Exception as exc:
+                # An engine Stop sets the bound event, not ``stopped``: no member may retry alone.
+                if ticket.cancelled() and not cancelled(exc):
+                    raise RuntimeError(DIFFUSION_CANCELLED_MSG) from exc
+                raise
 
     key = (
         current_account_id(),
