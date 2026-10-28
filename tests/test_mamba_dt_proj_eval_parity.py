@@ -313,9 +313,7 @@ def test_device_or_dtype_move_releases_the_cached_weight(monkeypatch, arch):
     ids = _ids()
     _logits(model, ids)
     cache = sys.modules["_unsloth_mamba_lora_under_test"]._CACHE
-    leaves = [
-        m for m in model.modules() if type(m).__name__ == "Linear" and hasattr(m, "lora_A")
-    ]
+    leaves = [m for m in model.modules() if type(m).__name__ == "Linear" and hasattr(m, "lora_A")]
     assert any(cache in leaf.__dict__ for leaf in leaves), "eval forward did not cache W + delta"
     model.to(torch.float64)
     assert not any(cache in leaf.__dict__ for leaf in leaves)
