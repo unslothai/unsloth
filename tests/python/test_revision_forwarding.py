@@ -43,12 +43,19 @@ def _params(function):
 
 
 def _calls(function, callee):
-    """Every Call whose dotted name ends with `callee`."""
-    return [
-        node
-        for node in ast.walk(function)
-        if isinstance(node, ast.Call) and ast.unparse(node.func).split(".")[-1] == callee
-    ]
+    """Every Call whose dotted name ends with `callee`. A probe routed through
+    `_memo_config_probe(loader, name, ...)` counts as the call `loader(name, ...)`."""
+    found = []
+    for node in ast.walk(function):
+        if not isinstance(node, ast.Call):
+            continue
+        if ast.unparse(node.func) == "_memo_config_probe" and node.args:
+            node = ast.copy_location(
+                ast.Call(func = node.args[0], args = node.args[1:], keywords = node.keywords), node
+            )
+        if ast.unparse(node.func).split(".")[-1] == callee:
+            found.append(node)
+    return found
 
 
 def _revision_kwarg(call):

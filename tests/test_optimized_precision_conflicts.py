@@ -120,6 +120,8 @@ def loader():
         _revision_for_resolved_repo = lambda revision, *args: revision,
         AutoConfig = SimpleNamespace(from_pretrained = config),
         PeftConfig = SimpleNamespace(from_pretrained = no_adapter),
+        # No load scope here, so every probe reaches its loader, as _memo_config_probe does outside one.
+        _memo_config_probe = lambda loader, name, **kwargs: loader(name, **kwargs),
         get_transformers_model_type = lambda *args, **kwargs: ["llama"],
         FastLlamaModel = SimpleNamespace(from_pretrained = dispatch),
         apply_unsloth_gradient_checkpointing = lambda value, *args: value,
