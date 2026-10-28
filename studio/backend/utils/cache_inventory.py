@@ -728,8 +728,7 @@ class _OccupancyLedger:
         self.device_paths: dict[int, Path] = {}
 
     def add(self, info, path: Path | str) -> None:
-        # Some network filesystems do not provide inode numbers; do not merge
-        # every file on such a device into inode zero.
+        # Some network filesystems report st_ino 0: identify by path instead.
         identity = (info.st_dev, info.st_ino) if info.st_ino else (info.st_dev, str(path))
         if identity in self._seen:
             return
@@ -746,8 +745,7 @@ def _record_entry(
     occupancy: Optional[_OccupancyLedger] = None,
 ) -> None:
     try:
-        # Windows DirEntry.stat leaves volume/inode/link-count at zero. HF
-        # occupancy needs full identity for shared files and volume attribution.
+        # Windows DirEntry.stat zeroes st_dev, st_ino and st_nlink.
         stat = (
             os.stat(entry.path, follow_symlinks = False)
             if occupancy is not None and os.name == "nt"
@@ -897,8 +895,7 @@ def _measurement_roots(definition: CacheDefinition) -> list[Path]:
         resolved = _safe_resolve(root)
         if resolved is None or resolved in unique:
             continue
-        # Reading a protected tree's cache is fine; reading the protected root
-        # itself, or following a link into it, is not a bounded cache measurement.
+        # Never walk a protected root itself, or a link into one.
         try:
             assert_purgeable_root(root, protected = protected, trees = set(), keep = {})
         except CachePurgeRefused:
@@ -911,8 +908,7 @@ def _measurement_roots(definition: CacheDefinition) -> list[Path]:
 
 
 def _system_disk_device():
-    # /api/system and models_disk_usage measure this volume, even if Studio
-    # itself was moved to another disk.
+    # The volume /api/system and models_disk_usage report, wherever Studio lives.
     try:
         return Path(os.path.abspath(os.sep)).stat().st_dev
     except OSError:
@@ -933,8 +929,7 @@ def _system_disk_occupancy(occupancy: _OccupancyLedger) -> int:
     for other, size in occupancy.by_device.items():
         if other == device:
             continue
-        # Match models_disk_usage: APFS Data and btrfs subvolumes can have
-        # distinct device IDs while sharing the system volume's storage pool.
+        # As models_disk_usage: APFS Data / btrfs subvolumes share the pool under another st_dev.
         try:
             usage = shutil.disk_usage(occupancy.device_paths[other])
         except (OSError, ValueError):
@@ -964,8 +959,7 @@ def _model_cache_action(root: Path, entry: os.DirEntry) -> dict:
         candidate = _safe_resolve(Path(entry.path))
         if candidate is None or candidate.parent != root or candidate.name != entry.name:
             return refused
-        # The Hub action independently validates known roots, including history.
-        # Its cache_path names the repo directory, rather than the hub parent.
+        # cache_path is the repo directory; the Hub delete re-validates its root.
         if scoped_delete_root("model", repo_id, str(candidate)) != root:
             return refused
         return {
@@ -1048,8 +1042,7 @@ def describe_cache(definition: CacheDefinition) -> dict:
     measured_paths = roots
     system_disk_bytes = None
     if definition.key in {"hf_hub", "hf_datasets", "hf_xet", "hf_assets"}:
-        # Delete permission and disk occupancy are separate facts. A cache under
-        # Documents still occupies space even when bulk clearing is forbidden.
+        # Occupancy is measured even where clearing is refused (e.g. under Documents).
         measured_paths = _measurement_roots(definition)
         entries = 0
         clear_entries = 0

@@ -1406,7 +1406,6 @@ async def get_cache_breakdown(
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    # Repository walks are only requested by expanding the UI, never every poll.
     require_ui_session(via_api_key)
     try:
         return await asyncio.to_thread(cache_breakdown, key)
