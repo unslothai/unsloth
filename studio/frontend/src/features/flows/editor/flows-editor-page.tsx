@@ -11,10 +11,15 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty";
 import { Spinner } from "@/components/ui/spinner";
+import {
+  holdSidebarUnpinned,
+  releaseSidebarPinned,
+} from "@/hooks/use-sidebar-pin";
 import { useNavigate } from "@tanstack/react-router";
 import { ReactFlowProvider } from "@xyflow/react";
 import { useReactFlow } from "@xyflow/react";
 import { type ReactElement, useCallback, useEffect, useState } from "react";
+import { toast } from "sonner";
 import { getFlow } from "../api";
 import { ensureCatalog } from "../stores/catalog-loader";
 import { needsNewerStudio } from "../stores/catalog-store";
@@ -39,6 +44,26 @@ import {
 } from "./use-autosave";
 import { useEditorShortcuts } from "./use-editor-shortcuts";
 
+const SAVE_WAIT_MS = 10_000;
+
+/** Saves, then leaves; a failed or stuck save asks instead of leaving the user stuck. */
+function leaveAfterSave(go: () => void): void {
+  const wait = new Promise<"stuck">((resolve) =>
+    setTimeout(() => resolve("stuck"), SAVE_WAIT_MS),
+  );
+  void Promise.race([flushSave(), wait]).then((saved) => {
+    if (saved === true) return go();
+    toast.warning(
+      saved === "stuck" ? "Still saving this flow" : "This flow isn't saved",
+      {
+        description: "Leave anyway and lose the unsaved changes, or stay.",
+        duration: 15_000,
+        action: { label: "Leave anyway", onClick: go },
+      },
+    );
+  });
+}
+
 type LoadState =
   | { status: "loading" }
   | { status: "ready"; readOnly: boolean }
@@ -54,6 +79,12 @@ function EditorBody({
   const runStatus = useRuntimeStore((s) => s.runStatus);
   const { screenToFlowPosition } = useReactFlow();
   useEditorShortcuts(!readOnly);
+  // The Nodes panel owns the left edge here: the app sidebar unpins (Desktop peeks it from the
+  // window edge) without touching the saved pin, which comes back on leaving.
+  useEffect(() => {
+    holdSidebarUnpinned();
+    return releaseSidebarPinned;
+  }, []);
   useAutosave(!readOnly);
 
   const addAtCenter = useCallback(
@@ -86,22 +117,18 @@ function EditorBody({
       data-testid="flows-editor"
     >
       <Toolbar
-        onBack={() =>
-          void flushSave().then((saved) => {
-            if (saved) void navigate({ to: "/flows" });
-          })
-        }
+        onBack={() => leaveAfterSave(() => void navigate({ to: "/flows" }))}
         onPlay={() =>
-          void flushSave().then((saved) => {
-            if (saved)
-              void navigate({ to: "/flows/$flowId/play", params: { flowId } });
-          })
+          leaveAfterSave(
+            () =>
+              void navigate({ to: "/flows/$flowId/play", params: { flowId } }),
+          )
         }
         onApp={() =>
-          void flushSave().then((saved) => {
-            if (saved)
-              void navigate({ to: "/flows/$flowId/app", params: { flowId } });
-          })
+          leaveAfterSave(
+            () =>
+              void navigate({ to: "/flows/$flowId/app", params: { flowId } }),
+          )
         }
       />
       {readOnly && (

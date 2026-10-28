@@ -83,7 +83,12 @@ function PaletteImpl({ onAdd }: { onAdd: (type: string) => void }) {
   }, [catalog, deferred]);
 
   return (
-    <div className="flex h-full w-64 shrink-0 flex-col border-border border-r bg-background">
+    <div
+      className="flex h-full w-64 shrink-0 flex-col border-border border-r bg-background"
+      onKeyDown={(e) => {
+        if (e.key === "Escape") useUiStore.getState().togglePalette();
+      }}
+    >
       <div className="flex items-center justify-between pt-2 pr-1.5 pl-4">
         <span className="font-semibold text-sm text-foreground">Nodes</span>
         <Button
@@ -91,7 +96,7 @@ function PaletteImpl({ onAdd }: { onAdd: (type: string) => void }) {
           variant="ghost"
           size="icon-sm"
           aria-label="Hide nodes"
-          title="Hide nodes"
+          title="Hide nodes (Esc)"
           onClick={() => useUiStore.getState().togglePalette()}
           className="text-muted-foreground"
         >

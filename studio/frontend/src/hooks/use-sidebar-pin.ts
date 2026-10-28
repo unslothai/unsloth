@@ -77,12 +77,21 @@ function setPinnedGlobal(next: boolean) {
   listeners.forEach((cb) => cb());
 }
 
-/** Pin for a tour without touching the stored preference. */
-export function holdSidebarPinned() {
+function hold(value: boolean) {
   if (!held) beforeHold = pinnedValue;
   held = true;
-  pinnedValue = true;
+  pinnedValue = value;
   listeners.forEach((cb) => cb());
+}
+
+/** Pin for a tour without touching the stored preference. */
+export function holdSidebarPinned() {
+  hold(true);
+}
+
+/** Unpin while a page needs the room (Flows' editor); release restores the user's pin. */
+export function holdSidebarUnpinned() {
+  hold(false);
 }
 
 /** End the hold: the user's choice if any, else the default for the current width. */
