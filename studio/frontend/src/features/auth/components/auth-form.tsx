@@ -565,7 +565,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
           variant="primary"
           type="submit"
           size="hero"
-          className="mx-auto flex h-[2.967em] w-fit bg-control-accent px-[1.56em] py-0 [font-family:var(--font-heading)] text-[0.9375rem] font-semibold tracking-[0.02em] text-control-accent-foreground hover:bg-control-accent/85"
+          className="mx-auto flex h-[2.967em] w-fit bg-control-accent px-[1.56em] pt-0 pb-[0.07em] [font-family:var(--font-heading)] text-[0.9375rem] font-semibold tracking-[0.02em] text-control-accent-foreground hover:bg-control-accent/85"
           disabled={
             loading ||
             statusLoading ||
