@@ -1,31 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Sandbox-side compatibility shim for ChatGPT code-interpreter paths.
-
-Models habitually write to /mnt/data (or /mnt/outputs, /home/sandbox,
-/workspace), none of which exist in the Unsloth sandbox. This module sits on the
-sandbox subprocess PYTHONPATH (see ``tools._build_safe_env``), so it loads at
-interpreter startup in every sandboxed ``python`` run and any Python the
-``terminal`` tool launches.
-
-It remaps those prefixes onto the CWD in ``open`` / ``io.open``, ``os.open``,
-``os.makedirs`` / ``os.mkdir`` and ``pathlib.Path.mkdir``. A write/create to a
-convention prefix always heals onto the CWD; a READ heals only when the mapped
-target already exists (re-reading an earlier write), so a genuinely missing
-input stays truthful on the path the model used instead of silently reading a
-same-basename workdir file. Since prefix lists cannot cover every invented path,
-``open`` / ``io.open`` also get a create-mode fallback: an absolute path outside
-the CWD whose parent is missing is redirected to the basename in the CWD. Reads
-and mkdir never use the fallback (an arbitrary absolute directory can legitimately
-succeed). It is collision-safe: it refuses to redirect onto an existing CWD file
-(letting open raise). The patch set (io.open, os.open, os.mkdir, Path.mkdir, and
-the <3.11 ``_NormalAccessor.open``) covers the low-level entry points pathlib
-routes through. A one-line stderr notice fires on the first remap, and everything
-is wrapped in try/except so a failure never breaks the interpreter.
-
-Identical with and without output streaming because the child env is.
-"""
+"""Remaps invented paths like /mnt/data onto CWD; reads heal only if the target exists; all wrapped
+in try/except so a failure never breaks the interpreter; no redirect onto existing CWD file"""
 
 import builtins
 import io

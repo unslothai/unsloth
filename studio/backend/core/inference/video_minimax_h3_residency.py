@@ -1,11 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Keep as much of a streamed MiniMax-H3 denoiser on the device as the card allows: the top-level group first, then a
-prefix of its block groups, re-fitted per request. Resident groups keep their pinned host copy, so demoting is free.
-
-``UNSLOTH_H3_DIT_RESIDENT=0`` keeps everything streamed.
-"""
+"""Keeps as much of a MiniMax-H3 denoiser on device as fits: top-level group first, then a prefix of
+its block groups; re-fitted per request; demotion is free; UNSLOTH_H3_DIT_RESIDENT=0 keeps all
+streamed."""
 
 from __future__ import annotations
 

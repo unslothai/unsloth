@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unsloth dependency checks shared by the CLI commands.
-
-The wheel ships studio/ and studio.backend*, so train / export / chat /
-inference / studio all work after a plain `pip install unsloth` right up to the
-point they import the backend. studio_backend_imports() turns the resulting
-traceback into one sentence and the two commands that fix it.
-
-Also loads studio/install_manifest.py for `unsloth studio verify-install`.
-"""
+"""Dependency checks: studio_backend_imports() explains import failures; loads install_manifest.py."""
 
 from __future__ import annotations
 

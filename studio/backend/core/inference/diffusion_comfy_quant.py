@@ -1,24 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Load a ComfyUI-format quantized single-file DiT, or refuse it by name.
-
-ComfyUI keeps quantized codes under each layer's ``.weight`` with ``.weight_scale`` (some formats also
-``.input_scale``, ...) beside it, the format declared per layer (``<layer>.comfy_quant`` JSON tensor), in
-the header's ``_quantization_metadata`` table, or by the legacy ``scaled_fp8`` marker + ``.scale_weight``.
-Stock ``from_single_file`` casts the codes as weights and drops the scales: the load succeeds and renders noise.
-
-From the header alone: int8_tensorwise (optionally ConvRot) maps into Studio's int8 runtime with codes and
-per-row scales unchanged; float8_e4m3fn into Studio's per-row fp8 runtime (scalar scale repeated per row);
-nvfp4 into Studio's FlashInfer NVFP4 Linear and mxfp8 into a ``torch._scaled_mm`` block-scaled Linear
-(``diffusion_comfy_block``); where none runs, or for layers Studio keeps in bf16 and float8_e5m2, layers
-dequantize. Any other format is refused by name, never mis-loaded.
-
-Row mapping: the family's converter runs once on float64 row tags ``(source key, row)``; the tags that
-come out say which source rows each diffusers weight holds. A converter that splices columns, changes
-the column count or transforms values leaves undecodable tags and is refused. (Tags are constant along a
-row: a pure input-column reorder would go unseen; no diffusers converter does one.)
-"""
+"""ComfyUI quantized single-file DiTs: stock loader drops scales and renders noise; others refused."""
 
 from __future__ import annotations
 
