@@ -396,9 +396,12 @@ mod tests {
             "heldfb",
             "sleep 30 &\ncase \"$2\" in if*) exit 2 ;; esac\nPATH=/from/fallback:$PATH exec /bin/sh -c \"$2\"\n",
         );
+        let started = std::time::Instant::now();
         let path = login_shell_path(&shell, PROBE_TIMEOUT).unwrap_or_default();
+        let elapsed = started.elapsed();
         let _ = std::fs::remove_dir_all(&dir);
         assert!(path.starts_with("/from/fallback:"), "{path:?}");
+        assert!(elapsed < std::time::Duration::from_secs(10), "{elapsed:?}");
     }
 
     #[cfg(not(windows))]
