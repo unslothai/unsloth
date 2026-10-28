@@ -319,13 +319,19 @@ def test_hub_holdout_never_downloads_more_than_it_can_use(monkeypatch):
 
     import datasets
 
-    def no_download(*a, streaming = False, **k):
+    def no_download(
+        *a,
+        streaming = False,
+        **k,
+    ):
         assert streaming, "a full split download"
         return SimpleNamespace(take = lambda n: [{"q": i} for i in range(n)])
 
     monkeypatch.setattr(datasets, "load_dataset", no_download)
     info = SimpleNamespace(splits = {"train": SimpleNamespace(num_examples = 900_000)})
-    monkeypatch.setattr(datasets, "load_dataset_builder", lambda *a, **k: SimpleNamespace(info = info))
+    monkeypatch.setattr(
+        datasets, "load_dataset_builder", lambda *a, **k: SimpleNamespace(info = info)
+    )
     with pytest.raises(FlowNodeError, match = "900000 rows"):
         training._load_rows({"source": "hf", "ref": "org/big"}, None, None)
     assert len(training._load_rows({"source": "hf", "ref": "org/big"}, None, 9)) == 10
@@ -339,3 +345,8 @@ def test_grpo_without_saved_rewards_or_prompt_uses_the_node_defaults():
     config = {}
     training.rl_config({"system_prompt": ""}, "grpo", config)
     assert "rl_system_prompt" not in config
+
+def test_a_coded_route_error_reaches_the_node_as_its_message():
+    from core.flows.caller import route_detail
+    body = b'{"detail": {"code": "hf_model_verification_failed", "message": "The Hugging Face model could not be verified."}}'
+    assert route_detail(body) == "The Hugging Face model could not be verified."
