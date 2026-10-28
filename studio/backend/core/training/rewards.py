@@ -113,9 +113,13 @@ class _NoAliasLoader(yaml.SafeLoader):
 
 
 def _number(value: Any, field: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
-        raise RewardError(f"{field} must be a finite number.")
-    return float(value)
+    if not isinstance(value, bool) and isinstance(value, (int, float)):
+        try:
+            if math.isfinite(value):
+                return float(value)
+        except OverflowError:  # an int past the float range
+            pass
+    raise RewardError(f"{field} must be a finite number.")
 
 
 def _validate_extract(extract: Any) -> Optional[dict]:

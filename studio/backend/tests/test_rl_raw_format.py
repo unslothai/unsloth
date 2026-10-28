@@ -117,6 +117,27 @@ def test_preference_objectives_are_refused_for_a_vision_model_on_text_data(train
     assert "vision-language" in (trainer.training_progress.error or "")
 
 
+def test_grpo_is_refused_on_an_image_dataset(trainer, tmp_path):
+    path = tmp_path / "grpo.jsonl"
+    path.write_text(json.dumps({"prompt": "q", "answer": "a"}) + "\n", encoding = "utf-8")
+    trainer.is_vlm = True
+    assert (
+        trainer.load_and_format_dataset(None, local_datasets = [str(path)], objective = "grpo") is None
+    )
+    assert "image dataset" in (trainer.training_progress.error or "")
+
+
+def test_grpo_still_runs_for_a_vision_model_on_text_data(trainer, tmp_path):
+    path = tmp_path / "grpo.jsonl"
+    path.write_text(json.dumps({"prompt": "q", "answer": "a"}) + "\n", encoding = "utf-8")
+    trainer.is_vlm = False
+    trainer.model_has_vision = True
+    dataset_info, _ = trainer.load_and_format_dataset(
+        None, local_datasets = [str(path)], objective = "grpo"
+    )
+    assert "prompt" in dataset_info["dataset"].column_names
+
+
 def test_grpo_runs_without_loss_based_early_stopping(trainer):
     trainer.training_objective = "grpo"
     trainer.trainer = object()
