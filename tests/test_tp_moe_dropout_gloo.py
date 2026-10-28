@@ -73,7 +73,9 @@ def _case_parity(
 
         error = _import_checkout_unsloth()
         assert error is None, error
-        from unsloth.models import tp_native as T  # one tp_native for the fused kernels and tp_replica
+        from unsloth.models import (
+            tp_native as T,
+        )  # one tp_native for the fused kernels and tp_replica
     else:
         T = tpn
     ref = build(repo, overrides, **lora_kwargs)

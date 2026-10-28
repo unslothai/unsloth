@@ -1334,10 +1334,7 @@ def _dropout_region_forward(module, forward):
     mode_class = _dropout_mode_class()
 
     def forward_with_tp_dropout(*args, **kwargs):
-        if (
-            module.__dict__.get("_unsloth_tp_gathered")
-            or not module.training
-        ):
+        if module.__dict__.get("_unsloth_tp_gathered") or not module.training:
             # Not torch.is_grad_enabled(): a reentrant checkpoint runs its first forward under no_grad and
             # recomputes with grad; both must draw one process's masks.
             return forward(*args, **kwargs)
@@ -1364,7 +1361,10 @@ def _lora_dropout(self, adapter, x):
     if state is not None:
         state.bypass += 1
     try:
-        if self._unsloth_tp_style in (COLWISE, KV_REPLICATED):  # whole (replicated) input on every rank
+        if self._unsloth_tp_style in (
+            COLWISE,
+            KV_REPLICATED,
+        ):  # whole (replicated) input on every rank
             return F.dropout(x, p, True)
         rank, tp = self._unsloth_tp_coord
         return x * _full_mask(x.shape, x.dim() - 1, rank, tp, p, x)

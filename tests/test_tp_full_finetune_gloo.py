@@ -374,7 +374,9 @@ def test_env_tp2_x_fsdp2_full_finetuning_is_refused_before_training():
         pytest.skip("torch < 2.7: tensor parallel x FSDP2 is refused at load")
     with tempfile.TemporaryDirectory() as tmp:
         ckpt = _save_checkpoint("llama", os.path.join(tmp, "ckpt"))
-        results = _spawn("env", 4, {"UNSLOTH_TP_SIZE": "2", "UNSLOTH_FSDP2": "1"}, tmp = tmp, ckpt = ckpt)
+        results = _spawn(
+            "env", 4, {"UNSLOTH_TP_SIZE": "2", "UNSLOTH_FSDP2": "1"}, tmp = tmp, ckpt = ckpt
+        )
     for res in results:
         assert res["refused"] is None, res["refused"]  # the load itself is fine
         assert "UNSLOTH_TP_SIZE without UNSLOTH_FSDP2" in res.get("trainer_refused", ""), res
@@ -382,7 +384,6 @@ def test_env_tp2_x_fsdp2_full_finetuning_is_refused_before_training():
 
 def _torch_below_2_7():
     from packaging.version import Version
-
     return Version(torch.__version__.split("+")[0]) < Version("2.7")
 
 
@@ -400,7 +401,10 @@ def _skip_unsupported_qat(kind):
     from torchao.quantization.qat import QATConfig
 
     try:
-        quantize_(torch.nn.Sequential(torch.nn.Linear(32, 32)), QATConfig(_qat_config(kind), step = "prepare"))
+        quantize_(
+            torch.nn.Sequential(torch.nn.Linear(32, 32)),
+            QATConfig(_qat_config(kind), step = "prepare"),
+        )
     except Exception as e:
         pytest.skip(f"this torchao cannot QAT-prepare {kind}: {type(e).__name__}: {e}")
 
