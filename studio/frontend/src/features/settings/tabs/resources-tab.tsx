@@ -91,13 +91,11 @@ function usageIndicatorClass(percent: number): string {
   return "bg-control-accent";
 }
 
-function usagePillClass(percent: number | null): string {
-  if (!isFiniteNumber(percent)) return "bg-muted text-muted-foreground";
-  if (percent >= 90) return "bg-destructive/10 text-destructive";
-  if (percent >= 70) {
-    return "bg-amber-500/10 text-amber-600 dark:text-amber-400";
-  }
-  return "bg-control-accent/10 text-control-accent";
+function usageValueClass(percent: number | null): string {
+  if (!isFiniteNumber(percent)) return "text-muted-foreground/70";
+  if (percent >= 90) return "text-red-600 dark:text-red-400";
+  if (percent >= 70) return "text-amber-600 dark:text-amber-400";
+  return "text-foreground";
 }
 
 function formatGb(value: number | null | undefined): string {
@@ -147,6 +145,7 @@ function formatUptime(seconds: number | null | undefined): string {
   return `${Math.max(1, minutes)}m`;
 }
 
+// The API page's traffic Stat on the Train and API pages' elevated card.
 function MetricTile({
   label,
   value,
@@ -166,50 +165,55 @@ function MetricTile({
   const percentKnown = isFiniteNumber(percent);
   const safePercent = clampPercent(percent);
   return (
-    <div className="flex min-w-0 flex-col gap-4 rounded-xl border border-border/60 bg-muted/20 p-4 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]">
+    <div className="elevated-card flex min-w-0 flex-col gap-3 bg-card px-5 py-4">
       <div className="flex min-w-0 flex-col gap-0.5">
-        <div className="flex min-w-0 items-center justify-between gap-2">
-          <span className="truncate text-sm font-medium text-foreground">
-            {label}
+        <span className="truncate text-ui-12 text-muted-foreground">
+          {label}
+        </span>
+        <span
+          title={showUsage ? undefined : value}
+          className={cn(
+            "truncate font-heading text-ui-21 font-semibold leading-tight tracking-[-0.02em] tabular-nums",
+            showUsage
+              ? usageValueClass(percentKnown ? safePercent : null)
+              : "text-foreground",
+          )}
+        >
+          {showUsage
+            ? percentKnown
+              ? formatPercent(safePercent)
+              : "--"
+            : value}
+        </span>
+        {showUsage ? (
+          <span
+            title={value}
+            className="truncate text-ui-12 tabular-nums text-foreground"
+          >
+            {value}
           </span>
-          {/* Same accent pill as the GPU rows. */}
-          {showUsage ? (
-            <span
-              className={cn(
-                "shrink-0 rounded-full px-2 py-1 text-ui-10 leading-none font-semibold tabular-nums",
-                usagePillClass(percentKnown ? safePercent : null),
-              )}
-            >
-              {percentKnown ? formatPercent(safePercent) : "--"}
-            </span>
-          ) : null}
-        </div>
-        <span title={detail} className="truncate text-xs text-muted-foreground">
+        ) : null}
+        <span
+          title={detail}
+          className="truncate text-ui-11 text-muted-foreground"
+        >
           {detail}
         </span>
         {extraDetail ? (
-          <span className="whitespace-pre-line text-xs text-muted-foreground">
+          <span className="whitespace-pre-line text-ui-11 text-muted-foreground">
             {extraDetail}
           </span>
         ) : null}
       </div>
       {/* mt-auto: the meters of side-by-side tiles stay on one line. */}
-      <div className="mt-auto flex min-w-0 flex-col gap-2.5">
-        <span
-          title={value}
-          className="truncate font-mono text-sm tabular-nums text-foreground"
-        >
-          {value}
-        </span>
-        {showUsage && (
-          <Progress
-            value={percentKnown ? safePercent : 0}
-            aria-label={label}
-            className="h-1.5 rounded-full bg-muted dark:bg-[rgb(0_0_0_/_calc(0.4*var(--contrast-wash-gain,1)))]"
-            indicatorClassName={usageIndicatorClass(safePercent)}
-          />
-        )}
-      </div>
+      {showUsage && (
+        <Progress
+          value={percentKnown ? safePercent : 0}
+          aria-label={label}
+          className="mt-auto h-1.5 rounded-full bg-muted dark:bg-[rgb(0_0_0_/_calc(0.4*var(--contrast-wash-gain,1)))]"
+          indicatorClassName={usageIndicatorClass(safePercent)}
+        />
+      )}
     </div>
   );
 }
@@ -679,7 +683,7 @@ export function ResourcesTab() {
 
       <SettingsSection title={t("settings.resources.liveMonitor.title")}>
         {/* An odd tile out spans the row, so the grid never ends on a hole. */}
-        <div className="grid gap-2 py-3 sm:grid-cols-2 sm:[&>:last-child:nth-child(odd)]:col-span-2">
+        <div className="grid gap-3 py-3 sm:grid-cols-2 sm:[&>:last-child:nth-child(odd)]:col-span-2">
           <MetricTile
             label={t("settings.resources.liveMonitor.cpu")}
             value={hostReading(cpuFrequencyLabel ?? cpuCoresLabel)}
