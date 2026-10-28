@@ -6251,10 +6251,11 @@ def test_unload_route_clears_reload_stash(monkeypatch):
 
 
 def test_non_gguf_load_clears_reload_stash():
-    # A non-GGUF load clears the stash too, so it never lingers when idle-unload is off.
+    # A non-GGUF load clears the stash too, so it never lingers when idle-unload is off; it is
+    # handed the orchestrator, which restores an MLX chat context kept across a media swap.
 
     src = inspect.getsource(inference_route._load_model_impl)
-    assert src.count("note_model_loaded()") >= 1
+    assert "to_thread(note_model_loaded, backend)" in src
     assert "to_thread(note_model_loaded, llama_backend)" in src
 
 
@@ -6963,14 +6964,20 @@ def test_new_idle_save_purges_previous_manifest_files(tmp_path):
 def test_sweep_slot_save_dir_removes_only_resume_files(monkeypatch, tmp_path):
     from utils.paths import storage_roots
 
+    mlx_root = tmp_path / "mlx"
     monkeypatch.setattr(storage_roots, "llama_slot_cache_root", lambda: tmp_path)
+    monkeypatch.setattr(storage_roots, "mlx_prompt_cache_root", lambda: mlx_root)
     stale = tmp_path / "resume-old-slot0.bin"
     stale.write_bytes(b"kv")
     other = tmp_path / "unrelated.txt"
     other.write_text("keep")
+    (mlx_root / "resume-old").mkdir(parents = True)
+    (mlx_root / "resume-old" / "text-0.safetensors").write_bytes(b"kv")
+    (mlx_root / "unrelated").mkdir()
     kw.sweep_slot_save_dir()
     assert not stale.exists()
     assert other.exists()
+    assert not (mlx_root / "resume-old").exists() and (mlx_root / "unrelated").exists()
 
 
 def test_keep_kv_setting_roundtrip_and_default(monkeypatch):
@@ -12431,3 +12438,66 @@ def test_a_background_tracked_load_keeps_the_request_cancel_and_no_user_warnings
         assert seen["load_cancel_event"] is attempt.cancel_event
         assert seen["warnings"] is (not background)
         assert attempt.cancel_event.is_set() is background
+
+
+def test_an_unattended_switch_beside_rechecks_after_the_load_gate_before_replacing_the_primary(
+    monkeypatch,
+):
+    # Keep multiple models loaded: the switch checks before load_model_gated takes the load gate,
+    # so a user load that lands during that wait must still refuse a load onto the primary.
+    from contextlib import asynccontextmanager
+    from starlette.requests import Request
+    from core.scheduled_tasks import scheduler
+
+    _reset_keepwarm()
+    monkeypatch.setattr(kw, "_inflight", 1)
+    stamp = [1.0]
+    checks = []
+    loads = []
+    backend, _ = _wired(monkeypatch, _FakeBackend("org/A-GGUF"), ("org/B-GGUF", None, "org/B-GGUF"))
+    monkeypatch.setattr(kw, "attended_stamp", lambda: stamp[0])
+    monkeypatch.setattr(inference_route, "_switch_loads_beside", lambda *_: True)
+    monkeypatch.setattr(inference_route, "_raise_if_sidecar_swap_in_progress", lambda: None)
+
+    @asynccontextmanager
+    async def waited_load_gate():
+        stamp[0] = 2.0  # the user's own load finishes while this one queues for the gate
+        yield
+
+    monkeypatch.setattr(kw, "model_load_gate", waited_load_gate)
+
+    async def select_primary(_request):
+        return None  # as for a managed-engine or NPU primary: the load would replace it
+
+    monkeypatch.setattr(inference_route, "_select_load_slot", select_primary)
+
+    async def tracked_load(request, *_a, **_k):
+        loads.append(request.model_path)
+        backend.model_identifier = request.model_path
+        return {}
+
+    monkeypatch.setattr(inference_route, "_run_tracked_load_model_impl", tracked_load)
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "headers": [],
+            "query_string": b"",
+        }
+    )
+    swap = types.SimpleNamespace(attended = 1.0)
+
+    def require_away():
+        checks.append(stamp[0])
+        try:
+            scheduler._require_still_away(swap)
+        except scheduler.RunFailed:
+            raise HTTPException(409, "model_busy") from None
+
+    inference_route.require_for_model_switch(request.scope, require_away)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route._maybe_auto_switch_model("org/B-GGUF", request, "tester"))
+    assert exc.value.status_code == 409
+    assert checks == [1.0, 2.0]
+    assert loads == [] and backend.model_identifier == "org/A-GGUF"

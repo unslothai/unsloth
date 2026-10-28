@@ -537,8 +537,9 @@ export function ChatSettingsPanel({
   const activeModel = useChatRuntimeStore(
     (s) => s.models.find((m) => m.id === currentCheckpoint) ?? null,
   );
+  const loadedEngine = useChatRuntimeStore((s) => s.loadedEngine);
   // Same call the request body makes, so the panel cannot offer a seed the body drops.
-  const showSeed = modelReadsSamplingSeed(activeModel);
+  const showSeed = modelReadsSamplingSeed(activeModel, loadedEngine);
   const platformDeviceType = usePlatformStore((s) => s.deviceType);
   // Unified memory, not just Darwin: an Intel Mac spills to system RAM like a PC.
   const isUnifiedMemory = usePlatformStore((s) => s.appleSilicon);

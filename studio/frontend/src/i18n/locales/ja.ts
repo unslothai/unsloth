@@ -140,6 +140,11 @@ export const ja = {
     more: "その他",
     addressPlaceholder: "検索または URL を入力",
     local: "ローカル",
+    browserUse: {
+      label: "ブラウザ操作",
+      description: "モデルに内蔵ブラウザを操作させる",
+      unavailable: "ブラウザを使わせるには、ツールを呼び出せるモデルを読み込んでください。",
+    },
     suggested: "おすすめ",
     suggestedMenu: {
       open: "開く",
@@ -2290,6 +2295,7 @@ export const ja = {
       liveMonitor: {
         title: "リアルタイムモニター",
         apiTitle: "API モニター",
+        apiDescription: "他のアプリがこのサーバーの API に送る内容を、届いたそばから確認できます。",
         summary: "処理中のリクエスト、エラー、トークン使用量",
         status: "処理中 {active} 件 · 最近 {recent} 件 · {model}",
         noModelLoaded: "モデル未読み込み",
@@ -2309,7 +2315,7 @@ export const ja = {
         gpuUnusableDetail: "検出されましたが、PyTorch から利用できません",
         detailedView: "詳細表示",
         detailedViewDescription:
-          "フローティングウィンドウとここに、CPU 負荷と各 GPU の負荷、温度、消費電力を表示します。",
+          "フローティングウィンドウに、CPU 負荷と各 GPU の負荷、温度、消費電力を表示します。",
         cpuLoad: "CPU 負荷",
         gpuLoad: "GPU 負荷",
         temperature: "温度",
@@ -2343,6 +2349,10 @@ export const ja = {
         used: "{value} 使用中",
         free: "{value} 空き",
         total: "{value} 合計",
+        usedOf: "{total} 中 {used} 使用中",
+        segmentUsed: "GPU が使用中",
+        segmentSystem: "システムが使用中",
+        segmentAvailable: "使用可能",
       },
       llamaBackend: {
         title: "GGUF 推論エンジン",
@@ -2529,6 +2539,8 @@ export const ja = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "稼働時間",
         processMemory: "プロセスメモリ",
         notInstalled: "未インストール",
@@ -3268,6 +3280,7 @@ export const ja = {
       desktopAppVersionUnavailable: "利用できません",
       llamaCppVersion: "llama.cpp バージョン",
       audioCppVersion: "audio.cpp バージョン",
+      mlxVersion: "MLX バージョン",
       whisperCppVersion: "whisper.cpp バージョン",
       engines: {
         title: "エンジン",
@@ -4498,6 +4511,7 @@ export const ja = {
       modelsTitle: "ファインチューニング済みモデルはまだありません",
       modelsDescription: "Unsloth でトレーニングまたはエクスポートしたモデルがここに表示されます。",
       createFolder: "フォルダを作成",
+      generateImage: "画像を生成",
       generateVideo: "動画を生成",
       generateAudio: "音声を生成",
       trainModel: "モデルをトレーニング",

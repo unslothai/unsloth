@@ -1,14 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""SDXL generation controls (diffusers engine): A1111 prompt weighting, CLIP skip, CFG rescale, variation seeds.
-
-CLIP skip uses A1111 numbering: A1111 N = diffusers N - 1 on SD 1.x and N - 2 on SDXL (diffusers already reads
-the penultimate layer there; matches webui-forge minimal_clip_skip). On SDXL it moves CLIP-L and OpenCLIP-G
-together, as ComfyUI's CLIPSetLastLayer (sdxl_clip.SDXLClipModel.set_clip_options) and Forge's
-StableDiffusionXL.set_clip_skip do. Variation seeds follow webui modules/rng.py;
-the base noise is still drawn by prepare_latents, so the generator advances exactly as before.
-"""
+"""A1111 CLIP skip N = diffusers N-1 on SD 1.x, N-2 on SDXL; variation seeds follow webui rng; base
+noise still drawn in prepare_latents, so generator advances as before"""
 
 from __future__ import annotations
 

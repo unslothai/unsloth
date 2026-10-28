@@ -1,15 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Persistent, per-user trust_remote_code approval cache.
-
-Remembers a user's explicit approval so the consent gate can skip only the DIALOG on a
-later load of the SAME unchanged code. The gate ALWAYS re-scans (the cache never skips the
-scan), so CRITICAL is hard-blocked every time and a hand-edited store cannot auto-approve
-malicious code. Keyed per subject; honored only when the content fingerprint matches AND
-the scanner-rules version matches AND (when resolvable) the commit SHA matches. CRITICAL is
-never stored or honored, and any store/SHA error degrades to "ask again", never auto-approve.
-"""
+"""Per-user approval cache skips only the dialog, honored only on matching fingerprint, rules
+version and SHA; gate always re-scans, never stores CRITICAL; errors mean ask again, never auto-
+approve."""
 
 from __future__ import annotations
 

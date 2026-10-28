@@ -139,6 +139,11 @@ export const ar = {
     more: "المزيد",
     addressPlaceholder: "ابحث أو أدخل عنوان URL",
     local: "محلي",
+    browserUse: {
+      label: "استخدام المتصفح",
+      description: "السماح للنماذج بالتحكم في المتصفح المدمج",
+      unavailable: "حمّل نموذجًا يمكنه استدعاء الأدوات ليتمكن من استخدام المتصفح.",
+    },
     suggested: "مقترحات",
     suggestedMenu: {
       open: "فتح",
@@ -2310,6 +2315,7 @@ export const ar = {
       liveMonitor: {
         title: "المراقبة المباشرة",
         apiTitle: "مراقبة API",
+        apiDescription: "شاهد ما ترسله التطبيقات الأخرى إلى واجهة برمجة هذا الخادم فور وصوله.",
         summary: "الطلبات المباشرة والأخطاء واستخدام التوكنات",
         status: "نشطة: {active} · حديثة: {recent} · {model}",
         noModelLoaded: "لا يوجد نموذج محمّل",
@@ -2328,7 +2334,7 @@ export const ar = {
         gpuUnusableDetail: "تم اكتشافه، لكن PyTorch لا يستطيع استخدامه",
         detailedView: "عرض مفصل",
         detailedViewDescription:
-          "اعرض حمل المعالج وحمل كل وحدة GPU وحرارتها واستهلاكها للطاقة في النافذة العائمة وهنا.",
+          "اعرض حمل المعالج وحمل كل وحدة GPU وحرارتها واستهلاكها للطاقة في النافذة العائمة.",
         cpuLoad: "حمل المعالج",
         gpuLoad: "حمل GPU",
         temperature: "الحرارة",
@@ -2361,6 +2367,10 @@ export const ar = {
         used: "{value} مستخدم",
         free: "{value} متاح",
         total: "{value} إجمالي",
+        usedOf: "{used} مستخدمة من {total}",
+        segmentUsed: "مستخدمة بواسطة GPU",
+        segmentSystem: "مستخدمة بواسطة النظام",
+        segmentAvailable: "متاحة",
       },
       llamaBackend: {
         title: "محرك استدلال GGUF",
@@ -2547,6 +2557,8 @@ export const ar = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "مدة التشغيل",
         processMemory: "ذاكرة العملية",
         notInstalled: "غير مثبّت",
@@ -3296,6 +3308,7 @@ export const ar = {
       desktopAppVersionUnavailable: "غير متاح",
       llamaCppVersion: "إصدار llama.cpp",
       audioCppVersion: "إصدار audio.cpp",
+      mlxVersion: "إصدار MLX",
       whisperCppVersion: "إصدار whisper.cpp",
       engines: {
         title: "المحركات",
@@ -4548,6 +4561,7 @@ export const ar = {
       modelsTitle: "لا توجد نماذج مضبوطة بعد",
       modelsDescription: "تظهر هنا النماذج التي تدربها أو تصدّرها في Unsloth.",
       createFolder: "إنشاء مجلد",
+      generateImage: "إنشاء صورة",
       generateVideo: "إنشاء فيديو",
       generateAudio: "إنشاء صوت",
       trainModel: "تدريب نموذج",

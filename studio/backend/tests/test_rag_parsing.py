@@ -1106,6 +1106,16 @@ def test_html_ordered_lists_keep_their_numbers(tmp_path):
     )
 
 
+def test_html_check_boxes_keep_their_ticked_state(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        '<ul><li><input type="checkbox" checked> Ship</li><li><input type="checkbox"> Docs</li></ul>'
+        '<ol><li><input type="checkbox" checked disabled />Test</ol>'
+        '<p>Smoker:<input type="radio" checked> Yes <input type="radio"> No <input type="text"> Age</p>',
+    )
+    assert text == "☒ Ship\n☐ Docs\n1. ☒ Test\nSmoker: ☒ Yes ☐ No Age"
+
+
 def test_html_list_numbers_stay_in_their_cell(tmp_path):
     text = _parse_html(tmp_path, '<table><tr><td><ol><li><img src="x"></td><td>B</td></tr></table>')
     assert text == "1. | B"

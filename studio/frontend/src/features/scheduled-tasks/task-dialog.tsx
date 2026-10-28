@@ -128,9 +128,9 @@ function Row({
 const CARD =
   "flex flex-col divide-y divide-border overflow-hidden rounded-[20px] border border-border dark:divide-y-0 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]";
 const BARE_SELECT =
-  "h-9 w-auto gap-1.5 border-none bg-transparent px-2 text-ui-15 text-muted-foreground shadow-none hover:text-foreground focus-visible:ring-1 dark:bg-transparent dark:hover:bg-transparent";
+  "-mr-1.5 h-9 w-auto gap-1.5 border-none bg-transparent px-3.5 text-ui-15 text-muted-foreground shadow-none hover:text-foreground focus-visible:ring-1 dark:bg-transparent";
 const BARE_INPUT =
-  "h-9 w-auto border-none bg-transparent px-2 text-right text-ui-15 text-muted-foreground shadow-none focus-visible:ring-1 dark:bg-transparent";
+  "-mr-1.5 h-9 w-auto border-none bg-transparent px-3.5 text-right text-ui-15 text-muted-foreground shadow-none focus-visible:ring-1 dark:bg-transparent";
 // Its scroll buttons paint the base popover colour, which shows as bands on the lifted dark menu.
 const LONG_LIST =
   "max-h-[min(--spacing(72),var(--radix-select-content-available-height))] [&_[data-slot^=select-scroll]]:bg-transparent";
@@ -355,7 +355,7 @@ export function TaskDialog({
           <DialogDescription className="sr-only">{t("scheduledTasks.description")}</DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-2">
-          <div className={CARD}>
+          <div className={cn(CARD, "rounded-full")}>
             <Input
               id={`${ids}-name`}
               aria-label={t("scheduledTasks.form.name")}

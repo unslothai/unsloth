@@ -140,6 +140,11 @@ export const he = {
     more: "עוד",
     addressPlaceholder: "חפש או הזן URL",
     local: "מקומי",
+    browserUse: {
+      label: "שימוש בדפדפן",
+      description: "אפשר למודלים לשלוט בדפדפן המובנה",
+      unavailable: "טען מודל שיכול לקרוא לכלים כדי שיוכל להשתמש בדפדפן.",
+    },
     suggested: "מוצעים",
     suggestedMenu: {
       open: "פתח",
@@ -2413,6 +2418,7 @@ export const he = {
       liveMonitor: {
         title: "מוניטור חי",
         apiTitle: "מוניטור API",
+        apiDescription: "ראה מה אפליקציות אחרות שולחות ל-API של השרת הזה ברגע שזה מגיע.",
         summary: "בקשות חיות, שגיאות ושימוש בטוקנים",
         status: "{active} פעילות · {recent} לאחרונה · {model}",
         noModelLoaded: "אין מודל טעון",
@@ -2431,7 +2437,7 @@ export const he = {
         gpuUnusableDetail: "זוהה, אך PyTorch אינו יכול להשתמש בו",
         detailedView: "תצוגה מפורטת",
         detailedViewDescription:
-          "הצגת עומס המעבד ועומס, טמפרטורה וצריכת חשמל של כל GPU בחלון הצף וכאן.",
+          "הצגת עומס המעבד ועומס, טמפרטורה וצריכת חשמל של כל GPU בחלון הצף.",
         cpuLoad: "עומס מעבד",
         gpuLoad: "עומס GPU",
         temperature: "טמפרטורה",
@@ -2464,6 +2470,10 @@ export const he = {
         used: "{value} בשימוש",
         free: "{value} פנוי",
         total: "{value} סה״כ",
+        usedOf: "{used} בשימוש מתוך {total}",
+        segmentUsed: "בשימוש ה-GPU",
+        segmentSystem: "בשימוש המערכת",
+        segmentAvailable: "זמין",
       },
       llamaBackend: {
         title: "מנוע הסקה GGUF",
@@ -2667,6 +2677,8 @@ export const he = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "זמן פעילות",
         processMemory: "זיכרון תהליך",
         notInstalled: "לא מותקן",
@@ -3432,6 +3444,7 @@ export const he = {
       desktopAppVersionUnavailable: "לא זמין",
       llamaCppVersion: "גרסת llama.cpp",
       audioCppVersion: "גרסת audio.cpp",
+      mlxVersion: "גרסת MLX",
       whisperCppVersion: "גרסת whisper.cpp",
       engines: {
         title: "מנועים",
@@ -4689,6 +4702,7 @@ export const he = {
       modelsTitle: "אין עדיין מודלים מכווננים",
       modelsDescription: "מודלים שתאמן או תייצא ב-Unsloth יופיעו כאן.",
       createFolder: "צור תיקייה",
+      generateImage: "יצירת תמונה",
       generateVideo: "צור סרטון",
       generateAudio: "צור אודיו",
       trainModel: "אמן מודל",

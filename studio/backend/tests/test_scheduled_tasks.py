@@ -1422,6 +1422,76 @@ def test_a_scheduled_run_while_away_switches_back_to_the_earlier_model(monkeypat
     assert world.loaded == SwapWorld.EARLIER
 
 
+def test_a_scheduled_run_stays_off_a_model_the_user_loaded_while_it_waited(monkeypatch):
+    # The user's load holds the lifecycle gate, so admission waits it out; the load landing stamps attendance.
+    world = SwapWorld(monkeypatch)
+    stamp = [1.0]
+    monkeypatch.setattr(llama_keepwarm, "attended_stamp", lambda: stamp[0])
+    users_model = ("/models/llama.gguf", "Q4_K_M", "unsloth/Llama-3.2-1B-GGUF")
+    start = llama_keepwarm.InferenceActivityReservation.start
+
+    async def wait_out_the_users_load(self, cancel_event = None):
+        world.loaded, world.idle = users_model, False
+        stamp[0] = 2.0
+        await start(self, cancel_event)
+
+    monkeypatch.setattr(
+        llama_keepwarm.InferenceActivityReservation, "start", wait_out_the_users_load
+    )
+    producer = world.producer()
+    with pytest.raises(RunFailed) as failure:
+        world.run(monkeypatch, {"id": "run-1", "source": "schedule"}, producer)
+    assert failure.value.code == "model_busy"
+    assert producer.payload is None
+    assert world.loaded == users_model
+    assert world.unloaded == [] and world.reloads == []
+
+
+def test_a_scheduled_switch_rechecks_under_its_gate_for_a_user_request(monkeypatch):
+    # A chat that starts after admission is caught where the switch would replace the model.
+    world = SwapWorld(monkeypatch)
+    others = [0]
+    monkeypatch.setattr(llama_keepwarm, "other_inference_request_count", lambda *a, **k: others[0])
+
+    class SwitchesAfterAUserRequestStarts(FakeProducer):
+        async def __call__(self, payload, request, current_subject, *, cancel_on_disconnect):
+            self.payload = payload
+            others[0] = 1
+            inference_routes._check_switch_precondition(request)
+            world.loaded = ("/models/qwen.gguf", "Q4_K_M", world.TASK_MODEL)
+            return completion("Dawn light.")
+
+    with pytest.raises(RunFailed) as failure:
+        world.run(
+            monkeypatch,
+            {"id": "run-1", "source": "schedule"},
+            SwitchesAfterAUserRequestStarts(),
+        )
+    assert failure.value.code == "model_busy"
+    assert world.loaded == SwapWorld.EARLIER
+
+
+def test_a_run_the_user_started_is_not_held_to_the_away_check(monkeypatch):
+    world = SwapWorld(monkeypatch, idle = False)
+    seen = []
+
+    class Switches(FakeProducer):
+        async def __call__(self, payload, request, current_subject, *, cancel_on_disconnect):
+            seen.append(request.scope.get(inference_routes._SWITCH_PRECONDITION_SCOPE_KEY))
+            inference_routes._check_switch_precondition(request)
+            world.loaded = ("/models/qwen.gguf", "Q4_K_M", world.TASK_MODEL)
+            return await super().__call__(
+                payload, request, current_subject, cancel_on_disconnect = cancel_on_disconnect
+            )
+
+    world.run(
+        monkeypatch,
+        {"id": "run-1", "source": "manual"},
+        Switches(completion("Dawn light.")),
+    )
+    assert seen == [None]
+
+
 def test_switching_back_unloads_only_a_task_model_loaded_beside_the_primary(monkeypatch):
     from core.inference.orchestrator import routed_slot
 

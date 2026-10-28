@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Pure helpers for diffusion model identification. No torch/diffusers imports: everything here is a
-pure function of its string/path arguments, so it can be unit-tested without the heavy runtime. A
-diffusion checkpoint published as a single-file GGUF only carries the transformer weights; the
-matching VAE / text encoders / scheduler come from a companion ``diffusers`` base repo, and
-``DiffusionFamily`` maps a checkpoint to the diffusers classes and base repo needed to assemble
-the full pipeline."""
+"""Pure torch-free helpers; a GGUF holds only the transformer, so DiffusionFamily names the base repo."""
 
 from __future__ import annotations
 
@@ -965,6 +960,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # ComfyUI QwenImage21: ModelSamplingFlux fixed mu 0.69, no terminal stretch.
         comfy_flow_shift = flux_mu_shift(0.69),
         pipeline_class = "QwenImage21Pipeline",
+        # Every arch: near-tied reduction autotune picks made one seed render differently per process.
+        filter_reduction_configs = True,
         transformer_class = "QwenImage21Transformer2DModel",
         base_repo = "Qwen/Qwen-Image-2.1",
         prequant_repos = (

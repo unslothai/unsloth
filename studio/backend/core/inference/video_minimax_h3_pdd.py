@@ -1,22 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MiniMax-H3 PDD (parallel decoding distillation) checkpoints: the stacked output-head bank.
-
-A PDD ``with_heads`` file stores ``pdd_steps`` (32) video and audio output heads stacked along the rows of
-``final_layer.video_out`` / ``final_layer.audio_out`` (``[32 * 96, 5376]`` and ``[32 * 32, 5376]``): head 0 is a full
-head and every later head is an offset from it. One sampler step from ``sigma`` to ``sigma_next`` covers a contiguous
-run of fine intervals on the unshifted grid, and consumes head 0 plus the dt-weighted mean of the offsets it spans.
-This matches ComfyUI's PDD head selection (``FinalLayer.forward`` / ``_pdd_head``) term for term.
-
-Graph safety: the ``(sigma, sigma_next)`` pair is a device tensor on each bank (``pdd_state``), rewritten in place by
-a forward pre-hook on the denoiser before every call, and the head selection is pure tensor math on it. Nothing about
-the step is a Python constant, so a CUDA graph replays it with new sigmas and torch.compile never specializes on it.
-Without device float64 (Intel Arc A-series) the float64 math stays on the host; only the cast weights go to the device.
-
-A ``without_heads`` bake keeps the plain single heads and needs an external head bank applied by a custom node, which
-Studio does not have, so it is refused rather than run as a plain trunk (that renders wrong output with no error).
-"""
+"""with_heads stacks 32 video/audio heads (head 0 full, rest offsets); step uses head 0 + dt-
+weighted offset mean; sigma pair is a device tensor rewritten in place by a pre-hook, so CUDA
+graph replays and torch.compile never specializes; Intel Arc keeps float64 on host; without_heads
+refused."""
 
 from __future__ import annotations
 
