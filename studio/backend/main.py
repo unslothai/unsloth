@@ -3289,3 +3289,9 @@ def setup_frontend(
     # The lifespan reads this to decide whether engine paths need their own GET denial.
     app.state.frontend_mounted = True
     return True
+
+
+# Last, after every module-level route is registered; routes added later stay unguarded.
+from utils.route_prefix_guard import install_route_prefix_guards  # noqa: E402
+
+install_route_prefix_guards(app.router.routes)
