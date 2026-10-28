@@ -183,6 +183,7 @@ def test_trl_022_inline_sync_reaches_trl_engine():
     trainer, rec = _trainer(dense)
     assert trainer._generate_vllm(dense, ["p"]) == ["p"]
     assert rec.loaded == ["weight", "bias"]
+    assert rec.resets == 1
 
     model = _lora_model()
     base = model.base_model.model.proj.base_layer.weight.detach().clone()

@@ -3401,6 +3401,7 @@ def _unsloth_vllm_load_state_dict(trainer, model):
     trainer.llm.llm_engine.model_executor.driver_worker.model_runner.model.load_weights(
         model.state_dict().items()
     )
+    trainer.llm.reset_prefix_cache()
 
 
 def online_dpo_trainer__generate_vllm(function_name, function):
