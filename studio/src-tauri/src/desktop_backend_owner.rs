@@ -1044,12 +1044,15 @@ async fn probe_owned_backend_state_on_ports(
     // Liveness GETs are read-only, so every candidate is asked at once (a refused loopback port can
     // take about a second on Windows); answers are still walked in port order below, and the login
     // probes with auth-log side effects stay sequential.
+    // Wrapped so an early return (or a dropped caller) aborts the probes still in flight instead of
+    // leaving them holding sockets until their own timeout.
     let mut pending = Vec::with_capacity(ports.len());
     for port in ports {
-        pending.push((port, tokio::spawn(fetch_liveness(port, timeout))));
+        let task = tokio::spawn(fetch_liveness(port, timeout));
+        pending.push((port, AbortOnDrop(task)));
     }
-    for (port, answer) in pending {
-        let answer = match answer.await {
+    for (port, mut answer) in pending {
+        let answer = match (&mut answer.0).await {
             Ok(answer) => answer,
             Err(error) => std::panic::resume_unwind(error.into_panic()),
         };
@@ -1120,6 +1123,15 @@ async fn probe_owned_backend_state_on_ports(
         port,
         readiness,
     })
+}
+
+/// Aborts the spawned task when dropped, so unread answers do not outlive the scan.
+struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 #[allow(dead_code)]
@@ -1991,6 +2003,44 @@ mod tests {
         }
         slow_server.abort();
         fast_server.abort();
+    }
+
+    #[tokio::test]
+    async fn an_early_answer_aborts_the_liveness_probes_still_in_flight() {
+        use tokio::io::AsyncReadExt;
+        // The delay lets the silent port's request connect before the scan decides.
+        let (first, first_server) =
+            delayed_json_port(Duration::from_millis(300), OWNED_BUT_INCOMPATIBLE).await;
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let silent = listener.local_addr().unwrap().port();
+        let (closed_tx, closed_rx) = tokio::sync::oneshot::channel();
+        let silent_server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut chunk = [0u8; 2048];
+            while !matches!(socket.read(&mut chunk).await, Ok(0) | Err(_)) {}
+            let _ = closed_tx.send(());
+        });
+        let owner = BackendOwnerState::from_metadata(
+            std::env::temp_dir().join("unsloth-abort-scan.json"),
+            metadata(std::process::id(), None),
+        );
+        let probe = probe_owned_backend_state_on_ports(
+            owner,
+            vec![first, silent],
+            false,
+            Duration::from_secs(30),
+        )
+        .await;
+        assert!(matches!(probe, OwnedBackendProbe::Unmanageable { port, .. } if port == first));
+        // The silent port's request must be dropped with the scan, not held for its 30 s timeout.
+        tokio::time::timeout(Duration::from_secs(5), closed_rx)
+            .await
+            .expect("a liveness probe outlived the scan that no longer reads it")
+            .unwrap();
+        first_server.abort();
+        silent_server.abort();
     }
 
     #[tokio::test]
