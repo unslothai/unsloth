@@ -657,8 +657,7 @@ def inject_multi_lora(
     ]
     if not found:
         raise ValueError(f"No linear layers named {targets} found.")
-    for p in model.parameters():
-        p.requires_grad_(False)
+    _freeze_all_but_adapters(model)
     for name, module in found:
         parent_name, _, child = name.rpartition(".")
         parent = model.get_submodule(parent_name) if parent_name else model
@@ -919,8 +918,7 @@ def inject_multi_lora_experts(
                 by_module.setdefault(name, []).append(param)
     if not by_module:
         raise ValueError(f"No fused expert parameters named {targets} found.")
-    for p in model.parameters():
-        p.requires_grad_(False)
+    _freeze_all_but_adapters(model)
     for name, params in by_module.items():
         parent_name, _, child = name.rpartition(".")
         parent = model.get_submodule(parent_name) if parent_name else model
@@ -929,6 +927,14 @@ def inject_multi_lora_experts(
             parent, child, MultiLoraExperts(module, params, num_adapters, r, lora_alpha, use_rslora)
         )
     return [f"{name}.{param}" for name, params in by_module.items() for param in params]
+
+
+def _freeze_all_but_adapters(model: nn.Module) -> None:
+    # Dense and expert adapters are injected one after the other: neither call may freeze the other's.
+    keep = {id(p) for _, layer in _layers(model) for p in (*layer.lora_A, *layer.lora_B)}
+    for p in model.parameters():
+        if id(p) not in keep:
+            p.requires_grad_(False)
 
 
 def _layers(model: nn.Module) -> list[tuple[str, nn.Module]]:

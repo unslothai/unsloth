@@ -122,6 +122,17 @@ def test_expert_grads_match_the_lone_run(base):
             )
             other = experts.adapters[param].lora_A[0].grad
             assert other is None or other.abs().max() == 0
+    dense = [(n, m) for n, m in model.named_modules() if isinstance(m, ml.MultiLoraLinear)]
+    assert dense
+    for name, layer in dense:
+        holder = lone.base_model.model.get_submodule(name)
+        assert layer.lora_A[u].requires_grad and layer.lora_B[u].requires_grad
+        torch.testing.assert_close(
+            layer.lora_A[u].grad, holder.lora_A["default"].weight.grad, atol = 1e-6, rtol = 1e-4
+        )
+        torch.testing.assert_close(
+            layer.lora_B[u].grad, holder.lora_B["default"].weight.grad, atol = 1e-6, rtol = 1e-4
+        )
 
 
 def test_another_adapter_cannot_move_a_row(base):
