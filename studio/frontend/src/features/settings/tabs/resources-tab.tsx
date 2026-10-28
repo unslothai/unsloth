@@ -166,7 +166,7 @@ function MetricTile({
   const percentKnown = isFiniteNumber(percent);
   const safePercent = clampPercent(percent);
   return (
-    <div className="flex min-w-0 flex-col gap-3 rounded-2xl border border-border/60 bg-card px-5 py-4 dark:border-transparent">
+    <div className="flex min-w-0 flex-col gap-3 rounded-xl border border-border/60 bg-card px-5 py-4 dark:border-transparent">
       {/* Narrow tiles wrap the readings under the percentage instead of truncating them. */}
       <div className="flex min-w-0 flex-wrap items-start justify-between gap-x-4 gap-y-1">
         <div className="flex shrink-0 flex-col gap-0.5">
@@ -1116,7 +1116,7 @@ export function ResourcesTab() {
                       segments={segments}
                       totalBytes={isFiniteNumber(total) ? total : undefined}
                       legend={shared ? "inline" : false}
-                      barClassName="h-4"
+                      barClassName="h-1.5 rounded-full"
                     />
                   )}
                   {telemetryText ? (
