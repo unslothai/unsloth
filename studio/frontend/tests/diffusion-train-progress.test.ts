@@ -91,6 +91,7 @@ test("stopped and failed runs do not keep an animated preparation bar", () => {
     });
     assert.equal(progress.preparing, false);
     assert.equal(progress.percent, 0);
+    assert.equal(progress.title, status === "stopped" ? "Stopped" : "Error");
   }
 });
 
@@ -141,7 +142,7 @@ test("a run stopped mid-preparation does not read as starting while its worker e
     preparation: null,
   });
   assert.equal(progress.preparing, false);
-  assert.equal(progress.title, "stopped");
+  assert.equal(progress.title, "Stopped");
   assert.equal(progress.percent, 0);
   assert.equal(progress.detail, "Stopped (no adapter saved).");
 });

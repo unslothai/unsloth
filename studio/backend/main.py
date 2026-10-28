@@ -98,10 +98,25 @@ def _process_tree_rss_mb(process: Any) -> int:
     import psutil
 
     total = process.memory_info().rss
-    try:
-        children = process.children(recursive = True)
-    except (psutil.NoSuchProcess, psutil.AccessDenied):
-        children = []
+    children = None
+    pid = getattr(process, "pid", None)
+    if isinstance(pid, int):
+        from utils.process_tree import linux_descendant_pids
+
+        # Linux walks the tree itself; psutil's recursive children() reads every process on the host.
+        descendants = linux_descendant_pids(pid)
+        if descendants is not None:
+            children = []
+            for child_pid in descendants:
+                try:
+                    children.append(psutil.Process(child_pid))
+                except psutil.Error:
+                    continue
+    if children is None:
+        try:
+            children = process.children(recursive = True)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            children = []
     for child in children:
         try:
             total += child.memory_info().rss
@@ -1344,8 +1359,8 @@ def _nonced_docs_response(html: str, *, tag: "_re.Pattern[str]") -> HTMLResponse
     return HTMLResponse(nonced, headers = {_CSP_SCRIPT_NONCE_HEADER: nonce})
 
 
-# FastAPI's own /openapi.json builds the schema on the event loop: seconds for ~550 routes, fetched by the chat
-# sidebar every session, stalling every request behind it (#9712). Built once in a worker thread instead.
+# FastAPI's own /openapi.json builds the schema on the event loop: seconds for ~550 routes, fetched by older chat
+# sidebars every session, stalling every request behind it (#9712). Built once in a worker thread instead.
 _openapi_build_lock = threading.Lock()
 _build_openapi_schema = app.openapi
 
@@ -1358,15 +1373,33 @@ def _openapi_once() -> dict:
 app.openapi = _openapi_once
 
 
-@app.get(app.openapi_url, include_in_schema = False)
-async def openapi_json(request: Request):
-    schema = await asyncio.to_thread(app.openapi)
+# Rendered once per schema object, off the loop: a rebuilt schema (openapi_schema reset) is a new object.
+_openapi_body_cache: dict = {}
+
+
+def _openapi_body(root_path: str) -> bytes:
+    schema = app.openapi()
+    key = (root_path, app.root_path_in_servers)
+    cached = _openapi_body_cache.get(key)
+    if cached is not None and cached[0] is schema:
+        return cached[1]
+    served = schema
     # As FastAPI's built-in route: name the prefix a path-stripping proxy hides.
-    root_path = request.scope.get("root_path", "").rstrip("/")
     if root_path and app.root_path_in_servers:
         if root_path not in {server.get("url") for server in schema.get("servers", [])}:
-            schema = {**schema, "servers": [{"url": root_path}, *schema.get("servers", [])]}
-    return JSONResponse(schema)
+            served = {**schema, "servers": [{"url": root_path}, *schema.get("servers", [])]}
+    body = JSONResponse(served).body
+    if len(_openapi_body_cache) >= 8:
+        _openapi_body_cache.clear()
+    _openapi_body_cache[key] = (schema, body)
+    return body
+
+
+@app.get(app.openapi_url, include_in_schema = False)
+async def openapi_json(request: Request):
+    root_path = request.scope.get("root_path", "").rstrip("/")
+    body = await asyncio.to_thread(_openapi_body, root_path)
+    return Response(content = body, media_type = JSONResponse.media_type)
 
 
 if _DOCS_ASSETS_DIR.is_dir():
@@ -2321,6 +2354,7 @@ def _get_cached_system_gpu_info(
         amd_driver_warning_report,
         get_backend_visible_gpu_info,
         get_cross_vendor_inference_gpu_info,
+        get_mixed_vulkan_inference_gpu_info,
         get_visible_gpu_utilization,
         get_vulkan_inference_gpu_info,
         gpu_query,
@@ -2449,6 +2483,16 @@ def _get_cached_system_gpu_info(
                 inference_gpu_info = {**cross_vendor_info, "gguf_gpu_ids_supported": False}
             else:
                 inference_gpu_info = gpu_info
+            if vulkan_info is None:
+                # A CUDA + Vulkan llama.cpp also runs on the cards only Vulkan reaches (#15444).
+                with (
+                    contextlib.nullcontext()
+                    if refresh_memory
+                    else gpu_query.display_reads(max_stale = 0)
+                ):
+                    mixed_info = get_mixed_vulkan_inference_gpu_info(inference_gpu_info)
+                if mixed_info is not None:
+                    inference_gpu_info = mixed_info
 
         combined_info = (gpu_info, inference_gpu_info)
         _system_gpu_cache = (time.monotonic(), combined_info)
@@ -3142,6 +3186,27 @@ class _TunnelOnlyFrontend:
         await Response(status_code = 404)(scope, receive, send)
 
 
+def _match_assets_before_api_routes(app: FastAPI) -> None:
+    """Move the new /assets mount first (after earlier ones); no API route matches /assets/..."""
+    from starlette.routing import Mount
+
+    routes = app.router.routes
+    if not routes:
+        return
+    mount = routes[-1]
+    if not (isinstance(mount, Mount) and mount.path == "/assets"):
+        return
+    routes.pop()
+    position = 0
+    while (
+        position < len(routes)
+        and isinstance(routes[position], Mount)
+        and routes[position].path == "/assets"
+    ):
+        position += 1
+    routes.insert(position, mount)
+
+
 def setup_frontend(
     app: FastAPI,
     build_path: Path,
@@ -3163,6 +3228,7 @@ def setup_frontend(
         if tunnel_only:
             assets_app = _TunnelOnlyFrontend(assets_app, app.state)
         app.mount("/assets", assets_app, name = "assets")
+        _match_assets_before_api_routes(app)
 
     def _frontend_request_allowed(request: Request) -> bool:
         return not tunnel_only or _is_remote_frontend_request(request.scope, app.state)

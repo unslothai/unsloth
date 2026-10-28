@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unified SQLite store: relational chunks + FTS5 lexical + sqlite-vec dense.
-
-Module-level functions each take a ``conn`` the caller opens and closes. Inserts
-are incremental: ``add_chunks`` appends one document's rows without rebuilding the
-scope. Scope ("kb_<id>" / "thread_<id>") is a column on every table and the vec0
-partition key.
-"""
+"""Unified SQLite store (chunks, FTS5, sqlite-vec); caller-opened conn; add_chunks appends
+incrementally; scope kb_<id>/thread_<id> is the vec0 partition key."""
 
 from __future__ import annotations
 
@@ -515,18 +510,7 @@ def delete_document(
     commit: bool = True,
 ) -> None:
     """Remove a document and all its chunks (+ fts + vec rows)."""
-    ids = [
-        r["id"]
-        for r in conn.execute(
-            "SELECT id FROM chunks WHERE document_id=?", (document_id,)
-        ).fetchall()
-    ]
-    has_vec = rag_db.vec_table_exists(conn)
-    for chunk_id in ids:
-        conn.execute("DELETE FROM chunks_fts WHERE chunk_id=?", (chunk_id,))
-        if has_vec:
-            conn.execute("DELETE FROM chunks_vec WHERE chunk_id=?", (chunk_id,))
-    conn.execute("DELETE FROM chunks WHERE document_id=?", (document_id,))
+    rag_db._delete_document_chunks(conn, document_id)
     conn.execute("DELETE FROM documents WHERE id=?", (document_id,))
     if commit:
         conn.commit()

@@ -123,7 +123,7 @@ import {
   Folder02Icon,
   FlimSlateIcon,
   HelpCircleIcon,
-  Image03Icon,
+  Image01Icon,
   InformationCircleIcon,
   LibrariesIcon,
   Logout05Icon,
@@ -274,7 +274,9 @@ import { videoNavHint } from "@/config/hardware-verdict";
 import {
   AUTH_SESSION_ENDING_EVENT,
   clearAuthTokens,
+  fetchAuthStatus,
   logout,
+  markDesktopSignedOut,
   useIsAccountOwner,
 } from "@/features/auth";
 import { TOUR_OPEN_EVENT, getTourId, useTourAvailable } from "@/features/tour";
@@ -3378,7 +3380,7 @@ export function AppSidebar() {
       },
     },
     images: {
-      icon: Image03Icon,
+      icon: Image01Icon,
       label: t("shell.navigation.images"),
       active: pathname === "/images" || pathname.startsWith("/images/"),
       onClick: () => {
@@ -4307,23 +4309,41 @@ export function AppSidebar() {
     </>
   );
 
-  useShortcut(
-    "logOut",
-    () => {
-      // Desktop signs out through the OS account menu, not here.
-      if (isTauri) return;
-      void (async () => {
-        if (!window.dispatchEvent(new Event(AUTH_SESSION_ENDING_EVENT, { cancelable: true }))) return;
-        try {
-          await logout();
-        } catch {
-          clearAuthTokens();
-        }
-        void navigate({ to: "/login" });
-      })();
-    },
-    { enabled: !isTauri },
-  );
+  async function signOut() {
+    // Multi-account Desktop signs back in with a password, and the seeded one was never shown.
+    if (isTauri && isOwner) {
+      // Unknown is not "no password to lose": stay signed in rather than risk a lockout.
+      const status = await fetchAuthStatus().catch(() => null);
+      if (!status) {
+        toast.error(t("shell.navigation.logOutFailed"));
+        return;
+      }
+      if (status.login_mode === "multi" && status.requires_password_change) {
+        toast.error(t("shell.navigation.logOutNeedsPassword"));
+        useSettingsDialogStore.getState().openDialog("remote-lan");
+        return;
+      }
+    }
+    if (!window.dispatchEvent(new Event(AUTH_SESSION_ENDING_EVENT, { cancelable: true }))) return;
+    // Marker before the revoke, else a relaunch or failing request signs straight back in.
+    if (isTauri) {
+      try {
+        await markDesktopSignedOut();
+      } catch {
+        toast.error(t("shell.navigation.logOutFailed"));
+        return;
+      }
+    }
+    // Best-effort revocation; ignore network errors so the local clear still runs.
+    try {
+      await logout();
+    } catch {
+      clearAuthTokens();
+    }
+    void navigate({ to: "/login" });
+  }
+
+  useShortcut("logOut", () => void signOut());
 
   /** Filing a pinned chat takes its pin, else Pinned keeps drawing it. */
   function fileChatsInSection(chatIds: string[], sectionId: string | null) {
@@ -6828,23 +6848,10 @@ export function AppSidebar() {
                   </DropdownMenuItem>
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
-              {!isTauri && (
-                <DropdownMenuItem
-                  onSelect={async () => {
-                    if (!window.dispatchEvent(new Event(AUTH_SESSION_ENDING_EVENT, { cancelable: true }))) return;
-                    // Best-effort revocation; ignore network errors so the local clear still runs.
-                    try {
-                      await logout();
-                    } catch {
-                      clearAuthTokens();
-                    }
-                    void navigate({ to: "/login" });
-                  }}
-                >
-                  <HugeiconsIcon icon={Logout05Icon} strokeWidth={1.75} className="size-icon" />
-                  <span>{t("shell.navigation.logOut")}</span>
-                </DropdownMenuItem>
-              )}
+              <DropdownMenuItem onSelect={() => void signOut()}>
+                <HugeiconsIcon icon={Logout05Icon} strokeWidth={1.75} className="size-icon" />
+                <span>{t("shell.navigation.logOut")}</span>
+              </DropdownMenuItem>
               {!isTauri && (
                 <DropdownMenuItem onSelect={() => setShutdownOpen(true)}>
                   <HugeiconsIcon icon={PowerIcon} strokeWidth={1.75} className="size-icon" />

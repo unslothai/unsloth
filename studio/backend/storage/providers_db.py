@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""SQLite storage for external LLM provider configurations.
-
-Same pattern as studio_db.py (module-level functions, raw sqlite3, WAL, per-function connections). API keys are
-NOT stored here: they live only in the browser (localStorage) and are sent encrypted per-request. Enabled model
-selections and discovered catalog IDs are stored server-side so remote Unsloth clients see the same connection
-state (#7281).
-"""
+"""SQLite for LLM providers; API keys stay in the browser and are sent encrypted per request"""
 
 from __future__ import annotations
 

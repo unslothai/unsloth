@@ -5146,6 +5146,15 @@ def provision_desktop_auth():
     typer.echo("Desktop auth ready.")
 
 
+def _owner_login_alias(conn: sqlite3.Connection) -> Optional[str]:
+    if "login_alias" not in {row[1] for row in conn.execute("PRAGMA table_info(auth_user)")}:
+        return None
+    row = conn.execute(
+        "SELECT login_alias FROM auth_user WHERE username = ?", (DEFAULT_ADMIN_USERNAME,)
+    ).fetchone()
+    return row[0] if row else None
+
+
 def _reset_password_username(conn: sqlite3.Connection, username: Optional[str]) -> str:
     columns = {row[1] for row in conn.execute("PRAGMA table_info(auth_user)")}
     active_filter = " WHERE is_active = 1" if "is_active" in columns else ""
@@ -5157,8 +5166,10 @@ def _reset_password_username(conn: sqlite3.Connection, username: Optional[str]) 
     if target == DEFAULT_ADMIN_USERNAME:
         _ensure_cli_default_admin(conn)
     elif conn.execute("SELECT 1 FROM auth_user WHERE username = ?", (target,)).fetchone() is None:
-        typer.echo("Error: account not found.", err = True)
-        raise typer.Exit(1)
+        if _owner_login_alias(conn) != target:
+            typer.echo("Error: account not found.", err = True)
+            raise typer.Exit(1)
+        target = DEFAULT_ADMIN_USERNAME
     return target
 
 
@@ -5185,6 +5196,7 @@ def reset_password(
     try:
         conn.execute("BEGIN IMMEDIATE")
         target = _reset_password_username(conn, username)
+        alias = _owner_login_alias(conn) if target == DEFAULT_ADMIN_USERNAME else None
         _cli_update_password(conn, target, new_password, revoke_api_keys = True)
     except (OSError, sqlite3.Error) as exc:
         typer.echo(f"Error: could not reset the password ({exc}).", err = True)
@@ -5192,7 +5204,8 @@ def reset_password(
     finally:
         conn.close()
 
-    typer.echo(f"New password for '{target}': {new_password}")
+    signs_in_as = f" (also signs in as '{alias}')" if alias else ""
+    typer.echo(f"New password for '{target}'{signs_in_as}: {new_password}")
     typer.echo(
         "Sessions and API keys revoked. A running Unsloth takes it on the next request, "
         "though repeated failed logins can hold the rate limit shut for up to a minute."

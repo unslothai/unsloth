@@ -1,17 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""SQLite storage for the RAG engine.
-
-Same pattern as providers_db.py / studio_db.py (module functions, raw sqlite3, WAL, per-call connections, lazy
-schema), but every connection also loads sqlite-vec (vec0 needs it per-connection). If it cannot load,
-get_connection() raises RagExtensionUnavailable rather than failing import, and rag_available() reports the
-machine as one where RAG cannot run.
-
-One rag.db holds the ``documents`` / ``chunks`` model, the FTS5 lexical index (``chunks_fts``) and the
-sqlite-vec dense index (``chunks_vec``, created lazily by ensure_vec once the embedding dim is known, since vec0
-bakes the dim into the column type).
-"""
+"""Every connection loads sqlite-vec; if it fails get_connection raises RagExtensionUnavailable,
+never at import; rag_available reports it; chunks_vec made lazily by ensure_vec"""
 
 import logging
 import re
@@ -415,19 +406,16 @@ def _delete_document_chunks(conn, document_id: str) -> None:
     """Delete a document's chunk rows (chunks/chunks_fts/chunks_vec), keeping the documents row. Used when
     reconciling a half-ingested doc to failed: retrieval filters by scope not status, so leftover chunks would
     stay citable."""
-    chunk_ids = [
-        r["id"]
-        for r in conn.execute(
-            "SELECT id FROM chunks WHERE document_id=?", (document_id,)
-        ).fetchall()
-    ]
-    if not chunk_ids:
+    if (
+        conn.execute("SELECT 1 FROM chunks WHERE document_id=? LIMIT 1", (document_id,)).fetchone()
+        is None
+    ):
         return
-    has_vec = vec_table_exists(conn)
-    for chunk_id in chunk_ids:
-        conn.execute("DELETE FROM chunks_fts WHERE chunk_id=?", (chunk_id,))
-        if has_vec:
-            conn.execute("DELETE FROM chunks_vec WHERE chunk_id=?", (chunk_id,))
+    # chunk_id is unindexed in fts5 and vec0: one IN scan per table, not one scan per chunk.
+    owned = "SELECT id FROM chunks WHERE document_id=?"
+    conn.execute(f"DELETE FROM chunks_fts WHERE chunk_id IN ({owned})", (document_id,))
+    if vec_table_exists(conn):
+        conn.execute(f"DELETE FROM chunks_vec WHERE chunk_id IN ({owned})", (document_id,))
     conn.execute("DELETE FROM chunks WHERE document_id=?", (document_id,))
 
 

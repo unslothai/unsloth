@@ -282,6 +282,7 @@ from ._uma_safetensors import is_integrated_unified_memory_gpu
 from ._utils import estimate_training_reserve_bytes as _zoo_reserve_estimate
 from ._remote_code_buffers import restore_remote_code_non_persistent_buffers
 from ._custom_dtype import cast_mixed_linear_inputs, resolve_dtype, trusted_custom_dtype
+from ._mamba_lora import patch_mamba_fused_lora
 from .remote_code_shims import apply_remote_code_shims
 from .grouped_linear_lora import register_grouped_linear_lora
 from .loader_utils import (
@@ -390,6 +391,7 @@ try:
     from huggingface_hub.utils import get_token
 except:
     from huggingface_hub.utils._token import get_token
+from .._gc_passes import collect_garbage
 from ..device_type import (
     xpu_keeps_explicit_bf16,
     xpu_vllm_refuses_bf16,
@@ -4517,9 +4519,7 @@ class FastBaseModel:
                 for jj, (name, module) in enumerate(model.named_modules()):
                     exec(custom_datatype)
                 cast_mixed_linear_inputs(model, torch_dtype)
-        for _ in range(3):
-            gc.collect()
-            clean_gpu_cache()
+        collect_garbage(after = clean_gpu_cache)
 
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
         # The loader resolves this (caller's adapter repo vs resolved base model); the fallback below covers a direct call.
@@ -4897,9 +4897,7 @@ class FastBaseModel:
             tokenizer = tokenizer,
             float32_mixed_precision = float32_mixed_precision,
         )
-        for _ in range(3):
-            gc.collect()
-            clean_gpu_cache()
+        collect_garbage(after = clean_gpu_cache)
         # Saving restores sentencepiece assets from the repo name alone, which carries no branch. Stamped here, not per processor branch, so a fallback cannot lose it.
         _mark_loaded_revision(tokenizer, _tokenizer_revision)
         model = _mark_forced_float32(model, do_forced_float32)
@@ -5202,9 +5200,7 @@ class FastBaseModel:
                     "Unsloth: LoRA finetuning for Llama 3.2 aka mllama models is not supported with fast_inference!"
                 )
 
-        for _ in range(3):
-            gc.collect()
-            clean_gpu_cache()
+        collect_garbage(after = clean_gpu_cache)
         max_seq_length = model.max_seq_length
         # Passing loftq_config = None gives an error.
         loftq_config = validate_loftq_config(
@@ -5427,9 +5423,7 @@ class FastBaseModel:
             use_gradient_checkpointing = use_gradient_checkpointing,
         )
         skip_checkpointing(model, checkpoint_skip_layers)
-        for _ in range(3):
-            gc.collect()
-            clean_gpu_cache()
+        collect_garbage(after = clean_gpu_cache)
         patch_saving_functions(model, vision = True)
         patch_peft_fast_inference(model)
 
@@ -5458,6 +5452,8 @@ class FastBaseModel:
     ):
         reject_alora(model)
         set_deepspeed_moe_leaf_modules(model)
+        # Mamba fused kernels read x_proj / dt_proj / out_proj .weight raw, skipping adapters on them.
+        patch_mamba_fused_lora(model)
         from ..import_fixes import fix_transformers_voxtral_realtime_inplace_audio_add
 
         fix_transformers_voxtral_realtime_inplace_audio_add()
@@ -5606,9 +5602,7 @@ class FastBaseModel:
         # Prevent Transformers Trainer from auto-wrapping Unsloth LoRA models in DP.
         _mark_unsloth_disable_data_parallel(model, disable = not full_finetuning)
 
-        for _ in range(3):
-            gc.collect()
-            clean_gpu_cache()
+        collect_garbage(after = clean_gpu_cache)
         model.for_training = functools.partial(FastBaseModel.for_training, model)
         model.for_inference = functools.partial(FastBaseModel.for_inference, model)
         m = model

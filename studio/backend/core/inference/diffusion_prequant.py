@@ -1,31 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Load a *pre-quantized* transformer instead of quantising a dense one on the GPU.
-
-The runtime transformer_quant path loads the dense bf16 transformer and ``quantize_``s it in place,
-materialising the full bf16 weights on the GPU first (~2x the GGUF peak, plus the full bf16
-download). When a transformer was already quantised and saved
-(``scripts/build_prequant_checkpoint.py``), this loads those weights directly: build the skeleton on
-``meta`` (``init_empty_weights`` + ``from_config``), ``load_state_dict(assign=True)`` the quantized
-state dict (subclass tensors assigned, not copied, so dense bf16 never touches the GPU), then move
-to device. Measured (B200, Z-Image fp8): GPU load peak 12.9 -> 6.3 GB, download 12 -> 6.28 GB,
-output bit-identical (LPIPS 0.0). The checkpoint carries the same scheme + ``min_features`` as the
-runtime path, so the result matches quantising on the fly.
-
-Two containers, one dict. Historically the artifact could only be a ``torch.save`` pickle, because
-torchao's weight subclasses are wrapper tensors and safetensors stores flat ones; that pickle is read
-under ``weights_only`` plus the constructor ALLOWLIST below, never as a free one, since it is a
-mutable remote file reached by loads that never asked for a scheme (auto resolves an unset precision
-to a hosted checkpoint) and "first-party repo" cannot stand in for that restriction. torchao >= 0.16
-can flatten those subclasses, so an artifact may now also be ``.safetensors`` (see
-``prequant_safetensors``), which needs no allowlist at all and answers the validation questions from
-its header. ``_load_prequant_checkpoint`` returns the same ``{"format", "state_dict", "metadata"}``
-for both, so every check in this module applies to them identically and the two cannot drift apart.
-
-Best-effort and lazily imported: a missing / mismatched / unreadable checkpoint returns None and the
-caller falls back to dense-quantise (then GGUF). Inert with nothing configured.
-"""
+"""Pre-quantized transformer load, lazily imported; pickles use weights_only plus allowlist; bad
+files return None so the caller falls back to dense quantise"""
 
 from __future__ import annotations
 

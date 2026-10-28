@@ -791,6 +791,8 @@ export const ja = {
       guidedTour: "ガイドツアー",
       help: "ヘルプ",
       logOut: "ログアウト",
+      logOutNeedsPassword: "ログアウトする前に、設定 > リモートアクセスでパスワードを設定してください。再びサインインするために必要です。",
+      logOutFailed: "安全にログアウトできませんでした。しばらくしてからもう一度お試しください。",
       shutdown: "シャットダウン",
     },
     commandPalette: {
@@ -935,6 +937,11 @@ export const ja = {
   },
   settings: {
     accounts: {
+      signsInAs: "{username} としてサインイン",
+      signsInAsOwner: "{alias} または {username} としてサインイン",
+      signInName: "サインイン名",
+      signInNameDescription: "このインストールに複数のアカウントがあるときにサインインで入力する名前です。unsloth も常に使えます。空欄にすると unsloth のみになります。",
+      signInNameSave: "名前を保存",
       title: "アカウント",
       description: "個別の Unsloth アカウントを作成します。新しいユーザーは一度きりのセットアップコードでサインインし、パスワードを設定します。",
       username: "ユーザー名",
@@ -1414,7 +1421,7 @@ export const ja = {
       installingRuntime: "インストール中…",
       installRuntimeFailed: "ランタイムのインストールに失敗しました。",
       installRuntimeError: "ランタイムのインストールを開始できませんでした。",
-      unsupportedArch: "Windows サンドボックス (MXC) は x64 版 Windows でのみ動作するため、この PC では使用できません。",
+      unsupportedArch: "Windows サンドボックス (MXC) は x64 版および ARM64 版 Windows でのみ動作するため、この PC では使用できません。",
       builtinNeedsUpdate:
         "Windows の組み込みコンテナーにはビルド {required} 以降が必要ですが、この PC は {current} です。管理者の手順なしで使うには最新の Windows Update をインストールするか、下のフォールバック サンドボックスをオンにしてください。",
       unsupportedBuild: "Windows サンドボックス (MXC) には Windows 11 24H2 (ビルド 26100) 以降が必要なため、この PC では使用できません。",
@@ -2315,7 +2322,7 @@ export const ja = {
         gpuUnusableDetail: "検出されましたが、PyTorch から利用できません",
         detailedView: "詳細表示",
         detailedViewDescription:
-          "フローティングウィンドウとここに、CPU 負荷と各 GPU の負荷、温度、消費電力を表示します。",
+          "フローティングウィンドウに、CPU 負荷と各 GPU の負荷、温度、消費電力を表示します。",
         cpuLoad: "CPU 負荷",
         gpuLoad: "GPU 負荷",
         temperature: "温度",
@@ -2349,6 +2356,10 @@ export const ja = {
         used: "{value} 使用中",
         free: "{value} 空き",
         total: "{value} 合計",
+        usedOf: "{total} 中 {used} 使用中",
+        segmentUsed: "GPU が使用中",
+        segmentSystem: "システムが使用中",
+        segmentAvailable: "使用可能",
       },
       llamaBackend: {
         title: "GGUF 推論エンジン",
@@ -4142,7 +4153,6 @@ export const ja = {
       terminalStart: "> unsloth トレーニングを開始します...",
       preparingResources: "> モデルとデータセットを準備中...",
       gettingReady: "> 実行の準備を整えています...",
-      waitingForFirstStep: "> {message} | 最初のステップを待機中... ({step})",
       resumingTraining: "トレーニングを再開しています...",
       startingTraining: "トレーニングを開始しています...",
       dataset: "データセット",
