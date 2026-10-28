@@ -101,7 +101,7 @@
         "width": 400,
         "node_type": "markdown_note",
         "name": "note_1",
-        "markdown": "This recipe uses **seed data** from external documents.\nInstead of starting from empty generation, we load real source text first.\n\nIn this flow, the seed source is **Unstructured Documents**:\n\n- Upload: `.pdf`, `.docx`, `.txt`\n- Text is extracted and split on client into chunks\n- Each chunk becomes a row-like seed record (`chunk_text`) that you can reference in prompts with `{{ chunk_text }} `",
+        "markdown": "This recipe uses **seed data** from external documents.\nInstead of starting from empty generation, we load real source text first.\n\nIn this flow, the seed source is **Unstructured Documents**:\n\n- Upload: `.pdf`, `.docx`, `.epub`, `.mobi`, `.xlsx`, `.pptx`, `.txt` and more\n- Text is extracted and split on client into chunks\n- Each chunk becomes a row-like seed record (`chunk_text`) that you can reference in prompts with `{{ chunk_text }} `",
         "note_color": "#F3E8FF",
         "note_opacity": "35"
       },

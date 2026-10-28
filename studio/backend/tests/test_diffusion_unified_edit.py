@@ -130,7 +130,52 @@ def test_edit_only_and_reference_families_keep_their_contracts():
     from core.inference.diffusion import _family_workflows
 
     assert _family_workflows(kontext) == ["edit"]
-    assert "edit" not in _family_workflows(flux2)
+    assert "edit" not in _family_workflows(flux2) and not flux2.reference_edit
+    for repo in (
+        "black-forest-labs/flux-3-image-klein",
+        "black-forest-labs/flux-3-image-klein-base",
+    ):
+        flux3 = detect_family(repo)
+        assert _family_workflows(flux3) == ["txt2img", "reference", "edit"]
+        c = cond.conditioning_capabilities(flux3, _family_workflows(flux3))
+        assert c["unified_edit"] is True and c["localized_edit_modes"] == []
+        assert c["multi_image_edit"] is False and c["max_condition_images"] == 10
+
+
+def test_reference_edit_runs_the_reference_call_at_the_requested_size(fake_runtime, tmp_path):
+    import dataclasses
+
+    backend = _flux2(fake_runtime, tmp_path)
+    backend._state = dataclasses.replace(
+        backend._state, family = dataclasses.replace(backend._state.family, reference_edit = True)
+    )
+    assert backend.status()["workflows"] == ["txt2img", "reference", "edit", "inpaint"]
+    calls = {}
+    for workflow in ("reference", "edit"):
+        out = backend.generate(
+            prompt = "make it night",
+            steps = 2,
+            seed = 1,
+            width = 768,
+            height = 512,
+            workflow = workflow,
+            init_image = _png(size = (96, 64), mode = "RGB"),
+            reference_images = [_png(size = (64, 64), mode = "RGB")],
+        )
+        assert out["workflow"] == workflow
+        call = backend._state.pipe.last_kwargs
+        calls[workflow] = ([im.size for im in _images(call)], call["width"], call["height"])
+    assert calls["edit"] == calls["reference"] and calls["edit"][1:] == (768, 512)
+    with pytest.raises(ValueError, match = "localized_edit"):
+        backend.generate(
+            prompt = "p",
+            steps = 2,
+            width = 512,
+            height = 512,
+            workflow = "edit",
+            init_image = _png(mode = "RGB"),
+            localized_edit = cond.LocalizedEdit("paint", _png(mode = "L", color = (255,))),
+        )
 
 
 def test_sampling_defaults_resolve_for_every_21_artifact_name():
@@ -140,7 +185,6 @@ def test_sampling_defaults_resolve_for_every_21_artifact_name():
         "unsloth/Qwen-Image-2.1-FP8",
     ):
         assert default_generation_params(name) == (25, 1.0), name
-    # The generic key still owns the other Qwen-Image checkpoints.
     assert default_generation_params("Qwen/Qwen-Image-2512") == (50, 4.0)
 
 
@@ -159,7 +203,6 @@ def test_explicit_edit_hands_ordered_rgba_images_and_explicit_geometry(backend21
     )
     call = backend21._state.pipe.last_kwargs
     assert [im.mode for im in call["image"]] == ["RGBA"] * 4
-    # Order kept exactly, alpha included.
     assert [im.getpixel((0, 0)) for im in call["image"]] == colors
     assert (call["width"], call["height"]) == (1024, 768)
     assert call["output_resolution"] == 512
@@ -190,9 +233,8 @@ def test_unified_edit_registers_the_requested_shape_not_the_source(backend21):
     fam = backend21._state.family
     src = Image.new("RGBA", (96, 64))
     assert _compile_shape_dims("edit", src, 1024, 768, fam) == (1024, 768)
-    # Edit-only families still size from the source.
     kontext = detect_family("black-forest-labs/FLUX.1-Kontext-dev")
-    assert _compile_shape_dims("edit", src, 1024, 768, kontext) == (96, 64)
+    assert _compile_shape_dims("edit", src, 1024, 768, kontext) == (1248, 832)
 
 
 @pytest.mark.parametrize("extras,ok", [(0, True), (3, True), (9, True), (10, False)])
@@ -245,7 +287,6 @@ def test_output_bounds_follow_the_family(backend21, fake_runtime, tmp_path):
         backend21.generate(width = 2752, height = 2752, **base)
     with pytest.raises(ValueError, match = "2752px per side"):
         backend21.generate(width = 2784, height = 512, **base)
-    # Another family keeps 2048 even though the transport now carries 2752.
     other = DiffusionBackend()
     _load_into(other, tmp_path)
     with pytest.raises(ValueError, match = "2048px per side"):
@@ -333,7 +374,7 @@ def test_paint_whitens_the_region_at_the_source_geometry(backend21):
         localized_edit = cond.LocalizedEdit("paint", base64.b64encode(buf.getvalue()).decode()),
     )
     painted = _images(backend21._state.pipe.last_kwargs)[0]
-    assert painted.size == (64, 64)  # the half-size layer was scaled to the source
+    assert painted.size == (64, 64)
     assert painted.getpixel((4, 4)) == (255, 255, 255, 255)
     assert painted.getpixel((60, 60)) == (10, 20, 30, 255)
 
@@ -404,7 +445,7 @@ def test_transparent_palette_png_and_exif_rotation_decode_for_the_family():
     assert img.mode == "RGBA" and img.getpixel((0, 0))[3] == 0
 
     exif = Image.Exif()
-    exif[0x0112] = 6  # rotate 90 CW on display
+    exif[0x0112] = 6  # EXIF orientation 6: rotate 90 CW on display
     jpg = io.BytesIO()
     Image.new("RGB", (40, 20)).save(jpg, format = "JPEG", exif = exif.tobytes())
     (rot,) = cond.decode_condition_images(fam, base64.b64encode(jpg.getvalue()).decode(), None)
@@ -453,7 +494,6 @@ def test_offloaded_vision_tower_builds_position_embeddings_on_the_compute_device
     assert (
         vision.fast_pos_embed_interpolate(types.SimpleNamespace(device = "cuda:0")).device == "cuda:0"
     )
-    # Idempotent, and a module without the method or without modules() is left alone.
     assert _pin_vision_embedding_device(vision) == 0
     assert _pin_vision_embedding_device(object()) == 0
     assert _Vision().fast_pos_embed_interpolate(None).device == "cpu"

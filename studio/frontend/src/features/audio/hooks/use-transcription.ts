@@ -246,7 +246,15 @@ export function useTranscription({
   const runTranscription = useCallback(
     async (
       source: AudioSourceSelection,
-      options: { language: string; timestamps: boolean; speakers: boolean },
+      {
+        connection,
+        ...options
+      }: {
+        language: string;
+        timestamps: boolean;
+        speakers: boolean;
+        connection?: { providerId: string; modelId: string } | null;
+      },
       onSourceExpired?: () => void,
       confirmedVersion?: number,
     ) => {
@@ -260,7 +268,9 @@ export function useTranscription({
       const controller = new AbortController();
       transcriptionAbort.current = controller;
       try {
-        const target = await prepareTranscriptionModel();
+        const target = connection
+          ? { model: connection.modelId, engine: "" }
+          : await prepareTranscriptionModel();
         if (!target || controller.signal.aborted || !activeRef.current) return;
         setBusy("transcribing");
         clearTranscript();
@@ -276,7 +286,8 @@ export function useTranscription({
           source.name,
           {
             ...target,
-            device: useVoiceSettingsStore.getState().sttDevice,
+            device: connection ? "" : useVoiceSettingsStore.getState().sttDevice,
+            providerId: connection?.providerId,
             ...options,
             signal: controller.signal,
           },

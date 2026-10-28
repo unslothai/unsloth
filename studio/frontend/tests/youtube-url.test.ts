@@ -31,7 +31,7 @@ test("recognises the YouTube link shapes the composer offer covers", () => {
 
 test("rejects look-alike hosts and non-video URLs", () => {
   for (const url of [
-    // A path segment must not stand in for the host, or any site could trigger the offer.
+    // A path segment must not stand in for the host.
     `https://evil.com/youtube.com/watch?v=${ID}`,
     `https://youtube.com.evil.com/watch?v=${ID}`,
     `https://notyoutube.com/watch?v=${ID}`,

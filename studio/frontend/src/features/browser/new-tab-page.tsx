@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronDownStandardIcon, ChevronUpStandardIcon } from "@/lib/chevron-icons";
 import { useLocale, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
-  ArrowDown01Icon,
-  ArrowUp01Icon,
   Cancel01Icon,
   Clock01Icon,
   StarIcon,
@@ -14,8 +13,12 @@ import {
   ViewOffSlashIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { type ReactNode, useMemo, useState } from "react";
+import { type ReactNode, useId, useMemo, useState } from "react";
+import { Switch } from "@/components/ui/switch";
+import { CursorInWindowIcon } from "@/lib/browser-use-icon";
 import { hostOf } from "./address";
+import { useBrowserAgentStore } from "./agent/agent-store";
+import { useBrowserAgentDisabled } from "./agent/composer-toggle";
 import { type HistoryItem, useBrowserHistoryStore } from "./history-store";
 import { LinkContextMenu, MenuRow } from "./link-context-menu";
 import { useNativeBrowser } from "./native-support";
@@ -30,7 +33,7 @@ const UNSLOTH_SITES: Site[] = [
   { title: "Unsloth", url: "https://unsloth.ai", icon: "/sticker.png" },
   {
     title: "Unsloth Docs",
-    url: "https://docs.unsloth.ai",
+    url: "https://unsloth.ai/docs",
     icon: "/sticker.png",
   },
 ];
@@ -46,6 +49,26 @@ const OTHER_SITES: Site[] = [
 
 const KNOWN_SITES = [...UNSLOTH_SITES, ...OTHER_SITES];
 
+// The proxied view keeps the docs; the unsloth.ai home page stays blocked.
+const PROXIED_SITES: Site[] = [
+  { title: "Unsloth Docs", url: "https://unsloth.ai/docs", icon: "/sticker.png" },
+  ...OTHER_SITES,
+];
+
+/** One suggestion per host, except the docs, which share unsloth.ai with the home page. */
+function siteKey(url: string): string {
+  const host = hostOf(url);
+  if (host === "docs.unsloth.ai") return "unsloth.ai/docs";
+  if (host !== "unsloth.ai") return host;
+  try {
+    return /^\/docs(?:\/|$)/.test(new URL(url).pathname)
+      ? "unsloth.ai/docs"
+      : host;
+  } catch {
+    return host;
+  }
+}
+
 const SUGGESTED_COUNT = 4;
 const RECENTS_PER_PAGE = 5;
 
@@ -57,12 +80,12 @@ function suggestedSites(
 ): Site[] {
   const byHost = new Map<string, { site: Site; visits: number }>();
   for (const item of history) {
-    const host = hostOf(item.url);
+    const host = siteKey(item.url);
     const seen = byHost.get(host);
     if (seen) seen.visits += 1;
     else {
       const icon = KNOWN_SITES.find(
-        (site) => hostOf(site.url) === host,
+        (site) => siteKey(site.url) === host,
       )?.icon;
       byHost.set(host, {
         site: { title: item.title || host, url: item.url, icon },
@@ -74,12 +97,12 @@ function suggestedSites(
     .filter((site) => site.visits > 1)
     .sort((a, b) => b.visits - a.visits)
     .map((site) => site.site);
-  const hosts = new Set(sites.map((site) => hostOf(site.url)));
+  const hosts = new Set(sites.map((site) => siteKey(site.url)));
   for (const site of defaults)
-    if (!hosts.has(hostOf(site.url))) sites.push(site);
-  const off = new Set(hidden);
+    if (!hosts.has(siteKey(site.url))) sites.push(site);
+  const off = new Set(hidden.map((key) => siteKey(`https://${key}`)));
   return sites
-    .filter((site) => !off.has(hostOf(site.url)))
+    .filter((site) => !off.has(siteKey(site.url)))
     .slice(0, SUGGESTED_COUNT);
 }
 
@@ -93,7 +116,7 @@ function SiteIcon({ site }: { site: Site }) {
     <SiteFavicon
       url={site.url}
       icon={site.icon}
-      className="size-9 rounded-lg"
+      className="size-9 rounded-md"
       fallbackClassName="size-9 text-foreground"
     />
   );
@@ -103,7 +126,7 @@ function SuggestedSite({ site, tabId }: { site: Site; tabId: string }) {
   const t = useT();
   const { navigate } = useBrowserStore.getState();
   const remove = () =>
-    useBrowserPrefsStore.getState().hideSuggestion(hostOf(site.url));
+    useBrowserPrefsStore.getState().hideSuggestion(siteKey(site.url));
   return (
     <LinkContextMenu
       url={site.url}
@@ -119,7 +142,7 @@ function SuggestedSite({ site, tabId }: { site: Site; tabId: string }) {
           type="button"
           title={`${site.title}\n${site.url}`}
           onClick={() => navigate(tabId, { url: site.url })}
-          className="flex w-full min-w-0 cursor-pointer flex-col items-center gap-4 rounded-2xl px-2 pb-4 pt-5 transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-data-[state=open]/site:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]"
+          className="flex w-full min-w-0 cursor-pointer flex-col items-center gap-4 rounded-xl px-2 pb-4 pt-5 transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-data-[state=open]/site:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]"
         >
           <SiteIcon site={site} />
           <span className="w-full truncate text-center text-ui-15 text-foreground">
@@ -165,15 +188,56 @@ function ToolButton({
     <button
       type="button"
       onClick={onClick}
-      className="flex h-11 min-w-0 cursor-pointer items-center gap-3 rounded-xl bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] px-3.5 text-start text-ui-15 text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="flex h-11 min-w-0 cursor-pointer items-center gap-3 rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] px-3.5 text-start text-ui-15 text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       <HugeiconsIcon
         icon={icon}
         strokeWidth={1.75}
-        className="size-5 shrink-0 text-muted-foreground"
+        className="size-4.5 shrink-0 text-muted-foreground"
       />
       <span className="min-w-0 flex-1 truncate">{label}</span>
     </button>
+  );
+}
+
+/** The composer's Browser use switch: the same store, so its pill shows as soon as this is on. */
+function BrowserUseToggle() {
+  const t = useT();
+  const id = useId();
+  const disabled = useBrowserAgentDisabled();
+  const enabled = useBrowserAgentStore((state) => state.enabled);
+  return (
+    <label
+      htmlFor={id}
+      className={cn(
+        "flex min-w-0 items-center gap-3 rounded-lg bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] px-5 py-3",
+        disabled ? "cursor-default" : "cursor-pointer",
+      )}
+    >
+      <HugeiconsIcon
+        icon={CursorInWindowIcon}
+        strokeWidth={1.75}
+        className="me-1 size-6 shrink-0 text-muted-foreground"
+      />
+      <span className="min-w-0 flex-1">
+        <span className="block text-ui-15 text-foreground">
+          {t("browser.browserUse.label")}
+        </span>
+        <span className="block text-ui-13 text-muted-foreground">
+          {t(
+            disabled
+              ? "browser.browserUse.unavailable"
+              : "browser.browserUse.description",
+          )}
+        </span>
+      </span>
+      <Switch
+        id={id}
+        checked={enabled && !disabled}
+        disabled={disabled}
+        onCheckedChange={(on) => useBrowserAgentStore.getState().setEnabled(on)}
+      />
+    </label>
   );
 }
 
@@ -210,10 +274,10 @@ export function NewTabPage({ tabId }: { tabId: string }) {
   const hidden = useBrowserPrefsStore((state) => state.hiddenSuggestions);
   const showSuggested = useBrowserPrefsStore((state) => state.showSuggestedSites);
   const showRecents = useBrowserPrefsStore((state) => state.showRecentPages);
-  // Cloudflare blocks Unsloth's sites in the proxied view, so only native views suggest them.
+  // Cloudflare blocks the Unsloth home page in the proxied view, so only native views suggest it.
   const native = useNativeBrowser((state) => state.enabled);
   const sites = useMemo(
-    () => suggestedSites(history, hidden, native ? KNOWN_SITES : OTHER_SITES),
+    () => suggestedSites(history, hidden, native ? KNOWN_SITES : PROXIED_SITES),
     [history, hidden, native],
   );
   const recents = useMemo(() => recentPages(history), [history]);
@@ -246,6 +310,89 @@ export function NewTabPage({ tabId }: { tabId: string }) {
       ? timeFormat.format(time)
       : dateFormat.format(time);
 
+  const suggestedSection =
+    showSuggested && sites.length > 0 ? (
+      <section className="flex flex-col gap-3">
+        <SectionTitle>{t("browser.suggested")}</SectionTitle>
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          {sites.map((site) => (
+            <SuggestedSite key={site.url} site={site} tabId={tabId} />
+          ))}
+        </div>
+      </section>
+    ) : null;
+  const recentsSection =
+    showRecents && recents.length > 0 ? (
+      <section className="flex flex-col gap-3">
+        <SectionTitle
+          actions={
+            <div className="flex items-center gap-1">
+              <PageButton
+                label={t("browser.recentNewer")}
+                icon={ChevronUpStandardIcon}
+                disabled={shownPage === 0}
+                onClick={() => setPage(shownPage - 1)}
+              />
+              <PageButton
+                label={t("browser.recentOlder")}
+                icon={ChevronDownStandardIcon}
+                disabled={shownPage >= pages - 1}
+                onClick={() => setPage(shownPage + 1)}
+              />
+            </div>
+          }
+        >
+          {t("browser.recents")}
+        </SectionTitle>
+        <div className="flex flex-col gap-1">
+          {shown.map((item) => (
+            <LinkContextMenu
+              key={item.id}
+              url={item.url}
+              tabId={tabId}
+              extra={
+                <MenuRow
+                  icon={Delete02Icon}
+                  onSelect={() => removeFromHistory(item.url)}
+                >
+                  {t("browser.pages.removeFromHistory")}
+                </MenuRow>
+              }
+            >
+              <button
+                type="button"
+                title={item.url}
+                onClick={() => navigate(tabId, { url: item.url })}
+                className={cn(
+                  "flex min-w-0 cursor-pointer items-center gap-4 rounded-md px-3 py-3 text-start transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]",
+                )}
+              >
+                <span className="flex size-10 shrink-0 items-center justify-center rounded-md bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)]">
+                  <SiteFavicon
+                    url={item.url}
+                    className="size-5 rounded-[4px]"
+                    fallbackClassName="size-5 text-muted-foreground"
+                  />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-ui-15 text-foreground">
+                    {item.title || hostOf(item.url)}
+                  </span>
+                  <span className="block truncate text-ui-13 text-muted-foreground">
+                    {t("browser.website")}
+                  </span>
+                </span>
+                <span className="shrink-0 text-ui-13 tabular-nums text-muted-foreground">
+                  {when(item.visitedAt)}
+                </span>
+              </button>
+            </LinkContextMenu>
+          ))}
+        </div>
+      </section>
+    ) : null;
+  const visited = recentsSection !== null;
+
   return (
     <div className="size-full overflow-auto">
       <div className="mx-auto flex w-full max-w-4xl flex-col gap-9 px-6 pb-10 pt-8">
@@ -269,85 +416,9 @@ export function NewTabPage({ tabId }: { tabId: string }) {
             />
           </div>
         </section>
-        {showSuggested && sites.length > 0 ? (
-          <section className="flex flex-col gap-3">
-            <SectionTitle>{t("browser.suggested")}</SectionTitle>
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-              {sites.map((site) => (
-                <SuggestedSite key={site.url} site={site} tabId={tabId} />
-              ))}
-            </div>
-          </section>
-        ) : null}
-        {showRecents && recents.length > 0 ? (
-          <section className="flex flex-col gap-3">
-            <SectionTitle
-              actions={
-                <div className="flex items-center gap-1">
-                  <PageButton
-                    label={t("browser.recentNewer")}
-                    icon={ArrowUp01Icon}
-                    disabled={shownPage === 0}
-                    onClick={() => setPage(shownPage - 1)}
-                  />
-                  <PageButton
-                    label={t("browser.recentOlder")}
-                    icon={ArrowDown01Icon}
-                    disabled={shownPage >= pages - 1}
-                    onClick={() => setPage(shownPage + 1)}
-                  />
-                </div>
-              }
-            >
-              {t("browser.recents")}
-            </SectionTitle>
-            <div className="flex flex-col gap-1">
-              {shown.map((item) => (
-                <LinkContextMenu
-                  key={item.id}
-                  url={item.url}
-                  tabId={tabId}
-                  extra={
-                    <MenuRow
-                      icon={Delete02Icon}
-                      onSelect={() => removeFromHistory(item.url)}
-                    >
-                      {t("browser.pages.removeFromHistory")}
-                    </MenuRow>
-                  }
-                >
-                  <button
-                    type="button"
-                    title={item.url}
-                    onClick={() => navigate(tabId, { url: item.url })}
-                    className={cn(
-                      "flex min-w-0 cursor-pointer items-center gap-4 rounded-2xl px-3 py-3 text-start transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]",
-                    )}
-                  >
-                    <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)]">
-                      <SiteFavicon
-                        url={item.url}
-                        className="size-5 rounded-[4px]"
-                        fallbackClassName="size-5 text-muted-foreground"
-                      />
-                    </span>
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-ui-15 text-foreground">
-                        {item.title || hostOf(item.url)}
-                      </span>
-                      <span className="block truncate text-ui-13 text-muted-foreground">
-                        {t("browser.website")}
-                      </span>
-                    </span>
-                    <span className="shrink-0 text-ui-13 tabular-nums text-muted-foreground">
-                      {when(item.visitedAt)}
-                    </span>
-                  </button>
-                </LinkContextMenu>
-              ))}
-            </div>
-          </section>
-        ) : null}
+        {visited ? recentsSection : suggestedSection}
+        <BrowserUseToggle />
+        {visited ? suggestedSection : null}
       </div>
     </div>
   );

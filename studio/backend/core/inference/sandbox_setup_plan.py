@@ -1,9 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""What it takes to get OS isolation on this computer, and whether Unsloth can do it from Settings.
-
-Detection only: nothing here runs a privileged command.
-"""
+"""Detects OS isolation support and setup needs from Settings; never runs a privileged command."""
 
 from __future__ import annotations
 
@@ -341,10 +338,10 @@ MXC_MIN_WINDOWS_BUILD = 26100
 
 
 def windows_runtime_unsupported() -> str | None:
-    """None when this Windows can run MXC; else "arch" (not x64) or "build" (older than 26100)."""
-    import platform
+    """None when this Windows can run MXC; else "arch" (not x64 or ARM64) or "build" (older than 26100)."""
+    from .wsl_host import native_machine
 
-    if platform.machine().lower() not in ("amd64", "x86_64"):
+    if native_machine() not in ("x86_64", "arm64"):
         return "arch"
     try:
         build = sys.getwindowsversion().build
@@ -384,12 +381,12 @@ def windows_builtin_container_update() -> tuple[str, str] | None:
 
 
 def windows_runtime_supported() -> bool:
-    """The MXC runtime Unsloth installs is built for x64 Windows 11 build 26100 or newer."""
+    """The MXC runtime Unsloth installs is built for x64 and ARM64 Windows 11 build 26100 or newer."""
     return windows_runtime_unsupported() is None
 
 
 _UNSUPPORTED_NOTES = {
-    "arch": "The MXC runtime is built for x64 Windows, and this PC is not x64.",
+    "arch": "The MXC runtime is built for x64 and ARM64 Windows, and this PC is neither.",
     "build": (
         f"The MXC sandbox needs Windows 11 build {MXC_MIN_WINDOWS_BUILD} (24H2) or newer, "
         "and this PC runs an older build."

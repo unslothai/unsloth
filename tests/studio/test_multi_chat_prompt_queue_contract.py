@@ -502,8 +502,7 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert (
         len(
             re.findall(
-                r"await persistResolvedQueuedModel\(\s*params\.checkpoint,"
-                r"\s*runtime\.activeGgufVariant,\s*\)",
+                r"void persistRunModel\(params\.checkpoint, runtime\.activeGgufVariant\);",
                 CHAT_ADAPTER,
             )
         )
@@ -950,7 +949,7 @@ def test_clear_all_invalidates_and_removes_late_fresh_thread_initialization():
     )
     # Matched on the call prefix; only the ordering is pinned.
     assert CLEAR_ALL_CHATS.index("requestPromptQueueStop();") < CLEAR_ALL_CHATS.index(
-        "return await clearStoredChats("
+        "await clearStoredChats("
     )
     assert "const historyClearGeneration = chatHistoryClearBoundary.capture();" in RUNTIME_PROVIDER
     assert "await throwIfHistoryWasCleared(initialized.remoteId);" in RUNTIME_PROVIDER

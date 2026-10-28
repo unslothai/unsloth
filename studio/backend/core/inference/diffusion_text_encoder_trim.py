@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Drop the unused ``lm_head`` of a Qwen3-VL text encoder whose pipeline reads only hidden states.
-
-Qwen-Image-2.1 reads ``hidden_states[-1]`` (diffusers ``QwenImage21Pipeline._get_qwen_prompt_embeds``); the untied
-151936 x 4096 head runs after every hidden state, so replacing it with :class:`NoLogitsHead` is bit-identical. The
-vision tower stays: edit requests on the same pipeline run ``model.visual``. Kill switch: ``UNSLOTH_TE_KEEP_LM_HEAD=1``.
-"""
+"""Drops unused lm_head of Qwen3-VL text encoder (bit-identical); vision tower must stay, since edit
+requests run model.visual; kill UNSLOTH_TE_KEEP_LM_HEAD=1"""
 
 from __future__ import annotations
 
@@ -17,10 +13,46 @@ from typing import Any, Optional
 KEEP_LM_HEAD_ENV = "UNSLOTH_TE_KEEP_LM_HEAD"
 
 # By class name so this module never imports transformers.
-_HIDDEN_STATE_ONLY_CLASSES = frozenset({"Qwen3VLForConditionalGeneration"})
+_HIDDEN_STATE_ONLY_CLASSES = frozenset(
+    {
+        "Qwen3VLForConditionalGeneration",
+        "Qwen3ForCausalLM",
+        "Qwen2_5_VLForConditionalGeneration",
+        "Mistral3ForConditionalGeneration",
+        # HiDream's text_encoder_4: the pipeline stacks its hidden states and never reads logits
+        "LlamaForCausalLM",
+    }
+)
 
-# FLUX.3 Klein stacks hidden_states[4..32] (diffusers Flux3TextEncoderStep) and never reads logits.
-_HIDDEN_STATE_ONLY_FAMILIES = frozenset({"qwen-image-2.1", "flux.3-klein", "flux.3-klein-base"})
+# Every image pipeline below reads encoder hidden states and never logits (diffusers prompt encoders: FLUX.2 klein
+# stacks hidden_states (9, 18, 27), FLUX.2-dev (10, 20, 30), Qwen-Image and its edit / layered releases [-1],
+# HunyuanImage-2.1 [-3], Z-Image and Lumina-2 [-2], Krea-2 a config-driven stack, FLUX.1 T5's last state), which is
+# also what lets their int8 ConvRot files leave the head out. A tied head (klein 4B, Z-Image) is kept by the trim and
+# costs nothing; the headless classes (T5EncoderModel, Qwen3Model, Qwen3VLModel, Gemma2Model) have none to drop.
+_HIDDEN_STATE_ONLY_FAMILIES = frozenset(
+    {
+        "qwen-image-2.1",
+        "flux.2-klein",
+        "flux.2-dev",
+        "qwen-image",
+        "qwen-image-edit",
+        "qwen-image-layered",
+        "hunyuanimage-2.1",
+        "z-image",
+        "krea-2",
+        "lumina-2",
+        "flux.1",
+        "flux.1-kontext",
+        # text_encoder_4 (Llama-3.1-8B): all hidden states stacked, no logits
+        "hidream-i1",
+        # Qwen3VLModel, headless; a hidden-state stack (0, 3, ..., 35)
+        "ideogram-4",
+        # FLUX.3 Klein stacks hidden_states[4..32] (diffusers Flux3TextEncoderStep)
+        "flux.3-klein",
+        "flux.3-klein-base",
+        "moss-image",
+    }
+)
 
 LM_HEAD_KEY = "lm_head.weight"
 

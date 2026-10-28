@@ -81,8 +81,7 @@ test("reasoning budget and message round-trip through per-model storage", () => 
 });
 
 test("a record only claims v6 when it carries a reasoning setting", () => {
-  // toStoredConfig stamps the oldest version that understands every field present,
-  // so a v5 client can still rewrite a record that pins nothing newer than its own.
+  // toStoredConfig stamps the oldest version that understands every field present.
   const storedVersion = () =>
     (
       Object.values(

@@ -1,17 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The optimization plan: which steps a load will try, in what order, and why a step is declined.
-
-Every decision here is the SAME predicate the primitives apply (compile_eligible, the fp16 U-Net offload rule,
-family flags, the graph layer's eligibility), evaluated up front so the audit can name the reason. The primitives
-still decide at apply time; the plan never overrides a registered family. For a family with no data the plan uses
-the denoiser profile to decline a compile up front (no repeated blocks, graph-break suspects in a discovered block)
-rather than letting it fail inside the load.
-
-:func:`compile_cache_kwargs` is the one resolver for the compile-cache fingerprint kwargs (load-time and deferred
-image compile, and the opt-in video compile cache), so the bundle keys on what the compile will actually use.
-"""
+"""Ordered optimizer steps and decline reasons, using the same predicates the primitives apply;
+primitives still decide at apply time and the plan never overrides a registered family"""
 
 from __future__ import annotations
 

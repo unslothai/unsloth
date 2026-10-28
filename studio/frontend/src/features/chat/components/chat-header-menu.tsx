@@ -31,7 +31,7 @@ import {
   Archive03Icon,
   BubbleChatTemporaryIcon,
   Cancel01Icon,
-  Copy01Icon,
+  CollapseIcon,
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
@@ -46,6 +46,7 @@ import {
   ViewIcon,
   ViewOffSlashIcon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { ForkIcon } from "@/lib/fork-icon";
 import { type ReactNode, useSyncExternalStore } from "react";
@@ -64,8 +65,6 @@ import {
   hasPreStreamRunReservation,
   subscribePreStreamRunReservations,
 } from "../utils/pre-stream-run-reservation";
-import { deriveContextUsageBar } from "../lib/context-usage-bar-state";
-import { UsageRing } from "./context-usage-bar";
 import {
   type ConversationExportFormat,
   chatExportOptions,
@@ -73,7 +72,11 @@ import {
   getSidebarItemThreadIds,
   regenerateChatTitleWithToast,
 } from "./chat-row-menu";
-import { OpenChatFolderItem, UploadToChatFolderItem } from "./open-chat-folder-item";
+import {
+  chatFolderSessionId,
+  OpenChatFolderItem,
+  UploadToChatFolderItem,
+} from "./open-chat-folder-item";
 
 const MENU = "library-actions-menu";
 const ICON = "size-icon";
@@ -143,7 +146,7 @@ function TemporaryChatButton({
           className={cn(
             "flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
             temporary
-              ? "bg-primary/10 text-primary hover:bg-primary/15"
+              ? "bg-wash-10 text-foreground hover:bg-wash-15"
               : "text-nav-fg hover:bg-nav-surface-hover hover:text-black dark:hover:text-white",
           )}
           aria-label={label}
@@ -178,16 +181,6 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
   const busy = useChatRuntimeStore((state) =>
     state.modelLoading || Boolean(state.runningByThreadId[menu.item.id]),
   ) || preStreamRunActive || liveRunActive;
-  const usedPercent = useChatRuntimeStore((state) => {
-    const usage =
-      state.activeThreadId === menu.item.id
-        ? state.contextUsage
-        : state.contextUsageByThreadId[menu.item.id];
-    return deriveContextUsageBar({
-      used: usage?.contextTokens ?? usage?.totalTokens ?? null,
-      total: state.loadedContextLength,
-    })?.percent ?? null;
-  });
   const compact = () => {
     const runtime = useChatRuntimeStore.getState();
     if (
@@ -244,6 +237,7 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
       >
         {t("library.menu.regenerateTitle")}
       </Item>
+      <DropdownMenuSeparator className="mx-3" />
       <Item
         icon={menu.pinned ? PinOffIcon : PinIcon}
         onSelect={menu.togglePin}
@@ -286,11 +280,7 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
       </Item>
       <DropdownMenuSeparator className="mx-3" />
       <Item
-        glyph={
-          <span className="flex [--track:color-mix(in_srgb,currentColor_30%,transparent)]">
-            <UsageRing percent={usedPercent} stroke="stroke-current" />
-          </span>
-        }
+        icon={CollapseIcon}
         onSelect={compact}
         disabled={menu.item.type !== "single" || busy}
       >
@@ -304,6 +294,7 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
       >
         {t("library.chats.menu.fork")}
       </Item>
+      <DropdownMenuSeparator className="mx-3" />
       <DropdownMenuSub>
         <DropdownMenuSubTrigger className="gap-2.5">
           <HugeiconsIcon
@@ -412,6 +403,8 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
           ))}
         </DropdownMenuSubContent>
       </DropdownMenuSub>
+      {/* Only with the folder items, or it doubles the next separator. */}
+      {chatFolderSessionId(menu.item) ? <DropdownMenuSeparator className="mx-3" /> : null}
       <OpenChatFolderItem item={menu.item} />
       <UploadToChatFolderItem item={menu.item} />
       <DropdownMenuSeparator className="mx-3" />
@@ -425,7 +418,7 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
   );
 }
 
-/** A saved chat's "…" menu, or the temporary toggle on a new chat. Turning a saved chat temporary is not offered: it would quietly stop saving a chat the user kept. */
+/** A saved chat's menu, or the temporary toggle on a new chat. Saved chats cannot turn temporary. */
 export function ChatHeaderMenu({
   temporary,
   onToggleTemporary,

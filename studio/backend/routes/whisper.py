@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""whisper.cpp prebuilt status endpoint, kept for old clients.
-
-GET  /api/whisper/update-status  -> always ``supported: False`` with no update
-
-whisper.cpp is retired: Unsloth Studio no longer installs, updates or re-pairs it, so this answers without
-probing the install or GitHub. The response shape is unchanged so older frontends still parse it.
-"""
+"""GET /api/whisper/update-status, kept for old clients: whisper.cpp is retired, so it always answers
+``supported: False`` without probing the install or GitHub; the response shape is unchanged."""
 
 from __future__ import annotations
 

@@ -130,8 +130,8 @@ test("the Voice picker shows Whisper rows from their Transformers repos", () => 
 
 test("the whisper.cpp notification setting is gone; its stored keys still reset", () => {
   const general = readSrc("features/settings/tabs/general-tab.tsx");
-  assert.doesNotMatch(general, /channel="whisper"/);
-  assert.match(general, /channel="audio"/);
+  assert.doesNotMatch(general, /channel(=|: )"whisper"/);
+  assert.match(general, /channel: "audio"/);
   const search = readSrc("features/settings/settings-search.ts");
   assert.doesNotMatch(search, /showWhisperUpdates/);
   const locales = readdirSync(new URL("../src/i18n/locales/", import.meta.url))
@@ -140,7 +140,8 @@ test("the whisper.cpp notification setting is gone; its stored keys still reset"
   for (const name of locales) {
     const source = readSrc(`i18n/locales/${name}`);
     assert.doesNotMatch(source, /showWhisperUpdates/, name);
-    assert.match(source, /showAudioCppUpdates/, name);
+    assert.doesNotMatch(source, /whisperCppVersion/, name);
+    assert.match(source, /audioHint/, name);
   }
   assert.ok(NOTIFICATION_PREF_KEYS.includes("unsloth_whisper_notification_frequency"));
 });

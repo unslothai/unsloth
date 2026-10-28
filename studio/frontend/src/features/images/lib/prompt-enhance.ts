@@ -10,6 +10,8 @@ export const PROMPT_UPSAMPLER_ROUTES = {
   download: "/api/inference/images/prompt-upsampler/download",
   cancel: "/api/inference/images/prompt-upsampler/cancel",
   preview: "/api/inference/images/prompt-upsampler/preview",
+  warm: "/api/inference/images/prompt-upsampler/warm",
+  release: "/api/inference/images/prompt-upsampler/release",
 } as const;
 
 export const ENHANCE_PROMPT_LABEL = "Enhance prompt";
@@ -41,6 +43,11 @@ export interface PromptUpsamplerStatus {
   size_bytes: number;
   mmproj_size_bytes: number;
   mmproj_downloaded: boolean;
+  // False while an earlier quant serves (downloaded above); an older backend without it reads downloaded && mmproj.
+  current_downloaded: boolean;
+  current_missing_bytes: number;
+  // "" from an older backend.
+  current_filename: string;
   // Local files from the env overrides: no repo download is offered beside them.
   override: boolean;
   download: PromptUpsamplerDownload;
@@ -90,18 +97,39 @@ export function parsePromptUpsamplerStatus(raw: unknown): PromptUpsamplerStatus 
     size_bytes: num(body.size_bytes) ?? 0,
     mmproj_size_bytes: num(body.mmproj_size_bytes) ?? 0,
     mmproj_downloaded: body.mmproj_downloaded === true,
+    current_downloaded:
+      typeof body.current_downloaded === "boolean"
+        ? body.current_downloaded
+        : body.downloaded === true && body.mmproj_downloaded === true,
+    current_missing_bytes: num(body.current_missing_bytes) ?? 0,
+    current_filename: str(body.current_filename) ?? "",
     override: body.override === true,
     download,
   };
 }
 
-/** The model or its vision projector (edits) is missing, so the Download control stays offered. */
+/** The model, its vision projector (edits) or the current default quant is missing. */
 export function upsamplerNeedsDownload(status: PromptUpsamplerStatus): boolean {
-  return status.supported && !status.override && (!status.downloaded || !status.mmproj_downloaded);
+  return (
+    status.supported &&
+    !status.override &&
+    (!status.downloaded || !status.mmproj_downloaded || !status.current_downloaded)
+  );
+}
+
+/** An earlier quant serves; a model with no projector counts when it is not the default file (the Download then
+ * fetches both, not the projector alone). */
+export function upsamplerServesEarlierQuant(status: PromptUpsamplerStatus): boolean {
+  if (!status.downloaded || status.current_downloaded) return false;
+  return (
+    status.mmproj_downloaded ||
+    (status.current_filename !== "" && status.filename !== "" && status.filename !== status.current_filename)
+  );
 }
 
 /** Bytes the Download button fetches: whichever of the model and the vision projector is still missing. */
 export function upsamplerDownloadBytes(status: PromptUpsamplerStatus): number {
+  if (upsamplerServesEarlierQuant(status)) return status.current_missing_bytes;
   return (
     (status.downloaded ? 0 : status.size_bytes) +
     (status.mmproj_downloaded ? 0 : status.mmproj_size_bytes)
@@ -135,6 +163,28 @@ export function promptUpsamplerCapability(
   const supported = !external && status?.loaded === true && status.supports_prompt_upsampler === true;
   return { supported, defaultOn: supported && status?.prompt_upsampler_default === true };
 }
+
+/** Whether to start the upsampler ahead of the first enhanced run: Enhance on, its files downloaded, no download
+ *  running. The backend decides the rest (GPU owner, free memory) and answers idempotently. */
+export function shouldWarmUpsampler(
+  enabled: boolean,
+  status: Pick<PromptUpsamplerStatus, "supported" | "downloaded" | "download"> | null,
+): boolean {
+  return enabled && status !== null && status.supported && status.downloaded && !status.download.downloading;
+}
+
+/** Warm outcomes that clear on their own (a render, a load, training or a GPU handover in progress, a request
+ *  holding the server): the panel asks again a little later. Memory, placement and setup outcomes do not. */
+export const WARM_RETRY_OUTCOMES: ReadonlySet<string> = new Set([
+  "generating",
+  "loading",
+  "gpu",
+  "busy",
+  "stopped",
+  "cancelled",
+]);
+export const WARM_RETRY_DELAY_MS = 15_000;
+export const WARM_RETRY_LIMIT = 8;
 
 /** The toggle's value: a one-off restore override, else the stored per-family choice, else the family default. */
 export function resolveEnhancePrompt(args: {
@@ -257,17 +307,10 @@ export function previewSignature(body: PromptUpsamplerPreviewRequest): string {
   return JSON.stringify([body.prompt.trim(), body.variant ?? null, refs]);
 }
 
-/** Non-blocking notice after a run that asked for enhancement and did not get it, else null. */
+/** Notice when the upsampler failed, else null; "unavailable" stays silent. */
 export function enhancementNotice(
   outcome: string | null | undefined,
 ): { title: string; description: string } | null {
-  if (outcome === "unavailable") {
-    return {
-      title: "Prompt used as typed",
-      description:
-        "The prompt upsampler could not run (not downloaded yet, or llama.cpp is unavailable), so the prompt ran unchanged.",
-    };
-  }
   if (outcome === "failed") {
     return {
       title: "Prompt used as typed",

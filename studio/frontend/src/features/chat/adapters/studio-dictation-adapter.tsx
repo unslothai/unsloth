@@ -36,9 +36,7 @@ export function cancelActiveStudioDictation(): void {
   session?.cancel();
 }
 
-/** Routes dictation to the engine chosen in Voice settings, resolved at listen() time so
- *  switching engines applies without reloading the chat runtime. */
-/** local and custom transcription record through the media recorder. */
+/** Local and custom transcription record through the media recorder. */
 function usesRecordedAudio(dictationEngine: DictationEngine): boolean {
   return dictationEngine !== "browser";
 }
@@ -57,8 +55,7 @@ function customSttConfigured(): boolean {
 }
 
 export class StudioDictationAdapter implements DictationAdapter {
-  // Chat linked in Recent dictations. undefined follows the active single chat; null records no
-  // chat (composers outside it, e.g. Compare).
+  // undefined follows the active chat; null links no chat (e.g. Compare).
   private readonly chatId: string | null | undefined;
 
   constructor(options: { chatId?: string | null } = {}) {
@@ -79,11 +76,9 @@ export class StudioDictationAdapter implements DictationAdapter {
 
   listen(): StudioDictationSession {
     const session = this.createSession();
-    // A second entry point (chat, Compare, settings test) replaces the active session; cancel the
-    // old one so it cannot keep the mic open or save a transcript with no discard button.
+    // Cancel the old session so it cannot hold the mic or save an undiscardable transcript.
     cancelActiveStudioDictation();
     activeSession = session;
-    // Forget the session once it ends so a later cancel is a no-op.
     const clear = () => {
       if (activeSession === session) {
         activeSession = null;
@@ -122,7 +117,6 @@ export class StudioDictationAdapter implements DictationAdapter {
   }
 }
 
-/** Whether dictation can run now for the chosen engine. */
 export function isStudioDictationAvailable(
   dictationEngine: DictationEngine = useVoiceSettingsStore.getState()
     .dictationEngine,
@@ -130,7 +124,6 @@ export function isStudioDictationAvailable(
   return StudioDictationAdapter.isSupported(dictationEngine);
 }
 
-/** Explain why dictation can't start and point the user to the local model. */
 export function notifyStudioDictationUnavailable(
   dictationEngine: DictationEngine = useVoiceSettingsStore.getState()
     .dictationEngine,

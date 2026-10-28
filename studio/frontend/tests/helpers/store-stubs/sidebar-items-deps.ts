@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The transitive weight of use-chat-sidebar-items: the chat API, Dexie-backed storage and
-// the zustand stores. Only the calls archiveAllChatItems makes are modelled; everything
-// else is an inert stub so the real batching and notification bookkeeping runs.
-
 export interface StubThread {
   id: string;
   archived?: boolean;
@@ -16,7 +12,6 @@ export interface StubThread {
 interface Recorder {
   notifications: number;
   patched: string[];
-  /** Ordered "patch:<id>" / "fail:<id>" / "notify" log, for asserting when the batch announces. */
   events: string[];
   threads: StubThread[];
   failOn: Set<string>;
@@ -61,7 +56,6 @@ export async function updateStoredChatThread(
   _patch: unknown,
   options: { notify?: boolean } = {},
 ): Promise<StubThread> {
-  // a slow thread settles a macrotask later, so a rejecting sibling resolves well ahead of it
   if (recorder.slowOn.has(threadId)) {
     await new Promise((resolve) => setTimeout(resolve, 0));
   }

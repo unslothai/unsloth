@@ -58,7 +58,6 @@ test("an unclipped pane keeps its own span", () => {
 });
 
 test("a pane clipped by an ancestor reports the visible span", () => {
-  // The list pane runs past the bottom of the dialog body that scrolls it.
   const span = clipSpan({ top: 100, bottom: 900 }, [{ top: 0, bottom: 400 }]);
   assert.deepEqual(span, { top: 100, bottom: 400 });
 });

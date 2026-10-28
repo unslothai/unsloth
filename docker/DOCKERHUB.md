@@ -2,7 +2,7 @@
 
 Fine-tune and run LLMs, vision, audio and diffusion models with no setup. Every image carries the training stack (PyTorch 2.11 with CUDA 12.8, [Unsloth](https://github.com/unslothai/unsloth), unsloth-zoo, bitsandbytes, TRL, PEFT, plus xformers on `linux/amd64`), JupyterLab with the [Unsloth notebooks](https://github.com/unslothai/notebooks), and prebuilt llama.cpp. The `latest` image adds audio.cpp (CUDA build on `linux/amd64`) for Unsloth Studio's text-to-speech, music and speech-to-text models.
 
-Source: [`docker/`](https://github.com/unslothai/unsloth/tree/main/docker). Guide: [docs.unsloth.ai](https://docs.unsloth.ai/get-started/install/docker).
+Source: [`docker/`](https://github.com/unslothai/unsloth/tree/main/docker). Guide: [unsloth.ai/docs](https://unsloth.ai/docs/get-started/install/docker).
 
 ## Quick start
 
@@ -93,7 +93,7 @@ docker run --rm --gpus all --ipc=host -v "$PWD":/workspace/host -w /workspace/ho
 `latest` starts without a GPU on its own. Unsloth Studio chat with GGUF models, JupyterLab and the GGUF tooling work; training does not. `core` refuses to start without a GPU unless you opt in:
 
 ```bash
-docker run -d -p 8000:8000 -p 8888:8888 -v unsloth-workspace:/workspace unsloth/unsloth
+docker run -d --name unsloth -p 8000:8000 -p 8888:8888 -v unsloth-studio:/opt/unsloth-studio -v unsloth-workspace:/workspace unsloth/unsloth
 docker run --rm -e UNSLOTH_ALLOW_CPU=1 unsloth/unsloth:core python -c "import unsloth"
 ```
 
@@ -194,7 +194,7 @@ Both images refresh the notebooks from GitHub on each start, which costs 10 to 2
 
 ## Help
 
-- [Documentation](https://docs.unsloth.ai)
+- [Documentation](https://unsloth.ai/docs)
 - [r/unsloth](https://reddit.com/r/unsloth)
 - [Issues](https://github.com/unslothai/unsloth/issues)
 

@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Manage FastFlowLM NPU models through a private Lemonade server.
-
-Installs and validates the runtime, manages its catalog, and loads models by
-``lemonade:<id>``. Health checks confirm residency and context length.
-GGUF models are unsupported. This module does not import the GPU stack.
-"""
+"""Runs FastFlowLM NPU models via a private Lemonade server; loads lemonade:<id>; GGUF unsupported;
+does not import the GPU stack."""
 
 from __future__ import annotations
 
@@ -46,11 +42,10 @@ DEFAULT_CONTEXT_LENGTH = 8192
 # Names the lemond install whose NPU passed `flm validate`, so a restart needs no new Enable.
 _VALIDATED_MARKER = "npu_validated.json"
 
-# Model modes Unsloth's chat cannot serve: embeddings and transcription have no chat endpoint,
-# and a single-turn ("flash") model answers only the first message of a conversation.
+# Unservable modes: no chat endpoint for embeddings/transcription; single-turn answers once
 _EXCLUDED_LABELS = frozenset({"embeddings", "transcription", "single-turn"})
 # Lemonade reports config.json max_position_embeddings, but FastFlowLM engines can fail above a lower
-# limit (FastFlowLM 1.0.7; recheck on pin bumps). https://fastflowlm.com/docs/models/qwen/#-model-card-qwen38-27b
+# limit (FastFlowLM 1.0.9; recheck on pin bumps). https://fastflowlm.com/docs/models/qwen/#-model-card-qwen38-27b
 _FLM_CONTEXT_LIMITS = {"qwen3.8-mtp:27b": 8192}
 
 _VALIDATE_PROBLEMS = (
@@ -438,8 +433,8 @@ class LemonadeNpuBackend:
             raise NpuError("No AMD Ryzen AI NPU was found on this machine.")
         if hardware.get("family") == "XDNA2" and hardware.get("enabled") is False:
             raise NpuError(
-                "The AMD NPU is off by default. Start Unsloth Studio with "
-                "UNSLOTH_STUDIO_ENABLE_NPU=1 to use it."
+                "The AMD NPU is turned off by UNSLOTH_STUDIO_ENABLE_NPU. Unset it or set it "
+                "to 1, then restart Unsloth Studio to use the NPU."
             )
         if not hardware.get("supported"):
             raise NpuError(
@@ -647,14 +642,8 @@ class LemonadeNpuBackend:
         return model
 
     def download(self, model_id: str) -> Iterator[dict[str, Any]]:
-        """Download a model, yielding progress events, then a final ``complete`` one.
-
-        Studio fetches the files itself when it can read FastFlowLM's file list, which lets an
-        interrupted download continue where it stopped; lemond's pull then only registers the
-        model. Otherwise lemond downloads it and its events are relayed.
-
-        Raises unless lemond sent its ``complete`` event: a stream cut short leaves a partial model.
-        """
+        """Raises unless lemond sends its complete event, since a cut-short stream leaves a partial
+        model."""
         model = self._model(model_id)
         server = self._ensure_running()
         files = (

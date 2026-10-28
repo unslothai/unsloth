@@ -11,14 +11,16 @@
 
 from .llama import *
 from .llama import (
+    _decode_rotary_seq_len,
     original_apply_qkv,
     original_apply_o,
     _gqa_decode_scores,
     _gqa_decode_values,
     _LazyDeviceScratch,
 )
+from .._gc_passes import collect_garbage
 from ._utils import __version__
-from ._utils import move_to_device, per_layer_device, DEVICE_TYPE
+from ._utils import move_to_device, per_layer_device, refresh_moved_layer_devices, DEVICE_TYPE
 from unsloth_zoo.utils import _get_dtype, Version
 from unsloth_zoo.hf_utils import dtype_from_config
 from ..utils.packing import get_packed_info_from_kwargs
@@ -156,9 +158,9 @@ def Gemma2Attention_fast_forward(
 
     bsz, q_len, _ = hidden_states.size()
 
-    n_heads = self.config.num_attention_heads
+    n_heads = self.__dict__.get("_unsloth_tp_heads", self.config.num_attention_heads)
     n_groups = self.num_key_value_groups
-    n_kv_heads = self.config.num_key_value_heads
+    n_kv_heads = self.__dict__.get("_unsloth_tp_kv_heads", self.config.num_key_value_heads)
     head_dim = self.head_dim
     assert n_kv_heads * n_groups == n_heads
 
@@ -232,8 +234,7 @@ def Gemma2Attention_fast_forward(
             },
         )
 
-        # PrefixGrouper seg table rides in **kwargs from the GRPO logprob forward; misuse (KV cache /
-        # padding mask) raises. None means the byte-identical default.
+        # PrefixGrouper seg table rides in kwargs; None is the default path, and KV cache or padding mask misuse raises
         _pg_seg = resolve_prefix_seg_info(kwargs, past_key_value, attention_mask)
         context = AttentionContext(
             bsz = bsz,
@@ -243,6 +244,7 @@ def Gemma2Attention_fast_forward(
             head_dim = head_dim,
             requires_grad = hidden_states.requires_grad,
             seq_info = seq_info,
+            training = self.training,
             attention_mask = attention_mask,
             causal_mask = causal_mask,
             sliding_window = sliding_window,
@@ -405,10 +407,8 @@ def Gemma2Attention_fast_forward_inference(
             device = device,
         )
 
-        # Gemma 9b should use 256, not hidden_size // num_attention_heads (224); 27b uses the derived value,
-        # so default to the config. See google/gemma_pytorch commit 03e6575.
+        # Gemma 9b uses query_pre_attn_scalar 256, not hidden_size // heads (224).
         self.scalar = 1.0 / math_sqrt(self.config.query_pre_attn_scalar)
-        # self.scalar = 1.0 / math_sqrt(self.config.hidden_size // self.config.num_attention_heads)
         self.half_head_dim = head_dim // 2
         self.t = self.config.attn_logit_softcapping
         self.reciprocal_t = 1.0 / self.config.attn_logit_softcapping
@@ -433,7 +433,13 @@ def Gemma2Attention_fast_forward_inference(
     Kn = Kn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
     Vn = Vn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
 
-    cos, sin = self.rotary_emb.get_cached(kv_seq_len, Qn.device.index)
+    # rotary_seq_len (once per step from the decode loop) covers explicit positions past the KV length.
+    rotary_seq_len = kwargs.get("rotary_seq_len")
+    if rotary_seq_len is not None and rotary_seq_len > kv_seq_len:
+        self.rotary_emb.extend_rope_embedding(Vn, rotary_seq_len + 1)
+        cos, sin = self.rotary_emb.get_cached(rotary_seq_len, Qn.device.index)
+    else:
+        cos, sin = self.rotary_emb.get_cached(kv_seq_len, Qn.device.index)
     # Transformers 5.x: position_ids may be [batch, full_seq_len]; slice to last.
     if position_ids.dim() >= 2 and position_ids.shape[-1] > 1:
         position_ids = position_ids[:, -1:]
@@ -486,15 +492,13 @@ def Gemma2Attention_fast_forward_inference(
 
     _, _, cached_len, _ = Knn.shape
 
-    # Gemma2 uses manual matmul for all batch sizes since SDPA lacks softcapping (tanh logit scaling);
-    # if PyTorch adds a softcap param, consider SDPA for bsz > 1 to match llama/qwen3.
+    # Manual matmul: SDPA has no softcapping.
     Qn *= self.scalar
     # (Q * scalar) @ K beats (Q @ K) * scalar for stopping overflows; see ggerganov/llama.cpp#7805 (comment 2153349963).
     # Grouped query attention: the KV heads are read in place, not repeated per query head.
     A = _gqa_decode_scores(Qn, Knn, self.attention[:, :, :, :cached_len])
 
-    # Softcapping must happen BEFORE the mask is applied; see google-deepmind/gemma _modules.py and
-    # transformers gemma2 eager_attention_forward.
+    # Softcapping must happen BEFORE the mask is applied.
     A *= self.reciprocal_t
     A.tanh_()
     A *= self.t
@@ -568,8 +572,15 @@ def Gemma2Model_fast_forward_inference(
         # One row has no padding; the raw 2D mask cannot be sliced to the sliding window.
         SWA = None
         GA = None
+    # Once per step for every layer, never per layer (one host sync at most).
+    rotary_seq_len = _decode_rotary_seq_len(
+        getattr(getattr(self.model.layers[0], "self_attn", None), "rotary_emb", None),
+        seq_len + 1,
+        position_ids,
+    )
     next_decoder_cache = []
     block_swap = getattr(self.model.layers, "_unsloth_block_swap", None)
+    refresh_moved_layer_devices(self.model.layers, block_swap)
     for idx, decoder_layer in enumerate(self.model.layers):
         if block_swap is not None:
             block_swap.enter(idx)
@@ -599,6 +610,7 @@ def Gemma2Model_fast_forward_inference(
             use_sliding_window = use_sliding_window,
             flash_decode = flash_decode,
             leftpad = leftpad,
+            rotary_seq_len = rotary_seq_len,
         )
         hidden_states = fast_rms_layernorm_inference_gemma(
             decoder_layer.post_attention_layernorm,
@@ -657,8 +669,7 @@ class FastGemma2Model(FastLlamaModel):
         PeftModelForCausalLM.forward = PeftModel_fast_forward
         fix_prepare_inputs_for_generation(Gemma2ForCausalLM)
 
-        # Static KV Cache landed in 4.38.0 and made training much slower (#168,
-        # huggingface/transformers#27931), so the old rotary embeddings are retained.
+        # Static KV cache (4.38.0) made training slower, so the old rotary embeddings are kept.
         import transformers.models.gemma2.modeling_gemma2
 
         transformers.models.gemma2.modeling_gemma2.Gemma2RotaryEmbedding = GemmaFixedRotaryEmbedding
@@ -687,14 +698,9 @@ class FastGemma2Model(FastLlamaModel):
 
         for name, module in model.named_modules():
             if isinstance(module, Gemma2RMSNorm):
-                # Must be in float32 (keras-nlp gemma/rms_normalization.py#L36); the +1 is left to the Triton kernel
-                # itself.
+                # Must be float32; the Triton kernel applies the +1 itself.
                 if not hasattr(module, "variance_epsilon"):
                     module.variance_epsilon = module.eps  # Gemma doesn't use variance_epsilon
 
-        import gc
-
-        for _ in range(3):
-            gc.collect()
-            clean_gpu_cache()
+        collect_garbage(after = clean_gpu_cache)
         return model, tokenizer

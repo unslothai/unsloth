@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Seed a conventional video pipeline with hosted pre-quantized denoisers, all-or-nothing.
-
-The MoE's second expert uses the ``task`` slot with NO filename fallback: it would load expert 1 as expert 2.
-"""
+"""Hosted denoisers seed a video pipeline all or nothing; MoE expert 2 uses task slot, never filename."""
 
 from __future__ import annotations
 
@@ -169,6 +166,10 @@ def denoiser_prequant_pipe_kwargs(
                     )
                 return {}
             seeded[component] = module
+            from .diffusion_prequant_cache import note_hit, path_in_cache
+
+            if getattr(source, "kind", None) == "path" and path_in_cache(source.location):
+                note_hit(source.location, logger)
             gc.collect()
         if logger is not None:
             logger.info(

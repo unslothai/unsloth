@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-# Keep this test runnable where optional logging deps are not installed.
 if "structlog" not in sys.modules:
 
     class _DummyLogger:

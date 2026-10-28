@@ -255,6 +255,49 @@ def test_self_check_under_inference_mode():
         assert LH._self_check(device, dtype) is True
 
 
+def _self_check_in_checkpoint(device, dtype):
+    # Cold first call from inside a non-reentrant checkpointed layer (DDP / FSDP2, Gemma-4
+    # E-series): returns the cached verdict, the layer's run count and whether w got a grad.
+    from torch.utils.checkpoint import checkpoint
+
+    LH._SELF_CHECK.pop((str(device), dtype), None)
+    calls = []
+    w = (torch.randn(8, 8, device = device) * 0.1).requires_grad_()
+
+    def layer(x):
+        calls.append(1)
+        h = (x @ w).sigmoid()
+        LH._self_check(device, dtype)
+        return (h @ w).sigmoid()
+
+    checkpoint(layer, torch.randn(4, 8, device = device), use_reentrant = False).sum().backward()
+    return LH._SELF_CHECK[(str(device), dtype)], len(calls), w.grad is not None
+
+
+def test_self_check_stays_out_of_a_non_reentrant_checkpoint(monkeypatch):
+    # The check's tensors were packed into the layer's checkpoint and its autograd.grad recomputed
+    # the layer mid-forward: CheckpointError, cached as False, the kernel off for the process.
+    def kernel(q, k, v, lo, hi, scale):
+        groups = q.shape[1] // k.shape[1]
+        out = torch.nn.functional.scaled_dot_product_attention(
+            q, k.repeat_interleave(groups, 1), v.repeat_interleave(groups, 1), is_causal = True
+        )
+        return out.transpose(1, 2)
+
+    monkeypatch.setattr(LH, "large_head_attention", kernel)
+    monkeypatch.setattr(LH, "_measured_faster_on", lambda device: True)
+    monkeypatch.setattr(LH, "_dense_intervals", lambda *args: (None, None))
+    key = (str(torch.device("cpu")), torch.float32)
+    monkeypatch.setitem(LH._SELF_CHECK, key, None)
+    assert _self_check_in_checkpoint(torch.device("cpu"), torch.float32) == (True, 2, True)
+
+
+@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
+def test_real_self_check_stays_out_of_a_non_reentrant_checkpoint():
+    device, dtype = torch.device("cuda", torch.cuda.current_device()), _cuda_dtype()
+    assert _self_check_in_checkpoint(device, dtype) == (True, 2, True)
+
+
 @pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
 def test_patch_self_checks_so_compiled_graphs_use_the_kernel(monkeypatch):
     from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
@@ -443,8 +486,7 @@ def test_router_falls_back_to_sdpa_on_kernel_oom(monkeypatch):
 
 @pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
 def test_router_skips_the_mask_scan_when_it_cannot_use_the_result(monkeypatch):
-    # The scan needs a host sync: inference masks would pay it on every layer, and a failed self
-    # check makes the result unusable.
+    # The scan needs a host sync, and a failed self check makes the result unusable.
     def scan(*args, **kwargs):
         raise AssertionError("mask scanned")
 
@@ -455,12 +497,43 @@ def test_router_skips_the_mask_scan_when_it_cannot_use_the_result(monkeypatch):
     monkeypatch.setattr(LH, "intervals_from_mask", scan)
     q = torch.randn(1, 4, 24, 512, device = "cuda", dtype = dtype)
     kv = torch.randn(1, 2, 24, 512, device = "cuda", dtype = dtype)
-    with torch.inference_mode():
-        mask = _causal(24).cuda()[None, None]
-        assert router(_Module(), q, kv, kv, mask)[0] == "original"
     monkeypatch.setitem(LH._SELF_CHECK, (str(device), dtype), False)
     assert router(_Module(), q, kv, kv, _causal(24).cuda()[None, None])[0] == "original"
-    assert len(calls) == 2
+    assert len(calls) == 1
+
+
+@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
+def test_router_leaves_an_explicit_is_causal_beside_a_mask_to_sdpa():
+    calls, original = _sentinel()
+    router = LH._make_router(original)
+    dtype = _cuda_dtype()
+    q = torch.randn(1, 4, 24, 512, device = "cuda", dtype = dtype)
+    kv = torch.randn(1, 2, 24, 512, device = "cuda", dtype = dtype)
+    allowed = torch.ones(1, 1, 24, 24, device = "cuda", dtype = torch.bool)
+    before = LH.LARGE_HEAD_ENGAGED["calls"]
+    assert router(_Module(), q, kv, kv, allowed, is_causal = True)[0] == "original"
+    assert calls[-1]["is_causal"] is True and LH.LARGE_HEAD_ENGAGED["calls"] == before
+    causal = _causal(24).cuda()[None, None]
+    assert router(_Module(), q, kv, kv, causal)[0] != "original"
+    assert router(_Module(), q, kv, kv, causal, is_causal = False)[0] != "original"
+    assert LH.LARGE_HEAD_ENGAGED["calls"] == before + 2 and len(calls) == 1
+
+
+@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
+def test_router_falls_back_to_sdpa_on_mask_scan_oom(monkeypatch):
+    def oom(*args, **kwargs):
+        raise torch.cuda.OutOfMemoryError("CUDA out of memory.")
+
+    calls, original = _sentinel()
+    router = LH._make_router(original)
+    device, dtype = torch.device("cuda", torch.cuda.current_device()), _cuda_dtype()
+    assert LH._self_check(device, dtype) is True
+    monkeypatch.setattr(LH, "intervals_from_mask", oom)
+    q = torch.randn(1, 4, 24, 512, device = "cuda", dtype = dtype)
+    kv = torch.randn(1, 2, 24, 512, device = "cuda", dtype = dtype)
+    before = LH.LARGE_HEAD_ENGAGED["fallback"]
+    assert router(_Module(), q, kv, kv, _causal(24).cuda()[None, None])[0] == "original"
+    assert LH.LARGE_HEAD_ENGAGED["fallback"] == before + 1 and len(calls) == 1
 
 
 def test_pre_ampere_keeps_sdpa_without_compiling(monkeypatch):
@@ -496,3 +569,259 @@ def test_install_skipped_when_every_self_check_fails(monkeypatch):
         assert ALL_ATTENTION_FUNCTIONS["sdpa"] is saved
     finally:
         ALL_ATTENTION_FUNCTIONS["sdpa"] = saved
+
+
+def test_enabled_reads_the_same_value_compiled_and_eager(monkeypatch):
+    # An lru_cache wrapper is traced through by dynamo (with a warning), so a compiled caller
+    # re-read the environment while eager callers kept the cached value.
+    import sys
+
+    # dynamo resolves globals through sys.modules; this test loads the file standalone.
+    monkeypatch.setitem(sys.modules, LH.__name__, LH)
+    monkeypatch.setenv("UNSLOTH_HD512_ATTENTION", "1")
+    LH._enabled.cache_clear()
+    try:
+        assert LH._enabled() is True
+        monkeypatch.setenv("UNSLOTH_HD512_ATTENTION", "0")
+
+        def f(x):
+            return x + 1 if LH._enabled() else x - 1
+
+        x = torch.zeros(3)
+        torch._dynamo.reset()
+        compiled = torch.compile(f, backend = "eager", fullgraph = True)(x)
+        assert torch.equal(compiled, f(x))
+        assert torch.equal(compiled, x + 1)
+    finally:
+        monkeypatch.delenv("UNSLOTH_HD512_ATTENTION")
+        LH._enabled.cache_clear()
+        torch._dynamo.reset()
+
+
+def _install_with_params(monkeypatch, params, **attrs):
+    from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+
+    model = torch.nn.Linear(4, 4)
+    model.head_dim = 512
+    for name, value in attrs.items():
+        setattr(model, name, value)
+    monkeypatch.setattr(model, "parameters", lambda: iter(params))
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.version, "hip", None)
+    monkeypatch.setattr(LH, "_PATCHED", [False])
+    checked = []
+    monkeypatch.setattr(
+        LH, "_self_check", lambda device, dtype: checked.append((device, dtype)) or True
+    )
+    saved = ALL_ATTENTION_FUNCTIONS["sdpa"]
+    try:
+        installed = LH.patch_large_head_attention(model)
+    finally:
+        ALL_ATTENTION_FUNCTIONS["sdpa"] = saved
+    return installed, checked
+
+
+class _FakeParam:
+    is_cuda = True
+    device = torch.device("cuda", 0)
+
+    def __init__(
+        self,
+        dtype,
+        quant_dtype = None,
+    ):
+        self.dtype = dtype
+        if quant_dtype is not None:
+            self.quant_state = type("QuantState", (), {"dtype": quant_dtype})()
+
+
+def test_patch_self_checks_the_compute_dtype_of_4bit_only_shards(monkeypatch):
+    # A GPU holding only bnb 4-bit weights (uint8 storage), e.g. embeddings offloaded to CPU, must
+    # still get its load-time check, else compiled blocks never use the kernel there.
+    cpu = type(
+        "CpuParam", (), {"is_cuda": False, "device": torch.device("cpu"), "dtype": torch.bfloat16}
+    )()
+    installed, checked = _install_with_params(
+        monkeypatch, [cpu, _FakeParam(torch.uint8, torch.bfloat16)]
+    )
+    assert installed is True
+    assert checked == [(torch.device("cuda", 0), torch.bfloat16)]
+
+
+def test_patch_self_checks_the_compute_dtype_of_float_packed_4bit(monkeypatch):
+    # bnb_4bit_quant_storage = float16 with bfloat16 compute: the storage dtype is a half type, but
+    # attention runs in bfloat16, so that is the verdict compiled blocks look up.
+    installed, checked = _install_with_params(
+        monkeypatch, [_FakeParam(torch.float16, torch.bfloat16)]
+    )
+    assert installed is True
+    assert checked == [(torch.device("cuda", 0), torch.bfloat16)]
+
+
+def test_patch_skips_the_fp16_self_check_under_forced_float32(monkeypatch):
+    # zoo's forced float32 Gemma-4 attention runs float32 SDPA directly, so the router never sees it.
+    installed, checked = _install_with_params(
+        monkeypatch, [_FakeParam(torch.float16)], _unsloth_forced_float32 = True
+    )
+    assert installed is False and checked == []
+    installed, checked = _install_with_params(monkeypatch, [_FakeParam(torch.float16)])
+    assert installed is True and checked == [(torch.device("cuda", 0), torch.float16)]
+
+
+@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
+def test_router_uses_the_kernel_for_masks_made_under_inference_mode():
+    # generate() / eval build their masks under inference_mode. Sending those to SDPA repeated the
+    # KV heads and kept the dense mask (OOM at 8192 tokens where the kernel fits); they are rescanned
+    # per call instead, since an inference tensor has no version counter to cache the verdict on.
+    calls, original = _sentinel()
+    router = LH._make_router(original)
+    device, dtype = torch.device("cuda", torch.cuda.current_device()), _cuda_dtype()
+    assert LH._self_check(device, dtype) is True
+    q = torch.randn(1, 4, 24, 512, device = "cuda", dtype = dtype)
+    kv = torch.randn(1, 2, 24, 512, device = "cuda", dtype = dtype)
+    with torch.inference_mode():
+        mask = _causal(24).cuda()[None, None]
+        before = LH.LARGE_HEAD_ENGAGED["calls"]
+        out, _ = router(_Module(), q, kv, kv, mask)
+        reference, _ = router(_Module(), q, kv, kv, None)
+    assert not isinstance(out, str) and len(calls) == 0
+    assert LH.LARGE_HEAD_ENGAGED["calls"] == before + 2
+    torch.testing.assert_close(out, reference)
+
+
+class _FakeCudaOperand:
+    """A meta tensor that reports CUDA, so `_shapes_qualify` can be checked without a GPU."""
+
+    def __init__(
+        self,
+        shape,
+        stride,
+        dtype = torch.float16,
+    ):
+        self._t = torch.empty_strided(shape, stride, device = "meta", dtype = dtype)
+        self.shape, self.dtype, self.is_cuda, self.device = self._t.shape, dtype, True, "cuda:0"
+
+    def dim(self):
+        return self._t.dim()
+
+    def numel(self):
+        return self._t.numel()
+
+    def stride(self, dim = None):
+        return self._t.stride() if dim is None else self._t.stride(dim)
+
+
+def test_shapes_qualify_bounds_the_reachable_row_offset():
+    # 2,560 elements, but row 4 starts 2**31 elements in: int32 row offsets wrap in the kernel.
+    dense = _FakeCudaOperand((1, 1, 5, 512), (2560, 2560, 512, 1))
+    wide = _FakeCudaOperand((1, 1, 5, 512), (0, 0, 1 << 29, 1))
+    assert LH._shapes_qualify(dense, dense, dense)
+    assert not LH._shapes_qualify(wide, dense, dense)
+    assert not LH._shapes_qualify(dense, wide, dense)
+    assert not LH._shapes_qualify(dense, dense, wide)
+    # Batch and head offsets are int64 in the kernels, so a wide batch stride still qualifies.
+    batch = _FakeCudaOperand((2, 1, 5, 512), (1 << 31, 2560, 512, 1))
+    assert LH._shapes_qualify(batch, batch, batch)
+    # The last row's last element at exactly 2**31 - 1 is the largest offset that still fits.
+    edge = _FakeCudaOperand((1, 1, 2, 512), (0, 0, LH._INT32_MAX - 511, 1))
+    dense_k = _FakeCudaOperand((1, 1, 2, 512), (1024, 1024, 512, 1))
+    assert LH._shapes_qualify(edge, dense_k, dense_k)
+    over = _FakeCudaOperand((1, 1, 2, 512), (0, 0, LH._INT32_MAX - 510, 1))
+    assert not LH._shapes_qualify(over, dense_k, dense_k)
+
+
+def _wide_row_stride(shape, dtype, seed):
+    # The storage runs to the last row's offset: 2**29 elements per row, over 4 GiB for five rows.
+    need = ((shape[-2] - 1) * (1 << 29) + shape[-1]) * torch.empty((), dtype = dtype).element_size()
+    if torch.cuda.mem_get_info()[0] < need + (1 << 30):
+        pytest.skip(reason = f"needs {need / 2**30:.1f} GiB free for a 2**29 element row stride")
+    gen = torch.Generator(device = "cuda").manual_seed(seed)
+    x = torch.empty_strided(shape, (0, 0, 1 << 29, 1), device = "cuda", dtype = dtype)
+    x.copy_(torch.randn(shape, device = "cuda", dtype = dtype, generator = gen))
+    return x
+
+
+@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
+def test_router_sends_a_wide_row_stride_query_to_sdpa():
+    dtype = _cuda_dtype()
+    S = 5
+    q = _wide_row_stride((1, 1, S, 512), dtype, 0)
+    k = torch.randn(1, 1, S, 512, device = "cuda", dtype = dtype)
+    v = torch.randn_like(k)
+
+    def original(module, query, key, value, attention_mask, **kwargs):
+        out = torch.nn.functional.scaled_dot_product_attention(query, key, value, is_causal = True)
+        return out.transpose(1, 2).contiguous(), None
+
+    router = LH._make_router(original)
+    before = LH.LARGE_HEAD_ENGAGED["calls"]
+    out, _ = router(_Module(), q, k, v, None)
+    torch.cuda.synchronize()
+    assert LH.LARGE_HEAD_ENGAGED["calls"] == before
+    ref = _reference(q.float(), k.float(), v.float(), _causal(S).cuda())
+    assert torch.isfinite(out).all()
+    assert (out.float() - ref).abs().max() <= 0.03 * ref.abs().max() + 0.02
+    del q
+    torch.cuda.empty_cache()
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+def test_backward_copies_a_wide_row_stride_grad():
+    dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
+    S = 5
+    torch.manual_seed(1)
+    q, k, v = [torch.randn(1, 1, S, 512, device = "cuda", dtype = dtype) for _ in range(3)]
+    lo, hi = LH._dense_intervals(1, S, True, q.device)
+    ours_in = [x.clone().requires_grad_() for x in (q, k, v)]
+    out = LH.large_head_attention(*ours_in, lo, hi)
+    grad = _wide_row_stride((1, 1, S, 512), dtype, 2)  # [B, H, S, D], as the kernel reads dO
+    out.backward(grad.transpose(1, 2))
+    torch.cuda.synchronize()
+    ref_in = [x.detach().float().requires_grad_() for x in (q, k, v)]
+    _reference(*ref_in, _causal(S).cuda()).backward(grad.float().transpose(1, 2))
+    for a, b in zip([x.grad for x in ours_in], [x.grad for x in ref_in]):
+        assert torch.isfinite(a).all()
+        assert (a.float() - b).abs().max() <= 0.03 * b.abs().max() + 0.02
+    del grad
+    torch.cuda.empty_cache()
+
+
+@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
+def test_router_captures_into_a_cuda_graph_with_an_inference_mask():
+    # The mask scan syncs the host ("operation not permitted when stream is capturing"), and a graph
+    # would replay one scan's verdict for whatever the mask buffer holds later, so capture uses SDPA.
+    def original(module, query, key, value, attention_mask, **kwargs):
+        key, value = key.repeat_interleave(2, 1), value.repeat_interleave(2, 1)
+        out = torch.nn.functional.scaled_dot_product_attention(
+            query, key, value, attn_mask = attention_mask
+        )
+        return out.transpose(1, 2).contiguous(), None
+
+    router = LH._make_router(original)
+    device, dtype = torch.device("cuda", torch.cuda.current_device()), _cuda_dtype()
+    assert LH._self_check(device, dtype) is True
+    with torch.inference_mode():
+        q = torch.randn(1, 4, 24, 512, device = "cuda", dtype = dtype)
+        kv = torch.randn(1, 2, 24, 512, device = "cuda", dtype = dtype)
+        mask = _causal(24).cuda()[None, None]
+        eager_masked = router(_Module(), q, kv, kv, mask)[0]
+        eager_dense = router(_Module(), q, kv, kv, None)[0]
+        stream = torch.cuda.Stream()
+        stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(stream):
+            for _ in range(3):
+                router(_Module(), q, kv, kv, mask)
+                router(_Module(), q, kv, kv, None)
+        stream.synchronize()
+        before = LH.LARGE_HEAD_ENGAGED["calls"]
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph, stream = stream):
+            masked = router(_Module(), q, kv, kv, mask)[0]
+            dense = router(_Module(), q, kv, kv, None)[0]
+        # The unmasked call still runs the kernel inside the graph; the masked one runs SDPA.
+        assert LH.LARGE_HEAD_ENGAGED["calls"] == before + 1
+        graph.replay()
+        torch.cuda.synchronize()
+    assert LH._SELF_CHECK[(str(device), dtype)] is True
+    torch.testing.assert_close(masked, eager_masked, atol = 2e-2, rtol = 2e-2)
+    torch.testing.assert_close(dense, eager_dense)

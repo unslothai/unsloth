@@ -157,7 +157,7 @@ class TestMatrix:
         assert prebuilt_wheels.TRITON_WINDOWS["2.14"].startswith("3.8.0.post")
 
     @pytest.mark.parametrize("torch_version", ["2.10.0", "2.11.0", "2.12.0"])
-    def test_win_amd64_only_torches_are_opt_in(self, torch_version):
+    def test_older_torches_are_opt_in(self, torch_version):
         torch_mm = prebuilt_wheels.torch_minor(torch_version)
         cells = prebuilt_wheels.build_matrix(
             torches = torch_version, platforms = "win_amd64", pythons = "3.11,3.12,3.13"
@@ -170,16 +170,32 @@ class TestMatrix:
             if cell["package"] == "mamba-ssm":
                 triton = prebuilt_wheels.TRITON_WINDOWS[torch_mm]
                 assert cell["smoke_extra"] == f"triton-windows=={triton}"
-        for platform in ("linux_x86_64", "linux_aarch64", "win_arm64"):
+        with pytest.raises(SystemExit):
+            prebuilt_wheels.build_matrix(torches = torch_version, platforms = "win_arm64")
+        # Linux builds causal-conv1d and mamba-ssm only: upstream flash-attn 2.8.1 is smaller there.
+        for platform in ("linux_x86_64", "linux_aarch64"):
             with pytest.raises(SystemExit):
-                prebuilt_wheels.build_matrix(torches = torch_version, platforms = platform)
+                prebuilt_wheels.build_matrix(
+                    torches = torch_version, platforms = platform, packages = "flash-attn"
+                )
+            linux = prebuilt_wheels.build_matrix(
+                torches = torch_version, platforms = platform, pythons = "3.11,3.12,3.13"
+            )
+            assert len(linux) == 6
+            assert {c["package"] for c in linux} == {"causal-conv1d", "mamba-ssm"}
+            assert {c["python_tag"] for c in linux} == {"cp311", "cp312", "cp313"}
+            for cell in linux:
+                assert cell["wheel_name"].endswith(f"-{platform}.whl")
+                assert f"+cu13torch{torch_mm}cxx11abiTRUE-" in cell["wheel_name"]
         # A default dispatch builds what it did before.
         assert torch_version not in {cell["torch"] for cell in prebuilt_wheels.build_matrix()}
         both = prebuilt_wheels.build_matrix(torches = f"{torch_version},2.13.0")
-        assert {(c["platform"], c["torch"]) for c in both} == {
-            ("win_amd64", torch_version),
-            ("win_amd64", "2.13.0"),
-            ("linux_x86_64", "2.13.0"),
+        assert {(c["platform"], c["torch"], c["package"]) for c in both} == {
+            *(("win_amd64", torch_version, p) for p in prebuilt_wheels.SPECS),
+            *(("win_amd64", "2.13.0", p) for p in prebuilt_wheels.SPECS),
+            *(("linux_x86_64", "2.13.0", p) for p in prebuilt_wheels.SPECS),
+            ("linux_x86_64", torch_version, "causal-conv1d"),
+            ("linux_x86_64", torch_version, "mamba-ssm"),
         }
 
     def test_win_amd64_inherits_a_new_global_torch(self, monkeypatch):
@@ -274,14 +290,14 @@ class TestNames:
         assert out == "causal_conv1d-1.7.0+cu13torch2.13cxx11abiTRUE-cp313-cp313-win_amd64.whl"
 
     def test_wheel_name_cli_refuses_a_cell_nothing_builds(self):
-        def name(*platform):
+        def name(package, *platform):
             return subprocess.run(
                 [
                     sys.executable,
                     str(SCRIPTS / "prebuilt_wheels.py"),
                     "wheel-name",
                     "--package",
-                    "mamba-ssm",
+                    package,
                     "--torch",
                     "2.11.0",
                     "--python",
@@ -292,13 +308,27 @@ class TestNames:
                 text = True,
             )
 
-        for platform in ([], ["--platform", "linux_x86_64"], ["--platform", "win_arm64"]):
-            result = name(*platform)
-            assert result.returncode != 0
+        # win_arm64 builds torch 2.14 only; Linux builds no flash-attn for torch 2.10 to 2.12.
+        for package, platform in (
+            ("mamba-ssm", ["--platform", "win_arm64"]),
+            ("flash-attn", []),
+            ("flash-attn", ["--platform", "linux_x86_64"]),
+            ("flash-attn", ["--platform", "linux_aarch64"]),
+        ):
+            result = name(package, *platform)
+            assert result.returncode != 0, (package, platform)
             assert "not built for" in result.stderr
-        result = name("--platform", "win_amd64")
-        assert result.returncode == 0
-        assert result.stdout.strip().endswith("torch2.11cxx11abiTRUE-cp312-cp312-win_amd64.whl")
+        for package, platform in (
+            ("flash-attn", "win_amd64"),
+            ("mamba-ssm", "win_amd64"),
+            ("mamba-ssm", "linux_x86_64"),
+            ("causal-conv1d", "linux_aarch64"),
+        ):
+            result = name(package, "--platform", platform)
+            assert result.returncode == 0, (package, platform)
+            assert result.stdout.strip().endswith(
+                f"torch2.11cxx11abiTRUE-cp312-cp312-{platform}.whl"
+            )
 
     def test_round_trip_on_both_platforms(self):
         for platform in prebuilt_wheels.PLATFORMS:
@@ -350,6 +380,22 @@ class TestNotes:
             "mamba-ssm 2.3.2.post1, built for PyTorch 2.13 and 2.14 on Python 3.13. "
             "Windows x86_64: flash-attn 2.8.4, causal-conv1d 1.7.0 and mamba-ssm 2.3.2.post1, "
             "built for PyTorch 2.13 and 2.14 on Python 3.13.\n"
+        )
+
+    def test_packages_with_different_coverage_are_described_apart(self):
+        """Linux torch 2.10 to 2.12 carries causal-conv1d and mamba-ssm but no flash-attn."""
+        entries = [
+            (f"{index:064x}", prebuilt_wheels.wheel_name(package, torch, "3.13", "linux_x86_64"))
+            for index, (package, torch) in enumerate(
+                [(pkg, "2.10.0") for pkg in ("causal-conv1d", "mamba-ssm")]
+                + [(pkg, "2.13.0") for pkg in prebuilt_wheels.SPECS]
+            )
+        ]
+        notes = prebuilt_wheels.render_notes(entries, tag = "t", repo = "r")
+        assert notes == (
+            "Prebuilt Linux x86_64 CUDA 13 wheels for flash-attn 2.8.4, built for PyTorch 2.13 on "
+            "Python 3.13; causal-conv1d 1.7.0 and mamba-ssm 2.3.2.post1, built for PyTorch 2.10 "
+            "and 2.13 on Python 3.13.\n"
         )
 
     def test_torch_minors_with_different_interpreters_are_not_merged(self):

@@ -1,22 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""LTX-2.5 on diffusers' LTX-2 pipelines.
-
-LTX-2.5 keeps the LTX-2.3 DiT layout (minus the video FFN bias, plus a keyframe position embedding) and the 2.3 conv
-VAE, but conditions on a fine-tuned Gemma 4 12B (``Gemma4UnifiedForConditionalGeneration``) that only transformers
->= 5.10.1 provides. Studio's server runs an older transformers, so the encoder runs in a spawned worker on the
-``.venv_t5_510`` sidecar (``video_ltx25_te_worker``) and hands back the packed prompt embeddings; ``pipe.encode_prompt``
-is replaced by a call into that worker, and everything after it (connectors, DiT, VAE, vocoder) runs here.
-
-Generation follows the reference two-stage distilled recipe: stage 1 at half resolution on the 8 distilled sigmas,
-the latent x2 spatial upsampler, then stage 2 at full resolution on 0.85 / 0.725 / 0.421875 with the stage-1 audio
-latents carried over, CFG 1 and every other guidance off, sampled euler-ancestral. Image-to-video conditions the first
-latent frame through ``LTX2ConditionPipeline`` at CRF 18, strength 0.7 in stage 1 and 1.0 in stage 2. The dev (full)
-DiT runs the pipeline's own single-stage SFT recipe instead.
-
-Everything here is gated on the ``ltx-2.5`` family; no other family reaches this module.
-"""
+"""LTX-2.5 pipeline, gated to the ltx-2.5 family (no other family reaches this module); Gemma 4
+encoder runs in a worker on the .venv_t5_510 transformers 5.10 sidecar"""
 
 from __future__ import annotations
 
@@ -58,6 +44,7 @@ LTX25_DEV_SCHEDULER_OVERRIDES: dict[str, Any] = {
 TWO_STAGE_ENV = "UNSLOTH_LTX25_TWO_STAGE"
 SAMPLER_ENV = "UNSLOTH_LTX25_SAMPLER"
 _OFF = ("0", "false", "no", "off")
+_ON = ("1", "true", "yes", "on")
 
 # Pack components a load never reads: the dev DiT (single-file dev picks bring their own), the prompt enhancer and its
 # processor (Studio never enhances), the diffusion decoder (conv decode is the pipeline default), the temporal
@@ -84,9 +71,8 @@ TEXT_ENCODER_MIN_TRANSFORMERS = "5.10.1"
 # What the encoder worker holds on the card beyond its weights, on every plan tier: its CUDA context (~0.6 GB on
 # Hopper / Blackwell) plus allocator slack. The weights are the family table's text-encoder term.
 LTX25_WORKER_RESIDENT_GB = 1.0
-# An unset text_encoder_quant runs the int8 ConvRot encoder, as ComfyUI's LTX-2.5 templates load Lightricks'
-# gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot. "none" / "off" pin the bf16 encoder; UNSLOTH_LTX25_TE_INT8=0 makes
-# an unset request bf16 again (an operator kill switch, not the default).
+# int8 ConvRot (ComfyUI's LTX-2.5 encoder) is opt-in: its LPIPS vs bf16 sits above the compile floor. Unset keeps
+# bf16 unless UNSLOTH_LTX25_TE_INT8=1.
 LTX25_TE_QUANT_DEFAULT = "int8"
 LTX25_TE_QUANT_ENV = "UNSLOTH_LTX25_TE_INT8"
 # Measured int8 encoder weights (12,424 MiB vs 22,811 MiB bf16).
@@ -391,6 +377,10 @@ def load_ltx25_transformer(
         "cache_dir": cache_dir,
         "local_files_only": local_files_only,
     }
+    from .diffusion_families import pinned_revision_kwargs
+
+    # The load plan's commit for a hub-id config (none for the bundled config dir or an unpinned load).
+    kwargs.update(pinned_revision_kwargs(kwargs["config"]))
     if is_gguf:
         kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(compute_dtype = torch_dtype)
     elif device is not None:
@@ -409,6 +399,8 @@ def load_ltx25_comfy_transformer(
     local_files_only: bool = False,
     int8_backend: Optional[str] = None,
     fp8_backend: Optional[str] = None,
+    fp8_storage: Optional[bool] = None,
+    fp8_widen_chosen: bool = False,
     family: Optional[str] = None,
     target: Any = None,
     logger: Any = None,
@@ -434,6 +426,8 @@ def load_ltx25_comfy_transformer(
         },
         int8_backend = int8_backend,
         fp8_backend = fp8_backend,
+        fp8_storage = fp8_storage,
+        fp8_widen_chosen = fp8_widen_chosen,
         family = family,
         target = target,
         logger = logger,
@@ -451,6 +445,7 @@ def load_latent_upsampler(
     local_files_only: bool = False,
 ) -> Any:
     from diffusers.pipelines.ltx2.latent_upsampler import LTX2LatentUpsamplerModel
+
     if is_ltx25_single_file_base(base_repo):
         from safetensors.torch import load_file
 
@@ -460,8 +455,11 @@ def load_latent_upsampler(
         return _build_from_config(
             LTX2LatentUpsamplerModel, LTX25_UPSAMPLER_CONFIG, load_file(path), {}, torch_dtype
         )
+    from .diffusion_families import pinned_revision_kwargs
+
     return LTX2LatentUpsamplerModel.from_pretrained(
         base_repo,
+        **pinned_revision_kwargs(base_repo),
         subfolder = LATENT_UPSAMPLER_SUBFOLDER,
         torch_dtype = torch_dtype,
         token = hf_token,
@@ -473,7 +471,7 @@ def load_latent_upsampler(
 # ── the split single-file layout as its own base ────────────────────────────
 
 
-def is_ltx25_single_file_base(base: Optional[str]) -> bool:
+def is_ltx25_single_file_base(base: Optional[str], *, fold_mirror: bool = True) -> bool:
     """Whether ``base`` is the split single-file release (hub id) or a local folder with its layout (the encoder file
     and the conv VAE beside the DiTs), rather than a Diffusers pack."""
     text = (base or "").strip()
@@ -484,7 +482,13 @@ def is_ltx25_single_file_base(base: Optional[str]) -> bool:
         return (path / LTX25_SINGLE_TEXT_ENCODER).is_file() and (
             path / LTX25_SINGLE_VIDEO_VAE
         ).is_file()
-    return text.lower() == LTX25_SINGLE_FILE_REPO.lower()
+    if not fold_mirror:
+        return text.lower() == LTX25_SINGLE_FILE_REPO.lower()
+    # The fetch sites hand the assembly the repo carrying the release's byte-identical files (unsloth/LTX-2.5-GGUF).
+    # ``fold_mirror=False`` is for a PICK's own repo: a GGUF picked from that repo keeps the Diffusers base.
+    from .diffusion_families import canonical_base
+
+    return canonical_base(text).lower() == LTX25_SINGLE_FILE_REPO.lower()
 
 
 def is_ltx25_single_file_listing(names: Any) -> bool:
@@ -510,7 +514,7 @@ def ltx25_single_file_companions(
 
 def ltx25_default_base(repo_id: Optional[str]) -> Optional[str]:
     """A DiT picked from the single-file release (or a local copy of it) uses that release as its base."""
-    return repo_id if is_ltx25_single_file_base(repo_id) else None
+    return repo_id if is_ltx25_single_file_base(repo_id, fold_mirror = False) else None
 
 
 def ltx25_companion_path(
@@ -530,10 +534,13 @@ def ltx25_companion_path(
         return str(target)
     from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
+    from .diffusion_families import pinned_revision_kwargs
+
     return hf_hub_download_with_xet_fallback(
         base,
         filename,
         hf_token,
+        **pinned_revision_kwargs(base),
         reuse_other_cache_root = True,
         local_files_only = local_files_only,
     )
@@ -545,7 +552,9 @@ def ltx25_transformer_config_dir() -> str:
     import json
     import tempfile
 
-    root = Path(tempfile.gettempdir()) / "unsloth_ltx25_config"
+    from utils.paths.private_tmp import private_tmp_dir
+
+    root = private_tmp_dir("unsloth_ltx25_config")
     target = root / "transformer" / "config.json"
     payload = json.dumps(
         {"_class_name": "LTX2VideoTransformer3DModel", **LTX25_TRANSFORMER_CONFIG},
@@ -688,15 +697,15 @@ def ltx25_te_quant_scheme(text_encoder_quant: Optional[str]) -> Optional[str]:
     from .diffusion_precision import normalize_te_quant, te_quant_is_auto
 
     if te_quant_is_auto(text_encoder_quant):
-        if (os.environ.get(LTX25_TE_QUANT_ENV) or "").strip().lower() in _OFF:
-            return None
-        return LTX25_TE_QUANT_DEFAULT
+        if (os.environ.get(LTX25_TE_QUANT_ENV) or "").strip().lower() in _ON:
+            return LTX25_TE_QUANT_DEFAULT
+        return None
     scheme = normalize_te_quant(text_encoder_quant)
     if scheme is None or scheme == LTX25_TE_QUANT_DEFAULT:
         return scheme
     raise ValueError(
         f"LTX-2.5's Gemma 4 text encoder runs int8 (ConvRot, as in ComfyUI's LTX-2.5 workflows) or bf16, not "
-        f"'{scheme}'. Pick int8 (the default when unset) for int8, or Off for bf16."
+        f"'{scheme}'. Pick int8 for int8, or leave it unset / Off for bf16."
     )
 
 
@@ -761,8 +770,8 @@ def ltx25_te_outcome(client: Any) -> Any:
 def sidecar_missing_message(venv_dir: str) -> str:
     return (
         "LTX-2.5's text encoder is a Gemma 4 model (Gemma4UnifiedForConditionalGeneration) that needs transformers "
-        f">= {TEXT_ENCODER_MIN_TRANSFORMERS}. Studio keeps that in its transformers 5.10 sidecar at '{venv_dir}', "
-        "which is missing and could not be installed. Re-run the Studio installer (or check the network so Studio "
+        f">= {TEXT_ENCODER_MIN_TRANSFORMERS}. Unsloth keeps that in its transformers 5.10 sidecar at '{venv_dir}', "
+        "which is missing and could not be installed. Re-run the Unsloth installer (or check the network so Unsloth "
         "can rebuild the sidecar), then load LTX-2.5 again."
     )
 
@@ -1119,6 +1128,7 @@ def close_encoder(pipe: Any) -> None:
 def start_text_encoder(
     *,
     repo: str,
+    revision: Optional[str] = None,
     hf_token: Optional[str],
     cache_dir: Optional[str],
     local_files_only: bool,
@@ -1160,6 +1170,15 @@ def start_text_encoder(
         te_prequant = te_prequant,
         hub_repo = hub_repo if hub_repo != repo else None,
     )
+    from .diffusion_families import pinned_revision_kwargs
+
+    # The worker is another process: the plan's commit travels in its config (absent when unpinned).
+    client.config.update({"revision": revision} if revision else pinned_revision_kwargs(repo))
+    from .diffusion_memory import user_budget_reserve_share
+
+    share = user_budget_reserve_share()
+    if share > 0:
+        client.config["vram_reserve_share"] = share
     client.start()
     return client
 

@@ -43,8 +43,8 @@ def _precision(vid, fam, tq, te_scheme, free_gb, monkeypatch):
     )
 
 
-# (free GB, conditioner, request) -> (engaged denoiser, tier). Quantised denoiser 20.3 GB, released 66.3 GB,
-# conditioner 27.2 GB int8 / 66.7 GB dense, VAEs 11.1 GB, plus the default-shape activation headroom.
+# (free GB, conditioner, request) -> (engaged denoiser, tier). Denoiser 20.3 GB quantised / 66.3 GB,
+# conditioner 27.2 GB int8 / 66.7 GB dense, VAEs 11.1 GB, plus activation headroom.
 _LADDER = {
     (24, "int8", "auto"): ("int8", "stream"),
     (32, "int8", "auto"): ("int8", "stream"),
@@ -228,7 +228,6 @@ def test_the_generate_preflight_reads_the_streamed_fact_off_the_state():
     fields = set(vid._VideoLoadState.__dataclass_fields__)
     assert {"denoiser_streamed", "denoiser_host_copy"} <= fields
     source = inspect.getsource(vid.VideoBackend.generate)
-    # VRAM floor: any streaming. Host floor: only a full pinned host copy doubles the denoiser.
     assert (
         source.count('transformer_streamed = bool(getattr(state, "denoiser_streamed", False))') == 1
     )
@@ -256,7 +255,6 @@ class _Net(torch.nn.Module):
         self.proj_out = torch.nn.Linear(d, d)
 
     def pad_small_m(self):
-        # What the hosted H3 load does to its small-M int8 linears: a wrapper that forwards ``weight`` to the Linear.
         from core.inference.diffusion_quant_pad import PadToMinM
         self.proj_out = PadToMinM(self.proj_out)
         return self
@@ -353,7 +351,7 @@ def test_a_streamed_torchao_denoiser_matches_the_resident_one_bit_for_bit(monkey
         del resident
 
         streamed = copy.deepcopy(base)
-        quantize_(streamed, config())  # built on the CPU, like the seeded H3 load
+        quantize_(streamed, config())
         streamed.pad_small_m()
         mode, rotating = _stream(streamed, stream_prequantized_module)
         assert mode == "stream", (name, mode)

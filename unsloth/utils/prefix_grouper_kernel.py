@@ -10,39 +10,8 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""FlexAttention shared-prefix kernel for PrefixGrouper (GRPO shared-prompt dedup).
-
-In GRPO every prompt spawns ``G = num_generations`` completions that share the same
-prompt prefix. The full-row packed path forwards the identical prefix ``G`` times.
-PrefixGrouper stores the prefix ONCE and concatenates only the ``G`` suffixes, with an
-attention layout where each suffix token attends to ``[the single shared prefix] +
-[causal within its own suffix]``. This kernel expresses that one-prefix -> many-suffix
-fan-out via a ``torch.nn.attention.flex_attention`` block mask, so the masked-out
-cross-suffix / cross-group blocks are never computed and the ``P + G*R`` FLOP saving is
-realised (not merely a masked dense ``O(T^2)``).
-
-Mask semantics (identical to the certified SDPA oracle):
-
-    keep(q_idx, kv_idx) = same_group(q, kv) AND
-        ( is_prefix[kv_idx]                                  # full prefix visibility
-          OR ( suffix_of_kv[kv_idx] == suffix_of_kv[q_idx]   # same suffix ...
-               AND kv_idx <= q_idx ) )                       # ... causal within it
-
-This module is self-contained (no dependency on any temp/ scratch dir) so PrefixGrouper
-works from the installed source after a fresh compile. It is only imported lazily from
-``attention_dispatch.run_attention`` when ``prefix_seg_info`` is present, which itself is
-only ever set when ``UNSLOTH_GRPO_PREFIX_GROUPER`` is on and grouping succeeded, so the
-default (off) path never touches this file.
-
-Provided entry points:
-  * ``PrefixSegInfo``            : per-flat-token segment metadata + cache signature.
-  * ``build_seg_info_multigroup``: build PrefixSegInfo for many groups packed flat.
-  * ``build_seg_info_from_layout``: build PrefixSegInfo for ONE group (test helper).
-  * ``get_block_mask``          : cached create_block_mask keyed on the signature.
-  * ``flex_shared_prefix_attention(Q, K, V, prefix_seg_info)``
-        Q/K/V of shape [1, T, n_heads, head_dim]; returns [1, T, n_heads, head_dim],
-        IDENTICAL semantics to the SDPA oracle.
-"""
+"""GRPO PrefixGrouper FlexAttention kernel, prefix stored once; self-contained (no temp dir
+dependency); imported lazily only when prefix_seg_info is set, so default-off never imports it."""
 
 from __future__ import annotations
 
@@ -57,22 +26,19 @@ from torch.nn.attention.flex_attention import (
     flex_attention,
 )
 
-# GRPO feeds many distinct segment lengths, and at dynamo's default recompile_limit (8) the compiled
-# kernel silently reuses a mismatched specialisation, giving wrong results.
+# Many distinct segment lengths: at the default recompile_limit (8) the kernel silently reuses a
+# mismatched specialisation.
 torch._dynamo.config.recompile_limit = max(getattr(torch._dynamo.config, "recompile_limit", 8), 256)
 torch._dynamo.config.accumulated_recompile_limit = max(
     getattr(torch._dynamo.config, "accumulated_recompile_limit", 256), 2048
 )
 
 
-# Compiled kernels: torch.compile fuses the sparse mask into one kernel, and dynamic=True is
-# required, since T changes almost every GRPO batch and dynamic=False recompiles per T (~14s each).
+# dynamic=True is required: T changes almost every GRPO batch, and dynamic=False recompiles per T (~14s each).
 _flex_attention_compiled = torch.compile(flex_attention, dynamic = True)
 _create_block_mask_compiled = torch.compile(create_block_mask, dynamic = True)
 
-# Flash block sizes by Q dtype (env-overridable): the two disjoint key runs stress online-softmax
-# accumulation, so fp32 needs 32/32 for a ~1e-6 floor, while bf16 passes parity at 128/64 and is
-# ~5x faster (128/128 OOMs Triton on B200).
+# fp32 needs 32/32 for a ~1e-6 floor (two disjoint key runs stress online softmax); bf16 128/64 is ~5x faster; 128/128 OOMs Triton on B200.
 _FP32_BLOCK_M = int(os.environ.get("PG_FLEX_BLOCK_M", "32"))
 _FP32_BLOCK_N = int(os.environ.get("PG_FLEX_BLOCK_N", "32"))
 _BF16_BLOCK_M = int(os.environ.get("PG_FLEX_BF16_BLOCK_M", "128"))
@@ -89,9 +55,7 @@ def _kernel_options_for_dtype(dtype):
 # Backward-compat constant (fp32 default).
 _FLEX_KERNEL_OPTIONS = {"BLOCK_M": _FP32_BLOCK_M, "BLOCK_N": _FP32_BLOCK_N}
 
-# The compiled backward trips an Inductor assertion when T is not a multiple of 128, so pad the
-# flat sequence: pad tokens attend to and are attended by nothing (all-masked rows return 0) and
-# are sliced off the output.
+# The compiled backward asserts unless T is a multiple of 128; pad tokens are fully masked and sliced off.
 _PAD_MULTIPLE = 128
 _PAD_GROUP = -99  # sentinel group id / suffix id for pad tokens
 
@@ -247,8 +211,7 @@ def build_seg_info_multigroup(
     return seg, group_meta
 
 
-# Block-mask builder and cache, keyed on (signature, device): the mask depends only on the per-token
-# labels and T, so it is reused across layers and steps.
+# Block-mask cache, keyed on (signature, device): the mask depends only on per-token labels and T.
 
 
 _BLOCK_MASK_CACHE: Dict[Tuple, BlockMask] = {}
@@ -299,10 +262,8 @@ def get_block_mask(
     if bm is not None:
         return bm
 
-    # Move labels to the consumer (Q) device: with a sharded model the seg tensors live on
-    # input_ids.device and would index cross-device. These copies must also run with inference mode
-    # DISABLED, like the mask build: built under the no-grad forward's inference_mode, a .to(device)
-    # copy would be an inference tensor that mask_mod captures and could not be saved for backward.
+    # Move labels to the Q device (sharded models), outside inference mode: an inference tensor
+    # captured by mask_mod could not be saved for backward.
     builder = _create_block_mask_compiled if compile_mask else create_block_mask
     with torch.inference_mode(False):
         mask_mod = _make_mask_mod(

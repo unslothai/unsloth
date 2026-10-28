@@ -34,9 +34,22 @@ def tool_parser_for_template(template, engine):
     return None
 
 
+_SGLANG_REASONING_PARSERS = {
+    "openai_gptoss": "gpt-oss",
+    "minimax_m2": "minimax",
+    "deepseek_v3": "deepseek-v3",
+    "deepseek_r1": "deepseek-r1",
+}
+
+
 def reasoning_parser_for_template(template, engine):
-    """vLLM reasoning parser for the model's own thinking markup; None leaves the launch unchanged."""
-    if engine != "vllm" or not isinstance(template, str):
+    """Reasoning parser for the model's own thinking markup; None leaves the launch unchanged."""
+    parser = _vllm_reasoning_parser(template)
+    return parser if engine == "vllm" else _SGLANG_REASONING_PARSERS.get(parser, parser)
+
+
+def _vllm_reasoning_parser(template):
+    if not isinstance(template, str):
         return None
     if "<|channel|>" in template and "<|message|>" in template:
         return "openai_gptoss"
@@ -121,7 +134,7 @@ class EngineAdapter:
             tool_args = ["--tool-call-parser", options["tool_parser"]]
             if self.name == "vllm":
                 tool_args.append("--enable-auto-tool-choice")
-        if self.name == "vllm" and options.get("reasoning_parser"):
+        if options.get("reasoning_parser"):
             tool_args += ["--reasoning-parser", options["reasoning_parser"]]
         mode = options.get("parallelism", "tensor")
         parallel_args = ["--tensor-parallel-size", str(gpu_count if mode == "tensor" else 1)]
@@ -304,6 +317,7 @@ ADAPTERS = {
         "--context-length",
         "--mem-fraction-static",
         ("--attention-backend", "triton", "--sampling-backend", "pytorch"),
+        True,
     ),
 }
 
@@ -379,13 +393,8 @@ def launch_arguments(
 
 
 def memory_reserve_mib(engine: str, options: dict | None) -> int:
-    """MiB left outside the engine's budget, for what each engine allocates past it. On a 24 GB L4
-    with Qwen2.5-0.5B, vLLM's sampler warmup failed at 512 MiB and passed from 1536 (it scales with
-    the vocabulary, so larger ones need more); SGLang's CUDA graphs and NCCL buffers died mid-request
-    at 512 and passed from 2048. vLLM with TorchAO weights overruns by 2.4-4.8 GiB more (B200).
-    The warmup also grows with the card: vLLM raises its default max_num_seqs on large GPUs, and a
-    96 GB RTX PRO 6000 ran out of memory in the sampler warmup with 3 GiB left, so
-    ``gpu_memory_fraction`` keeps at least ``RESERVE_SHARE`` of each card free as well."""
+    """Reserve for allocations the engine does not budget; the warmup grows with vocabulary and card
+    size."""
     options = options or {}
     precision = options.get("precision", "auto")
     torchao = engine == "vllm" and (
@@ -396,6 +405,9 @@ def memory_reserve_mib(engine: str, options: dict | None) -> int:
 
 
 RESERVE_SHARE = 0.06
+
+
+MANAGED_ENGINE_BUDGET_FLOOR = 0.80
 
 
 def gpu_memory_fraction(
@@ -416,7 +428,9 @@ def gpu_memory_fraction(
         rows = (measure or _nvidia_memory_rows)(gpu_ids)
         if len(rows) != len(gpu_ids):
             raise ValueError("Could not measure every selected GPU")
-        fraction = get_vram_budget_fraction()
+        # vLLM / SGLang cannot offload to the CPU, so a GGUF-only low budget must not shrink them;
+        # the per-load engine_gpu_memory_utilization still caps lower.
+        fraction = max(get_vram_budget_fraction(), MANAGED_ENGINE_BUDGET_FLOOR)
         for total, free in rows:
             reserve = max(reserve_mib, reserve_share * total)
             if total <= 0 or free <= reserve or free > total:
@@ -433,7 +447,23 @@ def gpu_memory_fraction(
 
 
 def _nvidia_memory_rows(gpu_ids: list[int]) -> list[tuple[float, float]]:
+    # R570+ MIG ids are CUDA devices: budget each slice; nvidia-smi --id takes physical ids.
+    try:
+        from utils.hardware import mig
+        slices = mig.rows_for(gpu_ids)
+    except Exception:
+        slices = None
+    if slices is not None:
+        if not all(float(r.get("memory_total_mib") or 0) > 0 for r in slices):
+            raise RuntimeError(
+                "The selected MIG GPU instance has no memory reading right now because the GPU "
+                "probe did not answer. Retry in a few seconds."
+            )
+        return [
+            (float(r["memory_total_mib"]), float(r.get("memory_free_mib") or 0)) for r in slices
+        ]
     from utils.hardware.nvidia import _nvidia_smi_executable
+
     result = subprocess.run(
         [
             _nvidia_smi_executable(),

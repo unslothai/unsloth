@@ -103,12 +103,12 @@ export function ChatAudioUpload({ audioUpload }: ChatAudioUploadProps) {
         </DialogHeader>
 
         {platform === "ios" ? (
-          <p className="rounded-2xl bg-muted px-3 py-2 text-sm text-muted-foreground">
+          <p className="rounded-lg bg-muted px-3 py-2 text-sm text-muted-foreground">
             {t("settings.voice.dictation.audioUploadIphoneHint")}
           </p>
         ) : null}
 
-        <dl className="grid min-w-0 gap-3 rounded-2xl bg-muted/60 p-3 text-sm">
+        <dl className="grid min-w-0 gap-3 rounded-lg bg-muted/60 p-3 text-sm">
           <div>
             <dt className="text-muted-foreground">
               {t("settings.voice.dictation.sttModelLabel")}
@@ -140,7 +140,7 @@ export function ChatAudioUpload({ audioUpload }: ChatAudioUploadProps) {
 
         {audioUpload.failureMessage ? (
           <div
-            className="rounded-2xl border border-destructive/30 bg-destructive/5 p-3 text-sm"
+            className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm"
             role="alert"
           >
             <p className="font-medium text-destructive">

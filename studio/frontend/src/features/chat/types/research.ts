@@ -114,6 +114,8 @@ export interface CreateResearchRunInput {
   instructions?: string;
   /** research the question handed off by the model. */
   question?: string;
+  /** Stop the run once no tab follows it, instead of finishing in the background. Sent only when set. */
+  stopWhenUnattended?: boolean;
 }
 
 export interface ResearchRun {

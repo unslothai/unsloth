@@ -259,3 +259,132 @@ def test_every_failed_file_is_listed_with_its_reason(rag_home, stub_embeddings, 
     view = _folder_view(_folder_row(folder["id"]))
     assert view["failureCount"] == 5
     assert view["failures"][0] == {"path": "bad0.txt", "error": "embed unavailable"}
+
+
+def _mapped(folder_id: str) -> set[str]:
+    with closing(rag_db.get_connection()) as conn:
+        return {
+            row["relative_path"]
+            for row in conn.execute(
+                "SELECT relative_path FROM linked_folder_files WHERE folder_id=?", (folder_id,)
+            )
+        }
+
+
+def _gitignore_the_folder(source, monkeypatch):
+    _write(source, ".gitignore", "build/\n")
+
+
+def _empty_the_file(source, monkeypatch):
+    _write(source, "build/plan.txt", "")
+
+
+def _add_a_project_manifest(source, monkeypatch):
+    _write(source, "package.json", "{}")
+
+
+def _shrink_the_text_limit(source, monkeypatch):
+    monkeypatch.setattr(config, "FOLDER_MAX_TEXT_BYTES", 10)
+
+
+def _lower_the_file_cap(source, monkeypatch):
+    monkeypatch.setattr(config, "FOLDER_MAX_FILES", 1)
+
+
+def _make_it_a_venv(source, monkeypatch):
+    _write(source, "build/pyvenv.cfg", "home = /usr/bin")
+
+
+@requires_sqlite_vec
+@pytest.mark.parametrize(
+    "exclude",
+    [
+        _gitignore_the_folder,
+        _empty_the_file,
+        _add_a_project_manifest,
+        _shrink_the_text_limit,
+        _lower_the_file_cap,
+        _make_it_a_venv,
+    ],
+)
+def test_a_file_the_scan_now_skips_is_removed_from_the_index(
+    rag_home, stub_embeddings, monkeypatch, exclude
+):
+    source = rag_home / "source"
+    _write(source, "a-notes.md", "notes")
+    _write(source, "build/plan.txt", "draft plan " * 10)
+    folder = folder_sync.create_folder(
+        scope_type = "project", scope_id = "p1", path = str(source), name = "Docs"
+    )
+    assert _run(folder["id"])["status"] == "completed"
+    assert _mapped(folder["id"]) == {"a-notes.md", "build/plan.txt"}
+
+    exclude(source, monkeypatch)
+    job = _run(folder["id"])
+    assert job["status"] == "completed", job["error"]
+    assert job["deleted"] == 1
+    assert _mapped(folder["id"]) - {"package.json"} == {"a-notes.md"}
+    assert (source / "build" / "plan.txt").is_file()
+
+
+@requires_sqlite_vec
+def test_a_file_refilled_after_an_empty_scan_keeps_its_index_entry(
+    rag_home, stub_embeddings, monkeypatch
+):
+    source = rag_home / "source"
+    _write(source, "notes.md", "durable words")
+    note = source / "notes.md"
+    folder = folder_sync.create_folder(
+        scope_type = "project", scope_id = "p1", path = str(source), name = "Docs"
+    )
+    assert _run(folder["id"])["status"] == "completed"
+
+    note.write_text("", encoding = "utf-8")
+    real_scan = folder_sync._scan
+
+    def refill_after_scan(*args, **kwargs):
+        result = real_scan(*args, **kwargs)
+        note.write_text("durable words", encoding = "utf-8")
+        return result
+
+    monkeypatch.setattr(folder_sync, "_scan", refill_after_scan)
+    assert _run(folder["id"])["status"] == "failed"
+    assert _mapped(folder["id"]) == {"notes.md"}
+
+
+def _shrink_back_under_the_limit(source, monkeypatch):
+    monkeypatch.setattr(config, "FOLDER_MAX_TEXT_BYTES", 10)
+    return lambda: monkeypatch.setattr(config, "FOLDER_MAX_TEXT_BYTES", 0)
+
+
+def _drop_the_gitignore_rule(source, monkeypatch):
+    _write(source, ".gitignore", "notes.txt\n")
+    return lambda: (source / ".gitignore").unlink()
+
+
+@requires_sqlite_vec
+@pytest.mark.parametrize("exclude", [_shrink_back_under_the_limit, _drop_the_gitignore_rule])
+def test_a_file_eligible_again_before_removal_keeps_its_index_entry(
+    rag_home, stub_embeddings, monkeypatch, exclude
+):
+    source = rag_home / "source"
+    _write(source, "notes.txt", "durable words")
+    folder = folder_sync.create_folder(
+        scope_type = "project", scope_id = "p1", path = str(source), name = "Docs"
+    )
+    assert _run(folder["id"])["status"] == "completed"
+
+    restore = exclude(source, monkeypatch)
+    real_scan = folder_sync._scan
+    calls = []
+
+    def restore_after_first_scan(*args, **kwargs):
+        result = real_scan(*args, **kwargs)
+        if not calls:
+            restore()
+        calls.append(1)
+        return result
+
+    monkeypatch.setattr(folder_sync, "_scan", restore_after_first_scan)
+    assert _run(folder["id"])["status"] == "failed"
+    assert _mapped(folder["id"]) == {"notes.txt"}

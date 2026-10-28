@@ -715,11 +715,7 @@ def _id_chunks(folder_ids: list[str]) -> list[list[str]]:
 
 
 def linked_folder_ids(scope: str) -> list[str]:
-    """The folders a scope owns right now, for bounding a later retirement to them.
-
-    Metadata connection, like retirement itself: the delete path has to finish even when the
-    vector extension cannot load.
-    """
+    """Reads only the metadata DB, so deletes finish even when the vector extension cannot load."""
     with closing(rag_db.get_metadata_connection()) as conn:
         if not _metadata_table_exists(conn, "linked_folders"):
             return []
@@ -741,11 +737,7 @@ def _retire_scope_rows(
         "INSERT OR IGNORE INTO linked_folder_retired_scopes(scope, retired_at) VALUES(?, ?)",
         (scope, _now()),
     )
-    # The ownership check and this write cannot share a transaction across two databases, so the
-    # caller bounds the write to the folders it saw. Identity, not created_at: Windows reads its
-    # clock in ~15.6ms steps, so a folder linked just after the check carries the check's own
-    # timestamp, and retiring it disables RAG for a project recreated with the same id, for good.
-    # None means no bound at all; an empty list means the caller saw no folders.
+    # Bounded to folder ids, not created_at: Windows clock has ~15.6ms resolution.
     batches = [None] if folder_ids is None else _id_chunks(folder_ids)
     for batch in batches:
         bound = "" if batch is None else f" AND id IN ({','.join('?' * len(batch))})"
@@ -771,12 +763,7 @@ def retire_scope(
     folder_ids: list[str] | None = None,
     rows: bool = True,
 ) -> None:
-    """Stop all future work, even when the vector extension cannot load.
-
-    `rows = False` writes only the tombstone: enough on its own to stop new links and uploads,
-    and the only half a caller can take back, since the folder and job updates overwrite state
-    nobody recorded. A caller whose ownership check can still go stale takes it first.
-    """
+    """rows=False writes only the tombstone: stops new links and uploads, and is all a caller can undo."""
     conn = _retirement_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -790,11 +777,7 @@ def retire_scope(
 
 
 def retire_and_delete_kb(kb_id: str) -> bool:
-    """Atomically retire a KB scope and delete its owner row.
-
-    Document rows remain as the durable cleanup queue until
-    ``delete_retired_scope`` removes their stored files and database state.
-    """
+    """Retires the scope and deletes its owner row atomically; document rows stay as the cleanup queue."""
     scope = store.kb_scope(kb_id)
     conn = rag_db.get_connection()
     try:
@@ -814,12 +797,7 @@ def retire_and_delete_kb(kb_id: str) -> bool:
 
 
 def delete_retired_scope(scope: str) -> bool:
-    """Purge an ownerless scope and retain its tombstone permanently.
-
-    The tombstone closes late cross-database upload/link races while the scope is ownerless; only a
-    same-id project recreate clears it (``unretire_scope``). File removal happens before database rows
-    are discarded, so any failure remains retryable from durable metadata.
-    """
+    """Purges an ownerless scope but keeps its tombstone; files go before DB rows, so retries are safe."""
     conn = rag_db.get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -918,8 +896,7 @@ def reconcile_retired_scopes(project_exists) -> dict[str, list[str]]:
         if not project_id:
             continue
         try:
-            # rechecked inside the lock create_folder takes: a project recreated with the same id must not have
-            # its new folders retired
+            # Rechecked under create_folder's lock so a recreated project's folders are not retired.
             with _scope_lock(scope):
                 owned = linked_folder_ids(scope)
                 if project_exists(project_id):
@@ -1000,12 +977,7 @@ def request_sync(folder_id: str, *, rebuild: bool = False) -> str:
 
 
 def _fold_into_active_job(conn, active, kind: str) -> None:
-    """Absorb a new request into the job already queued or running for this folder.
-
-    A pending job has not scanned yet, so it can simply become the requested kind. A
-    running job already fixed its file list, so the request becomes a successor: the
-    caller's changes are only guaranteed to land in the run that follows this one.
-    """
+    """Pending jobs take the kind; a running job's files are fixed, so the request becomes a successor."""
     if active["status"] == "pending":
         if kind == "rebuild":
             conn.execute(
@@ -1074,11 +1046,7 @@ def get_job(job_id: str) -> dict | None:
 
 
 def job_events(job_id: str):
-    """Poll persisted state so streams also work after a backend restart.
-
-    Yields None as a keepalive when a pass produces no change for a while, which is what
-    lets a client tell a slow job from a proxy holding the whole response back.
-    """
+    """Polls persisted state so streams survive restarts; yields None as a keepalive during quiet passes."""
     previous = None
     last_sent = time.monotonic()
     while True:
@@ -1102,6 +1070,7 @@ def _scan(
     root: str,
     expected_identity: tuple[int, int] | None = None,
     report: dict[str, int] | None = None,
+    excluded: set[str] | None = None,
 ) -> tuple[dict[str, dict], tuple[int, int]]:
     """Map relative path -> metadata; `report` receives counts of deliberately skipped entries."""
     from hub.storage.scan_folders import contains_sensitive_path_component, is_denied_system_path
@@ -1111,6 +1080,7 @@ def _scan(
         raise RuntimeError("Linked folder root identity changed")
 
     skipped = {"gitignored": 0, "build_dirs": 0, "too_large": 0, "over_limit": 0}
+    excluded = set() if excluded is None else excluded
     found: dict[str, dict] = {}
     mount_points = _mount_points()
     root_identities = frozenset({identity}) if identity[1] not in (None, 0) else frozenset()
@@ -1130,12 +1100,15 @@ def _scan(
                 rel = os.path.relpath(full, root).replace(os.sep, "/")
                 if entry.is_dir(follow_symlinks = False):
                     if _is_ignored_scan_dir(entry.name, full):
+                        excluded.add(rel)
                         continue
                     if rules and gitignore.is_ignored(rel, True, rules):
                         skipped["gitignored"] += 1
+                        excluded.add(rel)
                         continue
                     if _is_build_output_dir(entry.name, directory):
                         skipped["build_dirs"] += 1
+                        excluded.add(rel)
                         continue
                     resolved = os.path.realpath(full)
                     if (
@@ -1182,23 +1155,20 @@ def _scan(
                     continue
                 if rules and gitignore.is_ignored(rel, False, rules):
                     skipped["gitignored"] += 1
+                    excluded.add(rel)
                     continue
-                # Finder metadata carries the document's extension, so a text parser would embed and cite it as a
-                # real chunk.
+                # Compare only fstat-reproducible ids: scandir has none on Windows; lstat differs on unstable inodes.
                 if is_appledouble_metadata(Path(full)):
                     continue
                 st = entry.stat(follow_symlinks = False)
                 from_path = False
                 if st.st_ino in (None, 0):
-                    # Windows DirEntry.stat leaves st_dev/st_ino at 0 (FindFirstFileW carries no file index); os.lstat
-                    # fills both, else the stored identity is (0, 0) forever.
+                    # Windows DirEntry.stat leaves st_dev/st_ino at 0; os.lstat fills them.
                     try:
                         st = os.lstat(full)
                         from_path = True
                     except OSError:
-                        # A file that vanished mid-scan must reach _snapshot as a failure: a scan is never
-                        # authoritative for
-                        # deletion.
+                        # A file vanishing mid-scan must count as a failure: scans never authorize deletion.
                         pass
                 if st.st_size == 0:
                     continue
@@ -1208,6 +1178,7 @@ def _scan(
                     and st.st_size > config.FOLDER_MAX_TEXT_BYTES
                 ):
                     skipped["too_large"] += 1
+                    excluded.add(rel)
                     continue
                 found[rel] = {
                     "path": full,
@@ -1215,8 +1186,7 @@ def _scan(
                     "mtime_ns": st.st_mtime_ns,
                     "device": st.st_dev,
                     "inode": st.st_ino,
-                    # A recovered identity is comparable to the next scan's but not to os.fstat's: shared-folder and
-                    # WebDAV drivers report different ids per call path.
+                    # Path-derived ids differ from fstat ids on shared-folder and WebDAV drivers.
                     "identity_from_path": from_path,
                 }
                 if hard_cap and len(found) > hard_cap:
@@ -1229,6 +1199,7 @@ def _scan(
     if config.FOLDER_MAX_FILES and len(found) > config.FOLDER_MAX_FILES:
         kept = sorted(found)[: config.FOLDER_MAX_FILES]
         skipped["over_limit"] = len(found) - len(kept)
+        excluded.update(set(found) - set(kept))
         found = {rel: found[rel] for rel in kept}
     if report is not None:
         report.update(skipped)
@@ -1331,7 +1302,7 @@ def _check_root_identity(root: str, expected: tuple[int, int]) -> None:
         raise _FolderChanged("Linked folder root identity changed during reconciliation")
 
 
-def _source_reappeared(root: str, relative_path: str) -> bool:
+def _source_reappeared(root: str, relative_path: str, excluded: set[str]) -> bool:
     """check scanner eligibility without following a replaced path component."""
     path = PurePosixPath(relative_path)
     parts = path.parts
@@ -1347,6 +1318,8 @@ def _source_reappeared(root: str, relative_path: str) -> bool:
         # previously indexed dot directories are excluded even if they still exist
         if index < len(parts) - 1 and part.startswith("."):
             return False
+        if "/".join(parts[: index + 1]) in excluded:
+            return False
         current = os.path.join(current, part)
         try:
             current_stat = os.lstat(current)
@@ -1360,7 +1333,8 @@ def _source_reappeared(root: str, relative_path: str) -> bool:
             if not stat.S_ISDIR(current_stat.st_mode):
                 return False
         else:
-            return stat.S_ISREG(current_stat.st_mode)
+            # Empty files are skipped by the scan; one refilled since then has reappeared.
+            return stat.S_ISREG(current_stat.st_mode) and current_stat.st_size > 0
     return False
 
 
@@ -1433,8 +1407,7 @@ def _install_mapping(
         raise
     finally:
         conn.close()
-    # Only after the commit: a rollback here restores a live searchable document, unlike the delete
-    # paths where the surviving row is the retry queue.
+    # Only after the commit: a rollback restores a live searchable document.
     for stored_path in replaced:
         _remove_snapshot(stored_path)
 
@@ -1480,8 +1453,7 @@ def _delete_mapping(folder_id: str, rel: str) -> None:
         raise
     finally:
         conn.close()
-    # After the commit: a rollback restores a live document, and an auto_sync=0 folder may not reconcile
-    # again for a long time.
+    # Only after the commit: a rollback restores a live document.
     _remove_snapshot(row["stored_path"])
 
 
@@ -1567,8 +1539,7 @@ def _ingest_folder_document(
     embedding_model: str,
     rebuild: bool,
 ) -> _IngestionResult:
-    """Ingest one file in a pool thread; the coordinator owns all folder state."""
-    # Thread-local, so copy the coordinator's lease and stop state for _check_running.
+    """Thread-local, so the coordinator lease and stop state are copied in for _check_running."""
     _worker_state.job_id = job_id
     _worker_state.folder_id = folder["id"]
     _worker_state.stop_event = stop_event
@@ -1650,7 +1621,8 @@ def _reconcile_folder(job_id: str) -> None:
         _check_running()
         expected_identity = _load_identity(folder["root_device"], folder["root_inode"])
         skipped: dict[str, int] = {}
-        current, scanned_identity = _scan(folder["path"], expected_identity, skipped)
+        excluded: set[str] = set()
+        current, scanned_identity = _scan(folder["path"], expected_identity, skipped, excluded)
         _check_running()
     except (_SyncStopped, _SyncCancelled, _LeaseLost):
         raise
@@ -1929,10 +1901,20 @@ def _reconcile_folder(job_id: str) -> None:
             raise
 
     deleted = 0
-    for rel in sorted(missing - withheld):
+    removable = sorted(missing - withheld)
+    if removable:
+        # Exclusions can lapse during ingestion (.gitignore edited, file shrunk): judge removals on a fresh scan.
+        excluded = set()
+        try:
+            rescanned, _ = _scan(folder["path"], scanned_identity, None, excluded)
+        except RuntimeError as exc:
+            raise _FolderChanged(str(exc)) from exc
+        if not rescanned.keys().isdisjoint(removable):
+            raise _FolderChanged("Linked source reappeared during reconciliation")
+    for rel in removable:
         _check_running()
         _check_root_identity(folder["path"], scanned_identity)
-        if _source_reappeared(folder["path"], rel):
+        if _source_reappeared(folder["path"], rel, excluded):
             raise _FolderChanged("Linked source reappeared during reconciliation")
         _check_root_identity(folder["path"], scanned_identity)
         _delete_mapping(folder["id"], rel)
@@ -2296,12 +2278,7 @@ def _recover_startup_state() -> None:
 
 
 def _reap_orphaned_documents(conn, now: str) -> None:
-    """Drop folder-owned documents left unreferenced by a crash before mapping.
-
-    Also runs periodically: a process that survives the crash reclaims the
-    expired job and reindexes the file, so its own startup pass is long past.
-    Anything still leased by a live ingestion or folder sync is left alone.
-    """
+    """Drops folder-owned orphans from a crash; anything still leased by a live ingestion is kept."""
     orphans = conn.execute(
         "SELECT d.id, d.stored_path FROM documents d "
         "WHERE d.linked_folder_id IS NOT NULL AND NOT EXISTS "
@@ -2336,8 +2313,7 @@ def start_auto_sync(
         if not rag_db.rag_available():
             return False
     except sqlite3.OperationalError:
-        # The worker retries initialization, so transient database contention must not turn a startup
-        # preflight into a process-lifetime outage.
+        # Tile figure pages and merge tile text into the page so small labels and every sub-figure are kept.
         pass
     with _thread_lock:
         retired = _thread if _thread is not None and _thread.is_alive() else None
@@ -2390,8 +2366,7 @@ def _initialize_account_sync(project_exists, *, recover: bool = False) -> None:
 
 
 def _next_account_job():
-    # Round robin from the account after the last claim: one folder is reconciled at a time,
-    # so always restarting at the first account starves everyone behind a backlog.
+    # Round robin across accounts so one backlog cannot starve the rest.
     global _last_job_account
     accounts = job_accounts()
     start = 0

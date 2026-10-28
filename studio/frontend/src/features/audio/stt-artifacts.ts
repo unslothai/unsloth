@@ -39,8 +39,7 @@ const GGUF_REPO_BY_KEY: Record<string, string> = {
   "large-v3": "unslothai/whisper-large-v3-GGUF",
 };
 
-// The audiocpp engine takes any GGUF ASR repo or package folder id as its key. Dictation keys
-// saved before that are distinct from every other engine's and resolve to their folder id.
+// Older dictation keys are engine-distinct and resolve to their audiocpp folder id.
 const AUDIOCPP_REPO_BY_KEY: Record<string, string> = Object.fromEntries(
   AUDIO_CPP_DICTATION_MODELS.map((model) => [model.key, model.id]),
 );
@@ -80,16 +79,14 @@ export function sttRepoIdForSidecarKey(
   engine: AudioSttEngine = "transformers",
 ): string {
   const normalized = sidecarKey.trim().toLowerCase();
-  // A saved audiocpp dictation key names one folder whatever engine the caller assumed.
   if (engine === "audiocpp" || Object.hasOwn(AUDIOCPP_REPO_BY_KEY, normalized))
     return AUDIOCPP_REPO_BY_KEY[normalized] ?? sidecarKey;
   if (engine === "mtmd") return MTMD_REPO_BY_KEY[normalized] ?? sidecarKey;
   return TRANSFORMERS_REPO_BY_KEY[normalized] ?? sidecarKey;
 }
 
-/** Resolve from the picker artifact, not the shared short sidecar key. The curated Qwen3-ASR
- *  GGUFs run on llama.cpp and the retired Whisper GGUFs on Transformers; every other GGUF ASR
- *  repo is the audio runtime's, and a safetensors repo runs on Transformers. */
+/** Resolve from the picker artifact, not the shared short sidecar key. Curated Qwen3-ASR GGUFs run on
+ *  llama.cpp, retired Whisper GGUFs on Transformers, other GGUF ASR on audio.cpp, safetensors on Transformers. */
 export function sttEngineForRepoId(
   repoId: string,
   isGguf?: boolean | null,

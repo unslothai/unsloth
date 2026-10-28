@@ -6,7 +6,6 @@ type FrameListener = (rawRms: number, now: number) => void;
 
 const levelListeners = new Set<LevelListener>();
 
-/** Subscribe to the live microphone level (0..1) during dictation. */
 export function subscribeDictationLevel(listener: LevelListener): () => void {
   levelListeners.add(listener);
   return () => {
@@ -20,8 +19,7 @@ function publishLevel(level: number): void {
   }
 }
 
-/** Start a lightweight Web Audio meter for the shared recording waveform and optional
- *  voice-activity detection. Returns an idempotent cleanup function. */
+/** Returns an idempotent cleanup function. */
 export function startDictationLevelMeter(
   source: MediaStream,
   onFrame?: FrameListener,

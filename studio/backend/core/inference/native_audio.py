@@ -14,13 +14,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""Native Transformers/Diffusers audio generation backends.
-
-This module intentionally has no ML imports at module import time. The worker uses
-``is_native_audio_model`` before choosing its MLX or Unsloth runtime, including on
-Apple Silicon, and imports torch/transformers only after the normal version and
-remote-code security gates have run.
-"""
+"""No ML imports at load; torch/transformers load only after version and remote-code security gates."""
 
 from __future__ import annotations
 
@@ -353,6 +347,39 @@ def _higgs_tts3_codec_target(model_name: str, hf_token: Optional[str] = None) ->
     return HIGGS_TTS3_CODEC_REPO
 
 
+def _moss_local_audio_tokenizer_target(
+    model_name: str, hf_token: Optional[str] = None
+) -> Optional[str]:
+    """The codec ``audio_tokenizer_config.json`` names; the processor loads it by itself."""
+    audio_tokenizer_config = _read_audio_metadata(
+        model_name, "audio_tokenizer_config.json", hf_token, reject_oversized = True
+    )
+    candidate = audio_tokenizer_config.get("audio_tokenizer_name_or_path")
+    if isinstance(candidate, str) and candidate.strip():
+        return candidate.strip()
+    return None
+
+
+_CURATED_AUDIO_COMPANIONS = frozenset(
+    repo for repos in NATIVE_AUDIO_COMPANION_REPOS.values() for repo in repos
+)
+
+
+def _companion_adapter_base(companion: str, hf_token: Optional[str] = None) -> Optional[str]:
+    """The base ``from_pretrained`` loads in place of a companion that is a PEFT adapter."""
+    if companion in _CURATED_AUDIO_COMPANIONS:
+        return None
+    local = Path(companion).expanduser()
+    if local.is_dir() and (local / "config.json").is_file():
+        # Transformers only swaps a local folder for its base when it has no config.json.
+        return None
+    adapter_config = _read_audio_metadata(
+        companion, "adapter_config.json", hf_token, reject_oversized = True
+    )
+    base = adapter_config.get("base_model_name_or_path")
+    return base.strip() if isinstance(base, str) and base.strip() else None
+
+
 def native_audio_type_from_local_path(model_name: str) -> Optional[str]:
     """Recognize a local native-audio checkpoint from bounded metadata files."""
     normalized = str(model_name or "").strip()
@@ -390,11 +417,7 @@ def _native_audio_type(model_name: str) -> Optional[str]:
 
 
 def audio_cpp_audio_type(model_name: str) -> Optional[str]:
-    """The audio_type of an audio.cpp speech or music id, from the HF cache alone.
-
-    Only ids that name the umbrella repo, a legacy key, or a repo this process already
-    resolved are looked at, so an ordinary model name costs nothing here.
-    """
+    """Looks only at umbrella, legacy or already-resolved ids, so ordinary model names cost nothing."""
     from core.inference.audio_cpp_models import looks_like_audio_cpp, resolve
 
     if not looks_like_audio_cpp(model_name):
@@ -411,11 +434,7 @@ def is_audio_cpp_audio_model(model_name: str) -> bool:
 
 
 def is_native_audio_model(model_name: str) -> bool:
-    """Whether ``model_name`` belongs in the portable native-audio worker.
-
-    Curated Hub IDs are answered without network access. Local checkpoints are
-    recognized from small metadata files; model weights are not opened.
-    """
+    """Curated Hub ids need no network, and local checkpoints are judged from metadata, never weights."""
     return _native_audio_type(model_name) is not None
 
 
@@ -434,12 +453,20 @@ def native_audio_security_targets(
     resolved_type = audio_type or _native_audio_type(model_name)
     if resolved_type == "moss_tts_local":
         targets.append(_moss_local_codec_target(model_name, hf_token))
+        audio_tokenizer = _moss_local_audio_tokenizer_target(model_name, hf_token)
+        if audio_tokenizer and audio_tokenizer not in targets:
+            targets.append(audio_tokenizer)
     elif resolved_type == "higgs_tts2":
         targets.append(_higgs_tts2_codec_target(model_name, hf_token))
     elif resolved_type == "higgs_tts3":
         targets.append(_higgs_tts3_codec_target(model_name, hf_token))
     else:
         targets.extend(NATIVE_AUDIO_COMPANION_REPOS.get(resolved_type, ()))
+    # A companion that is only an adapter loads its base instead, so the gates must see that base.
+    for companion in targets[1:]:
+        base = _companion_adapter_base(companion, hf_token)
+        if base and base not in targets:
+            targets.append(base)
     return targets
 
 
@@ -496,16 +523,7 @@ def native_audio_kv_memory_gb(
 
 
 def _moss_transformers5_config_compat(codec_source: str, token_kwargs: dict[str, Any]) -> None:
-    """Import a MOSS codec config with the pre-Transformers-5 subclass contract.
-
-    Transformers 5 turns every ``PreTrainedConfig`` subclass into a dataclass.
-    The published MOSS codec configs have required fields (including
-    ``sampling_rate``) after inherited default fields, which Python dataclasses
-    reject before any model weights are read. The remote configs already own
-    their constructors, so briefly suppressing only that automatic conversion
-    restores the contract they were published against. The base hook is always
-    restored before the actual model load begins.
-    """
+    """Turns off Transformers 5 dataclass conversion for MOSS configs, which put required fields after defaults; restore the base hook before model load"""
     import transformers
 
     try:
@@ -694,12 +712,7 @@ def _native_audio_repo_files(
 
 
 def native_audio_download_plan(model_name: str, hf_token: Optional[str] = None) -> dict[str, Any]:
-    """Return uncached Hub files for an Audio-page TTS load.
-
-    Native models add their companion codec repositories and MiniMax excludes
-    legacy weights its modular index never references. Other TTS repositories
-    use a full snapshot, matching Chat's safe generic fallback.
-    """
+    """Native models add companion codec repos, and MiniMax skips legacy weights its index never names."""
     normalized = str(model_name or "").strip()
     if not normalized:
         raise ValueError("A model repository is required.")
@@ -1074,6 +1087,14 @@ class NativeAudioBackend:
     def _load_moss_nano(
         self, entry: dict[str, Any], source: str, hf_token: Optional[str], trust_remote_code: bool
     ) -> None:
+        # Read the guard's sentinel, not sys.platform: the env var overrides the platform default.
+        if "sentencepiece" in sys.modules and sys.modules["sentencepiece"] is None:
+            raise RuntimeError(
+                "MOSS-TTS-Nano requires SentencePiece, which is disabled in this Unsloth "
+                "process. Restart Unsloth with UNSLOTH_DISABLE_SENTENCEPIECE=0 to enable "
+                "its native tokenizer."
+            )
+
         from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer
 
         token_kwargs = self._token_kwargs(hf_token)

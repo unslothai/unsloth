@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The migration must never leave this tab showing sampling the server does not
-// have. Each test here failed before the fix it guards.
-
 import assert from "node:assert/strict";
 import { register } from "node:module";
 import test from "node:test";
@@ -48,7 +45,6 @@ function resetHttp(settings: Record<string, unknown>): void {
   settingsHttp.putGate = null;
 }
 
-/** The store as it stands with the legacy Qwen3.8 snapshot loaded and active. */
 function seedActiveQwen(overrides: Record<string, unknown> = {}): void {
   const hydratedSnapshot = { ...LEGACY_SNAPSHOT, minPMode: "custom" as const };
   useChatRuntimeStore.setState((state) => ({
@@ -67,7 +63,6 @@ function seedActiveQwen(overrides: Record<string, unknown> = {}): void {
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
-/** The adoption a model load performs, and the drain that follows it. */
 async function adoptQwenDefaults(): Promise<void> {
   const active = useChatRuntimeStore.getState();
   active.setParams(
@@ -98,8 +93,6 @@ const LEGACY_SETTINGS = {
 
 test("a rejected retry leaves local sampling on the value the server kept", async () => {
   resetHttp({ ...LEGACY_SETTINGS });
-  // Another tab commits presencePenalty=0.4 between the confirming GET and the
-  // conditional write, so the compare-and-set is rejected.
   settingsHttp.beforeConditionalApply = () => {
     settingsHttp.settings = {
       ...LEGACY_SETTINGS,
@@ -114,7 +107,6 @@ test("a rejected retry leaves local sampling on the value the server kept", asyn
 
   assert.equal(settingsHttp.puts.length, 0);
   assert.equal(serverRow().presencePenalty, 0.4);
-  // The local store must not advertise the rejected values.
   const after = useChatRuntimeStore.getState();
   assert.notEqual(after.params.presencePenalty, 1.5);
   assert.notEqual(
@@ -139,8 +131,7 @@ test("an accepted retry still applies the migration locally", async () => {
 
 test("a backend without the conditional route persists nothing and shows nothing", async () => {
   resetHttp({ ...LEGACY_SETTINGS });
-  // The desktop app adopts backends above a version floor, so an older one that
-  // never learned this route is a supported install rather than an error.
+  // Desktop adopts older backends without this route, so a 404 is a supported install.
   settingsHttp.conditionalStatus = 404;
   seedActiveQwen();
 
@@ -172,8 +163,7 @@ test("a preset modified during hydration is not migrated on a stale read", async
   });
   settingsHttp.hold();
   const hydration = useChatRuntimeStore.getState().hydratePersistedSettings();
-  // A slider moves while the settings GET is in flight. Its provenance write
-  // sits behind the debounce, so the server still reads "builtin-default".
+  // Provenance write sits behind the debounce, so the server still reads builtin-default.
   useChatRuntimeStore.getState().setActivePresetSource("modified");
   settingsHttp.release?.();
   await hydration;
@@ -209,8 +199,6 @@ test("a normalized exact key cannot overwrite a row added after the read", async
 
   await adoptQwenDefaults();
 
-  // The exact-key row the other tab wrote must survive intact, and no
-  // per-model patch may be sent for it at all.
   assert.deepEqual(serverRow(QWEN38), newerRow);
   assert.deepEqual(serverRow(lower), LEGACY_SNAPSHOT);
   assert.deepEqual(
@@ -231,7 +219,6 @@ test("a model id containing slashes stays one absence-fence path segment", async
 
   await adoptQwenDefaults();
 
-  // Nothing raced it, so the normalization applies under the exact spelling.
   assert.equal(serverRow(QWEN38).presencePenalty, 1.5);
 });
 
@@ -251,7 +238,6 @@ test("the loaded model's reasoning mode survives hydration", async () => {
   await useChatRuntimeStore.getState().hydratePersistedSettings();
 
   const after = useChatRuntimeStore.getState();
-  // The pill and the sampling table have to agree; both follow the load.
   assert.equal(after.reasoningEnabled, false);
   assert.equal(after.params.temperature, 0.7);
   assert.equal(after.params.topP, 0.8);
@@ -260,9 +246,7 @@ test("the loaded model's reasoning mode survives hydration", async () => {
 });
 
 test("a status refresh cannot outrank the installation's persisted reasoning", async () => {
-  // Adoption of a resident model echoes whatever this browser had locally,
-  // which before hydration is a local default, not the installation setting.
-  // Only a load this browser performed may win.
+  // Before hydration the echo is a local default, so only a load from this browser may win.
   resetHttp({
     ...BUILTIN_DEFAULT,
     reasoningEnabled: false,
@@ -271,21 +255,16 @@ test("a status refresh cannot outrank the installation's persisted reasoning", a
   seedActiveQwen({
     settingsHydrated: false,
   });
-  // This browser never loaded QWEN38: clear any load marker left by an earlier
-  // case, then let a status merely report the model (fromLoad defaults false).
   noteLoadedModelReasoningMode("unsloth/Llama-3.2-3B-Instruct-GGUF", false);
   noteLoadedModelReasoningMode(QWEN38, true);
 
   await useChatRuntimeStore.getState().hydratePersistedSettings();
 
-  // The server said thinking is off for this installation. It stays off.
   assert.equal(useChatRuntimeStore.getState().reasoningEnabled, false);
 });
 
 test("the post-load refresh does not drop the load's claim on the mode", async () => {
-  // performLoad marks fromLoad, then awaits refresh(), whose status merge calls
-  // noteLoadedModelReasoningMode again with the default false. Downgrading there
-  // would let hydration replay the previous model's persisted toggle.
+  // refresh() re-notes the mode with false; downgrading would replay the previous toggle.
   resetHttp({
     ...BUILTIN_DEFAULT,
     reasoningEnabled: true,
@@ -296,7 +275,6 @@ test("the post-load refresh does not drop the load's claim on the mode", async (
     settingsHydrated: false,
   });
   noteLoadedModelReasoningMode(QWEN38, false, true);
-  // The refresh that performLoad awaits, reporting the same model.
   noteLoadedModelReasoningMode(QWEN38, false);
 
   await useChatRuntimeStore.getState().hydratePersistedSettings();
@@ -308,8 +286,7 @@ test("the post-load refresh does not drop the load's claim on the mode", async (
 });
 
 test("a model without reasoning support is migrated as non-thinking", async () => {
-  // The load-time overlay is gated on supportsReasoning, so a toggle left over
-  // from the previous model must not pick the thinking table for the row.
+  // The overlay is gated on supportsReasoning, so a leftover toggle must not pick the thinking table.
   resetHttp({
     ...BUILTIN_DEFAULT,
     inferenceParamsByModel: { [QWEN38]: LEGACY_SNAPSHOT },
@@ -318,7 +295,6 @@ test("a model without reasoning support is migrated as non-thinking", async () =
     supportsReasoning: false,
     settingsHydrated: false,
   });
-  // A status reported this checkpoint, and it cannot reason.
   noteLoadedModelReasoningMode("unsloth/Llama-3.2-3B-Instruct-GGUF", false);
   useChatRuntimeStore.setState({ reasoningEnabled: true });
   noteLoadedModelReasoningMode(QWEN38, true);
@@ -330,11 +306,7 @@ test("a model without reasoning support is migrated as non-thinking", async () =
 });
 
 test("an empty stored model map is declined, since it cannot be fenced", async () => {
-  // sanitizeChatSettings drops inferenceParamsByModel: {}, so it lands in
-  // neither expected nor expectedAbsent, and the server matches expected by
-  // recursive subset, where an empty map matches a populated one. Another tab
-  // adding the first row would slip through, so this declines rather than
-  // write unfenced. An absent key is different and stays fenced.
+  // An empty map matches any populated one by recursive subset, so this declines to write unfenced.
   resetHttp({
     ...BUILTIN_DEFAULT,
     inferenceParams: {
@@ -378,19 +350,15 @@ test("case-distinct POSIX paths keep separate reasoning-mode records", async () 
     supportsReasoning: true,
     settingsHydrated: false,
   }));
-  // The load was for the other path entirely.
   noteLoadedModelReasoningMode(upper, false, true);
 
   await useChatRuntimeStore.getState().hydratePersistedSettings();
 
-  // No record for this checkpoint, so the persisted toggle stands.
   assert.equal(useChatRuntimeStore.getState().reasoningEnabled, true);
 });
 
 test("a checkpoint switch during the conditional write is not migrated", async () => {
-  // The CAS commits for QWEN38, but the user moves to another Qwen before the
-  // response resolves. Applying then would mark the second model's row migrated
-  // while the server updated only the first.
+  // Applying after a switch would mark the second row migrated; the server updated only the first.
   const other = "unsloth/Qwen3.6-9B-GGUF";
   resetHttp({ ...LEGACY_SETTINGS });
   settingsHttp.beforeConditionalApply = () => {
@@ -411,7 +379,6 @@ test("a checkpoint switch during the conditional write is not migrated", async (
   );
   await sleep(60);
 
-  // The row the user switched to keeps its legacy values locally.
   const after = useChatRuntimeStore.getState();
   const otherRow = after.paramsByModel[other] as Record<string, number>;
   assert.equal(otherRow.presencePenalty, 0);
@@ -419,9 +386,7 @@ test("a checkpoint switch during the conditional write is not migrated", async (
 });
 
 test("case-distinct POSIX ownership claims still conflict", async () => {
-  // Two resident-model callbacks enqueue ownership before the microtask runs.
-  // They are different files, so the competing claims must cancel each other
-  // rather than the later one silently replacing the earlier.
+  // Different files, so competing ownership claims must cancel rather than the later one win.
   const upper = "/home/u/Models/qwen3.8-27b";
   const lower = "/home/u/models/qwen3.8-27b";
   resetHttp({
@@ -465,8 +430,7 @@ test("case-distinct POSIX ownership claims still conflict", async () => {
 });
 
 test("selecting an external Qwen migrates its dormant row", async () => {
-  // No load and no status follows an external pick, so setCheckpoint is the
-  // only chance to repair the row it just replayed.
+  // No load or status follows an external pick, so setCheckpoint must repair the row.
   const external = `external::openrouter::${encodeURIComponent(
     "Qwen/Qwen3.8-27B",
   )}`;
@@ -514,9 +478,7 @@ test("the send barrier waits for a migration a model pick just scheduled", async
   }));
 
   useChatRuntimeStore.getState().setCheckpoint(external, null);
-  // What the run does before sending. No sleep: the point is that this alone
-  // is enough, since the row is still legacy the microtask before it. Raced
-  // against a deadline so a regression fails here instead of hanging CI.
+  // Raced against a deadline so a regression fails instead of hanging CI.
   const settled = await Promise.race([
     awaitPendingQwenDefaultsMigration().then(() => "settled"),
     new Promise((resolve) => setTimeout(() => resolve("timeout"), 5000)),
@@ -529,7 +491,6 @@ test("the send barrier waits for a migration a model pick just scheduled", async
 
 test("an edit racing the conditional write does not strand local on legacy", async () => {
   resetHttp({ ...LEGACY_SETTINGS });
-  // The user moves a control after the confirming GET, while the write is out.
   settingsHttp.beforeConditionalApply = () => {
     useChatRuntimeStore.getState().setActivePresetSource("modified");
   };
@@ -542,8 +503,6 @@ test("an edit racing the conditional write does not strand local on legacy", asy
   );
   await sleep(60);
 
-  // The server took the migration, so the tab must not keep generating from the
-  // values it no longer holds.
   assert.equal(serverRow().presencePenalty, 1.5);
   const after = useChatRuntimeStore.getState();
   assert.equal(after.activePresetSource, "modified");
@@ -552,8 +511,7 @@ test("an edit racing the conditional write does not strand local on legacy", asy
 });
 
 test("a decision field that sanitizes away blocks the write", async () => {
-  // An explicit null cannot be asserted as a value or as an absence, so the
-  // migration declines rather than writing unfenced.
+  // An explicit null cannot be fenced as value or absence, so the migration declines.
   resetHttp({ ...LEGACY_SETTINGS, activePresetSource: null });
   seedActiveQwen();
 
@@ -564,15 +522,13 @@ test("a decision field that sanitizes away blocks the write", async () => {
   );
   await sleep(60);
 
-  // The row itself, not the queue: an earlier case's debounced PUT can land in
-  // this window and says nothing about whether the migration wrote.
+  // Check the row, not the queue: an earlier case's debounced PUT can land here.
   assert.equal(serverRow().presencePenalty, 0);
   assert.equal(serverRow().minP, 0.01);
 });
 
 test("a case-distinct external switch during the write is not migrated", async () => {
-  // Provider-qualified ids are opaque, so these are two different models even
-  // though normalizeModelIdentity would fold them together.
+  // Provider-qualified ids are opaque even though normalizeModelIdentity would fold them.
   const upper = `external::vendor::${encodeURIComponent("Vendor/Qwen3.8-27B")}`;
   const lower = `external::vendor::${encodeURIComponent("vendor/qwen3.8-27b")}`;
   resetHttp({
@@ -608,7 +564,6 @@ test("a case-distinct external switch during the write is not migrated", async (
   );
   await sleep(60);
 
-  // Only the row the write was for; the other model keeps its own values.
   const lowerRow = useChatRuntimeStore.getState().paramsByModel[lower] as Record<
     string,
     number
@@ -627,8 +582,6 @@ test("an earlier retry settling does not clear a later retry's barrier", async (
     },
   };
   resetHttp({ ...base });
-  // Both confirming GETs are held, so the first retry finishes while the second
-  // is still deciding.
   const holdGet = (): [Promise<Record<string, unknown>>, () => void] => {
     let release: () => void = () => undefined;
     const held = new Promise<Record<string, unknown>>((resolve) => {
@@ -665,8 +618,7 @@ test("an earlier retry settling does not clear a later retry's barrier", async (
   await sleep(30);
   setTimeout(releaseSecond, 40);
 
-  // A barrier cleared by the wrong retry resolves here with the second row
-  // still legacy; the deadline keeps that a failure rather than a hang.
+  // The deadline keeps a wrongly cleared barrier a failure rather than a hang.
   await Promise.race([
     awaitPendingQwenDefaultsMigration(),
     new Promise((resolve) => setTimeout(resolve, 5000)),
@@ -707,7 +659,6 @@ test("the send barrier follows a retry that replaces the one it captured", async
     { fromModelDefaults: true },
   );
   await sleep(0);
-  // The send joins here, so it captures the first retry.
   const barrier = awaitPendingQwenDefaultsMigration();
   useChatRuntimeStore.setState((state) => ({
     params: { ...state.params, ...LEGACY_SNAPSHOT, checkpoint: QWEN36 },
@@ -725,7 +676,6 @@ test("the send barrier follows a retry that replaces the one it captured", async
     barrier,
     new Promise((resolve) => setTimeout(resolve, 5000)),
   ]);
-  // The checkpoint the send would generate from is the second one.
   assert.equal(serverRow(QWEN36).presencePenalty, 1.5);
 });
 
@@ -736,8 +686,6 @@ test("a write outlasting the flush timeout rearms the migration", async () => {
     releasePut = resolve;
   });
   seedActiveQwen();
-  // An unrelated setting write, held open past the debounce so it is still on
-  // the wire when the migration tries to land.
   const before = useChatRuntimeStore.getState();
   before.setAutoTitle(!before.autoTitle);
   await sleep(600);
@@ -762,8 +710,7 @@ test("a write outlasting the flush timeout rearms the migration", async () => {
 });
 
 test("a status-only reasoning marker does not pick the migration table", async () => {
-  // Status for a resident model lands before the settings GET, so the marker
-  // carries this browser's local default rather than an answer about the model.
+  // Status lands before the settings GET, so the marker holds the local default.
   resetHttp({
     ...BUILTIN_DEFAULT,
     reasoningEnabled: false,
@@ -782,16 +729,12 @@ test("a status-only reasoning marker does not pick the migration table", async (
   );
   await sleep(60);
 
-  // The persisted toggle is off, so the non-thinking row is what the pill will
-  // hydrate against.
   assert.equal(serverRow().temperature, 0.7);
   assert.equal(serverRow().topP, 0.8);
 });
 
 test("a null model map is fenced rather than treated as empty", async () => {
-  // Only a genuinely empty map means "no per-model memory". A null is a key the
-  // row holds, so another tab can replace it with rows this write never saw,
-  // and the compare-and-set asserts neither its value nor its absence.
+  // A null map is a key another tab can replace, and the CAS asserts neither value nor absence.
   resetHttp({
     ...BUILTIN_DEFAULT,
     inferenceParams: { ...LEGACY_SNAPSHOT },
@@ -817,8 +760,6 @@ test("a null model map is fenced rather than treated as empty", async () => {
 
 test("per-model memory enabled during the read cancels the global migration", async () => {
   const OTHER = "unsloth/Llama-3.2-3B-GGUF";
-  // Scheduled while the global snapshot was the active model's to rewrite; the
-  // confirming read shows per-model memory on, so it no longer is.
   resetHttp({
     ...BUILTIN_DEFAULT,
     rememberParamsPerModel: true,
@@ -874,9 +815,7 @@ test("a wedged backend does not hold a send open forever", async () => {
 });
 
 test("adopting the startup model clears the unowned pre-hydration mark", async () => {
-  // Status finds a resident Qwen before hydration finishes. setCheckpoint marks
-  // any pre-hydration switch as an interactive pick, and adoption is the signal
-  // that says otherwise, so the global snapshot is still this model's.
+  // setCheckpoint marks pre-hydration switches interactive; adoption says otherwise.
   resetHttp({
     ...BUILTIN_DEFAULT,
     inferenceParams: { ...LEGACY_SNAPSHOT },
@@ -913,16 +852,13 @@ test("adopting the startup model clears the unowned pre-hydration mark", async (
 });
 
 test("a thread pin survives the race recovery path", async () => {
-  // Applying a thread snapshot advances no installation mutation version, so
-  // nothing in the recovery path would otherwise notice the pin.
+  // Applying a thread snapshot advances no mutation version, so recovery would miss the pin.
   resetHttp({ ...LEGACY_SETTINGS });
   seedActiveQwen();
   useChatRuntimeStore
     .getState()
     .applyThreadScopedSettings("thread-1", { presencePenalty: 0.9 });
   useChatRuntimeStore.setState({ activeThreadId: "thread-1" });
-  // Provenance moves while the conditional write is in flight, which is the
-  // branch that copies migrated fields straight into the live params.
   settingsHttp.beforeConditionalApply = () => {
     useChatRuntimeStore.getState().setActivePresetSource("modified");
   };
@@ -943,8 +879,6 @@ test("a thread pin survives the race recovery path", async () => {
 
 test("an unreachable backend does not spin the migration rearm", async () => {
   resetHttp({ ...LEGACY_SETTINGS });
-  // Every ordinary write is refused, so the patch is retained and each pass
-  // flushes it again.
   settingsHttp.putFailures = Array.from({ length: 400 }, () => ({
     status: 503,
   }));
@@ -976,8 +910,6 @@ test("a model switch during hydration still gets its own row migrated", async ()
     },
   };
   resetHttp({ ...stored });
-  // The first GET is hydration's own read; the second is the confirming read
-  // taken immediately before the write, and that is the one to hold open.
   let releaseConfirm: () => void = () => undefined;
   const confirming = new Promise<Record<string, unknown>>((resolve) => {
     releaseConfirm = () => resolve(settingsHttp.settings);
@@ -993,8 +925,6 @@ test("a model switch during hydration still gets its own row migrated", async ()
   });
   const hydrating = useChatRuntimeStore.getState().hydratePersistedSettings();
   await sleep(20);
-  // The model moves while the confirming read is out. Neither switch path can
-  // schedule a retry from here, since hydration has not finished.
   useChatRuntimeStore.setState((state) => ({
     params: { ...state.params, ...LEGACY_SNAPSHOT, checkpoint: QWEN36 },
   }));
@@ -1016,9 +946,7 @@ test("a custom preset chosen mid-write keeps its own legacy-valued fields", asyn
   resetHttp({ ...LEGACY_SETTINGS });
   useChatRuntimeStore.getState().applyThreadScopedSettings(null, {});
   useChatRuntimeStore.setState({ activeThreadId: null });
-  // A custom preset can hold presencePenalty 0 on purpose. Applying it leaves
-  // that field's value alone, so its mutation counter does not move and the
-  // recovery path would read it as untouched.
+  // Applying a preset with presencePenalty 0 does not move its mutation counter.
   settingsHttp.beforeConditionalApply = () => {
     useChatRuntimeStore.getState().setActivePresetSource("custom");
   };

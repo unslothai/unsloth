@@ -1,18 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Keep the top-level group and a block prefix of a group-offloaded Wan denoiser resident, re-fitted per request.
-
-Room = free + unused cache + already resident - need. Need is the streamed floor + base overhead + the runtime estimate,
-or, for a request no larger (pixels x frames) than a completed one, that request's measured peak x 1.15 + 1 GiB; the
-estimate stays the lower bound. Resident groups keep their host copy, so streaming them again is a pointer swap.
-Kill switches: UNSLOTH_VIDEO_DIT_RESIDENT=0, UNSLOTH_VIDEO_DIT_RESIDENT_BLOCKS=0 (top-level group only),
-UNSLOTH_VIDEO_DIT_RESIDENT_MEASURED=0 (estimate only).
-
-Calibration is not Wan-only: ``arm_request`` arms the same peak measurement for any video family, and every recorded
-peak also lands in a process-wide table keyed by the loaded model (``calibration_key``), so a reload of the same model
-and the offload refusal (``measured_extra_mib``) reuse it. ``UNSLOTH_VIDEO_DIT_RESIDENT_MEASURED=0`` turns reuse off.
-"""
+"""Keeps top group and block prefix of a Wan or HunyuanVideo-1.5 denoiser resident, re-fitted per
+request; need estimate stays the lower bound; kill switches UNSLOTH_VIDEO_DIT_RESIDENT=0,
+UNSLOTH_VIDEO_DIT_RESIDENT_BLOCKS=0 (top group only), UNSLOTH_VIDEO_DIT_RESIDENT_MEASURED=0
+(estimate only)."""
 
 from __future__ import annotations
 
@@ -22,6 +14,9 @@ from typing import Any, Optional
 VIDEO_DIT_RESIDENT_ENV = "UNSLOTH_VIDEO_DIT_RESIDENT"
 VIDEO_DIT_RESIDENT_BLOCKS_ENV = "UNSLOTH_VIDEO_DIT_RESIDENT_BLOCKS"
 VIDEO_DIT_RESIDENT_MEASURED_ENV = "UNSLOTH_VIDEO_DIT_RESIDENT_MEASURED"
+RESIDENT_POLICIES = ("group", "streaming")
+# Single-DiT families measured under the fit (MiniMax-H3 has its own controller, video_minimax_h3_residency).
+RESIDENT_FAMILY_PREFIXES = ("wan", "hunyuanvideo-1.5")
 # A measured peak is scaled by this and a fixed slack is kept on top (allocator fragmentation, cuDNN workspaces).
 MEASURED_PEAK_MARGIN = 1.15
 MEASURED_SLACK_MIB = 1024
@@ -69,8 +64,8 @@ def applies(
         residency_enabled()
         and not modular
         and not is_moe
-        and str(family_name or "").startswith("wan")
-        and offload_policy == "group"
+        and str(family_name or "").startswith(RESIDENT_FAMILY_PREFIXES)
+        and offload_policy in RESIDENT_POLICIES
         and str(device or "").startswith("cuda")
     )
 
@@ -279,10 +274,15 @@ def _open_window(module: Any, dev: Any) -> Any:
     if stale is not None:
         close_window(stale[0], stale[1])
     module._unsloth_video_window = (dev, open_window(dev))
+    before = _capture_generation(dev)
     graphs = _live_graphs(dev)
     generation = _capture_generation(dev)
     accounted = getattr(module, "_unsloth_video_graphs", None)
-    if accounted is None or graphs < accounted:
+    # a capture counts its graph before its generation, so an unchanged generation around the count makes 0 consistent
+    if graphs == 0 and generation == before:
+        module._unsloth_video_graphs = accounted = 0
+        module._unsloth_video_graph_gen = generation
+    elif accounted is None or graphs < accounted:
         # the load's own graphs (every request starts above them), or fewer after a reset freed some
         first = accounted is None
         module._unsloth_video_graphs = accounted = graphs
@@ -339,6 +339,38 @@ def _failed_captures() -> int:
         return failed_capture_count()
     except Exception:  # noqa: BLE001
         return 0
+
+
+def _graphs_off_for_load(handles: tuple) -> bool:
+    """True when every whole-step graph is off for good (declined or poisoned, no per-block fallback); per-call refusals keep the key."""
+    if not handles:
+        return False
+    for h in handles:
+        if (
+            getattr(h, "fallback", None) is not None
+            or getattr(h, "fallback_handle", None) is not None
+        ):
+            return False
+        # load-wide only: a per-key drop (probe OOM, unpaid replay) leaves other shapes free to capture
+        placement = getattr(h, "placement", None)
+        declined = placement is not None and getattr(placement, "_declined", None) is not None
+        dropped = declined and not getattr(h, "cache", None)
+        if not (dropped or getattr(h, "poisoned", False) is True):
+            return False
+    return True
+
+
+def live_speed_optims(pipe: Any, speed_optims: Any) -> tuple:
+    """``speed_optims`` minus ``cuda_graph`` once this load's graphs are off for good, so the key matches what runs."""
+    optims = tuple(speed_optims or ())
+    if "cuda_graph" not in optims:
+        return optims
+    try:
+        if _graphs_off_for_load(tuple(getattr(pipe, "_unsloth_cuda_graphs", ()) or ())):
+            return tuple(o for o in optims if o != "cuda_graph")
+        return optims
+    except Exception:  # noqa: BLE001 - unreadable: keep the load's record
+        return optims
 
 
 def _keyed_graphs_live(pipe: Any, key: Any) -> bool:
@@ -447,13 +479,18 @@ def fit_for_request(
     try:
         import torch
 
-        from .diffusion_memory import _keep_groups_resident, release_resident_groups
+        from .diffusion_memory import (
+            _keep_groups_resident,
+            _user_budget_reserve_mib,
+            cuda_reusable_cache_bytes,
+            release_resident_groups,
+        )
 
         dev = torch.device(device)
         if dev.type != "cuda":
             return None
-        free, _total = torch.cuda.mem_get_info(dev)
-        unused = int(torch.cuda.memory_reserved(dev)) - int(torch.cuda.memory_allocated(dev))
+        free, total = torch.cuda.mem_get_info(dev)
+        unused = cuda_reusable_cache_bytes(dev)
         current = resident_mib(module)
         # an earlier request that never reached record_request_peak (cancelled, failed) leaves nothing measured
         module._unsloth_video_pending = None
@@ -478,6 +515,7 @@ def fit_for_request(
             if wider > room:
                 room = wider
                 _COUNTS["measured_fits"] += 1
+        room = max(0, room - _user_budget_reserve_mib(int(total) >> 20))
         if not blocks_enabled():
             top = _top_group_mib(module)
             room = min(room, top) if top else 0

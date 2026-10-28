@@ -89,7 +89,6 @@ export function estimateSeparateSeconds(
       ? ROFORMER_NO_OVERLAP_SECONDS_PER_SECOND
       : GPU_SECONDS_PER_SECOND[family];
   if (rate === undefined) return null;
-  // Saving the stems adds about a second per minute of audio.
   return Math.max(1, Math.round(rate * durationS + durationS / 60));
 }
 
@@ -114,7 +113,6 @@ export function overlapRequest(value: OverlapValue | undefined): {
   return value?.overlap === false ? { options: { num_overlap: 1 } } : {};
 }
 
-/** A model this page has not run yet loaded with the default (overlap on). */
 export function overlapReloads(
   lastOverlap: boolean | undefined,
   overlap: boolean,

@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Pre-importing diffusers off the first image load.
-
-These tests pin the properties that make paying that import early safe, not the speedup:
-
-  1. A chat-only or training-only install pays NOTHING.
-  2. Every failure mode degrades to "skip": the post-warm worker also carries MLX repair.
-  3. It runs from the POST-warm worker, so it cannot delay a warm stage or the socket bind.
-  4. The tqdm quieting diffusers forces at import is applied here too.
-
-None of these import the real diffusers, which is the point of stubbing it.
-"""
+"""Diffusers prewarm must cost nothing on chat-only installs and skip quietly on any failure."""
 
 from __future__ import annotations
 
@@ -29,10 +19,7 @@ _BACKEND = Path(__file__).resolve().parent.parent
 
 @pytest.fixture
 def restore_diffusers_modules():
-    """Put back every ``diffusers*`` entry this test disturbs.
-
-    monkeypatch only restores keys it set itself, so the real purge leaks into later tests.
-    """
+    """Restore every diffusers* sys.modules entry: monkeypatch cannot undo the real purge's removals."""
     saved = {name: mod for name, mod in sys.modules.items() if name.split(".")[0] == "diffusers"}
     try:
         yield
@@ -59,10 +46,7 @@ def _stub_gate(
     raises = False,
     engine = "diffusers",
 ):
-    """Stand in for the media index and the engine router.
-
-    ``engine`` is not decoration: a CPU or MPS host routes a supported GGUF to sd.cpp.
-    """
+    """The engine argument matters: CPU and MPS hosts route a supported GGUF to sd.cpp, not diffusers."""
     idx = types.ModuleType("core.inference.media_model_index")
 
     def _available(task):
@@ -94,7 +78,7 @@ def _stub_diffusers(monkeypatch, *, raises = False):
     """A diffusers that records whether it was imported, without importing the real one."""
     seen = {"imported": False, "quieted": False}
     if raises:
-        monkeypatch.setitem(sys.modules, "diffusers", None)  # import -> ImportError
+        monkeypatch.setitem(sys.modules, "diffusers", None)
         return seen
     d = types.ModuleType("diffusers")
     hooks = types.ModuleType("diffusers.hooks")
@@ -146,17 +130,12 @@ def test_a_video_only_install_also_prewarms(warm, monkeypatch):
 
 
 def test_a_video_only_install_of_an_h3_gguf_pays_nothing(warm, monkeypatch):
-    """MiniMax H3 as a GGUF is the one video combination that never imports diffusers.
-
-    ``VideoBackend.load_pipeline`` returns through ``_run_load_h3_native`` before its own
-    ``import diffusers``, and ``detected_image_family`` cannot place a ``VideoFamily``.
-    """
+    """MiniMax H3 GGUF video loads return before the import of diffusers, so prewarm must skip it."""
     _stub_gate(monkeypatch, {"text-to-image": [], "text-to-video": ["unsloth/MiniMax-H3-GGUF"]})
     seen = _stub_diffusers(monkeypatch)
     seen["imported"] = False
 
     assert warm.prewarm_diffusers_if_image_models_exist() is False
-    # And not latched, so an image model downloaded later still gets a prewarm next boot.
     assert warm._diffusers_prewarmed is False
 
 
@@ -165,9 +144,9 @@ def test_an_h3_gguf_named_only_by_its_filename_pays_nothing(warm, monkeypatch):
     _stub_gate(monkeypatch, {"text-to-image": [], "text-to-video": ["custom-video"]})
     sys.modules["core.inference.media_model_index"].resolve_local_media_model = (
         lambda model_id, task: types.SimpleNamespace(
-            model_id = "custom-video",  # names no family
-            model_path = "/models/custom",  # nor does the directory
-            gguf_filename = "minimax_h3_fl2va-Q4.gguf",  # only the checkpoint does
+            model_id = "custom-video",
+            model_path = "/models/custom",
+            gguf_filename = "minimax_h3_fl2va-Q4.gguf",
             model_kind = "gguf",
             ambiguous = False,
         )
@@ -288,11 +267,7 @@ def test_the_windows_rocm_stubs_are_installed_before_the_import(warm, monkeypatc
 def test_a_failed_prewarm_leaves_no_half_imported_diffusers(
     warm, monkeypatch, restore_diffusers_modules
 ):
-    """The failure this prewarm adds that the loader did not have.
-
-    When ``diffusers/__init__.py`` raises, CPython evicts only the parent and keeps every
-    submodule it executed, so the next importer rebuilds an incomplete package from them.
-    """
+    """A failed diffusers import leaves submodules behind, so purge them or the next import is broken."""
     _stub_gate(monkeypatch, {"text-to-image": ["m"]})
     monkeypatch.delitem(sys.modules, "diffusers", raising = False)
     leftover = types.ModuleType("diffusers.pipelines")
@@ -323,11 +298,7 @@ def test_a_failed_prewarm_leaves_no_half_imported_diffusers(
 def test_the_diffusers_import_lock_is_held_across_the_failure_cleanup(
     warm, monkeypatch, restore_diffusers_modules
 ):
-    """Releasing between the failed import and the purge is the whole bug.
-
-    CPython drops the module lock the moment ``__init__`` raises, and a request waiting in
-    that gap republishes the malformed parent, which the purge then declines.
-    """
+    """Hold the diffusers import lock through the purge: a waiter could republish the malformed parent."""
     from importlib._bootstrap import _get_module_lock
 
     _stub_gate(monkeypatch, {"text-to-image": ["m"]})
@@ -338,9 +309,7 @@ def test_the_diffusers_import_lock_is_held_across_the_failure_cleanup(
     real_purge = warm.purge_partial_import
 
     def _checking_purge(package):
-        # The lock of the package being purged, not always the parent: the hooks subtree has its
-        # own lock and the same release-before-cleanup gap. Reading .owner does not disturb the
-        # lock the way acquiring it would.
+        # The purged package's own lock; reading .owner does not disturb it as acquiring would.
         lock = _get_module_lock(package)
         held_during_purge.append(getattr(lock, "owner", None) == threading.get_ident())
         return real_purge(package)
@@ -361,7 +330,6 @@ def test_the_diffusers_import_lock_is_held_across_the_failure_cleanup(
     monkeypatch.setattr(sys, "meta_path", [_Boom(), *sys.meta_path])
 
     assert warm.prewarm_diffusers_if_image_models_exist() is False
-    # One entry per purge call (the hooks subtree and the parent); every one must be under lock.
     assert held_during_purge and all(held_during_purge), (
         "the diffusers import lock was released before the purge ran, so a waiting importer "
         f"could take it in the gap (observed: {held_during_purge})"
@@ -408,9 +376,6 @@ def test_a_hooks_failure_after_a_good_parent_still_purges_the_hook_subtree(
     monkeypatch.setattr(sys, "meta_path", [_Boom(), *sys.meta_path])
 
     assert warm.prewarm_diffusers_if_image_models_exist() is False
-    # The subpackage has its own lock and the same gap: `import diffusers.hooks` drops it when it
-    # raises, and with the healthy parent already published a waiting request could rebuild the
-    # hooks package from these stale submodules before the purge reacquires it.
     assert held and all(
         ok for _, ok in held
     ), f"a purge ran without holding that package's own import lock (observed: {held})"
@@ -425,11 +390,7 @@ def test_a_hooks_failure_after_a_good_parent_still_purges_the_hook_subtree(
 def test_the_parent_and_child_import_locks_are_never_held_together(
     warm, monkeypatch, restore_diffusers_modules
 ):
-    """Holding both would invert CPython's own lock order and deadlock a concurrent import.
-
-    ``import diffusers.hooks`` makes CPython take the CHILD lock first, so parent-then-child
-    inverts that and cycles, as the ``_DeadlockError`` importlib swallows.
-    """
+    """Never hold the parent and child import locks together: that inverts CPython's order and deadlocks."""
     from importlib._bootstrap import _get_module_lock
 
     _stub_gate(monkeypatch, {"text-to-image": ["m"]})
@@ -476,7 +437,6 @@ def test_a_concurrent_submodule_import_does_not_deadlock_the_prewarm(
     finished = threading.Event()
 
     def _importer():
-        # CPython's order for a submodule import: child lock, then the parent.
         with LM("diffusers.hooks"):
             started.set()
             release.wait(10)
@@ -498,8 +458,7 @@ def test_a_concurrent_submodule_import_does_not_deadlock_the_prewarm(
 
     p = threading.Thread(target = _prewarm, daemon = True)
     p.start()
-    # The prewarm must not be blocked behind a lock the other thread is holding while that
-    # thread waits on one the prewarm holds.
+    # Prewarm must not be blocked behind a thread that holds a lock while waiting on a prewarm lock
     release.set()
     assert done.wait(20), "the prewarm deadlocked against a concurrent submodule import"
     assert finished.wait(20), "the concurrent submodule import deadlocked against the prewarm"
@@ -510,11 +469,8 @@ def test_a_concurrent_submodule_import_does_not_deadlock_the_prewarm(
 def test_the_lock_is_never_released_between_a_failed_import_and_its_purge(
     warm, monkeypatch, restore_diffusers_modules
 ):
-    """Held CONTINUOUSLY, not merely held again by the time the purge runs.
-
-    The try around the ``with`` releases the lock on the exception and reacquires it in the
-    handler, which asserting that the purge ran under the lock would not catch.
-    """
+    """The lock must stay held without a gap from failed import to purge; a release in between is
+    the bug."""
     _stub_gate(monkeypatch, {"text-to-image": ["m"]})
     monkeypatch.delitem(sys.modules, "diffusers", raising = False)
     monkeypatch.setitem(sys.modules, "diffusers.pipelines", types.ModuleType("diffusers.pipelines"))
@@ -561,9 +517,7 @@ def test_the_lock_is_never_released_between_a_failed_import_and_its_purge(
     purge_at = next(
         i for i, (what, name) in enumerate(timeline) if what == "purge" and name == "diffusers"
     )
-    # Everything before the purge, from the first acquisition onwards, must be acquisitions:
-    # a matching release in there is the gap. Reentrant acquires (purge_partial_import takes the
-    # same lock through its own decorator) are fine and expected.
+    # Before the purge only acquisitions may appear (reentrant ones are fine); a release is the gap.
     enter_at = next(
         i for i, (what, name) in enumerate(timeline) if what == "enter" and name == "diffusers"
     )
@@ -673,8 +627,6 @@ def test_the_real_index_answers_our_task_strings_and_not_the_friendly_ones(monke
     monkeypatch.setattr(
         routes_models, "_local_model_task", lambda _info: "text-to-image", raising = False
     )
-    # _name_keys and the on-disk checks would reject a path that does not exist, so stand in
-    # for the registration step; the task comparison above it is what is under test.
     monkeypatch.setattr(idx, "_name_keys", lambda _info: ("z-image-gguf",), raising = False)
     monkeypatch.setattr(idx, "_resolve_load_dir", lambda p: p, raising = False)
     monkeypatch.setattr(

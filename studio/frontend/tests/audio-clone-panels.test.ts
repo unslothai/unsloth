@@ -21,6 +21,7 @@ const {
   EMOTION_AUDIO_MISSING,
   SAVED_VOICE_DELETED,
   SAVED_VOICE_MISSING,
+  SAVED_VOICE_NO_TRANSCRIPT,
   chatterboxExpressivenessLogic,
   cosyVoiceModeLogic,
   emotionSourceProblem,
@@ -28,7 +29,10 @@ const {
   indexTts2EmotionLogic,
   qwen3TimbreLogic,
   speakVoiceLogic,
+  speakVoiceStored,
+  supertonicLanguageLogic,
   vibeVoiceDialogueLogic,
+  voiceOptionName,
 } = await import("../src/features/audio/tools/panel-logic.ts");
 const {
   cloneBlocker,
@@ -70,7 +74,7 @@ test("each clone family gets its one panel, only on Clone", () => {
   assert.deepEqual(shown("qwen3_tts", "speak"), []);
 });
 
-test("the saved-voice choice shows on Speak only for models that also clone", () => {
+test("the Voice panel shows on Speak for models that clone or declare a voice", () => {
   assert.equal(
     panelApplies(
       speakVoiceLogic,
@@ -89,7 +93,15 @@ test("the saved-voice choice shows on Speak only for models that also clone", ()
       "speak",
       ctx({ audioWorkflows: ["speak", "clone"], referenceTextMode: "required" }),
     ),
-    false,
+    true,
+  );
+  assert.equal(
+    panelApplies(
+      speakVoiceLogic,
+      "speak",
+      ctx({ audioWorkflows: ["speak"], voiceOption: "voice_id" }),
+    ),
+    true,
   );
   assert.equal(
     panelApplies(
@@ -107,6 +119,36 @@ test("the saved-voice choice shows on Speak only for models that also clone", ()
     ),
     true,
   );
+});
+
+test("Supertonic's Language panel shows on Speak and sends only a code it reads", () => {
+  const supertonic = ctx({
+    audioFamily: "supertonic",
+    audioWorkflows: ["speak"],
+  });
+  assert.equal(
+    panelApplies(supertonicLanguageLogic, "speak", supertonic),
+    true,
+  );
+  assert.equal(
+    panelApplies(
+      supertonicLanguageLogic,
+      "speak",
+      ctx({ audioFamily: "kokoro_tts", audioWorkflows: ["speak"] }),
+    ),
+    false,
+  );
+  const request = (stored: unknown) =>
+    collectToolRequest(
+      [{ ...supertonicLanguageLogic, Component: () => null }],
+      stored === undefined ? {} : { "supertonic-language": stored },
+      { text: "Hallo" },
+      supertonic,
+    ).patch;
+  assert.deepEqual(request("de"), { language: "de" });
+  assert.deepEqual(request(""), {});
+  assert.deepEqual(request(undefined), {});
+  assert.deepEqual(request("German"), {});
 });
 
 test("collectToolRequest merges every panel's part and returns the first error", () => {
@@ -233,7 +275,6 @@ test("IndexTTS2 emotion from text and from audio", () => {
     ),
     EMOTION_AUDIO_MISSING,
   );
-  // A replacement still uploading, a failed one, or an expired clip blocks the run.
   for (const status of [
     { phase: "uploading" as const, name: "y", progress: 0.5 },
     { phase: "error" as const, message: "Upload failed." },
@@ -275,7 +316,6 @@ test("Qwen3 Timbre only sends x_vector_only_mode and drops the transcript requir
     panelError: null,
   });
   assert.equal(blocked, null);
-  // A failed replacement hides the kept clip, so it blocks until dismissed.
   const failed = cloneBlocker({
     reference: { kind: "input", id: "i", name: "a.wav", durationS: 4 },
     referenceBusy: false,
@@ -360,19 +400,20 @@ test("Maya1's required voice description reaches the tool context", () => {
 });
 
 test("a saved voice on Speak becomes the run's reference", () => {
-  assert.deepEqual(
-    speakVoiceLogic.toRequest({ source: "saved", voiceId: "v1" }),
-    {
-      inputs: { reference: { voice_id: "v1" } },
-    },
-  );
-  assert.deepEqual(
-    speakVoiceLogic.toRequest({ source: "builtin", voiceId: "v1" }),
-    {},
-  );
+  const speak = ctx({ audioWorkflows: ["speak", "clone"], voiceOption: "voice" });
+  const request = (source: "saved" | "builtin", c = speak) =>
+    speakVoiceLogic.toRequest(
+      { source, voiceId: "v1", builtin: source === "saved" ? "af_bella" : null },
+      c,
+    );
+  assert.deepEqual(request("saved"), {
+    inputs: { reference: { voice_id: "v1" } },
+  });
+  assert.deepEqual(request("builtin"), {});
+  assert.deepEqual(request("saved", ctx({ audioWorkflows: ["speak"] })), {});
   assert.equal(
     speakVoiceLogic.validate?.(
-      { source: "saved", voiceId: null },
+      { source: "saved", voiceId: null, builtin: null },
       { text: "" },
       ctx(),
     ),
@@ -381,13 +422,45 @@ test("a saved voice on Speak becomes the run's reference", () => {
 });
 
 test("a saved voice deleted on Clone holds Speak's Generate", () => {
-  const saved = { source: "saved" as const, voiceId: "v1" };
+  const saved = { source: "saved" as const, voiceId: "v1", builtin: null };
   const check = (savedVoiceIds: readonly string[] | null) =>
     speakVoiceLogic.validate?.(saved, { text: "hi" }, ctx({ savedVoiceIds }));
   assert.equal(check(["v2"]), SAVED_VOICE_DELETED);
   assert.equal(check(["v1", "v2"]), null);
-  // Not loaded yet, or the list failed: nothing to compare against.
   assert.equal(check(null), null);
+});
+
+test("the built-in voice goes under the model's own option name", () => {
+  const builtin = { source: "builtin" as const, voiceId: null, builtin: "x" };
+  // Magpie and NeuTTS keep voice_id: top-level voice breaks them on audio.cpp v0.9.1.
+  for (const name of ["voice", "voice_id", "speaker", null]) {
+    assert.deepEqual(
+      speakVoiceLogic.toRequest(builtin, ctx({ voiceOption: name })),
+      name ? { options: { [name]: "x" } } : {},
+    );
+  }
+  assert.deepEqual([...speakVoiceLogic.claims], ["voice", "voice_id", "speaker"]);
+  const spec = (name: string, type: "enum" | "string" = "enum") =>
+    ({ name, type, values: ["a"] }) as const;
+  assert.equal(voiceOptionName([spec("speaker"), spec("voice")]), "voice");
+  assert.equal(
+    voiceOptionName([spec("voice", "string"), spec("voice_id")]),
+    "voice_id",
+  );
+  assert.equal(voiceOptionName([spec("voice", "string")]), "voice");
+  assert.equal(voiceOptionName([spec("speaker_id")]), null);
+});
+
+test("a saved voice without a transcript holds Speak only when the model needs one", () => {
+  const check = (referenceTextMode: "required" | "optional", voiceId = "v1") =>
+    speakVoiceLogic.validate?.(
+      { source: "saved", voiceId, builtin: null },
+      { text: "hi" },
+      ctx({ referenceTextMode, voicesWithoutTranscript: ["v1"] }),
+    );
+  assert.equal(check("required"), SAVED_VOICE_NO_TRANSCRIPT);
+  assert.equal(check("optional"), null);
+  assert.equal(check("required", "v2"), null);
 });
 
 test("formatVibeVoiceScript prefixes plain text only", () => {
@@ -528,4 +601,32 @@ test("transcribing the reference holds the page busy until it ends", () => {
   assert.match(body, /if \(!source \|\| busyRef\.current\) return;\s*busyRef\.current = "transcribing";\s*setBusy\("transcribing"\);/);
   assert.match(body, /finally \{\s*if \(busyRef\.current === "transcribing"\) \{\s*busyRef\.current = null;\s*setBusy\(null\);/);
   assert.match(body, /transcribe: transcribeReference/);
+});
+
+test("a voice chosen in Advanced before the picker carries into the picker", () => {
+  const send = (stored: unknown, saved: Record<string, unknown>, name: string) =>
+    speakVoiceLogic.toRequest(
+      panelValue(
+        speakVoiceLogic,
+        { [speakVoiceLogic.id]: speakVoiceStored(stored, saved, name) },
+        [],
+      ),
+      ctx({ voiceOption: name }),
+    );
+  // Kokoro's am_adam and Magpie's Jason were kept in Advanced, which the picker now claims.
+  assert.deepEqual(send(undefined, { voice: "am_adam" }, "voice"), {
+    options: { voice: "am_adam" },
+  });
+  assert.deepEqual(
+    send({ source: "builtin", voiceId: null }, { speaker: "Jason" }, "speaker"),
+    { options: { speaker: "Jason" } },
+  );
+  // A choice made in the picker wins, including going back to the default.
+  const picked = { source: "builtin", voiceId: null, builtin: null };
+  assert.deepEqual(send(picked, { voice: "am_adam" }, "voice"), {});
+  assert.deepEqual(send(undefined, {}, "voice"), {});
+  assert.match(
+    readSrc("features/audio/hooks/use-speech-generation.ts"),
+    /speakVoiceStored\(stored, audioOptionValues, toolContext\.voiceOption\)/,
+  );
 });

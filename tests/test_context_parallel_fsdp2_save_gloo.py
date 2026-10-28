@@ -12,7 +12,6 @@ and leave the installed config in place afterwards.
 from __future__ import annotations
 
 import os
-import socket
 import types
 
 import pytest
@@ -28,9 +27,8 @@ if not dist.is_available() or not dist.is_gloo_available():
 
 
 def _free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    from tests._rendezvous_port import free_port
+    return free_port()
 
 
 def _accelerator_less_import():
@@ -45,7 +43,13 @@ def _accelerator_less_import():
     spec.loader.exec_module(importlib.util.module_from_spec(spec))
 
 
-def _worker(rank, port, out_dir, user_config):
+def _worker(
+    rank,
+    port,
+    out_dir,
+    user_config,
+    state_dict_type = "FULL_STATE_DICT",
+):
     _accelerator_less_import()
     os.environ.update(
         RANK = str(rank),
@@ -73,7 +77,7 @@ def _worker(rank, port, out_dir, user_config):
         state = types.SimpleNamespace(
             device_mesh = manager.device_mesh,
             parallelism_config = None,
-            fsdp_plugin = types.SimpleNamespace(state_dict_type = "FULL_STATE_DICT"),
+            fsdp_plugin = types.SimpleNamespace(state_dict_type = state_dict_type),
         )
         if user_config:
             # A dp_shard only ParallelismConfig the user passed: still non-None for transformers 4.x.
@@ -103,7 +107,7 @@ def _worker(rank, port, out_dir, user_config):
             pass
 
         trl.SFTTrainer = SFTTrainer
-        cp.patch_sft_trainer()
+        cp.patch_sft_trainer(install_cp_methods = True)
 
         class Acc:
             parallelism_config = property(lambda self: self.state.parallelism_config)
@@ -126,6 +130,14 @@ def _worker(rank, port, out_dir, user_config):
         trainer.accelerator = Acc()
         trainer.accelerator.state = state
         trainer._context_parallel_manager = manager
+        full_state_dicts = []
+
+        def get_state_dict(model, *args, **kwargs):
+            # Accelerator.get_state_dict gathers the whole model, frozen base weights included.
+            full_state_dicts.append(1)
+            return Accelerator.get_state_dict(trainer.accelerator, model, *args, **kwargs)
+
+        trainer.accelerator.get_state_dict = get_state_dict
 
         result = {}
         try:
@@ -134,11 +146,14 @@ def _worker(rank, port, out_dir, user_config):
         except Exception as e:
             result["error"] = f"{type(e).__name__}: {e}"
         result["config_kept"] = state.parallelism_config is installed
+        result["full_state_dicts"] = len(full_state_dicts)
         dist.barrier()
         if rank == 0 and result["error"] is None:
             from safetensors.torch import load_file
 
-            saved = load_file(os.path.join(out_dir, "adapter_model.safetensors"))
+            path = os.path.join(out_dir, "adapter_model.safetensors")
+            # A save that silently writes nothing must fail the count, not crash the rank.
+            saved = load_file(path) if os.path.exists(path) else {}
             equal = 0
             for name, ref in reference.items():
                 got = saved.get(name.replace(".default", ""))
@@ -154,17 +169,48 @@ def _worker(rank, port, out_dir, user_config):
         dist.destroy_process_group()
 
 
-@pytest.mark.parametrize("user_config", [False, True])
-def test_save_model_gathers_fsdp2_lora_under_context_parallel(tmp_path, user_config):
+def _run(
+    tmp_path,
+    user_config,
+    state_dict_type = "FULL_STATE_DICT",
+):
     import json
 
     import torch.multiprocessing as mp
 
-    mp.spawn(_worker, args = (_free_port(), str(tmp_path), user_config), nprocs = 2, join = True)
+    args = (_free_port(), str(tmp_path), user_config, state_dict_type)
+    mp.spawn(_worker, args = args, nprocs = 2, join = True)
     with open(tmp_path / "result.json") as f:
         results = json.load(f)
     for r in results:
         assert r["error"] is None, r["error"]
         assert r["config_kept"]
+    return results
+
+
+@pytest.mark.parametrize("user_config", [False, True])
+def test_save_model_gathers_fsdp2_lora_under_context_parallel(tmp_path, user_config):
+    results = _run(tmp_path, user_config)
     assert results[0]["lora_tensors"] == 4
     assert results[0]["saved_whole_and_equal"] == 4
+
+
+def _parallelism_config_dispatched_first():
+    import transformers
+    from packaging.version import Version
+    return Version(transformers.__version__).major < 5
+
+
+@pytest.mark.skipif(
+    not _parallelism_config_dispatched_first(),
+    reason = "transformers >= 5 dispatches save_model on FSDP first, as without CP",
+)
+@pytest.mark.parametrize("state_dict_type", ["FULL_STATE_DICT", "SHARDED_STATE_DICT"])
+def test_save_model_adapter_export_gathers_only_adapter(tmp_path, state_dict_type):
+    # transformers < 5 exported the adapter for either plugin setting through the parallelism_config
+    # branch; clearing the config sent it to the FSDP branch, which writes nothing for a sharded
+    # setting and otherwise gathers the frozen base model to rank 0 before PEFT drops it.
+    results = _run(tmp_path, False, state_dict_type)
+    assert results[0]["lora_tensors"] == 4
+    assert results[0]["saved_whole_and_equal"] == 4
+    assert [r["full_state_dicts"] for r in results] == [0, 0]

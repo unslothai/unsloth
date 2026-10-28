@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""GGUF export of decision models (Clef, Laya) for the Export page.
-
-The server side (``decision_preview``) only reads files: the parent process must not import
-unsloth. The worker side (``run_decision_gguf_export``) calls unsloth.models.decision_gguf,
-whose ``gguf_eligibility`` is the authoritative gate.
-"""
+"""Decision-model GGUF export; server must not import unsloth; worker's gguf_eligibility is the gate."""
 
 import json
 from pathlib import Path
@@ -81,7 +76,7 @@ def _preview_eligibility(folder: Path, layout: str) -> tuple:
             return True, None
         return False, (
             "GGUF export of Laya decision models needs a ModernBERT encoder, and this one is "
-            f"{model_type or 'unknown'}. It still serves through PyTorch in Studio's Decision API."
+            f"{model_type or 'unknown'}. It still serves through PyTorch in Unsloth's Decision API."
         )
     config = _read_json(folder / "config.json")
     if config is None:
@@ -97,7 +92,7 @@ def _preview_eligibility(folder: Path, layout: str) -> tuple:
     return False, (
         "GGUF export of this decision model is not supported: llama.cpp's decision graph is "
         f"built for Qwen3.5 backbones only, and this one is {', '.join(architectures) or 'unknown'}. "
-        "It still serves through PyTorch in Studio's Decision API."
+        "It still serves through PyTorch in Unsloth's Decision API."
     )
 
 
@@ -179,6 +174,31 @@ def normalize_decision_quants(quantization_method) -> list:
         if method not in chosen:
             chosen.append(method)
     return chosen or [DECISION_GGUF_QUANTIZATIONS[0]]
+
+
+def adapter_load_bases(folder) -> list[str]:
+    """Every base a local adapter folder's loaders follow: the decision config's ``base_model``
+    (preferred by the decision loader) and adapter_config.json's ``base_model_name_or_path``."""
+    folder = Path(str(folder)).expanduser()
+    if not (folder / "adapter_config.json").is_file():
+        return []
+    bases = []
+    for name, key in (
+        ("unsloth_decision_config.json", "base_model"),
+        ("adapter_config.json", "base_model_name_or_path"),
+    ):
+        try:
+            value = json.loads((folder / name).read_text(encoding = "utf-8-sig")).get(key)
+        except (OSError, ValueError, AttributeError):
+            value = None
+        if value and str(value) not in bases:
+            bases.append(str(value))
+    return bases
+
+
+def adapter_base_changed(folder, pinned: str) -> bool:
+    """Whether the folder now names a base other than the one authorized for it."""
+    return any(base != pinned for base in adapter_load_bases(folder))
 
 
 def adapter_base(checkpoint_path) -> str:

@@ -1,16 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The /audio/stt/download route must validate a custom Transformers repo before
-snapshot_download pulls it into the shared HF cache.
-
-Regression for a Codex finding: the Transformers engine accepts arbitrary
-`owner/model` repos, so an authenticated caller could make Unsloth download a
-large non-STT repository before load-time validation ever ran. Whisper-
-compatibility is now enforced (metadata-only, no weights) before the background
-download starts. Curated ids short-circuit the check, including the ones a retired
-whisper.cpp (``gguf``) request now downloads through Transformers.
-"""
+"""A custom Transformers repo must pass a metadata-only Whisper check before the download starts.
+Curated ids skip it, including the ones a retired whisper.cpp (``gguf``) request downloads through Transformers."""
 
 from __future__ import annotations
 
@@ -65,7 +57,6 @@ def test_custom_non_whisper_repo_is_rejected_before_download(monkeypatch):
 
     assert excinfo.value.status_code == 422
     assert validated == ["owner/chat-model"]
-    # The download never starts for a repo that failed the Whisper check.
     assert started == []
 
 
@@ -185,5 +176,5 @@ def test_gguf_download_falls_back_to_transformers_when_server_absent(monkeypatch
     )
 
     assert resp.status_code == 200
-    assert tf_started == ["small"]  # served by Transformers instead of dead-ending on GGUF
+    assert tf_started == ["small"]
     assert gguf_started == []

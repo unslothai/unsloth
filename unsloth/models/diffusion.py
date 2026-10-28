@@ -8,14 +8,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""
-FastDiffusionModel: a transformers-only slow path for text-diffusion models (e.g. DiffusionGemma).
-
-These models use a block-diffusion sampling loop (custom generate) and a novel backbone, so we skip
-Unsloth's autoregressive kernel/compile patching and load the unmodified HF model (outputs stay
-bit-identical to transformers), keeping only the safe conveniences: 4bit/8bit loading, PEFT LoRA, the
-(model, tokenizer) API, and for_inference/for_training. Extend DIFFUSION_MODEL_TYPES as more land.
-"""
+"""FastDiffusionModel: unpatched HF text-diffusion models; outputs bit-identical to transformers."""
 
 import os
 import re
@@ -23,7 +16,14 @@ import torch
 from transformers import AutoConfig, AutoProcessor, AutoTokenizer, set_seed
 from unsloth_zoo.hf_utils import add_dtype_kwargs
 
-from ._utils import is_bfloat16_supported, maybe_prefetch_hf_snapshot
+from ._utils import (
+    _mark_requested_float32,
+    _requested_float32,
+    check_mixed_gpu_placement,
+    is_bfloat16_supported,
+    maybe_prefetch_hf_snapshot,
+)
+from ..device_type import DEVICE_TYPE, xpu_keeps_explicit_bf16
 from .diffusion_profiles import (
     diffusion_model_types,
     resolve_diffusion_profile,
@@ -32,10 +32,12 @@ from .diffusion_profiles import (
 )
 from .llama import logger
 from .loader_utils import (
+    is_automatic_device_map,
     planner_config_overrides,
     planner_hub_kwargs,
     planner_kwargs_with_max_memory,
     planner_quantization_kwargs,
+    prepare_device_map,
     requested_device_map,
     resolve_unsloth_device_map,
 )
@@ -50,8 +52,7 @@ __all__ = [
 # transformers model_type strings routed to this slow path.
 DIFFUSION_MODEL_TYPES = ("diffusion_gemma", "diffusion_gemma4")
 
-# Default LoRA targets are the standard nn.Linear modules in the shared Gemma-4 backbone: the 128
-# MoE experts are fused 3D Parameters, not nn.Linear, so PEFT LoRA cannot target them.
+# The fused 3D MoE experts are not nn.Linear, so PEFT LoRA cannot target them.
 DIFFUSION_LORA_TARGETS = [
     "q_proj",
     "k_proj",
@@ -203,8 +204,7 @@ def _load_diffusion_config(
         from transformers import DiffusionGemma4Config
 
         aliased = DiffusionGemma4Config.from_dict(cd)
-        # Only this object knows the rewrite happened: the checkpoint on disk still says diffusion_gemma,
-        # so anything rebuilding the config from model_name hits the AutoConfig failure just caught.
+        # The checkpoint still says diffusion_gemma, so a rebuild from model_name would fail.
         aliased._unsloth_legacy_alias = True
         return aliased
 
@@ -231,10 +231,13 @@ class FastDiffusionModel:
         return_tokenizer = True,
         **kwargs,
     ):
+        # Read before dtype is normalized: the trainer keeps float32 on a GPU without bf16 only if it was asked for.
+        user_float32 = _requested_float32(dtype)
         SUPPORTS_BFLOAT16 = is_bfloat16_supported()
         if dtype is None:
             dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
-        elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16:
+        # XPU runs an explicit bf16 request (emulated if need be), as before the native-bf16 probe.
+        elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16 and not xpu_keeps_explicit_bf16():
             logger.warning_once("Device does not support bfloat16. Will change to float16.")
             dtype = torch.float16
         assert dtype in (torch.float16, torch.bfloat16, torch.float32)
@@ -307,8 +310,7 @@ class FastDiffusionModel:
         else:
             model_cls = _resolve_diffusion_model_class(config)
 
-        # Prefetch the whole repo root so the weight load is a cache hit. No subfolder: the pipeline loads
-        # every component subfolder, so narrowing would leave unet/vae/text_encoder to Xet.
+        # No subfolder: the pipeline loads every component; narrowing would leave unet, vae and text_encoder to Xet
         maybe_prefetch_hf_snapshot(
             model_name,
             token = token,
@@ -347,8 +349,15 @@ class FastDiffusionModel:
 
         # Same leaf-level resolution as llama.py and vision.py: an unresolved "unsloth" becomes
         # torch.device("unsloth") in transformers and raises instead of loading.
+        device_map = requested_device_map(device_map)
+        if is_automatic_device_map(device_map):
+            # Under torchrun / accelerate launch each rank loads one whole model on its own device, as
+            # FastLanguageModel / FastModel do: "auto" would spread every rank over all the visible cards.
+            distributed_device_map, is_dist = prepare_device_map()
+            if is_dist:
+                device_map = distributed_device_map
         device_map = resolve_unsloth_device_map(
-            requested_device_map(device_map),
+            device_map,
             model_name,
             full_finetuning = full_finetuning,
             skip_reason = (
@@ -361,8 +370,7 @@ class FastDiffusionModel:
                 device_map_planner_kwargs,
                 kwargs,
             ),
-            # This leaf popped local_files_only off kwargs above, so the helper gets the resolved value rather
-            # than the caller's raw mapping.
+            # local_files_only was popped from kwargs above, so planner_hub_kwargs gets the resolved value, not the raw mapping.
             **planner_hub_kwargs(
                 {
                     "cache_dir": cache_dir,
@@ -414,6 +422,7 @@ class FastDiffusionModel:
         )
 
         model = model_cls.from_pretrained(model_name, config = config, **load_kwargs).eval()
+        check_mixed_gpu_placement(model, dtype)
         model._unsloth_full_finetuning = bool(full_finetuning)
         if trust_remote_code:
             # 4.x remote code builds RoPE inv_freq in __init__; transformers 5 leaves it uninitialised.
@@ -451,7 +460,7 @@ class FastDiffusionModel:
         if not return_tokenizer:
             if profile is not None:
                 profile.prepare_model(unwrap_diffusion_model(model), None)
-            return model, None
+            return _mark_requested_float32(model, user_float32), None
 
         # Prefer the processor (chat template plus tokenizer), falling back to a bare tokenizer, returned as
         # "tokenizer" to match the Unsloth (model, tokenizer) contract.
@@ -498,7 +507,7 @@ class FastDiffusionModel:
         if profile is not None:
             # On the base module: the objectives read these attributes after unwrapping PEFT / DDP.
             profile.prepare_model(unwrap_diffusion_model(model), tokenizer)
-        return model, tokenizer
+        return _mark_requested_float32(model, user_float32), tokenizer
 
     @staticmethod
     def get_peft_model(

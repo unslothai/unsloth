@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Install FlashInfer on demand for an NVFP4 load, without ever moving the resident torch stack.
-
-Pinned flashinfer-python plus the CUDA-matched jit-cache; every installed distribution is constrained to its
-exact version, verified in a fresh interpreter, and rolled back on any drift.
-"""
+"""On-demand FlashInfer install for NVFP4 loads; pins exact versions, never moves torch, rolls back."""
 
 from __future__ import annotations
 
@@ -20,6 +16,7 @@ import sys
 import tempfile
 import threading
 from typing import Any, Callable, Optional
+from .rocm_bf16 import is_rocm_torch
 
 # auto (default) / 1 installs flashinfer when an NVFP4 load needs it; 0 never installs.
 FLASHINFER_INSTALL_ENV = "UNSLOTH_NVFP4_FLASHINFER_INSTALL"
@@ -178,14 +175,16 @@ ENV_LOCK_TIMEOUT_S = 900.0
 
 
 def _env_lock_path() -> str:
-    """One lock file per environment: next to its site-packages when writable, else in the temp dir."""
+    """One lock file per environment: next to its site-packages when writable, else in a per-user temp folder."""
     import hashlib
+
+    from utils.paths.private_tmp import private_tmp_dir
 
     name = ".unsloth-flashinfer-install.lock"
     if os.access(sys.prefix, os.W_OK):
         return os.path.join(sys.prefix, name)
     digest = hashlib.sha256(os.path.realpath(sys.prefix).encode()).hexdigest()[:16]
-    return os.path.join(tempfile.gettempdir(), f"{name}.{digest}")
+    return os.path.join(private_tmp_dir("unsloth-flashinfer-lock"), f"{name}.{digest}")
 
 
 @contextlib.contextmanager
@@ -266,7 +265,7 @@ def _host_refusal(device: Any) -> Optional[str]:
         import torch
     except Exception as exc:  # noqa: BLE001
         return f"torch is not importable ({type(exc).__name__})"
-    if getattr(torch.version, "hip", None):
+    if is_rocm_torch(torch):
         return "flashinfer NVFP4 kernels are CUDA only (this torch is a ROCm build)"
     if not getattr(torch.version, "cuda", None):
         return "flashinfer NVFP4 kernels need a CUDA build of torch"
@@ -659,8 +658,7 @@ def _pinnable(dists: dict[str, str]) -> dict[str, str]:
     return pins
 
 
-# An unconstrained FlashInfer resolve lands cutlass-dsl 4.8, which the hub FA4 build cannot load: hold a fresh install to
-# the range both load with.
+# cutlass-dsl 4.8 cannot load the hub FA4 build: hold fresh installs to this range.
 _CUTLASS_DSL_CONSTRAINT = "nvidia-cutlass-dsl>=4.4,<4.6"
 
 

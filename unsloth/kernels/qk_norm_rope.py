@@ -9,7 +9,7 @@ import triton
 import triton.language as tl
 import torch
 from typing import Tuple
-from .utils import torch_gpu_device
+from .utils import torch_gpu_device, DEVICE_TYPE
 from .rms_layernorm import (
     _BF16_TRACEABLE,
     _TRACEABLE,
@@ -18,14 +18,27 @@ from .rms_layernorm import (
     _traced_kernel,
     fast_rms_layernorm,
 )
-from .rope_embedding import fast_rope_embedding, _sync_if_split
+from .rope_embedding import fast_rope_embedding, _sync_if_split, DECODE_FUSED_ROPE
 
 __all__ = [
     "fast_qk_norm_rope",
     "QK_NORM_ROPE_ENABLED",
+    "decode_qk_norm_rope",
 ]
 
-QK_NORM_ROPE_ENABLED = os.environ.get("UNSLOTH_FUSED_QKNORM_ROPE", "0") == "1"
+
+def _qk_norm_rope_default():
+    # UNSLOTH_FUSED_QKNORM_ROPE=0 keeps the unfused path, =1 forces the fused one. Unset: on for
+    # NVIDIA CUDA; ROCm keeps the unfused training path until its backward is measured there.
+    flag = os.environ.get("UNSLOTH_FUSED_QKNORM_ROPE", "").strip().lower()
+    if flag in ("0", "false", "no", "off"):
+        return False
+    if flag in ("1", "true", "yes", "on"):
+        return True
+    return DEVICE_TYPE == "cuda"
+
+
+QK_NORM_ROPE_ENABLED = _qk_norm_rope_default()
 
 
 @triton.jit
@@ -44,6 +57,7 @@ def _norm_rope_fwd_block(
     cols,
     eps,
     HEAD_DIM: tl.constexpr,
+    HAS_ROPE_INDICES: tl.constexpr,
 ):
     HALF = HEAD_DIM // 2
     hmask = heads < n_heads
@@ -57,9 +71,14 @@ def _norm_rope_fwd_block(
     w0 = tl.load(W + cols)
     w1 = tl.load(W + HALF + cols)
     # Same roundings as fast_rms_layernorm then the RoPE kernel: normed in W's dtype, the norm output
-    # in Y's dtype, the rotation in cos's dtype.
-    y0 = ((x0 * inv[:, None]).to(w0.dtype) * w0[None, :]).to(Y.dtype.element_ty).to(cos1.dtype)
-    y1 = ((x1 * inv[:, None]).to(w1.dtype) * w1[None, :]).to(Y.dtype.element_ty).to(cos1.dtype)
+    # in Y's dtype. The rotation matches the RoPE kernel it replaces: the indexed one multiplies the
+    # norm output by cos / sin with type promotion (fp32 activations stay fp32 for bf16 tables), the
+    # plain one casts to cos's dtype first. A no-op when the dtypes already match.
+    y0 = ((x0 * inv[:, None]).to(w0.dtype) * w0[None, :]).to(Y.dtype.element_ty)
+    y1 = ((x1 * inv[:, None]).to(w1.dtype) * w1[None, :]).to(Y.dtype.element_ty)
+    if not HAS_ROPE_INDICES:
+        y0 = y0.to(cos1.dtype)
+        y1 = y1.to(cos1.dtype)
     y_ptr = Y + (row * n_heads + heads[:, None].to(tl.int64)) * HEAD_DIM + cols[None, :]
     tl.store(y_ptr, y0 * cos1[None, :] - y1 * sin1[None, :], mask = mask)
     tl.store(y_ptr + HALF, y1 * cos1[None, :] + y0 * sin1[None, :], mask = mask)
@@ -107,13 +126,13 @@ def _qk_norm_rope_forward(
         heads = hblock * BLOCK_H + tl.arange(0, BLOCK_H)
         _norm_rope_fwd_block(
             Qo, Q, Q_row_stride, Q_head_stride, Wq, rq, row, heads, n_heads_Q,
-            cos1, sin1, cols, eps_Q, HEAD_DIM,
+            cos1, sin1, cols, eps_Q, HEAD_DIM, HAS_ROPE_INDICES,
         )  # fmt: skip
     else:
         heads = (hblock - n_blocks_Q) * BLOCK_H + tl.arange(0, BLOCK_H)
         _norm_rope_fwd_block(
             Ko, K, K_row_stride, K_head_stride, Wk, rk, row, heads, n_heads_K,
-            cos1, sin1, cols, eps_K, HEAD_DIM,
+            cos1, sin1, cols, eps_K, HEAD_DIM, HAS_ROPE_INDICES,
         )  # fmt: skip
 
 
@@ -169,8 +188,10 @@ def _norm_rope_bwd_block(
     rowsum = tl.sum(g0 * n0, axis = 1) + tl.sum(g1 * n1, axis = 1)
     scale = (inv / HEAD_DIM)[:, None]
     dx_ptr = dX + (row * n_heads + hoff) * HEAD_DIM + cols[None, :]
-    tl.store(dx_ptr, scale * (HEAD_DIM * g0 - n0 * rowsum[:, None]), mask = mask)
-    tl.store(dx_ptr + HALF, scale * (HEAD_DIM * g1 - n1 * rowsum[:, None]), mask = mask)
+    # HEAD_DIM * g - n * rowsum with the contraction pinned (HEAD_DIM * g is exact): left to the backend
+    # the eager and the Inductor build contract it differently on ROCm, and fp16 dX lands 1 ulp apart.
+    tl.store(dx_ptr, scale * tl.fma(-n0, rowsum[:, None], HEAD_DIM * g0), mask = mask)
+    tl.store(dx_ptr + HALF, scale * tl.fma(-n1, rowsum[:, None], HEAD_DIM * g1), mask = mask)
 
 
 @triton.jit
@@ -383,8 +404,9 @@ def _eps(norm):
 
 
 def _unfused(q_norm, k_norm, Q, K, cos, sin, position_ids):
-    Q = fast_rms_layernorm(q_norm, Q).transpose(1, 2)
-    K = fast_rms_layernorm(k_norm, K).transpose(1, 2)
+    # reuse_grad as in the flag-off Qwen3 path: the norm output only feeds the RoPE kernel.
+    Q = fast_rms_layernorm(q_norm, Q, reuse_grad = True).transpose(1, 2)
+    K = fast_rms_layernorm(k_norm, K, reuse_grad = True).transpose(1, 2)
     return fast_rope_embedding(Q, K, cos, sin, position_ids)
 
 
@@ -434,7 +456,7 @@ def fast_qk_norm_rope(
             position_ids = position_ids.reshape(1, seq_len).expand(batch, seq_len)
         if position_ids.numel() != batch * seq_len:
             return _unfused(q_norm, k_norm, Q, K, cos, sin, position_ids)
-        rope_indices = position_ids.reshape(-1).to(dtype = torch.int32, device = Q.device)
+        rope_indices = position_ids.reshape(-1).to(dtype = torch.int32, device = Q.device).contiguous()
     else:
         if seq_len > cos2.shape[0]:
             return _unfused(q_norm, k_norm, Q, K, cos, sin, position_ids)
@@ -447,4 +469,52 @@ def fast_qk_norm_rope(
         Qo, Ko = _fused_untraced(*args)
     else:
         Qo, Ko, _, _ = torch.ops.unsloth.qk_norm_rope(*args)
+    return Qo.transpose(1, 2), Ko.transpose(1, 2)
+
+
+def decode_qk_norm_rope(q_norm, k_norm, Q, K, cos, sin, position_ids):
+    """Decode q/k norm + RoPE in one launch; returns new [bsz, n_heads, 1, head_dim] Q, K or None.
+    UNSLOTH_DECODE_FUSED_ROPE=0 disables it."""
+    if not DECODE_FUSED_ROPE or torch.compiler.is_compiling():
+        return None
+    Wq, Wk = q_norm.weight, k_norm.weight
+    if Q.device.type != "cuda" or Q.dim() != 4 or K.dim() != 4:
+        return None
+    batch, seq_len, _, head_dim = Q.shape
+    if seq_len != 1 or K.shape[0] != batch or K.shape[1] != 1 or K.shape[3] != head_dim:
+        return None
+    if position_ids is None or position_ids.numel() != batch:
+        return None
+    if torch.is_grad_enabled() and (
+        Q.requires_grad or K.requires_grad or Wq.requires_grad or Wk.requires_grad
+    ):
+        return None
+    cos2, sin2 = cos.squeeze(), sin.squeeze()
+    if (
+        head_dim % 2 != 0
+        or head_dim & (head_dim - 1) != 0
+        or head_dim < 16
+        or head_dim > 1024
+        or cos2.dim() != 2
+        or cos2.shape[-1] != head_dim
+        or sin2.shape != cos2.shape
+        or cos2.stride(-1) != 1
+        or sin2.stride(-1) != 1
+        or Q.stride(-1) != 1
+        or K.stride(-1) != 1
+        or Wq.shape != (head_dim,)
+        or Wk.shape != (head_dim,)
+        # Matches the unfused rounding only when every operand shares Q's dtype.
+        or not (Q.dtype == K.dtype == Wq.dtype == Wk.dtype == cos2.dtype == sin2.dtype)
+        or not (Q.device == K.device == Wq.device == Wk.device == cos2.device == sin2.device)
+    ):
+        return None
+    # The kernel indexes positions densely; an int32 last-column slice keeps its row stride.
+    rope_indices = position_ids.reshape(-1).to(dtype = torch.int32, device = Q.device).contiguous()
+    with torch_gpu_device(Q.device):
+        Qo, Ko, _, _ = _launch_forward(
+            Q, K, Wq.contiguous(), Wk.contiguous(), cos2, sin2, rope_indices,
+            float(_eps(q_norm)), float(_eps(k_norm)), True, _eager_kernel,
+        )  # fmt: skip
+    # No host drain (see decode_rope_inplace).
     return Qo.transpose(1, 2), Ko.transpose(1, 2)

@@ -10,7 +10,7 @@ import re
 import subprocess
 import sys
 import threading
-from contextlib import ExitStack
+from contextlib import ExitStack, suppress
 from pathlib import Path
 from typing import Optional
 
@@ -100,8 +100,7 @@ def _installer_script() -> Optional[Path]:
     )
 
 
-# Markerless (source-build) installs have no UNSLOTH_PREBUILT_INFO.json, so we
-# ask the installer whether an official prebuilt now exists for this host.
+# Source-build installs lack UNSLOTH_PREBUILT_INFO.json, so ask the installer if a prebuilt exists.
 _resolve_memo: dict = {}
 
 
@@ -340,16 +339,7 @@ def _merge_whisper_status(status: dict, *, force_refresh: bool = False) -> dict:
         "update_size_bytes": sub.get("update_size_bytes"),
         "skip_reason": plan.get("skip_reason"),
     }
-    whisper_update_available = bool(plan.get("update_available"))
-    if whisper_update_available:
-        status["update_available"] = True
-    status["update_component"] = (
-        "llama"
-        if status["llama_update_available"]
-        else "whisper"
-        if whisper_update_available
-        else None
-    )
+    status["update_component"] = "llama" if status["llama_update_available"] else None
     return status
 
 
@@ -934,8 +924,7 @@ def _run_llama_phase(
         raise
     finally:
         mtmd_guard.close()
-        # A kept slot serving a non-GGUF model stays loaded through the update; its llama backend
-        # must not stay refused once the update is done.
+        # A kept non-GGUF slot stays loaded; its llama backend must not stay refused once the update ends.
         for llama in (backend, *marked):
             if llama is not None:
                 try:
@@ -1266,6 +1255,10 @@ def _run_claimed_job(phases: list[dict]) -> None:
             )
     finally:
         _operation_lock.release()
+        # The projector precision follows the installed backend.
+        with suppress(Exception):
+            from utils.models.model_config import device_mmproj_precision
+            device_mmproj_precision.cache_clear()
 
 
 def _start_llama_job(backend_request: Optional[str] = None) -> dict:

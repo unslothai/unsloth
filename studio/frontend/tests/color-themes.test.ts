@@ -9,6 +9,7 @@ import {
   COLOR_THEMES,
   COLOR_THEME_IDS,
   FLAVOR_THEME_IDS,
+  HALLOWEEN_THEME_IDS,
   isColorThemeId,
 } from "../src/features/settings/lib/color-themes.ts";
 
@@ -18,6 +19,7 @@ const read = (path: string) =>
 const indexCss = read("../src/index.css");
 const themeBoot = read("../public/theme-boot.js");
 const backendSettings = read("../../backend/routes/settings.py");
+const SEEDED_THEME_IDS = [...FLAVOR_THEME_IDS, ...HALLOWEEN_THEME_IDS];
 
 test("every non-standard theme is applied by the boot script", () => {
   for (const id of COLOR_THEME_IDS) {
@@ -33,8 +35,8 @@ test("the backend accepts every theme id", () => {
   assert.deepEqual([...accepted].sort(), [...COLOR_THEME_IDS].sort());
 });
 
-test("every flavor theme has light and dark seed blocks", () => {
-  for (const id of FLAVOR_THEME_IDS) {
+test("every flavor and Halloween theme has light and dark seed blocks", () => {
+  for (const id of SEEDED_THEME_IDS) {
     assert.ok(
       indexCss.includes(`:root[data-palette="${id}"]:not(.dark) {`),
       `${id} light`,
@@ -91,16 +93,12 @@ function mix(hex: string, target: string, amount: number): string {
   return `#${channel(1)}${channel(3)}${channel(5)}`;
 }
 
-// text-primary and text-control-accent paint these on the page, so they share
-// the applier's 2.5:1 accent-text floor, plain and on a 20% wash.
-test("flavor accents used as text meet the accent-text floor", () => {
-  for (const id of FLAVOR_THEME_IDS) {
+test("flavor and Halloween accents used as text meet the accent-text floor", () => {
+  for (const id of SEEDED_THEME_IDS) {
     for (const [mode, selector] of [
       ["light", `:root[data-palette="${id}"]:not(.dark) {`],
       ["dark", `:root[data-palette="${id}"].dark {`],
     ] as const) {
-      // A palette can open the same selector more than once (its seeds in one block, a shared
-      // variable such as --composer-shadow in another), so read every block it opens.
       const blocks: string[] = [];
       for (let start = indexCss.indexOf(selector); start >= 0; start = indexCss.indexOf(selector, start + 1)) {
         blocks.push(indexCss.slice(start, indexCss.indexOf("}", start)));
@@ -127,8 +125,6 @@ test("flavor accents used as text meet the accent-text floor", () => {
 });
 
 test("More themes leads with Butterfly Pea and Earl Grey, and Cherry is just Cherry", () => {
-  // The menu draws FLAVOR_THEME_IDS in order: Butterfly Pea took Blueberry's slot and Earl Grey
-  // took Honey's, with Blueberry and Honey moving to where those two were.
   assert.deepEqual(FLAVOR_THEME_IDS.slice(0, 5), ["matcha", "espresso", "butterfly-pea", "cherry", "earl-grey"]);
   assert.equal(FLAVOR_THEME_IDS.indexOf("blueberry"), 11);
   assert.equal(FLAVOR_THEME_IDS.indexOf("honey"), 13);

@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Qwen-Image RoPE in real arithmetic (Inductor cannot lower the complex multiply): points the stock RoPE at
-``diffusion_qwenimage21_rope``'s probed fma wrapper, bit-identical to the complex product. Two stock forms:
-diffusers 0.41.0 routes through ``ROPE_PER_DEVICE["cuda"]`` (its entry is swapped); main d42ebf9c dropped the table
-and the attention processor calls the module global ``apply_rotary_emb_qwen`` (the global is swapped, only while the
-processor matches a known source). Kill switch: ``UNSLOTH_DIFFUSION_QWEN_REAL_ROPE=0``
-(``UNSLOTH_DIFFUSION_Q21_REAL_ROPE=0`` also disables it).
-"""
+"""Real-arithmetic Qwen-Image RoPE, patched into diffusers; kill UNSLOTH_DIFFUSION_QWEN_REAL_ROPE=0"""
 
 from __future__ import annotations
 
@@ -145,19 +139,14 @@ def install(transformer: Any, logger: Any = None) -> bool:
         return False
     if type(transformer).__name__ != "QwenImageTransformer2DModel":
         return False
-    from .diffusion_int8_fused import resident_cuda_device, run_on_first_call
+    from .diffusion_int8_fused import resident_cuda_cards, run_on_first_call
 
     def _finish(t: Any) -> bool:
-        dev = resident_cuda_device(t)
-        if dev is None:
-            return False
-        import torch
+        cards = resident_cuda_cards(t)
+        passed = [index for index in cards if _probe(index)]
+        return bool(passed) and _patch_table(passed[0], logger)
 
-        return _patch_table(
-            dev.index if dev.index is not None else torch.cuda.current_device(), logger
-        )
-
-    if resident_cuda_device(transformer) is not None:
+    if resident_cuda_cards(transformer):
         return _finish(transformer)
     run_on_first_call(transformer, "qwenimage_rope", _finish)
     return True

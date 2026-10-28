@@ -184,10 +184,25 @@ def _add_message(client, thread_id, message_id):
     assert response.status_code == 200, response.text
 
 
-def _fork(client, thread_id, message_id, new_thread_id):
+# The fork's clock correction carries the request's own latency, so events need to sit well apart
+# from it; 10 ms was inside a CI runner's latency and the Windows clock tick.
+_EVENT_GAP_S = 0.5
+
+
+def _fork(
+    client,
+    thread_id,
+    message_id,
+    new_thread_id,
+    browser_skew_ms = 0,
+):
     response = client.post(
         f"/api/chat/threads/{thread_id}/fork",
-        json = {"messageId": message_id, "newThreadId": new_thread_id, "createdAt": 2},
+        json = {
+            "messageId": message_id,
+            "newThreadId": new_thread_id,
+            "createdAt": int(time.time() * 1000) + browser_skew_ms,
+        },
     )
     assert response.status_code == 200, response.text
     return response.json()
@@ -226,6 +241,62 @@ def test_forking_a_thread_copies_its_uploaded_documents(client):
     assert _stored_path(copy) != _stored_path(source)
     with open(_stored_path(copy), encoding = "utf-8") as copied:
         assert copied.read() == text
+
+
+def test_a_fork_leaves_behind_documents_uploaded_after_its_fork_point(client):
+    _create_thread(client, "source")
+    _add_message(client, "source", "m1")
+    early = _upload(client, "source", "early.txt", "alpha bravo charlie " * 50)
+    time.sleep(_EVENT_GAP_S)
+    response = client.put(
+        "/api/chat/threads/source/messages/m2",
+        json = {
+            "id": "m2",
+            "threadId": "source",
+            "parentId": "m1",
+            "role": "user",
+            "createdAt": int(time.time() * 1000),
+        },
+    )
+    assert response.status_code == 200, response.text
+    time.sleep(_EVENT_GAP_S)
+    _upload(client, "source", "late.txt", "delta echo foxtrot " * 50)
+
+    _fork(client, "source", "m1", "early-fork")
+    _fork(client, "source", "m2", "tip-fork")
+
+    assert [d["filename"] for d in _thread_documents(client, "early-fork")] == ["early.txt"]
+    assert {d["filename"] for d in _thread_documents(client, "tip-fork")} == {
+        "early.txt",
+        "late.txt",
+    }
+    assert early not in {d["id"] for d in _thread_documents(client, "early-fork")}
+
+
+def test_the_fork_cutoff_survives_a_browser_clock_behind_the_server(client):
+    skew = -60_000
+    _create_thread(client, "source")
+    for message_id, parent in (("m1", None), ("m2", "m1")):
+        if message_id == "m2":
+            _upload(client, "source", "early.txt", "alpha bravo charlie " * 50)
+            time.sleep(_EVENT_GAP_S)
+        response = client.put(
+            f"/api/chat/threads/source/messages/{message_id}",
+            json = {
+                "id": message_id,
+                "threadId": "source",
+                "parentId": parent,
+                "role": "user",
+                "createdAt": int(time.time() * 1000) + skew,
+            },
+        )
+        assert response.status_code == 200, response.text
+    time.sleep(_EVENT_GAP_S)
+    _upload(client, "source", "late.txt", "delta echo foxtrot " * 50)
+
+    _fork(client, "source", "m1", "skewed-fork", browser_skew_ms = skew)
+
+    assert [d["filename"] for d in _thread_documents(client, "skewed-fork")] == ["early.txt"]
 
 
 def _vectors(document_id):

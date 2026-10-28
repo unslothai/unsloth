@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Page-aware recursive-separator chunking with token overlap. Each chunk records
-its ``[page_char_start, page_char_end)`` span and ``source_page_index``, used by
-the locator pass to highlight it on the PDF page."""
+"""Page-aware recursive-separator chunking with token overlap; chunks record
+page_char_start/page_char_end and source_page_index for locator highlights."""
 
 from __future__ import annotations
 
@@ -95,8 +94,7 @@ def _merge(
         pt = piece.token_count
         if buf and buf_tok + pt > max_tokens:
             _flush()
-            # Bound the carry so carry + this piece fits max_tokens; else a full overlap before a near-max piece
-            # overflows the embedder.
+            # Bound carry so carry + piece fits max_tokens, or the embedder overflows.
             carry_budget = min(overlap, max(0, max_tokens - pt))
             carry, carry_starts, run = [], [], 0
             for prev, prev_start in zip(reversed(buf), reversed(buf_starts)):

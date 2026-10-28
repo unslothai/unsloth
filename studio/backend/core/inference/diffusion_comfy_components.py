@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Separate text-encoder / VAE files (ComfyUI ``models/text_encoders``, ``models/vae``) beside a single-file DiT.
-
-Each file is classified from its header, assigned to the base pipeline slot whose class it fits, renamed under a
-rule that loads strictly, and built from the base repo's config (which still supplies configs and tokenizers).
-fp8 dequantizes, int8 ConvRot stays int8, every other ComfyUI quant format is refused by name.
-"""
+"""ComfyUI text-encoder and VAE files beside a single-file DiT; fp8, nvfp4 and mxfp8 dequantize,
+int8 ConvRot stays int8, other ComfyUI quant formats are refused by name"""
 
 from __future__ import annotations
 
@@ -98,7 +94,9 @@ class ComponentFileRef:
 
     @property
     def name(self) -> str:
-        return os.path.basename(self.local_path or self.filename or self.spec)
+        if self.local_path:
+            return re.split(r"[\\/]", self.spec)[-1] or os.path.basename(self.local_path)
+        return os.path.basename(self.filename or self.spec)
 
     @property
     def is_hub(self) -> bool:
@@ -140,10 +138,7 @@ def parse_component_file(
     trusted_repo: Optional[Callable[[str], bool]] = None,
     what: str = "text_encoder_file",
 ) -> ComponentFileRef:
-    """Validate one spec without touching the network. Local: an existing ``.safetensors`` file (a relative or
-    bare name resolves against a local ``model_path`` directory, so a ComfyUI ``models/`` tree works with
-    ``../text_encoders/x.safetensors``). Hub: ``owner/repo/path.safetensors`` held to ``trusted_repo``, the
-    same bar a single-file DiT clears."""
+    """Network-free check: local files resolve against model_path; Hub specs must be in trusted_repo."""
     spec = (spec or "").strip()
     if not spec:
         raise ComponentFileError(f"{what} is empty")
@@ -355,10 +350,7 @@ def match_keys(
     tied_missing: Iterable[str] = (),
     rules: Sequence[tuple[str, Callable[[str], Optional[str]]]] = KEY_RULES,
 ) -> KeyMapping:
-    """The first rename rule under which ``file_shapes`` loads STRICTLY into ``expected``: every expected
-    tensor present with the same shape, nothing extra except the known-dead tensors. ``tied_missing``
-    names model tensors the class re-ties after loading (an ``lm_head`` tied to the embedding).
-    Raises ``ComponentFileError`` with the closest rule's diagnostics."""
+    """First rename rule that loads the file strictly; tied_missing names tensors re-tied after loading."""
     tied = set(tied_missing)
     best: Optional[tuple[int, str, list, list, list]] = None
     for name, rule in rules:
@@ -423,9 +415,9 @@ def quant_layers(path: str) -> dict[str, Any]:
         shown = "; ".join(scan.problems[:3])
         more = f" (and {len(scan.problems) - 3} more)" if len(scan.problems) > 3 else ""
         raise ComponentFileError(
-            f"'{os.path.basename(path)}' uses a ComfyUI quantization Studio cannot load as a text encoder "
-            f"or VAE: {shown}{more}. Supported: unquantized, scaled fp8 (float8_e4m3fn / float8_e5m2) and "
-            "int8_tensorwise (with or without ConvRot); use the bf16 or fp8 file instead."
+            f"'{os.path.basename(path)}' uses a ComfyUI quantization Unsloth cannot load as a text encoder "
+            f"or VAE: {shown}{more}. Supported: unquantized, scaled fp8 (float8_e4m3fn / float8_e5m2), nvfp4, "
+            "mxfp8 and int8_tensorwise (with or without ConvRot); use the bf16 or fp8 file instead."
         )
     return dict(scan.layers)
 
@@ -463,7 +455,7 @@ def resident_bytes(
     kind: str = "text_encoder",
 ) -> int:
     """What the loaded component holds: int8 ConvRot Linears at stored size (+ scales), every other weight
-    (dequantized fp8 included) at the compute dtype. Header-only."""
+    (dequantized fp8 / nvfp4 / mxfp8 included) at the compute dtype, at its logical shape. Header-only."""
     header, _ = read_safetensors_header(path)
     layers = quant_layers(path) if kind != COMPONENT_VAE else {}
     total = 0
@@ -474,6 +466,8 @@ def resident_bytes(
         layer = layers.get(key[: -len(".weight")]) if key.endswith(".weight") else None
         if layer is not None and layer.convrot and layer.format == "int8_tensorwise":
             total += _numel(shape) + int(shape[0]) * 4
+        elif layer is not None:
+            total += _numel(_logical_shape(layer, shape)) * dtype_itemsize
         elif dtype in ("F32", "F16", "BF16", "F8_E4M3", "F8_E5M2", "I8", "U8") or layer is not None:
             total += _numel(shape) * dtype_itemsize
         else:
@@ -502,8 +496,25 @@ def _expected_shapes(module: Any) -> dict[str, tuple]:
     return {k: tuple(v.shape) for k, v in module.state_dict().items()}
 
 
-def _file_logical_shapes(header: dict) -> dict[str, tuple]:
-    return {k: tuple(int(d) for d in (header[k].get("shape") or ())) for k in weight_keys(header)}
+def _logical_shape(layer: Any, shape: Sequence[int]) -> tuple:
+    """The dense shape of a quantized layer's stored weight: nvfp4 packs two columns per byte."""
+    from .diffusion_comfy_block import NVFP4
+
+    dims = tuple(int(d) for d in shape)
+    if layer is not None and layer.format == NVFP4 and len(dims) == 2:
+        return (dims[0], dims[1] * 2)
+    return dims
+
+
+def _file_logical_shapes(header: dict, layers: Optional[dict] = None) -> dict[str, tuple]:
+    layers = layers or {}
+    return {
+        k: _logical_shape(
+            layers.get(k[: -len(".weight")]) if k.endswith(".weight") else None,
+            header[k].get("shape") or (),
+        )
+        for k in weight_keys(header)
+    }
 
 
 def _strip_meta(module: Any) -> list[str]:
@@ -525,11 +536,12 @@ def _fit_text_encoder(
     if trim_lm_head:
         trim_text_encoder(encoder)
     expected = _expected_shapes(encoder)
+    layers = quant_layers(path)
     tied = ()
     if config_ties_lm_head(config) and "lm_head.weight" in expected:
         tied = ("lm_head.weight",)
     try:
-        mapping = match_keys(_file_logical_shapes(header), expected, tied_missing = tied)
+        mapping = match_keys(_file_logical_shapes(header, layers), expected, tied_missing = tied)
     except ComponentFileError as exc:
         raise ComponentFileError(
             f"'{os.path.basename(path)}' does not fit this pipeline's {encoder_cls.__name__}: {exc}"
@@ -558,6 +570,7 @@ def build_text_encoder(
     layers = quant_layers(path)
     encoder, mapping, tied = _fit_text_encoder(path, header, encoder_cls, config, trim_lm_head)
 
+    from .diffusion_comfy_block import BLOCK_SIZES, decode_layer, dequant_block
     from .diffusion_comfy_quant import _dequant
 
     convrot_cls = None
@@ -609,6 +622,33 @@ def build_text_encoder(
                     kept_int8 += 1
                 else:
                     state[dst] = _dequant(codes, scale, int(layer.group or 0), dtype)
+            elif layer.format in BLOCK_SIZES:
+                # nvfp4 / mxfp8: the DiT loader's decoder (nibble order, cuBLAS-tiled block scales), then dense.
+                if scale is None:
+                    raise ComponentFileError(
+                        f"'{name}': {stem} is {layer.format} with no weight_scale"
+                    )
+                tensor_scale = (
+                    handle.get_tensor(stem + ".weight_scale_2")
+                    if stem + ".weight_scale_2" in header
+                    else None
+                )
+                pre_quant_scale = (
+                    handle.get_tensor(stem + ".pre_quant_scale")
+                    if stem + ".pre_quant_scale" in header
+                    else None
+                )
+                plain_codes, plain_scale = decode_layer(layer.format, codes, scale)
+                state[dst] = dequant_block(
+                    layer.format,
+                    plain_codes,
+                    plain_scale,
+                    tensor_scale = None
+                    if tensor_scale is None
+                    else float(tensor_scale.float().reshape(-1)[0]),
+                    pre_quant_scale = pre_quant_scale,
+                    dtype = dtype,
+                )
             else:
                 state[dst] = _dequant_fp8(codes, scale, layer.format, dtype)
     if convrot_cls is not None:
@@ -1048,24 +1088,30 @@ def _component_class_and_config(
         vae_cls = getattr(diffusers, class_name, None)
         if vae_cls is None:
             raise ComponentFileError(f"diffusers has no {class_name}; update diffusers")
+        from .diffusion_families import pinned_revision_kwargs
+
         return vae_cls, vae_cls.load_config(
             base,
             subfolder = COMPONENT_VAE,
             token = hf_token,
             cache_dir = cache_dir,
             local_files_only = local_files_only,
+            **pinned_revision_kwargs(base),
         )
     import transformers
 
     encoder_cls = getattr(transformers, class_name, None)
     if encoder_cls is None:
         raise ComponentFileError(f"transformers has no {class_name}; update transformers")
+    from .diffusion_families import pinned_revision_kwargs
+
     config = transformers.AutoConfig.from_pretrained(
         base,
         subfolder = component,
         token = hf_token,
         cache_dir = cache_dir,
         local_files_only = local_files_only,
+        **pinned_revision_kwargs(base),
     )
     from .diffusion_krea2 import remap_rope_parameters
 
@@ -1198,12 +1244,15 @@ def read_model_index(
             continue
     from huggingface_hub import hf_hub_download
 
+    from .diffusion_families import pinned_revision_kwargs
+
     local = hf_hub_download(
         base,
         "model_index.json",
         token = hf_token,
         cache_dir = cache_dir,
         local_files_only = local_files_only,
+        **pinned_revision_kwargs(base),
     )
     return json.loads(Path(local).read_text(encoding = "utf-8"))
 

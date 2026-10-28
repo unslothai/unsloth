@@ -127,3 +127,32 @@ def test_degenerate_weights_stay_dense(N, monkeypatch):
     monkeypatch.setattr(N, "_device_capability", lambda index: (12, 0))
     flat = torch.zeros(4096 * 2048, dtype = torch.uint8)
     assert not N._fused_ok(_rows(1, 4096), flat, torch.ones(1, 1), torch.tensor([1.0]), 4096)
+
+
+# (capability, SMs, dx, M, n_out, k_red, split): sm89 dX up to 32 rows skips split K once the output fills every SM.
+SPLIT_CASES = [
+    ((8, 9), 58, True, 1, 14336, 4096, 1),  # Llama-3-8B down_proj dX: was 4
+    ((8, 9), 58, True, 32, 12288, 4096, 1),  # Qwen3-8B down_proj dX: was 4
+    ((8, 9), 58, True, 64, 14336, 4096, 2),  # past 32 rows: unchanged
+    ((8, 9), 58, True, 16, 4096, 14336, 8),  # 32 output tiles: still split
+    ((8, 9), 58, False, 16, 4096, 14336, 4),  # forward: unchanged
+    ((8, 0), 108, True, 16, 14336, 4096, 4),  # A100: split 4 stays fastest
+    ((12, 0), 188, True, 16, 14336, 4096, 8),
+]
+
+
+@pytest.mark.parametrize("cap, sms, dx, M, n_out, k_red, split", SPLIT_CASES)
+def test_split_k_per_capability(N, monkeypatch, cap, sms, dx, M, n_out, k_red, split):
+    monkeypatch.setattr(N, "_device_capability", lambda index: cap)
+    monkeypatch.setattr(N, "_sm_count", lambda index: sms)
+    assert N._fused_config(M, n_out, k_red, torch.device("cuda", 0), dx)[-1] == split
+
+
+@pytest.mark.parametrize("cap", [(8, 0), (8, 9), (12, 0)])
+@pytest.mark.parametrize("dx", [False, True])
+def test_unaligned_k_stays_dense_in_both_directions(N, monkeypatch, cap, dx):
+    # dX reduces over N, so K must be checked apart from inner.
+    assert _decide(N, monkeypatch, cap, 16, 4096, 4096, dx)
+    assert not _decide(N, monkeypatch, cap, 16, 4096, 4112, dx)
+    assert not _decide(N, monkeypatch, cap, 16, 4112, 4096, dx)
+    assert _decide(N, monkeypatch, cap, 16, 4096, 4112, dx, mode = "1")

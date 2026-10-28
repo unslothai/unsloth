@@ -76,14 +76,16 @@ import {
 import { FILE_LIST_COLUMNS } from "../components/library-list";
 import { useLibrarySettingsStore } from "../settings-store";
 import { SortRadio } from "../components/library-toolbar";
-import { CARD_SHADOW, OVERLAY_CONTROL, RAISED_SURFACE } from "../surface";
+import { CARD_MIN_HEIGHT, CARD_SHADOW, OVERLAY_CONTROL, RAISED_SURFACE } from "../surface";
 
-// No overflow-hidden, so a two-line name grows its row instead of clipping; the row stretches to match.
 const CARD = cn(
   RAISED_SURFACE,
   CARD_SHADOW,
-  "group/chat relative flex aspect-[8/7] cursor-pointer flex-col gap-2.5 self-stretch rounded-[calc(var(--radius-xl)-2px)] px-5 pb-3.5 pt-5 transition hover:bg-neutral-100 hover:shadow-none dark:hover:bg-accent/60",
+  // min-h-0 min-w-0: content must not size the card, or one long card grows its whole tab.
+  "group/chat relative flex min-h-0 min-w-0 cursor-pointer flex-col gap-2.5 self-stretch rounded-2xl px-5 py-5 transition hover:bg-neutral-100 hover:shadow-none dark:hover:bg-accent/60",
 );
+
+export const CHAT_CARD_ROW_MIN = CARD_MIN_HEIGHT;
 import {
   type ChatContents,
   type ChatSort,
@@ -99,7 +101,6 @@ import {
 
 const ICON = "size-icon";
 const MENU = "library-actions-menu";
-// Fits the window, and each group scrolls past ~7 rows so Sections stays reachable.
 const MOVE_TO_MENU =
   "max-h-[var(--radix-dropdown-menu-content-available-height)] overflow-y-auto";
 const MOVE_TO_LIST =
@@ -110,7 +111,6 @@ export type ChatExportChoice =
   | { kind: "chat"; format: ConversationExportFormat }
   | { kind: "bulk"; format: ConvExportFormat; merged: boolean };
 
-/** Move target; a null project or section id removes the chat from its current one. */
 export type ChatDestination =
   | { kind: "project"; id: string | null }
   | { kind: "section"; id: string | null }
@@ -125,9 +125,7 @@ export interface ChatsActions {
   favorites: ReadonlySet<string>;
   favoriteProjects: ReadonlySet<string>;
   favoriteSections: ReadonlySet<string>;
-  /** Off in Favorites, where every entry is starred. */
   favoriteMarks: boolean;
-  /** False in Favorites, where chats do not share the file selection. */
   selectable: boolean;
   models: ReadonlyMap<string, string[]>;
   sections: readonly SidebarCustomSection[];
@@ -136,7 +134,6 @@ export interface ChatsActions {
   dateField: DateField;
   chatContents: ReadonlyMap<string, ChatContents>;
   selection: ReadonlySet<string>;
-  /** `range`: shift-click, from the last toggled row. */
   toggleSelected: (id: string, range?: boolean) => void;
   open: (chat: SidebarItem) => void;
   rename: (chat: SidebarItem) => void;
@@ -147,12 +144,9 @@ export interface ChatsActions {
   toggleFavoriteSection: (sectionId: string) => void;
   fork: (chat: SidebarItem) => void;
   move: (chats: SidebarItem[], destination: ChatDestination) => void;
-  /** Moves a project into or out of a section; projects never nest. */
   moveProject: (project: ProjectRecord, destination: ChatDestination) => void;
-  /** Narrows the list to one section. Omitted where there are no filters (Favorites). */
   viewSection: (sectionId: string) => void;
   newChatInSection: (sectionId: string) => void;
-  /** New project dialog; the project is filed in the section. */
   newProjectInSection: (sectionId: string) => void;
   renameSection: (section: SidebarCustomSection) => void;
   removeSection: (section: SidebarCustomSection) => void;
@@ -241,18 +235,16 @@ export function ExportSubmenu({
   );
 }
 
-/** "Move to" menu, as in the sidebar. The current location is omitted, not greyed out. */
 export function MoveSubmenu({
   project,
   section,
   onMove,
   sectionsOnly = false,
 }: {
-  /** Shared project of the moved chats (null for none); undefined when they differ. */
+  /** Undefined when the moved chats differ. */
   project?: string | null;
   section?: string | null;
   onMove: (destination: ChatDestination) => void;
-  /** Sections only, for moving a project (projects never nest). */
   sectionsOnly?: boolean;
 }) {
   const t = useT();
@@ -484,7 +476,6 @@ function ChatMenu({
     >
       <DropdownMenu>
         <MenuTrigger variant={variant} />
-        {/* No Open chat: clicking the chat opens it. */}
         <DropdownMenuContent align="end" className={cn(MENU, "w-52")}>
           <MenuItem
             icon={Edit03Icon}
@@ -568,7 +559,7 @@ function ChatMenu({
 }
 
 const TILE =
-  "flex size-9 shrink-0 items-center justify-center rounded-[10px] bg-muted text-foreground/70 transition-colors group-hover/chat:bg-primary/10 group-hover/chat:text-primary";
+  "flex size-9 shrink-0 items-center justify-center rounded-md bg-muted text-foreground/70 transition-colors group-hover/chat:bg-primary/10 group-hover/chat:text-primary";
 const TILE_ICON = "size-5";
 
 function ChatTile({
@@ -642,9 +633,8 @@ function modelLabel(
   return (models.get(chat.id) ?? []).map(compareModelDisplayName).join(" · ");
 }
 
-// Plain text, not a pill: a pill inside a hovered row looked like a second row.
 const CHIP =
-  "inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-sm text-left outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring";
+  "inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-full text-left outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring";
 
 function ChatLocation({
   chat,
@@ -679,7 +669,6 @@ function ChatLocation({
           if (projectId) filterProject(projectId);
           else if (section) viewSection(section.id);
         }}
-        // Icon first, so a location is not read as a count.
         className={cn(CHIP, "max-w-full")}
       >
         <HugeiconsIcon
@@ -714,7 +703,6 @@ function ChatLocation({
         <SectionChip
           section={section}
           onView={viewSection}
-          // The project name truncates first so a short section name stays whole.
           className={projectId ? "max-w-[55%] shrink-0" : "shrink"}
         />
       )}
@@ -750,7 +738,6 @@ function SectionChip({
   );
 }
 
-/** "own": under its own header; "files": among files; object: among chats (All). */
 export type CollectionRowLayout = "own" | "files" | { showLocation: boolean };
 
 function FileColumns({ modified }: { modified: number }) {
@@ -773,7 +760,6 @@ function CollectionCount({ children }: { children: ReactNode }) {
   );
 }
 
-/** Time inside a date group, which already names the day: so no relative "6 hr. ago". */
 function groupedTime(
   ts: number,
   bucket: DateBucket["kind"],
@@ -885,7 +871,6 @@ export function DateHeader({
           <DropdownMenuContent
             align="start"
             className={cn(MENU, "w-44")}
-            // Focus returning to the title after a pick left a ring around it.
             onCloseAutoFocus={(event) => event.preventDefault()}
           >
             {fields.map((option) => (
@@ -944,7 +929,6 @@ function SelectBox({
     <Isolate className={className}>
       <Checkbox
         checked={selection.has(chat.id)}
-        // onClick to read shift.
         onClick={(event) => {
           event.preventDefault();
           toggleSelected(chat.id, event.shiftKey);
@@ -962,8 +946,7 @@ function SelectBox({
 }
 
 const ROW_INSET = "pl-4 pr-6";
-const CELL = "truncate text-ui-13 text-muted-foreground";
-// Columns follow the list's width, not the window's; the date column hides last.
+const CELL = "truncate text-ui-12p5 text-muted-foreground";
 const DATE_COLUMN = "hidden w-32 shrink-0 @xl:block";
 const CONTENTS_COLUMN = "hidden w-36 shrink-0 @3xl:block";
 const LOCATION_COLUMN = "hidden w-40 shrink-0 @4xl:block";
@@ -1027,7 +1010,7 @@ export function ChatListHeader({
     <div className="pb-2">
       <div
         className={cn(
-          "group/chat relative flex items-center gap-4 text-ui-13 text-muted-foreground",
+          "group/chat relative flex items-center gap-4 text-ui-12p5 text-muted-foreground",
           ROW_INSET,
         )}
       >
@@ -1075,15 +1058,16 @@ export function ChatRow({
   locationColumn = showProject || showSection,
   fileColumns = false,
   times = {},
+  showTile = true,
 }: {
   chat: SidebarItem;
   archived: boolean;
-  /** Off inside a project or when grouped by it (sections likewise). */
   showProject: boolean;
   showSection: boolean;
   locationColumn?: boolean;
   fileColumns?: boolean;
   times?: RowTimes;
+  showTile?: boolean;
 }) {
   const t = useT();
   const locale = useLocale();
@@ -1099,7 +1083,7 @@ export function ChatRow({
           : actions.open(chat)
       }
       className={cn(
-        "group/chat relative flex cursor-pointer items-center gap-4 rounded-[14px] transition-colors hover:bg-muted dark:hover:bg-muted/60",
+        "group/chat relative flex cursor-pointer items-center gap-4 rounded-md transition-colors hover:bg-muted dark:hover:bg-muted/60",
         ROW_INSET,
         selected && "bg-muted dark:bg-muted/60",
       )}
@@ -1109,8 +1093,8 @@ export function ChatRow({
         visible={actions.selection.size > 0}
         className="absolute end-full top-1/2 me-3 flex -translate-y-1/2"
       />
-      <div className="flex min-w-0 flex-1 items-center gap-4 py-2">
-        <ChatTile chat={chat} />
+      <div className={cn("flex min-w-0 flex-1 items-center gap-4 py-2", !showTile && TILELESS_ROW_NAME)}>
+        {showTile && <ChatTile chat={chat} />}
         <div className="flex min-w-0 flex-col">
           <span className="flex min-w-0 items-center gap-2">
             <button
@@ -1120,14 +1104,14 @@ export function ChatRow({
                 if (actions.selection.size > 0) actions.toggleSelected(chat.id, event.shiftKey);
                 else actions.open(chat);
               }}
-              className="truncate rounded text-left text-ui-14 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="truncate rounded-full text-left text-ui-13 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               {chatTitle(chat, t)}
             </button>
             <ChatBadges chat={chat} />
           </span>
           {model && (
-            <span className="truncate text-ui-12 text-muted-foreground">
+            <span className="truncate text-ui-11p5 text-muted-foreground">
               {model}
             </span>
           )}
@@ -1171,12 +1155,14 @@ export function ChatCard({
   showProject,
   showSection,
   times = {},
+  showTile = true,
 }: {
   chat: SidebarItem;
   archived: boolean;
   showProject: boolean;
   showSection: boolean;
   times?: RowTimes;
+  showTile?: boolean;
 }) {
   const t = useT();
   const locale = useLocale();
@@ -1196,12 +1182,12 @@ export function ChatCard({
       }
       className={cn(CARD, selected && "ring-2 ring-foreground")}
     >
-      <div className="flex items-center gap-2">
-        <ChatTile chat={chat} />
-        <ChatBadges chat={chat} marksOnly />
+      <div className={cn("flex items-center gap-2", !showTile && TILELESS_ROW)}>
+        {showTile && <ChatTile chat={chat} />}
+        <ChatBadges chat={chat} marksOnly={showTile} />
       </div>
       <ChatMenu chat={chat} archived={archived} variant="card" />
-      <SelectBox chat={chat} visible={selecting} className="absolute bottom-3.5 end-4 flex" />
+      <SelectBox chat={chat} visible={selecting} className="absolute bottom-5 end-4 flex" />
       <button
         type="button"
         onClick={(event) => {
@@ -1209,9 +1195,9 @@ export function ChatCard({
           if (selecting) actions.toggleSelected(chat.id, event.shiftKey);
           else actions.open(chat);
         }}
-        className={CARD_TITLE}
+        className={cn(CARD_TITLE, !showTile && TILELESS_TITLE)}
       >
-        {/* Clamp an inner span: buttons ignore line-clamp. */}
+        {/* Buttons ignore line-clamp, so clamp an inner span. */}
         <span className="line-clamp-2">{chatTitle(chat, t)}</span>
       </button>
       <CardFooter
@@ -1227,7 +1213,7 @@ function CardFooter({ meta, date, className }: { meta?: ReactNode; date: string;
   return (
     <div
       className={cn(
-        "mt-auto flex min-w-0 flex-col items-start gap-1 text-ui-12 text-muted-foreground",
+        "mt-auto flex min-w-0 flex-col items-start gap-1 text-ui-11p5 text-muted-foreground",
         className,
       )}
     >
@@ -1237,10 +1223,14 @@ function CardFooter({ meta, date, className }: { meta?: ReactNode; date: string;
   );
 }
 
-const CARD_TITLE =
-  "block w-full rounded text-left font-medium text-ui-14 leading-snug text-foreground outline-none [overflow-wrap:anywhere] focus-visible:ring-2 focus-visible:ring-ring";
+// Without a tile, the empty marks row collapses and the title clears the corner menu.
+const TILELESS_ROW = "empty:hidden pe-8";
+const TILELESS_TITLE = "pe-6";
+const TILELESS_ROW_NAME = "min-h-13";
 
-/** Group name and count in words; a bare number beside "Today" read as part of the name. */
+const CARD_TITLE =
+  "block w-full rounded-md text-left font-medium text-ui-13 leading-snug text-foreground outline-none [overflow-wrap:anywhere] focus-visible:ring-2 focus-visible:ring-ring";
+
 export function GroupHeading({
   children,
   count,
@@ -1296,7 +1286,7 @@ export function CollectionHeader({
         <button
           type="button"
           onClick={onParent}
-          className="rounded text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+          className="rounded-full text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
         >
           {parent}
         </button>
@@ -1310,7 +1300,7 @@ export function CollectionHeader({
         </span>
       </nav>
       <div className="flex items-center gap-4">
-        <span className="flex size-13 shrink-0 items-center justify-center rounded-[18px] bg-muted text-foreground/80">
+        <span className="flex size-13 shrink-0 items-center justify-center rounded-lg bg-muted text-foreground/80">
           <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-6.5" />
         </span>
         <div className="flex min-w-0 flex-1 flex-col gap-1">
@@ -1413,9 +1403,11 @@ function chatCount(count: number, t: ReturnType<typeof useT>): string {
 export function ProjectCard({
   project,
   stats,
+  showTile = true,
 }: {
   project: ProjectRecord;
   stats?: ProjectStats;
+  showTile?: boolean;
 }) {
   const t = useT();
   const locale = useLocale();
@@ -1427,8 +1419,8 @@ export function ProjectCard({
       onClick={() => actions.viewProject(project.id)}
       className={CARD}
     >
-      <div className="flex items-center gap-2">
-        <CollectionTile icon={Folder02Icon} />
+      <div className={cn("flex items-center gap-2", !showTile && TILELESS_ROW)}>
+        {showTile && <CollectionTile icon={Folder02Icon} />}
         {actions.favoriteProjects.has(project.id) && <FavoriteMark />}
         {pinned && <PinMark />}
       </div>
@@ -1439,7 +1431,7 @@ export function ProjectCard({
           event.stopPropagation();
           actions.viewProject(project.id);
         }}
-        className={CARD_TITLE}
+        className={cn(CARD_TITLE, !showTile && TILELESS_TITLE)}
       >
         <span className="line-clamp-2">{project.name}</span>
       </button>
@@ -1455,10 +1447,12 @@ export function ProjectRow({
   project,
   stats,
   layout = "own",
+  showTile = true,
 }: {
   project: ProjectRecord;
   stats?: ProjectStats;
   layout?: CollectionRowLayout;
+  showTile?: boolean;
 }) {
   const t = useT();
   const locale = useLocale();
@@ -1473,12 +1467,12 @@ export function ProjectRow({
     <div
       onClick={() => actions.viewProject(project.id)}
       className={cn(
-        "group/chat relative flex cursor-pointer items-center gap-4 rounded-[14px] transition-colors hover:bg-muted dark:hover:bg-muted/60",
+        "group/chat relative flex cursor-pointer items-center gap-4 rounded-md transition-colors hover:bg-muted dark:hover:bg-muted/60",
         ROW_INSET,
       )}
     >
-      <div className="flex min-w-0 flex-1 items-center gap-4 py-2">
-        <CollectionTile icon={Folder02Icon} />
+      <div className={cn("flex min-w-0 flex-1 items-center gap-4 py-2", !showTile && TILELESS_ROW_NAME)}>
+        {showTile && <CollectionTile icon={Folder02Icon} />}
         <div className="flex min-w-0 flex-col">
           <span className="flex min-w-0 items-center gap-2">
             <button
@@ -1487,7 +1481,7 @@ export function ProjectRow({
                 event.stopPropagation();
                 actions.viewProject(project.id);
               }}
-              className="truncate rounded text-left text-ui-14 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="truncate rounded-full text-left text-ui-13 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               {project.name}
             </button>
@@ -1508,7 +1502,7 @@ export function ProjectRow({
             )}
           </span>
           {project.instructions?.trim() && (
-            <span className="truncate text-ui-12 text-muted-foreground">
+            <span className="truncate text-ui-11p5 text-muted-foreground">
               {project.instructions.trim()}
             </span>
           )}
@@ -1554,7 +1548,7 @@ export function ProjectListHeader({ date }: { date: DateColumn }) {
   return (
     <div
       className={cn(
-        "flex items-center gap-4 pb-2 text-ui-13 text-muted-foreground",
+        "flex items-center gap-4 pb-2 text-ui-12p5 text-muted-foreground",
         ROW_INSET,
       )}
     >
@@ -1628,7 +1622,6 @@ export function SectionMenuItems({
         disabled={!actions.sectionChatCounts.get(section.id)}
         onExport={(choice) => actions.exportSection(section, choice)}
       />
-      {/* Into no project, filed in the section. */}
       <MenuItem
         icon={Upload01Icon}
         label={t("settings.chat.importChats")}
@@ -1660,9 +1653,11 @@ function sectionCountLabel(
 export function SectionCard({
   section,
   stats,
+  showTile = true,
 }: {
   section: SidebarCustomSection;
   stats?: SectionStats;
+  showTile?: boolean;
 }) {
   const t = useT();
   const locale = useLocale();
@@ -1673,8 +1668,8 @@ export function SectionCard({
       onClick={() => actions.viewSection(section.id)}
       className={CARD}
     >
-      <div className="flex items-center gap-2">
-        <CollectionTile icon={LayerIcon} />
+      <div className={cn("flex items-center gap-2", !showTile && TILELESS_ROW)}>
+        {showTile && <CollectionTile icon={LayerIcon} />}
         {actions.favoriteSections.has(section.id) && <FavoriteMark />}
       </div>
       <SectionMenu section={section} variant="card" />
@@ -1684,7 +1679,7 @@ export function SectionCard({
           event.stopPropagation();
           actions.viewSection(section.id);
         }}
-        className={CARD_TITLE}
+        className={cn(CARD_TITLE, !showTile && TILELESS_TITLE)}
       >
         <span className="line-clamp-2">{section.name}</span>
       </button>
@@ -1700,10 +1695,12 @@ export function SectionRow({
   section,
   stats,
   layout = "own",
+  showTile = true,
 }: {
   section: SidebarCustomSection;
   stats?: SectionStats;
   layout?: CollectionRowLayout;
+  showTile?: boolean;
 }) {
   const t = useT();
   const locale = useLocale();
@@ -1713,12 +1710,12 @@ export function SectionRow({
     <div
       onClick={() => actions.viewSection(section.id)}
       className={cn(
-        "group/chat relative flex cursor-pointer items-center gap-4 rounded-[14px] transition-colors hover:bg-muted dark:hover:bg-muted/60",
+        "group/chat relative flex cursor-pointer items-center gap-4 rounded-md transition-colors hover:bg-muted dark:hover:bg-muted/60",
         ROW_INSET,
       )}
     >
-      <div className="flex min-w-0 flex-1 items-center gap-4 py-2">
-        <CollectionTile icon={LayerIcon} />
+      <div className={cn("flex min-w-0 flex-1 items-center gap-4 py-2", !showTile && TILELESS_ROW_NAME)}>
+        {showTile && <CollectionTile icon={LayerIcon} />}
         <span className="flex min-w-0 items-center gap-2">
           <button
             type="button"
@@ -1726,7 +1723,7 @@ export function SectionRow({
               event.stopPropagation();
               actions.viewSection(section.id);
             }}
-            className="truncate rounded text-left text-ui-14 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="truncate rounded-full text-left text-ui-13 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             {section.name}
           </button>
@@ -1768,7 +1765,7 @@ export function SectionListHeader({ date }: { date: DateColumn }) {
   return (
     <div
       className={cn(
-        "flex items-center gap-4 pb-2 text-ui-13 text-muted-foreground",
+        "flex items-center gap-4 pb-2 text-ui-12p5 text-muted-foreground",
         ROW_INSET,
       )}
     >
@@ -1804,19 +1801,18 @@ function FavoriteTile({
         aria-label={title}
         onClick={onOpen}
         className={cn(
-          "block w-full overflow-hidden rounded-[calc(var(--radius-xl)-2px)] text-left outline-none transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+          "block w-full overflow-hidden rounded-2xl text-left outline-none transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
           FILE_CARD_SURFACE,
         )}
       >
-        {/* Same layout as the file cards. */}
         <div className="grid aspect-square grid-cols-[minmax(0,1fr)] grid-rows-[auto_1fr_auto] px-5 pt-5 pb-3.5">
-          <p className="line-clamp-2 min-h-[2.75em] break-words font-medium text-ui-13p5 leading-snug text-foreground">
+          <p className="line-clamp-2 min-h-[2.75em] break-words font-medium text-ui-12p5 leading-snug text-foreground">
             {title}
           </p>
           <div className="flex flex-col items-center text-foreground before:flex-5 after:flex-7">
             {icon}
           </div>
-          <p className="truncate pr-6 text-ui-12 text-muted-foreground">
+          <p className="truncate pr-6 text-ui-11p5 text-muted-foreground">
             {showTime && time ? formatCardTime(time, locale) : ""}
           </p>
         </div>

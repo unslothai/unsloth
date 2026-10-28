@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Optimizer-state-only CPU offload (UNSLOTH_OFFLOAD_OPTIMIZER_STATE=1).
-
-State lives in pinned host memory between steps and visits the GPU only inside optimizer.step,
-so peak memory is max(activations, optimizer state) instead of their sum. The step runs in chunks
-of UNSLOTH_OFFLOAD_OPTIMIZER_STATE_CHUNK_MB (default 1024) of state, so the step itself never holds
-all of it on device either (parameter-local optimizers only, see _CHUNK_SAFE_MODULES).
-"""
+"""UNSLOTH_OFFLOAD_OPTIMIZER_STATE=1: state on host, chunked to GPU in step; parameter-local only."""
 
 import copy
 import os
@@ -94,6 +88,18 @@ def _held_tensors(value):
     if isinstance(value, (list, tuple)):
         return [v for v in value if isinstance(v, torch.Tensor)]
     return [t for _, t in _tensor_attrs(value)]
+
+
+def _local(tensor):
+    """This rank's shard of a DTensor (FSDP2), whose numel() is the global one; else the tensor."""
+    if DTensor is not None and isinstance(tensor, DTensor):
+        return tensor._local_tensor
+    return tensor
+
+
+def _local_nbytes(tensor):
+    local = _local(tensor)
+    return local.numel() * local.element_size()
 
 
 def _source_device(local, param, key, device_of):
@@ -251,7 +257,7 @@ class _StateOffloader:
         for p in params:
             held = [t for v in state.get(p, {}).values() for t in _held_tensors(v)]
             if held:
-                nbytes = sum(v.numel() * v.element_size() for v in held)
+                nbytes = sum(_local_nbytes(v) for v in held)
             else:
                 # Not stepped yet: two moments, a third with amsgrad or centered RMSprop with
                 # momentum (square_avg, momentum_buffer, grad_avg), at least fp32 each.
@@ -263,7 +269,7 @@ class _StateOffloader:
                     or "ademamix" in type(self.optimizer).__name__.lower()
                 )
                 moments = 3 if third else 2
-                nbytes = moments * max(p.element_size(), 4) * p.numel()
+                nbytes = moments * max(p.element_size(), 4) * _local(p).numel()
             if chunk and size + nbytes > self.chunk_bytes:
                 chunks.append(chunk)
                 chunk, size = [], 0
@@ -282,17 +288,28 @@ class _StateOffloader:
         closure = rest[0] if rest else kwargs.get("closure")
         # A closure recomputes the loss on every call, so it must run once over all parameters.
         if closure is not None or not _chunk_safe(optimizer):
-            params = None
-            if closure is None and _grad_only_step(optimizer):
-                # Unchunked weight_quant Q-GaLore still skips parameters without a gradient.
-                params = [
-                    p
-                    for group in optimizer.param_groups
-                    for p in group["params"]
-                    if p.grad is not None
-                ]
-            self.restore(params)
-            return
+            if closure is not None or not _grad_only_step(optimizer):
+                self.restore()
+                return
+
+            # Unchunked weight_quant Q-GaLore still skips parameters without a gradient. Select
+            # them from the step's closure, after later pre hooks that may create gradients.
+            def _restore_active():
+                self.restore(
+                    [
+                        p
+                        for group in optimizer.param_groups
+                        for p in group["params"]
+                        if p.grad is not None
+                    ]
+                )
+                return None
+
+            if rest:
+                rest = (_restore_active,) + tuple(rest[1:])
+            else:
+                kwargs = dict(kwargs, closure = _restore_active)
+            return ((optimizer,) + tuple(rest) if has_self else tuple(rest)), kwargs
 
         # Chunk-safe steps call a closure first, before any update, so the chunked updates run
         # after every step pre hook (registered later ones too), as a plain step would.
@@ -411,6 +428,9 @@ def offload_optimizer_state(
                     return out
                 out = value.to(dtype = out.dtype)
                 moved[id(out)] = param.device
+                if DTensor is not None and isinstance(out, DTensor):
+                    # offload() looks a DTensor up by its local shard.
+                    moved[id(out._local_tensor)] = param.device
                 return out
 
             torch.optim.Optimizer._process_value_according_to_param_policy = staticmethod(

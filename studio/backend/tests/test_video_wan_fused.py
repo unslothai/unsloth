@@ -16,6 +16,12 @@ import pytest
 from core.inference import video_wan_fused as wf
 
 torch = pytest.importorskip("torch")
+from torch.torch_version import TorchVersion  # noqa: E402
+
+# A CUDA build's version tag: Studio reads ROCm from the "+rocm" tag too (AMD SDK / Radeon wheels leave
+# torch.version.hip unset), so a test that fakes NVIDIA clears both.
+_CUDA_TORCH_VERSION = TorchVersion(str(torch.__version__).split("+")[0] + "+cu130")
+
 transformer_wan = pytest.importorskip("diffusers.models.transformers.transformer_wan")
 WanTransformerBlock = transformer_wan.WanTransformerBlock
 
@@ -37,6 +43,7 @@ def _fake_kernels(monkeypatch):
     # install logic without a GPU; on ROCm torch wanted() refuses HIP, so pretend a CUDA build too
     monkeypatch.setattr(wf, "_kernels", lambda: {"modnorm": None})
     monkeypatch.setattr(torch.version, "hip", None)
+    monkeypatch.setattr(torch, "__version__", _CUDA_TORCH_VERSION, raising = False)
 
 
 def test_stock_block_matches_the_fingerprint():
@@ -102,7 +109,6 @@ def test_install_for_pipe_scopes_to_wan(monkeypatch):
     wan = types.SimpleNamespace(transformer = _Wan())
     assert wf.install_for_pipe(wan, torch.float16, "cuda") is True
     assert WanTransformerBlock.forward is not stock
-    # a later non-Wan load puts the stock forward back
     assert wf.install_for_pipe(other, torch.float16, "cuda") is False
     assert WanTransformerBlock.forward is stock
 
@@ -171,7 +177,7 @@ def test_fused_block_is_bit_identical_to_stock_on_gpu(per_token, cross_attn_norm
         dim = D, ffn = 512, heads = 4, device = "cuda", dtype = torch.float16, cross_attn_norm = cross_attn_norm
     )
     x, enc, temb, rot = _inputs(blk, batch, 300, D, "cuda", torch.float16, per_token = per_token)
-    x[0, :3, :5] = 300.0  # rows far from zero mean, where a different reduction order would show
+    x[0, :3, :5] = 300.0
     with torch.no_grad():
         want = WanTransformerBlock.forward(blk, x, enc, temb, rot)
         assert wf.install(torch.float16, "cuda") is True
@@ -217,7 +223,7 @@ def test_modulation_kernels_index_past_two_gib_of_temb():
     if torch.cuda.mem_get_info()[0] < 8 << 30:
         pytest.skip("needs ~8 GiB free on the GPU")
     g = torch.Generator(device = "cuda").manual_seed(5)
-    # fp16 straight from randn (and scaled in place): an fp32 temb here alone would be 8 GiB, twice over with "* 0.5"
+    # fp16 straight from randn: an fp32 temb here alone would be 8 GiB.
     x = torch.randn(B, L, D, device = "cuda", dtype = torch.half, generator = g)
     a = torch.randn(B, L, D, device = "cuda", dtype = torch.half, generator = g)
     t = torch.randn(B, L, 6, D, device = "cuda", dtype = torch.half, generator = g).mul_(0.5)
@@ -502,7 +508,6 @@ def test_self_attention_rotary_is_bit_identical_and_scoped(monkeypatch):
         assert got is not None and torch.equal(want, got) and len(calls) == 2
         # an fp16 table rounds each product to fp16 in the stock path: not this kernel's arithmetic
         assert wf._self_attention(blk.attn1, x, (rot[0].half(), rot[1].half())) is None
-        # a replaced processor (another attention backend's) is left alone
         blk.attn1.processor = type(
             "OtherProcessor",
             (transformer_wan.WanAttnProcessor,),

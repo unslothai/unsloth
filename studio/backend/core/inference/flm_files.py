@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Download a FastFlowLM model's files with resume, into the folder FastFlowLM reads.
-
-FastFlowLM's own pull cannot resume. It writes each file straight to its final name, starts a
-failed file over from zero (three tries), must finish each file within an hour, and takes a file a
-killed pull left half-written as complete. Studio downloads the files here instead: each one goes
-to ``<name>.partial``, continues from there with a Range request after any interruption, and is
-renamed only once its hash matches. lemond's pull then finds every file present and only
-registers the model.
-"""
+"""Resumable FastFlowLM downloads into the folder it reads; renamed from .partial once hash matches"""
 
 from __future__ import annotations
 
@@ -145,11 +137,7 @@ def _matches(path: Path, file: FlmFile) -> bool:
 def download_files(
     model: FlmModelFiles, client: Optional[httpx.Client] = None
 ) -> Iterator[dict[str, Any]]:
-    """Download every missing file, yielding progress over the whole model as its percent moves.
-
-    Raises FlmDownloadError when a file stops making progress or fails its hash check. Whatever
-    was written stays in ``.partial`` files, so the next call continues from there.
-    """
+    """Raises FlmDownloadError on a stall or bad hash; partial files are kept so the next call resumes."""
     model.folder.mkdir(parents = True, exist_ok = True)
     owned = client is None
     client = client or httpx.Client(follow_redirects = True, timeout = httpx.Timeout(30.0, read = 120.0))

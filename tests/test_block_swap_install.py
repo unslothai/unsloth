@@ -540,8 +540,8 @@ def test_host_load_runs_for_layers_or_streamed_embeddings_only():
 def _load_skip():
     src = open(UTILS, encoding = "utf-8").read()
     mod = ast.parse(src)
-    names = ("_skip_aware_flag", "skip_checkpointing")
-    ns = {"find_decoder_layers": lambda m: m.layers}
+    names = ("_skip_aware_flag", "skip_checkpointing", "_gc_keep_layers_env")
+    ns = {"find_decoder_layers": lambda m: m.layers, "os": os}
     for n in mod.body:
         if isinstance(n, ast.FunctionDef) and n.name in names:
             exec(ast.get_source_segment(src, n), ns)

@@ -9,13 +9,15 @@ import { prefersReducedMotion } from "@/features/settings";
 //   the new pill's segment, after the browser has laid out the frame anyway.
 //   Both the old and the new segment are measured then, so nothing is cached
 //   that could go stale;
-// - the slide is a transform-only Web Animation on both axes (tracks can wrap),
-//   which the compositor runs off the main thread. When the two segments differ
-//   in width, a fill inside the pill changes width through a round clip-path
-//   inset, so the ends stay round (a scaleX would squash them). Chromium runs
-//   that on the compositor too; other engines repaint it on the main thread,
-//   still with no script.
-// At rest the pill paints itself and the fill and its shadow are hidden.
+// - the slide is transform-only Web Animations on both axes (tracks can wrap),
+//   which every engine's compositor runs off the main thread. When the two
+//   segments differ in width, the pill is drawn as two round caps and a middle
+//   strip: the end cap moves and the strip stretches with scaleX, so the ends
+//   stay round (a scaleX of the whole pill would squash them). The move and
+//   the resize are then both transforms on one clock, so a busy main thread
+//   (a list re-rendering after the click) cannot hold the width back while the
+//   pill moves. A clip-path resize could: Chromium repaints it on the main thread.
+// At rest the pill paints itself and the caps, strip and shadow are hidden.
 
 /** Spring the design system gives segmented controls (design.md, 2.5 Motion). */
 const SPRING = { stiffness: 500, damping: 35, mass: 0.5 };
@@ -100,6 +102,7 @@ interface Box {
   x: number;
   y: number;
   w: number;
+  h: number;
 }
 
 interface PillState {
@@ -134,51 +137,73 @@ function measure(segment: HTMLElement): Box {
     x += node.offsetLeft;
     y += node.offsetTop;
   }
-  return { x, y, w: segment.clientWidth };
+  return { x, y, w: segment.clientWidth, h: segment.clientHeight };
 }
 
 function slide(
   root: HTMLElement,
   w: number,
+  h: number,
   dx: number,
   dy: number,
   dw: number,
 ) {
-  const timing = { duration: SLIDE_MS, easing: EASING };
+  const [shadow, startCap, strip, endCap] = Array.from(
+    root.children,
+  ) as HTMLElement[];
+  // The caps are half circles. The strip runs between their flat sides and
+  // tucks 1px under each, so no seam shows; any deeper and its square corners
+  // would poke out past the curve. Every width involved must leave it room.
+  const r = h / 2;
+  const inner = w - 2 * r + 2;
+  const resize =
+    endCap && Math.abs(dw) >= 0.5 && Math.min(w, w + dw) > 2 * r + 1;
+  // Held until the cleanup below, so the pieces never show their rest state
+  // between the end of the slide and the cleanup.
+  const timing = {
+    duration: SLIDE_MS,
+    easing: EASING,
+    fill: resize ? ("forwards" as const) : ("none" as const),
+  };
   const animations = [
     root.animate(
       [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "none" }],
       timing,
     ),
   ];
-  const [shadow, fill] = Array.from(root.children) as HTMLElement[];
-  const resize = fill && Math.abs(dw) >= 0.5;
   if (resize) {
-    // The pill spans the wider of the two widths; the fill's clip shows the
-    // current one. A clip also cuts the fill's shadow, so a shadow-only copy
-    // of the pill underneath stretches with it. Its scale bends the shadow's
-    // ends a little, which the blur hides; a filter would follow the clip
-    // instead, but Chromium draws it from a stale clip and leaves a ghost.
-    const span = Math.max(w, w + dw);
-    const inset = (width: number) =>
-      `inset(0 ${span - width}px 0 0 round 9999px)`;
-    root.style.right = "auto";
-    root.style.width = `${span}px`;
+    // The pill keeps its left end on the root's; the end cap moves by the
+    // width change and the strip stretches to meet it. Only the strip scales,
+    // and it has no round ends to squash. A shadow-only copy of the whole pill
+    // stretches underneath, so the pieces need no shadow of their own; its
+    // scale bends the shadow's ends a little, which the blur hides.
     root.style.setProperty("background-color", "transparent", "important");
     root.style.setProperty("box-shadow", "none", "important");
     shadow.style.width = `${w}px`;
-    shadow.style.transformOrigin = "left";
     shadow.style.setProperty("background-color", "transparent", "important");
     shadow.style.display = "block";
-    fill.style.setProperty("box-shadow", "none", "important");
-    fill.style.display = "block";
+    startCap.style.width = `${r}px`;
+    strip.style.left = `${r - 1}px`;
+    strip.style.width = `${inner}px`;
+    endCap.style.width = `${r}px`;
+    for (const piece of [startCap, strip, endCap]) {
+      piece.style.setProperty("box-shadow", "none", "important");
+      piece.style.display = "block";
+    }
     animations.push(
       shadow.animate(
         [{ transform: `scaleX(${(w + dw) / w})` }, { transform: "none" }],
         timing,
       ),
-      fill.animate(
-        [{ clipPath: inset(w + dw) }, { clipPath: inset(w) }],
+      strip.animate(
+        [
+          { transform: `scaleX(${(inner + dw) / inner})` },
+          { transform: "none" },
+        ],
+        timing,
+      ),
+      endCap.animate(
+        [{ transform: `translateX(${dw}px)` }, { transform: "none" }],
         timing,
       ),
     );
@@ -189,16 +214,12 @@ function slide(
   if (!resize) return;
   Promise.all(animations.map((animation) => animation.finished)).then(
     () => {
-      for (const property of [
-        "right",
-        "width",
-        "background-color",
-        "box-shadow",
-      ]) {
-        root.style.removeProperty(property);
+      root.style.removeProperty("background-color");
+      root.style.removeProperty("box-shadow");
+      for (const piece of [shadow, startCap, strip, endCap]) {
+        piece.style.display = "none";
       }
-      shadow.style.display = "none";
-      fill.style.display = "none";
+      for (const animation of animations) animation.cancel();
     },
     () => {},
   );
@@ -231,7 +252,7 @@ function place(group: string, root: HTMLElement, segment: HTMLElement) {
   const dw = from.w + (prev.slide?.dw ?? 0) * remaining - to.w;
   if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5 && Math.abs(dw) < 0.5) return;
   state.slide = { dx, dy, dw, start: time };
-  slide(root, to.w, dx, dy, dw);
+  slide(root, to.w, to.h, dx, dy, dw);
 }
 
 /** Track a mounted pill: once its segment has been laid out, slide it in from

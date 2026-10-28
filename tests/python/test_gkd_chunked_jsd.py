@@ -694,6 +694,8 @@ def test_fp16_grad_scaler_reaches_the_chunked_jsd(enabled, accepts_scaler, monke
     scaler = None if enabled is None else _Scaler(enabled)
     trainer.accelerator = types.SimpleNamespace(unwrap_model = lambda m: m, scaler = scaler)
     calls = []
+    # The legacy zoo route (a zoo without fused_linear_jsd); the fused route has its own scaler test.
+    monkeypatch.setattr(rl, "_unsloth_fused_linear_jsd", None)
     monkeypatch.setattr(rl, "distillation_chunked_jsd", _spy_jsd(calls, accepts_scaler))
     forwards = []
     student.register_forward_hook(lambda *a: forwards.append(1))

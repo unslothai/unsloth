@@ -2,28 +2,29 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useAppShellReadySignal } from "@/components/app-readiness";
-import { apiUrl } from "@/lib/api-base";
+import { apiUrl, isTauri } from "@/lib/api-base";
 import { normalizeAccountUsername, transitionBrowserAccount } from "@/lib/account-transition";
 import { sessionAccount, useLoginMode } from "../account-session";
 import { fetchAuthStatus, loginFromForm, loginWithPassword, setLoginMode, type TokenResponse } from "../login-client";
 import { Button } from "@/components/ui/button";
 import { MascotImg } from "@/components/mascot-img";
+import { useSpookyGreetings } from "@/features/halloween/halloween-store";
+import { pickSpookySloth } from "@/features/halloween/spooky-greetings";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { Eye, EyeOff } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { ReactElement } from "react";
 import type { SyntheticEvent } from "react";
-import { refreshSession } from "../api";
+import { refreshSession, refreshSessionOutcome } from "../api";
+import { clearDesktopSignedOut, continueAsDesktopOwner } from "../tauri-auto-auth";
 import {
   deadlineFromStatus,
   formatCountdown,
   hasExpired,
 } from "../bootstrap-deadline";
 
-// Bootstrap credentials injected into index.html by the backend (only present
-// while default admin must_change_password is true)
+// Injected into index.html by the backend while the default admin must change its password.
 declare global {
   interface Window {
     __UNSLOTH_BOOTSTRAP__?: { username: string; password: string };
@@ -40,6 +41,8 @@ import {
   setMustChangePassword,
   storeAuthTokens,
 } from "../session";
+import { ViewIcon, ViewOffSlashIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 
 type AuthMode = "login" | "change-password";
 
@@ -75,6 +78,9 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
     password: string;
     token: TokenResponse;
   } | null>(null);
+  const spooky = useSpookyGreetings();
+  const [halloweenSloth] = useState(pickSpookySloth);
+  const spookySloth = isLoginMode && spooky ? halloweenSloth : null;
 
   useEffect(() => {
     if (deadlineAt === null) {
@@ -88,31 +94,26 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
     let canceled = false;
 
     async function initializeAuthForm(): Promise<void> {
-      // Always check the server first; localStorage flags can be stale (e.g. tokens from a previous
-      // install). /api/auth/status is the source of truth for requires_password_change.
+      // Server first: localStorage flags can be stale (e.g. tokens from a previous install).
       try {
         const result = await fetchAuthStatus();
-        const requiresChange = result.login_mode === "multi"
+        const requiresChange = result.login_mode === "multi" || isTauri
           ? hasAuthToken() && mustChangePassword()
           : result.requires_password_change;
         if (!canceled) {
           setInitialized(result.initialized);
           setRequiresPasswordChange(requiresChange);
-          // One clock sample for both: nowMs is otherwise still the mount time
-          // until the first tick, which adds the request duration to the figure
-          // and renders a 0 from the server as "shuts down in 0 seconds".
+          // One clock sample, or the request duration skews the countdown.
           const sampledNow = Date.now();
           setNowMs(sampledNow);
           setDeadlineAt(
             deadlineFromStatus(result.bootstrap_deadline_seconds, sampledNow),
           );
 
-          // Server truth wins; keep localStorage in sync both ways.
           if (requiresChange !== mustChangePassword()) {
             setMustChangePassword(requiresChange);
           }
 
-          // Redirect between login / change-password per server state
           if (mode === "login" && requiresChange) {
             navigate({ to: "/change-password" });
             return;
@@ -122,7 +123,6 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
             return;
           }
 
-          // On login, skip to the app if a valid session exists and no password change is required.
           if (isLoginMode && !requiresChange) {
             if (hasRefreshToken()) {
               const refreshed = await refreshSession();
@@ -161,7 +161,6 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
     signalReady();
   }, [statusLoading, signalReady]);
 
-  // Seed password from bootstrap credentials injected into HTML by web CLI.
   useEffect(() => {
     function loadBootstrap() {
       const bootstrap = window.__UNSLOTH_BOOTSTRAP__;
@@ -195,9 +194,8 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   const switchLinkTo = "/login";
   const switchLinkText = "Back to login";
   const currentPassword = password || window.__UNSLOTH_BOOTSTRAP__?.password || "";
-  // On first boot the backend injects __UNSLOTH_BOOTSTRAP__ and we silently
-  // reuse that password; the Current password input is only rendered for the
-  // admin-forced must_change_password path where no bootstrap is available.
+  // First boot reuses the injected bootstrap password; the Current password field is only for the
+  // admin-forced change path.
   const hasBootstrapPassword = Boolean(window.__UNSLOTH_BOOTSTRAP__?.password);
   const changingFromSetupCode =
     !isLoginMode && sessionAccount(getAuthToken())?.isOwner === false;
@@ -271,9 +269,12 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
         let accessToken = getAuthToken();
 
         if (hasRefreshToken()) {
-          const refreshed = await refreshSession();
+          const outcome = await refreshSessionOutcome();
+          if (outcome === "unavailable") {
+            throw new Error("Unsloth is busy. Try again in a moment.");
+          }
           accessToken = getAuthToken();
-          if (!refreshed) {
+          if (outcome === "rejected") {
             clearAuthTokens();
             accessToken = null;
           }
@@ -317,6 +318,8 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
         token = (await response.json()) as TokenResponse;
       }
 
+      // A failed clear only shows login on the next launch.
+      if (isTauri) await clearDesktopSignedOut().catch(() => undefined);
       const finishSession = () => {
         setLoginMode(loginMode);
         if (!isLoginMode) setRequiresPasswordChange(false);
@@ -335,14 +338,24 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       if (replaced) return;
       navigate({ to: getPostAuthRoute() });
     } catch (err: unknown) {
-      // The backend returns the correct PATH-based command ("unsloth studio
-      // reset-password"), which the installer puts on PATH on every platform.
-      // Do NOT rewrite it to a relative Windows path like
-      // ".\unsloth_studio\Scripts\unsloth.exe ..." -- that only resolves inside
-      // the Unsloth home dir and fails with CommandNotFoundException elsewhere.
-      // Show the backend message as-is.
+      // Show the backend's PATH-based command as-is; a relative Windows path only resolves in the
+      // Unsloth home dir.
       const msg = err instanceof Error ? err.message : "Auth failed.";
       setError(msg);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleContinueAsOwner() {
+    setError(null);
+    setLoading(true);
+    try {
+      if (await continueAsDesktopOwner()) {
+        navigate({ to: getPostAuthRoute() });
+      } else {
+        setError("Sign in with your username and password.");
+      }
     } finally {
       setLoading(false);
     }
@@ -351,18 +364,23 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   if (statusLoading && initialized === null && error === null) return null;
 
   return (
-    <div className="w-full max-w-sm space-y-6">
-      <div className="space-y-1.5 text-center">
+    <div className="w-full space-y-7">
+      <div className="flex flex-col items-center gap-1.5 text-center">
         <MascotImg
-          src="Sloth emojis/large sloth wave.png"
+          src={
+            spookySloth
+              ? `Sloth emojis/${spookySloth.sloth}`
+              : "Sloth emojis/large sloth wave.png"
+          }
           className="mx-auto mb-2 h-20 w-20 object-contain"
+          style={spookySloth?.enlarge ? { scale: "1.15" } : undefined}
         />
-        <h2 className="text-2xl font-semibold text-foreground">{title}</h2>
-        <p className="text-muted-foreground">{subtitle}</p>
+        <h2 className="font-semibold text-ui-28 text-foreground leading-tight tracking-[-0.02em]">{title}</h2>
+        <p className="text-muted-foreground text-sm">{subtitle}</p>
       </div>
       {/* Not a live region: it re-renders every second, so it would be read aloud on every tick. */}
       {deadlineAt !== null && (
-        <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-center text-sm text-amber-600">
+        <p className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-center text-sm text-amber-600">
           {hasExpired(deadlineAt - nowMs) ? (
             <>
               This instance is shutting down: it was reachable on the network
@@ -378,7 +396,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
           )}
         </p>
       )}
-      <form className="space-y-5" onSubmit={handleSubmit}>
+      <form className="space-y-4" onSubmit={handleSubmit}>
         {passwordManagerUsername && (
           <input
             type="text"
@@ -397,6 +415,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
             <Input
               id="username"
               name="username"
+              className="h-11 px-4"
               autoComplete="username"
               autoCapitalize="none"
               spellCheck={false}
@@ -404,8 +423,11 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
               onChange={(event) => setEnteredUsername(event.target.value)}
               required
             />
-            <p id="setup-code-hint" className="text-sm text-muted-foreground">
+            <p id="setup-code-hint" className="text-muted-foreground text-xs leading-relaxed">
               First sign in? Paste the setup code your administrator gave you as the password.
+            </p>
+            <p className="text-sm text-muted-foreground">
+              Installation owner? Sign in as unsloth, or the sign-in name shown in Settings &gt; Accounts.
             </p>
           </div>
         )}
@@ -417,7 +439,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
                 id="password"
                 aria-describedby={loginMode === "multi" ? "setup-code-hint" : undefined}
                 type={showPassword ? "text" : "password"}
-                className="pr-10"
+                className="h-11 pr-11 pl-4"
                 autoComplete="current-password"
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
@@ -428,13 +450,13 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
                 type="button"
                 variant="ghost"
                 size="icon"
-                className="absolute right-0 top-0 h-full px-3 text-muted-foreground hover:bg-transparent"
+                className="absolute top-1/2 right-1 size-9 -translate-y-1/2 rounded-full text-muted-foreground hover:bg-transparent hover:text-foreground"
                 onClick={() => setShowPassword((prev) => !prev)}
               >
                 {showPassword ? (
-                  <EyeOff className="h-4 w-4" />
+                  <HugeiconsIcon icon={ViewOffSlashIcon} className="h-4 w-4" />
                 ) : (
-                  <Eye className="h-4 w-4" />
+                  <HugeiconsIcon icon={ViewIcon} className="h-4 w-4" />
                 )}
               </Button>
             </div>
@@ -453,7 +475,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
                       changingFromSetupCode ? "current-setup-code-hint" : undefined
                     }
                     type={showPassword ? "text" : "password"}
-                    className="pr-10"
+                    className="h-11 pr-11 pl-4"
                     autoComplete="current-password"
                     value={password}
                     onChange={(event) => setPassword(event.target.value)}
@@ -464,20 +486,20 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
                     type="button"
                     variant="ghost"
                     size="icon"
-                    className="absolute right-0 top-0 h-full px-3 text-muted-foreground hover:bg-transparent"
+                    className="absolute top-1/2 right-1 size-9 -translate-y-1/2 rounded-full text-muted-foreground hover:bg-transparent hover:text-foreground"
                     onClick={() => setShowPassword((prev) => !prev)}
                   >
                     {showPassword ? (
-                      <EyeOff className="h-4 w-4" />
+                      <HugeiconsIcon icon={ViewOffSlashIcon} className="h-4 w-4" />
                     ) : (
-                      <Eye className="h-4 w-4" />
+                      <HugeiconsIcon icon={ViewIcon} className="h-4 w-4" />
                     )}
                   </Button>
                 </div>
                 {changingFromSetupCode && (
                   <p
                     id="current-setup-code-hint"
-                    className="text-sm text-muted-foreground"
+                    className="text-muted-foreground text-xs leading-relaxed"
                   >
                     Paste the setup code you just signed in with as the current password.
                   </p>
@@ -490,7 +512,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
                 <Input
                   id="new-password"
                   type={showNewPassword ? "text" : "password"}
-                  className="pr-10"
+                  className="h-11 pr-11 pl-4"
                   autoComplete="new-password"
                   value={newPassword}
                   onChange={(event) => setNewPassword(event.target.value)}
@@ -501,13 +523,13 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
                   type="button"
                   variant="ghost"
                   size="icon"
-                  className="absolute right-0 top-0 h-full px-3 text-muted-foreground hover:bg-transparent"
+                  className="absolute top-1/2 right-1 size-9 -translate-y-1/2 rounded-full text-muted-foreground hover:bg-transparent hover:text-foreground"
                   onClick={() => setShowNewPassword((prev) => !prev)}
                 >
                   {showNewPassword ? (
-                    <EyeOff className="h-4 w-4" />
+                    <HugeiconsIcon icon={ViewOffSlashIcon} className="h-4 w-4" />
                   ) : (
-                    <Eye className="h-4 w-4" />
+                    <HugeiconsIcon icon={ViewIcon} className="h-4 w-4" />
                   )}
                 </Button>
               </div>
@@ -517,6 +539,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
               <Input
                 id="confirm-password"
                 type="password"
+                className="h-11 px-4"
                 autoComplete="new-password"
                 value={confirmPassword}
                 onChange={(event) => setConfirmPassword(event.target.value)}
@@ -551,8 +574,9 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
         )}
 
         <Button
+          variant="primary"
           type="submit"
-          className="mx-auto flex w-fit px-4"
+          className="mt-2 h-11 w-full bg-control-accent [font-family:var(--font-heading)] text-[0.9375rem] font-semibold tracking-[0.02em] text-control-accent-foreground hover:bg-control-accent/85"
           disabled={
             loading ||
             statusLoading ||
@@ -563,12 +587,24 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
         >
           {loading ? "Please wait..." : submitLabel}
         </Button>
+        {/* Single mode only: there the shell secret proves the owner, who may never have set a password. */}
+        {isTauri && isLoginMode && loginMode === "single" && (
+          <Button
+            type="button"
+            variant="ghost"
+            className="mx-auto flex w-fit"
+            disabled={loading || statusLoading}
+            onClick={() => void handleContinueAsOwner()}
+          >
+            Continue as owner
+          </Button>
+        )}
       </form>
 
       {showSwitchLink && (
         <p className="text-center text-sm text-muted-foreground">
           {switchText}
-          <Link to={switchLinkTo} className="text-primary hover:underline">
+          <Link to={switchLinkTo} className="font-medium text-primary hover:underline">
             {switchLinkText}
           </Link>
         </p>

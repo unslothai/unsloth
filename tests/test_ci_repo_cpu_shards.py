@@ -3,6 +3,7 @@
 
 """Each tests/ directory is claimed by exactly one Repo tests (CPU) shard, the third a catch-all."""
 
+import fnmatch
 from pathlib import Path
 
 import pytest
@@ -39,7 +40,7 @@ def _shards() -> dict:
         index = 0
         while index < len(tokens):
             token = tokens[index]
-            if token.startswith("--ignore="):
+            if token.startswith(("--ignore=", "--ignore-glob=")):
                 ignores.append(token.split("=", 1)[1].rstrip("/"))
             elif token == "--deselect":
                 index += 1  # a test id, not a path
@@ -53,6 +54,8 @@ def _shards() -> dict:
 
 
 def _covers(prefix: str, path: str) -> bool:
+    if "*" in prefix:  # a shell-expanded root or an --ignore-glob, matched like pytest does
+        return fnmatch.fnmatch(path, prefix)
     prefix = prefix.rstrip("/")
     return path == prefix or path.startswith(prefix + "/")
 
@@ -120,6 +123,26 @@ class TestEveryTestFileLandsInExactlyOneShard:
         assert claiming == [], (
             f"{excluded} is {_NOT_IN_ANY_SHARD[excluded]}, but shard(s) {claiming} now "
             "collect it"
+        )
+
+
+class TestEveryGlobRootMatchesAFile:
+    def test_no_shard_hands_pytest_an_unexpanded_pattern(self):
+        """bash passes a glob that matches nothing through as the literal pattern, and pytest
+        then fails the whole shard on a path that does not exist. A split that moved the last
+        file out of one of its globs would break that shard rather than drop the file."""
+        files = _test_files()
+        empty = [
+            (name, root)
+            for name, (roots, _) in _shards().items()
+            for root in roots
+            if "*" in root and not any(fnmatch.fnmatch(path, root) for path in files)
+        ]
+        assert not empty, f"these shard globs match no test file: {empty}"
+
+    def test_an_empty_glob_is_reported(self):
+        assert not any(
+            fnmatch.fnmatch(path, "tests/test_no_such_prefix_*.py") for path in _test_files()
         )
 
 

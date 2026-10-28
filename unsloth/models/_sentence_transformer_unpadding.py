@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""Training-only encoder unpadding for mean-pooled BERT / RoBERTa SentenceTransformers.
-
-Embeddings and pooling stay stock; only valid tokens enter the encoder, whose output is
-scattered back to the padded layout before pooling. Checkpoints are unchanged.
-"""
+"""Training-only: BERT/RoBERTa encoder runs on valid tokens, output re-padded before mean pooling;
+embeddings and pooling stay stock; checkpoints unchanged."""
 
 from types import MethodType
 
@@ -24,8 +21,11 @@ def _unpadding_backend():
     backend = ad.select_attention_backend(use_varlen = True)
     if backend == ad.FLASH_VARLEN:
         return backend
-    if backend == ad.XFORMERS and _XFormersBidirectionalMask is not None:
-        return backend
+    # Training may prefer torch's kernels over xformers; this route only runs on xformers or FA2.
+    if (
+        backend == ad.XFORMERS or (backend == ad.SDPA and ad.HAS_XFORMERS)
+    ) and _XFormersBidirectionalMask is not None:
+        return ad.XFORMERS
     return None
 
 

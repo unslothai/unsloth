@@ -1,11 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Checks for an Edit speech request, and the source clip an edit keeps in history.
-
-The client renders the word diff (DotTTS markup or FireRedAudio instructions); each check holds it
-against both transcripts, so a malformed or injected value never reaches the runtime.
-"""
+"""Checks for Edit speech requests (DotTTS markup or FireRedAudio word diffs, verified against both
+transcripts) and the source clip an edit keeps in history, so malformed or injected values never
+reach the runtime."""
 
 from __future__ import annotations
 
@@ -106,8 +104,7 @@ def check_instructions(
             "Make fewer changes, or use DotTTS Edit."
         )
     before, after = _collapse(original), _collapse(edited)
-    # Runtime gets the instructions, history gets ``edited``: they must agree as bags of words
-    # (which occurrence of a repeated word is meant is the runtime's call).
+    # Instruction and edited text must match as word bags; the runtime picks which repeated word is meant
     words = Counter(before.split())
     for instruction in items:
         match = INSTRUCTION_RE.match(str(instruction))
@@ -207,10 +204,14 @@ def wav_seconds(path: Path) -> Optional[float]:
 
 
 def save_source_clip(
-    source, prepared_path: Path, reference_text: Optional[str]
+    source,
+    prepared_path: Path,
+    reference_text: Optional[str],
+    created: Optional[list[str]] = None,
 ) -> Optional[dict[str, Any]]:
     """Keep an uploaded recording in history beside its edit, so A/B outlives the upload. Reuses a
-    source clip of the same audio; None for a history clip or an upload with no record."""
+    source clip of the same audio; None for a history clip or an upload with no record. The id of
+    a clip it had to save is appended to ``created``."""
     import wave
 
     from core.inference import audio_gallery, audio_inputs
@@ -250,4 +251,7 @@ def save_source_clip(
         "duration_s": duration_s,
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
-    return audio_gallery.save(Path(prepared_path).read_bytes(), meta)
+    record = audio_gallery.save(Path(prepared_path).read_bytes(), meta)
+    if record is not None and created is not None:
+        created.append(record["id"])
+    return record
