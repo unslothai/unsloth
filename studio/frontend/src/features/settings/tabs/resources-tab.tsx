@@ -92,6 +92,17 @@ function usageIndicatorClass(percent: number): string {
   return "bg-control-accent";
 }
 
+// Same thresholds as the tile values, on the accent pill's tint.
+function usagePillClass(percent: number | null): string {
+  if (isFiniteNumber(percent) && percent >= 90) {
+    return "bg-[#df4530]/10 text-[#df4530] dark:text-[#ef5b40]";
+  }
+  if (isFiniteNumber(percent) && percent >= 70) {
+    return "bg-amber-500/10 text-amber-600 dark:text-amber-400";
+  }
+  return "bg-control-accent/10 text-control-accent";
+}
+
 function usageValueClass(percent: number | null): string {
   if (!isFiniteNumber(percent)) return "text-muted-foreground/70";
   if (percent >= 90) return "text-[#df4530] dark:text-[#ef5b40]";
@@ -1004,7 +1015,7 @@ export function ResourcesTab() {
                 label: t("settings.resources.gpu.segmentUsed"),
                 bytes: isFiniteNumber(used) ? used : 0,
                 value: usedText,
-                color: "bg-neutral-600 dark:bg-neutral-300",
+                color: "bg-neutral-500 dark:bg-neutral-300",
               },
               ...(usedBySystem > 0
                 ? [
@@ -1062,11 +1073,25 @@ export function ResourcesTab() {
                         {t("settings.resources.gpu.sharedWithSystemRam")}
                       </span>
                     ) : sharedSplit ? (
-                      <span className="shrink-0 rounded-full bg-control-accent/10 px-1.5 py-1 text-ui-10 leading-none font-semibold tabular-nums text-control-accent">
+                      <span
+                        className={cn(
+                          "shrink-0 rounded-full px-1.5 py-1 text-ui-10 leading-none font-semibold tabular-nums",
+                          usagePillClass(
+                            isFiniteNumber(percent) ? safePercent : null,
+                          ),
+                        )}
+                      >
                         {percentText}
                       </span>
                     ) : (
-                      <span className="shrink-0 rounded-full bg-control-accent/10 px-1.5 py-1 text-ui-10 leading-none font-semibold tabular-nums text-control-accent">
+                      <span
+                        className={cn(
+                          "shrink-0 rounded-full px-1.5 py-1 text-ui-10 leading-none font-semibold tabular-nums",
+                          usagePillClass(
+                            isFiniteNumber(percent) ? safePercent : null,
+                          ),
+                        )}
+                      >
                         {percentText}{" "}
                         {t("settings.resources.gpu.vramUtilization")}
                       </span>
