@@ -910,11 +910,12 @@ def inject_multi_lora_experts(
     for name, module in model.named_modules():
         if isinstance(module, MultiLoraExperts):
             continue
-        for target in targets:
-            path, _, param = target.rpartition(".")
-            if (name == path or name.endswith("." + path)) and isinstance(
-                module._parameters.get(param), torch.Tensor
-            ):
+        # Registration order, as PEFT nests its ParamWrappers: the first parameter ends up innermost.
+        for param, value in module._parameters.items():
+            if not isinstance(value, torch.Tensor):
+                continue
+            key = f"{name}.{param}"
+            if any(key == t or key.endswith("." + t) for t in targets):
                 by_module.setdefault(name, []).append(param)
     if not by_module:
         raise ValueError(f"No fused expert parameters named {targets} found.")

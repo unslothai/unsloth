@@ -21,7 +21,7 @@ pytestmark = pytest.mark.skipif(Qwen3_5Moe is None, reason = "transformers has n
 
 REPO = "trl-internal-testing/tiny-Qwen3_5MoeForConditionalGeneration-3.6"
 DENSE = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
-EXPERTS = ["mlp.experts.gate_up_proj", "mlp.experts.down_proj"]
+EXPERTS = ["mlp.experts.down_proj", "mlp.experts.gate_up_proj"]
 RANKS, ALPHAS = [2, 4, 3], [4.0, 8.0, 3.0]
 T = 6
 
