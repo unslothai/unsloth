@@ -2266,7 +2266,14 @@ def _fp8_rowwise_direct(X, weight, weight_scale, bias, route):
         numel = W_deq.numel()
         with _fp8_triton_device_context(weight, static_device_count = True):
             _fp8_rowwise_dequant_kernel[(triton.cdiv(numel, 1024),)](
-                weight, weight_scale, W_deq, numel, K, BLOCK = 1024, num_warps = 4, enable_fp_fusion = True
+                weight,
+                weight_scale,
+                W_deq,
+                numel,
+                K,
+                BLOCK = 1024,
+                num_warps = 4,
+                enable_fp_fusion = True,
             )
         output = torch_matmul(X, W_deq.t())
     if bias is not None:
