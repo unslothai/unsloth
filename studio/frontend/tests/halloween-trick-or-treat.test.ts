@@ -131,7 +131,7 @@ test("every spooky greeting has English text, and named lines keep {name}", () =
   const keys = [...source.matchAll(/"halloween\.greeting\.(\w+)"/g)].map(
     (m) => m[1],
   );
-  assert.equal(keys.length, 7);
+  assert.equal(keys.length, 8);
   for (const key of keys) {
     const line = en.match(new RegExp(`\\n\\s+${key}: "([^"]+)"`))?.[1];
     assert.ok(line, key);
@@ -158,24 +158,25 @@ test("the sidebar row and dialog are gated on the season", () => {
   assert.match(select, /\{isHalloweenSeason\(\) && \(/);
 });
 
-test("October 30 and 31 always say Happy Halloween", async () => {
+test("Happy Halloween joins the greetings on October 30 and 31 only", async () => {
   const { buildSpookyWelcome } = await import(
     "../src/features/halloween/spooky-greetings.ts"
   );
-  for (const day of [30, 31]) {
-    const at = new Date(2026, 9, day, 21, 0);
-    assert.equal(
-      buildSpookyWelcome("", at).key,
-      "halloween.greeting.happyHalloween",
+  const draw = (at: Date, name = "") =>
+    new Set(
+      Array.from({ length: 200 }, () => buildSpookyWelcome(name, at).key),
     );
-    assert.deepEqual(buildSpookyWelcome("Ada", at), {
-      key: "halloween.greeting.happyHalloweenName",
-      name: "Ada",
-      sloth: "large sloth yay.png",
-    });
+  for (const day of [30, 31]) {
+    const keys = draw(new Date(2026, 9, day, 21, 0));
+    assert.ok(keys.has("halloween.greeting.happyHalloween"), `${day}`);
+    assert.equal(keys.size, 5, `${day}: Happy Halloween plus the other four`);
+    assert.ok(
+      draw(new Date(2026, 9, day, 21, 0), "Ada").has(
+        "halloween.greeting.happyHalloweenName",
+      ),
+    );
   }
-  for (let i = 0; i < 40; i++) {
-    const { key } = buildSpookyWelcome("", new Date(2026, 9, 29, 23, 59));
-    assert.notEqual(key, "halloween.greeting.happyHalloween");
-  }
+  const before = draw(new Date(2026, 9, 29, 23, 59));
+  assert.equal(before.size, 4);
+  assert.ok(!before.has("halloween.greeting.happyHalloween"));
 });

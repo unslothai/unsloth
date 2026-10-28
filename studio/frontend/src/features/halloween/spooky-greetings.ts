@@ -13,30 +13,33 @@ type Line = [TranslationKey, TranslationKey | null, string];
 
 // [key, key with {name} or null, sloth picture]
 const LINES: Line[] = [
+  ["halloween.greeting.pumpkins", null, "large sloth yay.png"],
   [
-    "halloween.greeting.boo",
-    "halloween.greeting.booName",
-    "sloth shock large.png",
+    "halloween.greeting.brewing",
+    "halloween.greeting.brewingName",
+    "large sloth fire.png",
   ],
   ["halloween.greeting.trickOrTreat", null, "large sloth cheeky.png"],
-  ["halloween.greeting.brewing", null, "large sloth fire.png"],
-  ["halloween.greeting.ghosts", null, "sloth shy large.png"],
+  [
+    "halloween.greeting.manor",
+    "halloween.greeting.manorName",
+    "sloth sir large.png",
+  ],
 ];
 
 const HALLOWEEN: Line = [
   "halloween.greeting.happyHalloween",
   "halloween.greeting.happyHalloweenName",
-  "large sloth yay.png",
+  "large sloth wave.png",
 ];
 
-/** October 30 and 31 (local time) always say Happy Halloween; other days pick a line. */
+/** On October 30 and 31 (local time) Happy Halloween joins the lines a new chat picks from. */
 export function buildSpookyWelcome(
   name: string,
   now: Date = new Date(),
 ): SpookyWelcome {
-  const [key, namedKey, sloth] =
-    now.getMonth() === 9 && now.getDate() >= 30
-      ? HALLOWEEN
-      : LINES[Math.floor(Math.random() * LINES.length)];
+  const pool =
+    now.getMonth() === 9 && now.getDate() >= 30 ? [...LINES, HALLOWEEN] : LINES;
+  const [key, namedKey, sloth] = pool[Math.floor(Math.random() * pool.length)];
   return name && namedKey ? { key: namedKey, name, sloth } : { key, sloth };
 }
