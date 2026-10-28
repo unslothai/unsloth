@@ -157,17 +157,21 @@ def save(
             except OSError:
                 pass
         raise
-    return _record(video_id, meta)
+    return _record(video_id, meta, directory = directory)
 
 
 def _record(
     video_id: str,
     meta: dict[str, Any],
     flags: Optional[dict[str, dict[str, Any]]] = None,
+    *,
+    directory: Optional[Path] = None,
 ) -> dict[str, Any]:
+    if directory is None:
+        directory = gallery_dir()
     # flags are library state, not recipe: they come from the .flags.json store, never the sidecar
     if flags is None:
-        flags = gallery_flags.read(gallery_dir())
+        flags = gallery_flags.read(directory)
     return {
         **meta,
         "id": video_id,
@@ -175,18 +179,20 @@ def _record(
         **gallery_flags.flags_for(flags, video_id),
         # The server's own sort key, so a client re-sort agrees with it (created_at can differ).
         "order_at": gallery_flags.order_rank(
-            flags, video_id, _mtime(path) if (path := video_path(video_id)) else 0.0
+            flags, video_id, _mtime(path) if (path := video_path(video_id, directory)) else 0.0
         ),
     }
 
 
-def video_path(video_id: str) -> Optional[Path]:
+def video_path(video_id: str, directory: Optional[Path] = None) -> Optional[Path]:
     """Resolve an id to its on-disk MP4, or None if missing / unsafe."""
     if not _ID_RE.match(video_id):
         return None
-    path = gallery_dir() / f"{video_id}.mp4"
+    if directory is None:
+        directory = gallery_dir()
+    path = directory / f"{video_id}.mp4"
     try:
-        path.resolve().relative_to(gallery_dir().resolve())
+        path.resolve().relative_to(directory.resolve())
     except ValueError:
         return None
     return path if path.is_file() else None
@@ -635,8 +641,8 @@ def _transcode_gif(path: Path) -> bytes:
         raise RuntimeError(f"GIF export failed to decode the clip: {exc}") from exc
 
 
-def _sidecar_path(video_id: str) -> Path:
-    return gallery_dir() / f"{video_id}.json"
+def _sidecar_path(video_id: str, directory: Optional[Path] = None) -> Path:
+    return (gallery_dir() if directory is None else directory) / f"{video_id}.json"
 
 
 # Keys every genuine Unsloth sidecar carries; delete()/clear() own only pairs with all, so a partial hand-dropped MP4 is never destroyed. Key-presence only.
@@ -702,10 +708,11 @@ def list_videos(
 ) -> list[dict[str, Any]]:
     """Pinned then newest-first; archived selects one shelf, does not widen it; valid filters run before slicing so has_more counts accepted clips"""
     try:
-        paths = list(gallery_dir().glob("*.mp4"))
+        directory = gallery_dir()
+        paths = list(directory.glob("*.mp4"))
     except OSError:
         return []
-    flags = gallery_flags.read(gallery_dir())
+    flags = gallery_flags.read(directory)
     # Shelf split and pin sort use stems only, before any sidecar read, keeping the early break.
     paths = [p for p in paths if gallery_flags.is_archived(flags, p.stem) == archived]
     paths.sort(
@@ -719,10 +726,10 @@ def list_videos(
     want = None if limit is None else offset + limit
     records = []
     for path in paths:
-        meta = _read_meta(_sidecar_path(path.stem))
+        meta = _read_meta(_sidecar_path(path.stem, directory))
         if meta is None:
             continue
-        record = _record(path.stem, meta, flags)
+        record = _record(path.stem, meta, flags, directory = directory)
         if valid is not None and not valid(record):
             continue
         records.append(record)
