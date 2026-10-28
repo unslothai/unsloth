@@ -160,6 +160,7 @@ async def _recipe_heldout(ctx: NodeContext, label: str, is_lora: bool, max_rows:
         "baseline": {"mode": "adapter_off" if with_base else "none"},
         # The judge is the loaded model; with an adapter loaded the route turns it off for judging.
         "judge_alias": "candidate" if scorer == "judge" else None,
+        "local_adapter": is_lora,
         "model_providers": [{"name": "local", "is_local": True}],
         "model_configs": [{"alias": "candidate", "provider": "local", "model": ""}],
     }

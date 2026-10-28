@@ -96,6 +96,7 @@ def test_adapter_is_scored_against_itself_off_and_failures_keep_the_row(monkeypa
     assert sent[0]["task"] == "recipe_heldout"
     assert spec["prompt_column"] == "instruction" and spec["reference_column"] == "response"
     assert spec["baseline"] == {"mode": "adapter_off"} and spec["scorer"] == "reference"
+    assert spec["local_adapter"] is True
     assert spec["model_providers"] == [{"name": "local", "is_local": True}]
     assert out["score"] == 0.75
     results = out["results"]

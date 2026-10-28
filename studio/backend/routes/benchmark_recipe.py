@@ -156,7 +156,7 @@ async def run_recipe_heldout(
             if spec.scorer == "judge":
                 targets["judge"] = resolve_chat_target(spec.judge_alias, configs, providers)
                 judge_provider = configs[spec.judge_alias].get("provider")
-                if spec.baseline.mode == "adapter_off" and judge_provider in local_names:
+                if (spec.baseline.mode == "adapter_off" or spec.local_adapter) and judge_provider in local_names:
                     # The local model can judge, but never with the adapter it is grading.
                     targets["judge"]["body"]["use_adapter"] = False
         except ValueError as exc:
