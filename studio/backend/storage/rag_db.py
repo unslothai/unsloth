@@ -1,17 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""SQLite storage for the RAG engine.
-
-Same pattern as providers_db.py / studio_db.py (module functions, raw sqlite3, WAL, per-call connections, lazy
-schema), but every connection also loads sqlite-vec (vec0 needs it per-connection). If it cannot load,
-get_connection() raises RagExtensionUnavailable rather than failing import, and rag_available() reports the
-machine as one where RAG cannot run.
-
-One rag.db holds the ``documents`` / ``chunks`` model, the FTS5 lexical index (``chunks_fts``) and the
-sqlite-vec dense index (``chunks_vec``, created lazily by ensure_vec once the embedding dim is known, since vec0
-bakes the dim into the column type).
-"""
+"""Every connection loads sqlite-vec; if it fails get_connection raises RagExtensionUnavailable,
+never at import; rag_available reports it; chunks_vec made lazily by ensure_vec"""
 
 import logging
 import re

@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""base_precision="fp8" training straight from a hosted ``unsloth/*-FP8`` denoiser checkpoint.
-
-Same file Studio fp8 inference resolves (one download, dense bf16 never fetched). Layout ``<fqn>._weight_qdata`` e4m3
-[out, in] + ``<fqn>._weight_scale`` fp32 [out, 1] is FrozenFp8Linear's per-row format. Anything unexpected returns None
-and the caller loads bf16.
-"""
+"""Loads an unsloth/*-FP8 denoiser for fp8 base; None on unexpected layout, so the caller uses bf16."""
 
 from __future__ import annotations
 

@@ -1,42 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""CFG batching: both guidance branches of a step through ONE forward of the denoiser.
-
-A guided step calls the denoiser twice (conditional, then unconditional). ComfyUI batches the two branches into one
-call by default whenever memory allows (``comfy/samplers.py`` ``calc_cond_batch``), resident or not; diffusers pipelines
-call the transformer once per branch. A denoiser streamed from host memory pays its weight upload once instead of
-twice; a resident one gains where one doubled call keeps the GPU busier than two (small images). This router batches
-them for the classes whose forward keeps no state between calls:
-
-- the first branch of a step builds the second branch's arguments from the previous step's second call (same latent
-  object, the first branch's per-step tensors, the second branch's constants), runs both as one call of twice the
-  batch, returns the first half and keeps the second;
-- the second call is verified against what was batched (every argument bitwise) and gets the kept half; anything
-  else (a changed argument, no second call, a third call) reruns that branch plain and counts as a miss.
-
-Priced once per request shape, before any batched result is used: steps 1-2 run plain (step 2 is timed); a resident
-pair >= ``_RESIDENT_MAX_PAIR_S`` stays plain untried. Otherwise a discarded trial (plain pairs interleaved with doubled
-calls) batches steps 3+ only if the fastest batched step (predict, merge, snapshot, doubled call, split, verify) beats the
-fastest plain pair by ``_MEASURED_FRACTION``, so every render of a shape takes one path (same seed, same image). The
-verdict is latched for the load (memory pressure never re-times it) and stored per (model, weight tensor classes and
-quant scheme, speed tier, offload policy, card, compiled or eager, request shape, runtimes) next to the learned peaks,
-first writer wins: a borderline shape
-cannot land on a different path in another process (``UNSLOTH_DIFFUSION_CFG_BATCH_VERDICTS=0`` keeps it per load;
-``UNSLOTH_DIFFUSION_CFG_BATCH_VERDICTS_FILE`` names the file). The doubled call needs room for twice a plain call's
-activations; no room, or an OOM, turns the shape plain for the rest of that render.
-
-Not always bit-exact (other GEMM / attention tiles): B200 bf16 resident FLUX.2-klein-base-4B is bitwise equal,
-Wan2.1-T2V-1.3B LPIPS 0.019 mean; offloaded FLUX.2-klein-base LPIPS ~0.01. ``UNSLOTH_DIFFUSION_CFG_BATCH=0`` keeps the exact
-one-branch-per-call path, as does a request with ``speed_mode="off"``; ``force`` batches anyway, an unlisted class too
-(the trial's discarded calls must be side-effect free). Declined for per-call activation scaling (NVFP4 without frozen
-global scales), whose scale would change with the doubled batch, and for denoisers already wrapped by another forward
-layer.
-
-Compiled denoisers: the doubled shape compiles a second graph per block, allowed only in a shape's trial render.
-Offloaded compiled denoisers batch; resident compiled ones and shapes judged before a later compile stay plain. A
-follow-up-render compile ends batching for the load; under Dynamo tracing the router passes straight through.
-"""
+"""Batches CFG branches into one forward for stateless denoisers only; a second call differing from
+the batched inputs reruns that branch plain; not always bit-exact; UNSLOTH_DIFFUSION_CFG_BATCH=0
+keeps one branch per call"""
 
 from __future__ import annotations
 

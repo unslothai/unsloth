@@ -1,12 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Seam-free LTX-2 / 2.3 VAE decode: the fewest, largest tiles that fit free VRAM (untiled when it fits).
-
-Stock tiles (16 latents, 2-latent blend) are narrower than the decoder's receptive field, so every seam shows a line.
-Kill switch ``UNSLOTH_VIDEO_VAE_WIDE_TILES=0``; ``UNSLOTH_VIDEO_VAE_UNTILED=0`` keeps >= 2 tiles. Tiles span every
-frame: Studio never decodes LTX framewise.
-"""
+"""Seam-free LTX-2/2.3 VAE tiling: widest tiles fitting VRAM; tiles span every frame, Studio never
+decodes framewise; UNSLOTH_VIDEO_VAE_WIDE_TILES=0 reverts; UNSLOTH_VIDEO_VAE_UNTILED=0 keeps >=2
+tiles"""
 
 from __future__ import annotations
 

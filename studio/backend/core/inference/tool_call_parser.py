@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Backend-neutral tool-call parser shared by GGUF, safetensors, and MLX, so the safetensors + MLX
-agentic loop sees the same call shape llama-server gives GGUF. Formats:
-``<tool_call>{json}</tool_call>`` (Qwen / Hermes);
-``<function=name><parameter=k>v</parameter></function>`` (Qwen3.5 xml);
-``<|python_tag|>NAME.call(k="v", ...)`` and ``<|python_tag|>{"name":..., "parameters":...}``
-(Llama-3); bare ``{"name":..., "parameters":...}`` (Llama-3.2); ``[TOOL_CALLS]`` array /
-``name{json}`` / ``name[ARGS]{json}`` (Mistral v0.3 through Large 3);
-``<|tool_call>call:NAME{k:<|"|>v<|"|>}<tool_call|>`` (Gemma 4); the fullwidth-pipe envelopes of
-DeepSeek R1 / V3 / V3.1; ``<tool_call>NAME<arg_key>..<arg_value>..</tool_call>`` (GLM 4.5-4.7);
-and the ``<|tool_calls_section_begin|>`` form (Kimi K2). Missing closing tags / brackets are
-tolerated: models often truncate mid-stream."""
+"""Backend-neutral tool-call parser for all backends; tolerates missing closing tags from truncation."""
 
 # Lazy annotations keep the standalone python 3.9 import working.
 from __future__ import annotations

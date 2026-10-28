@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Translate llama-server's Prometheus /metrics into a periodic, vLLM-style
-engine-stats log line (generation/prompt throughput, requests in flight).
-
-llama-server already computes these (it needs `--metrics`); this lifts them
-into Unsloth's structured log so the terminal shows serving health, not just
-per-request access lines. Emitted only while there is activity.
-"""
+"""Turns llama-server /metrics into periodic vLLM-style stats lines, only while busy; needs --metrics."""
 
 import math
 import os

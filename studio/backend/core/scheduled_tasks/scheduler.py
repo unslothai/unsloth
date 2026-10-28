@@ -379,6 +379,16 @@ async def _plan_swap(task: dict, model: str, unattended: bool, carried: Optional
     )
 
 
+def _require_still_away(swap: _Swap) -> None:
+    """Raise model_busy once someone came back since the swap was planned: an inference request ended,
+    a model load landed, or a request is running beside this run."""
+    from core.inference.llama_keepwarm import attended_stamp, other_inference_request_count
+    if attended_stamp() != swap.attended or other_inference_request_count(
+        current_request_counted = True
+    ):
+        raise RunFailed("model_busy")
+
+
 async def _restore_after_swap(swap: _Swap, app: Any) -> None:
     """Put back what the run's load replaced, unless someone used or loaded a model since. Best effort."""
     from core.inference.llama_keepwarm import (
@@ -484,6 +494,7 @@ async def generate_answer(
         allow_model_switch_for_request,
         load_alongside_for_request,
         produce_openai_chat_completions,
+        require_for_model_switch,
     )
 
     carried = holder.pending if holder is not None else None
@@ -494,16 +505,8 @@ async def generate_answer(
     model_fields, provider, allow_switch = _model_fields(
         task.get("model"), bool(task.get("allowModelLoad") or run.get("allowModelLoad"))
     )
-    swap = (
-        await _plan_swap(
-            task,
-            task["model"],
-            run.get("source") == "schedule" and not run.get("allowModelLoad"),
-            carried,
-        )
-        if allow_switch
-        else None
-    )
+    unattended = run.get("source") == "schedule" and not run.get("allowModelLoad")
+    swap = await _plan_swap(task, task["model"], unattended, carried) if allow_switch else None
     if holder is not None:
         holder.pending = swap or carried
     loop = asyncio.get_running_loop()
@@ -515,6 +518,18 @@ async def generate_answer(
         allow_model_switch_for_request(request.scope)
         # Keep multiple models loaded: the task model goes beside the user's when it fits, as from Chat's picker.
         load_alongside_for_request(request.scope)
+    away_swap = swap if unattended else None
+    refused: list[bool] = []
+    if away_swap is not None:
+        # The switch rechecks under its gates; it can only answer with an HTTP error, read back as model_busy.
+        def still_away() -> None:
+            try:
+                _require_still_away(away_swap)
+            except RunFailed:
+                refused.append(True)
+                raise HTTPException(status_code = 409, detail = "model_busy") from None
+
+        require_for_model_switch(request.scope, still_away)
     with unattended_activity():
         activity = InferenceActivityReservation()
         activity.reserve()
@@ -529,6 +544,9 @@ async def generate_answer(
                 raise RunFailed("timeout") from None
             if cancel_event.is_set():
                 raise RunFailed("cancelled")
+            if away_swap is not None:
+                # Admission can wait out a load the user started, so the idle check before it may be stale.
+                _require_still_away(away_swap)
             # Built once admitted: a model kept alongside is chosen as it stands now, not before a load or unload.
             if not task.get("model") and (kept := _sole_kept_model()):
                 model_fields = {"model": kept}
@@ -596,6 +614,8 @@ async def generate_answer(
             try:
                 response = producer.result()
             except HTTPException as exc:
+                if refused:
+                    raise RunFailed("model_busy") from None
                 if allow_switch and not _model_is_loaded(payload.model):
                     raise RunFailed("model_load_failed", _error_text(exc.detail)) from None
                 # A named kept model answered for itself, so its refusal is not "nothing loaded",
@@ -609,6 +629,8 @@ async def generate_answer(
                 raise RunFailed(None, _error_text(exc.detail)) from None
             except GpuBusyForAnotherAccountError as exc:
                 raise RunFailed(None, _error_text(exc.as_http_exception().detail)) from None
+            if refused:
+                raise RunFailed("model_busy")
             if serving.get("loaded") is False:
                 raise RunFailed("model_load_failed")
         finally:

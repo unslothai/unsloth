@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Boundary validator for user-supplied llama-server pass-through args. Reject only flags Unsloth
-manages (model identity, auth, network, parallel slots). Everything else (sampling, ``-c``,
-``-ngl``, ``--flash-attn``, ``--cache-type-*``, ``--spec-*``, ``--jinja``, ...) is appended after
-Unsloth's auto-set flags so llama.cpp's last-wins parser lets the user override. Ref:
-https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md"""
+"""Rejects only Unsloth-managed flags (model, auth, network, slots); user flags come last and win."""
 
 from __future__ import annotations
 

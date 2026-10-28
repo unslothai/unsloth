@@ -882,6 +882,9 @@ def format_and_template_dataset(
     raw_text_column = None,
 ):
     """Combines format_dataset and apply_chat_template_to_dataset, for UI workflows where one call does everything. custom_prompt_template is retained for signature compatibility; non-None values are rejected because Studio cannot persist a matching inference template. Returns {dataset (with a 'text' column), detected_format, final_format, success, requires_manual_mapping, warnings, errors, summary}."""
+    from .tokenizer_fingerprint import install_tokenizer_fingerprint
+
+    install_tokenizer_fingerprint()
 
     custom_prompt_error = _custom_prompt_template_error(custom_prompt_template)
     if custom_prompt_error:

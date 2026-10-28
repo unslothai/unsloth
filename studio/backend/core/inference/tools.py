@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tool definitions and executors for LLM tool calling: web search (DuckDuckGo), Python code
-execution, and terminal commands."""
+"""Tool definitions and executors for LLM calls: DuckDuckGo search, Python code, terminal commands."""
 
 import ast
 import base64
@@ -9096,7 +9095,12 @@ def _apply_prepared_launch(prepared, popen_kwargs: dict) -> dict:
     popen_kwargs["cwd"] = prepared.workdir
     popen_kwargs["env"] = prepared.env
     if sys.platform != "win32":
-        popen_kwargs["preexec_fn"] = prepared.preexec_fn
+        if prepared.preexec_fn is _bypass_preexec:
+            # setsid in C: a Python pre-exec forks the whole server instead of vfork.
+            popen_kwargs.pop("preexec_fn", None)
+            popen_kwargs["start_new_session"] = True
+        else:
+            popen_kwargs["preexec_fn"] = prepared.preexec_fn
     popen_kwargs["close_fds"] = prepared.close_fds
     if prepared.pass_fds:
         # Empty for every fallback, so Windows never sees a kwarg it rejects.

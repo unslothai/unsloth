@@ -17,6 +17,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Awaitable, Callable, Hashable, NamedTuple, Optional, TypeVar
 
 from loggers import get_logger
+from utils.scan_memo import in_scan_memo, invalidate_scan_memos
 
 logger = get_logger(__name__)
 
@@ -98,6 +99,14 @@ def invalidate_hf_cache_scans() -> None:
         _hf_cache_scans_result = None
         _hf_cache_scans_cached_at = 0.0
         _hf_cache_scans_epoch += 1
+        invalidate_scan_memos()
+    # Settings may answer a slow cache from its last walk; a download or delete must not show the old size.
+    try:
+        from utils.cache_inventory import invalidate_cache_size
+        for key in ("hf_hub", "hf_xet", "hf_datasets", "hf_assets"):
+            invalidate_cache_size(key)
+    except Exception:  # noqa: BLE001 - the Settings sizes are best effort
+        pass
     try:
         from core.inference.audio_cpp_models import forget
     except Exception:  # noqa: BLE001 - no audio.cpp support, nothing memoized
@@ -398,6 +407,7 @@ def _with_repos_dropped_by_scan(
         return scan
 
 
+@in_scan_memo
 def _compute_all_hf_cache_scans() -> list:
     from huggingface_hub import HFCacheInfo, scan_cache_dir
 

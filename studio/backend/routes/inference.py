@@ -58,6 +58,7 @@ from utils.account_context import (
 )
 from utils.security.consent import MANAGED_REMOTE_CODE_REFUSAL, managed_remote_code_refused
 from loggers import get_logger
+from utils.scan_memo import in_scan_memo
 from loggers.media_progress import (
     log_media_generation_progress,
     log_media_load_progress,
@@ -1003,10 +1004,15 @@ def _truncate_middle_messages(messages: list, keep_ratio: float):
         return messages, 0
 
     new_messages = head + anchor
-    for grp in middle[first_kept:]:
-        new_messages.extend(grp)
-    for grp in tail:
-        new_messages.extend(grp)
+    kept = [msg for grp in middle[first_kept:] + tail for msg in grp]
+    # Merge the seam: strict templates (e.g. Mistral) reject two user turns in a row.
+    if kept and new_messages[-1].get("role") == kept[0].get("role") == "user":
+        new_messages[-1] = {
+            **new_messages[-1],
+            "content": _merge_user_content(new_messages[-1].get("content"), kept[0].get("content")),
+        }
+        kept = kept[1:]
+    new_messages.extend(kept)
     return new_messages, dropped
 
 
@@ -1161,6 +1167,20 @@ def _remember_passthrough_cut(
         return
     from core.inference import prefix_boundary
     prefix_boundary.remember(original, body.get("messages") or [], dropped, scope)
+
+
+async def _prepare_passthrough_cut(llama_backend, body: dict, policy: Optional[str]):
+    """(uncut messages, cut scope, messages a remembered cut dropped). Only truncate_oldest
+    remembers cuts, so every other policy skips the copy, the scope and the thread hop."""
+    if policy != "truncate_oldest":
+        return None, None, 0
+    uncut = list(body.get("messages") or [])
+    scope = _passthrough_cut_scope(llama_backend, body)
+    # Off the event loop: the history can hold megabytes of images.
+    dropped = await asyncio.to_thread(
+        _replay_passthrough_cut, body, policy, getattr(llama_backend, "context_length", None), scope
+    )
+    return uncut, scope, dropped
 
 
 def _anthropic_stream_error_event(exc, *, force: bool = False):
@@ -9516,6 +9536,23 @@ def _model_switch_allowed_for_request(fastapi_request) -> bool:
     return isinstance(scope, dict) and bool(scope.get(_ALLOW_MODEL_SWITCH_SCOPE_KEY))
 
 
+_SWITCH_PRECONDITION_SCOPE_KEY = "unsloth.switch_precondition"
+
+
+def require_for_model_switch(scope, check) -> None:
+    """Have this in-process request's switch call ``check()`` under the swap gate, just before it replaces the
+    loaded model; ``check`` raises to refuse. A scope key, so no HTTP client can set it."""
+    if isinstance(scope, dict):
+        scope[_SWITCH_PRECONDITION_SCOPE_KEY] = check
+
+
+def _check_switch_precondition(fastapi_request) -> None:
+    scope = getattr(fastapi_request, "scope", None)
+    check = scope.get(_SWITCH_PRECONDITION_SCOPE_KEY) if isinstance(scope, dict) else None
+    if callable(check):
+        check()
+
+
 _LOAD_ALONGSIDE_SCOPE_KEY = "unsloth.load_alongside"
 
 
@@ -11342,6 +11379,8 @@ async def _maybe_auto_switch_model(
                             _record_serving_alias()
                             return
                         require_no_foreign_generations(path = switch_path)
+                        # Last chance to refuse: held swap gates keep inference and loads from starting before it.
+                        _check_switch_precondition(fastapi_request)
                         # Order: variant-qualified keys before bare ids, load path before advertised id.
                         from utils.openai_auto_switch_settings import (
                             resolve_override_for_load,
@@ -17295,6 +17334,9 @@ async def load_model_gated(
                 )
             async with nullcontext() if new_slot else inference_lifecycle_gate():
                 _raise_if_sidecar_swap_in_progress()
+                if not new_slot:
+                    # An auto-switch beside checked before this gate: this load replaces a loaded model.
+                    _check_switch_precondition(fastapi_request)
                 # The 409 gate runs inside _load_model_impl, under the lifecycle gate, atomic with teardown.
                 if new_slot:
                     reload_gate = None
@@ -17365,11 +17407,14 @@ async def load_model_gated(
                             raise refusal_for(
                                 await asyncio.to_thread(chat_eviction_reports)
                             ) from exc
+                        # The new slot loads with no gate against chats: recheck before anything is unloaded.
+                        _check_switch_precondition(fastapi_request)
                         # An idle image or video model goes before any chat model, as gpu_residency orders it.
                         if await _free_for_chat(exc, evicted, media_only = True):
                             continue
                         # No chat may start on a victim between its pick and teardown.
                         async with inference_lifecycle_gate() if new_slot else nullcontext():
+                            _check_switch_precondition(fastapi_request)
                             victims = await asyncio.to_thread(
                                 model_slots.eviction_victims,
                                 extra,
@@ -17420,6 +17465,8 @@ async def load_model_gated(
                                     # The drain can outlast a sidecar install or a cancel: never unload for nothing.
                                     _raise_if_sidecar_swap_in_progress()
                                     _raise_if_load_cancelled(attempt, impl_kwargs)
+                                    # A user back during the drain keeps their model.
+                                    _check_switch_precondition(fastapi_request)
                                 else:
                                     _raise_or_cancel_active_generations(
                                         force = request.force_cancel_active,
@@ -32877,10 +32924,9 @@ async def produce_openai_chat_completions(
 
     # Classify capability flags from the loaded template.
     _sf_model_info = backend.models.get(backend.active_model_name, {})
-    # Only MLX and managed vLLM count their own prompt exactly, so only they are fitted first.
     _sf_fit_overflow = (
         _rolling_context_policy(payload)
-        if _sf_model_info.get("is_mlx") or _sf_model_info.get("engine") == "vllm"
+        if _sf_model_info.get("is_mlx") or _sf_model_info.get("engine") in ("vllm", "sglang")
         else None
     )
     if _sf_model_info.get("engine") in ("vllm", "sglang"):
@@ -32937,6 +32983,8 @@ async def produce_openai_chat_completions(
     # tool_choice asked directly: _tool_loop_unusable weighs it against GGUF's tools.
     _sf_recall_loop_usable = (
         payload.tool_choice != "none"
+        # Managed engines refuse tools on this path; their tool turns go through managed_tool_chat.
+        and _sf_model_info.get("engine") not in ("vllm", "sglang")
         and not _tool_loop_unusable
         and not _has_client_tool_contract
         and not _response_format_constrains_decoding(payload)
@@ -35807,6 +35855,7 @@ async def _openai_catalog_with_aliases(quant_pins: bool = False) -> list[dict]:
 # compatibility alias for the canonical OpenAI path.
 @router.get("/models/", include_in_schema = False)
 @router.get("/models")
+@in_scan_memo
 async def openai_list_models(
     output_modalities: Optional[str] = None, current_subject: str = Depends(get_current_subject)
 ):
@@ -43233,6 +43282,7 @@ async def anthropic_messages(
                     auto_heal_tool_calls = payload.auto_heal_tool_calls,
                     response_format = response_format,
                     parse_think = _think_parsing_expected(llama_backend, payload),
+                    context_overflow = _overflow_truncation_policy(payload),
                     **_reasoning_args,
                 )
             )
@@ -43260,6 +43310,7 @@ async def anthropic_messages(
                 cancel_event = cancel_event,
                 response_format = response_format,
                 parse_think = _think_parsing_expected(llama_backend, payload),
+                context_overflow = _overflow_truncation_policy(payload),
                 **_reasoning_args,
             )
         )
@@ -44379,6 +44430,7 @@ async def _anthropic_passthrough_stream(
     preserve_thinking = None,
     parse_think = True,
     thinking_budget_tokens = None,
+    context_overflow = None,
 ):
     """Streaming client-side pass-through: forward tools to llama-server and
     translate its stream to Anthropic SSE without executing anything."""
@@ -44506,29 +44558,64 @@ async def _anthropic_passthrough_stream(
         items_iter = None
         cancel_watcher = None
         disconnect_watcher = None
-        try:
-            upstream = _LlamaUpstream(llama_backend, "/v1/chat/completions")
-            async with aclosing(
-                upstream.stream_response(client, body, cancel_event, request)
-            ) as opening:
-                async for opened in opening:
-                    if opened is _LLAMA_STREAM_KEEPALIVE:
-                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
-                    else:
-                        resp = opened
-            first_token_deadline = upstream.first_token_deadline
-            if resp is None:
-                return
+        # Resolved by the route from the request field or UNSLOTH_CONTEXT_OVERFLOW; None keeps the 400.
+        _truncate_budget = _OVERFLOW_TRUNCATE_MAX_RETRIES if context_overflow else 0
 
-            # Headers flushed, so upstream 4xx must surface as in-band Anthropic error, not silent end_turn.
-            if resp.status_code != 200:
+        def _apply_passthrough_truncation(err_text: str) -> bool:
+            nonlocal _truncated_messages
+            dropped = _apply_measured_overflow_truncation(body, err_text, context_overflow)
+            if dropped is None:
+                return False
+            _truncated_messages += dropped
+            _remember_passthrough_cut(
+                _uncut_messages, body, context_overflow, _truncated_messages, _cut_scope
+            )
+            return True
+
+        try:
+            # Inside the try so a disconnect during the replay still releases the tracker.
+            _uncut_messages, _cut_scope, _truncated_messages = await _prepare_passthrough_cut(
+                llama_backend, body, context_overflow
+            )
+            upstream = _LlamaUpstream(llama_backend, "/v1/chat/completions")
+            while True:
+                async with aclosing(
+                    upstream.stream_response(client, body, cancel_event, request)
+                ) as opening:
+                    async for opened in opening:
+                        if opened is _LLAMA_STREAM_KEEPALIVE:
+                            yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                        else:
+                            resp = opened
+                first_token_deadline = upstream.first_token_deadline
+                if resp is None:
+                    return
+
+                if resp.status_code == 200:
+                    break
+
+                # Headers flushed, so upstream 4xx must surface as in-band Anthropic error, not silent end_turn.
                 _err_bytes = await resp.aread()
-                _err_text = _err_bytes.decode("utf-8", "replace")[:500]
+                _err_text = _err_bytes.decode("utf-8", "replace")
                 logger.error(
                     "anthropic passthrough upstream error: status=%s body=%s",
                     resp.status_code,
-                    _err_text,
+                    _err_text[:500],
                 )
+                # Opt-in overflow policy, as on /v1/chat/completions: shrink and retry instead of a 400.
+                if (
+                    _truncate_budget > 0
+                    and _classify_llama_generation_error(Exception(_err_text))
+                    and _apply_passthrough_truncation(_err_text)
+                ):
+                    _truncate_budget -= 1
+                    try:
+                        await resp.aclose()
+                    except Exception:
+                        pass
+                    resp = None
+                    continue
+                _err_text = _err_text[:500]
                 # The outer 200 stream headers are already flushed, so flag the failure: the
                 # middleware must not claim a preview-owned model on a passthrough whose
                 # upstream errored before any SSE.
@@ -44761,6 +44848,7 @@ async def _anthropic_passthrough_non_streaming(
     preserve_thinking = None,
     parse_think = True,
     thinking_budget_tokens = None,
+    context_overflow = None,
 ):
     body = _build_passthrough_payload(
         openai_messages,
@@ -44789,7 +44877,26 @@ async def _anthropic_passthrough_non_streaming(
     async with _LlamaUpstream(
         llama_backend, "/v1/chat/completions", cancel_event = cancel_event, request = request
     ) as upstream:
+        _truncate_budget = _OVERFLOW_TRUNCATE_MAX_RETRIES if context_overflow else 0
+        _uncut_messages, _cut_scope, _truncated_messages = await _prepare_passthrough_cut(
+            llama_backend, body, context_overflow
+        )
         resp = await upstream.post(body, timeout = _timeout)
+        # Opt-in overflow policy, as on /v1/chat/completions: shrink and retry instead of a 400.
+        while (
+            resp.status_code != 200
+            and _truncate_budget > 0
+            and _classify_llama_generation_error(Exception(resp.text))
+        ):
+            dropped = _apply_measured_overflow_truncation(body, resp.text, context_overflow)
+            if dropped is None:
+                break
+            _truncate_budget -= 1
+            _truncated_messages += dropped
+            _remember_passthrough_cut(
+                _uncut_messages, body, context_overflow, _truncated_messages, _cut_scope
+            )
+            resp = await upstream.post(body, timeout = _timeout)
 
         if resp.status_code != 200:
             _err_text = resp.text[:500]
@@ -45598,15 +45705,8 @@ async def _openai_passthrough_stream_admitted(
         client = _llama_stream_client()
         _truncate_policy = _overflow_truncation_policy(payload)
         _truncate_budget = _OVERFLOW_TRUNCATE_MAX_RETRIES if _truncate_policy else 0
-        _uncut_messages = list(body.get("messages") or [])
-        # Off the event loop: the history can hold megabytes of images.
-        _cut_scope = _passthrough_cut_scope(llama_backend, body)
-        _truncated_messages = await asyncio.to_thread(
-            _replay_passthrough_cut,
-            body,
-            _truncate_policy,
-            getattr(llama_backend, "context_length", None),
-            _cut_scope,
+        _uncut_messages, _cut_scope, _truncated_messages = await _prepare_passthrough_cut(
+            llama_backend, body, _truncate_policy
         )
         _context_was_truncated = _truncated_messages > 0
 
@@ -46378,15 +46478,8 @@ async def _openai_passthrough_non_streaming_upstream(
 
     _truncate_policy = _overflow_truncation_policy(payload)
     _truncate_budget = _OVERFLOW_TRUNCATE_MAX_RETRIES if _truncate_policy else 0
-    _uncut_messages = list(body.get("messages") or [])
-    # Off the event loop: the history can hold megabytes of images.
-    _cut_scope = _passthrough_cut_scope(llama_backend, body)
-    _truncated_messages = await asyncio.to_thread(
-        _replay_passthrough_cut,
-        body,
-        _truncate_policy,
-        getattr(llama_backend, "context_length", None),
-        _cut_scope,
+    _uncut_messages, _cut_scope, _truncated_messages = await _prepare_passthrough_cut(
+        llama_backend, body, _truncate_policy
     )
     _context_was_truncated = _truncated_messages > 0
 

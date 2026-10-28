@@ -2288,7 +2288,7 @@ export async function buildLocalTokenCountExtras(
         checkpoint: state.params.checkpoint,
       }),
       isMlx: state.loadedIsMlx === true,
-      isManagedEngine: state.loadedEngine === "vllm",
+      isManagedEngine: state.loadedEngine !== "auto",
       autoCompactEnabled: state.autoCompactEnabled,
     }),
   };
@@ -5519,7 +5519,7 @@ export function createOpenAIStreamAdapter(
       const isMlxForCompaction =
         !isExternalModelId(params.checkpoint) && runtime.loadedIsMlx === true;
       const isManagedEngineForCompaction =
-        !isExternalModelId(params.checkpoint) && runtime.loadedEngine === "vllm";
+        !isExternalModelId(params.checkpoint) && runtime.loadedEngine !== "auto";
       // Taken once, so a retried request still carries it and the next turn does not.
       const compactNow =
         takeThreadCompactionRequest(resolvedThreadId) &&

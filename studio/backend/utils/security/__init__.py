@@ -1,16 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Security helpers for the ``trust_remote_code`` boundary.
-
-Two orthogonal questions: ``trusted_org.is_trusted_org_repo`` (may we AUTO-enable
-remote code for this name?) and ``remote_code_scan`` (WHAT would run if the user
-opts in?). The load paths try ``trust_remote_code=False`` first and, on the
-transformers "requires trust_remote_code" error, scan the repo's ``auto_map``,
-surface findings + a pinning fingerprint, and require explicit consent before
-retrying with it enabled. Detection (is-vision / version / size) reads raw
-``config.json`` and never enters this flow.
-"""
+"""trust_remote_code boundary: trusted_org gates auto-enable; remote_code_scan lists what would run;
+explicit consent required before retrying with it enabled; detection reads raw config."""
 
 from utils.security.consent import (  # noqa: F401
     RemoteCodeDecision,

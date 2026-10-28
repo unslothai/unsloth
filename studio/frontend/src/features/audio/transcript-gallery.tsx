@@ -17,6 +17,16 @@ import {
   MoreVerticalIcon,
 } from "@hugeicons/core-free-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -135,6 +145,7 @@ export function TranscriptGallery({
   const [archived, setArchived] = useState(false);
   const [cursor, setCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [confirmingClear, setConfirmingClear] = useState(false);
   const generation = useRef(0);
   const loadingRef = useRef(false);
   const currentIdRef = useRef(currentId);
@@ -257,14 +268,7 @@ export function TranscriptGallery({
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => {
-              if (
-                window.confirm(
-                  "Delete all transcripts in history? Archived transcripts will be kept.",
-                )
-              )
-                void mutate(() => deleteTranscript(), null);
-            }}
+            onClick={() => setConfirmingClear(true)}
           >
             Clear all
           </Button>
@@ -389,6 +393,26 @@ export function TranscriptGallery({
           </Button>
         )}
       </div>
+      <AlertDialog open={confirmingClear} onOpenChange={setConfirmingClear}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Clear transcript history</AlertDialogTitle>
+            <AlertDialogDescription>
+              Delete all transcripts in history? Archived transcripts will be
+              kept. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => void mutate(() => deleteTranscript(), null)}
+            >
+              Clear all
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
