@@ -189,6 +189,12 @@ def _warm_hardware(epoch: Optional[int] = None) -> None:
 def _warm_transformers() -> None:
     from utils.models.model_config import _detection_sets
     _detection_sets()
+    # The sets can now come from the registry's source without importing it; the warm still
+    # imports it, so the first request that needs transformers finds it loaded, as before.
+    try:
+        importlib.import_module("transformers.models.auto.modeling_auto")
+    except Exception as exc:  # noqa: BLE001 -- _detection_sets() swallowed this failure before too
+        logger.debug("transformers registry import failed in the warm: %r", exc)
 
 
 def _warm_datasets() -> None:

@@ -646,14 +646,147 @@ _CURATED_REMOTE_VLM_TYPES = frozenset(
 _FALLBACK_AUDIO_MODEL_TYPES = frozenset({"csm", "whisper"})
 
 
+_VLM_MAPPING_ATTRS = (
+    "MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES",
+    "MODEL_FOR_VISION_2_SEQ_MAPPING_NAMES",
+)
+_AUDIO_MAPPING_ATTRS = (
+    "MODEL_FOR_CTC_MAPPING_NAMES",
+    "MODEL_FOR_SPEECH_SEQ_2_SEQ_MAPPING_NAMES",
+    "MODEL_FOR_AUDIO_CLASSIFICATION_MAPPING_NAMES",
+    "MODEL_FOR_TEXT_TO_WAVEFORM_MAPPING_NAMES",
+    "MODEL_FOR_TEXT_TO_SPECTROGRAM_MAPPING_NAMES",
+    "MODEL_FOR_AUDIO_XVECTOR_MAPPING_NAMES",
+)
+
+
+# Calling these on a mapping cannot change it; any other attribute (update, pop, setdefault, ...) can.
+_READ_ONLY_DICT_METHODS = frozenset({"items", "keys", "values", "get", "copy"})
+
+
+def _modeling_auto_source_path() -> Optional[str]:
+    """modeling_auto.py of the transformers an import would load now, found without importing it."""
+    import importlib.util
+
+    package = sys.modules.get("transformers")
+    try:
+        if package is not None:
+            locations = list(getattr(package, "__path__", None) or [])
+        else:
+            spec = importlib.util.find_spec("transformers")
+            locations = list(spec.submodule_search_locations or []) if spec is not None else []
+    except (ImportError, ValueError, AttributeError):
+        return None
+    if len(locations) != 1:
+        return None
+    path = os.path.join(locations[0], "models", "auto", "modeling_auto.py")
+    return path if os.path.isfile(path) else None
+
+
+def _mapping_names_from_source(path: str) -> Optional[Dict[str, dict]]:
+    """The *_MAPPING_NAMES dicts read below, taken from modeling_auto.py's source with ast, never
+    executed. Importing the module imports torch: seconds and hundreds of MB in a process that has
+    not loaded it yet (the API server). None, so the caller imports as before, unless every wanted
+    name is bound exactly once, at module level, to a literal (``OrderedDict([...])`` or a dict),
+    and the module never rebinds, mutates or subscripts it."""
+    import ast
+
+    wanted = frozenset(_VLM_MAPPING_ATTRS + _AUDIO_MAPPING_ATTRS)
+    try:
+        with open(path, encoding = "utf-8") as fh:
+            tree = ast.parse(fh.read())
+    except (OSError, SyntaxError, ValueError, UnicodeDecodeError, MemoryError, RecursionError):
+        return None
+    found: Dict[str, dict] = {}
+    for node in tree.body:
+        if not (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id in wanted
+        ):
+            continue
+        value = node.value
+        if (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id == "OrderedDict"
+            and len(value.args) == 1
+            and not value.keywords
+        ):
+            value = value.args[0]
+        try:
+            literal = ast.literal_eval(value)
+            mapping = dict(literal)
+        except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+            return None
+        if node.targets[0].id in found or not all(isinstance(k, str) for k in mapping):
+            return None
+        found[node.targets[0].id] = mapping
+    # A name the module never mentions reads as {} below, exactly like getattr(module, name, None)
+    # (MODEL_FOR_VISION_2_SEQ_MAPPING_NAMES is gone in transformers 5), unless it could be made
+    # some other way: a module __getattr__, a star import or globals().
+    mentioned = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name) and n.id in wanted}
+    for node in ast.walk(tree):
+        if (
+            (isinstance(node, ast.FunctionDef) and node.name == "__getattr__")
+            or (isinstance(node, ast.ImportFrom) and any(a.name == "*" for a in node.names))
+            or (isinstance(node, ast.Name) and node.id in ("globals", "vars", "setattr", "exec"))
+        ):
+            if wanted - set(found):
+                return None
+    if not found:
+        return None  # not a registry this reader knows
+    for name in wanted - set(found):
+        if name in mentioned:
+            return None
+        found[name] = {}
+    stores: Dict[str, int] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id in wanted and not isinstance(node.ctx, ast.Load):
+            stores[node.id] = stores.get(node.id, 0) + 1
+        elif isinstance(node, (ast.Attribute, ast.Subscript)):
+            base = node.value
+            if (
+                isinstance(base, ast.Name)
+                and base.id in wanted
+                and not (
+                    isinstance(node.ctx, ast.Load)
+                    and (isinstance(node, ast.Subscript) or node.attr in _READ_ONLY_DICT_METHODS)
+                )
+            ):
+                return None  # X.update(...), X[k] = v, del X[k]: the runtime dict may differ
+        elif isinstance(node, (ast.Global, ast.Nonlocal)) and wanted.intersection(node.names):
+            return None
+        elif isinstance(node, (ast.Import, ast.ImportFrom)) and any(
+            (alias.asname or alias.name) in wanted for alias in node.names
+        ):
+            return None
+    if any(stores.get(name, 0) != (1 if name in mentioned else 0) for name in wanted):
+        return None
+    return found
+
+
 def _build_detection_sets():
     """Reads static name dicts from the transformers registry only; no model loads and no code runs."""
     try:
-        from transformers.models.auto import modeling_auto as _ma
+        source_path = (
+            None
+            if "transformers.models.auto.modeling_auto" in sys.modules
+            else _modeling_auto_source_path()
+        )
+        from_source = _mapping_names_from_source(source_path) if source_path else None
+        if from_source is not None:
 
-        def _names(attr):
-            d = getattr(_ma, attr, None)
-            return dict(d) if d else {}
+            def _names(attr):
+                d = from_source[attr]
+                return dict(d) if d else {}
+
+        else:
+            from transformers.models.auto import modeling_auto as _ma
+            def _names(attr):
+                d = getattr(_ma, attr, None)
+                return dict(d) if d else {}
 
         itt = _names("MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES")
         v2s = _names("MODEL_FOR_VISION_2_SEQ_MAPPING_NAMES")
@@ -661,14 +794,7 @@ def _build_detection_sets():
         vlm_classes = set(itt.values()) | set(v2s.values())
 
         audio_types: set = set()
-        for attr in (
-            "MODEL_FOR_CTC_MAPPING_NAMES",
-            "MODEL_FOR_SPEECH_SEQ_2_SEQ_MAPPING_NAMES",
-            "MODEL_FOR_AUDIO_CLASSIFICATION_MAPPING_NAMES",
-            "MODEL_FOR_TEXT_TO_WAVEFORM_MAPPING_NAMES",
-            "MODEL_FOR_TEXT_TO_SPECTROGRAM_MAPPING_NAMES",
-            "MODEL_FOR_AUDIO_XVECTOR_MAPPING_NAMES",
-        ):
+        for attr in _AUDIO_MAPPING_ATTRS:
             audio_types |= set(_names(attr))
         audio_types |= set(_FALLBACK_AUDIO_MODEL_TYPES)
 
