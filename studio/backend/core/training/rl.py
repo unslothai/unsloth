@@ -25,9 +25,10 @@ RL_ROLES = {
     "orpo": ("prompt", "chosen", "rejected", "system"),
     "grpo": ("prompt", "answer", "system"),
 }
+# DPO/ORPO prompts may be implicit, as TRL reads them: the turns chosen and rejected share.
 _REQUIRED_ROLES = {
-    "dpo": ("prompt", "chosen", "rejected"),
-    "orpo": ("prompt", "chosen", "rejected"),
+    "dpo": ("chosen", "rejected"),
+    "orpo": ("chosen", "rejected"),
     "grpo": ("prompt",),
 }
 _AUTO_ROLE_NAMES = {
@@ -50,7 +51,6 @@ _REWARD_CALL_KEYS = (
     "log_metric",
     "environments",
 )
-PYTHON_REWARD_ISOLATION_FIELD = "grpo_python_reward_isolation"
 REWARD_ISOLATION_METRIC = "sandbox/python_rewards_os_isolation"
 DEFAULT_BETA = {"dpo": 0.1, "orpo": 0.1, "grpo": 0.0}
 # variant -> (loss_type, importance_sampling_level). dapo is TRL's and Unsloth's default; gspo is
@@ -281,10 +281,10 @@ def format_rl_dataset(
             )
 
     def convert(row: dict) -> dict:
-        value = row[roles["prompt"]]
+        value = row[roles["prompt"]] if "prompt" in roles else []
         extra_input = row.get("input")
         if (
-            roles["prompt"] == "instruction"
+            roles.get("prompt") == "instruction"
             and "input" not in roles.values()
             and (mapping or {}).get("input") != _IGNORE_ROLE
             and isinstance(value, str)
@@ -323,7 +323,8 @@ def format_rl_dataset(
                 chosen[: len(mapped)]
             ) == _strip_nulls(mapped)
             if (
-                not repeats_prompt
+                "prompt" in roles
+                and not repeats_prompt
                 and chosen[0]["role"] == "assistant"
                 and rejected[0]["role"] == "assistant"
             ):
@@ -341,6 +342,12 @@ def format_rl_dataset(
                     prompt = [{"role": "system", "content": str(system)}] + prompt
                 out["prompt"] = prompt
                 out["chosen"], out["rejected"] = chosen[shared:], rejected[shared:]
+            elif "prompt" not in roles:
+                raise ValueError(
+                    f"{objective.upper()} without a prompt column needs chosen and rejected as "
+                    "conversations that start with the same user turn. Map a Prompt column under "
+                    "Column roles."
+                )
             else:
                 out["chosen"] = _split_conversation(row[roles["chosen"]])[1]
                 out["rejected"] = _split_conversation(row[roles["rejected"]])[1]
@@ -834,8 +841,8 @@ def _reward_funcs(
     """In ``reward_specs`` order, since TRL pairs ``reward_weights`` with them by position.
     ``mode`` is the os_sandbox mode: ``required`` refuses a host without OS isolation, ``auto``
     is the user's opt-in to software safeguards. The worker's isolation is copied into ``isolation``."""
-    from core.inference.os_sandbox import _FALLBACK_NOTE, SandboxUnavailableError
-    from core.training.python_rewards import PythonRewardError
+    from core.inference.os_sandbox import SandboxUnavailableError
+    from core.training.python_rewards import PythonRewardError, sandbox_refusal
 
     python = [s for s in reward_specs if s.get("kind") == "python"]
     python_funcs = {}
@@ -843,14 +850,7 @@ def _reward_funcs(
         try:
             worker = worker_cls(python, mode = mode).start()
         except SandboxUnavailableError as exc:
-            # The sandbox's own fallback note says tools "still run", which reads wrong on a refusal.
-            remediation = (exc.remediation or "").replace(_FALLBACK_NOTE, "").strip()
-            raise PythonRewardError(
-                f"Python rewards need the OS sandbox, and it is not available here ({exc}). "
-                f"{remediation} To run them with software safeguards only, which do not "
-                "stop a reward from reading your files, writing outside its folder or using the "
-                f'network, set {PYTHON_REWARD_ISOLATION_FIELD} to "auto".'
-            ) from exc
+            raise PythonRewardError(sandbox_refusal(str(exc), exc.remediation)) from exc
         if worker.isolation.get("os_isolation"):
             logger.info("Python rewards run with %s", worker.isolation)
         else:
@@ -967,7 +967,10 @@ def build_rl_trainer(
                 raise ValueError(refusal)
         if tokenizer is not None:
             thinking = settings.get("enable_thinking")
-            keep_turns = any(s.get("kind") == "python" for s in reward_specs)
+            # Python rewards read the turns, and sample answers show the question from them.
+            keep_turns = sample_sink is not None or any(
+                s.get("kind") == "python" for s in reward_specs
+            )
             train_dataset, _ = render_grpo_prompts(
                 train_dataset, tokenizer, thinking, keep_turns = keep_turns
             )
@@ -1022,13 +1025,15 @@ def build_rl_trainer(
             world = max(int(os.environ.get("WORLD_SIZE") or 1), 1)
         except ValueError:
             world = 1
-        batch = int(grpo_base.get("per_device_train_batch_size") or 1) * world
-        per_step = batch * int(grpo_base.get("gradient_accumulation_steps") or 1)
-        if per_step % num_generations:
-            # TRL wants a generation batch divisible by both the global batch and num_generations.
-            group = batch * num_generations // math.gcd(batch, num_generations)
-            grpo_base["generation_batch_size"] = -(-per_step // group) * group
-        prompts = grpo_base.get("generation_batch_size", per_step) // num_generations
+        device_batch = int(grpo_base.get("per_device_train_batch_size") or 1)
+        others = world * int(grpo_base.get("gradient_accumulation_steps") or 1)
+        if (device_batch * others) % num_generations:
+            # Like Unsloth's own GRPO bump: grow the batch until a step holds whole prompt groups,
+            # and leave generation_batch_size / steps_per_generation to TRL's defaults.
+            unit = num_generations // math.gcd(others, num_generations)
+            device_batch = -(-device_batch // unit) * unit
+            grpo_base["per_device_train_batch_size"] = device_batch
+        prompts = device_batch * others // num_generations
         try:
             rows = len(train_dataset)
         except TypeError:

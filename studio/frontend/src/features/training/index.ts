@@ -3,6 +3,7 @@
 
 export {
   hasSeparateStreamingEvalSplit,
+  sftLearningRate,
   useTrainingConfigStore,
 } from "./stores/training-config-store";
 export {
@@ -79,6 +80,7 @@ export {
   listRewards,
   previewRewards,
 } from "./api/rewards-api";
+export { usePythonRewardRefusal } from "./hooks/use-python-reward-refusal";
 export type {
   RewardPreviewResponse,
   RewardRecord,

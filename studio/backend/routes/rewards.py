@@ -85,6 +85,8 @@ class RewardPreviewScore(BaseModel):
     name: str
     score: Optional[float]
     weighted: Optional[float]
+    # Set when this reward could not score; the others still did.
+    error: Optional[str] = None
 
 
 class RewardPreviewIsolation(BaseModel):
@@ -158,6 +160,20 @@ def preview_rewards(
         "total": sum(s["weighted"] for s in scores if s["weighted"] is not None),
         "isolation": isolation,
     }
+
+
+class PythonIsolationStatus(BaseModel):
+    # What Start would be refused with under this isolation setting; None when it can run.
+    refusal: Optional[str] = None
+
+
+@router.get("/python-isolation", response_model = PythonIsolationStatus)
+def python_isolation_status(
+    mode: Literal["required", "auto"] = "required",
+    current_subject: str = Depends(get_current_subject),
+) -> dict[str, Any]:
+    from core.training.python_rewards import python_isolation_refusal
+    return {"refusal": python_isolation_refusal(mode)}
 
 
 @router.get("/{name}/export", response_model = RewardExport)

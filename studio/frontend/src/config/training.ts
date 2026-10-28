@@ -177,6 +177,8 @@ export const DEFAULT_RL_SETTINGS = {
   grpoEpsilonHigh: null as number | null,
   grpoReasoningFormat: false,
   grpoFormatWarmupSteps: 0,
+  grpoPythonRewardIsolation:
+    "required" as import("@/types/training").GrpoPythonRewardIsolation,
   grpoRewards: [
     ...GRPO_DEFAULT_REWARDS,
   ] as import("@/types/training").GrpoRewardSelection[],

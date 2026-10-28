@@ -2,9 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Input } from "@/components/ui/input";
+import { SegmentedTabsList } from "@/components/segmented-tabs";
 import { Switch } from "@/components/ui/switch";
+import { Tabs } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import {
   GRPO_DEFAULT_SYSTEM_PROMPT,
   GRPO_REASONING_SYSTEM_PROMPT,
@@ -158,39 +159,22 @@ export function PromptFormatSection(): ReactElement {
           </div>
         )}
       </div>
-      <ToggleGroup
-        type="single"
-        variant="outline"
-        size="sm"
+      <Tabs
         value={showEditor ? "custom" : preset}
-        onValueChange={(value) => {
-          // Radix clears on re-click; ignore empty so one stays selected.
-          if (value) {
-            choose(value);
-          }
-        }}
-        aria-label={t("rl.prompt.presetLabel")}
-        className="w-full"
+        onValueChange={choose}
+        className="contents"
       >
-        <ToggleGroupItem
-          value="notebook"
-          className="flex-1 data-[state=on]:border-primary/40 data-[state=on]:bg-primary/10 data-[state=on]:text-primary"
-        >
-          {t("rl.prompt.presets.notebook")}
-        </ToggleGroupItem>
-        <ToggleGroupItem
-          value="none"
-          className="flex-1 data-[state=on]:border-primary/40 data-[state=on]:bg-primary/10 data-[state=on]:text-primary"
-        >
-          {t("rl.prompt.presets.none")}
-        </ToggleGroupItem>
-        <ToggleGroupItem
-          value="custom"
-          className="flex-1 data-[state=on]:border-primary/40 data-[state=on]:bg-primary/10 data-[state=on]:text-primary"
-        >
-          {t("rl.prompt.presets.custom")}
-        </ToggleGroupItem>
-      </ToggleGroup>
+        <SegmentedTabsList
+          value={showEditor ? "custom" : preset}
+          ariaLabel={t("rl.prompt.presetLabel")}
+          size="compact"
+          options={[
+            { value: "notebook", label: t("rl.prompt.presets.notebook") },
+            { value: "none", label: t("rl.prompt.presets.none") },
+            { value: "custom", label: t("rl.prompt.presets.custom") },
+          ]}
+        />
+      </Tabs>
 
       {showEditor && (
         <Textarea

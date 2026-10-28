@@ -309,7 +309,10 @@ export function buildTrainingStartPayload(
       objective === "grpo" ? config.grpoMaxCompletionLength : null,
     grpo_temperature: objective === "grpo" ? config.grpoTemperature : 1,
     rl_system_prompt:
-      objective === "grpo" ? config.grpoSystemPrompt.trim() || null : null,
+      // Sent as written, like the notebooks' prompts; only a blank one means none.
+      objective === "grpo" && config.grpoSystemPrompt.trim()
+        ? config.grpoSystemPrompt
+        : null,
     grpo_enable_thinking: objective === "grpo" && config.grpoEnableThinking,
     grpo_variant: objective === "grpo" ? config.grpoVariant : "dapo",
     grpo_mask_truncated_completions:
@@ -320,6 +323,8 @@ export function buildTrainingStartPayload(
       objective === "grpo" && config.grpoReasoningFormat
         ? config.grpoFormatWarmupSteps
         : 0,
+    grpo_python_reward_isolation:
+      objective === "grpo" ? config.grpoPythonRewardIsolation : "required",
     grpo_rewards: objective === "grpo" ? config.grpoRewards : [],
     finetune_vision_layers: config.finetuneVisionLayers,
     finetune_language_layers: config.finetuneLanguageLayers,

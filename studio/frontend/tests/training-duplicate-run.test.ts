@@ -310,17 +310,23 @@ test("on a Mac a duplicated GRPO run loads its other settings for SFT", async ()
   usePlatformStore.setState({ deviceType: "mac" });
   try {
     setAuthFetchHandler(() => modelResponse());
-    store.getState().restoreRunConfig({
+    const loadedAsSft = store.getState().restoreRunConfig({
       model_name: "org/model",
       hf_dataset: "org/data",
       training_type: "LoRA/QLoRA",
+      learning_rate: "0.000005",
       custom_format_mapping: { question: "prompt", solution: "answer" },
       objective: "grpo",
       rl_settings: { beta: 0.04 },
-      reward_specs: [{ name: "exact-answer", weight: 2, rule: { type: "exact_match" } }],
+      reward_specs: [
+        { name: "exact-answer", weight: 2, rule: { type: "exact_match" } },
+      ],
     });
     await settle();
     const state = store.getState();
+    // The caller warns with this; the RL learning rate is not carried into SFT.
+    assert.equal(loadedAsSft, "grpo");
+    assert.notEqual(state.learningRate, 5e-6);
     assert.equal(state.trainingObjective, "sft");
     assert.deepEqual(state.datasetManualMapping, {});
     assert.equal(buildTrainingStartPayload(state, null).objective, "sft");

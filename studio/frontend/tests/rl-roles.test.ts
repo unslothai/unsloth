@@ -56,6 +56,14 @@ test("a GRPO mapping carried over to DPO drops the answer role and reports chose
   ]);
 });
 
+test("DPO and ORPO read the prompt from chosen/rejected when no column holds it", () => {
+  // trl-lib/ultrafeedback_binarized has only chosen, rejected and their scores.
+  const columns = ["chosen", "rejected", "score_chosen", "score_rejected"];
+  assert.deepEqual(missingRlRoles("dpo", columns, {}), []);
+  assert.deepEqual(missingRlRoles("orpo", columns, {}), []);
+  assert.deepEqual(missingRlRoles("grpo", ["answer"], {}), ["prompt"]);
+});
+
 test("explicit roles win over name matching, and a stale column is ignored", () => {
   const mapping = { good: "chosen", bad: "rejected", gone: "prompt" };
   assert.deepEqual(

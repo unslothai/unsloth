@@ -12,6 +12,7 @@ import {
   parseYamlConfig,
   parseYamlRlSettings,
   serializeConfigToYaml,
+  sftLearningRate,
   useTrainingConfigStore,
 } from "@/features/training";
 import { useT } from "@/i18n";
@@ -50,6 +51,19 @@ export function ConfigActions() {
       // Objective first: it swaps in the RL learning rate, which the file's own value then overrides.
       store.setTrainingObjective(isMac ? "sft" : trainingObjective);
       store.applyConfigPatch(config);
+      if (isMac && trainingObjective !== "sft") {
+        // The file's learning rate is the RL one, far too low for SFT.
+        useTrainingConfigStore.setState({
+          learningRate: sftLearningRate(useTrainingConfigStore.getState()),
+        });
+        toast.warning(
+          t("studio.training.rlLoadedAsSft", {
+            objective: trainingObjective.toUpperCase(),
+          }),
+          { description: filename },
+        );
+        return;
+      }
       if (!isMac && Object.keys(rl).length > 0) {
         useTrainingConfigStore.setState(rl);
       }

@@ -129,6 +129,14 @@ function canReapplyModelDefaults(modelName: string): boolean {
 const DEFAULT_DECISION_CHECKPOINT = "laya-multilingual";
 
 // Saved runs and YAML files carry it, but it is not a model default: switching models keeps it.
+/** The learning rate SFT starts from for this method and model. */
+export function sftLearningRate(state: TrainingConfigState): number {
+  return state.trainingMethod === "full"
+    ? LR_DEFAULT_FULL
+    : (state.trainingMethodProvenance.modelAdapterLearningRate ??
+        LR_DEFAULT_LORA);
+}
+
 function earlyStoppingPatienceFrom(value: unknown): number {
   const patience = Number(value);
   return Number.isFinite(patience) && patience > 0 ? Math.floor(patience) : 0;
@@ -1732,10 +1740,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           if (!state.trainingMethodProvenance.learningRateManuallySet) {
             patch.learningRate =
               trainingObjective === "sft"
-                ? state.trainingMethod === "full"
-                  ? LR_DEFAULT_FULL
-                  : (state.trainingMethodProvenance.modelAdapterLearningRate ??
-                    LR_DEFAULT_LORA)
+                ? sftLearningRate(state)
                 : RL_LEARNING_RATES[trainingObjective];
           }
           setUserEdit(patch);
@@ -1757,6 +1762,8 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         setGrpoVariant: (grpoVariant) => setUserEdit({ grpoVariant }),
         setGrpoMaskTruncatedCompletions: (grpoMaskTruncatedCompletions) =>
           setUserEdit({ grpoMaskTruncatedCompletions }),
+        setGrpoPythonRewardIsolation: (grpoPythonRewardIsolation) =>
+          setUserEdit({ grpoPythonRewardIsolation }),
         setGrpoEpsilonHigh: (grpoEpsilonHigh) =>
           setUserEdit({ grpoEpsilonHigh }),
         setGrpoReasoningFormat: (grpoReasoningFormat) => {
@@ -1808,12 +1815,17 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           });
           // RL runs keep their roles in custom_format_mapping, which selections read as chat roles.
           const { trainingObjective, ...rl } = parseRunConfigRlSettings(config);
-          // MLX has no RL trainer: an RL run restores its other settings for SFT, without RL roles.
-          if (
+          // MLX has no RL trainer: an RL run restores its other settings for SFT, without RL roles
+          // and with SFT's learning rate in place of the RL one.
+          const loadedAsSft =
             trainingObjective !== "sft" &&
-            usePlatformStore.getState().deviceType === "mac"
-          ) {
-            setUserEdit({ trainingObjective: "sft", datasetManualMapping: {} });
+            usePlatformStore.getState().deviceType === "mac";
+          if (loadedAsSft) {
+            setUserEdit({
+              trainingObjective: "sft",
+              datasetManualMapping: {},
+              learningRate: sftLearningRate(get()),
+            });
           } else if (
             trainingObjective !== "sft" &&
             selections.modelType !== "decision" &&
@@ -1835,6 +1847,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             keepModelSubfolder: true,
             fillMethodProvenance: true,
           });
+          return loadedAsSft ? trainingObjective : null;
         },
         reset: () => {
           trainingDatasetCacheRejections.reset();

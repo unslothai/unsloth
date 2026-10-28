@@ -53,6 +53,32 @@ def test_one_group_per_batch_with_every_reward_and_the_weighted_total():
     assert group["items"][1]["total"] == 4.0
 
 
+def test_a_rendered_prompt_shows_the_question_not_the_chat_template():
+    import json
+
+    from core.training.rewards import PROMPT_TURNS_COLUMN
+
+    sent = []
+    funcs = record_samples(_funcs(), SPECS, sent.append, group_size = 1)
+    rendered = [
+        "<|im_start|>system\ns<|im_end|>\n<|im_start|>user\nWhat is 48 + 24?<|im_end|>\n"
+    ] * 4
+    turns = [json.dumps(PROMPTS[0])] * 4
+    for f in funcs:
+        f(prompts = rendered, completions = COMPLETIONS, **{PROMPT_TURNS_COLUMN: turns})
+    assert sent[0]["prompt"] == "What is 48 + 24?"
+
+
+def test_grpo_keeps_prompt_turns_when_sample_answers_are_on():
+    # Rendered prompts lose the turns unless they are kept beside them for the sample card.
+    import inspect
+
+    from core.training import rl
+
+    source = inspect.getsource(rl.build_rl_trainer)
+    assert "keep_turns = sample_sink is not None or" in source
+
+
 def test_missing_and_nan_scores_become_none_and_count_as_zero():
     sent = []
     _run(record_samples(_funcs(), SPECS, sent.append, group_size = 4))

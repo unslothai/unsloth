@@ -1502,6 +1502,11 @@ _RESUME_CACHE_FIELDS = (
 )
 
 
+def _rl_system_prompt(text: Optional[str]) -> Optional[str]:
+    # Kept verbatim like the notebooks' system prompts; only a blank one means none.
+    return text if text and text.strip() else None
+
+
 def _stored_reward_specs(stored: dict) -> dict[str, dict]:
     """name -> reward spec stored with a run. A resume scores with these, not the library's
     current rules, which may have been edited or deleted since."""
@@ -2172,9 +2177,7 @@ async def _admit_training_request(
             normalize_reward_name,
         )
 
-        stored_specs = (
-            _stored_reward_specs(training_run_config(resume_run)) if resume_run else {}
-        )
+        stored_specs = _stored_reward_specs(training_run_config(resume_run)) if resume_run else {}
         if resume_run and _resume_reward_mismatch(stored_specs, request.grpo_rewards):
             raise HTTPException(
                 status_code = 409,
@@ -2191,6 +2194,15 @@ async def _admit_training_request(
             raise HTTPException(status_code = 404, detail = str(exc)) from exc
         except RewardError as exc:
             raise HTTPException(status_code = 400, detail = str(exc)) from exc
+        if any(spec.get("kind") == "python" for spec in reward_specs):
+            from core.training.python_rewards import python_isolation_refusal
+
+            # Refused here, not minutes later once the model has loaded.
+            refusal = await asyncio.to_thread(
+                python_isolation_refusal, request.grpo_python_reward_isolation
+            )
+            if refusal:
+                raise HTTPException(status_code = 400, detail = refusal)
 
     device_backend = getattr(_hw.DEVICE, "value", "") or ""
     training_optimizer = normalize_training_optimizer_for_device(
@@ -2245,6 +2257,8 @@ async def _admit_training_request(
         "save_steps": request.save_steps,
         "weight_decay": request.weight_decay,
         "max_grad_norm": request.max_grad_norm,
+        "adam_beta1": request.adam_beta1,
+        "adam_beta2": request.adam_beta2,
         "max_grad_value": request.max_grad_value,
         "max_grad_leaf_norm": request.max_grad_leaf_norm,
         "cast_norm_output_to_input_dtype": request.cast_norm_output_to_input_dtype,
@@ -2277,7 +2291,7 @@ async def _admit_training_request(
             "temperature": request.grpo_temperature,
             "variant": request.grpo_variant,
             "enable_thinking": request.grpo_enable_thinking,
-            "system_prompt": (request.rl_system_prompt or "").strip()
+            "system_prompt": _rl_system_prompt(request.rl_system_prompt)
             or (REASONING_SYSTEM_PROMPT if request.grpo_reasoning_format else None),
             "reasoning_format": request.grpo_reasoning_format,
             "format_warmup_steps": request.grpo_format_warmup_steps,

@@ -48,6 +48,7 @@ import {
 } from "@/features/training/lib/rl-roles";
 import { type TranslationKey, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
+import type { GrpoPythonRewardIsolation } from "@/types/training";
 import {
   Calculator01Icon,
   Cancel01Icon,
@@ -145,10 +146,22 @@ function RewardSummaryLine({
 
 function ScoreChip({
   value,
+  error,
 }: {
   value: number | null | undefined;
+  error?: string | null;
 }): ReactElement {
   const t = useT();
+  if (error) {
+    return (
+      <span
+        title={error}
+        className="w-14 rounded-md bg-rose-100 px-1.5 py-0.5 text-center text-ui-10 text-rose-700 dark:bg-rose-950/50 dark:text-rose-300"
+      >
+        {t("rl.rewards.scoreError")}
+      </span>
+    );
+  }
   if (value === undefined) {
     return <span className="w-14" />;
   }
@@ -362,22 +375,31 @@ function previewPrompt(
     prompt: turns
       ? (cell as Record<string, unknown>[])
       : previewCell(cell) || null,
-    systemPrompt: own || configured.trim() || null,
+    systemPrompt: own || (configured.trim() ? configured : null),
   };
 }
 
 export function RewardsSection(): ReactElement {
   const t = useT();
-  const { rewards, setRewards, mapping, reasoning, grpoSystemPrompt } =
-    useTrainingConfigStore(
-      useShallow((s) => ({
-        reasoning: s.grpoReasoningFormat,
-        rewards: s.grpoRewards,
-        setRewards: s.setGrpoRewards,
-        mapping: s.rlRoleMapping,
-        grpoSystemPrompt: s.grpoSystemPrompt,
-      })),
-    );
+  const {
+    rewards,
+    setRewards,
+    mapping,
+    reasoning,
+    grpoSystemPrompt,
+    isolationMode,
+    setIsolationMode,
+  } = useTrainingConfigStore(
+    useShallow((s) => ({
+      reasoning: s.grpoReasoningFormat,
+      rewards: s.grpoRewards,
+      setRewards: s.setGrpoRewards,
+      mapping: s.rlRoleMapping,
+      grpoSystemPrompt: s.grpoSystemPrompt,
+      isolationMode: s.grpoPythonRewardIsolation,
+      setIsolationMode: s.setGrpoPythonRewardIsolation,
+    })),
+  );
   const { library, libraryLoaded, libraryError, refreshLibrary, previewRow } =
     useRlWorkspaceStore(
       useShallow((s) => ({
@@ -407,6 +429,10 @@ export function RewardsSection(): ReactElement {
   const [referenceEdit, setReferenceEdit] = useState<string | null>(null);
   const [preview, setPreview] = useState<Record<string, number | null> | null>(
     null,
+  );
+  // A Python reward that could not score; the others keep theirs.
+  const [previewErrors, setPreviewErrors] = useState<Record<string, string>>(
+    {},
   );
   const [isolation, setIsolation] =
     useState<RewardPreviewResponse["isolation"]>(null);
@@ -448,6 +474,7 @@ export function RewardsSection(): ReactElement {
     const request = ++previewRequest.current;
     if (rewards.length === 0) {
       setPreview(null);
+      setPreviewErrors({});
       setPreviewTotal(null);
       return;
     }
@@ -470,10 +497,16 @@ export function RewardsSection(): ReactElement {
         row,
         prompt,
         systemPrompt,
+        isolationMode,
       );
       if (request !== previewRequest.current) return;
       setPreview(
         Object.fromEntries(res.scores.map((s) => [s.name, s.weighted])),
+      );
+      setPreviewErrors(
+        Object.fromEntries(
+          res.scores.flatMap((s) => (s.error ? [[s.name, s.error]] : [])),
+        ),
       );
       setPreviewTotal(res.total);
       setIsolation(res.isolation);
@@ -482,6 +515,7 @@ export function RewardsSection(): ReactElement {
       if (request !== previewRequest.current) return;
       // Stale scores next to an error read as if the failing reward had scored.
       setPreview(null);
+      setPreviewErrors({});
       setPreviewTotal(null);
       setIsolation(null);
       setPreviewError(err instanceof Error ? err.message : String(err));
@@ -496,6 +530,7 @@ export function RewardsSection(): ReactElement {
     answerColumn,
     mapping,
     grpoSystemPrompt,
+    isolationMode,
     selectedRules,
   ]);
 
@@ -530,6 +565,16 @@ export function RewardsSection(): ReactElement {
   };
 
   const loadError = actionError ?? libraryError;
+  const usesPython = rewards.some((r) => byName.get(r.name)?.kind === "python");
+  // The sandbox refusal is the same for every Python reward: say it once.
+  const errorTexts = Object.entries(previewErrors).reduce<string[]>(
+    (out, [name, text]) => {
+      const shared = Object.values(previewErrors).filter((e) => e === text);
+      const line = shared.length > 1 ? text : `${name}: ${text}`;
+      return out.includes(line) ? out : [...out, line];
+    },
+    [],
+  );
 
   return (
     <div className="flex flex-col gap-4">
@@ -605,7 +650,10 @@ export function RewardsSection(): ReactElement {
                   }}
                 />
               </div>
-              <ScoreChip value={preview?.[selection.name]} />
+              <ScoreChip
+                value={preview?.[selection.name]}
+                error={previewErrors[selection.name]}
+              />
               <DropdownMenu>
                 <DropdownMenuTrigger asChild={true}>
                   <Button
@@ -706,6 +754,50 @@ export function RewardsSection(): ReactElement {
         </Button>
       </div>
 
+      {usesPython && (
+        <div className="flex flex-col gap-1.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <Label className="text-xs font-medium text-foreground">
+              {t("rl.rewards.isolationLabel")}
+            </Label>
+            <Select
+              value={isolationMode}
+              onValueChange={(value) =>
+                setIsolationMode(value as GrpoPythonRewardIsolation)
+              }
+            >
+              <SelectTrigger
+                size="sm"
+                aria-label={t("rl.rewards.isolationLabel")}
+                className="w-[calc(220px*var(--ui-space-scale,1))]"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="required">
+                  {t("rl.rewards.isolationRequired")}
+                </SelectItem>
+                <SelectItem value="auto">
+                  {t("rl.rewards.isolationAuto")}
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <p
+            className={cn(
+              "text-ui-11p5",
+              isolationMode === "auto"
+                ? "text-amber-700 dark:text-amber-300"
+                : "text-muted-foreground/85",
+            )}
+          >
+            {isolationMode === "auto"
+              ? t("rl.rewards.isolationAutoWarning")
+              : t("rl.rewards.isolationRequiredHint")}
+          </p>
+        </div>
+      )}
+
       <div className="flex flex-col gap-2.5 rounded-xl border border-border/70 p-3">
         <div className="flex items-center gap-2">
           <HugeiconsIcon
@@ -765,11 +857,14 @@ export function RewardsSection(): ReactElement {
               : t("rl.rewards.isolationSoftware")}
           </p>
         )}
-        {previewError && (
-          <p className="whitespace-pre-wrap break-words font-mono text-ui-11p5 text-destructive">
-            {previewError}
+        {(previewError ? [previewError] : errorTexts).map((text) => (
+          <p
+            key={text}
+            className="whitespace-pre-wrap break-words text-ui-11p5 text-destructive"
+          >
+            {text}
           </p>
-        )}
+        ))}
       </div>
 
       <CodeDialog

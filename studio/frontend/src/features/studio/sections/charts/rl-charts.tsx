@@ -23,6 +23,8 @@ import {
   formatAxisMetric,
   formatMetric,
   formatStepTick,
+  REWARD_LOG_KEY,
+  rewardLogLabel,
 } from "./utils";
 
 const PALETTE = [
@@ -34,8 +36,7 @@ const PALETTE = [
   "#eab308",
 ];
 
-// New TRL logs rewards/<fn>/mean; older TRL (and the notebook tables) log rewards/<fn>.
-const PER_REWARD_KEY = /^rewards\/(.+?)(\/mean)?$/;
+const PER_REWARD_KEY = REWARD_LOG_KEY;
 const PREFERENCE_REWARD_KEYS = new Set([
   "rewards/chosen",
   "rewards/rejected",
@@ -70,7 +71,7 @@ function buildCards(
         !PREFERENCE_REWARD_KEYS.has(k),
     )
     .sort()
-    .map((k) => ({ key: k, label: k.replace(PER_REWARD_KEY, "$1") }));
+    .map((k) => ({ key: k, label: rewardLogLabel(k) }));
   const lengthKey = has("completions/mean_length")
     ? "completions/mean_length"
     : "completion_length";
@@ -252,7 +253,9 @@ function RlChartCard({
 
 export function RlChartsGrid({
   history,
-}: { history: RlMetricPoint[] }): ReactElement | null {
+}: {
+  history: RlMetricPoint[];
+}): ReactElement | null {
   const t = useT();
   const data = useMemo(
     () => history.map((point) => ({ step: point.step, ...point.values })),

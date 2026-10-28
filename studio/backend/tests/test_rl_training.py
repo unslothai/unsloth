@@ -66,6 +66,28 @@ def test_preference_rows_strip_the_user_turn_from_full_conversations():
     assert out[0]["prompt"] == [{"role": "user", "content": "q"}]
 
 
+@pytest.mark.parametrize("objective", ["dpo", "orpo"])
+def test_preference_prompt_is_implicit_like_trl(objective):
+    # trl-lib/ultrafeedback_binarized: no prompt column, the conversations share the user turn.
+    def convo(reply):
+        return [{"role": "user", "content": "q"}, {"role": "assistant", "content": reply}]
+
+    ds = Dataset.from_list(
+        [{"chosen": convo("good"), "rejected": convo("bad"), "score_chosen": 9.0}]
+    )
+    out, roles = format_rl_dataset(ds, objective)
+    assert "prompt" not in roles
+    assert out[0]["prompt"] == [{"role": "user", "content": "q"}]
+    assert out[0]["chosen"] == [{"role": "assistant", "content": "good"}]
+    assert out[0]["rejected"] == [{"role": "assistant", "content": "bad"}]
+
+
+def test_implicit_prompt_needs_conversations_that_share_it():
+    ds = Dataset.from_list([{"chosen": "good", "rejected": "bad"}])
+    with pytest.raises(ValueError, match = "Map a Prompt column"):
+        format_rl_dataset(ds, "dpo")
+
+
 def test_missing_roles_name_the_columns_found():
     with pytest.raises(ValueError, match = "chosen, rejected"):
         resolve_role_columns(["prompt", "text"], "orpo")
@@ -528,7 +550,7 @@ class _FakeGRPOConfigWithGenBatch(_FakeGRPOConfig):
     generation_batch_size: int = None
 
 
-@pytest.mark.parametrize("generations, expected", [(3, 36), (5, 40), (4, None)])
+@pytest.mark.parametrize("generations, expected", [(3, 6), (5, 5), (4, 4)])
 def test_grpo_generation_batch_holds_whole_prompt_groups(monkeypatch, generations, expected):
     fake = types.SimpleNamespace(
         GRPOConfig = _FakeGRPOConfigWithGenBatch, GRPOTrainer = lambda **kw: kw
@@ -553,7 +575,10 @@ def test_grpo_generation_batch_holds_whole_prompt_groups(monkeypatch, generation
         settings = {"num_generations": generations},
         reward_specs = [spec],
     )
-    assert kw["args"].generation_batch_size == expected
+    # Batch 4 x accumulation 8 grows to the next batch that holds whole prompt groups; TRL's own
+    # default (one generation batch per optimizer step) is left alone.
+    assert kw["args"].per_device_train_batch_size == expected
+    assert kw["args"].generation_batch_size is None
 
 
 def test_grpo_generation_batch_counts_every_process(monkeypatch):
@@ -581,8 +606,39 @@ def test_grpo_generation_batch_counts_every_process(monkeypatch):
         settings = {"num_generations": 3},
         reward_specs = [spec],
     )
-    # Global batch 2, three generations: the generation batch rounds up to 6.
-    assert kw["args"].generation_batch_size == 6
+    # Global batch 2 is no multiple of three generations: the per-device batch grows to 3.
+    assert kw["args"].per_device_train_batch_size == 3
+    assert kw["args"].generation_batch_size is None
+
+
+def test_grpo_notebook_config_trains_one_prompt_group_per_step(monkeypatch):
+    # Qwen2.5-3B GRPO notebook: batch 1, accumulation 1, 8 generations.
+    fake = types.SimpleNamespace(
+        GRPOConfig = _FakeGRPOConfigWithGenBatch, GRPOTrainer = lambda **kw: kw
+    )
+    monkeypatch.setitem(sys.modules, "trl", fake)
+    spec = {"name": "len", "rule": {"type": "length", "max_chars": 9, "score": {}}}
+    kw = build_rl_trainer(
+        "grpo",
+        model = None,
+        tokenizer = None,
+        train_dataset = None,
+        eval_dataset = None,
+        config_args = {
+            "output_dir": "o",
+            "max_seq_length": 512,
+            "per_device_train_batch_size": 1,
+            "gradient_accumulation_steps": 1,
+        },
+        settings = {"num_generations": 8},
+        reward_specs = [spec],
+    )
+    args = kw["args"]
+    assert args.per_device_train_batch_size == 8
+    assert args.generation_batch_size is None
+    assert getattr(args, "steps_per_generation", None) is None
+    # TRL then runs steps_per_generation = gradient_accumulation_steps = 1.
+    assert args.gradient_accumulation_steps == 1
 
 
 def test_resume_refuses_a_changed_reward_set():
@@ -652,6 +708,17 @@ def test_grpo_step_estimate_counts_every_process():
         grpo_global_batch(types.SimpleNamespace(per_device_train_batch_size = 4, world_size = 2)) == 8
     )
     assert grpo_global_batch(types.SimpleNamespace(per_device_train_batch_size = 4)) == 4
+
+
+def test_grpo_step_estimate_matches_the_notebook_one_prompt_per_step():
+    from core.training.trainer import grpo_completion_rows, grpo_global_batch
+
+    # Batch grown to 8 for 8 generations; TRL fills generation_batch_size = 8 itself.
+    args = types.SimpleNamespace(
+        num_generations = 8, generation_batch_size = 8, per_device_train_batch_size = 8
+    )
+    rows = grpo_completion_rows(100, args)
+    assert rows // grpo_global_batch(args) == 100
 
 
 @pytest.mark.parametrize("objective", ["dpo", "orpo", "grpo"])
@@ -1973,3 +2040,25 @@ def test_grpo_prompts_show_every_parallel_call_and_omit_null_content():
     out, rendered = render_grpo_prompts(ds, _SingleCallTemplate(), enable_thinking = None)
     assert rendered
     assert "[weather]" in out[0]["prompt"] and "[time]" in out[0]["prompt"]
+
+
+def test_rl_system_prompt_keeps_its_whitespace():
+    from routes.training import _rl_system_prompt
+
+    prompt = "You are given a problem.\nPlace your answer between <SOLUTION></SOLUTION>\n"
+    assert _rl_system_prompt(prompt) == prompt
+    assert _rl_system_prompt("  \n") is None and _rl_system_prompt(None) is None
+
+
+def test_gemma_fold_keeps_the_system_prompt_as_given():
+    from datasets import Dataset
+    from core.training.rl import fold_system_into_user
+
+    system = "Think first.\n"
+    rows = Dataset.from_list(
+        [{"prompt": [{"role": "system", "content": system}, {"role": "user", "content": "1+1?"}]}]
+    )
+    # Gemma's own template folds the same way: system + "\n\n" + first user turn.
+    assert fold_system_into_user(rows)[0]["prompt"] == [
+        {"role": "user", "content": "Think first.\n\n\n1+1?"}
+    ]

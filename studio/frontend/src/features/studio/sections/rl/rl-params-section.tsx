@@ -242,7 +242,7 @@ export function RlParamsSection({
           max={10}
           step={0.01}
           value={s.rlBeta}
-          placeholder={String(DEFAULT_BETA[objective])}
+          placeholder={auto}
           onChange={s.setRlBeta}
         />
       </ParamsRow>

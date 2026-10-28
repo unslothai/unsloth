@@ -626,10 +626,12 @@ class TrainingStartRequest(BaseModel):
             "Global gradient norm clipping threshold. Unset keeps the training "
             "backend's own default; 0 turns global-norm clipping off, which on "
             "MLX leaves per-parameter clipping in force unless max_grad_leaf_norm "
-            "is also 0. Honored on MLX; the CUDA path trains with its own fixed "
-            "thresholds."
+            "is also 0. Honored on MLX and on the CUDA trainer (SFT, DPO, ORPO, GRPO)."
         ),
     )
+    # TRL's AdamW defaults.
+    adam_beta1: float = Field(0.9, ge = 0, lt = 1, allow_inf_nan = False, description = "AdamW beta1")
+    adam_beta2: float = Field(0.999, ge = 0, lt = 1, allow_inf_nan = False, description = "AdamW beta2")
     max_grad_value: Optional[float] = Field(
         None,
         ge = 0,
