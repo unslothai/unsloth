@@ -21,6 +21,9 @@ from core.tool_healing import _balanced_bracket_end, _balanced_json_span  # noqa
 
 
 class _AlwaysParse:
+    def release(self):
+        pass
+
     def may_parse(self, buffer):
         return True
 
@@ -140,3 +143,73 @@ def test_long_held_call_is_not_reparsed_per_chunk(monkeypatch, opening, closing)
     events += healer.finalize()
     assert [kind for kind, _ in events] == ["tool_call"]
     assert len(calls) <= 2
+
+
+_FUZZ_PIECES = (
+    "[TOOL_CALLS]",
+    "[ARGS]",
+    "[CALL_ID]",
+    "python",
+    "web_search",
+    "-",
+    " ",
+    "{",
+    "}",
+    "[",
+    "]",
+    '"',
+    "\\",
+    ":",
+    "x",
+)
+
+
+def test_random_marker_soup_matches_always_reparsing_healer():
+    rng = random.Random(15618)
+    for _ in range(300):
+        doc = "".join(rng.choice(_FUZZ_PIECES) for _ in range(rng.randint(1, 24)))
+        for chunks in (
+            [doc],
+            [doc[i : i + 1] for i in range(len(doc))],
+            [doc[i : i + 5] for i in range(0, len(doc), 5)],
+        ):
+            assert _events(ph.StreamToolCallHealer, chunks) == _events(
+                _ReparsingHealer, chunks
+            ), doc
+
+
+def _count_scans(monkeypatch):
+    scans = []
+    for name in ("_resume_json_span", "_resume_bracket_end"):
+        real = getattr(ph, name)
+        monkeypatch.setattr(
+            ph, name, lambda text, state, _real = real: scans.append(1) or _real(text, state)
+        )
+    return scans
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "[TOOL_CALLS]f" + "python[ARGS]{" * 2000,
+        "[TOOL_CALLS]python{" * 2000,
+        '[TOOL_CALLS]python{"query": "' + "[ARGS]{" * 2000 + "}",
+    ],
+    ids = ["rehearsal_no_closer", "bracket_no_closer", "nameless_quoted"],
+)
+def test_openers_that_cannot_parse_are_not_scanned(monkeypatch, text):
+    scans = _count_scans(monkeypatch)
+    for chunks in ([text], [text[i : i + 64] for i in range(0, len(text), 64)]):
+        scans.clear()
+        assert _events(ph.StreamToolCallHealer, chunks) == _events(_ReparsingHealer, chunks)
+        assert len(scans) <= len(chunks), len(scans)
+
+
+def test_gate_lets_go_of_released_text():
+    healer = ph.StreamToolCallHealer({"python"}, TOOLS)
+    healer.feed("[TOOL_CALLS]python[ARGS]{" + "x" * (ph._MAX_HOLD_CHARS + 10))
+    assert healer._buffer == "" and healer._strict_gate._buf == ""
+    healer.feed('<tool_call>{"name": "python"')
+    assert healer._strict_gate._buf
+    healer.finalize()
+    assert healer._strict_gate._buf == ""
