@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Managed engines on native Windows run inside a private WSL2 distro that Studio owns.
-
-Studio stays a Windows process: it enables WSL (one UAC prompt), imports a pinned Ubuntu rootfs
-as its own distro, and drives everything through ``wsl.exe`` argv lists. The engine's HTTP
-server is reached through WSL2's localhost forwarding. The user's own distros are never touched.
-"""
+"""Native-Windows engines run in a private WSL2 distro Studio imports and drives via wsl.exe,
+reached over localhost forwarding; user's distros never touched."""
 
 from __future__ import annotations
 

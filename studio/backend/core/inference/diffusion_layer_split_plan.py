@@ -1,23 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Layer split planner: a denoiser too big for one card, cut into contiguous block ranges across the selected cards.
-
-Order of preference on a multi-card selection: companion split (diffusion_multigpu), then a layer split, then the
-one-card offload plan. A layer split is only considered when the one-card plan offloads the DENOISER itself and the
-companion assignment found nothing; it is priced with the same per-card reserves as the companion split. The VAE and
-every non-text-encoder companion stay on the primary (the decode and its tile verdict stay where today's guard reads
-them); the text encoders may move to any used card. One card, Keep multiple models loaded and the kill switches keep
-today's plan unchanged. ROCm splits across discrete cards only (an APU's memory is the host's: a split across "cards"
-sharing one pool frees nothing), and a per-gfx-target attention kernel keeps blocks on cards of the primary's target.
-
-The engine (block placement + device-crossing hooks) is a separate piece; this module only defines the interface it
-must provide (``split_blocks``, ``engine_available``, ``place_layer_split``, ``undo_layer_split``) with stubs that keep
-production behaviour unchanged until it lands.
-
-``UNSLOTH_DIFFUSION_LAYER_SPLIT=0`` turns only this off; ``force`` also cuts a denoiser one card would hold resident
-(for proving the engine on cards that are too big to need it).
-"""
+"""Layer split tried after companion split, only when the one-card plan offloads the denoiser; one
+card, Keep multiple models loaded and kill switches keep the current plan unchanged; engine is
+stubbed until it lands."""
 
 from __future__ import annotations
 

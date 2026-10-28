@@ -789,6 +789,8 @@ export const ko = {
       guidedTour: "가이드 투어",
       help: "도움말",
       logOut: "로그아웃",
+      logOutNeedsPassword: "로그아웃하기 전에 설정 > 원격 액세스에서 비밀번호를 설정하세요. 다시 로그인하려면 필요합니다.",
+      logOutFailed: "안전하게 로그아웃하지 못했습니다. 잠시 후 다시 시도하세요.",
       shutdown: "종료",
     },
     commandPalette: {
@@ -933,6 +935,11 @@ export const ko = {
   },
   settings: {
     accounts: {
+      signsInAs: "{username}(으)로 로그인",
+      signsInAsOwner: "{alias} 또는 {username}(으)로 로그인",
+      signInName: "로그인 이름",
+      signInNameDescription: "이 설치에 계정이 둘 이상일 때 로그인할 때 입력하는 이름입니다. unsloth도 항상 사용할 수 있습니다. 비워 두면 unsloth만 사용합니다.",
+      signInNameSave: "이름 저장",
       title: "계정",
       description: "개별 Unsloth 계정을 만듭니다. 새 사용자는 일회용 설정 코드로 로그인한 뒤 비밀번호를 정합니다.",
       username: "사용자 이름",
@@ -1412,7 +1419,7 @@ export const ko = {
       installingRuntime: "설치 중…",
       installRuntimeFailed: "런타임을 설치하지 못했습니다.",
       installRuntimeError: "런타임 설치를 시작하지 못했습니다.",
-      unsupportedArch: "Windows 샌드박스(MXC)는 x64 Windows에서만 실행되므로 이 PC에서는 사용할 수 없습니다.",
+      unsupportedArch: "Windows 샌드박스(MXC)는 x64 및 ARM64 Windows에서만 실행되므로 이 PC에서는 사용할 수 없습니다.",
       builtinNeedsUpdate:
         "Windows 기본 제공 컨테이너에는 빌드 {required} 이상이 필요하지만 이 PC는 {current}입니다. 관리자 단계 없이 사용하려면 최신 Windows 업데이트를 설치하거나 아래의 대체 샌드박스를 켜세요.",
       unsupportedBuild: "Windows 샌드박스(MXC)는 Windows 11 24H2(빌드 26100) 이상이 필요하므로 이 PC에서는 사용할 수 없습니다.",
@@ -2328,7 +2335,7 @@ export const ko = {
         gpuUnusableDetail: "감지되었지만 PyTorch에서 사용할 수 없습니다",
         detailedView: "자세히 보기",
         detailedViewDescription:
-          "플로팅 창과 여기에 CPU 부하와 각 GPU의 부하, 온도, 전력을 표시합니다.",
+          "플로팅 창에 CPU 부하와 각 GPU의 부하, 온도, 전력을 표시합니다.",
         cpuLoad: "CPU 부하",
         gpuLoad: "GPU 부하",
         temperature: "온도",
@@ -2361,6 +2368,10 @@ export const ko = {
         used: "{value} 사용 중",
         free: "{value} 여유",
         total: "총 {value}",
+        usedOf: "{total} 중 {used} 사용 중",
+        segmentUsed: "GPU 사용 중",
+        segmentSystem: "시스템 사용 중",
+        segmentAvailable: "사용 가능",
       },
       llamaBackend: {
         title: "GGUF 추론 엔진",

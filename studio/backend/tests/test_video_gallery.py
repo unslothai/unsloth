@@ -88,6 +88,18 @@ def test_list_paginates_with_limit_offset():
     assert len(gallery.list_videos(offset = 4)) == 1
 
 
+def test_listing_resolves_the_folder_once(monkeypatch):
+    for i in range(4):
+        _save_with_mtime(f"p{i}", float(i))
+    calls = []
+    real = gallery.gallery_dir
+    monkeypatch.setattr(gallery, "gallery_dir", lambda: calls.append(1) or real())
+    listed = gallery.list_videos()
+    assert len(calls) == 1
+    assert [r["prompt"] for r in listed] == ["p3", "p2", "p1", "p0"]
+    assert [r["order_at"] for r in listed] == [3.0, 2.0, 1.0, 0.0]
+
+
 def test_video_path_rejects_unsafe_ids():
     assert gallery.video_path("../../etc/passwd") is None
     assert gallery.video_path("/etc/passwd") is None

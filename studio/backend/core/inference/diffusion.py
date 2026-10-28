@@ -963,41 +963,6 @@ def _set_pinned_lora_scales(pipe: Any, weights: dict) -> bool:
     return True
 
 
-def resolve_local_single_file(model_path: str) -> Optional[str]:
-    """The sole single-file checkpoint basename in a local ``model_path`` directory that is NOT a
-    diffusers pipeline (no ``model_index.json`` or FLUX.3 ``modular_model_index.json``) and holds exactly one ``.safetensors`` file, else
-    None.
-
-    The On-Device scanner advertises a bare single-file safetensors directory as a text-to-image
-    model, but the local picker starts it as a ``pipeline`` with no filename, so a pipeline load
-    400s on the missing ``model_index.json``. The images load route uses this to reinterpret such a
-    pick as a ``single_file`` load of the sole checkpoint. A real pipeline dir, or an ambiguous one
-    (0 or more than 1 ``.safetensors``), returns None and loads unchanged. A PEFT LoRA adapter
-    folder is also skipped. Never raises.
-    """
-    try:
-        root = Path(model_path).expanduser()
-        if not root.is_dir() or any(
-            (root / index).is_file() for index in ("model_index.json", FLUX3_INDEX)
-        ):
-            return None
-        # A PEFT adapter folder is not a base checkpoint; skip it so validation 400s before eviction
-        if (root / "adapter_config.json").is_file():
-            return None
-
-        checkpoints = [
-            p.name
-            for p in root.iterdir()
-            if p.is_file()
-            and p.suffix.lower() == ".safetensors"
-            and p.stem.lower() != "adapter_model"
-            and not is_appledouble_metadata(p)
-        ]
-    except OSError:
-        return None
-    return checkpoints[0] if len(checkpoints) == 1 else None
-
-
 def split_local_checkpoint_path(model_path: str) -> Optional[tuple[str, str]]:
     """``(dir, name)`` when ``model_path`` is one local ``.safetensors`` file, else None."""
     try:
@@ -10410,7 +10375,10 @@ class DiffusionBackend:
                         plan = prefer_whole_module_offload(
                             pipe, plan, logger = logger, steps = plan_steps
                         )
-                        headroom = plan.estimates.get("measured_runtime_headroom_mib")
+                        streamed_headroom = plan.estimates.get("measured_streamed_headroom_mib")
+                        headroom = streamed_headroom or plan.estimates.get(
+                            "measured_runtime_headroom_mib"
+                        )
                         if headroom and (
                             plan.resident_transformer_mib or plan.resident_text_encoder_mib
                         ):
@@ -10427,6 +10395,7 @@ class DiffusionBackend:
                                 plan.estimates.get("measured_learned_cfg_off", False),
                                 plan.estimates.get("measured_dense_bf16", False),
                                 plan.estimates.get("measured_small_host_int8", False),
+                                bool(streamed_headroom),
                             )
                             setattr(pipe, DECODE_LEND_ATTR, decode_lend_from_plan(plan))
 

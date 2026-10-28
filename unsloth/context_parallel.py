@@ -209,11 +209,10 @@ def _hybrid_config_blocker(model) -> Optional[str]:
 
 
 def _supports_context_parallel(model, backend = "ring") -> bool:
-    from .models.llama import LlamaAttention_fast_forward
+    from .models.llama import LlamaAttention_fast_forward, runs_fast_forward
 
     modules = [module for name, module in model.named_modules() if name.endswith("self_attn")]
-    forwards = [getattr(type(m).forward, "__func__", type(m).forward) for m in modules]
-    if bool(forwards) and all(f is LlamaAttention_fast_forward for f in forwards):
+    if bool(modules) and all(runs_fast_forward(m, LlamaAttention_fast_forward) for m in modules):
         return not _stateful_mixers(model)
     mixers = _stateful_mixers(model)
     return (

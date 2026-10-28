@@ -2332,6 +2332,8 @@ fn main() {
             long_paths::windows_long_paths_status,
             long_paths::enable_windows_long_paths,
             desktop_auth::desktop_auth,
+            desktop_auth::desktop_mark_signed_out,
+            desktop_auth::desktop_clear_signed_out,
             desktop_update_policy::check_desktop_manual_update,
             desktop_update_policy::desktop_update_policy,
             desktop_updater::check_desktop_update,
@@ -2404,6 +2406,8 @@ fn main() {
             if let Err(error) = desktop_backend_owner::ensure_installed_studio_root_id() {
                 warn!("Desktop backend ownership id unavailable: {error}");
             }
+            // After the staged-update reconcile, so the preflight's `-h` overlaps the webview load.
+            preflight::start_launch_cli_probe();
             #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
             {
                 use tauri_plugin_deep_link::DeepLinkExt;

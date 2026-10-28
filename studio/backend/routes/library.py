@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Library API: one view over uploads, chat attachments, generated images and audio, fine-tuned
-models and sandbox files, plus folders, favorites and renames. See ``core.library`` for the sources."""
+"""Library API over uploads, attachments, media, models and sandbox files; sources in core.library."""
 
 import hashlib
 import hmac

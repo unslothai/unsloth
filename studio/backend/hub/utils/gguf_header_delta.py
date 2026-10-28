@@ -1,16 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Rebuild a republished image / video GGUF from the cached older copy when only its header changed.
-
-A metadata fix (an architecture label, a new KV) rewrites the GGUF header and leaves every tensor byte alone, but the
-file's sha256 changes, so huggingface_hub downloads the whole file again. Here the new header is fetched with a Range
-request, its tensor table is checked against the cached copy's, and the new file is written as the new header plus the
-cached copy's tensor data, hashed in the same pass. It is kept only when its sha256 equals the Hub's.
-
-Opt-in (Images / Video loads, and image / video GGUFs in the download manager). No network unless the file for the
-target commit is missing AND an older snapshot holds the same path; anything unproven falls back to the normal
-download, and nothing here raises."""
+"""Rebuilds header-only GGUF changes from the cached copy; opt-in; no network unless the target-
+commit file is missing and an older snapshot has it; falls back to normal download, never raises;
+keeps only if sha256 matches Hub."""
 
 from __future__ import annotations
 

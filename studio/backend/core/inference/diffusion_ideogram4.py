@@ -1,31 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Ideogram 4 pipeline assembly for a transformers-4.x runtime.
-
-The ideogram-ai repos ship the transformers-5.x Qwen text stack (like the krea repos), breaking
-``Ideogram4Pipeline.from_pretrained`` on 4.x twice: (1) ``text_encoder/config.json`` keeps rope
-under ``rope_parameters`` (5.x), which 4.x Qwen3-VL crashes on -- fixed by the shared krea remap
-shim; (2) ``model_index.json`` pins the SLOW ``Qwen2Tokenizer`` but the repo ships only
-``tokenizer.json``, so neither the slow class (can't construct) nor the fast class (type-gate
-rejected) loads. So the pipeline is assembled per-component (no from_pretrained type gate).
-
-The two DiTs need one more fix on the ``-fp8`` base repo, whose shards store the vendor's float8
-layout diffusers can't read: attention is FUSED as ``attention.qkv.weight`` [3*hidden, hidden]
-(Q/K/V stacked) + ``attention.o.weight``, vs diffusers' SPLIT ``to_q``/``to_k``/``to_v`` +
-``to_out.0`` (from_pretrained maps neither -> random weights on meta); and each ``*.weight`` is
-float8_e4m3 with a per-channel ``*.weight_scale`` (real weight = ``fp8.float() * scale[:, None]``)
-that diffusers drops. So ``load_ideogram4_transformer`` reads the shards, dequantizes, splits qkv
-and renames o -> to_out.0, then loads into a config-constructed model (verified vs the split
-``-nf4`` repo: cosine ~0.997, quant noise apart). The already-split ``-nf4`` repos carry a
-``quantization_config`` and use the stock path, so the conversion is gated on the ``*.weight_scale``
-marker. VAE via ``AutoencoderKLFlux2``, scheduler ``FlowMatchEulerDiscreteScheduler``.
-
-One last incompat is in the diffusers pipeline: it calls ``create_causal_mask(inputs_embeds=...)``
-with no ``cache_position``, but 4.x/5.0 spell it ``input_embeds`` and require ``cache_position``.
-``_patch_create_causal_mask`` installs a signature-aware wrapper that renames the kwarg and derives
-``cache_position``; self-disabling where the installed function already accepts the exact kwargs.
-"""
+"""Ideogram 4 assembled per component for transformers 4.x; -fp8 DiTs need fp8 dequant and qkv
+split, gated on weight_scale (-nf4 keeps stock path); create_causal_mask kwarg patch self-
+disables where supported."""
 
 from __future__ import annotations
 

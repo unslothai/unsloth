@@ -293,8 +293,9 @@
 	--bypass: #c99d00;
 	/* Full access in permission menus: ChatGPT's orange, a touch yellower. */
 	--full-access: #eb6702;
-	--border-base: oklch(0.9208 0 0);
-	--input-base: oklch(0.9208 0 0);
+	/* 2:1 on the page, so control outlines and dividers stay visible. */
+	--border-base: #b6b6b6;
+	--input-base: #b6b6b6;
 	--ring: #262626;
 	/* Derived from the live border/foreground so every palette and mode gets the right shade.
 	   Focus/hover uses soft; selected uses the deeper one. */
@@ -314,7 +315,7 @@
 	--sidebar-accent-base: #ececec;
 	--sidebar-accent-foreground-base: #262626;
 	--tabs-line-indicator-base: #ececec;
-	--sidebar-border-base: #f2f2f2;
+	--sidebar-border-base: #b6b6b6;
 	--sidebar-ring: #262626;
 	--destructive-foreground: oklch(1 0 0);
 	--font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
@@ -409,7 +410,7 @@
 	--studio-chat-header-height: calc(48px * var(--ui-space-scale, 1));
 	--studio-chat-control-height: calc(33px * var(--ui-space-scale, 1));
 	--studio-chat-header-padding-top: calc(11px * var(--ui-space-scale, 1));
-	--studio-media-header-left-inset: calc(1.5rem * var(--ui-space-scale, 1));
+	--studio-media-header-left-inset: calc(0.5rem * var(--ui-space-scale, 1));
 
 	/* Scales at the same rate as text and padding (12 -> 12px, 20 -> 20px). */
 	--ui-icon-size: calc(1rem * var(--ui-font-scale, 1));
@@ -564,8 +565,8 @@
 	--accent-base: #ececec;
 	--accent-foreground-base: #1a1c1f;
 	--bypass: #9a7b1e;
-	--border-base: #e6e6e6;
-	--input-base: #e6e6e6;
+	--border-base: #b6b7b7;
+	--input-base: #b6b7b7;
 	--ring: #1a1c1f;
 	--chart-1: #339cff;
 	--chart-2: #8fa3b8;
@@ -578,7 +579,7 @@
 	--sidebar-primary-foreground: #ffffff;
 	--sidebar-accent-base: #ececec;
 	--sidebar-accent-foreground-base: #1a1c1f;
-	--sidebar-border-base: #f2f2f2;
+	--sidebar-border-base: #b6b6b6;
 	--sidebar-ring: #1a1c1f;
 
 	--nav-fg-base: #2d2f31;
@@ -631,8 +632,8 @@
 	--accent-base: #ebebeb;
 	--accent-foreground-base: #171717;
 	--bypass: #6f6f6f;
-	--border-base: #e2e2e2;
-	--input-base: #e2e2e2;
+	--border-base: #b6b6b6;
+	--input-base: #b6b6b6;
 	--ring: #171717;
 	--chart-1: #171717;
 	--chart-2: #4d4d4d;
@@ -645,7 +646,7 @@
 	--sidebar-primary-foreground: #ffffff;
 	--sidebar-accent-base: #ebebeb;
 	--sidebar-accent-foreground-base: #171717;
-	--sidebar-border-base: #e8e8e8;
+	--sidebar-border-base: #b6b6b6;
 	--sidebar-ring: #171717;
 
 	--nav-fg-base: #333333;
@@ -780,7 +781,7 @@
 	--th-surface: #eef0f9;
 	--th-raised: #e6e9f5;
 	--th-hover: #dde1f0;
-	--th-border: #d5daec;
+	--th-border: #abb0c5;
 	--th-fg: #1c2140;
 	--th-muted: #4f5677;
 	--th-subtle: #8c92b0;
@@ -815,7 +816,7 @@
 	--th-surface: #e9f2fa;
 	--th-raised: #deebf6;
 	--th-hover: #d2e3f2;
-	--th-border: #c7dbee;
+	--th-border: #a0b4c7;
 	--th-fg: #0f2233;
 	--th-muted: #3f5a70;
 	--th-subtle: #7f97ab;
@@ -850,7 +851,7 @@
 	--th-surface: #f9ebeb;
 	--th-raised: #f4e0e0;
 	--th-hover: #eed4d4;
-	--th-border: #e8c9c9;
+	--th-border: #c9a9aa;
 	--th-fg: #300f12;
 	--th-muted: #6e4144;
 	--th-subtle: #a67f82;
@@ -885,7 +886,7 @@
 	--th-surface: #f6ece6;
 	--th-raised: #f0e1d9;
 	--th-hover: #e9d5cb;
-	--th-border: #e2cabe;
+	--th-border: #c4ada2;
 	--th-fg: #2e1a12;
 	--th-muted: #6b4d40;
 	--th-subtle: #a3877a;
@@ -920,7 +921,7 @@
 	--th-surface: #f7eef6;
 	--th-raised: #f1e4f0;
 	--th-hover: #eadaea;
-	--th-border: #e4d0e4;
+	--th-border: #c0acc1;
 	--th-fg: #2a1830;
 	--th-muted: #65496b;
 	--th-subtle: #a288a6;
@@ -955,7 +956,7 @@
 	--th-surface: #f8eaf3;
 	--th-raised: #f3deec;
 	--th-hover: #edd2e5;
-	--th-border: #e7c6dd;
+	--th-border: #caa8bf;
 	--th-fg: #300c24;
 	--th-muted: #6e3d5d;
 	--th-subtle: #a67d98;
@@ -990,7 +991,7 @@
 	--th-surface: #eceff3;
 	--th-raised: #e3e7ec;
 	--th-hover: #d9dee5;
-	--th-border: #cfd5de;
+	--th-border: #abb1ba;
 	--th-fg: #1c2129;
 	--th-muted: #4c5563;
 	--th-subtle: #8a93a0;
@@ -1025,7 +1026,7 @@
 	--th-surface: #f3ece5;
 	--th-raised: #ece3da;
 	--th-hover: #e5d9cd;
-	--th-border: #dfd2c4;
+	--th-border: #bbaea2;
 	--th-fg: #2b201a;
 	--th-muted: #6b584c;
 	--th-subtle: #a08c7e;
@@ -1060,7 +1061,7 @@
 	--th-surface: #f8f1de;
 	--th-raised: #f2e9d0;
 	--th-hover: #ebe0c2;
-	--th-border: #e4d8b6;
+	--th-border: #bdb293;
 	--th-fg: #2a2310;
 	--th-muted: #675b3c;
 	--th-subtle: #a0946f;
@@ -1101,7 +1102,7 @@
 	--th-surface: #f2f2f3;
 	--th-raised: #eaeaec;
 	--th-hover: #e3e3e6;
-	--th-border: #dcdce0;
+	--th-border: #b3b3b7;
 	--th-fg: #111114;
 	--th-muted: #55555f;
 	--th-subtle: #8e8e99;
@@ -1136,7 +1137,7 @@
 	--th-surface: #f9ecf0;
 	--th-raised: #f4e2e8;
 	--th-hover: #eed7df;
-	--th-border: #e8ccd6;
+	--th-border: #c7aab4;
 	--th-fg: #33121d;
 	--th-muted: #704553;
 	--th-subtle: #a8818e;
@@ -1171,7 +1172,7 @@
 	--th-surface: #eef2e6;
 	--th-raised: #e5ebda;
 	--th-hover: #dce4cf;
-	--th-border: #d3dcc4;
+	--th-border: #abb49e;
 	--th-fg: #1d2618;
 	--th-muted: #4f5d47;
 	--th-subtle: #8a9782;
@@ -1206,7 +1207,7 @@
 	--th-surface: #e9f4f1;
 	--th-raised: #dfeeea;
 	--th-hover: #d5e8e3;
-	--th-border: #cce1db;
+	--th-border: #9eb6b0;
 	--th-fg: #12302a;
 	--th-muted: #44645d;
 	--th-subtle: #7e9c95;
@@ -1247,7 +1248,7 @@
 	--th-surface: #e2f6f8;
 	--th-raised: #d4eff3;
 	--th-hover: #c6e8ed;
-	--th-border: #9fdce4;
+	--th-border: #88bbc3;
 	--th-fg: #0a0a0f;
 	--th-muted: #2f525b;
 	--th-subtle: #6a959e;
@@ -1292,7 +1293,7 @@
 	--th-surface: #f4efe7;
 	--th-raised: #ede6db;
 	--th-hover: #e6ddcf;
-	--th-border: #dfd5c6;
+	--th-border: #bab1a3;
 	--th-fg: #2e2921;
 	--th-muted: #6a6152;
 	--th-subtle: #a19886;
@@ -1327,7 +1328,7 @@
 	--th-surface: #f9eee7;
 	--th-raised: #f4e4db;
 	--th-hover: #eed9ce;
-	--th-border: #e8cfc2;
+	--th-border: #c5ada1;
 	--th-fg: #33211a;
 	--th-muted: #6f5247;
 	--th-subtle: #a88b80;
@@ -1368,7 +1369,7 @@
 	--th-surface: #fbf5df;
 	--th-raised: #f5edcf;
 	--th-hover: #eee4c0;
-	--th-border: #e7dab0;
+	--th-border: #c0b48e;
 	--th-fg: #2c2410;
 	--th-muted: #675a36;
 	--th-subtle: #a29466;
@@ -1409,7 +1410,7 @@
 	--th-surface: #f4ecf8;
 	--th-raised: #ece2f3;
 	--th-hover: #e4d7ee;
-	--th-border: #dccde8;
+	--th-border: #bcacc8;
 	--th-fg: #2a1836;
 	--th-muted: #634b74;
 	--th-subtle: #9d86ad;
@@ -1444,7 +1445,7 @@
 	--th-surface: #f9efe5;
 	--th-raised: #f4e6d8;
 	--th-hover: #eedccb;
-	--th-border: #e8d2bf;
+	--th-border: #c3ae9c;
 	--th-fg: #2f1f10;
 	--th-muted: #6e5540;
 	--th-subtle: #a88d75;
@@ -1485,7 +1486,7 @@
 	--th-surface: #f1edf8;
 	--th-raised: #e9e3f3;
 	--th-hover: #e0d9ee;
-	--th-border: #d8cfe8;
+	--th-border: #b6adc6;
 	--th-fg: #241d33;
 	--th-muted: #5a4f70;
 	--th-subtle: #9588ab;
@@ -1520,7 +1521,7 @@
 	--th-surface: #eef3e3;
 	--th-raised: #e5ecd5;
 	--th-hover: #dbe4c7;
-	--th-border: #d2dcba;
+	--th-border: #acb697;
 	--th-fg: #1a2410;
 	--th-muted: #4c5a3c;
 	--th-subtle: #899878;
@@ -1555,7 +1556,7 @@
 	--th-surface: #f5f6e4;
 	--th-raised: #eef0d7;
 	--th-hover: #e6e9ca;
-	--th-border: #dfe3bf;
+	--th-border: #b3b796;
 	--th-fg: #22260f;
 	--th-muted: #585e3b;
 	--th-subtle: #959b77;
@@ -2423,21 +2424,6 @@ html[data-chat-font] .aui-root {
 		background-color: var(--panel-input-surface-hover);
 	}
 
-	/* Images (Create + Train) and Video: a lighter control border than the palette
-	   default. Light mode only, since dark mode draws these controls borderless.
-	   Overrides the token, so every derived shade stays in step. */
-	html:not(.dark) .diffusion-surface {
-		--border-base: #e9e9e9;
-		--input-base: #e9e9e9;
-		--border: var(--border-base);
-		--input: var(--input-base);
-	}
-	/* The :root derivation is already substituted, so a scoped base must redo it for the slider. */
-	html[data-contrast-adjust]:not(.dark) .diffusion-surface {
-		--border: color-mix(in oklab, var(--border-base), var(--contrast-target) var(--contrast-line-mix));
-		--input: color-mix(in oklab, var(--input-base), var(--contrast-target) var(--contrast-control-mix));
-	}
-
 	.panel-scroll-fade.is-scrolled {
 		-webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
 		mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
@@ -2882,11 +2868,11 @@ html[data-chat-font] .aui-root {
 		background-color: rgb(255 255 255 / calc(0.1 * var(--contrast-wash-gain, 1)));
 	}
 
-	/* Elevated cards sink the shared track; the API page's buttons lift above them instead. */
-	html.dark .api-monitor-page .elevated-card .btn-fill {
+	/* Elevated cards sink the shared track; their buttons lift above it. */
+	html.dark :is(.api-monitor-page .elevated-card, .section-box) .btn-fill {
 		background-color: rgb(255 255 255 / calc(0.06 * var(--contrast-wash-gain, 1)));
 	}
-	html.dark .api-monitor-page .elevated-card .btn-fill:hover {
+	html.dark :is(.api-monitor-page .elevated-card, .section-box) .btn-fill:hover {
 		background-color: rgb(255 255 255 / calc(0.1 * var(--contrast-wash-gain, 1)));
 	}
 
@@ -3300,14 +3286,14 @@ html[data-chat-font] .aui-root {
 		--composer-fade-bottom: calc(1rem * var(--ui-space-scale, 1));
 	}
 
-	/* max(): at 480px tall the clamp is 192px, under the twelve-row compact
-	   height, so expanding would clip. svh, since dvh tracks Safari's bar. */
-	/* Either composer root: the thread's form or compare's wrapper. */
+	/* --composer-fill-height: useExpandedComposerFill; the clamp is the first-frame fallback. */
 	[data-writing-expanded="true"] .unsloth-composer-editor {
 		height: max(
 			var(--composer-editor-height, calc(40px * var(--ui-space-scale, 1))),
-			clamp(8rem, calc(80svh - 12rem), 42rem)
+			var(--composer-fill-height, clamp(8rem, calc(80svh - 12rem), 42rem))
 		);
+		/* Instant: easing in read as the bottom edge creeping. */
+		transition: none;
 	}
 
 	.aui-thread-welcome-center {
@@ -3316,15 +3302,9 @@ html[data-chat-font] .aui-root {
 
 	.aui-thread-welcome-center:has([data-writing-expanded="true"]) {
 		padding-top: calc(1rem * var(--ui-space-scale, 1));
+		transition: none;
 	}
 
-	/* Welcome: grows by the pt-[27.5dvh] given up, so the bottom edge stays put and it expands upward. */
-	.aui-thread-welcome-center:not(:has(.unsloth-files-panel)) [data-writing-expanded="true"] .unsloth-composer-editor {
-		height: calc(
-			var(--composer-editor-height, calc(40px * var(--ui-space-scale, 1))) + 27.5dvh - 1rem *
-				var(--ui-space-scale, 1)
-		);
-	}
 
 	.unsloth-composer-plus {
 		@apply relative flex size-9 shrink-0 cursor-pointer items-center justify-center rounded-full text-foreground transition-colors hover:bg-muted-foreground/15 disabled:cursor-not-allowed disabled:opacity-40;
