@@ -279,13 +279,11 @@ def resolve_tool_decision(
                 or (permissions.cancel_event is not None and permissions.cancel_event.is_set())
             ):
                 return False
-            # Defense in depth for internal callers as well as the authenticated route.
             from state.tool_policy import require_tool_access
             from utils.account_context import run_as
 
             require_tool_access("full")
-            # The eventual tool worker retains the originating run's API/UI identity.
-            # A UI approval must not acknowledge a grant that that worker will refuse.
+            # The tool worker keeps the run's API/UI identity: never acknowledge a grant it would refuse.
             run_as(permissions.account, require_tool_access, "full")
             permissions._full.set()
         slot["decision"] = decision

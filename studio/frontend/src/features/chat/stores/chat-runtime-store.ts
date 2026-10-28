@@ -2435,7 +2435,6 @@ type ChatRuntimeStore = {
   /** In-memory grants only: never saved in defaults, thread snapshots or browser storage. */
   chatFullAccessGrants: ChatFullAccessGrants;
   chatFullAccessPendingRunId: string | null;
-  /** First-turn adoption can finish before an approval response arrives. */
   chatFullAccessThreadByRunId: Record<string, string>;
   sandboxLevel: SandboxLevel;
   /** Whether the bypass warning dialog is open. Lifted out of the composer menu so confirming
