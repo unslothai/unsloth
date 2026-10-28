@@ -1574,7 +1574,7 @@ def write_state(path: Path, state: dict) -> None:
     # It holds the Unsloth key the gateway uses, so 0600 from the first byte.
     path.parent.mkdir(parents = True, exist_ok = True, mode = 0o700)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as handle:
+    with os.fdopen(fd, "w", encoding = "utf-8") as handle:
         handle.write(json.dumps(state, indent = 2) + "\n")
 
 
