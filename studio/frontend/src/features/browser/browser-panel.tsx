@@ -363,7 +363,7 @@ function TabIcon({ tab }: { tab: BrowserTab }) {
       <HugeiconsIcon
         icon={icon}
         strokeWidth={1.75}
-        className="size-4 shrink-0"
+        className="mx-px size-3.5 shrink-0"
       />
     );
   }

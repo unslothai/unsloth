@@ -142,7 +142,7 @@ function SuggestedSite({ site, tabId }: { site: Site; tabId: string }) {
           type="button"
           title={`${site.title}\n${site.url}`}
           onClick={() => navigate(tabId, { url: site.url })}
-          className="flex w-full min-w-0 cursor-pointer flex-col items-center gap-4 rounded-2xl px-2 pb-4 pt-5 transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-data-[state=open]/site:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]"
+          className="flex w-full min-w-0 cursor-pointer flex-col items-center gap-4 rounded-xl px-2 pb-4 pt-5 transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-data-[state=open]/site:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]"
         >
           <SiteIcon site={site} />
           <span className="w-full truncate text-center text-ui-15 text-foreground">
@@ -188,14 +188,14 @@ function ToolButton({
     <button
       type="button"
       onClick={onClick}
-      className="flex h-11 min-w-0 cursor-pointer items-center gap-3 rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] px-3.5 text-start text-ui-15 text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="flex h-11 min-w-0 cursor-pointer items-center justify-center gap-2.5 rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] px-3.5 text-start text-ui-15 text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       <HugeiconsIcon
         icon={icon}
         strokeWidth={1.75}
-        className="size-5 shrink-0 text-muted-foreground"
+        className="size-4.5 shrink-0 text-muted-foreground"
       />
-      <span className="min-w-0 flex-1 truncate">{label}</span>
+      <span className="min-w-0 truncate">{label}</span>
     </button>
   );
 }
