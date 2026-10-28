@@ -1071,6 +1071,8 @@ def _module_binding_sites(tree: ast.Module, name: str) -> int:
                 count += sum(isinstance(n, ast.Global) and name in n.names for n in ast.walk(child))
                 continue
             if isinstance(child, ast.Lambda):
+                # Defaults are evaluated where the lambda is; only its body is a new scope.
+                visit_one(child.args)
                 continue
             visit_one(child)
 
