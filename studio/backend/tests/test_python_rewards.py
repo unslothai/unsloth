@@ -955,3 +955,39 @@ def test_the_windows_job_is_closed_even_if_terminating_it_fails():
     job = _Stuck()
     python_rewards._kill_group(None, job)
     assert job.calls == ["close"]
+
+
+def test_reward_code_waits_until_the_worker_is_in_its_job(worker_factory, monkeypatch):
+    # A reward that starts a child at import must start it inside the job, so the setup the
+    # worker loads rewards from is only written after the job holds the worker.
+    seen = {}
+
+    def capture(proc):
+        workdir = Path(proc.args[-1]).parent
+        assert (workdir / "worker.py").exists()
+        seen["setup_written"] = (workdir / "rewards.json").exists()
+        return None
+
+    monkeypatch.setattr(python_rewards, "_windows_job", capture)
+    worker = worker_factory([_spec("one", "def reward(completions, **kw):\n    return [1.0]\n")])
+    assert worker.score(["one"], [], [[{"content": "x"}]], {})["one"] == [1.0]
+    assert seen == {"setup_written": False}
+
+
+def test_without_a_windows_job_close_kills_the_tree_before_the_worker_exits(monkeypatch, tmp_path):
+    calls = []
+
+    class _Proc:
+        pid = 4321
+
+        def wait(self, timeout = None):
+            calls.append("wait")
+            return 0
+
+    monkeypatch.setattr(python_rewards, "_kill_tree", lambda proc: calls.append("kill_tree"))
+    monkeypatch.setattr(python_rewards.os, "name", "nt")
+    worker = RewardWorker([_spec("one", "def reward(completions, **kw):\n    return [1.0]\n")])
+    worker._proc, worker._workdir = _Proc(), str(tmp_path / "w")
+    os.makedirs(worker._workdir)
+    worker.close()
+    assert calls == ["kill_tree"]
