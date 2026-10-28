@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import operator
 import os
@@ -398,6 +399,20 @@ def _xformers_rejects_fp32(device) -> bool:
     if index is not None and index < len(_XFORMERS_FP32_UNSUPPORTED_BY_INDEX):
         return _XFORMERS_FP32_UNSUPPORTED_BY_INDEX[index]
     return _XFORMERS_FP32_UNSUPPORTED
+
+
+def _on_tensor_device(X):
+    """Make X's card the current device for an xformers call. Its grouped (5-D, GQA) forward reads
+    the current device rather than the tensors', so a device_map layer on another card got wrong
+    attention (NaN loss in every no-grad forward). A no-op when X is already on the current card."""
+    if (
+        DEVICE_TYPE in ("cuda", "hip")
+        and X.is_cuda
+        and not torch.compiler.is_compiling()
+        and X.device.index != torch.cuda.current_device()
+    ):
+        return torch.cuda.device(X.device)
+    return contextlib.nullcontext()
 
 
 # Lazy so import never opens a CUDA context on another rank's card (torchrun sees every GPU).
@@ -1504,13 +1519,14 @@ def _run_attention(
                 K_mod = K_mod.view(1, bsz * kv_seq_len, n_heads, head_dim)
                 V_mod = V_mod.view(1, bsz * kv_seq_len, n_heads, head_dim)
 
-        out = xformers_attention(
-            Q_mod,
-            K_mod,
-            V_mod,
-            attn_bias = attn_bias,
-            **xformers_kwargs,
-        )
+        with _on_tensor_device(Q_mod):
+            out = xformers_attention(
+                Q_mod,
+                K_mod,
+                V_mod,
+                attn_bias = attn_bias,
+                **xformers_kwargs,
+            )
 
         if config.n_groups != 1 and not requires_grad:
             out = out.view(bsz, q_len, config.n_kv_heads, config.n_groups, head_dim)
