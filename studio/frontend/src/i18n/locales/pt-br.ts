@@ -631,7 +631,7 @@ export const ptBR = {
   },
   halloween: {
     navLabel: "Doces ou travessuras…",
-    title: "A fim de uns sustos?",
+    title: "Doces ou travessuras?!",
     description:
       "Preparamos alguns sustos para o Unsloth, disponíveis até o fim de outubro.",
     chooseTheme: "Escolha um tema assustador",

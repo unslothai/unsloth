@@ -454,7 +454,7 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
     },
   },
   alien: {
-    name: "Martian",
+    name: "Alien",
     light: {
       accent: "#007a33",
       background: "#eefff4",

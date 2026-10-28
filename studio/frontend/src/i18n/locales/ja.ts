@@ -632,7 +632,7 @@ export const ja = {
   },
   halloween: {
     navLabel: "トリック・オア・トリート…",
-    title: "ちょっと怖いのはいかが？",
+    title: "トリック・オア・トリート？！",
     description: "Unslothに少しだけ怖い仕掛けを用意しました。10月いっぱいお楽しみください。",
     chooseTheme: "怖いテーマを選ぶ",
     spookyGreetings: "怖いあいさつ",

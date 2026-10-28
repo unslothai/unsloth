@@ -685,7 +685,7 @@ export const en = {
   // The sidebar's October "Trick or treat" row, its dialog, and the spooky chat greetings.
   halloween: {
     navLabel: "Trick or treat…",
-    title: "Feeling spooky?",
+    title: "Trick or Treat?!",
     description:
       "We’ve been brewing a few frights for Unsloth, here for the rest of October.",
     chooseTheme: "Choose a frightful theme",

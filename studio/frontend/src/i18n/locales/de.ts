@@ -631,7 +631,7 @@ export const de = {
   },
   halloween: {
     navLabel: "Süßes oder Saures…",
-    title: "Lust auf Gruseln?",
+    title: "Süßes oder Saures?!",
     description:
       "Für Unsloth haben wir ein paar Schauer zusammengebraut, noch bis Ende Oktober.",
     chooseTheme: "Schauriges Design auswählen",

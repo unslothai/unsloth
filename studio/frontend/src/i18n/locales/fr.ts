@@ -631,7 +631,7 @@ export const fr = {
   },
   halloween: {
     navLabel: "Un bonbon ou un sort…",
-    title: "Envie de frissons ?",
+    title: "Un bonbon ou un sort ?!",
     description:
       "Nous avons concocté quelques frayeurs pour Unsloth, jusqu’à la fin d’octobre.",
     chooseTheme: "Choisissez un thème effrayant",

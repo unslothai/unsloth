@@ -718,7 +718,7 @@ export const he = {
   },
   halloween: {
     navLabel: "ממתק או תעלול…",
-    title: "בא לך להיבהל?",
+    title: "ממתק או תעלול?!",
     description: "רקחנו כמה הפחדות בשביל Unsloth, כאן עד סוף אוקטובר.",
     chooseTheme: "בחירת ערכת נושא מפחידה",
     spookyGreetings: "ברכות מפחידות",

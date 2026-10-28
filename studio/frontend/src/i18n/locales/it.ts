@@ -3414,7 +3414,7 @@ export const it = {
   },
   halloween: {
     navLabel: "Dolcetto o scherzetto…",
-    title: "Voglia di brividi?",
+    title: "Dolcetto o scherzetto?!",
     description:
       "Abbiamo preparato qualche spavento per Unsloth, fino alla fine di ottobre.",
     chooseTheme: "Scegli un tema da brivido",

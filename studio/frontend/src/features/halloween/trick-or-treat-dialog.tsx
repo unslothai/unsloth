@@ -12,19 +12,14 @@ import {
   COLOR_THEMES,
   HALLOWEEN_THEME_IDS,
 } from "@/features/settings/lib/color-themes";
-import { usePalette, useTheme } from "@/features/settings/stores/theme-store";
+import { usePalette } from "@/features/settings/stores/theme-store";
 import { useT } from "@/i18n";
 import {
   ChevronLeftStandardIcon,
   ChevronRightStandardIcon,
 } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
-import {
-  CandyIcon,
-  Moon02Icon,
-  PumpkinIcon,
-  SkullIcon,
-} from "@hugeicons/core-free-icons";
+import { CandyIcon, Moon02Icon, SkullIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactNode, useState } from "react";
 import {
@@ -33,6 +28,7 @@ import {
   removeHalloween,
   useHalloweenStore,
 } from "./halloween-store";
+import { CutePumpkinIcon } from "./pumpkin-icon";
 
 function NightSky() {
   return (
@@ -60,7 +56,7 @@ function Row({
   onClick,
   trailing,
 }: {
-  icon: typeof PumpkinIcon;
+  icon: typeof CandyIcon;
   label: string;
   description?: string;
   onClick: () => void;
@@ -101,13 +97,12 @@ function ArrowBadge() {
 }
 
 function ThemeGrid() {
-  const { resolved } = useTheme();
   const { palette } = usePalette();
   return (
     <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
       {HALLOWEEN_THEME_IDS.map((id) => {
-        const { name, ...modes } = COLOR_THEMES[id];
-        const colors = modes[resolved];
+        // The dark accent in both modes: the light ones are deepened for contrast and read muddy.
+        const { name, dark: colors } = COLOR_THEMES[id];
         const selected = palette === id;
         return (
           <button
@@ -168,11 +163,11 @@ export function TrickOrTreatDialog({
         {view === "home" && <NightSky />}
         {view === "home" ? (
           <div className="relative flex flex-col">
-            <div className="flex flex-col items-center gap-2.5 px-8 pt-10 pb-6 text-center">
+            <div className="flex flex-col items-center gap-2.5 px-12 pt-10 pb-6 text-center">
               <span className="mb-1 flex size-14 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-[0_0_32px_-4px_var(--primary)]">
                 <HugeiconsIcon
-                  icon={PumpkinIcon}
-                  strokeWidth={1.75}
+                  icon={CutePumpkinIcon}
+                  strokeWidth={1.25}
                   className="size-8"
                 />
               </span>
@@ -183,7 +178,7 @@ export function TrickOrTreatDialog({
                 {t("halloween.description")}
               </DialogDescription>
             </div>
-            <div className="flex flex-col gap-0.5 px-4">
+            <div className="flex flex-col gap-0.5 px-8">
               <Row
                 icon={Moon02Icon}
                 label={t("halloween.chooseTheme")}
@@ -215,7 +210,7 @@ export function TrickOrTreatDialog({
                 trailing={<ArrowBadge />}
               />
             </div>
-            <p className="px-8 pt-5 pb-7 text-center text-muted-foreground text-xs italic">
+            <p className="px-12 pt-5 pb-7 text-center text-muted-foreground text-xs italic">
               {t("halloween.footer")}{" "}
               <button
                 type="button"
@@ -231,7 +226,7 @@ export function TrickOrTreatDialog({
             </p>
           </div>
         ) : (
-          <div className="relative flex flex-col gap-5 px-6 pt-6 pb-7">
+          <div className="relative flex flex-col gap-5 px-8 pt-6 pb-7">
             <div className="flex items-center gap-2 pr-8">
               <button
                 type="button"

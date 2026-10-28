@@ -734,7 +734,7 @@ export const sv = {
   },
   halloween: {
     navLabel: "Bus eller godis…",
-    title: "Sugen på att bli skrämd?",
+    title: "Bus eller godis?!",
     description:
       "Vi har bryggt ihop lite skräck för Unsloth, här resten av oktober.",
     chooseTheme: "Välj ett läskigt tema",

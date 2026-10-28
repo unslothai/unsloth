@@ -631,7 +631,7 @@ export const ko = {
   },
   halloween: {
     navLabel: "트릭 오어 트릿…",
-    title: "으스스한 기분인가요?",
+    title: "트릭 오어 트릿?!",
     description: "Unsloth를 위해 오싹한 깜짝 선물을 준비했어요. 10월 말까지 만나 보세요.",
     chooseTheme: "오싹한 테마 선택",
     spookyGreetings: "오싹한 인사말",

@@ -631,7 +631,7 @@ export const ar = {
   },
   halloween: {
     navLabel: "حلوى أم خدعة…",
-    title: "مستعد لبعض الرعب؟",
+    title: "حلوى أم خدعة?!",
     description:
       "حضّرنا بعض المفاجآت المخيفة لـ Unsloth، وستبقى حتى نهاية أكتوبر.",
     chooseTheme: "اختر سمة مخيفة",

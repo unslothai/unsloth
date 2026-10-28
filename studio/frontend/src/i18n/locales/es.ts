@@ -631,7 +631,7 @@ export const es = {
   },
   halloween: {
     navLabel: "Truco o trato…",
-    title: "¿Con ganas de sustos?",
+    title: "¡¿Truco o trato?!",
     description:
       "Hemos preparado algunos sustos para Unsloth, disponibles hasta finales de octubre.",
     chooseTheme: "Elige un tema terrorífico",

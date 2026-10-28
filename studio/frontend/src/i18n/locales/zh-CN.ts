@@ -631,7 +631,7 @@ export const zhCN = {
   },
   halloween: {
     navLabel: "不给糖就捣蛋…",
-    title: "想来点惊吓吗？",
+    title: "不给糖就捣蛋？！",
     description: "我们为 Unsloth 准备了一些惊吓，持续到十月底。",
     chooseTheme: "选择一个惊悚主题",
     spookyGreetings: "惊悚问候",
