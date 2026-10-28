@@ -11792,8 +11792,7 @@ def _chat_fit_kwargs(
     elif not (config.is_gguf and _primary_can_retry_fit.get()) and (
         policy == "fit" or (not config.is_gguf and _unified_metal_host())
     ):
-        # On unified memory running past the budget pages instead of failing, so Always has no
-        # out-of-memory error to turn into its refusal.
+        # Unified memory pages past the budget, so Always gets no out-of-memory error to refuse on.
         kwargs["evict_first"] = True
     return kwargs
 
@@ -14740,9 +14739,8 @@ def _mlx_chat_need(
     model_identifier,
     slots: int = 1,
 ) -> Optional[tuple[int, dict]]:
-    """``(need MiB, growth)`` of an MLX chat load on Apple Silicon serving ``slots`` rows, or None where it cannot
-    be priced. Weights are wired at load; the KV cache (one per row) and the prompt cache grow. ``growth`` is
-    what one row grows by and what each further row adds."""
+    """``(need MiB, growth)`` of an MLX chat load on Apple Silicon serving ``slots`` rows, or None if unpriceable.
+    ``growth`` is what one row grows past its weights and what each further row's KV cache adds."""
     if getattr(config, "is_gguf", False) or not _unified_metal_host():
         return None
     try:

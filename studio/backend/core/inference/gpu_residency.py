@@ -532,15 +532,13 @@ def chat_load_in_flight() -> bool:
 
 
 def chat_growth_unpriced() -> bool:
-    """Whether a chat model may still grow past what live memory shows by an amount nobody priced: on Metal, an MLX
-    model allocates its KV and prompt cache as it generates. A media load then treats chat as unpriced."""
+    """On Metal, whether a resident MLX chat model may still grow its KV / prompt cache by an unpriced amount."""
     return _on_metal() and _mlx_chat_unallocated_mib() is None
 
 
 def _mlx_chat_unallocated_mib() -> Optional[int]:
-    """MiB the primary and kept MLX chat models priced at load but have not allocated yet: a KV cache per parallel
-    row and the prompt cache, less what each worker has grown by since. None when any of them recorded no price or
-    the orchestrators are unreadable."""
+    """MiB the resident MLX chat models priced at load but have not allocated yet, less what each worker has grown
+    since. None when any recorded no price."""
     total = 0
     try:
         from core.inference import model_slots, orchestrator

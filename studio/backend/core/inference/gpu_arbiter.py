@@ -846,7 +846,7 @@ def would_evict(
                 return True  # coreside_locked evicts a chat that is still loading
             unpriced = getattr(gpu_residency, "chat_growth_unpriced", None)
             if callable(unpriced) and unpriced():
-                return True  # and one it cannot price
+                return True
             answer = fits(owner, need_mib)
             ok, info = answer if isinstance(answer, tuple) else (answer, {})
             return not (ok or _idle_media_frees_room(gpu_residency, owner, info))
