@@ -1008,6 +1008,11 @@ def coreside_locked(
         return
     if need_mib is None or evict_first:
         return evict_or_refuse(list(kept))
+    if isinstance(need_mib, ChatNeed):
+        # can_load_alongside reserves headroom only for priced media, as the unpriced chat branch above assumes.
+        evict_or_refuse([n for n in kept if n in MEDIA_OWNERS and n not in _media_records()])
+        if not kept:
+            return
     fits, info = can_load_alongside(owner, need_mib)
     if fits:
         return

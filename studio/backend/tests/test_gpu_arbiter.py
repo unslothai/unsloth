@@ -193,6 +193,22 @@ def test_a_short_chat_load_on_metal_frees_media_but_no_kept_chat_model(cores, mo
     assert asked
 
 
+@pytest.mark.parametrize("policy", ["fit", "always"])
+@pytest.mark.parametrize("priced", [True, False])
+def test_a_priced_mlx_chat_load_does_not_join_an_unpriced_image(cores, monkeypatch, policy, priced):
+    import core.inference.gpu_residency as res
+
+    monkeypatch.setattr(res, "can_load_alongside", lambda *a: (True, {}))
+    # Off records no price for the image; changing the setting later does not add one.
+    arb.acquire_for(
+        arb.DIFFUSION, lambda: None, policy = "fit" if priced else "off", need_mib = {0: 4096}
+    )
+    refused = policy == "always" and not priced
+    with pytest.raises(arb.MultiModelAlwaysRefusal) if refused else nullcontext():
+        arb.acquire_for(arb.CHAT, policy = policy, need_mib = res.ChatNeed({0: 2048}))
+    assert (arb.DIFFUSION in arb.residents()) is (priced or refused)
+
+
 @pytest.mark.parametrize("managed", [False, True])
 def test_always_refuses_an_image_load_that_does_not_fit_without_evicting(cores, managed):
     from utils.account_context import AccountContext, run_as
