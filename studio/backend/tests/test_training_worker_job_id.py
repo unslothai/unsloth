@@ -3,6 +3,7 @@
 
 """The worker files activation records under the run, so its config has to carry the run id."""
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from core.training.training import TrainingBackend
@@ -39,6 +40,9 @@ def _start(**kwargs):
         patch("core.training.training._CTX.Process", return_value = _DummyProcess()),
         patch("core.training.training.threading.Thread", return_value = _DummyThread()),
         patch("core.training.training.account_process_spec", side_effect = spec),
+        # A CUDA host: capture is cleared on the MLX trainer.
+        patch("core.training.training.is_apple_silicon_training_platform", return_value = False),
+        patch("core.training.training.get_device", return_value = SimpleNamespace(value = "cuda")),
     ):
         assert TrainingBackend().start_training(
             job_id = "run-123",
