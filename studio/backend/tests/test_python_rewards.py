@@ -501,6 +501,23 @@ def test_import_and_preview_a_python_reward(client):
     assert body["isolation"] == {"backend": "none", "os_isolation": False}
 
 
+def test_a_python_score_too_large_to_weight_fails_alone_in_the_preview(client):
+    huge = _python_md("huge", "def reward(completions, **kw):\n    return [1e308]\n")
+    response = client.post(
+        "/api/rewards/preview",
+        json = {
+            "rewards": [{"markdown": huge, "weight": 10}, {"name": "strict-xml-format"}],
+            "completion": GOOD,
+            "python_reward_isolation": "auto",
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    scores = {s["name"]: s for s in body["scores"]}
+    assert scores["huge"]["weighted"] is None and "is outside" in scores["huge"]["error"]
+    assert body["total"] == 0.5
+
+
 def test_a_broken_python_reward_fails_alone_in_the_preview(client):
     # One reward's error sits on its own chip; the rule and the working Python reward still score.
     boom = _python_md("boom", "def reward(completions, **kw):\n    return 1 / 0\n")

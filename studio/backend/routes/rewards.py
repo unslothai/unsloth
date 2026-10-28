@@ -10,6 +10,7 @@ from auth.authentication import get_current_subject
 from utils.account_context import current_account_id
 from core.training.rewards import (
     MAX_REWARD_MD_BYTES,
+    MAX_SCORE,
     RewardError,
     RewardExistsError,
     RewardNotFoundError,
@@ -126,6 +127,21 @@ def import_reward_route(
         raise _http_error(exc) from exc
 
 
+def _weigh(result: dict, weight: float) -> dict:
+    score = result["score"]
+    if score is None:
+        return {**result, "weighted": None}
+    # Rule scores are bounded when parsed; a Python reward's is only known here.
+    if abs(score) > MAX_SCORE:
+        return {
+            **result,
+            "score": None,
+            "weighted": None,
+            "error": f"Score {score:g} is outside -{MAX_SCORE:,.0f} to {MAX_SCORE:,.0f}.",
+        }
+    return {**result, "weighted": score * weight}
+
+
 @router.post("/preview", response_model = RewardPreviewResponse)
 def preview_rewards(
     payload: RewardPreviewRequest, current_subject: str = Depends(get_current_subject)
@@ -151,10 +167,7 @@ def preview_rewards(
         )
     except RewardError as exc:
         raise _http_error(exc) from exc
-    scores = [
-        {**r, "weighted": None if r["score"] is None else r["score"] * item.weight}
-        for r, item in zip(results, payload.rewards)
-    ]
+    scores = [_weigh(r, item.weight) for r, item in zip(results, payload.rewards)]
     return {
         "scores": scores,
         "total": sum(s["weighted"] for s in scores if s["weighted"] is not None),
