@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Settings policy: the account, shared and owner routers decide who may reach each
-/api/settings path."""
+"""Access to each /api/settings path is decided by the account, shared and owner routers"""
 
 import asyncio
 import functools
@@ -44,6 +43,7 @@ from utils.account_context import (
     current_account,
     is_owner_context,
     reset_account,
+    run_as,
 )
 from hub.utils.hf_tokens import (
     HfTokenArg,
@@ -77,7 +77,7 @@ from utils.upload_limits import (
     upload_limit_bytes,
     upload_limit_label,
 )
-from utils.cache_inventory import CACHE_KEYS, cache_inventory, purge_caches
+from utils.cache_inventory import CACHE_KEYS, cache_inventory, cache_breakdown, purge_caches
 from utils.xet_notice_settings import reserve_xet_notice
 from utils.chat_preferences_settings import (
     get_show_model_disclaimer,
@@ -903,6 +903,10 @@ class CacheEntryResponse(BaseModel):
     # Clearing costs a re-download, so it is never folded into a clear-everything action.
     opt_in: bool
     paths: list[str]
+    measured_paths: list[str] = Field(default_factory = list)
+    clear_size_bytes: Optional[int] = None
+    clear_entry_count: Optional[int] = None
+    system_disk_bytes: Optional[int] = None
     size_bytes: int
     entry_count: int
     present: bool
@@ -916,6 +920,7 @@ class CacheInventoryResponse(BaseModel):
     reclaimable_bytes: int
     free_bytes: Optional[int] = None
     total_disk_bytes: Optional[int] = None
+    refreshing: bool = False
 
 
 class CachePurgePayload(BaseModel):
@@ -1394,6 +1399,19 @@ async def get_caches(
     # Cold walks of a large hub or triton cache take seconds, so this runs off the event loop.
     inventory = await asyncio.to_thread(cache_inventory, refresh = refresh)
     return CacheInventoryResponse(**inventory)
+
+
+@_owner_settings_router.get("/caches/{key}/breakdown")
+async def get_cache_breakdown(
+    key: str,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    require_ui_session(via_api_key)
+    try:
+        return await asyncio.to_thread(cache_breakdown, key)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
 
 
 @_owner_settings_router.post("/caches/purge", response_model = CachePurgeResponse)
@@ -2534,6 +2552,31 @@ def _fallback_supplies_reasoning_flag(model_id: str, target_id: str) -> bool:
     return False
 
 
+def _owner_fallback_answers(model_id: str, target_id: str) -> bool:
+    """Whether a managed account's load for this model would fall through to the owner's row once its own
+    entry empties out. That fallback takes the owner's row whole, so a save left at the defaults has to keep
+    a row of its own or the account gets the owner's flags, context and layers back."""
+    from utils.openai_auto_switch_settings import cached_repo_alias_keys, get_model_override
+
+    if is_owner_context():
+        return False
+    candidates = [
+        key
+        for key in (_bare_model_id(model_id), _legacy_standalone_gguf_key(model_id))
+        if key and key != target_id
+    ]
+    # The account's own broader row answers first; the same-account rules above cover it.
+    if any(get_model_override(key) for key in candidates):
+        return False
+
+    def _owner_has_row() -> bool:
+        return any(get_model_override(key) for key in (model_id, *candidates)) or bool(
+            cached_repo_alias_keys(model_id)
+        )
+
+    return run_as(OWNER, _owner_has_row)
+
+
 def _other_quants_remain(bare_id: str, removed_ids: list[str]) -> bool:
     """Whether a quant of ``bare_id`` other than the ones being removed still has an entry. Such a quant has its
     own settings and never reads the bare fallback, so this is not "is anyone inheriting" but "is this
@@ -2781,6 +2824,11 @@ def update_openai_auto_switch_override(
                 payload.llama_extra_args == []
                 and not payload.fill_absent_fields
                 and _fallback_supplies_extra_args(payload.model_id, target_id)
+            ) or (
+                # A managed account's explicit save shadows the owner's row, defaults included.
+                not is_removal
+                and not payload.fill_absent_fields
+                and _owner_fallback_answers(payload.model_id, target_id)
             )
             # Unsent defaults are still written when a broader entry would answer with the flag this row shadows.
             _kept_reasoning_budget = _kept_tuning["reasoning_budget"]
@@ -3227,14 +3275,6 @@ def _gguf_conversion_name_matches(hit_name: str, base: str) -> bool:
     name = hit_name.casefold()
     base = base.casefold()
     return name == base or name in {f"{base}-gguf", f"{base}_gguf", f"{base}.gguf"}
-
-
-def _gguf_files_for_pick(names: list[str], picked: str) -> Optional[list[str]]:
-    """The complete downloadable file family for a picked GGUF. llama-server opens split siblings implicitly,
-    so a single selected shard is not a usable plan, and incomplete published families are rejected.
-    Deferred to the loader so the plan offered here and the transfer name one set."""
-    from core.rag.embed_llama_server import LlamaServerBackend
-    return LlamaServerBackend._split_family(names, picked)
 
 
 def _pick_downloadable_gguf(names: list[str]) -> Optional[list[str]]:
@@ -4780,6 +4820,17 @@ class PersonalizationAppearance(BaseModel):
         "taro",
         "wasabi",
         "yuzu",
+        "pumpkin",
+        "bloody-valentine",
+        "the-thing",
+        "alien",
+        "gothic",
+        "hexberry",
+        "candycorn",
+        "black-cat",
+        "trick-or-treat",
+        "ghost-ship",
+        "midnight-haunt",
     ] = "standard"
     language: Optional[str] = Field(None, max_length = 20)
     customization: PersonalizationCustomization = Field(

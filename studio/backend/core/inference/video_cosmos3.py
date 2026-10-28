@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Cosmos3 (nvidia/Cosmos3-Nano, nvidia/Cosmos3-Edge) on diffusers' ``Cosmos3OmniPipeline``.
-
-The guardrail (``cosmos_guardrail``) is built whenever ``model_index.json`` enables it and raises ``ImportError``
-without the package, so Studio refuses the load up front; ``UNSLOTH_COSMOS3_SAFETY_CHECKER=0`` opts out.
-"""
+"""Cosmos3 pipeline; load refuses a missing guardrail, opt out with UNSLOTH_COSMOS3_SAFETY_CHECKER=0."""
 
 from __future__ import annotations
 

@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""GGUF tensor layout, bucketed by where each tensor is allowed to live.
-
-Split out from ``offload_planner`` on purpose: this half does file IO and knows
-about GGUF key names, the other half is pure arithmetic. The planner can then be
-tested exhaustively from hand-built layouts with no fixtures on disk.
-"""
+"""GGUF tensor layout by placement bucket; file IO and GGUF keys live here, not in offload_planner."""
 
 from __future__ import annotations
 
@@ -15,6 +10,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 import os
+
+from core.inference.lookup_tables import is_per_layer_embedding
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +49,7 @@ class ModelLayout:
     lm_head_bytes: int = 0
     # llama.cpp pins dev_input to CPU: never VRAM, but charged to host RAM
     token_embd_bytes: int = 0
+    per_layer_embd_bytes: int = 0
     # Every tensor's bytes, excluded blocks included; the file size less its metadata.
     tensor_bytes: int = 0
     # output_norm and friends: GPU-resident, too small to be worth spilling.
@@ -259,6 +257,7 @@ def _layout_from_readers(readers) -> ModelLayout:
     resident: dict[int, int] = {}
     lm_head = 0
     token_embd = 0
+    per_layer_embd = 0
     other_resident = 0
 
     for tensor in (t for r in readers for t in r.tensors):
@@ -276,8 +275,11 @@ def _layout_from_readers(readers) -> ModelLayout:
             else:
                 resident[index] = resident.get(index, 0) + nbytes
             continue
+        # Before the token_embd substring below, which would otherwise swallow the per-layer table.
+        if is_per_layer_embedding(name):
+            per_layer_embd += nbytes
         # token_embd_norm is a repeating-layer tensor, not a host-pinned input embedding.
-        if "token_embd" in name and not name.startswith("token_embd_norm"):
+        elif "token_embd" in name and not name.startswith("token_embd_norm"):
             token_embd += nbytes
         elif name == "output.weight":
             lm_head += nbytes
@@ -315,6 +317,7 @@ def _layout_from_readers(readers) -> ModelLayout:
         blocks = blocks,
         lm_head_bytes = lm_head,
         token_embd_bytes = token_embd,
+        per_layer_embd_bytes = per_layer_embd,
         tensor_bytes = sum(int(t.n_bytes) for r in readers for t in r.tensors),
         other_resident_bytes = other_resident,
         kv_bytes_per_token_f16 = kv_per_token,

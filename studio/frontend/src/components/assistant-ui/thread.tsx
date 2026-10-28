@@ -66,6 +66,10 @@ import { MessageTiming } from "@/components/assistant-ui/message-timing";
 import { attachThreadFastCopy } from "@/components/assistant-ui/thread-fast-copy";
 import { attachWheelHoverSuppression } from "@/components/assistant-ui/thread-wheel-hover";
 import { threadHasResearchMessage } from "@/components/assistant-ui/thread-research-presence";
+import {
+  THREAD_GUTTER_CHANGE_EVENT,
+  watchThreadGutter,
+} from "@/components/assistant-ui/thread-gutter";
 import { observeThreadWidthSteps } from "@/components/assistant-ui/thread-width-steps";
 import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
 import { researchReplyOwners } from "@/components/assistant-ui/research-reply-owners";
@@ -142,6 +146,7 @@ import {
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
   IntentAwareScrollProvider,
+  useDetachThreadFromBottom,
   useIntentAwareAutoScroll,
   useIsThreadAtBottom,
   useScrollThreadToBottom,
@@ -211,6 +216,7 @@ import {
 } from "@/features/chat/stores/research-run-store";
 import { researchReplyOwnsRun } from "@/features/chat/utils/research-run-binding";
 import {
+  isExternalModelId,
   parseExternalModelId,
   providerModelSupportsStudioTools,
 } from "@/features/chat/external-providers";
@@ -226,6 +232,7 @@ import {
 import {
   CONTINUATION_RUN_CONFIG_KEY,
   type ContinuationRequest,
+  carriedThought,
   incompleteLabel,
   incompleteRemedy,
   isContinuableContent,
@@ -378,6 +385,8 @@ import { useRagAvailabilityStore } from "@/features/rag/api/rag-availability";
 import { ThreadDocumentsBar } from "@/features/rag/components/thread-documents-bar";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { useUserProfileStore } from "@/features/profile/stores/user-profile-store";
+import { useSpookyGreetings } from "@/features/halloween/halloween-store";
+import { buildSpookyWelcome } from "@/features/halloween/spooky-greetings";
 import { usePublishedFrame } from "@/features/settings/hooks/use-published-frame";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
@@ -420,7 +429,6 @@ import {
   AttachmentIcon,
   Bookmark02Icon,
   CodeIcon,
-  Copy01Icon,
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
@@ -439,9 +447,10 @@ import {
   SlidersHorizontalIcon,
   MoreHorizontalIcon,
   PlusSignIcon,
-  StopIcon,
   Cancel01Icon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
+import { StopIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { RefreshGlyph } from "@/lib/refresh-icon";
 import { useNavigate } from "@tanstack/react-router";
@@ -482,6 +491,7 @@ import { extractTaggedText, updateThreadMessage } from "@/features/chat/utils/up
 import { useComposerPillFit } from "@/hooks/use-composer-pill-fit";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
+import { useExpandedComposerFill } from "./use-expanded-composer-fill";
 import { watchComposerClearance } from "@/lib/toast-offset";
 
 const PageDragContext = createContext(false);
@@ -2117,6 +2127,11 @@ export const Thread: FC<{
     return attachWheelHoverSuppression(viewportEl);
   }, [viewportEl]);
 
+  useEffect(() => {
+    if (!viewportEl) return;
+    return watchThreadGutter(viewportEl);
+  }, [viewportEl]);
+
   // composer growth applies immediately because content below the scroll position is invisible.
   // composer shrink waits until clamping scrollTop is safe or a bottom pin owns the motion.
   // imperative sizing restores remounted spacers even when composerHeight is unchanged.
@@ -2604,7 +2619,11 @@ const ThreadComposerDock: FC<{
     apply();
     resizeObserver.observe(viewport);
     resizeObserver.observe(dock);
-    return () => resizeObserver.disconnect();
+    viewport.addEventListener(THREAD_GUTTER_CHANGE_EVENT, apply);
+    return () => {
+      resizeObserver.disconnect();
+      viewport.removeEventListener(THREAD_GUTTER_CHANGE_EVENT, apply);
+    };
   }, []);
 
   return (
@@ -2680,7 +2699,12 @@ const pickRandom = <T,>(arr: T[]): T =>
 // same mascot. Greeting varies by local time; name-bearing lines drop the
 // name when none is set. Text is a message key, translated at render so a
 // language switch updates the open greeting.
-type Welcome = { key: TranslationKey; name?: string; sloth: string };
+type Welcome = {
+  key: TranslationKey;
+  name?: string;
+  sloth: string;
+  enlarge?: boolean;
+};
 const DEFAULT_WELCOME: Welcome = {
   key: "welcome.onYourMind",
   sloth: "sloth magnify final.png",
@@ -2731,14 +2755,19 @@ const ThreadWelcome: FC<{
   const displayName = useUserProfileStore((s) => s.displayName);
   const nickname = useUserProfileStore((s) => s.nickname);
   const showGreetingSloth = useUserProfileStore((s) => s.showGreetingSloth);
+  const spooky = useSpookyGreetings();
   const [welcome, setWelcome] = useState<Welcome>(DEFAULT_WELCOME);
   const t = useT();
 
   useEffect(() => {
     const raw = nickname.trim() || (displayName.trim().split(/\s+/)[0] ?? "");
     const name = raw.length > 20 ? `${raw.slice(0, 20)}…` : raw;
-    setWelcome(buildWelcome(new Date().getHours(), name));
-  }, [displayName, nickname]);
+    setWelcome(
+      spooky
+        ? buildSpookyWelcome(name)
+        : buildWelcome(new Date().getHours(), name),
+    );
+  }, [displayName, nickname, spooky]);
 
   const currentEmojiSrc = `Sloth emojis/${welcome.sloth}`;
 
@@ -2752,7 +2781,10 @@ const ThreadWelcome: FC<{
             {showGreetingSloth && !incognito && (
               <MascotImg
                 src={currentEmojiSrc}
-                className="unsloth-welcome-sloth size-[calc(44px*var(--ui-space-scale,1))] -translate-y-[2px]"
+                className={cn(
+                  "unsloth-welcome-sloth size-[calc(44px*var(--ui-space-scale,1))] -translate-y-[2px]",
+                  welcome.enlarge && "scale-[1.15]",
+                )}
               />
             )}
             <h1 className="aui-thread-welcome-message-inner unsloth-welcome-title fade-in slide-in-from-bottom-1 animate-in text-3xl tracking-[-0.02em] duration-200">
@@ -3094,10 +3126,29 @@ const Composer: FC<{
   const oneRowHeight = Math.round(40 * uiSpaceScale);
   const [editorHeight, setEditorHeight] = useState(40);
   const [isWritingExpanded, setIsWritingExpanded] = useState(false);
+  const detachFromBottom = useDetachThreadFromBottom();
+  const scrollThreadToBottom = useScrollThreadToBottom();
+  const threadEmpty = useAuiState(({ thread }) => thread.isEmpty);
   const toggleWritingExpanded = () => {
     setIsWritingExpanded((expanded) => !expanded);
     inputRef.current?.focus({ preventScroll: true });
   };
+  // Welcome page: the bottom pin's stabilizer padding shifted the expanded frame up. On every
+  // transition (button, Escape, send), so collapsing always re-pins the toolbar into view.
+  const wasExpandedRef = useRef(false);
+  useLayoutEffect(() => {
+    const was = wasExpandedRef.current;
+    wasExpandedRef.current = isWritingExpanded;
+    if (!threadEmpty || was === isWritingExpanded) {
+      return;
+    }
+    if (isWritingExpanded) {
+      detachFromBottom();
+    } else {
+      window.requestAnimationFrame(() => scrollThreadToBottom("instant"));
+    }
+  }, [isWritingExpanded, threadEmpty, detachFromBottom, scrollThreadToBottom]);
+  useExpandedComposerFill(editorRef, isWritingExpanded && !isDictating);
   // Cache line metrics so getComputedStyle runs once, not per keystroke.
   const lineMetricsRef = useRef<{ lineHeight: number; padding: number } | null>(
     null,
@@ -7538,7 +7589,7 @@ const MessageError: FC = () => {
   return (
     <MessagePrimitive.Error>
       <ErrorPrimitive.Root className="aui-message-error-root mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg bg-destructive/10 p-3 text-destructive text-sm dark:bg-destructive/5 dark:text-red-200">
-        <ErrorPrimitive.Message className="aui-message-error-message line-clamp-2 min-w-0 flex-1" />
+        <ErrorPrimitive.Message className="aui-message-error-message min-w-0 flex-1 whitespace-pre-wrap break-words" />
         {!researchRunId && !researchActive && (
           <ActionBarPrimitive.Reload asChild={true}>
             <button
@@ -7649,6 +7700,9 @@ function useContinuation() {
       checkpoint: s.params.checkpoint,
     }),
   );
+  const managedEngine = useChatRuntimeStore(
+    (s) => !isExternalModelId(s.params.checkpoint) && s.loadedEngine !== "auto",
+  );
   const partial = useAuiState(
     ({ message }) => readContinuationSource(message.content).partial,
   );
@@ -7714,7 +7768,10 @@ function useContinuation() {
     cancelled && !isProviderReportedReason(stamped?.reason)
       ? ("cancelled" as const)
       : stamped?.reason;
-  const carriedReasoning = thoughtResumable ? reasoning : "";
+  const carriedReasoning = carriedThought(
+    { partial, reasoning },
+    { resumesThought: thoughtResumable, managedEngine },
+  );
 
   const canResume =
     isLast &&
@@ -8913,33 +8970,39 @@ const EditComposer: FC = () => {
   }, [aui, isComposingRef]);
 
   return (
-    <MessagePrimitive.Root className="aui-edit-composer-wrapper mx-auto flex w-full max-w-(--thread-content-max-width) flex-col py-3">
+    // Top gap and type match UserMessage, so the text stays near the prompt's line.
+    <MessagePrimitive.Root className="aui-edit-composer-wrapper mx-auto flex w-full max-w-(--thread-content-max-width) flex-col pt-6 pb-4 text-ui-15p5 [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em]">
       <ComposerPrimitive.Root
-        className="aui-edit-composer-root ml-auto flex w-full max-w-[85%] flex-col rounded-3xl bg-muted"
+        className="aui-edit-composer-root flex w-full flex-col rounded-xl bg-muted"
         onSubmit={(event) => {
           event.preventDefault();
           submitEdit();
         }}
       >
-        <ComposerAttachments className="mb-0 px-3 pt-3" />
+        <ComposerAttachments className="mb-0 px-4 pt-4" />
         <ComposerPrimitive.Input
           submitMode={
             effectiveSendShortcut(sendShortcut, editMultiline ? "\n" : "") === "mod-enter"
               ? "ctrlEnter"
               : "enter"
           }
-          className="aui-edit-composer-input min-h-14 w-full resize-none bg-transparent p-4 text-foreground text-sm font-[450] outline-none"
+          minRows={2}
+          className="aui-edit-composer-input w-full resize-none bg-transparent px-5 py-3.5 text-foreground outline-none"
           autoFocus={true}
           dir="auto"
           {...inputProps}
         />
-        <div className="aui-edit-composer-footer mx-3 mb-3 flex items-center gap-2 self-end">
+        <div className="aui-edit-composer-footer mx-4 mb-4 flex items-center gap-2 self-end">
           <ComposerPrimitive.Cancel asChild={true}>
-            <Button type="button" variant="ghost" size="sm">
+            <Button type="button" variant="outline">
               Cancel
             </Button>
           </ComposerPrimitive.Cancel>
-          <Button type="submit" size="sm" disabled={researchActive || editEmpty}>
+          <Button
+            type="submit"
+            variant="dark"
+            disabled={researchActive || editEmpty}
+          >
             Send
           </Button>
         </div>

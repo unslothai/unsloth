@@ -74,7 +74,7 @@ jobs:
     steps:
       # Per-job egress allowlist. Audit mode for now: logs dialed hosts, does not block them.
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
         with:
           egress-policy: block
           disable-sudo: true
@@ -453,7 +453,7 @@ jobs:
       # ─────────────────────────────────────────────────────────────
       - name: TruffleHog (secrets in diff)
         continue-on-error: true
-        uses: trufflesecurity/trufflehog@e76dff8a7e57d6df0c60ad8cbf5d5cba505a8fc9  # v3.99.2
+        uses: trufflesecurity/trufflehog@e63326d6545de8f425d93ce24078c6e68d83f70e  # v3.99.3
         with:
           path: ./
           base: ${{ github.event.pull_request.base.sha || '' }}
@@ -638,7 +638,7 @@ jobs:
     steps:
       # Egress block: this job only fetches PyPI archives.
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
         with:
           egress-policy: block
           disable-sudo: true
@@ -803,7 +803,7 @@ jobs:
     steps:
       # Egress: registry.npmjs.org plus GitHub for checkout/setup machinery.
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
         with:
           egress-policy: block
           disable-sudo: true
@@ -868,7 +868,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
         with:
           egress-policy: audit
           disable-sudo: true

@@ -407,3 +407,58 @@ def test_probe_scales_follow_each_cast_config(monkeypatch):
         (torch.float8_e5m2, e4m3, (), ()),
     ]
     assert _probe_calls(monkeypatch, "rowwise") == [(e4m3, e4m3, (16, 1), (1, 16))]
+
+
+def _counting_align_hook():
+    from accelerate.hooks import AlignDevicesHook
+    class CountingAlignDevicesHook(AlignDevicesHook):
+        calls = []
+
+        def pre_forward(self, module, *args, **kwargs):
+            CountingAlignDevicesHook.calls.append(id(module))
+            return super().pre_forward(module, *args, **kwargs)
+
+    return CountingAlignDevicesHook
+
+
+def test_accelerate_dispatch_hooks_survive_conversion():
+    pytest.importorskip("accelerate")
+    from accelerate.hooks import add_hook_to_module
+
+    hook_cls = _counting_align_hook()
+    model = _tiny_qwen3()
+    hooks = {}
+    for name, m in model.named_modules():
+        if isinstance(m, torch.nn.Linear):
+            hooks[name] = hook_cls(execution_device = torch.device("cpu"), io_same_device = True)
+            add_hook_to_module(m, hooks[name])
+    weights = {name: m.weight for name, m in model.named_modules() if name in hooks}
+
+    converted = f8t.convert_model_to_float8_training(
+        model, _emulated_config("tensorwise"), size_filter = False, check_hardware = False
+    )
+    assert converted
+    modules = dict(model.named_modules())
+    after = {name: m for name, m in modules.items() if getattr(m, "_hf_hook", None) is not None}
+    assert set(after) == set(hooks)
+    for name in converted:
+        assert isinstance(modules[name], _float8_linear())
+        assert modules[name]._hf_hook is hooks[name]
+        assert modules[name].weight is weights[name]
+        assert "init_hook" not in vars(hooks[name])
+
+    hook_cls.calls.clear()
+    ids = torch.randint(0, 256, (2, 32), generator = torch.Generator().manual_seed(1))
+    out = model(input_ids = ids, labels = ids)
+    out.loss.backward()
+    assert torch.isfinite(out.loss)
+    assert {id(modules[name]) for name in converted} <= set(hook_cls.calls)
+
+
+def test_conversion_adds_no_hooks_to_an_undispatched_model():
+    model = _tiny_qwen3()
+    converted = f8t.convert_model_to_float8_training(
+        model, _emulated_config("tensorwise"), size_filter = False, check_hardware = False
+    )
+    assert converted
+    assert not any(hasattr(m, "_hf_hook") for m in model.modules())

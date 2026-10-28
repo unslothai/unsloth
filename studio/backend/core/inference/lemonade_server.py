@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Private Lemonade process serving FastFlowLM on the AMD NPU.
-
-Uses authenticated loopback and owns the child process tree. Runtime, config and models
-stay under Studio's home; a separate FLM_MODEL_PATH prevents other FastFlowLM installs
-from deleting these models (lemonade-sdk/lemonade#3375). No torch or transformers imports.
-"""
+"""Private Lemonade serving FastFlowLM on AMD NPU over authenticated loopback; no torch or
+transformers imports; FLM_MODEL_PATH stops other FLM installs deleting models"""
 
 from __future__ import annotations
 

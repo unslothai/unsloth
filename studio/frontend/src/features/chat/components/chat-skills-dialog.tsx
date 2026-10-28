@@ -958,7 +958,7 @@ function SkillRow({
         {skill.valid ? null : <Badge variant="destructive">{t("skills.invalid")}</Badge>}
       </div>
       <Switch
-        className="pointer-events-auto translate-y-[0.11em] text-ui-14"
+        className="pointer-events-auto self-start mt-[calc(var(--text-ui-14)*0.3865)] text-ui-14"
         checked={usable && skill.enabled}
         disabled={!usable || changing}
         aria-label={t(skill.enabled ? "skills.disable" : "skills.enable", { name: skill.name })}

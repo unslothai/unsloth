@@ -164,25 +164,43 @@ export function LibraryHeader({
   controls: ReactNode;
   tabs: { items: HeaderTab[]; active: string; onChange: (key: string) => void } | null;
 }) {
+  const barRef = useRef<HTMLDivElement>(null);
   const controlsRef = useRef<HTMLDivElement>(null);
   const titleRef = useRef<HTMLDivElement>(null);
   const rowRef = useRef<HTMLDivElement>(null);
   const [controlsWidth, setControlsWidth] = useState(0);
   const [covered, setCovered] = useState(false);
   const [stuck, setStuck] = useState(false);
+  const [stacked, setStacked] = useState(false);
 
   useEffect(() => {
+    const bar = barRef.current;
     const controlsNode = controlsRef.current;
     const row = rowRef.current;
     const titleNode = titleRef.current;
-    if (!controlsNode || !row || !titleNode) return;
+    if (!bar || !controlsNode || !row || !titleNode) return;
     let frame = 0;
     const update = () => {
       frame = 0;
       setControlsWidth(controlsNode.getBoundingClientRect().width);
+      // Unwrapped width from the tools themselves, so wrapping once stacked cannot flip it back.
+      const tools = [...(controlsNode.firstElementChild?.children ?? [])] as HTMLElement[];
+      const toolGap = controlsNode.firstElementChild
+        ? Number.parseFloat(getComputedStyle(controlsNode.firstElementChild).columnGap) || 0
+        : 0;
+      const needed =
+        tools.reduce((sum, tool) => sum + tool.offsetWidth, 0) +
+        toolGap * Math.max(0, tools.length - 1);
+      // ~6em of title; a longer name truncates instead of stacking.
+      const heading = titleNode.firstElementChild as HTMLElement | null;
+      const titleRoom = heading
+        ? Math.min(heading.scrollWidth, 6 * Number.parseFloat(getComputedStyle(heading).fontSize))
+        : 0;
+      setStacked(needed + GAP_PX + titleRoom > bar.clientWidth);
       const top = row.getBoundingClientRect().top;
       setCovered(top < controlsNode.getBoundingClientRect().bottom);
-      const gap = top - titleNode.getBoundingClientRect().bottom;
+      const above = (row.previousElementSibling as HTMLElement | null) ?? titleNode;
+      const gap = top - above.getBoundingClientRect().bottom;
       setStuck(gap > Number.parseFloat(getComputedStyle(row).marginTop) + 1);
     };
     const schedule = () => {
@@ -190,6 +208,7 @@ export function LibraryHeader({
     };
     const observer = new ResizeObserver(schedule);
     observer.observe(controlsNode);
+    observer.observe(bar);
     document.addEventListener("scroll", schedule, { capture: true, passive: true });
     window.addEventListener("resize", schedule);
     schedule();
@@ -201,20 +220,40 @@ export function LibraryHeader({
     };
   }, []);
 
+  // Keyed: stacking moves the toolbar instead of remounting its search box.
+  const bar = (
+    <div
+      key="bar"
+      ref={barRef}
+      className={cn(
+        "@container flex",
+        stacked
+          ? "mt-3"
+          : "pointer-events-none sticky top-4 z-30 h-0 justify-end",
+      )}
+    >
+      <div
+        ref={controlsRef}
+        className={cn("pointer-events-auto", stacked && "max-w-full [&>*]:flex-wrap [&>*]:gap-y-2")}
+      >
+        {controls}
+      </div>
+    </div>
+  );
+  const heading = (
+    <div
+      key="title"
+      ref={titleRef}
+      className="flex h-9 min-w-0 items-center"
+      style={{ paddingRight: stacked ? undefined : controlsWidth + GAP_PX }}
+    >
+      {title}
+    </div>
+  );
+
   return (
     <>
-      <div className="@container pointer-events-none sticky top-4 z-30 flex h-0 justify-end">
-        <div ref={controlsRef} className="pointer-events-auto">
-          {controls}
-        </div>
-      </div>
-      <div
-        ref={titleRef}
-        className="flex h-9 min-w-0 items-center"
-        style={{ paddingRight: controlsWidth + GAP_PX }}
-      >
-        {title}
-      </div>
+      {stacked ? [heading, bar] : [bar, heading]}
       <div
         ref={rowRef}
         data-stuck={stuck || undefined}
@@ -226,7 +265,7 @@ export function LibraryHeader({
               tabs={tabs.items}
               active={tabs.active}
               onChange={tabs.onChange}
-              reserve={covered ? controlsWidth + GAP_PX : 0}
+              reserve={covered && !stacked ? controlsWidth + GAP_PX : 0}
             />
           </div>
         ) : (

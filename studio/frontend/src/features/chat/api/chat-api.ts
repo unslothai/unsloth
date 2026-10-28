@@ -32,6 +32,8 @@ import {
 } from "@/lib/model-lifecycle-events";
 import type { AgentsMdRecord } from "../utils/agents-md";
 import { showLoadWarning } from "../utils/load-warning-toast";
+import { readAdvertisedPatchGuards } from "../utils/openapi-support";
+import { validateRequestBody, wireLoadRequest } from "../lib/load-request";
 import type {
   MessageRecord,
   ModelType,
@@ -415,12 +417,7 @@ export async function loadModel(
         const response = await authFetch("/api/inference/load", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            ...payload,
-            hf_token: preparedToken.token,
-            native_path_lease: payload.nativePathLease ?? null,
-            nativePathLease: undefined,
-          }),
+          body: JSON.stringify(wireLoadRequest(payload, preparedToken.token)),
           signal: options?.signal,
         });
         const loaded = await parseJsonOrThrow<LoadModelResponse>(response, "Model load");
@@ -474,47 +471,7 @@ export async function validateModel(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     signal: options?.signal,
-    body: JSON.stringify({
-      model_path: payload.model_path,
-      native_path_lease: payload.nativePathLease ?? null,
-      hf_token: preparedToken.token,
-      gguf_variant: payload.gguf_variant ?? null,
-      engine: payload.engine ?? "auto",
-      engine_precision: payload.engine_precision ?? "auto",
-      engine_parallelism: payload.engine_parallelism ?? "tensor",
-      engine_kv_cache_dtype: payload.engine_kv_cache_dtype ?? "auto",
-      engine_seed: payload.engine_seed ?? null,
-      engine_gpu_memory_utilization:
-        payload.engine_gpu_memory_utilization ?? null,
-      // Intended load settings so validate's preflight matches the follow-up /load.
-      max_seq_length: payload.max_seq_length,
-      load_in_4bit: payload.load_in_4bit,
-      cache_type_kv: payload.cache_type_kv ?? null,
-      tensor_parallel: payload.tensor_parallel ?? false,
-      disable_vision: payload.disable_vision ?? false,
-      gpu_ids: payload.gpu_ids,
-      // Takes no VRAM, so validate must not preflight it and refuse what /load takes.
-      audio_device: payload.audio_device ?? null,
-      // Tell validate the placement mode so it applies the same fit policy as /load.
-      gpu_memory_mode: payload.gpu_memory_mode,
-      // Only 0 changes the verdict: a zero-layer DiffusionGemma split places no layers.
-      gpu_layers: payload.gpu_layers,
-      // Slots scale the KV estimate; keep validate sized like the load.
-      n_parallel: payload.n_parallel,
-      reasoning_budget: payload.reasoning_budget ?? -1,
-      reasoning_budget_message: payload.reasoning_budget_message ?? "",
-      // Extra args can change ctx-size or cache, so preflight must price the same command.
-      ...(payload.llama_extra_args !== undefined
-        ? // biome-ignore lint/style/useNamingConvention: API schema
-          { llama_extra_args: payload.llama_extra_args }
-        : {}),
-      // batch sizes scale the same estimate; omitted when blank so they never read as set
-      ...(payload.n_batch != null ? { n_batch: payload.n_batch } : {}),
-      ...(payload.n_ubatch != null ? { n_ubatch: payload.n_ubatch } : {}),
-      // Drafter size differs by kind (DSpark ~11 GB), so preflight needs the mode to match /load.
-      speculative_type: payload.speculative_type ?? null,
-      spec_draft_n_max: payload.spec_draft_n_max ?? null,
-    }),
+    body: JSON.stringify(validateRequestBody(payload, preparedToken.token)),
   });
   return parseJsonOrThrow<ValidateModelResponse>(response);
 }
@@ -857,6 +814,17 @@ export async function deleteFineTunedModel(args: {
   await parseJsonOrThrow<unknown>(response);
 }
 
+let advertisedPatchGuards: boolean | null = null;
+
+export function advertisedThreadPatchGuards(): boolean | null {
+  return advertisedPatchGuards;
+}
+
+function noteAdvertisedPatchGuards(data: unknown): void {
+  const advertised = readAdvertisedPatchGuards(data);
+  if (advertised !== null) advertisedPatchGuards = advertised;
+}
+
 export async function listChatThreads(
   args: {
     modelType?: ModelType;
@@ -875,6 +843,7 @@ export async function listChatThreads(
   const qs = params.toString();
   const response = await authFetch(`/api/chat/threads${qs ? `?${qs}` : ""}`);
   const data = await parseJsonOrThrow<{ threads: ThreadRecord[] }>(response);
+  noteAdvertisedPatchGuards(data);
   // Always hand back an array: an older or misbehaving backend may omit it or send a non-array.
   return Array.isArray(data.threads) ? data.threads : [];
 }
@@ -948,6 +917,7 @@ export async function fetchSidebarRows(
   if (response.status === 404 || response.status === 405) return null;
   if (response.status === 400 && request.cursor) throw new SidebarCursorRejectedError();
   const data = await parseJsonOrThrow<SidebarRowsPage>(response);
+  noteAdvertisedPatchGuards(data);
   return {
     rows: Array.isArray(data.rows) ? data.rows : [],
     nextCursor: data.nextCursor ?? null,
@@ -1666,6 +1636,8 @@ export async function listGgufVariants(
 export interface KvCacheEstimate {
   kv_bytes: number | null;
   weights_bytes: number | null;
+  /** Host / disk lookup tables, part of weights_bytes but never on the GPU; null when none. */
+  lookup_table_bytes?: number | null;
   native_context: number | null;
   /** Extra MTP draft reserve; null for ngram or a model with no MTP head. */
   spec_bytes: number | null;

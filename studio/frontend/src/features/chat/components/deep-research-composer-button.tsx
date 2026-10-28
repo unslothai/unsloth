@@ -219,6 +219,7 @@ function McpSourceList({
               ) : null}
             </span>
             <Switch
+              className="mt-[var(--ui-title-cap-inset)]"
               checked={values.some((value) => matches(tool, value))}
               disabled={
                 !values.some((value) => matches(tool, value)) &&
@@ -412,7 +413,7 @@ function DeepResearchWebsiteAccessContent({
             </div>
             <label
               htmlFor="research-no-time-limit"
-              className="flex shrink-0 cursor-pointer items-center gap-2 pt-0.5 text-sm text-muted-foreground"
+              className="mt-[var(--ui-title-cap-inset)] flex shrink-0 cursor-pointer items-center gap-2 text-sm text-muted-foreground"
             >
               No limit
               <Switch

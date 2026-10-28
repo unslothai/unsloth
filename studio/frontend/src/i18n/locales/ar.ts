@@ -139,6 +139,11 @@ export const ar = {
     more: "المزيد",
     addressPlaceholder: "ابحث أو أدخل عنوان URL",
     local: "محلي",
+    browserUse: {
+      label: "استخدام المتصفح",
+      description: "السماح للنماذج بالتحكم في المتصفح المدمج",
+      unavailable: "حمّل نموذجًا يمكنه استدعاء الأدوات ليتمكن من استخدام المتصفح.",
+    },
     suggested: "مقترحات",
     suggestedMenu: {
       open: "فتح",
@@ -624,6 +629,37 @@ export const ar = {
     compactEmpty: "لا يوجد ما يمكن ضغطه بعد",
     compactUnsupported: "ضغط المحادثة يتطلب نموذج GGUF أو MLX يدعم الأدوات",
   },
+  halloween: {
+    navLabel: "حلوى أم خدعة…",
+    title: "حلوى أم خدعة?!",
+    description:
+      "حضّرنا بعض المفاجآت المخيفة لـ Unsloth، وستبقى حتى نهاية أكتوبر.",
+    chooseTheme: "اختر سمة مخيفة",
+    spookyGreetings: "تحيات مخيفة",
+    spookyGreetingsDescription: "يستقبل الكسلان المحادثات الجديدة بإخافة.",
+    decorations: "عناكب وخفافيش",
+    decorationsDescription:
+      "شباك عنكبوت في الزوايا، وعنكبوت أو خفاش بين حين وآخر مع سمة الهالوين.",
+    surprise: "حلوى أم خدعة!",
+    surpriseDescription: "دع الكسلان يختار سمة لك.",
+    themesTitle: "سمات مخيفة",
+    back: "رجوع",
+    footer: "يعود Unsloth إلى طبيعته عند منتصف ليل 1 نوفمبر.",
+    removeNow: "إزالة الآن",
+    hideFromSidebar: "إخفاء من الشريط الجانبي",
+    greeting: {
+      pumpkins: "نُحتت اليقطينات. ما التالي؟",
+      brewing: "هيا نحضّر الجرعة",
+      trickOrTreat: "حلوى أم خدعة؟",
+      manor: "مرحبًا بك في القصر",
+      manorName: "مرحبًا بك في القصر يا {name}",
+      happyHalloween: "هالوين سعيد",
+      happyHalloweenName: "هالوين سعيد يا {name}",
+      spirits: "الأرواح تُصغي…",
+      mysteries: "ما الأسرار التي سنكشفها الليلة؟",
+      conjure: "ماذا أستحضر لك؟",
+    },
+  },
   welcome: {
     goodToSeeYou: "سعيد برؤيتك",
     goodToSeeYouName: "سعيد برؤيتك يا {name}",
@@ -784,6 +820,8 @@ export const ar = {
       guidedTour: "جولة إرشادية",
       help: "مساعدة",
       logOut: "تسجيل الخروج",
+      logOutNeedsPassword: "عيّن كلمة مرور في الإعدادات > الوصول عن بُعد قبل تسجيل الخروج، حتى تتمكن من تسجيل الدخول مرة أخرى.",
+      logOutFailed: "تعذّر تسجيل الخروج بأمان. حاول مرة أخرى بعد قليل.",
       shutdown: "إيقاف التشغيل",
     },
     commandPalette: {
@@ -928,6 +966,11 @@ export const ar = {
   },
   settings: {
     accounts: {
+      signsInAs: "يسجّل الدخول باسم {username}",
+      signsInAsOwner: "يسجّل الدخول باسم {alias} أو {username}",
+      signInName: "اسم تسجيل الدخول",
+      signInNameDescription: "الاسم الذي تكتبه لتسجيل الدخول عندما يكون في هذا التثبيت أكثر من حساب. يعمل unsloth دائمًا أيضًا. اتركه فارغًا لاستخدام unsloth فقط.",
+      signInNameSave: "حفظ الاسم",
       title: "الحسابات",
       description: "أنشئ حسابات Unsloth خاصة. يسجّل المستخدمون الجدد الدخول برمز إعداد يُستخدم مرة واحدة ثم يختارون كلمة مرور.",
       username: "اسم المستخدم",
@@ -1407,17 +1450,17 @@ export const ar = {
       installingRuntime: "جارٍ التثبيت…",
       installRuntimeFailed: "فشل تثبيت بيئة التشغيل.",
       installRuntimeError: "تعذر بدء تثبيت بيئة التشغيل.",
-      unsupportedArch: "يعمل وضع حماية Windows (MXC) على Windows x64 فقط، لذا فهو غير متاح على هذا الكمبيوتر.",
+      unsupportedArch: "يعمل وضع حماية Windows (MXC) على Windows x64 وARM64 فقط، لذا فهو غير متاح على هذا الكمبيوتر.",
       builtinNeedsUpdate:
         "تحتاج الحاوية المدمجة في Windows إلى الإصدار {required} أو أحدث، بينما يعمل هذا الكمبيوتر بالإصدار {current}. ثبّت آخر تحديث لـ Windows لاستخدامها دون خطوة مسؤول، أو فعّل وضع الحماية الاحتياطي أدناه.",
       unsupportedBuild: "يتطلب وضع حماية Windows (MXC) إصدار Windows 11 24H2 (البنية 26100) أو أحدث، لذا فهو غير متاح على هذا الكمبيوتر.",
-      permissionsIntro: "اختر متى تسأل الأدوات أولاً، وما إذا كان Python والطرفية يعملان أيضاً داخل وضع حماية نظام التشغيل.",
       permissionLabel: "أذونات الأدوات",
+      levelRowLabel: "مستوى وضع الحماية",
       levelPickerTitle: "كيف يجب عزل الكود؟",
       levelOff: "معطّل",
       levelOffShort: "الوصول الكامل يوقف وضع الحماية",
-      levelHighDetail: "حماية على مستوى النظام. يعمل Python والطرفية داخل وضع حماية نظام التشغيل (bubblewrap أو Seatbelt أو MXC) إضافة إلى الضمانات البرمجية. من دون وضع حماية يعمل، تسأل الاستدعاءات الخطرة أولاً.",
-      levelLowDetail: "حماية برمجية. يعمل Python والطرفية بالضمانات البرمجية فقط، خارج وضع حماية نظام التشغيل. تسأل الاستدعاءات الخطرة أولاً ما لم تختر الوصول الكامل.",
+      levelHighDetail: "يعمل Python والطرفية داخل وضع حماية نظام التشغيل (bubblewrap أو Seatbelt أو MXC) إضافة إلى الضمانات البرمجية. من دون وضع حماية يعمل، تسأل الاستدعاءات الخطرة أولاً.",
+      levelLowDetail: "يعمل Python والطرفية بالضمانات البرمجية فقط، خارج وضع حماية نظام التشغيل. تسأل الاستدعاءات الخطرة أولاً ما لم تختر الوصول الكامل.",
       levelLabel: "وضع الحماية",
       levelHigh: "عالٍ",
       levelLow: "منخفض",
@@ -2048,13 +2091,13 @@ export const ar = {
         },
         details: {
           ask:
-            "يطلب الموافقة قبل كل استدعاء أداة، بما في ذلك شيفرة الطرفية وPython وعمليات البحث في الويب وتعديل الملفات وأدوات MCP. الأدوات التي يشغّلها مزوّد خارجي لا تتوقف لطلب الموافقة. الأنسب عندما تريد مراجعة كل خطوة.",
+            "يطلب الموافقة قبل كل استدعاء أداة، بما في ذلك شيفرة الطرفية وPython وعمليات البحث في الويب وتعديل الملفات وأدوات MCP. الأدوات التي يشغّلها مزوّد خارجي لا تتوقف لطلب الموافقة.",
           auto:
             "يشغّل استدعاءات الأدوات المعتادة تلقائيًا ولا يطلب الموافقة إلا عندما يبدو الإجراء خطرًا، مثل قراءة بيانات الاعتماد أو رفع الصلاحيات أو تشغيل أوامر مدمّرة.",
           off:
-            "يشغّل كل استدعاءات الأدوات دون سؤال. تظل شيفرة Python والطرفية تعمل داخل صندوق العزل، الذي يحدّ من الملفات التي يمكنها الوصول إليها على جهازك. إذا لم يكن على هذا الكمبيوتر وضع حماية يعمل لنظام التشغيل، فإن استدعاءات Python والطرفية الخطرة تطلب الموافقة أولًا.",
+            "يشغّل كل استدعاءات الأدوات دون سؤال. تظل شيفرة Python والطرفية تعمل داخل صندوق العزل، الذي يحدّ من الملفات التي يمكنها الوصول إليها على جهازك. من دون وضع حماية يعمل، تسأل الاستدعاءات الخطرة أولاً.",
           full:
-            "يشغّل كل استدعاءات الأدوات دون سؤال ويوقف صندوق عزل الشيفرة، فيمكن لشيفرة Python والطرفية قراءة أي ملف يصل إليه حسابك وتغييره. الأنسب للمهام الموثوقة التي تحتاج إلى العمل خارج صندوق العزل.",
+            "يشغّل كل استدعاءات الأدوات دون سؤال ويوقف صندوق عزل الشيفرة، فيمكن لشيفرة Python والطرفية قراءة أي ملف يصل إليه حسابك وتغييره.",
         },
       },
     },
@@ -2174,6 +2217,12 @@ export const ar = {
         classic: "كلاسيكية",
         minimal: "بسيطة",
         moreThemes: "المزيد من السمات",
+        halloween: "هالوين",
+      },
+      trickOrTreat: {
+        label: "حلوى أم خدعة",
+        description:
+          "سمات الهالوين وتحيات مخيفة حتى 1 نوفمبر.",
       },
       custom: {
         chatWidth: {
@@ -2310,6 +2359,7 @@ export const ar = {
       liveMonitor: {
         title: "المراقبة المباشرة",
         apiTitle: "مراقبة API",
+        apiDescription: "شاهد ما ترسله التطبيقات الأخرى إلى واجهة برمجة هذا الخادم فور وصوله.",
         summary: "الطلبات المباشرة والأخطاء واستخدام التوكنات",
         status: "نشطة: {active} · حديثة: {recent} · {model}",
         noModelLoaded: "لا يوجد نموذج محمّل",
@@ -2328,7 +2378,7 @@ export const ar = {
         gpuUnusableDetail: "تم اكتشافه، لكن PyTorch لا يستطيع استخدامه",
         detailedView: "عرض مفصل",
         detailedViewDescription:
-          "اعرض حمل المعالج وحمل كل وحدة GPU وحرارتها واستهلاكها للطاقة في النافذة العائمة وهنا.",
+          "اعرض حمل المعالج وحمل كل وحدة GPU وحرارتها واستهلاكها للطاقة في النافذة العائمة.",
         cpuLoad: "حمل المعالج",
         gpuLoad: "حمل GPU",
         temperature: "الحرارة",
@@ -2361,6 +2411,10 @@ export const ar = {
         used: "{value} مستخدم",
         free: "{value} متاح",
         total: "{value} إجمالي",
+        usedOf: "{used} مستخدمة من {total}",
+        segmentUsed: "مستخدمة بواسطة GPU",
+        segmentSystem: "مستخدمة بواسطة النظام",
+        segmentAvailable: "متاحة",
       },
       llamaBackend: {
         title: "محرك استدلال GGUF",
@@ -2490,6 +2544,10 @@ export const ar = {
           hideDetailsAction: "إخفاء التفاصيل",
           clearAction: "مسح ذاكرات التخزين المؤقت",
           clearOneAction: "مسح",
+          showFolders: "إظهار المجلدات",
+          hideFolders: "إخفاء المجلدات",
+          previousLocations: "يشمل المواقع السابقة. يؤثر زر المسح الرئيسي على مجلد ذاكرة التخزين المؤقت الحالي. تمسح أزرار النماذج النسخة المحددة فقط.",
+          clearModelDescription: "يؤدي هذا إلى إزالة هذه النسخة المخزنة مؤقتًا فقط. سيتم تنزيلها مرة أخرى عند الحاجة.",
           clearingAction: "جارٍ المسح...",
           confirmTitle: "هل تريد مسح الملفات المخزّنة مؤقتًا؟",
           confirmDescription: "سيؤدي ذلك إلى تحرير نحو {size}.",
@@ -2547,6 +2605,8 @@ export const ar = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "مدة التشغيل",
         processMemory: "ذاكرة العملية",
         notInstalled: "غير مثبّت",
@@ -3296,6 +3356,7 @@ export const ar = {
       desktopAppVersionUnavailable: "غير متاح",
       llamaCppVersion: "إصدار llama.cpp",
       audioCppVersion: "إصدار audio.cpp",
+      mlxVersion: "إصدار MLX",
       whisperCppVersion: "إصدار whisper.cpp",
       engines: {
         title: "المحركات",
@@ -4183,7 +4244,6 @@ export const ar = {
       terminalStart: "> يبدأ تدريب Unsloth...",
       preparingResources: "> جارٍ تحضير النموذج ومجموعة البيانات...",
       gettingReady: "> نُجهّز كل شيء لعملية التدريب...",
-      waitingForFirstStep: "> {message} | في انتظار الخطوة الأولى... ({step})",
       resumingTraining: "جارٍ استئناف التدريب...",
       startingTraining: "جارٍ بدء التدريب...",
       dataset: "مجموعة البيانات",
@@ -4548,6 +4608,7 @@ export const ar = {
       modelsTitle: "لا توجد نماذج مضبوطة بعد",
       modelsDescription: "تظهر هنا النماذج التي تدربها أو تصدّرها في Unsloth.",
       createFolder: "إنشاء مجلد",
+      generateImage: "إنشاء صورة",
       generateVideo: "إنشاء فيديو",
       generateAudio: "إنشاء صوت",
       trainModel: "تدريب نموذج",

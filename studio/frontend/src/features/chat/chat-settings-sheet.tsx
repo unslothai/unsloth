@@ -537,8 +537,9 @@ export function ChatSettingsPanel({
   const activeModel = useChatRuntimeStore(
     (s) => s.models.find((m) => m.id === currentCheckpoint) ?? null,
   );
+  const loadedEngine = useChatRuntimeStore((s) => s.loadedEngine);
   // Same call the request body makes, so the panel cannot offer a seed the body drops.
-  const showSeed = modelReadsSamplingSeed(activeModel);
+  const showSeed = modelReadsSamplingSeed(activeModel, loadedEngine);
   const platformDeviceType = usePlatformStore((s) => s.deviceType);
   // Unified memory, not just Darwin: an Intel Mac spills to system RAM like a PC.
   const isUnifiedMemory = usePlatformStore((s) => s.appleSilicon);
@@ -2053,7 +2054,12 @@ function ConfirmToolCallsToggle() {
   const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
 
   return (
-    <div className="flex min-h-8 items-center justify-between gap-3">
+    <div
+      className={cn(
+        "flex min-h-8 justify-between gap-3",
+        permissionMode === "full" ? "items-start" : "items-center",
+      )}
+    >
       <div className="flex min-w-0 flex-col gap-0.5">
         <div className="flex min-w-0 items-center gap-1.5">
           <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
@@ -2075,7 +2081,11 @@ function ConfirmToolCallsToggle() {
         ) : null}
       </div>
       <Switch
-        className="panel-switch shrink-0"
+        // Cap top of the 13px title at leading 1.25 (Inter: 0.26em).
+        className={cn(
+          "panel-switch shrink-0",
+          permissionMode === "full" && "mt-[calc(var(--text-ui-13)*0.26)]",
+        )}
         checked={permissionMode === "ask"}
         onCheckedChange={(checked) => {
           if (checked) {

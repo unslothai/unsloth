@@ -13,11 +13,11 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
-  Copy01Icon,
   Delete02Icon,
   Refresh01Icon,
   MoreHorizontalIcon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ApiKey } from "../api/api-keys";
 

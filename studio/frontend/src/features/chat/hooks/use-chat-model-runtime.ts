@@ -8,6 +8,7 @@ import {
 } from "../lib/cache-miss-download";
 import { mlxRuntimeStateFrom } from "../lib/mlx-runtime-state";
 import { shouldRestorePreviousModel } from "../lib/restore-previous-model";
+import { llamaServerLoadFields } from "../lib/load-request";
 import {
   type ServerTuningValues,
   clearedServerTuningState,
@@ -172,6 +173,7 @@ import {
   type CpuFallbackReason,
   type MmprojFallbackReason,
   type InferenceStatusResponse,
+  type LoadModelRequest,
   isMultimodalResponse,
 } from "../types/api";
 import { isExternalModelId } from "../external-providers";
@@ -193,6 +195,7 @@ import {
   invalidateLlamaFlagCatalog,
   loadManagedLlamaFlags,
 } from "@/features/model-picker/api/llama-flags";
+import { sanitizeStoredExtraArgs } from "@/features/model-picker/model-config/llama-extra-args";
 import { usePlatformStore } from "@/config/env";
 import {
   DEFAULT_ENGINE_LAUNCH_FIELDS,
@@ -2147,7 +2150,31 @@ export function useChatModelRuntime() {
             pendingLoadConfig?.reasoningBudgetMessage ??
             stateBeforeUnload.reasoningBudgetMessage;
           // No fallback: undefined means unread, and the route keeps stored flags when omitted.
-          const loadLlamaExtraArgs = pendingLoadConfig?.llamaExtraArgs;
+          let loadLlamaExtraArgs = pendingLoadConfig?.llamaExtraArgs;
+          if (
+            isGguf &&
+            !targetIsDiffusion &&
+            loadLlamaExtraArgs != null &&
+            loadLlamaExtraArgs.length > 0
+          ) {
+            // Sanitized like auto-load: a flag managed since it was saved would 400 the load.
+            try {
+              const managed = await loadManagedLlamaFlags();
+              const cleaned = sanitizeStoredExtraArgs(
+                loadLlamaExtraArgs,
+                managed?.managed ?? new Set<string>(),
+                {
+                  maxBytes: managed?.maxBytes,
+                  windowsCommandBudget: managed?.windowsCommandBudget,
+                },
+              );
+              if (cleaned.length !== loadLlamaExtraArgs.length) {
+                loadLlamaExtraArgs = cleaned;
+              }
+            } catch {
+              // A flag-catalogue outage must not stop the load.
+            }
+          }
           let loadNBatch =
             pendingLoadConfig?.nBatch ?? stateBeforeUnload.nBatch;
           let loadNUbatch =
@@ -2174,133 +2201,170 @@ export function useChatModelRuntime() {
             const validateNativePathLease = nativePathToken
               ? (await consumeNativePathToken(nativePathToken, "validate-model")).nativePathLease
               : undefined;
-            // Validate with the same effective context /load uses.
             const switchingModelOrVariant =
               currentCheckpoint !== modelId ||
               (loadActiveGgufVariant ?? null) !== (ggufVariant ?? null);
             const resetsPerModelSettings = Boolean(
               currentCheckpoint && switchingModelOrVariant && !keepSpeculative,
             );
+            // Size staged settings before validation; reset the store only after unloading.
+            const persistedSpeculativeType = resetsPerModelSettings
+              ? readPersistedSpeculativeType()
+              : null;
+            if (resetsPerModelSettings) {
+              loadSpeculativeType =
+                pendingLoadConfig?.speculativeType != null
+                  ? normalizeSpeculativeType(pendingLoadConfig.speculativeType)
+                  : persistedSpeculativeType;
+              loadSpecDraftNMax = pendingLoadConfig?.specDraftNMax ?? null;
+              loadNParallel = pendingLoadConfig?.nParallel ?? null;
+              loadReasoningBudget = pendingLoadConfig?.reasoningBudget ?? -1;
+              loadReasoningBudgetMessage =
+                pendingLoadConfig?.reasoningBudgetMessage ?? "";
+              loadNBatch = pendingLoadConfig?.nBatch ?? null;
+              loadNUbatch = pendingLoadConfig?.nUbatch ?? null;
+              loadServerTuning = {
+                loadMode: pendingLoadConfig?.loadMode ?? null,
+                specDraftCacheDtype:
+                  pendingLoadConfig?.specDraftCacheDtype ?? null,
+                ctxCheckpoints: pendingLoadConfig?.ctxCheckpoints ?? null,
+                cacheRam: pendingLoadConfig?.cacheRam ?? null,
+              };
+              loadMlxKvQuant = pendingLoadConfig?.mlxKvQuant ?? null;
+              loadMlxInt8Prefill = pendingLoadConfig?.mlxInt8Prefill ?? false;
+              loadMlxPleOffload = pendingLoadConfig?.mlxPleOffload ?? null;
+              loadMlxExpertOffload = pendingLoadConfig?.mlxExpertOffload ?? null;
+              loadChatTemplateOverride =
+                pendingLoadConfig?.chatTemplateOverride?.trim()
+                  ? pendingLoadConfig.chatTemplateOverride
+                  : null;
+              loadCustomContextLength =
+                pendingLoadConfig?.customContextLength ?? null;
+              loadSelectedGpuIds = stagedGpuIds;
+              loadGpuLayers = pendingLoadConfig?.gpuLayers ?? GPU_LAYERS_AUTO;
+              loadNCpuMoe = pendingLoadConfig?.nCpuMoe ?? 0;
+              loadSplitRatio = reconcileTensorSplit(
+                pendingLoadConfig?.tensorSplit,
+                pendingLoadConfig?.selectedGpuIds,
+                stagedGpuIds,
+              );
+            }
+
+            // The Context Length the USER set for this load, captured before the clamp below can stand in for
+            // it. This, not the n_ctx that goes on the wire, is what the completed load pins: several send
+            // rules put a positive n_ctx on the wire with the control on Auto.
+            const targetIsMlx = isServedByMlx(
+              isGguf,
+              platform.deviceType,
+              platform.chatOnlyReason,
+            );
+            // Only a same-model reload without a staged config reuses the resident's settings; otherwise the
+            // drafter is this model's own and a standing mode goes through the resolver.
+            if (targetIsMlx && (pendingLoadConfig != null || switchingModelOrVariant)) {
+              loadSpecDraftModel = pendingLoadConfig?.specDraftModel ?? null;
+              if (loadSpeculativeType && pendingLoadConfig?.speculativeType == null) {
+                loadSpeculativeType = resolveSpeculativeType(null, loadSpeculativeType, true);
+              }
+            }
+            const explicitCtxPin = loadRequestContextPin(
+              loadCustomContextLength,
+              targetIsMlx,
+              pinnedMaxSeqLength,
+            );
             // Pinning layers on the SAME model keeps the currently resolved context: with no explicit pin, a
             // manual+pinned reload would send 0, which the backend's --fit off branch treats as the NATIVE
             // context, far larger than the sheet shows when the load was fit-sized, a likely OOM.
             // loadedContextLength is that resolved value; a model already at native reloads unchanged.
-            // Validation takes it too, so /validate and /load size the same context.
-            const fixedLayerContext = (
-              customContextLength: number | null,
-              gpuLayers: number,
-            ): number | null =>
+            if (
               isGguf &&
               !switchingModelOrVariant &&
               loadGpuMemoryMode === "manual" &&
-              gpuLayers >= 0 &&
-              customContextLength == null &&
+              loadGpuLayers >= 0 &&
+              loadCustomContextLength == null &&
               (loadContextLength ?? 0) > 0
-                ? loadContextLength
-                : customContextLength;
-            const validateCustomContextLength = resetsPerModelSettings
-              ? null
-              : fixedLayerContext(loadCustomContextLength, loadGpuLayers);
-            const validateGpuIds = resetsPerModelSettings
-              ? stagedGpuIds
-              : loadSelectedGpuIds;
-            // The reset below re-baselines gpuLayers to Auto; mirror it here.
-            const validateGpuLayers = resetsPerModelSettings
-              ? GPU_LAYERS_AUTO
-              : loadGpuLayers;
-            const validateNParallel = resetsPerModelSettings
-              ? (pendingLoadConfig?.nParallel ?? null)
-              : loadNParallel;
-            const validateReasoningBudget = resetsPerModelSettings
-              ? (pendingLoadConfig?.reasoningBudget ?? -1)
-              : loadReasoningBudget;
-            const validateReasoningBudgetMessage = resetsPerModelSettings
-              ? (pendingLoadConfig?.reasoningBudgetMessage ?? "")
-              : loadReasoningBudgetMessage;
-            const validateNBatch = resetsPerModelSettings
-              ? (pendingLoadConfig?.nBatch ?? null)
-              : loadNBatch;
-            const validateNUbatch = resetsPerModelSettings
-              ? (pendingLoadConfig?.nUbatch ?? null)
-              : loadNUbatch;
-            const validateServerTuning: ServerTuningValues =
-              resetsPerModelSettings
-                ? {
-                    loadMode: pendingLoadConfig?.loadMode ?? null,
-                    specDraftCacheDtype:
-                      pendingLoadConfig?.specDraftCacheDtype ?? null,
-                    ctxCheckpoints: pendingLoadConfig?.ctxCheckpoints ?? null,
-                    cacheRam: pendingLoadConfig?.cacheRam ?? null,
-                  }
-                : loadServerTuning;
-            const validateMaxSeqLength = resolveFitMaxSeqLength(
+            ) {
+              loadCustomContextLength = loadContextLength;
+            }
+            // A GGUF native context can exceed maxSeqLength, so sizing on raw maxSeqLength could pass
+            // /validate, unload, then have /load refuse it.
+            const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
+              modelId,
+              ggufVariant,
+              isGguf,
+              customContextLength: loadCustomContextLength,
+              loadedContextLength: loadContextLength,
+              currentCheckpoint,
+              activeGgufVariant: loadActiveGgufVariant,
+              isMlx: targetIsMlx,
+              pinnedMaxSeqLength,
+              defaultMaxSeqLength: unpinnedDefaultRequest(
+                previousIsMlx,
+                stateBeforeUnload.params.maxSeqLength,
+                DEFAULT_MAX_SEQ_LENGTH,
+              ),
+              presetSource: loadActivePresetSource,
+              loadedContextPin: stateBeforeUnload.loadedCustomContextLength,
+            });
+            const loadMaxSeqLength = resolveFitMaxSeqLength(
               isGguf,
               loadGpuMemoryMode,
-              validateGpuLayers,
-              validateCustomContextLength,
-              resolveLoadMaxSeqLength({
-                modelId,
-                ggufVariant,
-                isGguf,
-                customContextLength: validateCustomContextLength,
-                loadedContextLength: loadContextLength,
-                currentCheckpoint,
-                activeGgufVariant: loadActiveGgufVariant,
-                isMlx: isServedByMlx(isGguf, platform.deviceType, platform.chatOnlyReason),
-                pinnedMaxSeqLength,
-                defaultMaxSeqLength: unpinnedDefaultRequest(
-                  previousIsMlx,
-                  stateBeforeUnload.params.maxSeqLength,
-                  DEFAULT_MAX_SEQ_LENGTH,
-                ),
-                presetSource: loadActivePresetSource,
-                loadedContextPin: stateBeforeUnload.loadedCustomContextLength,
-              }),
+              loadGpuLayers,
+              loadCustomContextLength,
+              effectiveMaxSeqLength,
             );
-            const validation = await validateModel({
+            const effectiveChatTemplateOverride =
+              loadChatTemplateOverride?.trim() ? loadChatTemplateOverride : null;
+            // Build lazily: validation, the engine offer and consent update these values.
+            const loadRequest = (): LoadModelRequest => ({
               model_path: loadPath,
-              engine_precision: stateBeforeUnload.params.enginePrecision ?? "auto",
-              engine_parallelism: stateBeforeUnload.params.engineParallelism ?? "tensor",
-              ...engineLaunchFieldsFromParams(stateBeforeUnload.params),
-              engine: isGguf ? "auto" : (stateBeforeUnload.params.engine ?? "auto"),
-              nativePathLease: validateNativePathLease,
+              ...loadEngineFields,
+              engine: isGguf ? "auto" : loadEngineFields.engine,
               hf_token: hfToken,
-              max_seq_length: validateMaxSeqLength,
-              load_in_4bit:
-                (stateBeforeUnload.params.engine ?? "auto") === "auto" &&
-                stateBeforeUnload.params.loadIn4bit !== false,
+              max_seq_length: loadMaxSeqLength,
+              max_seq_length_auto_derived: isReplayedLoadContext(
+                isGguf,
+                loadCustomContextLength,
+                loadMaxSeqLength,
+              ),
+              load_in_4bit: loadEngineFields.engine === "auto" && loadIn4bitChoice,
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
+              trust_remote_code: trustRemoteCode,
+              approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
+              chat_template_override: effectiveChatTemplateOverride,
               cache_type_kv: loadKvCacheDtype,
+              mlx_kv_quant: loadMlxKvQuant ?? null,
+              mlx_int8_prefill: loadMlxInt8Prefill,
+              mlx_ple_offload: loadMlxPleOffload,
+              mlx_expert_offload: loadMlxExpertOffload,
+              speculative_type: loadSpeculativeType,
+              spec_draft_n_max: loadSpecDraftNMax,
+              ...(targetIsMlx ? { spec_draft_model: loadSpecDraftModel } : {}),
+              n_parallel: loadNParallel,
+              ...llamaServerLoadFields(
+                {
+                  reasoningBudget: loadReasoningBudget,
+                  reasoningBudgetMessage: loadReasoningBudgetMessage,
+                  nBatch: loadNBatch,
+                  nUbatch: loadNUbatch,
+                  llamaExtraArgs: loadLlamaExtraArgs,
+                  ...loadServerTuning,
+                },
+                { isGguf, isDiffusion: targetIsDiffusion },
+              ),
               tensor_parallel: loadTensorParallel,
               disable_vision: loadDisableVision,
-              gpu_ids: validateGpuIds ?? undefined,
-              ...(isGguf
-                ? {
-                    gpu_memory_mode: loadGpuMemoryMode,
-                    // Sized like the follow-up /load, else a manual DiffusionGemma split 409s when it fits.
-                    gpu_layers: validateGpuLayers,
-                    n_parallel: validateNParallel,
-                    reasoning_budget: targetIsDiffusion
-                      ? -1
-                      : validateReasoningBudget,
-                    reasoning_budget_message: targetIsDiffusion
-                      ? ""
-                      : validateReasoningBudgetMessage,
-                    ...(validateNBatch != null
-                      ? { n_batch: validateNBatch }
-                      : {}),
-                    ...(validateNUbatch != null
-                      ? { n_ubatch: validateNUbatch }
-                      : {}),
-                    // Same values as /load: the preflight must approve the command /load sends.
-                    ...serverTuningLoadPayload(validateServerTuning),
-                    // Same extra args as /load: --ctx-size or cache overrides change the memory estimate.
-                    ...(!targetIsDiffusion && loadLlamaExtraArgs !== undefined
-                      ? { llama_extra_args: loadLlamaExtraArgs ?? [] }
-                      : {}),
-                  }
-                : {}),
+              // A manual DiffusionGemma split keeps its layer count, or a training guard judges it a
+              // full-GGUF occupant.
+              gpu_memory_mode: loadGpuMemoryMode,
+              gpu_layers: loadGpuLayers,
+              n_cpu_moe: loadNCpuMoe,
+              tensor_split: loadSplitRatio ?? undefined,
+              gpu_ids: loadSelectedGpuIds ?? undefined,
+            });
+            const validation = await validateModel({
+              ...loadRequest(),
+              nativePathLease: validateNativePathLease,
             });
             isLora = validation.is_lora ?? isLora;
             // validateModel cannot be aborted, so stop here if a replacement superseded this load.
@@ -2378,22 +2442,7 @@ export function useChatModelRuntime() {
               if (!nativePathToken) {
                 Object.assign(
                   validation,
-                  await validateModel(
-                    {
-                      model_path: loadPath,
-                      ...loadEngineFields,
-                      hf_token: hfToken,
-                      max_seq_length: validateMaxSeqLength,
-                      load_in_4bit: false,
-                      is_lora: isLora,
-                      gguf_variant: ggufVariant ?? null,
-                      cache_type_kv: loadKvCacheDtype,
-                      tensor_parallel: loadTensorParallel,
-                      disable_vision: loadDisableVision,
-                      gpu_ids: validateGpuIds ?? undefined,
-                    },
-                    { signal: abortCtrl.signal },
-                  ),
+                  await validateModel(loadRequest(), { signal: abortCtrl.signal }),
                 );
                 if (abortCtrl.signal.aborted) throw new Error("Cancelled");
               }
@@ -2488,7 +2537,6 @@ export function useChatModelRuntime() {
 
             // On a switch, fall back to the standing spec preference so forced MTP does not follow.
             if (resetsPerModelSettings) {
-              const persistedSpeculativeType = readPersistedSpeculativeType();
               useChatRuntimeStore.setState({
                 speculativeType: persistedSpeculativeType,
                 loadedSpeculativeType: persistedSpeculativeType,
@@ -2518,95 +2566,8 @@ export function useChatModelRuntime() {
                 splitRatio: null,
                 customContextLength: null,
               });
-              loadSpeculativeType =
-                pendingLoadConfig?.speculativeType != null
-                  ? normalizeSpeculativeType(pendingLoadConfig.speculativeType)
-                  : persistedSpeculativeType;
-              loadSpecDraftNMax = pendingLoadConfig?.specDraftNMax ?? null;
-              loadNParallel = pendingLoadConfig?.nParallel ?? null;
-              loadReasoningBudget = pendingLoadConfig?.reasoningBudget ?? -1;
-              loadReasoningBudgetMessage =
-                pendingLoadConfig?.reasoningBudgetMessage ?? "";
-              loadNBatch = pendingLoadConfig?.nBatch ?? null;
-              loadNUbatch = pendingLoadConfig?.nUbatch ?? null;
-              loadServerTuning = {
-                loadMode: pendingLoadConfig?.loadMode ?? null,
-                specDraftCacheDtype:
-                  pendingLoadConfig?.specDraftCacheDtype ?? null,
-                ctxCheckpoints: pendingLoadConfig?.ctxCheckpoints ?? null,
-                cacheRam: pendingLoadConfig?.cacheRam ?? null,
-              };
-              loadMlxKvQuant = pendingLoadConfig?.mlxKvQuant ?? null;
-              loadMlxInt8Prefill = pendingLoadConfig?.mlxInt8Prefill ?? false;
-              loadMlxPleOffload = pendingLoadConfig?.mlxPleOffload ?? null;
-              loadMlxExpertOffload = pendingLoadConfig?.mlxExpertOffload ?? null;
-              loadChatTemplateOverride =
-                pendingLoadConfig?.chatTemplateOverride?.trim()
-                  ? pendingLoadConfig.chatTemplateOverride
-                  : null;
-              // Keep the click-time snapshot in lock-step with the store reset.
-              loadCustomContextLength =
-                pendingLoadConfig?.customContextLength ?? null;
-              loadSelectedGpuIds = stagedGpuIds;
-              loadGpuLayers = pendingLoadConfig?.gpuLayers ?? GPU_LAYERS_AUTO;
-              loadNCpuMoe = pendingLoadConfig?.nCpuMoe ?? 0;
-              loadSplitRatio = reconcileTensorSplit(
-                pendingLoadConfig?.tensorSplit,
-                pendingLoadConfig?.selectedGpuIds,
-                stagedGpuIds,
-              );
             }
-
-            // The user's Context Length, captured before the clamp: this is what the load pins.
-            const targetIsMlx = isServedByMlx(
-              isGguf,
-              platform.deviceType,
-              platform.chatOnlyReason,
-            );
-            // Only a same-model reload without a staged config reuses the resident's settings; otherwise the
-            // drafter is this model's own and a standing mode goes through the resolver.
-            if (targetIsMlx && (pendingLoadConfig != null || switchingModelOrVariant)) {
-              loadSpecDraftModel = pendingLoadConfig?.specDraftModel ?? null;
-              if (loadSpeculativeType && pendingLoadConfig?.speculativeType == null) {
-                loadSpeculativeType = resolveSpeculativeType(null, loadSpeculativeType, true);
-              }
-            }
-            const explicitCtxPin = loadRequestContextPin(
-              loadCustomContextLength,
-              targetIsMlx,
-              pinnedMaxSeqLength,
-            );
-            loadCustomContextLength = fixedLayerContext(
-              loadCustomContextLength,
-              loadGpuLayers,
-            );
-            const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
-              modelId,
-              ggufVariant,
-              isGguf,
-              customContextLength: loadCustomContextLength,
-              loadedContextLength: loadContextLength,
-              currentCheckpoint,
-              activeGgufVariant: loadActiveGgufVariant,
-              isMlx: targetIsMlx,
-              pinnedMaxSeqLength,
-              defaultMaxSeqLength: unpinnedDefaultRequest(
-                  previousIsMlx,
-                  stateBeforeUnload.params.maxSeqLength,
-                  DEFAULT_MAX_SEQ_LENGTH,
-                ),
-              presetSource: loadActivePresetSource,
-              loadedContextPin: stateBeforeUnload.loadedCustomContextLength,
-            });
-            const loadMaxSeqLength = resolveFitMaxSeqLength(
-              isGguf,
-              loadGpuMemoryMode,
-              loadGpuLayers,
-              loadCustomContextLength,
-              effectiveMaxSeqLength,
-            );
-            const effectiveChatTemplateOverride =
-              loadChatTemplateOverride?.trim() ? loadChatTemplateOverride : null;
+            // Invalidate factories started before the final loading boundary.
             if (!keepsOthers && !touchesOnlySelected) {
               requestLocalPromptQueueStop();
             }
@@ -2617,59 +2578,10 @@ export function useChatModelRuntime() {
             loadRun.loadAttemptPath = loadPath;
 
             const loadResponse = await loadModel({
-              model_path: loadPath,
-              ...loadEngineFields,
-              engine: isGguf ? "auto" : loadEngineFields.engine,
+              ...loadRequest(),
               load_request_id: loadRun.requestId,
               nativePathLease: loadNativePathLease,
-              hf_token: hfToken,
-              max_seq_length: loadMaxSeqLength,
-              max_seq_length_auto_derived: isReplayedLoadContext(
-                isGguf,
-                loadCustomContextLength,
-                loadMaxSeqLength,
-              ),
-              load_in_4bit:
-                loadEngineFields.engine === "auto" && loadIn4bitChoice,
-              is_lora: isLora,
-              gguf_variant: ggufVariant ?? null,
-              trust_remote_code: trustRemoteCode,
-              approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
-              chat_template_override: effectiveChatTemplateOverride,
-              cache_type_kv: loadKvCacheDtype,
-              mlx_kv_quant: loadMlxKvQuant ?? null,
-              mlx_int8_prefill: loadMlxInt8Prefill,
-              mlx_ple_offload: loadMlxPleOffload,
-              mlx_expert_offload: loadMlxExpertOffload,
-              speculative_type: loadSpeculativeType,
-              spec_draft_n_max: loadSpecDraftNMax,
-              ...(targetIsMlx ? { spec_draft_model: loadSpecDraftModel } : {}),
-              n_parallel: loadNParallel,
-              reasoning_budget:
-                isGguf && !targetIsDiffusion ? loadReasoningBudget : -1,
-              reasoning_budget_message:
-                isGguf && !targetIsDiffusion ? loadReasoningBudgetMessage : "",
-              // [] means launch with none; llama-server flags only, never transformers or diffusion.
-              ...(isGguf && !targetIsDiffusion && loadLlamaExtraArgs !== undefined
-                ? { llama_extra_args: loadLlamaExtraArgs ?? [] }
-                : {}),
-              // omitted when blank: a null counts as set and strips inherited -b / -ub
-              ...(isGguf && loadNBatch != null ? { n_batch: loadNBatch } : {}),
-              ...(isGguf && loadNUbatch != null
-                ? { n_ubatch: loadNUbatch }
-                : {}),
-              ...(isGguf && !targetIsDiffusion
-                ? serverTuningLoadPayload(loadServerTuning)
-                : {}),
-              tensor_parallel: loadTensorParallel,
-              disable_vision: loadDisableVision,
-              gpu_memory_mode: loadGpuMemoryMode,
-              gpu_layers: loadGpuLayers,
-              n_cpu_moe: loadNCpuMoe,
-              tensor_split: loadSplitRatio ?? undefined,
-              gpu_ids: loadSelectedGpuIds ?? undefined,
               force_cancel_active: forceCancelActive,
-
               force_reload: forceReload,
               alongside: keepModelsLoaded || touchesOnlySelected,
             });

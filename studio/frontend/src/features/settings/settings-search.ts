@@ -60,6 +60,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
   appearance: [
     "settings.appearance.theme.label",
     "settings.appearance.palette.label",
+    "settings.appearance.trickOrTreat.label",
     "settings.appearance.custom.colors.accent",
     "settings.appearance.custom.colors.background",
     "settings.appearance.custom.colors.foreground",
@@ -331,6 +332,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
   sandbox: [
     "settings.general.permissions.sectionTitle",
     "settings.sandbox.levelLabel",
+    "settings.sandbox.levelRowLabel",
     "settings.sandbox.toolsSection",
     "settings.sandbox.python",
     "settings.sandbox.terminal",

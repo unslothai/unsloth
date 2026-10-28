@@ -140,6 +140,11 @@ export const he = {
     more: "עוד",
     addressPlaceholder: "חפש או הזן URL",
     local: "מקומי",
+    browserUse: {
+      label: "שימוש בדפדפן",
+      description: "אפשר למודלים לשלוט בדפדפן המובנה",
+      unavailable: "טען מודל שיכול לקרוא לכלים כדי שיוכל להשתמש בדפדפן.",
+    },
     suggested: "מוצעים",
     suggestedMenu: {
       open: "פתח",
@@ -711,6 +716,36 @@ export const he = {
     compactEmpty: "אין עדיין מה לכווץ",
     compactUnsupported: "כיווץ שיחה דורש מודל GGUF או MLX עם תמיכה בכלים",
   },
+  halloween: {
+    navLabel: "ממתק או תעלול…",
+    title: "ממתק או תעלול?!",
+    description: "רקחנו כמה הפחדות בשביל Unsloth, כאן עד סוף אוקטובר.",
+    chooseTheme: "בחירת ערכת נושא מפחידה",
+    spookyGreetings: "ברכות מפחידות",
+    spookyGreetingsDescription: "העצלן מקבל שיחות חדשות בהפחדה.",
+    decorations: "עכבישים ועטלפים",
+    decorationsDescription:
+      "קורי עכביש בפינות, ומדי פעם עכביש או עטלף בערכת נושא של ליל כל הקדושים.",
+    surprise: "ממתק או תעלול!",
+    surpriseDescription: "העצלן יבחר בשבילך ערכת נושא.",
+    themesTitle: "ערכות נושא מפחידות",
+    back: "חזרה",
+    footer: "Unsloth יחזור לרגיל בחצות של 1 בנובמבר.",
+    removeNow: "הסרה עכשיו",
+    hideFromSidebar: "הסתרה מסרגל הצד",
+    greeting: {
+      pumpkins: "הדלעות כבר מגולפות. מה הלאה?",
+      brewing: "בואו נרקח משהו",
+      trickOrTreat: "ממתק או תעלול?",
+      manor: "ברוכים הבאים לאחוזה",
+      manorName: "ברוכים הבאים לאחוזה, {name}",
+      happyHalloween: "ליל כל הקדושים שמח",
+      happyHalloweenName: "ליל כל הקדושים שמח, {name}",
+      spirits: "הרוחות מקשיבות…",
+      mysteries: "אילו תעלומות נגלה הלילה?",
+      conjure: "מה אוכל לכשף בשבילך?",
+    },
+  },
   welcome: {
     goodToSeeYou: "טוב לראות אותך",
     goodToSeeYouName: "טוב לראות אותך, {name}",
@@ -870,6 +905,8 @@ export const he = {
       guidedTour: "סיור מודרך",
       help: "עזרה",
       logOut: "התנתקות",
+      logOutNeedsPassword: "לפני ההתנתקות, הגדירו סיסמה בהגדרות > גישה מרחוק כדי שתוכלו להתחבר שוב.",
+      logOutFailed: "לא ניתן היה להתנתק בבטחה. נסו שוב בעוד רגע.",
       shutdown: "כיבוי",
     },
     commandPalette: {
@@ -1014,6 +1051,11 @@ export const he = {
   },
   settings: {
     accounts: {
+      signsInAs: "מתחבר בתור {username}",
+      signsInAsOwner: "מתחבר בתור {alias} או {username}",
+      signInName: "שם ההתחברות שלך",
+      signInNameDescription: "השם שמקלידים כדי להתחבר כשבהתקנה הזו יש יותר מחשבון אחד. גם unsloth תמיד עובד. השאירו ריק כדי להשתמש רק ב-unsloth.",
+      signInNameSave: "שמירת השם",
       title: "חשבונות",
       description:
         "צור חשבונות Unsloth פרטיים. משתמשים חדשים יתחברו באמצעות קוד הגדרה חד-פעמי ויבחרו סיסמה.",
@@ -1518,19 +1560,18 @@ export const he = {
       installRuntimeFailed: "התקנת סביבת זמן הריצה נכשלה.",
       installRuntimeError: "לא ניתן להתחיל את התקנת סביבת זמן הריצה.",
       unsupportedArch:
-        "ארגז החול של Windows (MXC) פועל רק ב-Windows x64, ולכן אינו זמין במחשב זה.",
+        "ארגז החול של Windows (MXC) פועל רק ב-Windows x64 ו-ARM64, ולכן אינו זמין במחשב זה.",
       builtinNeedsUpdate:
         "המכל המובנה של Windows דורש גרסת build {required} ומעלה, והמחשב הזה מריץ {current}. התקינו את עדכון Windows האחרון כדי להשתמש בו בלי שלב מנהל, או הפעילו את ארגז החול החלופי שלמטה.",
       unsupportedBuild:
         "ארגז החול של Windows (MXC) דורש Windows 11 24H2 (build 26100) ומעלה, ולכן אינו זמין במחשב זה.",
-      permissionsIntro:
-        "בחר מתי כלים שואלים קודם, והאם Python והטרמינל רצים גם בתוך ארגז החול של מערכת ההפעלה.",
       permissionLabel: "הרשאות כלים",
+      levelRowLabel: "רמת ארגז החול",
       levelPickerTitle: "איך להריץ קוד בארגז חול?",
       levelOff: "מושבת",
       levelOffShort: "גישה מלאה מכבה את ארגז החול",
-      levelHighDetail: "ארגז חול של מערכת ההפעלה. Python והטרמינל רצים בתוך ארגז החול של מערכת ההפעלה (bubblewrap, Seatbelt או MXC) בנוסף לארגז החול בתוכנה. ללא ארגז חול פעיל של מערכת ההפעלה, קריאות מסוכנות ישאלו קודם.",
-      levelLowDetail: "ארגז חול בתוכנה. Python והטרמינל רצים עם ארגז חול בתוכנה בלבד, מחוץ לארגז החול של מערכת ההפעלה. קריאות מסוכנות ישאלו קודם, אלא אם בחרת גישה מלאה.",
+      levelHighDetail: "Python והטרמינל רצים בתוך ארגז החול של מערכת ההפעלה (bubblewrap, Seatbelt או MXC) בנוסף לארגז החול בתוכנה. ללא ארגז חול פעיל של מערכת ההפעלה, קריאות מסוכנות ישאלו קודם.",
+      levelLowDetail: "Python והטרמינל רצים עם ארגז חול בתוכנה בלבד, מחוץ לארגז החול של מערכת ההפעלה. קריאות מסוכנות ישאלו קודם, אלא אם בחרת גישה מלאה.",
       levelLabel: "ארגז חול",
       levelHigh: "גבוהה",
       levelLow: "נמוכה",
@@ -1953,10 +1994,10 @@ export const he = {
           full: "גישה מלאה",
         },
         details: {
-          ask: "שואל לפני כל קריאה לכלי, כולל קוד Terminal ו-Python, חיפושים באינטרנט, עריכת קבצים וכלי MCP. כלים שמורצים על ידי ספק חיצוני אינם מושהים. מתאים כשברצונך לבדוק כל שלב.",
+          ask: "שואל לפני כל קריאה לכלי, כולל קוד Terminal ו-Python, חיפושים באינטרנט, עריכת קבצים וכלי MCP. כלים שמורצים על ידי ספק חיצוני אינם מושהים.",
           auto: "מריץ קריאות שגרתיות לכלים בעצמו ושואל רק כשפעולה נראית מסוכנת, כגון קריאת פרטי התחברות, הסלמת הרשאות או הרצת פקודות הרסניות.",
-          off: "מריץ כל קריאה לכלי בלי לשאול. קוד Python ו-Terminal עדיין רץ בארגז החול, שמגביל לאילו קבצים במחשב שלך הוא יכול לגשת. אם אין במחשב זה ארגז חול תקין של מערכת ההפעלה, קריאות Python ו-Terminal מסוכנות ישאלו קודם.",
-          full: "מריץ כל קריאה לכלי בלי לשאול ומכבה את ארגז החול של הקוד, כך שקוד Python ו-Terminal יכול לקרוא ולשנות כל קובץ שהחשבון שלך יכול לגשת אליו. מתאים למשימות מהימנות שצריכות לפעול מחוץ לארגז החול.",
+          off: "מריץ כל קריאה לכלי בלי לשאול. קוד Python ו-Terminal עדיין רץ בארגז החול, שמגביל לאילו קבצים במחשב שלך הוא יכול לגשת. ללא ארגז חול פעיל של מערכת ההפעלה, קריאות מסוכנות ישאלו קודם.",
+          full: "מריץ כל קריאה לכלי בלי לשאול ומכבה את ארגז החול של הקוד, כך שקוד Python ו-Terminal יכול לקרוא ולשנות כל קובץ שהחשבון שלך יכול לגשת אליו.",
         },
       },
       notifications: {
@@ -2280,6 +2321,12 @@ export const he = {
         classic: "קלאסית",
         minimal: "מינימלית",
         moreThemes: "ערכות נושא נוספות",
+        halloween: "האלווין",
+      },
+      trickOrTreat: {
+        label: "ממתק או תעלול",
+        description:
+          "ערכות נושא של ליל כל הקדושים וברכות מפחידות, עד 1 בנובמבר.",
       },
       custom: {
         chatWidth: {
@@ -2414,6 +2461,7 @@ export const he = {
       liveMonitor: {
         title: "מוניטור חי",
         apiTitle: "מוניטור API",
+        apiDescription: "ראה מה אפליקציות אחרות שולחות ל-API של השרת הזה ברגע שזה מגיע.",
         summary: "בקשות חיות, שגיאות ושימוש בטוקנים",
         status: "{active} פעילות · {recent} לאחרונה · {model}",
         noModelLoaded: "אין מודל טעון",
@@ -2432,7 +2480,7 @@ export const he = {
         gpuUnusableDetail: "זוהה, אך PyTorch אינו יכול להשתמש בו",
         detailedView: "תצוגה מפורטת",
         detailedViewDescription:
-          "הצגת עומס המעבד ועומס, טמפרטורה וצריכת חשמל של כל GPU בחלון הצף וכאן.",
+          "הצגת עומס המעבד ועומס, טמפרטורה וצריכת חשמל של כל GPU בחלון הצף.",
         cpuLoad: "עומס מעבד",
         gpuLoad: "עומס GPU",
         temperature: "טמפרטורה",
@@ -2465,6 +2513,10 @@ export const he = {
         used: "{value} בשימוש",
         free: "{value} פנוי",
         total: "{value} סה״כ",
+        usedOf: "{used} בשימוש מתוך {total}",
+        segmentUsed: "בשימוש ה-GPU",
+        segmentSystem: "בשימוש המערכת",
+        segmentAvailable: "זמין",
       },
       llamaBackend: {
         title: "מנוע הסקה GGUF",
@@ -2621,6 +2673,10 @@ export const he = {
           hideDetailsAction: "הסתר פרטים",
           clearAction: "נקה מטמונים",
           clearOneAction: "ניקוי",
+          showFolders: "הצגת תיקיות",
+          hideFolders: "הסתרת תיקיות",
+          previousLocations: "כולל מיקומים קודמים. לחצן הניקוי הראשי משפיע על תיקיית המטמון הנוכחית. לחצני המודלים מנקים רק את העותק שנבחר.",
+          clearModelDescription: "פעולה זו מסירה רק את העותק השמור הזה. הוא יורד שוב בעת הצורך.",
           clearingAction: "מנקה...",
           confirmTitle: "לנקות את הקבצים השמורים במטמון?",
           confirmDescription: "פעולה זו תפנה כ-{size}.",
@@ -2668,6 +2724,8 @@ export const he = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "זמן פעילות",
         processMemory: "זיכרון תהליך",
         notInstalled: "לא מותקן",
@@ -3433,6 +3491,7 @@ export const he = {
       desktopAppVersionUnavailable: "לא זמין",
       llamaCppVersion: "גרסת llama.cpp",
       audioCppVersion: "גרסת audio.cpp",
+      mlxVersion: "גרסת MLX",
       whisperCppVersion: "גרסת whisper.cpp",
       engines: {
         title: "מנועים",
@@ -4304,7 +4363,6 @@ export const he = {
       terminalStart: "> אימון unsloth מתחיל...",
       preparingResources: "> מכין מודל ומערך נתונים...",
       gettingReady: "> מכינים הכל לקראת ההרצה שלך...",
-      waitingForFirstStep: "> {message} | ממתין לצעד ראשון... ({step})",
       resumingTraining: "מחדש אימון...",
       startingTraining: "מתחיל אימון...",
       dataset: "מערך נתונים",
@@ -4690,6 +4748,7 @@ export const he = {
       modelsTitle: "אין עדיין מודלים מכווננים",
       modelsDescription: "מודלים שתאמן או תייצא ב-Unsloth יופיעו כאן.",
       createFolder: "צור תיקייה",
+      generateImage: "יצירת תמונה",
       generateVideo: "צור סרטון",
       generateAudio: "צור אודיו",
       trainModel: "אמן מודל",

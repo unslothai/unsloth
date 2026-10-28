@@ -18,7 +18,12 @@ import {
   Edit03Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import type { MouseEvent, PointerEvent } from "react";
+import {
+  type MouseEvent,
+  type PointerEvent,
+  useEffect,
+  useState,
+} from "react";
 import {
   SAVED_RUN_SETTINGS_NAME_MAX,
   type SavedRunSettings,
@@ -36,6 +41,7 @@ interface RunSettingsPickerProps {
   sets: readonly SavedRunSettings[];
   /** The set the model loads with, or null for the default (recommended) settings. */
   selected: string | null;
+  pinned?: string | null;
   /** Default with edits: the name they will be saved under. */
   customName: string | null;
   /** Null on Default settings, which cannot be renamed. */
@@ -78,6 +84,7 @@ export function RunSettingsPicker({
   modelName,
   sets,
   selected,
+  pinned = null,
   customName,
   onEditName,
   compact = false,
@@ -88,6 +95,25 @@ export function RunSettingsPicker({
   onNamingSubmit,
   onDelete,
 }: RunSettingsPickerProps) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const isNaming = naming !== null;
+  useEffect(() => {
+    if (!isNaming) {
+      return;
+    }
+    // Window capture runs before Radix's document listener, which then skips the prevented Escape.
+    const keepPanel = (event: KeyboardEvent) => {
+      if (
+        event.key === "Escape" &&
+        event.target instanceof Element &&
+        event.target.closest("[data-run-settings-name]")
+      ) {
+        event.preventDefault();
+      }
+    };
+    window.addEventListener("keydown", keepPanel, true);
+    return () => window.removeEventListener("keydown", keepPanel, true);
+  }, [isNaming]);
   if (naming) {
     return (
       // The sidebar is too narrow for a readable name beside the buttons, so they go below it.
@@ -99,6 +125,7 @@ export function RunSettingsPicker({
       >
         <Input
           autoFocus={true}
+          data-run-settings-name=""
           value={naming.name}
           onFocus={(event) => event.currentTarget.select()}
           onChange={(event) =>
@@ -149,14 +176,23 @@ export function RunSettingsPicker({
       </div>
     );
   }
+  // Closed first: the rename box replaces the menu, and the delete confirmation must not open under it.
+  const rename = (name: string) => {
+    setMenuOpen(false);
+    onNamingChange({ mode: "rename", name, target: name });
+  };
+  const remove = (name: string) => {
+    setMenuOpen(false);
+    onDelete(name);
+  };
   return (
     <div className="flex min-w-0 items-center gap-1.5">
-      <DropdownMenu>
+      <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
         <DropdownMenuTrigger asChild={true} disabled={disabled}>
           <button
             type="button"
             aria-label="Run settings for this model"
-            className="flex h-9 w-full min-w-0 items-center justify-between gap-1.5 rounded-full border border-border bg-transparent px-3.5 text-left text-ui-13 font-medium text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+            className="flex h-9 w-full min-w-0 items-center justify-between gap-1.5 rounded-full border border-[color-mix(in_oklab,var(--foreground)_calc(15%*var(--contrast-edge-gain,1)),transparent)] bg-background px-3.5 text-left text-ui-13 font-medium text-foreground outline-none transition-colors hover:bg-accent/50 focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
           >
             <span className="min-w-0 truncate">
               {selected ?? customName ?? "Default settings"}
@@ -193,22 +229,35 @@ export function RunSettingsPicker({
               key={entry.name}
               className={cn(ITEM, "pr-1.5")}
               onSelect={() => onPick(entry.name)}
+              aria-keyshortcuts="F2 Delete"
+              onKeyDown={(event) => {
+                if (event.key === "F2") {
+                  event.preventDefault();
+                  rename(entry.name);
+                } else if (event.key === "Delete") {
+                  event.preventDefault();
+                  remove(entry.name);
+                }
+              }}
             >
               <Check on={entry.name === selected} />
               <span className="min-w-0 flex-1 truncate">{entry.name}</span>
+              {entry.name === pinned && (
+                <span className="shrink-0 text-ui-11 font-normal text-muted-foreground">
+                  Always
+                </span>
+              )}
               <button
                 type="button"
                 aria-label={`Rename ${entry.name}`}
+                title="Rename (F2)"
+                tabIndex={-1}
                 className={ROW_ICON}
                 onPointerDown={keepRow}
                 onPointerUp={keepRow}
                 onClick={(event) => {
                   keepRow(event);
-                  onNamingChange({
-                    mode: "rename",
-                    name: entry.name,
-                    target: entry.name,
-                  });
+                  rename(entry.name);
                 }}
               >
                 <HugeiconsIcon
@@ -220,12 +269,14 @@ export function RunSettingsPicker({
               <button
                 type="button"
                 aria-label={`Delete ${entry.name}`}
+                title="Delete (Del)"
+                tabIndex={-1}
                 className={ROW_ICON}
                 onPointerDown={keepRow}
                 onPointerUp={keepRow}
                 onClick={(event) => {
                   keepRow(event);
-                  onDelete(entry.name);
+                  remove(entry.name);
                 }}
               >
                 <HugeiconsIcon

@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Boundary validator for user-supplied llama-server pass-through args. Reject only flags Unsloth
-manages (model identity, auth, network, parallel slots). Everything else (sampling, ``-c``,
-``-ngl``, ``--flash-attn``, ``--cache-type-*``, ``--spec-*``, ``--jinja``, ...) is appended after
-Unsloth's auto-set flags so llama.cpp's last-wins parser lets the user override. Ref:
-https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md"""
+"""Rejects only Unsloth-managed flags (model, auth, network, slots); user flags come last and win."""
 
 from __future__ import annotations
 
@@ -588,9 +584,6 @@ MEMORY_ENV_VARS: tuple[str, ...] = (
     "LLAMA_ARG_NO_DIO",
 )
 
-_SHADOWING_FLAGS: frozenset[str] = (
-    _CONTEXT_FLAGS | _CACHE_FLAGS | _SPEC_FLAGS | _TEMPLATE_FLAGS | _SPLIT_SHADOWING_FLAGS
-)
 
 # Shadowing flags that take no value -- strip the flag only, not the next token.
 _BOOLEAN_SHADOWING_FLAGS: frozenset[str] = frozenset(
@@ -1890,3 +1883,41 @@ def memory_state_satisfies_settings(
             return False
         return mlock or not mlock_applicable
     return not policy_active
+
+
+_NGRAM_MOD_LEGACY_FLAGS = {
+    "--spec-ngram-mod-n-match": "--spec-ngram-size-n",
+    "--spec-ngram-mod-n-min": "--draft-min",
+    "--spec-ngram-mod-n-max": "--draft-max",
+}
+
+
+def translate_ngram_mod_args(
+    args: Iterable[str],
+    flavor: Optional[str],
+    *,
+    chain_with_mtp: bool = False,
+) -> list[str]:
+    """Respell ``--spec-ngram-mod-n-*`` for a legacy build (else it refuses to start); with MTP drop min/max (MTP owns the range)."""
+    args = [str(a) for a in args]
+    if flavor != "legacy":
+        return args
+    out: list[str] = []
+    i = 0
+    while i < len(args):
+        _flag, eq, value = args[i].partition("=")
+        legacy = _NGRAM_MOD_LEGACY_FLAGS.get(_flag_name(args[i]) or "")
+        # A following flag is not this flag's value; consuming it would orphan that flag's own value.
+        if legacy is None or (
+            not eq and (i + 1 >= len(args) or _flag_name(args[i + 1]) is not None)
+        ):
+            out.append(args[i])
+            i += 1
+            continue
+        if not eq:
+            value = args[i + 1]
+        i += 1 if eq else 2
+        if chain_with_mtp and legacy != "--spec-ngram-size-n":
+            continue
+        out.extend([legacy, value])
+    return out

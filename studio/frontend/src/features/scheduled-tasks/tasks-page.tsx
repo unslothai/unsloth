@@ -9,8 +9,8 @@ import {
   PencilEdit02Icon,
   Search01Icon,
   Clock01Icon,
-  PauseIcon,
 } from "@hugeicons/core-free-icons";
+import { PauseIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { PlayIcon } from "lucide-react";
@@ -437,7 +437,7 @@ export function TasksPage() {
               className="h-control w-full rounded-full border-none bg-muted pl-10 pr-4 shadow-none dark:bg-card"
             />
           </div>
-          <Button onClick={() => setEditing(null)}>
+          <Button variant="dark" onClick={() => setEditing(null)}>
             <HugeiconsIcon icon={Add01Icon} strokeWidth={1.75} className="size-icon" />
             {t("scheduledTasks.newTask")}
           </Button>

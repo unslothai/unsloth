@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Pydantic schemas for the Hub inventory layer (/api/hub/*).
-
-Kept independent from upstream models/models.py so the Hub module can ship
-without modifying any upstream schema."""
+"""Pydantic Hub inventory schemas, kept independent of upstream models/models.py by design."""
 
 from pydantic import BaseModel, Field, PrivateAttr, model_validator
 from typing import List, Literal, Optional
@@ -46,6 +43,11 @@ class GgufVariantDetail(BaseModel):
     )
     size_bytes: int = Field(0, description = "File size in bytes")
     download_size_bytes: int = Field(0, description = "Total bytes needed to download this variant")
+    lookup_table_bytes: int = Field(
+        0,
+        description = "Bytes of lazily read lookup tables (per-layer embeddings / Engram) "
+        "llama.cpp streams from disk by default. Part of size_bytes; 0 when none or unknown.",
+    )
     pending_drafter_filename: Optional[str] = Field(
         None,
         description = (

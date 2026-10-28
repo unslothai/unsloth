@@ -7187,7 +7187,6 @@ WINDOWS_ARM64_SKIP_PACKAGES = {
     "librosa",
     "openai-whisper",
     "torch-c-dlpack-ext",
-    "pytorch_tokenizers",
     "hf_transfer",
     "xformers",
 }

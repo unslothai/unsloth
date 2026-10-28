@@ -11,6 +11,7 @@ import {
   hubWithdrawsSoleQuant,
   loadPickerGgufVariants,
 } from "./gguf-discovery";
+import { firstIndexByKey } from "./option-index";
 
 import { ModelMemoryBar } from "@/components/model-memory-bar";
 import { shouldRefreshPickerInventoryOnMount } from "@/components/resource-picker/picker-tab-policy";
@@ -120,7 +121,8 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
 import {
   type GgufFitClass,
-  ggufVariantFitSizeBytes,
+  classifyGgufFitWithLookupTables,
+  ggufVariantLookupTableBytes,
   requiredGgufMemoryGb,
 } from "@/lib/gguf-fit";
 import { formatGiB } from "@/lib/memory/format";
@@ -133,7 +135,6 @@ import {
   Add01Icon,
   ArrowUpDownIcon,
   Cancel01Icon,
-  Copy01Icon,
   DashboardCircleIcon,
   Flag01Icon,
   FlimSlateIcon,
@@ -147,6 +148,7 @@ import {
   Settings02Icon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { useT } from "@/i18n";
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -268,7 +270,11 @@ import {
   modelIdsMatchForPicker,
   soleQuantRowState,
 } from "./row-identity";
-import { isStandaloneGgufPath } from "@/features/hub/lib/model-identity";
+import {
+  isHfCacheSnapshotPath,
+  isStandaloneGgufPath,
+  publicModelId,
+} from "@/features/hub/lib/model-identity";
 import { cachedRepoConfigId } from "../../model-config/model-identity";
 import {
   type FormatTone,
@@ -379,22 +385,24 @@ function useRovingModelList({
   const rawListboxId = useId();
   const listboxId = `model-picker-${rawListboxId.replace(/:/g, "")}`;
   const [rovingOptionKey, setRovingOptionKey] = useState<string | null>(null);
+  // Looked up once per row: indexOf here made each render O(N^2).
+  const optionIndexByKey = useMemo(() => firstIndexByKey(optionKeys), [optionKeys]);
 
   const preferredOptionKey =
-    selectedOptionKey && optionKeys.includes(selectedOptionKey)
+    selectedOptionKey && optionIndexByKey.has(selectedOptionKey)
       ? selectedOptionKey
       : (optionKeys[0] ?? null);
   const activeOptionKey =
-    rovingOptionKey && optionKeys.includes(rovingOptionKey)
+    rovingOptionKey && optionIndexByKey.has(rovingOptionKey)
       ? rovingOptionKey
       : preferredOptionKey;
 
   const getOptionDomId = useCallback(
     (optionKey: string) => {
-      const index = optionKeys.indexOf(optionKey);
-      return index === -1 ? undefined : `${listboxId}-option-${index}`;
+      const index = optionIndexByKey.get(optionKey);
+      return index === undefined ? undefined : `${listboxId}-option-${index}`;
     },
-    [listboxId, optionKeys],
+    [listboxId, optionIndexByKey],
   );
 
   const focusOption = useCallback(
@@ -417,7 +425,7 @@ function useRovingModelList({
         return;
       }
 
-      const currentIndex = optionKeys.indexOf(fromOptionKey);
+      const currentIndex = optionIndexByKey.get(fromOptionKey) ?? -1;
       let nextIndex = currentIndex === -1 ? 0 : currentIndex;
       if (direction === "next") {
         if (currentIndex >= optionKeys.length - 1) {
@@ -441,7 +449,7 @@ function useRovingModelList({
       setRovingOptionKey(nextOptionKey);
       focusOption(nextOptionKey);
     },
-    [focusOption, onNavigatePastEnd, onNavigatePastStart, optionKeys],
+    [focusOption, onNavigatePastEnd, onNavigatePastStart, optionIndexByKey, optionKeys],
   );
 
   const getOptionProps = useCallback(
@@ -820,6 +828,11 @@ const VRAM_VERDICT: Record<PickerFitStatus, FitVerdict | null> = {
     label: "RAM fallback",
     tone: ORANGE,
     hint: "No GPU detected. Runs on system RAM and CPU. Expect much slower inference.",
+  },
+  streamed: {
+    label: "Fits (lookup tables streamed from disk)",
+    tone: AMBER,
+    hint: "Fits with its lookup tables streamed from disk, llama.cpp's default for them. Prefill and decode can be slower and vary with disk speed.",
   },
   oom: OFFLOADS,
   exceeds: WONT_FIT,
@@ -2083,7 +2096,7 @@ function GgufVariantExpander({
   // One verdict per variant from the download footprint (incl. companions), so badge, order and star agree.
   const getVariantFit = useCallback(
     (variant: GgufVariantDetail): GgufFitClass =>
-      getGgufFit(ggufVariantFitSizeBytes(variant)),
+      classifyGgufFitWithLookupTables(getGgufFit, variant),
     [getGgufFit],
   );
 
@@ -4944,11 +4957,13 @@ export function HubModelPicker({
     downloaded: ReadonlyMap<string, string | null>;
     visionByRepo: ReadonlyMap<string, boolean>;
     sizes: ReadonlyMap<string, number>;
+    lookupTables: ReadonlyMap<string, number>;
   }>({
     validated: false,
     downloaded: new Map(),
     visionByRepo: new Map(),
     sizes: new Map(),
+    lookupTables: new Map(),
   });
   const prunePinnedQuantValidation = useCallback(
     (repoId: string, quant: string) => {
@@ -4997,10 +5012,23 @@ export function HubModelPicker({
               (variant) =>
                 [pinKey(repoId, variant.quant), variant.size_bytes] as const,
             ),
+            lookupTables: downloaded.map(
+              (variant) =>
+                [
+                  pinKey(repoId, variant.quant),
+                  ggufVariantLookupTableBytes(variant),
+                ] as const,
+            ),
           };
         } catch {
           // Hide unverifiable quants rather than claim a missing file is downloaded.
-          return { repoId, hasVision: undefined, downloaded: [], sizes: [] };
+          return {
+            repoId,
+            hasVision: undefined,
+            downloaded: [],
+            sizes: [],
+            lookupTables: [],
+          };
         }
       }),
     ).then((groups) => {
@@ -5016,6 +5044,9 @@ export function HubModelPicker({
             ),
           ),
           sizes: new Map(groups.flatMap((group) => group.sizes)),
+          lookupTables: new Map(
+            groups.flatMap((group) => group.lookupTables),
+          ),
         });
       }
     });
@@ -6133,6 +6164,13 @@ export function HubModelPicker({
             ? { ...selectMeta, ggufVariant: undefined, isGguf: true }
             : selectMeta,
         ];
+    // A path load keeps the menu. A cached download pins and reveals as its repo: the local
+    // reveal endpoint only lists non-cache sources, so it would 404.
+    const pinRepoId = !isLocal
+      ? checkpoint
+      : isHfCacheSnapshotPath(checkpoint)
+        ? publicModelId(checkpoint)
+        : null;
     // Its curated row is hidden while loaded, so this row must open the quant list instead.
     const expandable = Boolean(quant) && !isLocal && isKnownGgufRepo(entry.id);
     const expanded = expandable && expandedGguf === entry.id;
@@ -6174,7 +6212,10 @@ export function HubModelPicker({
             <ModelRowMenu
               ariaLabel={`More options for ${entry.id}`}
               cachePath={
-                isLocal ? undefined : { repoId: checkpoint, variant: quant ?? undefined }
+                pinRepoId === null ? undefined : { repoId: pinRepoId, variant: quant ?? undefined }
+              }
+              onReveal={
+                pinRepoId === null ? () => revealLocalModel(checkpoint, entry.id) : undefined
               }
               // Every loaded row ejects while several are loaded, the active one included.
               items={
@@ -6196,13 +6237,13 @@ export function HubModelPicker({
                   : undefined
               }
               pin={
-                isLocal
+                pinRepoId === null
                   ? undefined
                   : {
-                      pinned: pinnedSet.has(pinKey(checkpoint, quant ?? undefined)),
+                      pinned: pinnedSet.has(pinKey(pinRepoId, quant ?? undefined)),
                       pinLabel: "Pin",
                       unpinLabel: "Unpin",
-                      onToggle: () => togglePinned(checkpoint, quant ?? undefined),
+                      onToggle: () => togglePinned(pinRepoId, quant ?? undefined),
                     }
               }
             />
@@ -6413,7 +6454,14 @@ export function HubModelPicker({
                 diffusionTaskById.get(entry.repoId.toLowerCase()),
               )
                 ? undefined
-                : { repoId: entry.repoId, quant: entry.quant }
+                : {
+                    repoId: entry.repoId,
+                    quant: entry.quant,
+                    sizeBytes,
+                    lookupTableBytes: pinnedQuantValidation.lookupTables.get(
+                      pinKey(entry.repoId, entry.quant),
+                    ),
+                  }
             }
             gpuGb={expanderGpuGb}
             alignMeta="device"
@@ -6562,6 +6610,7 @@ export function HubModelPicker({
                     repoId: c.repo_id,
                     quant: variant.quant,
                     sizeBytes: variant.size_bytes,
+                    lookupTableBytes: ggufVariantLookupTableBytes(variant),
                     loadId: c.load_id,
                   }
             }

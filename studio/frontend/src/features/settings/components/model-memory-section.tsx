@@ -8,7 +8,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import {
   resyncInferenceStatusAfterKeptModelsUnload,
@@ -217,10 +216,9 @@ export function ModelMemorySection({
       ref={ref}
       action={
         full ? undefined : (
-          <Button
-            size="sm"
-            variant="ghost"
-            className="text-muted-foreground"
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             onClick={() =>
               useSettingsDialogStore
                 .getState()
@@ -228,8 +226,8 @@ export function ModelMemorySection({
             }
           >
             {t("settings.resources.modelMemory.openSystemSettings")}
-            <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-3.5" />
-          </Button>
+            <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-3" />
+          </button>
         )
       }
     >

@@ -13,9 +13,9 @@ import { cn } from "@/lib/utils";
 import {
   Delete02Icon,
   MoreHorizontalIcon,
-  PauseIcon,
   PencilEdit02Icon,
 } from "@hugeicons/core-free-icons";
+import { PauseIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 import { useEffect, useRef, useState } from "react";

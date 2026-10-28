@@ -67,7 +67,7 @@ import {
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { type VariantProps, cva } from "class-variance-authority";
 import { Tick02Icon } from "@/lib/tick-icon";
-import { Copy01Icon } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { IconActionButton } from "./icon-action-button";
 import {

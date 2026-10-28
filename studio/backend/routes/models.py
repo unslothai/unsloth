@@ -13,6 +13,7 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Requ
 from pydantic import BaseModel
 from typing import List, NamedTuple, Optional
 from loggers import get_logger
+from utils.scan_memo import in_scan_memo
 
 # Dependency-light leaf (PEP 562 package init): no llama.cpp / torch import chain.
 from core.inference.memory_contract import (
@@ -533,7 +534,7 @@ def _scan_models_dir(
                 )
 
     # Several loose checkpoints: one row per file (the folder rescue below needs exactly one).
-    from core.inference.diffusion import resolve_local_single_file
+    from core.inference.diffusion_local_files import resolve_local_single_file
     from hub.utils.comfy_models import loose_diffusion_checkpoints
 
     sole = resolve_local_single_file(str(models_dir)) if not (found or loose_files) else None
@@ -1062,6 +1063,7 @@ def _merge_scan_folder_row(
     return m.model_copy(update = {"source": "custom"})
 
 
+@in_scan_memo
 def collect_local_models(
     models_root: Path,
     *,
@@ -1365,6 +1367,7 @@ def _compat_inventory_path_identity(path: object) -> str:
         return os.path.normcase(raw)
 
 
+@in_scan_memo
 async def _shared_compat_local_inventory_scan(
     models_root: Path, sources: Optional[_CompatLocalInventorySources] = None
 ) -> List[LocalModelInfo]:
@@ -2673,6 +2676,15 @@ async def get_model_config(
                 is_decision, layout = True, "llm"
                 config_dict = load_llm_decision_defaults()
 
+            from utils.models.training_defaults import model_training_recommendations
+
+            config_dict = model_training_recommendations(
+                config_dict,
+                is_vision = is_vision,
+                is_audio = audio_type is not None,
+                is_embedding = is_embedding,
+                is_decision = is_decision,
+            )
             logger.info(
                 f"Model config result for {model_name}: is_vision={is_vision}, is_embedding={is_embedding}, audio_type={audio_type}, audio_type_known={audio_type_definitive}, is_lora={is_lora}, max_position_embeddings={max_position_embeddings}"
             )
@@ -4229,6 +4241,7 @@ async def get_kv_cache_estimate(
         null = {
             "kv_bytes": None,
             "weights_bytes": None,
+            "lookup_table_bytes": None,
             "native_context": None,
             "spec_bytes": None,
             "n_ctx": None,
@@ -4797,6 +4810,7 @@ async def get_gguf_variants(
                         download_size_bytes = int(
                             getattr(v, "download_size_bytes", v.size_bytes) or v.size_bytes
                         ),
+                        lookup_table_bytes = int(getattr(v, "lookup_table_bytes", 0) or 0),
                         pending_drafter_filename = getattr(v, "pending_drafter_filename", None),
                         pending_drafter_size_bytes = int(
                             getattr(v, "pending_drafter_size_bytes", 0) or 0
@@ -5214,6 +5228,7 @@ async def list_cached_gguf(
         return {"cached": []}
 
 
+@in_scan_memo
 def cached_gguf_rows(cache_scans = None) -> list[dict]:
     if cache_scans is None:
         cache_scans = _all_hf_cache_scans()
@@ -5445,6 +5460,7 @@ def _repo_hosts_artifacts(repo_id: str) -> bool:
         return False
 
 
+@in_scan_memo
 def cached_model_rows(cache_scans = None) -> list[dict]:
     _WEIGHT_EXTENSIONS = _NON_GGUF_WEIGHT_EXTENSIONS
     if cache_scans is None:
