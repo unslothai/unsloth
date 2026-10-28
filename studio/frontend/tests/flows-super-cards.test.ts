@@ -223,13 +223,16 @@ test("other things drawn inside a collapsed frame fold with it", () => {
   const nodes = [
     ...deriver.nodes(state.graph, new Set(), null),
     { id: "rr1", type: "flowReroute", position: { x: 500, y: 200 }, data: { nodeId: "rr1" } },
+    { id: "note:n1", type: "flowNote", position: { x: 300, y: 200 }, data: { noteId: "n1" } },
+    { id: "note:n2", type: "flowNote", position: { x: 300, y: 900 }, data: { noteId: "n2" } },
   ];
   const edges = [
     ...deriver.edges(state.graph, new Set(), () => "any"),
     { id: "w1", source: "prompt", target: "rr1", sourceHandle: "o:text", targetHandle: "in" },
   ];
   const out = applySuperCards(nodes, edges, state.graph, new Set(["g"]), specs);
-  assert.ok(!out.nodes.some((n) => n.id === "rr1"));
+  assert.ok(!out.nodes.some((n) => n.id === "rr1" || n.id === "note:n1"));
+  assert.ok(out.nodes.some((n) => n.id === "note:n2"));
   const w1 = out.edges.find((e) => e.id === "w1");
   assert.equal(w1?.target, "group:g");
 });

@@ -11,7 +11,7 @@ import { useDocStore } from "../stores/doc-store";
 import { IDLE_RUNTIME, useRuntimeStore } from "../stores/runtime-store";
 import { useUiStore } from "../stores/ui-store";
 import { GROUP_PREFIX, type RfEdge, type RfNode } from "./derive-rf";
-import { Maximize01Icon, PackageIcon } from "./icon-data";
+import { ArrowExpand01Icon, PackageIcon } from "./icon-data";
 import {
   NodeCard,
   NodeCardHeader,
@@ -74,7 +74,7 @@ function SuperCardViewImpl({ data }: NodeProps<RfNode>) {
             setSuperCard(groupId, false);
           }}
         >
-          <HugeiconsIcon icon={Maximize01Icon} size={12} />
+          <HugeiconsIcon icon={ArrowExpand01Icon} size={12} />
         </Button>
       </NodeCardHeader>
       <div className="py-2">

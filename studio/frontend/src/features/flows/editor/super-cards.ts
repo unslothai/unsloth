@@ -99,9 +99,9 @@ export function applySuperCards(
     owner.set(id, group);
     members.set(group, [...(members.get(group) ?? []), id]);
   }
-  // Anything else drawn inside a collapsed frame (reroutes, a recipe's side cards) folds with it.
+  // Anything else drawn inside a collapsed frame (notes, reroutes, a recipe's side cards) folds with it.
   for (const n of nodes) {
-    if (graph.nodes[n.id] || n.id.includes(":")) continue;
+    if (graph.nodes[n.id] || n.id.startsWith(GROUP_PREFIX)) continue;
     const x = n.position.x + (n.measured?.width ?? 0) / 2;
     const y = n.position.y + (n.measured?.height ?? 0) / 2;
     for (const groupId of collapsed) {
