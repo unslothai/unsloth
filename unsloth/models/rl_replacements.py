@@ -748,7 +748,13 @@ def dpo_trainer_reference_snapshot(function_name, function):
         r"(?P=indent)self\.ref_model = create_model_from_path\(ref_model_path, \*\*ref_model_init_kwargs\)",
         lambda m: (
             f"{m['indent']}from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled\n"
-            f"{m['indent']}if _unsloth_dpo_model_is_instance and not is_deepspeed_zero3_enabled():\n"
+            # Native FSDP2 shards the policy in Trainer.__init__, and FSDP2 modules refuse deepcopy.
+            f"{m['indent']}try:\n"
+            f"{m['indent']}    from torch.distributed.fsdp import FSDPModule as _UnslothFSDPModule\n"
+            f"{m['indent']}except ImportError:\n"
+            f"{m['indent']}    _UnslothFSDPModule = ()\n"
+            f"{m['indent']}if _unsloth_dpo_model_is_instance and not is_deepspeed_zero3_enabled() "
+            f"and not isinstance(self.model, _UnslothFSDPModule):\n"
             f"{m['indent']}    from trl.experimental.utils import create_reference_model\n"
             f"{m['indent']}    self.ref_model = create_reference_model(self.model)\n"
             f"{m['indent']}else:\n" + textwrap.indent(m[0], "    ")

@@ -49,6 +49,14 @@ class _Model:
     config = "ckpt"
 
 
+class _FSDPModule:
+    pass
+
+
+class _ShardedModel(_Model, _FSDPModule):
+    pass
+
+
 def _run(
     source,
     model,
@@ -56,8 +64,10 @@ def _run(
     zero3 = False,
 ):
     calls = []
+    import torch.distributed.fsdp as fsdp
     import transformers.integrations.deepspeed as ds
 
+    monkeypatch.setattr(fsdp, "FSDPModule", _FSDPModule)
     monkeypatch.setattr(ds, "is_deepspeed_zero3_enabled", lambda: zero3)
     utils = types.ModuleType("trl.experimental.utils")
     utils.create_reference_model = lambda m: calls.append(("snapshot", m)) or "snapshot"
@@ -87,7 +97,9 @@ def test_instance_reference_is_snapshot(monkeypatch):
     assert ref == "reloaded"
 
 
-@pytest.mark.parametrize("model, zero3", [("hub/id", False), (_Model(), True)])
+@pytest.mark.parametrize(
+    "model, zero3", [("hub/id", False), (_Model(), True), (_ShardedModel(), False)]
+)
 def test_path_and_zero3_keep_loader(monkeypatch, model, zero3):
     ref, calls = _run(hook("__init__", TRL_INIT), model, monkeypatch, zero3 = zero3)
     assert ref == "reloaded" and calls[-1] == ("load", "ckpt")
