@@ -36,10 +36,19 @@ def tree():
     # Earlier tests in this session can leave children of their own; count only ours.
     before = {child.pid for child in me.children(recursive = True)}
     procs = [_sleeper(), subprocess.Popen([sys.executable, "-c", nested])]
-    # A child forked by another thread is listed under that thread's task, not the main one.
-    worker = threading.Thread(target = lambda: procs.append(_sleeper()))
+    # A child forked by another thread is listed under that thread's task while the thread lives
+    # (once it exits the child moves to the main task), so keep it alive across the walk.
+    forked = threading.Event()
+    release = threading.Event()
+
+    def fork_and_wait():
+        procs.append(_sleeper())
+        forked.set()
+        release.wait(60)
+
+    worker = threading.Thread(target = fork_and_wait, daemon = True)
     worker.start()
-    worker.join()
+    forked.wait(30)
     deadline = time.monotonic() + 30
 
     def ours():
@@ -57,6 +66,8 @@ def tree():
             pass
     for proc in procs:
         proc.wait()
+    release.set()
+    worker.join()
 
 
 @linux_only
