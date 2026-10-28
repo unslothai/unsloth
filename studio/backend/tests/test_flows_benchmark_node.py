@@ -104,7 +104,7 @@ def test_adapter_is_scored_against_itself_off_and_failures_keep_the_row(monkeypa
     assert results["preview"][2]["passed"] is False and results["preview"][2]["base_passed"] is False
     failed = next(rows for name, rows in _uploads(ctx).items() if name.endswith("-failures.jsonl"))
     assert failed == [{**ROWS[2], "model_output": "x", "reason": ""}]
-    assert out["failures"]["rows"] == 1
+    assert out["failures"]["rows"] == 1 and out["failures"]["preview"][0]["id"] == 2
 
 
 def test_no_adapter_means_no_baseline_and_judge_scores_without_a_reference(monkeypatch):

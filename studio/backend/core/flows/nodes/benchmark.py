@@ -300,8 +300,6 @@ async def benchmark(ctx: NodeContext) -> dict:
             "preview": [{k: _short(v) for k, v in r.items()} for r in found["results"][:MAX_ROWS]],
         }
     )
-    return {
-        "score": found["score"],
-        "results": results,
-        "failures": await _as_dataset(ctx, found["failures"], f"{tag}-failures"),
-    }
+    failures = await _as_dataset(ctx, found["failures"], f"{tag}-failures")
+    failures["preview"] = [{k: _short(v) for k, v in r.items()} for r in found["failures"][:MAX_ROWS]]
+    return {"score": found["score"], "results": results, "failures": failures}
