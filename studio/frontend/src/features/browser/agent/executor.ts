@@ -61,11 +61,13 @@ export type BrowserAction = {
 };
 
 /** `scope`: the chat the run belongs to; sites approved in one chat aren't approved in another.
- *  `chat`: its browser chat when that isn't the thread's own (a compare pane's pair). */
+ *  `chat`: its browser chat when that isn't the thread's own (a compare pane's pair).
+ *  `temporary`: the run's chat is temporary, so its pages stay out of history whatever chat is shown. */
 export type ActionContext = {
   runKey: string;
   scope?: string;
   chat?: string;
+  temporary?: boolean;
   userText: string;
   fullAccess?: boolean;
   signal?: AbortSignal;
@@ -627,12 +629,12 @@ async function open(url: string, context: Run): Promise<BrowserTab | null> {
     : agent && !onGrantedOrigin(agent) ? agent : undefined;
   if (existing) {
     if (agentChat(context.session.chat).tabId !== existing.id) moveRun(context, existing.id);
-    store.navigate(existing.id, { url }, { replace: false });
+    store.navigate(existing.id, { url, temporary: context.temporary }, { replace: false });
     showTab(existing, context);
     return waitForLoad(existing.id, context.signal);
   }
   // In its own chat's tabs: a chat off screen gets a tab there, and the panel on screen stays put.
-  const tabId = store.openTabIn(context.session.chat, url);
+  const tabId = store.openTabIn(context.session.chat, url, { temporary: context.temporary });
   if (!tabId) return null;
   // Off screen the view opens a beat later: loading until it reports in, so the wait below doesn't read the blank view.
   if (!chatOnScreen(context)) store.updateTab(tabId, { loading: true });
@@ -988,7 +990,7 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
       }
       const sent = Date.now();
       // Straight to the landing page that was gated: the store unwraps only one redirect hop.
-      useBrowserStore.getState().navigate(ready.id, { url: end, from: here }, { replace: false });
+      useBrowserStore.getState().navigate(ready.id, { url: end, from: here, temporary: context.temporary }, { replace: false });
       const loaded = await waitForLoad(ready.id, signal);
       return loaded ? arrive(loaded, end, action, context, sent) : { ok: false, error: "the browser tab closed." };
     }

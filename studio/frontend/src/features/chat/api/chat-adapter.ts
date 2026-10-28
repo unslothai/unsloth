@@ -381,6 +381,7 @@ import type { CachedGgufRepo, CachedModelRepo } from "./chat-api";
 import {
   budgetImpliesTruncation,
   CONTINUE_INSTRUCTION,
+  carriedThought,
   continuationSeed,
   createContinuationMerger,
   hasRenderableContent,
@@ -2287,7 +2288,7 @@ export async function buildLocalTokenCountExtras(
         checkpoint: state.params.checkpoint,
       }),
       isMlx: state.loadedIsMlx === true,
-      isManagedEngine: state.loadedEngine === "vllm",
+      isManagedEngine: state.loadedEngine !== "auto",
       autoCompactEnabled: state.autoCompactEnabled,
     }),
   };
@@ -4443,6 +4444,12 @@ export function createOpenAIStreamAdapter(
       // Capture the thread ID once so it stays stable across chat switches during model load.
       const resolvedThreadId =
         (runThreadId ?? runtime.activeThreadId) || undefined;
+      // Taken as it sends, from the run's own thread: its browser pages keep that chat's history rule
+      // after a switch. The shown chat's toggle counts only for the thread on screen (marked as it initializes).
+      const browserTemporary = resolvedThreadId
+        ? isThreadIncognito(resolvedThreadId) ||
+          (resolvedThreadId === runtime.activeThreadId && runtime.incognito)
+        : runtime.incognito;
       if (resolvedThreadId) {
         rememberComposerProjectForRun(resolvedThreadId, composerProjectIdAtSend);
       }
@@ -5202,17 +5209,20 @@ export function createOpenAIStreamAdapter(
       }
 
       // Carry reasoning only to a backend that can resume it.
-      const resumedThought =
-        continuation &&
-        resumesThought({
-          loadedIsGguf: runtime.loadedIsGguf,
-          loadedIsMlx: runtime.loadedIsMlx,
-          activeGgufVariant: runtime.activeGgufVariant,
-          activeNativePathToken: runtime.activeNativePathToken,
-          checkpoint: params.checkpoint,
-        })
-          ? (continuation.reasoning ?? "")
-          : "";
+      const resumedThought = continuation
+        ? carriedThought(continuation, {
+            resumesThought: resumesThought({
+              loadedIsGguf: runtime.loadedIsGguf,
+              loadedIsMlx: runtime.loadedIsMlx,
+              activeGgufVariant: runtime.activeGgufVariant,
+              activeNativePathToken: runtime.activeNativePathToken,
+              checkpoint: params.checkpoint,
+            }),
+            managedEngine:
+              !isExternalModelId(params.checkpoint) &&
+              runtime.loadedEngine !== "auto",
+          })
+        : "";
       const hasGeminiReplayContinuation = Boolean(
         continuation &&
           externalProvider?.providerType === "gemini" &&
@@ -5509,7 +5519,7 @@ export function createOpenAIStreamAdapter(
       const isMlxForCompaction =
         !isExternalModelId(params.checkpoint) && runtime.loadedIsMlx === true;
       const isManagedEngineForCompaction =
-        !isExternalModelId(params.checkpoint) && runtime.loadedEngine === "vllm";
+        !isExternalModelId(params.checkpoint) && runtime.loadedEngine !== "auto";
       // Taken once, so a retried request still carries it and the next turn does not.
       const compactNow =
         takeThreadCompactionRequest(resolvedThreadId) &&
@@ -6826,7 +6836,8 @@ export function createOpenAIStreamAdapter(
             repetition_penalty: params.repetitionPenalty,
             presence_penalty: params.presencePenalty,
             // Omit when unset (server draws a seed) or unread, so a stale GGUF pin is never sent.
-            ...(params.seed == null || !modelReadsSamplingSeed(activeModel)
+            ...(params.seed == null ||
+            !modelReadsSamplingSeed(activeModel, runtime.loadedEngine)
               ? {}
               : { seed: params.seed }),
             // Turn-scoped: a stale screenshot here made the backend refuse every later text turn's durable run.
@@ -7374,6 +7385,7 @@ export function createOpenAIStreamAdapter(
                           scope: liveThreadKey(serverCancel),
                           userText,
                           fullAccess: bypassPermissions,
+                          temporary: browserTemporary,
                           signal: runSignal,
                         });
                       }

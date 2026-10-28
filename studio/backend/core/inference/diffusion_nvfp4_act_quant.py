@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""One-pass NVFP4 quantiser for torchao's ``NVFP4Tensor.to_nvfp4`` (two-level scales, swizzled block scales).
-
-Under Inductor torchao's version is three kernels (quantise, pack, swizzle); this ``triton_op`` does all three in
-one pass.
-
-Arithmetic is torchao's, in torchao's order (block max / 6, divide by the per-tensor scale, clamp to
-[2^-6, 448], e4m3, then ``x * ((1 / s) / scale_fp8)``, clamp to +-6, round-to-nearest-even onto e2m1 by the
-same bit trick), so the packed bytes and scales are bit-identical to torchao's own path; ``verify()`` checks
-that on the device before the patch engages. ``UNSLOTH_NVFP4_FAST_ACT_QUANT=0`` restores torchao.
-"""
+"""One-pass NVFP4 quantiser, bit-identical to torchao's to_nvfp4; verify() checks it before the patch."""
 
 from __future__ import annotations
 

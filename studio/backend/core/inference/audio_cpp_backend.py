@@ -1,18 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Worker backend for audio.cpp speech, music and separation models in the main audio slot.
-
-Selected by the inference worker in place of ``NativeAudioBackend`` when the model
-is an audio.cpp TTS or music GGUF, so loading, auto-switching, idle eviction,
-cancellation and the Audio page, read-aloud and ``/v1/audio/speech`` all work
-through the machinery every other main-slot audio model uses. The weights run in
-an ``audiocpp_server`` child; this class only downloads, starts, proxies and stops.
-
-A cancelled request cannot interrupt GPU work already queued inside the server, and
-the server would make the next request wait for it (minutes, for music). So a cancel
-stops the server and the next request starts it again from the warm file cache.
-"""
+"""Worker backend for audio.cpp speech, music and separation models in the main audio slot, used in
+place of NativeAudioBackend; weights run in an audiocpp_server child. A cancel stops that server
+(queued GPU work cannot be interrupted); the next request restarts it from the warm file cache."""
 
 from __future__ import annotations
 

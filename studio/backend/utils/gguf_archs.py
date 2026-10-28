@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The speech-architecture verdict, as a leaf module with no package baggage.
-
-It lives here rather than beside the rest of the GGUF metadata helpers because
-``utils.models.__init__`` eagerly imports ``model_config``, which imports ``yaml``.
-``core.inference.llama_cpp`` needs this verdict at import time, and reaching it through
-``utils.models`` made the whole models package -- and PyYAML with it -- a hard import
-dependency of the chat backend. That took the repo's own Source lint job red, where
-``tests/studio/load_freeze/test_load_orchestrator.py`` imports the backend without PyYAML
-installed.
-
-Every caller imports from here, so there is exactly ONE definition.
-"""
+"""Speech-architecture verdict, single definition; a leaf, so importing it does not pull in PyYAML."""
 
 from __future__ import annotations
 

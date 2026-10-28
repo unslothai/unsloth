@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Text-diffusion language models (LLaDA, Dream, SDAR, DiffusionGemma, ...), detected from config.json alone.
-
-Torch-free mirror of the profile matching in ``unsloth/models/diffusion_profiles.py``; same names, same
-order (a profile's ``model_types`` and ``architectures`` are both tried before the next profile, and
-LLaDA-MoE precedes LLaDA because both report ``model_type = "llada"``). ``test_diffusion_lm_studio.py``
-keeps the two in sync. Not to be confused with Studio's image / video diffusion pipelines.
-"""
+"""Diffusion LM detection; torch-free mirror of diffusion_profiles.py, keep LLaDA-MoE before LLaDA."""
 
 from pathlib import Path
 from typing import Mapping, Optional

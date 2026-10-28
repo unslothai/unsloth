@@ -1845,6 +1845,11 @@
         "kind": "def",
         "signature": "text: str, first: int"
       },
+      "_search_from_literal": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "pattern: re.Pattern, literal: str, text: str, pos: int"
+      },
       "_signal_inside_leading_wrapperless_gemma": {
         "decorators": [],
         "kind": "def",
@@ -2057,8 +2062,11 @@
   },
   "core.tool_healing": {
     "compiled": {
+      "_BRACE_SKIP_GEMMA_RE": "'[^\"{}<]*(?:<(?!\\\\|\"\\\\|>)[^\"{}<]*)*' flags=32",
+      "_BRACE_SKIP_RE": "'[^\"{}]*' flags=32",
       "_CODE_SPAN_RE": "'^[ \\\\t]*(?:>[ \\\\t]*)*(?:(?P<bt>```+)[^`\\\\n]*$.*?(?:^[ \\\\t]*(?:>[ \\\\t]*)*(?P=bt)`*[ \\\\t\\\\r]*$|\\\\Z)|(?P<tl>~~~+)[^\\\\n]*$.*?(?:^[ \\\\t]*(?:>[ \\\\t]*)*(?P=tl)~*[ \\\\t\\\\r]*$|\\\\Z))|``(?:[^`]|`(?!`))*?``|`[^`\\\\n]*`' flags=56",
       "_GEMMA_NEXT_KEY_RE": "'\\\\s*[A-Za-z_][\\\\w.\\\\-]*\\\\s*:' flags=32",
+      "_JSON_STRING_BODY_RE": "'[^\"\\\\\\\\]*(?:\\\\\\\\.[^\"\\\\\\\\]*)*' flags=48",
       "_MISTRAL_ARRAY_RE": "'\\\\[TOOL_CALLS\\\\]\\\\s*(?=\\\\[)' flags=32",
       "_MISTRAL_BRACKET_RE": "'\\\\[TOOL_CALLS\\\\]\\\\s*([\\\\w-]+)(?:\\\\[CALL_ID\\\\][\\\\w-]+)?(?:\\\\[ARGS\\\\])?\\\\s*(?=\\\\{)' flags=32",
       "_REHEARSAL_CLOSED_STRIP_RE": "'(?<!\\\\[CALL_ID\\\\])\\\\b([\\\\w-]+)\\\\[ARGS\\\\]\\\\s*\\\\{[^{}]*(?:\\\\{[^{}]*\\\\}[^{}]*)*\\\\}' flags=48",
@@ -2122,6 +2130,9 @@
       "re.compile('<tool_call>.*$', re.DOTALL)": 1,
       "re.compile('<tool_call>.*?</tool_call>', re.DOTALL)": 1,
       "re.compile('<tool_call\\\\|>')": 2,
+      "re.compile('[^\"\\\\\\\\]*(?:\\\\\\\\.[^\"\\\\\\\\]*)*', re.DOTALL)": 1,
+      "re.compile('[^\"{}<]*(?:<(?!\\\\|\"\\\\|>)[^\"{}<]*)*')": 1,
+      "re.compile('[^\"{}]*')": 1,
       "re.compile('\\\\[/TOOL_CALLS\\\\]')": 1,
       "re.compile('\\\\[TOOL_CALLS\\\\].*$', re.DOTALL)": 1,
       "re.compile('\\\\[TOOL_CALLS\\\\]\\\\s*(?=\\\\[)')": 1,
@@ -2139,6 +2150,12 @@
       "EXECUTION_CLASS_TOOL_NAMES": {
         "kind": "assign"
       },
+      "_BRACE_SKIP_GEMMA_RE": {
+        "kind": "assign"
+      },
+      "_BRACE_SKIP_RE": {
+        "kind": "assign"
+      },
       "_BRACKETED_JSON_ONE_LEVEL": {
         "kind": "assign"
       },
@@ -2152,6 +2169,9 @@
         "kind": "assign"
       },
       "_GEMMA_QUOTE": {
+        "kind": "assign"
+      },
+      "_JSON_STRING_BODY_RE": {
         "kind": "assign"
       },
       "_MAX_BRACKET_SCAN_CHARS": {

@@ -25,7 +25,7 @@ from ._utils import _ignore_block_swap_params_for_ddp
 from ._utils import _tensor_parallel_for_inference, _tensor_parallel_for_training
 from ._utils import __version__, importlib_version
 from ._utils import move_to_device
-from ._utils import per_layer_device
+from ._utils import per_layer_device, refresh_moved_layer_devices
 from ._utils import embedding_applies_scale
 from ._utils import (
     _get_inference_mode_context_manager,
@@ -1781,6 +1781,7 @@ def _LlamaModel_fast_forward_inference(
 
         next_decoder_cache = []
         block_swap = getattr(self.model.layers, "_unsloth_block_swap", None)
+        refresh_moved_layer_devices(self.model.layers, block_swap)
 
         for idx, decoder_layer in enumerate(self.model.layers):
             if block_swap is not None:
@@ -3308,6 +3309,22 @@ def _gated_method(cls, name, fast, original):
 
     gated._unsloth_gated = True
     return gated
+
+
+def runs_fast_forward(
+    module,
+    fast,
+    name = "forward",
+):
+    """True when `module` runs Unsloth's `fast` as its class `name`: directly, or through the gate that
+    pre_patch installs (which runs `fast` only on modules marked by mark_unsloth_fast_path)."""
+    method = getattr(type(module), name, None)
+    method = getattr(method, "__func__", method)
+    if method is fast:
+        return True
+    if getattr(method, "_unsloth_gated", False) and getattr(method, "__wrapped__", None) is fast:
+        return bool(getattr(module, "_unsloth_fast_path", False))
+    return False
 
 
 def mark_unsloth_fast_path(model):

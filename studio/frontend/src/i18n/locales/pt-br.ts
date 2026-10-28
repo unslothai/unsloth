@@ -139,6 +139,11 @@ export const ptBR = {
     more: "Mais",
     addressPlaceholder: "Pesquise ou digite um URL",
     local: "Local",
+    browserUse: {
+      label: "Uso do navegador",
+      description: "Permite que os modelos controlem o navegador integrado",
+      unavailable: "Carregue um modelo que chame ferramentas para que ele use o navegador.",
+    },
     suggested: "Sugestões",
     suggestedMenu: {
       open: "Abrir",
@@ -2324,6 +2329,7 @@ export const ptBR = {
       liveMonitor: {
         title: "Monitor ao vivo",
         apiTitle: "Monitor da API",
+        apiDescription: "Veja o que outros apps enviam para a API deste servidor assim que chega.",
         summary: "Solicitações ativas, erros e uso de tokens",
         status: "{active} ativas · {recent} recentes · {model}",
         noModelLoaded: "nenhum modelo carregado",
@@ -2343,7 +2349,7 @@ export const ptBR = {
         gpuUnusableDetail: "Detectada, mas o PyTorch não consegue usá-la",
         detailedView: "Visualização detalhada",
         detailedViewDescription:
-          "Mostra a carga da CPU e a carga, temperatura e consumo de cada GPU na janela flutuante e aqui.",
+          "Mostra a carga da CPU e a carga, temperatura e consumo de cada GPU na janela flutuante.",
         cpuLoad: "Carga da CPU",
         gpuLoad: "Carga da GPU",
         temperature: "Temperatura",
@@ -2376,6 +2382,10 @@ export const ptBR = {
         used: "{value} usados",
         free: "{value} livres",
         total: "{value} total",
+        usedOf: "{used} em uso de {total}",
+        segmentUsed: "Em uso pela GPU",
+        segmentSystem: "Em uso pelo sistema",
+        segmentAvailable: "Disponível",
       },
       llamaBackend: {
         title: "GGUF inference engine",
@@ -2563,6 +2573,8 @@ export const ptBR = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "Tempo de atividade",
         processMemory: "Memória do processo",
         notInstalled: "Não instalado",
@@ -3316,6 +3328,7 @@ export const ptBR = {
       desktopAppVersionUnavailable: "Indisponível",
       llamaCppVersion: "Versão do llama.cpp",
       audioCppVersion: "Versão do audio.cpp",
+      mlxVersion: "Versão do MLX",
       whisperCppVersion: "Versão do whisper.cpp",
       engines: {
         title: "Motores",
@@ -4582,6 +4595,7 @@ export const ptBR = {
       modelsTitle: "Nenhum modelo ajustado ainda",
       modelsDescription: "Os modelos que você treina ou exporta no Unsloth aparecem aqui.",
       createFolder: "Criar pasta",
+      generateImage: "Gerar uma imagem",
       generateVideo: "Gerar um vídeo",
       generateAudio: "Gerar áudio",
       trainModel: "Treinar um modelo",

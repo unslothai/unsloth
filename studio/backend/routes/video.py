@@ -166,7 +166,8 @@ async def video_download_plan(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
     await _refuse_disabled_nvfp4_checkpoint(request)
-    from core.inference.diffusion import resolve_local_single_file, split_local_checkpoint_path
+    from core.inference.diffusion import split_local_checkpoint_path
+    from core.inference.diffusion_local_files import resolve_local_single_file
     from core.inference.video import (
         assert_video_precision_available,
         get_video_backend,
@@ -328,7 +329,8 @@ async def load_video_model_gated(
         for ref in (request.model_path, request.base_repo)
         if ref and _repo_is_in_the_hub_cache(ref) is not True
     ]
-    from core.inference.diffusion import resolve_local_single_file, split_local_checkpoint_path
+    from core.inference.diffusion import split_local_checkpoint_path
+    from core.inference.diffusion_local_files import resolve_local_single_file
     from core.inference.diffusion_device import (
         resolve_diffusion_device_target,
         resolve_selected_cuda_ordinal,

@@ -1,15 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Native stable-diffusion.cpp (``sd-cli``) engine for the diffusion backend.
-
-Mirrors the chat backend's llama.cpp shell-out: locate a prebuilt / built binary, run it as a
-one-shot subprocess. The CPU / Apple-Silicon / low-VRAM tier; diffusers stays the default on
-CUDA / ROCm / XPU. Thin: ``find_sd_cpp_binary()`` (env -> install layouts -> in-tree -> PATH),
-``SdCppEngine`` (``is_available`` / ``version`` + a ``generate`` that builds argv, runs sd-cli,
-returns the PNG path), and the pure ``select_diffusion_engine(...)`` routing decision. Everything
-heavy is reached only inside ``generate`` / ``version``, so import is free and tests stay hermetic.
-"""
+"""sd-cli engine for CPU, Apple Silicon and low-VRAM; diffusers stays default on CUDA/ROCm/XPU;
+heavy work only in generate/version so import is free"""
 
 from __future__ import annotations
 

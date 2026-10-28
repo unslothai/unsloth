@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Document parsing -> list[Page], one dispatch with lazy optional deps.
-
-PDFs keep per-page boundaries (``page_number``); txt/md/docx/html return a single
-page. ``parse(path, want_images=True)`` also returns embedded images. Heavy imports
-are lazy, so importing this module never fails on a missing dep.
-"""
+"""Document parsing to list[Page]; PDFs keep per-page page_number, txt/md/docx/html give one page;
+deps are lazy so importing never fails on a missing one."""
 
 from __future__ import annotations
 
@@ -273,6 +269,8 @@ class _Stripper(HTMLParser):
                 self._lists[-1][2].append(item)
                 self._label = f"\ue000{self.nonce}.{len(self.labels)}\ue001 "
                 self.labels.append("")
+        elif tag == "input" and (dict(attrs).get("type") or "").lower() in ("checkbox", "radio"):
+            self.handle_data(" ☒ " if "checked" in dict(attrs) else " ☐ ")
         elif tag in _HTML_BOX_TAGS and not self._skip and not self._pre:
             self._line.append(" ")
         elif tag == "tspan" and not self._skip and any(k in ("x", "y") for k, _ in attrs):
