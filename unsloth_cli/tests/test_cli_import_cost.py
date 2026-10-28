@@ -18,20 +18,27 @@ if str(_REPO_ROOT) not in sys.path:
 DEFERRED = ("yaml", "asyncio", "rich.console")
 
 
-def _deferred_loaded_by(statement: str) -> set[str]:
-    probe = (
-        f"{statement}\n"
-        "import sys\n"
-        f"print(json.dumps(sorted(m for m in {DEFERRED!r} if m in sys.modules)))\n"
-    )
+def _child_json(code: str):
+    # cwd alone does not select this checkout under PYTHONSAFEPATH=1, so put it first on sys.path.
+    probe = f"import json, sys\nsys.path.insert(0, {str(_REPO_ROOT)!r})\n{code}\n"
     result = subprocess.run(
-        [sys.executable, "-c", "import json\n" + probe],
+        [sys.executable, "-c", probe],
         capture_output = True,
         text = True,
         cwd = str(_REPO_ROOT),
+        timeout = 300,
     )
     assert result.returncode == 0, result.stderr
-    return set(json.loads(result.stdout.strip().splitlines()[-1]))
+    return json.loads(result.stdout.strip().splitlines()[-1])
+
+
+def _deferred_loaded_by(statement: str) -> set[str]:
+    return set(
+        _child_json(
+            f"{statement}\n"
+            f"print(json.dumps(sorted(m for m in {DEFERRED!r} if m in sys.modules)))"
+        )
+    )
 
 
 def test_importing_the_cli_does_not_load_deferred_modules():
@@ -59,3 +66,41 @@ def test_yaml_config_still_loads(tmp_path):
     cfg = load_config(path)
     assert cfg.model == "unsloth/foo"
     assert cfg.training.max_steps == 7
+
+
+_MODELS = "(c.DataConfig, c.TrainingConfig, c.LoraConfig, c.LoggingConfig, c.Config)"
+
+
+def test_importing_the_cli_leaves_every_config_schema_unbuilt():
+    built = _child_json(
+        "import unsloth_cli\n"
+        "import unsloth_cli.config as c\n"
+        f"print(json.dumps([m.__pydantic_complete__ for m in {_MODELS}]))"
+    )
+    assert built == [False] * 5
+
+
+def test_concurrent_first_loads_build_the_schemas_once():
+    # Racing first builds of the deferred schemas can leave a validator broken for every later call.
+    errors, ok = _child_json(
+        "import threading\n"
+        "sys.setswitchinterval(1e-6)\n"
+        "from unsloth_cli.config import load_config\n"
+        "errors = []\n"
+        "barrier = threading.Barrier(8)\n"
+        "def run():\n"
+        "    try:\n"
+        "        barrier.wait()\n"
+        "        cfg = load_config(None)\n"
+        "        cfg.apply_overrides(learning_rate = 1e-4, lora_r = 8, max_steps = 3)\n"
+        "    except Exception as error:\n"
+        "        errors.append(repr(error))\n"
+        "threads = [threading.Thread(target = run) for _ in range(8)]\n"
+        "for t in threads: t.start()\n"
+        "for t in threads: t.join()\n"
+        "cfg = load_config(None)\n"
+        "cfg.apply_overrides(learning_rate = 2e-4)\n"
+        "print(json.dumps([errors, cfg.training.learning_rate == 2e-4]))"
+    )
+    assert errors == []
+    assert ok is True
