@@ -440,9 +440,16 @@ class ActivationCapture:
                 flat = hidden.detach().flatten(0, -2)[..., sampled].float()  # [*, K]
                 buf_key = layer_idx if kind == "layer" else f"{layer_idx}_mlp"
                 n, sum_abs, total = self._act_sums.get(buf_key, (0, 0.0, 0.0))
-                n, sum_abs, total = n + flat.shape[0], sum_abs + flat.abs().sum(dim = 0), total + flat.sum(dim = 0)
+                n, sum_abs, total = (
+                    n + flat.shape[0],
+                    sum_abs + flat.abs().sum(dim = 0),
+                    total + flat.sum(dim = 0),
+                )
                 self._act_sums[buf_key] = (n, sum_abs, total)
-                self._buffer[buf_key] = {"mean_abs": (sum_abs / n).tolist(), "mean": (total / n).tolist()}
+                self._buffer[buf_key] = {
+                    "mean_abs": (sum_abs / n).tolist(),
+                    "mean": (total / n).tolist(),
+                }
             self._captured_layers.add(key)
 
         return hook

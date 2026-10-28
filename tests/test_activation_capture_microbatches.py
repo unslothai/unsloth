@@ -49,7 +49,9 @@ class _Model(torch.nn.Module):
 
 def _capture(tmp_path, checkpointed):
     model = _Model(checkpointed)
-    cfg = ac.ActivationCaptureConfig(output_dir = str(tmp_path), capture_interval = 1, capture_lora_norms = False)
+    cfg = ac.ActivationCaptureConfig(
+        output_dir = str(tmp_path), capture_interval = 1, capture_lora_norms = False
+    )
     cap = ac.ActivationCapture(model, cfg)
     cap.attach()
     return model, cap
@@ -58,7 +60,10 @@ def _capture(tmp_path, checkpointed):
 @pytest.mark.parametrize("checkpointed", [False, True])
 def test_a_step_averages_every_microbatch(tmp_path, checkpointed):
     model, cap = _capture(tmp_path, checkpointed)
-    micro = [torch.full((1, 2, H), 1.0, requires_grad = True), torch.full((1, 2, H), -3.0, requires_grad = True)]
+    micro = [
+        torch.full((1, 2, H), 1.0, requires_grad = True),
+        torch.full((1, 2, H), -3.0, requires_grad = True),
+    ]
     cap.mark_capture(step = 0)
     for x in micro:
         model(x).sum().backward()
