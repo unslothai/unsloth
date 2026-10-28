@@ -1494,12 +1494,6 @@ _RUNTIME_FINGERPRINT_MEMO: Optional[dict] = None
 _HOST_FINGERPRINT_MEMO: Optional[dict] = None
 
 
-def _reset_host_fingerprint() -> None:
-    global _HOST_FINGERPRINT_MEMO, _RUNTIME_FINGERPRINT_MEMO
-    _HOST_FINGERPRINT_MEMO = None
-    _RUNTIME_FINGERPRINT_MEMO = None
-
-
 def _runtime_fingerprint() -> dict:
     global _RUNTIME_FINGERPRINT_MEMO
     if _RUNTIME_FINGERPRINT_MEMO is not None:

@@ -163,10 +163,6 @@ def _cast_bytes(shards: list) -> Optional[int]:
     return total if seen else None
 
 
-def _all_wide(shards: list) -> bool:
-    return _cast_bytes(shards) is not None
-
-
 def _fit_budget(cands: list, logger: Any = None) -> list:
     """A set over the LRU budget would evict its own entries every load. Greedy largest-first, so it is deterministic."""
     budget = _cache.max_cache_bytes()
