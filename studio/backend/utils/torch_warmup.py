@@ -432,14 +432,11 @@ _STAGES = (
 )
 
 
-# Upper bound on how long the warm waits for its start gate (the first HTTP response). The desktop's port
-# validation arrives right after TAURI_PORT, so this only matters for a launch nobody has connected to yet.
+# Bound on the start-gate wait; only a launch nobody connects to reaches it.
 START_GATE_MAX_WAIT_S = 2.0
 
 
 def _wait_for_start_gate(gate: Optional[threading.Event]) -> None:
-    """Hold the warm until the first response is out: import torch and the CUDA probe hold the GIL for whole
-    C calls (seconds on a loaded host), and the desktop's 2 s port probe must not queue behind them."""
     if gate is None:
         return
     waited = time.perf_counter()
@@ -512,8 +509,7 @@ def _warm_after(
 def start_background_warm(gate: Optional[threading.Event] = None) -> bool:
     """A finished thread from an earlier lifespan does not count; shutdown cleared the state it warmed.
 
-    ``gate``: the thread starts (and reports started) now, but runs its stages only once the event is set or
-    START_GATE_MAX_WAIT_S passes. Set it at shutdown too, so a parked warm reaches its epoch check."""
+    ``gate``: reports started now, runs stages once set or after START_GATE_MAX_WAIT_S (utils/first_response_gate.py)."""
     global _thread
     if os.environ.get(DISABLE_ENV_VAR) == "1":
         return False

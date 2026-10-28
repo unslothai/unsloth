@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Start gate for the torch warm: opens once the first HTTP response has been sent.
-
-The warm's ``import torch`` (loading torch's extension module) and its CUDA probe each hold the GIL for a whole
-C call, seconds on a loaded host. A request arriving meanwhile cannot run until the call returns, so the
-desktop's first port probe (2 s timeout, then a doubling retry backoff) could miss and wait it out. Letting the
-first answer go out before the warm's stages begin keeps that probe off the stall; the warm still starts in
-the lifespan (so its in-progress marker reads as before) and runs every stage unchanged."""
+"""Start gate for the torch warm: its import torch / CUDA probe hold the GIL for whole C calls, so the desktop's
+first 2 s port probe must be answered before they begin."""
 
 from __future__ import annotations
 
@@ -35,5 +30,5 @@ class FirstResponseGateMiddleware:
         try:
             await self.app(scope, receive, send_and_mark)
         finally:
-            # A request that ends without a complete body (client gone, error) still counts as answered.
+            # Client gone or error: still answered.
             event.set()

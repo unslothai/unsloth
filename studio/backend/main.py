@@ -611,8 +611,7 @@ def _start_llama_cpp_probes_if_enabled(app: FastAPI) -> None:
     ).start()
 
 
-# The torch warm's start gate (utils/first_response_gate.py): set once the first HTTP response is out, and at
-# shutdown so a parked warm reaches its epoch check.
+# Torch warm start gate: set by the first response, and at shutdown so a parked warm reaches its epoch check.
 _first_response_sent = threading.Event()
 
 
