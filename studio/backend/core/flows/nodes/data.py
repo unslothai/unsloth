@@ -79,6 +79,61 @@ def declarative_recipe(payload: Any) -> dict:
     return recipe
 
 
+def runnable_recipe(payload: Any) -> dict:
+    """A Recipe group's recipe as the job runs it: tool profiles and provider keys kept (a flow calls
+    with an API key, so keys travel in ``api_key``), a local (stdio) tool server refused."""
+    recipe = payload if isinstance(payload, dict) else None
+    if recipe is None:
+        raise FlowNodeError("That Data Recipe has no recipe")
+    recipe = json.loads(json.dumps(recipe))
+    from core.flows.recipe_share import stdio_names
+
+    stdio = stdio_names(recipe)
+    if stdio:
+        raise FlowNodeError(
+            f"Tool server {stdio[0]} is a local (stdio) server; those only run from the Data Recipes "
+            "page. Use an http(s) MCP server here, or remove it from the tool profile"
+        )
+    from core.training.account_jobs import managed_account
+
+    if managed_account():
+        for provider in recipe.get("model_providers") or []:
+            if isinstance(provider, dict):
+                provider.pop("api_key_env", None)
+    return recipe
+
+
+def run_settings(saved: Any, rows: int, mode: str, recipe: dict) -> dict:
+    """The job's `run` from a group's saved run settings, as Recipe Studio's run dialog builds it:
+    batching (``run_config.buffer_size``) only on a full run, else one buffer of ``rows``."""
+    saved = saved if isinstance(saved, dict) else {}
+    run: dict[str, Any] = {}
+    config = saved.get("run_config")
+    if isinstance(config, dict):
+        config = dict(config)
+        batching = mode == "full" and isinstance(config.get("buffer_size"), int)
+        if not batching:
+            config.pop("buffer_size", None)
+            if rows > 0:
+                config["buffer_size"] = rows
+        run["run_config"] = config
+        run["merge_batches"] = bool(batching and saved.get("merge_batches"))
+    elif "merge_batches" in saved:
+        run["merge_batches"] = bool(saved["merge_batches"])
+    name = saved.get("run_name")
+    if mode == "full" and isinstance(name, str) and name.strip():
+        run["run_name"] = name.strip()
+    parallel = saved.get("llm_parallel_requests")
+    if isinstance(parallel, int) and not isinstance(parallel, bool) and parallel > 0:
+        for model in recipe.get("model_configs") or []:
+            if isinstance(model, dict):
+                inference = model.get("inference_parameters")
+                inference = dict(inference) if isinstance(inference, dict) else {}
+                inference["max_parallel_requests"] = parallel
+                model["inference_parameters"] = inference
+    return run
+
+
 @handler("data.recipe")
 async def recipe(ctx: NodeContext) -> dict:
     recipe_id = str(ctx.params.get("recipe_id") or "").strip()
@@ -96,7 +151,7 @@ async def recipe_group(ctx: NodeContext) -> dict:
     compiled = ctx.params.get(RECIPE_PARAM)
     if not isinstance(compiled, dict):
         raise FlowNodeError("Put this step inside a Data Recipe group")
-    body = declarative_recipe(compiled.get("recipe"))
+    body = runnable_recipe(compiled.get("recipe"))
     checked = await ctx.call("POST", f"{RECIPES}/validate", json = {"recipe": body})
     if isinstance(checked, dict) and checked.get("valid") is False:
         problems = [
@@ -107,10 +162,9 @@ async def recipe_group(ctx: NodeContext) -> dict:
         raise FlowNodeError(
             "The recipe is not ready: " + ("; ".join(problems[:3]) or "it did not validate")
         )
-    saved = compiled.get("run") if isinstance(compiled.get("run"), dict) else {}
-    return await run_recipe(
-        ctx, body, {k: saved[k] for k in ("run_config", "merge_batches") if k in saved}
-    )
+    mode = "preview" if ctx.params.get("mode") == "preview" else "full"
+    run = run_settings(compiled.get("run"), int(ctx.params.get("rows") or 0), mode, body)
+    return await run_recipe(ctx, body, run)
 
 
 async def run_recipe(ctx: NodeContext, body: dict, run: dict[str, Any]) -> dict:

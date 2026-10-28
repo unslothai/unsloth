@@ -121,7 +121,7 @@ test("a recipe-level edit lands on the group config, not on the columns", () => 
   >[];
   assert.equal(providers[0].endpoint, "http://127.0.0.1:8000/v1");
   assert.equal("columns" in (edit.group?.config ?? {}), false);
-  assert.equal("mcp_providers" in (edit.group?.config ?? {}), false);
+  assert.deepEqual(edit.group?.config?.mcp_providers, []);
 });
 
 test("reference wires follow the prompts, like the backend import", () => {

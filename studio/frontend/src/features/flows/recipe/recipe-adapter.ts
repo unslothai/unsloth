@@ -36,8 +36,6 @@ const LAYOUT_UI = new Set([
   "aux_nodes",
   "advanced_open_by_node",
 ]);
-// Flows keep no tool servers (backend `declarative_recipe`).
-const DROPPED_KEYS = new Set(["mcp_providers", "tool_configs"]);
 
 export interface StudioView {
   configs: Record<string, NodeConfig>;
@@ -186,13 +184,19 @@ export function commitStudioEdit(
   >;
   const config: Record<string, unknown> = { ...(group.config ?? {}) };
   for (const [key, value] of Object.entries(recipe)) {
-    if (value === undefined || DROPPED_KEYS.has(key)) delete config[key];
+    if (value === undefined) delete config[key];
     else config[key] = value;
   }
   const ui: Record<string, unknown> = { ...(group.ui ?? {}) };
   for (const [key, value] of Object.entries(built.payload.ui)) {
     if (!LAYOUT_UI.has(key)) ui[key] = value;
   }
+  // A tool profile's fetched tool list lives on its Recipe Studio canvas node.
+  const toolNodes = (built.payload.ui.nodes ?? []).filter(
+    (node) => (node as { node_type?: string }).node_type === "tool_config",
+  );
+  if (toolNodes.length > 0) ui.nodes = toolNodes;
+  else delete ui.nodes;
   return { nodes, group: { ...group, config, ui } };
 }
 

@@ -14,18 +14,24 @@ import re
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Optional
+from typing import Annotated, Any, Optional
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from auth.authentication import get_current_subject
+from auth.authentication import (
+    authenticated_via_api_key,
+    get_current_subject,
+    require_ui_session_for_local_commands,
+)
 from core.flows import assets as asset_store
 from core.flows import caller as flow_caller
 from core.flows import capabilities, compiler, notebook_import, package, replication, triggers
-from core.flows.recipe_import import flow_from_recipe
+from core.flows.recipe_compile import RecipeCompileError, compile_recipe, recipe_graph
+from core.flows.recipe_import import GENERATE_TYPE, flow_from_recipe
+from core.flows.recipe_share import share_recipe, stdio_names
 from core.flows.examples import build_examples as examples
 from core.flows.compiler import CompileError
 from core.flows.engine import get_engine
@@ -88,6 +94,11 @@ class RecipeImportBody(BaseModel):
     recipe_id: Optional[str] = Field(default = None, min_length = 1, max_length = 128)
     payload: Optional[dict[str, Any]] = None
     name: Optional[str] = Field(default = None, max_length = 200)
+
+
+class RecipeExportBody(BaseModel):
+    doc: dict[str, Any]
+    group_id: str = Field(min_length = 1, max_length = 64)
 
 
 class SessionBody(BaseModel):
@@ -268,7 +279,9 @@ def _recipe_source(record: dict) -> dict:
 
 
 @router.post("/import/recipe")
-def import_recipe(body: RecipeImportBody) -> dict:
+def import_recipe(
+    body: RecipeImportBody, via_api_key: Annotated[bool, Depends(authenticated_via_api_key)] = False
+) -> dict:
     """A saved Data Recipe (by id) or recipe JSON as a new flow; the recipe itself is left alone.
     Asking again for an unchanged saved recipe opens the flow made last time."""
     from storage import data_recipes_db
@@ -285,11 +298,40 @@ def import_recipe(body: RecipeImportBody) -> dict:
             return {"flow": existing, "report": {"notices": [], "reused": True}}
         payload, name, source = record["payload"], record.get("name"), _recipe_source(record)
     elif body.payload is not None:
+        recipe = (
+            body.payload.get("recipe")
+            if isinstance(body.payload.get("recipe"), dict)
+            else body.payload
+        )
+        if stdio_names(recipe):
+            # Same rule as saving a recipe: only the Unsloth UI may hand this host a command to run.
+            require_ui_session_for_local_commands(via_api_key)
         payload, name, source = body.payload, None, None
     else:
         raise HTTPException(status_code = 400, detail = "Send a recipe_id or a recipe payload")
     flow, notices = _recipe_flow(payload, body.name or name or "Data Recipe", source)
     return {"flow": flow, "report": {"notices": notices}}
+
+
+@router.post("/export/recipe")
+def export_recipe(body: RecipeExportBody) -> dict:
+    """One Recipe group of ``doc`` as recipe JSON Recipe Studio imports (`{recipe, run, ui}`), without
+    credentials, local tool servers or this machine's upload paths."""
+    try:
+        graph = recipe_graph(body.doc, body.group_id)
+        compiled = compile_recipe(graph)
+    except RecipeCompileError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc))
+    recipe, ui = share_recipe(compiled["recipe"], graph["group"].get("ui"))
+    run = compiled["run"]
+    # Rows and mode live on the Recipe Dataset step, not on the group.
+    step = next((n for n in graph["nodes"] if n.get("type") == GENERATE_TYPE), None)
+    if step:
+        params = step.get("params") or {}
+        if isinstance(params.get("rows"), int) and params["rows"] > 0:
+            run["rows"] = params["rows"]
+        run["preview"] = params.get("mode", "preview") == "preview"
+    return package.scrub({"recipe": recipe, "run": run, "ui": ui})
 
 
 @router.post("/import/recipes")

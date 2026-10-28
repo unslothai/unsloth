@@ -256,6 +256,14 @@ export const importRecipe = (
     json("POST", source),
   );
 
+/** One recipe group as recipe JSON Recipe Studio imports, without keys, local tool servers or upload paths. */
+export const exportRecipe = (doc: FlowDocument, groupId: string) =>
+  request<{
+    recipe: Record<string, unknown>;
+    run: Record<string, unknown>;
+    ui: Record<string, unknown>;
+  }>("/export/recipe", json("POST", { doc, group_id: groupId }));
+
 export interface RecipeMigration {
   created: {
     recipe_id: string;
