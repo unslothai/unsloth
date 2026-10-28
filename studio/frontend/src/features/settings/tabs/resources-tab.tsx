@@ -1061,7 +1061,10 @@ export function ResourcesTab() {
               <div
                 key={`${device.index ?? index}-${device.name ?? "gpu"}`}
                 data-settings-label={device.name ?? undefined}
-                className="flex min-w-0 flex-wrap items-start justify-between gap-x-6 gap-y-3 py-3 max-[992px]:flex-col max-[992px]:items-stretch"
+                className={cn(
+                  "flex min-w-0 flex-wrap items-start justify-between gap-x-6 gap-y-3 py-4 max-[992px]:flex-col max-[992px]:items-stretch",
+                  index > 0 && "border-t border-border/60",
+                )}
               >
                 <div className="flex min-w-0 flex-1 flex-col gap-1">
                   <p className="flex min-w-0 items-center gap-2 text-sm font-semibold text-foreground">
