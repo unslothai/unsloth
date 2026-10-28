@@ -4006,6 +4006,7 @@ export const ar = {
       uploadConfigTooltip: "تحميل تكوين YAML محفوظ",
       saveConfigTooltip: "تنزيل التكوين الحالي بصيغة YAML",
       resetConfigTooltip: "إعادة التعيين إلى إعدادات النموذج الافتراضية",
+      rlLoadedAsSft: "تدريب {objective} غير متاح بعد على Apple Silicon، لذلك تم تحميله كـ SFT بمعدل تعلّم SFT.",
       configLoaded: "تم تحميل التكوين",
       failedToLoadConfig: "فشل تحميل التكوين",
       invalidYamlFile: "ملف YAML غير صالح",

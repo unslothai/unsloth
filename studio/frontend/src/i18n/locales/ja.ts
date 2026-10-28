@@ -3964,6 +3964,7 @@ export const ja = {
       uploadConfigTooltip: "保存された YAML 構成を読み込みます",
       saveConfigTooltip: "現在の構成を YAML としてダウンロードします",
       resetConfigTooltip: "モデルのデフォルト値にリセットします",
+      rlLoadedAsSft: "{objective} の学習は Apple Silicon ではまだ利用できないため、SFT の学習率で SFT として読み込みました。",
       configLoaded: "構成を読み込みました",
       failedToLoadConfig: "構成の読み込みに失敗しました",
       invalidYamlFile: "無効な YAML ファイルです",

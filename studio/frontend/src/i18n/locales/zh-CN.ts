@@ -3915,6 +3915,7 @@ export const zhCN = {
       uploadConfigTooltip: "加载已保存的 YAML 配置",
       saveConfigTooltip: "将当前配置下载为 YAML",
       resetConfigTooltip: "重置为模型默认值",
+      rlLoadedAsSft: "Apple Silicon 暂不支持 {objective} 训练，因此已按 SFT 加载，并使用 SFT 学习率。",
       configLoaded: "配置已加载",
       failedToLoadConfig: "加载配置失败",
       invalidYamlFile: "无效的 YAML 文件",

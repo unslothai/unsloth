@@ -4255,6 +4255,7 @@ export const sv = {
       uploadConfigTooltip: "Läs in en sparad YAML-konfiguration",
       saveConfigTooltip: "Hämta aktuell konfiguration som YAML",
       resetConfigTooltip: "Återställ till modellens standardvärden",
+      rlLoadedAsSft: "{objective}-träning är ännu inte tillgänglig på Apple Silicon, så den lästes in som SFT med SFT:s inlärningstakt.",
       configLoaded: "Konfigurationen har lästs in",
       failedToLoadConfig: "Det gick inte att läsa in konfigurationen",
       invalidYamlFile: "Ogiltig YAML-fil",

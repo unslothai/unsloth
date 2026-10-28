@@ -342,7 +342,10 @@ export interface TrainingConfigActions {
   setGrpoMaskTruncatedCompletions: (value: boolean) => void;
   setGrpoEpsilonHigh: (value: number | null) => void;
   setGrpoRewards: (value: GrpoRewardSelection[]) => void;
-  restoreRunConfig: (config: Record<string, unknown>) => void;
+  /** Returns the RL objective that was loaded as SFT (Apple Silicon), else null. */
+  restoreRunConfig: (
+    config: Record<string, unknown>,
+  ) => Exclude<TrainingObjective, "sft"> | null;
   reset: () => void;
   resetToModelDefaults: () => void;
   applyConfigPatch: (config: BackendModelConfig) => void;

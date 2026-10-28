@@ -37,7 +37,16 @@ export function useDuplicateTrainingRun() {
       if (useTrainingConfigStore.getState().userEditRevision !== revision) {
         throw new Error(translate("studio.training.duplicateDraftChanged"));
       }
-      useTrainingConfigStore.getState().restoreRunConfig(detail.config);
+      const loadedAsSft = useTrainingConfigStore
+        .getState()
+        .restoreRunConfig(detail.config);
+      if (loadedAsSft) {
+        toast.warning(
+          translate("studio.training.rlLoadedAsSft", {
+            objective: loadedAsSft.toUpperCase(),
+          }),
+        );
+      }
       useTrainingRuntimeStore.setState((state) => ({
         selectedHistoryRunId: null,
         configureRequest: state.configureRequest + 1,

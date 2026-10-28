@@ -4060,6 +4060,7 @@ export const en = {
       uploadConfigTooltip: "Load a saved YAML config",
       saveConfigTooltip: "Download current config as YAML",
       resetConfigTooltip: "Reset to model defaults",
+      rlLoadedAsSft: "{objective} training isn't available on Apple Silicon yet, so it was loaded as SFT with the SFT learning rate.",
       configLoaded: "Config loaded",
       failedToLoadConfig: "Failed to load config",
       invalidYamlFile: "Invalid YAML file",

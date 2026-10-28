@@ -4017,6 +4017,7 @@ export const hi = {
       uploadConfigTooltip: "एक सहेजा गया YAML कॉन्फ़िग लोड करें",
       saveConfigTooltip: "वर्तमान कॉन्फ़िग को YAML के रूप में डाउनलोड करें",
       resetConfigTooltip: "मॉडल डिफ़ॉल्ट पर रीसेट करें",
+      rlLoadedAsSft: "{objective} ट्रेनिंग अभी Apple Silicon पर उपलब्ध नहीं है, इसलिए इसे SFT लर्निंग रेट के साथ SFT के रूप में लोड किया गया।",
       configLoaded: "कॉन्फ़िग लोड हुआ",
       failedToLoadConfig: "कॉन्फ़िग लोड करने में विफल",
       invalidYamlFile: "अमान्य YAML फ़ाइल",

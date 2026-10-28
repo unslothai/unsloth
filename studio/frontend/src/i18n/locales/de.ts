@@ -4073,6 +4073,7 @@ export const de = {
       uploadConfigTooltip: "Eine gespeicherte YAML-Konfiguration laden",
       saveConfigTooltip: "Aktuelle Konfiguration als YAML herunterladen",
       resetConfigTooltip: "Auf Modellstandardwerte zurücksetzen",
+      rlLoadedAsSft: "{objective}-Training ist auf Apple Silicon noch nicht verfügbar, daher wurde es als SFT mit der SFT-Lernrate geladen.",
       configLoaded: "Konfiguration geladen",
       failedToLoadConfig: "Konfiguration konnte nicht geladen werden",
       invalidYamlFile: "Ungültige YAML-Datei",

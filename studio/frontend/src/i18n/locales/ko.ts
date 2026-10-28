@@ -3998,6 +3998,7 @@ export const ko = {
       uploadConfigTooltip: "저장된 YAML 구성 불러오기",
       saveConfigTooltip: "현재 구성을 YAML로 다운로드",
       resetConfigTooltip: "모델 기본값으로 재설정",
+      rlLoadedAsSft: "{objective} 학습은 아직 Apple Silicon에서 사용할 수 없어 SFT 학습률로 SFT로 불러왔습니다.",
       configLoaded: "구성이 로드되었습니다",
       failedToLoadConfig: "구성을 불러오지 못했습니다",
       invalidYamlFile: "잘못된 YAML 파일입니다",

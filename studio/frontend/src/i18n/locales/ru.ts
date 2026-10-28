@@ -4038,6 +4038,7 @@ export const ru = {
       uploadConfigTooltip: "Загрузить сохранённую конфигурацию YAML",
       saveConfigTooltip: "Скачать текущую конфигурацию как YAML",
       resetConfigTooltip: "Сбросить к значениям модели по умолчанию",
+      rlLoadedAsSft: "Обучение {objective} пока недоступно на Apple Silicon, поэтому загружено как SFT со скоростью обучения SFT.",
       configLoaded: "Конфигурация загружена",
       failedToLoadConfig: "Не удалось загрузить конфигурацию",
       invalidYamlFile: "Недопустимый файл YAML",

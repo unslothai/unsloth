@@ -4038,6 +4038,7 @@ export const ptBR = {
       uploadConfigTooltip: "Carregar uma configuração YAML salva",
       saveConfigTooltip: "Baixar configuração atual como YAML",
       resetConfigTooltip: "Redefinir para os padrões do modelo",
+      rlLoadedAsSft: "O treinamento {objective} ainda não está disponível no Apple Silicon, então foi carregado como SFT com a taxa de aprendizado de SFT.",
       configLoaded: "Configuração carregada",
       failedToLoadConfig: "Falha ao carregar a configuração",
       invalidYamlFile: "Arquivo YAML inválido",

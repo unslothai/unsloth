@@ -4078,6 +4078,7 @@ export const it = {
       uploadConfigTooltip: "Carica una configurazione YAML salvata",
       saveConfigTooltip: "Scarica la configurazione attuale in YAML",
       resetConfigTooltip: "Torna ai valori predefiniti del modello",
+      rlLoadedAsSft: "L’addestramento {objective} non è ancora disponibile su Apple Silicon, quindi è stato caricato come SFT con il learning rate SFT.",
       configLoaded: "Configurazione caricata",
       failedToLoadConfig: "Impossibile caricare la configurazione",
       invalidYamlFile: "File YAML non valido",

@@ -4128,6 +4128,7 @@ export const he = {
       uploadConfigTooltip: "טען תצורת YAML שמורה",
       saveConfigTooltip: "הורד תצורה נוכחית כ-YAML",
       resetConfigTooltip: "אפס לברירות המחדל של המודל",
+      rlLoadedAsSft: "אימון {objective} עדיין אינו זמין ב-Apple Silicon, ולכן נטען כ-SFT עם קצב הלמידה של SFT.",
       configLoaded: "התצורה נטענה",
       failedToLoadConfig: "טעינת התצורה נכשלה",
       invalidYamlFile: "קובץ YAML לא חוקי",
