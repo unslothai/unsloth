@@ -323,7 +323,6 @@ def _files_under_patterns(
     matchers = [(pattern, _glob_to_regex(pattern)) for pattern in patterns]
     if not as_the_loader_would:
         return [f for f in data_files if any(m.match(f) for _, m in matchers)]
-    # The skip rules compare a few facts of the file and the pattern: each is parsed once per call, not per pair
     rules = [(m, _loader_path_facts(p)) for p, m in matchers]
     kept = []
     for f in data_files:
