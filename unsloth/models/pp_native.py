@@ -820,7 +820,14 @@ class _PPStageModule(nn.Module):
     stage and, for the duration of the forward, `swaps` [(container, key, stand-in)] replace this rank's
     modules that belong to its other stages (their layers by pass-throughs, the embedding by its stub)."""
 
-    def __init__(self, model, ctx, dtype, hidden_size, stage = None):
+    def __init__(
+        self,
+        model,
+        ctx,
+        dtype,
+        hidden_size,
+        stage = None,
+    ):
         super().__init__()
         self.model = model
         self.__dict__["_pp_ctx"] = ctx
@@ -992,7 +999,9 @@ class PipelineParallel:
         self.mesh = mesh
         self.group = mesh.get_group()
         self.num_stages = mesh.size()  # pp ranks
-        self.stage_index = mesh.get_local_rank()  # this rank's pp index (its stage with one stage per rank)
+        self.stage_index = (
+            mesh.get_local_rank()
+        )  # this rank's pp index (its stage with one stage per rank)
         self.bounds = bounds  # [start, end) decoder layers of every stage (pp x stages_per_rank)
         self.spec = schedule_spec(schedule)
         self.stages_per_rank = int(stages_per_rank)
@@ -1588,9 +1597,7 @@ def apply_pipeline_parallel(
         if "dp" in names:
             raise ValueError(_MULTI_STAGE_DP)
     # The torch schedule's own checks, on placeholder stages: before anything is cut.
-    props = validate_schedule(
-        spec, pp_mesh.get_group(), pp, stages_per_rank, n_microbatches, rank
-    )
+    props = validate_schedule(spec, pp_mesh.get_group(), pp, stages_per_rank, n_microbatches, rank)
     _check_schedule(model, spec, props)
     tuple_format = _layer_call_format(parts.decoder, parts.layers_name) == "tuple"
     bounds = derive_pp_split(model, total_stages, config)

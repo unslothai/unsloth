@@ -51,7 +51,11 @@ ARCHS = {"llama": LLAMA, "qwen3": QWEN3, "gemma3": GEMMA3}
 N_LAYERS = 8
 
 
-def _save_checkpoint(arch, directory, tie = None):
+def _save_checkpoint(
+    arch,
+    directory,
+    tie = None,
+):
     model = build(ARCHS[arch], layers = N_LAYERS, lora = False, tie = tie)
     model.generation_config.pad_token_id = None  # tiny repos ship -1, which save_pretrained rejects
     model.save_pretrained(directory, max_shard_size = "1MB", safe_serialization = True)
@@ -62,7 +66,9 @@ def _peft(model, **extra):
     from peft import LoraConfig, get_peft_model
 
     torch.manual_seed(1)
-    kw = dict(r = 4, lora_alpha = 8, target_modules = "all-linear", init_lora_weights = False, lora_dropout = 0.0)
+    kw = dict(
+        r = 4, lora_alpha = 8, target_modules = "all-linear", init_lora_weights = False, lora_dropout = 0.0
+    )
     kw.update(extra)
     return get_peft_model(model, LoraConfig(**kw)).train()
 
@@ -70,7 +76,9 @@ def _peft(model, **extra):
 def _load(ckpt):
     from transformers import AutoModelForCausalLM
 
-    model = AutoModelForCausalLM.from_pretrained(ckpt, torch_dtype = torch.float32, attn_implementation = "eager")
+    model = AutoModelForCausalLM.from_pretrained(
+        ckpt, torch_dtype = torch.float32, attn_implementation = "eager"
+    )
     for key in ("attention_dropout", "hidden_dropout", "dropout"):
         if isinstance(getattr(model.config, key, None), float):
             setattr(model.config, key, 0.0)
@@ -88,20 +96,38 @@ def _storage_bytes(model):
     return total
 
 
-def _train(model, pp, ids, labels, steps = 3):
+def _train(
+    model,
+    pp,
+    ids,
+    labels,
+    steps = 3,
+):
     opt = torch.optim.AdamW(pp.parameters(), lr = 1e-2, foreach = False)
     losses, grads = [], None
     for step in range(steps):
         losses.append(float(pp.step(ids, labels)))
         if step == 0:
-            grads = {n: p.grad.detach().clone() for n, p in model.named_parameters() if p.grad is not None}
+            grads = {
+                n: p.grad.detach().clone()
+                for n, p in model.named_parameters()
+                if p.grad is not None
+            }
         pp.clip_grad_norm_(1.0)
         opt.step()
         opt.zero_grad(set_to_none = True)
     return losses, grads
 
 
-def _case_load(rank, world, tmp, ckpt, schedule = "gpipe", n_mb = 2, v = None):
+def _case_load(
+    rank,
+    world,
+    tmp,
+    ckpt,
+    schedule = "gpipe",
+    n_mb = 2,
+    v = None,
+):
     from torch.distributed.device_mesh import init_device_mesh
 
     ppl = _pp_load()
@@ -111,7 +137,9 @@ def _case_load(rank, world, tmp, ckpt, schedule = "gpipe", n_mb = 2, v = None):
     full_lora = {n: p.detach().clone() for n, p in full.named_parameters() if "lora_" in n}
     full_bytes = _storage_bytes(full)
     ids, labels = batch(full)
-    pp_full = ppn.apply_pipeline_parallel(full, mesh, n_microbatches = n_mb, schedule = schedule, config = config)
+    pp_full = ppn.apply_pipeline_parallel(
+        full, mesh, n_microbatches = n_mb, schedule = schedule, config = config
+    )
     full_after = _storage_bytes(full)
     seen, kept_numel = set(), 0
     for n, p in full.named_parameters():
@@ -131,19 +159,24 @@ def _case_load(rank, world, tmp, ckpt, schedule = "gpipe", n_mb = 2, v = None):
     lora_equal = set(full_lora) == {n for n, _ in model.named_parameters() if "lora_" in n} and all(
         torch.equal(full_lora[n], p) for n, p in model.named_parameters() if "lora_" in n
     )
-    pp = ppn.apply_pipeline_parallel(model, mesh, n_microbatches = n_mb, schedule = schedule, config = config)
+    pp = ppn.apply_pipeline_parallel(
+        model, mesh, n_microbatches = n_mb, schedule = schedule, config = config
+    )
     sharded_after = _storage_bytes(model)
     # Same weights where this rank computes: every owned parameter / buffer bitwise equal to the full load.
     a, b = full.state_dict(), model.state_dict()
-    diffs = sorted(set(a) ^ set(b)) + [
-        k for k in a if k in b and not torch.equal(a[k], b[k])
-    ]
+    diffs = sorted(set(a) ^ set(b)) + [k for k in a if k in b and not torch.equal(a[k], b[k])]
     full_res = _train(full, pp_full, ids, labels)
     res = _train(model, pp, ids, labels)
     return {
         "stats": stats,
         "models_loaded": len(state["models"]),
-        "bytes": {"full": full_bytes, "full_after": full_after, "loaded": loaded_bytes, "after": sharded_after},
+        "bytes": {
+            "full": full_bytes,
+            "full_after": full_after,
+            "loaded": loaded_bytes,
+            "after": sharded_after,
+        },
         "unsplit": unsplit,
         "lora_equal": lora_equal,
         "diffs": diffs,
@@ -172,11 +205,18 @@ def _case_refusals(rank, world, tmp, ckpt):
 
     with ppl.pipeline_sharded_loading(mesh, schedule = "gpipe"):
         model = _peft(_load(ckpt))
-    catch("other_split", lambda: ppn.apply_pipeline_parallel(model, mesh, n_microbatches = 4, schedule = "interleaved1f1b"))
+    catch(
+        "other_split",
+        lambda: ppn.apply_pipeline_parallel(
+            model, mesh, n_microbatches = 4, schedule = "interleaved1f1b"
+        ),
+    )
     out["other_split:uncut"] = not ppn.is_pipeline_parallel(model)
     catch(
         "other_layers_per_stage",
-        lambda: ppn.apply_pipeline_parallel(model, mesh, config = ppn.PPConfig(layers_per_stage = [1, N_LAYERS - 1])),
+        lambda: ppn.apply_pipeline_parallel(
+            model, mesh, config = ppn.PPConfig(layers_per_stage = [1, N_LAYERS - 1])
+        ),
     )
     with ppl.pipeline_sharded_loading(mesh, schedule = "gpipe"):
         trainable_head = _peft(_load(ckpt), modules_to_save = ["lm_head"])
@@ -189,7 +229,10 @@ def _case_refusals(rank, world, tmp, ckpt):
             AutoModelForCausalLM.from_pretrained(ckpt, load_in_4bit = True)
 
     catch("quantized", quantized)
-    catch("unknown_schedule", lambda: ppl.pipeline_sharded_loading(mesh, schedule = "pipedream").__enter__())
+    catch(
+        "unknown_schedule",
+        lambda: ppl.pipeline_sharded_loading(mesh, schedule = "pipedream").__enter__(),
+    )
     return out
 
 
@@ -210,7 +253,9 @@ def _worker(rank, world, port, case, tmp, kwargs):
     import torch.distributed as dist
 
     torch.set_num_threads(2)
-    dist.init_process_group("gloo", rank = rank, world_size = world, timeout = datetime.timedelta(seconds = 180))
+    dist.init_process_group(
+        "gloo", rank = rank, world_size = world, timeout = datetime.timedelta(seconds = 180)
+    )
     try:
         res = CASES[case](rank, world, tmp, **kwargs)
         torch.save(res, os.path.join(tmp, f"result_{rank}.pt"))
@@ -218,20 +263,30 @@ def _worker(rank, world, port, case, tmp, kwargs):
         dist.destroy_process_group()
 
 
-def _spawn(case, world = 2, **kwargs):
+def _spawn(
+    case,
+    world = 2,
+    **kwargs,
+):
     if _torch_pipelining_error():
         pytest.skip(_torch_pipelining_error())
     ctx = multiprocessing.get_context("spawn")
     port = _free_port()
     with tempfile.TemporaryDirectory() as tmp:
-        procs = [ctx.Process(target = _worker, args = (r, world, port, case, tmp, kwargs)) for r in range(world)]
+        procs = [
+            ctx.Process(target = _worker, args = (r, world, port, case, tmp, kwargs))
+            for r in range(world)
+        ]
         for p in procs:
             p.start()
         for p in procs:
             p.join(600)
         codes = [p.exitcode for p in procs]
         assert codes == [0] * world, f"rank exit codes {codes}"
-        return [torch.load(os.path.join(tmp, f"result_{r}.pt"), weights_only = False) for r in range(world)]
+        return [
+            torch.load(os.path.join(tmp, f"result_{r}.pt"), weights_only = False)
+            for r in range(world)
+        ]
 
 
 @pytest.mark.parametrize(
@@ -248,7 +303,6 @@ def _spawn(case, world = 2, **kwargs):
 def test_sharded_loading_matches_full_load_then_split(arch, world, schedule, v, tie):
     if schedule in ("zbvzerobubble", "dualpipev"):
         import importlib
-
         if not importlib.import_module("unsloth.models.pp_schedules").v_schedules_supported():
             pytest.skip(f"V schedules need torch >= 2.12 (refused on {torch.__version__})")
     with tempfile.TemporaryDirectory() as ckpt:
@@ -259,13 +313,21 @@ def test_sharded_loading_matches_full_load_then_split(arch, world, schedule, v, 
     for rank, res in enumerate(results):
         stats = res["stats"]
         assert res["models_loaded"] == 1
-        assert tuple(stats["local_stages"]) == tuple(res["local"]) and stats["bounds"] == [tuple(b) for b in res["bounds"]]
+        assert tuple(stats["local_stages"]) == tuple(res["local"]) and stats["bounds"] == [
+            tuple(b) for b in res["bounds"]
+        ]
         n = stats["loaded_numel"] + stats["placeholder_numel"]
         total_numel = total_numel or n
         assert n == total_numel  # every rank saw the whole model, read part of it
-        assert stats["placeholder_numel"] > 0 and stats["read_bytes"] == stats["loaded_numel"] * 4, stats
+        assert (
+            stats["placeholder_numel"] > 0 and stats["read_bytes"] == stats["loaded_numel"] * 4
+        ), stats
         # Exactly what this rank's stage keeps after a full load is split: nothing more was read.
-        assert stats["loaded_numel"] == res["kept_numel"], (rank, stats["loaded_numel"], res["kept_numel"])
+        assert stats["loaded_numel"] == res["kept_numel"], (
+            rank,
+            stats["loaded_numel"],
+            res["kept_numel"],
+        )
         # Load peak: only this rank's share of the weights exists, and after the split it is what a full load
         # leaves (same stage).
         assert res["bytes"]["loaded"] < res["bytes"]["full"], res["bytes"]
@@ -276,7 +338,10 @@ def test_sharded_loading_matches_full_load_then_split(arch, world, schedule, v, 
         assert res["diffs"] == [], res["diffs"][:6]
         full_losses, full_grads = res["full"]
         losses, grads = res["sharded"]
-        assert losses == full_losses, (losses, full_losses)  # bitwise: same weights, same stage program
+        assert losses == full_losses, (
+            losses,
+            full_losses,
+        )  # bitwise: same weights, same stage program
         assert set(grads) == set(full_grads)
         for k, g in grads.items():
             assert torch.equal(g, full_grads[k]), k
@@ -287,7 +352,9 @@ def test_sharded_loading_refusals_leave_the_model_uncut():
         _save_checkpoint("llama", ckpt)
         res = _spawn("refusals", 2, ckpt = ckpt)
     for r in res:
-        assert "loaded with pipeline_sharded_loading for another split" in (r["other_split"] or ""), r
+        assert "loaded with pipeline_sharded_loading for another split" in (
+            r["other_split"] or ""
+        ), r
         assert r["other_split:uncut"]
         assert "another split" in (r["other_layers_per_stage"] or ""), r
         assert "16-bit safetensors checkpoints only" in (r["quantized"] or ""), r
@@ -295,5 +362,7 @@ def test_sharded_loading_refusals_leave_the_model_uncut():
     # Rank 0's head is a placeholder, rank 1's is real: both refuse together (no rank enters the split alone).
     assert "lm_head" in (res[0]["trainable_placeholder_head"] or ""), res[0]
     for r in res:
-        assert "trainable but not loaded on every rank" in (r["trainable_placeholder_head"] or ""), r
+        assert "trainable but not loaded on every rank" in (
+            r["trainable_placeholder_head"] or ""
+        ), r
         assert r["trainable_placeholder_head:uncut"]

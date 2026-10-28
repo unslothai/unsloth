@@ -60,7 +60,11 @@ def is_placeholder(t):
     return bool(getattr(t, _PLACEHOLDER, False))
 
 
-def _refuse_unsplit_forward(module, args, kwargs = None):
+def _refuse_unsplit_forward(
+    module,
+    args,
+    kwargs = None,
+):
     raise RuntimeError(
         "Unsloth: this model was loaded with pipeline_sharded_loading (each rank holds only its stages' "
         "layers); call apply_pipeline_parallel(model, pp_mesh, ...) with the same mesh, schedule and split "
@@ -132,7 +136,9 @@ def _materialize(model, name, kwargs, mesh, plan, device):
     guards = [model.register_forward_pre_hook(_refuse_unsplit_forward, with_kwargs = True)]
     for i, layer in enumerate(parts.layers):
         if i not in owned:
-            guards.append(layer.register_forward_pre_hook(_refuse_unsplit_forward, with_kwargs = True))
+            guards.append(
+                layer.register_forward_pre_hook(_refuse_unsplit_forward, with_kwargs = True)
+            )
     model.__dict__[_GUARDS] = guards
     stats = {
         "pp": mesh.size(),
@@ -153,7 +159,6 @@ def _materialize(model, name, kwargs, mesh, plan, device):
 
 def _preload_info(model):
     from .pp_native import _model_chain
-
     for level in _model_chain(model) if isinstance(model, nn.Module) else ():
         for module in level.modules():
             info = module.__dict__.get(_MARK)
@@ -201,7 +206,9 @@ def check_preloaded_split(model, pp_mesh, schedule, stages_per_rank, bounds, loc
     if pp_mesh.size() > 1:
         dist.all_reduce(flag, op = dist.ReduceOp.MAX, group = pp_mesh.get_group())
     if float(flag) > 0:
-        where = f"{trainable[:2]} are" if trainable else "the embedding / lm_head of another rank is"
+        where = (
+            f"{trainable[:2]} are" if trainable else "the embedding / lm_head of another rank is"
+        )
         raise ValueError(
             f"Unsloth: {where} trainable but not loaded on every rank (pipeline_sharded_loading reads the "
             "embedding / lm_head only where their stage lives); train them with a full load, or keep them "
@@ -216,7 +223,11 @@ def release_preload_guards(holder):
 
 
 @contextlib.contextmanager
-def pipeline_sharded_loading(pp_mesh = None, schedule = "gpipe", config = None):
+def pipeline_sharded_loading(
+    pp_mesh = None,
+    schedule = "gpipe",
+    config = None,
+):
     """Every transformers `from_pretrained` inside reads only this rank's pipeline stages (see the module
     docstring). Pass apply_pipeline_parallel the same pp_mesh, schedule and config afterwards."""
     from .pp_schedules import schedule_spec
