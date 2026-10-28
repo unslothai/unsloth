@@ -103,6 +103,6 @@ test("Create and Train get roomy tabs on Images and Video", () => {
 
 test("Reapply's icon sits at the button's own gap", () => {
   for (const page of [IMAGES, VIDEO]) {
-    assert.match(page, /<HugeiconsIcon icon=\{ReloadIcon\} className="size-4" \/>\s*Reapply/);
+    assert.match(page, /<HugeiconsIcon icon=\{Refresh01Icon\} className="size-4" \/>\s*Reapply/);
   }
 });
