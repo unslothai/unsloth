@@ -2715,6 +2715,10 @@ class TestInheritedSplitEnvGoesWithTheArgvStrip:
         assert env.get("LLAMA_ARG_TENSOR_SPLIT") == "3,1"
 
 
+# A build whose --help probe answered (old spellings only): an unanswered probe gets no lock (#15828).
+_PROBED_CAPS = {"help_probe_ok": True, "flags": ["--mlock", "--no-mmap"]}
+
+
 class TestTheForcedCpuLaunchAppliesThePageLock:
     """Residency must be judged on the post-gate devices, or a forced-CPU load skips the page-lock."""
 
@@ -2745,6 +2749,7 @@ class TestTheForcedCpuLaunchAppliesThePageLock:
             capture = capture,
             backend = backend,
             intent_kwargs = {"gpu_memory_mode": "manual", "gpu_layers": 33},
+            server_caps = _PROBED_CAPS,
         )
         return launches, capture
 
@@ -2844,6 +2849,7 @@ class TestTheApuRetryRecomputesThePageLock:
             returncode = 1,
             output = "ROCm error: device kernel image is invalid",
             capture = capture,
+            server_caps = _PROBED_CAPS,
         )
         return launches, capture
 
@@ -2883,6 +2889,7 @@ class TestTheApuRetryRecomputesThePageLock:
             capture = capture,
             # -c 8192 is the entry a valueless-flag scan would eat with --no-mmap.
             intent_kwargs = {"extra_args": ["--no-mmap", "-c", "8192"]},
+            server_caps = _PROBED_CAPS,
         )
         retry = [(cmd, env) for cmd, env in launches if env.get("ROCR_VISIBLE_DEVICES") == "1"]
         assert retry, [_visibility(e) for _c, e in launches]

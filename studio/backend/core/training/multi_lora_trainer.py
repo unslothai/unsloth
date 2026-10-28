@@ -192,6 +192,57 @@ def _is_moe(model) -> bool:
     return False
 
 
+# Fused-expert families checked batched vs alone; other MoE layouts train alone.
+BATCHED_MOE_MODEL_TYPES = frozenset({"qwen3_moe", "qwen3_5_moe", "qwen3_5_moe_text"})
+
+
+def _moe_refusal(model) -> Optional[str]:
+    if not _is_moe(model):
+        return None
+    config = getattr(model, "config", None)
+    configs = [c for c in (config, getattr(config, "text_config", None)) if c is not None]
+    if not any(getattr(c, "model_type", None) in BATCHED_MOE_MODEL_TYPES for c in configs):
+        return "Batched training does not support this MoE model; train these jobs one at a time."
+    if any(getattr(c, "output_router_logits", False) for c in configs):
+        # The router's load-balancing loss would average every job's tokens together.
+        return "Batched training does not support a router auxiliary loss; train these jobs one at a time."
+    return None
+
+
+def _expert_targets(model, target_modules) -> Optional[list[str]]:
+    """The fused expert parameters the lone job's get_peft_model adds as PEFT target_parameters."""
+    if not _is_moe(model):
+        return None
+    from unsloth.models._utils import get_moe_target_modules, get_moe_target_parameters
+
+    if get_moe_target_modules(model, target_modules):
+        raise RuntimeError(
+            "Batched training does not support per-expert LoRA modules; train these jobs one at a time."
+        )
+    return get_moe_target_parameters(model, target_modules) or None
+
+
+_SSM_CLASS_TAGS = ("mamba", "ssm", "shortconv", "short_conv", "hymba")
+
+
+def _has_ssm_mixer(model) -> bool:
+    """A Mamba / SSM / short-conv mixer; Gated DeltaNet (Qwen3.5 linear attention) is checked batched and passes."""
+    return any(
+        any(tag in type(module).__name__.lower() for tag in _SSM_CLASS_TAGS)
+        for module in model.modules()
+    )
+
+
+def _lone_target_modules(target_modules):
+    """What the lone job's prepare_model_for_training hands get_peft_model as target_modules."""
+    if isinstance(target_modules, str):
+        target_modules = [target_modules]
+    target_modules = list(target_modules or [])
+    if target_modules == ["all-linear"]:
+        return "all-linear"
+    return [m for m in target_modules if m != "all-linear"] or list(_DEFAULT_TARGETS)
+
+
 def _resolve_targets(model, target_modules) -> list[str]:
     """Leaf names as PEFT resolves them: an explicit list, the Studio default, or every linear layer
     except the output head for ``all-linear``."""
@@ -216,8 +267,23 @@ def _resolve_targets(model, target_modules) -> list[str]:
 
 
 def _multi_lora_layers(model):
-    from unsloth.kernels.multi_lora import MultiLoraLinear
-    return [(n, m) for n, m in model.named_modules() if isinstance(m, MultiLoraLinear)]
+    from unsloth.kernels.multi_lora import _layers
+    return _layers(model)
+
+
+def _routed_modules(model):
+    """The modules a forward calls: dense LoRA layers and expert containers (their stacks are not modules)."""
+    from unsloth.kernels import multi_lora
+
+    # Unsloth releases before the expert kernel still batch dense jobs.
+    kinds = tuple(
+        k for k in (multi_lora.MultiLoraLinear, getattr(multi_lora, "MultiLoraExperts", None)) if k
+    )
+    return [(n, m) for n, m in model.named_modules() if isinstance(m, kinds)]
+
+
+# As get_peft_regex's vision_tags: a text forward never reaches these, and alone they stay untrained too.
+_VISION_TAGS = ("vision", "image", "visual", "patch")
 
 
 def _seed_adapter(model, slot: int, seed: int) -> None:
@@ -227,9 +293,11 @@ def _seed_adapter(model, slot: int, seed: int) -> None:
     generator = torch.Generator().manual_seed(int(seed))
     with torch.no_grad():
         for _, layer in _multi_lora_layers(model):
-            A = torch.empty(layer.lora_A[slot].shape, dtype = torch.float32)
+            shape = layer.lora_A[slot].shape
+            # An expert stack (E, r, in) inits each expert as PEFT does its (E*r, in) matrix: fan_in = in.
+            A = torch.empty((math.prod(shape[:-1]), shape[-1]), dtype = torch.float32)
             torch.nn.init.kaiming_uniform_(A, a = math.sqrt(5), generator = generator)
-            layer.lora_A[slot].copy_(A)
+            layer.lora_A[slot].copy_(A.view(shape))
             layer.lora_B[slot].zero_()
 
 
@@ -260,7 +328,7 @@ def _check_routed(model, device) -> None:
     import torch
     from unsloth.kernels.multi_lora import set_multi_lora_batch
 
-    layers = _multi_lora_layers(model)
+    layers = _routed_modules(model)
     hits = set()
     handles = [
         layer.register_forward_hook(lambda m, i, o, name = name: hits.add(name))
@@ -276,9 +344,13 @@ def _check_routed(model, device) -> None:
     finally:
         for handle in handles:
             handle.remove()
-        for _, layer in layers:
+        for _, layer in _multi_lora_layers(model):
             layer.batch = layer.seen = layer.trained = None
-    missed = [name for name, _ in layers if name not in hits]
+    missed = [
+        name
+        for name, _ in layers
+        if name not in hits and not any(tag in name.lower() for tag in _VISION_TAGS)
+    ]
     if missed:
         raise RuntimeError(
             f"Batched training cannot run on this model: its forward skips {len(missed)} adapter "
@@ -705,6 +777,7 @@ def _export(
     targets: list,
     use_rslora: bool,
     path: str = "",
+    target_parameters: Optional[list] = None,
 ) -> None:
     from peft import LoraConfig
     from safetensors.torch import save_file
@@ -730,6 +803,7 @@ def _export(
         lora_dropout = 0.0,
         bias = "none",
         target_modules = targets,
+        **({"target_parameters": list(target_parameters)} if target_parameters else {}),
         use_rslora = use_rslora,
         task_type = "CAUSAL_LM",
         base_model_name_or_path = getattr(model.config, "_name_or_path", None),
@@ -878,10 +952,12 @@ def _run(event_queue, stop_queue, config: dict, members: list) -> None:
         raise RuntimeError(
             "Batched training does not support text-diffusion models; train these jobs one at a time."
         )
-    if _is_moe(trainer.model):
-        # The single-job path trains fused experts through PEFT target_parameters; these layers cannot.
+    moe_refusal = _moe_refusal(trainer.model)
+    if moe_refusal:
+        raise RuntimeError(moe_refusal)
+    if _has_ssm_mixer(trainer.model):
         raise RuntimeError(
-            "Batched training does not support MoE models; train these jobs one at a time."
+            "Batched training does not support state-space (Mamba-style) models; train these jobs one at a time."
         )
     if getattr(trainer.model, "peft_config", None):
         # A saved LoRA loads as a PeftModel; the multi-LoRA layers would train fresh adapters and drop its weights.
@@ -950,15 +1026,32 @@ def _run(event_queue, stop_queue, config: dict, members: list) -> None:
     _send_status(event_queue, f"Configuring {U} LoRA adapters...")
     targets = _resolve_targets(model, config.get("target_modules"))
     use_rslora = bool(config.get("use_rslora", False))
-    injected = inject_multi_lora(
-        model,
-        targets,
-        U,
-        r = [int(m.config.get("lora_r", 16)) for m in live],
-        lora_alpha = [float(m.config.get("lora_alpha", 16)) for m in live],
-        use_rslora = use_rslora,
-    )
-    targets = sorted({name.rsplit(".", 1)[-1] for name in injected})
+    expert_targets = _expert_targets(model, _lone_target_modules(config.get("target_modules")))
+    try:
+        injected = inject_multi_lora(
+            model,
+            targets,
+            U,
+            r = [int(m.config.get("lora_r", 16)) for m in live],
+            lora_alpha = [float(m.config.get("lora_alpha", 16)) for m in live],
+            use_rslora = use_rslora,
+        )
+    except ValueError as exc:
+        # Expert-only targets (just gate_up_proj): the single job trains no dense layer either.
+        if not expert_targets or "No linear layers named" not in str(exc):
+            raise
+        injected = []
+    targets = sorted({name.rsplit(".", 1)[-1] for name in injected}) if injected else targets
+    if expert_targets:
+        from unsloth.kernels.multi_lora import inject_multi_lora_experts
+        inject_multi_lora_experts(
+            model,
+            expert_targets,
+            U,
+            r = [int(m.config.get("lora_r", 16)) for m in live],
+            lora_alpha = [float(m.config.get("lora_alpha", 16)) for m in live],
+            use_rslora = use_rslora,
+        )
     for member in live:
         _seed_adapter(model, member.slot, member.config.get("random_seed", 3407))
     _enable_training(
@@ -993,7 +1086,7 @@ def _run(event_queue, stop_queue, config: dict, members: list) -> None:
         _send(event_queue, "output_dir", member, output_dir = member.output_dir)
 
     def export(member: _Member, path: str = "") -> None:
-        _export(model, member, trainer, targets, use_rslora, path)
+        _export(model, member, trainer, targets, use_rslora, path, expert_targets)
 
     def take_messages() -> Optional[bool]:
         """Applies queued member stops; returns the save flag of a whole-batch stop, if one arrived."""

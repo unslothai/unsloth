@@ -358,9 +358,19 @@ jobs:
           # Native FSDP2's gloo tests spawn 2 to 4 ranks each: about ten minutes of this
           # runner on their own, which pushed the catch-all to the 2100 s step cap. They run
           # beside it instead.
+          # They then grew to 2092 s of the same cap on their own (364 tests by 2026-10-28)
+          # and were interrupted after passing, so they are split in two by file name: native_d
+          # onwards is about 55% of the measured time, everything else about 45%. Each glob
+          # must match a file, or bash hands pytest the literal pattern
+          # (tests/test_ci_repo_cpu_shards.py checks both).
           - shard: fsdp2
             selection: >-
-              tests/test_fsdp2*.py
+              tests/test_fsdp2_[!n]*.py
+              tests/test_fsdp2_n[!a]*.py
+              tests/test_fsdp2_native_[abc]*.py
+          - shard: fsdp2-native
+            selection: >-
+              tests/test_fsdp2_native_[!abc]*.py
           # The other multi-rank gloo suites (tensor, pipeline and context parallel, float8 and
           # fp8 under FSDP2) did the same again: with them the catch-all hit the 2100 s cap and was
           # interrupted at 74 to 98% on most runs. Locally on 4 cores they are 578 s of the
