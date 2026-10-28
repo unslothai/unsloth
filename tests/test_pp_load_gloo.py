@@ -47,6 +47,19 @@ def _pp_load():
     return module
 
 
+def _lora_init():
+    full = "unsloth.models.lora_init"
+    if full in sys.modules:
+        return sys.modules[full]
+    spec = importlib.util.spec_from_file_location(
+        full, os.path.join(REPO, "unsloth", "models", "lora_init.py")
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[full] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 ARCHS = {"llama": LLAMA, "qwen3": QWEN3, "gemma3": GEMMA3}
 N_LAYERS = 8
 
@@ -63,14 +76,27 @@ def _save_checkpoint(
 
 
 def _peft(model, **extra):
+    import contextlib
+
     from peft import LoraConfig, get_peft_model
 
     torch.manual_seed(1)
     kw = dict(
         r = 4, lora_alpha = 8, target_modules = "all-linear", init_lora_weights = False, lora_dropout = 0.0
     )
+    fast = extra.pop("_fast", False)  # Unsloth's fast PiSSA / MiCA swap, as FastLanguageModel.get_peft_model
     kw.update(extra)
-    return get_peft_model(model, LoraConfig(**kw)).train()
+    with _lora_init().fast_lora_init() if fast else contextlib.nullcontext():
+        return get_peft_model(model, LoraConfig(**kw)).train()
+
+
+def _placeholders(model):
+    ppl = _pp_load()
+    return [p for p in model.parameters() if ppl.is_placeholder(p)]
+
+
+def _zero_stride(p):
+    return all(s == 0 for s in p.stride()) and p.untyped_storage().nbytes() <= p.element_size()
 
 
 def _load(ckpt):
@@ -169,9 +195,35 @@ def _case_load(
         model(input_ids = ids)
     except RuntimeError as exc:
         unsplit = str(exc)
+    placeholders = _placeholders(model)
     model = _peft(model, **peft)
-    lora_equal = set(full_lora) == set(lora(model)) and all(
-        torch.equal(full_lora[n], p) for n, p in lora(model).items()
+    peft_bytes = _storage_bytes(model)
+    # Weight-reading inits (PiSSA, OLoRA, MiCA, ...) leave every placeholder storage-free: same tensors, still
+    # zero-stride, none replaced.
+    after = _placeholders(model)
+    placeholders_kept = (
+        len(placeholders) > 0
+        and {id(p) for p in after} == {id(p) for p in placeholders}
+        and all(_zero_stride(p) for p in after)
+    )
+    # LoRA of layers this rank read equals the full load's; another rank's (dropped at the split) is only
+    # comparable when its init does not read the weight.
+    weight_init = peft.get("init_lora_weights", False) not in (True, False, "gaussian")
+    skipped = {
+        name + "."
+        for name, m in model.named_modules()
+        if hasattr(m, "lora_A") and ppl.is_placeholder(m.get_base_layer().weight)
+    }
+    mine = {
+        n: p
+        for n, p in lora(model).items()
+        if not (weight_init and any(n.startswith(k) for k in skipped))
+    }
+    lora_equal = (
+        set(mine) <= set(full_lora)
+        and len(mine) > 0
+        and (weight_init or set(mine) == set(full_lora))
+        and all(torch.equal(full_lora[n], p) for n, p in mine.items())
     )
     pp = ppn.apply_pipeline_parallel(
         model, mesh, n_microbatches = n_mb, schedule = schedule, config = config
@@ -189,8 +241,12 @@ def _case_load(
             "full": full_bytes,
             "full_after": full_after,
             "loaded": loaded_bytes,
+            "peft": peft_bytes,
             "after": sharded_after,
         },
+        "placeholders_kept": placeholders_kept,
+        "weight_init": weight_init,
+        "skipped_lora_layers": len(skipped),
         "unsplit": unsplit,
         "lora_equal": lora_equal,
         "diffs": diffs,
@@ -314,6 +370,15 @@ def _spawn(
         ("llama", 4, "gpipe", None, None, {"modules_to_save": ["input_layernorm", "lm_head"]}),
         ("llama", 2, "interleaved1f1b", 2, None, {"use_dora": True}),
         ("qwen3", 2, "1f1b", None, None, {"trainable_token_indices": {"lm_head": [1, 2, 3]}}),
+        # Inits that read / rewrite the base weight skip another rank's placeholders (no dense residual), and
+        # the owner's init from its real weights trains bitwise like the full load's.
+        ("llama", 2, "gpipe", None, None, {"init_lora_weights": "pissa"}),
+        ("llama", 2, "gpipe", None, None, {"init_lora_weights": "pissa", "_fast": True}),
+        ("qwen3", 4, "gpipe", None, None, {"init_lora_weights": "pissa_niter_2"}),
+        ("qwen3", 2, "1f1b", None, None, {"init_lora_weights": "pissa_niter_2", "_fast": True}),
+        ("llama", 2, "interleaved1f1b", 2, None, {"init_lora_weights": "olora"}),
+        ("llama", 2, "gpipe", None, None, {"init_lora_weights": "mica", "_fast": True}),
+        ("llama", 2, "gpipe", None, None, {"init_lora_weights": "pissa", "use_dora": True}),
     ],
 )
 def test_sharded_loading_matches_full_load_then_split(arch, world, schedule, v, tie, peft):
@@ -350,6 +415,10 @@ def test_sharded_loading_matches_full_load_then_split(arch, world, schedule, v, 
         # leaves (same stage).
         assert res["bytes"]["loaded"] < res["bytes"]["full"], res["bytes"]
         assert res["bytes"]["after"] == res["bytes"]["full_after"], res["bytes"]
+        # Adapter creation keeps the bound: no placeholder was densified.
+        assert res["placeholders_kept"], "a LoRA init densified a placeholder"
+        assert res["bytes"]["peft"] < res["bytes"]["full"], res["bytes"]
+        assert not res["weight_init"] or res["skipped_lora_layers"] > 0
         assert res["unsplit"] and "call apply_pipeline_parallel" in res["unsplit"], res["unsplit"]
         assert res["lora_equal"], "LoRA init differs from the full load"
         assert res["guards"] == 0
@@ -377,3 +446,44 @@ def test_sharded_loading_refusals_leave_the_model_uncut():
         assert "another split" in (r["other_layers_per_stage"] or ""), r
         assert "16-bit safetensors checkpoints only" in (r["quantized"] or ""), r
         assert "pipeline schedule must be one of" in (r["unknown_schedule"] or ""), r
+
+
+@pytest.mark.parametrize(
+    "init",
+    ["pissa", "pissa_niter_2", "olora", "mica", "loftq", "corda", "lora_ga", True, "gaussian", "orthogonal"],
+)
+def test_lora_inits_leave_placeholders_storage_free(init):
+    """Every PEFT init on a layer whose base weight is a placeholder (another stage reads it) leaves it zero-stride
+    and runs nothing on it: LoftQ would quantize on CUDA, CorDA / LoRA-GA would need their calibration data."""
+    from peft import LoraConfig, get_peft_model
+
+    ppl = _pp_load()
+    ppl.install_placeholder_aware_lora_init()
+    model = torch.nn.Sequential(torch.nn.Linear(64, 48, bias = False))
+    model[0].weight = ppl._placeholder_param(model[0].weight, "cpu")
+    kw = dict(r = 4, lora_alpha = 8, target_modules = ["0"], init_lora_weights = init)
+    if init == "lora_ga":
+        from peft import LoraGAConfig
+
+        kw["lora_ga_config"] = LoraGAConfig()
+    if init == "corda":
+        from peft.tuners.lora.config import CordaConfig
+
+        kw["corda_config"] = CordaConfig()
+    if init == "loftq":
+        # LoraConfig refuses "loftq" without scipy (absent here); LoftQ's own quantizer never runs on a placeholder.
+        config = LoraConfig(**{**kw, "init_lora_weights": True})
+        config.init_lora_weights, config.loftq_config = "loftq", {"loftq_bits": 4, "loftq_iter": 1}
+    else:
+        config = LoraConfig(**kw)
+    torch.manual_seed(0)
+    peft_model = get_peft_model(model, config)
+    after = torch.random.get_rng_state()
+    weight = peft_model.base_model.model[0].get_base_layer().weight
+    assert ppl.is_placeholder(weight) and _zero_stride(weight)
+    if init not in ("loftq", "corda", "lora_ga"):
+        # The global RNG advanced exactly as on a real weight, so the ranks' later draws stay in step.
+        real = torch.nn.Sequential(torch.nn.Linear(64, 48, bias = False))
+        torch.manual_seed(0)
+        get_peft_model(real, LoraConfig(**kw))
+        assert torch.equal(torch.random.get_rng_state(), after), init

@@ -19,7 +19,10 @@ get_peft_model then attaches full-size LoRA everywhere with the 1-GPU initializa
 apply_pipeline_parallel (which must use the same mesh, schedule and stage split, checked) replaces the
 placeholder layers, embedding and head by its pass-throughs and stubs. A forward before that is refused.
 Trainable tensors built from a weight (modules_to_save, DoRA, trainable tokens) are synced only from a rank
-that read that weight.
+that read that weight. LoRA initializations that read or rewrite the base weight (PiSSA, OLoRA, MiCA, LoftQ,
+CorDA, LoRA-GA) skip placeholder layers: their placeholders stay storage-free, the owning rank computes the
+same init from its real weights, and the split drops the others' adapters. Inits that need a calibration
+forward (CorDA, EVA, LoRA-GA) need the whole model: the forward is refused before the split.
 16-bit checkpoints only.
 
     mesh = init_device_mesh("cuda", (pp,), mesh_dim_names = ("pp",))
@@ -70,8 +73,53 @@ def _refuse_unsplit_forward(
     raise RuntimeError(
         "Unsloth: this model was loaded with pipeline_sharded_loading (each rank holds only its stages' "
         "layers); call apply_pipeline_parallel(model, pp_mesh, ...) with the same mesh, schedule and split "
-        "after get_peft_model and before running it."
+        "after get_peft_model and before running it. LoRA initializations that run calibration forwards "
+        "(init_lora_weights = 'corda' / 'eva' / 'lora_ga') need the whole model: load it without "
+        "pipeline_sharded_loading, then apply_pipeline_parallel."
     )
+
+
+# PEFT LoraLayer initializers that read the base weight (and most rewrite it with a dense residual).
+_WEIGHT_INITS = ("pissa_init", "olora_init", "mica_init", "corda_init", "loftq_init", "lora_ga_init")
+_SKIPS_PLACEHOLDER = "_unsloth_pp_skips_placeholder"
+
+
+def base_is_placeholder(lora_layer):
+    weight = getattr(lora_layer.get_base_layer(), "weight", None)
+    return weight is not None and is_placeholder(weight)
+
+
+def _placeholder_aware(name, original):
+    def init(self, adapter_name, *args, **kwargs):
+        if not base_is_placeholder(self):
+            return original(self, adapter_name, *args, **kwargs)
+        # Another rank owns this layer: computing on the zero placeholder would densify it (fp32 copy plus a
+        # full residual) for an adapter the split drops. Keep the global RNG in step with a full load:
+        # PEFT's pissa_niter_N draws one sketch through torch.svd_lowrank (the other inits draw nothing).
+        init_lora_weights = args[0] if args else kwargs.get("init_lora_weights")
+        if name == "pissa_init" and isinstance(init_lora_weights, str) and "_niter_" in init_lora_weights:
+            weight = self.get_base_layer().weight
+            torch.randn(min(weight.shape[-2:]), self.r[adapter_name], dtype = torch.float32, device = weight.device)
+        return None
+
+    init.__name__ = init.__qualname__ = name
+    init.__wrapped__ = original
+    setattr(init, _SKIPS_PLACEHOLDER, True)
+    return init
+
+
+def install_placeholder_aware_lora_init():
+    """Wrap PEFT's weight-dependent LoraLayer initializers to skip pipeline_sharded_loading placeholders (a no-op
+    for every other layer). Idempotent; Unsloth's fast PiSSA / MiCA swap checks placeholders itself."""
+    try:
+        from peft.tuners.lora.layer import LoraLayer
+    except Exception:
+        return
+    for name in _WEIGHT_INITS:
+        original = LoraLayer.__dict__.get(name)
+        if original is None or getattr(original, _SKIPS_PLACEHOLDER, False):
+            continue
+        setattr(LoraLayer, name, _placeholder_aware(name, original))
 
 
 def _split_for(model, mesh, schedule, config):
@@ -135,6 +183,7 @@ def _materialize(model, name, kwargs, mesh, plan, device):
         label = "pipeline parallel",
         fallback = "a full load, then apply_pipeline_parallel",
     )
+    install_placeholder_aware_lora_init()
     guards = [model.register_forward_pre_hook(_refuse_unsplit_forward, with_kwargs = True)]
     for i, layer in enumerate(parts.layers):
         if i not in owned:
