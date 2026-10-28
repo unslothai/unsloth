@@ -55,6 +55,7 @@ from typing import Any, Dict, List, Optional, Callable, Union
 from datasets import Dataset
 from core.training.eval_dataset import evaluation_enabled
 from utils.datasets.audio_decode import ensure_audio_decoding
+from utils.datasets.tokenizer_fingerprint import install_tokenizer_fingerprint
 from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
 from utils.hf_dataset_options import hf_dataset_split_instruction_names
 from utils.third_party_source import (
@@ -3190,6 +3191,9 @@ class UnslothTrainer:
             ensure_audio_decoding()
         except Exception:  # noqa: BLE001 - never let a broken librosa stop a text run
             pass
+
+        # Every map below and TRL's / Unsloth's tokenization hash the tokenizer to name cache files.
+        install_tokenizer_fingerprint()
 
         s3_download = None
         try:
