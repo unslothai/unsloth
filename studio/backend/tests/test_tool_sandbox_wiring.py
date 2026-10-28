@@ -226,7 +226,7 @@ def test_the_process_unsloth_holds_still_lands_in_its_own_session():
     real = subprocess.Popen
 
     def capture(argv, **kwargs):
-        seen.append((argv, kwargs.get("preexec_fn")))
+        seen.append((argv, kwargs.get("preexec_fn"), kwargs.get("start_new_session", False)))
         return real(argv, **kwargs)
 
     subprocess.Popen = capture
@@ -235,11 +235,21 @@ def test_the_process_unsloth_holds_still_lands_in_its_own_session():
         assert "6" in tools._bash_exec("echo 6", None, 60, _SESSION)
     finally:
         subprocess.Popen = real
-    launches = [preexec for _, preexec in seen if preexec is not None]
-    bookkeeping = [argv for argv, preexec in seen if preexec is None]
-    assert len(launches) == 2, [argv for argv, _ in seen]
+    launches = [
+        (argv, preexec) for argv, preexec, new_session in seen if preexec is not None or new_session
+    ]
+    bookkeeping = [
+        argv for argv, preexec, new_session in seen if preexec is None and not new_session
+    ]
+    assert len(launches) == 2, [entry[0] for entry in seen]
     assert all(tuple(argv)[:1] == ("ps",) for argv in bookkeeping), bookkeeping
-    seen = launches
+    seen = []
+    for argv, preexec in launches:
+        if preexec is None:
+            # No Python pre-exec: Popen runs setsid itself, then setpriv and prlimit exec in place.
+            assert os.path.basename(argv[0]) == "setpriv", argv
+            continue
+        seen.append(preexec)
     for preexec in seen:
         read_fd, write_fd = os.pipe()
         child = os.fork()

@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""``search_knowledge_base`` LLM tool: scope resolution + hit formatting.
-
-KB scope wins; otherwise project and thread scopes combine so project chats also
-see their own attachments. Hits render as ``<chunk>`` blocks for the model,
-plus a parallel citation source-map for clickable sources. Each call opens and
-closes its own ``rag_db`` connection.
-"""
+"""search_knowledge_base LLM tool: KB scope wins, else project and thread scopes combine."""
 
 from __future__ import annotations
 

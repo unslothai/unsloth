@@ -1,15 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Pure command builder for the ``sd-cli`` (stable-diffusion.cpp) native engine.
-
-No torch / diffusers / subprocess: a pure function of its arguments, so argv construction
-unit-tests without a GPU, binary, or model files. sd.cpp consumes the SAME split GGUF assets as
-the diffusers path -- a transformer (``--diffusion-model``), a VAE (``--vae``), and text encoders
-wired to the family flag (Z-Image Qwen3 -> ``--llm``, Qwen-Image Qwen2-VL -> ``--qwen2vl``, FLUX.1
--> ``--clip_l`` / ``--t5xxl``). The diffusers memory policy maps to sd.cpp's offload flags here, so
-one knob drives both engines. Ref: sd.cpp ``examples/cli`` and ``docs/z_image.md``.
-"""
+"""Pure sd-cli argv builder for stable-diffusion.cpp; no torch, diffusers or subprocess imports, so
+tests need no GPU, binary, or model files"""
 
 from __future__ import annotations
 

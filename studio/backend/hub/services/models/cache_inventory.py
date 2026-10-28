@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import NamedTuple, Optional
 
 from loggers import get_logger
+from utils.scan_memo import in_scan_memo
 
 from hub.schemas.inventory import ModelFormat
 from hub.utils import inventory_scan as hf_cache_scan
@@ -864,6 +865,7 @@ async def _shared_cached_inventory_scan(name: str, scanner) -> _CachedInventoryS
     return _CachedInventoryScan(_last_confirmed_inventory.get(name, []), False)
 
 
+@in_scan_memo
 async def list_cached_gguf_response(hf_token: Optional[str] = None):
     """List GGUF repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     try:
@@ -1244,10 +1246,8 @@ def _scan_cached_models(
                 cross_root_folders = any_root_gguf and _hosts_artifacts(repo_id)
                 # The FP8 artifact mirror (unsloth/Qwen-Image-2.1-Turbo-FP8): its folders are what a pick of the BASE
                 # fetches, and a pipeline pick of the repo itself is refused, so the row stays the root checkpoint row
-                # released builds listed, whatever part of the folders is cached.
+                # released builds listed.
                 artifact_checkpoint = not any_root_gguf and _hosts_artifacts(repo_id)
-                key = repo_id.lower()
-                existing = seen_lower.get(key)
                 identity = _resolve_load_identity(
                     repo_id,
                     repo_path = repo_path,
@@ -1256,6 +1256,22 @@ def _scan_cached_models(
                     payload_snapshots = payload.payload_snapshots,
                 )
                 load_snapshot = identity.load_snapshot
+                # Unless the whole base pipeline is cached: then the row is that base pick, listed and loaded by the base id.
+                base_pipeline = (
+                    artifact_checkpoint
+                    and hf_cache_scan.snapshot_has_pipeline_index(load_snapshot)
+                    and not hf_cache_scan.snapshot_pipeline_missing_denoiser(load_snapshot)
+                )
+                cached_id = repo_id
+                if base_pipeline:
+                    from core.inference.diffusion_families import canonical_base
+
+                    artifact_checkpoint = False
+                    repo_id = canonical_base(cached_id)
+                    if identity.load_id == cached_id:
+                        identity = identity._replace(load_id = repo_id)
+                key = repo_id.lower()
+                existing = seen_lower.get(key)
                 local_metadata = (
                     snapshot_metadata
                     if load_snapshot == snapshot_path
@@ -1267,13 +1283,13 @@ def _scan_cached_models(
                 # Scoped to the row's snapshot, so an incomplete newer revision cannot flip can_chat.
                 download_partial = hf_cache_scan.is_snapshot_partial(
                     "model",
-                    repo_id,
+                    cached_id,
                     repo_path,
                     snapshot_dir = load_snapshot,
                     variant_state = (
                         variant_states.for_repo(
                             "model",
-                            repo_id,
+                            cached_id,
                             hub_cache = repo_path.parent,
                         )
                         if variant_states is not None
@@ -1340,7 +1356,7 @@ def _scan_cached_models(
                     "partial_transport": (
                         hf_cache_scan.partial_transport_for(
                             "model",
-                            repo_id,
+                            cached_id,
                             repo_cache_dir = repo_path,
                         )
                         # Only a genuine download partial has a transport; a companion-only snapshot arrived intact and has no Resume story.
@@ -1350,7 +1366,7 @@ def _scan_cached_models(
                     "partial_resumable": (
                         hf_cache_scan.partial_resume_available(
                             "model",
-                            repo_id,
+                            cached_id,
                             repo_cache_dir = repo_path,
                         )
                         if download_partial
@@ -1366,7 +1382,7 @@ def _scan_cached_models(
                     ),
                     # Listed so tens of GB of companion weights stay visible and deletable, but flagged so no picker offers a denoiser-less repo as a load.
                     "companion": cross_root_folders
-                    or _cached_row_companion(repo_id, load_snapshot),
+                    or _cached_row_companion(cached_id, load_snapshot),
                     "diffusers": _cached_row_is_diffusers(repo_info, load_snapshot),
                     **local_metadata,
                 }
@@ -1413,6 +1429,7 @@ def _scan_cached_models(
     return cached
 
 
+@in_scan_memo
 async def list_cached_models_response(hf_token: Optional[str] = None):
     """List non-GGUF model repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     try:
@@ -1455,6 +1472,39 @@ def artifact_folder_bytes(*repo_paths: Path) -> int:
         except (OSError, ValueError):
             continue
     return sum(seen.values())
+
+
+def artifact_mirror_delete_id(repo_id: str, cache_path: Optional[str]) -> Optional[str]:
+    """Quant-free artifact mirror copy listed under base *repo_id*, else None."""
+    try:
+        from core.inference.diffusion_families import mirror_repo
+
+        mirror = mirror_repo(repo_id)
+        if not mirror or not _hosts_artifacts(mirror):
+            return None
+        target = None
+        if cache_path:
+            name = f"models--{mirror.replace('/', '--')}".lower()
+            path = Path(cache_path).expanduser().resolve(strict = False)
+            target = next((p for p in (path, *path.parents) if p.name.lower() == name), None)
+            if target is None:
+                return None
+        copies = []
+        for hf_cache in all_hf_cache_scans():
+            for repo in getattr(hf_cache, "repos", ()) or ():
+                if str(repo.repo_type) != "model":
+                    continue
+                if target is None and repo.repo_id.lower() == repo_id.lower():
+                    return None
+                if repo.repo_id.lower() == mirror.lower() and (
+                    target is None or Path(repo.repo_path).resolve(strict = False) == target
+                ):
+                    copies.append(repo)
+        if not copies or any(_repo_has_gguf_files(repo) for repo in copies):
+            return None
+        return copies[0].repo_id
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _artifact_gguf_repo_ids(cache_scans) -> set[str]:

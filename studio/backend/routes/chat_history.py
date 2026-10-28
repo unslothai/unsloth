@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Chat history API routes backed by studio.db.
-
-SQLite-backed handlers are sync defs unless they also perform asynchronous cleanup; those mixed
-handlers explicitly send their database transaction through Starlette's threadpool.
-"""
+"""Chat history API; sync SQLite handlers, except mixed ones that use Starlette's threadpool."""
 
 import asyncio
 import os
@@ -113,6 +109,8 @@ def _reject_boolean(value: Any) -> Any:
 
 
 NotABoolean = Annotated[Optional[int], BeforeValidator(_reject_boolean)]
+# sqlite INTEGER is signed 64-bit: a wider value raises OverflowError (a 500) where it is bound.
+SqliteInt = Annotated[int, Field(ge = -(2**63), le = 2**63 - 1)]
 
 # llama.cpp spends 0xFFFFFFFF on its "draw one" sentinel, so a pin stops one below it.
 MAX_SAMPLING_SEED = 2**32 - 2
@@ -189,8 +187,8 @@ class ChatThread(BaseModel):
     pairId: Optional[str] = None
     projectId: Optional[str] = None
     archived: bool = False
-    createdAt: int
-    updatedAt: Optional[int] = None
+    createdAt: SqliteInt
+    updatedAt: Optional[SqliteInt] = None
     openaiCodeExecContainerId: Optional[str] = None
     anthropicCodeExecContainerId: Optional[str] = None
     forkedFromThreadId: Optional[str] = None
@@ -290,8 +288,8 @@ class ChatThreadPatch(BaseModel):
     pairId: Optional[str] = None
     projectId: Optional[str] = None
     archived: Optional[bool] = None
-    createdAt: Optional[int] = None
-    updatedAt: Optional[int] = None
+    createdAt: Optional[SqliteInt] = None
+    updatedAt: Optional[SqliteInt] = None
     openaiCodeExecContainerId: Optional[str] = None
     anthropicCodeExecContainerId: Optional[str] = None
     # Replaces the whole snapshot, except for anything the client could not read.
@@ -311,7 +309,7 @@ class ChatMessage(BaseModel):
     content: Any = Field(default_factory = list)
     attachments: Optional[Any] = None
     metadata: Optional[dict[str, Any]] = None
-    createdAt: int
+    createdAt: SqliteInt
 
 
 class ChatProject(BaseModel):
@@ -323,8 +321,8 @@ class ChatProject(BaseModel):
     # Read only: a saved record cannot set the folder.
     workingFolder: Optional[str] = None
     archived: bool = False
-    createdAt: int
-    updatedAt: int
+    createdAt: SqliteInt
+    updatedAt: SqliteInt
     lastActivityAt: Optional[int] = None
 
 
@@ -351,12 +349,20 @@ class ChatProjectPatch(BaseModel):
     name: Optional[str] = None
     instructions: Optional[str] = None
     archived: Optional[bool] = None
-    createdAt: Optional[int] = None
-    updatedAt: Optional[int] = None
+    createdAt: Optional[SqliteInt] = None
+    updatedAt: Optional[SqliteInt] = None
+
+
+# Advertised on the thread lists so the title repair skips fetching /openapi.json (older backends still need it).
+_THREAD_PATCH_GUARD_FIELDS = ("expectedTitle", "expectedOpeningMessageId")
+THREAD_PATCH_GUARDS = all(
+    name in ChatThreadPatch.model_fields for name in _THREAD_PATCH_GUARD_FIELDS
+)
 
 
 class ChatThreadListResponse(BaseModel):
     threads: list[ChatThread]
+    threadPatchGuards: bool = False
 
 
 class ChatProjectListResponse(BaseModel):
@@ -399,6 +405,7 @@ class ChatSidebarRowsResponse(BaseModel):
     nextCursor: Optional[str] = None
     hasMore: bool
     total: int
+    threadPatchGuards: bool = False
 
 
 class ChatSidebarThreadRowsResponse(BaseModel):
@@ -764,7 +771,10 @@ def list_threads(
         project_id = project_id,
         include_archived = include_archived,
     )
-    return ChatThreadListResponse(threads = [thread_from_row(t) for t in threads])
+    return ChatThreadListResponse(
+        threads = [thread_from_row(t) for t in threads],
+        threadPatchGuards = THREAD_PATCH_GUARDS,
+    )
 
 
 @router.post(
@@ -790,7 +800,7 @@ def list_sidebar_rows(
         )
     except SidebarCursorError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
-    return ChatSidebarRowsResponse(**page)
+    return ChatSidebarRowsResponse(**page, threadPatchGuards = THREAD_PATCH_GUARDS)
 
 
 _SIDEBAR_THREAD_ROWS_MAX = 500
@@ -1141,7 +1151,7 @@ async def _remove_sandboxes(thread_ids, delete_files: bool) -> "tuple[int, list[
 @router.get("/attachments")
 def list_attachments(
     limit: Annotated[int, Query(ge = 1, le = 100)] = 50,
-    offset: Annotated[int, Query(ge = 0)] = 0,
+    offset: Annotated[int, Query(ge = 0, le = 2**63 - 1)] = 0,
     current_subject: str = Depends(get_current_subject),
 ) -> dict:
     """One bounded page of chat uploads for the settings Data tab."""
@@ -1981,7 +1991,7 @@ class ChatForkRequest(BaseModel):
     # an omitted message selects the tip within the fork transaction.
     messageId: Optional[str] = None
     newThreadId: str
-    createdAt: int
+    createdAt: SqliteInt
 
 
 class ChatForkResponse(BaseModel):

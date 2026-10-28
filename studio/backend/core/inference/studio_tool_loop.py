@@ -1348,6 +1348,9 @@ async def stream_with_studio_tools(
     permission_mode, bypass_permissions = normalize_tool_permissions(
         policy.permission_mode, policy.bypass_permissions
     )
+    from state.tool_approvals import LiveToolPermissions, bind_permission_upgrade
+
+    live_permissions = LiveToolPermissions(session_id, cancel_event)
     scoped_tool_stream = account_tool_stream(stream_tool_execution)
     confirm_tool_calls = policy.confirm_calls
     rag_scope = policy.rag_scope
@@ -1365,6 +1368,7 @@ async def stream_with_studio_tools(
         confirm_tool_calls = confirm_tool_calls,
         session_id = session_id,
         cancel_event = cancel_event,
+        permission_upgrade = live_permissions,
         continue_final_message = run.continue_final_message,
     )
     load_task = None
@@ -1813,6 +1817,9 @@ async def stream_with_studio_tools(
             call_id = decision.tool_call_id
             # Same id for a call the provider named; for one it did not, the card answers to the id the client minted
             card_id = decision.card_id
+            permission_mode, bypass_permissions = live_permissions.apply(
+                permission_mode, bypass_permissions
+            )
             needs_confirmation = needs_tool_confirmation(
                 confirm_tool_calls = confirm_tool_calls,
                 bypass_permissions = bypass_permissions,
@@ -1840,6 +1847,7 @@ async def stream_with_studio_tools(
             decision_slot = (
                 begin_tool_decision(session_id, approval_id) if needs_confirmation else None
             )
+            bind_permission_upgrade(decision_slot, live_permissions, eligible = image_share is None)
             if needs_confirmation:
                 note_host_access(approval_id, name, arguments)
 
@@ -1877,6 +1885,11 @@ async def stream_with_studio_tools(
                         if not waiter.done():
                             waiter.cancel()
                     verdict = waiter.result() if waiter.done() else None
+                permission_mode, bypass_permissions = live_permissions.apply(
+                    permission_mode, bypass_permissions
+                )
+                if bypass_permissions:
+                    strict_isolation = False
                 if verdict == "deny":
                     # Read decision_slot before it is dropped: it tells a user's refusal from an unanswered approval.
                     denied_reason = decision_reason(decision_slot)

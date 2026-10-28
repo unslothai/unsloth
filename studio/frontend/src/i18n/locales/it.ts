@@ -694,6 +694,8 @@ export const it = {
       guidedTour: "Tour guidato",
       help: "Aiuto",
       logOut: "Esci",
+      logOutNeedsPassword: "Imposta una password in Impostazioni > Accesso remoto prima di uscire, così potrai accedere di nuovo.",
+      logOutFailed: "Impossibile uscire in modo sicuro. Riprova tra un momento.",
       shutdown: "Arresta",
     },
     commandPalette: {
@@ -839,6 +841,11 @@ export const it = {
   },
   settings: {
     accounts: {
+      signsInAs: "Accede come {username}",
+      signsInAsOwner: "Accede come {alias} o {username}",
+      signInName: "Il tuo nome di accesso",
+      signInNameDescription: "Il nome da digitare per accedere quando questa installazione ha più di un account. Anche unsloth funziona sempre. Lascia vuoto per usare solo unsloth.",
+      signInNameSave: "Salva nome",
       title: "Account",
       description: "Crea account Unsloth privati. I nuovi utenti accedono con un codice di configurazione monouso e scelgono una password.",
       username: "Nome utente",
@@ -1318,7 +1325,7 @@ export const it = {
       installingRuntime: "Installazione…",
       installRuntimeFailed: "Installazione del runtime non riuscita.",
       installRuntimeError: "Impossibile avviare l'installazione del runtime.",
-      unsupportedArch: "La sandbox di Windows (MXC) funziona solo su Windows x64, quindi non è disponibile su questo PC.",
+      unsupportedArch: "La sandbox di Windows (MXC) funziona solo su Windows x64 e ARM64, quindi non è disponibile su questo PC.",
       builtinNeedsUpdate: "Il container integrato di Windows richiede la build {required} o successiva, e questo PC esegue {current}. Installa l'ultimo aggiornamento di Windows per usarlo senza un passaggio da amministratore, oppure attiva la sandbox di riserva qui sotto.",
       unsupportedBuild: "La sandbox di Windows (MXC) richiede Windows 11 24H2 (build 26100) o successivo, quindi non è disponibile su questo PC.",
       permissionLabel: "Autorizzazioni strumenti",
@@ -2110,6 +2117,12 @@ export const it = {
         classic: "Classica",
         minimal: "Minimale",
         moreThemes: "Altri temi",
+        halloween: "Halloween",
+      },
+      trickOrTreat: {
+        label: "Dolcetto o scherzetto",
+        description:
+          "Temi di Halloween e saluti spaventosi, fino al 1° novembre.",
       },
       custom: {
         chatWidth: {
@@ -2269,7 +2282,7 @@ export const it = {
         gpuUnusableDetail: "Rilevata, ma PyTorch non può usarla",
         detailedView: "Vista dettagliata",
         detailedViewDescription:
-          "Mostra il carico della CPU e carico, temperatura e consumo di ogni GPU nella finestra mobile e qui.",
+          "Mostra il carico della CPU e carico, temperatura e consumo di ogni GPU nella finestra mobile.",
         cpuLoad: "Carico CPU",
         gpuLoad: "Carico GPU",
         temperature: "Temperatura",
@@ -2310,6 +2323,10 @@ export const it = {
         used: "In uso: {value}",
         free: "Disponibili: {value}",
         total: "Totale: {value}",
+        usedOf: "{used} in uso su {total}",
+        segmentUsed: "In uso dalla GPU",
+        segmentSystem: "In uso dal sistema",
+        segmentAvailable: "Disponibile",
       },
       llamaBackend: {
         title: "Motore di inferenza GGUF",
@@ -2450,6 +2467,10 @@ export const it = {
           hideDetailsAction: "Nascondi dettagli",
           clearAction: "Svuota le cache",
           clearOneAction: "Svuota",
+          showFolders: "Mostra cartelle",
+          hideFolders: "Nascondi cartelle",
+          previousLocations: "Include le posizioni precedenti. Il pulsante Svuota principale riguarda la cartella cache attuale. I pulsanti dei modelli svuotano solo la copia selezionata.",
+          clearModelDescription: "Rimuove solo questa copia nella cache. Verrà scaricata di nuovo quando servirà.",
           clearingAction: "Svuotamento in corso...",
           confirmTitle: "Svuotare i file nella cache?",
           confirmDescription: "Libera circa {size}.",
@@ -3411,6 +3432,38 @@ export const it = {
     compactEmpty: "Ancora niente da compattare",
     compactUnsupported: "La compattazione richiede un modello GGUF o MLX con supporto per gli strumenti",
   },
+  halloween: {
+    navLabel: "Dolcetto o scherzetto…",
+    title: "Dolcetto o scherzetto?!",
+    description:
+      "Abbiamo preparato qualche spavento per Unsloth, fino alla fine di ottobre.",
+    chooseTheme: "Scegli un tema da brivido",
+    spookyGreetings: "Saluti da brivido",
+    spookyGreetingsDescription:
+      "Il bradipo accoglie le nuove chat con uno spavento.",
+    decorations: "Ragni e pipistrelli",
+    decorationsDescription:
+      "Ragnatele negli angoli e ogni tanto un ragno o un pipistrello con un tema di Halloween.",
+    surprise: "Dolcetto o scherzetto!",
+    surpriseDescription: "Lascia che il bradipo scelga un tema per te.",
+    themesTitle: "Temi da brivido",
+    back: "Indietro",
+    footer: "Unsloth torna alla normalità alla mezzanotte del 1° novembre.",
+    removeNow: "Rimuovi ora",
+    hideFromSidebar: "Nascondi dalla barra laterale",
+    greeting: {
+      pumpkins: "Le zucche sono intagliate. E adesso?",
+      brewing: "Prepariamo la pozione",
+      trickOrTreat: "Dolcetto o scherzetto?",
+      manor: "Ti diamo il benvenuto nel maniero",
+      manorName: "Ti diamo il benvenuto nel maniero, {name}",
+      happyHalloween: "Buon Halloween",
+      happyHalloweenName: "Buon Halloween, {name}",
+      spirits: "Gli spiriti ci ascoltano…",
+      mysteries: "Quali misteri sveleremo stanotte?",
+      conjure: "Cosa posso evocare per te?",
+    },
+  },
   welcome: {
     goodToSeeYou: "Che piacere vederti",
     goodToSeeYouName: "Che piacere vederti, {name}",
@@ -4274,7 +4327,6 @@ export const it = {
       terminalStart: "> avvio dell'addestramento con Unsloth...",
       preparingResources: "> Preparazione del modello e del dataset...",
       gettingReady: "> Stiamo preparando tutto per il tuo run...",
-      waitingForFirstStep: "> {message} | in attesa del primo step... ({step})",
       resumingTraining: "Ripresa dell'addestramento...",
       startingTraining: "avvio dell'addestramento...",
       dataset: "Dataset",

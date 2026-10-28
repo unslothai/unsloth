@@ -76,7 +76,7 @@ import {
 import { FILE_LIST_COLUMNS } from "../components/library-list";
 import { useLibrarySettingsStore } from "../settings-store";
 import { SortRadio } from "../components/library-toolbar";
-import { CARD_SHADOW, OVERLAY_CONTROL, RAISED_SURFACE } from "../surface";
+import { CARD_MIN_HEIGHT, CARD_SHADOW, OVERLAY_CONTROL, RAISED_SURFACE } from "../surface";
 
 const CARD = cn(
   RAISED_SURFACE,
@@ -85,9 +85,7 @@ const CARD = cn(
   "group/chat relative flex min-h-0 min-w-0 cursor-pointer flex-col gap-2.5 self-stretch rounded-2xl px-5 py-5 transition hover:bg-neutral-100 hover:shadow-none dark:hover:bg-accent/60",
 );
 
-/** Fits the fullest card: tile, two-line title, two-line footer (+1 unit for its icon). */
-export const CHAT_CARD_ROW_MIN =
-  "calc(var(--spacing) * 26 + 2.75 * var(--text-ui-14) + 3 * var(--text-ui-12))";
+export const CHAT_CARD_ROW_MIN = CARD_MIN_HEIGHT;
 import {
   type ChatContents,
   type ChatSort,
@@ -948,7 +946,7 @@ function SelectBox({
 }
 
 const ROW_INSET = "pl-4 pr-6";
-const CELL = "truncate text-ui-13 text-muted-foreground";
+const CELL = "truncate text-ui-12p5 text-muted-foreground";
 const DATE_COLUMN = "hidden w-32 shrink-0 @xl:block";
 const CONTENTS_COLUMN = "hidden w-36 shrink-0 @3xl:block";
 const LOCATION_COLUMN = "hidden w-40 shrink-0 @4xl:block";
@@ -1012,7 +1010,7 @@ export function ChatListHeader({
     <div className="pb-2">
       <div
         className={cn(
-          "group/chat relative flex items-center gap-4 text-ui-13 text-muted-foreground",
+          "group/chat relative flex items-center gap-4 text-ui-12p5 text-muted-foreground",
           ROW_INSET,
         )}
       >
@@ -1106,14 +1104,14 @@ export function ChatRow({
                 if (actions.selection.size > 0) actions.toggleSelected(chat.id, event.shiftKey);
                 else actions.open(chat);
               }}
-              className="truncate rounded-full text-left text-ui-14 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="truncate rounded-full text-left text-ui-13 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               {chatTitle(chat, t)}
             </button>
             <ChatBadges chat={chat} />
           </span>
           {model && (
-            <span className="truncate text-ui-12 text-muted-foreground">
+            <span className="truncate text-ui-11p5 text-muted-foreground">
               {model}
             </span>
           )}
@@ -1215,7 +1213,7 @@ function CardFooter({ meta, date, className }: { meta?: ReactNode; date: string;
   return (
     <div
       className={cn(
-        "mt-auto flex min-w-0 flex-col items-start gap-1 text-ui-12 text-muted-foreground",
+        "mt-auto flex min-w-0 flex-col items-start gap-1 text-ui-11p5 text-muted-foreground",
         className,
       )}
     >
@@ -1231,7 +1229,7 @@ const TILELESS_TITLE = "pe-6";
 const TILELESS_ROW_NAME = "min-h-13";
 
 const CARD_TITLE =
-  "block w-full rounded-md text-left font-medium text-ui-14 leading-snug text-foreground outline-none [overflow-wrap:anywhere] focus-visible:ring-2 focus-visible:ring-ring";
+  "block w-full rounded-md text-left font-medium text-ui-13 leading-snug text-foreground outline-none [overflow-wrap:anywhere] focus-visible:ring-2 focus-visible:ring-ring";
 
 export function GroupHeading({
   children,
@@ -1483,7 +1481,7 @@ export function ProjectRow({
                 event.stopPropagation();
                 actions.viewProject(project.id);
               }}
-              className="truncate rounded-full text-left text-ui-14 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="truncate rounded-full text-left text-ui-13 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               {project.name}
             </button>
@@ -1504,7 +1502,7 @@ export function ProjectRow({
             )}
           </span>
           {project.instructions?.trim() && (
-            <span className="truncate text-ui-12 text-muted-foreground">
+            <span className="truncate text-ui-11p5 text-muted-foreground">
               {project.instructions.trim()}
             </span>
           )}
@@ -1550,7 +1548,7 @@ export function ProjectListHeader({ date }: { date: DateColumn }) {
   return (
     <div
       className={cn(
-        "flex items-center gap-4 pb-2 text-ui-13 text-muted-foreground",
+        "flex items-center gap-4 pb-2 text-ui-12p5 text-muted-foreground",
         ROW_INSET,
       )}
     >
@@ -1725,7 +1723,7 @@ export function SectionRow({
               event.stopPropagation();
               actions.viewSection(section.id);
             }}
-            className="truncate rounded-full text-left text-ui-14 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="truncate rounded-full text-left text-ui-13 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             {section.name}
           </button>
@@ -1767,7 +1765,7 @@ export function SectionListHeader({ date }: { date: DateColumn }) {
   return (
     <div
       className={cn(
-        "flex items-center gap-4 pb-2 text-ui-13 text-muted-foreground",
+        "flex items-center gap-4 pb-2 text-ui-12p5 text-muted-foreground",
         ROW_INSET,
       )}
     >
@@ -1808,13 +1806,13 @@ function FavoriteTile({
         )}
       >
         <div className="grid aspect-square grid-cols-[minmax(0,1fr)] grid-rows-[auto_1fr_auto] px-5 pt-5 pb-3.5">
-          <p className="line-clamp-2 min-h-[2.75em] break-words font-medium text-ui-13p5 leading-snug text-foreground">
+          <p className="line-clamp-2 min-h-[2.75em] break-words font-medium text-ui-12p5 leading-snug text-foreground">
             {title}
           </p>
           <div className="flex flex-col items-center text-foreground before:flex-5 after:flex-7">
             {icon}
           </div>
-          <p className="truncate pr-6 text-ui-12 text-muted-foreground">
+          <p className="truncate pr-6 text-ui-11p5 text-muted-foreground">
             {showTime && time ? formatCardTime(time, locale) : ""}
           </p>
         </div>

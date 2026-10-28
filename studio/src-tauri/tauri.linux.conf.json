@@ -1,4 +1,21 @@
 {
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Unsloth",
+        "width": 760,
+        "height": 560,
+        "center": true,
+        "visible": false,
+        "resizable": false,
+        "decorations": false,
+        "titleBarStyle": "Overlay",
+        "trafficLightPosition": { "x": 14, "y": 26 },
+        "hiddenTitle": true
+      }
+    ]
+  },
   "bundle": {
     "icon": [
       "icons/linux/512x512.png",

@@ -1,14 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MiniMax-H3 attention fast path, one kill switch (``=0``) per lever:
-
-1. ``UNSLOTH_H3_STRIDED_ATTN``: torch cuDNN / flash SDPA take the permuted (B, S, H, D) views, so the q / k / v and
-   output copies disappear; bit-identical (attention kernels are layout-invariant).
-2. ``UNSLOTH_H3_FUSED_QKV``: one row-concatenated int8 ``to_qkv`` (one rotation, act quant and GEMM instead of three);
-   bit-identical because int accumulation is exact and the dequant epilogue is per row.
-3. ``UNSLOTH_H3_ATTN_ARCH``: flash instead of cuDNN on the archs in ``H3_FLASH_FASTER_ARCHS`` only.
-"""
+"""MiniMax-H3 attention fast paths, each off with its env var set to 0: UNSLOTH_H3_STRIDED_ATTN
+(permuted SDPA views, no copies), UNSLOTH_H3_FUSED_QKV (one row-concatenated int8 to_qkv),
+UNSLOTH_H3_ATTN_ARCH (flash only on H3_FLASH_FASTER_ARCHS); the first two are bit-identical."""
 
 from __future__ import annotations
 

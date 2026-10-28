@@ -144,6 +144,7 @@ def load_mentioned_skills(
     continue_final_message = False,
     protected_message_ids = None,
     dedup_tool_context = True,
+    permission_upgrade = None,
 ):
     """Inject complete manifests before generation; never a partial one. Caller gates on read_skill."""
     if continue_final_message or not any(
@@ -177,6 +178,8 @@ def load_mentioned_skills(
     )
     loaded_bytes = 0
     for name in names:
+        if permission_upgrade is not None:
+            mode, bypass = permission_upgrade.apply(mode, bypass)
         if cancel_event is not None and cancel_event.is_set():
             return
         event = {
@@ -188,6 +191,9 @@ def load_mentioned_skills(
         if name in loadable and confirm_tool_calls and not bypass and mode not in ("auto", "off"):
             approval_id = new_approval_id()
             slot = begin_tool_decision(session_id, approval_id)
+            from state.tool_approvals import bind_permission_upgrade
+
+            bind_permission_upgrade(slot, permission_upgrade)
             try:
                 yield {**event, "status": "awaiting_approval", "approval_id": approval_id}
                 verdict = wait_tool_decision(slot, approval_id, cancel_event = cancel_event)

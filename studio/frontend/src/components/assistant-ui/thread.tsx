@@ -146,6 +146,7 @@ import {
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
   IntentAwareScrollProvider,
+  useDetachThreadFromBottom,
   useIntentAwareAutoScroll,
   useIsThreadAtBottom,
   useScrollThreadToBottom,
@@ -384,6 +385,8 @@ import { useRagAvailabilityStore } from "@/features/rag/api/rag-availability";
 import { ThreadDocumentsBar } from "@/features/rag/components/thread-documents-bar";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { useUserProfileStore } from "@/features/profile/stores/user-profile-store";
+import { useSpookyGreetings } from "@/features/halloween/halloween-store";
+import { buildSpookyWelcome } from "@/features/halloween/spooky-greetings";
 import { usePublishedFrame } from "@/features/settings/hooks/use-published-frame";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
@@ -488,6 +491,7 @@ import { extractTaggedText, updateThreadMessage } from "@/features/chat/utils/up
 import { useComposerPillFit } from "@/hooks/use-composer-pill-fit";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
+import { useExpandedComposerFill } from "./use-expanded-composer-fill";
 import { watchComposerClearance } from "@/lib/toast-offset";
 
 const PageDragContext = createContext(false);
@@ -2695,7 +2699,12 @@ const pickRandom = <T,>(arr: T[]): T =>
 // same mascot. Greeting varies by local time; name-bearing lines drop the
 // name when none is set. Text is a message key, translated at render so a
 // language switch updates the open greeting.
-type Welcome = { key: TranslationKey; name?: string; sloth: string };
+type Welcome = {
+  key: TranslationKey;
+  name?: string;
+  sloth: string;
+  enlarge?: boolean;
+};
 const DEFAULT_WELCOME: Welcome = {
   key: "welcome.onYourMind",
   sloth: "sloth magnify final.png",
@@ -2746,14 +2755,19 @@ const ThreadWelcome: FC<{
   const displayName = useUserProfileStore((s) => s.displayName);
   const nickname = useUserProfileStore((s) => s.nickname);
   const showGreetingSloth = useUserProfileStore((s) => s.showGreetingSloth);
+  const spooky = useSpookyGreetings();
   const [welcome, setWelcome] = useState<Welcome>(DEFAULT_WELCOME);
   const t = useT();
 
   useEffect(() => {
     const raw = nickname.trim() || (displayName.trim().split(/\s+/)[0] ?? "");
     const name = raw.length > 20 ? `${raw.slice(0, 20)}…` : raw;
-    setWelcome(buildWelcome(new Date().getHours(), name));
-  }, [displayName, nickname]);
+    setWelcome(
+      spooky
+        ? buildSpookyWelcome(name)
+        : buildWelcome(new Date().getHours(), name),
+    );
+  }, [displayName, nickname, spooky]);
 
   const currentEmojiSrc = `Sloth emojis/${welcome.sloth}`;
 
@@ -2767,7 +2781,10 @@ const ThreadWelcome: FC<{
             {showGreetingSloth && !incognito && (
               <MascotImg
                 src={currentEmojiSrc}
-                className="unsloth-welcome-sloth size-[calc(44px*var(--ui-space-scale,1))] -translate-y-[2px]"
+                className={cn(
+                  "unsloth-welcome-sloth size-[calc(44px*var(--ui-space-scale,1))] -translate-y-[2px]",
+                  welcome.enlarge && "scale-[1.15]",
+                )}
               />
             )}
             <h1 className="aui-thread-welcome-message-inner unsloth-welcome-title fade-in slide-in-from-bottom-1 animate-in text-3xl tracking-[-0.02em] duration-200">
@@ -3109,10 +3126,29 @@ const Composer: FC<{
   const oneRowHeight = Math.round(40 * uiSpaceScale);
   const [editorHeight, setEditorHeight] = useState(40);
   const [isWritingExpanded, setIsWritingExpanded] = useState(false);
+  const detachFromBottom = useDetachThreadFromBottom();
+  const scrollThreadToBottom = useScrollThreadToBottom();
+  const threadEmpty = useAuiState(({ thread }) => thread.isEmpty);
   const toggleWritingExpanded = () => {
     setIsWritingExpanded((expanded) => !expanded);
     inputRef.current?.focus({ preventScroll: true });
   };
+  // Welcome page: the bottom pin's stabilizer padding shifted the expanded frame up. On every
+  // transition (button, Escape, send), so collapsing always re-pins the toolbar into view.
+  const wasExpandedRef = useRef(false);
+  useLayoutEffect(() => {
+    const was = wasExpandedRef.current;
+    wasExpandedRef.current = isWritingExpanded;
+    if (!threadEmpty || was === isWritingExpanded) {
+      return;
+    }
+    if (isWritingExpanded) {
+      detachFromBottom();
+    } else {
+      window.requestAnimationFrame(() => scrollThreadToBottom("instant"));
+    }
+  }, [isWritingExpanded, threadEmpty, detachFromBottom, scrollThreadToBottom]);
+  useExpandedComposerFill(editorRef, isWritingExpanded && !isDictating);
   // Cache line metrics so getComputedStyle runs once, not per keystroke.
   const lineMetricsRef = useRef<{ lineHeight: number; padding: number } | null>(
     null,
