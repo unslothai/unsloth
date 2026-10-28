@@ -69,7 +69,7 @@ def test_matches_reference_for_every_specialization(n, offset, add):
         # Reference: Triton's own launch of the same kernel (x * scale + y may be one FMA).
         ref = torch.empty(n, device = "cuda")
         _axpy[(-(-n // 128),)](x, y, ref, n, scale, BLOCK = 128, ADD = add, num_warps = 4)
-        for _ in range(3):  # first call compiles, the others take the cached kernel
+        for _ in range(3):
             out = _run(x, y, torch.empty(n, device = "cuda"), n, scale, add)
             torch.testing.assert_close(out, ref, rtol = 0, atol = 0)
 
@@ -136,6 +136,6 @@ def test_relaunch_repeats_the_entry_and_yields_to_hooks(monkeypatch):
     out = torch.empty(64, device = "cuda")
     assert triton_launch.relaunch(entry, grid, x.device.index, (y, y, out, 64, 2))
     torch.testing.assert_close(out, y * 2)
-    # A profiler hook must see every launch, so relaunch hands the call back to Triton's path.
+    # A profiler hook must see every launch, so relaunch defers to Triton's path.
     monkeypatch.setattr(triton_launch, "_hooks_set", lambda: True)
     assert not triton_launch.relaunch(entry, grid, x.device.index, (y, y, out, 64, 2))

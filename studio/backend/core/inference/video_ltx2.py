@@ -33,8 +33,7 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-# Companion files (text projections, VAEs incl. vocoder) beside the quants in unsloth's GGUF repo: the official
-# Lightricks weights split out of the combined checkpoint. Keyed by variant.
+# Companion files (projections, VAEs, vocoder) beside the quants in unsloth's GGUF repo.
 LTX23_EXTRAS_REPO = "unsloth/LTX-2.3-GGUF"
 
 
@@ -283,6 +282,19 @@ def is_ltx23_checkpoint(checkpoint_path: Path | str) -> bool:
     return False
 
 
+def assert_not_ltx25_checkpoint(checkpoint_path: Path | str) -> None:
+    """Catch a renamed LTX-2.5 file by header: ``is_ltx23_checkpoint`` counts modulation rows, and 2.5 keeps 2.3's nine."""
+    from .diffusion_content import is_ltx25_checkpoint
+    from .video_families import LTX2_FAMILY, wrong_ltx_family_message
+
+    if is_ltx25_checkpoint(str(checkpoint_path)):
+        raise ValueError(
+            wrong_ltx_family_message(
+                "2.5", LTX2_FAMILY, f"'{Path(str(checkpoint_path)).name}' (by its tensors)"
+            )
+        )
+
+
 def _apply_rename(state: dict[str, Any], rename: dict[str, str]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key, value in state.items():
@@ -486,7 +498,11 @@ def _copy_file_chunks(
                     got += read
         return
     buffers = max(1, min(buffers, len(jobs)))
-    staging = [torch.empty(chunk_bytes, dtype = torch.uint8, pin_memory = True) for _ in range(buffers)]
+    from .host_pinning import host_pinning_allowed
+
+    # Pageable on an integrated GPU: the copy then completes before copy_ returns, so slot reuse stays safe.
+    pin = host_pinning_allowed(device)
+    staging = [torch.empty(chunk_bytes, dtype = torch.uint8, pin_memory = pin) for _ in range(buffers)]
     done_events: list[Any] = [None] * buffers
     handles: "queue.SimpleQueue[Any]" = queue.SimpleQueue()
     opened: list[Any] = []
@@ -602,26 +618,129 @@ def _load_extras_file(
         LTX23_EXTRAS_REPO,
         filename,
         hf_token,
-        # The plan counts an extras file cached under EITHER root and stages neither, so this has to resolve both or it
-        # re-pulls what the planner skipped, inline and outside the manager.
+        # Resolve extras under EITHER cache root, else re-pull what the planner skipped.
         reuse_other_cache_root = True,
         # the switch's locality gate cleared these three artifacts by name
         local_files_only = local_files_only,
+        gguf_header_delta = True,
     )
     return load_file(path)
 
 
+# sha256[:16] of ``proj_out.bias`` as bf16 bits: headers match across 2.3 variants, but this bias is retrained per
+# release and never quantized, so fp8 / int8 / GGUF repacks carry the release's values.
+LTX23_PROJ_OUT_BIAS_SHA = {
+    "b6a06f88015c612b": "distilled",  # ltx-2.3-22b-distilled (and -distilled-fp8)
+    "140a7d077a306ea9": "distilled",  # ltx-2.3-22b-distilled-1.1
+    "3d334d94df5daf30": "dev",  # ltx-2.3-22b-dev (and -dev-fp8)
+}
+_PROJ_OUT_BIAS_NAMES = (
+    "proj_out.bias",
+    "model.diffusion_model.proj_out.bias",
+    "diffusion_model.proj_out.bias",
+)
+_CONTENT_VARIANT_CACHE: dict[tuple[str, int, int], Optional[str]] = {}
+
+
+def _safetensors_tensor_bf16_bits(path: str, names: tuple[str, ...]) -> Optional[bytes]:
+    """One small tensor's values as bfloat16 bits, read through the header offsets (no other weight byte)."""
+    import json
+    import struct
+
+    import torch
+
+    with open(path, "rb") as fh:
+        (size,) = struct.unpack("<Q", fh.read(8))
+        if size <= 0 or size > 256 * 1024 * 1024:
+            return None
+        header = json.loads(fh.read(size))
+        entry = next((header[n] for n in names if isinstance(header.get(n), dict)), None)
+        if entry is None:
+            return None
+        dtype = {"F32": torch.float32, "F16": torch.float16, "BF16": torch.bfloat16}.get(
+            entry.get("dtype")
+        )
+        start, end = entry["data_offsets"]
+        if dtype is None or not 0 < end - start <= 1 << 20:
+            return None
+        fh.seek(8 + size + start)
+        raw = bytearray(fh.read(end - start))
+    values = torch.frombuffer(raw, dtype = dtype)
+    return values.to(torch.bfloat16).view(torch.int16).numpy().tobytes()
+
+
+def _gguf_tensor_bf16_bits(path: str, names: tuple[str, ...]) -> Optional[bytes]:
+    import numpy as np
+    import torch
+    from gguf import GGMLQuantizationType, GGUFReader
+
+    for tensor in GGUFReader(path).tensors:
+        if str(tensor.name) not in names:
+            continue
+        data = np.asarray(tensor.data)
+        if tensor.tensor_type == GGMLQuantizationType.F32:
+            values = torch.from_numpy(data.astype(np.float32).reshape(-1).copy())
+        elif tensor.tensor_type == GGMLQuantizationType.F16:
+            values = torch.from_numpy(data.astype(np.float16).reshape(-1).copy())
+        elif tensor.tensor_type == GGMLQuantizationType.BF16:
+            values = torch.from_numpy(data.reshape(-1).view(np.int16).copy()).view(torch.bfloat16)
+        else:
+            return None
+        return values.to(torch.bfloat16).view(torch.int16).numpy().tobytes()
+    return None
+
+
+def ltx23_checkpoint_variant(checkpoint_path: Path | str | None) -> Optional[str]:
+    """``"distilled"`` / ``"dev"`` from the checkpoint's CONTENT (a 128-value bias fingerprint), or None when the file
+    is not on disk, unreadable, or not a known LTX-2.3 release (a finetune): callers then fall back to the name. Reads
+    the header plus 256 bytes; cached on (path, size, mtime)."""
+    if not checkpoint_path:
+        return None
+    path = str(checkpoint_path)
+    try:
+        stat = Path(path).stat()
+    except OSError:
+        return None
+    key = (path, stat.st_size, stat.st_mtime_ns)
+    if key in _CONTENT_VARIANT_CACHE:
+        return _CONTENT_VARIANT_CACHE[key]
+    variant: Optional[str] = None
+    try:
+        import hashlib
+
+        reader = (
+            _gguf_tensor_bf16_bits
+            if path.lower().endswith(".gguf")
+            else _safetensors_tensor_bf16_bits
+        )
+        bits = reader(path, _PROJ_OUT_BIAS_NAMES)
+        if bits is not None:
+            variant = LTX23_PROJ_OUT_BIAS_SHA.get(hashlib.sha256(bits).hexdigest()[:16])
+    except Exception as exc:  # noqa: BLE001 -- the name decides instead
+        logger.debug("video.ltx23_variant_probe_failed: %s", exc)
+    _CONTENT_VARIANT_CACHE[key] = variant
+    return variant
+
+
+def ltx23_variant_identifier(checkpoint_path: Path | str | None) -> Optional[str]:
+    """An identifier naming the content-detected variant, to put FIRST in the id lists the generation defaults and the
+    distilled recipe read (``default_video_generation_params`` / ``ltx2_distilled_ids``), so the file's weights outrank
+    its name. None when the content is inconclusive, leaving the name to decide as before."""
+    variant = ltx23_checkpoint_variant(checkpoint_path)
+    return f"ltx-2.3-22b-{variant}" if variant else None
+
+
 def checkpoint_variant(checkpoint_path: Path | str) -> str:
-    """Which companion-weight set a checkpoint pairs with ("dev"/"distilled"). The distilled-1.1
-    refresh only retrained the DiT, so it shares the distilled companions."""
+    """Which companion-weight set a checkpoint pairs with ("dev"/"distilled"): the file's content when it is a known
+    release, else its name. The distilled-1.1 refresh only retrained the DiT, so it shares the distilled companions."""
+    by_content = ltx23_checkpoint_variant(checkpoint_path)
+    if by_content is not None:
+        return by_content
     return "dev" if "dev" in Path(checkpoint_path).name.lower() else "distilled"
 
 
 def ltx23_extras_files(checkpoint_path: Path | str) -> tuple[str, ...]:
-    """The companion files in ``LTX23_EXTRAS_REPO`` a 2.3 checkpoint loads alongside itself.
-
-    Same variant rule as the assembly, so the download plan stages exactly what the load reads
-    (they are otherwise fetched inline, outside the panel's progress, cancel and disk preflight)."""
+    """Companion files a 2.3 checkpoint loads, picked by the assembly's variant rule so the plan matches."""
     variant = checkpoint_variant(checkpoint_path)
     return tuple(
         template.format(variant = variant)
@@ -629,9 +748,7 @@ def ltx23_extras_files(checkpoint_path: Path | str) -> tuple[str, ...]:
     )
 
 
-# Upstream ltx_core's DISTILLED_SIGMA_VALUES: the fixed 8-step curve the 22B distilled DiT was trained against (the
-# scheduler appends the terminal 0). The base scheduler's shifted spacing never lands near it, so 8 steps pass this
-# verbatim.
+# Upstream ltx_core DISTILLED_SIGMA_VALUES: fixed 8-step curve the distilled DiT expects; pass verbatim, base scheduler spacing never lands near it.
 LTX23_DISTILLED_SIGMAS: tuple[float, ...] = (
     1.0,
     0.99375,
@@ -682,7 +799,9 @@ LTX23_PREQUANT_RESIDENT_GB = 19.06
 
 
 # The hosted DiT REPLACES the file's own, so the file must be the official one (a same-named fine-tune would be swapped silently).
-LTX23_PREQUANT_SOURCE_REPOS = frozenset({"lightricks/ltx-2.3"})
+# The official repo and the unsloth repo carrying its byte-identical files (diffusion_families._VIDEO_MIRROR_PAIRS): a
+# pick of Lightricks/LTX-2.3 is FETCHED from there, so the file it lands on sits under that repo's cache dir.
+LTX23_PREQUANT_SOURCE_REPOS = frozenset({"lightricks/ltx-2.3", "unsloth/ltx-2.3-fp8"})
 _LTX23_HUB_REPO_DIRS = frozenset(
     "models--" + r.replace("/", "--") for r in LTX23_PREQUANT_SOURCE_REPOS
 )
@@ -865,7 +984,16 @@ def ltx23_prequant_eligible(
         return False
     if str(repo_id).strip().lower() not in LTX23_PREQUANT_SOURCE_REPOS:
         return False
-    cached = _ltx23_hub_cached_file(str(repo_id).strip(), str(checkpoint_filename))
+    cached = None
+    from .diffusion_families import canonical_base, mirror_repo
+
+    upstream = canonical_base(str(repo_id).strip())
+    for candidate in dict.fromkeys(
+        (str(repo_id).strip(), upstream, mirror_repo(upstream) or upstream)
+    ):
+        cached = _ltx23_hub_cached_file(candidate, str(checkpoint_filename))
+        if cached is not None:
+            break
     return True if cached is None else ltx23_source_file_verified(cached)
 
 
@@ -879,7 +1007,15 @@ class _LTX23PrequantConfig:
     def load_config(self, _base: str, **kwargs: Any) -> dict[str, Any]:
         from diffusers import LTX2VideoTransformer3DModel
 
-        config = dict(LTX2VideoTransformer3DModel.load_config(self.config_repo, **kwargs))
+        from .diffusion_families import pinned_revision_kwargs
+
+        # Pinned on the repo actually read, which need not be the caller's ``_base``.
+        kwargs.pop("revision", None)
+        config = dict(
+            LTX2VideoTransformer3DModel.load_config(
+                self.config_repo, **kwargs, **pinned_revision_kwargs(self.config_repo)
+            )
+        )
         config.update(LTX_2_3_TRANSFORMER_CONFIG_OVERRIDES)
         return config
 
@@ -981,6 +1117,29 @@ def _recompile_limit_hit(exc: BaseException) -> bool:
     return isinstance(kind, type) and isinstance(exc, kind)
 
 
+def _stg_adapted(inner: Any, guard: Any, transformer: Any, torch: Any) -> Any:
+    def adapted(*args: Any, **kwargs: Any) -> Any:
+        flag = kwargs.get("all_perturbed")
+        if isinstance(flag, torch.Tensor):
+            kwargs["all_perturbed"] = bool(flag)
+        try:
+            return inner(*args, **kwargs)
+        except Exception as exc:  # noqa: BLE001 -- reraised unless the recompile limit was hit
+            if guard is None or guard.error is not None or not _recompile_limit_hit(exc):
+                raise
+            # Past the recompile limit fullgraph raises unclassified by the guard: drop this DiT to eager.
+            guard.fail(exc, transformer)
+            exc.__traceback__ = None
+            return inner(*args, **kwargs)
+
+    adapted._unsloth_stg_adapter = True
+    if guard is not None:
+        adapted._unsloth_compile_guard = guard
+    # A compile moved below an offload hook rebuilds the block's callable: re-apply the adapter around it.
+    adapted._unsloth_rewrap = lambda new_inner: _stg_adapted(new_inner, guard, transformer, torch)
+    return adapted
+
+
 def install_stg_compile_adapter(transformer: Any) -> int:
     """Convert the STG pass's 0-d ``all_perturbed`` tensor to a bool before the compiled block (LTX2Attention branches
     on it, which fails fullgraph and drops the DiT to eager). Keeps the guard's marker so ``guard_compiled_blocks``
@@ -996,42 +1155,15 @@ def install_stg_compile_adapter(transformer: Any) -> int:
         inner = getattr(module, "_compiled_call_impl", None)
         if inner is None or getattr(inner, "_unsloth_stg_adapter", False):
             continue
-
-        guard = getattr(inner, "_unsloth_compile_guard", None)
-
-        def adapted(
-            *args: Any,
-            _inner: Any = inner,
-            _guard: Any = guard,
-            **kwargs: Any,
-        ) -> Any:
-            flag = kwargs.get("all_perturbed")
-            if isinstance(flag, torch.Tensor):
-                kwargs["all_perturbed"] = bool(flag)
-            try:
-                return _inner(*args, **kwargs)
-            except Exception as exc:  # noqa: BLE001 -- reraised unless the recompile limit was hit
-                if _guard is None or _guard.error is not None or not _recompile_limit_hit(exc):
-                    raise
-                # Past the recompile limit fullgraph raises unclassified by the guard: drop this DiT to eager.
-                _guard.fail(exc, transformer)
-                exc.__traceback__ = None
-                return _inner(*args, **kwargs)
-
-        adapted._unsloth_stg_adapter = True
-        if guard is not None:
-            adapted._unsloth_compile_guard = guard
-        module._compiled_call_impl = adapted
+        module._compiled_call_impl = _stg_adapted(
+            inner, getattr(inner, "_unsloth_compile_guard", None), transformer, torch
+        )
         count += 1
     return count
 
 
 def ltx23_verbatim_sigmas(pipe: Any) -> Any:
-    """Context manager neutralising the scheduler transforms that re-shape even explicit
-    ``sigmas`` (FlowMatchEulerDiscreteScheduler applies dynamic time-shift and the
-    shift_terminal stretch to caller-provided lists): dynamic shifting off, shift 1.0
-    (identity), no terminal stretch, restored on exit. Without this the calibrated curve
-    above would arrive at the DiT distorted (its 0.421875 tail clamped to 0.1)."""
+    """Disable scheduler sigma rewrites (dynamic shift, terminal stretch) so sigmas pass through intact."""
     import contextlib
 
     @contextlib.contextmanager
@@ -1109,14 +1241,13 @@ def load_ltx23_comfy_transformer(
     local_files_only: bool = False,
     int8_backend: Optional[str] = None,
     fp8_backend: Optional[str] = None,
+    fp8_storage: Optional[bool] = None,
+    fp8_widen_chosen: bool = False,
     family: Optional[str] = None,
     target: Any = None,
     logger: Any = None,
 ) -> Any:
-    """The LTX-2.3 DiT of a ComfyUI-quantized single file, for ``load_ltx23_pipeline(transformer_override=...)``.
-
-    Reads only the DiT keys (the assembly reads the connectors, VAEs and vocoder from the same file), applies the
-    2.3 pre-rename and the stock converter, and keeps int8 / fp8 codes where ``load_comfy_quant_transformer`` can."""
+    """LTX-2.3 DiT from a ComfyUI-quantized file: DiT keys only; int8 / fp8 codes kept where supported"""
     from diffusers import LTX2VideoTransformer3DModel
 
     from .diffusion_comfy_quant import load_comfy_quant_transformer
@@ -1136,6 +1267,8 @@ def load_ltx23_comfy_transformer(
         },
         int8_backend = int8_backend,
         fp8_backend = fp8_backend,
+        fp8_storage = fp8_storage,
+        fp8_widen_chosen = fp8_widen_chosen,
         family = family,
         target = target,
         logger = logger,
@@ -1157,8 +1290,7 @@ def load_ltx23_transformer(
     import diffusers
     from diffusers import LTX2VideoTransformer3DModel
 
-    # Pre-rename the 2.3-only keys the converter does not know; from_single_file then merges the config overrides into
-    # the base 2.0 config and runs the stock conversion.
+    # Pre-rename 2.3-only keys the converter does not know before from_single_file.
     for old, new in _TRANSFORMER_PRERENAME:
         for key in [k for k in dit_state if k.startswith(old)]:
             dit_state[new + key[len(old) :]] = dit_state.pop(key)
@@ -1171,6 +1303,10 @@ def load_ltx23_transformer(
         "local_files_only": local_files_only,
         **LTX_2_3_TRANSFORMER_CONFIG_OVERRIDES,
     }
+    from .diffusion_families import pinned_revision_kwargs
+
+    # The load plan's commit for that hub-id config (absent for an unpinned load).
+    kwargs.update(pinned_revision_kwargs(base_repo))
     if is_gguf:
         kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(compute_dtype = torch_dtype)
     elif device is not None:
@@ -1189,8 +1325,7 @@ def load_ltx23_connectors(
 ) -> Any:
     from diffusers.pipelines.ltx2.connectors import LTX2TextConnectors
 
-    # Transformer-only checkpoints carry the connector stacks but not the per-modality text projections, so fetch those
-    # from the companion file.
+    # Transformer-only checkpoints lack per-modality text projections; fetch from the companion.
     if not any(k.startswith("text_embedding_projection") for k in connector_state):
         connector_state = dict(connector_state)
         connector_state.update(
@@ -1257,8 +1392,7 @@ def load_ltx23_audio_vae_and_vocoder(
         _AUDIO_VAE_RENAME,
         torch_dtype,
     )
-    # The 2.3 vocoder is a composite (base + bandwidth-extension stack + mel STFT buffers); keys line up
-    # module-for-module after the renames.
+    # 2.3 vocoder is composite; keys line up module-for-module after the renames.
     vocoder_state = _apply_rename(_to_plain_dtype(vocoder_state, torch_dtype), _VOCODER_RENAME)
     for key in [k for k in vocoder_state if ".ups." in k]:
         vocoder_state[key.replace(".ups.", ".upsamplers.")] = vocoder_state.pop(key)
@@ -1437,23 +1571,9 @@ def _assemble_ltx23_pipeline(
     transformer_override: Optional[Any] = None,
     device: Optional[Any] = None,
     text_encoder_device: Optional[Any] = None,
+    revision: Optional[str] = None,
 ) -> Any:
-    """Full LTX-2.3 pipeline from a single-file/GGUF checkpoint. Assembled per-component
-    (constructor, not from_pretrained) because the base model_index pins LTX2Vocoder while 2.3
-    needs LTX2VocoderWithBWE, which the type gate would reject.
-
-    ``text_encoder`` supplies an already-built encoder (the caller's pre-cast fp8 Gemma3);
-    None builds it dense from the base repo. Because the assembly bypasses
-    ``from_pretrained``, this is the only way an fp8 request reaches the 2.3 path.
-
-    ``local_files_only`` is a load nobody asked for. Because the assembly bypasses
-    ``from_pretrained`` it also bypasses the caller's guarded ``pipe_kwargs``, and it is handed the
-    base REPO ID rather than a staged snapshot (the 2.3 snapshot lacks the base VAEs, so
-    ``_base_local_dir`` is deliberately None here), so without the flag the base config, the
-    scheduler, the tokenizer, the dense Gemma3 encoder and the companion VAE/vocoder artifacts are
-    all fetched by a load that promised to fetch nothing.
-
-    ``device`` / ``text_encoder_device`` (resident plans only) read the checkpoint / build the Gemma3 encoder there."""
+    """Assembled per component, bypassing from_pretrained, so local_files_only must be passed explicitly."""
     import transformers
 
     from .ltx2_import_compat import ensure_ltx2_pipelines_importable
@@ -1494,9 +1614,7 @@ def _assemble_ltx23_pipeline(
     groups = _split_checkpoint(state)
     del state
 
-    # The Lightricks fp8 single files store SCALED float8 weights (.weight_scale/.input_scale companions), and casting
-    # without the scales corrupts every quantized layer, so refuse loudly and point at the GGUF quants (Q8_0 for highest
-    # fidelity).
+    # Lightricks fp8 files are SCALED float8; casting without scales corrupts weights, so refuse.
     if any(k.endswith((".weight_scale", ".input_scale")) for k in groups["dit"]):
         raise ValueError(
             "This LTX checkpoint stores scaled fp8 weights, which this loader does "
@@ -1541,14 +1659,17 @@ def _assemble_ltx23_pipeline(
         local_files_only = local_files_only,
     )
 
-    # Shared 2.0/2.3 components from the base repo via model_index, so upstream class renames break loudly here rather
-    # than drift. Pinned to the LIVE hub root, not huggingface_hub's import-time constant: Unsloth's cache folder is a
-    # setting, and the locality gate that cleared this switch reads the live root. An unpinned lookup after a
-    # mid-session change searches the OTHER root, so under local_files_only it raises for a base that is fully
-    # downloaded, after eviction.
+    # Pin to the LIVE hub root (a setting), not the import-time constant, to match the locality gate.
     cache_dir = _live_cache_dir()
+    # ``revision``: the load plan's commit for the base, so the components come from the snapshot it staged (passed only
+    # when set, so an unpinned load calls exactly as before).
+    pinned: dict[str, Any] = {"revision": revision} if revision else {}
     index = LTX2Pipeline.load_config(
-        base_repo, token = hf_token, local_files_only = local_files_only, cache_dir = cache_dir
+        base_repo,
+        token = hf_token,
+        local_files_only = local_files_only,
+        cache_dir = cache_dir,
+        **pinned,
     )
 
     def _sub(name: str, **extra: Any) -> Any:
@@ -1560,6 +1681,7 @@ def _assemble_ltx23_pipeline(
             token = hf_token,
             local_files_only = local_files_only,
             cache_dir = cache_dir,
+            **pinned,
             **extra,
         )
 

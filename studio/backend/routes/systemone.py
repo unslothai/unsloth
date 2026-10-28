@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 import math
 import time
@@ -28,13 +30,21 @@ from core.systemone import catalog, laya_runtime
 from routes.provider_credentials import provider_config_guard, resolve_provider_api_key_or_400
 from storage import providers_db
 from utils import systemone_settings
-from utils.account_context import OWNER, arun_as, run_as
+from utils.account_context import OWNER, arun_as, is_owner_context, run_as
 
 MAX_QUESTIONS = 64
 MAX_CHOICES = 255
 MAX_SCORE_LEVELS = 10
 MAX_STATE_CHARS = 200_000
 MAX_QUESTION_CHARS = 20_000
+MAX_IMAGES = 4
+MAX_IMAGE_BYTES = 4 * 1024 * 1024
+MAX_IMAGES_BYTES = 8 * 1024 * 1024
+# As many clips as unsloth-zoo's MLX engine takes; 40 MiB holds the 20 minutes it hears as 16 kHz mono WAV.
+MAX_AUDIO = 8
+MAX_AUDIO_BYTES = 40 * 1024 * 1024
+# What llama.cpp's mtmd decodes in-process (stb_image); WebP needs an ffmpeg it may not have.
+_IMAGE_TYPES = {"image/png": "PNG", "image/jpeg": "JPEG"}
 _TYPES = ("noul", "choice", "score")
 MCP_PATH = "/mcp/decisions"
 LISTED_MODELS_TTL = 300.0
@@ -60,6 +70,9 @@ class SystemOneRequest(BaseModel):
     state: JSONContent
     model: str
     questions: dict[str, QuestionIn] = Field(min_length = 1)
+    # OpenJev's image extension: base64 data URLs, served by a Clef model through llama.cpp.
+    images: Optional[list[str]] = None
+    audio: Optional[list[str]] = None
 
 
 def _error(
@@ -142,18 +155,30 @@ async def system_one(
 
     # Same rule as the OpenAI routes: a keyless caller never downloads or swaps in another model.
     # Checked before the unknown-model answer, so it cannot tell which owner fine-tunes exist.
-    if checkpoint != await asyncio.to_thread(
-        catalog.default_checkpoint
-    ) and await asyncio.to_thread(request_admitted_without_credential, request):
-        raise _error(
-            403,
-            "permission_error",
-            "Keyless requests can only use the configured Decision API model; send an API key to pick another.",
-        )
+    if checkpoint != await asyncio.to_thread(catalog.default_checkpoint):
+        if await asyncio.to_thread(request_admitted_without_credential, request):
+            raise _error(
+                403,
+                "permission_error",
+                "Keyless requests can only use the configured Decision API model; send an API key to pick another.",
+            )
+        # Another checkpoint downloads into the shared cache and evicts the owner's resident model,
+        # which the owner-only settings, unload and resolve routes already keep from other accounts.
+        if not is_owner_context():
+            raise _error(
+                403,
+                "permission_error",
+                "Only the Studio owner can pick a Decision API model other than the configured one.",
+            )
     if checkpoint is None:
         raise _error(400, "api_usage_error", f"Unknown model: {payload.model}")
-    result = await _decide(checkpoint, payload.state, payload.questions)
-    return JSONResponse(result, headers = {"x-typesafe-request-id": str(uuid4())})
+    result = await _decide(
+        checkpoint, payload.state, payload.questions, payload.images, payload.audio
+    )
+    headers = {"x-typesafe-request-id": str(uuid4())}
+    if isinstance(checkpoint, catalog.Checkpoint):
+        headers["x-unsloth-decision-backend"] = result.pop("_backend", "pytorch")
+    return JSONResponse(result, headers = headers)
 
 
 def _require_enabled() -> None:
@@ -161,14 +186,103 @@ def _require_enabled() -> None:
         raise _error(
             404,
             "api_usage_error",
-            "The Decision API is off. The Studio owner can turn it on in Settings > API.",
+            "The Decision API is off. The Unsloth owner can turn it on in Settings > API.",
         )
+
+
+def _validate_images(images: list[str]) -> None:
+    if len(images) > MAX_IMAGES:
+        raise _error(422, "invalid_request_error", f"At most {MAX_IMAGES} images per request")
+    total = 0
+    for index, url in enumerate(images):
+        header, comma, data = url.partition(",")
+        kind = header.removeprefix("data:").removesuffix(";base64")
+        if not comma or kind not in _IMAGE_TYPES or header != f"data:{kind};base64":
+            raise _error(
+                422,
+                "invalid_request_error",
+                f"images[{index}] must be a PNG or JPEG base64 data URL; remote URLs are not fetched",
+            )
+        if len(data) > 4 * ((MAX_IMAGE_BYTES + 2) // 3):
+            raise _error(422, "invalid_request_error", f"images[{index}] is larger than 4 MiB")
+        try:
+            raw = base64.b64decode(data, validate = True)
+        except (binascii.Error, ValueError):
+            raise _error(
+                422, "invalid_request_error", f"images[{index}] is not valid base64"
+            ) from None
+        total += len(raw)
+        if not raw or len(raw) > MAX_IMAGE_BYTES or total > MAX_IMAGES_BYTES:
+            raise _error(
+                422,
+                "invalid_request_error",
+                "Each image must be at most 4 MiB, and all images together at most 8 MiB",
+            )
+        if not _decodes(raw):
+            raise _error(
+                422,
+                "invalid_request_error",
+                f"images[{index}] is not a readable PNG or JPEG image of at most 4096 x 4096 pixels",
+            )
+
+
+def _validate_audio(audio: list[str]) -> None:
+    # Shape and size only: the engine that hears the clips decodes them, and refuses what it cannot.
+    if len(audio) > MAX_AUDIO:
+        raise _error(422, "invalid_request_error", f"At most {MAX_AUDIO} audio clips per request")
+    total = 0
+    for index, url in enumerate(audio):
+        header, comma, data = url.partition(",")
+        kind = header.removeprefix("data:audio/").removesuffix(";base64")
+        if not comma or not kind or header != f"data:audio/{kind};base64":
+            raise _error(
+                422,
+                "invalid_request_error",
+                f"audio[{index}] must be a base64 audio data URL; remote URLs are not fetched",
+            )
+        total += 3 * len(data) // 4
+        if not data or total > MAX_AUDIO_BYTES:
+            raise _error(
+                422,
+                "invalid_request_error",
+                f"All audio clips together must be at most {MAX_AUDIO_BYTES // 1024**2} MiB",
+            )
+        try:
+            base64.b64decode(data, validate = True)
+        except (binascii.Error, ValueError):
+            raise _error(
+                422, "invalid_request_error", f"audio[{index}] is not valid base64"
+            ) from None
+
+
+MAX_IMAGE_PIXELS = 4096 * 4096
+
+
+def _decodes(raw: bytes) -> bool:
+    from io import BytesIO
+
+    from PIL import Image
+
+    try:
+        with Image.open(BytesIO(raw)) as image:
+            # By content, as stb_image reads it: a mislabelled JPEG still decodes.
+            if image.format not in _IMAGE_TYPES.values():
+                return False
+            # A few MiB of PNG can decode to gigabytes; stb_image allocates it all.
+            if image.width * image.height > MAX_IMAGE_PIXELS:
+                return False
+            image.verify()
+    except Exception:
+        return False
+    return True
 
 
 async def _decide(
     checkpoint: catalog.Checkpoint | catalog.Connection,
     state: JSONContent,
     questions: dict[str, QuestionIn],
+    images: list[str] | None = None,
+    audio: list[str] | None = None,
 ) -> dict:
     if not questions:
         raise _error(422, "invalid_request_error", "At least one question is required")
@@ -183,6 +297,18 @@ async def _decide(
         raise _error(422, "invalid_request_error", f"At most {MAX_QUESTIONS} questions per request")
     for name, question in questions.items():
         _validate(name, question)
+    if images:
+        _validate_images(images)
+        if isinstance(checkpoint, catalog.Connection):
+            raise _error(
+                400, "api_usage_error", "Images are not forwarded to Decision API connections"
+            )
+    if audio:
+        _validate_audio(audio)
+        if isinstance(checkpoint, catalog.Connection):
+            raise _error(
+                400, "api_usage_error", "Audio is not forwarded to Decision API connections"
+            )
 
     if isinstance(checkpoint, catalog.Connection):
         return await _connection_decide(
@@ -196,6 +322,8 @@ async def _decide(
             checkpoint,
             state,
             {name: q.model_dump() for name, q in questions.items()},
+            images or None,
+            audio or None,
         )
     except laya_runtime.Unavailable as exc:
         raise _error(exc.status, exc.error_type, exc.message, exc.retry_after) from None
@@ -212,8 +340,7 @@ async def _decide(
 async def _connection_decide(
     connection: catalog.Connection, state: JSONContent, questions: dict[str, dict[str, Any]]
 ) -> dict:
-    # The connection and its key are the owner's; the URL check and the request run as the caller,
-    # so a managed account keeps its egress policy.
+    # Connection and key are the owner's; the URL check and request run as the caller (egress policy).
     provider_id = connection.provider_id
     config = await asyncio.to_thread(run_as, OWNER, providers_db.get_provider, provider_id)
     if config is None or catalog.decision_models(config) is None:
@@ -301,17 +428,25 @@ async def refresh_listed_decision_models() -> None:
 def decision_model_objects() -> list[dict[str, Any]]:
     if not systemone_settings.get_enabled():
         return []
+    names = (
+        "default",
+        *(
+            (n for n in catalog.CHECKPOINTS if systemone_settings.llama_cpp_only(n))
+            if systemone_settings.runtime_unavailable_reason()
+            else catalog.CHECKPOINTS
+        ),
+    )
     return [
         {
             "id": name,
             "object": "model",
             "owned_by": "unsloth",
-            "architecture": {"input_modalities": ["text"], "output_modalities": ["decisions"]},
+            "architecture": {
+                "input_modalities": laya_runtime.input_modalities(catalog.resolve(name)),
+                "output_modalities": ["decisions"],
+            },
         }
-        for name in (
-            "default",
-            *(() if systemone_settings.runtime_unavailable_reason() else catalog.CHECKPOINTS),
-        )
+        for name in names
     ]
 
 
@@ -357,7 +492,9 @@ async def decide(state: JSONContent, questions: dict[str, QuestionIn]) -> dict[s
     try:
         await asyncio.to_thread(_require_enabled)
         checkpoint = await asyncio.to_thread(catalog.default_checkpoint)
-        return await _decide(checkpoint, state, questions)
+        result = await _decide(checkpoint, state, questions)
+        result.pop("_backend", None)
+        return result
     except HTTPException as exc:
         raise ToolError(exc.detail["message"]) from None
 

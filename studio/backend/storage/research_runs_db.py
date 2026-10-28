@@ -13,7 +13,7 @@ import threading
 import time
 from typing import Any
 
-from core.inference.web_access_policy import check_url_access
+from core.inference.web_access_policy import check_url_access, normalize_website_policy
 from storage.studio_db import get_connection as _studio_connection
 
 ACTIVE_STATUSES = frozenset(
@@ -179,11 +179,9 @@ def _bind_assistant_locked(
     existing_run_id = (
         existing_metadata.get("researchRunId") if isinstance(existing_metadata, dict) else None
     )
-    # Only bind to an empty placeholder or this run's own message: an untagged reply carries parts
-    # _update_assistant drops on completion, so binding one silently overwrites an existing answer.
+    # Bind only to an empty placeholder or this run's message, or an existing answer is overwritten.
     parts = _loads(message["content_json"], [])
-    # A preamble beside the deep_research call is not a prior answer, so only text WITHOUT the
-    # handoff refuses the bind. Source parts, which only a finished answer carries, still do.
+    # A preamble beside the deep_research call is not a prior answer; only text without the handoff refuses the bind, but source parts still do.
     has_research_handoff = any(
         isinstance(part, dict)
         and part.get("type") == "tool-call"
@@ -346,10 +344,7 @@ def rebind_cancelled(
     assistant_message_id: str | None,
     config: dict[str, Any],
 ) -> dict | None:
-    """Re-point the thread's stopped run at a newer message, or return None. A thread holds one Deep
-    Research run for its lifetime, so a run the user stopped would otherwise refuse every later
-    question in that chat. Stopping kept nothing, so the same run is reset and pointed at the new
-    message instead of a second one being created."""
+    """A thread keeps one Deep Research run; reset a stopped run for the next message, or every later question in the chat is refused."""
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -376,10 +371,8 @@ def rebind_cancelled(
             plan_revision = revision,
             created = now,
         )
-        # retry_count is the attempt epoch every event is stamped with, and a new question is a new attempt: without
-        # the bump its report would carry the stopped question's reasoning, since get_reasoning_text joins every event
-        # at the run's current attempt. The retry BUDGET is counted per question, so spending an epoch here spends no
-        # retry.
+        # retry_count is the event attempt epoch; bump it per question so old reasoning is not joined.
+        # The retry budget is counted per question, so this spends no retry.
         conn.execute(
             "UPDATE research_runs SET user_message_id=?, assistant_message_id=?, "
             "status='planning', cancel_requested=0, plan_json=NULL, plan_hash=NULL, "
@@ -401,8 +394,7 @@ def rebind_cancelled(
         conn.execute("DELETE FROM research_plan_steps WHERE run_id=?", (run_id,))
         conn.execute("DELETE FROM research_sources WHERE run_id=?", (run_id,))
         conn.execute("DELETE FROM research_document_sources WHERE run_id=?", (run_id,))
-        # Events replay into the activity panel, so a kept approval would show "Plan approved" for a
-        # question this run no longer researches.
+        # Events replay into the activity panel, so drop the stale approval or it shows Plan approved for a question this run no longer researches.
         conn.execute(
             "DELETE FROM research_events WHERE run_id=? AND event_type='run.approved'", (run_id,)
         )
@@ -479,6 +471,7 @@ def get_run(run_id: str, owner_subject: str | None = None) -> dict | None:
             for r in conn.execute(
                 "SELECT id, step_position AS stepPosition, document_id AS documentId, "
                 "chunk_id AS chunkId, filename, page, score, snippet, "
+                "COALESCE(kind, 'knowledge_base') AS kind, "
                 "fetched_at AS fetchedAt FROM research_document_sources "
                 "WHERE run_id = ? ORDER BY id",
                 (run_id,),
@@ -497,6 +490,20 @@ def list_active(thread_id: str) -> list[dict]:
             f"SELECT id FROM research_runs WHERE thread_id = ? "
             f"AND status IN ({placeholders}) ORDER BY created_at",
             (thread_id, *sorted(ACTIVE_STATUSES)),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [run for row in rows if (run := get_run(row["id"])) is not None]
+
+
+def list_all_active() -> list[dict]:
+    """Every unsettled run in this account, for startup work that is not scoped to one thread."""
+    conn = get_connection()
+    try:
+        placeholders = ",".join("?" for _ in ACTIVE_STATUSES)
+        rows = conn.execute(
+            f"SELECT id FROM research_runs WHERE status IN ({placeholders}) ORDER BY created_at",
+            tuple(sorted(ACTIVE_STATUSES)),
         ).fetchall()
     finally:
         conn.close()
@@ -755,13 +762,23 @@ def approve(run_id: str, revision: int, plan_hash: str) -> str:
         conn.close()
 
 
-def request_cancel(run_id: str) -> str:
+def request_cancel(run_id: str, expected_attempt: int | None = None) -> str | None:
+    """Stop ``run_id``. With ``expected_attempt``, only if that attempt is still the run's; else None.
+
+    The attempt check shares the cancel's transaction, so a retry or rebind that commits first
+    (both bump retry_count under the same id) can never be cancelled on its predecessor's behalf.
+    """
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute("SELECT status FROM research_runs WHERE id = ?", (run_id,)).fetchone()
+        row = conn.execute(
+            "SELECT status, retry_count FROM research_runs WHERE id = ?", (run_id,)
+        ).fetchone()
         if row is None:
             raise KeyError(run_id)
+        if expected_attempt is not None and int(row["retry_count"] or 0) != expected_attempt:
+            conn.commit()
+            return None
         status = row["status"]
         if status in TERMINAL_STATUSES or status == "cancelling":
             conn.commit()
@@ -786,12 +803,18 @@ def request_cancel(run_id: str) -> str:
         conn.close()
 
 
-def retry(run_id: str, max_retries: int = 3) -> str:
+def retry(
+    run_id: str,
+    max_retries: int = 3,
+    *,
+    model_timeout_seconds: int | None = None,
+    website_policy: dict[str, list[str]] | None = None,
+) -> str:
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
-            "SELECT status, retry_count, plan_json, owner_subject, thread_id "
+            "SELECT status, retry_count, plan_json, owner_subject, thread_id, config_json "
             "FROM research_runs WHERE id = ?",
             (run_id,),
         ).fetchone()
@@ -799,9 +822,7 @@ def retry(run_id: str, max_retries: int = 3) -> str:
             raise KeyError(run_id)
         if row["status"] not in {"failed", "cancelled"}:
             raise ResearchConflictError("Only failed or cancelled runs can be retried")
-        # Counted per question, not per run row: a thread re-points one run at each new question, so a raw
-        # retry_count would hand a fresh question whatever the stopped one left over, and nothing at all once the
-        # budget was spent.
+        # Counted per question, not per run row: a raw retry_count would give a fresh question leftover retries from the stopped one, or none once spent.
         spent = conn.execute(
             "SELECT COUNT(*) FROM research_events WHERE run_id=? AND event_type='run.retried' "
             "AND seq > COALESCE((SELECT MAX(seq) FROM research_events "
@@ -840,16 +861,29 @@ def retry(run_id: str, max_retries: int = 3) -> str:
             if row["plan_json"]
             else "planning"
         )
+        config = _loads(row["config_json"], {})
+        policy_changed = website_policy is not None and website_policy != normalize_website_policy(
+            config.get("websitePolicy")
+        )
+        if model_timeout_seconds is not None:
+            config.setdefault("budgets", {})["modelTimeoutSeconds"] = int(model_timeout_seconds)
+        if website_policy is not None:
+            config["websitePolicy"] = website_policy
         conn.execute(
             "UPDATE research_runs SET status = ?, cancel_requested = 0, retry_count = retry_count + 1, "
             "error_message = NULL, report_text = NULL, completed_at = NULL, lease_owner = NULL, "
-            "lease_expires_at = NULL, updated_at = ? WHERE id = ?",
-            (status, now_ms(), run_id),
+            "lease_expires_at = NULL, config_json = ?, updated_at = ? WHERE id = ?",
+            (status, json.dumps(config, ensure_ascii = False), now_ms(), run_id),
         )
-        if status != "awaiting_approval":
-            conn.execute("DELETE FROM research_plan_steps WHERE run_id = ?", (run_id,))
-        conn.execute("DELETE FROM research_sources WHERE run_id = ?", (run_id,))
-        conn.execute("DELETE FROM research_document_sources WHERE run_id = ?", (run_id,))
+        # Only a failed run keeps evidence, and only completed steps, so a transiently failed search runs again.
+        keep_evidence = row["status"] == "failed" and status == "queued" and not policy_changed
+        if keep_evidence:
+            _drop_unfinished_steps_locked(conn, run_id, ("completed",))
+        else:
+            if status != "awaiting_approval":
+                conn.execute("DELETE FROM research_plan_steps WHERE run_id = ?", (run_id,))
+            conn.execute("DELETE FROM research_sources WHERE run_id = ?", (run_id,))
+            conn.execute("DELETE FROM research_document_sources WHERE run_id = ?", (run_id,))
         _event_locked(conn, run_id, "run.retried", {"status": status})
         _commit_event(conn)
         return status
@@ -869,10 +903,7 @@ _CLAIMABLE_SQL = """SELECT r.id FROM research_runs r
 
 
 def _has_claimable(now: int) -> bool:
-    """Read-only probe for claimable work, taking no write lock. The supervisor polls twice a second forever and
-    almost every poll finds nothing, so opening BEGIN IMMEDIATE first meant an idle Studio held the writer lock
-    2x/second and any slow writer elsewhere became a stream of "database is locked" here.
-    """
+    """Read-only so the twice-a-second idle poll never takes the writer lock; BEGIN IMMEDIATE here turned slow writers elsewhere into database is locked errors."""
     conn = get_connection()
     try:
         return conn.execute(_CLAIMABLE_SQL, (now,)).fetchone() is not None
@@ -881,8 +912,7 @@ def _has_claimable(now: int) -> bool:
 
 
 def claim_next(worker_id: str, lease_ms: int = 120_000) -> dict | None:
-    # Advisory only: the row can disappear between this probe and the transaction below, which the "row
-    # is None" branch already handles.
+    # Advisory only: the row can vanish before the transaction (handled below).
     if not _has_claimable(now_ms()):
         return None
     conn = get_connection()
@@ -1100,24 +1130,7 @@ def prepare_execution_resume(run_id: str, worker_id: str) -> bool:
         if not _worker_can_write_locked(conn, run_id, worker_id, {"running"}):
             conn.commit()
             return False
-        interrupted = conn.execute(
-            "SELECT position FROM research_plan_steps WHERE run_id = ? "
-            "AND status NOT IN ('completed','failed')",
-            (run_id,),
-        ).fetchall()
-        conn.executemany(
-            "DELETE FROM research_sources WHERE run_id = ? AND step_position = ?",
-            [(run_id, int(row["position"])) for row in interrupted],
-        )
-        conn.executemany(
-            "DELETE FROM research_document_sources WHERE run_id = ? AND step_position = ?",
-            [(run_id, int(row["position"])) for row in interrupted],
-        )
-        conn.execute(
-            "DELETE FROM research_plan_steps WHERE run_id = ? "
-            "AND status NOT IN ('completed','failed')",
-            (run_id,),
-        )
+        _drop_unfinished_steps_locked(conn, run_id)
         conn.commit()
         return True
     except Exception:
@@ -1125,6 +1138,30 @@ def prepare_execution_resume(run_id: str, worker_id: str) -> bool:
         raise
     finally:
         conn.close()
+
+
+def _drop_unfinished_steps_locked(
+    conn: sqlite3.Connection,
+    run_id: str,
+    keep: tuple[str, ...] = ("completed", "failed"),
+) -> None:
+    marks = ",".join("?" for _ in keep)
+    interrupted = conn.execute(
+        f"SELECT position FROM research_plan_steps WHERE run_id = ? AND status NOT IN ({marks})",
+        (run_id, *keep),
+    ).fetchall()
+    conn.executemany(
+        "DELETE FROM research_sources WHERE run_id = ? AND step_position = ?",
+        [(run_id, int(row["position"])) for row in interrupted],
+    )
+    conn.executemany(
+        "DELETE FROM research_document_sources WHERE run_id = ? AND step_position = ?",
+        [(run_id, int(row["position"])) for row in interrupted],
+    )
+    conn.execute(
+        f"DELETE FROM research_plan_steps WHERE run_id = ? AND status NOT IN ({marks})",
+        (run_id, *keep),
+    )
 
 
 def upsert_execution_step(
@@ -1288,12 +1325,13 @@ def upsert_document_source(
         conn.execute(
             """INSERT INTO research_document_sources
                (run_id, step_position, source_key, document_id, chunk_id, filename,
-                page, score, snippet, fetched_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                page, score, snippet, fetched_at, kind)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(run_id, source_key) DO UPDATE SET
                step_position=excluded.step_position, document_id=excluded.document_id,
                chunk_id=excluded.chunk_id, filename=excluded.filename, page=excluded.page,
-               score=excluded.score, snippet=excluded.snippet, fetched_at=excluded.fetched_at""",
+               score=excluded.score, snippet=excluded.snippet, fetched_at=excluded.fetched_at,
+               kind=excluded.kind""",
             (
                 run_id,
                 position,
@@ -1305,6 +1343,7 @@ def upsert_document_source(
                 float(source["score"]) if isinstance(source.get("score"), (int, float)) else None,
                 str(source.get("text") or source.get("snippet") or "")[:4000],
                 fetched_at,
+                "mcp" if source.get("kind") == "mcp" else None,
             ),
         )
         conn.commit()

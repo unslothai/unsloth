@@ -1,0 +1,289 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import assert from "node:assert/strict";
+import test from "node:test";
+import * as React from "react";
+import * as jsxRuntime from "react/jsx-runtime";
+import { renderToStaticMarkup } from "react-dom/server";
+
+import type * as BarModule from "../src/features/rag/components/thread-documents-bar.tsx";
+import type * as FolderGroupsModule from "../src/features/rag/components/linked-folder-groups.ts";
+import type * as GateModule from "../src/features/chat/hooks/use-rag-tool-disabled.ts";
+import { loadWithStubs } from "./helpers/module-stubs.ts";
+
+const PROJECT_DOC = { id: "doc-1", filename: "handbook.pdf", status: "completed" };
+let extraProjectDocs: Record<string, unknown>[] = [];
+
+let runtime: Record<string, unknown> = {};
+const useChatRuntimeStore = (select: (s: Record<string, unknown>) => unknown) =>
+  select(runtime);
+
+function selectorStore(state: Record<string, unknown>) {
+  return (select: (s: Record<string, unknown>) => unknown) => select(state);
+}
+
+const gate = loadWithStubs<typeof GateModule>(
+  new URL("../src/features/chat/hooks/use-rag-tool-disabled.ts", import.meta.url),
+  {
+    "../external-providers": {
+      parseExternalModelId: () => null,
+      providerModelSupportsStudioTools: () => null,
+    },
+    "../stores/external-providers-store": {
+      useExternalProvidersStore: selectorStore({ providers: [] }),
+    },
+    "../stores/chat-runtime-store": { useChatRuntimeStore },
+  },
+);
+
+const Nothing = () => null;
+const Passthrough = ({ children }: { children?: React.ReactNode }) =>
+  React.createElement(React.Fragment, null, children);
+
+const chatStub = {
+  isThreadIncognito: () => false,
+  chatHistoryClearBoundary: { capture: () => 0 },
+  attachmentFileKind: (name: string) =>
+    name.endsWith(".pdf") ? "pdf" : "word",
+  isTextAttachment: (name: string) => name.endsWith(".txt"),
+};
+const fileViewerStub = {
+  MAX_DOCUMENT_PREVIEW_BYTES: 50,
+  documentKind: (name: string) =>
+    name.endsWith(".pdf") ? "pdf" : name.endsWith(".docx") ? "docx" : null,
+  isMarkdown: () => false,
+};
+
+const folderGroups = loadWithStubs<typeof FolderGroupsModule>(
+  new URL("../src/features/rag/components/linked-folder-groups.ts", import.meta.url),
+  { react: React, "../api/rag-api": { listLinkedFolders: async () => [] } },
+);
+
+const { ThreadDocumentsBar } = loadWithStubs<typeof BarModule>(
+  new URL("../src/features/rag/components/thread-documents-bar.tsx", import.meta.url),
+  {
+    react: React,
+    "react/jsx-runtime": jsxRuntime,
+    "@hugeicons/react": { HugeiconsIcon: Nothing },
+    "@hugeicons/core-free-icons": {},
+    "lucide-react": new Proxy({}, { get: () => Nothing }),
+    "@/lib/tick-icon": {},
+    "@/lib/open-file-picker": { openFilePicker: () => undefined },
+    "@/components/assistant-ui/attachment": {
+      AttachmentKindIcon: Nothing,
+      FileCardBody: ({ name }: { name: string }) =>
+        React.createElement("span", null, name),
+    },
+    "@/components/assistant-ui/attachment-card-preview": {
+      AttachmentCardPreview: Nothing,
+      attachmentPreview: () => null,
+    },
+    "@/components/assistant-ui/attachment-document-dialog": {
+      LocalFileDialog: Passthrough,
+    },
+    "@/components/ui/tooltip": {
+      Tooltip: Passthrough,
+      TooltipContent: Nothing,
+      TooltipTrigger: Passthrough,
+    },
+    "@/components/ui/spinner": { Spinner: Nothing },
+    "@/lib/chevron-icons": {},
+    "@assistant-ui/react": {
+      useAui: () => ({}),
+      useAuiState: (select: (s: { threadListItem: { id: string } }) => unknown) =>
+        select({ threadListItem: { id: "local-1" } }),
+    },
+    "@/lib/utils": {
+      cn: (...classes: unknown[]) => classes.filter(Boolean).join(" "),
+    },
+    "@/features/chat/stores/chat-runtime-store": {
+      PENDING_CHAT_ATTACHMENT_KEY: "pending",
+      readPendingAttachmentTargetClaim: () => null,
+      useChatRuntimeStore,
+    },
+    "@/features/chat/stores/chat-preferences-store": {
+      useChatPreferencesStore: (
+        select: (s: { filesPanelCollapsed: boolean; setFilesPanelCollapsed: () => void }) => unknown,
+      ) => select({ filesPanelCollapsed: false, setFilesPanelCollapsed: () => {} }),
+    },
+    "@/features/chat/hooks/use-rag-tool-disabled": gate,
+    "@/features/chat": chatStub,
+    "@/components/file-viewer": fileViewerStub,
+    "@/features/native-intents": {
+      useNativeAttachmentTargetKey: () => null,
+      useNativeIntentStore: selectorStore({ pendingAttachments: {} }),
+    },
+    "@/lib/toast": { toast: () => undefined },
+    "@/components/ui/dropdown-menu": new Proxy({}, { get: () => Passthrough }),
+    "../api/rag-api": {
+      listKnowledgeBases: async () => [],
+      subscribeKnowledgeBasesChanged: () => () => undefined,
+      listProjectDocuments: async () => [PROJECT_DOC],
+      listLinkedFolders: async () => [],
+      listThreadDocuments: async () => [],
+    },
+    "../api/rag-availability": {
+      useRagAvailabilityStore: selectorStore({ isUnavailable: () => false }),
+    },
+    "../types/rag": { isLinkedFolderManaged: () => false },
+    "./source-drop-policy": {
+      RAG_SOURCE_UPLOAD_ACCEPT: "",
+      SUPPORTED_SOURCES_HINT: "",
+      isSupportedSourceName: () => true,
+    },
+    "./use-source-drop": {
+      useSourceDrop: () => ({
+        dragging: false,
+        dropProps: {},
+        nativeDropTarget: () => undefined,
+      }),
+    },
+    "./use-upload-queue": {
+      useUploadQueue: (run: (items: unknown[]) => void) => ({
+        enqueue: run,
+        queued: 0,
+      }),
+    },
+    "./linked-folder-groups": folderGroups,
+    "@/components/ui/alert-dialog": new Proxy({}, { get: () => Passthrough }),
+    "./document-status-chip": { STAGE_LABELS: {} },
+    "./knowledge-base-dialog": { KnowledgeBaseDialog: Nothing },
+    "./rag-document-trigger": { RagDocumentTrigger: Passthrough },
+    "./source-file": loadWithStubs(
+      new URL("../src/features/rag/components/source-file.ts", import.meta.url),
+      {
+        "@/components/file-viewer": fileViewerStub,
+        "@/features/chat": chatStub,
+        "../api/rag-api": { getDocumentFileUrl: async () => "" },
+      },
+    ),
+    "./staged-source": { EXPIRY_GRACE_MS: 0 },
+    "./use-rag-documents": {
+      uploadItemFromIntent: () => null,
+      useRagDocuments: (scope: { type: string } | null) => ({
+        documents:
+          scope?.type === "project" ? [PROJECT_DOC, ...extraProjectDocs] : [],
+        uploading: false,
+        hasIndexing: false,
+        loading: false,
+        upload: async () => undefined,
+        remove: async () => undefined,
+        retry: async () => undefined,
+        canRetry: () => false,
+      }),
+    },
+  },
+);
+
+function renderProjectChat(
+  model: { checkpoint: string; supportsTools: boolean },
+  ragEnabled = false,
+) {
+  runtime = {
+    ragEnabled,
+    ragSource: { type: "thread" },
+    activeProjectId: "project-1",
+    projectAttachmentTarget: "project",
+    projectAttachmentTargetByThread: {},
+    params: { checkpoint: model.checkpoint },
+    modelLoading: false,
+    supportsTools: model.supportsTools,
+  };
+  return renderToStaticMarkup(
+    React.createElement(
+      Passthrough,
+      null,
+      React.createElement(ThreadDocumentsBar, { threadId: null }),
+    ),
+  );
+}
+
+test("a model without tool calling does not claim to use the project's sources", () => {
+  const html = renderProjectChat({
+    checkpoint: "unsloth/gemma-3-4b-it-GGUF",
+    supportsTools: false,
+  });
+  assert.match(html, /handbook\.pdf/);
+  assert.doesNotMatch(
+    html,
+    /This chat retrieves from its project/,
+    "the chat sends no search_knowledge_base or rag_scope without tool support",
+  );
+  assert.match(html, /not used/);
+});
+
+test("a model with tool calling still shows the project's sources as in effect", () => {
+  const html = renderProjectChat({
+    checkpoint: "unsloth/Qwen3-4B-GGUF",
+    supportsTools: true,
+  });
+  assert.match(html, /handbook\.pdf/);
+  assert.match(html, /This chat retrieves from its project/);
+  assert.doesNotMatch(html, /not used/);
+});
+
+test("with Docs on, a model without tool calling dims the files it will not search", () => {
+  const html = renderProjectChat(
+    { checkpoint: "unsloth/gemma-3-4b-it-GGUF", supportsTools: false },
+    true,
+  );
+  assert.match(html, /handbook\.pdf/);
+  assert.match(html, /title="[^"]*these files aren&#x27;t used[^"]*">Not used</);
+  assert.match(html, /opacity-50/);
+});
+
+// A linked folder can hold thousands of files; one card per file would flood the composer.
+test("a linked folder's files collapse into one folder card", () => {
+  extraProjectDocs = ["a.py", "b.py", "c.md"].map((filename, i) => ({
+    id: `linked-${i}`,
+    filename,
+    status: "completed",
+    linkedFolderId: "folder-1",
+    managed: true,
+  }));
+  try {
+    for (const ragEnabled of [false, true]) {
+      const html = renderProjectChat(
+        { checkpoint: "unsloth/Qwen3-4B-GGUF", supportsTools: true },
+        ragEnabled,
+      );
+      assert.match(html, /handbook\.pdf/);
+      assert.match(html, /Linked folder/);
+      assert.match(html, /3 files/);
+      assert.doesNotMatch(html, /a\.py|b\.py|c\.md/);
+    }
+  } finally {
+    extraProjectDocs = [];
+  }
+});
+
+// Every indexed card opens: the browser, the attachment viewer or a new tab.
+test("indexed cards of any format open", () => {
+  extraProjectDocs = [
+    { id: "doc-2", filename: "notes.docx", status: "completed" },
+    { id: "doc-3", filename: "book.epub", status: "completed" },
+  ];
+  try {
+    const html = renderProjectChat(
+      { checkpoint: "unsloth/Qwen3-4B-GGUF", supportsTools: true },
+      true,
+    );
+    for (const name of ["handbook\\.pdf", "notes\\.docx", "book\\.epub"]) {
+      assert.match(html, new RegExp(`aria-label="Preview ${name}`));
+    }
+    assert.doesNotMatch(html, /<button[^>]*disabled=""[^>]*aria-label="book\.epub/);
+  } finally {
+    extraProjectDocs = [];
+  }
+});
+
+test("with Docs on, a model with tool calling keeps the files in effect", () => {
+  const html = renderProjectChat(
+    { checkpoint: "unsloth/Qwen3-4B-GGUF", supportsTools: true },
+    true,
+  );
+  assert.match(html, /handbook\.pdf/);
+  assert.doesNotMatch(html, /Not used|aren&#x27;t used/);
+  assert.doesNotMatch(html, /opacity-50/);
+});

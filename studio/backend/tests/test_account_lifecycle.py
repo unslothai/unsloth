@@ -89,7 +89,8 @@ def db_rows(table):
 
 @pytest.mark.parametrize("actor", ["unsloth", "alice", "bob"])
 @pytest.mark.parametrize(
-    "operation", ["list", "create", "setup-code", "deactivate", "reactivate", "delete"]
+    "operation",
+    ["list", "create", "setup-code", "deactivate", "reactivate", "model-access", "delete"],
 )
 @pytest.mark.parametrize("target", ["unsloth", "alice", "bob"])
 def test_owner_alice_bob_endpoint_matrix(matrix, actor, operation, target):
@@ -103,6 +104,10 @@ def test_owner_alice_bob_endpoint_matrix(matrix, actor, operation, target):
         response = client.post("/api/accounts", headers = headers(actor), json = {"username": "carol"})
     elif operation == "setup-code":
         response = client.post(url + "/setup-code", headers = headers(actor))
+    elif operation == "model-access":
+        response = client.put(
+            url + "/model-access", headers = headers(actor), json = {"model_allowlist": ["unsloth/*"]}
+        )
     elif operation in ("deactivate", "reactivate"):
         response = client.patch(
             url, headers = headers(actor), json = {"is_active": operation == "reactivate"}
@@ -122,7 +127,15 @@ def test_owner_alice_bob_endpoint_matrix(matrix, actor, operation, target):
         assert {r["username"] for r in response.json()["accounts"]} == {"unsloth", "alice", "bob"}
         assert all(
             set(row)
-            == {"account_id", "username", "role", "is_active", "created_at", "setup_code_pending"}
+            == {
+                "account_id",
+                "username",
+                "role",
+                "is_active",
+                "created_at",
+                "setup_code_pending",
+                "model_allowlist",
+            }
             for row in response.json()["accounts"]
         )
 
@@ -134,6 +147,7 @@ def test_owner_alice_bob_endpoint_matrix(matrix, actor, operation, target):
         ("POST", "", {"username": "carol"}),
         ("POST", "/missing/setup-code", None),
         ("PATCH", "/missing", {"is_active": False}),
+        ("PUT", "/missing/model-access", {"model_allowlist": None}),
         ("DELETE", "/missing", None),
     ],
 )
@@ -821,8 +835,7 @@ def test_auth_schema_setup_runs_once_per_database_file(auth_env, tmp_path):
     conn = storage.get_connection()
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     conn.close()
-    # The recreated file may reuse the inode and reach the same schema version, so the key can
-    # collide with the first one; the schema running again is the observable requirement.
+    # A recreated file may reuse the inode and collide on the key; check the schema reran.
     assert "auth_user" in tables
 
 
@@ -887,3 +900,36 @@ def test_a_database_failure_after_retirement_puts_the_roots_back(matrix, monkeyp
     assert (
         client.delete(f"/api/accounts/{account.account_id}", headers = headers()).status_code == 204
     )
+
+
+def test_api_keys_cannot_manage_accounts(auth_env):
+    # A setup code signs in as the account, so a leaked owner API key must not mint one.
+    client, _auth, _accounts = auth_env
+    account = create(client).json()["account"]
+    raw, _row = storage.create_api_key("unsloth", "script")
+    key = {"Authorization": "Bearer " + raw}
+    url = f"/api/accounts/{account['account_id']}"
+    for response in (
+        client.get("/api/accounts", headers = key),
+        client.post("/api/accounts", headers = key, json = {"username": "mallory"}),
+        client.post(url + "/setup-code", headers = key),
+        client.patch(url, headers = key, json = {"is_active": False}),
+        client.delete(url, headers = key),
+    ):
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Account management requires a UI session."
+    assert client.get("/api/accounts", headers = headers()).status_code == 200
+    assert client.post(url + "/setup-code", headers = headers()).status_code == 200
+
+
+def test_keyless_callers_cannot_manage_accounts(auth_env):
+    import asyncio
+
+    _client, _auth, accounts = auth_env
+    keyless = authentication.HTTPAuthorizationCredentials(
+        scheme = authentication.KEYLESS_SCHEME, credentials = ""
+    )
+    via_api_key = asyncio.run(authentication.authenticated_via_api_key(keyless))
+    with pytest.raises(accounts.HTTPException) as refused:
+        accounts._require_ui_session(via_api_key)
+    assert refused.value.status_code == 403

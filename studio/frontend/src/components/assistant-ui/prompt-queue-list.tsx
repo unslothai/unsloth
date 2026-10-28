@@ -6,13 +6,13 @@ import {
   CornerDownRightIcon,
   GripVerticalIcon,
   ListEndIcon,
-  MoreHorizontalIcon,
 } from "lucide-react";
 import {
-  Copy01Icon,
   Delete02Icon,
   Edit03Icon,
+  MoreHorizontalIcon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Button } from "@/components/ui/button";
 import {
@@ -52,8 +52,9 @@ type PromptQueueListProps = {
   onResume: () => void;
 };
 
-/** The queue engine owns dispatch and validates every mutation against live IDs. */
 const MENU_OR_TRIGGER = "[data-slot='dropdown-menu-content'], [data-queue-menu]";
+// A focused row button shows its label below it, over the next 32px row; it must not take that row's clicks.
+const ROW_TOOLTIP_CLASS = "prompt-queue-option-tooltip pointer-events-none";
 
 export function PromptQueueList({
   entry,
@@ -113,8 +114,7 @@ export function PromptQueueList({
     inputRef.current?.select();
   }, [activeEditingId]);
 
-  // Some IMEs never send compositionend, which would wedge the Enter gate
-  // below. Drop the flag after a quiet spell, as the composer's watchdog does.
+  // Some IMEs never send compositionend; drop the flag after a quiet spell.
   const setComposing = useCallback((next: boolean) => {
     composingRef.current = next;
     if (composingTimerRef.current) clearTimeout(composingTimerRef.current);
@@ -143,7 +143,7 @@ export function PromptQueueList({
     const id = editingId;
     setEditingId(null);
     setDraft("");
-    // The editor replaces its row controls. Restore focus once they return.
+    // restore focus after the editor's row controls return.
     requestAnimationFrame(() => {
       const row = Array.from(
         listRef.current?.querySelectorAll<HTMLElement>(
@@ -155,7 +155,7 @@ export function PromptQueueList({
   }
 
   function saveEditing() {
-    if (!editingItem || !draft.trim()) return;
+    if (!editingItem || (!draft.trim() && !editingItem.attachmentNames?.length)) return;
     if (onEdit(editingItem.id, draft)) {
       setAnnouncement(t("promptQueue.announceUpdated"));
       finishEditing();
@@ -165,11 +165,10 @@ export function PromptQueueList({
   }
 
   return (
-    // Browsers paint the scrollbar outside the scroller's own radius, so the
-    // rounding and the clip live on this frame instead.
+    // browsers paint scrollbars outside scroller radii, so this frame owns rounding and clipping.
     <div
       data-queue-frame=""
-      className="relative z-0 mx-3 mb-[calc(-8px*var(--ui-space-scale,1))] overflow-hidden rounded-t-[20px] border border-border/60 bg-background sm:mx-5 dark:bg-[color-mix(in_srgb,var(--card)_50%,var(--background))]"
+      className="relative z-0 mx-3 mb-[calc(-8px*var(--ui-space-scale,1))] overflow-hidden rounded-t-xl border border-border/60 bg-background sm:mx-5 dark:bg-[color-mix(in_srgb,var(--card)_50%,var(--background))]"
     >
       <div
         ref={listRef}
@@ -205,7 +204,7 @@ export function PromptQueueList({
                 aria-label={t("promptQueue.itemLabel", {
                   position,
                   total: items.length,
-                  prompt: item.prompt,
+                  prompt: [item.prompt, ...(item.attachmentNames ?? [])].filter(Boolean).join(" · "),
                 })}
                 className={cn(
                   "group relative rounded-lg transition-colors",
@@ -226,12 +225,10 @@ export function PromptQueueList({
                         onCompositionStart={() => setComposing(true)}
                         onCompositionUpdate={() => setComposing(true)}
                         onCompositionEnd={() => setComposing(false)}
-                        // Blur commits or cancels any composition first, so it is
-                        // a safe unconditional reset.
+                        // Blur commits or cancels any composition first, so this reset is safe.
                         onBlur={() => setComposing(false)}
                         onKeyDown={(event) => {
-                          // The candidate window owns this key, Escape included:
-                          // cancelling here would discard the draft instead.
+                          // The candidate window owns this key; cancelling here would discard the draft.
                           if (
                             event.nativeEvent.isComposing ||
                             event.nativeEvent.keyCode === 229
@@ -240,15 +237,11 @@ export function PromptQueueList({
                             return;
                           }
                           if (composingRef.current) {
-                            // Candidate-confirming Enter can arrive as
-                            // non-composing; keep it gated. It follows the
-                            // composition immediately, so the gate is not
-                            // re-armed here and a stuck flag times out.
+                            // Candidate-confirming Enter can arrive as non-composing; keep it gated.
                             if (event.key === "Enter") {
                               if (!event.shiftKey) event.preventDefault();
                               return;
                             }
-                            // Any other key means the composition really ended.
                             setComposing(false);
                           }
                           if (event.key === "Escape") {
@@ -257,8 +250,6 @@ export function PromptQueueList({
                             finishEditing();
                             return;
                           }
-                          // Same chord as the composer send. The helper owns the
-                          // repeat and Shift+Enter guards.
                           if (
                             composerSubmitIntent(
                               {
@@ -280,9 +271,7 @@ export function PromptQueueList({
                             saveEditing();
                           }
                         }}
-                        // Negative margins move the resize grip out to the corner,
-                        // stopping short of the radius so it is not clipped; the
-                        // matching padding keeps the text where it was.
+                        // Negative margins move the resize grip to the corner; padding keeps the text.
                         className="-mr-1.5 -mb-1.5 block max-h-36 min-h-12 w-[calc(100%+0.375rem)] resize-y border-0 bg-transparent pt-0 pr-1.5 pb-1.5 pl-1 text-sm text-foreground outline-none"
                         aria-label={t("promptQueue.editLabel", { position })}
                       />
@@ -306,23 +295,25 @@ export function PromptQueueList({
                       type="button"
                       size="sm"
                       className="focus-visible:bg-primary/80"
-                      disabled={!draft.trim()}
+                      disabled={!draft.trim() && !item.attachmentNames?.length}
                       onClick={saveEditing}
                     >
                       {t("promptQueue.save")}
                     </Button>
                   </div>
                 ) : (
-                  <div className="flex min-h-11 items-center gap-1 sm:min-h-12">
+                  // Compact for a pointer; touch keeps 44px targets, so its rows stay taller.
+                  <div className="flex min-h-8 items-center gap-1 pointer-coarse:min-h-11">
                     <TooltipIconButton
                       type="button"
                       tooltip={t("promptQueue.dragTooltip")}
+                      tooltipClassName={ROW_TOOLTIP_CLASS}
                       aria-label={t("promptQueue.reorderLabel", {
                         position,
                         total: items.length,
                       })}
                       aria-describedby={instructionsId}
-                      className="h-8 w-4 shrink-0 touch-none cursor-grab text-muted-foreground/50 hover:bg-transparent hover:text-muted-foreground/50 active:cursor-grabbing pointer-coarse:h-11 pointer-coarse:w-8 dark:hover:bg-transparent"
+                      className="h-7 w-4 shrink-0 touch-none cursor-grab text-muted-foreground/50 hover:bg-transparent hover:text-muted-foreground/50 active:cursor-grabbing pointer-coarse:h-11 pointer-coarse:w-8 dark:hover:bg-transparent"
                       disabled={!canMove}
                       onPointerDown={(event) => onPointerDown(event, item.id)}
                       onPointerMove={onPointerMove}
@@ -355,6 +346,12 @@ export function PromptQueueList({
                     />
                     <span className="min-w-0 flex-1 truncate px-1.5 text-sm text-foreground/80">
                       {item.prompt}
+                      {item.attachmentNames?.length ? (
+                        <span title={item.attachmentNames.join(", ")}>
+                          {item.prompt ? " · " : ""}
+                          {item.attachmentNames.join(", ")}
+                        </span>
+                      ) : null}
                     </span>
                     {index === 0 && entry.paused && (
                       <span className="hidden shrink-0 px-1 text-xs text-muted-foreground sm:inline">
@@ -364,9 +361,10 @@ export function PromptQueueList({
                     <TooltipIconButton
                       type="button"
                       tooltip={t("promptQueue.steerTooltip")}
+                      tooltipClassName={ROW_TOOLTIP_CLASS}
                       aria-label={t("promptQueue.steerLabel", { position })}
                       disabled={!item.canEdit || !item.canRemove}
-                      className="h-8 w-auto shrink-0 gap-1.5 px-2 font-normal text-muted-foreground hover:text-foreground pointer-coarse:h-11"
+                      className="h-7 w-auto shrink-0 gap-1.5 px-2 font-normal text-muted-foreground hover:text-foreground pointer-coarse:h-11"
                       onClick={() => {
                         setAnnouncement(
                           t(
@@ -383,9 +381,10 @@ export function PromptQueueList({
                     <TooltipIconButton
                       type="button"
                       tooltip={t("promptQueue.removeTooltip")}
+                      tooltipClassName={ROW_TOOLTIP_CLASS}
                       aria-label={t("promptQueue.removeLabel", { position })}
                       disabled={!item.canRemove}
-                      className="size-8 shrink-0 text-muted-foreground hover:text-destructive pointer-coarse:size-11"
+                      className="size-7 shrink-0 text-muted-foreground hover:text-destructive pointer-coarse:size-11"
                       onClick={() => {
                         if (onRemove(item.id))
                           setAnnouncement(t("promptQueue.announceRemoved"));
@@ -398,21 +397,21 @@ export function PromptQueueList({
                         <TooltipIconButton
                           ref={triggerRef}
                           tooltip={t("promptQueue.moreTooltip")}
+                          tooltipClassName={ROW_TOOLTIP_CLASS}
                           data-queue-menu
                           aria-label={t("promptQueue.moreLabel", { position })}
-                          className="size-8 shrink-0 text-muted-foreground hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground pointer-coarse:size-11"
+                          className="size-7 shrink-0 text-muted-foreground hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground pointer-coarse:size-11"
                         >
-                          <MoreHorizontalIcon className="size-4" />
+                          <HugeiconsIcon icon={MoreHorizontalIcon} className="size-4" />
                         </TooltipIconButton>
                       )}
                       align="end"
                       side="bottom"
                       sideOffset={6}
-                      className="w-56 rounded-2xl border border-border/60 p-1.5 shadow-lg"
+                      className="w-56 rounded-lg border border-border/60 p-1 shadow-lg"
                       // Opening the menu must not select an item on pointer release.
                       onPointerUpCapture={(event) => event.preventDefault()}
-                      // A queued send focuses the composer: stay open and take focus back, or Escape lands there.
-                      // Any other focus move, or one a pointer just caused, dismisses as before.
+                      // A queued send focuses the composer, so stay open; other focus moves dismiss.
                       onFocusOutside={(event) => {
                         const { target, relatedTarget, timeStamp } =
                           event.detail.originalEvent;

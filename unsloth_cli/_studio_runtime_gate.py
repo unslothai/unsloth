@@ -233,12 +233,13 @@ def studio_runtime_launch_guard(
         return
 
     kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
-    kernel32.CreateMutexW.argtypes = [
+    kernel32.CreateMutexExW.argtypes = [
         ctypes.c_void_p,
-        wintypes.BOOL,
         wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
     ]
-    kernel32.CreateMutexW.restype = wintypes.HANDLE
+    kernel32.CreateMutexExW.restype = wintypes.HANDLE
     kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
     kernel32.WaitForSingleObject.restype = wintypes.DWORD
     kernel32.ReleaseMutex.argtypes = [wintypes.HANDLE]
@@ -247,7 +248,9 @@ def studio_runtime_launch_guard(
     kernel32.CloseHandle.restype = wintypes.BOOL
 
     name = runtime_mutex_name_for_studio_home(studio_home)
-    handle = kernel32.CreateMutexW(None, False, name)
+    # SYNCHRONIZE | MUTEX_MODIFY_STATE, not CreateMutexW's MUTEX_ALL_ACCESS, which an elevated
+    # holder's mutex denies to a non-elevated opener: error 5 instead of busy (#9928).
+    handle = kernel32.CreateMutexExW(None, name, 0, 0x00100001)
     if not handle:
         raise ctypes.WinError(ctypes.get_last_error())
 
@@ -330,10 +333,8 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
         if int(process.get("ProcessId") or -1) > 0
     }
 
-    # Exempt verified launcher ancestors only: a managed backend starting an update as its child must
-    # still block replacement.
-    # venv Scripts\python.exe is a redirector (bpo-34977), so exempt that one hop: our image is base
-    # Python while sys.executable names the shim.
+    # Exempt verified launcher ancestors only: a managed backend child starting an update must still block replacement
+    # venv python.exe in Scripts is a redirector (bpo-34977), so exempt that one hop.
     excluded_pids = {os.getpid()}
     descendant_pid = os.getpid()
     self_executable = (process_by_pid.get(os.getpid()) or {}).get("ExecutablePath")

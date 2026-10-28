@@ -79,7 +79,7 @@ class _Session:
         self.rows.remove(handle)
         self.settled[handle] = self.stats_at_retire.get(handle, {})
 
-    def step(self):
+    def step(self, waiting):
         for handle in list(self.rows):
             events = self.script.get(handle) or []
             if not events:
@@ -159,6 +159,23 @@ def test_replies_a_command_asked_for_together_are_addressed_and_counted_by_row()
     assert sorted(m["stats"]["n"] for m in done) == [1, 2]
     assert [m["type"] for m in resp.sent][-1] == "gen_done"
     assert resp.sent[-1]["stats"] is None
+
+
+def test_raw_completion_rows_join_the_batch_and_decode_alone_through_the_completion_path():
+    batch, _ = _batch()
+    cmd = _cmd(
+        rows = [{"prompt_ids": [5], "seed": 1}, {"prompt_ids": [6], "seed": 2}],
+        penalty_window = 3,
+        parallel_slots = 2,
+    )
+    assert batch.unavailable_reason(cmd) is None and batch.admit(cmd, None)
+    assert [(r["prompt_ids"], r["penalty_window"]) for _, r in batch.session.admitted] == [
+        ([5], 3),
+        ([6], 3),
+    ]
+    backend = SimpleNamespace(generate_completion = lambda ids, **kw: iter([f"{ids} {kw['seed']}"]))
+    apart = worker._rows_apart(backend, [{"prompt_ids": [5], "seed": 1}], threading.Event(), [None])
+    assert list(apart) == [(0, "[5] 1"), (0, None)]
 
 
 IDLE = object()

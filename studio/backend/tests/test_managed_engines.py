@@ -18,8 +18,14 @@ from core.inference.managed_engine import ManagedEngine, launch_arguments
 
 
 @pytest.fixture(autouse = True)
+def nvidia_host(monkeypatch):
+    # These cover the CUDA profiles; on an AMD runner the real gpu_platform() answers "rocm".
+    monkeypatch.setattr(install, "gpu_platform", lambda: "cuda")
+
+
+@pytest.fixture(autouse = True)
 def visible_gpus(monkeypatch):
-    # CPU CI has no parent-visible GPUs; the mask itself is tested with the real resolver below.
+    # CPU CI has no parent-visible GPUs; the real resolver tests the mask below.
     from core.inference import managed_engine
     monkeypatch.setattr(
         managed_engine, "resolve_requested_gpu_ids", lambda ids: list(ids) if ids else [0]
@@ -36,12 +42,10 @@ def isolated(monkeypatch, tmp_path):
     return tmp_path
 
 
-# Studio installs and starts engines locally only on a Linux host (Windows uses the WSL guest,
-# macOS is refused); these fake its POSIX venv layout and process timing.
+# Studio runs engines locally only on Linux; these fake its POSIX venv layout and timing.
 _LOCAL_ENGINE_HOST = pytest.mark.skipif(
     sys.platform != "linux", reason = "local engine host is Linux only"
 )
-# fcntl only: the copy-on-write clone probe, and a test that holds a lease with fcntl directly.
 _POSIX_ENGINE_LOCKS = pytest.mark.skipif(sys.platform == "win32", reason = "uses fcntl")
 
 
@@ -228,8 +232,7 @@ def test_shared_engine_never_sees_studio_flashinfer(tmp_path):
 
 
 def test_shared_engine_keeps_its_own_nvidia_tree_first(tmp_path):
-    # Colab's site has a regular nvidia package, which hid the engine's crt headers from
-    # FlashInfer's JIT ("'__cudaLaunch' was not declared").
+    # Colab's regular nvidia package hid the engine's crt headers from FlashInfer's JIT.
     import subprocess
     import sys
 
@@ -276,8 +279,7 @@ def test_engine_cuda_home_is_the_locked_pip_nvcc(tmp_path, monkeypatch):
     assert (home / "lib64" / "libcudart.so").resolve() == studio_cuda / "lib" / "libcudart.so.13"
     cuda = install.cuda_environment({"path": str(env), "shared": True})
     assert cuda == {"CUDA_HOME": str(home), "CPATH": str(home / "include")}
-    # One tree: Studio's cuda_runtime.h sits beside the engine's crt/, so its quote includes of
-    # crt/ resolve to the engine's release (Colab ships a newer crt than its nvcc).
+    # One tree, so cuda_runtime.h's quote includes of crt/ resolve to the engine's release.
     (studio_cuda / "include" / "crt").mkdir()
     install.link_cuda_home(env, shared = True)
     assert (
@@ -290,7 +292,6 @@ def test_engine_cuda_home_is_the_locked_pip_nvcc(tmp_path, monkeypatch):
 @_LOCAL_ENGINE_HOST
 @pytest.mark.parametrize("engine", ["vllm", "sglang"])
 def test_glibc_floor_matches_the_lock_platform(engine, monkeypatch):
-    # Both locks resolve for x86_64-manylinux_2_34 (see the lock headers).
     assert "--python-platform x86_64-manylinux_2_34" in install.requirements(engine).read_text()
     monkeypatch.setattr(install.platform, "system", lambda: "Linux")
     monkeypatch.setattr(install.platform, "machine", lambda: "x86_64")
@@ -298,7 +299,10 @@ def test_glibc_floor_matches_the_lock_platform(engine, monkeypatch):
     reason = install.support_reason(engine, wait = False)
     assert reason is None or "glibc" not in reason
     monkeypatch.setattr(install.platform, "libc_ver", lambda: ("glibc", "2.33"))
-    assert install.support_reason(engine, wait = False) == f"{engine} requires glibc 2.34 or newer."
+    assert (
+        install.support_reason(engine, wait = False)
+        == f"{install.ENGINE_NAMES[engine]} requires glibc 2.34 or newer."
+    )
 
 
 def fake_dist(site, name, version, *requires):
@@ -334,10 +338,8 @@ def test_shared_engine_reuses_studio_versions_its_dependencies_accept(
         install, "_compat", lambda engine: {"pillow": [">=11"], "flashinfer-python": []}
     )
     plan = install.install_plan("vllm")
-    # No dependent constrains it: Studio's own version serves the engine.
     assert plan["provided"]["bitsandbytes"] == "9.0.0"
     assert not any(line.startswith("bitsandbytes==") for line in plan["requirements"].splitlines())
-    # Rejected by a dependent, or its own requirement fails against the engine's numpy.
     assert "pillow" not in plan["provided"] and "scipy" not in plan["provided"]
     # Studio's NVFP4 FlashInfer is hidden from engines, so it can never stand in.
     assert "flashinfer-python" not in plan["provided"]
@@ -416,7 +418,6 @@ def test_release_follows_studio_torch(monkeypatch, engine, studio_torch, version
     chosen = install.profile(engine)
     assert chosen["version"] == version
     assert install._pins(engine)[engine][0] == version
-    # The chosen lock is built on that torch, so a matching Studio can share it.
     assert install._pins(engine)["torch"][0] == chosen["torch"]
 
 
@@ -568,7 +569,7 @@ def test_runtime_lease_blocks_removal(isolated):
     marker = active(isolated)
     with install.engine_lease("vllm"):
         assert install.status("vllm")["in_use"] is True
-        with pytest.raises(RuntimeError, match = "another Studio"):
+        with pytest.raises(RuntimeError, match = "another Unsloth"):
             install.remove("vllm")
     assert marker.exists()
     install.remove("vllm")
@@ -645,12 +646,55 @@ def test_installer_reuses_recorded_cache(monkeypatch, tmp_path):
     assert install.install_environment()["UV_CACHE_DIR"] == str(tmp_path / "explicit")
 
 
+@pytest.mark.parametrize("image_python", [False, True])
+def test_docker_engine_python_survives_image_replacement(isolated, monkeypatch, image_python):
+    import shutil
+
+    app = isolated / "app"
+    app.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_APP", str(app))
+    monkeypatch.delenv("UV_PYTHON_INSTALL_DIR", raising = False)
+    if image_python:
+        (app / "python").mkdir()
+        linked_python = isolated / "linked-python"
+        linked_python.symlink_to(app / "python", target_is_directory = True)
+        monkeypatch.setenv("UV_PYTHON_INSTALL_DIR", str(linked_python))
+
+    # Model uv's interpreter symlink with a small file, then discard the app layer.
+    python_home = Path(install.install_environment()["UV_PYTHON_INSTALL_DIR"])
+    python_home.mkdir(parents = True, exist_ok = True)
+    interpreter = python_home / "python3.13"
+    interpreter.touch()
+    for engine in ("vllm", "sglang"):
+        marker = active(isolated, engine)
+        python = marker.parent / "env-prior" / "bin" / "python"
+        python.unlink()
+        python.symlink_to(interpreter)
+    shutil.rmtree(app)
+    app.mkdir()
+    for engine in ("vllm", "sglang"):
+        assert install.installed(engine) is not None
+
+
+def test_docker_engine_python_respects_external_store(isolated, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_APP", str(isolated / "app"))
+    external = str(isolated / "persistent-python")
+    monkeypatch.setenv("UV_PYTHON_INSTALL_DIR", external)
+    assert install.install_environment()["UV_PYTHON_INSTALL_DIR"] == external
+
+
+def test_native_engine_python_keeps_uv_default(isolated, monkeypatch):
+    monkeypatch.delenv("UNSLOTH_STUDIO_APP", raising = False)
+    monkeypatch.delenv("UV_PYTHON_INSTALL_DIR", raising = False)
+    assert "UV_PYTHON_INSTALL_DIR" not in install.install_environment()
+
+
 @pytest.mark.parametrize("engine", ["vllm", "sglang"])
 def test_argv_owns_network_and_memory_settings(engine):
     argv = launch_arguments(engine, "/env/bin/python", "org/model", 45678, "private", 4096)
     assert argv[0:2] == ["/env/bin/python", "-I"]
     assert argv[argv.index("--host") + 1] == "127.0.0.1"
-    assert "private" not in argv  # the key travels in the environment (key_environment)
+    assert "private" not in argv
     assert "4096" in argv
     assert "--trust-remote-code" not in argv
 
@@ -762,6 +806,239 @@ def test_cancellation_does_not_wait_for_next_token(peer):
     start = time.monotonic()
     assert list(stream) == []
     assert time.monotonic() - start < 2
+
+
+def test_structured_output_and_continuation_reach_the_engine(peer):
+    engine, requests = peer
+    schema = {
+        "type": "json_schema",
+        "json_schema": {"name": "city", "schema": {"type": "object"}},
+    }
+    partial = {"role": "assistant", "content": "Once upon"}
+    list(
+        engine.generate(
+            messages = [{"role": "user", "content": "Hi"}, partial],
+            response_format = schema,
+            continue_final_message = True,
+        )
+    )
+    body = requests[-1][2]
+    assert body["response_format"] == schema
+    assert body["messages"][-1] == partial
+    assert body["continue_final_message"] is True
+    assert body["add_generation_prompt"] is False
+    list(engine.generate(messages = [{"role": "user", "content": "Hi"}]))
+    assert not {"response_format", "continue_final_message", "add_generation_prompt"} & set(
+        requests[-1][2]
+    )
+
+
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+def test_chat_completions_hand_structured_output_and_continuation_to_the_engine(
+    monkeypatch, engine
+):
+    import asyncio
+    from types import SimpleNamespace
+
+    import routes.inference as inf
+    from fastapi import HTTPException
+    from core.inference.api_monitor import ApiMonitor
+    from models.inference import ChatCompletionRequest
+    from state.tool_policy import reset_tool_policy
+
+    calls = []
+
+    class Backend:
+        active_model_name = "m"
+        models = {"m": {"engine": engine, "context_length": 2048}}
+
+        def generate_chat_response(self, **kwargs):
+            calls.append(kwargs)
+            yield '{"city": "Tokyo"}'
+
+        def reset_generation_state(self, caller_cancel_event = None):
+            pass
+
+    class Request:
+        state = SimpleNamespace()
+        url = SimpleNamespace(path = "/v1/chat/completions")
+        method = "POST"
+        scope: dict = {}
+        headers: dict = {}
+
+        async def is_disconnected(self):
+            return False
+
+    reset_tool_policy()
+    monkeypatch.setattr(inf, "api_monitor", ApiMonitor(max_entries = 8))
+    monkeypatch.setattr(
+        inf,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(
+            is_loaded = False, supports_tools = False, is_vision = False, context_length = None
+        ),
+    )
+    monkeypatch.setattr(inf, "get_inference_backend", lambda: Backend())
+
+    def chat(status = 200, **fields):
+        payload = ChatCompletionRequest(model = "m", stream = False, enable_tools = False, **fields)
+        try:
+            response = asyncio.run(
+                inf.openai_chat_completions(payload, request = Request(), current_subject = "u")
+            )
+        except HTTPException as exc:
+            assert exc.status_code == status, exc.detail
+            return exc.detail
+        assert response.status_code == status, response.body
+        return calls[-1]
+
+    schema = {"type": "json_schema", "json_schema": {"name": "c", "schema": {"type": "object"}}}
+    sent = chat(messages = [{"role": "user", "content": "City?"}], response_format = schema)
+    assert sent["response_format"] == schema
+    sent = chat(
+        messages = [
+            {"role": "user", "content": "Count to five."},
+            {"role": "assistant", "content": "one, two,"},
+        ],
+        continue_final_message = True,
+    )
+    assert sent["continue_final_message"] is True
+    sent_before = len(calls)
+    refusal = chat(
+        status = 400,
+        messages = [
+            {"role": "user", "content": "Count to five."},
+            {"role": "assistant", "content": "", "reasoning_content": "The user wants"},
+        ],
+        continue_final_message = True,
+    )
+    assert "mid-thought" in str(refusal)
+    assert len(calls) == sent_before
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_studio_tool_execution_refuses_a_response_format_it_cannot_honor(monkeypatch, stream):
+    import asyncio
+    from types import SimpleNamespace
+
+    import routes.inference as inf
+    from fastapi import HTTPException
+    from core.inference.api_monitor import ApiMonitor
+    from models.inference import ChatCompletionRequest
+    from state.tool_policy import reset_tool_policy
+
+    class Backend:
+        active_model_name = "m"
+        models = {"m": {"engine": "vllm", "context_length": 2048, "supports_tools": True}}
+        _managed_engine = None
+
+        def reset_generation_state(self, caller_cancel_event = None):
+            pass
+
+    class Request:
+        state = SimpleNamespace()
+        url = SimpleNamespace(path = "/v1/chat/completions")
+        method = "POST"
+        scope: dict = {}
+        headers: dict = {}
+
+        async def is_disconnected(self):
+            return False
+
+    reset_tool_policy()
+    monkeypatch.setattr(inf, "api_monitor", ApiMonitor(max_entries = 8))
+    monkeypatch.setattr(
+        inf,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(
+            is_loaded = False, supports_tools = False, is_vision = False, context_length = None
+        ),
+    )
+    monkeypatch.setattr(inf, "get_inference_backend", lambda: Backend())
+    payload = ChatCompletionRequest(
+        model = "m",
+        stream = stream,
+        enable_tools = True,
+        enabled_tools = ["python"],
+        permission_mode = "bypass",
+        messages = [{"role": "user", "content": "Compute 7*567 and answer as JSON."}],
+        response_format = {
+            "type": "json_schema",
+            "json_schema": {"name": "a", "schema": {"type": "object"}},
+        },
+    )
+    with pytest.raises(HTTPException) as refusal:
+        asyncio.run(inf.openai_chat_completions(payload, request = Request(), current_subject = "u"))
+    assert refusal.value.status_code == 400
+    assert refusal.value.detail["error"]["param"] == "response_format"
+
+
+def test_studio_tool_loop_resumes_the_partial_it_was_given(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    import routes.inference as inf
+    import routes.managed_engine_chat as mec
+    from core.inference.api_monitor import ApiMonitor
+    from models.inference import ChatCompletionRequest
+    from state.tool_policy import reset_tool_policy
+
+    runs = []
+
+    class _Stop(Exception):
+        pass
+
+    def capture(transport, *, run, **kwargs):
+        runs.append(run)
+        raise _Stop
+
+    engine = ManagedEngine("vllm")
+    engine.base_url, engine.model, engine.context = "http://127.0.0.1:9", "m", 2048
+
+    class Backend:
+        active_model_name = "m"
+        models = {"m": {"engine": "vllm", "context_length": 2048, "supports_tools": True}}
+        _managed_engine = engine
+
+        def reset_generation_state(self, caller_cancel_event = None):
+            pass
+
+    class Request:
+        state = SimpleNamespace()
+        url = SimpleNamespace(path = "/v1/chat/completions")
+        method = "POST"
+        scope: dict = {}
+        headers: dict = {}
+
+        async def is_disconnected(self):
+            return False
+
+    reset_tool_policy()
+    monkeypatch.setattr(mec, "stream_with_studio_tools", capture)
+    monkeypatch.setattr(inf, "api_monitor", ApiMonitor(max_entries = 8))
+    monkeypatch.setattr(
+        inf,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(
+            is_loaded = False, supports_tools = False, is_vision = False, context_length = None
+        ),
+    )
+    monkeypatch.setattr(inf, "get_inference_backend", lambda: Backend())
+    payload = ChatCompletionRequest(
+        model = "m",
+        stream = False,
+        enable_tools = True,
+        enabled_tools = ["python"],
+        permission_mode = "off",
+        continue_final_message = True,
+        messages = [
+            {"role": "user", "content": "Count to five."},
+            {"role": "assistant", "content": "one, two,"},
+        ],
+    )
+    with pytest.raises(_Stop):
+        asyncio.run(inf.openai_chat_completions(payload, request = Request(), current_subject = "u"))
+    assert runs and runs[-1].continue_final_message is True
 
 
 def test_unsupported_tools_are_not_silently_dropped(peer):
@@ -891,6 +1168,51 @@ def test_orchestrator_dispatches_managed_generation_without_worker(peer):
     ]
 
 
+def test_an_engine_rejecting_the_schema_is_a_response_format_refusal():
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    errors = ["Grammar error: Invalid type: ?"]
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            error = {"message": errors[-1], "type": "BadRequestError", "code": 400}
+            self.wfile.write(f"data: {json.dumps({'error': error})}\n\n".encode())
+            self.wfile.flush()
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target = server.serve_forever, daemon = True)
+    thread.start()
+    try:
+        engine = ManagedEngine("vllm")
+        engine.base_url = f"http://127.0.0.1:{server.server_port}"
+        engine.model = "org/model"
+        orchestrator = InferenceOrchestrator.__new__(InferenceOrchestrator)
+        orchestrator._managed_engine = engine
+        messages = [{"role": "user", "content": "Hi"}]
+        schema = {"type": "json_schema", "json_schema": {"name": "x", "schema": {"type": "?"}}}
+        [refusal] = orchestrator._generate_inner(messages = messages, response_format = schema)
+        assert refusal.openai_param == "response_format"
+        assert "Grammar error" in refusal
+        [failure] = orchestrator._generate_inner(messages = messages)
+        assert failure.openai_param is None
+        assert failure == "Engine generation failed."
+        errors.append("This model's maximum context length is 2048 tokens.")
+        [overflow] = orchestrator._generate_inner(messages = messages, response_format = schema)
+        assert overflow.openai_param is None
+        assert overflow == "Engine generation failed."
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(2)
+
+
 def test_managed_load_launches_the_validated_local_path(monkeypatch):
     import threading as _threading
     from types import SimpleNamespace
@@ -989,7 +1311,7 @@ def test_busy_install_does_not_overwrite_another_job(isolated):
     job = {"state": "running", "phase": "installing", "message": "Downloading"}
     (isolated / "vllm.job.json").write_text(json.dumps(job))
     with install.engine_lease("vllm", exclusive = True):
-        with pytest.raises(RuntimeError, match = "another Studio"):
+        with pytest.raises(RuntimeError, match = "another Unsloth"):
             install.start_install("vllm")
         assert install.status("vllm")["job"] == job
 
@@ -1146,10 +1468,16 @@ def test_memory_budget_uses_selected_gpu_and_reserves_headroom(monkeypatch):
     monkeypatch.setattr(vram_budget_settings, "get_vram_budget_fraction", lambda: 0.97)
     assert engine_adapters.gpu_memory_fraction([1]) == 0.645
     assert commands[0][commands[0].index("--id") + 1] == "1"
-    # vLLM TorchAO weights overrun the reservation in sampler warmup: 6 GiB more stays free.
+    # vLLM TorchAO weights overrun the reservation in sampler warmup, so keep 6 GiB more free.
     assert engine_adapters.gpu_memory_fraction([1], 512 + 6144) == 0.395
-    monkeypatch.setattr(vram_budget_settings, "get_vram_budget_fraction", lambda: 0.5)
-    assert engine_adapters.gpu_memory_fraction([1]) == 0.5
+    monkeypatch.setattr(
+        engine_adapters.subprocess, "run", lambda *a, **kw: SimpleNamespace(stdout = "24576, 24000")
+    )
+    monkeypatch.setattr(vram_budget_settings, "get_vram_budget_fraction", lambda: 0.85)
+    assert engine_adapters.gpu_memory_fraction([1]) == 0.85
+    # A GGUF-only low budget must not shrink an engine that cannot offload to the CPU.
+    monkeypatch.setattr(vram_budget_settings, "get_vram_budget_fraction", lambda: 0.3)
+    assert engine_adapters.gpu_memory_fraction([1]) == engine_adapters.MANAGED_ENGINE_BUDGET_FLOOR
     monkeypatch.setattr(
         engine_adapters.subprocess, "run", lambda *a, **kw: SimpleNamespace(stdout = "24576, 256")
     )
@@ -1164,14 +1492,14 @@ def test_memory_reserve_grows_with_the_card(monkeypatch):
 
     monkeypatch.setattr(vram_budget_settings, "get_vram_budget_fraction", lambda: 0.97)
     share = engine_adapters.RESERVE_SHARE
-    # 96 GB RTX PRO 6000, idle: 3 GiB left vLLM's sampler warmup out of memory there.
+    # On an idle 96 GB RTX PRO 6000, a 3 GiB reserve left vLLM sampler warmup out of memory.
     monkeypatch.setattr(
         engine_adapters.subprocess, "run", lambda *a, **kw: SimpleNamespace(stdout = "97887, 97300")
     )
     fraction = engine_adapters.gpu_memory_fraction([0], 3072, share)
     assert 97887 * (1 - fraction) >= 0.06 * 97887 - 1
     assert fraction < engine_adapters.gpu_memory_fraction([0], 3072)
-    # A 24 GB L4 keeps the measured fixed reserve: 6% would be less than 3 GiB.
+    # A 24 GB L4 keeps the fixed reserve because 6% would be less than 3 GiB.
     monkeypatch.setattr(
         engine_adapters.subprocess, "run", lambda *a, **kw: SimpleNamespace(stdout = "23034, 22700")
     )
@@ -1182,11 +1510,15 @@ def test_memory_reserve_grows_with_the_card(monkeypatch):
 
 def test_engine_start_reserves_a_share_of_the_card():
     import inspect
+    import re
     from core.inference import managed_engine
 
     # The local and the WSL launch both keep the share free.
     source = inspect.getsource(managed_engine)
-    assert source.count("memory_reserve_mib(self.engine, options), RESERVE_SHARE") == 2
+    assert (
+        len(re.findall(r"memory_reserve_mib\(self\.engine, options\),\s*RESERVE_SHARE", source))
+        == 2
+    )
 
 
 @_LOCAL_ENGINE_HOST
@@ -1223,7 +1555,7 @@ def test_server_outlives_short_lived_start_thread(isolated, monkeypatch, gpu_ids
         key_environment = lambda _: {},
     )
     errors = []
-    # Colab reaches libcuda only through LD_LIBRARY_PATH; a CUDA runtime there must not follow.
+    # Colab reaches libcuda only via LD_LIBRARY_PATH; a CUDA runtime there must not follow.
     driver, runtime = tmp_path / "lib64-nvidia", tmp_path / "cuda-12" / "lib64"
     for folder, library in ((driver, "libcuda.so.1"), (runtime, "libcudart.so.12")):
         folder.mkdir(parents = True)
@@ -1415,7 +1747,8 @@ def test_max_tokens_sentinel_is_not_sent_as_a_negative_limit(peer, limit):
     engine, requests = peer
     engine.context = 4096
     assert list(engine.generate(messages = [{"role": "user", "content": "Hi"}], max_new_tokens = limit))
-    payload = requests[0][2]
+    # A cap is first fitted to the window through /tokenize.
+    payload = next(body for path, _, body in requests if path.endswith("/chat/completions"))
     if limit is not None and 0 < limit < engine.context:
         assert payload["max_tokens"] == limit
     else:
@@ -1524,7 +1857,7 @@ def test_tensor_parallel_launch_stays_on_selected_local_devices(engine, size):
         assert ("--enable-p2p-check" in args) == (size > 1)
     from core.inference.engine_adapters import ADAPTERS
 
-    assert ADAPTERS[engine].environment(size) == (
+    multi_gpu = (
         {
             "vllm": {"VLLM_HOST_IP": "127.0.0.1"},
             "sglang": {
@@ -1535,6 +1868,8 @@ def test_tensor_parallel_launch_stays_on_selected_local_devices(engine, size):
         if size > 1
         else {}
     )
+    always = {"TRITON_ALLOW_NON_CONSTEXPR_GLOBALS": "1"} if engine == "vllm" else {}
+    assert ADAPTERS[engine].environment(size) == {**always, **multi_gpu}
 
 
 @pytest.mark.parametrize("engine", ["vllm", "sglang"])
@@ -1640,7 +1975,7 @@ def test_multi_gpu_memory_budget_uses_most_constrained_device(monkeypatch):
     [
         ({}, 2, True),
         ({}, 4, True),  # Two KV heads replicated over four ranks.
-        ({}, 3, False),  # Three ranks cannot shard or replicate two KV heads.
+        ({}, 3, False),
         ({"num_attention_heads": 7}, 2, False),
         ({"intermediate_size": 1537}, 2, False),
         ({"hidden_size": 769}, 2, False),
@@ -2224,8 +2559,7 @@ def test_only_vllm_torchao_loads_keep_extra_headroom(engine, options, reserve):
 
 @pytest.mark.parametrize(
     "engine, highest_passing",
-    # The fractions that passed chat, stream and a forced tool call on a Colab L4 (23034 MiB,
-    # 22564 free, Qwen2.5-0.5B); the old 512 MiB reserve gave 0.957, which failed on both.
+    # Highest passing on a Colab L4 (23034 MiB, Qwen2.5-0.5B); the old 512 MiB reserve gave 0.957.
     [("vllm", 0.912), ("sglang", 0.890)],
 )
 def test_a_24_gb_card_leaves_the_headroom_measured_on_an_l4(monkeypatch, engine, highest_passing):
@@ -2241,7 +2575,7 @@ def test_a_24_gb_card_leaves_the_headroom_measured_on_an_l4(monkeypatch, engine,
     assert engine_adapters.gpu_memory_fraction([0], reserve) < highest_passing
 
 
-def test_a_spelled_out_text_response_format_is_not_structured_output():
+def test_structured_output_and_continuation_pass_the_managed_engine_gate():
     from types import SimpleNamespace
     from routes import inference as route
 
@@ -2259,9 +2593,11 @@ def test_a_spelled_out_text_response_format_is_not_structured_output():
 
     assert not route._managed_engine_unsupported_controls(payload())
     assert not route._managed_engine_unsupported_controls(payload(response_format = {"type": "text"}))
-    assert route._managed_engine_unsupported_controls(
+    assert not route._managed_engine_unsupported_controls(
         payload(response_format = {"type": "json_object"})
     )
+    assert not route._managed_engine_unsupported_controls(payload(continue_final_message = True))
+    assert route._managed_engine_unsupported_controls(payload(use_adapter = True))
     assert route._managed_engine_unsupported_controls(payload(reasoning_effort = "high"))
 
 
@@ -2338,7 +2674,7 @@ def test_sglang_without_torchao_refuses_int8_and_int4(version):
 
 
 def test_legacy_load_in_4bit_is_validated_as_int4(monkeypatch):
-    # An older client's load_in_4bit becomes INT4; the SGLang refusal must see that before unloading.
+    # An older client's load_in_4bit becomes INT4, and the SGLang refusal must see it first.
     import asyncio
     from fastapi import HTTPException
     from core.inference import managed_engine
@@ -2360,3 +2696,217 @@ def test_legacy_load_in_4bit_is_validated_as_int4(monkeypatch):
         )
     )
     assert out.engine_precision == "int4" and out.load_in_4bit is False and out.gpu_ids == [0]
+
+
+def test_vllm_argv_caps_max_num_seqs_only_when_asked():
+    from core.inference.engine_adapters import ADAPTERS
+
+    def argv(engine, options = None):
+        return ADAPTERS[engine].command(
+            "/env/bin/python", "org/model", 45678, "key", 4096, 0.8, options = options
+        )
+
+    capped = argv("vllm", {"max_num_seqs": 36})
+    assert capped[capped.index("--max-num-seqs") + 1] == "36"
+    assert "--max-num-seqs" not in argv("vllm")
+    assert "--max-num-seqs" not in argv("vllm", {"precision": "auto"})
+    assert "--max-num-seqs" not in argv("sglang", {"max_num_seqs": 36})
+
+
+# The line vLLM 0.30.0 prints for Qwen3.8-27B-NVFP4 at a 32 GB RTX 5090's budget (#8861), measured on SM 12.0.
+_MAMBA_LIMIT_LINE = (
+    "(EngineCore pid=34071) ValueError: max_num_seqs (256) exceeds available Mamba cache blocks (36). "
+    "Each decode sequence requires one Mamba cache block, so CUDA graph capture cannot proceed. "
+    "Please lower max_num_seqs to at most 36 or increase gpu_memory_utilization."
+)
+
+
+def _scripted_engine(isolated, monkeypatch, outcomes):
+    """A vLLM ManagedEngine whose launches follow ``outcomes`` in order: "mamba" prints the
+    Mamba limit and exits, "crash" exits without it, "serve" answers /health."""
+    import sys
+    from types import SimpleNamespace
+    from core.inference import managed_engine
+
+    if not (isolated / "vllm" / "active.json").exists():
+        active(isolated)
+    monkeypatch.setattr(managed_engine, "gpu_memory_fraction", lambda *_: 0.8)
+    monkeypatch.setattr(managed_engine, "_SEQ_LIMITS", {})
+    engine = ManagedEngine("vllm")
+    launches = []
+
+    def command(
+        python,
+        model,
+        port,
+        key,
+        context,
+        memory,
+        tensor_parallel_size,
+        options = None,
+        **_,
+    ):
+        launches.append(dict(options or {}))
+        outcome = outcomes[len(launches) - 1]
+        if outcome == "serve":
+            code = (
+                "from http.server import BaseHTTPRequestHandler, HTTPServer\n"
+                "class Handler(BaseHTTPRequestHandler):\n"
+                " def do_GET(self):\n"
+                "  self.send_response(200); self.end_headers()\n"
+                " def log_message(self, *args): pass\n"
+                f"HTTPServer(('127.0.0.1', {port}), Handler).serve_forever()\n"
+            )
+        else:
+            lines = {
+                "mamba": [_MAMBA_LIMIT_LINE],
+                # Two data-parallel ranks with different free memory.
+                "mamba_dp": [_MAMBA_LIMIT_LINE, _MAMBA_LIMIT_LINE.replace("(36)", "(40)")],
+            }.get(outcome, ["RuntimeError: CUDA out of memory"])
+            code = f"import sys\nprint({chr(10).join(lines)!r}, flush = True)\nsys.exit(1)\n"
+        return [sys.executable, "-u", "-c", code]
+
+    engine.adapter = SimpleNamespace(
+        command = command,
+        progress = lambda _: None,
+        environment = lambda _: {},
+        key_environment = lambda _: {},
+    )
+    return engine, launches
+
+
+@_LOCAL_ENGINE_HOST
+def test_vllm_relaunches_once_at_the_mamba_block_count(isolated, monkeypatch):
+    import os
+
+    engine, launches = _scripted_engine(isolated, monkeypatch, ["mamba", "serve"])
+    try:
+        engine.start("model", 4096, [0], dict(os.environ), options = {"precision": "auto"})
+        assert engine.phase == "ready"
+    finally:
+        engine.stop()
+    assert [launch.get("max_num_seqs") for launch in launches] == [None, 36]
+    assert launches[1]["precision"] == "auto"
+
+    # A reload of the same config starts at the learned count instead of failing first.
+    from core.inference import managed_engine
+
+    learned = dict(managed_engine._SEQ_LIMITS)
+    engine, launches = _scripted_engine(isolated, monkeypatch, ["serve"])
+    monkeypatch.setattr(managed_engine, "_SEQ_LIMITS", learned)
+    try:
+        engine.start("model", 4096, [0], dict(os.environ), options = {"precision": "auto"})
+    finally:
+        engine.stop()
+    assert [launch.get("max_num_seqs") for launch in launches] == [36]
+
+
+@_LOCAL_ENGINE_HOST
+def test_vllm_relaunches_at_the_tightest_data_parallel_rank(isolated, monkeypatch):
+    import os
+
+    engine, launches = _scripted_engine(isolated, monkeypatch, ["mamba_dp", "serve"])
+    try:
+        engine.start("model", 4096, [0, 1], dict(os.environ), options = {"parallelism": "data"})
+    finally:
+        engine.stop()
+    assert [launch.get("max_num_seqs") for launch in launches] == [None, 36]
+
+
+@_LOCAL_ENGINE_HOST
+@pytest.mark.parametrize("outcomes", [["crash"], ["mamba", "mamba"]])
+def test_vllm_does_not_retry_other_failures_or_twice(isolated, monkeypatch, outcomes):
+    import os
+
+    engine, launches = _scripted_engine(isolated, monkeypatch, outcomes)
+    with pytest.raises(RuntimeError, match = "Engine failed to start"):
+        engine.start("model", 4096, [0], dict(os.environ))
+    engine.stop()
+    assert len(launches) == len(outcomes)
+
+
+@_LOCAL_ENGINE_HOST
+def test_vllm_mamba_retry_respects_a_cancelled_load(isolated, monkeypatch):
+    import os
+    import threading
+
+    engine, launches = _scripted_engine(isolated, monkeypatch, ["mamba", "serve"])
+    cancel = threading.Event()
+    original = engine._start_once
+
+    def first_then_cancel(*args):
+        try:
+            return original(*args)
+        finally:
+            cancel.set()
+
+    monkeypatch.setattr(engine, "_start_once", first_then_cancel)
+    with pytest.raises(RuntimeError, match = "cancelled"):
+        engine.start("model", 4096, [0], dict(os.environ), cancel)
+    engine.stop()
+    assert len(launches) == 1
+
+
+@_LOCAL_ENGINE_HOST
+def test_vllm_mamba_retry_respects_an_external_stop(isolated, monkeypatch):
+    import os
+    from core.inference import managed_engine
+
+    engine, launches = _scripted_engine(isolated, monkeypatch, ["mamba", "serve"])
+    original = engine._start_once
+
+    def first_then_stop(*args):
+        try:
+            return original(*args)
+        except managed_engine._MambaSeqLimit:
+            # An unload or GPU handoff stops the engine without the load's cancel event.
+            assert engine.stop() is True
+            raise
+
+    monkeypatch.setattr(engine, "_start_once", first_then_stop)
+    with pytest.raises(RuntimeError, match = "cancelled"):
+        engine.start("model", 4096, [0], dict(os.environ))
+    engine.stop()
+    assert len(launches) == 1
+
+
+@_LOCAL_ENGINE_HOST
+def test_vllm_retries_once_without_a_drafter_that_breaks_startup(isolated, monkeypatch):
+    import os
+    from core.inference import engine_adapters
+
+    monkeypatch.setattr(
+        engine_adapters, "vllm_speculative_args", lambda _: ["--speculative-config", "{}"]
+    )
+    engine, launches = _scripted_engine(isolated, monkeypatch, ["crash", "serve"])
+    try:
+        engine.start("model", 4096, [0], dict(os.environ))
+        assert engine.phase == "ready"
+    finally:
+        engine.stop()
+    assert [launch.get("no_speculative_config") for launch in launches] == [None, True]
+
+
+@_LOCAL_ENGINE_HOST
+def test_vllm_drafter_retry_respects_an_external_stop(isolated, monkeypatch):
+    import os
+    from core.inference import engine_adapters, managed_engine
+
+    monkeypatch.setattr(
+        engine_adapters, "vllm_speculative_args", lambda _: ["--speculative-config", "{}"]
+    )
+    engine, launches = _scripted_engine(isolated, monkeypatch, ["crash", "serve"])
+    original = engine._start_once
+
+    def first_then_stop(*args):
+        try:
+            return original(*args)
+        except managed_engine._EngineExited:
+            assert engine.stop() is True
+            raise
+
+    monkeypatch.setattr(engine, "_start_once", first_then_stop)
+    with pytest.raises(RuntimeError, match = "cancelled"):
+        engine.start("model", 4096, [0], dict(os.environ))
+    engine.stop()
+    assert len(launches) == 1

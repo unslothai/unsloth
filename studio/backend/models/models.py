@@ -92,8 +92,9 @@ class ModelDetails(BaseModel):
         False, description = "Whether model is an embedding/sentence-transformer model"
     )
     is_decision: bool = Field(False, description = "Whether model is a decision model")
-    decision_layout: Optional[Literal["laya", "clef"]] = Field(
-        None, description = "Checkpoint layout of a decision model: Laya or Cloudflare Clef"
+    decision_layout: Optional[Literal["laya", "clef", "llm"]] = Field(
+        None,
+        description = "Decision model layout: Laya, Cloudflare Clef, or llm for an LLM trained with a new Clef head",
     )
     decision_checkpoints: Optional[List[Dict[str, Any]]] = Field(
         None, description = "Checkpoints a decision model repo offers for training"
@@ -178,22 +179,24 @@ class GgufVariantDetail(BaseModel):
     cache_path: Optional[str] = Field(
         None, description = "Owning cache repository for this complete variant"
     )
-    # Mirrors hub.schemas.inventory.GgufVariantDetail; see display_label below. FastAPI
-    # serializes through THIS model, so an undeclared redacted reference is dropped.
+    # FastAPI serializes through THIS model; undeclared fields are dropped.
     cache_ref: Optional[str] = Field(
         None, description = "Opaque stand-in for cache_path, stable for the server's life"
     )
     context_length: Optional[int] = Field(
         None, description = "Native context limit from this variant's cached source"
     )
-    # Mirrors hub.schemas.inventory.GgufVariantDetail. The route builds THIS model, so a field that
-    # exists only on the hub twin is dropped by pydantic without a word and a qualified row falls back
-    # to rendering its whole relative path.
+    # Mirrors hub GgufVariantDetail; fields only on the hub twin get dropped.
     display_label: Optional[str] = Field(
         None, description = "Optional user-facing label when quant is an internal key"
     )
     size_bytes: int = Field(0, description = "File size in bytes")
     download_size_bytes: int = Field(0, description = "Total bytes needed to download this variant")
+    lookup_table_bytes: int = Field(
+        0,
+        description = "Bytes of lazily read lookup tables (per-layer embeddings / Engram) "
+        "llama.cpp streams from disk by default. Part of size_bytes; 0 when none or unknown.",
+    )
     # Mirrors hub.schemas.inventory.GgufVariantDetail; see display_label above.
     pending_drafter_filename: Optional[str] = Field(
         None, description = "Missing separate drafter when the main GGUF is already cached"
@@ -256,10 +259,17 @@ class GgufVariantsResponse(BaseModel):
         None,
         description = "Whether a variantless load resolves GGUF weights; None when unanswered",
     )
+    variant_format: Optional[str] = Field(
+        None,
+        description = (
+            "'mlx' when the variants are precision folders of an MLX repo rather than GGUF "
+            "quants; None for GGUF"
+        ),
+    )
 
 
 LocalModelSource = Literal[
-    "models_dir", "hf_cache", "lmstudio", "omlx", "ollama", "hermes", "custom"
+    "models_dir", "hf_cache", "lmstudio", "omlx", "ollama", "hermes", "custom", "unsloth"
 ]
 
 

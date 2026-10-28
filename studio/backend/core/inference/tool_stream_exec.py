@@ -7,7 +7,9 @@
 turns it into a generator that yields:
 
 * ``{"type": "tool_output", "tool_name", "tool_call_id", "text"}`` -- an
-  incremental stdout/stderr chunk (python/terminal tools) for live UI output;
+  incremental stdout/stderr chunk (python/terminal tools) for live UI output,
+  or, with empty ``text``, a dict the tool passed to its callback (the browser
+  tools' ``browser_action`` requests for the chat tab);
 * ``{"type": "heartbeat"}`` -- emitted whenever nothing else has been yielded
   for ``heartbeat_interval_s`` seconds, so the SSE route can write a
   keepalive and reverse proxies (Cloudflare tunnels cap idle streams at
@@ -26,7 +28,7 @@ import inspect
 import queue
 import threading
 import time
-from typing import Any, Callable, Generator
+from typing import Any, Callable, Generator, Sequence
 
 from loggers import get_logger
 
@@ -39,12 +41,7 @@ _SECRET_TERMINATORS = frozenset(" \t\r\n\"'`,;)]}")
 
 
 def _hold_back_partial_secret(text: str) -> int:
-    """Index at which `text` may hold a credential token still open at its end.
-
-    Everything from the returned index is carried to the next chunk. Returns ``len(text)`` when the
-    tail is safe to emit whole. Conservative on purpose: holding back a few bytes that turn out to
-    be ordinary text only delays them until the next chunk or the final flush.
-    """
+    """Index where a credential token still open at the end of `text` begins; the tail is held back."""
     tail_start = max(0, len(text) - _SECRET_SCAN_TAIL)
     tail = text[tail_start:]
     best = len(text)
@@ -53,13 +50,10 @@ def _hold_back_partial_secret(text: str) -> int:
         while index != -1:
             absolute = tail_start + index
             rest = text[absolute + len(prefix) :]
-            # A terminator ANYWHERE after the token ends it, so the regex has had its chance and
-            # the text is safe to emit. Read only at the ends, `sk-unsloth-<key> done` looked open
-            # and held the chunk (and every chunk after it) back until the tool finished.
+            # A terminator anywhere after the token ends it, so the text is safe to emit.
             if not rest or not _SECRET_TERMINATORS.intersection(rest):
                 best = min(best, absolute)
-            # Keep going left: a terminated occurrence says nothing about an EARLIER one, and
-            # stopping at the first one found hid an open token behind it.
+            # Keep going left: an earlier occurrence may still be open.
             index = tail.rfind(prefix, 0, index)
     # Also a tail that is a PREFIX of a prefix ("...sk-unslo"), which no rfind above can see.
     for prefix in _SECRET_PREFIXES:
@@ -74,12 +68,7 @@ logger = get_logger(__name__)
 
 
 def accepts_kwarg(func: Callable[..., str], name: str) -> bool:
-    """Whether an injectable ``execute_tool`` supports the keyword ``name``.
-
-    ``execute_tool`` is replaceable (tests inject fakes / the pre-PR signature),
-    so forward a kwarg only when the callable declares it or takes ``**kwargs``
-    (passing it unconditionally would ``TypeError`` on an old signature).
-    """
+    """Injected execute_tool fakes may lack the kwarg, so it is passed only when declared or **kwargs."""
     try:
         params = inspect.signature(func).parameters
     except (TypeError, ValueError):
@@ -94,12 +83,7 @@ def accepts_output_callback(func: Callable[..., str]) -> bool:
 
 
 def search_images_kwargs(func: Callable[..., str], tool_name: str) -> dict[str, bool]:
-    """``{"search_images": True}`` when web_search should also return images, else ``{}``.
-
-    Read per call rather than per request so the Settings toggle applies to the
-    next search without a reload, and only for web_search so other tools never
-    pay the settings read.
-    """
+    """Read per call so the Settings toggle applies to the next search without a reload."""
     if tool_name != "web_search" or not accepts_kwarg(func, "search_images"):
         return {}
     from .search_images import search_images_enabled
@@ -107,8 +91,7 @@ def search_images_kwargs(func: Callable[..., str], tool_name: str) -> dict[str, 
     return {"search_images": True} if search_images_enabled() else {}
 
 
-# Cadence of heartbeat events while a tool blocks with no output. Well under common proxy idle caps (Cloudflare ~100 s,
-# nginx default 60 s).
+# Under common proxy idle caps (Cloudflare ~100 s, nginx 60 s).
 TOOL_HEARTBEAT_INTERVAL_S = 10.0
 
 # delay before the first approval keepalive so it cannot coalesce with the gated card.
@@ -117,20 +100,21 @@ TOOL_APPROVAL_FLUSH_DELAY_S = 0.05
 # How often the wrapper wakes to poll for output / completion / cancellation.
 _POLL_INTERVAL_S = 0.25
 
-# Upper bound on how long teardown waits for the worker once the stream is closed or errors. A cancel-observing tool
-# returns within this after ``cancel_event`` is set; a cancel-ignoring one is a daemon left to finish on its own rather
-# than blocking teardown for the tool's full timeout.
+# A cancel-ignoring tool is left as a daemon rather than blocking teardown.
 _WORKER_JOIN_TIMEOUT_S = 5.0
 
-# Cap on total streamed live-output characters per tool call, bounding the transient UI stream so a tight print loop
-# cannot flood the SSE channel. Much higher than the model-visible result cap (tools._MAX_OUTPUT_CHARS) since the UI
-# keeps the live stream as the displayed output when the result is truncated.
+# Caps live output per tool call so a tight print loop cannot flood SSE; above the model result cap since the UI shows it on truncation.
 TOOL_OUTPUT_STREAM_MAX_CHARS = 400_000
 
 _STREAM_CAPPED_NOTICE = "\n... (further live output not streamed)\n"
 
 
-def _drain_queue(q: "queue.Queue", sentinel: object, max_chars: int | None) -> tuple[str, bool]:
+def _drain_queue(
+    q: "queue.Queue",
+    sentinel: object,
+    max_chars: int | None,
+    held: list | None = None,
+) -> tuple[str, bool]:
     """Pull every currently-queued item, joining chunks in FIFO order.
 
     With ``max_chars`` set, stop concatenating at the budget and discard the
@@ -138,7 +122,8 @@ def _drain_queue(q: "queue.Queue", sentinel: object, max_chars: int | None) -> t
     far more than the cap before the consumer wakes. The crossing chunk is sliced
     to one char past the budget, enough for the caller's truncation to stay
     byte-identical. Returns ``(joined_text, hit_sentinel)``; the surplus is still
-    scanned so completion is detected promptly.
+    scanned so completion is detected promptly. A structured event (a dict) ends
+    the run of text and waits in ``held``, so it is never joined or dropped.
     """
     parts: list[str] = []
     total = 0
@@ -151,6 +136,10 @@ def _drain_queue(q: "queue.Queue", sentinel: object, max_chars: int | None) -> t
             break
         if item is sentinel:
             hit_sentinel = True
+            break
+        if isinstance(item, dict):
+            if held is not None:
+                held.append(item)
             break
         if dropping:
             continue
@@ -172,6 +161,7 @@ def stream_tool_execution(
     cancel_event: Any = None,
     heartbeat_interval_s: float = TOOL_HEARTBEAT_INTERVAL_S,
     poll_interval_s: float = _POLL_INTERVAL_S,
+    started_events: Sequence[dict] = (),
 ) -> Generator[dict, None, str]:
     """Run ``invoke(output_callback)`` in a thread; yield live events; return the result.
 
@@ -186,20 +176,23 @@ def stream_tool_execution(
     timeout. Set ONLY on that abnormal-exit path, never on a clean finish, because
     the event is shared across a turn's tool calls and setting it early would
     abort the next tool.
+
+    ``started_events`` are yielded once the worker is running, so a slow consumer never delays the tool.
     """
     output_queue: queue.Queue[Any] = queue.Queue()
     done_sentinel = object()
     outcome: dict[str, Any] = {}
 
-    # Bound accepted output at the PRODUCER boundary: the consumer-side cap alone wouldn't stop a fast worker
-    # enqueuing unboundedly while a slow SSE client backpressures. Accept at most one char past the cap (so the
-    # consumer still emits the capped notice) and drop the rest. The final result is captured independently, so this
-    # never changes the byte-identical result.
+    # Caps at the producer so a fast worker cannot queue unboundedly behind a slow client; one char past the cap keeps the notice; result stays byte-identical.
     accepted_output_chars = 0
     accepted_output_lock = threading.Lock()
 
-    def _on_output(text: str) -> None:
+    def _on_output(text: "str | dict") -> None:
         nonlocal accepted_output_chars
+        if isinstance(text, dict):
+            # A structured request for the client (a browser action), outside the text budget.
+            output_queue.put(dict(text))
+            return
         if not text:
             return
         with accepted_output_lock:
@@ -216,8 +209,7 @@ def stream_tool_execution(
         except BaseException as exc:  # noqa: BLE001 - re-raised on the caller side
             outcome["error"] = exc
         finally:
-            # Posted after the result/error is recorded; wakes the consumer immediately so fast tools pay no
-            # poll-interval latency.
+            # Posted after the result or error is recorded; wakes the consumer at once so fast tools pay no poll latency.
             output_queue.put(done_sentinel)
 
     # The worker runs in the caller's context, so a tool started for one account cannot resolve another's roots.
@@ -229,27 +221,26 @@ def stream_tool_execution(
     )
     worker.start()
 
-    # Heartbeats are paced by counting idle queue polls rather than a wall clock (tests patch ``time.monotonic``
-    # globally, so the wrapper must not read it).
+    # Paced by idle polls, not a clock: tests patch ``time.monotonic`` globally.
     idle_polls_per_heartbeat = max(1, int(round(heartbeat_interval_s / poll_interval_s)))
     idle_polls = 0
     streamed_chars = 0
     stream_capped = False
     finished = False
 
+    # Structured events pulled while joining text, delivered before the queue is read again.
+    held: list[dict] = []
+
     def _drain_pending(max_chars: int | None = None) -> str:
         nonlocal finished
-        text, hit_sentinel = _drain_queue(output_queue, done_sentinel, max_chars)
+        text, hit_sentinel = _drain_queue(output_queue, done_sentinel, max_chars, held)
         if hit_sentinel:
             finished = True
         return text
 
     def _drain_and_drop() -> None:
-        """Discard the current and every queued chunk without concatenating.
-
-        Past the cap every chunk is dropped, so don't pay to build a combined
-        string only to drop it. Still detect completion so the loop can exit.
-        """
+        """Past the cap, drops chunks without joining them; completion is still detected so the loop
+        exits."""
         nonlocal finished
         while True:
             try:
@@ -259,10 +250,10 @@ def stream_tool_execution(
             if item is done_sentinel:
                 finished = True
                 return
+            if isinstance(item, dict):
+                held.append(item)
 
-    # tool_end is masked downstream, but these chunks are what the frontend paints and persists
-    # first. A key can straddle a chunk boundary, so `_hold_back_partial_secret` returns the index
-    # where a still-open token begins and everything from there is carried into the next chunk.
+    # Chunks reach the frontend and storage before tool_end is masked, so a key straddling chunks is carried into the next one.
     carry = ""
 
     def _masked(text: str, *, final: bool) -> "tuple[str, str]":
@@ -277,12 +268,13 @@ def stream_tool_execution(
 
     abnormal_exit = False
     try:
-        while not finished:
+        for event in started_events:
+            yield event
+        while not finished or held:
             try:
-                item = output_queue.get(timeout = poll_interval_s)
+                item = held.pop(0) if held else output_queue.get(timeout = poll_interval_s)
             except queue.Empty:
-                # A disconnect sets cancel_event while the worker is silent; surface a heartbeat this poll so the route
-                # regains control and tears down at once, not after a full heartbeat interval.
+                # A disconnect sets cancel_event; heartbeat now so the route tears down at once.
                 if cancel_event is not None and cancel_event.is_set():
                     yield {"type": "heartbeat"}
                     continue
@@ -295,13 +287,23 @@ def stream_tool_execution(
             if item is done_sentinel:
                 break
 
+            if isinstance(item, dict):
+                idle_polls = 0
+                yield {
+                    **item,
+                    "type": "tool_output",
+                    "tool_name": tool_name,
+                    "tool_call_id": tool_call_id,
+                    "text": "",
+                }
+                continue
+
             if stream_capped:
-                # Past the cap: drop this chunk and every queued sibling (see _drain_and_drop). Pace with one time.sleep
-                # per poll (not time.monotonic -- tests patch the clock), counted as an idle poll so heartbeats keep
-                # flowing while the queue stays non-empty.
+                # Past the cap: drop queued chunks. One sleep per poll (not monotonic; tests patch it), counted
+                # as idle so heartbeats keep flowing.
                 _drain_and_drop()
                 if finished:
-                    break
+                    continue
                 time.sleep(poll_interval_s)
                 idle_polls += 1
                 if idle_polls >= idle_polls_per_heartbeat:
@@ -309,8 +311,7 @@ def stream_tool_execution(
                     yield {"type": "heartbeat"}
                 continue
 
-            # Bound the join to the remaining budget so the crossing batch can't allocate far past the cap (surplus is
-            # truncated below anyway); the prefix is long enough that truncation stays byte-identical.
+            # Bound the join to the remaining budget so the crossing batch cannot overallocate; surplus is truncated anyway and output stays byte-identical.
             budget = TOOL_OUTPUT_STREAM_MAX_CHARS - streamed_chars
             chunk = item + _drain_pending(max_chars = budget - len(item))
             idle_polls = 0
@@ -340,11 +341,8 @@ def stream_tool_execution(
                     "text": emit,
                 }
     except BaseException:
-        # The loop only raises when the consumer closes us early: an SSE disconnect calls gen.close() (GeneratorExit at
-        # the yield) or the route throws in. Signal cancellation so a cancel-observing tool returns; the daemon worker
-        # is then abandoned (see finally). Re-raise so the caller sees the real cause (GeneratorExit must not be
-        # swallowed). Runs ONLY on abnormal exit, so the shared cancel_event is never set out from under the next tool
-        # in a clean multi-tool turn.
+        # Only reached on early close by the consumer. Set cancel only here so the shared event is
+        # never set under the next tool in a clean turn; re-raise (GeneratorExit must not be swallowed).
         abnormal_exit = True
         if cancel_event is not None:
             try:
@@ -353,15 +351,11 @@ def stream_tool_execution(
                 pass
         raise
     finally:
-        # Clean finish: the worker already recorded its result and queued the sentinel we consumed, so this join returns
-        # at once. Abnormal exit: cancel_event is set and the daemon worker abandoned, so join with a zero timeout --
-        # teardown never blocks the caller (the route may close this generator on the event loop), and the daemon cannot
-        # outlive the process.
+        # Abnormal exit: zero-timeout join so teardown never blocks the event loop.
         worker.join(timeout = 0 if abnormal_exit else _WORKER_JOIN_TIMEOUT_S)
 
     error = outcome.get("error")
     if error is not None:
         raise error
-    # Returned verbatim (the loop's record_result handles non-str), so the final tool result is byte-identical to a
-    # direct execute_tool call.
+    # Returned verbatim so the result matches a direct execute_tool call.
     return outcome.get("result")

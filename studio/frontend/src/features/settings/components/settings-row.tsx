@@ -16,6 +16,7 @@ export function SettingsRow({
   description,
   hint,
   icon,
+  iconAlign = "center",
   children,
   destructive,
   className,
@@ -23,57 +24,45 @@ export function SettingsRow({
 }: {
   label: string;
   description?: ReactNode;
-  /**
-   * Long-form explanation, shown on hover behind an info icon so `description`
-   * can stay to one line. Plain text: it doubles as the trigger's aria-label.
-   */
+  /** Shown on hover; plain text because it doubles as the trigger's aria-label. */
   hint?: string;
   icon?: ReactNode;
+  iconAlign?: "center" | "top";
   children?: ReactNode;
   destructive?: boolean;
   className?: string;
-  /** Right-aligned line under the control, kept out of its box so the control stays centred. */
   below?: ReactNode;
 }) {
   return (
     <div
       data-settings-label={label}
       className={cn(
-        // Controls are fixed-width and shrink-0, so an unwrapped row starves the label. justify-end
-        // right-aligns a wrapped control without breaking items-stretch for flex-col callers.
-        "flex flex-wrap items-center justify-end gap-x-6 gap-y-2 py-3",
+        // Controls are fixed-width, so wrap to avoid starving the label.
+        "flex flex-wrap justify-end gap-x-6 gap-y-2 py-3",
+        description ? "items-start" : "items-center",
         destructive && "border-t border-border/60 mt-2 pt-4",
         className,
       )}
     >
-      <div
-        // Widest floor that leaves already-fitting rows unchanged.
-        className="flex min-w-[calc(11rem*var(--ui-space-scale,1))] flex-1 basis-0 items-center gap-2.5"
-      >
+      <div className="flex min-w-[calc(11rem*var(--ui-space-scale,1))] flex-1 basis-0 items-center gap-2.5">
         {icon ? (
-          <span className="flex shrink-0 items-center text-foreground">
+          <span className={cn("flex shrink-0 items-center text-foreground", iconAlign === "top" && "self-start")}>
             {icon}
           </span>
         ) : null}
         <div className="flex min-w-0 w-full max-w-lg flex-col gap-0.5">
-          {/* Flex only when hinted, so every other row's label renders exactly
-              as before. */}
-          <span
-            className={cn(
-              "text-sm font-medium text-foreground",
-              hint && "flex items-center gap-1.5",
-            )}
-          >
+          <span className="text-sm font-medium text-foreground">
             {label}
             {hint ? (
               <Tooltip>
                 <TooltipTrigger asChild={true}>
                   {/* Focusable and labelled, so keyboard users reach the
-                      text too. Matches the secure-HTTPS hint. */}
+                      text too. Matches the secure-HTTPS hint. Inline on the
+                      baseline, so it follows the label's last word like a glyph. */}
                   <button
                     type="button"
                     aria-label={hint}
-                    className="flex shrink-0 items-center rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    className="ml-1.5 inline-flex align-baseline rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   >
                     {/* Sized off the token, not size-3.5: the label beside it is
                         scaled by the UI font size preference, and a fixed 14px
@@ -81,7 +70,7 @@ export function SettingsRow({
                         app's other small glyphs follow. */}
                     <HugeiconsIcon
                       icon={InformationCircleIcon}
-                      className="size-[var(--ui-icon-size-sm)]"
+                      className="size-[var(--ui-icon-size-hint)]"
                     />
                   </button>
                 </TooltipTrigger>
@@ -99,10 +88,20 @@ export function SettingsRow({
         </div>
       </div>
       {children ? (
-        <div className="flex max-w-full shrink-0 items-center">{children}</div>
+        <div
+          // Aligned to the title line by index.css; an items-center here would override it.
+          data-title-line-control={description ? true : undefined}
+          className={cn(
+            "flex max-w-full shrink-0",
+            !description && "items-center",
+          )}
+        >
+          {children}
+        </div>
       ) : null}
-      {/* A line of its own, so it wraps under the control without moving it. */}
-      {below ? <div className="flex basis-full justify-end">{below}</div> : null}
+      {below ? (
+        <div className="flex basis-full justify-end">{below}</div>
+      ) : null}
     </div>
   );
 }

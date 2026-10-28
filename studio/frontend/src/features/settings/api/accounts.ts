@@ -12,6 +12,8 @@ export interface StudioAccount {
   role: "owner" | "user";
   is_active: boolean;
   created_at: string;
+  // null = every model; set by the owner per account.
+  model_allowlist?: string[] | null;
 }
 export interface AccountSetupCode {
   account_id: string;
@@ -44,7 +46,7 @@ async function accountsRequest(
   return response;
 }
 const accountPath = (accountId: string) => `/${encodeURIComponent(accountId)}`;
-// Recheck installation policy after mutations; a failed status read must not lose a one-time code.
+// A failed status read must not lose a one-time code.
 async function refreshAccountPolicy(): Promise<void> {
   await fetchAuthStatus().catch(() => undefined);
 }
@@ -88,4 +90,14 @@ export async function setAccountActive(
 export async function deleteAccount(accountId: string): Promise<void> {
   await accountsRequest(accountPath(accountId), { method: "DELETE" });
   await refreshAccountPolicy();
+}
+export async function setAccountModelAllowlist(
+  accountId: string,
+  allowlist: string[] | null,
+): Promise<void> {
+  await accountsRequest(`${accountPath(accountId)}/model-access`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model_allowlist: allowlist }),
+  });
 }

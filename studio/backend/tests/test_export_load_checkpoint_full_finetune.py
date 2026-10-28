@@ -121,7 +121,7 @@ def test_load_checkpoint_resolves_hub_ids_before_choosing_4bit(
     monkeypatch.setattr(huggingface_hub, "file_exists", _file_exists)
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", _hf_hub_download)
 
-    # False is the "ambient token denied" sentinel; it must reach the Hub unchanged.
+    # False is the "ambient token denied" sentinel; it must reach the Hub unchanged
     load_in_4bit = _load_via_orchestrator(
         monkeypatch, "unsloth/Llama-3.2-1B-Instruct", None, hf_token = False
     )
@@ -152,6 +152,27 @@ def test_route_leaves_unset_load_in_4bit_to_the_backend(monkeypatch, tmp_path, e
 
     assert response.status_code == 200
     assert backend.load_checkpoint.call_args.kwargs["load_in_4bit"] is expected
+
+
+def test_route_defaults_offload_layers_to_auto(monkeypatch, tmp_path):
+    """#13696: Output export load defaults offload_layers='auto' without a UI control."""
+    monkeypatch.setattr(export_routes, "_ensure_export_supported", _fake_ensure_export_supported)
+    backend = MagicMock()
+    backend.load_checkpoint.return_value = (True, "loaded")
+    monkeypatch.setattr(export_routes, "get_export_backend", lambda: backend)
+
+    app = FastAPI()
+    app.include_router(export_routes.router, prefix = "/api/export")
+    app.dependency_overrides[get_current_subject] = lambda: "alice"
+    app.dependency_overrides[allow_ambient_hf_token] = lambda: True
+
+    response = TestClient(app).post(
+        "/api/export/load-checkpoint",
+        json = {"checkpoint_path": str(tmp_path), "hf_token": None},
+    )
+
+    assert response.status_code == 200
+    assert backend.load_checkpoint.call_args.kwargs["offload_layers"] == "auto"
 
 
 def test_hub_lookup_failure_keeps_the_old_default(monkeypatch):

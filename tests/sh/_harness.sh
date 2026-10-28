@@ -1,11 +1,8 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-#
-# Counters and assertions shared by the tests/sh suites. Sourced, never executed:
-# both runners glob test_*.sh, so this name deliberately sits outside the glob.
-# A suite wanting a different message or comparison shadows one of these after the
-# source -- the wording of a failure is part of what the suite tells its reader.
+# Shared counters and assertions. Sourced, never executed: named outside the test_*.sh glob.
+# A suite may shadow one of these after sourcing to change its failure wording.
 
 PASS=0
 FAIL=0
@@ -26,7 +23,6 @@ assert_eq() {
 
 assert_contains() {
     _label="$1"; _haystack="$2"; _needle="$3"
-    # `--` so a needle that starts with a dash is a pattern, not a grep option.
     if echo "$_haystack" | grep -qF -- "$_needle"; then
         echo "  PASS: $_label"
         PASS=$((PASS + 1))
@@ -47,7 +43,7 @@ assert_not_contains() {
     fi
 }
 
-# The tally every suite ends on. Non-zero exit is what the CI loop reads.
+# Non-zero exit is what the CI loop reads.
 summary() {
     echo ""
     echo "Results: $PASS passed, $FAIL failed"

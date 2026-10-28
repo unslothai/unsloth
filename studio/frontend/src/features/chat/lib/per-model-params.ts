@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Per-model parameter memory: a per-checkpoint record alongside the global set, so a switch no
-// longer hands the next model the previous one's settings. No store or network imports, so
-// the rules stay unit-testable.
+// Per-checkpoint param memory. No store or network imports, so it stays unit-testable.
 
 import type {
   InferenceParams,
@@ -13,6 +11,37 @@ import type {
 import { normalizeSavedMinP } from "./min-p-policy.ts";
 
 export type PersistedInferenceParamKey = keyof PersistedInferenceParams;
+
+/** "Max" Max Tokens as the memory records it. The window belongs to one load, so recording "Max"
+ *  as that number replayed a stale cap at a larger context, and admission charges any cap below the
+ *  window in full: one chat then held the whole KV pool and the rest queued (#10671). Above every
+ *  window, so a build without this still clamps it to the load; this one never lets it into params. */
+export const REMEMBERED_MAX_TOKENS_MAX = 2 ** 31 - 1;
+
+/** An entry with a Max Tokens at or above `contextWindow` (what the slider shows as "Max") recorded
+ *  as "Max". The window of the model the entry belongs to; null when unknown or external. `kept` is
+ *  the entry's current cap when Max Tokens was not itself edited: a chosen cap the window clamped
+ *  down to Max stays the chosen cap. */
+export function recordMaxTokensAsMax<T extends PersistedInferenceParams>(
+  entry: T,
+  contextWindow: number | null,
+  kept?: number,
+): T {
+  if (
+    contextWindow === null ||
+    entry.maxTokens === undefined ||
+    entry.maxTokens < contextWindow
+  ) {
+    return entry;
+  }
+  const maxTokens =
+    kept !== undefined &&
+    kept !== REMEMBERED_MAX_TOKENS_MAX &&
+    kept >= contextWindow
+      ? kept
+      : REMEMBERED_MAX_TOKENS_MAX;
+  return { ...entry, maxTokens };
+}
 
 /** Params that persist across a reload. `checkpoint` is the key, not a value. */
 export const PERSISTED_INFERENCE_PARAM_KEYS = [
@@ -32,8 +61,7 @@ export const PERSISTED_INFERENCE_PARAM_KEYS = [
   "seed",
 ] as const satisfies readonly PersistedInferenceParamKey[];
 
-/** What the memory records. `maxSeqLength` is left out: the context belongs to the load config,
- *  and a second copy would advertise one never loaded. */
+/** maxSeqLength is excluded: context belongs to the load config. */
 export const REMEMBERED_INFERENCE_PARAM_KEYS =
   PERSISTED_INFERENCE_PARAM_KEYS.filter(
     (key): key is PersistedInferenceParamKey => key !== "maxSeqLength",
@@ -47,7 +75,6 @@ export function setInferenceParam(
   (params as Record<PersistedInferenceParamKey, unknown>)[key] = value;
 }
 
-/** The remembered subset. No version bump, unlike getChangedInferenceParams. */
 export function pickRememberedParams(
   params: InferenceParams,
 ): PersistedInferenceParams {
@@ -61,16 +88,13 @@ export function pickRememberedParams(
   return picked;
 }
 
-/** Whether an edit moved anything the memory keeps. */
 function movedRememberedParam(changed: PersistedInferenceParams): boolean {
   return REMEMBERED_INFERENCE_PARAM_KEYS.some(
     (key) => changed[key] !== undefined,
   );
 }
 
-/** Just the keys an edit moved. What goes to the server for a model that already has an entry:
- *  it merges per key, so a whole snapshot would put this browser's copy of every other key
- *  over another tab's. */
+/** Only moved keys: the server merges per key, so a full snapshot would clobber other tabs. */
 export function pickRememberedChanges(
   changed: PersistedInferenceParams,
 ): PersistedInferenceParams {
@@ -84,8 +108,6 @@ export function pickRememberedChanges(
   return picked;
 }
 
-/** The map after an edit, or null when there is nothing to record (off, no model, no persisted
- *  param moved), which leaves the map and its version untouched. */
 export function getRememberedParamsPatch(
   enabled: boolean,
   paramsByModel: Record<string, PersistedInferenceParams>,
@@ -96,14 +118,11 @@ export function getRememberedParamsPatch(
   if (!(enabled && modelId && movedRememberedParam(changedParams))) {
     return null;
   }
-  // The whole snapshot: replay overlays the entry, so a partial one would leave the gaps filled
-  // by whichever model was on screen last.
+  // Whole snapshot: replay overlays it, so a partial one leaves stale gaps.
   return { ...paramsByModel, [modelId]: snapshot };
 }
 
-/** The params a switch should land on. A model with nothing remembered keeps what is on screen,
- *  and `current` comes back by identity so callers can tell that apart. `maxTokensCap` is the
- *  context the model just loaded with. */
+/** Returns `current` by identity when nothing is remembered. */
 export function getReplayedParams(
   enabled: boolean,
   paramsByModel: Record<string, PersistedInferenceParams>,
@@ -112,8 +131,6 @@ export function getReplayedParams(
   checkpointChanged: boolean,
   maxTokensCap?: number,
 ): InferenceParams {
-  // The cap describes the load, not the memory, so it applies even when nothing replays. Identity
-  // survives when the budget already fits.
   const capped = (params: InferenceParams): InferenceParams =>
     maxTokensCap !== undefined && params.maxTokens > maxTokensCap
       ? { ...params, maxTokens: maxTokensCap }
@@ -126,14 +143,17 @@ export function getReplayedParams(
   if (!remembered) {
     return capped(current);
   }
-  // Key by key, not a spread: the row accepts every persisted key from any writer, and a spread
-  // would carry maxSeqLength and stale keys into params.
+  // Key by key, not a spread, so maxSeqLength and stale keys do not leak into params.
   const replayed = { ...current };
   for (const key of REMEMBERED_INFERENCE_PARAM_KEYS) {
     const value = remembered[key];
     if (value !== undefined) {
       setInferenceParam(replayed, key, value);
     }
+  }
+  // "Max" is the load's window; with no load to size it, what is on screen stands.
+  if (replayed.maxTokens === REMEMBERED_MAX_TOKENS_MAX) {
+    replayed.maxTokens = maxTokensCap ?? current.maxTokens;
   }
   if (maxTokensCap !== undefined && replayed.maxTokens > maxTokensCap) {
     replayed.maxTokens = maxTokensCap;

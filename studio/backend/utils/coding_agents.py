@@ -24,19 +24,22 @@ _DEEPSEEK_HARNESS_FILE_MARKERS = (
 )
 
 # Keep in sync with the `unsloth start <agent>` subcommands defined in
-# unsloth_cli/commands/start.py. Each entry is the exact executable name that
-# subcommand launches, so a hit here means `unsloth start <agent>` can find the
-# binary on PATH without the user installing anything first.
+# unsloth_cli/commands/start.py, in the order the Settings pickers list them. Each
+# entry is the executable that subcommand needs on PATH (see _EXECUTABLES).
 CODING_AGENTS: tuple[str, ...] = (
     "claude",
     "codex",
-    "openclaw",
+    "vscode",
+    "dsh",
     "opencode",
     "hermes",
+    "openclaw",
     "pi",
-    "dsh",
     "vibe",
 )
+
+# `unsloth start vscode` edits VS Code's settings; `code` is the launcher an install puts on PATH.
+_EXECUTABLES = {"vscode": "code"}
 
 
 def is_deepseek_harness_executable(executable: str, *, allow_execution: bool = True) -> bool:
@@ -90,17 +93,13 @@ def deepseek_harness_executables_on_path(path: Optional[str] = None) -> list[str
 
 
 def _is_on_path(agent: str) -> bool:
-    # shutil.which returns None on a miss but PATH lookups can still raise, and this is advisory, so a lookup failure
-    # reads as "not installed" rather than breaking the endpoint.
+    # PATH lookups can still raise; this is advisory, so a failure reads as not installed, not an error.
     try:
-        executable = shutil.which(agent)
+        executable = shutil.which(_EXECUTABLES.get(agent, agent))
         if executable is None:
             return False
         if agent == "dsh":
-            # Detection runs when the settings panel opens, so it must not execute an
-            # arbitrary same-named program. Official npm/pnpm launchers contain one of
-            # the package or product markers above; explicit launches may additionally
-            # use the bounded --help probe for custom wrappers.
+            # Must not execute an arbitrary same-named program when the panel opens.
             if is_deepseek_harness_executable(executable, allow_execution = False):
                 return True
             return any(
@@ -115,9 +114,5 @@ def _is_on_path(agent: str) -> bool:
 
 
 def detect_installed_coding_agents() -> list[str]:
-    """Return the subset of CODING_AGENTS whose CLI binary is on PATH.
-
-    Order follows CODING_AGENTS, not discovery order, so callers can treat the
-    first entry as the preferred default among the installed agents.
-    """
+    """Ordered as CODING_AGENTS, so the first installed entry is the preferred default."""
     return [agent for agent in CODING_AGENTS if _is_on_path(agent)]

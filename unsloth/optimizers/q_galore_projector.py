@@ -106,6 +106,33 @@ class GaLoreProjector:
         self.ortho_matrix_zeros = None
         self.ortho_matrix_shape = None
 
+    def state_dict(self) -> dict:
+        """Plain dict of tensors and primitives, loadable with ``torch.load(weights_only = True)``."""
+        state = {
+            name: getattr(self, name) for name in self.__slots__ if name != "_ortho_float_cache"
+        }
+        state["queue"] = list(self.queue)
+        if self.ortho_matrix_shape is not None:
+            state["ortho_matrix_shape"] = tuple(self.ortho_matrix_shape)
+        return state
+
+    @classmethod
+    def from_state_dict(
+        cls,
+        state: dict,
+        device = None,
+    ) -> "GaLoreProjector":
+        # Checkpoints load on CPU; tensors go back to the parameter's device with their dtype kept.
+        projector = cls.__new__(cls)
+        for name in cls.__slots__:
+            value = state.get(name)
+            if device is not None and isinstance(value, torch.Tensor):
+                value = value.to(device)
+            setattr(projector, name, value)
+        projector.queue = deque(state.get("queue") or (), maxlen = projector.queue_size)
+        projector._ortho_float_cache = None
+        return projector
+
     def project(self, full_rank_grad: torch.Tensor, step: int) -> torch.Tensor:
         """Project a full-rank gradient into the low-rank subspace.
 
@@ -123,8 +150,7 @@ class GaLoreProjector:
         assert self.proj_type == "std", "Only proj_type='std' is supported."
 
         if full_rank_grad.shape[0] >= full_rank_grad.shape[1]:
-            # A "tall" matrix takes the right projection (grad @ Q^T), a "wide" one the left (Q^T @ grad).
-            # "wide" matrix → left projection (Q^T @ grad)
+            # "tall" takes the right projection (grad @ Q^T), "wide" the left (Q^T @ grad).
             if self.ortho_matrix is None or step % self.update_proj_gap == 0:
                 float_ortho = self._compute_orthogonal(
                     full_rank_grad,
@@ -197,8 +223,7 @@ class GaLoreProjector:
             U, s, Vh = torch.linalg.svd(matrix, full_matrices = False)
             result = Vh[:rank, :] if side == "right" else U[:, :rank]
         else:
-            # Oversampling p=10, per Halko et al. 2009 (arXiv:0909.4061), which recommends p=5..10 for large
-            # low-rank matrices.
+            # Oversampling p=10, per Halko et al. 2009 (arXiv:0909.4061).
             q = min(rank + 10, min(m, n))
             U, s, V = torch.svd_lowrank(matrix, q = q, niter = 2)
             result = V[:, :rank].t() if side == "right" else U[:, :rank]

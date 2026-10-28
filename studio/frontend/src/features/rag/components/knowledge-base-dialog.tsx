@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronLeftStandardIcon, ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import {
   Delete02Icon,
   Edit03Icon,
   PlusSignIcon,
+  Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ChevronLeftIcon, ChevronRightIcon, UploadIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
@@ -49,6 +50,7 @@ import { LinkedFoldersManager } from "./linked-folders-manager";
 import { RAG_SOURCE_UPLOAD_ACCEPT } from "./source-drop-policy";
 import { type RagUploadItem, useRagDocuments } from "./use-rag-documents";
 import { useSourceDrop } from "./use-source-drop";
+import { useUploadQueue } from "./use-upload-queue";
 
 type View =
   | { kind: "list" }
@@ -78,7 +80,6 @@ export function KnowledgeBaseDialog({
   const [kbs, setKbs] = useState<KnowledgeBase[]>([]);
   const [loading, setLoading] = useState(false);
   const [view, setView] = useState<View>({ kind: "list" });
-  // Handed-over files not yet uploading; nothing else holds them.
   const handoffRef = useRef<RagUploadItem[]>([]);
   const handedFocusRef = useRef<KnowledgeBaseFocus | null>(null);
   const [name, setName] = useState("");
@@ -87,8 +88,6 @@ export function KnowledgeBaseDialog({
   const [confirmingDelete, setConfirmingDelete] = useState<KnowledgeBase | null>(
     null,
   );
-  // Measured only: while the answer is unknown this stays false and the dialog renders
-  // exactly as it always has. See api/rag-availability.
   const ragUnavailable = useRagAvailabilityStore((s) => s.isUnavailable());
   const ragUnavailableReason = useRagAvailabilityStore((s) =>
     s.unavailableReason(),
@@ -123,15 +122,14 @@ export function KnowledgeBaseDialog({
     }
     const wasOpen = wasOpenRef.current;
     wasOpenRef.current = true;
-    // Once per handoff, though StrictMode runs this twice for the same one.
+    // StrictMode runs this twice for the same handoff.
     if (focus !== handedFocusRef.current) {
       handedFocusRef.current = focus;
       handoffRef.current = [...handoffRef.current, ...(focus?.uploads ?? [])];
     }
     const uploads = handoffRef.current;
     let cancelled = false;
-    // A handoff into the KB already on screen keeps its view mounted: unmounting it
-    // abandons the rest of a batch still uploading there.
+    // Unmounting the KB view would abandon the rest of a batch still uploading there.
     setView((current) =>
       wasOpen &&
       focus &&
@@ -148,7 +146,6 @@ export function KnowledgeBaseDialog({
       if (cancelled || !focus) return;
       const kb = rows?.find((row) => row.id === focus.kbId);
       if (!kb) {
-        // A failed load already said so.
         if (uploads.length && rows) {
           toast.error("Knowledge base not found", {
             description: "Open or create one below and the files go there.",
@@ -192,7 +189,6 @@ export function KnowledgeBaseDialog({
     });
   }
 
-  // The view outlives a close, so the files leave it as soon as they start.
   const takeUploads = useCallback(() => {
     handoffRef.current = [];
     setView((current) =>
@@ -203,8 +199,7 @@ export function KnowledgeBaseDialog({
   }, []);
 
   async function submitForm() {
-    // The button is disabled for this, but the form is also reachable by keyboard and
-    // the verdict can land while it is open. A 503 toast is not an explanation.
+    // The form is reachable by keyboard and the verdict can land while it is open.
     if (ragUnavailable) {
       toast.error("Knowledge bases are unavailable", {
         description: ragUnavailableReason ?? undefined,
@@ -315,6 +310,7 @@ export function KnowledgeBaseDialog({
           <div className="flex min-w-0 flex-col gap-3">
             <div className="flex justify-end">
               <Button
+                variant="secondary"
                 size="sm"
                 onClick={startCreate}
                 disabled={ragUnavailable}
@@ -330,15 +326,15 @@ export function KnowledgeBaseDialog({
               </div>
             ) : ragUnavailable ? (
               // An empty list on this host is not an empty store, so say which one it is.
-              <div className="rounded-md border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">
+              <div className="rounded-xl border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">
                 {ragUnavailableReason ?? "Knowledge bases are unavailable."}
               </div>
             ) : kbs.length === 0 ? (
-              <div className="rounded-md border border-dashed py-6 text-center text-sm text-muted-foreground">
+              <div className="rounded-xl border border-dashed py-6 text-center text-sm text-muted-foreground">
                 No knowledge bases yet.
               </div>
             ) : (
-              <ul className="flex max-h-[60dvh] flex-col divide-y overflow-y-auto scroll-rounded rounded-md border">
+              <ul className="flex max-h-[60dvh] flex-col divide-y overflow-y-auto scroll-rounded rounded-xl border">
                 {kbs.map((kb) => (
                   <li
                     key={kb.id}
@@ -360,7 +356,8 @@ export function KnowledgeBaseDialog({
                           {kb.description ? ` · ${kb.description}` : ""}
                         </span>
                       </span>
-                      <ChevronRightIcon
+                      <HugeiconsIcon
+                        icon={ChevronRightStandardIcon}
                         strokeWidth={1.5}
                         className="size-3.5 shrink-0 text-muted-foreground"
                       />
@@ -440,24 +437,22 @@ function KnowledgeBaseDocuments({
   onBack: () => void;
 }) {
   const lister = useCallback(() => listKnowledgeBaseDocuments(kb.id), [kb.id]);
-  const { documents, loading, uploading, refresh, upload, remove } =
+  const { documents, loading, uploading, refresh, upload, remove, retry, canRetry } =
     useRagDocuments({ type: "kb", kbId: kb.id }, lister);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const handleLinkedSourcesChanged = useCallback(() => {
     void refresh({ quiet: true });
   }, [refresh]);
+  const uploadNow = useCallback(
+    (items: RagUploadItem[]) => void upload(items),
+    [upload],
+  );
+  const { enqueue } = useUploadQueue(uploadNow, uploading, kb.id);
   const { dragging, dropProps, nativeDropTarget } = useSourceDrop({
-    onItems: (items) => void upload(items),
-    // upload() tracks one run at a time, so a second batch would clear the
-    // in-flight guard the first one is still relying on.
-    disabledReason: uploading
-      ? "An upload is already running. Add these when it finishes."
-      : undefined,
+    onItems: enqueue,
   });
 
-  // Deferred a tick: the hook's unmount cleanup aborts an upload started on StrictMode's
-  // first mount. Taking the files off the view, not the deps, stops a rerun.
-  // A batch already uploading here goes first: upload() tracks one run at a time.
+  // Deferred a tick: the hook's unmount cleanup aborts an upload started on StrictMode's first mount.
   useEffect(() => {
     if (!uploads?.length || uploading) return;
     const timer = window.setTimeout(() => {
@@ -475,15 +470,11 @@ function KnowledgeBaseDocuments({
     >
       <div className="flex items-center justify-between">
         <Button variant="ghost" size="sm" onClick={onBack}>
-          <ChevronLeftIcon className="size-4" />
+          <HugeiconsIcon icon={ChevronLeftStandardIcon} className="size-4" />
           All knowledge bases
         </Button>
-        <Button
-          size="sm"
-          onClick={() => fileInputRef.current?.click()}
-          disabled={uploading}
-        >
-          {uploading ? <Spinner /> : <UploadIcon className="size-3.5" />}
+        <Button size="sm" onClick={() => fileInputRef.current?.click()}>
+          {uploading ? <Spinner /> : <HugeiconsIcon icon={Upload01Icon} className="size-3.5" />}
           Upload
         </Button>
         <input
@@ -493,8 +484,9 @@ function KnowledgeBaseDocuments({
           accept={RAG_SOURCE_UPLOAD_ACCEPT}
           className="hidden"
           onChange={(e) => {
-            if (e.target.files?.length) void upload(e.target.files);
+            const files = Array.from(e.target.files ?? []);
             e.target.value = "";
+            enqueue(files.map((file) => ({ kind: "file" as const, file })));
           }}
         />
       </div>
@@ -505,18 +497,20 @@ function KnowledgeBaseDocuments({
       ) : documents.length === 0 ? (
         <div
           className={cn(
-            "rounded-md border border-dashed py-6 text-center text-sm text-muted-foreground transition-colors",
-            dragging && "border-primary/60 bg-primary/5 text-foreground",
+            "rounded-xl border border-dashed py-6 text-center text-sm text-muted-foreground transition-colors",
+            dragging &&
+              "border-wash-30 bg-wash-3 dark:border-wash-60 dark:bg-wash-5 text-foreground",
           )}
         >
-          No documents yet. Upload or drop a PDF, Markdown, DOCX, HTML, or text
-          file.
+          No documents yet. Upload or drop documents, spreadsheets, slides,
+          e-books, email, text or code.
         </div>
       ) : (
         <div
           className={cn(
-            "flex max-h-[55dvh] flex-wrap gap-1.5 overflow-y-auto scroll-rounded rounded-md pr-0.5 transition-colors",
-            dragging && "bg-primary/5 ring-1 ring-primary/60",
+            "flex max-h-[55dvh] flex-wrap gap-1.5 overflow-y-auto scroll-rounded rounded-xl pr-0.5 transition-colors",
+            dragging &&
+              "bg-wash-3 ring-1 ring-wash-30 dark:bg-wash-5 dark:ring-wash-60",
           )}
         >
           {documents.map((doc) => (
@@ -528,10 +522,12 @@ function KnowledgeBaseDocuments({
               stage={doc.stage}
               error={doc.error}
               onRemove={
-                doc.id.startsWith("pending_") || isLinkedFolderManaged(doc)
+                isLinkedFolderManaged(doc) ||
+                (doc.id.startsWith("pending_") && doc.status !== "failed")
                   ? undefined
                   : () => void remove(doc.id)
               }
+              onRetry={canRetry(doc.id) ? () => void retry(doc.id) : undefined}
             />
           ))}
         </div>

@@ -19,6 +19,8 @@ logger = get_logger(__name__)
 
 EVAL_MAX = 2000
 MIN_REPORTED_ITEMS = 50
+# The from-LM recipe's head rate (scripts/train_decision_from_lm.py --head-lr).
+FRESH_HEAD_LEARNING_RATE = 3e-4
 STRUCT_COLUMNS_WARNING = (
     "The state, questions or gold columns are stored as objects rather than JSON strings, so "
     "missing fields come back as nulls and choice options can change order. Store them as JSON "
@@ -127,6 +129,27 @@ def _read_local_rows(paths: list[str], load_dataset, warn: Callable[[str], None]
     return [row for row in rows if isinstance(row, dict)]
 
 
+def _hold_audio(rows: list[dict]) -> None:
+    # The audio files an S3 download rewrote rows to name are deleted with it, before training reads them.
+    for row in rows:
+        audio = row.get("audio")
+        if audio is None:
+            continue
+        clips = audio if isinstance(audio, list) else [audio]
+        held = [_held_clip(clip) for clip in clips]
+        row["audio"] = held if isinstance(audio, list) else held[0]
+
+
+def _held_clip(clip):
+    # The rewrite leaves a plain path string or a {"path"} dict naming the download.
+    if isinstance(clip, str) and os.path.isabs(clip) and os.path.isfile(clip):
+        return {"bytes": Path(clip).read_bytes(), "path": clip}
+    if isinstance(clip, dict) and clip.get("bytes") is None and clip.get("path"):
+        if os.path.isfile(clip["path"]):
+            clip["bytes"] = Path(clip["path"]).read_bytes()
+    return clip
+
+
 def _eval_sample(rows, seed: int):
     # Every row holds at least one decision, so EVAL_MAX rows can fill the eval set.
     if len(rows) <= EVAL_MAX:
@@ -159,6 +182,7 @@ def _load_rows(
             raise _Stopped("Training cancelled") from None
         try:
             rows = _read_local_rows(download.files, load_dataset, warn)
+            _hold_audio(_sliced(rows, config))
         finally:
             download.cleanup()
     elif config.get("hf_dataset"):
@@ -199,10 +223,71 @@ def _load_rows(
             _read_local_rows(config["local_eval_datasets"], load_dataset, warn), seed
         )
 
+    return _sliced(rows, config), eval_rows
+
+
+def _sliced(rows: list, config: dict) -> list:
     start, end = config.get("dataset_slice_start"), config.get("dataset_slice_end")
-    if start is not None or end is not None:
-        rows = rows[start or 0 : (len(rows) if end is None else end + 1)]
-    return rows, eval_rows
+    if start is None and end is None:
+        return rows
+    return rows[start or 0 : (len(rows) if end is None else end + 1)]
+
+
+def _is_mlx() -> bool:
+    from utils.hardware import hardware
+    return hardware.DEVICE == hardware.DeviceType.MLX
+
+
+def _peak_memory_gb() -> float | None:
+    import torch
+
+    if torch.cuda.is_available():
+        return torch.cuda.max_memory_allocated() / 1e9
+    if _is_mlx():
+        import mlx.core as mx
+        return mx.get_peak_memory() / 1e9
+    return None
+
+
+def _mlx_tracking_callback(report_to: list):
+    from transformers import TrainerCallback
+
+    # transformers' reporting callbacks are added by its own Trainer, which MLX does not run.
+    class Tracking(TrainerCallback):
+        writer = None
+
+        def on_train_begin(self, args, state, control, **kwargs):
+            if "tensorboard" in report_to:
+                try:
+                    from tensorboardX import SummaryWriter
+                except ImportError:
+                    from torch.utils.tensorboard import SummaryWriter
+                self.writer = SummaryWriter(log_dir = os.environ["TENSORBOARD_LOGGING_DIR"])
+
+        def on_log(
+            self,
+            args,
+            state,
+            control,
+            logs = None,
+            **kwargs,
+        ):
+            scalars = {
+                f"eval/{name[5:]}" if name.startswith("eval_") else f"train/{name}": value
+                for name, value in (logs or {}).items()
+                if isinstance(value, (int, float))
+            }
+            for name, value in scalars.items() if self.writer else ():
+                self.writer.add_scalar(name, value, state.global_step)
+            if "wandb" in report_to:
+                import wandb
+                wandb.log(scalars, step = state.global_step)
+
+        def on_train_end(self, args, state, control, **kwargs):
+            if self.writer:
+                self.writer.close()
+
+    return Tracking()
 
 
 def run_decision_training(event_queue: Any, stop_queue: Any, config: dict) -> None:
@@ -306,7 +391,9 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
 
     model_name = config["model_name"]
     subfolder = config.get("model_subfolder") or None
-    clef = config.get("decision_layout") == "clef"
+    # "llm": a plain text or vision LLM that gets a fresh Clef joint schema head.
+    llm = config.get("decision_layout") == "llm"
+    clef = llm or config.get("decision_layout") == "clef"
     hf_token = _worker_hf_token(config)
     if hf_token:
         os.environ["HF_TOKEN"] = hf_token
@@ -315,32 +402,44 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
     gradient_checkpointing = normalize_gradient_checkpointing(config["gradient_checkpointing"])
 
     status("Loading decision model...")
-    try:
-        root = laya_runtime._checkpoint_dir(
-            Checkpoint("base", model_name, subfolder, "", layout = "clef" if clef else "laya")
+    if llm:
+        model, tokenizer = FastDecisionModel.from_pretrained(
+            model_name,
+            decision_head = "clef",
+            max_seq_length = config.get("max_seq_length") or None,
+            load_in_4bit = use_lora and bool(config.get("load_in_4bit")),
+            full_finetuning = not use_lora,
+            token = hf_token or None,
+            use_gradient_checkpointing = gradient_checkpointing,
+            random_state = seed,
         )
-    except LocalEntryNotFoundError as exc:
-        send("error", error = f"Could not download {model_name}: {exc}", stack = "")
-        return
-    except FileNotFoundError as exc:
-        kind = "Clef" if clef else "Laya"
-        send("error", error = f"Not a {kind} decision checkpoint: {exc}", stack = "")
-        return
-    model, tokenizer = FastDecisionModel.from_pretrained(
-        str(root),
-        subfolder = subfolder,
-        full_finetuning = not use_lora,
-        use_gradient_checkpointing = gradient_checkpointing,
-        # Clef trains through Unsloth's Qwen3.5 loader, in 4-bit for QLoRA; Laya is always 16-bit.
-        **(
-            {
-                "load_in_4bit": use_lora and bool(config.get("load_in_4bit")),
-                "max_seq_length": config.get("max_seq_length") or None,
-            }
-            if clef
-            else {}
-        ),
-    )
+    else:
+        try:
+            root = laya_runtime._checkpoint_dir(
+                Checkpoint("base", model_name, subfolder, "", layout = "clef" if clef else "laya")
+            )
+        except LocalEntryNotFoundError as exc:
+            send("error", error = f"Could not download {model_name}: {exc}", stack = "")
+            return
+        except FileNotFoundError as exc:
+            kind = "Clef" if clef else "Laya"
+            send("error", error = f"Not a {kind} decision checkpoint: {exc}", stack = "")
+            return
+        model, tokenizer = FastDecisionModel.from_pretrained(
+            str(root),
+            subfolder = subfolder,
+            full_finetuning = not use_lora,
+            use_gradient_checkpointing = gradient_checkpointing,
+            # Clef trains through Unsloth's Qwen3.5 loader, in 4-bit for QLoRA; Laya is always 16-bit.
+            **(
+                {
+                    "load_in_4bit": use_lora and bool(config.get("load_in_4bit")),
+                    "max_seq_length": config.get("max_seq_length") or None,
+                }
+                if clef
+                else {}
+            ),
+        )
     if use_lora:
         model = FastDecisionModel.get_peft_model(
             model,
@@ -442,7 +541,8 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
             report_to.append("wandb")
         except Exception as exc:
             warn(f"Weights & Biases logging is off: {exc}")
-    arguments["report_to"] = report_to or "none"
+    # On MLX the run's own tracking callback reports instead, into the directory and W&B run opened above.
+    arguments["report_to"] = "none" if _is_mlx() or not report_to else report_to
 
     base_metrics = None
     if eval_items:
@@ -462,6 +562,8 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
         train_dataset = items,
         eval_dataset = eval_items or None,
         processing_class = tokenizer,
+        # A fresh head starts from random weights, so it learns faster than a trained Clef head.
+        head_learning_rate = FRESH_HEAD_LEARNING_RATE if llm else None,
         callbacks = [
             _create_embedding_progress_callback(
                 event_queue,
@@ -469,7 +571,8 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
                 training_start_time = time.time(),
                 should_stop = lambda: stop["requested"],
             )
-        ],
+        ]
+        + ([_mlx_tracking_callback(report_to)] if report_to and _is_mlx() else []),
     )
     _drop_hf_stdout_callbacks(trainer)
     start = time.time()
@@ -489,10 +592,11 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
         raise _Stopped("Training cancelled")
 
     status("Saving model...")
-    peak_gb = torch.cuda.max_memory_allocated() / 1e9 if torch.cuda.is_available() else None
+    peak_gb = _peak_memory_gb()
     model.decision_config["training"] = {
         "base": model_name,
         "subfolder": subfolder,
+        "decision_head": "clef (new)" if llm else None,
         "method": ("qlora" if clef and config.get("load_in_4bit") else "lora")
         if use_lora
         else "full",

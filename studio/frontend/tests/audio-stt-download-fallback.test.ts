@@ -24,7 +24,7 @@ test("STT download polling uses the available engine fallback", () => {
 test("Audio mirrors an STT transfer into Downloads without resetting an adopted job", () => {
   assert.match(
     source,
-    /await startSttDownload\(\s*sidecarKey,[\s\S]*engine,\s*ggufVariant,\s*\);[\s\S]*if \(!isTrackingSttDownload\(sidecarKey, engine\)\) \{[\s\S]*trackSttDownload\(sidecarKey, \{[\s\S]*warmSelectedVoiceModelOnComplete: false,[\s\S]*engine,[\s\S]*repoId,[\s\S]*\}\);[\s\S]*\}[\s\S]*for \(;;\)/,
+    /const download = await startSttDownload\(\s*sidecarKey,[\s\S]*engine,\s*ggufVariant,\s*\);[\s\S]*trackSttDownload\(sidecarKey, \{[\s\S]*warmSelectedVoiceModelOnComplete: false,[\s\S]*engine,[\s\S]*repoId,[\s\S]*ggufVariant,[\s\S]*downloadId: download\.download_id,[\s\S]*\}\);[\s\S]*for \(;;\)/,
   );
   assert.doesNotMatch(source, /`Downloading \$\{sidecarKey\}:/);
 });
@@ -58,7 +58,7 @@ test("resolved Transformers transfers share one tracker identity", () => {
   );
   assert.match(
     mirrorSource,
-    /if \(trackers\.has\(key\)\)[\s\S]*warmSelectedVoiceModelOnComplete\.set\(key, true\)/,
+    /if \(wasTracking && !changedAttempt\)[\s\S]*warmSelectedVoiceModelOnComplete\.set\(key, true\)/,
   );
 });
 
@@ -78,8 +78,7 @@ test("STT loading stays busy until authoritative residency refresh completes", (
 });
 
 test("cancelled deferred downloads remain cancelled on return", () => {
-  // `model` is null once the download thread has stopped, so the cancelled model id has to
-  // come from cancelled_model for a cancellation the user made while this page was hidden.
+  // `model` is null once the download thread stops, so the id comes from cancelled_model.
   assert.match(
     source,
     /const download = sttEngineStatusFor[\s\S]*download\?\.cancelled[\s\S]*\(download\.model \?\? download\.cancelled_model\) === deferred\.sidecarKey[\s\S]*return/,

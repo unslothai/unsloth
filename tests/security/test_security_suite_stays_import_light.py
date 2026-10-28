@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""`workflow-trigger-lint.yml` runs `tests/security` on a four-package runner.
-
-That job has no paths filter, and keeping it cheap is what lets it stay unfiltered, so
-a file there may not import anything in HEAVY at module scope unless the workflow
-`--ignore`s it. The failure is quiet: under `-n 4` xdist does not abort on a collection
-error, so the job stays green while that file's tests stop running entirely.
-"""
+"""Files here must not import HEAVY at module scope; under -n 4 xdist hides the collection error."""
 
 import ast
 import pathlib
@@ -57,7 +51,6 @@ def _module_level_statements(body):
     Function bodies are excluded; a CLASS body is not, since it runs at import."""
     for node in body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            # The BODY is deferred; decorators, defaults, annotations and bases are evaluated at import.
             for part in _definition_time_expressions(node):
                 yield ast.Expr(value = part)
             if isinstance(node, ast.ClassDef):
@@ -105,8 +98,6 @@ def _definition_time_expressions(node):
         yield node.returns
 
 
-# Helpers that load with no `ast.Import` node, and the module each is imported FROM, since a rename makes the spelling
-# at the call site insufficient.
 _LOADER_ORIGINS = {
     "import_module": "importlib",
     "__import__": "builtins",
@@ -138,7 +129,6 @@ def _scope_bindings(scope):
 def _settled_aliases(bindings, inherited):
     """Names bound to one of those helpers, by `from <origin> import <helper> as
     <alias>` or `alias = <helper>`. Nothing else is guessed at."""
-    # alias -> the helper it NAMES, so a renamed `import_module` is not read as a renamed `importorskip`.
     aliases: dict = dict(inherited)
     for _round in range(_ALIAS_ROUNDS):
         previous = aliases
@@ -280,7 +270,6 @@ def _body_level_heavy_imports(path):
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        # This body's OWN table; another function's `load` says nothing about it.
         loaders = scopes.get(id(node), module_loaders)
         skipped = _guarded_roots(node, loaders)
         for child in ast.walk(node):
@@ -337,7 +326,6 @@ def _guarded_roots(node, loaders):
             if isinstance(function, ast.Attribute)
             else (function.id if isinstance(function, ast.Name) else "")
         )
-        # The alias's ORIGIN decides: an importlib alias lives in `loaders` too.
         if not _is_pytest_skip(attribute, loaders):
             # An import ABOVE the guard is reached first, so the scan stops here.
             # The same stop, for calls: a non-guard call may be the load itself.
@@ -519,7 +507,6 @@ def test_every_ignored_suite_runs_somewhere_else():
     ignored = _ignored_by_the_workflow()
     assert ignored, "no suite is ignored any more, so this guard has nothing to check"
 
-    # By STEP: the redirect job sits in this same workflow.
     elsewhere = {}
     for path in sorted(_WORKFLOW.parent.glob("*.yml")):
         document = yaml.safe_load(path.read_text(encoding = "utf-8")) or {}
@@ -568,7 +555,6 @@ def test_the_redirect_job_is_triggered_by_what_it_protects():
         return
     text = host.read_text(encoding = "utf-8")
 
-    # Taken from the suites, so adding a module to one cannot leave this stale.
     protected = set()
     for name in sorted(_ignored_by_the_workflow()):
         path = _HERE / name
@@ -584,7 +570,6 @@ def test_the_redirect_job_is_triggered_by_what_it_protects():
                 for alias in node.names:
                     if alias.name.startswith("unsloth.models."):
                         protected.add(alias.name.split(".")[-1] + ".py")
-            # `__import__("unsloth.models.loader", ...)` too: a suite reads it so.
             if isinstance(node, ast.Call) and node.args:
                 function = node.func
                 name = (

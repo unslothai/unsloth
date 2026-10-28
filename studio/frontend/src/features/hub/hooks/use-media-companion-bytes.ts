@@ -10,6 +10,7 @@ import type { GgufVariantDetail } from "../inventory";
 import { ggufVariantDownloadSizeBytes } from "../lib/gguf-variant-sort";
 import { fingerprintToken } from "../lib/token-fingerprint";
 import { hfApiToken } from "../stores/hf-token-store";
+import { useInventoryVersion } from "../stores/inventory-events";
 
 export type MediaStudioPage = "images" | "video";
 
@@ -26,13 +27,11 @@ type CompanionPlanRequest = [
   sizeBytes: number,
 ];
 
-/** dependency_key groups variants with identical companions. Without one (video
- *  families among them) companions can differ per file, so each file is its own group. */
+/** Without a dependency_key, companions may differ per file, so each file is its own group. */
 function companionKey(variant: GgufVariantDetail): string {
   return variant.dependency_key ?? `file:${variant.filename}`;
 }
 
-/** One plan per keyed group; an unkeyed file is planned only once selected. */
 export function companionPlanRequests(
   page: MediaStudioPage | undefined,
   variants: readonly GgufVariantDetail[] | null,
@@ -55,7 +54,6 @@ export function companionPlanRequests(
   return Array.from(byKey.values());
 }
 
-/** Companion bytes Run would still download with default load settings, or null for none. */
 export async function resolveCompanionBytes(
   page: MediaStudioPage,
   repoId: string,
@@ -90,7 +88,6 @@ export async function resolveCompanionBytes(
   return companionBytes > 0 ? companionBytes : null;
 }
 
-/** Partial rows keep their "X left" size. Downloaded rows still get companions, which Run fetches. */
 export function ggufVariantFootprint(
   variant: GgufVariantDetail,
   companionBytesByKey: ReadonlyMap<string, number>,
@@ -104,8 +101,27 @@ export function ggufVariantFootprint(
   };
 }
 
-/** Companion bytes by group. Plans live as long as the card, so returning from Run,
- *  which fetches the companions, plans again. */
+export function awaitsCompanions(
+  downloaded: boolean | undefined,
+  footprint: GgufVariantFootprint | null,
+): boolean {
+  return Boolean(downloaded) && (footprint?.companionBytes ?? 0) > 0;
+}
+
+/** null (nothing left to fetch) drops the group's stale entry. */
+export function withCompanionBytes(
+  previous: ReadonlyMap<string, number>,
+  key: string,
+  companionBytes: number | null,
+): ReadonlyMap<string, number> {
+  if ((companionBytes ?? undefined) === previous.get(key)) return previous;
+  const next = new Map(previous);
+  if (companionBytes === null) next.delete(key);
+  else next.set(key, companionBytes);
+  return next;
+}
+
+/** Companion bytes by group; re-planned on inventory changes so Partial clears in place. */
 export function useMediaCompanionBytes(
   page: MediaStudioPage | undefined,
   repoId: string,
@@ -116,6 +132,7 @@ export function useMediaCompanionBytes(
   const identity = page
     ? JSON.stringify([page, repoId, fingerprintToken(hfToken)])
     : "";
+  const inventoryVersion = useInventoryVersion();
   const requests = useMemo(
     () => companionPlanRequests(page, variants, selectedFilename),
     [page, variants, selectedFilename],
@@ -124,14 +141,18 @@ export function useMediaCompanionBytes(
     identity: string;
     companionBytes: ReadonlyMap<string, number>;
   }>(() => ({ identity: "", companionBytes: EMPTY_COMPANION_BYTES }));
-  // Variant refetches and reselection rerun the effect; this keeps them from re-planning.
   const plans = useRef(new Map<string, Promise<number | null>>());
 
   useEffect(() => {
     if (!page) return;
     let cancelled = false;
     for (const [key, filename, sizeBytes] of requests) {
-      const planKey = JSON.stringify([identity, key, filename]);
+      const planKey = JSON.stringify([
+        identity,
+        inventoryVersion,
+        key,
+        filename,
+      ]);
       let plan = plans.current.get(planKey);
       if (!plan) {
         plan = resolveCompanionBytes(
@@ -146,15 +167,16 @@ export function useMediaCompanionBytes(
       }
       plan
         .then((companionBytes) => {
-          if (cancelled || companionBytes === null) return;
+          if (cancelled) return;
           setResolved((previous) => {
-            const same = previous.identity === identity;
-            if (same && previous.companionBytes.get(key) === companionBytes) {
-              return previous;
-            }
-            const next = new Map(same ? previous.companionBytes : undefined);
-            next.set(key, companionBytes);
-            return { identity, companionBytes: next };
+            const current =
+              previous.identity === identity
+                ? previous.companionBytes
+                : EMPTY_COMPANION_BYTES;
+            const next = withCompanionBytes(current, key, companionBytes);
+            return next === previous.companionBytes
+              ? previous
+              : { identity, companionBytes: next };
           });
         })
         .catch(() => {
@@ -164,7 +186,7 @@ export function useMediaCompanionBytes(
     return () => {
       cancelled = true;
     };
-  }, [page, repoId, hfToken, identity, requests]);
+  }, [page, repoId, hfToken, identity, inventoryVersion, requests]);
 
   return identity && resolved.identity === identity
     ? resolved.companionBytes

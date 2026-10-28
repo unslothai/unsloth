@@ -10,12 +10,15 @@
 # limitations under the License.
 
 from ..device_type import DEVICE_TYPE_TORCH, clean_gpu_cache
+from ..fsdp2_launch import fsdp_version_from_env
 import hashlib
 import importlib
 import os
 import torch
 import re
 import tempfile
+import types
+import shutil
 import contextlib
 import threading as _threading
 import functools
@@ -58,6 +61,12 @@ BAD_MAPPINGS = {
     "unsloth/Qwen3-30B-A3B-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B",  # We rather do it on the fly
     "unsloth/Qwen3-30B-A3B-Base-unsloth-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B-Base",  # HF loads MoEs too slowly
     "unsloth/Qwen3-30B-A3B-Base-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B-Base",  # We rather do it on the fly
+    "unsloth/solar-10.7b-bnb-4bit".lower(): "upstage/SOLAR-10.7B-v1.0",
+    "unsloth/Hermes-3-Llama-3.1-405B-bnb-4bit".lower(): "NousResearch/Hermes-3-Llama-3.1-405B",
+    "unsloth/Pixtral-12B-2409-Base-bnb-4bit".lower(): "unsloth/Pixtral-12B-Base-2409-bnb-4bit",
+    "unsloth/Llama-3.1-Tulu-3-8B-bnb-4bit".lower(): "unsloth/Llama-3.1-Tulu-3-8B",
+    "unsloth/Llama-3.1-Tulu-3-70B-bnb-4bit".lower(): "allenai/Llama-3.1-Tulu-3-70B",
+    "unsloth/OpenThinker-7B-unsloth-bnb-4bit".lower(): "open-thoughts/OpenThinker-7B",
 }
 
 
@@ -130,6 +139,31 @@ def _infer_local_rank(rank):
 _TRUTHY = ("1", "true", "yes", "on")
 
 
+def fsdp_version_requested():
+    """The FSDP version this process trains with: 0 for none, else 1 or 2.
+
+    A built Accelerator is authoritative; before one exists (model load, patch_peft_model) the
+    launcher env is the only signal (`fsdp_version_from_env`: `accelerate launch` with an FSDP
+    config, FSDP_VERSION by hand, or UNSLOTH_FSDP2=1 under torchrun). Every rank of a job sees the
+    same env and the same Accelerator config, so every rank gets the same answer.
+    `TrainingArguments(fsdp = ...)` alone is invisible until the Trainer builds its Accelerator;
+    the Trainer re-checks then (`_unsloth_trainer_init`).
+    """
+    try:
+        from accelerate.state import AcceleratorState
+
+        shared = AcceleratorState._shared_state
+        plugin = shared.get("fsdp_plugin", None)
+        if plugin is not None:
+            return int(getattr(plugin, "fsdp_version", 1) or 1)
+        distributed_type = shared.get("distributed_type", None)
+        if distributed_type is not None and "FSDP" in str(distributed_type).upper():
+            return fsdp_version_from_env() or 1
+    except Exception:
+        pass
+    return fsdp_version_from_env()
+
+
 def fsdp_will_wrap():
     """True when this process will hand the model to FSDP (unsloth#409).
 
@@ -139,19 +173,42 @@ def fsdp_will_wrap():
     """
     if os.environ.get("UNSLOTH_FORCE_FUSED_LORA", "0") == "1":
         return False
-    try:
-        from accelerate.state import AcceleratorState
-        distributed_type = AcceleratorState._shared_state.get("distributed_type", None)
-        if distributed_type is not None and "FSDP" in str(distributed_type).upper():
-            return True
-    except Exception:
-        pass
-    if str(os.environ.get("ACCELERATE_USE_FSDP", "")).strip().lower() in _TRUTHY:
-        return True
-    # "0" is how an accelerate config says "not FSDP".
-    if str(os.environ.get("FSDP_VERSION", "")).strip() not in ("", "0"):
-        return True
-    return False
+    return fsdp_version_requested() > 0
+
+
+def fsdp2_requested():
+    """True when this process runs under FSDP2: `accelerate launch` exports FSDP_VERSION=2,
+    UNSLOTH_FSDP2=1 under torchrun, or an Accelerator built already records its fsdp_plugin."""
+    return fsdp_version_requested() == 2
+
+
+def fsdp2_keeps_fused_lora():
+    """Load-time half of the fused LoRA gate under FSDP.
+
+    FSDP1 hands the fused kernels flat shard views (unsloth#409), so they are declined. FSDP2
+    unshards a block's parameters in its pre-forward hook and the kernels run inside the block's
+    forward, so with one FSDP unit per decoder block they read whole weights; the wrap accelerate
+    actually builds is checked once it exists (`unsloth.models.fsdp2`), which declines them for a
+    root-only or finer wrap. `UNSLOTH_FSDP2_FUSED_LORA=0` declines them under FSDP2 as well.
+    """
+    if str(os.environ.get("UNSLOTH_FSDP2_FUSED_LORA", "1")).strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        return False
+    return fsdp2_requested()
+
+
+def raise_if_fast_inference_under_fsdp2(fast_inference):
+    """Unsupported combination: refuse it before vLLM loads instead of failing mid-run (unsloth#3551)."""
+    if fast_inference and fsdp2_requested():
+        raise NotImplementedError(
+            "Unsloth: `fast_inference = True` (vLLM) is not supported with FSDP2.\n"
+            "Load the model with `fast_inference = False` to train with FSDP2, "
+            "or launch without FSDP2 to use vLLM."
+        )
 
 
 def prepare_device_map():
@@ -172,6 +229,172 @@ def prepare_device_map():
     except Exception:
         pass
     return device_map, True
+
+
+def deepspeed_zero3_device_map(device_map):
+    """None under DeepSpeed ZeRO-3 init: transformers refuses any device_map there, since ZeRO-3 places the
+    weights itself (#225). Only a placement left to us is dropped; a map the caller chose still raises."""
+    try:
+        from transformers.integrations import is_deepspeed_zero3_enabled
+        zero3 = is_deepspeed_zero3_enabled()
+    except Exception:
+        zero3 = False
+    if not zero3:
+        return device_map
+    return None if is_automatic_device_map(device_map) else device_map
+
+
+def deepspeed_zero_stage():
+    """DeepSpeed ZeRO stage, else None. Unsloth loads before TrainingArguments, so `accelerate launch` env counts."""
+    try:
+        from transformers.integrations.deepspeed import deepspeed_config
+        config = deepspeed_config()
+    except Exception:
+        config = None
+    if config is None:
+        try:
+            from accelerate.state import AcceleratorState
+
+            plugins = AcceleratorState._shared_state.get("deepspeed_plugins", None) or {}
+            if not isinstance(plugins, dict):
+                plugins = {"": plugins}
+            for plugin in plugins.values():
+                if (
+                    getattr(plugin, "selected", True)
+                    and getattr(plugin, "zero_stage", None) is not None
+                ):
+                    return int(plugin.zero_stage)
+        except Exception:
+            pass
+        if str(os.environ.get("ACCELERATE_USE_DEEPSPEED", "")).strip().lower() not in _TRUTHY:
+            return None
+        stage = str(os.environ.get("ACCELERATE_DEEPSPEED_ZERO_STAGE", "")).strip()
+        if stage.isdigit():
+            return int(stage)
+        path = os.environ.get("ACCELERATE_DEEPSPEED_CONFIG_FILE", "")
+        if not path:
+            return None
+        try:
+            import json
+            with open(path, "r", encoding = "utf-8") as f:
+                config = json.load(f)
+        except Exception:
+            return None
+    try:
+        return int(config.get("zero_optimization", {}).get("stage"))
+    except Exception:
+        return None
+
+
+def deepspeed_zero3_requested():
+    return deepspeed_zero_stage() == 3
+
+
+def sync_deepspeed_mixed_precision(args):
+    """Resync an already-filled DeepSpeed config's fp16 / bf16 after Unsloth changed them, else
+    transformers stops with "ds fp16.enabled=True vs hf fp16|fp16_full_eval=False"."""
+    want = {
+        "fp16": bool(getattr(args, "fp16", False) or getattr(args, "fp16_full_eval", False)),
+        "bf16": bool(getattr(args, "bf16", False) or getattr(args, "bf16_full_eval", False)),
+    }
+    configs = []
+    for holder, attr in (
+        (getattr(args, "hf_deepspeed_config", None), "config"),
+        (getattr(args, "deepspeed_plugin", None), "deepspeed_config"),
+    ):
+        config = getattr(holder, attr, None) if holder is not None else None
+        if isinstance(config, dict) and all(config is not c for c in configs):
+            configs.append(config)
+    changed = []
+    for config in configs:
+        for key, enabled in want.items():
+            section = config.get(key)
+            if not isinstance(section, dict) or section.get("enabled", False) == "auto":
+                continue
+            if bool(section.get("enabled", False)) != enabled:
+                section["enabled"] = enabled
+                changed.append(key)
+    hf_config = getattr(args, "hf_deepspeed_config", None)
+    if hf_config is not None and isinstance(getattr(hf_config, "config", None), dict):
+        # trainer_config_process already queued mismatches for the old flags; the config now agrees.
+        mismatches = getattr(hf_config, "mismatches", None)
+        if isinstance(mismatches, list):
+            mismatches[:] = [
+                m
+                for m in mismatches
+                if not m.startswith(("- ds fp16.enabled=", "- ds bf16.enabled="))
+            ]
+        if hasattr(hf_config, "_dtype"):
+            # From the flags: accelerate adds absent fp16 / bf16 sections later without refreshing _dtype.
+            hf_config._dtype = (
+                torch.bfloat16 if want["bf16"] else torch.float16 if want["fp16"] else torch.float32
+            )
+    return changed
+
+
+def vlm_gradient_checkpointing_reentrant():
+    """Only DDP needs non-reentrant (#3713); under ZeRO-3 non-reentrant fails torch's saved-tensor check."""
+    return not is_distributed() or fsdp2_requested() or deepspeed_zero_stage() is not None
+
+
+def _is_moe_block(module):
+    children = dict(module.named_children())
+    return "experts" in children and ("gate" in children or "router" in children)
+
+
+def set_deepspeed_moe_leaf_modules(model):
+    """Mark MoE blocks ZeRO-3 leaves (before `deepspeed.initialize`): per-expert hooks give mismatched all-gathers across ranks."""
+    if model is None or not deepspeed_zero3_requested():
+        return ()
+    try:
+        from deepspeed.utils import set_z3_leaf_modules
+    except Exception:
+        return ()
+    classes = []
+    for module in model.modules():
+        if type(module) not in classes and _is_moe_block(module):
+            classes.append(type(module))
+    if not classes:
+        return ()
+    try:
+        set_z3_leaf_modules(model, classes)
+    except Exception as exc:
+        print(f"Unsloth: could not mark MoE blocks as DeepSpeed ZeRO-3 leaf modules ({exc}).")
+        return ()
+    return tuple(cls.__name__ for cls in classes)
+
+
+def set_deepspeed_fused_lora_leaf_modules(layers):
+    """Fused LoRA kernels read weights without calling their modules, so ZeRO-3's prefetch trace breaks unless layers are leaves."""
+    layers = list(layers)
+    for layer in layers:
+        layer._unsloth_fused_lora_layer = True
+    if not deepspeed_zero3_requested():
+        return 0
+    for layer in layers:
+        layer._z3_leaf = True
+    return len(layers)
+
+
+def apply_deepspeed_zero3_model_setup(model):
+    """Redo load-time ZeRO-3 setup at trainer time, for models loaded before DeepSpeed was visible."""
+    if not hasattr(model, "modules") or not deepspeed_zero3_requested():
+        return
+    try:
+        set_deepspeed_moe_leaf_modules(model)
+        set_deepspeed_fused_lora_leaf_modules(
+            m for m in model.modules() if getattr(m, "_unsloth_fused_lora_layer", False)
+        )
+    except Exception as exc:
+        print(f"Unsloth: could not apply the DeepSpeed ZeRO-3 model setup ({exc}).")
+    if getattr(model, "_unsloth_vlm_gc_non_reentrant", False) and not getattr(
+        model, "_unsloth_warned_zero3_gc", False
+    ):
+        model._unsloth_warned_zero3_gc = True
+        print(
+            "Unsloth: this model was loaded without DeepSpeed detected, so it uses non-reentrant gradient "
+            "checkpointing, which can fail under ZeRO-3. Load the model under the DeepSpeed launch instead."
+        )
 
 
 UNSLOTH_DEVICE_MAP = "unsloth"
@@ -221,6 +444,63 @@ def planner_kwargs_with_max_memory(planner_kwargs, loader_kwargs):
     merged = dict(planner_kwargs or {})
     merged.setdefault("max_memory", budget)
     return merged
+
+
+# transformers' bitsandbytes quantizers (4-bit and 8-bit) raise this when the automatic map spills past the GPU.
+_BNB_CPU_SPILL_PREFIX = "Some modules are dispatched on the CPU or the disk"
+
+
+def raise_if_bnb_cpu_spill(
+    error,
+    model_name,
+    offload_layers = None,
+    device_map = None,
+    load_in_8bit = False,
+    quantization_config = None,
+    max_memory = None,
+):
+    """Replace transformers' bitsandbytes CPU-spill error with what to do in Unsloth (#1629). Its advice, `llm_int8_enable_fp32_cpu_offload`, keeps the spilled weights unquantized in fp32 on the CPU, which is no route to training; `offload_layers = "auto"` is. Returns for any other error, and for a caller's own dict or CPU map (that placement is a choice, and transformers' advice is the relevant one), so the caller re-raises it unchanged. `offload_layers`, `quantization_config` and `max_memory` are what the caller passed, before the loader added its own."""
+    if not isinstance(error, ValueError) or not str(error).startswith(_BNB_CPU_SPILL_PREFIX):
+        return
+    # On transformers 4.x an all-CPU map raises this too unless bitsandbytes' multi-backend is on.
+    if isinstance(device_map, dict) or str(device_map).split(":")[0] in ("cpu", "disk"):
+        return
+    free = ""
+    try:
+        # The current card only: probing others would open a CUDA context on cards the caller may have withheld.
+        # A caller's max_memory may withhold this card; then the figure would be about the wrong one.
+        if DEVICE_TYPE_TORCH == "cuda" and torch.cuda.is_available() and not max_memory:
+            device = torch.cuda.current_device()
+            free = (
+                f" (cuda:{device} has {torch.cuda.mem_get_info(device)[0] / 1024**3:.2f} GB free)"
+            )
+    except Exception:
+        free = ""
+    if load_in_8bit or getattr(quantization_config, "load_in_8bit", False):
+        # offload_layers supports 16-bit and 4-bit loads only.
+        hint = "Load in 4-bit (load_in_4bit = True) to halve the weights, or load a smaller model."
+    elif quantization_config is not None:
+        # offload_layers refuses a quantization_config.
+        hint = (
+            'Pass load_in_4bit = True with `offload_layers = "auto"` instead of a '
+            "quantization_config to stream the layers the GPU cannot hold from host RAM, "
+            "or load a smaller model."
+        )
+    elif offload_layers == "auto":
+        hint = "Lower max_seq_length or the batch size, load a smaller model, or add a GPU."
+    elif offload_layers:
+        hint = 'Raise offload_layers or pass `offload_layers = "auto"`, load a smaller model, or add a GPU.'
+    else:
+        hint = (
+            'Pass `offload_layers = "auto"` to from_pretrained to keep the decoder layers the GPU '
+            "cannot hold in host RAM and stream them in during training (slower, and it needs that "
+            "much free system RAM), "
+            "load a smaller model, or free GPU memory held by other programs."
+        )
+    raise ValueError(
+        f"Unsloth: {model_name} does not fit in GPU memory{free}, so transformers placed "
+        f"part of it on the CPU, which bitsandbytes cannot quantize. {hint}"
+    ) from error
 
 
 def unmarked_device_map(device_map):
@@ -554,6 +834,29 @@ def resolve_unsloth_device_map(
         print(f"Unsloth: Not planning a device map; {reason}. Using `{_declined}`.")
         return _declined
 
+    def _plan_fits_first_device(
+        plan,
+        explicit_reserve,
+        activation_share = 0.2,
+    ):
+        """First allowed card if weights + headroom + load transient leave `activation_share` (about
+        Gemma 3n E4B fp32 on a T4) and any passed reserve free; None for a planner without sizes."""
+        try:
+            budgets = plan.raw_budgets
+            first = min(budgets)
+            budget = int(budgets[first])
+            transient = max((plan.load_transient_by_device or {}).values(), default = 0)
+            need = int(plan.total_weight_bytes) + int(plan.headroom_bytes) + int(transient)
+            free = budget * activation_share
+            if explicit_reserve:
+                # A passed reserve is a hard constraint to the planner.
+                free = max(free, int(plan.activation_reserve_by_device.get(first, 0)))
+        except Exception:
+            return None
+        if budget > 0 and need + free <= budget:
+            return first
+        return None
+
     if skip_reason is not None:
         return _fallback(skip_reason)
     if fast_inference:
@@ -639,8 +942,71 @@ def resolve_unsloth_device_map(
 
     if plan is None:
         return _declined
+    single_device = (
+        _plan_fits_first_device(plan, planner_kwargs.get("activation_reserve_bytes") is not None)
+        if device_map == UNSLOTH_DEVICE_MAP
+        else None
+    )
+    if single_device is not None:
+        # Splitting a model one card holds only adds cross-device bugs (Kaggle T4x2).
+        print(
+            f"Unsloth: Not splitting across GPUs; the model fits on cuda:{single_device} with room "
+            f'to train. Pass device_map = "{UNSLOTH_BALANCED_DEVICE_MAP}" to split it anyway.'
+        )
+        return {"": single_device}
     print(plan.describe())
     return plan.device_map
+
+
+def _sharded_data_parallel_launch():
+    """ "FSDP" / "DeepSpeed" when this process will hand the model to one, else None."""
+    try:
+        from accelerate.state import AcceleratorState
+        distributed_type = str(AcceleratorState._shared_state.get("distributed_type", "")).upper()
+    except Exception:
+        distributed_type = ""
+    if "FSDP" in distributed_type:
+        return "FSDP"
+    if "DEEPSPEED" in distributed_type:
+        return "DeepSpeed"
+    if str(os.environ.get("ACCELERATE_USE_FSDP", "")).strip().lower() in _TRUTHY or str(
+        os.environ.get("FSDP_VERSION", "")
+    ).strip() not in ("", "0"):
+        return "FSDP"
+    if str(os.environ.get("ACCELERATE_USE_DEEPSPEED", "")).strip().lower() in _TRUTHY:
+        return "DeepSpeed"
+    return None
+
+
+def _single_card_device_map(device_map):
+    if isinstance(device_map, dict):
+        if set(device_map) != {""}:
+            return False
+        device_map = device_map[""]
+    if isinstance(device_map, int) and not isinstance(device_map, bool):
+        return True
+    if isinstance(device_map, torch.device):
+        return device_map.type == "cuda"
+    return isinstance(device_map, str) and (device_map == "cuda" or device_map.startswith("cuda:"))
+
+
+def ddp_auto_block_swap_launch(device_map):
+    return (
+        is_distributed()
+        and _sharded_data_parallel_launch() is None
+        and _single_card_device_map(device_map)
+    )
+
+
+def auto_offload_for_launch(offload_layers):
+    """No "auto" swap on a launch that already shows FSDP / DeepSpeed."""
+    if (
+        offload_layers == "auto"
+        and is_distributed()
+        and _sharded_data_parallel_launch() is not None
+    ):
+        return 0
+    return offload_layers
 
 
 _BLOCK_SWAP_PLANNER_KEYS = (
@@ -683,8 +1049,15 @@ def resolve_auto_block_swap(
         return _none(skip_reason)
     if DEVICE_TYPE_TORCH != "cuda" or not torch.cuda.is_available():
         return _none("block swap needs a CUDA or ROCm GPU")
-    if is_distributed():
-        return _none("each rank of a distributed launch owns its own device")
+    distributed = is_distributed()
+    if distributed:
+        sharded = _sharded_data_parallel_launch()
+        if sharded is not None:
+            return _none(f"{sharded} shards the weights across the ranks itself")
+        if not _single_card_device_map(device_map):
+            return _none("each rank of a distributed launch owns its own device")
+        # DDP refuses a CPU parameter.
+        offload_embedding = False
     try:
         from unsloth_zoo.device_map_planner import plan_block_swap
     except ImportError:
@@ -710,6 +1083,11 @@ def resolve_auto_block_swap(
             if target.type != "cuda":
                 return _none(f"the load places the model on {target}")
             target = target.index if target.index is not None else torch.cuda.current_device()
+        elif (
+            isinstance(device_map, (int, torch.device))
+            and _single_device_index(device_map) is not None
+        ):
+            target = _single_device_index(device_map)
         elif device_map is None or (
             isinstance(device_map, str)
             and (device_map in TRANSFORMERS_PLACEMENT_STRATEGIES or device_map.startswith("cuda"))
@@ -733,6 +1111,9 @@ def resolve_auto_block_swap(
         max_memory[d] = free if cap is None else min(free, cap)
 
     options = {k: planner_kwargs[k] for k in _BLOCK_SWAP_PLANNER_KEYS if k in planner_kwargs}
+    if "prefetch_depth" in options:
+        from ._utils import auto_plan_depth
+        options["prefetch_depth"] = auto_plan_depth(options["prefetch_depth"])
     try:
         planner_parameters = inspect.signature(plan_block_swap).parameters
     except (TypeError, ValueError):
@@ -755,6 +1136,11 @@ def resolve_auto_block_swap(
         + plan.describe().splitlines()[0].replace("block swap:", "offload_layers = 'auto':")
     )
     embedding = bool(getattr(plan, "offload_embedding", False))
+    if distributed:
+        # No collective: a loader only some ranks run would hang. Plans may differ per rank.
+        layers = int(plan.layers or 0)
+        print(f"Unsloth: offload_layers = 'auto' plans {layers} layers on this rank.")
+        return layers, ({"": target} if layers else device_map), False
     if not plan.layers:
         return 0, device_map, embedding
     if multi and plan.device_plan is not None:
@@ -1463,8 +1849,7 @@ def get_model_name(
     if new_model_name is None:
         new_model_name = model_name
     else:
-        # Also when the result equals the input: main returned it lowercased, so that is what is cached.
-        # The loader drops the revision on a real remap (_revision_for_resolved_repo), so probe main then.
+        # Also when equal to the input: main returned it lowercased. A real remap drops the revision.
         same_repo = new_model_name.lower() == str(model_name).lower()
         new_model_name = _prefer_legacy_lowercase_cache(
             new_model_name, local_files_only, cache_dir, revision if same_repo else None
@@ -1473,12 +1858,57 @@ def get_model_name(
     return new_model_name
 
 
+def _refuse_unless_private(path, what):
+    """On POSIX, refuse a path that is a symlink, not ours, or writable by group/other."""
+    import stat
+
+    if not hasattr(os, "getuid"):
+        return
+    info = os.lstat(path)
+    if stat.S_ISLNK(info.st_mode) or info.st_uid != os.getuid():
+        raise RuntimeError(
+            f"Unsloth: refusing {what} that is a symlink or owned by another user: {path}"
+        )
+    if stat.S_IMODE(info.st_mode) & 0o022:
+        raise RuntimeError(
+            f"Unsloth: refusing a group- or world-writable {what} "
+            f"(mode {stat.S_IMODE(info.st_mode):04o}): {path}"
+        )
+
+
+def _private_fp8_cache_dir():
+    """Per-user 0700 root for fp8 artifacts. The shared /tmp lets another account pre-create
+    a predictable artifact name and have it loaded (with trust_remote_code) as this user."""
+    if hasattr(os, "getuid"):
+        directory = os.path.join(tempfile.gettempdir(), "unsloth-fp8-%d" % os.getuid())
+    else:
+        # No owner check on Windows, and TEMP can be shared (services, build agents), so use the
+        # profile's LocalAppData, which Windows ACLs to this account.
+        base = os.environ.get("LOCALAPPDATA") or os.path.join(
+            os.path.expanduser("~"), "AppData", "Local"
+        )
+        directory = os.path.join(base, "unsloth", "fp8-cache")
+    os.makedirs(directory, mode = 0o700, exist_ok = True)
+    if hasattr(os, "getuid"):
+        info = os.lstat(directory)
+        # exist_ok does not apply mode, so tighten one of ours; anyone else's is refused below.
+        if not os.path.islink(directory) and info.st_uid == os.getuid() and info.st_mode & 0o077:
+            try:
+                os.chmod(directory, 0o700)
+            except OSError:
+                pass
+    _refuse_unless_private(directory, "an fp8 cache directory")
+    return directory
+
+
 def _offline_quantize_to_fp8(
     model_name: str,
     fp8_mode: str,
     *,
     text_only: bool = False,
     revision: str = None,
+    token = None,
+    trust_remote_code: bool = False,
 ) -> str:
     """Quantize the model to fp8 via torchao, save to a temp dir, return its path. For vllm >= 0.12.0, prefer dynamic quantization in vllm instead (via hf_overrides={"quantization_config_file": "torchao_config.json"}). The caller's revision has to reach the source loads, and the cache name has to name it too: the returned path replaces model_name, so the revision gate downstream drops the pin, and two refs of one repo would otherwise share a single artifact."""
     from transformers import (
@@ -1490,7 +1920,9 @@ def _offline_quantize_to_fp8(
         AutoConfig,
     )
 
-    config = AutoConfig.from_pretrained(model_name, revision = revision)
+    config = AutoConfig.from_pretrained(
+        model_name, revision = revision, token = token, trust_remote_code = trust_remote_code
+    )
     is_vlm = any(
         x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
         for x in (getattr(config, "architectures", None) or [])
@@ -1514,9 +1946,12 @@ def _offline_quantize_to_fp8(
             text_config = candidate
             is_vlm = False
 
-    temp_dir = tempfile.gettempdir()
+    temp_dir = _private_fp8_cache_dir()
     # Cache text-only and full-VLM artifacts separately so neither reuses the other (#5816).
     cache_name = model_name.split("/")[-1] + "-fp8-" + fp8_mode
+    # The basename alone would let org-a/model and org-b/model share one artifact.
+    source = os.path.abspath(model_name) if os.path.isdir(model_name) else model_name
+    cache_name += "-" + hashlib.sha256(source.encode("utf-8")).hexdigest()[:12]
     if revision is not None:
         # Sanitizing is lossy (release/v1 and release.v1 collapse), so a digest of the raw ref rides along and two refs never share an artifact.
         digest = hashlib.sha256(revision.encode("utf-8")).hexdigest()[:12]
@@ -1526,36 +1961,284 @@ def _offline_quantize_to_fp8(
         cache_name += "-text-only"
     new_model_name = os.path.join(temp_dir, cache_name)
     print(f"Unsloth: Quantizing '{model_name}' to fp8, using model_name='{new_model_name}' instead")
+    if os.path.lexists(new_model_name):
+        _refuse_unless_private(new_model_name, "a cached fp8 artifact")
 
     if not os.path.isdir(new_model_name):
         from ._utils import _apply_text_only_key_mapping
 
         qconfig = _get_torchao_fp8_config(fp8_mode)
         qconfig = TorchAoConfig(qconfig)
-        load_kwargs = dict(torch_dtype = "auto", device_map = "auto", quantization_config = qconfig)
+        # Under torchrun every rank converts: keep each on its own GPU, not all of them on "auto".
+        local_rank = os.environ.get("LOCAL_RANK")
+        device_map = (
+            {"": int(local_rank)}
+            if local_rank is not None and int(os.environ.get("WORLD_SIZE", "1")) > 1
+            else "auto"
+        )
+        load_kwargs = dict(
+            torch_dtype = "auto",
+            device_map = device_map,
+            quantization_config = qconfig,
+            trust_remote_code = trust_remote_code,
+        )
         if text_config is not None:
             _apply_text_only_key_mapping(load_kwargs, config, text_config)
             config = text_config
         auto_model = AutoModelForImageTextToText if is_vlm else AutoModelForCausalLM
         auto_processor = AutoProcessor if is_vlm else AutoTokenizer
-        model = auto_model.from_pretrained(
+        with sync_load_when_quantizing(qconfig, config):
+            model = auto_model.from_pretrained(
+                model_name,
+                config = config,
+                revision = revision,
+                token = token,
+                **load_kwargs,
+            )
+        tokenizer = auto_processor.from_pretrained(
             model_name,
-            config = config,
             revision = revision,
-            **load_kwargs,
+            token = token,
+            trust_remote_code = trust_remote_code,
         )
-        tokenizer = auto_processor.from_pretrained(model_name, revision = revision)
-        model.save_pretrained(new_model_name, safe_serialization = False)
-        del model
-        for _ in range(2):
-            clean_gpu_cache()
-            gc.collect()
-        tokenizer.save_pretrained(new_model_name)
+        # Atomic publish: the isdir check above must never see another rank's half-written artifact.
+        partial = tempfile.mkdtemp(prefix = cache_name + ".partial-", dir = temp_dir)
+        try:
+            model.save_pretrained(partial, safe_serialization = False)
+            del model
+            for _ in range(2):
+                clean_gpu_cache()
+                gc.collect()
+            tokenizer.save_pretrained(partial)
+            try:
+                os.rename(partial, new_model_name)
+            except OSError:
+                if not os.path.isdir(new_model_name):
+                    raise
+        finally:
+            shutil.rmtree(partial, ignore_errors = True)
     return new_model_name
+
+
+def _fp8_needs_offline_quantize(resolved_name, requested_name, fast_inference):
+    """True when no pre-quantized FP8 repo was mapped and vLLM won't quantize it on the fly."""
+    if resolved_name is not None and str(resolved_name).lower() != str(requested_name).lower():
+        return False
+    if not fast_inference or importlib.util.find_spec("vllm") is None:
+        return True
+    import vllm
+
+    return Version(vllm.__version__) < Version("0.12.0")
+
+
+def _drop_fp8_dequantize_conversions(model):
+    """Forget the Fp8Dequantize load conversions of a dequantizing fp8 load. save_pretrained reverses
+    them into Fp8Quantize, writing fp8 weights under a config with no quantization_config, so a reload
+    reads the raw fp8 values as 16bit weights. Returns how many conversions changed."""
+    conversions = getattr(model, "_weight_conversions", None)
+    if not conversions:
+        return 0
+    try:
+        from transformers.integrations.finegrained_fp8 import Fp8Dequantize
+    except Exception:
+        return 0
+
+    def _targets(conversion):
+        patterns = getattr(conversion, "_original_target_patterns", None) or []
+        return tuple(p[:-1] if p.endswith("$") else p for p in patterns)
+
+    def _sources(patterns):
+        # The dequantizing copy anchors `.weight` sources with `$` and adds `.weight_scale_inv$` ones.
+        patterns = [p[:-1] if p.endswith("$") else p for p in patterns or []]
+        return tuple(sorted(p for p in patterns if not p.endswith(".weight_scale_inv")))
+
+    def _source_forms(conversion):
+        return {
+            _sources(getattr(conversion, "_original_source_patterns", None)),
+            _sources(getattr(conversion, "source_patterns", None)),
+        }
+
+    def _ops(conversion):
+        operations = getattr(conversion, "operations", None) or []
+        return tuple(type(op).__name__ for op in operations if not isinstance(op, Fp8Dequantize))
+
+    def _signature(conversion):
+        return (
+            type(conversion),
+            getattr(conversion, "scope_prefix", None),
+            min(_source_forms(conversion)),
+            _targets(conversion),
+            _ops(conversion),
+        )
+
+    def _has_dequant(conversion):
+        return any(
+            isinstance(op, Fp8Dequantize) for op in getattr(conversion, "operations", None) or []
+        )
+
+    plain = None
+    kept, changed = [], 0
+    # Converters the load left untouched stay as they are; a counterpart equal to one is not re-added.
+    retained = {_signature(c) for c in conversions if not _has_dequant(c)}
+    for conversion in conversions:
+        operations = getattr(conversion, "operations", None) or []
+        if not _has_dequant(conversion):
+            kept.append(conversion)
+            continue
+        if getattr(getattr(model, "config", None), "quantization_config", None) is None:
+            # transformers dropped the fp8 config: 16bit weights, so no bitsandbytes stamp either.
+            model._unsloth_fp8_dequantized = True
+        if all(isinstance(op, Fp8Dequantize) for op in operations):
+            # weight + weight_scale_inv -> weight: the 16bit weight saves as it is.
+            changed += 1
+            continue
+        # A model converter (expert merge, ...) with the dequant prepended: keep its quantizer-free form.
+        if plain is None:
+            try:
+                from transformers.conversion_mapping import get_model_conversion_mapping
+                plain = get_model_conversion_mapping(model, None, None)
+            except Exception:
+                plain = []
+        # A composite model scopes one converter per submodel; the dequantizing copy can lose its
+        # scope_prefix, so an unscoped conversion is replaced by every scoped counterpart with the same
+        # sources, targets and operations (another submodel's converter can share type and targets).
+        scope = getattr(conversion, "scope_prefix", None)
+        sources = _source_forms(conversion)
+        matches = [
+            c
+            for c in plain
+            if type(c) is type(conversion)
+            and _targets(c) == _targets(conversion)
+            and _source_forms(c) & sources
+            and _ops(c) == _ops(conversion)
+            and (scope is None or getattr(c, "scope_prefix", None) == scope)
+        ]
+        if not matches:
+            print(
+                "Unsloth: an fp8 load conversion has no 16bit counterpart; save_pretrained may write fp8 "
+                f"weights for {list(_targets(conversion))}."
+            )
+            kept.append(conversion)
+            continue
+        for match in matches:
+            signature = _signature(match)
+            if signature not in retained:
+                retained.add(signature)
+                kept.append(match)
+        changed += 1
+    if changed:
+        model._weight_conversions = kept
+    return changed
+
+
+def _loaded_quant_method(config):
+    """quant_method of `config.quantization_config` as a lower-case string, dict or config object, else None."""
+    qc = getattr(config, "quantization_config", None)
+    if qc is None:
+        return None
+    method = qc.get("quant_method") if isinstance(qc, dict) else getattr(qc, "quant_method", None)
+    if method is None:
+        return None
+    return str(getattr(method, "value", method)).lower()
+
+
+def _fp8_dequantize_quantization_config(model_config):
+    """The checkpoint's fine-grained fp8 config with `dequantize = True` for an explicit 16bit load, else None.
+    On FP8-capable GPUs transformers otherwise keeps FP8Linear layers; FastModel passes the same flag."""
+    quantization_config = getattr(model_config, "quantization_config", None)
+    if quantization_config is None:
+        return None
+    as_dict = (
+        quantization_config
+        if isinstance(quantization_config, dict)
+        else getattr(quantization_config, "to_dict", lambda: {})()
+    )
+    quant_method = as_dict.get("quant_method", "")
+    # A config object's to_dict() can keep the QuantizationMethod enum, whose str() is not its value.
+    if str(getattr(quant_method, "value", quant_method)).lower() != "fp8":
+        return None
+    try:
+        from transformers import FineGrainedFP8Config
+    except Exception:
+        return None
+    if "dequantize" not in inspect.signature(FineGrainedFP8Config).parameters:
+        return None
+    try:
+        return FineGrainedFP8Config.from_dict(dict(as_dict), dequantize = True)
+    except Exception:
+        return None
+
+
+def _fp8_load_as_is(
+    model_name,
+    revision = None,
+    token = None,
+    trust_remote_code = False,
+):
+    """Only a readable, unquantized model config takes the offline fp8 path and its H100 gate: an already quantized checkpoint, an adapter (resolved to its base later) or an unreadable config loads as before."""
+    from transformers import AutoConfig
+
+    try:
+        from peft import PeftConfig
+
+        # The loader treats a repo holding both config.json and adapter_config.json as an adapter too.
+        PeftConfig.from_pretrained(model_name, revision = revision, token = token)
+        return True
+    except Exception:
+        pass
+    try:
+        config = AutoConfig.from_pretrained(
+            model_name, revision = revision, token = token, trust_remote_code = trust_remote_code
+        )
+    except Exception:
+        # Unreadable here (a Mistral-format checkpoint, say): leave it to the loader's own fallbacks.
+        return True
+    text_config = getattr(config, "text_config", None)
+    return bool(
+        getattr(config, "quantization_config", None)
+        or getattr(text_config, "quantization_config", None)
+    )
+
+
+class _Float8TensorLinear(torch.autograd.Function):
+    """torchao's Float8Tensor linear has no backward, so a LoRA layer Unsloth's kernels do not take (a biased Qwen2 q_proj, FastModel's PEFT path) failed in backward."""
+
+    @staticmethod
+    def forward(ctx, X, weight, bias):
+        ctx.weight = weight
+        ctx.bias_needs_grad = bias is not None and bias.requires_grad
+        return torch.nn.functional.linear(X, weight, bias)
+
+    @staticmethod
+    def backward(ctx, dY):
+        dX = dY @ ctx.weight.dequantize().to(dY.dtype)
+        dB = dY.reshape(-1, dY.shape[-1]).sum(0) if ctx.bias_needs_grad else None
+        return dX, None, dB
+
+
+def _float8_tensor_linear_forward(self, input):
+    # A trainable fp8 weight keeps torchao's own (backward-less) path, so it errors instead of silently getting no gradient.
+    if torch.is_grad_enabled() and input.requires_grad and not self.weight.requires_grad:
+        return _Float8TensorLinear.apply(input, self.weight, self.bias)
+    return torch.nn.functional.linear(input, self.weight, self.bias)
+
+
+def _enable_float8_tensor_backward(model: torch.nn.Module):
+    from ..kernels.utils import Float8Tensor
+    for module in model.modules():
+        weight = getattr(module, "weight", None)
+        if type(module) is torch.nn.Linear and isinstance(
+            getattr(weight, "data", weight), Float8Tensor
+        ):
+            module.forward = types.MethodType(_float8_tensor_linear_forward, module)
 
 
 def _tag_model_with_fp8_torchao_config(model: torch.nn.Module, fp8_mode: str):
     """Tag a model with a `TorchAOConfig` so downstream callers know how to handle it."""
+    try:
+        _enable_float8_tensor_backward(model)
+    except Exception:
+        pass
     try:
         base_config = _get_torchao_fp8_config(fp8_mode)
         model.torchao_config = TorchAOConfig(
@@ -1812,7 +2495,7 @@ def _route_compressed_tensors_fp8_to_unsloth(
     skip = (),
     default = "0",
 ):
-    # Opt-in for FP8 checkpoints (on-the-fly dequant trains slower than bf16); default beside NVFP4, where the
+    # Opt-in for FP8 checkpoints (on-the-fly dequant trains slower than bf16); default beside NVFP4.
     # decompressed FP8 layers would keep compressed-tensors' graph-breaking fake-quant forward.
     if os.environ.get("UNSLOTH_COMPRESSED_TENSORS_FP8_KERNELS", default) != "1":
         return 0
@@ -1973,8 +2656,7 @@ class _UnslothNVFP4Linear(torch.nn.Linear):
         fn,
         recurse = True,
     ):
-        # model.to(dtype) / .half() may move the packed weight and its scales but never cast them: an fp16 global
-        # scale overflows past 65504 and dequantizes the layer to zeros.
+        # model.to(dtype) must never cast the packed weight or scales: an fp16 global scale overflows.
         quant = {}
         for name in ("weight_packed", "weight_scale", "weight_global_scale", "input_global_scale"):
             param = self._parameters.get(name)
@@ -2358,6 +3040,43 @@ def _offload_store_set(store, key, value):
         raise TypeError(f"Unsloth: cannot write offloaded tensor into {type(store).__name__}")
 
 
+def _dequantize_multihead_attention_out_proj(model):
+    """nn.MultiheadAttention passes out_proj.weight straight to F.linear, so a bitsandbytes 4-bit out_proj
+    (SigLIP pooling head, granite-vision, #2672; transformers 4.x quantizes it) fails with "Half and Byte".
+    Swap each for a float Linear holding the dequantized weight, as transformers 5 loads it. Returns the count."""
+    try:
+        import bitsandbytes as bnb
+    except Exception:
+        return 0
+    n = 0
+    for module in model.modules():
+        if not isinstance(module, torch.nn.MultiheadAttention):
+            continue
+        out_proj = module.out_proj
+        quant_state = getattr(getattr(out_proj, "weight", None), "quant_state", None)
+        if not isinstance(out_proj, bnb.nn.Linear4bit) or quant_state is None:
+            continue
+        dtype = (
+            module.in_proj_weight.dtype if module.in_proj_weight is not None else quant_state.dtype
+        )
+        weight = bnb.functional.dequantize_4bit(out_proj.weight.data, quant_state).to(dtype)
+        new = torch.nn.modules.linear.NonDynamicallyQuantizableLinear(
+            out_proj.in_features,
+            out_proj.out_features,
+            bias = out_proj.bias is not None,
+            device = "meta",
+        )
+        new.weight = torch.nn.Parameter(weight, requires_grad = False)
+        if out_proj.bias is not None:
+            new.bias = out_proj.bias
+        if hasattr(out_proj, "_hf_hook"):
+            from accelerate.hooks import add_hook_to_module
+            add_hook_to_module(new, out_proj._hf_hook)
+        module.out_proj = new
+        n += 1
+    return n
+
+
 def _restore_dropped_fp8_scales(
     model,
     model_name,
@@ -2515,6 +3234,8 @@ def _checkpointed_layer_forward(original):
             not self.training
             or holder is None
             or not getattr(holder, "gradient_checkpointing", False)
+            # gradient_checkpointing_enable(every_n_layers = N) marks the layers it leaves out.
+            or self.__dict__.get("_unsloth_every_n_skip", False)
             or not torch.is_grad_enabled()
             # A cache would be written a second time by the recompute.
             or kwargs.get("past_key_value") is not None
@@ -2688,10 +3409,107 @@ def _decompress_compressed_tensors_model(model):
     return True
 
 
+def _dequantize_bitsandbytes_for_full_finetuning(
+    model,
+    dtype = None,
+    model_name = "",
+):
+    """Full finetuning marks every weight trainable, which the uint8 / int8 weights of a pre-quantized bitsandbytes checkpoint (a local `-bnb-4bit` folder, which the name mapper cannot redirect) reject (#2613)."""
+    quantizer = getattr(model, "hf_quantizer", None)
+    method = getattr(getattr(quantizer, "quantization_config", None), "quant_method", None)
+    # pre_quantized False = an explicit on-the-fly config; rounding then restoring would train a lossy copy.
+    if str(getattr(method, "value", method)).lower() != "bitsandbytes" or not getattr(
+        quantizer, "pre_quantized", True
+    ):
+        return False
+    print(
+        f"Unsloth: `{model_name}` is a pre-quantized bitsandbytes checkpoint, so full finetuning "
+        "dequantizes it to 16bit. For the best accuracy, full finetune the original 16bit model instead."
+    )
+    # transformers < 5 deletes these unguarded, and a composite's extracted text core lacks some of them.
+    for owner, attribute in (
+        (model, "quantization_method"),
+        (model.config, "quantization_config"),
+        (model.config, "_pre_quantization_dtype"),
+    ):
+        if not hasattr(owner, attribute):
+            setattr(owner, attribute, None)
+    # transformers < 5 has no dtype argument; prepare_model_for_training casts the weights anyway.
+    if "dtype" in inspect.signature(model.dequantize).parameters:
+        model.dequantize(dtype = dtype)
+    else:
+        model.dequantize()
+    # Left True by dequantize; the trainer's DataParallel gate and PEFT still read them.
+    for attribute in ("is_loaded_in_4bit", "is_loaded_in_8bit"):
+        if getattr(model, attribute, False):
+            setattr(model, attribute, False)
+    # transformers 5 keeps the load's bnb deserialize converter, whose missing reverse op makes save_pretrained raise NotImplementedError.
+    conversions = getattr(model, "_weight_conversions", None)
+    if isinstance(conversions, list):
+        model._weight_conversions = [
+            conversion
+            for conversion in conversions
+            if not any(
+                getattr(op, "hf_quantizer", None) is quantizer
+                for op in getattr(conversion, "operations", None) or ()
+            )
+        ]
+    return True
+
+
+def _compressed_tensors_format(quant_config):
+    if isinstance(quant_config, dict):
+        fmt = quant_config.get("format", None)
+    else:
+        fmt = getattr(quant_config, "format", None)
+        inner = getattr(quant_config, "quantization_config", None)
+        if inner is not None:
+            fmt = getattr(inner, "format", None) or fmt
+    return str(getattr(fmt, "value", fmt) or "unknown format")
+
+
+def _prepare_compressed_tensors_full_finetuning(model):
+    """Full finetuning marks every parameter trainable; integer leftovers of a compressed-tensors checkpoint reject that."""
+    quant_config = getattr(getattr(model, "config", None), "quantization_config", None)
+    if isinstance(quant_config, dict):
+        method = quant_config.get("quant_method", None)
+    else:
+        method = getattr(quant_config, "quant_method", None)
+    if str(getattr(method, "value", method)).lower() != "compressed-tensors":
+        return 0
+    name = getattr(getattr(model, "config", None), "_name_or_path", "") or "this model"
+    fmt = _compressed_tensors_format(quant_config)
+    moved = 0
+    for module_name, module in model.named_modules():
+        for param_name, param in list(module._parameters.items()):
+            if param is None or param.is_floating_point() or param.is_complex():
+                continue
+            full_name = f"{module_name}.{param_name}" if module_name else param_name
+            # A weight still packed to integers was not decompressed and cannot be trained.
+            if param_name in ("weight", "weight_packed"):
+                raise RuntimeError(
+                    f"Unsloth: `{name}` is a compressed-tensors checkpoint ({fmt}) and `{full_name}` "
+                    f"is still stored as {param.dtype}, so full finetuning cannot train it. "
+                    "Use `full_finetuning = False` to train LoRA on top of it, or full finetune "
+                    "the original 16bit model instead."
+                )
+            # Kept by decompress_model (e.g. int64 `weight_shape`) so the module can be recompressed on save:
+            # a persistent buffer keeps the state_dict key but leaves the trainable parameter list.
+            delattr(module, param_name)
+            module.register_buffer(param_name, param.data, persistent = True)
+            moved += 1
+    print(
+        f"Unsloth: `{name}` is a compressed-tensors checkpoint ({fmt}), so full finetuning trains "
+        "its decompressed 16bit weights. For the best accuracy, full finetune the original 16bit model instead."
+    )
+    return moved
+
+
 def _prepare_compressed_tensors_model(model, full_finetuning = False):
     # Routed FP8 / NVFP4 weights are frozen, so full finetuning always takes the decompressed bf16 weights.
     if full_finetuning:
         _decompress_compressed_tensors_model(model)
+        _prepare_compressed_tensors_full_finetuning(model)
         return
     _tag_compressed_tensors_modules(model)
     if _route_compressed_tensors_nvfp4_to_unsloth(model):
@@ -3064,6 +3882,88 @@ def _bnb_bits_requested(quantization_config):
     return None
 
 
+_ASYNC_LOAD_ENV = "HF_DEACTIVATE_ASYNC_LOAD"
+
+
+@contextlib.contextmanager
+def sync_load_when_quantizing(quantization_config, model_config):
+    """Sync-load on-the-fly quantization: transformers 5.0-5.3 worker threads put full-precision
+    tensors on the card faster than they are quantized (5.4+ already loads these synchronously)."""
+    if (
+        quantization_config is None
+        or getattr(model_config, "quantization_config", None) is not None
+        or _ASYNC_LOAD_ENV in os.environ
+    ):
+        yield
+        return
+    os.environ[_ASYNC_LOAD_ENV] = "1"
+    try:
+        yield
+    finally:
+        os.environ.pop(_ASYNC_LOAD_ENV, None)
+
+
+def gptq_trainable_quantization_config(model_config, user_quantization_config):
+    """GPTQConfig / AwqConfig asking gptqmodel for a trainable kernel on a GPTQ or AWQ checkpoint, else None.
+
+    gptqmodel's default kernels (Marlin / ExLlama) raise NotImplementedError on model.train(); only
+    `backend` is a loading attribute, so the checkpoint's own bits / group_size still apply.
+    """
+    if user_quantization_config is not None:
+        return None
+    qc = getattr(model_config, "quantization_config", None)
+    if qc is not None and not isinstance(qc, dict):
+        qc = qc.to_dict()
+    quant_method = str((qc or {}).get("quant_method", "")).lower()
+    if quant_method not in ("gptq", "awq"):
+        return None
+    # transformers 4.x wrote "autoawq" / "llm-awq" into AWQ configs (Qwen3-8B-AWQ); AwqConfig reads both as auto.
+    default_backends = (
+        (None, "auto", "autoawq", "llm-awq") if quant_method == "awq" else (None, "auto")
+    )
+    if qc.get("backend") not in default_backends:
+        return None
+    try:
+        from transformers import AwqConfig, GPTQConfig
+        from transformers.utils import is_gptqmodel_available
+    except ImportError:
+        return None
+    if not is_gptqmodel_available() or "backend" not in inspect.signature(GPTQConfig).parameters:
+        return None
+    if quant_method == "awq":
+        # transformers < 5 AwqConfig has no auto_trainable backend (autoawq era).
+        try:
+            from transformers.utils.quantization_config import AwqBackend
+        except ImportError:
+            return None
+        if not hasattr(AwqBackend, "AUTO_TRAINABLE"):
+            return None
+        return AwqConfig(bits = qc.get("bits", 4), backend = "auto_trainable")
+    return GPTQConfig(bits = qc["bits"], backend = "auto_trainable")
+
+
+def refuse_fast_inference_load_in_8bit(
+    load_in_8bit,
+    model_config = None,
+    quantization_config = None,
+):
+    """Refuse bnb 8-bit (flag, caller config or checkpoint config) under fast_inference: no 8-bit vLLM path."""
+    checkpoint_config = getattr(model_config, "quantization_config", None)
+    if not (
+        load_in_8bit
+        or _bnb_bits_requested(quantization_config) == 8
+        or _bnb_bits_requested(checkpoint_config) == 8
+    ):
+        return
+    raise NotImplementedError(
+        "Unsloth: fast_inference = True does not support bitsandbytes 8-bit "
+        "(load_in_8bit = True or an 8-bit bitsandbytes checkpoint): vLLM would "
+        "not run in 8-bit. Use load_in_4bit = True or 16-bit "
+        "(load_in_4bit = False, load_in_8bit = False) with fast_inference, or set "
+        "fast_inference = False to keep load_in_8bit."
+    )
+
+
 def warn_if_bitsandbytes_quantized_nothing(
     model,
     quantization_config,
@@ -3201,11 +4101,410 @@ def quantization_config_selects_bnb_4bit(quantization_config):
     return bool(get("load_in_4bit", False)) and not bool(get("load_in_8bit", False))
 
 
-def sync_unsloth_model_name_bnb_flags(load_in_4bit, load_in_8bit):
+_FUSED_EXPERT_SUFFIX = ".experts.gate_up_proj"
+
+
+def _safetensors_dtypes(path, names = None):
+    from safetensors import safe_open
+    with safe_open(path, framework = "pt") as f:
+        keys = f.keys() if names is None else names
+        return {k: f.get_slice(k).get_dtype() for k in keys}
+
+
+class GptOssUnknownExpertLayoutError(RuntimeError):
+    """A bitsandbytes gpt-oss checkpoint whose expert layout cannot be read without loading its weights."""
+
+
+class _UnreadableCheckpointNames(Exception):
+    """The checkpoint is a lone pytorch_model.bin whose tensor names cannot be read without loading it."""
+
+
+def _with_variant(filename, variant):
+    # Mirrors transformers' _add_variant.
+    if not variant:
+        return filename
+    parts = filename.split(".")
+    return ".".join(parts[:-1] + [variant, parts[-1]])
+
+
+def _index_weight_map(path):
+    import json
+    with open(path, "r", encoding = "utf-8") as f:
+        return json.load(f).get("weight_map", {}) or {}
+
+
+def _bin_dtypes(path):
+    # mmap + weights_only reads the pickle and storage metadata, not the tensor bytes.
+    state_dict = torch.load(path, map_location = "cpu", mmap = True, weights_only = True)
+    return {k: str(v.dtype) for k, v in state_dict.items() if isinstance(v, torch.Tensor)}
+
+
+def _hub_safetensors_header_dtypes(
+    repo_id,
+    filename,
+    revision = None,
+    token = None,
+):
+    """Range-reads one safetensors header from the Hub (never the tensor bytes)."""
+    import json
+    import struct
+    from huggingface_hub import HfFileSystem
+
+    fs = HfFileSystem(token = token)
+    with fs.open(f"{repo_id}/{filename}", "rb", revision = revision, block_size = 0) as f:
+        (size,) = struct.unpack("<Q", f.read(8))
+        header = json.loads(f.read(size))
+    return {k: v.get("dtype") for k, v in header.items() if k != "__metadata__"}
+
+
+def _hub_live_commit(
+    repo_id,
+    revision = None,
+    token = None,
+):
+    """The commit `revision` names on the Hub now, or None when it cannot be resolved (offline,
+    network error). A branch or tag can move past what the cache holds; transformers' online
+    `hf_hub_download` refreshes it, so cache lookups must use the live commit too."""
+    if isinstance(revision, str) and re.fullmatch(r"[0-9a-f]{40}", revision):
+        return revision
+    try:
+        from huggingface_hub import HfApi
+        return HfApi(token = token).model_info(repo_id, revision = revision).sha or None
+    except Exception:
+        return None
+
+
+_ESCAPING_WEIGHTS_FILENAME = object()
+
+
+def _explicit_weights_filename(transformers_weights):
+    """File transformers loads instead of standard names; None if unused, sentinel if it escapes the model dir."""
+    if not isinstance(transformers_weights, str) or not transformers_weights.endswith(
+        (".safetensors", ".safetensors.index.json")
+    ):
+        return None
+    base = os.path.abspath("model_dir")
+    try:
+        contained = (
+            os.path.commonpath([base, os.path.abspath(os.path.join(base, transformers_weights))])
+            == base
+        )
+    except ValueError:
+        contained = False
+    return transformers_weights if contained else _ESCAPING_WEIGHTS_FILENAME
+
+
+def _checkpoint_tensor_dtypes(
+    model_name,
+    token = None,
+    revision = None,
+    subfolder = None,
+    cache_dir = None,
+    local_files_only = False,
+    variant = None,
+    use_safetensors = None,
+    transformers_weights = None,
+):
+    """{tensor name: dtype} (dtype only for fused experts) without downloading weights; mirrors transformers'
+    file order, `variant`, `use_safetensors` and `transformers_weights`. Raises _UnreadableCheckpointNames for an unreadable lone .bin."""
+    if not isinstance(model_name, str) or not model_name:
+        return None
+    explicit = _explicit_weights_filename(transformers_weights)
+    if explicit is _ESCAPING_WEIGHTS_FILENAME:
+        return None
+    st_index, st_single = (
+        _with_variant(f, variant) for f in ("model.safetensors.index.json", "model.safetensors")
+    )
+    bin_index, bin_single = (
+        _with_variant(f, variant) for f in ("pytorch_model.bin.index.json", "pytorch_model.bin")
+    )
+    if use_safetensors is False:
+        st_index = st_single = None
+    elif use_safetensors:
+        bin_index = bin_single = None
+    if explicit is not None:
+        # Loaded verbatim (no variant / use_safetensors) with no fallback to standard names.
+        bin_index = bin_single = None
+        if explicit.endswith(".safetensors.index.json"):
+            st_index, st_single = explicit, None
+        else:
+            st_index, st_single = None, explicit
+    index_files = [f for f in (st_index, bin_index) if f]
+
+    def _local_shard_dtypes(path, names):
+        if path.endswith(".safetensors"):
+            return _safetensors_dtypes(path, names)
+        found = _bin_dtypes(path)
+        return {n: found.get(n) for n in names}
+
+    def _fill_fused_dtypes(weight_map, shard_dtypes):
+        out = dict.fromkeys(weight_map)
+        shards = {}
+        for name, shard in weight_map.items():
+            if name.endswith(_FUSED_EXPERT_SUFFIX):
+                shards.setdefault(shard, []).append(name)
+        for shard, names in shards.items():
+            try:
+                found = shard_dtypes(shard, names)
+            except Exception:
+                continue
+            out.update({n: found.get(n) for n in names})
+        return out
+
+    try:
+        if os.path.isdir(model_name):
+            root = os.path.join(model_name, subfolder) if subfolder else model_name
+            # transformers' order: a lone file beats an index of the same format, so a stale index
+            # left beside a re-saved model.safetensors must not decide the layout.
+            for filename in (st_single, st_index, bin_single, bin_index):
+                path = os.path.join(root, filename) if filename else None
+                if not path or not os.path.isfile(path):
+                    continue
+                if filename in index_files:
+                    return _fill_fused_dtypes(
+                        _index_weight_map(path),
+                        lambda shard, names: _local_shard_dtypes(os.path.join(root, shard), names),
+                    )
+                if filename == st_single:
+                    return _safetensors_dtypes(path)
+                try:
+                    return _bin_dtypes(path)
+                except Exception:
+                    raise _UnreadableCheckpointNames(path)
+            return None
+
+        if (
+            not local_files_only
+            and not subfolder
+            and not variant
+            and st_single
+            and explicit is None
+        ):
+            try:
+                from huggingface_hub import get_safetensors_metadata
+
+                metadata = get_safetensors_metadata(model_name, revision = revision, token = token)
+                out = dict.fromkeys(metadata.weight_map)
+                for file_metadata in metadata.files_metadata.values():
+                    for name, info in file_metadata.tensors.items():
+                        out[name] = info.dtype
+                return out
+            except Exception:
+                pass
+        from huggingface_hub import hf_hub_download
+
+        hub = dict(revision = revision, subfolder = subfolder, cache_dir = cache_dir, token = token)
+        if not local_files_only and not _env_says_offline():
+            # Cached files of a moved branch are stale: look them up under the commit it names now
+            # (a miss falls through to the live header read), as transformers' online resolver does.
+            live_commit = _hub_live_commit(model_name, revision, token)
+            if live_commit is not None:
+                hub["revision"] = live_commit
+
+        def _hub_index_dtypes(index_file):
+            try:
+                index_path = hf_hub_download(
+                    model_name, index_file, local_files_only = local_files_only, **hub
+                )
+            except Exception:
+                return None
+            weight_map = _index_weight_map(index_path)
+
+            def _hub_shard_dtypes(shard, names):
+                try:
+                    path = hf_hub_download(model_name, shard, local_files_only = True, **hub)
+                except Exception:
+                    path = None
+                if path is not None:
+                    return _local_shard_dtypes(path, names)
+                if local_files_only or not shard.endswith(".safetensors"):
+                    return {}
+                remote = f"{subfolder}/{shard}" if subfolder else shard
+                return _hub_safetensors_header_dtypes(model_name, remote, hub["revision"], token)
+
+            return _fill_fused_dtypes(weight_map, _hub_shard_dtypes)
+
+        # Same order as transformers: model.safetensors, its index, pytorch_model.bin, its index.
+        if st_single:
+            try:
+                return _safetensors_dtypes(
+                    hf_hub_download(model_name, st_single, local_files_only = True, **hub)
+                )
+            except Exception:
+                pass
+            if not local_files_only:
+                remote = f"{subfolder}/{st_single}" if subfolder else st_single
+                try:
+                    return _hub_safetensors_header_dtypes(
+                        model_name, remote, hub["revision"], token
+                    )
+                except Exception:
+                    pass
+        if st_index:
+            found = _hub_index_dtypes(st_index)
+            if found is not None:
+                return found
+        if not bin_single:
+            return _hub_index_dtypes(bin_index) if bin_index else None
+        try:
+            cached_bin = hf_hub_download(model_name, bin_single, local_files_only = True, **hub)
+        except Exception:
+            cached_bin = None
+        if cached_bin is not None:
+            try:
+                return _bin_dtypes(cached_bin)
+            except Exception:
+                raise _UnreadableCheckpointNames(cached_bin)
+        if not local_files_only:
+            from huggingface_hub import file_exists
+
+            remote = f"{subfolder}/{bin_single}" if subfolder else bin_single
+            try:
+                exists = file_exists(model_name, remote, revision = hub["revision"], token = token)
+            except Exception:
+                exists = False
+            if exists:
+                raise _UnreadableCheckpointNames(f"{model_name}/{remote}")
+        return _hub_index_dtypes(bin_index) if bin_index else None
+    except _UnreadableCheckpointNames:
+        raise
+    except Exception:
+        return None
+
+
+def _gpt_oss_bnb_checkpoint_expert_layout(dtypes):
+    """'split', 'fused', 'fused_no_quant_state' (packed bytes, no quant state), 'fused_unknown_dtype' or None."""
+    if not dtypes:
+        return None
+    if any(".experts.gate_up_projs." in n or ".experts.down_projs." in n for n in dtypes):
+        return "split"
+    fused = [n for n in dtypes if n.endswith(_FUSED_EXPERT_SUFFIX)]
+    if not fused:
+        return None
+    for name in fused:
+        if name + ".absmax" in dtypes:
+            continue
+        if dtypes[name] is None:
+            return "fused_unknown_dtype"
+        if dtypes[name] in ("U8", "I8", "torch.uint8", "torch.int8"):
+            return "fused_no_quant_state"
+    return "fused"
+
+
+def gpt_oss_checkpoint_has_fused_experts(
+    config,
+    model_name = None,
+    **hub_kwargs,
+):
+    """True when a gpt-oss checkpoint stores fused experts (zoo's bnb split classes cannot load them); None if unknown."""
+    if config is None:
+        return None
+    quantization_config = getattr(config, "quantization_config", None)
+    if not quantization_config:
+        return True
+    if model_name is None:
+        return False
+    get = (
+        quantization_config.get
+        if isinstance(quantization_config, dict)
+        else lambda key, default = None: getattr(quantization_config, key, default)
+    )
+    quant_method = get("quant_method", None)
+    quant_method = getattr(quant_method, "value", quant_method)
+    if str(quant_method).lower() != "bitsandbytes":
+        return False
+    hub_kwargs.setdefault("transformers_weights", getattr(config, "transformers_weights", None))
+    try:
+        dtypes = _checkpoint_tensor_dtypes(model_name, **hub_kwargs)
+    except _UnreadableCheckpointNames as exc:
+        # Anything not named *-unsloth-bnb-4bit may be a fused save; guessing split loads random experts.
+        if "unsloth-bnb-4bit" in str(model_name).lower():
+            return False
+        # A lone .bin outranks its index (transformers' order): advising an index cannot help.
+        unreadable = str(exc)
+        fix = (
+            "Re-save it with `safe_serialization = True` (safetensors), or re-save "
+            f"`{os.path.basename(unreadable)}` with a recent torch (zip serialization) so it can be "
+            "memory-mapped."
+        )
+        if not os.path.isfile(unreadable):
+            fix += " Downloading it locally first also lets its tensor names be read."
+        raise GptOssUnknownExpertLayoutError(
+            f"Unsloth: `{model_name}` is a bitsandbytes gpt-oss checkpoint whose weights load from a "
+            f"single `{os.path.basename(unreadable)}`, so its expert layout (fused or Unsloth's split "
+            "pre-quantized layout) cannot be read without loading the weights, and a wrong guess loads "
+            f"random experts. {fix}"
+        ) from None
+    layout = _gpt_oss_bnb_checkpoint_expert_layout(dtypes)
+    if layout == "fused_unknown_dtype":
+        raise GptOssUnknownExpertLayoutError(
+            f"Unsloth: `{model_name}` is a bitsandbytes gpt-oss checkpoint with fused experts and no "
+            "4-bit quantization state, and the dtype of its expert weights cannot be read without "
+            "downloading them, so packed 4-bit bytes (unrestorable) cannot be told apart from 16-bit "
+            "weights. Download it locally first, or re-save it with `safe_serialization = True`."
+        )
+    if layout == "fused_no_quant_state":
+        raise RuntimeError(
+            f"Unsloth: `{model_name}` is a 4-bit gpt-oss checkpoint whose fused expert weights were saved "
+            "without their bitsandbytes quantization state, so the experts cannot be restored. Reload the "
+            "original 16-bit checkpoint with `load_in_4bit = True` instead."
+        )
+    return layout == "fused"
+
+
+def quantization_config_is_bnb_4bit(quantization_config):
+    """True only for a present bitsandbytes 4-bit config (dict or BitsAndBytesConfig)."""
+    if quantization_config is None or (
+        isinstance(quantization_config, dict) and not quantization_config
+    ):
+        return False
+    return quantization_config_selects_bnb_4bit(quantization_config)
+
+
+def refuse_gpt_oss_fused_4bit_float16(dtype, supports_bfloat16 = True):
+    """Fused 4-bit experts compute in the model dtype and overflow float16 (split classes keep down_projs fp32).
+    Without bfloat16, dtype = torch.float32 still computes in float16: gpt-oss is a FORCE_FLOAT32 family, whose
+    float32 request there becomes the float16 weights + float32 islands recipe."""
+    if dtype != torch.float16 and (supports_bfloat16 or dtype != torch.float32):
+        return
+    raise NotImplementedError(
+        "Unsloth: this gpt-oss checkpoint stores fused experts, and in float16 (this GPU has no bfloat16, "
+        "or dtype = torch.float16) its fused 4-bit experts would overflow. dtype = torch.float32 does not "
+        "help on a GPU without bfloat16, since gpt-oss then still computes in float16. Use the pre-quantized "
+        "unsloth/gpt-oss-20b-unsloth-bnb-4bit (or -120b), or a GPU with bfloat16."
+    )
+
+
+def gpt_oss_keeps_checkpoint_quantization(model_name, config, load_in_4bit):
+    """True when gpt-oss ignores load_in_4bit / load_in_8bit. Unquantized still takes bnb 4-bit, not 8-bit
+    (bnb 8-bit only replaces nn.Linear, leaving fused experts 16-bit)."""
+    name = str(model_name).lower()
+    if "gpt-oss-20b" not in name and "gpt-oss-120b" not in name:
+        return False
+    return bool(getattr(config, "quantization_config", None)) or not load_in_4bit
+
+
+def sync_unsloth_model_name_bnb_flags(
+    load_in_4bit,
+    load_in_8bit,
+    config = None,
+    model_name = None,
+    **hub_kwargs,
+):
     """Make UNSLOTH_MODEL_NAME's `_load_in_4bit_`/`_load_in_8bit_` tokens match the EFFECTIVE bnb state (after get_model_name remap + check_and_disable). The per-load env is built from the pre-remap config (None for adapter-only PEFT repos), so its tokens can be wrong once the base resolves. Only the gpt-oss patch reads them, so this is gated to gpt-oss."""
     name = os.environ.get("UNSLOTH_MODEL_NAME", "")
     if "gpt_oss" not in name.replace("-", "_"):
         return
+    if load_in_4bit and gpt_oss_checkpoint_has_fused_experts(config, model_name, **hub_kwargs):
+        if os.environ.get("UNSLOTH_GPT_OSS_BNB4BIT_PATCHED", "0") == "1":
+            raise RuntimeError(
+                "Unsloth: this gpt-oss checkpoint is not quantized (fused experts), but the 4-bit gpt-oss "
+                "classes for pre-quantized checkpoints were already installed, so its experts and router "
+                "would load randomly initialised. Load the base model directly, use "
+                "`load_in_4bit = False`, or use a pre-quantized checkpoint such as "
+                "unsloth/gpt-oss-20b-unsloth-bnb-4bit."
+            )
+        load_in_4bit = False
     for flag, present in (
         ("_load_in_4bit_", bool(load_in_4bit)),
         ("_load_in_8bit_", bool(load_in_8bit)),
@@ -3290,6 +4589,78 @@ def _get_fp8_mode_and_check_settings(
 _ROTARY_INV_FREQ_BUFFER_NAMES = ("inv_freq", "short_inv_freq", "long_inv_freq")
 
 
+def _is_tensor_subclass_weight(t):
+    """A wrapper tensor subclass weight such as torchao's Float8Tensor (load_in_fp8). DDP's start-up
+    broadcast flattens every parameter (reshape to [-1]), which Float8Tensor does not implement.
+    torchao.float8's training weights (WeightWithDynamicFloat8CastTensor) implement it and DDP trains
+    them, so they are not counted, as in fsdp2_native's _float8_params."""
+    if type(t).__module__.startswith("torchao.float8"):
+        return False
+    if any(c.__module__.split(".")[0] == "torchao" for c in type(t).__mro__):
+        return True
+    try:
+        from torch.distributed.tensor import DTensor
+        if isinstance(t, DTensor):
+            return False
+    except Exception:
+        pass
+    try:
+        from torch.utils._python_dispatch import is_traceable_wrapper_subclass
+        return is_traceable_wrapper_subclass(t)
+    except Exception:
+        return False
+
+
+def _holds_float8(t, depth = 0):
+    """True when a tensor, or a tensor subclass's inner tensors (__tensor_flatten__), stores float8."""
+    if "float8" in str(t.dtype):
+        return True
+    if depth > 3 or not hasattr(t, "__tensor_flatten__"):
+        return False
+    try:
+        names = t.__tensor_flatten__()[0]
+    except Exception:
+        return False
+    for name in names:
+        inner = getattr(t, name, None)
+        if isinstance(inner, torch.Tensor) and _holds_float8(inner, depth + 1):
+            return True
+    return False
+
+
+def _ddp_can_flatten(t):
+    """DDP's start-up broadcast flattens every parameter (_flatten_dense_tensors); probe that on the weight."""
+    try:
+        torch._utils._flatten_dense_tensors([t.detach()])
+        return True
+    except Exception:
+        return False
+
+
+def _frozen_tensor_subclass_names_for_ddp(model, refuse_trainable = False):
+    """Frozen tensor subclass weights (load_in_fp8's Float8Tensor) stay out of DDP: every rank loads and
+    quantizes the same checkpoint, so there is nothing to broadcast, and a frozen weight has no gradient to
+    reduce. A trainable one would need both, which DDP cannot do for it: refused when asked."""
+    frozen, trainable = [], []
+    for name, p in model.named_parameters():
+        if not _is_tensor_subclass_weight(p):
+            continue
+        if not p.requires_grad:
+            frozen.append(name)
+        elif _holds_float8(p) or not _ddp_can_flatten(p):
+            # FP8 storage, and weights DDP's broadcast cannot flatten (Int8Tensor, AffineQuantizedTensor),
+            # are refused: trainable subclasses that flatten (torchao's int8 mixed precision training
+            # weight, NF4Tensor) train as before.
+            trainable.append(name)
+    if trainable and refuse_trainable:
+        raise NotImplementedError(
+            f"Unsloth: DDP cannot train the {type(model.get_parameter(trainable[0])).__name__} weight "
+            f"{trainable[0]} ({len(trainable)} such weights are trainable); it cannot be broadcast or have "
+            "its gradient all-reduced. Train LoRA on the frozen FP8 base (get_peft_model), or load in 16-bit."
+        )
+    return frozen
+
+
 def _exclude_rope_inv_freq_from_ddp(model):
     ignored = list(getattr(model, "_ddp_params_and_buffers_to_ignore", None) or [])
     for module_name, module in model.named_modules():
@@ -3298,6 +4669,12 @@ def _exclude_rope_inv_freq_from_ddp(model):
                 fqn = f"{module_name}.{buffer_name}" if module_name else buffer_name
                 if fqn not in ignored:
                     ignored.append(fqn)
+    try:
+        for fqn in _frozen_tensor_subclass_names_for_ddp(model):
+            if fqn not in ignored:
+                ignored.append(fqn)
+    except Exception:
+        pass
     if ignored:
         try:
             from torch.nn.parallel import DistributedDataParallel
@@ -3646,6 +5023,26 @@ def _note_offline_retry(error, retry_error):
         add_note(text)
     except Exception:
         pass
+
+
+# Set per load (family branches in FastModel.from_pretrained, the compiler's norm check) and read only during it. Left set, a later load of another family gets float32 norms beside 16 bit projections and fails with "float != BFloat16".
+LOAD_SCOPED_ENV_VARS = ("UNSLOTH_HIGH_PRECISION_LAYERNORM",)
+
+
+def _restore_load_scoped_env(fn):
+    @functools.wraps(fn)
+    def _wrapper(*args, **kwargs):
+        saved = {name: os.environ.get(name) for name in LOAD_SCOPED_ENV_VARS}
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            for name, value in saved.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+
+    return _wrapper
 
 
 def _offline_aware_load(fn):

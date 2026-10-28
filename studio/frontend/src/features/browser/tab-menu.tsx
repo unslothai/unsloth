@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A tab's menu, shared by its right-click in the tab strip and by a pinned page in the sidebar
-// (its 3-dot menu and its right-click), which offer the same actions.
-
 import {
   ContextMenuItem,
   ContextMenuSeparator,
@@ -25,12 +22,12 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { ForkIcon } from "@/lib/fork-icon";
 import { openExternalLink } from "@/lib/open-link";
 import { toast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
 import {
   Add01Icon,
   BubbleChatAddIcon,
   BubbleChatTemporaryIcon,
   Cancel01Icon,
-  Copy01Icon,
   Link01Icon,
   LinkSquare02Icon,
   PencilEdit02Icon,
@@ -40,6 +37,7 @@ import {
   VolumeHighIcon,
   VolumeMute02Icon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { type ComponentType, Fragment, type ReactNode } from "react";
@@ -47,7 +45,8 @@ import { hostOf } from "./address";
 import { callNative, useNativeBrowser } from "./native-support";
 import { nativeAction, hasNativeView } from "./native-view";
 import { type PinnedPage, usePinnedPagesStore } from "./pinned-pages-store";
-import { type BrowserTab, currentEntry, useBrowserStore } from "./store";
+import { type BrowserTab, chatTabs, currentEntry, useBrowserStore } from "./store";
+import { useShallow } from "zustand/shallow";
 
 const ICON = "size-icon";
 
@@ -79,16 +78,14 @@ export const DROPDOWN_TAB_MENU: TabMenuParts = {
   SubContent: DropdownMenuSubContent,
 };
 
-/** The address a tab shows, for a web page; null for files, new tabs and internal pages. */
 export function tabAddress(tab: BrowserTab | undefined): string | null {
   const entry = tab ? currentEntry(tab) : null;
   return entry?.kind === "web" ? (tab?.displayUrl ?? entry.url) : null;
 }
 
-/** The tab showing a pinned page, if one is open. */
 export function usePinnedTab(pinnedId: string | undefined): BrowserTab | undefined {
   return useBrowserStore((state) =>
-    pinnedId ? state.tabs.find((tab) => tab.pinnedId === pinnedId) : undefined,
+    pinnedId ? chatTabs(state).find((tab) => tab.pinnedId === pinnedId) : undefined,
   );
 }
 
@@ -121,7 +118,6 @@ export function unpinPage(pinnedId: string): void {
   for (const tab of store.tabs) if (tab.pinnedId === pinnedId) store.setTabPinned(tab.id, null);
 }
 
-/** Names the tab, and the sidebar pin it shows; empty gives both back their page's title. */
 export function renameTabTo(tab: BrowserTab | undefined, pinned: PinnedPage | undefined, title: string): void {
   if (tab) useBrowserStore.getState().renameTab(tab.id, title);
   const pinnedId = pinned?.id ?? tab?.pinnedId;
@@ -139,7 +135,6 @@ export function focusRenameField(selector: string): void {
 
 type Navigate = ReturnType<typeof useNavigate>;
 
-/** A new chat (temporary or not) with a copy of the tab, or the page, open beside it. */
 function forkToChat(navigate: Navigate, source: { tab?: BrowserTab; url: string }, temporary: boolean): void {
   resetToNewChat();
   if (temporary) useChatRuntimeStore.getState().setIncognito(true);
@@ -174,24 +169,26 @@ function Row({
   );
 }
 
-/** Menu rows. `strip` adds tab strip actions; `pinned` acts on the pinned page's open tab. Rows that
- *  don't apply are omitted, not disabled. */
+/** `strip` adds strip actions; `pinned` acts on the pinned tab. Inapplicable rows are omitted. */
 export function TabMenuItems({
   P,
   tab,
   pinned,
   strip = false,
+  subClassName = "browser-menu unsloth-plus-menu sidebar-row-menu",
   onRename,
 }: {
   P: TabMenuParts;
   tab?: BrowserTab;
   pinned?: PinnedPage;
   strip?: boolean;
+  /** Surface classes of the menu these items sit in, for its submenus. */
+  subClassName?: string;
   onRename: () => void;
 }) {
   const t = useT();
   const navigate = useNavigate();
-  const tabs = useBrowserStore((state) => state.tabs);
+  const tabs = useBrowserStore(useShallow(chatTabs));
   const url = (tab && tabAddress(tab)) ?? pinned?.url ?? null;
   const pinnedId = pinned?.id ?? tab?.pinnedId ?? null;
   const index = tab ? tabs.findIndex((other) => other.id === tab.id) : -1;
@@ -238,7 +235,7 @@ export function TabMenuItems({
             <HugeiconsIcon icon={ForkIcon} strokeWidth={1.75} className={ICON} />
             <span>{t("browser.tabMenu.fork")}</span>
           </P.SubTrigger>
-          <P.SubContent className="browser-menu unsloth-plus-menu sidebar-row-menu w-48">
+          <P.SubContent className={cn(subClassName, "w-48")}>
             <Row P={P} icon={BubbleChatAddIcon} onSelect={() => forkToChat(navigate, { tab, url }, false)}>
               {t("browser.tabMenu.forkNewChat")}
             </Row>

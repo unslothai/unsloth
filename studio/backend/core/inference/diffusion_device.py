@@ -12,7 +12,9 @@ the capability flags optimisation paths key off.
 from __future__ import annotations
 
 import os
+import types
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -29,8 +31,7 @@ class DiffusionDeviceTarget:
     supports_default_torch_compile: bool
     supports_pinned_transfer: bool
     supports_float64: bool = True
-    # Selected CUDA/ROCm physical index, kept OUT of ``device``: the memory, speed and attention policies compare that
-    # string against "cuda", so a "cuda:1" there disables them silently.
+    # Kept out of device: policies compare device to "cuda", so "cuda:1" would disable them.
     ordinal: Optional[int] = None
 
     @property
@@ -62,16 +63,7 @@ def force_float32_rope(
     *,
     logger: Any = None,
 ) -> int:
-    """Drop the float64 intermediate in RoPE frequency tables on a device without float64.
-
-    LTX-2 builds ``theta ** linspace(0, 1, n)`` in float64 and casts straight back to float32;
-    Metal has no float64, so torch raises before the first step. The modules gate that
-    intermediate on a ``double_precision`` attribute, and clearing it costs at most 6 float32 ULP
-    against a value the next line truncates anyway.
-
-    Returns the number of modules changed; a no-op wherever float64 works, so CUDA/XPU/CPU stay
-    bit-for-bit.
-    """
+    """Metal has no float64, so RoPE tables drop their float64 intermediate; a no-op where float64 works."""
     if target.supports_float64:
         return 0
     changed = 0
@@ -88,62 +80,83 @@ def force_float32_rope(
     return changed
 
 
-# Fraction of the device's recommended working set above which a decode starts synchronising.
-DECODE_SYNC_FRACTION = 0.85
+# Downsample shortcuts that zero-pad only the frame axis in front, to a multiple of ``factor_t``.
+_FRAME_PAD_CLASSES = frozenset({"QwenImage21AvgDown3D", "AvgDown3D"})
 
 
-def install_decoder_sync(
+def _prepend_zero_frames(module: Any, args: tuple) -> Optional[tuple]:
+    x = args[0]
+    pad_t = -x.shape[2] % module.factor_t
+    if not pad_t:
+        return None
+    import torch
+
+    zeros = x.new_zeros((*x.shape[:2], pad_t, *x.shape[3:]))
+    return (torch.cat([zeros, x], dim = 2), *args[1:])
+
+
+def install_frame_pad_fix(
+    pipe: Any,
+    target: DiffusionDeviceTarget,
+    *,
+    logger: Any = None,
+) -> int:
+    """MPS F.pad returns wrong data for large 5-D frame-axis pads, so shortcuts concatenate zero frames."""
+    if target.device != "mps":
+        return 0
+    patched = 0
+    for component in getattr(pipe, "components", {}).values() or ():
+        modules = getattr(component, "modules", None)
+        if not callable(modules):
+            continue
+        for module in modules():
+            if type(module).__name__ not in _FRAME_PAD_CLASSES:
+                continue
+            if getattr(module, "_unsloth_frame_pad_fix", False):
+                continue
+            module.register_forward_pre_hook(_prepend_zero_frames)
+            module._unsloth_frame_pad_fix = True
+            patched += 1
+    if patched and logger is not None:
+        logger.info(
+            "diffusion.vae_frame_pad: %d module(s) pad by concatenation (MPS pad defect)", patched
+        )
+    return patched
+
+
+def install_vae_sync(
     pipe: Any,
     target: DiffusionDeviceTarget,
     *,
     logger: Any = None,
 ) -> bool:
-    """Cap the memory a video VAE decode holds on Metal, by synchronising once it is running out.
+    """Synchronise Metal after every VAE decoder / encoder call (one per tile or latent frame).
 
-    Wan's VAE decodes one latent frame per call in a loop that never forces a commit, and Metal
-    cannot reuse a buffer until the work holding it completes, so intermediates accumulate until
-    the OS kills the process. Neither tiling (the growth is within one tile) nor torch's adaptive
-    commit bounds it.
-
-    Fires per decoder call and only above the threshold, so a decode with room to spare pays only
-    the memory read; synchronising costs the pipelining, not the decode.
-
-    ``torch.mps.recommended_max_memory()`` arrived in torch 2.5 while install.sh keeps an existing
-    venv's torch as far back as 2.4, so an unreadable budget falls back to synchronising every
-    call (measured to hold the same decode at 4.90 GiB for no wall-clock cost) rather than
-    failing the load or dropping the bound. Every probe is best-effort for the same reason.
+    Metal cannot reuse a buffer until the queued work holding it completes, so an unsynchronised
+    tile loop accumulates every call's intermediates; ``empty_cache`` cannot return them.
     """
     if target.device != "mps":
         return False
-    decoder = getattr(getattr(pipe, "vae", None), "decoder", None)
-    if not callable(getattr(decoder, "register_forward_hook", None)):
+    vae = getattr(pipe, "vae", None)
+    modules = [
+        module
+        for module in (getattr(vae, "decoder", None), getattr(vae, "encoder", None))
+        if callable(getattr(module, "register_forward_hook", None))
+    ]
+    if not modules:
         return False
     import torch
 
-    budget: Optional[float] = None
-    try:
-        budget = torch.mps.recommended_max_memory() * DECODE_SYNC_FRACTION
-    except Exception as exc:  # noqa: BLE001 -- torch < 2.5 has no such reading
-        if logger is not None:
-            logger.info(
-                "video.decoder_sync: no memory reading (%s); synchronising every decode", exc
-            )
-
     def _sync(_module, _args, _output) -> None:
-        if budget is not None:
-            try:
-                if torch.mps.driver_allocated_memory() < budget:
-                    return
-            except Exception:  # noqa: BLE001 -- an unreadable gauge syncs, the safe side
-                pass
         try:
             torch.mps.synchronize()
         except Exception:  # noqa: BLE001 -- a decode is worth more than the bound
             pass
 
-    decoder.register_forward_hook(_sync)
-    if logger is not None and budget is not None:
-        logger.info("video.decoder_sync: decode synchronises above %.1f GiB", budget / 1024**3)
+    for module in modules:
+        module.register_forward_hook(_sync)
+    if logger is not None:
+        logger.info("diffusion.vae_sync: VAE synchronises after every decoder / encoder call")
     return True
 
 
@@ -204,12 +217,7 @@ def install_rocm_vae_bf16_decode(
     *,
     logger: Any = None,
 ) -> Optional[str]:
-    """Decode an fp32-pinned video VAE (Wan) in bf16 on ROCm gfx11 / gfx12; returns the mode engaged, else None.
-
-    fp32 runs Wan's 3D convs as im2col plus a small-tile fp32 GEMM without matrix cores (~385 s of a 1280x704x21 clip on
-    gfx1151); ComfyUI decodes this VAE in bf16 on these cards. "weights" (default) casts only ``post_quant_conv`` +
-    ``decoder``, so ``vae.dtype`` and image-to-video encodes stay fp32; "autocast" keeps fp32 weights. Both return fp32.
-    UNSLOTH_VIDEO_VAE_BF16_DECODE: 0 off, auto / weights / autocast pick the mode, 1 also allows any bf16 CUDA device."""
+    """fp32 Wan VAE decode is very slow on ROCm gfx11/12; UNSLOTH_VIDEO_VAE_BF16_DECODE selects bf16."""
     gate = os.environ.get(VAE_BF16_DECODE_ENV, "auto").strip().lower()
     if gate in _VAE_BF16_OFF or target.device != "cuda":
         return None
@@ -244,6 +252,9 @@ def install_rocm_vae_bf16_decode(
     if mode == "weights" and not parts:
         mode = "autocast"  # no separable decode half: cast nothing
 
+    # The wrapped decode lives in a mutable slot (as the fp16 decode's does): a layer that must sit under this cast (a
+    # compiled decode guard under the OOM scope) can be found and rewrapped in place.
+    slot = types.SimpleNamespace(decode = decode)
     if mode == "weights":
         for part in parts:
             part.to(torch.bfloat16)
@@ -253,16 +264,17 @@ def install_rocm_vae_bf16_decode(
         def _bf16_decode(z: Any, *args: Any, **kwargs: Any) -> Any:
             if isinstance(z, torch.Tensor) and z.is_floating_point():
                 z = z.to(torch.bfloat16)
-            return _as_float32(decode(z, *args, **kwargs), torch)
+            return _as_float32(slot.decode(z, *args, **kwargs), torch)
 
     else:
 
         def _bf16_decode(*args: Any, **kwargs: Any) -> Any:
             with torch.autocast(device_type = "cuda", dtype = torch.bfloat16):
-                out = decode(*args, **kwargs)
+                out = slot.decode(*args, **kwargs)
             return _as_float32(out, torch)
 
     _bf16_decode._unsloth_bf16_decode = True  # type: ignore[attr-defined]
+    _bf16_decode._unsloth_decode_slot = slot  # type: ignore[attr-defined]
     _bf16_decode.__wrapped__ = decode  # type: ignore[attr-defined]
     vae.decode = _bf16_decode
     vae._unsloth_bf16_decode_mode = mode
@@ -287,8 +299,9 @@ def resolve_selected_cuda_ordinal(
     order (``4,5`` -> torch 0,1; ``1,0`` reverses them), hence going through the hardware layer
     that owns the mask.
 
-    Neither engine shards a checkpoint, so several cards still resolve to one: most free VRAM
-    wins, as ``auto_select_gpu_ids`` already does for training, ties to the lowest ordinal. Taking
+    Neither engine shards a checkpoint, so several cards resolve to one PRIMARY card (the
+    multi-GPU layer, diffusion_multigpu, may place companions or a denoiser replica on the
+    others, see :func:`resolve_selected_cuda_ordinals`): most free VRAM wins, as ``auto_select_gpu_ids`` already does for training, ties to the lowest ordinal. Taking
     the FIRST id instead would land on ordinal 0 whenever everything is selected, i.e. the small
     card on the mixed boxes this exists for. Resolved ONCE per load and carried, never re-derived:
     free VRAM moves the moment the checkpoint lands.
@@ -301,9 +314,52 @@ def resolve_selected_cuda_ordinal(
     still run -- they read the mask and nvidia-smi -- so the single card the UI sends resolves and
     only a multi-card pick comes back None.
     """
+    ordinals = resolve_selected_cuda_ordinals(gpu_ids)
+    if not ordinals:
+        return None
+    if len(ordinals) == 1:
+        return ordinals[0]
+    if not allow_ranking:
+        return None
+    return rank_cuda_ordinals(ordinals)[0]
+
+
+def _ranking_room_mib(free_mib: int, total_mib: Optional[int]) -> int:
+    """What a card offers a primary pick."""
+    from .diffusion_memory import DeviceMemory, _safe_device_budget_mib, _user_budget_reserve_mib
+
+    if _user_budget_reserve_mib(1 << 20) <= 0:
+        return int(free_mib)
+    memory = DeviceMemory("cuda", "cuda", "discrete_vram", int(free_mib), total_mib)
+    return int(_safe_device_budget_mib(memory) or 0)
+
+
+def rank_cuda_ordinals(ordinals: list[int]) -> list[int]:
+    """``ordinals`` by free VRAM, most first, ties to the lowest ordinal (an unreadable card sorts last)."""
+
+    def _free_vram(ordinal: int) -> int:
+        try:
+            import torch
+
+            free, total = torch.cuda.mem_get_info(ordinal)
+            from .diffusion_memory import _user_budget_reserve_mib
+
+            if _user_budget_reserve_mib(1 << 20) <= 0:
+                return int(free)
+            return _ranking_room_mib(int(free) >> 20, int(total) >> 20) << 20
+        except Exception:  # noqa: BLE001 -- an unreadable card sorts last rather than failing the load
+            return -(1 << 62)
+
+    return sorted(ordinals, key = lambda ordinal: (-_free_vram(ordinal), ordinal))
+
+
+def resolve_selected_cuda_ordinals(gpu_ids: Optional[list[int]]) -> list[int]:
+    """Every torch ordinal of the selection, in ascending order (validated and translated through the mask exactly as
+    :func:`resolve_selected_cuda_ordinal` does). Empty for no selection; raises ValueError for one this host cannot
+    honour. The multi-GPU layer (diffusion_multigpu) uses the cards beyond the primary."""
     wanted = sorted({int(gpu_id) for gpu_id in gpu_ids or ()})
     if not wanted:
-        return None
+        return []
     try:
         from utils.hardware.hardware import (
             get_parent_visible_gpu_ids,
@@ -313,43 +369,247 @@ def resolve_selected_cuda_ordinal(
         raise ValueError(f"GPU selection is unavailable on this host: {exc}") from exc
     allowed = resolve_requested_gpu_ids(wanted)
     visible = get_parent_visible_gpu_ids()
-    # Torch enumerates the parent-visible list in order, so its ordinal for a physical id is that id's position in the
-    # mask. Unmasked, the layer reports range(physical count) and this is the identity mapping.
+    # Patched forwards mirroring diffusers semantics with a fused fast path, e.g. addcmul(input, t1, t2) == input + t1 * t2
     ordinals = [visible.index(gpu_id) for gpu_id in allowed if gpu_id in visible]
     if not ordinals:
         raise ValueError(
             f"Requested GPU {wanted} but none of them are visible to this process "
             f"(visible: {visible}). Clear the GPU selection to use the default device."
         )
-    if len(ordinals) == 1:
-        return ordinals[0]
-    if not allow_ranking:
+    return sorted(dict.fromkeys(ordinals))
+
+
+_UNPLANNED = object()
+# Set by an auto-switch for its locality check and the load it starts (both copy this context), so free VRAM
+# moving in between cannot rank the load onto a card whose precision picks an artifact the check never saw.
+# A pinned None is a decision too (keep the current device), so the backend fallbacks honour it.
+_PLANNED_ORDINAL: ContextVar[Any] = ContextVar("media_planned_gpu_ordinal", default = _UNPLANNED)
+
+# Free-VRAM readings this close are noise, so the lower ordinal keeps an idle uniform host on card 0.
+_AUTO_FREE_TIE_BYTES = 256 * 1024**2
+# Set once any thread was pinned to a card other than 0: pooled workers may then sit elsewhere.
+_PINNED_AWAY_FROM_ZERO = False
+
+
+def resolve_auto_cuda_ordinal() -> Optional[int]:
+    """The torch ordinal an AUTOMATIC diffusion load should run on, or None to keep the current device.
+
+    Bare "cuda" is the current device, PCI slot 0 under Studio's PCI_BUS_ID order, so on a multi-GPU host
+    the load budgeted against that card alone and offloaded to RAM beside an idle bigger one (#8235). Neither
+    engine shards, so this picks ONE card: most free VRAM, like ``auto_select_gpu_ids`` and Ollama's
+    single-GPU fit, ties to the lowest ordinal. Read from nvidia-smi alone (no CUDA context per card, so no
+    torch fallback) and keyed through the parent-visible list, so a mask keeps deciding which cards exist.
+
+    None when card 0 wins (ties included) on identical cards, on one visible card (unchanged),
+    a UUID/MIG mask (no physical ids), ROCm (an APU's free reading is the
+    shared host pool, which would outrank a discrete card), a CUDA order other than nvidia-smi's (its rows are
+    then not torch's ordinals), an integrated GPU (its rows are a carve-out or N/A, and its real budget is the
+    shared host pool), missing nvidia-smi telemetry and any failure. Never raises. Only cards at least as
+    capable as the current one compete. A pinned plan (auto-switch, or the route's own ranking) is returned
+    as is.
+    """
+    planned = _PLANNED_ORDINAL.get()
+    if planned is not _UNPLANNED:
+        return planned
+    try:
+        from utils.hardware import hardware as hw
+
+        if hw.IS_ROCM:
+            return None
+        visible = hw.get_parent_visible_gpu_ids()
+        if len(visible) < 2:
+            return None
+        if hw._cuda_instance_ids_active():
+            # MIG instance ordinals are not nvidia-smi rows; keep card 0 explicit.
+            return 0
+        if not hw._cuda_order_matches_smi():
+            # No ranking (rows are not ordinals), but on cards that are not provably identical keep the
+            # current card explicit, so a pooled thread left on another card cannot preflight against it.
+            return None if hw._cuda_cards_identical() is True else 0
+        if hw._integrated_cuda_rows(visible)[0]:
+            return None
+        result = hw._smi_visible_utilization(hw._get_parent_visible_gpu_spec())
+        devices = (result or {}).get("devices", [])
+        from utils.hardware import nvidia
+
+        caps = nvidia.get_compute_capabilities()
+    except Exception:  # noqa: BLE001 -- automatic placement falls back to the current device
+        return None
+    # CUDA stops a mask at an entry naming no card ("0,99,1" is just 0), so later ids are not ordinals.
+    if not {d.get("index") for d in devices} >= set(visible):
+        return None
+    # Only cards at least as capable as the current one (ordinal 0): a freer older card can lack the
+    # installed torch's kernels or a precision the request needs, where the current card works today.
+    floor = caps.get(visible[0])
+    if floor is None:
+        return None
+    try:
+        from .diffusion_memory import _user_budget_reserve_mib
+        budgeted = _user_budget_reserve_mib(1 << 20) > 0
+    except Exception:  # noqa: BLE001 -- unreadable setting: the default ranking
+        budgeted = False
+    free_by_ordinal: dict[int, float] = {}
+    for device in devices:
+        index, total, used = (
+            device.get("index"),
+            device.get("vram_total_gb"),
+            device.get("vram_used_gb"),
+        )
+        if index not in visible or total is None or used is None:
+            continue
+        if caps.get(index, (0, 0)) < floor:
+            continue
+        free_bytes = max(float(total) - float(used), 0.0) * 1024**3
+        if budgeted:
+            try:
+                free_bytes = float(
+                    _ranking_room_mib(int(free_bytes) >> 20, int(float(total) * 1024)) << 20
+                )
+            except Exception:  # noqa: BLE001 -- never raises: keep the raw reading
+                pass
+        free_by_ordinal[visible.index(index)] = free_bytes
+    if not free_by_ordinal:
+        return None
+    best = max(free_by_ordinal.values())
+    winner = min(o for o, free in free_by_ordinal.items() if best - free <= _AUTO_FREE_TIE_BYTES)
+    if winner:
+        # Physical rows hide MIG slices: a MIG card's row is the whole card, and its CUDA
+        # ordinals are slices (or absent before R570), so a row-ranked winner is not a card
+        # CUDA hands out. Unknown MIG status or a MIG card in the set keeps card 0 explicit.
+        mig = hw._nvidia_mig_gpu_indices_or_none()
+        if mig is None or set(visible) & mig:
+            return 0
+        return winner
+    # Card 0 won. Identical cards (same capability and size) keep None, the unpinned path they always had,
+    # while no thread was ever pinned elsewhere. Mixed cards, or a process where a pooled thread may sit on
+    # another card, keep 0 explicit so preflight and load read the ranked card.
+    if _PINNED_AWAY_FROM_ZERO:
+        return 0
+    totals = {d.get("vram_total_gb") for d in devices if d.get("index") in visible}
+    if len({caps.get(i) for i in visible}) == 1 and len(totals) == 1:
+        # Physical rows hide MIG slice sizes, so a MIG card makes the set mixed.
+        mig = hw._nvidia_mig_gpu_indices_or_none()  # None (unknown) keeps card 0 explicit
+        if mig is not None and not set(visible) & mig:
+            return None
+    return 0
+
+
+def smi_free_total_mib(ordinal: int) -> tuple[Optional[int], Optional[int]]:
+    """(free, total) MiB of torch ordinal ``ordinal`` from nvidia-smi, so a card can be sized without a CUDA context
+    on it. (None, None) wherever ``resolve_auto_cuda_ordinal`` would not trust the rows (ROCm, a CUDA order other
+    than nvidia-smi's, a mask naming no card, an integrated or MIG card, missing telemetry). An R570+ MIG instance
+    ordinal is sized from that instance's own slice row, or (None, None) when it was not read. Never raises."""
+    try:
+        from utils.hardware import hardware as hw
+
+        if hw.IS_ROCM:
+            return None, None
+        if hw._cuda_instance_ids_active():
+            return hw._cuda_instance_free_total_mib(int(ordinal))
+        if not hw._cuda_order_matches_smi():
+            return None, None
+        visible = hw.get_parent_visible_gpu_ids()
+        if not 0 <= int(ordinal) < len(visible):
+            return None, None
+        index = visible[int(ordinal)]
+        if hw._integrated_cuda_rows(visible)[0]:
+            return None, None
+        mig = hw._nvidia_mig_gpu_indices_or_none()
+        if mig is None or index in mig:
+            return None, None
+        result = hw._smi_visible_utilization(hw._get_parent_visible_gpu_spec())
+        for device in (result or {}).get("devices", []):
+            if device.get("index") != index:
+                continue
+            total, used = device.get("vram_total_gb"), device.get("vram_used_gb")
+            if total is None or used is None:
+                return None, None
+            return int(max(float(total) - float(used), 0.0) * 1024), int(float(total) * 1024)
+    except Exception:  # noqa: BLE001 -- an unreadable card is simply not used
+        pass
+    return None, None
+
+
+def auto_cuda_ranking_possible_cached() -> Optional[bool]:
+    """``auto_cuda_ranking_possible`` when it can be answered from state already in memory, else None.
+
+    For the event loop: a cold device detection, an uncounted unmasked host or a non-numeric mask may run
+    nvidia-smi, so those go to a worker thread instead.
+    """
+    try:
+        from utils.hardware import hardware as hw
+
+        if hw.DEVICE is None:
+            return None
+        # From memory only: get_device() waits on _DETECT_LOCK, which a detection pass in flight
+        # holds, and this runs on the event loop.
+        if hw.IS_ROCM or hw.DEVICE != hw.DeviceType.CUDA:
+            return False
+        if not hw.DETECTION_COMPLETE.is_set():
+            return None
+        mask = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if mask is None:
+            # A stray HIP/ROCR mask is then read as the mask: leave that to the worker gate.
+            if hw._physical_gpu_count is None or {
+                "HIP_VISIBLE_DEVICES",
+                "ROCR_VISIBLE_DEVICES",
+            } & set(os.environ):
+                return None
+            # The count in memory: get_physical_gpu_count() may re-read nvidia-smi, the worker gate does.
+            return hw._physical_gpu_count >= 2
+        if not all(token.strip().isdigit() for token in mask.split(",") if token.strip()):
+            return None
+        # get_parent_visible_gpu_ids' CUDA rule, without its get_device(): an empty entry ends the
+        # list and a repeat empties it.
+        ids: list[int] = []
+        for token in (token.strip() for token in mask.split(",")):
+            if not token:
+                break
+            if int(token) in ids:
+                return False
+            ids.append(int(token))
+        return len(ids) >= 2
+    except Exception:  # noqa: BLE001 -- let the worker-thread gate decide
         return None
 
-    def _free_vram(ordinal: int) -> int:
-        try:
-            import torch
-            return int(torch.cuda.mem_get_info(ordinal)[0])
-        except Exception:  # noqa: BLE001 -- an unreadable card sorts last rather than failing the load
-            return -1
 
-    return max(ordinals, key = lambda ordinal: (_free_vram(ordinal), -ordinal))
+def auto_cuda_ranking_possible() -> bool:
+    """Whether an automatic load could pick another card: NVIDIA CUDA with 2+ parent-visible GPUs.
+
+    Read from the cached device and mask only (no torch, no capability or dtype probe), so zero / one GPU,
+    ROCm, XPU, MPS and CPU keep the pre-ranking fast path. Never raises.
+    """
+    try:
+        from utils.hardware import hardware as hw
+
+        # Resolve first: a cold get_device() is what sets IS_ROCM.
+        device = hw.get_device()
+        if hw.IS_ROCM or device != hw.DeviceType.CUDA:
+            return False
+        return len(hw.get_parent_visible_gpu_ids()) >= 2
+    except Exception:  # noqa: BLE001 -- unknown host keeps the current device
+        return False
+
+
+def auto_cuda_ordinal_for_load() -> Optional[int]:
+    """``resolve_auto_cuda_ordinal`` behind the cheap gate and the CUDA target check, for automatic loads."""
+    planned = _PLANNED_ORDINAL.get()
+    if planned is not _UNPLANNED:
+        return planned
+    if not auto_cuda_ranking_possible():
+        return None
+    if resolve_diffusion_device_target().device != "cuda":
+        return None
+    return resolve_auto_cuda_ordinal()
 
 
 @contextmanager
 def diffusion_device_scope(ordinal: Optional[int]):
-    """Make ``ordinal`` the current CUDA device for the block, then restore the previous one.
-
-    For probes on a POOLED thread. ``torch.cuda.set_device`` is thread-local but not scoped, so a
-    permanent pin on an asyncio.to_thread executor thread outlives the request and leaves the next
-    one -- perhaps an automatic load -- resolving bare "cuda" against the previous request's card.
-    Worker threads are dedicated and keep the permanent pin.
-    """
+    """Restores the prior CUDA device so a pooled worker's pin does not leak into the next request."""
     if ordinal is None:
         yield
         return
-    # Entering the context is what may fail on an unusable index; the BODY's exceptions have to travel untouched, or a
-    # yield-after-throw replaces the caller's real refusal with "generator didn't stop after throw()".
+    # Only entering may fail; body exceptions must propagate untouched (yield-after-throw).
     try:
         import torch
         scope = torch.cuda.device(ordinal)
@@ -367,14 +627,7 @@ def diffusion_device_scope(ordinal: Optional[int]):
 
 
 def apply_diffusion_device_ordinal(target: DiffusionDeviceTarget) -> None:
-    """Point this thread's CUDA context at ``target.ordinal``.
-
-    Thread-local, so every worker that loads or runs a pipeline has to call it; the load thread
-    setting it does nothing for the generate thread. The right lever rather than an indexed device
-    string because the offload policy reads ``torch.cuda.mem_get_info()`` with no argument, i.e.
-    the CURRENT device, so this steers the weights and their budget to the same card. A no-op for
-    an automatic pick.
-    """
+    """Thread-local, so each loading or running thread must call it; offload reads the current device."""
     if not target.is_cuda_torch_device:
         return
     pin_cuda_ordinal(target.ordinal)
@@ -382,25 +635,21 @@ def apply_diffusion_device_ordinal(target: DiffusionDeviceTarget) -> None:
 
 def pin_cuda_ordinal(ordinal: Optional[int]) -> None:
     """``torch.cuda.set_device``, thread-local, never fatal. A no-op for None."""
+    global _PINNED_AWAY_FROM_ZERO
     if ordinal is None:
         return
     try:
         import torch
         torch.cuda.set_device(ordinal)
+        if ordinal != 0:
+            _PINNED_AWAY_FROM_ZERO = True
     except Exception:  # noqa: BLE001 -- placement still works off torch_device; never fail a load here
         pass
 
 
 def placed_cuda_ordinal(target: DiffusionDeviceTarget) -> Optional[int]:
-    """The card the weights are actually on: the selection when there was one, else the card the
-    loading thread was pointing at.
-
-    Recorded WITH the pipeline because ``/images/generate`` runs on a pooled ``asyncio.to_thread``
-    worker: a pinned load leaves that worker on its card permanently, and a later automatic load
-    has no ordinal to re-pin with, so its bare "cuda" Generators and allocations would land on the
-    previous model's GPU while the weights sat on the default one. Kept apart from ``ordinal`` so
-    the automatic path still reports a bare device and an un-indexed target, as it always did.
-    """
+    """Records the card the weights actually sit on, since a pooled worker's pin would otherwise go
+    stale."""
     if not target.is_cuda_torch_device:
         return None
     if target.ordinal is not None:
@@ -413,17 +662,7 @@ def placed_cuda_ordinal(target: DiffusionDeviceTarget) -> Optional[int]:
 
 
 def resolve_diffusion_device_target(*, ordinal: Optional[int] = None) -> DiffusionDeviceTarget:
-    """Resolve the torch device + dtype + capability flags for diffusion.
-
-    Prefers Unsloth's hardware layer, else probes torch (CUDA -> XPU -> MPS -> CPU). On Apple
-    Silicon Unsloth may report MLX/CPU, but diffusers uses MPS, so those fall through to the MPS
-    probe. Torch is optional: without it the native sd.cpp engine still runs, so a missing torch
-    reports a torch-free CPU target instead of crashing ``/images/load`` before engine selection.
-
-    ``ordinal`` is an ALREADY-RESOLVED torch index from ``resolve_selected_cuda_ordinal``, carried
-    for one load rather than re-derived. Honoured only on CUDA / ROCm, where an index is what the
-    runners speak; XPU has no applicator and MPS / CPU nothing to choose between.
-    """
+    """Honours ordinal only on CUDA/ROCm; a missing torch yields a torch-free CPU target, not a crash."""
     try:
         import torch
     except Exception:
@@ -446,7 +685,10 @@ def resolve_diffusion_device_target(*, ordinal: Optional[int] = None) -> Diffusi
     except Exception:
         DeviceType = None
         studio_device = None
-        is_rocm = bool(getattr(getattr(torch, "version", None), "hip", None))
+        from .rocm_bf16 import is_rocm_torch
+
+        # Tag-aware: AMD SDK / Radeon wheels leave torch.version.hip unset.
+        is_rocm = is_rocm_torch(torch)
 
     if DeviceType is not None and studio_device is not None:
         if _studio_device_is(studio_device, DeviceType, "CUDA"):
@@ -479,7 +721,11 @@ def diffusion_device_target_from_torch_device(
     if device == "cuda":
         try:
             import torch
-            is_rocm = bool(getattr(getattr(torch, "version", None), "hip", None))
+
+            from .rocm_bf16 import is_rocm_torch
+
+            # Tag-aware: AMD SDK / Radeon wheels leave torch.version.hip unset.
+            is_rocm = is_rocm_torch(torch)
         except Exception:
             is_rocm = False
         return DiffusionDeviceTarget(
@@ -488,7 +734,7 @@ def diffusion_device_target_from_torch_device(
             backend = "rocm" if is_rocm else "cuda",
             vendor = "amd" if is_rocm else "nvidia",
             supports_model_cpu_offload = True,
-            supports_default_torch_compile = not is_rocm,
+            supports_default_torch_compile = (not is_rocm) or _rocm_compile_allowed(),
             supports_pinned_transfer = True,
             # An overriding caller's "cuda:1" is a device choice to keep, not one to drop back to ordinal 0.
             ordinal = int(index) if index.isdigit() else None,
@@ -517,6 +763,21 @@ def diffusion_device_target_from_torch_device(
     return _cpu_target(torch = None, dtype = dtype)
 
 
+def float64_device(device: Any) -> Any:
+    """Device to build float64 values on before moving the result to ``device``: itself, or CPU when it has no float64."""
+    target = diffusion_device_target_from_torch_device(str(device), None)
+    return device if target.supports_float64 else "cpu"
+
+
+def _rocm_compile_allowed() -> bool:
+    """Kill switch only; the install probe runs at compile time (``diffusion_rocm_compile``)."""
+    try:
+        from .diffusion_rocm_compile import rocm_compile_allowed
+        return rocm_compile_allowed()
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _cuda_or_rocm_target(
     torch: Any,
     *,
@@ -533,9 +794,7 @@ def _cuda_or_rocm_target(
             bf16_ok = False
         dtype = torch.bfloat16 if bf16_ok else torch.float16
     else:
-        # NVIDIA: bf16 needs Ampere+ (major >= 8), by capability NOT is_bf16_supported() (pre-Ampere cards emulate bf16
-        # slowly but report it supported). Asked of the SELECTED card, since the argument-less form reports the current
-        # device, a different generation on a mixed box; still argument-less without a selection.
+        # bf16 needs Ampere+ by capability: pre-Ampere reports supported but emulates slowly.
         try:
             major = (
                 torch.cuda.get_device_capability()
@@ -551,7 +810,7 @@ def _cuda_or_rocm_target(
         backend = "rocm" if is_rocm else "cuda",
         vendor = "amd" if is_rocm else "nvidia",
         supports_model_cpu_offload = True,
-        supports_default_torch_compile = not is_rocm,
+        supports_default_torch_compile = (not is_rocm) or _rocm_compile_allowed(),
         supports_pinned_transfer = True,
         ordinal = ordinal,
     )
@@ -585,6 +844,82 @@ def _mps_supports_bfloat16(torch: Any) -> bool:
         return False
 
 
+MPS_HIGH_WATERMARK_ENV = "PYTORCH_MPS_HIGH_WATERMARK_RATIO"
+# torch's accepted range for the high watermark ratio (MPSAllocator default_high_watermark_upper_bound).
+_MPS_RATIO_MAX = 2.0
+# Room left outside the cap for macOS, the window server and this process's own CPU-side memory.
+_MPS_CAP_OS_RESERVE_MIN = 1536 * 1024**2
+_MPS_CAP_OS_RESERVE_FRAC = 0.10
+
+
+def mps_high_watermark_ratio(
+    recommended_bytes: Optional[int], total_ram_bytes: Optional[int]
+) -> Optional[float]:
+    """The MPS high watermark ratio (a multiple of the recommended working set) that caps Metal allocations at
+    physical RAM minus an OS reserve, never below the working set Apple recommends. None when either reading is
+    missing (no cap: the caller keeps the unbounded allocator).
+
+    torch's own default is 1.7x the working set, which is above physical RAM on every Apple Silicon Mac (the working
+    set is ~2/3 to 3/4 of RAM), so past RAM it swaps instead of raising; 0.0 removes the limit entirely. A finite cap
+    turns that into an "MPS backend out of memory" RuntimeError that the batch backoff and VAE tile retry handle."""
+    try:
+        recommended = int(recommended_bytes or 0)
+        total = int(total_ram_bytes or 0)
+    except (TypeError, ValueError):
+        return None
+    if recommended <= 0 or total <= 0:
+        return None
+    reserve = max(_MPS_CAP_OS_RESERVE_MIN, int(total * _MPS_CAP_OS_RESERVE_FRAC))
+    cap = max(recommended, total - reserve)
+    return round(min(_MPS_RATIO_MAX, cap / recommended), 4)
+
+
+def _total_ram_bytes() -> Optional[int]:
+    try:
+        import psutil
+        return int(psutil.virtual_memory().total)
+    except Exception:  # noqa: BLE001 -- fall back to sysconf
+        pass
+    try:
+        return int(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES"))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _mps_cap_disabled() -> bool:
+    if MPS_HIGH_WATERMARK_ENV in os.environ and os.environ.get(MPS_HIGH_WATERMARK_ENV) != "0.0":
+        return True
+    # The oversized-load opt-in asks to run past the unified-memory guard, so it keeps the unbounded allocator too.
+    return os.environ.get("UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_LOAD", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def apply_mps_memory_cap(torch: Any, logger: Any = None) -> Optional[float]:
+    """Cap MPS allocations below physical RAM (``mps_high_watermark_ratio``). Returns the ratio set, or None when
+    nothing was changed: a user-set PYTORCH_MPS_HIGH_WATERMARK_RATIO, the oversized-load opt-in, or torch without
+    ``recommended_max_memory`` (< 2.5) / ``set_per_process_memory_fraction``. Set at runtime because the allocator
+    may already exist (its env reading is one-shot), and best-effort: a failure keeps today's allocator."""
+    if _mps_cap_disabled():
+        return None
+    try:
+        mps = torch.mps
+        ratio = mps_high_watermark_ratio(mps.recommended_max_memory(), _total_ram_bytes())
+        if ratio is None:
+            return None
+        mps.set_per_process_memory_fraction(float(ratio))
+    except Exception as exc:  # noqa: BLE001 -- old torch / no reading: keep the unbounded allocator
+        if logger is not None:
+            logger.info("diffusion: MPS memory cap not set (%s)", exc)
+        return None
+    if logger is not None:
+        logger.info("diffusion: MPS allocations capped at %.3fx the recommended working set", ratio)
+    return ratio
+
+
 def _mps_or_cpu_target(torch: Any) -> DiffusionDeviceTarget:
     mps_available = False
     try:
@@ -598,14 +933,17 @@ def _mps_or_cpu_target(torch: Any) -> DiffusionDeviceTarget:
         mps_available = False
 
     if mps_available:
-        # torch reads PYTORCH_MPS_HIGH_WATERMARK_RATIO once, at the first MPS allocation (the probe below), so relax it
-        # first or the allocator caps at ~1.7x recommendedMaxWorkingSet and can OOM a model that would fit. setdefault
-        # respects an override.
-        os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.0")
+        user_ratio = MPS_HIGH_WATERMARK_ENV in os.environ
+        # torch reads PYTORCH_MPS_HIGH_WATERMARK_RATIO once, when the allocator is built (the probe below, or an earlier
+        # recommended_max_memory() reading). 0.0 here only lifts torch's 1.7x-of-working-set default, which sits above
+        # physical RAM; apply_mps_memory_cap() then sets the finite cap. setdefault respects an override.
+        os.environ.setdefault(MPS_HIGH_WATERMARK_ENV, "0.0")
         # Prefer bfloat16, else float32, NEVER silent float16: modern DiTs produce activations far outside fp16's
         # range (Z-Image MLP peaks near 9e5 -> inf -> NaN -> black image). bf16 (macOS 14+) shares fp32's exponent
         # range; older macOS uses fp32.
         dtype = torch.bfloat16 if _mps_supports_bfloat16(torch) else torch.float32
+        if not user_ratio:
+            apply_mps_memory_cap(torch)
         return DiffusionDeviceTarget(
             device = "mps",
             dtype = dtype,

@@ -4,12 +4,15 @@
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from auth.authentication import authenticated_via_api_key
 from routes.data_recipe.library import router
 
 
 def _client() -> TestClient:
     app = FastAPI()
     app.include_router(router)
+    # Mounted bare here; in the app it sits behind get_current_subject, a UI session by default.
+    app.dependency_overrides[authenticated_via_api_key] = lambda: False
     return TestClient(app)
 
 

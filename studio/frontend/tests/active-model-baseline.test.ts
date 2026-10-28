@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { ActiveModelConfigState } from "../src/features/model-picker/hooks/use-active-model-config.ts";
 import type { PerModelConfig } from "../src/features/model-picker/model-config/per-model-config.ts";
+import * as gpuTensorSplit from "../src/hooks/gpu-tensor-split.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 function useActiveConfigFor(patch: Record<string, unknown>, gguf = true) {
@@ -60,6 +61,7 @@ function configsEqual(persistedMode: string) {
         readPersistedSpeculativeType: () => persistedMode,
       },
       "@/features/chat/presets/preset-policy": {},
+      "@/hooks/gpu-tensor-split": gpuTensorSplit,
       "./config-signature": { gpuFieldsSignature: () => "" },
       "./per-model-config": {
         normalizeMaxSeqLength: (value: number | null | undefined) =>
@@ -124,7 +126,6 @@ test("following the global mode, a stored Auto (null) equals the mode it resolve
 });
 
 test("between stored configs a null mode stays distinct from an explicit one", () => {
-  // Presets: null means no mode carried, so an explicit Off must never fold into it.
   const offEqual = configsEqual("off");
   assert.ok(!offEqual(BASE, { ...BASE, speculativeType: "off" }));
   assert.ok(offEqual({ ...BASE, speculativeType: "mtp" }, { ...BASE, speculativeType: "MTP" }));

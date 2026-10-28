@@ -47,7 +47,7 @@ def measure_cost(operation, warm = None) -> dict:
         counters["directories_created"] += 1
         return result
 
-    # Warm right before the measured call: the settings cache revalidates after one second idle.
+    # Warm right before the call: the settings cache revalidates after one second idle.
     if warm is not None:
         warm()
     with (

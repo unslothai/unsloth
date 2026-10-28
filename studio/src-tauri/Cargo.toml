@@ -1,11 +1,6 @@
 [package]
 name = "unsloth-studio"
-# Placeholder, not the released app version. release-desktop.yml rewrites this
-# field (and the unsloth-studio entry in Cargo.lock) to the dispatched
-# studio_version before every release build, so editing it here changes nothing
-# that ships. tauri.conf.json declares no version of its own, which is why the
-# app version comes from this field rather than from there. The stale CalVer
-# below is also the wrong shape: release builds always write SemVer, e.g. 0.1.52-beta.
+# Placeholder: release-desktop.yml rewrites this (and Cargo.lock) to the SemVer studio_version.
 version = "2026.4.8"
 description = "Unsloth Desktop App"
 authors = ["Unsloth AI"]
@@ -14,29 +9,33 @@ edition = "2021"
 rust-version = "1.89"
 
 [dependencies]
-# Windows executable-resource icons and ICO entry selection (tauri #15274 / #15241).
-# unstable: child webviews in the main window, for the browser panel's pages (browser_webview.rs).
+# unstable: child webviews in the main window for the browser panel (browser_webview.rs).
 tauri = { version = "~2.12.0", features = ["tray-icon", "unstable"] }
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 tauri-plugin-autostart = "2"
+# The plugin's own crate, used directly to pin the Windows Run entry to HKCU (main.rs).
+auto-launch = "0.6"
 tauri-plugin-deep-link = "2"
 tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.23"
-minisign-verify = "0.2.5"
+minisign-verify = "0.3.0"
 semver = "1"
 hmac = "0.13"
 sha2 = "0.11"
 reqwest = { version = "0.13", features = ["json"] }
+# The system proxy browser-panel pages go through (browser_proxy.rs); reqwest already builds both.
+hyper-util = { version = "0.1.20", features = ["client-proxy", "client-proxy-system"] }
+http = "1"
 tokio = { version = "1", features = ["full"] }
 log = "0.4"
 simplelog = "0.12"
-dirs = "6"
+dirs = "7"
 regex = "1"
 url = "2"
 open = "5"
-process-wrap = { version = "9", features = ["std"] }
+process-wrap = { version = "10", features = ["std"] }
 strip-ansi-escapes = "0.2"
 tauri-plugin-opener = "2.5.4"
 tauri-plugin-updater = "2"
@@ -54,24 +53,27 @@ libc = "0.2"
 signal-hook = "0.4"
 
 [dev-dependencies]
-# A paused clock for the address poll's tests (browser_webview.rs).
 tokio = { version = "1", features = ["test-util"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "0.6", features = ["exception"] }
 
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSAppearance", "NSButton", "NSControl", "NSResponder", "NSStatusBarButton", "NSStatusItem", "NSView", "NSBitmapImageRep", "NSImage", "NSImageRep", "NSPrintInfo", "NSPrintOperation", "NSWindow"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSError", "NSDictionary", "NSKeyValueCoding", "NSKeyValueObserving", "NSObject", "NSProcessInfo", "NSString", "NSURL", "NSData", "NSGeometry"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSAppearance", "NSButton", "NSControl", "NSResponder", "NSStatusBarButton", "NSStatusItem", "NSView", "NSBitmapImageRep", "NSImage", "NSImageRep", "NSPrintInfo", "NSPrintOperation", "NSWindow", "NSWorkspace", "NSGraphics"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSBundle", "NSError", "NSDictionary", "NSKeyValueCoding", "NSValue", "NSKeyValueObserving", "NSObject", "NSProcessInfo", "NSString", "NSURL", "NSURLRequest", "NSURLResponse", "NSData", "NSGeometry"] }
 # The browser panel's content rules (browser_webview.rs), snapshots and printing
-# (browser_capture.rs); wry already builds this crate.
-objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "WKContentRuleList", "WKContentRuleListStore", "WKUserContentController", "WKWebView", "WKWebViewConfiguration", "WKWebsiteDataStore", "WKSnapshotConfiguration", "objc2-app-kit", "objc2-core-foundation"] }
+# (browser_capture.rs) and context menu downloads (browser_context_downloads.rs); wry already
+# builds this crate.
+objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "WKContentRuleList", "WKContentRuleListStore", "WKDownload", "WKDownloadDelegate", "WKNavigationDelegate", "WKUserContentController", "WKWebView", "WKWebViewConfiguration", "WKWebsiteDataStore", "WKSnapshotConfiguration", "objc2-app-kit", "objc2-core-foundation"] }
 block2 = "0.6"
+# macOS' SOCKS proxy setting, which hyper-util does not read (browser_proxy.rs); already built.
+system-configuration = "0.8"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-# PNG output for the browser panel's screenshots (browser_capture.rs); gtk already builds it.
 cairo-rs = { version = "0.18", features = ["png"] }
 gdk = "0.18"
 gdk-pixbuf = "0.18"
+# The desktop's proxy resolver for browser panel pages (browser_proxy.rs); gtk already builds it.
+gio = "0.18"
 glib = "0.18"
 gtk = "0.18"
 elevated-command = "1.1.2"
@@ -79,12 +81,12 @@ webkit2gtk-sys = "2.0.2"
 webkit2gtk = "2.0.2"
 
 [target.'cfg(windows)'.dependencies]
-# Keep these versions aligned with Tauri's WebView2 controller bindings.
+# Keep aligned with Tauri's WebView2 controller bindings.
 webview2-com = "0.39.1"
-winreg = "0.55"
+winreg = "0.56"
 windows = { version = "0.62.2", features = ["Win32_System_Threading"] }
 windows-core = "0.62.2"
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_Networking_WinHttp"] }
 
 [build-dependencies]
 tauri-build = { version = "~2.7.0", features = [] }

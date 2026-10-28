@@ -9,6 +9,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import functools
 import triton
 import triton.language as tl
 import torch
@@ -20,6 +21,7 @@ from .utils import (
     torch_gpu_device,
     is_cdna,
 )
+from .rope_embedding import _eviction_hints_ok
 from transformers.models.llama.modeling_llama import logger
 from unsloth_zoo.utils import Version
 
@@ -29,9 +31,31 @@ from unsloth_zoo.loss_utils import (
 )
 
 
+# log1p / expm1 from tl.log / tl.exp only (Kahan's trick), so no libdevice is needed.
+@triton.jit
+def _log1p(x):
+    # log(1 + x) for x >= 0, keeping x when 1 + x rounds to 1.
+    u = 1.0 + x
+    return tl.where(u == 1.0, x, tl.log(u) * (x / (u - 1.0)))
+
+
+@triton.jit
+def _softplus(x):
+    return tl.maximum(x, 0.0) + _log1p(tl.exp(-tl.abs(x)))
+
+
+@triton.jit
+def _expm1_neg(x):
+    # exp(-x) - 1 for x >= 0: Kahan's trick only below 1, where u - 1 cancels; past ~87 u is
+    # subnormal and log(u) drifts from -x, so the trick would push the gradient past -1.
+    u = tl.exp(-x)
+    near_zero = tl.where(u == 1.0, -x, (u - 1.0) * (-x / tl.log(u)))
+    return tl.where(x < 1.0, near_zero, u - 1.0)
+
+
 def _cross_entropy_forward(
     logits_ptr,
-    logits_row_stride,
+    logits_row_stride: tl.constexpr,  # VOCAB_SIZE
     loss_ptr,
     logsumexp_ptr,
     labels_ptr,
@@ -85,7 +109,9 @@ def _cross_entropy_forward(
         logits = tl.where(mask, logits, -float("inf"))
 
     c = tl.max(logits, 0)
-    logsumexp = c + tl.log(tl.sum(tl.exp(logits - c), 0))
+    # One reduction that skips the label (col_offsets never equals -100); the label is added back below.
+    sum_others = tl.sum(tl.where(col_offsets == label_idx, 0.0, tl.exp(logits - c)), 0)
+    logsumexp = c + tl.log(sum_others)
 
     if label_idx != -100:
         x = tl.load(logits_ptr + label_idx).to(tl.float32)
@@ -95,7 +121,9 @@ def _cross_entropy_forward(
         # Do logit softcapping for Gemma 2: t * tanh(1/t * x)
         if DO_SOFTCAPPING:
             x = SOFTCAP * triton_tanh(x / SOFTCAP)
-        loss = logsumexp - x
+        # lse - x rounds to 0 past a ~16.6 nat margin in fp32 (softmax collapse, arXiv 2610.31642).
+        loss = _softplus(logsumexp - x)
+        logsumexp = c + tl.log(sum_others + tl.exp(x - c))
     else:
         loss = 0.0
     tl.store(logsumexp_ptr, logsumexp)
@@ -111,11 +139,55 @@ _cross_entropy_forward = triton.heuristics(
 )(_cross_entropy_forward)
 
 
+@functools.lru_cache(maxsize = None)
+def _chunked_evict_at(device_type, index):
+    # Read-once chunks: evict_first helps T4 / L4 / A100, hurts H100 and B200; ROCm unmeasured.
+    if device_type != "cuda" or torch.version.hip is not None:
+        return ""
+    return "" if torch.cuda.get_device_capability(index)[0] in (9, 10) else "evict_first"
+
+
+def _chunked_evict_policy(device):
+    if not _eviction_hints_ok(device):
+        return ""
+    index = device.index if device.index is not None else torch.cuda.current_device()
+    return _chunked_evict_at(device.type, index)
+
+
+# (BLOCK_SIZE, num_warps, max vocab) for the chunked forward, measured faster on T4 / A100 / B200.
+# A100 at Gemma 262144 was mixed across torch versions, so larger vocabs keep the default.
+# B200: 8192-wide chunks at 4 warps run 1.5-1.9x faster than one 65536-wide chunk at 32 warps
+# (128256 / 151936 / 262144 vocabs, bf16), since each program then needs a fraction of the registers.
+_CHUNKED_FORWARD_CONFIGS = {
+    (7, 5): (16384, 8, None),
+    (8, 0): (16384, 8, 163840),
+    (10, 0): (8192, 4, None),
+}
+
+
+@functools.lru_cache(maxsize = None)
+def _chunked_forward_config_at(device_type, index, vocab_size):
+    if device_type == "cuda" and torch.version.hip is None:
+        capability = tuple(torch.cuda.get_device_capability(index))
+        config = _CHUNKED_FORWARD_CONFIGS.get(capability)
+        if config is not None and (config[2] is None or vocab_size <= config[2]):
+            return config[0], config[1]
+    return MAX_FUSED_SIZE, (16 if is_cdna() else 32)
+
+
+def _chunked_forward_config(device, vocab_size):
+    index = device.index
+    if index is None and device.type == "cuda":
+        index = torch.cuda.current_device()
+    return _chunked_forward_config_at(device.type, index, vocab_size)
+
+
 def _chunked_cross_entropy_forward(
     logits_ptr,
     logits_row_stride: tl.constexpr,
     loss_ptr,
     logsumexp_ptr,
+    logsumexp_others_ptr,
     labels_ptr,
     VOCAB_SIZE: tl.constexpr,
     N_CHUNKS: tl.constexpr,
@@ -124,6 +196,7 @@ def _chunked_cross_entropy_forward(
     SOFTCAP: tl.constexpr,
     DO_LOGIT_SCALING: tl.constexpr,
     LOGIT_SCALE: tl.constexpr,
+    EVICT: tl.constexpr,
 ):
     """
     256K vocab divided in 4 chunks
@@ -148,22 +221,27 @@ def _chunked_cross_entropy_forward(
     final logsumexp reduction!
 
     Ie do: logsumexp(chunked_logsumexp) - x
+
+    The loss itself is softplus(logsumexp(chunked_logsumexp_others) - x), where
+    the others skip the label, so it does not round to 0 for confident labels.
     """
     row_idx = tl.program_id(0)
     chunk_idx = tl.program_id(1)
     logits_ptr += row_idx * triton_cast(logits_row_stride, tl.int64)
     loss_ptr += row_idx
     logsumexp_ptr += row_idx * N_CHUNKS + chunk_idx
+    logsumexp_others_ptr += row_idx * N_CHUNKS + chunk_idx
     labels_ptr += row_idx
 
     col_offsets = chunk_idx * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < VOCAB_SIZE
 
     label_idx = tl.load(labels_ptr).to(tl.int32)
-    logits = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf")).to(tl.float32)
+    logits = tl.load(
+        logits_ptr + col_offsets, mask = mask, other = -float("inf"), eviction_policy = EVICT
+    ).to(tl.float32)
 
     # Cohere logit scaling t * x; Gemma 2 softcapping t * tanh(1/t * x).
-    # Do logit scaling for Cohere
     if DO_LOGIT_SCALING:
         logits = LOGIT_SCALE * logits
     if DO_SOFTCAPPING:
@@ -173,7 +251,24 @@ def _chunked_cross_entropy_forward(
         logits = tl.where(mask, logits, -float("inf"))
 
     c = tl.max(logits, 0)
-    logsumexp = c + tl.log(tl.sum(tl.exp(logits - c), 0))
+    # All -inf chunk (masked vocab range): shift by 0 so logsumexp is -inf, not NaN.
+    c = tl.where(c == -float("inf"), 0.0, c)
+    exp_logits = tl.exp(logits - c)
+    # One reduction per chunk: the label chunk sums the other terms and adds the label back as a scalar.
+    has_label = (label_idx >= chunk_idx * BLOCK_SIZE) & (label_idx < (chunk_idx + 1) * BLOCK_SIZE)
+    if has_label:
+        exp_logits = tl.where(col_offsets == label_idx, 0.0, exp_logits)
+    sum_others = tl.sum(exp_logits, 0)
+    logsumexp_others = c + tl.log(sum_others)
+    logsumexp = logsumexp_others
+    if has_label:
+        x_label = tl.load(logits_ptr + label_idx).to(tl.float32)
+        if DO_LOGIT_SCALING:
+            x_label = LOGIT_SCALE * x_label
+        if DO_SOFTCAPPING:
+            x_label = SOFTCAP * triton_tanh(x_label / SOFTCAP)
+        logsumexp = c + tl.log(sum_others + tl.exp(x_label - c))
+    tl.store(logsumexp_others_ptr, logsumexp_others)
 
     if chunk_idx == 0:
         # logsumexp(chunked_logsumexp) - x, with the -x done separately.
@@ -206,6 +301,7 @@ def _cross_entropy_backward(
     dloss_ptr,
     dloss_row_stride: tl.constexpr,
     logsumexp_ptr,
+    loss_ptr,
     labels_ptr,
     VOCAB_SIZE: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
@@ -228,6 +324,9 @@ def _cross_entropy_backward(
     If y == 0: dC/dx = 0
     If y == 1 and x == label: dC/dlabel = exp[x - logsumexp] - 1
     If y == 1 and x != label: dC/dx     = exp[x - logsumexp]
+
+    exp[x - logsumexp] - 1 rounds to 0 for confident labels, so the label
+    uses exp[-loss] - 1 = expm1(-loss) with the accurate forward loss.
     """
     row_idx = tl.program_id(0)
     block_idx = tl.program_id(1)
@@ -259,10 +358,11 @@ def _cross_entropy_backward(
         x = SOFTCAP * partial
 
     logsumexp = tl.load(logsumexp_ptr + row_idx)
+    loss = tl.load(loss_ptr + row_idx)
     y = tl.exp(x - logsumexp)
     y = tl.where(
         col_offsets == label_idx,
-        y - 1.0,  # exp(x - logsumexp) - 1
+        _expm1_neg(loss),  # exp(x - logsumexp) - 1 = exp(-loss) - 1
         y,  # exp(x - logsumexp)
     )
 
@@ -333,9 +433,13 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
                     DO_LOGIT_SCALING = DO_LOGIT_SCALING,
                     LOGIT_SCALE = logit_scaling,
                     num_warps = num_warps,
+                    enable_fp_fusion = True,
                 )
         else:
             # For large vocabs > 65336 like Gemma 256K
+            BLOCK_SIZE, num_warps = _chunked_forward_config(device, vocab_size)
+            div, mod = divmod(vocab_size, BLOCK_SIZE)
+            n_chunks = div + (mod != 0)
             logsumexp = torch.empty(
                 (
                     n_rows,
@@ -344,6 +448,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
                 dtype = torch.float32,
                 device = device,
             )
+            logsumexp_others = torch.empty_like(logsumexp)
 
             with torch_gpu_device(device):
                 _chunked_cross_entropy_forward[
@@ -356,22 +461,26 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
                     logits.stride(0),
                     losses,
                     logsumexp,
+                    logsumexp_others,
                     labels,
                     VOCAB_SIZE = vocab_size,
                     N_CHUNKS = n_chunks,
-                    BLOCK_SIZE = MAX_FUSED_SIZE,
+                    BLOCK_SIZE = BLOCK_SIZE,
                     DO_SOFTCAPPING = DO_SOFTCAPPING,
                     SOFTCAP = logit_softcapping,
                     DO_LOGIT_SCALING = DO_LOGIT_SCALING,
                     LOGIT_SCALE = logit_scaling,
-                    num_warps = 32 if not is_cdna() else 16,
+                    EVICT = _chunked_evict_policy(device),
+                    num_warps = num_warps,
+                    enable_fp_fusion = True,
                 )
-            # logsumexp(chunked_logsumexp) - x, with the -x done separately.
+            # softplus(logsumexp(chunked_logsumexp_others) - x), with the -x done separately.
             logsumexp = torch.logsumexp(logsumexp, dim = 1)
-            losses += logsumexp
-            losses.masked_fill_(labels == -100, 0)  # Don't forget to mask padding out!
+            # Out of place: in-place ops on the returned tensor zero its compiled grads (torch 2.11).
+            losses = torch.nn.functional.softplus(torch.logsumexp(logsumexp_others, dim = 1) + losses)
+            losses = losses.masked_fill(labels == -100, 0)  # mask padding out
 
-        ctx.save_for_backward(logits, logsumexp, labels)
+        ctx.save_for_backward(logits, logsumexp, losses, labels)
         ctx.DO_SOFTCAPPING = DO_SOFTCAPPING
         ctx.logit_softcapping = logit_softcapping
         ctx.DO_LOGIT_SCALING = DO_LOGIT_SCALING
@@ -380,7 +489,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, dlosses):
-        logits, logsumexp, labels = ctx.saved_tensors
+        logits, logsumexp, losses, labels = ctx.saved_tensors
         n_rows: int
         vocab_size: int
         n_rows, vocab_size = logits.shape
@@ -406,6 +515,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
                 dlosses,
                 dlosses.stride(0),
                 logsumexp,
+                losses,
                 labels,
                 VOCAB_SIZE = vocab_size,
                 BLOCK_SIZE = BLOCK_SIZE,
@@ -414,6 +524,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
                 DO_LOGIT_SCALING = ctx.DO_LOGIT_SCALING,
                 LOGIT_SCALE = ctx.logit_scaling,
                 num_warps = 8,
+                enable_fp_fusion = True,
             )
         return (
             dlogits,
@@ -451,6 +562,10 @@ def fast_cross_entropy_loss(
         n_items = torch.count_nonzero(labels != -100)
     if torch.is_tensor(n_items):
         n_items = n_items.to(device)
+        # No labelled tokens (all -100): loss 0 and zero grads, not 0 / 0 = NaN.
+        n_items = torch.where(n_items == 0, torch.ones_like(n_items), n_items)
+    elif n_items == 0:
+        n_items = 1
     return loss.sum() / n_items
 
 
@@ -463,9 +578,7 @@ if (Version(torch.__version__) < Version("2.4.0")) and not hasattr(
 def patch_loss_functions(torch_compile = True):
     _patch_loss_functions(fast_cross_entropy_loss, torch_compile = torch_compile)
 
-    # Redirect LOSS_MAPPING aliases still pointing at stock ForCausalLMLoss (e.g.
-    # ForConditionalGeneration for Qwen3.5, Csm). unsloth_zoo also does this; remove once the floor
-    # pin passes unslothai/unsloth-zoo#656.
+    # Redirect LOSS_MAPPING aliases still on stock ForCausalLMLoss; drop once zoo floor has #656.
     try:
         import transformers.loss.loss_utils as _lu
         _unsloth_loss = _lu.LOSS_MAPPING.get("ForCausalLM")

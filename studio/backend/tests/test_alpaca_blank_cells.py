@@ -102,7 +102,6 @@ def test_blank_csv_cells_are_not_converted_to_none_for_chatml(tmp_path):
 
 
 def test_a_blank_cell_in_a_numeric_column_still_converts_to_chatml(tmp_path):
-    # The blank cell types the column float, so 1 and 3 arrive as 1.0 and 3.0.
     csv_path = tmp_path / "train.csv"
     csv_path.write_text("instruction,input,output\nA,1,x\nB,,y\nC,3,\n")
     dataset = load_dataset("csv", data_files = str(csv_path), split = "train")
@@ -129,7 +128,6 @@ def test_a_blank_cell_in_a_numeric_column_still_converts_to_chatml(tmp_path):
 
 
 def test_every_cell_reaches_a_chat_template_as_text():
-    # A chat template renders content directly: a non-string is a crash or a repr.
     dataset = Dataset.from_dict({"instruction": ["a"], "input": [True], "output": [7]})
 
     conversations = convert_alpaca_to_chatml(dataset, batch_size = 1, num_proc = 1)["conversations"]
@@ -145,7 +143,6 @@ def test_cell_text_maps_every_empty_spelling_to_empty_text():
     assert cell_text(float("nan")) == ""
     assert cell_text("") == ""
 
-    # Present values survive, including the ones `or ""` would have dropped.
     assert cell_text("None") == "None"
     assert cell_text(0) == "0"
     assert cell_text(False) == "False"

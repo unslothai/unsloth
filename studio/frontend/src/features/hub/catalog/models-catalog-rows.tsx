@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useVllmAvailable, useVllmPlatform } from "@/features/model-picker";
 import { isChatGgufTask, reconcileGgufPinsAfterDelete } from "@/features/model-picker/components/model-selector/reconcile-gguf-pins";
 
 import {
@@ -11,7 +12,10 @@ import {
 import {
   type GgufVariantDetail,
   deleteCachedDataset,
+  DELETABLE_LOCAL_SOURCES,
   deleteCachedModel,
+  deleteLocalModel,
+  revealLocalModel,
   formatLocalUpdated,
   listGgufVariants,
   useGgufVariantsCacheVersion,
@@ -64,10 +68,8 @@ const COARSE_POINTER =
   typeof window.matchMedia === "function" &&
   window.matchMedia("(pointer: coarse)").matches;
 
-// Defer the cached-size chip (Radix Tooltip + two store subscriptions) until a row is first
-// hovered/focused so scrolling the virtualized list doesn't pay that cost per row; an identical
-// StatChip placeholder makes the swap invisible. Coarse pointers have no hover, so they arm
-// immediately. Default true so any out-of-row usage stays functional.
+// Defer the cached-size chip until first hover/focus to keep virtualized scrolling cheap.
+// Coarse pointers arm immediately; default true so out-of-row usage works.
 const CatalogRowInteractiveContext = createContext(true);
 
 function CachedSizeChip(props: {
@@ -187,11 +189,10 @@ function CachedSizeChipLive({
               >
                 <span className="min-w-0 truncate">{row.label}</span>
                 <span className="ml-auto">
-                  {/* Brightened for the dark tooltip: muted grey reads poorly there. */}
                   <StatChip
                     icon={PackageIcon}
                     value={formatBytes(row.size_bytes)}
-                    className="text-ui-11 text-white/70"
+                    className="text-ui-11 text-(--tooltip-muted)"
                   />
                 </span>
               </li>
@@ -207,7 +208,6 @@ function CachedSizeChipLive({
   );
 }
 
-// Thin "·" separator for inline meta lines (owner · format · params).
 function MetaDivider() {
   return (
     <span aria-hidden="true" className="shrink-0 text-muted-foreground/35">
@@ -268,8 +268,8 @@ function CatalogRow({
       className={cn(
         "group/row relative w-full select-none overflow-hidden text-left",
         card
-          ? "hub-result-row flex h-full items-center rounded-[16px] px-4"
-          : "catalog-row block rounded-[14px] pl-3 pr-2.5 py-2.5",
+          ? "hub-result-row flex h-full items-center rounded-2xl px-4"
+          : "catalog-row block rounded-md pl-3 pr-2.5 py-2.5",
       )}
     >
       <button
@@ -278,7 +278,7 @@ function CatalogRow({
         onClick={onClick}
         className={cn(
           "absolute inset-0 cursor-pointer outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset",
-          card ? "rounded-[16px]" : "rounded-[14px]",
+          card ? "rounded-2xl" : "rounded-md",
         )}
       />
       <CatalogRowInteractiveContext.Provider value={interactive}>
@@ -426,11 +426,11 @@ export function buildRowStatusTooltip({
           This {resourceLabel} may not be supported yet.
         </span>
         {unsupportedReason && (
-          <span className="mt-0.5 block text-white/75">
+          <span className="mt-0.5 block text-(--tooltip-muted)">
             {unsupportedReason}
           </span>
         )}
-        <span className="mt-0.5 block text-white/75">
+        <span className="mt-0.5 block text-(--tooltip-muted)">
           Still downloadable to your Hugging Face cache.
         </span>
       </TooltipLegendRow>,
@@ -454,6 +454,8 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
   isDataset: boolean;
   onSelect: (id: string) => void;
 }) {
+  const vllmAvailable = useVllmAvailable();
+  const vllmPlatform = useVllmPlatform();
   const support = useMemo(
     () =>
       isDataset
@@ -465,8 +467,10 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
             libraryName: row.result.libraryName,
             deviceType,
             quantMethod: row.result.quantMethod,
+            vllmAvailable,
+            vllmPlatform,
           }),
-    [isDataset, row.id, row.result, deviceType],
+    [isDataset, row.id, row.result, deviceType, vllmAvailable, vllmPlatform],
   );
   const unsupported = support?.status === "unsupported" && !support?.supportedIn;
   const handleClick = useCallback(() => onSelect(row.id), [onSelect, row.id]);
@@ -496,7 +500,7 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
         <OwnerAvatar
           owner={row.owner}
           repoName={row.repo}
-          className="size-8 rounded-[11px]"
+          className="size-8 rounded-sm"
           remote={false}
         />
         <div className="flex min-w-0 flex-1 flex-col gap-[calc(3px*var(--ui-space-scale,1))]">
@@ -574,7 +578,6 @@ export const InventoryRow = memo(function InventoryRow({
   isDataset: boolean;
   dimmed: boolean;
   deviceType: string | null;
-  /** Narrow split master pane: drop the capability column so the name fits. */
   compact?: boolean;
   showFormatDot?: boolean;
   onSelect: (id: string) => void;
@@ -585,6 +588,8 @@ export const InventoryRow = memo(function InventoryRow({
       ? row.repoId
       : (row.repoId ?? row.baseModelHubId ?? row.baseModel ?? row.loadId);
   const rowTagsSignature = row.tags?.join("\u0001") ?? "";
+  const vllmAvailable = useVllmAvailable();
+  const vllmPlatform = useVllmPlatform();
   const unsupported = useMemo(() => {
     if (isDataset) return false;
     const classified = classifyUnslothSupport({
@@ -594,8 +599,9 @@ export const InventoryRow = memo(function InventoryRow({
       libraryName: row.libraryName,
       quantMethod: row.quantMethod,
       deviceType,
+      vllmAvailable,
+      vllmPlatform,
     });
-    // Images/Video run these, so they are not unsupported to a user.
     return classified.status === "unsupported" && !classified.supportedIn;
   }, [
     isDataset,
@@ -605,6 +611,8 @@ export const InventoryRow = memo(function InventoryRow({
     row.libraryName,
     row.quantMethod,
     deviceType,
+    vllmAvailable,
+    vllmPlatform,
   ]);
   const handleClick = useCallback(() => onSelect(row.id), [onSelect, row.id]);
   const title = row.kind === "cache" ? row.repo : row.title;
@@ -621,6 +629,13 @@ export const InventoryRow = memo(function InventoryRow({
         ? row.repoId
         : null;
   const canDelete = cacheDeletableRepoId !== null;
+  const localActionPath =
+    !isDataset &&
+    row.kind === "local" &&
+    row.source !== "hf_cache" &&
+    row.path
+      ? row.path
+      : null;
   const partialRepoId =
     row.partial && !row.companionPrefetch
       ? row.kind === "cache"
@@ -637,8 +652,6 @@ export const InventoryRow = memo(function InventoryRow({
     unsupported,
     resourceLabel: isDataset ? "dataset" : "model",
   });
-  // Always-derivable stats so on-device rows don't show empty placeholder cells:
-  // format badge, parameter count from the repo name, and GGUF quant variant.
   const formatLabel =
     row.modelFormat === "gguf"
       ? "GGUF"
@@ -653,7 +666,6 @@ export const InventoryRow = memo(function InventoryRow({
   const metaChips =
     !isDataset && (formatLabel || paramLabel || quantLabel) ? (
       <div className="hidden shrink-0 items-center gap-1.5 sm:flex">
-        {/* Format already shows as the status dot, so the pill stays neutral. */}
         {formatLabel && <span className="hub-chip">{formatLabel}</span>}
         {paramLabel && (
           <span className="hub-chip tabular-nums">{paramLabel}</span>
@@ -666,7 +678,6 @@ export const InventoryRow = memo(function InventoryRow({
       </div>
     ) : null;
 
-  // On-disk size for cached repos, else local source or last-modified date.
   const sourceLabel = row.kind === "local" ? row.sourceLabel : null;
 
   const statusMarkers = (
@@ -696,8 +707,6 @@ export const InventoryRow = memo(function InventoryRow({
     </>
   );
 
-  // Compact rows are all on-device, so the format dots are noise: surface only
-  // exceptional states; format + params move to the meta line.
   const compactMarkers =
     partialRepoId || unsupported ? (
       <span className="flex shrink-0 items-center gap-1">
@@ -730,8 +739,7 @@ export const InventoryRow = memo(function InventoryRow({
     deletableRepoId ? (
       <ModelRowMenu
         ariaLabel={`More options for ${deletableRepoId ?? rowModelId}`}
-        buttonClassName="pointer-events-auto hub-modal-pe-guard size-8 opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
-        iconClassName="size-4"
+        buttonClassName="pointer-events-auto hub-modal-pe-guard size-6 rounded-full opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
         pin={
           isDataset || !deletableRepoId
             ? undefined
@@ -766,8 +774,7 @@ export const InventoryRow = memo(function InventoryRow({
           ),
           successMessage: `Deleted ${deletableRepoId}`,
           onConfirm: async () => {
-            // Delete only the copy this row shows: cache rows carry the owning
-            // cache path, so pass it through and leave other caches untouched.
+            // Pass the owning cache path so only this row's copy is deleted.
             const rowCachePath =
               row.kind === "cache" ? (row.cachePath ?? undefined) : undefined;
             if (isDataset) {
@@ -792,10 +799,35 @@ export const InventoryRow = memo(function InventoryRow({
           onDeleted: onChange,
         } : undefined}
       />
+    ) : localActionPath && row.kind === "local" ? (
+      <ModelRowMenu
+        ariaLabel={`More options for ${rowModelId}`}
+        buttonClassName="pointer-events-auto hub-modal-pe-guard size-6 rounded-full opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
+        onReveal={() => revealLocalModel(localActionPath, row.loadId)}
+        del={
+          DELETABLE_LOCAL_SOURCES.has(row.source)
+            ? {
+                title: "Delete local model?",
+                description: (
+                  <>
+                    This will permanently remove{" "}
+                    <span className="font-medium text-foreground">{title}</span>{" "}
+                    from{" "}
+                    <span className="break-all font-mono text-xs">
+                      {localActionPath}
+                    </span>
+                    .
+                  </>
+                ),
+                successMessage: `Deleted ${title}`,
+                onConfirm: () => deleteLocalModel(localActionPath, row.loadId),
+                onDeleted: onChange,
+              }
+            : undefined
+        }
+      />
     ) : null;
 
-  // Compact master pane: drop the capability column and collapse size + date
-  // into one trailing group so the name keeps the whole middle.
   if (compact) {
     return (
       <CatalogRow
@@ -814,7 +846,7 @@ export const InventoryRow = memo(function InventoryRow({
           <OwnerAvatar
             owner={row.owner}
             repoName={title}
-            className="size-8 shrink-0 rounded-[9px] text-ui-12"
+            className="size-8 shrink-0 rounded-sm text-ui-12"
             remote={false}
           />
           <div className="min-w-0 flex-1">
@@ -885,7 +917,7 @@ export const InventoryRow = memo(function InventoryRow({
           <OwnerAvatar
             owner={row.owner}
             repoName={title}
-            className="size-9 rounded-[12px]"
+            className="size-9 rounded-md"
             remote={false}
           />
           <div className="min-w-0 flex-1">
@@ -930,7 +962,6 @@ export const InventoryRow = memo(function InventoryRow({
 });
 
 export const CATALOG_ROW_HEIGHT_PX = 57;
-/** Gutter between lanes, shared with the hand-laid grids beside these rows. */
 export const CATALOG_COLUMN_GAP_PX = 12;
 
 export function VirtualRows<T>({
@@ -956,8 +987,7 @@ export function VirtualRows<T>({
 }) {
   const lanes = Math.max(1, columns);
   const rowCount = Math.ceil(items.length / lanes);
-  // The rows inside these slots scale with the UI font size, so the slots do
-  // too, or tall rows run into the next absolutely positioned one.
+  // Slots scale with the UI font size or tall rows overlap the next absolutely positioned one.
   const scale = useUiSpaceScale();
   const slotHeight = Math.round(rowHeight * scale);
   const slotCellHeight = Math.round(cellHeight * scale);
@@ -1001,8 +1031,7 @@ export function VirtualRows<T>({
               left: 0,
               width: "100%",
               transform: `translateY(${virtualRow.start - scrollMargin}px)`,
-              // Fixed height matching estimateSize (no measureElement ref): dynamic per-row
-              // measurement churns virtualizer state and causes visible jumps as new rows arrive.
+              // Fixed height, no measureElement: per-row measurement causes visible jumps.
               height: `${slotHeight}px`,
               contain: "layout",
             }}

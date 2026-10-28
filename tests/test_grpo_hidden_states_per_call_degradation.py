@@ -1,24 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Degradation is a property of the CALL, not of the model.
-
-`_install_grpo_hidden_states_forward_wrapper` asks the model for hidden states
-and falls back to real logits when it cannot get them. The dispatch helper reads
-that outcome right after the forward returns, so the flag it reads has to
-describe the call that just finished.
-
-`_warn_grpo_hidden_states_fallback_once` is warn-once bookkeeping: it only ever
-sets its flag. Reading it as the per-call outcome makes it mean "ever degraded",
-and a forward can degrade on one batch and succeed on the next -- a
-*ForConditionalGeneration that splats **kwargs into a vision tower rejects the
-extra flags only on the batches carrying pixel_values. With
-`vocab_size == hidden_size` the width test cannot correct that, so every later
-hidden-state tensor gets routed to the raw-logits helper: the lm_head matmul is
-skipped, log probabilities are wrong and the head gets no gradient.
-
-CPU-only: the model here is a few `torch.randn` calls behind a square head.
-"""
+"""Degradation is per call: the warn-once flag only ever sets, so it cannot report this call."""
 
 from __future__ import annotations
 
@@ -153,14 +136,7 @@ def test_a_forward_run_with_the_flag_off_reports_real_logits():
 
 
 def test_the_fallback_retry_does_not_reuse_the_rejected_kwargs(hidden_states_env):
-    """The retry has to send the caller's original kwargs.
-
-    `_drop_forward_kwargs_consumed_positionally` returns the caller's dict itself
-    when there is nothing to drop, which every GRPO call site hits: they pass
-    everything by keyword. Mutating it to add `output_hidden_states`/`return_dict`
-    would make the fallback re-send exactly what the model just rejected, so the
-    TypeError branch would re-raise instead of degrading.
-    """
+    """Retry must not mutate the caller's kwargs dict, or it re-sends the kwargs the model just rejected."""
     model = _SquareModel("typeerror")
     install_wrapper(model)
     kwargs = {
@@ -186,7 +162,6 @@ def test_dropping_positional_kwargs_never_hands_back_the_callers_dict():
     for args in ((), (1,)):
         kwargs = {"input_ids": 1, "pixel_values": 2}
         assert drop_positional_kwargs(signature, args, kwargs) is not None
-    # the wrapper copies before mutating, so the caller's dict survives a forward
     kwargs = {"input_ids": 1}
     result = drop_positional_kwargs(signature, (), kwargs)
     dict(result)["output_hidden_states"] = True

@@ -70,8 +70,7 @@ pub(crate) fn render_report(
     let mut redaction = RedactionReport::default();
     let redacted_body = redact_text(&raw, &mut redaction);
 
-    // Redact collection warnings/footer too. Some warnings include raw local paths
-    // from failed log reads, so the footer must not be appended after redaction.
+    // Some warnings include raw local paths, so the footer must be redacted too.
     let footer_for_count = render_footer(&warnings, &redaction);
     let _ = redact_text(&footer_for_count, &mut redaction);
     let footer = redact_text(
@@ -358,16 +357,20 @@ fn append_log_sections(
     warnings: &mut Vec<String>,
 ) {
     out.push_str("\n== Log tails ==\n");
-    for name in ["tauri.log", "tauri.log.1"] {
-        let path = studio_dir().join(name);
-        append_tail_section(out, &path, name, "local-app-log", warnings);
+    for (index, root) in super::log_roots().into_iter().enumerate() {
+        for name in ["tauri.log", "tauri.log.1"] {
+            let path = root.join(name);
+            if index > 0 && !path.is_file() {
+                continue;
+            }
+            append_tail_section(out, &path, name, "local-app-log", warnings);
+        }
     }
 
     let server_log_dir = logs_dir().join("server");
     let server_logs = newest_server_logs_in(&server_log_dir, SERVER_LOG_TAIL_FILES, warnings);
     if server_logs.is_empty() {
-        // Name the directory: an adopted backend can take its studio root from
-        // sys.prefix (storage_roots.py `_infer_studio_home_from_venv`), past any
+        // Name the directory: an adopted backend can take its studio root from sys.prefix, past any
         // env scrub, so bare "unavailable" cannot be told from "logs elsewhere".
         out.push_str(&format!(
             "backend_session_logs=unavailable searched={}\n",
@@ -412,29 +415,19 @@ fn append_log_sections(
 /// Two, so a crash and the restart after it both land in one report.
 const SERVER_LOG_TAIL_FILES: usize = 2;
 
-/// Smaller than the other tails on purpose: enforce_report_limit chops the END of
-/// the body, so bytes spent here come out of the phase logs below, and a faulthandler
-/// dump is a few KB at the end of the file, which is the half read_tail returns.
+/// Small on purpose: enforce_report_limit chops the END of the body, so bytes spent here come out
+/// of the phase logs below.
 const SERVER_LOG_TAIL_MAX_LINES: usize = 400;
 const SERVER_LOG_TAIL_MAX_BYTES: usize = 64 * 1024;
 
-/// Newest `server-*.log` files, most recent first.
-///
-/// run.py's `_setup_server_disk_logging` aims faulthandler here, so when the GPU
-/// runtime aborts this holds the Python stack naming the call that died, and no
-/// other file Unsloth keeps does.
-///
-/// Only two are collected, so an entry is rejected HERE rather than later in
-/// `read_tail`: one that merely matches the name would otherwise spend a slot and
-/// push the real crash log out. `scan_phase_logs_in_dir` screens during selection
-/// for the same reason.
+/// Newest `server-*.log` files, most recent first; faulthandler writes Python crash stacks there.
+/// Entries are screened here so a mere name match does not take one of the few slots.
 fn newest_server_logs_in(dir: &Path, max: usize, warnings: &mut Vec<String>) -> Vec<PathBuf> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(error) => {
-            // Missing is the ordinary case, not a fault: a --no-torch host,
-            // UNSLOTH_STUDIO_NO_FILE_LOG=1, or a backend never started. Anything
-            // else, a permission wall above all, is worth saying out loud.
+            // Missing is ordinary (--no-torch, UNSLOTH_STUDIO_NO_FILE_LOG=1, never started); other
+            // errors are worth reporting.
             if error.kind() != std::io::ErrorKind::NotFound {
                 warnings.push(format!(
                     "backend session log dir unavailable: {} ({})",
@@ -454,9 +447,7 @@ fn newest_server_logs_in(dir: &Path, max: usize, warnings: &mut Vec<String>) -> 
         if !name.starts_with("server-") || !name.ends_with(".log") {
             continue;
         }
-        // The header and the path print verbatim into a line-oriented, ```text-fenced
-        // report, and a Unix filename may hold a newline or a backtick, so a matching
-        // name could forge report structure.
+        // Names print verbatim into a fenced report; a newline or backtick could forge structure.
         if name.contains(|ch: char| ch.is_control() || ch == '`') {
             warnings.push(format!(
                 "ignored backend session log with an unprintable name in {}",
@@ -474,9 +465,7 @@ fn newest_server_logs_in(dir: &Path, max: usize, warnings: &mut Vec<String>) -> 
         let Ok(metadata) = entry.metadata() else {
             continue;
         };
-        // Regular files only. A directory reads back as EISDIR; a FIFO is worse,
-        // since `File::open` on one blocks until a writer appears, hanging report
-        // generation rather than failing it.
+        // Regular files only: `File::open` on a FIFO blocks until a writer appears.
         if !metadata.is_file() {
             warnings.push(format!(
                 "ignored non-regular backend session log: {}",
@@ -484,11 +473,7 @@ fn newest_server_logs_in(dir: &Path, max: usize, warnings: &mut Vec<String>) -> 
             ));
             continue;
         }
-        // `metadata` is `stat`, which needs no permission on the file itself, so a
-        // log we cannot read still looks like a candidate here and would spend a slot
-        // that `read_tail` only refuses afterwards. A backend once started under sudo
-        // leaves exactly that behind. Safe to open now: non-regular files are already
-        // out, so this cannot be the FIFO that blocks.
+        // `stat` needs no permission on the file, so probe readability here before it spends a slot.
         if let Err(error) = File::open(&path) {
             warnings.push(format!(
                 "ignored unreadable backend session log: {} ({})",
@@ -502,8 +487,7 @@ fn newest_server_logs_in(dir: &Path, max: usize, warnings: &mut Vec<String>) -> 
         };
         logs.push((modified, path));
     }
-    // mtime decides; the name breaks an exact tie, descending like the mtime. `pidN`
-    // is not zero-padded, so that tie-break is stable, not chronological.
+    // mtime decides; the name breaks exact ties (`pidN` is not zero-padded, so not chronological).
     logs.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
     logs.truncate(max);
     logs.into_iter().map(|(_, path)| path).collect()
@@ -588,12 +572,21 @@ fn read_tail(path: &Path, max_lines: usize, max_bytes: usize) -> Result<TailRead
     let size = metadata.len();
     let mut file = File::open(path).map_err(|e| e.to_string())?;
     let start = size.saturating_sub(max_bytes as u64);
-    file.seek(SeekFrom::Start(start))
+    // Read from one byte early so a cut that lands on a line start keeps that line.
+    let read_from = start.saturating_sub(1);
+    file.seek(SeekFrom::Start(read_from))
         .map_err(|e| e.to_string())?;
     let mut bytes = Vec::new();
-    file.take(max_bytes as u64)
+    file.take(max_bytes as u64 + (start - read_from))
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
+    if start > 0 {
+        // Drop the partial first line: a value cut from its key escapes the key-based redactor.
+        match bytes.iter().position(|&b| b == b'\n') {
+            Some(newline) => drop(bytes.drain(..=newline)),
+            None => bytes.clear(),
+        }
+    }
     let mut text = String::from_utf8_lossy(&bytes).into_owned();
     let mut truncated = start > 0;
     if truncated {
@@ -781,9 +774,7 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// The test above cannot say WHICH key ordered it, since its names and mtimes
-    /// agree. Make them disagree. A copied or restored log carries a stamp that is
-    /// not its mtime, and the crash we want is the one written last.
+    /// Names and mtimes disagree here, to prove mtime orders the logs.
     #[test]
     fn server_logs_order_by_mtime_not_by_name() {
         let dir = server_log_dir("order-key");
@@ -811,8 +802,6 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// An entry that matches the name but cannot be read must not spend one of the
-    /// two slots: rejecting it later in `read_tail` still costs the real crash log.
     #[test]
     fn unreadable_entries_never_take_a_slot_from_a_real_log() {
         let dir = server_log_dir("crowding");
@@ -835,9 +824,6 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// A regular file we cannot open is the same defect wearing different clothes:
-    /// `stat` needs no permission on the file, so it survives every check above and
-    /// spends a slot. A backend once started under sudo leaves two of these behind.
     #[cfg(unix)]
     #[test]
     fn an_unreadable_log_never_takes_a_slot_from_a_readable_one() {
@@ -861,11 +847,7 @@ mod tests {
         })
         .collect();
 
-        // Mode 000 does not deny root, or anyone holding CAP_DAC_OVERRIDE, so in a
-        // root container the fixture cannot express its own precondition and the
-        // assertions below would report an environment, not a defect. Probe rather
-        // than test the uid, since the capability can be held without being root.
-        // Same reason test_recommended_folders_permission.py skips itself as root.
+        // Mode 000 does not deny root or CAP_DAC_OVERRIDE, so probe instead of checking the uid.
         if File::open(&locked[0]).is_ok() {
             for path in &locked {
                 fs::set_permissions(path, fs::Permissions::from_mode(0o644)).unwrap();
@@ -889,8 +871,6 @@ mod tests {
         );
     }
 
-    /// A newline in the name forges `key=value` lines in a report a maintainer then
-    /// reads as structure.
     #[cfg(unix)]
     #[test]
     fn server_logs_reject_names_that_could_forge_report_structure() {
@@ -908,8 +888,7 @@ mod tests {
     fn server_log_section_stays_inside_its_smaller_budget() {
         let dir = server_log_dir("budget");
         let path = dir.join("server-20260101-000000-pid1.log");
-        // Wide lines so the BYTE cap binds first: with short ones the line cap alone
-        // keeps the section small and raising the byte cap would go unnoticed.
+        // Wide lines so the BYTE cap binds first.
         let wide = "x".repeat(1024);
         let bulk: String = (0..1_000).map(|i| format!("line {i} {wide}\n")).collect();
         fs::write(
@@ -930,10 +909,7 @@ mod tests {
             &mut warnings,
         );
 
-        // A literal, not a multiple of the constant under test, which would scale with
-        // any raise and never catch one. 80 KiB clears the 64 KiB cap and its header
-        // while still catching a raise far short of TAIL_MAX_BYTES; at the 128 KiB
-        // this once allowed, a mutation to 100 KiB passed unnoticed.
+        // A literal, not a multiple of the constant, so raising the cap is caught.
         assert!(
             out.len() < 80 * 1024,
             "section grew into the phase-log budget: {}",
@@ -943,7 +919,6 @@ mod tests {
             TAIL_MAX_BYTES >= 80 * 1024,
             "budget headroom assumption broke"
         );
-        // The faulthandler stack sits at the end of the file, so the tail must keep it.
         assert!(out.contains("Current thread 0x1 (most recent call first):"));
         fs::remove_dir_all(&dir).unwrap();
     }
@@ -955,7 +930,6 @@ mod tests {
         let _ = fs::remove_dir_all(&missing);
         let mut warnings = Vec::new();
         assert!(newest_server_logs_in(&missing, 2, &mut warnings).is_empty());
-        // A backend that never started is the ordinary case, not a warning.
         assert!(warnings.is_empty(), "{warnings:?}");
     }
 
@@ -970,6 +944,21 @@ mod tests {
         fs::write(&path, [0xff, b'a', b'\n', b'b']).unwrap();
         let tail = read_tail(&path, 10, 100).unwrap();
         assert!(tail.text.contains('�'));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_byte_cut_tail_never_starts_mid_line() {
+        let path = std::env::temp_dir().join(format!("unsloth-cut-tail-{}", std::process::id()));
+        // Cut after the key: the bare value must not survive.
+        fs::write(&path, "{\"password\": \"opaque0123456789\"}\nkept line\n").unwrap();
+        let tail = read_tail(&path, 10, 29).unwrap();
+        assert!(!tail.text.contains("opaque"), "{}", tail.text);
+        assert!(tail.text.contains("kept line"), "{}", tail.text);
+
+        fs::write(&path, "first\nsecond\n").unwrap();
+        let tail = read_tail(&path, 10, 7).unwrap();
+        assert!(tail.text.contains("second"), "{}", tail.text);
         let _ = fs::remove_file(path);
     }
 
@@ -1019,8 +1008,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// The section sits above the phase logs and enforce_report_limit chops the END,
-    /// so a report that overflows the clipboard budget must still carry the stack.
+    /// enforce_report_limit chops the END, so an overflowing report must still carry the stack.
     #[test]
     fn a_truncated_report_still_carries_the_crash_stack() {
         let stack = "Current thread 0x1 (most recent call first):";

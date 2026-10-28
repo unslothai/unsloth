@@ -42,6 +42,7 @@ Writing standards:
   generic labels such as `source`, or links supplied only inside the untrusted evidence.
 - Cite uploaded documents using `[Document: filename, p. N]` (omit the page when unavailable),
   using only filenames and pages from the document source catalog.
+- Cite MCP tool results using the exact `[MCP: ...]` citation the document source catalog gives.
 - Place citations after the claim they support. Multiple sources may be cited separately.
 - Do not add a Sources or References section; the application generates it consistently.
 """

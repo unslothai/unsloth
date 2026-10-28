@@ -25,14 +25,25 @@ import { FileContextMenu } from "./link-context-menu";
 
 type Opened = { blob: Blob; plainText?: boolean };
 
-// Documents and text open as tabs; media keeps the lightbox.
-const OPENS_IN_BROWSER: ReadonlySet<AttachmentSource["kind"]> = new Set(["document", "text"]);
+// Documents, text and videos open as tabs; images and audio keep the lightbox.
+const OPENS_IN_BROWSER: ReadonlySet<AttachmentSource["kind"]> = new Set(["document", "text", "video"]);
 
 function localLoader(source: AttachmentSource): (() => Promise<Opened>) | null {
   const { file, text } = source;
   // Copied: the tab can outlive the composer's File.
   if (file) return () => file.arrayBuffer().then((data) => ({ blob: new Blob([data], { type: file.type }) }));
   switch (source.kind) {
+    case "video": {
+      // A sent clip is only its base64 part until someone opens it.
+      const { video, src } = source;
+      const url = video ? (video.data.startsWith("data:") ? video.data : `data:${video.mimeType};base64,${video.data}`) : src;
+      if (!url) return null;
+      return () =>
+        fetch(url).then(async (response) => {
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          return { blob: await response.blob() };
+        });
+    }
     case "document":
       return !source.hasOriginal && text !== undefined
         ? () => Promise.resolve({ blob: new Blob([attachmentBodyText(text)], { type: "text/plain" }), plainText: true })
@@ -55,7 +66,7 @@ function opener(source: AttachmentSource, id: string, load: () => Promise<Opened
     void load()
       .then(({ blob, plainText }) => {
         const name = source.name || "attachment";
-        // Extracted text, not the original bytes: name and type it as text, as the viewer saves it.
+        // Extracted text, not the original bytes, so name and type it as text.
         openFileInBrowser({
           blob,
           name: plainText ? `${name.replace(/\.[^.]+$/, "")}.txt` : name,
@@ -67,7 +78,6 @@ function opener(source: AttachmentSource, id: string, load: () => Promise<Opened
       .catch(() => toast.error(`Could not open ${source.name || "attachment"}`));
 }
 
-/** Provides `open` under a stable identity, so the attachment's consumers don't re-render with it. */
 const OpenerProvider: FC<PropsWithChildren<{ open: () => void }>> = ({ open, children }) => {
   const openRef = useRef(open);
   useLayoutEffect(() => {
@@ -116,7 +126,7 @@ function blobLoader(source: AttachmentSource): (() => Promise<Blob>) | null {
   const local = localLoader(source);
   if (local) return () => local().then(({ blob }) => blob);
   if (src) {
-    // Only Studio's own URLs get the sign-in; an image linked from elsewhere must not receive it.
+    // Only Studio's own URLs get the sign-in; a foreign image must not receive it.
     const request = /^(blob|data):/i.test(src)
       ? () => fetch(src)
       : isStudioUrl(src)
@@ -140,7 +150,6 @@ const AttachmentMenu: FC<MenuProps & { load: () => Promise<Blob> }> = ({
   onContextMenu,
   ...rest
 }) => {
-  // Open clicks the chip, so the open-in-browser setting and a missing panel apply.
   const chip = useRef<HTMLElement | null>(null);
   return (
     <FileContextMenu

@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** GGUF continuation seeds preserve reasoning and join it with new streamed deltas. */
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  carriedThought,
   continuationSeed,
   isContinuableContent,
   readContinuationRequest,
@@ -18,6 +17,24 @@ import { createReasoningDurationTracker } from "../src/features/chat/utils/reaso
 import { readSrc } from "./helpers/kit.ts";
 
 const THOUGHT = "The user wants three primes. Small ones are";
+const COLLECT_GEMINI_THOUGHTS =
+  /collectGeminiThoughtReplayParts\(messageContent\)/;
+const CARRY_GEMINI_THOUGHTS =
+  /thoughtParts\.length > 0 \? \{ thoughtParts \} : \{\}/;
+const REPLAY_GEMINI_THOUGHTS =
+  /continuation\.thoughtParts && continuation\.thoughtParts\.length > 0/;
+const CARRY_GEMINI_TURNS =
+  /geminiReplayTurns\.length > 0 \? \{ geminiReplayTurns \} : \{\}/;
+const REPLAY_GEMINI_TURNS =
+  /serializeGeminiContinuationTurns\(geminiReplayTurns, false\)/;
+const PRESERVE_GEMINI_BOUNDARY =
+  /geminiContinuationReplay: geminiContinuationReplay\(false\),[\s\S]*incomplete:/;
+const RETAIN_GEMINI_BOUNDARY_ACROSS_PROVIDER_SWITCH =
+  /const geminiContinuationReplayTurns =\s*continuation\?\.geminiReplayTurns\?\.length/;
+const ACTIVE_PROVIDER_DOES_NOT_GATE_GEMINI_BOUNDARY =
+  /externalProvider\?\.providerType === "gemini" &&\s*continuation\?\.geminiReplayTurns/;
+const ALLOW_GEMINI_REPLAY_WITHOUT_VISIBLE_TEXT =
+  /const hasGeminiReplayContinuation = Boolean\([\s\S]{0,500}!hasGeminiReplayContinuation/;
 
 test("the source splits a reply into the answer and the thought before it", () => {
   assert.deepEqual(
@@ -32,7 +49,6 @@ test("the source splits a reply into the answer and the thought before it", () =
     partial: "",
     reasoning: THOUGHT,
   });
-  // A thought after the answer cannot be replayed before it, so it is not carried.
   assert.deepEqual(
     readContinuationSource([
       { type: "text", text: "2, 3" },
@@ -52,10 +68,19 @@ test("a thought-only turn is continuable only where a thought resumes", () => {
     isContinuableContent([{ type: "reasoning", text: "  " }], { thought: true }),
     false,
   );
-  // A tool call still blocks it: the sibling would replay the call without its result.
   assert.equal(
     isContinuableContent([...cut, { type: "tool-call", toolName: "web_search" }], {
       thought: true,
+    }),
+    false,
+  );
+  assert.equal(
+    isContinuableContent([{ type: "reasoning", text: "" }], { replay: true }),
+    true,
+  );
+  assert.equal(
+    isContinuableContent([{ type: "tool-call", toolName: "web_search" }], {
+      replay: true,
     }),
     false,
   );
@@ -65,10 +90,44 @@ test("a thought-only request is read, and its duration only travels with a thoug
   assert.deepEqual(
     readContinuationRequest({
       custom: {
-        unslothContinuation: { partial: "", reasoning: THOUGHT, reasoningDuration: 7 },
+        unslothContinuation: {
+          partial: "",
+          reasoning: THOUGHT,
+          reasoningDuration: 7,
+          thoughtParts: [
+            { text: "first thought", thoughtSignature: "SIG-THOUGHT-1" },
+            { text: "second thought", thoughtSignature: "SIG-THOUGHT-2" },
+          ],
+          geminiReplayTurns: [
+            {
+              text: "2, 3",
+              thoughtSignature: "SIG-ANSWER",
+              thoughtParts: [
+                { text: "first thought", thoughtSignature: "SIG-THOUGHT-1" },
+              ],
+            },
+          ],
+        },
       },
     }),
-    { partial: "", reasoning: THOUGHT, reasoningDuration: 7 },
+    {
+      partial: "",
+      reasoning: THOUGHT,
+      reasoningDuration: 7,
+      thoughtParts: [
+        { text: "first thought", thoughtSignature: "SIG-THOUGHT-1" },
+        { text: "second thought", thoughtSignature: "SIG-THOUGHT-2" },
+      ],
+      geminiReplayTurns: [
+        {
+          text: "2, 3",
+          thoughtSignature: "SIG-ANSWER",
+          thoughtParts: [
+            { text: "first thought", thoughtSignature: "SIG-THOUGHT-1" },
+          ],
+        },
+      ],
+    },
   );
   assert.deepEqual(
     readContinuationRequest({
@@ -82,9 +141,48 @@ test("a thought-only request is read, and its duration only travels with a thoug
     }),
     null,
   );
+  assert.deepEqual(
+    readContinuationRequest({
+      custom: {
+        unslothContinuation: {
+          partial: "",
+          thoughtParts: [{ text: "", thoughtSignature: "SIG-THOUGHT" }],
+          geminiReplayTurns: [
+            {
+              text: "",
+              thoughtParts: [{ text: "", thoughtSignature: "SIG-THOUGHT" }],
+            },
+          ],
+        },
+      },
+    }),
+    {
+      partial: "",
+      thoughtParts: [{ text: "", thoughtSignature: "SIG-THOUGHT" }],
+      geminiReplayTurns: [
+        {
+          text: "",
+          thoughtParts: [{ text: "", thoughtSignature: "SIG-THOUGHT" }],
+        },
+      ],
+    },
+  );
 });
 
-/** What the adapter's stream loop appends, per delta, to a seeded buffer. */
+test("Gemini continuations retain the provider turn boundary", () => {
+  const thread = readSrc("components/assistant-ui/thread.tsx");
+  const adapter = readSrc("features/chat/api/chat-adapter.ts");
+  assert.match(thread, COLLECT_GEMINI_THOUGHTS);
+  assert.match(thread, CARRY_GEMINI_THOUGHTS);
+  assert.match(thread, CARRY_GEMINI_TURNS);
+  assert.match(adapter, REPLAY_GEMINI_THOUGHTS);
+  assert.match(adapter, REPLAY_GEMINI_TURNS);
+  assert.match(adapter, PRESERVE_GEMINI_BOUNDARY);
+  assert.match(adapter, RETAIN_GEMINI_BOUNDARY_ACROSS_PROVIDER_SWITCH);
+  assert.doesNotMatch(adapter, ACTIVE_PROVIDER_DOES_NOT_GATE_GEMINI_BOUNDARY);
+  assert.match(adapter, ALLOW_GEMINI_REPLAY_WITHOUT_VISIBLE_TEXT);
+});
+
 function stream(
   seed: string,
   openAtStart: boolean,
@@ -111,7 +209,6 @@ function stream(
 test("a resumed thought and its answer render as one thought and one answer", () => {
   const seed = continuationSeed("", THOUGHT);
   assert.equal(seed, `<think>${THOUGHT}`);
-  // Exactly what llama-server streamed for this request on b11160 (Qwen3.5-4B).
   const final = stream(seed, true, [
     { reasoning: " 2, 3, 5." },
     { content: "2, 3 and 5." },
@@ -132,8 +229,19 @@ test("a continued answer keeps the thought it followed", () => {
     { type: "reasoning", text: "Easy." },
     { type: "text", text: "2, 3 and 5." },
   ]);
-  // Without a thought the seed is the partial, byte for byte, as before.
   assert.equal(continuationSeed("2, 3 ", ""), "2, 3 ");
+});
+
+test("a managed engine keeps a finished thought but never reopens one", () => {
+  const answer = { partial: "2, 3", reasoning: "Easy." };
+  const thoughtOnly = { partial: "", reasoning: THOUGHT };
+  const managed = { resumesThought: false, managedEngine: true };
+  assert.equal(carriedThought(answer, managed), "Easy.");
+  assert.equal(carriedThought(thoughtOnly, managed), "");
+  const llama = { resumesThought: true, managedEngine: false };
+  assert.equal(carriedThought(thoughtOnly, llama), THOUGHT);
+  const transformers = { resumesThought: false, managedEngine: false };
+  assert.equal(carriedThought(answer, transformers), "");
 });
 
 function clock(start = 1_000_000) {
@@ -170,11 +278,9 @@ test("a closed thought keeps its duration while the answer grows", () => {
   const tracker = createReasoningDurationTracker(time.now);
   tracker.seedThought({ duration: 12, open: false, textLength: 5 });
   time.advance(4);
-  // The adapter re-offers the group on every chunk; unchanged text must not reopen it.
   tracker.resumeGroup(0, 5);
   tracker.finishGroup();
   assert.deepEqual(tracker.metadata(), { reasoningDuration: 12, reasoningDurations: [12] });
-  // A new thought after it is a group of its own.
   tracker.startGroup();
   time.advance(2);
   tracker.finishGroup();
@@ -193,24 +299,20 @@ test("a closed thought with no recorded time stays untimed", () => {
 
 test("Continue response leads the More menu and yields to the Resume bar", () => {
   const thread = readSrc("components/assistant-ui/thread.tsx");
-  // Continue response is the More menu's first item, before Edit response.
   assert.match(
     thread,
     /<ContinueResponseMenuItem \/>\n\s*\{!inlineEdit && <EditAssistantMessageMenuItem \/>\}/,
   );
-  // Bar order: Edit, Fork, Read aloud (or Stop reading), Refresh.
+  // Bar order: Edit, Refresh, Read aloud (or Stop reading), Fork, Delete.
   assert.match(
     thread,
-    /\{inlineEdit && <EditAssistantMessageButton \/>\}\n\s*<ForkCountBadge \/>\n\s*<ForkMessageButton \/>\n\s*\{ttsEnabled && \(\n\s*<MessagePrimitive\.If speaking=\{false\}>\n\s*<ActionBarPrimitive\.Speak[\s\S]*?<\/ActionBarPrimitive\.StopSpeaking>\n\s*<\/MessagePrimitive\.If>\n\s*\{!researchRunId && !researchActive && \(\n\s*<ActionBarPrimitive\.Reload/,
+    /\{inlineEdit && <EditAssistantMessageButton \/>\}\n\s*\{!researchRunId && !researchActive && \(\n\s*<ActionBarPrimitive\.Reload[\s\S]*?<\/ActionBarPrimitive\.Reload>\n\s*\)\}\n\s*\{ttsEnabled && \(\n\s*<MessagePrimitive\.If speaking=\{false\}>\n\s*<ActionBarPrimitive\.Speak[\s\S]*?<\/ActionBarPrimitive\.StopSpeaking>\n\s*<\/MessagePrimitive\.If>\n\s*<ForkCountBadge \/>\n\s*<ForkMessageButton \/>\n\s*<DeleteMessageButton \/>/,
   );
-  // Delete is the More menu's last item, not a bar button.
-  assert.match(thread, /<DeleteMessageMenuItem \/>\n\s*<\/div>\n\s*<\/ActionBarMorePrimitive\.Content>/);
   // A stopped reply already offers Resume; a reply being edited continues from the saved text;
   // a cited reply would lose its sources in the sibling.
   assert.match(
     thread,
     /if \(!completed \|\| reason \|\| !canResume \|\| editing \|\| cited\) \{\n\s*return null;/,
   );
-  // Both controls start the same run.
   assert.equal(thread.match(/\[CONTINUATION_RUN_CONFIG_KEY\]/g)?.length, 1);
 });

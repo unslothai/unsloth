@@ -18,12 +18,10 @@ import pytest
 
 @pytest.fixture(autouse = True)
 def _tmp_gallery(monkeypatch, tmp_path):
-    # Point the gallery at a throwaway root instead of ~/.unsloth/studio.
     monkeypatch.setattr(gallery, "studio_root", lambda: tmp_path)
 
 
 def _wav(tag = b"RIFF\x24\x00\x00\x00WAVEfmt "):
-    # Not a real container; the gallery treats the bytes as opaque payload.
     return tag
 
 
@@ -44,7 +42,6 @@ def test_save_writes_pair_and_round_trips():
     record = gallery.save(_wav(), _meta())
     assert record["id"] and record["url"].endswith(f"{record['id']}/file")
 
-    # Both files of the pair exist: the wav payload and the json recipe sidecar.
     directory = gallery.gallery_dir()
     assert (directory / f"{record['id']}.wav").is_file()
     sidecar = directory / f"{record['id']}.json"
@@ -53,7 +50,6 @@ def test_save_writes_pair_and_round_trips():
     listed = gallery.list_audio()
     assert len(listed) == 1
     assert listed[0]["prompt"] == "hello from a sloth"
-    # Meta fields survive the sidecar round-trip untouched.
     assert listed[0]["sample_rate"] == 24000 and listed[0]["audio_type"] == "snac"
 
 
@@ -82,7 +78,6 @@ def test_list_paginates_with_limit_offset():
     page2 = gallery.list_audio(limit = 2, offset = 2)
     assert [r["prompt"] for r in page1] == ["p4", "p3"]
     assert [r["prompt"] for r in page2] == ["p2", "p1"]
-    # limit=None still returns everything from the offset.
     assert len(gallery.list_audio()) == 5
     assert len(gallery.list_audio(offset = 4)) == 1
 
@@ -93,14 +88,12 @@ def test_cursor_pagination_does_not_skip_after_earlier_clip_is_deleted():
     visible1 = page1[:2]
     assert [record["prompt"] for record, _ in visible1] == ["A", "B"]
 
-    # Removing A shifts every offset, but the exclusive B cursor still starts at C.
     assert gallery.delete(records[-1]["id"]) is True
     page2 = gallery.list_audio(limit = 2, before = visible1[-1][1])
     assert [record["prompt"] for record in page2] == ["C", "D"]
 
 
 def test_audio_path_rejects_unsafe_ids():
-    # Traversal / bad chars / absolute paths never resolve to a path.
     assert gallery.audio_path("../../etc/passwd") is None
     assert gallery.audio_path("/etc/passwd") is None
     assert gallery.audio_path("a/b") is None
@@ -114,12 +107,10 @@ def test_audio_path_returns_wav_for_saved_id():
 
 
 def test_owned_audio_path_serves_only_owned_clips():
-    # A hand-dropped orphan WAV resolves via audio_path (safe stem, on disk) but must NOT be
-    # served: owned_audio_path applies the same sidecar check as delete/clear.
     orphan = gallery.gallery_dir() / "recording.wav"
     orphan.write_bytes(_wav())
-    assert gallery.audio_path("recording") is not None  # resolvable...
-    assert gallery.owned_audio_path("recording") is None  # ...but not ours to serve
+    assert gallery.audio_path("recording") is not None
+    assert gallery.owned_audio_path("recording") is None
 
     ours = gallery.save(_wav(), _meta(prompt = "ours"))
     assert gallery.owned_audio_path(ours["id"]) is not None
@@ -150,17 +141,14 @@ def test_delete_removes_both_files():
     gallery.save(_wav(), _meta(prompt = "b"))
     directory = gallery.gallery_dir()
     assert gallery.delete(record["id"]) is True
-    # Both halves of the pair are gone.
     assert not (directory / f"{record['id']}.wav").exists()
     assert not (directory / f"{record['id']}.json").exists()
-    assert gallery.delete(record["id"]) is False  # already gone
+    assert gallery.delete(record["id"]) is False
     assert len(gallery.list_audio()) == 1
 
 
 def test_delete_keeps_sidecar_listable_when_wav_unlink_fails(monkeypatch):
-    # delete() must remove the WAV FIRST: list_audio globs *.wav but needs a readable sidecar,
-    # so dropping the sidecar first and then failing the wav unlink would hide a still-present
-    # wav with no way to retry.
+    # Remove the WAV first so a failed unlink does not hide it from list_audio.
     record = gallery.save(_wav(), _meta(prompt = "keep"))
     directory = gallery.gallery_dir()
     wav = directory / f"{record['id']}.wav"
@@ -176,11 +164,10 @@ def test_delete_keeps_sidecar_listable_when_wav_unlink_fails(monkeypatch):
     # Scoped so undoing it does not revert the autouse fixture's studio_root redirect.
     with pytest.MonkeyPatch.context() as m:
         m.setattr(Path, "unlink", _fail_on_wav)
-        assert gallery.delete(record["id"]) is False  # wav unlink failed
-    # The sidecar was NOT dropped, so the record is still listable and the user can retry.
+        assert gallery.delete(record["id"]) is False
     assert sidecar.exists() and wav.exists()
     assert [r["prompt"] for r in gallery.list_audio()] == ["keep"]
-    assert gallery.delete(record["id"]) is True  # retry now succeeds
+    assert gallery.delete(record["id"]) is True
 
 
 def test_clear_returns_count():
@@ -188,12 +175,10 @@ def test_clear_returns_count():
     gallery.save(_wav(), _meta(prompt = "b"))
     assert gallery.clear() == 2
     assert gallery.list_audio() == []
-    # No stray sidecars left behind after a clear.
     assert list(gallery.gallery_dir().glob("*.json")) == []
 
 
 def test_clear_preserves_orphan_wav():
-    # An orphan / foreign WAV is invisible to list_audio; clear must remove the owned pair without destroying it.
     foreign = gallery.gallery_dir() / "recording.wav"
     foreign.write_bytes(_wav())
     gallery.save(_wav(), _meta(prompt = "ours"))
@@ -203,7 +188,6 @@ def test_clear_preserves_orphan_wav():
 
 
 def test_delete_ignores_orphan_wav():
-    # A per-id delete must refuse a WAV we do not own (no readable sidecar).
     foreign = gallery.gallery_dir() / "recording.wav"
     foreign.write_bytes(_wav())
     assert gallery.delete("recording") is False
@@ -225,7 +209,6 @@ def test_list_skips_orphan_sidecar_without_wav():
 
 
 def test_orphan_wav_in_window_does_not_drop_valid_clips():
-    # An orphan WAV sorting INTO the requested page must not consume a window slot: paging is over readable records.
     _save_with_mtime("p2", 100.0)
     orphan = gallery.gallery_dir() / "zzz_orphan.wav"
     orphan.write_bytes(_wav())
@@ -244,7 +227,6 @@ def test_list_skips_corrupt_sidecar():
 
 
 def test_list_skips_invalid_utf8_sidecar():
-    # Invalid UTF-8 raises UnicodeDecodeError, not an OSError: one corrupt sidecar is skipped, it does not 500 the listing.
     directory = gallery.gallery_dir()
     (directory / "badbytes.wav").write_bytes(_wav())
     (directory / "badbytes.json").write_bytes(b"\xff\xfe{}")
@@ -253,7 +235,6 @@ def test_list_skips_invalid_utf8_sidecar():
 
 
 def test_clear_preserves_wav_with_present_but_invalid_sidecar():
-    # A hand-dropped WAV whose sidecar parses but lacks the required recipe keys is hidden by list_audio, so clear must spare it.
     directory = gallery.gallery_dir()
     (directory / "foreign.wav").write_bytes(_wav())
     (directory / "foreign.json").write_text("{}", encoding = "utf-8")
@@ -263,19 +244,16 @@ def test_clear_preserves_wav_with_present_but_invalid_sidecar():
 
 
 def test_delete_refuses_wav_with_present_but_invalid_sidecar():
-    # The gallery never surfaced a record missing required keys, so a guessed id must not destroy it.
     directory = gallery.gallery_dir()
     (directory / "foreign.wav").write_bytes(_wav())
-    (directory / "foreign.json").write_text(
-        json.dumps({"prompt": "x"}), encoding = "utf-8"
-    )  # partial sidecar (no model/sample_rate/...)
+    (directory / "foreign.json").write_text(json.dumps({"prompt": "x"}), encoding = "utf-8")
     assert gallery.delete("foreign") is False
     assert (directory / "foreign.wav").exists()
 
 
 def test_valid_callback_paginates_over_accepted_records():
     # ``valid`` must filter before pagination, else a leading bad record returns a short page and stalls scroll.
-    _save_with_mtime("BAD", 300.0)  # newest, sorts first
+    _save_with_mtime("BAD", 300.0)
     _save_with_mtime("g1", 200.0)
     _save_with_mtime("g2", 100.0)
 
@@ -288,20 +266,19 @@ def test_valid_callback_paginates_over_accepted_records():
 
 
 def test_save_leaves_no_orphan_wav_when_sidecar_publish_fails(monkeypatch):
-    # If the sidecar (the pair's commit marker) fails to publish, the WAV must not be stranded as an invisible orphan.
+    # Sidecar is the commit marker; a failed publish must roll back the WAV.
     real_replace = gallery.os.replace
     calls = {"n": 0}
 
     def _replace(src, dst, *a, **k):
         calls["n"] += 1
-        if calls["n"] == 2:  # the sidecar publish
+        if calls["n"] == 2:
             raise OSError("simulated sidecar failure")
         return real_replace(src, dst, *a, **k)
 
     monkeypatch.setattr(gallery.os, "replace", _replace)
     with pytest.raises(OSError, match = "simulated sidecar failure"):
         gallery.save(_wav(), _meta())
-    # No wav, no sidecar, no temp files: the whole record was rolled back.
     assert list(gallery.gallery_dir().iterdir()) == []
     assert gallery.list_audio() == []
 
@@ -319,9 +296,6 @@ def test_a_nonnumeric_cap_disables_pruning(monkeypatch):
     assert audio_gallery._max_clips() == 5
     monkeypatch.delenv("UNSLOTH_AUDIO_GALLERY_MAX_CLIPS")
     assert audio_gallery._max_clips() == audio_gallery._DEFAULT_MAX_CLIPS
-
-
-# --- archive flags -----------------------------------------------------------------------
 
 
 def test_records_carry_default_archived_flag():
@@ -483,13 +457,11 @@ def test_prune_skips_when_the_flag_store_cannot_be_read(monkeypatch):
     (gallery.gallery_dir() / ".flags.json").write_text("corrupt", encoding = "utf-8")
     gallery.save(_wav(), _meta(prompt = "d"))
     assert gallery.audio_path(shelved["id"]) is not None
-    # Nothing was pruned at all: the clips over the cap wait for a save that can read the store.
     assert len(list(gallery.gallery_dir().glob("*.wav"))) == 4
 
 
 def test_prune_spares_a_clip_archived_after_its_snapshot(monkeypatch):
-    # The prune once picked victims from a listing and unlinked afterwards, so an archive landing
-    # in that window read as active from the stale snapshot and the clip was deleted anyway.
+    # Victims are chosen under the lock, so a racing archive is honoured.
     from core.inference import gallery_flags
 
     doomed = _save_with_mtime("doomed", 100.0)
@@ -507,7 +479,6 @@ def test_prune_spares_a_clip_archived_after_its_snapshot(monkeypatch):
         return entries
 
     monkeypatch.setattr(gallery, "_list_audio_entries", racing)
-    # Capped only now, so the seeding saves do not prune `doomed` before the hook is in place.
     monkeypatch.setenv("UNSLOTH_AUDIO_GALLERY_MAX_CLIPS", "2")
     gallery.save(_wav(), _meta(prompt = "d"))
 
@@ -558,9 +529,6 @@ def test_clear_stops_when_the_cross_process_lock_is_unavailable(monkeypatch):
     with pytest.raises(gallery_flags.FlagsUnavailable):
         gallery.clear()
     assert gallery.audio_path(record["id"]) is not None
-
-
-# --- pins and manual order ---------------------------------------------------------------
 
 
 def test_pinned_clips_lead_history():
@@ -626,7 +594,6 @@ def test_prune_goes_by_age_and_spares_pins(monkeypatch):
     gallery.set_flags(oldest["id"], pinned = True)
     b = _save_with_mtime("b", 200.0)
     c = _save_with_mtime("c", 300.0)
-    # Dragged to the bottom, but still newer than b.
     gallery.move(c["id"], b["id"])
     gallery.save(_wav(), _meta(prompt = "d"))
     assert gallery.audio_path(oldest["id"]) is not None
@@ -679,7 +646,6 @@ def test_project_route_copies_the_wav(monkeypatch, tmp_path):
 
 
 def test_list_route_resolves_a_cursor_sent_without_its_pin_rank():
-    # Older clients send only before_mtime and before_id.
     from routes.inference import list_gallery_audio
 
     clips = [_save_with_mtime(f"p{i}", float(i)) for i in range(1, 5)]
@@ -776,7 +742,6 @@ def test_a_clone_clip_keeps_its_workflow_and_run_fields_and_survives_a_speak_cle
         and item.voice_id == "v" * 32
         and item.settings["reference_text_used"] is True
     )
-    # Its audio type alone would read as speak.
     assert gallery.set_flags(clone["id"], pinned = True)["workflow"] == "clone"
     assert gallery.clear(workflow = "speak") == 1
     assert gallery.audio_path(speech["id"]) is None
@@ -830,7 +795,6 @@ def test_the_inputs_and_voices_folders_never_list_as_clips():
 def test_only_a_hidden_edit_source_is_kept_for_the_clip_that_plays_it(monkeypatch):
     reference = gallery.save(_wav(), _meta(workflow = "speak"))
     gallery.save(_wav(), _meta(workflow = "clone", source_clip_id = reference["id"]))
-    # A visible clip another clip was made from still goes with its own page's Clear and the cap.
     assert gallery.clear(workflow = "speak") == 1
     monkeypatch.setenv("UNSLOTH_AUDIO_GALLERY_MAX_CLIPS", "1")
     reference = _save_with_mtime("reference", 1000)
@@ -969,10 +933,8 @@ def test_a_kept_source_goes_with_its_clip(tmp_path):
     assert copy.read_bytes() == source.read_bytes()
     assert gallery.owned_source_path(kept["id"]) == copy
     assert gallery.owned_source_path(plain["id"]) is None
-    # Never a clip of its own, in the listing or a move.
     assert sorted(r["id"] for r in gallery.list_audio()) == sorted([kept["id"], plain["id"]])
     assert gallery.move(plain["id"], None)["id"] == plain["id"]
-    # Archiving keeps it with the clip; a clear that spares archived clips leaves it.
     gallery.set_flags(kept["id"], archived = True)
     assert gallery.clear() == 1 and copy.is_file()
     assert gallery.clear(include_archived = True) == 1

@@ -104,7 +104,6 @@ def test_discovery_does_not_construct_an_unused_orchestrator(
 
     llama, _ = resident_backends
     llama.is_loaded = gguf_loaded
-    # Exercise the real singleton getter/peek, not the fixture's replacement.
     monkeypatch.setattr(inf, "get_inference_backend", orchestrator.get_inference_backend)
     monkeypatch.setattr(orchestrator, "_inference_backend", None)
 

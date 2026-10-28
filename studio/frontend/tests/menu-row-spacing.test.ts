@@ -7,8 +7,7 @@ import test from "node:test";
 import { readSrc } from "./helpers/kit.ts";
 
 test("submenu chevrons sit as far from the right edge as leading icons from the left", () => {
-  // The arrow is drawn against its box's right edge, inset as a leading icon's stroke is on the
-  // left, so a box flush on the row's padding lines up at any icon size: no pixel pull.
+  // The arrow is inset like a leading icon, so a flush box aligns at any icon size.
   const chevrons = readSrc("lib/chevron-icons.ts");
   assert.match(chevrons, /MenuChevronRightIcon[\s\S]*?d: "M16 6L22 12L16 18"/);
   for (const file of ["dropdown-menu", "context-menu", "menubar"]) {
@@ -24,7 +23,6 @@ test("submenu chevrons sit as far from the right edge as leading icons from the 
 });
 
 test("trailing ticks and shortcuts sit as far in as the row's leading edge", () => {
-  // The tick is drawn inset like a leading icon, and its box sits on the row's own padding.
   assert.match(readSrc("lib/tick-icon.ts"), /MenuTickIcon[\s\S]*?d: "M7\.227 13\.299L11\.758 17\.829L21\.873 7\.714"/);
   for (const [file, rows] of [
     ["dropdown-menu", 2],
@@ -44,7 +42,6 @@ test("trailing ticks and shortcuts sit as far in as the row's leading edge", () 
   for (const file of ["dropdown-menu", "context-menu", "menubar", "command"]) {
     assert.match(readSrc(`components/ui/${file}.tsx`), /-mr-\[0\.1em\][^"]*tracking-widest|tracking-widest[^"]*-mr-\[0\.1em\]/, `${file} shortcut`);
   }
-  // Ticks a call site sets at the end of a row use the same trailing tick.
   for (const file of ["features/chat/shared-composer.tsx", "features/chat/mcp-composer-button.tsx", "features/chat/permission-mode-select.tsx"]) {
     assert.doesNotMatch(readSrc(file), /icon=\{Tick02Icon\}\s+strokeWidth=\{2\}\s+className="ml-auto/, file);
   }
@@ -58,10 +55,7 @@ test("menu rows keep a small gap between them", () => {
   );
 });
 
-// A menu's padding and trigger-aligning margin scale with the UI (8px is 7.47px at font size
-// 14). Chromium draws a row's rounded hover pill on whole CSS pixels while the menu keeps its
-// fraction, so the pill sat a device pixel nearer one edge; Firefox does the same for a
-// fractional width. Every menu surface rounds them as it opens.
+// Chromium rounds the hover pill to whole pixels, so menus round padding to stay centred.
 test("menu surfaces keep whole-pixel padding, margin and width, so the hover pill sits centred", async () => {
   const { snapInlinePadding } = await import("../src/lib/snap-padding.ts");
   const computed: Record<string, string> = {
@@ -92,19 +86,14 @@ test("menu surfaces keep whole-pixel padding, margin and width, so the hover pil
     const snapped = (source.match(/ref=\{snappedRef\}/g)?.length ?? 0) + (source.match(/snapRowInsets\(element\);/g)?.length ?? 0);
     assert.equal(snapped, surfaces, `${file} surfaces rounded as they mount`);
   }
-  // Rows nested in lists are balanced by their measured inset, corrected at the surface, and a
-  // list still loading is waited for, briefly.
   const helper = readSrc("lib/snap-padding.ts");
-  // Insets meant to match land on the same whole pixel, whatever the surface's rounding did.
   assert.match(helper, /const even = Math\.abs\(left - right\) < 1;/);
   assert.match(helper, /let targetLeft = even \? Math\.round\(\(left \+ right\) \/ 2\) : Math\.round\(left\);/);
   // A bare surface around a padded list can only widen, so it rounds up.
   assert.match(helper, /targetLeft = even \? Math\.ceil\(Math\.max\(left, right\)\) : Math\.ceil\(left\);/);
   assert.match(helper, /new MutationObserver/);
   assert.match(helper, /window\.setTimeout\(\(\) => observer\.disconnect\(\), ROW_WAIT_MS\)/);
-  // The model picker's panel is padded 16px left, 8px right (16px with external providers) so
-  // its scroller can run near the edge; the list's own right inset evens the rows out, reaching
-  // into the panel padding for an overlay scrollbar.
+  // The model picker panel pads 16px left, 8px right so its scroller runs near the edge.
   assert.match(
     readSrc("features/model-picker/components/model-selector/pickers.tsx"),
     /"model-list-scroll [^"]*pl-0\.5",/,

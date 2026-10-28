@@ -1,25 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Who paints over whom in the bottom-right corner.
-
-The Live resource monitor, the API monitor panel and the notification stack all
-live there. The first two keep out of each other's way geometrically
-(panel-placement and panel-placement.test.ts); the stack does not move for
-anyone -- it is anchored to the corner in CSS, because placing it from the
-boxes the others publish is what moved it to the middle and the top of the
-window. So the corner is shared, and z-order is the only thing deciding whether
-a monitor sitting under the stack still has a clickable Close button.
-
-The Windows UI smoke does exactly that drag-and-resize and then clicks Close, so
-it catches a regression here for real. It takes about twenty minutes and needs a
-Windows runner. These read the numbers straight out of the source instead.
-
-The numbers themselves live in one place now, studio/frontend/src/lib/z-layers.ts.
-These tests compare them rather than pinning any one of them, so renumbering a
-layer does not break them -- what breaks them is a surface leaving the named scale
-or two layers swapping places.
-"""
+"""Z-order alone decides whether a monitor under the notification stack has a clickable Close button."""
 
 from __future__ import annotations
 
@@ -28,7 +10,6 @@ from pathlib import Path
 
 import pytest
 
-# tests/conftest.py puts tests/_shared on sys.path for everything under tests/.
 from jsx_tags import opening_tag, without_comments  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
@@ -109,22 +90,12 @@ _RAIL_TESTID = 'data-testid="overlay-rail"'
 
 
 def test_the_notification_stack_uses_the_named_layer():
-    """Both copies, browser and desktop. They drifted apart once already.
-
-    Found by `data-testid`, not by a run of the rail's classes. The class-anchored version
-    spelled the corner into the pattern, so #11260 moving the rail flush to the edge made it
-    match nothing and report the stacks as missing rather than as moved. Where the rail sits
-    is asserted in tests/studio/test_update_release_notes.py, which is the file about its
-    layout; this one is only about the layer it draws on.
-    """
+    """Locates both stack copies by data-testid, since class-anchored matching broke when the rail moved."""
     src = without_comments(PROVIDER.read_text(encoding = "utf-8"))
     stacks = []
     at = src.find(_RAIL_TESTID)
     while at != -1:
-        # opening_tag, not rfind("<")/find(">"): an attribute before the test id can hold a
-        # comparison (`disabled={count < limit}`) and one after it an arrow function, either
-        # of which truncates a hand-rolled scan. A truncated tag drops the classes this test
-        # reads, so it would pass over the very z-index regression it exists to catch.
+        # opening_tag, not rfind/find: `<` or `=>` inside attributes truncates a hand-rolled scan.
         start, end = opening_tag(src, at)
         stacks.append(src[start:end])
         at = src.find(_RAIL_TESTID, end)
@@ -141,10 +112,7 @@ def test_the_notification_stack_uses_the_named_layer():
     [(STARTUP, "STARTUP_SCREEN"), (TOOLTIP, "TOOLTIP")],
 )
 def test_the_layers_that_outrank_the_panels_still_do(path: Path, layer: str):
-    """The startup screen blocks the app while the backend comes up, and tooltips
-    are transient and have to be readable above whatever spawned them. Both are
-    still Tailwind classes, so check the literal against the scale as well as the
-    ordering -- otherwise the scale can say one thing and the class another."""
+    """Also checks the Tailwind class literal against the scale, so the two cannot disagree."""
     layers = _layers()
     assert (
         layers[layer] > layers["FLOATING_PANEL_TOP"]

@@ -12,19 +12,24 @@ from __future__ import annotations
 
 import json
 import os
-import struct
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
+from .rocm_bf16 import is_rocm_torch
 
 SMALL_HOST_ENV = "UNSLOTH_DIFFUSION_SMALL_HOST"
 HOST_RAM_CHECK_ENV = "UNSLOTH_DIFFUSION_HOST_RAM_CHECK"
+# test hook: caps every host reading the guards take (total, available, commit)
+HOST_RAM_LIMIT_ENV = "UNSLOTH_DIFFUSION_HOST_RAM_LIMIT_MIB"
 SMALL_HOST_ATTR = "_unsloth_small_host"
 
 _MIB = 1024 * 1024
 _STREAM_MIN_MIB = 512
 _HOST_RESERVE_MIN_MIB = 3072
 _HOST_RESERVE_FRACTION = 0.10
+# Host RAM the fp8-storage rule (``diffusion_comfy_quant.fp8_storage_wanted``) keeps free when it lets a single file
+# widen. The single-file refusal reserves at most this much, so it never refuses a widened load that rule chose.
+FP8_STORAGE_HOST_RESERVE_MIB = 4096
 # fp16 T5 keeps ``wo`` in fp32 (``_keep_in_fp32_modules``): 9.5 GB stored, 11.0 GB loaded.
 _CONVERT_MARGIN = 1.15
 _INT8_MIN_ELEMENTS = 1 << 22
@@ -52,14 +57,11 @@ _ST_DTYPES = {"BF16": "bfloat16", "F16": "float16", "F32": "float32"}
 
 
 def _safetensors_bytes_by_dtype(path: Path, keep: tuple[str, ...] = ()) -> dict[str, int]:
+    from .diffusion_component_sizes import read_safetensors_header
+
     out: dict[str, int] = {}
-    try:
-        with open(path, "rb") as fh:
-            (n,) = struct.unpack("<Q", fh.read(8))
-            if not 0 < n <= 256 * _MIB:
-                return out
-            header = json.loads(fh.read(n))
-    except Exception:  # noqa: BLE001 - unreadable header: no claim about this file
+    header = read_safetensors_header(path, max_bytes = 256 * _MIB)
+    if header is None:  # unreadable header: no claim about this file
         return out
     for name, meta in header.items():
         if name == "__metadata__":
@@ -82,6 +84,7 @@ class StoredComponent:
     dtype: str  # dominant stored float dtype ("bfloat16", "float16", "float32", ...)
     # stored MiB of ``_keep_in_fp32_modules`` tensors: they convert to fp32 on the host even on the route
     kept_fp32_mib: int = 0
+    library: str = ""
 
 
 def _keep_fp32_from_config(sub: Path) -> tuple[str, ...]:
@@ -113,6 +116,10 @@ def stored_components(snapshot: Any) -> dict[str, StoredComponent]:
         root = Path(snapshot)
         if not root.is_dir():
             return out
+        try:
+            index = json.loads((root / "model_index.json").read_text(encoding = "utf-8"))
+        except Exception:  # noqa: BLE001
+            index = {}
         for sub in sorted(p for p in root.iterdir() if p.is_dir()):
             totals: dict[str, int] = {}
             keep = _keep_fp32_from_config(sub) if sub.name.startswith("text_encoder") else ()
@@ -123,8 +130,10 @@ def stored_components(snapshot: Any) -> dict[str, StoredComponent]:
             if not totals:
                 continue
             dtype = max(totals.items(), key = lambda kv: kv[1])[0]
+            entry = index.get(sub.name)
+            library = str(entry[0]) if isinstance(entry, list) and entry and entry[0] else ""
             out[sub.name] = StoredComponent(
-                sub.name, -(-sum(totals.values()) // _MIB), dtype, -(-kept // _MIB)
+                sub.name, -(-sum(totals.values()) // _MIB), dtype, -(-kept // _MIB), library
             )
     except Exception:  # noqa: BLE001 - no claim
         return {}
@@ -147,14 +156,43 @@ def resolve_snapshot_dir(repo_or_dir: Any, cache_dir: Any = None) -> Optional[Pa
     return None
 
 
+def _host_ram_limit_mib() -> int:
+    try:
+        return max(0, int((os.environ.get(HOST_RAM_LIMIT_ENV) or "").strip()))
+    except ValueError:
+        return 0
+
+
+def _capped(value: Optional[int], limit: int) -> Optional[int]:
+    if limit <= 0:
+        return value
+    return limit if value is None else min(value, limit)
+
+
 def host_ram_mib() -> tuple[Optional[int], Optional[int]]:
-    """(total, available) host MiB, both capped by an enforcing cgroup."""
+    """(total, available) host MiB, both capped by an enforcing cgroup and the ``HOST_RAM_LIMIT_ENV`` test hook."""
     from .diffusion_memory import _available_system_memory_mib, _host_ram_capacity_mib
-    return _host_ram_capacity_mib(), _available_system_memory_mib()
+
+    limit = _host_ram_limit_mib()
+    return _capped(_host_ram_capacity_mib(), limit), _capped(_available_system_memory_mib(), limit)
+
+
+def host_commit_mib() -> Optional[int]:
+    """Windows commit headroom MiB (None elsewhere or unreadable), capped by the ``HOST_RAM_LIMIT_ENV`` test hook."""
+    from .diffusion_memory import _windows_commit_headroom_mib
+
+    headroom = _windows_commit_headroom_mib()
+    return None if headroom is None else _capped(headroom, _host_ram_limit_mib())
 
 
 def host_reserve_mib(total_mib: Optional[int]) -> int:
     return max(_HOST_RESERVE_MIN_MIB, int((total_mib or 0) * _HOST_RESERVE_FRACTION))
+
+
+def single_file_host_reserve_mib(total_mib: Optional[int]) -> int:
+    """Reserve of the single-file host RAM refusal: the small-host reserve, capped at the fp8-storage rule's. Hosts
+    up to 40 GB are unchanged; above, 10% would refuse loads the fp8-storage rule widens because they fit."""
+    return min(host_reserve_mib(total_mib), FP8_STORAGE_HOST_RESERVE_MIB)
 
 
 def _dtype_name(dtype: Any) -> str:
@@ -175,6 +213,8 @@ class SmallHostDecision:
     total_mib: Optional[int] = None
     dense_host_mib: int = 0
     route_host_mib: int = 0
+    commit_mib: Optional[int] = None
+    dense_commit_mib: int = 0
     # component -> stored dtype it loads at (memory-mapped)
     storage_dtypes: dict[str, str] = field(default_factory = dict)
     refuse: Optional[str] = None
@@ -188,9 +228,13 @@ def decide_small_host(
     host_total_mib: Optional[int],
     host_available_mib: Optional[int],
     lora_active: bool = False,
+    host_commit_mib: Optional[int] = None,
+    pread_libraries: tuple[str, ...] = (),
 ) -> SmallHostDecision:
     """Whether this pipeline load takes the small-host route. Only CUDA loads converting large bf16 components
-    (fp16 / fp32 compute) change; same-dtype loads already stay memory-mapped."""
+    (fp16 / fp32 compute) change; same-dtype loads already stay memory-mapped. ``host_commit_mib`` (Windows)
+    also routes a dense load whose commit need does not fit: on Windows commit exhaustion is an access
+    violation in native code, not a Python error (#13432, #14513)."""
     if small_host_disabled():
         return SmallHostDecision(False, f"{SMALL_HOST_ENV}=0")
     if str(device) != "cuda":
@@ -219,29 +263,50 @@ def decide_small_host(
         for n, c in converted.items()
     )
     reserve = host_reserve_mib(host_total_mib)
+    # Windows charges each copy-on-write safetensors view to commit until the load ends: stored bytes plus the
+    # converted copy; a component read through ``pread`` (``pread_libraries``) holds no view. Linux / macOS do not
+    # enforce commit.
+    dense_commit = dense + int(
+        sum(c.mib for c in converted.values() if c.library not in pread_libraries) * _CONVERT_MARGIN
+    )
     storage = {name: comp.dtype for name, comp in converted.items()}
     forced = small_host_forced()
     if host_available_mib is None and not forced:
         return SmallHostDecision(False, "host RAM unreadable", dense_host_mib = dense)
-    fits = host_available_mib is not None and dense + reserve <= int(host_available_mib)
+    commit = None if host_commit_mib is None else int(host_commit_mib)
+    commit_fits = commit is None or dense_commit + reserve <= commit
+    fits = (
+        host_available_mib is not None
+        and dense + reserve <= int(host_available_mib)
+        and commit_fits
+    )
+    commit_note = (
+        ""
+        if commit is None
+        else f", {commit} MiB commit headroom (dense needs ~{dense_commit} MiB)"
+    )
+    extra = {"commit_mib": commit, "dense_commit_mib": dense_commit}
     if fits and not forced:
         return SmallHostDecision(
             False,
-            f"dense {compute} load ({dense} MiB) fits {host_available_mib} MiB available host RAM",
+            f"dense {compute} load ({dense} MiB) fits {host_available_mib} MiB available host RAM{commit_note}",
             host_available_mib,
             host_total_mib,
             dense,
             route,
+            **extra,
         )
     if lora_active and not forced:
         # the int8 denoiser cannot carry adapters
         return SmallHostDecision(
             False,
-            f"LoRA adapters need the dense denoiser (dense load ~{dense} MiB, {host_available_mib} MiB available)",
+            f"LoRA adapters need the dense denoiser (dense load ~{dense} MiB, {host_available_mib} MiB available"
+            f"{commit_note})",
             host_available_mib,
             host_total_mib,
             dense,
             route,
+            **extra,
         )
     refuse = None
     if (
@@ -254,10 +319,18 @@ def decide_small_host(
         f"{SMALL_HOST_ENV}=1"
         if forced and fits
         else f"dense {compute} load needs ~{dense} MiB + {reserve} MiB reserve of host RAM, "
-        f"{host_available_mib} MiB available"
+        f"{host_available_mib} MiB available{commit_note}"
     )
     return SmallHostDecision(
-        True, why, host_available_mib, host_total_mib, dense, route, storage, refuse
+        True,
+        why,
+        host_available_mib,
+        host_total_mib,
+        dense,
+        route,
+        storage_dtypes = storage,
+        refuse = refuse,
+        **extra,
     )
 
 
@@ -314,7 +387,7 @@ def int8_act_device_ok(device: Any) -> bool:
 
     try:
         dev = torch.device(device)
-        if dev.type != "cuda" or getattr(torch.version, "hip", None):
+        if dev.type != "cuda" or is_rocm_torch(torch):
             return False
         idx = dev.index if dev.index is not None else torch.cuda.current_device()
     except Exception:  # noqa: BLE001
@@ -595,6 +668,36 @@ def _group_tensors(group: Any) -> list:
     return out
 
 
+def _prefetch_budget_bytes(device: Any) -> int:
+    """Bytes of encoder groups the prefetcher may hold on ``device`` ahead of compute."""
+    try:
+        import torch
+
+        from .diffusion_memory import user_budget_reserve_bytes
+
+        free, total = torch.cuda.mem_get_info(device)
+        reserve = user_budget_reserve_bytes(device, total)
+        free = max(0, int(free) - reserve)
+        if reserve > 0 and free < _PREFETCH_MIN_BYTES:
+            return 0
+        return max(_PREFETCH_MIN_BYTES, min(_PREFETCH_MAX_BYTES, free // 8))
+    except Exception:  # noqa: BLE001
+        return _PREFETCH_MIN_BYTES
+
+
+def _prefetch_budget_lowered(device: Any) -> bool:
+    """True when the user's VRAM Budget keeps a reserve on ``device``."""
+    try:
+        import torch
+
+        from .diffusion_memory import user_budget_reserve_bytes
+
+        _free, total = torch.cuda.mem_get_info(device)
+        return user_budget_reserve_bytes(device, total) > 0
+    except Exception:  # noqa: BLE001
+        return False
+
+
 class _EncoderPrefetcher:
     """Copies a memory-mapped encoder's offload groups ahead of its forward, in the previous forward's order, on a
     worker thread through a pinned ring (diffusers pins each group on the calling thread). Off-order groups and worker
@@ -620,6 +723,8 @@ class _EncoderPrefetcher:
         self.ready: dict = {}  # id(group) -> (device tensors, event)
         self.inflight = 0
         self.budget = _PREFETCH_MIN_BYTES
+        self.strict = False  # lowered Budget: an ahead group must fit the window, else it copies synchronously
+        self.skipped: dict = {}  # group id -> times the worker left to a synchronous copy
         self.pos = 0
         self.stop = False
         self.worker = None
@@ -627,6 +732,8 @@ class _EncoderPrefetcher:
         self.stage: list = []
         self.stage_events: list = []
         self.slot = 0
+        # The worker and a synchronous onload copy (a group skipped under a lowered Budget) share the staging ring.
+        self.copy_lock = threading.Lock()
         self.stats = {"prefetched": 0, "sync": 0, "passes": 0}
         self.by_id = {id(g): g for g in groups}
 
@@ -649,6 +756,11 @@ class _EncoderPrefetcher:
 
     def _copy_group(self, group: Any) -> tuple:
         """Device copies of ``group``'s host tensors, issued on the side stream. Returns (tensors, event, bytes)."""
+        # Held across staging write, H2D enqueue and slot event so the other thread cannot reuse a slot in between.
+        with self.copy_lock:
+            return self._copy_group_locked(group)
+
+    def _copy_group_locked(self, group: Any) -> tuple:
         import torch
 
         self._ensure_stage()
@@ -669,8 +781,7 @@ class _EncoderPrefetcher:
                         )
                     continue
                 nbytes += n
-                # Compute-stream pool (a side-stream block stays cached away from the denoise); the copy waits for
-                # work queued there, covering the last user of a freed block.
+                # Copy waits on the compute stream so it covers the last user of a freed block.
                 with torch.cuda.stream(compute):
                     dst = torch.empty(src.shape, dtype = src.dtype, device = self.device)
                     queued = torch.cuda.Event()
@@ -700,6 +811,14 @@ class _EncoderPrefetcher:
             done.record(stream)
         return moved, done, nbytes
 
+    def _group_bytes(self, group: Any) -> int:
+        """Host bytes :meth:`_copy_group` would stage for ``group``."""
+        n = 0
+        for _t, src in _group_tensors(group):
+            if src.device.type == "cpu" and src.is_contiguous() and not src.is_pinned():
+                n += int(src.numel()) * int(src.element_size())
+        return n
+
     def _attach(self, group: Any, moved: list, done: Any) -> None:
         import torch
 
@@ -718,15 +837,25 @@ class _EncoderPrefetcher:
             if self.device.type == "cuda":
                 torch.cuda.set_device(self.device)
             for gid in order:
+                group = self.by_id.get(gid)
+                need = self._group_bytes(group) if self.strict and group is not None else 0
                 with self.cond:
+                    if need > self.budget:
+                        self.skipped[gid] = self.skipped.get(gid, 0) + 1
+                        self.cond.notify_all()
+                        continue
                     # A group the forward onloads twice waits for its first copy to be taken.
                     while not self.stop and (
-                        (self.inflight > 0 and self.inflight >= self.budget) or gid in self.ready
+                        (
+                            self.inflight + need > self.budget
+                            if self.strict
+                            else self.inflight > 0 and self.inflight >= self.budget
+                        )
+                        or gid in self.ready
                     ):
                         self.cond.wait(0.05)
                     if self.stop:
                         return
-                group = self.by_id.get(gid)
                 if group is None:
                     continue
                 moved, done, n = self._copy_group(group)
@@ -750,6 +879,7 @@ class _EncoderPrefetcher:
         self.worker = None
         with self.cond:
             self.ready.clear()
+            self.skipped.clear()
             self.inflight = 0
 
     def begin(self) -> None:
@@ -769,11 +899,10 @@ class _EncoderPrefetcher:
         )
         if not self.order:
             return  # first forward: synchronous copies, and it records the order
-        try:
-            free, _total = torch.cuda.mem_get_info(self.device)
-            self.budget = max(_PREFETCH_MIN_BYTES, min(_PREFETCH_MAX_BYTES, int(free) // 8))
-        except Exception:  # noqa: BLE001
-            self.budget = _PREFETCH_MIN_BYTES
+        self.budget = _prefetch_budget_bytes(self.device)
+        if self.budget <= 0:
+            return  # no budgeted room: every group copies synchronously, as on the first forward
+        self.strict = _prefetch_budget_lowered(self.device)
         self._order_after_compute()
         self.worker = threading.Thread(
             target = self._run, args = (list(self.order),), daemon = True, name = "unsloth-encoder-prefetch"
@@ -803,9 +932,16 @@ class _EncoderPrefetcher:
             if expected == gid:
                 self.pos += 1
                 with self.cond:
-                    while gid not in self.ready and self.error is None and self.worker.is_alive():
+                    while (
+                        gid not in self.ready
+                        and not self.skipped.get(gid)
+                        and self.error is None
+                        and self.worker.is_alive()
+                    ):
                         self.cond.wait(0.05)
                     entry = self.ready.pop(gid, None)
+                    if entry is None and self.skipped.get(gid):
+                        self.skipped[gid] -= 1
                     if entry is not None:
                         self.inflight -= entry[2]
                         self.cond.notify_all()
@@ -839,6 +975,10 @@ def install_encoder_prefetch(
 
         if _env(GROUP_OFFLOAD_PIN_ENV) in ("0", "off", "false", "no"):
             return 0  # the ring is pinned memory: the user's "pin nothing" override wins
+        from .host_pinning import host_pinning_allowed
+
+        if not host_pinning_allowed(device):
+            return 0  # integrated GPU: pinned memory only takes RAM from the GPU
 
         groups = [
             g

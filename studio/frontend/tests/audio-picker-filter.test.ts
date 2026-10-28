@@ -16,6 +16,9 @@ const { audioModelsForTask, isMusicGenerationModel } = await import(
 
 const { AUDIO_CPP_MODELS, audioCppModelSpeaks, audioCppWorkflowsFor } =
   await import("../src/features/audio/audio-cpp-catalog.ts");
+const { searchRowFitsDevice } = await import(
+  "../src/features/model-picker/components/model-selector/recommended-fit.ts"
+);
 
 type Workflow = "speak" | "clone" | "edit" | "convert" | "music" | "transcribe";
 const WORKFLOWS: Workflow[] = [
@@ -191,9 +194,7 @@ test("an undefined rowFilter leaves the picker rows untouched", () => {
     "features/model-picker/components/model-selector/pickers.tsx",
   );
   const guards = pickers.match(/\(!rowFilter \|\|\s*rowFilter\(\{/g) ?? [];
-  // Cached GGUF, cached repos, LM Studio, ./models and custom folders; Hub search rows stay unfiltered.
   assert.equal(guards.length, 5);
-  // Each On Device list applies it, so a custom-folder speech model is not offered on the Music page.
   for (const list of [
     "sortedCachedGguf",
     "sortedCachedModels",
@@ -222,7 +223,6 @@ test("a speech editing model lists on Edit beside its other pages", () => {
     ],
     // DotTTS's other packages do not edit.
     ["DotTTS-MF-GGUF", { audioWorkflows: ["speak"] }, ["speak"]],
-    // Without the backend's list, the catalog seed decides.
     ["Vevo2-GGUF", { audioType: "audiocpp_tts" }, ["clone", "edit", "convert"]],
   ];
   for (const [folder, row, workflows] of rows) {
@@ -260,7 +260,6 @@ test("Hub search rows for clone-only families outside the catalog list on Clone,
     assert.equal(audioRowMatchesWorkflow(row, "clone"), true, id);
     assert.equal(audioRowMatchesWorkflow(row, "speak"), false, id);
   }
-  // Backend workflows still win once the row is downloaded.
   assert.equal(
     audioRowMatchesWorkflow(
       { id: "x/MioTTS-GGUF", task: "text-to-speech", audioWorkflows: ["speak"] },
@@ -354,4 +353,48 @@ test("every seeded audio GGUF lists on exactly the pages it runs on", () => {
   assert.deepEqual(listed("MOSS-VoiceGenerator-GGUF"), ["speak"]);
   assert.deepEqual(listed("HeartMuLa-GGUF"), ["music"]);
   assert.deepEqual(listed("Niagara-ASR-GGUF"), ["transcribe"]);
+});
+
+test("the image edit-keyword hiding stays off audio pickers", () => {
+  const pickers = readSrc(
+    "features/model-picker/components/model-selector/pickers.tsx",
+  );
+  assert.match(
+    pickers,
+    /!\(!taskFilterHasAudio\(filter\) && isImageEditModel\(repoId\)\)/,
+  );
+  assert.match(
+    pickers,
+    /taskMatchesFilter\(r\.pipelineTag, task\) &&\s*!\(!audioTaskPicker && isImageEditModel\(r\.id\)\)/,
+  );
+  assert.match(
+    pickers,
+    /\.filter\(\(id\) => audioTaskPicker \|\| !isImageEditModel\(id\)\)/,
+  );
+  // Every other call keeps its gate; none is left unconditional.
+  const calls = pickers.match(/isImageEditModel\([^)]*\)/g) ?? [];
+  assert.equal(calls.length, 4);
+});
+
+test("a More row keeps its catalog size when search judges its fit", () => {
+  // TF-GridNet: no seed metadata and no parameter count in its name, so only its size sizes it.
+  const id = "audio-cpp/audio.cpp-gguf/TF-GridNet-GGUF";
+  const gpu = {
+    available: true,
+    memoryTotalGb: 24,
+    maxDeviceMemoryGb: 24,
+    loadDeviceMemoryGb: 24,
+    systemRamAvailableGb: 0,
+    budgetKnown: true,
+  };
+  const opts = { isGguf: true, gpu, inferenceGpu: gpu, taskScoped: true };
+  assert.equal(searchRowFitsDevice({ id }, opts), false);
+  assert.equal(searchRowFitsDevice({ id, estimatedSizeBytes: 32_792_096 }, opts), true);
+  const pickers = readSrc("features/model-picker/components/model-selector/pickers.tsx");
+  const body = pickers.slice(pickers.indexOf("const filteredRecommendedIds = useMemo("));
+  const block = body.slice(0, body.indexOf("\n  }, ["));
+  assert.match(
+    block,
+    /searchRowFits\(\{\s*id,\s*estimatedSizeBytes:\s*moreById\.get\(id\.toLowerCase\(\)\)\?\.sizeBytes/,
+  );
 });

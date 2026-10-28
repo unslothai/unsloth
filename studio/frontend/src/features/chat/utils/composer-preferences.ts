@@ -17,7 +17,7 @@ export type ComposerKeyEvent = {
   keyCode?: number;
 };
 
-// WebKit fires compositionend before the committing keydown (keyCode 229, WebKit bug 165004); ProseMirror's window.
+// WebKit fires compositionend before the committing keydown (keyCode 229, WebKit bug 165004).
 const IME_COMMIT_KEYDOWN_MS = 500;
 
 /** False only for a plain IME-marked Enter outside any composition, e.g. idle macOS Pinyin (#12137). */
@@ -35,15 +35,20 @@ export function imeKeydownBlocksComposerSubmit(
   );
 }
 
-export type InputImeState = { open: boolean; endedAt: number };
+export type InputImeState = {
+  open: boolean;
+  endedAt: number;
+  commitKeydownSeen: boolean;
+};
 
 export function newInputImeState(): InputImeState {
-  return { open: false, endedAt: -Infinity };
+  return { open: false, endedAt: -Infinity, commitKeydownSeen: false };
 }
 
 export function resetInputIme(ime: InputImeState) {
   ime.open = false;
   ime.endedAt = -Infinity;
+  ime.commitKeydownSeen = false;
 }
 
 export function inputImeHandlers(ime: InputImeState) {
@@ -54,24 +59,31 @@ export function inputImeHandlers(ime: InputImeState) {
     onBlur: reset,
     onCompositionStart: () => {
       ime.open = true;
+      ime.commitKeydownSeen = false;
     },
     onCompositionEnd: (event: { timeStamp: number }) => {
       ime.open = false;
-      ime.endedAt = event.timeStamp;
+      ime.endedAt = ime.commitKeydownSeen ? -Infinity : event.timeStamp;
+      ime.commitKeydownSeen = false;
     },
   };
 }
 
-/** True when the keydown belongs to an IME; idle macOS Pinyin Enter (229, #12137) passes. */
 export function imeOwnsInputKeydown(
   event: ComposerKeyEvent & {
     timeStamp: number;
     nativeEvent: { isComposing?: boolean };
   },
   ime: InputImeState,
+  options?: { modifiedEnterSubmits?: boolean },
 ): boolean {
+  if (event.key === "Enter" && (event.nativeEvent.isComposing || ime.open)) {
+    ime.commitKeydownSeen = true;
+  }
   const msSinceCompositionEnd = event.timeStamp - ime.endedAt;
   ime.endedAt = -Infinity;
+  // A held candidate Enter repeats past compositionend: same press, never the submit.
+  if (event.key === "Enter" && event.repeat) return true;
   if (event.nativeEvent.isComposing) return true;
   if (event.keyCode !== 229) {
     // Candidate-confirming Enter can arrive as keyCode 13 mid-composition; swallow it once.
@@ -79,7 +91,10 @@ export function imeOwnsInputKeydown(
     ime.open = false;
     return confirmsCandidate;
   }
-  return imeKeydownBlocksComposerSubmit(event, ime.open, msSinceCompositionEnd);
+  const candidate = options?.modifiedEnterSubmits
+    ? { ...event, metaKey: false, ctrlKey: false }
+    : event;
+  return imeKeydownBlocksComposerSubmit(candidate, ime.open, msSinceCompositionEnd);
 }
 
 export function composerKeyEventForImeSubmit(
@@ -95,7 +110,6 @@ export function composerKeyEventForImeSubmit(
   };
 }
 
-/** The rule in force for `draft`. */
 export function effectiveSendShortcut(
   shortcut: ComposerSendShortcut,
   draft?: string | null,
@@ -104,7 +118,6 @@ export function effectiveSendShortcut(
   return draft?.includes("\n") ? "mod-enter" : "enter";
 }
 
-/** Only called for the focused composer, after its IME and mention-picker guards. */
 export function composerSubmitIntent(
   event: ComposerKeyEvent,
   preference: ComposerSendShortcut,
@@ -136,7 +149,6 @@ export function composerFollowUpBehavior(
   return preference === "queue" ? "steer" : "queue";
 }
 
-/** Intent that lands a submit on `behavior` from either preference. */
 export function followUpSubmitIntent(
   preference: ComposerFollowUpBehavior,
   behavior: ComposerFollowUpBehavior,
@@ -184,7 +196,6 @@ export function normalizeComposerPreferences(value: unknown) {
   };
 }
 
-/** Put a steering prompt after a dispatched item, or before the next pending item. */
 export function steeringInsertionIndex(
   items: readonly { dispatched: boolean }[],
   runIndex: number,

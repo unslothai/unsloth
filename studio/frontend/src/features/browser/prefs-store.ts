@@ -5,7 +5,6 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { SearchEngineId } from "./address";
 
-/** When the bookmarks toolbar shows, as Firefox offers it. */
 export type BookmarksToolbarMode = "always" | "newtab" | "never";
 
 /** Whether sending annotations also attaches a screenshot of the page. */
@@ -23,9 +22,7 @@ interface BrowserPrefsState {
   searchEngine: SearchEngineId;
   showFullUrl: boolean;
   bookmarksToolbar: BookmarksToolbarMode;
-  /** Whether saving a bookmark opens its name and location editor. */
   showBookmarkEditor: boolean;
-  /** Sites taken off the new tab's Suggested, by host. */
   hiddenSuggestions: string[];
   /** Show ⌘/Ctrl-clicked links' tabs at once instead of in the background. */
   switchToNewTabs: boolean;
@@ -36,8 +33,8 @@ interface BrowserPrefsState {
   /** Days visits are kept (HISTORY_RETENTION_DAYS); 0 for until cleared. */
   historyRetentionDays: number;
   saveDownloadHistory: boolean;
-  /** Web build: a save dialog for each download, where the browser offers one. */
   askWhereToSave: boolean;
+  askBeforeDownloading: boolean;
   annotationScreenshots: AnnotationScreenshots;
   setOpenLinksInBrowser: (value: boolean) => void;
   setOpenFilesInBrowser: (value: boolean) => void;
@@ -55,6 +52,7 @@ interface BrowserPrefsState {
   setHistoryRetentionDays: (value: number) => void;
   setSaveDownloadHistory: (value: boolean) => void;
   setAskWhereToSave: (value: boolean) => void;
+  setAskBeforeDownloading: (value: boolean) => void;
   setAnnotationScreenshots: (value: AnnotationScreenshots) => void;
 }
 
@@ -76,6 +74,7 @@ export const useBrowserPrefsStore = create<BrowserPrefsState>()(
       historyRetentionDays: 0,
       saveDownloadHistory: true,
       askWhereToSave: false,
+      askBeforeDownloading: true,
       annotationScreenshots: "never",
       setOpenLinksInBrowser: (openLinksInBrowser) => set({ openLinksInBrowser }),
       setOpenFilesInBrowser: (openFilesInBrowser) => set({ openFilesInBrowser }),
@@ -98,6 +97,7 @@ export const useBrowserPrefsStore = create<BrowserPrefsState>()(
       setHistoryRetentionDays: (historyRetentionDays) => set({ historyRetentionDays }),
       setSaveDownloadHistory: (saveDownloadHistory) => set({ saveDownloadHistory }),
       setAskWhereToSave: (askWhereToSave) => set({ askWhereToSave }),
+      setAskBeforeDownloading: (askBeforeDownloading) => set({ askBeforeDownloading }),
       setAnnotationScreenshots: (annotationScreenshots) => set({ annotationScreenshots }),
     }),
     {
@@ -111,6 +111,11 @@ export const useBrowserPrefsStore = create<BrowserPrefsState>()(
     },
   ),
 );
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.key === useBrowserPrefsStore.persist.getOptions().name) void useBrowserPrefsStore.persist.rehydrate();
+  });
+}
 
 /** The zoom a page is at unless the reader zooms it. */
 export function defaultZoom(): number {

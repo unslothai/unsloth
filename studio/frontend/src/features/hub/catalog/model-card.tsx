@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useVllmAvailable, useVllmPlatform } from "@/features/model-picker";
 import {
   Tooltip,
   TooltipContent,
@@ -23,7 +24,7 @@ import {
 import { OwnerAvatar, useAvatarImageUrl } from "./owner-avatar";
 import { AccessGlyphs, CapabilityPill } from "./shared";
 
-export const MODEL_CARD_WIDTH_PX = 204;
+export const MODEL_CARD_WIDTH_PX = 224;
 export const MODEL_CARD_HEIGHT_PX = 128;
 
 export type TrendingCardStyle = CSSProperties & {
@@ -239,6 +240,8 @@ export const ModelCard = memo(function ModelCard({
   isDataset: boolean;
   onSelect: (id: string) => void;
 }) {
+  const vllmAvailable = useVllmAvailable();
+  const vllmPlatform = useVllmPlatform();
   const support = useMemo(
     () =>
       isDataset
@@ -250,8 +253,10 @@ export const ModelCard = memo(function ModelCard({
             libraryName: row.result.libraryName,
             deviceType,
             quantMethod: row.result.quantMethod,
+            vllmAvailable,
+            vllmPlatform,
           }),
-    [isDataset, row.id, row.result, deviceType],
+    [isDataset, row.id, row.result, deviceType, vllmAvailable, vllmPlatform],
   );
   const unsupported = support?.status === "unsupported" && !support?.supportedIn;
   const partial = row.isAvailableOnDevice && row.isPartialOnDevice;
@@ -289,7 +294,7 @@ export const ModelCard = memo(function ModelCard({
         <OwnerAvatar
           owner={row.owner}
           repoName={row.repo}
-          className="size-11 shrink-0 rounded-[14px] text-ui-17 ring-1 ring-[rgb(255_255_255_/_calc(0.1*var(--contrast-edge-gain,1)))]"
+          className="size-11 shrink-0 rounded-md text-ui-17 ring-1 ring-[rgb(255_255_255_/_calc(0.1*var(--contrast-edge-gain,1)))]"
           remote={false}
         />
         <div className="min-w-0 flex-1 space-y-0.5">

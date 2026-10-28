@@ -29,10 +29,77 @@ ROOTFS = {
     "size": 356739129,
 }
 UV = {
-    "url": "https://github.com/astral-sh/uv/releases/download/0.12.19/uv-x86_64-unknown-linux-gnu.tar.gz",
-    "sha256": "23bf5552d220e0842b65c862097b2ebaeba0064b74eda5e565e77fd25969d8c8",
-    "size": 19831732,
+    "url": "https://github.com/astral-sh/uv/releases/download/0.13.5/uv-x86_64-unknown-linux-gnu.tar.gz",
+    "sha256": "f68d291c75783122dad58ab77def0e13f3233f358731db5d6d7e8715603b928f",
+    "size": 16682639,
+    "version": "0.13.5",
 }
+# AMD: ROCm from AMD's apt repo plus the DXG bridge .deb (HSA reaches the Windows driver via /dev/dxg).
+# The repo key ships with Studio: repo.radeon.com serves it at a mutable URL, breaking a pinned download.
+ROCM_APT_KEY = Path(__file__).resolve().parents[2] / "requirements" / "engines" / "rocm.gpg.key"
+ROCM_APT_KEY_SHA256 = "2de99e2354646a90d9903e2a669fc4e36b02c1bbff7075c481e12d7edab2c88b"
+ROCDXG = {
+    "url": "https://github.com/ROCm/librocdxg/releases/download/v1.2.2/rocdxg-roct_1.2.2_amd64.deb",
+    "sha256": "28ded1254811192ebace1f76c0227580184af7b27ab2475fb9728295a702d541",
+    "size": 185130,
+}
+# amd-smi built for WSL: vLLM finds its ROCm platform through amd-smi, whose Linux build reports
+# "driver not loaded" without /dev/kfd.
+ROCDXG_SMI = {
+    "url": "https://github.com/ROCm/librocdxg/releases/download/v1.2.2/rocdxg-amd-smi-lib_1.2.2_amd64.deb",
+    "sha256": "f9b601457ea513a223c7dd2cc281fb0aef1d11f21f38ce6108dc76e665ad6cc5",
+    "size": 548282,
+}
+ROCM_RELEASE = "7.2.1"
+# apt-get's own estimate on the pinned rootfs: 5356 MB of ROCm, 81 MB of amd-smi's dependencies.
+ROCM_APT_BYTES = 5_437_000_000
+# Runs as root in the distro: $1 is the apt key, $2 and $3 the rocdxg packages. Idempotent.
+ROCM_SETUP = """#!/bin/sh
+set -eu
+export DEBIAN_FRONTEND=noninteractive
+if [ ! -e /dev/dxg ]; then
+  echo "WSL cannot see the AMD GPU. Update the AMD Adrenalin driver, restart Windows, then click Install again." >&2
+  exit 3
+fi
+case "$(cat /opt/rocm/.info/version 2>/dev/null)" in
+  {release}|{release}-*) installed=1 ;;
+  *) installed=0 ;;
+esac
+if [ "$installed" = 0 ] || [ ! -e /opt/rocm/lib/librocdxg.so.1 ] || [ ! -e /opt/rocm-wsl/lib/libamd_smi.so ]; then
+  install -d -m 755 /etc/apt/keyrings
+  cp "$1" /etc/apt/keyrings/rocm.asc
+  echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.asc] https://repo.radeon.com/rocm/apt/{release} noble main" > /etc/apt/sources.list.d/rocm.list
+  printf 'Package: *\\nPin: release o=repo.radeon.com\\nPin-Priority: 600\\n' > /etc/apt/preferences.d/rocm-pin-600
+  # A cancelled install can leave dpkg interrupted, which fails every later apt-get.
+  dpkg --configure -a
+  apt-get update
+  # rocm-libs is what PyTorch links (rocBLAS, MIOpen, RCCL, ...); vLLM's PyTorch also links
+  # OpenMPI and the ROCm profiler libraries, and Triton compiles its HIP driver with gcc.
+  apt-get install -y rocm-libs rocminfo hip-runtime-amd rocprofiler-sdk hsa-amd-aqlprofile libopenmpi3t64 gcc
+  apt-get install -y "$2" "$3"
+  ldconfig
+fi
+HSA_ENABLE_DXG_DETECTION=1 /opt/rocm/bin/rocminfo | grep -E "Name:[[:space:]]+gfx[1-9]" || {
+  echo "ROCm cannot reach the AMD GPU through WSL. Update the AMD Adrenalin driver, restart Windows, then click Install again." >&2
+  exit 3
+}
+""".replace("{release}", ROCM_RELEASE)
+# HSA loads the DXG bridge only when asked. The profiler SDK is never registered: it aborts HIP
+# start-up without KFD's sysfs topology, which WSL lacks.
+ROCM_ENVIRONMENT = {
+    "HSA_ENABLE_DXG_DETECTION": "1",
+    "LD_LIBRARY_PATH": "/opt/rocm-wsl/lib",
+    "ROCPROFILER_REGISTER_ENABLED": "0",
+}
+
+
+def rocm_environment() -> dict[str, str]:
+    """ROCM_ENVIRONMENT, plus Studio's HSA_OVERRIDE_GFX_VERSION: Studio's torch already reported the
+    overridden target, so the guest's check and the engine have to see that same target."""
+    override = os.environ.get("HSA_OVERRIDE_GFX_VERSION", "").strip()
+    return {**ROCM_ENVIRONMENT, **({"HSA_OVERRIDE_GFX_VERSION": override} if override else {})}
+
+
 _PREPARE_LOCK = threading.Lock()
 MIN_BUILD = 19044  # Windows 10 21H2: first build with CUDA in WSL2.
 GUEST_ROOT = "/opt/unsloth"
@@ -47,9 +114,7 @@ appendWindowsPath=false
 root=/mnt/
 """
 
-# Runs the engine in its own process group. The engine exits when Studio closes the stdin
-# pipe, which happens on stop and when Studio itself dies, so vLLM never outlives its owner.
-# A non-interactive sh gives background jobs /dev/null as stdin, hence the fd 3 duplicate.
+# Engine runs in its own process group, exits when Studio closes stdin, so vLLM never outlives it; fd 3 copies stdin since background jobs get /dev/null.
 RUNNER = """#!/bin/sh
 exec 3<&0
 setsid "$@" </dev/null &
@@ -116,9 +181,18 @@ def native_machine() -> str:
     """The OS architecture, not the interpreter's: an x64 Python under ARM64 emulation reports AMD64."""
     try:
         import ctypes
+        from ctypes import wintypes
 
-        process, native = ctypes.c_ushort(), ctypes.c_ushort()
-        kernel32 = ctypes.windll.kernel32
+        # Typed, or the pseudo-handle arrives truncated under x64-on-ARM64 emulation and AMD64 is reported.
+        kernel32 = ctypes.WinDLL("kernel32")
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel32.IsWow64Process2.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.USHORT),
+            ctypes.POINTER(wintypes.USHORT),
+        ]
+        kernel32.IsWow64Process2.restype = wintypes.BOOL
+        process, native = wintypes.USHORT(), wintypes.USHORT()
         if kernel32.IsWow64Process2(
             kernel32.GetCurrentProcess(), ctypes.byref(process), ctypes.byref(native)
         ):
@@ -126,7 +200,12 @@ def native_machine() -> str:
     except (AttributeError, OSError):
         pass
     arch = os.environ.get("PROCESSOR_ARCHITEW6432") or os.environ.get("PROCESSOR_ARCHITECTURE", "")
-    return {"AMD64": "x86_64", "ARM64": "arm64"}.get(arch.upper(), arch.lower())
+    if not arch:
+        import platform
+        arch = platform.machine()
+    return {"AMD64": "x86_64", "X86_64": "x86_64", "ARM64": "arm64", "AARCH64": "arm64"}.get(
+        arch.upper(), arch.lower()
+    )
 
 
 def windows_build() -> int:
@@ -158,8 +237,7 @@ def boot_id() -> int:
 
 def decode(raw: bytes) -> str:
     """wsl.exe writes its own messages as UTF-16LE; guest programs write UTF-8."""
-    # Localized messages can open with a non-ASCII character, so no single byte identifies
-    # UTF-16; UTF-8 text never carries NULs and CJK UTF-16 is almost never valid UTF-8.
+    # Localized text may start non-ASCII; UTF-8 never has NULs, CJK UTF-16 is rarely valid UTF-8.
     if raw[:2] == b"\xff\xfe" or b"\x00" in raw:
         return raw.decode("utf-16-le", errors = "replace").lstrip("\ufeff")
     try:
@@ -304,8 +382,7 @@ def guest_command(
     if exe is None:
         raise RuntimeError("WSL is not installed.")
     secrets = secrets or {}
-    # `withhold` keys the caller chose not to send (an anonymous load) must not ride in on the
-    # user's own WSLENV either.
+    # Withheld keys (anonymous load) must not ride in via the user's WSLENV.
     windows_env = {key: value for key, value in os.environ.items() if key.upper() not in withhold}
     windows_env.update(secrets)
     shared = [item for item in windows_env.get("WSLENV", "").split(":") if item]
@@ -429,7 +506,24 @@ def ensure_build_tools(run_guest, progress = None) -> None:
     run_guest(["apt-get", "install", "-y", "--no-install-recommends", "build-essential"])
 
 
-def ensure_distro(progress = None, cancel = None) -> None:
+# {platform: (what the Windows driver exposes in the distro, the error when it is absent)}
+_GPU_PASSTHROUGH = {
+    "cuda": (
+        "/usr/lib/wsl/lib/libcuda.so",
+        "WSL cannot see the NVIDIA GPU. Update the NVIDIA Windows driver, then click Install again.",
+    ),
+    "rocm": (
+        "/dev/dxg",
+        "WSL cannot see the AMD GPU. Update the AMD Adrenalin driver, restart Windows, then click Install again.",
+    ),
+}
+
+
+def ensure_distro(
+    progress = None,
+    cancel = None,
+    platform = "cuda",
+) -> None:
     """Idempotent: import the private distro, configure it, and install uv inside it."""
     from utils.paths.storage_roots import studio_root
 
@@ -455,20 +549,24 @@ def ensure_distro(progress = None, cancel = None) -> None:
             )
         put("/etc/wsl.conf", WSL_CONF)
         run(["--terminate", distro_name()], timeout = 120)
-        # The GPU paravirtualization library comes from the Windows driver, not the distro.
+        # The GPU paravirtualization comes from the Windows driver, not the distro.
+        device, missing = _GPU_PASSTHROUGH[platform]
         try:
-            guest(["test", "-e", "/usr/lib/wsl/lib/libcuda.so"])
+            guest(["test", "-e", device])
         except RuntimeError:
-            raise RuntimeError(
-                "WSL cannot see the NVIDIA GPU. Update the NVIDIA Windows driver, then click Install again."
-            ) from None
+            raise RuntimeError(missing) from None
         owner = json.dumps({"studio_home": str(studio_root()), "distro": distro_name()})
         guest(["mkdir", "-p", f"{GUEST_ROOT}/bin"])
         put(f"{GUEST_ROOT}/owner.json", owner)
     put(f"{GUEST_ROOT}/bin/run-engine", RUNNER, "755")
+    # The pinned release, not merely a uv: an older guest uv (0.12.x) still trusts the emSign roots.
     try:
-        guest(["test", "-x", f"{GUEST_ROOT}/bin/uv"])
-    except RuntimeError:
+        installed = re.search(
+            r"^uv (\S+)", guest([f"{GUEST_ROOT}/bin/uv", "--version"], timeout = 60), re.M
+        )
+    except (RuntimeError, subprocess.TimeoutExpired):
+        installed = None
+    if not installed or installed.group(1) != UV["version"]:
         archive = download(UV, "uv-x86_64-unknown-linux-gnu.tar.gz", progress, cancel)
         guest(
             [
@@ -483,14 +581,17 @@ def ensure_distro(progress = None, cancel = None) -> None:
     write_state(state = "ready", distro = distro_name())
 
 
-def prepare(progress = None, cancel = None) -> None:
-    """Everything before the engine's own packages. Raises ``Waiting`` for a user step."""
-    # vLLM and SGLang installs share one download, one elevation prompt and one distro import.
+def prepare(
+    progress = None,
+    cancel = None,
+    platform = "cuda",
+) -> None:
+    """Everything before the engine's own packages; raises Waiting for a user step; vLLM and SGLang share one download, prompt and distro import."""
     with _PREPARE_LOCK:
-        _prepare(progress, cancel)
+        _prepare(progress, cancel, platform)
 
 
-def _prepare(progress, cancel) -> None:
+def _prepare(progress, cancel, platform) -> None:
     state = wsl_state()
     if state.startswith("blocked"):
         raise RuntimeError(state.partition(": ")[2])
@@ -500,7 +601,7 @@ def _prepare(progress, cancel) -> None:
         if progress:
             progress("Approve the Windows prompt to install WSL")
         enable_wsl()
-    ensure_distro(progress, cancel)
+    ensure_distro(progress, cancel, platform)
 
 
 def _uuid_table(output: str) -> dict[int, str]:
@@ -563,12 +664,12 @@ def unregister() -> None:
     if distro_ready():
         owner = json.loads(guest(["cat", f"{GUEST_ROOT}/owner.json"]))
         if owner.get("distro") != distro_name():
-            raise RuntimeError("The WSL environment belongs to another Studio installation.")
+            raise RuntimeError("The WSL environment belongs to another Unsloth installation.")
     code, output = run(["--unregister", distro_name()], timeout = 300)
     if code and distro_name() in registered_distros():
         raise RuntimeError("Could not remove the WSL environment. " + output.strip()[-500:])
     shutil.rmtree(host_dir() / "distro", ignore_errors = True)
-    write_state(state = "removed")
+    write_state(state = "removed", rocm = None)
 
 
 def registered_distros() -> set[str]:
@@ -586,4 +687,4 @@ def _nvidia_smi() -> str:
 def summary() -> dict:
     """Status-poll view from the state file only: no wsl.exe call, so polling never boots WSL."""
     state = read_state()
-    return {"state": state.get("state"), "distro": state.get("distro")}
+    return {"state": state.get("state"), "distro": state.get("distro"), "rocm": state.get("rocm")}

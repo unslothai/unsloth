@@ -18,7 +18,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from core.rag import folder_sync, store
+from core.rag import embeddings, folder_sync, ingestion, store
 from storage import rag_db
 from utils.paths import rag_db_path
 
@@ -259,7 +259,6 @@ def test_skipped_reconciliation_releases_a_claim_the_queue_already_activated(rag
     assert folder_sync._claim_job(job_id) == (job_id, folder["id"])
     with _connection() as conn:
         assert job_leases.owned_by_this_process(conn, job_leases.FOLDER_SYNC, job_id)
-        # delete_folder() fails the claimed job before reconciliation starts.
         conn.execute("UPDATE linked_folder_sync_jobs SET status='failed' WHERE id=?", (job_id,))
         conn.commit()
 
@@ -421,6 +420,50 @@ def test_reconcile_add_rename_delete_and_skip_unsupported_and_symlinks(rag_home,
             ).fetchone()
             is None
         )
+
+
+@pytest.mark.parametrize("relative", [".obsidian", "notes/.obsidian", ".cache"])
+def test_scan_does_not_enter_dot_directories(tmp_path, monkeypatch, relative):
+    source = tmp_path / "vault"
+    hidden = source / relative
+    (hidden / "plugins").mkdir(parents = True)
+    (hidden / "plugins" / "manifest.json").write_text("{}", encoding = "utf-8")
+    visible = source / "notes" / "v1.0"
+    visible.mkdir(parents = True, exist_ok = True)
+    (visible / "note.md").write_text("visible note", encoding = "utf-8")
+    original_scandir = os.scandir
+
+    def guarded_scandir(path):
+        assert Path(path) != hidden, "Hidden directories must not be traversed"
+        return original_scandir(path)
+
+    monkeypatch.setattr(folder_sync.os, "scandir", guarded_scandir)
+    found, _ = folder_sync._scan(str(source))
+    assert set(found) == {"notes/v1.0/note.md"}
+
+
+@requires_sqlite_vec
+@pytest.mark.parametrize("already_indexed", [False, True])
+def test_sync_removes_documents_in_a_dot_directory(rag_home, stub_embeddings, already_indexed):
+    source, folder = _folder(rag_home)
+    notes = source / "notes"
+    notes.mkdir()
+    (notes / "note.txt").write_text("hiddencontenttoken", encoding = "utf-8")
+    (source / "visible.txt").write_text("visiblecontenttoken", encoding = "utf-8")
+    assert _run(folder["id"])["discovered"] == 2
+
+    notes.rename(source / ".obsidian")
+    if already_indexed:
+        # reproduce a mapping created before dot directories were excluded.
+        folder_sync._rename_mapping(folder["id"], "notes/note.txt", ".obsidian/note.txt")
+    result = _run(folder["id"])
+    assert result["status"] == "completed"
+    assert result["discovered"] == 1
+    assert result["deleted"] == 1
+    with _connection() as conn:
+        assert not store.search_lexical(conn, folder["scope"], "hiddencontenttoken", 5)
+        assert store.search_lexical(conn, folder["scope"], "visiblecontenttoken", 5)
+    assert (source / ".obsidian" / "note.txt").is_file()
 
 
 def test_scan_skips_revisited_directory_identity(rag_home, monkeypatch):
@@ -872,8 +915,7 @@ def test_reauthorizing_same_path_refreshes_root_identity_and_retains_mappings(
     source_stat = source.stat()
     assert reauthorized.is_set()
     assert refreshed["id"] == folder["id"]
-    # Read back through the loader: an identity above SQLite's signed maximum is stored as
-    # a hex string, which is the ordinary case for a Windows device id.
+    # Identities above SQLite's signed max are stored as hex (common for Windows device ids).
     loaded = folder_sync._load_identity(refreshed["root_device"], refreshed["root_inode"])
     assert loaded == (source_stat.st_dev, source_stat.st_ino), _identity_mismatch(
         loaded,
@@ -893,8 +935,7 @@ def test_reauthorizing_same_path_refreshes_root_identity_and_retains_mappings(
 @pytest.mark.parametrize("source_name", ["source", "source "])
 def test_directory_lease_contract_preserves_path_and_purpose(rag_home, source_name):
     if source_name.endswith(" ") and os.name == "nt":
-        # Win32 strips a trailing space from a path component, so the two names are one
-        # directory there and the pair this case contrasts cannot be created at all.
+        # Win32 strips trailing spaces from path components, so this pair cannot exist there.
         pytest.skip("Windows cannot hold a directory whose name ends in a space")
     source = rag_home / source_name
     source.mkdir()
@@ -969,8 +1010,13 @@ def test_large_windows_file_identity_round_trips_through_sqlite(
     identity = (1 << 63, 1 << 127)
     real_scan, real_snapshot = folder_sync._scan, folder_sync._snapshot
 
-    def scan(root, expected_identity = None):
-        found, root_identity = real_scan(root, expected_identity)
+    def scan(
+        root,
+        expected_identity = None,
+        report = None,
+        excluded = None,
+    ):
+        found, root_identity = real_scan(root, expected_identity, report, excluded)
         for metadata in found.values():
             metadata["scanned"], (metadata["device"], metadata["inode"]) = (
                 (metadata["device"], metadata["inode"]),
@@ -991,7 +1037,6 @@ def test_large_windows_file_identity_round_trips_through_sqlite(
     row = _mapping(folder)
     loaded = folder_sync._load_identity(row["device"], row["inode"])
     assert loaded == identity, _identity_mismatch(loaded, identity, (row["device"], row["inode"]))
-    # The same identity must still compare equal, so nothing re-embeds every sync.
     assert _run(folder["id"])["changed"] == 0
 
 
@@ -1004,14 +1049,12 @@ def test_identities_round_trip_across_the_sqlite_integer_boundary(value):
     """os.stat ids are unsigned, SQLite INTEGER is signed, and the encoding straddles that edge."""
     stored = folder_sync._store_identity((value, value))
     with closing(sqlite3.connect(":memory:")) as conn:
-        # Same declared affinity as linked_folders and linked_folder_files.
         conn.execute("CREATE TABLE ids(device INTEGER, inode INTEGER)")
         conn.execute("INSERT INTO ids VALUES(?,?)", stored)
         read = tuple(conn.execute("SELECT device, inode FROM ids").fetchone())
 
     loaded = folder_sync._load_identity(*read)
     assert loaded == (value, value), _identity_mismatch(loaded, (value, value), read)
-    # Anything SQLite can hold stays an integer, so rows written by older builds still load.
     fits = value <= folder_sync._SQLITE_INTEGER_MAX
     assert isinstance(read[0], int) is fits, (
         f"{value} was stored as {read[0]!r}; a value that {'fits' if fits else 'overflows'} "
@@ -1045,8 +1088,6 @@ def test_reauthorizing_encodes_a_root_identity_above_the_sqlite_maximum(
     stored = (refreshed["root_device"], refreshed["root_inode"])
     loaded = folder_sync._load_identity(*stored)
     assert loaded == identity, _identity_mismatch(loaded, identity, stored)
-    # Reconciliation reloads the row as the identity to expect, so an undecoded column would
-    # fail the whole sync rather than round-trip.
     assert _run(folder["id"])["status"] == "completed"
 
 
@@ -2178,9 +2219,6 @@ def test_kb_deletion_retries_retired_scope_cleanup_after_failure(
             subject = "test",
         )
     assert getattr(exc_info.value, "status_code", None) == 404
-    with pytest.raises(Exception) as exc_info:
-        rag_routes.preview_target(document["id"], subject = "test")
-    assert getattr(exc_info.value, "status_code", None) == 404
     with _connection() as conn:
         assert (
             conn.execute(
@@ -2325,7 +2363,6 @@ def test_unrelated_ingest_failure_still_removes_deleted_sources(
         else real_start(*args, **kwargs),
     )
 
-    # each vanished path gets one grace pass before it is removed anyway
     assert _run(folder["id"])["deleted"] == 0
     result = _run(folder["id"])
 
@@ -2400,7 +2437,6 @@ def test_a_rewritten_rename_retains_the_prior_document_until_it_reindexes(
     original.write_text("durable travelling words", encoding = "utf-8")
     assert _run(folder["id"])["status"] == "completed"
 
-    # an atomic re-save after a rename shares neither inode nor content with the original
     renamed = source / "report-final.txt"
     renamed.write_text("rewritten content that fails", encoding = "utf-8")
     original.unlink()
@@ -2470,7 +2506,6 @@ def test_a_project_recreated_during_delete_keeps_its_rag_scope(rag_home, monkeyp
     from routes import chat_history
 
     scope = store.project_scope("p1")
-    # the row delete has committed and another client has already created the id again
     monkeypatch.setattr(chat_history, "get_chat_project", lambda project_id: {"id": project_id})
 
     chat_history._delete_project_rag_sources("p1")
@@ -2496,7 +2531,6 @@ def test_the_purge_is_skipped_for_a_project_recreated_after_the_ownership_check(
     seen = {"checks": 0}
 
     def recreated_after_the_check(project_id):
-        # gone for the check that decides to retire, back by the time the purge asks
         seen["checks"] += 1
         return None if seen["checks"] == 1 else {"id": project_id}
 
@@ -2507,14 +2541,12 @@ def test_the_purge_is_skipped_for_a_project_recreated_after_the_ownership_check(
 
     survivor = folder_sync.get_folder(folder["id"])
     assert survivor is not None
-    # untouched, not just undeleted: a retired row left behind is not an abort
     assert (survivor["status"], survivor["auto_sync"], survivor["last_error"]) == (
         folder["status"],
         folder["auto_sync"],
         None,
     )
     assert seen["checks"] == 2
-    # and the scope is usable again immediately, not once the reconciler next runs
     assert folder_sync.scope_retired(scope) is False
 
 
@@ -2746,8 +2778,7 @@ def test_periodic_retirement_checks_ownership_under_the_scope_lock(rag_home):
     held = []
 
     def project_exists(project_id):
-        # create_folder and upload admission take this lock, so holding it here is what
-        # stops a project recreated mid-pass from having its new folders retired
+        # create_folder and upload admission take this lock, so a recreated project keeps its folders.
         lock = folder_sync._scope_lock(scope)
         acquired = []
         probe = threading.Thread(target = lambda: acquired.append(lock.acquire(blocking = False)))
@@ -2773,7 +2804,6 @@ def test_retirement_leaves_a_folder_linked_after_the_ownership_check(rag_home):
     source.mkdir()
     existing = folder_sync.create_folder(scope_type = "project", scope_id = "p1", path = str(source))
     owned = folder_sync.linked_folder_ids(scope)
-    # a second backend process links this one after the check and before the write
     later = rag_home / "after-check"
     later.mkdir()
     fresh = folder_sync.create_folder(scope_type = "project", scope_id = "p1", path = str(later))
@@ -2859,8 +2889,7 @@ def test_the_ownership_snapshot_survives_an_unloadable_vector_extension(rag_home
     def unavailable():
         raise sqlite3.OperationalError("cannot load sqlite-vec")
 
-    # scoped, not monkeypatch.undo(): rag_home patches through the same fixture, so undoing
-    # here would restore the database path before the assertions read it
+    # Scoped, not monkeypatch.undo(): rag_home patches through the same fixture.
     with monkeypatch.context() as no_vec:
         no_vec.setattr(folder_sync.rag_db, "get_connection", unavailable)
         owned = folder_sync.linked_folder_ids(scope)
@@ -3199,3 +3228,96 @@ def test_a_vec_table_resized_after_the_prefetch_falls_back_to_a_normal_ingest(
             (folder["id"],),
         ).fetchone()["document_id"]
     assert _vectors(b_id)
+
+
+@requires_sqlite_vec
+def test_unlink_stops_the_document_being_embedded(rag_home, stub_embeddings, monkeypatch):
+    """Unlink must not wait for a long embed to finish, then die on a 5 s busy_timeout (#13095)."""
+    source, folder = _folder(rag_home)
+    (source / "big.txt").write_text(" ".join(f"word{i}" for i in range(200_000)), encoding = "utf-8")
+    embedding = threading.Event()
+    real_encode = embeddings.encode
+
+    def slow_gpu(texts, **kwargs):
+        embedding.set()
+        time.sleep(0.25)
+        return real_encode(texts, **kwargs)
+
+    monkeypatch.setattr(embeddings, "encode", slow_gpu)
+    monkeypatch.setattr(ingestion, "_EMBED_BATCH", 4)
+    job_id = folder_sync.request_sync(folder["id"])
+    worker = threading.Thread(target = folder_sync.reconcile_folder, args = (job_id,), daemon = True)
+    worker.start()
+    assert embedding.wait(30), "the document never reached embedding"
+    started = time.monotonic()
+    assert folder_sync.delete_folder(folder["id"], remove_index = False) is True
+    elapsed = time.monotonic() - started
+    worker.join(timeout = 60)
+    assert not worker.is_alive()
+    # The whole document takes ~30 s of embedding here.
+    assert elapsed < 8, f"unlink waited {elapsed:.1f}s for the embed"
+    assert folder_sync.get_folder(folder["id"]) is None
+    assert _row("SELECT 1 FROM ingestion_jobs WHERE status NOT IN ('completed','failed')") is None
+
+
+@requires_sqlite_vec
+def test_periodic_sync_does_not_retry_an_unchanged_failed_file(
+    rag_home, stub_embeddings, monkeypatch
+):
+    """A file that cannot be indexed is retried when it changes or on Sync, not every period (#13095)."""
+    source, folder = _folder(rag_home)
+    (source / "good.txt").write_text("words to index", encoding = "utf-8")
+    bad = source / "bad.txt"
+    bad.write_text("   ", encoding = "utf-8")
+    attempts = []
+    real_start = ingestion.start_ingestion
+
+    def counting(*args, **kwargs):
+        attempts.append(kwargs["linked_relative_path"])
+        return real_start(*args, **kwargs)
+
+    monkeypatch.setattr(ingestion, "start_ingestion", counting)
+
+    def periodic() -> dict:
+        folder_sync._enqueue_periodic()
+        job_id = _row(
+            "SELECT id FROM linked_folder_sync_jobs WHERE folder_id=? AND status='pending'",
+            (folder["id"],),
+        )["id"]
+        folder_sync.reconcile_folder(job_id)
+        return folder_sync.get_job(job_id)
+
+    first = folder_sync.request_sync(folder["id"])
+    folder_sync.reconcile_folder(first)
+    assert attempts.count("bad.txt") == 1
+    assert "bad.txt" in folder_sync.get_job(first)["error"]
+
+    job = periodic()
+    assert attempts.count("bad.txt") == 1
+    assert job["status"] == "failed" and "bad.txt" in job["error"] and job["failed"] == 1
+    assert folder_sync.get_folder(folder["id"])["status"] == "error"
+
+    bad.write_text("     \n\n", encoding = "utf-8")
+    periodic()
+    assert attempts.count("bad.txt") == 2
+
+    manual = folder_sync.request_sync(folder["id"])
+    folder_sync.reconcile_folder(manual)
+    assert attempts.count("bad.txt") == 3
+
+    monkeypatch.setattr(folder_sync, "_FAILED_RETRY_S", 0)
+    periodic()
+    assert attempts.count("bad.txt") == 4
+    assert attempts.count("good.txt") == 1
+
+
+def test_an_unlink_cancel_only_reaches_its_own_account():
+    from utils.account_context import AccountContext, run_as
+
+    other = AccountContext("account-b", "b")
+    folder_sync.request_cancel("shared-id")
+    try:
+        assert folder_sync.is_cancel_requested("shared-id")
+        assert not run_as(other, folder_sync.is_cancel_requested, "shared-id")
+    finally:
+        folder_sync.clear_cancel("shared-id")

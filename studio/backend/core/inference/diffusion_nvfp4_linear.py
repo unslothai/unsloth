@@ -128,7 +128,12 @@ def nvfp4_linear_class():
 
 
 def is_nvfp4_flashinfer_linear(module: Any) -> bool:
-    return type(module).__name__ == "NVFP4FlashInferLinear" and hasattr(module, "a_gsf")
+    """The FlashInfer NVFP4 Linear or a subclass of it (the ComfyUI per-call activation-scale variant)."""
+    if not hasattr(module, "a_gsf"):
+        return False
+    return type(module).__name__ == "NVFP4FlashInferLinear" or isinstance(
+        module, nvfp4_linear_class()
+    )
 
 
 def is_nvfp4_tensor(t: Any) -> bool:
@@ -323,7 +328,9 @@ def _prewarm_shapes(modules, shapes, *, logger, tuned_box) -> None:
                     x = torch.zeros(m, module.in_features, device = device, dtype = torch.bfloat16)
                     with flashinfer.autotune(True):
                         module(x)
-                    torch.cuda.synchronize(device)
+                    from .diffusion_cuda_graph import synchronize_outside_capture
+
+                    synchronize_outside_capture(device)
             except Exception as exc:  # noqa: BLE001 - a shape that will not tune still runs
                 _log(logger, "debug", f"[nvfp4] prewarm {key} failed ({type(exc).__name__}: {exc})")
                 continue

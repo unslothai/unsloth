@@ -33,6 +33,12 @@ _CASES = [
     pytest.param(
         [{"messages": []}, {"messages": _CHATML}], "chatml", "messages", id = "empty-first-row"
     ),
+    pytest.param(
+        [{"dialog": _CHATML, "output_format": {"conversation": _SHAREGPT}}],
+        "chatml",
+        "dialog",
+        id = "plain-over-wrapped",
+    ),
 ]
 
 

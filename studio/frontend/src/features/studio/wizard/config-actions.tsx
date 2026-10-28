@@ -21,9 +21,9 @@ import {
 } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import {
-  Archive04Icon,
-  CleanIcon,
-  CloudUploadIcon,
+  FloppyDiskIcon,
+  UndoIcon,
+  Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ChangeEvent, useRef } from "react";
@@ -139,10 +139,10 @@ export function ConfigActions() {
           <Button
             variant="outline"
             size="sm"
-            className="h-9 cursor-pointer rounded-lg"
+            className="h-9 cursor-pointer rounded-full"
             onClick={() => void handleLoadConfig()}
           >
-            <HugeiconsIcon icon={CloudUploadIcon} className="size-3.5" />
+            <HugeiconsIcon icon={Upload01Icon} className="size-3.5" />
             {t("studio.wizard.loadYaml")}
           </Button>
         </TooltipTrigger>
@@ -155,10 +155,10 @@ export function ConfigActions() {
           <Button
             variant="outline"
             size="sm"
-            className="h-9 cursor-pointer rounded-lg"
+            className="h-9 cursor-pointer rounded-full"
             onClick={handleSaveConfig}
           >
-            <HugeiconsIcon icon={Archive04Icon} className="size-3.5" />
+            <HugeiconsIcon icon={FloppyDiskIcon} className="size-3.5" />
             {t("studio.wizard.saveYaml")}
           </Button>
         </TooltipTrigger>
@@ -171,11 +171,11 @@ export function ConfigActions() {
           <Button
             variant="outline"
             size="sm"
-            className="h-9 cursor-pointer rounded-lg"
+            className="h-9 cursor-pointer rounded-full"
             onClick={handleResetConfig}
             disabled={!selectedModel}
           >
-            <HugeiconsIcon icon={CleanIcon} className="size-3.5" />
+            <HugeiconsIcon icon={UndoIcon} className="size-3.5" />
             {t("studio.wizard.resetDefaults")}
           </Button>
         </TooltipTrigger>

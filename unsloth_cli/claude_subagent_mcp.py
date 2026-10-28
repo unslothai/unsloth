@@ -18,7 +18,11 @@ from typing import Any, Callable
 
 from unsloth_cli.commands.start import (
     _CLAUDE_ENV_UNSET,
+    _CLAUDE_SUBAGENT_AUTO_ROUTE_ENV,
+    _CLAUDE_SUBAGENT_FALLBACK_ENV,
     _CLAUDE_SUBAGENT_SETTINGS_ENV,
+    _SUBAGENT_AUTO_ROUTE_DESCRIPTION,
+    _SUBAGENT_AUTO_ROUTE_INSTRUCTIONS,
     _SUBAGENT_DESCRIPTION,
     _SUBAGENT_INSTRUCTIONS,
     _SUBAGENT_PLAN_DESCRIPTION,
@@ -63,10 +67,9 @@ def _bounded(text: str) -> str:
     return text[:_MAX_RESULT_CHARACTERS] + "\n\n[Local agent output truncated]"
 
 
-def _result_text(stdout: str) -> str:
+def _result_payload(stdout: str) -> dict:
     lines = [line for line in stdout.splitlines() if line.strip()]
-    candidates = [stdout.strip(), *reversed(lines)]
-    for candidate in candidates:
+    for candidate in [stdout.strip(), *reversed(lines)]:
         try:
             payload = json.loads(candidate)
         except ValueError:
@@ -74,10 +77,18 @@ def _result_text(stdout: str) -> str:
         if not isinstance(payload, dict):
             continue
         result = payload.get("result")
-        if payload.get("is_error"):
-            raise RuntimeError(str(result or "The local Claude agent failed."))
-        if isinstance(result, str) and result.strip():
-            return _bounded(result.strip())
+        if payload.get("is_error") or (isinstance(result, str) and result.strip()):
+            return payload
+    return {}
+
+
+def _result_text(stdout: str) -> str:
+    payload = _result_payload(stdout)
+    result = payload.get("result")
+    if payload.get("is_error"):
+        raise RuntimeError(str(result or "The local Claude agent failed."))
+    if isinstance(result, str) and result.strip():
+        return _bounded(result.strip())
     raise RuntimeError("The local Claude agent returned no readable result.")
 
 
@@ -172,18 +183,16 @@ def run_local_agent(
         "--output-format",
         "json",
         "--no-session-persistence",
-        # Strip human-blocking tools so the child runs unattended; plan/prompt tools are listed
-        # pre-emptively, and Bash is denied read-only side because plan mode is not a write barrier.
-        "--disallowedTools",
-        (
-            "AskUserQuestion,EnterPlanMode,Edit,Write,NotebookEdit,Bash"
-            if read_only
-            else "AskUserQuestion,EnterPlanMode,ExitPlanMode"
-        ),
+        # The full tool set (~16k tokens) fills a small window; plan mode is no write barrier, so read-only gets no writer.
+        "--tools",
+        "Read,Grep,Glob,ExitPlanMode"
+        if read_only
+        else "Bash,Read,Edit,Write,Grep,Glob,NotebookEdit",
         "--append-system-prompt",
         _SUBAGENT_PLAN_INSTRUCTIONS if read_only else _SUBAGENT_INSTRUCTIONS,
-        f"Task: {task}",
     ]
+    # The task goes over stdin: a non-npm .cmd shim runs argv through cmd.exe, where a quote and & in it run a command.
+    prompt: str | None = f"Task: {task}"
     bridged, wsl_names = _wsl_shim_env(command, local_env, _CLAUDE_ENV_UNSET)
     if wsl_names:
         from unsloth_cli.commands.start import _merge_wslenv
@@ -199,7 +208,7 @@ def run_local_agent(
     popen_kwargs: dict[str, Any] = {
         "cwd": os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd(),
         "env": child_env,
-        "stdin": subprocess.DEVNULL,
+        "stdin": subprocess.PIPE,
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
         "text": True,
@@ -220,9 +229,11 @@ def run_local_agent(
     try:
         while True:
             try:
-                stdout, stderr = process.communicate(timeout = _CANCEL_POLL_SECONDS)
+                stdout, stderr = process.communicate(input = prompt, timeout = _CANCEL_POLL_SECONDS)
                 break
             except subprocess.TimeoutExpired:
+                # communicate() refuses input once started; the first call keeps writing it.
+                prompt = None
                 if cancel_event.is_set():
                     _stop_child(process)
                     raise RuntimeError("The local Claude agent was cancelled.")
@@ -238,7 +249,9 @@ def run_local_agent(
             _stop_child(process)
         raise
     if process.returncode != 0:
-        detail = stderr.strip() or stdout.strip()
+        # stderr can hold only claude's own warnings; the result says why the run stopped.
+        reason = _result_payload(stdout).get("result")
+        detail = str(reason or "").strip() or stderr.strip() or stdout.strip()
         raise RuntimeError(
             _bounded(detail) or f"Local Claude exited with code {process.returncode}."
         )
@@ -360,8 +373,7 @@ def serve(
             cancel_event.set()
 
     def handle_shutdown(_signum: int, _frame: Any) -> None:
-        # Claude Code may send SIGINT repeatedly; only the first unwinds stdin, later ones must not
-        # interrupt process-tree cleanup.
+        # Only the first SIGINT unwinds stdin; later ones must not interrupt process-tree cleanup.
         first_signal = not shutdown_started.is_set()
         shutdown_started.set()
         cancel_active()
@@ -459,12 +471,43 @@ def serve(
             signal.signal(signum, handler)
 
 
+def _with_fallback(run_agent: Callable[..., str], marker: str) -> Callable[..., str]:
+    def run(task: str, cancel_event: threading.Event) -> str:
+        try:
+            text = run_agent(task, cancel_event)
+        except Exception as exc:
+            if cancel_event.is_set():
+                raise
+            Path(marker).touch()
+            raise RuntimeError(
+                f"{exc}\n\nThe local agent failed, so your own Read, Grep, Glob, Bash, "
+                "PowerShell, Monitor, NotebookRead and Agent tools are unblocked until the "
+                "next successful unsloth_agent call. "
+                "Do this step yourself."
+            ) from exc
+        Path(marker).unlink(missing_ok = True)
+        return text
+
+    return run
+
+
 def main() -> None:
+    auto_route = os.environ.get(_CLAUDE_SUBAGENT_AUTO_ROUTE_ENV) == "1"
+    marker = os.environ.get(_CLAUDE_SUBAGENT_FALLBACK_ENV)
+    run_agent = run_local_agent
+    run_read_only_agent = lambda task, cancel_event: run_local_agent(
+        task, cancel_event, read_only = True
+    )
+    if marker:
+        # With --auto-route the parent's own tools are blocked, so a failed local run would otherwise lose the task.
+        run_agent = _with_fallback(run_agent, marker)
+        run_read_only_agent = _with_fallback(run_read_only_agent, marker)
     serve(
-        run_read_only_agent = lambda task, cancel_event: run_local_agent(
-            task, cancel_event, read_only = True
-        ),
+        run_agent = run_agent,
+        tool_description = _SUBAGENT_AUTO_ROUTE_DESCRIPTION if auto_route else None,
+        run_read_only_agent = run_read_only_agent,
         read_only_tool_name = "unsloth_plan_agent",
+        instructions = _SUBAGENT_AUTO_ROUTE_INSTRUCTIONS if auto_route else None,
     )
 
 

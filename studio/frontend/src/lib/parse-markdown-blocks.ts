@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-// streamdown 2.5 parseMarkdownIntoBlocks with blockTokens instead of Lexer.lex (vercel/streamdown#608):
-// inline lexing of one long backslash line costs seconds (#11376). Drop when streamdown is bumped past #608.
+// streamdown 2.5 parseMarkdownIntoBlocks using blockTokens (vercel/streamdown#608): inline lexing
+// of one long backslash line takes seconds. Drop once streamdown includes #608.
 
 import { Lexer, type Token } from "marked";
 
@@ -151,6 +151,57 @@ const mergeTokensIntoBlocks = (tokens: Token[]): string[] => {
 
   return mergedBlocks;
 };
+
+// Prose that can still hold a link reference (code and definitions removed), and Marked's
+// own definitions.
+const collectReferenceProse = (
+  tokens: Token[],
+  out: { referenceProse: string[]; definitions: string[] },
+): { referenceProse: string[]; definitions: string[] } => {
+  for (const token of tokens) {
+    // Indented code stays: Marked and remark disagree on some list continuations.
+    if (
+      (token.type === "code" && token.codeBlockStyle !== "indented") ||
+      token.type === "space"
+    ) {
+      continue;
+    }
+    if (token.type === "def") {
+      out.definitions.push(token.raw);
+    } else if (token.type === "blockquote") {
+      collectReferenceProse(token.tokens ?? [], out);
+    } else if (token.type === "list") {
+      for (const item of token.items) {
+        collectReferenceProse(item.tokens, out);
+      }
+    } else {
+      out.referenceProse.push(token.raw);
+    }
+  }
+  return out;
+};
+
+// One lex for both the split and the reference prose.
+export function parseMarkdownBlockDetails(markdown: string): {
+  blocks: string[];
+  referenceProse: string[];
+  definitions: string[];
+} {
+  if (
+    footnoteReferencePattern.test(markdown) ||
+    footnoteDefinitionPattern.test(markdown)
+  ) {
+    return { blocks: [markdown], referenceProse: [markdown], definitions: [] };
+  }
+  const input = markdown.includes("\r")
+    ? markdown.replace(lineEndingPattern, "\n")
+    : markdown;
+  const tokens = lexBlocks(input);
+  return {
+    blocks: mergeTokensIntoBlocks(tokens),
+    ...collectReferenceProse(tokens, { referenceProse: [], definitions: [] }),
+  };
+}
 
 export function parseMarkdownIntoBlocks(markdown: string): string[] {
   const hasFootnoteReference = footnoteReferencePattern.test(markdown);

@@ -87,6 +87,37 @@ test("a project has no side pane, so a browser opened from it shows over it, not
   assert.match(page, /\(view\.mode === "project" &&\s*projectBrowserBaseline !== null &&\s*browserOpenSequence > projectBrowserBaseline\)/);
 });
 
+test("a project hosts the browser like a chat, so Browser use and the header toggle work (#15046)", () => {
+  const page = read("../src/features/chat/chat-page.tsx");
+  const landing = page.slice(page.indexOf("function ProjectLanding"));
+  assert.match(page, /function useBrowserChatHost\(active: boolean, overlay = false\): void \{/);
+  assert.match(page, /Project landing never mounts SingleContent/);
+  assert.match(landing, /useBrowserChatHost\(active, true\);/);
+  assert.match(page, /useBrowserChatHost\(chatActive\);/);
+  assert.match(
+    page,
+    /\(view\.mode === "single" \|\| view\.mode === "project"\) && !isMobile \? \(\s*<BrowserToggleButton\s*active=\{active\}\s*hideWhenOpen=\{view\.mode === "single" \|\| showBrowserOverlay\}/,
+  );
+  const toggle = read("../src/features/browser/browser-toggle.tsx");
+  assert.match(toggle, /hideWhenOpen = true,/);
+  assert.match(toggle, /if \(hideWhenOpen && open\) return null;/);
+  assert.match(toggle, /\{ enabled: active && !\(hideWhenOpen && open\) \}/);
+});
+
+test("a project's modal overlay closes before Request edits or Attach hand off to its composer", () => {
+  const page = read("../src/features/chat/chat-page.tsx");
+  const host = page.slice(page.indexOf("function useBrowserChatHost"), page.indexOf("// Compare keeps the base view"));
+  assert.match(host, /stageFixPrompt\(prompt\);\s*if \(overlay\) useBrowserStore\.getState\(\)\.closePanel\(\);/);
+  assert.match(host, /sendAnnotations: overlay \? null : /);
+  assert.match(host, /if \(overlay\) \{\s*useBrowserStore\.getState\(\)\.closePanel\(\);[^}]*window\.setTimeout\(focusComposer, 0\);/);
+  assert.match(host, /\[active, overlay, isMobile, aui\]/);
+});
+
+test("a browser-use question re-opens the panel even when it is already open, so a project overlay shows it", () => {
+  const executor = read("../src/features/browser/agent/executor.ts");
+  assert.match(executor, /if \(tabId\) store\.revealIn\(context\.session\.chat, tabId\);\s*(\/\/[^\n]*\n\s*)?if \(chatOnScreen\(context\)\) store\.openPanel\(\);/);
+});
+
 test("opening the browser closes Research, which would otherwise hide it in the side pane", () => {
   const page = read("../src/features/chat/chat-page.tsx");
   assert.match(page, /if \(handledBrowserOpenRef\.current === browserOpenSequence\) return;/);
@@ -105,6 +136,66 @@ test("Request edits stays in overlays, staging the prompt for the visible compos
 test("a project's browser overlay stages Request edits in the project composer", () => {
   const page = read("../src/features/chat/chat-page.tsx");
   const landing = page.slice(page.indexOf("function ProjectLanding"));
+  assert.match(landing, /useBrowserChatHost\(active, true\);/);
   assert.match(landing, /useStagedFixPrompt\(\s*useChatArtifactsStore\(\(state\) => state\.pendingFixPrompt\),\s*active,\s*\);/);
   assert.match(page, /useStagedFixPrompt\(pendingFixPrompt, chatActive\);/);
+});
+
+test("leaving Chat and coming back keeps a new chat's pages open", () => {
+  const page = read("../src/features/chat/chat-page.tsx");
+  // outside Chat, activeThreadId is cleared and restored, so ?new uses the first shown thread id.
+  assert.match(page, /if \(search\.new && activeThreadId === null\) \{\s*newChatIdentityBlankedRef\.current = search\.new;/);
+  assert.match(page, /if \(search\.new && activeThreadId && newChatIdentityBlankedRef\.current === search\.new\) \{/);
+  assert.match(page, /view\.newThreadNonce === newChat\.nonce \? newChat\.threadId : null;/);
+  const key = page.slice(page.indexOf("const shownChatKey ="), page.indexOf("closeChatPages();"));
+  assert.match(key, /view\.threadId \?\? newChatShownId \?\? activeThreadId/);
+});
+
+test("a new chat deleted while Chat is hidden re-latches onto its replacement thread", () => {
+  const page = read("../src/features/chat/chat-page.tsx");
+  const identity = page.slice(page.indexOf("const newChatIdentityBlankedRef"), page.indexOf("const modelOperationInProgress"));
+  // ThreadNewChatSwitch starts a fresh thread under the same nonce when the recorded one is tombstoned.
+  assert.match(identity, /newChatRef\.current = \{ nonce: search\.new, threadId: activeThreadId \};\s*newChatIdentityBlankedRef\.current = null;/);
+  assert.doesNotMatch(identity, /newChatRef\.current\?\.nonce !== search\.new/);
+});
+
+test("Back and Forward cannot assign an outgoing local thread to an incoming new-chat nonce", () => {
+  const page = read("../src/features/chat/chat-page.tsx");
+  const identity = page.slice(page.indexOf("const newChatIdentityBlankedRef"), page.indexOf("const modelOperationInProgress"));
+  assert.match(identity, /search\.new && activeThreadId === null/);
+  assert.match(identity, /newChatIdentityBlankedRef\.current === search\.new/);
+  assert.doesNotMatch(identity, /isAssistantLocalThreadId/);
+});
+
+test("a chat switch removes stale pages before destination artifacts auto-open", () => {
+  const page = read("../src/features/chat/chat-page.tsx");
+  const cleanup = page.slice(page.indexOf("const shownChatKey ="), page.indexOf("const hasActiveModel"));
+  assert.match(cleanup, /useLayoutEffect\(\(\) => \{\s*useBrowserStore\.getState\(\)\.closeChatPages\(\);/);
+  const card = read("../src/features/chat/artifacts/artifact-card.tsx");
+  const autoOpen = card.slice(card.indexOf("const autoOpenAttemptedRef"), card.indexOf("const pageTitle"));
+  assert.match(autoOpen, /useEffect\(\(\) => \{/);
+});
+
+test("a new chat started inside a project closes the previous project chat's pages", () => {
+  const page = read("../src/features/chat/chat-page.tsx");
+  const key = page.slice(page.indexOf("const shownChatKey ="), page.indexOf("closeChatPages();"));
+  // the project URL stays ?project=, so projectNewThreadNonce distinguishes its chats.
+  assert.match(key, /`project:\$\{view\.projectId\}:\$\{projectNewThreadNonce\}`/);
+});
+
+test("a project chat keeps its pages when its new thread gains a URL", () => {
+  const page = read("../src/features/chat/chat-page.tsx");
+  const key = page.slice(page.indexOf("const shownChatKey ="), page.indexOf("closeChatPages();"));
+  // ProjectLanding shows a newly-created thread before its row changes the route to ?thread=.
+  // Both representations use the same identity once the runtime has assigned the thread id.
+  assert.match(key, /view\.mode === "project"\s*\? projectChatShownId\s*\? `single:\$\{projectChatShownId\}`/);
+  assert.match(key, /view\.threadId \?\? newChatShownId \?\? activeThreadId/);
+});
+
+test("leaving Chat and coming back keeps a new project chat's pages open", () => {
+  const page = read("../src/features/chat/chat-page.tsx");
+  const key = page.slice(page.indexOf("const projectChatBlankedRef"), page.indexOf("closeChatPages();"));
+  // RootLayout clears activeThreadId while Chat is hidden, so retain the first created thread by nonce.
+  assert.match(key, /projectChatRef\.current = \{\s*projectId: view\.projectId,\s*nonce: projectNewThreadNonce,\s*threadId: activeThreadId,/);
+  assert.match(key, /projectChat\.nonce === projectNewThreadNonce\s*\? projectChat\.threadId\s*:\s*null/);
 });

@@ -98,7 +98,7 @@ def test_audio_files_download_beside_the_manifest_preserving_structure(monkeypat
             "datasets/metadata.jsonl",
             "datasets/audio/a.wav",
             "datasets/audio/b.mp3",
-            "datasets/notes.txt",  # still unsupported, still skipped
+            "datasets/notes.txt",
         ],
         contents = {"datasets/metadata.jsonl": '{"audio": "audio/a.wav", "text": "hi"}\n'},
     )
@@ -140,14 +140,11 @@ def test_audio_with_no_manifest_names_whats_missing(monkeypatch, tmp_path):
 def test_jsonl_audio_references_are_rewritten_to_local_paths(monkeypatch, tmp_path):
     manifest = "\n".join(
         [
-            # A prefix-relative key.
             json.dumps({"audio": "audio/a.wav", "text": "one"}),
-            # A full S3 URI to a downloaded key.
             json.dumps({"audio": "s3://my-bucket/datasets/audio/b.mp3", "text": "two"}),
-            # The HF undecoded-audio dict shape.
             json.dumps({"audio": {"path": "audio/a.wav"}, "text": "three"}),
-            # Unmatched references are somebody else's contract: left alone.
             json.dumps({"audio": "https://example.com/c.wav", "text": "four"}),
+            json.dumps({"audio": [{"path": "audio/a.wav"}, "audio/b.mp3"], "text": "five"}),
         ]
     )
     _install(
@@ -165,6 +162,7 @@ def test_jsonl_audio_references_are_rewritten_to_local_paths(monkeypatch, tmp_pa
     assert rows[1]["audio"] == local_b
     assert rows[2]["audio"]["path"] == local_a
     assert rows[3]["audio"] == "https://example.com/c.wav"
+    assert rows[4]["audio"] == [{"path": local_a}, local_b]
     assert all(os.path.isabs(p) for p in (rows[0]["audio"], rows[1]["audio"]))
     assert rows[0]["text"] == "one"
 
@@ -212,12 +210,10 @@ def test_csv_audio_references_are_rewritten_to_local_paths(monkeypatch, tmp_path
         rows = list(csv.DictReader(f))
     assert rows[0]["audio"] == str(tmp_path / "audio" / "a.wav")
     assert rows[0]["text"] == "hello there"
-    # An unmatched reference stays; it may be absolute on the training host.
     assert rows[1]["audio"] == "missing.wav"
 
 
 def test_tabular_only_prefixes_keep_the_flat_layout(monkeypatch, tmp_path):
-    # #6222's flat, collision-renamed layout is unchanged without audio.
     _install(monkeypatch, ["datasets/sub/train.parquet", "datasets/other/train.parquet"])
     files = s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
     assert sorted(os.path.basename(f) for f in files) == ["train.parquet", "train_1.parquet"]
@@ -237,3 +233,35 @@ def test_a_key_with_dotdot_segments_cannot_escape_the_download_dir(monkeypatch, 
     escaped = tmp_path / "evil.wav"
     assert not escaped.exists()
     assert all("evil" not in key for (_b, key, _p) in client.downloaded)
+
+
+@pytest.mark.parametrize(
+    "parts",
+    [
+        ["C:evil.txt"],
+        ["C:\\Users\\victim\\Startup\\evil.bat"],
+        ["\\\\server\\share\\evil.wav"],
+        ["audio", "..\\..\\evil.wav"],
+        ["\\evil.wav"],
+        ["datasets", ".. ", "evil.wav"],
+        ["datasets", ". .", "evil.wav"],
+        ["datasets\\.. \\evil.wav"],
+    ],
+)
+def test_windows_shaped_keys_cannot_escape_the_download_dir(parts):
+    import ntpath
+    with pytest.raises(ValueError, match = "S3 key"):
+        s3_dataset._contained_local_path("C:\\data\\download", parts, pathmod = ntpath)
+
+
+@pytest.mark.parametrize(
+    "parts", [["train.parquet"], ["audio", "a.wav"], ["audio", "x..y.wav"], ["a\\b.wav"]]
+)
+def test_ordinary_keys_stay_inside_the_download_dir(parts, tmp_path):
+    import ntpath
+    assert s3_dataset._contained_local_path(str(tmp_path), parts) == os.path.join(
+        str(tmp_path), *parts
+    )
+    if "\\" not in parts[-1]:
+        win = s3_dataset._contained_local_path("C:\\data\\download", parts, pathmod = ntpath)
+        assert win == ntpath.join("C:\\data\\download", *parts)

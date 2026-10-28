@@ -11,6 +11,7 @@ own process: unloading ends it and the memory goes with it (as core/inference/st
 
 from __future__ import annotations
 
+import json
 import multiprocessing as mp
 import os
 import sys
@@ -45,10 +46,20 @@ class _Events:
 
 
 def _fast_paths(folder: str) -> None:
-    # The same prebuilt causal-conv1d a Qwen3.5 training run gets; the gated delta kernels ship with
-    # unsloth_zoo. A failed install leaves transformers' torch path, which is slower but right.
+    # Clef is a Qwen3.5 backbone: unsloth_zoo ships its gated delta kernels and Triton causal conv
+    # (prefill and decode), so nothing is installed. Where that conv cannot run (switched off, ROCm,
+    # no Triton, an older zoo) it gets the prebuilt causal-conv1d a training run would; a failed
+    # install leaves transformers' torch path, which is slower but right.
     try:
+        from utils.ssm_runtime import zoo_triton_causal_conv1d_usable
+
+        if zoo_triton_causal_conv1d_usable():
+            # The hooks below also steer FLA off TileLang where it faults; keep that part.
+            from core.training.worker import _guard_fla_tilelang
+            _guard_fla_tilelang()
+            return
         from core.training.worker import _ensure_causal_conv1d_fast_path, _install_fast_path_hooks
+
         _ensure_causal_conv1d_fast_path(_Events(), folder, required = True)
         _install_fast_path_hooks(_Events(), folder, install_causal_conv1d = True)
     except Exception as exc:
@@ -67,7 +78,14 @@ def _load(folder: str):
     if not torch.cuda.is_available():
         raise ClefWorkerError("Clef needs an NVIDIA GPU; this machine has none torch can use.")
     free, _ = torch.cuda.mem_get_info()
-    load_in_4bit = free < _weight_bytes(Path(folder)) * _BF16_HEADROOM
+    path = Path(folder)
+    if (path / "config.json").is_file():
+        load_in_4bit = free < _weight_bytes(path) * _BF16_HEADROOM
+    else:
+        # LoRA adapters over a base LLM: served on the base they trained on (4-bit for QLoRA).
+        saved = path / "unsloth_decision_config.json"
+        config = json.loads(saved.read_text(encoding = "utf-8")) if saved.is_file() else {}
+        load_in_4bit = bool(config.get("load_in_4bit"))
     model, processor = FastDecisionModel.from_pretrained(
         folder,
         max_seq_length = MAX_LENGTH,
@@ -79,54 +97,9 @@ def _load(folder: str):
 
 
 def _decide(model, tokenizer, state, questions: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    import torch
-
-    from unsloth.models.clef import encode_record, systemone_answer
-    from unsloth.models.decision import QUESTION_TYPES, _clef_amp_dtype, _served_temperatures
-
-    encoded = encode_record(
-        tokenizer, {"state": state, "questions": questions}, max_length = MAX_LENGTH
-    )
-    device = next(model.parameters()).device
-    ids = torch.tensor([encoded.input_ids], device = device)
-    amp_dtype = _clef_amp_dtype(model, device)
-    with (
-        torch.inference_mode(),
-        torch.autocast(device.type, dtype = amp_dtype, enabled = amp_dtype is not None),
-    ):
-        logits, _ = model(input_ids = ids, attention_mask = torch.ones_like(ids), records = [encoded])
-    rows = [
-        row[: len(question.option_ids)]
-        for question, row in zip(encoded.questions, logits.float().cpu())
-    ]
     # The trainer's own rule: per type, or per (type, option count) bucket, after any folded scale.
-    scales = _served_temperatures(
-        model.decision_config,
-        rows,
-        [{"qtype": QUESTION_TYPES.index(q["type"])} for q in questions.values()],
-    )
-    answers = {}
-    for question, row, scale in zip(encoded.questions, rows, scales):
-        probabilities = (row / scale).softmax(-1).tolist()
-        answers[question.question_id] = systemone_answer(
-            questions[question.question_id], dict(zip(question.option_ids, probabilities))
-        )
-    return {
-        "answers": answers,
-        "input_tokens": len(encoded.input_ids),
-        "truncated": _truncated(tokenizer, state, questions, encoded),
-    }
-
-
-def _truncated(tokenizer, state, questions, encoded) -> bool:
-    # A cut state fills the budget exactly, but so does one that fits exactly: one more token of
-    # room tells them apart, and is only spent on prompts at the limit.
-    if len(encoded.input_ids) < MAX_LENGTH:
-        return False
-    from unsloth.models.clef import encode_record
-
-    record = {"state": state, "questions": questions}
-    return len(encode_record(tokenizer, record, max_length = MAX_LENGTH + 1).input_ids) > MAX_LENGTH
+    from unsloth.models.decision import _clef_decide
+    return _clef_decide(model, tokenizer, state, questions, max_length = MAX_LENGTH)
 
 
 def run_clef_worker(conn, folder: str) -> None:
@@ -165,27 +138,44 @@ class ClefAgent:
         folder: Path,
         cancelled: Callable[[], bool] | None = None,
     ):
+        from utils.native_path_leases import (
+            native_path_secret_removed_for_child_start,
+            run_without_native_path_secret,
+        )
+        from utils.process_lifetime import (
+            adopt_pid,
+            is_process_shutting_down,
+            spawn_on_lifetime_thread,
+        )
+
+        if is_process_shutting_down():
+            raise ClefWorkerError("Unsloth is shutting down; the Clef worker was not started.")
         self._lock = threading.Lock()
         self._broken: str | None = None
         self._conn, child = _CTX.Pipe()
         env = os.environ.get("UNSLOTH_IS_PRESENT")
         os.environ["UNSLOTH_IS_PRESENT"] = "1"
         try:
-            self._process = _CTX.Process(
-                target = run_clef_worker,
-                args = (child, str(folder)),
-                name = "systemone-clef",
-                daemon = True,
-            )
-            self._process.start()
+            with native_path_secret_removed_for_child_start():
+                self._process = _CTX.Process(
+                    target = run_without_native_path_secret,
+                    args = (run_clef_worker, child, str(folder)),
+                    name = "systemone-clef",
+                    daemon = True,
+                )
+                # Linux PDEATHSIG follows the spawning thread, and this runs on a loader thread that ends after the load.
+                spawn_on_lifetime_thread(self._process.start)
         finally:
             if env is None:
                 os.environ.pop("UNSLOTH_IS_PRESENT", None)
+        adopt_pid(self._process.pid)
         child.close()
         try:
             # Polled in slices so a training run starting mid-load stops the worker before both need the GPU.
             deadline = time.monotonic() + LOAD_TIMEOUT_S
             while time.monotonic() < deadline and not self._conn.poll(1.0):
+                if is_process_shutting_down():
+                    raise ClefWorkerError("The Clef worker was stopped while it loaded.")
                 if cancelled is not None and cancelled():
                     raise ClefWorkerError("A training run took the GPU while Clef loaded.")
             if not self._conn.poll(0):
@@ -242,3 +232,6 @@ class ClefAgent:
             self._process.kill()
             self._process.join(CLOSE_TIMEOUT_S)
         self._conn.close()
+        if not self._process.is_alive():
+            from utils.process_lifetime import forget_pid
+            forget_pid(self._process.pid)

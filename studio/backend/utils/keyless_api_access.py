@@ -45,6 +45,11 @@ _INFERENCE_ROUTES = frozenset(
         ("GET", "/props"),
         ("GET", "/v1/props"),
         ("GET", "/version"),
+        # /v1/models for Open WebUI's management view; /models/load and /models/unload stay keyed.
+        ("GET", "/models"),
+        # Token counters, like /v1/chat/count_tokens. Not /slots or /metrics: those are server-wide.
+        ("POST", "/tokenize"),
+        ("POST", "/detokenize"),
     }
 )
 
@@ -375,6 +380,11 @@ def _full_scope_transport_allowed(request: Any, app_state: Any) -> bool:
 
     if not request_is_loopback(request):
         return False
+    from utils.client_ip import names_a_forwarded_client
+
+    # The loopback socket is a same-host proxy's when it marks the request as relayed.
+    if names_a_forwarded_client(request):
+        return False
     bind_host = getattr(app_state, "bind_host", None)
     scope = getattr(request, "scope", {})
     server = scope.get("server")
@@ -492,8 +502,12 @@ def keyless_transport_allowed(request: Any, scope: str) -> bool:
         return _full_scope_transport_allowed(request, app_state)
     if scope != KEYLESS_SCOPE_INFERENCE:
         return False
+    from utils.client_ip import names_a_forwarded_client
     from utils.lan_access_settings import request_is_loopback, request_on_lan_access
 
+    # a relaying proxy cannot vouch for its caller: neither grant covers it
+    if names_a_forwarded_client(request):
+        return False
     if request_on_lan_access(request):
         return True
     if _public_tunnel_active(app_state):
@@ -507,10 +521,7 @@ def keyless_request_allowed(request: Any) -> bool:
 
 
 async def keyless_request_may_load_models(request: Any) -> bool:
-    """Whether keyless access would admit this request's transport on ``POST /api/inference/load``.
-
-    Reads settings like admission (``_settings_async``): the sync read fails closed to ``off`` during a concurrent cache refresh.
-    """
+    """Uses the async settings read like admission; the sync read fails closed during a cache refresh."""
     from starlette.concurrency import run_in_threadpool
 
     scope, _tools, _generation = await _settings_async()

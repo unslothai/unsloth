@@ -5,6 +5,8 @@
 
 import re
 
+from .cells import wrapped_messages
+
 
 def _keyword_in_column(keyword: str, col_name: str) -> bool:
     """Word-boundary keyword match to avoid false positives like 'pic' in 'topic'."""
@@ -44,7 +46,11 @@ def _is_trace_conversation_name(column_name: str) -> bool:
     return column_name.lower().endswith(_TRACE_SUFFIXES)
 
 
-def _inspect_conversation_column(rows: list[dict], column_name: str) -> dict | None:
+def _inspect_conversation_column(
+    rows: list[dict],
+    column_name: str,
+    unwrap: bool = False,
+) -> dict | None:
     turn_keys: set[str] = set()
     has_chatml = False
     has_sharegpt = False
@@ -52,7 +58,7 @@ def _inspect_conversation_column(rows: list[dict], column_name: str) -> dict | N
     for row in rows:
         if not isinstance(row, dict) or column_name not in row:
             continue
-        chat_data = row[column_name]
+        chat_data = wrapped_messages(row[column_name]) if unwrap else row[column_name]
         if not isinstance(chat_data, list) or len(chat_data) == 0:
             continue
         for turn in chat_data:
@@ -89,11 +95,15 @@ def _inspect_conversation_column(rows: list[dict], column_name: str) -> dict | N
     return None
 
 
-def _has_message_prompt_completion(rows: list[dict], column_names: list[str]) -> bool:
+def _has_message_prompt_completion(
+    rows: list[dict],
+    column_names: list[str],
+    unwrap: bool = False,
+) -> bool:
     if not {"prompt", "completion"} <= set(column_names):
         return False
     for column_name in ("prompt", "completion"):
-        inspected = _inspect_conversation_column(rows, column_name)
+        inspected = _inspect_conversation_column(rows, column_name, unwrap)
         if inspected and inspected["format"] in {"sharegpt", "chatml"}:
             return True
     return False
@@ -102,20 +112,24 @@ def _has_message_prompt_completion(rows: list[dict], column_names: list[str]) ->
 def has_message_prompt_completion(dataset) -> bool:
     rows = _sample_dataset_rows(dataset)
     return bool(rows) and _has_message_prompt_completion(
-        rows, _get_dataset_column_names(dataset, rows[0])
+        rows, _get_dataset_column_names(dataset, rows[0]), unwrap = True
     )
 
 
-def _detect_conversation_column(rows: list[dict], column_names: list[str]) -> dict | None:
+def _detect_conversation_column(
+    rows: list[dict],
+    column_names: list[str],
+    unwrap: bool = False,
+) -> dict | None:
     column_name_set = set(column_names)
-    if _has_message_prompt_completion(rows, column_names):
+    if _has_message_prompt_completion(rows, column_names, unwrap):
         return None
 
     unknown_exact = None
     for column_name in CONVERSATION_COLUMNS:
         if column_name not in column_name_set:
             continue
-        inspected = _inspect_conversation_column(rows, column_name)
+        inspected = _inspect_conversation_column(rows, column_name, unwrap)
         if inspected and inspected["format"] in {"sharegpt", "chatml"}:
             return inspected
         if inspected and unknown_exact is None:
@@ -125,7 +139,7 @@ def _detect_conversation_column(rows: list[dict], column_names: list[str]) -> di
     for column_name in column_names:
         if column_name in CONVERSATION_COLUMNS:
             continue
-        inspected = _inspect_conversation_column(rows, column_name)
+        inspected = _inspect_conversation_column(rows, column_name, unwrap)
         if inspected and inspected["format"] in {"sharegpt", "chatml"}:
             structural_candidates.append(inspected)
 
@@ -169,6 +183,11 @@ def detect_dataset_format(dataset):
         }
 
     conversation = _detect_conversation_column(sample_rows, column_names)
+    if conversation is None or conversation["format"] == "unknown":
+        # A chat wrapped in a one-field object counts only when no plain chat column does.
+        wrapped = _detect_conversation_column(sample_rows, column_names, unwrap = True)
+        if wrapped and wrapped["format"] != "unknown":
+            conversation = wrapped
     if conversation:
         return conversation
 
@@ -451,9 +470,7 @@ def detect_custom_format_heuristic(dataset):
             user_candidates.append((col, score))
 
     if not user_candidates and not any(col != assistant_col for col in user_potential):
-        # has_keyword drops "context" from user_potential because "text" only matches
-        # inside it. When nothing else can hold the user turn, that column is a better
-        # user turn than an assistant-worded leftover.
+        # "text" only matches inside "context", so it is still the best user column if nothing else fits.
         shadowed_potential = [
             col
             for col in content_columns
@@ -948,21 +965,45 @@ def detect_vlm_dataset_structure(dataset):
         return 0
 
     def _probe_image_candidate(col, sample_value):
-        """Probe whether an image candidate is reachable (True unless definitely broken)."""
+        """Probe whether an image candidate is reachable (True unless definitely broken).
+        Row URLs are untrusted, so they go through the web tool's SSRF guard."""
         import os
 
         if not isinstance(sample_value, str):
             return True
 
+        from .remote_images import (
+            guard_url,
+            is_network_share,
+            open_opted_in_url,
+            private_sources_allowed,
+        )
+
         if not sample_value.startswith(("http://", "https://")):
+            if is_network_share(sample_value) and not private_sources_allowed():
+                return False
             return os.path.exists(sample_value)
+        if private_sources_allowed():
+            # Still probe, so a broken column loses to a working one.
+            try:
+                with open_opted_in_url(sample_value, method = "HEAD", timeout = 3) as response:
+                    return response.status < 400
+            except Exception:
+                return False
 
         try:
-            import urllib.request
+            import time
 
-            req = urllib.request.Request(sample_value, method = "HEAD")
-            resp = urllib.request.urlopen(req, timeout = 3)
-            return resp.status < 400
+            from core.inference.tools import _fetch_url_raw
+
+            error, _, _ = _fetch_url_raw(
+                guard_url(sample_value),
+                timeout = 3,
+                deadline = time.monotonic() + 3,
+                method = "HEAD",
+                raw_bytes_max = 0,
+            )
+            return error is None
         except Exception:
             return False
 

@@ -65,8 +65,6 @@ def client_for(account):
 
     app.dependency_overrides[get_current_subject] = subject
     app.dependency_overrides[allow_ambient_hf_token] = lambda: False
-    # A browser session: the isolation these tests check is between ACCOUNTS, not between
-    # caller classes.
     app.dependency_overrides[authenticated_via_api_key] = lambda: False
     app.include_router(inference.router, prefix = "/api/inference")
     app.include_router(inference.studio_router, prefix = "/api/inference")
@@ -94,7 +92,6 @@ def test_resident_identity_and_progress_are_hidden_from_other_accounts(
             assert response.status_code == 200
             body = response.json()
             assert body.get("yours") is False, body
-            # The chat status shape lists resident models, so its hidden answer lists none.
             assert body["loaded"] == ([] if path == "status" and modality == "chat" else True)
     assert not run_as(ALICE, access.resident_hidden, modality)
     assert not run_as(OWNER, access.resident_hidden, modality)
@@ -284,6 +281,16 @@ def test_a_resolved_adapter_base_needs_its_own_grant(monkeypatch, base, expected
     inference._require_resolved_base_access(config)
 
 
+def test_a_named_mlx_drafter_needs_its_own_grant(monkeypatch):
+    monkeypatch.setattr(access, "repo_is_public", lambda repo, *a, **k: repo == "org/public")
+    monkeypatch.setattr(inference, "_mlx_cached_drafters", lambda path: [{"repo_id": "org/d"}])
+    assert run_as(BOB, inference._discoverable_drafters, "org/public") == ["org/d"]
+    assert inference._discoverable_drafters("org/public") is None
+    body = {"model_path": "org/public", "spec_draft_model": "org/private"}
+    with client_for(BOB) as client:
+        assert client.post("/api/inference/estimate-memory", json = body).status_code == 404
+
+
 def test_preview_load_refuses_private_foreign_target_before_gpu_work():
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
@@ -338,6 +345,7 @@ def test_cpu_resident_provenance_does_not_depend_on_a_gpu_lease(monkeypatch):
 
 def test_stt_private_status_and_download_state_are_filtered(monkeypatch):
     monkeypatch.setattr(inference, "_stt_download_accounts", {"transformers": ALICE.account_id})
+    monkeypatch.setattr(inference, "_stt_download_id_accounts", {})
     monkeypatch.setattr(access, "_resident_accounts", {})
     monkeypatch.setattr(inference, "_stt_repo_reference", lambda model, engine: model)
     run_as(ALICE, access.note_resident_account, "stt:transformers", "org/private")
@@ -354,14 +362,56 @@ def test_stt_private_status_and_download_state_are_filtered(monkeypatch):
     assert "private error" not in str(result)
 
 
+def test_stt_filtered_status_preserves_only_caller_relevant_attempt_identity(monkeypatch):
+    monkeypatch.setattr(inference, "_stt_download_accounts", {"audiocpp": BOB.account_id})
+    monkeypatch.setattr(
+        inference,
+        "_stt_download_id_accounts",
+        {
+            "audiocpp": {
+                "alice-complete": ALICE.account_id,
+                "bob-complete": BOB.account_id,
+                "bob-active": BOB.account_id,
+            }
+        },
+    )
+    monkeypatch.setattr(inference, "_stt_repo_reference", lambda model, engine: model)
+    monkeypatch.setattr(access, "model_visible", lambda model: True)
+    status = {"loaded_model": None}
+    for engine in ["transformers", "gguf", "mtmd", "audiocpp"]:
+        status[engine] = {
+            "loaded_model": None,
+            "downloaded_models": [],
+            "download": {"downloading": False, "completed_download_ids": []},
+        }
+    status["audiocpp"]["download"] = {
+        "downloading": True,
+        "model": "bob/private-model",
+        "download_id": "bob-active",
+        "completed_download_ids": ["alice-complete", "bob-complete"],
+        "error": "bob private error",
+    }
+
+    result = run_as(ALICE, inference._account_stt_status, status)
+
+    assert result["audiocpp"]["download"] == {
+        "downloading": False,
+        "download_id": "bob-active",
+        "completed_download_ids": ["alice-complete"],
+    }
+    assert "private-model" not in str(result)
+    assert "private error" not in str(result)
+
+
 def test_stt_downloads_grant_only_the_initiator_and_cancel_is_scoped(monkeypatch):
     monkeypatch.setattr(inference, "_stt_download_accounts", {})
+    monkeypatch.setattr(inference, "_stt_download_id_accounts", {})
     monkeypatch.setattr(inference, "_stt_grant_pending", {})
     monkeypatch.setattr(inference, "_stt_repo_reference", lambda model, engine: model)
     monkeypatch.setattr(access, "authorize_download", lambda *a: None)
     calls = []
     module = SimpleNamespace(
-        start_model_download = lambda *a: calls.append(a),
+        start_model_download = lambda *a: calls.append(a) or "alice-attempt",
         download_status = lambda: {"downloading": False},
         is_model_downloaded = lambda model: True,
         cancel_model_download = lambda: calls.append("cancel") or True,
@@ -375,6 +425,9 @@ def test_stt_downloads_grant_only_the_initiator_and_cancel_is_scoped(monkeypatch
         "alice-token",
     )
     assert inference._stt_grant_pending["transformers"].wait(5)
+    assert inference._stt_download_id_accounts == {
+        "transformers": {"alice-attempt": ALICE.account_id}
+    }
     assert run_as(ALICE, access.repo_visible, "org/private")
     assert not run_as(BOB, access.repo_visible, "org/private")
     assert run_as(BOB, inference._cancel_account_stt_download, module, "transformers") == {
@@ -454,6 +507,77 @@ def test_the_local_id_v1_models_publishes_is_usable_by_its_own_account(monkeypat
         assert refused.value.status_code == 404
 
 
+@pytest.mark.parametrize("auto_switch", [False, True])
+@pytest.mark.parametrize("public", [False, True])
+def test_an_own_file_listed_under_a_foreign_residents_id_does_not_unlock_it(
+    monkeypatch, auto_switch, public
+):
+    from utils import openai_auto_switch_settings
+    from utils.paths.storage_roots import workspace_root
+
+    own = str(run_as(ALICE, workspace_root) / "sandbox" / "org" / "private.gguf")
+    row = SimpleNamespace(model_id = "org/private", id = own, path = own)
+    monkeypatch.setattr(inference, "_classified_catalog", lambda listed: listed)
+    monkeypatch.setattr(models, "collect_local_models", lambda *_a, **_kw: [row])
+    monkeypatch.setattr(access, "repo_is_public", lambda *a, **k: public)
+    monkeypatch.setattr(
+        openai_auto_switch_settings, "get_openai_auto_switch_enabled", lambda: auto_switch
+    )
+    monkeypatch.setattr(openai_auto_switch_settings, "idle_unload_is_configured", lambda: False)
+    monkeypatch.setattr(inference, "_loaded_slot_ident", lambda: "org/private")
+    monkeypatch.setattr(inference, "_loaded_satisfies", lambda model: True)
+    monkeypatch.setattr(inference, "_loaded_identity_satisfies", lambda model: True)
+    claimed = []
+    monkeypatch.setattr(inference, "_claim_slot_for_non_preview", claimed.append)
+    request = SimpleNamespace(
+        scope = {},
+        state = SimpleNamespace(),
+        url = SimpleNamespace(path = "/v1/chat/completions"),
+    )
+    switch = arun_as(ALICE, inference._maybe_auto_switch_model("org/private", request, "alice"))
+    if public:
+        asyncio.run(switch)
+        assert claimed
+        return
+    with pytest.raises(HTTPException) as refused:
+        asyncio.run(switch)
+    assert refused.value.status_code == 404
+    assert not claimed
+
+
+def test_a_private_hub_resident_the_callers_own_token_can_fetch_is_served(monkeypatch):
+    from utils import openai_auto_switch_settings
+    from utils.paths.storage_roots import workspace_root
+
+    own = str(run_as(ALICE, workspace_root) / "sandbox" / "org" / "private.gguf")
+    row = SimpleNamespace(model_id = "org/private", id = own, path = own)
+    monkeypatch.setattr(inference, "_classified_catalog", lambda listed: listed)
+    monkeypatch.setattr(models, "collect_local_models", lambda *_a, **_kw: [row])
+    monkeypatch.setattr(access, "repo_is_public", lambda *a, **k: False)
+    monkeypatch.setattr(openai_auto_switch_settings, "get_openai_auto_switch_enabled", lambda: True)
+    monkeypatch.setattr(openai_auto_switch_settings, "idle_unload_is_configured", lambda: False)
+    monkeypatch.setattr(inference, "_loaded_slot_ident", lambda: "org/private")
+    monkeypatch.setattr(inference, "_loaded_satisfies", lambda model: True)
+    monkeypatch.setattr(inference, "_loaded_identity_satisfies", lambda model: True)
+    authorized = []
+
+    async def _token_authorizes(named_model, request):
+        authorized.append(named_model)
+        return named_model == "org/private"
+
+    monkeypatch.setattr(inference, "_caller_token_authorizes_download", _token_authorizes)
+    claimed = []
+    monkeypatch.setattr(inference, "_claim_slot_for_non_preview", claimed.append)
+    request = SimpleNamespace(
+        scope = {},
+        state = SimpleNamespace(),
+        url = SimpleNamespace(path = "/v1/chat/completions"),
+    )
+    asyncio.run(arun_as(ALICE, inference._maybe_auto_switch_model("org/private", request, "alice")))
+    assert claimed
+    assert "org/private" in authorized
+
+
 def test_private_media_index_rows_cannot_bypass_filtered_openai_catalog(monkeypatch):
     picks = {
         "text-to-image": [
@@ -510,7 +634,6 @@ def test_private_cpu_media_residents_hide_progress_and_refuse_generation_and_unl
             "loaded": True,
             "yours": False,
         }
-        # Hidden, but still the declared shape: `active` reads false, not KeyError.
         hidden = client.get(f"/api/inference/{kind}/generate-progress").json()
         assert hidden["yours"] is False and hidden["active"] is False, hidden
         response = client.post(f"/api/inference/{kind}/generate", json = {"prompt": "hello"})
@@ -594,6 +717,12 @@ def test_every_model_load_worker_is_pinned_to_its_account():
 
     from core.inference import diffusion, sd_cpp_backend, video as video_backend
 
+    def _is_run_load(value):
+        # A target may be wrapped (carry_load_budget(self._run_load)); the worker is still _run_load.
+        if isinstance(value, ast.Call) and value.args:
+            value = value.args[0]
+        return isinstance(value, ast.Attribute) and value.attr == "_run_load"
+
     for module in (diffusion, sd_cpp_backend, video_backend):
         tree = ast.parse(inspect.getsource(module))
         starters = [
@@ -601,10 +730,7 @@ def test_every_model_load_worker_is_pinned_to_its_account():
             for node in ast.walk(tree)
             if isinstance(node, ast.Call)
             and any(
-                keyword.arg == "target"
-                and isinstance(keyword.value, ast.Attribute)
-                and keyword.value.attr == "_run_load"
-                for keyword in node.keywords
+                keyword.arg == "target" and _is_run_load(keyword.value) for keyword in node.keywords
             )
         ]
         assert starters, module.__name__

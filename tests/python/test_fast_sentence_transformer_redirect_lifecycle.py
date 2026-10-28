@@ -1,7 +1,4 @@
-"""FastSentenceTransformer constructor-redirect lifecycle: Auto*.from_pretrained
-are restored even when the Transformer constructor raises (try/finally), and
-`is_requested_model_name` matches HF IDs, local paths, trailing slashes, Path
-objects, and missing identifiers."""
+"""Auto*.from_pretrained must be restored even if the Transformer constructor raises (try/finally)."""
 
 from __future__ import annotations
 

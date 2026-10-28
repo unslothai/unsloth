@@ -1,16 +1,13 @@
 #!/usr/bin/env pwsh
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# Unit test for install.ps1's torch-flavor helpers (ConvertTo-TorchFlavorTag,
-# Get-ExpectedTorchFlavorTag) that drive the stale-CPU-PyTorch repair. Pure
-# helpers, AST-extracted and run in-process -- no GPU/venv needed.
+# Tests install.ps1's torch-flavor helpers, AST-extracted and run in-process.
 # Run: pwsh -NoProfile -File tests/studio/test_torch_flavor.ps1
 
 $ErrorActionPreference = "Stop"
 $installPath = [System.IO.Path]::Combine($PSScriptRoot, "..", "..", "install.ps1")
 $installPath = (Resolve-Path $installPath).Path
 
-# --- Parse install.ps1 (also serves as a syntax gate) and extract the helpers ---
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($installPath, [ref]$tokens, [ref]$errors)
 if ($errors) { $errors | ForEach-Object { $_.ToString() }; throw "install.ps1 has parse errors" }
@@ -20,7 +17,6 @@ foreach ($name in @("ConvertTo-TorchFlavorTag", "Get-ExpectedTorchFlavorTag", "T
         $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name
     }, $true)
     if ($fn.Count -ne 1) { throw "expected exactly one $name in install.ps1, found $($fn.Count)" }
-    # Pure helpers (no exit / external calls) -- safe to define in this scope.
     Invoke-Expression $fn[0].Extent.Text
 }
 

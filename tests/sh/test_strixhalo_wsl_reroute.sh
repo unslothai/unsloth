@@ -1,15 +1,8 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# Unit tests for _maybe_reroute_strixhalo_to_2404() from install.sh.
-#
-# ROCm-on-WSL only targets Ubuntu 24.04: from a newer distro (e.g. 26.04) with a
-# 24.04 distro present, re-run the install there and stop; otherwise leave the distro
-# alone and let CPU-fallback print the `wsl --install` hint. Tested hermetically: the
-# function is extracted from install.sh, its absolute paths rewritten to per-test
-# fixtures, with a mock wsl.exe (no real WSL).
-#
-# Follows the extract-via-sed pattern of test_get_torch_index_url.sh.
+# Unit tests for _maybe_reroute_strixhalo_to_2404() from install.sh. ROCm-on-WSL only targets
+# Ubuntu 24.04; extracted function runs against fixtures with a mock wsl.exe.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -17,8 +10,6 @@ INSTALL_SH="$SCRIPT_DIR/../../install.sh"
 PASS=0
 FAIL=0
 
-# All fixtures/temp files live under one root removed on exit, so a set -e abort
-# can't leak dirs into $TMPDIR.
 _TMP_ROOT=$(mktemp -d)
 trap 'rm -rf "$_TMP_ROOT"' EXIT
 
@@ -38,8 +29,6 @@ assert_absent() {
     esac
 }
 
-# Extract the function and rewrite its hardcoded absolute paths to point at the
-# fixture dir $1, plus stub substep()/colors. The mock wsl.exe lives in $1/bin.
 build_func() {
     _fix="$1"
     _f=$(mktemp -p "$_TMP_ROOT")
@@ -85,15 +74,12 @@ case "\$1" in
 esac
 MOCK
     chmod +x "$_d/bin/wsl.exe"
-    # Harmless curl stub so the default reroute (curl | sh) never hits the network.
     printf '#!/bin/sh\nexit 0\n' > "$_d/bin/curl"
     chmod +x "$_d/bin/curl"
     echo "$_d"
 }
 
-# run_func FIXTURE_DIR [extra VAR=val ...]
-# Prints the function's stdout. "__ROUTED__" => the reroute exec ran;
-# "__NOROUTE__" => the function returned without rerouting (exit 0 not hit).
+# run_func FIXTURE_DIR [VAR=val ...]: prints __ROUTED__ or __NOROUTE__.
 run_func() {
     _fix="$1"; shift
     _func=$(build_func "$_fix")
@@ -177,23 +163,20 @@ _out=$(run_func "$_d" SKIP_TORCH=true)
 assert_contains "SKIP_TORCH=true -> no route"           "$_out" "__NOROUTE__"
 rm -rf "$_d"
 
-# 11) Loop-guard payload: the reroute exports UNSLOTH_WSL_REROUTED=1 into the child
-#     (so the nested install short-circuits gate 7). Verify it reaches wsl.exe -d.
+# 11) The reroute exports UNSLOTH_WSL_REROUTED=1 into the child (loop guard).
 _d=$(make_fixture 1 strix 0 26.04 1)
 _out=$(run_func "$_d" UNSLOTH_WSL_REROUTE_CMD='echo flag=[$UNSLOTH_WSL_REROUTED]')
 assert_contains "reroute exports loop-guard flag"       "$_out" "flag=[1]"
 rm -rf "$_d"
 
-# 12) On Ubuntu 22.04 -> unsupported by the ROCm-on-WSL bootstrap (helper targets
-#     24.04 only), so with a 24.04 distro present reroute the GPU install there.
+# 12) 22.04 is unsupported by the bootstrap, so reroute to 24.04 when present.
 _d=$(make_fixture 1 strix 0 22.04 1)
 _out=$(run_func "$_d")
 assert_contains "22.04 + existing 24.04 -> routes"      "$_out" "__ROUTED__"
 assert_absent   "22.04 route stops current distro"      "$_out" "__NOROUTE__"
 rm -rf "$_d"
 
-# 13) --local install -> NO auto-reroute (a local checkout can't be replayed via
-#     curl|sh); prints guidance and continues locally instead of a different install.
+# 13) --local -> NO auto-reroute: a local checkout can't be replayed via a piped install.
 _d=$(make_fixture 1 strix 0 26.04 1)
 _out=$(run_func "$_d" STUDIO_LOCAL_INSTALL=true)
 assert_contains "--local -> no auto-reroute"            "$_out" "__NOROUTE__"
@@ -222,8 +205,7 @@ _out=$(run_func "$_d" PACKAGE_NAME=unsloth TAURI_MODE=true UNSLOTH_WSL_REROUTE_C
 assert_contains "forwards --tauri to reroute"            "$_out" "--tauri"
 rm -rf "$_d"
 
-# 17) A FAILED reroute sets the ROCm-bootstrap skip guard so _maybe_bootstrap_rocm_wsl
-#     does not later install ROCm into the unsupported origin distro.
+# 17) A FAILED reroute sets the skip guard so ROCm is not installed into the origin distro.
 _d=$(make_fixture 1 strix 0 26.04 1)
 _out=$(run_func "$_d" UNSLOTH_WSL_REROUTE_CMD='exit 1')
 assert_contains "failed reroute -> sets ROCm-bootstrap skip guard" "$_out" "SKIP_ROCM=1"
@@ -236,9 +218,8 @@ _out=$(run_func "$_d")
 assert_absent   "supported 24.04 -> skip guard not forced"        "$_out" "SKIP_ROCM=1"
 rm -rf "$_d"
 
-# 19) No wsl.exe on an unsupported distro -> can't reach a 24.04 target, so stay
-#     CPU-only AND set the skip guard (don't bootstrap ROCm into 26.04 etc.).
-#     Drop the stub AND pin PATH to coreutils so a real host wsl.exe can't leak in.
+# 19) No wsl.exe on an unsupported distro -> CPU-only and set the skip guard.
+# PATH pinned to coreutils so a real host wsl.exe can't leak in.
 _d=$(make_fixture 1 strix 0 26.04 1)
 rm -f "$_d/bin/wsl.exe"
 _out=$(run_func "$_d" PATH="$_d/bin:/usr/bin:/bin")
@@ -247,8 +228,7 @@ assert_absent   "no wsl.exe -> not rerouted"                      "$_out" "__ROU
 assert_contains "no wsl.exe -> skip ROCm bootstrap"               "$_out" "SKIP_ROCM=1"
 rm -rf "$_d"
 
-# 20) UNSLOTH_ROCM_WSL_AUTO=1 consent is forwarded as an export into the reroute so
-#     the child auto-enables the GPU bootstrap instead of the desktop-app prompt.
+# 20) UNSLOTH_ROCM_WSL_AUTO=1 consent is forwarded into the reroute.
 _d=$(make_fixture 1 strix 0 26.04 1)
 _out=$(run_func "$_d" UNSLOTH_ROCM_WSL_AUTO=1 \
         UNSLOTH_WSL_REROUTE_CMD='echo auto=[$UNSLOTH_ROCM_WSL_AUTO]')
@@ -264,8 +244,7 @@ assert_contains "both present -> targets 24.04"                   "$_out" "-d Ub
 assert_absent   "both present -> does not target 22.04"           "$_out" "-d Ubuntu-22.04"
 rm -rf "$_d"
 
-# 22) Only 22.04 installed (no 24.04) -> no route. 22.04 isn't a bootstrap target,
-#     so stay CPU-only and skip the origin ROCm bootstrap.
+# 22) Only 22.04 installed -> no route, CPU-only, skip the origin ROCm bootstrap.
 _d=$(make_fixture 1 strix 0 26.04 0)
 printf 'Ubuntu\nUbuntu-22.04\n' > "$_d/distros"
 _out=$(run_func "$_d")
@@ -282,8 +261,7 @@ assert_contains "no supported target -> no route"                 "$_out" "__NOR
 assert_contains "no supported target -> skip ROCm bootstrap"      "$_out" "SKIP_ROCM=1"
 rm -rf "$_d"
 
-# 24) A custom distro that merely CONTAINS the name (Ubuntu-24.04-test) but has no
-#     exact Ubuntu-24.04 must NOT be picked (substring match would fail wsl -d).
+# 24) A distro merely CONTAINING the name (Ubuntu-24.04-test) must NOT be picked.
 _d=$(make_fixture 1 strix 0 26.04 0)
 printf 'Ubuntu\nUbuntu-24.04-test\n' > "$_d/distros"
 _out=$(run_func "$_d")
@@ -300,8 +278,7 @@ assert_contains "exact + custom -> routes"                        "$_out" "__ROU
 assert_contains "exact + custom -> targets the exact 24.04"       "$_out" "-d Ubuntu-24.04 --"
 rm -rf "$_d"
 
-# 26) Tauri mode: a child exit 2 ([TAURI:NEED_SUDO]) must propagate so the desktop app
-#     drives elevation for the target distro, not get masked as a CPU fallback here.
+# 26) Tauri mode: a child exit 2 ([TAURI:NEED_SUDO]) must propagate for elevation.
 _d=$(make_fixture 1 strix 0 26.04 1)
 _rc=0
 _out=$(run_func "$_d" TAURI_MODE=true UNSLOTH_WSL_REROUTE_CMD='exit 2') || _rc=$?
@@ -309,16 +286,14 @@ if [ "$_rc" = "2" ]; then echo "  PASS: tauri child exit 2 -> reroute propagates
 assert_absent   "tauri exit 2 -> not a CPU fallback"              "$_out" "__NOROUTE__"
 rm -rf "$_d"
 
-# 27) The post-install autostart opt-out must reach the target distro, where the
-#     final launch prompt is evaluated.
+# 27) The autostart opt-out reaches the target distro.
 _d=$(make_fixture 1 strix 0 26.04 1)
 _out=$(run_func "$_d" _SKIP_AUTOSTART=true UNSLOTH_SKIP_AUTOSTART= \
         UNSLOTH_WSL_REROUTE_CMD='echo skip=[$UNSLOTH_SKIP_AUTOSTART]')
 assert_contains "UNSLOTH_SKIP_AUTOSTART forwarded to reroute"    "$_out" "skip=[1]"
 rm -rf "$_d"
 
-# 27b) The systemd opt-in and its bind settings reach the target distro too (the mock prints the
-#      command it was handed; the target distro does not inherit this shell's environment).
+# 27b) The systemd opt-in and bind settings are forwarded: the target does not inherit this env.
 _d=$(make_fixture 1 strix 0 26.04 1)
 _out=$(run_func "$_d" _INSTALL_SYSTEMD=true UNSLOTH_SYSTEMD_HOST=0.0.0.0 UNSLOTH_SYSTEMD_PORT=9000)
 assert_contains "systemd opt-in forwarded to reroute"             "$_out" "export UNSLOTH_INSTALL_SYSTEMD=1"
@@ -337,9 +312,7 @@ assert_contains "non-tauri child fail -> CPU fallback"            "$_out" "__NOR
 assert_contains "non-tauri child fail -> skip ROCm bootstrap"     "$_out" "SKIP_ROCM=1"
 rm -rf "$_d"
 
-# 29) UV_CACHE_DIR: only a CALLER's override is portable. The installer's own default is a
-#     path in the ORIGIN distro, and forwarding it pins the child to `custom`, which skips
-#     its adaptive cache selection and outranks its --isolated-uv-cache.
+# 29) Only a CALLER's UV_CACHE_DIR is forwarded; the installer default is an origin-distro path.
 _d=$(make_fixture 1 strix 0 26.04 1)
 _out=$(run_func "$_d" UV_CACHE_DIR=/home/someone/.unsloth/studio/cache/uv \
         _UV_CACHE_DIR_INSTALLER_DEFAULT=true)

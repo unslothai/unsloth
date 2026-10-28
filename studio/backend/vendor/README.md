@@ -74,7 +74,7 @@ has changed verification behaviour, which here applies process-wide.
   `NOTICE` file, and the source files are unmodified.
 
 `core/systemone/laya_runtime.py` uses it to serve the Decision API (`POST /v1/systemone`). It is pure
-Python over torch, transformers, safetensors, huggingface_hub and numpy, all of which Studio already
+Python over torch, transformers, safetensors, huggingface_hub and numpy, all of which Unsloth Studio already
 installs, so shipping the source replaces the `laya` pin in `requirements/extras-no-deps.txt` and the
 runtime `pip install` the Decision API used to fall back to.
 
@@ -82,7 +82,7 @@ runtime `pip install` the Decision API used to fall back to.
 
 Only through `laya_runtime._laya()`, which loads `vendor/laya/__init__.py` by file path and registers
 it as the top-level `laya` module (its files import each other relatively). It never goes through
-`sys.path`, so a `laya` left in the venv by an older Studio, or installed by the user, does not replace
+`sys.path`, so a `laya` left in the venv by an older Unsloth Studio, or installed by the user, does not replace
 this copy: `laya_runtime` drives laya internals (`Agent._to_internal`, `laya.common.collate_items`),
 so the version it runs must be the one it was written against.
 

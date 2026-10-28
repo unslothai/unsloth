@@ -49,7 +49,6 @@ install = _load_installer()
 
 
 class ScaledWordEmbedding(nn.Embedding):
-    # Same forward as transformers' Gemma*TextScaledWordEmbedding.
     def __init__(
         self,
         num_embeddings,
@@ -65,7 +64,6 @@ class ScaledWordEmbedding(nn.Embedding):
 
 
 class Float32ScaledWordEmbedding(ScaledWordEmbedding):
-    # Like Unsloth's float32 Gemma patch: a different product.
     def forward(self, input_ids: torch.Tensor):
         return (
             nn.functional.embedding(input_ids, self.weight, self.padding_idx).float()
@@ -109,7 +107,6 @@ def test_eligibility(kind, kw, expected):
 
 
 class PreprocessingScaledEmbedding(ScaledWordEmbedding):
-    # Extra work before the same return: the op would skip the clamp.
     def forward(self, input_ids: torch.Tensor):
         input_ids = input_ids.clamp(max = 10)
         return super().forward(input_ids) * self.embed_scale.to(self.weight.dtype)
@@ -121,7 +118,6 @@ class ClampingEmbedding(nn.Embedding):
 
 
 class OverScaledEmbedding(ClampingEmbedding):
-    # The scaled forward verbatim, but super() is not nn.Embedding.forward.
     def __init__(self, *args, **kw):
         super().__init__(*args, **kw)
         self.register_buffer("embed_scale", torch.tensor(2.0), persistent = False)
@@ -268,7 +264,7 @@ def test_compiled_no_grad_matches_module_and_breaks_only_when_declined(kind):
     breaks = sum(counters["graph_break"].values())
     assert torch.equal(out, expected)
     if kind == "float32":
-        assert breaks > 0  # declined: the disabled hooks still run
+        assert breaks > 0
     else:
         assert breaks == 0, dict(counters["graph_break"])
 

@@ -10,7 +10,6 @@ import {
   useSidebarOrganizationStore,
 } from "./sidebar-organization-store";
 
-/** Deletes a section (not its rows); returns an undo that restores it in place. */
 export function removeCustomSectionWithUndo(section: SidebarCustomSection): () => void {
   const state = useSidebarOrganizationStore.getState();
   const index = state.customSections.findIndex((s) => s.id === section.id);
@@ -20,9 +19,11 @@ export function removeCustomSectionWithUndo(section: SidebarCustomSection): () =
   const projectIds = Object.keys(state.sectionByProjectId).filter(
     (id) => state.sectionByProjectId[id] === section.id,
   );
+  const pageIds = Object.keys(state.sectionByPageId).filter(
+    (id) => state.sectionByPageId[id] === section.id,
+  );
   const order = state.manualOrder[customSectionScope(section.id)];
   const hidden = state.hiddenSections.includes(section.id);
-  // Undo reinserts it above the first of these that still exists.
   const drawnOrder = resolveSectionOrder(state.sectionOrder, state.customSections);
   const followers = drawnOrder.slice(drawnOrder.indexOf(section.id) + 1);
   state.deleteCustomSection(section.id);
@@ -35,6 +36,8 @@ export function removeCustomSectionWithUndo(section: SidebarCustomSection): () =
       for (const id of chatIds) sectionByChatId[id] ??= section.id;
       const sectionByProjectId = assignmentMap(now.sectionByProjectId);
       for (const id of projectIds) sectionByProjectId[id] ??= section.id;
+      const sectionByPageId = assignmentMap(now.sectionByPageId);
+      for (const id of pageIds) sectionByPageId[id] ??= section.id;
       const sectionOrder = resolveSectionOrder(now.sectionOrder, now.customSections);
       const follower = followers.find((key) => sectionOrder.includes(key));
       sectionOrder.splice(
@@ -43,11 +46,11 @@ export function removeCustomSectionWithUndo(section: SidebarCustomSection): () =
         section.id,
       );
       return {
-        // Match the sidebar's current order, which may have changed since the delete.
         customSections: inSectionOrder(restored, sectionOrder),
         sectionOrder,
         sectionByChatId,
         sectionByProjectId,
+        sectionByPageId,
         hiddenSections: hidden
           ? [...now.hiddenSections, section.id]
           : now.hiddenSections,

@@ -3,6 +3,7 @@
 
 import asyncio
 import importlib.util
+import json
 import os
 import sys
 import threading
@@ -193,7 +194,7 @@ def test_a_managed_account_is_told_decision_training_is_owner_only(route, monkey
         asyncio.run(route.start_training(_request(), current_subject = "managed-user"))
 
     assert refused.value.status_code == 403
-    assert "Only the Studio owner" in refused.value.detail
+    assert "Only the Unsloth owner" in refused.value.detail
 
 
 def test_python_older_than_3_10_cannot_train_decision_models(route, monkeypatch):
@@ -359,17 +360,88 @@ def test_a_local_checkpoint_is_checked_at_its_subfolder(route, tmp_path):
     assert refused.value.detail["code"] == "training_local_model_not_decision"
 
 
-def test_a_local_llm_is_not_trained_as_a_decision_model(route, tmp_path):
-    llm = tmp_path / "llm"
-    llm.mkdir()
-    (llm / "config.json").write_text("{}", encoding = "utf-8")
-    (llm / "model.safetensors").write_bytes(b"x")
+def _llm_folder(folder: Path) -> Path:
+    folder.mkdir(parents = True)
+    config = {"model_type": "llama", "architectures": ["LlamaForCausalLM"], "hidden_size": 64}
+    (folder / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+    (folder / "model.safetensors").write_bytes(b"x")
+    return folder
 
+
+def test_a_local_llm_is_only_a_decision_checkpoint_when_validated_as_an_llm(route, tmp_path):
+    llm = _llm_folder(tmp_path / "llm")
+
+    # A caller's layout claim is not what makes an LLM pass: its validated layout is.
     with pytest.raises(HTTPException) as refused:
-        route._reject_untrainable_model_request(_request(model_name = str(llm)))
-
+        route._reject_untrainable_model_request(
+            _request(model_name = str(llm), decision_layout = "laya")
+        )
     assert refused.value.status_code == 400
     assert refused.value.detail["code"] == "training_local_model_not_decision"
+
+
+def test_an_llm_trains_as_a_decision_model_with_a_new_clef_head(route, device, tmp_path):
+    from utils.models.model_config import load_llm_decision_defaults
+
+    llm = _llm_folder(tmp_path / "llm")
+    request = _request(model_name = str(llm), decision_layout = "laya")
+    route._validate_decision_request(request)
+    assert request.decision_layout == "llm"
+    assert route._reject_untrainable_model_request(request).model_name == str(llm.resolve())
+
+    config = _started_config(route, _request(model_name = str(llm), load_in_4bit = True))
+    recipe = load_llm_decision_defaults()
+    assert config["decision_layout"] == "llm"
+    # QLoRA works for an LLM, unlike Laya.
+    assert config["load_in_4bit"] is True
+    assert float(config["learning_rate"]) == float(recipe["training"]["learning_rate"])
+    assert config["max_seq_length"] == recipe["training"]["max_seq_length"]
+    assert (config["batch_size"], config["gradient_accumulation_steps"]) == (
+        recipe["training"]["batch_size"],
+        recipe["training"]["gradient_accumulation_steps"],
+    )
+    assert (config["lora_r"], config["lora_alpha"]) == (
+        recipe["lora"]["lora_r"],
+        recipe["lora"]["lora_alpha"],
+    )
+
+    full = _request(model_name = str(llm), training_type = "Full Finetuning")
+    route._validate_decision_request(full)
+    assert full.learning_rate == route._DECISION_FULL_FINETUNING_LR
+
+    with pytest.raises(HTTPException) as refused:
+        route._validate_decision_request(_request(model_name = str(llm), use_dora = True))
+    assert "DoRA" in refused.value.detail
+
+
+def test_a_laya_subfolder_or_catalog_repo_never_becomes_an_llm_run(route, device):
+    from utils.models import model_config
+
+    # Offline or without access the layout is unknown; a subfolder or Laya's repo still means Laya.
+    with patch.object(model_config, "decision_layout", return_value = None):
+        for request in (
+            _request(model_name = "org/decisions", model_subfolder = "multilingual"),
+            _request(model_name = LAYA_REPO, model_subfolder = "multilingual"),
+            _request(model_name = LAYA_REPO),
+        ):
+            route._validate_decision_request(request)
+            assert request.decision_layout == "laya", request.model_name
+
+
+@pytest.mark.parametrize("kind", ["cpu", "xpu"])
+def test_llm_decision_training_needs_an_nvidia_or_amd_gpu(route, device, tmp_path, kind):
+    from core.systemone.catalog import CLEF_NEEDS_GPU
+
+    device(kind)
+    with pytest.raises(HTTPException) as refused:
+        route._validate_decision_request(_request(model_name = str(_llm_folder(tmp_path / "l"))))
+    assert (refused.value.status_code, refused.value.detail) == (400, CLEF_NEEDS_GPU)
+
+
+def test_a_plain_request_carries_no_decision_layout(route):
+    request = _request(is_decision = False, model_name = "org/llm", decision_layout = "llm")
+    route._validate_decision_request(request)
+    assert request.decision_layout is None
 
 
 def test_a_hub_checkpoint_downloads_under_the_stall_watchdog(monkeypatch, tmp_path):
@@ -418,7 +490,35 @@ def test_a_hub_checkpoint_downloads_under_the_stall_watchdog(monkeypatch, tmp_pa
 
     events.clear()
     worker._download_decision_checkpoint(queue, {"model_name": str(tmp_path)})
+    # An LLM that gets a new head downloads through FastModel in the trainer.
+    worker._download_decision_checkpoint(
+        queue, {"model_name": "unsloth/Qwen3.5-0.8B", "decision_layout": "llm"}
+    )
     assert events == [] and len(downloads) == 1
+
+
+def test_an_offline_decision_start_does_not_wait_for_a_pin_it_never_uses(tmp_path):
+    from core.training.training import _apply_cache_pins
+    from core.training.worker import _verify_config_pins
+
+    events = []
+    queue = SimpleNamespace(put = events.append)
+    # Offline, the start route pins the cached snapshot of an LLM given a decision head, as of any LLM.
+    snapshot = str(tmp_path / "snapshot")
+    pinned = {
+        "model_name": "unsloth/Qwen3.5-0.8B",
+        "actual_model_repo_id": "unsloth/Qwen3.5-0.8B",
+        "model_snapshot_path": snapshot,
+        "require_validated_model_snapshot": True,
+    }
+    decision = {**pinned, "is_decision": True, "decision_layout": "llm"}
+    _apply_cache_pins(decision)
+    assert _verify_config_pins(decision, queue) and events == []
+    # An LLM run still loads exactly the snapshot it was pinned to, or not at all.
+    from core.training.provenance import ExactResumeResourcesUnavailable
+
+    with pytest.raises(ExactResumeResourcesUnavailable, match = "no longer available"):
+        _apply_cache_pins(pinned)
 
 
 @pytest.mark.skipif(sys.platform == "darwin", reason = "Apple Silicon trains with MLX")
@@ -473,6 +573,7 @@ def device(monkeypatch):
             "cuda": hardware.DeviceType.CUDA,
             "cpu": hardware.DeviceType.CPU,
             "xpu": hardware.DeviceType.XPU,
+            "mlx": hardware.DeviceType.MLX,
         }[kind]
         monkeypatch.setattr(hardware, "get_device", lambda: value)
         monkeypatch.setattr(hardware, "DEVICE", value)
@@ -567,3 +668,49 @@ def test_clef_training_is_refused_without_an_nvidia_or_amd_gpu(route, device, tm
     laya = _request(model_name = str(_laya_folder(tmp_path / "laya")))
     route._validate_decision_request(laya)
     assert laya.decision_layout == "laya"
+    # Apple Silicon trains a Clef, and a language model given a decision head, with MLX.
+    device("mlx")
+    for folder in (tmp_path / "c", _llm_folder(tmp_path / "l")):
+        request = _request(model_name = str(folder))
+        route._validate_decision_request(request)
+        assert request.decision_layout == {"c": "clef", "l": "llm"}[folder.name]
+
+
+def _clef_adapter_folder(folder: Path, base: str) -> Path:
+    folder.mkdir(parents = True)
+    files = {
+        "adapter_config.json": {"base_model_name_or_path": base},
+        "joint_head_config.json": {},
+    }
+    for name, content in files.items():
+        (folder / name).write_text(json.dumps(content), encoding = "utf-8")
+    for name in ("adapter_model.safetensors", "joint_head.safetensors"):
+        (folder / name).write_bytes(b"x")
+    return folder
+
+
+def test_a_managed_decision_adapter_authorizes_and_pins_its_base(route, tmp_path, monkeypatch):
+    adapter = _clef_adapter_folder(tmp_path / "clef_adapter", "owner/private-model")
+    checked = []
+    monkeypatch.setattr(route, "managed_account", lambda: True)
+    monkeypatch.setattr(route, "account_path", lambda path, **kwargs: Path(path).resolve())
+    monkeypatch.setattr(
+        route,
+        "_authorize_adapter_base",
+        lambda name, token: checked.append(name) or "owner/private-model",
+    )
+
+    result = route._reject_untrainable_model_request(_request(model_name = str(adapter)))
+
+    assert checked == [str(adapter.resolve())]
+    assert result.adapter_base_pin == "owner/private-model"
+
+
+def test_a_managed_hub_decision_adapter_authorizes_its_base(route, monkeypatch):
+    checked = []
+    monkeypatch.setattr(route, "managed_account", lambda: True)
+    monkeypatch.setattr(route, "is_decision_model", lambda *a, **k: True)
+    monkeypatch.setattr(route, "_authorize_adapter_base", lambda name, token: checked.append(name))
+    with patch.object(route, "_remote_untrainable_model_format", return_value = None):
+        route._reject_untrainable_model_request(_request(model_name = "org/clef-adapter"))
+    assert checked == ["org/clef-adapter"]

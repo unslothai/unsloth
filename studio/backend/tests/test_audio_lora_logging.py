@@ -16,11 +16,14 @@ import structlog
 
 def _module_level_dependencies(tree):
     """Defaults and annotations are evaluated at def time, so exec needs the module-level
-    names the signature reads."""
+    names the signature reads, plus the helpers the LoRA setup calls."""
     return [
         node
         for node in tree.body
-        if (isinstance(node, ast.FunctionDef) and node.name == "normalize_gradient_checkpointing")
+        if (
+            isinstance(node, ast.FunctionDef)
+            and node.name in ("normalize_gradient_checkpointing", "_loftq_peft_kwargs")
+        )
         or (
             isinstance(node, ast.Assign)
             and any(isinstance(t, ast.Name) and t.id == "_UNSET" for t in node.targets)
@@ -59,6 +62,7 @@ def test_audio_lora_setup_accepts_real_structlog(monkeypatch, audio_type):
         should_stop = False,
         _update_progress = progress,
         _use_gradient_checkpointing = "unsloth",
+        _offload_peft_kwargs = lambda: {},
     )
 
     assert namespace["prepare_model_for_training"](instance) is True

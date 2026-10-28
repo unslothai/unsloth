@@ -57,7 +57,7 @@ test("a clip names the Audio page workflow that made it; other audio names none"
     assert.equal(audioWorkflow(clip(id, { workflow: id }))?.id, id);
   }
   assert.equal(audioWorkflow(clip("upload", null)), null);
-  // A workflow a newer server adds falls back to the plain audio icon.
+  // A workflow a newer server adds names none.
   assert.equal(audioWorkflow(clip("future", { workflow: "dub" })), null);
 });
 
@@ -68,7 +68,7 @@ test("a stem shows its stem, music its kind and take, speech nothing extra", () 
   assert.equal(audioDetail(clip("e", { workflow: "music", role: "edit", mode: "edit" })), "Edit");
   assert.equal(audioDetail(clip("t", {})), null);
   assert.deepEqual(audioSummary(stem("v", "vocals")), ["0:42", "Vocals"]);
-  assert.deepEqual(audioSummary(clip("t", { durationS: null })), ["Speak"]);
+  assert.deepEqual(audioSummary(clip("t", { durationS: null })), ["Text to Speech"]);
   assert.deepEqual(audioSummary(clip("upload", null)), []);
 });
 
@@ -133,7 +133,9 @@ function chatWithModelFor(lora: { audio_type: string; export_type: string }, dev
     "@/i18n": { translate: (key: string) => key },
     "@/lib/audio-utils": {},
     "@/lib/api-base": { isTauri: false },
+    "@/lib/image-fit": {},
     "@/lib/native-files": {},
+    "@/stores/image-edit-handoff": {},
     "@/lib/toast": { toast: (title: unknown) => toasts.push(title) },
     "@/lib/video-utils": {},
     "./api": {},

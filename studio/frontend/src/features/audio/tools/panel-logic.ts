@@ -3,15 +3,35 @@
 
 // JSX-free so the node test runner can load it; clone-panels.tsx / speak-panels.tsx add Components.
 
+import type { AudioOptionSpec } from "../audio-options";
 import { type AudioSourceSelection, sourceRefOf } from "../audio-run-request";
 import { INDEX_TTS2_EMOTIONS, emotionVectorString } from "../clone-policy";
 import type { AudioSourceStatus } from "../hooks/audio-source-state";
-import type { AudioRunPatch, AudioToolPanel } from "./types";
+import type { AudioModelContext, AudioRunPatch, AudioToolPanel } from "./types";
 
 type AudioToolPanelLogic<V> = Omit<AudioToolPanel<V>, "Component">;
 
 const clamp = (x: number, lo: number, hi: number) =>
   Math.min(hi, Math.max(lo, x));
+
+// A panel starts where the server would: the option's declared default, which it fills when unset.
+function numberDefault(
+  specs: readonly AudioOptionSpec[],
+  name: string,
+  fallback: number,
+): number {
+  const value = specs.find((spec) => spec.name === name)?.default;
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function boolDefault(
+  specs: readonly AudioOptionSpec[],
+  name: string,
+  fallback: boolean,
+): boolean {
+  const value = specs.find((spec) => spec.name === name)?.default;
+  return typeof value === "boolean" ? value : fallback;
+}
 
 export interface TimbreOnlyValue {
   timbreOnly: boolean;
@@ -23,7 +43,9 @@ export const qwen3TimbreLogic: AudioToolPanelLogic<TimbreOnlyValue> = {
   workflows: ["clone"],
   title: "Timbre only",
   claims: ["x_vector_only_mode"],
-  initial: () => ({ timbreOnly: false }),
+  initial: (specs) => ({
+    timbreOnly: boolDefault(specs, "x_vector_only_mode", false),
+  }),
   toRequest: (value) =>
     value.timbreOnly
       ? {
@@ -41,7 +63,6 @@ export interface EmotionValue {
   vector: number[];
   alpha: number;
   source: AudioSourceSelection | null;
-  /** Why the emotion clip cannot be sent yet (uploading, failed, expired); set by its input. */
   sourceProblem?: string | null;
 }
 
@@ -68,11 +89,11 @@ export const indexTts2EmotionLogic: AudioToolPanelLogic<EmotionValue> = {
     "use_emotion_text",
     "emotion_text",
   ],
-  initial: () => ({
+  initial: (specs) => ({
     mode: "text",
     text: "",
     vector: INDEX_TTS2_EMOTIONS.map(() => 0),
-    alpha: 0.7,
+    alpha: numberDefault(specs, "emotion_alpha", 0.7),
     source: null,
   }),
   toRequest: (value): AudioRunPatch => {
@@ -124,7 +145,10 @@ export const chatterboxExpressivenessLogic: AudioToolPanelLogic<ExpressivenessVa
     workflows: ["clone"],
     title: "Expressiveness",
     claims: ["exaggeration", "guidance_scale"],
-    initial: () => ({ exaggeration: 0.5, guidance: 0.5 }),
+    initial: (specs) => ({
+      exaggeration: numberDefault(specs, "exaggeration", 0.5),
+      guidance: numberDefault(specs, "guidance_scale", 0.5),
+    }),
     toRequest: (value) => ({
       options: {
         exaggeration: clamp(value.exaggeration, 0, 2),
@@ -214,37 +238,84 @@ export const f5SpeedDialectLogic: AudioToolPanelLogic<SpeedDialectValue> = {
 export interface SpeakVoiceValue {
   source: "builtin" | "saved";
   voiceId: string | null;
+  /** The built-in voice; null leaves the model's default. */
+  builtin: string | number | boolean | null;
 }
 
 export const SAVED_VOICE_MISSING =
   "Pick a saved voice, or switch Voice to Built-in.";
 export const SAVED_VOICE_DELETED =
   "That saved voice was deleted. Pick another one, or switch Voice to Built-in.";
+export const SAVED_VOICE_NO_TRANSCRIPT =
+  "This voice has no transcript, and this model needs one. Add it on Clone, or pick another voice.";
+
+const VOICE_OPTION_NAMES = ["voice", "voice_id", "speaker"] as const;
+
+/** Saved voices clone, so a model that cannot clone always uses its built-in voice. */
+export const usesSavedVoice = (value: SpeakVoiceValue, ctx?: AudioModelContext) =>
+  value.source === "saved" && ctx?.audioWorkflows?.includes("clone") === true;
+
+/** The option that picks a built-in voice: the first choice list among voice, voice_id and
+ *  speaker, else the first of them the model declares at all. */
+export function voiceOptionName(
+  specs: readonly AudioOptionSpec[],
+): string | null {
+  const declared = VOICE_OPTION_NAMES.map((name) =>
+    specs.find((spec) => spec.name === name),
+  ).filter((spec) => spec !== undefined);
+  return (
+    (declared.find((spec) => spec.type === "enum") ?? declared[0])?.name ??
+    null
+  );
+}
+
+/** The kept picker value; one saved before the picker held built-in voices takes the voice
+ *  chosen in Advanced, which the picker now claims. */
+export function speakVoiceStored(
+  stored: unknown,
+  optionValues: Readonly<Record<string, unknown>>,
+  voiceOption: string | null | undefined,
+): unknown {
+  const saved = voiceOption ? optionValues[voiceOption] : undefined;
+  if (saved === undefined || saved === null) return stored;
+  if (stored === undefined) return { builtin: saved };
+  if (typeof stored === "object" && stored !== null && !("builtin" in stored))
+    return { ...stored, builtin: saved };
+  return stored;
+}
 
 export const speakVoiceLogic: AudioToolPanelLogic<SpeakVoiceValue> = {
   id: "speak-voice",
   families: [],
   workflows: ["speak"],
   title: "Voice",
-  claims: [],
-  // Speak sends no transcript, so a model that needs one (Fish Audio) clones only on Clone.
+  claims: VOICE_OPTION_NAMES,
   appliesTo: (ctx) =>
     Boolean(
       ctx.audioWorkflows?.includes("speak") &&
-        ctx.audioWorkflows.includes("clone") &&
-        ctx.referenceTextMode !== "required",
+        (ctx.voiceOption || ctx.audioWorkflows.includes("clone")),
     ),
-  initial: () => ({ source: "builtin", voiceId: null }),
-  toRequest: (value) =>
-    value.source === "saved" && value.voiceId
-      ? { inputs: { reference: { voice_id: value.voiceId } } }
-      : {},
+  initial: () => ({ source: "builtin", voiceId: null, builtin: null }),
+  toRequest: (value, ctx) => {
+    if (usesSavedVoice(value, ctx)) {
+      return value.voiceId
+        ? { inputs: { reference: { voice_id: value.voiceId } } }
+        : {};
+    }
+    return ctx?.voiceOption && value.builtin !== null
+      ? { options: { [ctx.voiceOption]: value.builtin } }
+      : {};
+  },
   validate: (value, _core, ctx) => {
-    if (value.source !== "saved") return null;
+    if (!usesSavedVoice(value, ctx)) return null;
     if (!value.voiceId) return SAVED_VOICE_MISSING;
     // Deleting a voice on Clone does not reach the choice kept here.
-    return ctx.savedVoiceIds && !ctx.savedVoiceIds.includes(value.voiceId)
-      ? SAVED_VOICE_DELETED
+    if (ctx.savedVoiceIds && !ctx.savedVoiceIds.includes(value.voiceId))
+      return SAVED_VOICE_DELETED;
+    // The server falls back to the voice's transcript, so only an empty one blocks.
+    return ctx.referenceTextMode === "required" &&
+      ctx.voicesWithoutTranscript?.includes(value.voiceId)
+      ? SAVED_VOICE_NO_TRANSCRIPT
       : null;
   },
 };
@@ -258,6 +329,26 @@ export const vibeVoiceDialogueLogic: AudioToolPanelLogic<null> = {
   claims: [],
   initial: () => null,
   toRequest: () => ({}),
+};
+
+// audio.cpp model_specs/supertonic.json; anything else fails its tokenizer.
+export const SUPERTONIC_LANGUAGES: readonly string[] = (
+  "en ko ja ar bg cs da de el es et fi fr hi hr hu id it lt lv nl pl pt ro ru " +
+  "sk sl sv tr uk vi"
+).split(" ");
+
+/** Language code, "" for the model's default (English). */
+export const supertonicLanguageLogic: AudioToolPanelLogic<string> = {
+  id: "supertonic-language",
+  families: ["supertonic"],
+  workflows: ["speak"],
+  title: "Language",
+  claims: [],
+  initial: () => "",
+  toRequest: (value) =>
+    typeof value === "string" && SUPERTONIC_LANGUAGES.includes(value)
+      ? { language: value }
+      : {},
 };
 
 export const CLONE_PANEL_LOGIC = [

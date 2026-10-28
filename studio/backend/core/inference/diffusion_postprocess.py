@@ -4,8 +4,8 @@
 """diffusers' ``postprocess(output_type="pil")`` uint8 conversion on the device instead of numpy on the host.
 
 Stock runs ``(x * 255).round().astype("uint8")`` over host float32 copies, which stalls under host load. Same IEEE ops
-on clamped [0, 1] values, so bit-identical; anything else takes the stock path. Kill switch:
-``UNSLOTH_DIFFUSION_DEVICE_POSTPROCESS=0``.
+on clamped [0, 1] values, so bit-identical; anything else takes the stock path. A decoded image with NaN raises instead
+of saving blank. Kill switch: ``UNSLOTH_DIFFUSION_DEVICE_POSTPROCESS=0``.
 """
 
 from __future__ import annotations
@@ -15,6 +15,10 @@ from typing import Any, Optional
 
 DEVICE_POSTPROCESS_ENV = "UNSLOTH_DIFFUSION_DEVICE_POSTPROCESS"
 _MARK = "_unsloth_device_postprocess"
+NAN_IMAGE_MESSAGE = (
+    "The decoded image contains NaN values and would be saved as a blank image. The model or VAE overflowed at this "
+    "resolution and precision; try a smaller resolution or another quant of this model."
+)
 
 
 def disabled() -> bool:
@@ -67,6 +71,16 @@ def to_pil_on_device(
     return [Image.fromarray(pixels[i]) for i in range(pixels.shape[0])]
 
 
+def has_nan(image: Any) -> bool:
+    import torch
+    return (
+        isinstance(image, torch.Tensor)
+        and image.is_floating_point()
+        and image.device.type != "meta"
+        and bool(torch.isnan(image).any())
+    )
+
+
 def uint8_hwc(image: Any) -> Any:
     """Values must lie in [0, 1]: the uint8 cast of anything else is undefined."""
     import torch
@@ -91,6 +105,9 @@ def install(pipe: Any, logger: Any = None) -> bool:
         output_type: str = "pil",
         do_denormalize: Optional[list] = None,
     ) -> Any:
+        if output_type != "latent" and has_nan(image):
+            # Stock casts NaN to 0, a blank image that looks like a finished render.
+            raise RuntimeError(NAN_IMAGE_MESSAGE)
         if output_type == "pil":
             try:
                 out = to_pil_on_device(processor, image, do_denormalize)

@@ -102,6 +102,11 @@ def preferred_mmproj_sibling(siblings: Sequence) -> Optional[object]:
     candidates = mmproj_siblings(siblings)
     if not candidates:
         return None
+    from utils.models.model_config import mmproj_order, mmproj_order_rank
+
+    order = mmproj_order(*(_gguf_rfilename(s) for s in siblings))
+    if order:
+        return max(candidates, key = lambda s: mmproj_order_rank(getattr(s, "rfilename"), order))
     return next(
         (s for s in candidates if extract_quant_label(getattr(s, "rfilename")).upper() == "F16"),
         candidates[0],
@@ -118,9 +123,7 @@ def preferred_mtp_sibling(siblings: Sequence) -> Optional[object]:
     gguf_names = [name for sibling in siblings if (name := _gguf_rfilename(sibling))]
 
     def _complete(name: str) -> bool:
-        # Match detect_mtp_file's launchability gate. A half-published family
-        # must step aside before preference ranking so a complete fallback can
-        # be selected instead of making the plan omit MTP entirely.
+        # Match detect_mtp_file launchability gate; a half-published family must step aside before ranking.
         return split_listing_is_complete(gguf_names, name)
 
     # Root-level only: the MTP/ subdir copies now share the mtp- prefix too.
@@ -138,10 +141,7 @@ def preferred_mtp_sibling(siblings: Sequence) -> Optional[object]:
     if candidates:
         return candidates[0]
 
-    # The remote planner cannot read an undownloaded GGUF header to prove
-    # ``qwen4exp`` the way the loader can. This family token is part of every
-    # main weight and every sidecar in the sole repo that needs the fallback,
-    # and boundary matching keeps future names such as Flash-Next2 out.
+    # Remote planner cannot read the GGUF header to prove qwen4exp; match the family token.
     flash_next = any(
         re.search(r"(?:^|[/_-])qwen3\.8-flash-next(?:$|[/_.-])", name, re.IGNORECASE)
         for sibling in siblings
@@ -232,14 +232,7 @@ def dflash_plan_files(
     *,
     max_bytes: int = 0,
 ) -> tuple[ExpectedFile, ...]:
-    """Every shard of the DFlash sidecar to plan alongside ``weight_name``, or ().
-
-    Whole shard family, not the ranked file alone: the loader refuses an incomplete split set, so planning shard 1 reports the variant complete and then loses DFlash. A half-published family is dropped for the same reason.
-
-    Bounded by ``max_bytes``, the variant's own weights: ``dflash-`` is a prefix real weights carry (Lucebox/Qwen3.6-27B-DFlash-GGUF) and a listing cannot read the ``general.architecture`` the loader rejects them by, but a drafter is a few layers of its target and cannot outweigh it. An unknown size stays out.
-
-    Both rules filter BEFORE the ranking, so an oversized or half-published name at the top steps aside for a usable sidecar behind it.
-    """
+    """Whole DFlash shard family; bounded by max_bytes, and an unknown size stays out."""
     from utils.models.drafters import dflash_repo_preference_key, split_listing_is_complete
 
     families: dict[str, list[ExpectedFile]] = {}
@@ -434,12 +427,7 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
 
 
 def plan_for_variant(plans: dict[str, GgufVariantPlan], variant: str) -> Optional[GgufVariantPlan]:
-    """The plan for *variant*, accepting a bare quant when exactly one plan carries it.
-
-    A repo that files every variant under one shared container (``weights/model-Q4_K_M.gguf``) qualifies every key, because the key is a pure function of the path and cannot know that the directory disambiguates nothing. Every stored pin and every explicit ``repo:Q4_K_M`` then missed the plan map and the worker exited with "No GGUF shards matching variant".
-
-    Resolved at LOOKUP rather than by aliasing the map, so the key stays a pure function of the path (the remote listing and a partial cache scan have to agree on it) and the advertised rows stay one per checkpoint. Only when the bare name is UNAMBIGUOUS: a repo that really does hold several checkpoints at one quant gets no fallback, because there the bare name genuinely does not name one of them.
-    """
+    """A bare quant matches at lookup only when exactly one plan carries it; map keys stay path-based."""
     wanted = (variant or "").strip().lower()
     if not wanted:
         return None
@@ -449,6 +437,45 @@ def plan_for_variant(plans: dict[str, GgufVariantPlan], variant: str) -> Optiona
     # PATH-qualified keys only, not is_qualified_gguf_variant_key: an H3 root stem's bare quant names both partitions, and picking either would load a different task.
     matches = [key for key in plans if "/" in key and bare_quant_alias(key).lower() == wanted]
     return plans[matches[0]] if len(matches) == 1 else None
+
+
+def precision_folder_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
+    """Each MLX precision folder (``6-bit/``) as a variant plan over every file in the folder."""
+    from hub.utils.snapshot_filters import precision_variant_subfolders
+
+    by_name = {getattr(s, "rfilename", ""): s for s in siblings}
+    return {
+        folder.lower(): _precision_folder_plan(
+            tuple(expected_file_from_sibling(by_name[name]) for name in sorted(names))
+        )
+        for folder, names in precision_variant_subfolders(by_name).items()
+    }
+
+
+def _precision_folder_plan(expected: tuple[ExpectedFile, ...]) -> GgufVariantPlan:
+    hashes = frozenset(file.sha256 for file in expected if file.sha256)
+    size = sum(max(0, int(file.size or 0)) for file in expected)
+    return GgufVariantPlan(
+        main_filenames = frozenset(file.path for file in expected),
+        target_filenames = tuple(file.path for file in expected),
+        main_hashes = hashes,
+        required_hashes = hashes,
+        companion_hashes = frozenset(),
+        mmproj_filenames = frozenset(),
+        mmproj_hashes = frozenset(),
+        expected_files = expected,
+        main_size_bytes = size,
+        download_size_bytes = size,
+    )
+
+
+def resolve_variant_plan(siblings: Sequence, variant: str) -> Optional[GgufVariantPlan]:
+    """A GGUF variant's plan, else the MLX precision folder of that name."""
+    siblings = list(siblings)
+    plan = plan_for_variant(build_gguf_variant_plans(siblings), variant)
+    if plan is not None:
+        return plan
+    return precision_folder_plans(siblings).get((variant or "").strip().lower())
 
 
 def _one_shard_family(main_files: Sequence[ExpectedFile]) -> tuple[ExpectedFile, ...]:
@@ -473,6 +500,16 @@ def plan_from_expected_files(
 ) -> GgufVariantPlan:
     expected = tuple(expected_files)
     all_main = tuple(file for file in expected if is_main_gguf_variant_path(file.path, variant))
+    from hub.utils.snapshot_filters import PRECISION_FOLDER_RE
+
+    folder = (variant or "").strip()
+    if (
+        not all_main
+        and expected
+        and PRECISION_FOLDER_RE.fullmatch(folder)
+        and all(file.path.lower().startswith(f"{folder.lower()}/") for file in expected)
+    ):
+        return _precision_folder_plan(expected)
     main_files = _one_shard_family(all_main)
     # A discarded family has to leave the plan ENTIRELY: target_filenames, required_hashes and download_size_bytes are what the worker fetches, so leaving the copy there downloaded it, then reclaim deleted it as not-ours (absent from main_hashes) and the job fetched it again.
     kept = {file.path for file in main_files}

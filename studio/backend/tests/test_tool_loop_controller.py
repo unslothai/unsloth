@@ -54,13 +54,11 @@ def test_append_deferred_nudges_merges_deduped_into_one_message():
     conversation = [{"role": "assistant", "tool_calls": [1]}, {"role": "tool", "content": "r"}]
     nudges = [
         {"role": "user", "content": "duplicate"},
-        {"role": "user", "content": "duplicate"},  # dropped: same content
+        {"role": "user", "content": "duplicate"},
         {"role": "user", "content": "disabled foo"},
     ]
     append_deferred_nudges(conversation, nudges)
-    # One user message, after the results, with distinct contents joined.
     assert conversation[2:] == [{"role": "user", "content": "duplicate\n\ndisabled foo"}]
-    # Empty is a no-op.
     before = list(conversation)
     append_deferred_nudges(conversation, [])
     assert conversation == before
@@ -130,7 +128,6 @@ def test_status_and_provenance_match_local_event_conventions():
         ("//google.com", "Reading: google.com"),
         ("example.com:8443/path", "Reading: example.com"),
         ("github.com/unslothai/unsloth", "Reading: github.com"),
-        # still generic for what the fetch layer refuses
         ("/login", "Reading page..."),
         ("javascript:alert(1)", "Reading page..."),
         # urlparse raises on these, outside the fetch's handler: degrade, not raise
@@ -188,6 +185,27 @@ def test_successful_duplicate_is_internal_noop_and_keeps_remaining_tools():
     assert "different enabled tool" in duplicate_nudge
     assert completion.model_message()["role"] == "user"
     _shared_setup_1(controller)
+
+
+def test_reprepare_uses_normalized_arguments_for_replay_and_dedup():
+    tool_name = "mcp__srv1__lookup"
+    controller = ToolLoopController(tools = [_tool(tool_name)])
+    call = _call(tool_name, {}, "call_a")
+    call["card_id"] = "painted_a"
+    first = controller.prepare_call(call)
+    first.arguments["image"] = "attached_image"
+    first = controller.reprepare_call(first)
+
+    assert first.card_id == "painted_a"
+    assert first.as_assistant_tool_call()["function"]["arguments"] == ('{"image":"attached_image"}')
+    assert first.key == canonical_tool_call_key(tool_name, {"image": "attached_image"})
+    controller.record_result(first, "ok")
+
+    repeated = controller.prepare_call(_call(tool_name, {}, "call_b"))
+    repeated.arguments["image"] = "attached_image"
+    repeated = controller.reprepare_call(repeated)
+    assert repeated.action == "duplicate"
+    assert repeated.key == first.key
 
 
 def test_web_search_alias_args_share_the_duplicate_key():
@@ -264,6 +282,22 @@ def test_repeated_successful_duplicate_becomes_terminal_after_one_recovery_nudge
     assert controller.active_tools() == []
 
 
+def test_deduplication_can_be_disabled():
+    controller = ToolLoopController(
+        tools = [_tool("web_search"), _tool("python")],
+        deduplicate_tool_calls = False,
+    )
+    first = controller.prepare_call(_call("web_search", {"query": "gpu prices"}, "call_a"))
+    controller.record_result(first, "ok")
+
+    repeat = controller.prepare_call(_call("web_search", {"query": "gpu prices"}, "call_b"))
+    assert repeat.action == "execute"
+    assert repeat.should_execute
+    controller.record_result(repeat, "ok")
+    assert not controller.force_final_answer
+    _shared_setup_1(controller)
+
+
 def test_command_can_run_again_after_a_file_edit():
     controller = ToolLoopController(
         tools = [_tool("terminal"), _tool("edit_file"), _tool("web_search")]
@@ -286,9 +320,8 @@ def test_command_can_run_again_after_a_file_edit():
 
     controller.record_noop(controller.prepare_call(run))
     assert not controller.force_final_answer
-    # The edit does NOT come back. Nothing new has run since it did -- only `run`, which was
-    # already spent -- so re-applying the identical edit is a repeating block replaying
-    # itself, and a non-idempotent one (an appending python/terminal call) would land twice.
+    # Replaying the identical edit is a block repeating itself; a non-idempotent call
+    # would land twice.
     assert controller.prepare_call(edit).action == "duplicate"
     assert controller.prepare_call(search).action == "duplicate"
 
@@ -325,6 +358,23 @@ def test_a_repeating_workspace_block_stops_replaying_itself():
     assert reread.action == "execute"
     controller.record_result(reread, "version two")
     assert controller.prepare_call(edit).action == "duplicate"
+
+
+def test_mcp_call_can_run_again_after_another_mcp_call_changed_state():
+    """#10348: `list, create, list` on an MCP server must re-list, not answer from a stale duplicate."""
+    name = "mcp__docs__unified_document_manager"
+    controller = ToolLoopController(tools = [_tool(name)])
+    listing = _call(name, {"action": "list"})
+    create = _call(name, {"action": "create", "name": "a.md"})
+
+    controller.record_result(controller.prepare_call(listing), "[]")
+    assert controller.prepare_call(listing).action == "duplicate"
+    controller.record_result(controller.prepare_call(create), "created a.md")
+    relist = controller.prepare_call(listing)
+    assert relist.action == "execute"
+    controller.record_result(relist, '["a.md"]')
+    assert controller.prepare_call(listing).action == "duplicate"
+    assert controller.prepare_call(create).action == "duplicate"
 
 
 def test_failed_call_does_not_block_retry():
@@ -452,15 +502,7 @@ def test_two_plots_in_one_code_execution_turn_replay_no_base64():
 
 
 def test_a_flood_of_stacked_image_markers_stays_linear():
-    """A hosted result's length is the provider's to choose and this runs on the request
-    thread, so the cost has to follow it. Re-partitioning the shortened string once per
-    marker copies it again every time: quadruple the markers and the work grows about
-    sixteenfold instead of fourfold.
-
-    Measured as CPU time, and as the best of several runs. A shared runner can deschedule
-    the process mid-call, which adds wall clock but no CPU, and taking the minimum drops
-    the samples where it happened -- interference can only ever make a run look slower.
-    """
+    """Stacked image markers must cost linear time; repartitioning the string per marker is quadratic."""
 
     def cost(markers: int) -> float:
         flood = '\n__IMAGES__:["x"]' * markers
@@ -478,10 +520,7 @@ def test_a_flood_of_stacked_image_markers_stays_linear():
 
 
 def test_a_large_source_map_is_still_taken_off_the_result():
-    """No length bound here either. Every source record repeats its whole chunk and
-    `search_knowledge_base` honours the model's `top_k` without a ceiling, so a real map
-    can be megabytes; one refused for being big would be left for `_fit_result_to_room`
-    to cut into malformed JSON in front of the model."""
+    """A big source map must still be stripped, or _fit_result_to_room cuts it into malformed JSON."""
     import json as _json
 
     chunk = "retrieved text. " * 400
@@ -512,10 +551,7 @@ def test_a_large_plot_is_still_taken_off_the_result():
 
 
 def test_only_the_tools_that_emit_an_envelope_have_one_taken_off():
-    """`_strip_files_sentinel` is already scoped this way. A document an MCP tool read,
-    or a page that was fetched, can end in a well-formed line of either kind, and it is
-    content: the card keeps it, so cutting it leaves the model with less than the user
-    is looking at."""
+    """Only envelope-emitting tools lose it; a document an MCP tool read or a fetched page is content."""
     manifest = 'icons/\n__IMAGES__:["icon.png"]'
     citation = 'notes\n__RAG_SOURCES__:[{"filename": "a.pdf"}]'
 
@@ -523,13 +559,11 @@ def test_only_the_tools_that_emit_an_envelope_have_one_taken_off():
         assert strip_result_for_model(manifest, reader) == manifest
         assert strip_result_for_model(citation, reader) == citation
 
-    # The tools that do emit them are unaffected.
     for emitter in ("python", "terminal", "code_execution"):
         assert strip_result_for_model(manifest, emitter) == "icons/"
     for emitter in ("search_knowledge_base", "search_conversation"):
         assert strip_result_for_model(citation, emitter) == "notes"
 
-    # An unnamed caller still gets everything stripped, as it did before.
     assert strip_result_for_model(manifest) == "icons/"
     assert strip_result_for_model(citation) == "notes"
 
@@ -558,8 +592,6 @@ def test_an_unreadable_fragment_is_carried_as_the_text_the_card_shows():
     assert json.loads(payload["arguments_text"]) == {"raw": truncated}
     assert payload["arguments_text"] != decision.as_assistant_tool_call()["function"]["arguments"]
 
-
-# --- schema-aware argument typing -------------------------------------------------------
 
 _MCP_SERVER = {"id": "notes", "display_name": "Notes"}
 _MCP_TOOL = {
@@ -615,7 +647,6 @@ def test_a_value_reads_as_the_type_its_schema_declares(key, text, expected):
 @pytest.mark.parametrize(
     "spec",
     [
-        # The walk stops on any keyword it does not follow, whichever one it is.
         {"type": "boolean", "$ref": "#/$defs/Flag"},
         # Collapsing a union discards the rest, so it is read only where it is all there is.
         {"anyOf": [{"type": "boolean"}], "properties": {"x": {"type": "boolean"}}},
@@ -671,7 +702,6 @@ def test_an_mcp_tool_call_parsed_from_xml_arrives_typed():
         "tags": ["a", "b"],
         "depth": None,
     }
-    # The turn replayed to the model carries the typed values too, not the strings.
     assert decision.as_assistant_tool_call()["function"]["arguments"] == (
         '{"query":"ship dates","limit":25,"fuzzy":false,"tags":["a","b"],"depth":null}'
     )
@@ -705,10 +735,7 @@ def test_replayed_arguments_keep_the_order_the_model_generated():
 
 
 def test_two_xml_calls_written_in_different_orders_replay_in_their_own():
-    """Each call's own order, not one fixed order that happens to look unsorted.
-
-    No fixed order satisfies both, so on the sorted encoder both replay as the same string.
-    """
+    """Each XML call replays in its own parameter order; a sorted encoder would replay both the same."""
 
     def replay(*parameters):
         content = (
@@ -743,7 +770,6 @@ def test_a_declared_type_nested_in_a_container_is_read_too():
     ]
     call = {"path": "app.py", "edits": edits}
     assert coerce_arguments_by_schema(call, props) == {"path": "app.py", "edits": typed}
-    # An already-typed container is descended into too: its elements can still be text.
     call = {"path": "app.py", "edits": json.loads(edits)}
     assert coerce_arguments_by_schema(call, props) == {"path": "app.py", "edits": typed}
 

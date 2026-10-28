@@ -1,28 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""PR #10648: a release lookup that could not answer must keep an intact install.
-
-Two halves, because the feature is a contract between two programs.
-
-PART 1 drives ``install_whisper_prebuilt.main()`` -- the same entrypoint setup.sh
-runs -- with every network failure injected at the module's own primitives, and
-asserts the exit code, the token in the log, and that the tree on disk did not
-move. The wrap this PR added (``fetch_release_for_install``, ``_release_plan_for_host``)
-is what turns a ``URLError`` / ``RuntimeError`` into the ``PrebuiltFallback`` the
-keep path reads, so the assertions that matter most are the negative ones: with no
-install, or a broken one, every single failure mode must still exit non-zero. An
-offline update reporting success over nothing installed is the outcome this file
-exists to rule out.
-
-PART 2 executes the real ``setup.sh`` and ``setup.ps1`` status blocks, extracted
-from the shipped scripts, and checks the label each exit-code/output pair produces
-in BOTH shells. ``pwsh`` is present on Linux CI, so the Windows arm is measured
-rather than asserted from source text.
-
-No test here touches the network: every exit is stubbed, and each stub records the
-URLs it was asked for so a test that intercepted nothing fails instead of passing.
-"""
+"""An offline lookup must keep an intact install and never report success over nothing installed."""
 
 from __future__ import annotations
 
@@ -46,8 +25,7 @@ from unsloth_pwsh_runner import run_pwsh
 
 MODULE_PATH = PACKAGE_ROOT / "studio" / "install_whisper_prebuilt.py"
 
-# A DISTINCT sys.modules name: test_install_whisper_prebuilt_logic.py owns
-# "studio_install_whisper_prebuilt", and -n 4's per-worker cache would share the monkeypatches.
+# Distinct sys.modules name, or per-worker caches share monkeypatches.
 M = load_studio_module(
     "studio_install_whisper_prebuilt_pr10648_offline", "install_whisper_prebuilt.py"
 )
@@ -62,8 +40,7 @@ UPSTREAM_TAG = "v1.9.1"
 SOURCE_COMMIT = "0" * 40
 STUDIO_PROTOCOL = "inference/multipart-v1"
 
-# The two substrings the setup scripts grep. Spelled out here so a test that stops matching the
-# installer is a test that stops matching the shipped scripts too.
+# The substrings the setup scripts grep.
 KEEP_TOKEN = "keeping the existing complete install"
 MATCH_TOKEN = "already matches"
 FAIL_TOKEN = "prebuilt install failed"
@@ -140,11 +117,7 @@ def _bundle(host: HostInfo, asset: str, sha256: str, **artifact_extra):
 
 
 def _seed_install(tmp_path: Path, host: HostInfo, **artifact_extra) -> Path:
-    """Install a real prebuilt tree + marker, with every patch undone afterwards.
-
-    The seeding patches live in their own MonkeyPatch context so the failure injection the
-    test then installs is the ONLY thing standing between the installer and the network.
-    """
+    """Seeds a real prebuilt tree and marker under its own MonkeyPatch; the injected failure stays live."""
     archive, asset, sha256 = _build_cpu_bundle(tmp_path, host)
     install_dir = tmp_path / "whisper.cpp"
     bundle = _bundle(host, asset, sha256, **artifact_extra)
@@ -172,35 +145,21 @@ def _http_error(code: int, url: str) -> urllib.error.HTTPError:
     return urllib.error.HTTPError(url, code, f"injected {code}", email.message.Message(), None)
 
 
-# Every failure mode, named once. The value is what the injected primitives do.
 FAILURE_MODES = (
     "offline",  # urllib.error.URLError: no network at all
     "timeout",  # socket.timeout on both the CDN HEAD and every GET
     "http_403",  # api.github.com rate limit -> fetch_json raises RuntimeError
     "http_429",  # api.github.com secondary rate limit -> same RuntimeError
-    "http_404",  # the repo/release does not answer
-    "http_500",  # GitHub 5xx
+    "http_404",
+    "http_500",
     "truncated_json",  # a body that stops mid-object
     "malformed_json",  # a captive-portal/proxy HTML page where JSON was expected
-    "empty_releases",  # a well-formed answer listing no releases at all
+    "empty_releases",
 )
 
 
 class _InjectedNetwork:
-    """Every network exit this installer has, replaced by one injected failure.
-
-    There are exactly two primitives, and both are resolved through ``_OPS`` against the
-    installer module's own globals, so setting them here is the real seam rather than an
-    unused alias:
-
-      * ``download_bytes`` -- every JSON GET, api.github.com and the release CDN alike
-        (``core.fetch_json`` and ``core.fetch_download_host_json`` both route through it).
-      * ``_URL_OPENER`` -- the bare HEAD ``core.download_host_latest_release_tag`` uses to
-        read /releases/latest without spending API quota.
-
-    ``calls`` is the proof the injection fired. A test whose patch intercepted nothing would
-    otherwise be green while the real code took some other path.
-    """
+    """Replaces download_bytes and _URL_OPENER with one injected failure; calls shows it fired."""
 
     def __init__(self, mode: str) -> None:
         self.mode = mode
@@ -213,7 +172,6 @@ class _InjectedNetwork:
         if self.mode == "timeout":
             raise socket.timeout("injected: timed out")
 
-    # ── the /releases/latest HEAD ──
     def open(
         self,
         request,
@@ -222,11 +180,9 @@ class _InjectedNetwork:
         url = getattr(request, "full_url", str(request))
         self.calls.append(("head", url))
         self._raise_transport(url)
-        # Every remaining mode is about api.github.com, so the CDN shortcut declines first. A 404
-        # is how download_host_latest_release_tag says "cannot name the release": None, not a raise.
+        # A 404 is how download_host_latest_release_tag says 'cannot name the release': None, not a raise.
         raise _http_error(404, url)
 
-    # ── every JSON GET ──
     def download_bytes(self, url, **_kwargs) -> bytes:
         self.calls.append(("get", url))
         self._raise_transport(url)
@@ -240,7 +196,6 @@ class _InjectedNetwork:
             return b"[]"
         raise AssertionError(f"unhandled injection mode {self.mode!r}")
 
-    # ── the pre-check's own HEAD, which lives on the llama module ──
     def llama_latest_tag(self, repo: str) -> str | None:
         self.calls.append(("precheck", repo))
         self._raise_transport(repo)
@@ -252,27 +207,12 @@ class _InjectedNetwork:
 
     @property
     def install_calls(self) -> list[tuple[str, str]]:
-        """Calls made by the INSTALL path, i.e. not the marker-only pre-check.
-
-        A fully offline run never reaches ``download_bytes`` at all -- the CDN HEAD that
-        resolves /releases/latest raises first -- so this, not a GET count, is what proves
-        the injection fired where the PR's wrap had to catch it."""
+        """Install-path calls only; a fully offline run never reaches download_bytes at all."""
         return [(kind, url) for kind, url in self.calls if kind != "precheck"]
 
 
 def _inject(monkeypatch, mode: str) -> _InjectedNetwork:
-    """Close every network exit, then prove the one that mattered was used.
-
-    Patching only ``M.download_bytes`` is the trap this helper exists to avoid: the
-    installer does ``fetch_json = llama.fetch_json`` and ``download_bytes =
-    llama.download_bytes`` at import, so ``core.fetch_json`` resolves through the LLAMA
-    module's globals and an injection on the whisper alias intercepts nothing -- the first
-    version of this file reached api.github.com for real and still looked green until
-    ``calls`` was read back and showed a live release tag in the URL.
-
-    So: both modules' primitives, plus ``prebuilt_core._URL_OPENER`` underneath them, which
-    every HTTP call in all three modules ultimately goes through.
-    """
+    """Patch both modules' primitives and prebuilt_core._URL_OPENER; one alias alone intercepts nothing."""
     net = _InjectedNetwork(mode)
     for module in (M, M.llama):
         monkeypatch.setattr(module, "download_bytes", net.download_bytes)
@@ -320,22 +260,9 @@ def _partial_artifacts(install_dir: Path) -> list[str]:
     )
 
 
-# ══ Part 1: network failure modes ════════════════════════════════════════════════════
-
-
 @pytest.mark.parametrize("mode", FAILURE_MODES)
 def test_every_lookup_failure_keeps_an_intact_install(tmp_path, monkeypatch, capsys, mode):
-    """An unpinned update whose lookup could not answer keeps the tree and exits 0.
-
-    This is the whole point of the PR: before it, ``URLError`` and ``fetch_json``'s
-    ``RuntimeError`` escaped ``install_prebuilt`` uncaught and setup printed
-    "prebuilt install failed" over a healthy install.
-
-    Note which modes are in this list. 404 and 500 are here too, because with no release
-    pin they are also "the lookup could not answer": nothing named a release, so nothing
-    established that the install on disk is stale. The pinned case below is where a 404
-    stops being an unavailability and starts being an answer.
-    """
+    """An unpinned update whose release lookup fails keeps the intact install and exits 0."""
     host = _host("linux", "x64")
     install_dir = _seed_install(tmp_path, host)
     before = _tree_snapshot(install_dir)
@@ -346,7 +273,7 @@ def test_every_lookup_failure_keeps_an_intact_install(tmp_path, monkeypatch, cap
 
     assert net.install_calls, f"{mode}: the injection never fired; the test intercepted nothing"
     assert code == M.EXIT_SUCCESS, f"{mode}: exit {code}\n{log}"
-    # The exact substring studio/setup.sh:3636 and studio/setup.ps1:6381 grep for.
+    # The substring setup.sh and setup.ps1 grep for.
     assert KEEP_TOKEN in log, f"{mode}: {log}"
     assert FAIL_TOKEN not in log, f"{mode}: {log}"
     # Not "already matches": that arm names a release this run never fetched.
@@ -366,13 +293,7 @@ def test_every_lookup_failure_keeps_an_intact_install(tmp_path, monkeypatch, cap
 def test_no_failure_mode_reports_success_without_a_working_install(
     tmp_path, monkeypatch, capsys, mode, damage
 ):
-    """The worst possible outcome, ruled out for every mode x every damage shape.
-
-    An update that cannot reach the network and reports success while nothing usable is
-    installed would leave setup.sh printing "prebuilt installed" over an empty directory
-    and dictation silently broken. Every one of these must exit non-zero and say
-    "prebuilt install failed" -- the token setup.sh's else-arm reports.
-    """
+    """Every failure mode and damage shape must exit non-zero with 'prebuilt install failed'."""
     host = _host("linux", "x64")
     if damage == "absent":
         install_dir = tmp_path / "whisper.cpp"
@@ -413,13 +334,7 @@ def test_no_failure_mode_reports_success_without_a_working_install(
 
 @pytest.mark.parametrize("mode", FAILURE_MODES)
 def test_an_explicitly_pinned_release_is_never_silently_kept(tmp_path, monkeypatch, capsys, mode):
-    """A run that NAMED a release must not be answered with a different one.
-
-    Keeping ignores the pin, so the pin has to fail instead. This is also the honest
-    answer to the 404 question: a 404 on ``--published-release-tag v9.9.9-unsloth.99``
-    is a deleted or misspelled tag -- an answer -- and it exits 1 rather than reporting
-    the installed release as a success.
-    """
+    """An explicitly pinned release must fail rather than keep a different installed release."""
     host = _host("linux", "x64")
     install_dir = _seed_install(tmp_path, host)
     before = _tree_snapshot(install_dir)
@@ -433,7 +348,6 @@ def test_an_explicitly_pinned_release_is_never_silently_kept(tmp_path, monkeypat
     assert code == M.EXIT_ERROR, f"{mode}: exit {code}\n{log}"
     assert KEEP_TOKEN not in log, f"{mode}: a pinned release was papered over\n{log}"
     assert FAIL_TOKEN in log, f"{mode}: {log}"
-    # The intact tree is still not damaged -- refusing to keep is not the same as deleting.
     assert _tree_snapshot(install_dir) == before, f"{mode}: a failed pinned run moved the tree"
     assert _partial_artifacts(install_dir) == [], f"{mode}: half-installed leftovers"
 
@@ -448,12 +362,7 @@ def test_an_explicitly_pinned_release_is_never_silently_kept(tmp_path, monkeypat
     ids = ["force", "upstream-tag-pin", "force-compile"],
 )
 def test_an_explicit_request_never_keeps(tmp_path, monkeypatch, capsys, extra_argv, env):
-    """Everything this RUN asked for that keeping would ignore fails instead.
-
-    ``--force`` asked for a reinstall, ``--whisper-tag`` asked for a specific upstream
-    version, and ``UNSLOTH_WHISPER_FORCE_COMPILE=1`` asked setup.sh to try a source build,
-    which it only does after a non-zero exit. Reporting 0 would swallow all three.
-    """
+    """--force, --whisper-tag and UNSLOTH_WHISPER_FORCE_COMPILE=1 ask for work that keeping would skip."""
     host = _host("linux", "x64")
     install_dir = _seed_install(tmp_path, host)
 
@@ -481,17 +390,12 @@ def test_the_keep_arm_names_the_reason_and_the_release_it_kept(tmp_path, monkeyp
     assert RELEASE_TAG in log, log
     assert "update unavailable, existing prebuilt kept" in log, log
     assert "prebuilt update reason:" in log, log
-    # The 403 arrives as fetch_json's RuntimeError, not an OSError; the PR's wrap is the only
-    # thing that turns it into the PrebuiltFallback the keep path reads.
+    # The 403 is fetch_json's RuntimeError, not OSError; only the wrap makes it a PrebuiltFallback.
     assert "403" in log, log
 
 
 def test_a_release_compatibility_error_is_never_papered_over(tmp_path, monkeypatch, capsys):
-    """Exit 2 is a lookup that ANSWERED: no published bundle pairs with this runtime.
-
-    setup.sh names both tags from exit 2, so converting it into a kept success would hide
-    real release skew behind a warning about the network.
-    """
+    """Exit 2 means the lookup answered with no compatible bundle; it must never become a kept success."""
     host = _host("linux", "x64")
     install_dir = _seed_install(tmp_path, host)
     _inject(monkeypatch, "offline")
@@ -507,20 +411,12 @@ def test_a_release_compatibility_error_is_never_papered_over(tmp_path, monkeypat
 
 
 def _macos_listing_failure(tmp_path, monkeypatch, host):
-    """Newest published release incompatible with this Mac, release LISTING unavailable.
-
-    ``_release_plan_for_host`` records the newest release's incompatibility in
-    ``first_error``, then walks older releases to look for one this Mac can run. When the
-    listing that drives the walk cannot be fetched, line 1424-1427 raises a new
-    PrebuiltFallback and ``first_error`` is discarded.
-    """
+    """When the release listing fails, the newest release's incompatibility in first_error is discarded."""
     newer_dir = tmp_path / "newer"
     newer_dir.mkdir(parents = True, exist_ok = True)
     archive, asset, sha256 = _build_cpu_bundle(newer_dir, host)
-    # A newest release whose only artifact needs a macOS this host does not have.
     newest = _bundle(host, asset, sha256, min_os = "26.0")
-    # Control: the SAME bundle is selectable on a new enough Mac, so the rejection below is the
-    # min_os floor, not a manifest built wrong. Without it the scenario passes exercising nothing.
+    # Control: the same bundle selects on a newer Mac, so the rejection is the min_os floor.
     M.select_artifact_with_cpu_fallback(
         newest.manifest, _host("macos", host.whisper_arch, macos_version = (26, 0)), "cpu"
     )
@@ -537,18 +433,8 @@ def _macos_listing_failure(tmp_path, monkeypatch, host):
 def test_macos_incompatible_newest_plus_unreachable_listing_keeps_a_runnable_install(
     tmp_path, monkeypatch, capsys
 ):
-    """The open question, settled: this is an IMPROVEMENT, not a false success.
-
-    ``first_error`` describes the NEWEST release only. The walk-back loop exists precisely
-    because an older release may still run here, so with the listing unreachable the
-    installer has NOT established "your macOS is too old for any available build" -- it has
-    established that it cannot tell. Discarding first_error for "could not list releases"
-    is therefore the accurate verdict, not a downgrade of a real one.
-
-    And the install that is kept is known to run on this host: ``_existing_install_is_intact``
-    re-checks the marker's ``min_os`` against ``host.macos_version`` before keeping anything
-    (test_macos_keep_refuses_an_install_below_this_hosts_floor below is the negative case).
-    """
+    """Unreachable listing rules nothing out, so keeping a min_os-compatible install is the right
+    verdict."""
     host = _host("macos", "arm64", macos_version = (13, 0))
     install_dir = _seed_install(tmp_path, host, min_os = "13.0")
     before = _tree_snapshot(install_dir)
@@ -556,16 +442,13 @@ def test_macos_incompatible_newest_plus_unreachable_listing_keeps_a_runnable_ins
     net = _macos_listing_failure(tmp_path, monkeypatch, host)
     code, log = _run_cli(monkeypatch, capsys, host, install_dir)
 
-    # The listing endpoint _published_release_tags walks, and nothing else: this is the call
-    # whose failure discards first_error.
+    # This is the call whose failure discards first_error.
     assert [url for _kind, url in net.install_calls] == [
         "https://api.github.com/repos/unslothai/whisper.cpp/releases?per_page=100"
     ], net.install_calls
     assert code == M.EXIT_SUCCESS, f"exit {code}\n{log}"
     assert KEEP_TOKEN in log, log
-    # The reason names the unavailability, so nobody reads it as a compatibility verdict.
     assert "could not list" in log, log
-    # And the discarded first_error is NOT what the user is told; a kept install is.
     assert "no whisper.cpp prebuilt asset" not in log, log
     assert _tree_snapshot(install_dir) == before
 
@@ -573,12 +456,8 @@ def test_macos_incompatible_newest_plus_unreachable_listing_keeps_a_runnable_ins
 def test_macos_incompatible_newest_plus_unreachable_listing_fails_without_an_install(
     tmp_path, monkeypatch, capsys
 ):
-    """The other half of the same verdict: nothing on disk, nothing invented.
-
-    If the discarded first_error had been converted into a false success, THIS is where it
-    would show -- a Mac with no whisper install reporting exit 0 after a lookup that never
-    found a compatible bundle. It exits 1.
-    """
+    """With no install and an unreachable listing, the run must exit 1 rather than report a false
+    success."""
     host = _host("macos", "arm64", macos_version = (13, 0))
     install_dir = tmp_path / "whisper.cpp"
 
@@ -592,17 +471,12 @@ def test_macos_incompatible_newest_plus_unreachable_listing_fails_without_an_ins
 
 
 def test_macos_keep_refuses_an_install_below_this_hosts_floor(tmp_path, monkeypatch, capsys):
-    """A tree carried onto an older Mac is not "intact" and must not be kept offline.
-
-    Without this, the keep path would hold an install that cannot load, which is the shape
-    a genuine false success would take.
-    """
+    """An install built for a newer macOS must not be kept offline on an older Mac; it cannot load there."""
     build_host = _host("macos", "arm64", macos_version = (15, 0))
     install_dir = _seed_install(tmp_path, build_host, min_os = "15.0")
     older_mac = _host("macos", "arm64", macos_version = (13, 0))
 
-    # Only the floor changed: the same tree is intact on the Mac it was installed on. Asserting the
-    # predicate keeps the exit-1 below from passing for an unrelated reason.
+    # Assert the tree is intact on its own Mac so the exit 1 cannot pass for another reason.
     intact = dict(
         published_repo = M.DEFAULT_PUBLISHED_REPO,
         requested_backend = "cpu",
@@ -645,18 +519,15 @@ def test_pre_pr_an_unreachable_release_listing_escaped_as_an_uncaught_oserror():
     assert pre.returncode == 0, pre.stderr
     source = pre.stdout
 
-    # The loop was unguarded: no try/except between the planner and the listing fetch.
     assert (
         "    for release_tag in _published_release_tags(published_repo):" in source
     ), "the pre-PR planner did not iterate the listing directly; re-read the comparison"
     assert "could not list" not in source, "pre-PR already had the listing guard"
-    # install_prebuilt had no keep arm, so nothing downgraded a lookup failure to exit 0.
     pre_install = source[source.index("def install_prebuilt(") :]
     pre_install = pre_install[: pre_install.index("\ndef ")]
     assert "except PrebuiltFallback" not in pre_install, pre_install
     assert KEEP_TOKEN not in source, "pre-PR already logged the keep token"
 
-    # And post-PR it is guarded, in the same function.
     post = MODULE_PATH.read_text(encoding = "utf-8")
     assert "except (OSError, RuntimeError) as exc:" in post
     guard = 'raise PrebuiltFallback(f"could not list {published_repo} releases: {exc}") from exc'
@@ -664,28 +535,11 @@ def test_pre_pr_an_unreachable_release_listing_escaped_as_an_uncaught_oserror():
 
 
 def test_the_keep_arm_sits_beside_the_status_arms_it_did_not_replace():
-    """The pre-existing tokens must still mean exactly what they meant before.
-
-    ``already matches`` and llama's two arms carry other behaviour (node greps the same
-    token at setup.sh:1261), so this PR's keep arm is only safe next to them rather than
-    written over them.
-
-    Stated on the shipped text, not on a diff. The original spelling of this test read
-    ``git diff <the PR's merge base> -- studio/setup.*`` and asserted that no line carrying
-    a status decision appeared as a REMOVAL, which is a property of one branch and not of
-    the product: on ``main`` that diff is everything the installers have done since
-    2026-09-09, so it went red the moment the PR landed on a main that had moved, and it
-    said so about whichever unrelated commit happened to touch a ``-match`` line. CI never
-    reported it because ``actions/checkout`` is shallow there and the merge base is absent,
-    so ``requires_merge_base`` skipped the whole thing. What the assertions below keep is
-    the part that is checkable forever: each arm, each guard, and exactly one keep arm per
-    runtime per script -- a rewritten or duplicated arm still fails here.
-    """
+    """Keep arm must sit beside existing status arms, one per runtime per script, without rewriting them."""
     setup_sh = (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8")
     setup_ps1 = (PACKAGE_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
 
-    # The keep arm this PR added: one per runtime per script, and guarded with each shell's
-    # own test rather than, say, both scripts growing the sh spelling.
+    # One keep arm per runtime per script, each in its own shell's syntax.
     sh_keeps = [line for line in setup_sh.splitlines() if KEEP_TOKEN in line]
     ps1_keeps = [line for line in setup_ps1.splitlines() if KEEP_TOKEN in line]
     # llama.cpp, whisper.cpp and audio.cpp.
@@ -694,7 +548,6 @@ def test_the_keep_arm_sits_beside_the_status_arms_it_did_not_replace():
     assert all("grep -Fq" in line for line in sh_keeps), sh_keeps
     assert all("-match" in line for line in ps1_keeps), ps1_keeps
 
-    # The llama arms and node's grep are still exactly where they were.
     assert 'grep -Fq "already matches" "$_PREBUILT_LOG"' in setup_sh
     assert 'grep -Fq "already matches" "$_NODE_LOG"' in setup_sh
     assert f'$prebuiltOutput -match "{MATCH_TOKEN}"' in setup_ps1
@@ -704,15 +557,12 @@ def test_the_keep_arm_sits_beside_the_status_arms_it_did_not_replace():
         ), "llama, whisper and audio.cpp each have exactly one keep arm"
 
 
-# ══ Part 2: the status contract, executed in both shells ═════════════════════════════
-
 _SH_WHISPER_START = 'if [ "$_WHISPER_STATUS" -eq 0 ]; then'
 _PS1_WHISPER_START = "if ($whisperExit -eq 0) {"
 _SH_LLAMA_START = 'if [ "$_PREBUILT_STATUS" -eq 0 ]; then'
 _PS1_LLAMA_START = "if ($prebuiltExit -eq 0) {"
 
-# Stand-ins for the setup helpers the blocks call. `step` echoes both arguments, which is what
-# distinguishes "llama reported the keep" from "whisper reported it".
+# `step` echoes both args to tell llama's keep from whisper's.
 _SH_HARNESS = """
 set -u
 C_OK=""; C_WARN=""; C_ERR=""
@@ -774,8 +624,7 @@ def _sh_block(name: str) -> str:
 def _ps1_block(name: str) -> str:
     setup_ps1 = (PACKAGE_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
     if name == "whisper":
-        # The exit-2 arm ends with the same words followed by "} else {", so the trailing
-        # newline is what pins this to the final closing brace of the chain.
+        # The exit-2 arm ends with the same words then '} else {', so the newline pins the final brace.
         return _extract_block(setup_ps1, _PS1_WHISPER_START, 'remain available" "Yellow"\n    }\n')
     return _extract_block(setup_ps1, _PS1_LLAMA_START, 'retry setup."\n        }')
 
@@ -832,8 +681,7 @@ def _run_ps1(
 ):
     script_path = tmp_path / name
     script_path.write_text(script, encoding = "utf-8")
-    # run_pwsh, not subprocess.run: a pwsh killed at startup returns rc -6 with empty stdout,
-    # which this file would otherwise report as setup.ps1 choosing the wrong label.
+    # run_pwsh: a pwsh killed at startup returns -6 with empty stdout.
     return run_pwsh(
         [
             shutil.which("pwsh") or "pwsh",
@@ -857,8 +705,7 @@ requires_bash = pytest.mark.skipif(
     reason = "setup.sh is the POSIX installer",
 )
 
-# One table, run in both shells: `output` is what the installer printed, `label` what the user
-# must be told. The last three rows are the traps, where the two disagree.
+# `output` is what the installer printed, `label` what the user sees; last three rows disagree.
 STATUS_CASES = [
     (
         "up-to-date",
@@ -1154,13 +1001,8 @@ def test_the_installer_emits_exactly_the_substrings_the_scripts_grep(tmp_path, m
     ), result.stdout
 
 
-# An untrustworthy release is an ANSWER, not an unavailability
-# The keep arm exists because a lookup that could not answer says nothing about the tree on disk.
-# A manifest digest disagreeing with the checksum index is the opposite: the release was fetched
-# and found untrustworthy. Reporting "update unavailable, existing prebuilt kept" over it turns a
-# tamper signal into a routine offline notice, and setup then paints it yellow rather than red.
-# Unit coverage of the exception TYPE is not enough here: with the re-raise removed the whole
-# install suite stayed green and only an end-to-end run noticed, which is why this drives the CLI.
+# A digest mismatch is a tamper signal, not an offline notice; only an end-to-end CLI run caught
+# the removed re-raise.
 def test_a_tampered_release_is_not_reported_as_an_unavailable_update(tmp_path, monkeypatch, capsys):
     host = _host("linux", "x64")
     install_dir = _seed_install(tmp_path, host)
@@ -1178,7 +1020,6 @@ def test_a_tampered_release_is_not_reported_as_an_unavailable_update(tmp_path, m
     assert code != M.EXIT_SUCCESS, f"a tampered release reported success\n{log}"
     assert KEEP_TOKEN not in log, f"the keep arm swallowed an integrity failure\n{log}"
     assert "tampered" in log, f"the reason never reached the user\n{log}"
-    # Refusing to bless it must not damage the install that is already there.
     assert _tree_snapshot(install_dir) == before, "the intact tree moved"
 
 

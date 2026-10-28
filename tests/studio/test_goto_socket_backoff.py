@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""goto_with_socket_backoff retries a navigation only on net::ERR_NO_BUFFER_SPACE.
-
-The Windows UI lane failed the update banner suite on its first navigation with
-`Page.goto: net::ERR_NO_BUFFER_SPACE`, the runner running out of socket buffers,
-which says nothing about the app. Anything else still fails at once.
-"""
+"""goto_with_socket_backoff retries only on net::ERR_NO_BUFFER_SPACE; any other error fails at once."""
 
 from __future__ import annotations
 

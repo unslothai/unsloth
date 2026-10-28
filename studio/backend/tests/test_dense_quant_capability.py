@@ -127,11 +127,7 @@ def test_the_probes_never_switch_the_current_device(name):
 
 
 def test_the_capability_is_published_and_never_memoised():
-    """`/api/system` carries the bit, and the probe must not be pinned.
-
-    `dense_quant_host_capable` counts an UNPROBED scheme as usable, so an early yes can be undone by
-    a later load recording a kernel failure. Memoising would pin the optimistic answer forever.
-    """
+    """Do not memoise the dense-quant probe: an early yes would stay pinned after a later kernel failure."""
     src = (_BACKEND / "main.py").read_text(encoding = "utf-8")
     assert '"dense_quant_supported": _dense_quant_supported()' in src
     node = next(
@@ -143,17 +139,11 @@ def test_the_capability_is_published_and_never_memoised():
 
 
 def test_the_polled_route_never_imports_the_ml_stack():
-    """torch and torchao cost ~0.8s each and hold the GIL; /api/system is polled through startup.
-
-    The reader answers from `sys.modules` and a value the post-warm worker resolved, so a poll on a
-    cold backend imports nothing. `_await_hardware_detection` avoids the same stall.
-    """
+    """Polled /api/system reads sys.modules and a cached value; it must never import torch."""
     reader = _src("_dense_quant_supported")
     assert '"torch" in sys.modules' in reader and '"torchao" in sys.modules' in reader
-    # The reader itself must not reach the importing probe except behind that guard.
     assert "_probe_dense_quant_supported" not in reader
     src = (_BACKEND / "main.py").read_text(encoding = "utf-8")
-    # ...and something off the polled path has to resolve it, or the label never appears.
     assert "_refresh_dense_quant_capability()" in _src("_post_warm_background_work")
 
 
@@ -259,27 +249,16 @@ def test_an_incapable_host_never_publishes_a_ladder():
 
 
 def test_the_warm_refresh_honours_the_torch_kill_switch():
-    """UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1 must keep the stack cold.
-
-    `start_background_warm` is then a no-op and `join_background_warm` returns at once, so the
-    post-warm worker reaches this point with torch unimported. Refreshing there would import torch
-    and torchao and defeat the switch, so it is gated on torch already being up.
-    """
+    """The warm refresh is gated on torch already loaded, so UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1 holds."""
     body = _src("_post_warm_background_work")
     refresh = body.index("_refresh_dense_quant_capability()")
     guard = body.rindex('"torch" in sys.modules', 0, refresh)
     assert guard != -1
-    # The guard must not swallow the rest of the worker.
     assert "_start_linked_folder_auto_sync" in body[refresh:]
 
 
 def test_the_polled_ladder_never_runs_the_allocating_smoke_probe(monkeypatch):
-    """The ladder on the polled route reads ``_SMOKE_CACHE`` and nothing else.
-
-    ``_scheme_supported`` spawns the up-to-180s child smoke probe, or allocates in this process when
-    it cannot, and an allocator failure is deliberately not cached, so reaching it from
-    ``/api/system`` would repeat the work on every poll.
-    """
+    """The polled ladder reads only _SMOKE_CACHE; an allocating smoke probe would repeat on every poll."""
     from core.inference import diffusion_transformer_quant as tq
 
     def _never(*_a, **_k):
@@ -290,7 +269,6 @@ def test_the_polled_ladder_never_runs_the_allocating_smoke_probe(monkeypatch):
     monkeypatch.setattr(tq, "_capability", lambda ordinal = None: (8, 9))
     monkeypatch.setattr(tq, "_smoke_cache_device_key", lambda _device, ordinal = None: "cuda:0")
     monkeypatch.setattr(tq, "_SMOKE_CACHE", {("fp8", "cuda:0"): False})
-    # An unprobed scheme counts as usable; a probed failure does not.
     assert tq.auto_scheme_candidates_cached(object()) == ("int8",)
     monkeypatch.setattr(tq, "_SMOKE_CACHE", {})
     assert tq.auto_scheme_candidates_cached(object()) == ("int8", "fp8")

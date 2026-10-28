@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import vm from "node:vm";
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 
 import { stripSearchImageTokens } from "../src/features/chat/search-images/search-images.ts";
 import {
@@ -110,11 +110,15 @@ function loadExporters(
     listStoredChatMessages: async () => stored,
     getStoredChatThread: async (id: string) =>
       threads.find((thread) => thread.id === id),
+    resolveChatInstructions: async () => "",
+    threadScopedDefault: () => undefined,
+    settleThreadScopedSettingsForCopy: async () => {},
     buildNamedConversationsMarkdown,
     CONVERSATION_MARKDOWN_MIME_TYPE,
     canMergeConversationExport,
     planChatItemSources,
     ...liveThreadHead,
+    savedBranchHead: () => undefined,
     orderByParentChain,
     createConversationMarkdownBuilder,
     createConversationMarkdownExporter,
@@ -126,6 +130,7 @@ function loadExporters(
     csvDocument,
     CSV_MIME,
     exportTs: () => "ts",
+    conversationBasename: async () => "conversation",
     downloadBlob: async (body: string) => {
       downloads.push(body);
     },
@@ -199,7 +204,6 @@ test("Markdown leaves out the reply a regeneration replaced", async () => {
   });
 });
 
-// Mid-switch the branch on screen is briefly an empty list, which is no opinion about which reply is showing.
 test("Markdown still exports while the switched-to chat is loading", async () => {
   const expected = "## User\n\nName one fruit.\n\n## Assistant\n\nPears.\n";
   const expectedExport = `<!-- unsloth-chat-v1:[24,20] -->\n\n${expected}`;
@@ -210,7 +214,7 @@ test("Markdown still exports while the switched-to chat is loading", async () =>
   });
 });
 
-// CSV must not follow markdown onto one branch: it is the export used to compare versions.
+// CSV writes all branches: it is the export used to compare versions.
 test("CSV still writes both replies while markdown writes one", async () => {
   const downloads: string[] = [];
   const exporters = loadExporters(regenerated, downloads, []);

@@ -100,7 +100,6 @@ def fake_binary(tmp_path, monkeypatch):
     real_popen = srv.subprocess.Popen
 
     def launch(command, *args, **kwargs):
-        # The fake runs as the direct child (no shell wrapper), so stop() terminates the server itself.
         if command and command[0] == str(binary):
             command = [sys.executable, str(script), *command[1:]]
         return real_popen(command, *args, **kwargs)
@@ -122,7 +121,6 @@ def test_ready_only_when_our_model_id_is_listed(fake_binary, tmp_path, monkeypat
         server.stop()
     assert not server.alive()
     assert not server._config_dir.exists()
-    # A responder that does not list this launch's id is not our child: never treated as ready.
     with pytest.raises(srv.AudioCppUnavailableError, match = "did not start in time"):
         srv.AudioCppServer.start(model, str(tmp_path / "wrong-id.gguf"))
 
@@ -155,7 +153,6 @@ def test_cancel_closes_the_socket_mid_request(fake_binary, tmp_path):
             )
         # Returns on the cancel, not on the server's reply or the timeout (Windows never woke the recv).
         assert time.monotonic() - started < 5
-        # The server is untouched by the client-side cancel and still serves.
         _ctype, data = server.post_json(
             "/v1/audio/speech", {"model": server.model_id, "input": "hi"}
         )
@@ -196,7 +193,6 @@ def test_cancelled_transcription_stops_the_busy_server(fake_binary, tmp_path):
         threading.Timer(0.3, cancel.set).start()
         with side._lock, pytest.raises(SttTranscriptionCancelledError):
             side._post_details(tmp_path / "a.wav", "slow", cancel, {})
-        # The child still decoding the abandoned clip is gone, so the next load starts a fresh one.
         assert side._server is None and not server.alive()
     finally:
         server.stop()
@@ -204,7 +200,7 @@ def test_cancelled_transcription_stops_the_busy_server(fake_binary, tmp_path):
 
 def test_threads_budget_reaches_the_command_line(fake_binary, tmp_path, monkeypatch):
     seen = {}
-    launch = srv.subprocess.Popen  # the fixture's launcher
+    launch = srv.subprocess.Popen
 
     def spy(command, *args, **kwargs):
         seen["command"] = command
@@ -223,7 +219,7 @@ def test_cuda_graphs_are_off_only_for_families_that_wedge_with_them(
     fake_binary, tmp_path, monkeypatch
 ):
     seen = []
-    launch = srv.subprocess.Popen  # the fixture's launcher
+    launch = srv.subprocess.Popen
 
     def spy(command, *args, **kwargs):
         seen.append(kwargs["env"])
@@ -239,7 +235,7 @@ def test_cuda_graphs_are_off_only_for_families_that_wedge_with_them(
 
 def test_gpu_runs_cap_host_threads_unless_the_user_set_a_budget(fake_binary, tmp_path, monkeypatch):
     seen = []
-    launch = srv.subprocess.Popen  # the fixture's launcher
+    launch = srv.subprocess.Popen
 
     def spy(command, *args, **kwargs):
         seen.append(command)
@@ -248,7 +244,7 @@ def test_gpu_runs_cap_host_threads_unless_the_user_set_a_budget(fake_binary, tmp
     monkeypatch.setattr(srv.subprocess, "Popen", spy)
     monkeypatch.delenv("UNSLOTH_CPU_THREADS", raising = False)
     monkeypatch.setattr(srv.os, "cpu_count", lambda: 192)
-    srv.AudioCppServer.start(KOKORO, str(tmp_path / "m.gguf")).stop()  # the fixture's CPU backend
+    srv.AudioCppServer.start(KOKORO, str(tmp_path / "m.gguf")).stop()
     monkeypatch.setattr(srv, "select_backend", lambda binary, force_cpu: "cuda")
     srv.AudioCppServer.start(KOKORO, str(tmp_path / "m.gguf")).stop()
     monkeypatch.setenv("UNSLOTH_CPU_THREADS", "32")
@@ -268,6 +264,7 @@ def test_a_custom_build_launches_on_a_backend_it_was_compiled_with(tmp_path, mon
     monkeypatch.setattr(
         srv.shutil, "which", lambda name: "/usr/bin/nvidia-smi" if name == "nvidia-smi" else None
     )
+    monkeypatch.setattr(srv, "_gpu_vendors", lambda: {"nvidia"})
 
     def build(name, backends):
         binary = tmp_path / name / "audiocpp_server"
@@ -279,8 +276,244 @@ def test_a_custom_build_launches_on_a_backend_it_was_compiled_with(tmp_path, mon
     assert srv.select_backend(build("cpu", "cpu"), False) == "cpu"
     assert srv.select_backend(build("vulkan", "cpu,vulkan"), False) == "vulkan"
     assert srv.select_backend(build("cuda", "cpu,cuda"), False) == "cuda"
-    # A build too old to report keeps the host guess.
     assert srv.select_backend(build("silent", ""), False) == "cuda"
+
+
+def _recorded_build(tmp_path, backend):
+    binary = tmp_path / backend / srv.BINARY_NAME
+    binary.parent.mkdir()
+    binary.write_bytes(b"")
+    (binary.parent / srv.INSTALL_RECORD).write_text(json.dumps({"backend": backend}))
+    return str(binary)
+
+
+@pytest.mark.parametrize(
+    "backend, vendors, expected",
+    [
+        # CUDA_VISIBLE_DEVICES="" or a container without the NVIDIA device nodes.
+        ("cuda", set(), "cpu"),
+        ("cuda", {"nvidia"}, "cuda"),
+        # Nothing detected at all: an unknown host keeps the build's backend.
+        ("cuda", None, "cuda"),
+        ("hip", {"nvidia"}, "cpu"),
+        ("hip", {"amd"}, "hip"),
+        ("vulkan", set(), "vulkan"),
+        ("metal", {"apple"}, "metal"),
+    ],
+)
+def test_a_gpu_build_launches_on_cpu_when_its_gpu_is_not_visible(
+    tmp_path, monkeypatch, backend, vendors, expected
+):
+    monkeypatch.delenv("UNSLOTH_AUDIO_CPP_BACKEND", raising = False)
+    monkeypatch.setattr(srv, "_gpu_vendors", lambda: vendors)
+    assert srv.select_backend(_recorded_build(tmp_path, backend), False) == expected
+
+
+def test_an_explicit_backend_or_cpu_request_is_not_second_guessed(tmp_path, monkeypatch):
+    monkeypatch.setattr(srv, "_gpu_vendors", lambda: set())
+    binary = _recorded_build(tmp_path, "cuda")
+    monkeypatch.setenv("UNSLOTH_AUDIO_CPP_BACKEND", "CUDA")
+    assert srv.select_backend(binary, False) == "cuda"
+    assert srv.select_backend(binary, True) == "cpu"
+    monkeypatch.setattr(srv, "_gpu_vendors", lambda: {"nvidia"})
+    monkeypatch.delenv("UNSLOTH_AUDIO_CPP_BACKEND")
+    assert srv.select_backend(binary, True) == "cpu"
+
+
+def test_nvidia_smi_on_path_is_not_a_visible_gpu(tmp_path, monkeypatch):
+    """No install record: nvidia-smi stays on PATH when CUDA_VISIBLE_DEVICES hides every GPU."""
+    monkeypatch.delenv("UNSLOTH_AUDIO_CPP_BACKEND", raising = False)
+    monkeypatch.setattr(srv.sys, "platform", "linux")
+    monkeypatch.setattr(
+        srv.shutil, "which", lambda name: "/usr/bin/nvidia-smi" if name == "nvidia-smi" else None
+    )
+    monkeypatch.setattr(srv, "compiled_backends", lambda binary: frozenset({"cpu", "cuda"}))
+    binary = str(tmp_path / srv.BINARY_NAME)
+    monkeypatch.setattr(srv, "_gpu_vendors", lambda: set())
+    assert srv.select_backend(binary, False) == "cpu"
+    monkeypatch.setattr(srv, "_gpu_vendors", lambda: None)
+    assert srv.select_backend(binary, False) == "cuda"
+
+
+def test_gpu_vendor_probe_failure_reads_as_unknown(monkeypatch):
+    from utils import llama_cpp_path_settings
+
+    def boom():
+        raise OSError("sysfs unreadable")
+
+    monkeypatch.setattr(llama_cpp_path_settings, "host_gpu_vendors", boom)
+    assert srv._gpu_vendors() is None
+
+
+@pytest.mark.parametrize(
+    "env, expected",
+    [
+        # With no HIP or ROCR mask set, CUDA_VISIBLE_DEVICES stands in for AMD too.
+        ({"CUDA_VISIBLE_DEVICES": ""}, set()),
+        ({"CUDA_VISIBLE_DEVICES": "-1", "HIP_VISIBLE_DEVICES": "0"}, {"amd"}),
+        ({"HIP_VISIBLE_DEVICES": ""}, {"nvidia"}),
+        ({"CUDA_VISIBLE_DEVICES": "0"}, {"nvidia", "amd"}),
+        ({}, {"nvidia", "amd"}),
+    ],
+)
+def test_visibility_masks_hide_vendors_found_by_driver_dlls(monkeypatch, env, expected):
+    """Windows detection only globs driver DLLs, so the masks are applied on top of it."""
+    from utils import llama_cpp_path_settings
+
+    for name in ("CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
+        monkeypatch.delenv(name, raising = False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(llama_cpp_path_settings, "host_gpu_vendors", lambda: {"nvidia", "amd"})
+    assert srv._gpu_vendors() == expected
+
+
+def test_a_masked_windows_gpu_build_launches_on_cpu(tmp_path, monkeypatch):
+    from utils import llama_cpp_path_settings
+
+    monkeypatch.delenv("UNSLOTH_AUDIO_CPP_BACKEND", raising = False)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+    monkeypatch.setattr(llama_cpp_path_settings, "host_gpu_vendors", lambda: {"nvidia"})
+    binary = _recorded_build(tmp_path, "cuda")
+    assert srv.select_backend(binary, False) == "cpu"
+    monkeypatch.setattr(llama_cpp_path_settings, "host_gpu_vendors", lambda: None)
+    assert srv.select_backend(binary, False) == "cuda"
+
+
+_EXITS_WITH = textwrap.dedent(
+    """
+    import sys
+    print({output!r}, flush=True)
+    sys.exit(1)
+    """
+)
+
+
+def test_a_gpu_init_failure_says_so_instead_of_blaming_the_model(
+    fake_binary, tmp_path, monkeypatch
+):
+    (tmp_path / "fake_server.py").write_text(
+        _EXITS_WITH.format(
+            output = "ggml_cuda_init: failed to initialize CUDA: no CUDA-capable device is detected\n"
+            "audiocpp_server failed: CUDA backend requested but registry 'CUDA' has no device 0"
+        ),
+        encoding = "utf-8",
+    )
+    monkeypatch.setattr(srv, "select_backend", lambda binary, force_cpu: "cuda")
+    with pytest.raises(srv.AudioCppUnavailableError) as raised:
+        srv.AudioCppServer.start(CANARY, str(tmp_path / "m.gguf"))
+    message = str(raised.value)
+    assert "incomplete" not in message
+    assert "CUDA backend" in message and "Unsloth Studio" in message
+    assert "UNSLOTH_AUDIO_CPP_BACKEND=cpu" in message
+    assert "has no device 0" in message
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "gguf: unknown tensor type 42",
+        # A CUDA build on the CPU backend logs its CUDA init failure before the real one.
+        "ggml_cuda_init: failed to initialize CUDA: no CUDA-capable device is detected\n"
+        "audiocpp_server failed: unknown tensor type 42",
+    ],
+)
+def test_other_early_exits_keep_pointing_at_the_model(fake_binary, tmp_path, output):
+    (tmp_path / "fake_server.py").write_text(_EXITS_WITH.format(output = output), encoding = "utf-8")
+    with pytest.raises(srv.AudioCppUnavailableError) as raised:
+        srv.AudioCppServer.start(CANARY, str(tmp_path / "m.gguf"))
+    message = str(raised.value)
+    assert "the model file may be incomplete or unsupported by this build" in message
+    assert "unknown tensor type 42" in message
+
+
+_GPU_FAILS = textwrap.dedent(
+    """
+    import json, sys
+    if json.load(open(sys.argv[sys.argv.index("--config") + 1], encoding="utf-8"))["backend"] != "cpu":
+        print({output!r}, flush=True)
+        sys.exit(1)
+    """
+)
+_NO_GPU = "ggml_cuda_init: failed to initialize CUDA: no CUDA-capable device is detected"
+
+
+def _backend_whose_gpu_fails(
+    tmp_path,
+    monkeypatch,
+    output,
+    preference = None,
+):
+    """The fake server exits with ``output`` unless launched on CPU."""
+    from core.inference import audio_cpp_backend as acb
+
+    (tmp_path / "fake_server.py").write_text(
+        _GPU_FAILS.format(output = output) + FAKE_SERVER, encoding = "utf-8"
+    )
+    starts = []
+
+    def select(binary, force_cpu):
+        starts.append(force_cpu)
+        return "cpu" if force_cpu else "cuda"
+
+    monkeypatch.setattr(srv, "select_backend", select)
+    monkeypatch.setattr(acb.audio_cpp_files, "materialize", lambda model: str(tmp_path / "m.gguf"))
+    monkeypatch.delenv("UNSLOTH_AUDIO_DEVICE", raising = False)
+    return acb.AudioCppBackend(preference), starts
+
+
+def test_gpu_unavailable_start_retries_once_on_cpu(fake_binary, tmp_path, monkeypatch):
+    backend, starts = _backend_whose_gpu_fails(tmp_path, monkeypatch, _NO_GPU)
+    try:
+        backend._start_server(KOKORO)
+        assert starts == [False, True]
+        assert (backend.device, backend._device_fallback, backend._server.backend) == (
+            "cpu",
+            "cpu",
+            "cpu",
+        )
+        backend._start_server(KOKORO)
+        assert starts == [False, True, True]
+        backend._model = KOKORO
+        fields = backend.runtime_fields()
+        assert (fields["audio_cpu"], fields["audio_device_fallback"]) == (True, "cpu")
+    finally:
+        backend._stop_server_locked()
+
+
+@pytest.mark.parametrize(
+    "output, preference, code",
+    [
+        (_NO_GPU, "gpu", "gpu_unavailable"),
+        ("failed to allocate CUDA0 backend weight buffer", None, "out_of_memory"),
+    ],
+)
+def test_pinned_gpu_or_oom_does_not_retry(
+    fake_binary, tmp_path, monkeypatch, output, preference, code
+):
+    from core.inference.audio_cpp_failures import failure_of
+
+    backend, starts = _backend_whose_gpu_fails(tmp_path, monkeypatch, output, preference)
+    with pytest.raises(srv.AudioCppUnavailableError) as raised:
+        backend._start_server(KOKORO)
+    assert starts == [False] and backend._device_fallback is None
+    assert failure_of(raised.value).code == code
+
+
+def test_cancelled_start_does_not_retry(monkeypatch):
+    from core.inference import audio_cpp_backend as acb
+    from core.inference.audio_cpp_failures import AudioCppFailure, attach_failure
+
+    backend = acb.AudioCppBackend("auto")
+    gpu = attach_failure(
+        srv.AudioCppUnavailableError("x"), AudioCppFailure("gpu_unavailable", "m", 503)
+    )
+    assert backend._may_retry_on_cpu(gpu, threading.Event())
+    cancelled = threading.Event()
+    cancelled.set()
+    assert not backend._may_retry_on_cpu(gpu, cancelled)
+    monkeypatch.setattr("utils.process_lifetime.is_process_shutting_down", lambda: True)
+    assert not backend._may_retry_on_cpu(gpu, None)
 
 
 def test_stop_survives_a_server_slow_to_exit_after_sigkill(tmp_path):

@@ -12,12 +12,12 @@ import {
   useTrainingActions,
 } from "@/features/training";
 import { translate, useT } from "@/i18n";
-import { PlayIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useEffect, useState } from "react";
 import { ChartsSection } from "./sections/charts-section";
 import { ProgressSection } from "./sections/progress-section";
 import { mapRunConfigToOverride } from "./sections/run-config-override";
+import { PlayIcon } from "lucide-react";
 
 type StudioT = ReturnType<typeof useT>;
 
@@ -179,7 +179,7 @@ export function HistoricalTrainingView({
 
   if (loading) {
     return (
-      <div className="rounded-xl border bg-card p-8 text-sm text-muted-foreground">
+      <div className="rounded-2xl border bg-card p-8 text-sm text-muted-foreground">
         {t("studio.history.loadingRun")}
       </div>
     );
@@ -187,7 +187,7 @@ export function HistoricalTrainingView({
 
   if (error || !detail) {
     return (
-      <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-8 text-sm text-red-500">
+      <div className="rounded-2xl border border-destructive/30 bg-destructive/5 p-8 text-sm text-red-500">
         {error ?? t("studio.history.runNotFound")}
       </div>
     );
@@ -211,7 +211,7 @@ export function HistoricalTrainingView({
             {resuming ? (
               <Spinner className="size-3.5" />
             ) : (
-              <HugeiconsIcon icon={PlayIcon} className="size-3.5" />
+              <PlayIcon className="size-3.5" />
             )}
             {stopRequested
               ? t("studio.training.stopping")
@@ -222,6 +222,7 @@ export function HistoricalTrainingView({
         </div>
       )}
       <ProgressSection
+        runId={runId}
         data={viewData}
         isHistorical={true}
         configOverride={configOverride}

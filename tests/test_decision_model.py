@@ -6,6 +6,7 @@ import json
 import math
 import sys
 import types
+import warnings
 from pathlib import Path
 
 import pytest
@@ -13,10 +14,16 @@ from real_accelerator import has_real_cuda
 
 torch = pytest.importorskip("torch")
 
+import unsloth
+
+# The torch backend: on Apple Silicon unsloth serves decision models from decision_mlx instead.
+if unsloth._IS_MLX:
+    pytest.skip("the torch backend", allow_module_level = True)
+
 from transformers import TrainerCallback, TrainingArguments
 
 from unsloth import DecisionTrainer, FastDecisionModel
-from unsloth.models import decision
+from unsloth.models import _decision_common, decision
 from unsloth.models.decision import (
     DecisionDataCollator,
     DecisionDataError,
@@ -24,6 +31,9 @@ from unsloth.models.decision import (
     _laya,
     _target,
 )
+
+# torch < 2.3 has only the CUDA scaler.
+GRAD_SCALER = getattr(torch.amp, "GradScaler", None) or torch.cuda.amp.GradScaler
 
 laya = _laya()
 # Every word the states, questions and options use, so the toy task below is learnable.
@@ -171,7 +181,7 @@ def test_laya_is_the_copy_vendored_with_unsloth(monkeypatch, fresh_laya):
 
 
 def test_missing_vendored_laya_is_a_clear_error(monkeypatch, tmp_path, fresh_laya):
-    monkeypatch.setattr(decision, "_VENDORED_LAYA", tmp_path / "laya" / "__init__.py")
+    monkeypatch.setattr(_decision_common, "_VENDORED_LAYA", tmp_path / "laya" / "__init__.py")
     with pytest.raises(ImportError, match = "Unsloth: decision models need laya"):
         decision._laya()
 
@@ -419,10 +429,15 @@ def test_train_calibrate_save_and_serve(checkpoint, tmp_path, lora):
     encoder_config = (checkpoint / "encoder" / "config.json").read_bytes()
     assert (tmp_path / "out" / "encoder" / "config.json").read_bytes() == encoder_config
     agent = laya.load(str(tmp_path / "out"), device = "cpu")
-    assert agent.predict("the server is down again", QUESTIONS)["answers"]["team"]["choice"] in (
-        "outage",
-        "billing",
-    )
+    served = agent.predict("the server is down again", QUESTIONS)["answers"]
+    assert served["team"]["choice"] in ("outage", "billing")
+    # predict() answers like the served checkpoint, from the model in memory.
+    ours = FastDecisionModel.predict(model, tokenizer, "the server is down again", QUESTIONS)
+    assert set(ours) == set(QUESTIONS)
+    for name, answer in served.items():
+        assert ours[name]["type"] == answer["type"]
+        for key, value in (answer.get("probabilities") or {}).items():
+            assert ours[name]["probabilities"][key] == pytest.approx(value, abs = 0.02)
 
     FastDecisionModel.for_inference(model)
     assert not model.training
@@ -875,7 +890,7 @@ def test_rope_parameters_build_the_trained_rope_on_every_transformers(tmp_path):
     assert not torch.allclose(outputs[0], outputs[2], atol = 1e-2)
 
 
-TINY_QWEN3_5 = "trl-internal-testing/tiny-Qwen3_5ForConditionalGeneration"
+TINY_QWEN3_5 = "trl-internal-testing/tiny-Qwen3_5ForConditionalGeneration-NoThink"
 CLEF_HEAD = {
     "hidden_size": 16,
     "width": 32,
@@ -1009,6 +1024,7 @@ def test_clef_metrics_score_in_the_runs_batch_size(monkeypatch):
         items,
         pad_token_id,
         batch_size = 4,
+        processor = None,
     ):
         seen.append(batch_size)
         raise StopIteration
@@ -1044,8 +1060,10 @@ def test_clef_loads_scores_like_cloudflares_model_and_trains(clef_checkpoint, tm
         ours_same_dtype, _ = model(batch["input_ids"], batch["attention_mask"], batch["records"])
         model.head = fp32_head
     for row, z in enumerate(theirs):
-        assert torch.allclose(ours_same_dtype[row, : len(z)].float(), z, atol = 2e-2, rtol = 2e-2)
-        assert torch.allclose(ours[row, : len(z)].float(), z, atol = 0.1)
+        same = ours_same_dtype[row, : len(z)].float()
+        assert torch.allclose(same, z, atol = 2e-2, rtol = 2e-2), (row, (same - z).abs().max(), same, z)
+        fp32 = ours[row, : len(z)].float()
+        assert torch.allclose(fp32, z, atol = 0.1), (row, (fp32 - z).abs().max(), fp32, z)
 
     items, report = FastDecisionModel.build_dataset(_clef_rows(64), processor, model)
     assert report["skipped"] == 0 and len(items) == 64 and len(items[0]["targets"]) == 4
@@ -1077,7 +1095,7 @@ def test_clef_loads_scores_like_cloudflares_model_and_trains(clef_checkpoint, tm
     )
     trainer.train()
     after = FastDecisionModel.evaluate(model, processor, holdout)
-    assert min(losses[-5:]) < losses[0] and after["loss"] < before["loss"]
+    assert min(losses[-5:]) < losses[0] and after["loss"] < before["loss"], (losses, before, after)
     calibration = FastDecisionModel.calibrate(model, processor, holdout)
     assert "accuracy" in calibration
     # Fitted to the gold labels, so the calibrated confidence tracks being right.
@@ -1105,15 +1123,30 @@ def test_clef_loads_scores_like_cloudflares_model_and_trains(clef_checkpoint, tm
         trained, _ = model(batch["input_ids"], batch["attention_mask"], batch["records"])
         again, _ = reloaded(batch["input_ids"], batch["attention_mask"], batch["records"])
         theirs = released(batch)[0]
-    # Saved in bf16, so the reload rounds the trained weights.
-    # Compared as served probabilities: the folded head is trained / folded, and a small folded
-    # temperature would magnify bf16 rounding if the logits were compared directly.
+    # bf16 reload rounding grows with the per-run logit scale, so the bound is relative (10 B200 runs
+    # peaked at 1.6%); a fold left out or doubled is off by >= 20%.
     mask = trained > -1e3
-    served = torch.softmax((trained / folded).masked_fill(~mask, -1e4), -1)
-    reloaded_served = torch.softmax(again.masked_fill(~mask, -1e4), -1)
-    assert torch.allclose(served, reloaded_served, atol = 0.02)
+    expected = (trained / folded).float()[mask]
+    error = (again.float()[mask] - expected).abs().max().item()
+    scale = expected.abs().max().item()
+    assert error <= 0.03 * scale + 0.05, (error, scale, folded)
     for row, z in enumerate(theirs):
-        assert int(z.argmax()) == int(again[row, : len(z)].argmax())
+        assert int(z.argmax()) == int(again[row, : len(z)].argmax()), (row, z, again[row, : len(z)])
+    # predict() serves the same calibrated answer from memory, the merged reload and the adapters.
+    state = "the server is down again"
+    ours = FastDecisionModel.predict(model, processor, state, QUESTIONS)
+    merged = FastDecisionModel.predict(reloaded, processor, state, QUESTIONS)
+    model.save_pretrained(str(tmp_path / "adapters"))
+    from_adapters, _ = FastDecisionModel.from_pretrained(
+        str(tmp_path / "adapters"), max_seq_length = 512
+    )
+    assert from_adapters.decision_config["base_model"] == str(clef_checkpoint)
+    adapters = FastDecisionModel.predict(from_adapters, processor, state, QUESTIONS)
+    for name in QUESTIONS:
+        for other in (merged, adapters):
+            assert other[name]["type"] == ours[name]["type"]
+            for key, value in (ours[name].get("probabilities") or {}).items():
+                assert other[name]["probabilities"][key] == pytest.approx(value, abs = 0.03)
 
 
 @pytest.mark.skipif(not has_real_cuda(), reason = "the fast kernels need a CUDA device")
@@ -1383,8 +1416,12 @@ def test_clef_trains_in_float16_and_bfloat16(clef_checkpoint, tmp_path, dtype):
         callbacks = [Grads()],
     )
     assert trainer.args.fp16 is False and trainer.args.bf16 == (dtype == torch.bfloat16)
+    assert isinstance(trainer.accelerator.scaler, GRAD_SCALER) == (dtype == torch.float16)
     trainer.train()
-    assert grads and all(math.isfinite(loss) and math.isfinite(g) and g > 0 for loss, g in grads)
+    assert grads and all(math.isfinite(loss) for loss, _ in grads)
+    # The scaler skips the steps that overflow while it calibrates; they log a nan grad norm.
+    stepped = [g for _, g in grads if math.isfinite(g)]
+    assert len(stepped) * 2 >= len(grads) and all(g > 0 for g in stepped), grads
     assert math.isfinite(FastDecisionModel.evaluate(model, processor, items)["loss"])
 
 
@@ -1414,7 +1451,7 @@ def test_clef_calibration_fits_being_right_and_serves_through_the_head_temperatu
     )
 
 
-def test_clef_autocasts_only_in_bfloat16_and_never_on_the_float32_path(monkeypatch):
+def test_clef_autocasts_as_it_trains_and_never_on_the_float32_path(monkeypatch):
     model = torch.nn.Linear(1, 1)
     cuda = torch.device("cuda")
     monkeypatch.setattr(decision, "is_bfloat16_supported", lambda: True)
@@ -1422,9 +1459,148 @@ def test_clef_autocasts_only_in_bfloat16_and_never_on_the_float32_path(monkeypat
     model._unsloth_forced_float32 = True
     assert decision._clef_amp_dtype(model, cuda) is None
     model._unsloth_forced_float32 = False
+    # A T4: an fp16 model autocasts like its fp16 training, else its fp32 norms meet fp16 Linears.
     monkeypatch.setattr(decision, "is_bfloat16_supported", lambda: False)
+    assert decision._clef_amp_dtype(model, cuda) == torch.float16
+    model._unsloth_forced_float32 = True
     assert decision._clef_amp_dtype(model, cuda) is None
+    model._unsloth_forced_float32 = False
     assert decision._clef_amp_dtype(model, torch.device("cpu")) is None
+    # An XPU without native bf16 loads fp16, so it autocasts fp16 too.
+    xpu = torch.device("xpu")
+    assert decision._amp_dtype(xpu) == torch.float16
+    monkeypatch.setattr(decision, "is_bfloat16_supported", lambda: True)
+    assert decision._amp_dtype(xpu) == torch.bfloat16
+
+
+def test_clef_keeps_an_explicit_bf16_model_in_bf16_on_xpu(monkeypatch):
+    # The loaders keep an explicit bf16 request on an XPU without native bf16; autocast and the
+    # 4-bit compute dtype must follow it, never fp16 autocast over bf16 weights.
+    pytest.importorskip("transformers")
+    monkeypatch.setattr(decision, "is_bfloat16_supported", lambda: False)
+    xpu, cuda = torch.device("xpu"), torch.device("cuda")
+    model = torch.nn.Linear(1, 1).to(torch.bfloat16)
+    assert decision._clef_amp_dtype(model, xpu) == torch.bfloat16
+    assert decision._clef_amp_dtype(model, cuda) == torch.float16
+    assert decision._clef_amp_dtype(torch.nn.Linear(1, 1).half(), xpu) == torch.float16
+    model._unsloth_forced_float32 = True
+    assert decision._clef_amp_dtype(model, xpu) is None
+    monkeypatch.setattr(decision, "_device", lambda: xpu)
+    monkeypatch.setattr(decision, "xpu_keeps_explicit_bf16", lambda: True)
+    assert decision._clef_bnb_config(torch.bfloat16).bnb_4bit_compute_dtype == torch.bfloat16
+    assert decision._clef_bnb_config(None).bnb_4bit_compute_dtype == torch.float16
+    monkeypatch.setattr(decision, "_device", lambda: cuda)
+    assert decision._clef_bnb_config(torch.bfloat16).bnb_4bit_compute_dtype == torch.float16
+
+
+def test_a_clef_prompt_that_fits_exactly_is_not_truncated(monkeypatch):
+    # Serving (Studio's Decision API) and predict share this rule.
+    from unsloth.models import clef
+
+    def encode(
+        tokenizer,
+        record,
+        max_length,
+        processor = None,
+    ):
+        # The state needs `natural` tokens; anything over max_length is cut to fit.
+        return types.SimpleNamespace(input_ids = [0] * min(record["state"], max_length))
+
+    monkeypatch.setattr(clef, "encode_record", encode)
+    size = 16384
+
+    def truncated(natural):
+        encoded = encode(None, {"state": natural}, size)
+        return decision._clef_truncated(None, natural, {}, encoded, size)
+
+    assert (truncated(size - 1), truncated(size), truncated(size + 1)) == (False, False, True)
+
+
+@pytest.mark.parametrize("forced", [False, True])
+def test_clef_trains_under_the_autocast_it_evaluates_in(tmp_path, monkeypatch, forced):
+    # A previous trainer leaves fp16 in ACCELERATE_MIXED_PRECISION, which transformers 4.x reads.
+    monkeypatch.setenv("ACCELERATE_MIXED_PRECISION", "fp16")
+    monkeypatch.setattr(decision, "_amp_dtype", lambda device: torch.bfloat16)
+    model = torch.nn.Linear(1, 1)
+    model._unsloth_forced_float32 = forced
+    args = _args(tmp_path)
+    assert not args.bf16 and not args.fp16
+    decision._clef_mixed_precision(model, args)
+    expected = "no" if forced else "bf16"
+    assert args.bf16 == (not forced) and not args.fp16, (args.bf16, args.fp16)
+    assert decision.os.environ["ACCELERATE_MIXED_PRECISION"] == expected
+    assert getattr(args, "mixed_precision", expected) == expected
+
+
+@pytest.mark.parametrize(
+    "case, wants",
+    [
+        ("float32_path", True),
+        ("deepspeed", False),
+        ("fsdp", False),
+        ("cpu", False),
+        ("not_forced", False),
+    ],
+)
+def test_clef_loss_scaler_only_on_the_float32_path(tmp_path, case, wants):
+    device = torch.device("cpu" if case == "cpu" else "cuda")
+    model = types.SimpleNamespace(
+        parameters = lambda: iter([types.SimpleNamespace(device = device)]),
+        _unsloth_forced_float32 = case != "not_forced",
+    )
+    args = _args(tmp_path)
+    if case == "deepspeed":
+        args.deepspeed = {"zero_optimization": {"stage": 2}}
+    if case == "fsdp":
+        args.fsdp = ["full_shard"]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # GradScaler warns when this host has no CUDA
+        scaler = decision._clef_loss_scaler(model, args)
+    assert isinstance(scaler, GRAD_SCALER) == wants
+
+
+def test_clef_loss_scaler_on_torch_without_torch_amp_grad_scaler(tmp_path, monkeypatch):
+    monkeypatch.delattr(torch.amp, "GradScaler", raising = False)
+    made = []
+    monkeypatch.setattr(torch.cuda.amp, "GradScaler", lambda: made.append(1) or "legacy")
+    for device, wants in (("cuda", "legacy"), ("xpu", None)):
+        model = types.SimpleNamespace(
+            parameters = lambda device = device: iter(
+                [types.SimpleNamespace(device = torch.device(device))]
+            ),
+            _unsloth_forced_float32 = True,
+        )
+        assert decision._clef_loss_scaler(model, _args(tmp_path)) == wants
+    assert made == [1]
+
+
+def test_clef_loss_scaler_unscales_once_before_clipping():
+    # A prior fp16 Trainer in the process can leave Accelerate on native fp16, which unscales itself.
+    calls = []
+    scaler = types.SimpleNamespace(unscale_ = lambda optimizer: calls.append(("unscale", optimizer)))
+    for native, wants in ((False, [("unscale", "opt"), "clip"]), (True, ["clip"])):
+        calls.clear()
+        accelerator = types.SimpleNamespace(
+            native_amp = native,
+            mixed_precision = "fp16" if native else "no",
+            clip_grad_norm_ = lambda p, m, n = 2: calls.append("clip"),
+        )
+        decision._install_clef_loss_scaler(accelerator, scaler, lambda: "opt")
+        assert accelerator.scaler is scaler
+        accelerator.clip_grad_norm_([], 1.0)
+        assert calls == wants
+
+
+def test_clef_trains_under_fp16_autocast_on_a_gpu_without_bf16(tmp_path, monkeypatch):
+    # A T4: evaluate and serving autocast fp16, so training does too.
+    monkeypatch.setenv("ACCELERATE_MIXED_PRECISION", "no")
+    monkeypatch.setattr(decision, "_amp_dtype", lambda device: torch.float16)
+    model = torch.nn.Linear(1, 1)
+    model._unsloth_forced_float32 = False
+    args = _args(tmp_path)
+    decision._clef_mixed_precision(model, args)
+    assert args.fp16 and not args.bf16, (args.bf16, args.fp16)
+    assert decision.os.environ["ACCELERATE_MIXED_PRECISION"] == "fp16"
 
 
 def test_clef_calibration_with_every_holdout_decision_from_one_row():

@@ -32,7 +32,7 @@ from utils.paths.path_utils import drop_appledouble_metadata, is_appledouble_met
 
 ModelType = Literal["text", "vision", "audio", "embeddings"]
 LocalModelSource = Literal[
-    "models_dir", "hf_cache", "lmstudio", "omlx", "ollama", "hermes", "custom"
+    "models_dir", "hf_cache", "lmstudio", "omlx", "ollama", "hermes", "custom", "unsloth"
 ]
 
 
@@ -358,8 +358,7 @@ def _local_transformers_can_chat(path: Path) -> Optional[bool]:
     if names and all(name in _BARE_TEXT_BACKBONE_ARCHITECTURES for name in names):
         return False
 
-    # The type alone decides: requiring the name shape too kept rows chat-capable when it did not fit,
-    # e.g.
+    # The type alone decides; requiring the name shape too kept non-fitting rows chat-capable.
     if normalized_type in _ENCODER_ONLY_MODEL_TYPES:
         return False
     return None
@@ -454,6 +453,9 @@ def _local_path_can_chat(path: str | Path, base_model: Optional[str] = None) -> 
     return _base_transformers_can_chat(base, revision, model_path) if base else None
 
 
+LOCAL_DELETE_SOURCES = frozenset({"models_dir", "lmstudio", "custom", "ollama", "hermes", "omlx"})
+
+
 def _capabilities_for_format(
     model_format: ModelFormat,
     source: str,
@@ -470,7 +472,7 @@ def _capabilities_for_format(
     return LocalModelCapabilities(
         can_train = can_train,
         can_chat = can_chat and is_complete,
-        can_delete = source == "hf_cache",
+        can_delete = source == "hf_cache" or source in LOCAL_DELETE_SOURCES,
         can_download = False,
         requires_variant = requires_variant,
         supports_lora = model_format in {"safetensors", "checkpoint"} and is_complete,
@@ -742,10 +744,13 @@ def _sum_file_sizes(paths) -> int:
 
 
 def _main_gguf_files(path: Path, *, include_symlinks: bool = False) -> list[Path]:
+    from core.inference.diffusion_lora import is_image_lora_file
     return [
         entry
         for entry in _iter_immediate_files(path, include_symlinks = include_symlinks)
-        if _is_main_gguf_filename(entry.name) and not is_appledouble_metadata(entry)
+        if _is_main_gguf_filename(entry.name)
+        and not is_appledouble_metadata(entry)
+        and not is_image_lora_file(entry)
     ]
 
 
@@ -922,6 +927,13 @@ def _classify_local_path(
             )
         )
 
+    if source != "hf_cache":
+        from core.inference.diffusion_lora import is_image_lora_file
+
+        # An image LoRA beside a config is an Images-page add-on, not this folder's weights.
+        files = [
+            f for f in files if f.suffix.lower() != ".safetensors" or not is_image_lora_file(f)
+        ]
     has_config = (scan_path / "config.json").is_file() if scan_path.is_dir() else False
     has_adapter_config = (
         (scan_path / "adapter_config.json").is_file() if scan_path.is_dir() else False

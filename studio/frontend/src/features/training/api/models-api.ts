@@ -28,8 +28,15 @@ interface BackendTrainingDefaults {
   max_steps?: number;
   save_steps?: number;
   eval_steps?: number;
+  early_stopping_patience?: number;
+  /** Drafter training block (same shape as the start request's `drafter`). */
+  drafter?: unknown;
   weight_decay?: number;
   random_seed?: number;
+  offload_layers?: number | "auto";
+  offload_vram_gb?: number | null;
+  offload_vram_gb_per_device?: Record<string, number | null> | (number | null)[] | null;
+  prefetch_depth?: number | "auto";
   vision_image_size?: number | string | null;
   packing?: boolean;
   train_on_completions?: boolean;
@@ -81,10 +88,9 @@ export interface ModelConfigResponse {
   is_embedding?: boolean;
   is_decision?: boolean;
   decision_checkpoints?: DecisionCheckpoint[] | null;
-  decision_layout?: "laya" | "clef" | null;
+  decision_layout?: DecisionLayout | null;
   is_audio: boolean;
-  // False when the repo's tokenizer_config.json was unreadable (gated, offline,
-  // upstream error), so is_audio false means unknown rather than "not audio".
+  // False when tokenizer_config.json was unreadable, so is_audio false means unknown.
   audio_type_known?: boolean;
   is_lora: boolean;
   base_model?: string | null;
@@ -93,9 +99,21 @@ export interface ModelConfigResponse {
   model_size_bytes?: number | null;
 }
 
+// laya: a Laya checkpoint. clef: Cloudflare Clef. llm: a text or vision LLM trained with a Clef decision head.
+export type DecisionLayout = "laya" | "clef" | "llm";
+
+/** Clef and LLM decision runs have an LLM backbone, so they take QLoRA and the recipe's context; Laya is 16-bit at 1024 tokens. */
+export function decisionLayoutHasLlmBackbone(
+  layout: DecisionLayout | null | undefined,
+): boolean {
+  return layout === "clef" || layout === "llm";
+}
+
 export interface ModelConfigRequestOptions {
   preferLocalCache?: boolean;
   localPath?: string | null;
+  // Ask for an LLM's defaults as a decision model; Laya and Clef are decision models anyway.
+  asDecision?: boolean;
 }
 
 export interface LocalModelInfo {
@@ -114,7 +132,7 @@ interface LocalModelListResponse {
   models: LocalModelInfo[];
 }
 
-/** GET /api/models/check-vision; pass the token so a gated/private VLM is not misread as non-vision. */
+/** Pass the token so a gated/private VLM is not misread as non-vision. */
 export async function checkVisionModel(
   modelName: string,
   hfToken?: string | null,
@@ -132,7 +150,6 @@ export async function checkVisionModel(
   return data.is_vision;
 }
 
-/** GET /api/models/check-embedding; pass the token for gated/private repos. */
 export async function checkEmbeddingModel(
   modelName: string,
   hfToken?: string | null,
@@ -142,7 +159,6 @@ export async function checkEmbeddingModel(
     headers: hubTokenHeader(hfToken?.trim() || null),
   });
   if (!response.ok) {
-    // Check failure (e.g. network error): default to non-embedding.
     return false;
   }
   const data = (await response.json()) as EmbeddingCheckResponse;
@@ -162,6 +178,9 @@ export async function getModelConfig(
   }
   if (options?.localPath) {
     params.set("local_path", options.localPath);
+  }
+  if (options?.asDecision) {
+    params.set("as_decision", "true");
   }
   const query = params.toString();
   const response = await authFetch(

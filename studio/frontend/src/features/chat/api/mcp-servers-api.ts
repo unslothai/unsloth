@@ -260,6 +260,17 @@ export function listMcpServerTools(
   return mcpRequest(`/${serverId}/tools`);
 }
 
+export interface ResearchMcpTool {
+  serverId: string;
+  serverName: string;
+  tool: string;
+  description: string;
+}
+
+export function listResearchMcpTools(): Promise<ResearchMcpTool[]> {
+  return mcpRequest("/research-tools");
+}
+
 export function testMcpServer(payload: {
   url: string;
   headers?: Record<string, string>;
@@ -297,8 +308,7 @@ export function encodeMcpStdioCommand(payload: McpStdioCommand): Promise<{
   });
 }
 
-// Bulk-import servers from a standard mcpServers JSON config (Claude Desktop, Cursor, Cline, VS
-// Code). The backend skips duplicates and reports per-entry errors instead of failing the batch.
+// Backend skips duplicates and reports per-entry errors instead of failing the batch.
 export function importMcpServers(
   config: unknown,
 ): Promise<McpServerImportResult> {

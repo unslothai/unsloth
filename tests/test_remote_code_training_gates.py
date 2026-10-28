@@ -1,8 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Gates that let a remote-code multimodal model reach its first training step:
-padding-free off for a fixed-signature forward, gradient checkpointing inherited by
-a wrapper, and text training through the wrapped language model. No downloads.
-"""
+"""Padding-free off for fixed-signature forwards, and text training via the wrapped language model."""
 
 import os
 
@@ -142,12 +139,7 @@ class _Wrapper(PreTrainedModel):
 
 
 def test_wrapper_refuses_gradient_checkpointing_on_its_own():
-    """The precondition, on this transformers version.
-
-    unsloth_zoo (#1448) wraps PreTrainedModel.gradient_checkpointing_enable to grant the
-    same inheritance, so the precondition is read off transformers' own method, which the
-    wrapper keeps as `_unsloth_original`.
-    """
+    """Read transformers' own method past unsloth_zoo's wrapper of gradient_checkpointing_enable."""
     model = _Wrapper(_Cfg())
     assert model.supports_gradient_checkpointing is False
     enable = PreTrainedModel.gradient_checkpointing_enable
@@ -162,7 +154,6 @@ def test_wrapper_inherits_support_and_every_layer_is_switched_on():
     assert model.supports_gradient_checkpointing is True
     model.gradient_checkpointing_enable()
     assert all(layer.gradient_checkpointing for layer in model.language_model.layers)
-    # the class default is untouched: a fresh wrapper starts from False again
     assert _Wrapper.supports_gradient_checkpointing is False
 
 
@@ -266,7 +257,6 @@ def test_multimodal_intent_keeps_the_wrapper(capsys):
     assert hasattr(model, "vision_model")
     out = capsys.readouterr().out
     assert "pixel_values" in out and "text_only = True" in out
-    # A wrapper that can take a text batch prints nothing either way.
     vlm = _VlmWrapper(_Cfg())
     assert _text_trainable_core(vlm, text_intent = False) is vlm
     assert capsys.readouterr().out == ""

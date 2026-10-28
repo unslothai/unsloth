@@ -6,15 +6,10 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { ParamSlider } from "@/features/chat";
 import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
-import type { ModelOption } from "@/features/model-picker/components/model-selector/types";
 import type { ComponentProps } from "react";
 import type { AudioGalleryClip } from "../api";
-import {
-  isMusicGenerationModel,
-  macTtsCatalogChoiceIsRunnable,
-} from "../catalog";
 import { AudioHistoryProvider } from "../components/audio-source-input";
-import { Field } from "../components/field";
+import { Field, FieldLabel } from "../components/field";
 import { LyricsEditor } from "../components/lyrics-editor";
 import { MusicEditInputs } from "../components/music-edit-inputs";
 import type { MusicGeneration } from "../hooks/use-music-generation";
@@ -36,17 +31,6 @@ import { TtsOutput, TtsRailFields } from "./tts-workspace";
 export const MUSIC_DESCRIPTION_FIELD_ID = "music-description";
 export const MUSIC_LYRICS_FIELD_ID = "music-lyrics";
 export const MUSIC_SFX_FIELD_ID = "music-sfx-prompt";
-
-export function musicPageModels(
-  models: ModelOption[],
-  isMac: boolean,
-): ModelOption[] {
-  return models.filter(
-    (model) =>
-      isMusicGenerationModel(model.id, model.audioType) &&
-      (!isMac || macTtsCatalogChoiceIsRunnable(model.id)),
-  );
-}
 
 /** One line under a prompt: example picks while it is empty, the hint once it has text. */
 function ExamplesOrHint({
@@ -152,6 +136,7 @@ function VariationsSlider({
         valueSize={2}
         disabled={disabled}
         onChange={onChange}
+        commitWhileDragging
         info="Several takes of the same request, kept together in history."
       />
       {notice ? (
@@ -187,11 +172,8 @@ function SongInputs({
     <>
       <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-1.5">
         <Field
-          label={
-            rule.description === "required"
-              ? "Description"
-              : "Description (optional)"
-          }
+          label="Description"
+          optional={rule.description !== "required"}
           htmlFor={MUSIC_DESCRIPTION_FIELD_ID}
         >
           <Textarea
@@ -227,7 +209,7 @@ function SongInputs({
       </div>
       {instrumental.shown ? (
         <div className="grid gap-1">
-          <label
+          <FieldLabel
             htmlFor="music-instrumental"
             className="flex items-center justify-between gap-3 text-ui-13 font-medium text-foreground"
           >
@@ -240,7 +222,7 @@ function SongInputs({
                 patch("song", { instrumental: checked })
               }
             />
-          </label>
+          </FieldLabel>
           <p className="text-ui-11p5 leading-snug text-muted-foreground">
             {instrumental.reason ?? "No vocals; the lyrics are kept for later."}
           </p>
@@ -250,7 +232,8 @@ function SongInputs({
         <div className="grid gap-1.5">
           <LyricsEditor
             id={MUSIC_LYRICS_FIELD_ID}
-            label={rule.lyrics === "required" ? "Lyrics" : "Lyrics (optional)"}
+            label="Lyrics"
+            optional={rule.lyrics !== "required"}
             value={lyrics}
             onChange={setLyrics}
             sectionCase={rule.section_case}
@@ -457,7 +440,6 @@ export function MusicRail({
   return (
     <TtsRailFields
       {...props}
-      // Length lives in the page's fields, so Advanced keeps only the model's options.
       musicGeneration={false}
       samplingControls={false}
       inputs={

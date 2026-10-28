@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Hub sizes must include the companion assets Run would still download.
-
 import assert from "node:assert/strict";
 import { register } from "node:module";
 import test from "node:test";
@@ -30,8 +28,13 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   });
 }) as typeof fetch;
 
-const { companionPlanRequests, ggufVariantFootprint, resolveCompanionBytes } =
-  await import("../src/features/hub/hooks/use-media-companion-bytes.ts");
+const {
+  awaitsCompanions,
+  companionPlanRequests,
+  ggufVariantFootprint,
+  resolveCompanionBytes,
+  withCompanionBytes,
+} = await import("../src/features/hub/hooks/use-media-companion-bytes.ts");
 
 function entry(repo: string, bytes: number, checkpoint = false) {
   // biome-ignore lint/style/useNamingConvention: API schema
@@ -91,14 +94,11 @@ test("companions are the uncached plan entries beyond the checkpoint", async () 
     hf_token: "hf_x",
   });
 
-  // A checkpoint entry can also carry companions from the same repo.
   planBody = plan([entry(GGUF_REPO, GGUF_BYTES + 7, true)]);
   assert.equal(await resolve(), 7);
-  // A cached checkpoint leaves its repo's missing companions unflagged.
   planBody = plan([entry(GGUF_REPO, 7)]);
   assert.equal(await resolve(), 7);
-  // Without the flag (older backend) the bytes cannot be attributed: a scoped
-  // file list names the GGUF whether or not it is cached.
+  // Without the flag (older backend) a scoped file list names the GGUF whether or not it is cached.
   planBody = plan([
     {
       ...entry(GGUF_REPO, GGUF_BYTES + 7),
@@ -107,7 +107,6 @@ test("companions are the uncached plan entries beyond the checkpoint", async () 
     },
   ]);
   assert.equal(await resolve(), null);
-  // The listed size stands in for a checkpoint the planner could not size.
   planBody = plan([entry(GGUF_REPO, GGUF_BYTES + 7, true)], {
     // biome-ignore lint/style/useNamingConvention: API schema
     checkpoint_bytes: 0,
@@ -174,7 +173,6 @@ test("one plan per companion set, and none outside the media pages", () => {
 
 test("rows add their own set's companions, except partials", () => {
   const resolved = new Map([["qwen-image-2.1", COMPANION_BYTES]]);
-  // Run, offered once the GGUF is on disk, is what fetches companions.
   for (const state of [{}, { downloaded: true }]) {
     assert.deepEqual(ggufVariantFootprint(variant("Q5_K_M", state), resolved), {
       checkpointBytes: GGUF_BYTES,
@@ -193,4 +191,42 @@ test("rows add their own set's companions, except partials", () => {
     ggufVariantFootprint(variant("Q4_K_M", { partial: true }), resolved),
     null,
   );
+});
+
+test("a cached GGUF reads as partial until Run has its companions", () => {
+  const pending = new Map([["qwen-image-2.1", COMPANION_BYTES]]);
+  const cached = new Map([["qwen-image-2.1", 0]]);
+  const done = variant("Q5_K_M", { downloaded: true });
+  assert.equal(
+    awaitsCompanions(true, ggufVariantFootprint(done, pending)),
+    true,
+  );
+  assert.equal(
+    awaitsCompanions(true, ggufVariantFootprint(done, cached)),
+    false,
+  );
+  // No plan yet (or a non-media page): keep the plain On device badge.
+  assert.equal(awaitsCompanions(true, null), false);
+  assert.equal(
+    awaitsCompanions(false, ggufVariantFootprint(variant("Q5_K_M"), pending)),
+    false,
+  );
+});
+
+test("a re-plan with nothing left clears the group's pending companions", () => {
+  const pending = new Map([["qwen-image-2.1", COMPANION_BYTES]]);
+  assert.equal(
+    withCompanionBytes(pending, "qwen-image-2.1", COMPANION_BYTES),
+    pending,
+  );
+  const done = withCompanionBytes(pending, "qwen-image-2.1", null);
+  assert.equal(done.has("qwen-image-2.1"), false);
+  assert.equal(
+    awaitsCompanions(
+      true,
+      ggufVariantFootprint(variant("Q5_K_M", { downloaded: true }), done),
+    ),
+    false,
+  );
+  assert.equal(pending.get("qwen-image-2.1"), COMPANION_BYTES);
 });

@@ -82,7 +82,6 @@ def test_patched_gemma_loader_preserves_sequence_isolation(tmp_path, loader_back
     if loader_backend == "sdpa":
         from unsloth.models.sentence_transformer import _ensure_sentence_attention_masks
 
-        # Exercise the backend repair without requiring an FA extension to load.
         base.config._attn_implementation = "flash_attention_2"
         assert _ensure_sentence_attention_masks(base)
         if hasattr(model[0], "unpad_inputs"):
@@ -113,12 +112,11 @@ def test_patched_gemma_loader_preserves_sequence_isolation(tmp_path, loader_back
         assert not torch.equal(actual[1], expected[1])
         model.zero_grad(set_to_none = True)
         actual[0].float().square().sum().backward()
-        # Token 14 appears only in the unrelated row.
         assert torch.count_nonzero(base.get_input_embeddings().weight.grad[14]) == 0
     assert all(mask.ndim == 4 for mask in masks)
     mask = masks[0]
     allowed = mask if mask.dtype == torch.bool else mask == 0
-    assert allowed[0, 0, 0, 1]  # Future token is visible in bidirectional attention.
-    assert not allowed[0, 0, 0, 3]  # Padding is never visible.
-    assert not allowed[1, 0, 0, 5]  # Out of the sliding window.
+    assert allowed[0, 0, 0, 1]
+    assert not allowed[0, 0, 0, 3]
+    assert not allowed[1, 0, 0, 5]
     handle.remove()

@@ -1,30 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Refuse to benchmark a development build.
-
-A Vite dev server MANUFACTURES the symptom this tool exists to find. React's development build
-does per-render bookkeeping the production build does not, and the measured inflation is about
-3.2x on exactly the axis under investigation. A number taken against it is not a smaller version
-of the truth, it is a different phenomenon with the same units, and it would confirm any
-hypothesis you brought to it.
-
-TWO independent checks, because either alone has a hole.
-
-1. **`/@vite/client` answers 200.** Only a dev server serves that path. Cheap, decisive, and it
-   catches a dev server even when the entry asset happens to look fine.
-
-2. **`bundleType: 0` in the SAME chunk as `rendererPackageName: "react-dom"`.** React's renderer
-   registers itself with the DevTools hook carrying a `bundleType`, 0 for production and 1 for
-   development. It has to be read from the same chunk as the `react-dom` marker: a large app
-   bundle contains several renderers' worth of strings, and `bundleType:1` from some other
-   package proves nothing about react-dom.
-
-**Do NOT grep for `jsxDEV`.** It false-positives. `hast-util-to-jsx-runtime`, which Streamdown
-pulls in and which is in every production bundle of this app, ships its own option guard naming
-`jsxDEV` as a supported entry point. A `jsxDEV` grep therefore fails a perfectly good production
-build, and the natural response to a gate that fails on a correct build is to switch the gate off.
-"""
+"""React dev builds inflate render cost, so the gate refuses them by two independent checks."""
 
 from __future__ import annotations
 
@@ -34,15 +11,10 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Optional
 
-# Kept small: an app entry chunk is megabytes and the marker pair sits within a few hundred bytes
-# of each other in every React build, minified or not.
+# Small: the marker pair sits within a few hundred bytes in every React build.
 _WINDOW = 4000
 
-# BACKTICKS as well as quotes. Unsloth's production bundle is minified with a pass that rewrites
-# short string literals as template literals, so the marker reads with backticks and a quote-only
-# pattern misses it on every asset, which reads as "build mode could not be established" on a
-# perfectly good production build. Verified against the shipped bundle.
-# The marker reads ``rendererPackageName:`react-dom` ``.
+# Accept backticks: the minified production bundle rewrites short strings as template literals.
 _RENDERER_RE = re.compile(r'rendererPackageName\s*:\s*["\'`]react-dom["\'`]')
 _BUNDLETYPE_RE = re.compile(r"bundleType\s*:\s*([01])")
 
@@ -66,8 +38,7 @@ class BundleVerdict:
             "entry_url": self.entry_url,
             "entry_bytes": self.entry_bytes,
             "checked": self.checked,
-            # Attempted flags, because "bundle_type is None" and "bundle_type is 0" are opposite findings and a
-            # bare null cannot say which.
+            # Attempted flag: bundle_type None and 0 are opposite findings.
             "bundle_type_attempted": self.entry_url is not None,
             "vite_probe_attempted": self.vite_client_status is not None,
         }
@@ -85,16 +56,7 @@ def _get(url: str, timeout: float = 20.0) -> tuple[int, bytes, str]:
 
 
 def _is_vite_client(status: int, body: bytes, content_type: str) -> bool:
-    """A 200 alone does NOT mean a dev server, and assuming it does breaks the gate.
-
-    Unsloth serves its built frontend as a single-page app, so ANY unknown path returns 200 with
-    `index.html` -- measured here against two production Unsloth instances, both of which answered 200 to
-    `/@vite/client` and were failed as dev servers by the first version of this check. A gate that
-    fails every correct build is a gate someone turns off.
-
-    A real Vite dev server serves that path as a JavaScript module. So the probe is: 200, AND the
-    body is script rather than the SPA's HTML fallback.
-    """
+    """A 200 alone proves nothing: the SPA serves index.html for any path, so the body must be script."""
     if status != 200 or not body:
         return False
     head = body[:512].lstrip().lower()
@@ -115,8 +77,7 @@ def _entry_urls(base_url: str, html: str) -> list[str]:
     for src in re.findall(r'<script[^>]+src=["\']([^"\']+)["\']', html):
         url = src if src.startswith("http") else base_url.rstrip("/") + "/" + src.lstrip("/")
         out.append(url)
-    # A modulepreload is how Vite names the real entry chunk when the script tag points at a loader
-    # shim, so it is worth following when the script tags carry nothing.
+    # Vite names the real entry chunk via modulepreload when the script tag is a loader shim.
     for href in re.findall(
         r'<link[^>]+rel=["\']modulepreload["\'][^>]+href=["\']([^"\']+)["\']', html
     ):
@@ -182,8 +143,7 @@ def check_bundle(base_url: str) -> BundleVerdict:
         if match is None:
             checked.append(f"{url}: no rendererPackageName marker, {len(raw)} bytes")
             continue
-        # The SAME chunk, and within a small window of the marker: a bundle this size carries several
-        # `bundleType` occurrences and picking the wrong one is picking a different package's answer.
+        # Search near the marker in the same chunk; other packages also carry bundleType.
         lo = max(0, match.start() - _WINDOW)
         hi = min(len(text), match.end() + _WINDOW)
         found = _BUNDLETYPE_RE.search(text, lo, hi)

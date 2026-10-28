@@ -1,0 +1,96 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import assert from "node:assert/strict";
+import { register } from "node:module";
+import test, { afterEach } from "node:test";
+
+register("./helpers/settings-api-resolver.mjs", import.meta.url);
+
+const originalFetch = globalThis.fetch;
+afterEach(() => {
+  globalThis.fetch = originalFetch;
+});
+
+const { cancelDiffusionGeneration, generateDiffusionImage, GenerateResponseLostError } = await import(
+  "../src/features/images/api.ts"
+);
+
+function respond(status: number, body: string, contentType: string) {
+  globalThis.fetch = (async () =>
+    new Response(body, { status, headers: { "content-type": contentType } })) as typeof fetch;
+}
+
+test("a JSON 502 from the app shows the upstream reason instead of waiting for a lost run", async () => {
+  respond(
+    502,
+    JSON.stringify({ detail: "Image endpoint returned HTTP 401: invalid api key" }),
+    "application/json",
+  );
+  await assert.rejects(generateDiffusionImage({ prompt: "a sloth" }), (err: unknown) => {
+    assert.ok(!(err instanceof GenerateResponseLostError));
+    assert.match((err as Error).message, /invalid api key/);
+    return true;
+  });
+});
+
+test("a proxy's HTML 502 is still a lost response", async () => {
+  respond(502, "<html>Bad gateway</html>", "text/html");
+  await assert.rejects(
+    generateDiffusionImage({ prompt: "a sloth" }),
+    (err: unknown) => err instanceof GenerateResponseLostError,
+  );
+});
+
+test("Stop on a connection run targets the connection, a local Stop does not", async () => {
+  const urls: string[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    urls.push(String(input));
+    return new Response(JSON.stringify({ cancelled: true }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+  const { cancelConnectionImageGeneration } = await import(
+    "../src/features/images/connection-cancel.ts"
+  );
+  await cancelConnectionImageGeneration();
+  await cancelDiffusionGeneration();
+  assert.deepEqual(urls, [
+    "/api/inference/images/generate/cancel?target=connection",
+    "/api/inference/images/generate/cancel",
+  ]);
+});
+
+test("a connected pick retires a staged local pick and skips the hidden seed", async () => {
+  const { readSrc } = await import("./helpers/kit.ts");
+  const page = readSrc("features/images/images-page.tsx");
+  const branch = page.slice(page.indexOf('if (meta.source === "external") {'));
+  const body = branch.slice(0, branch.indexOf("setExternalModelId(id);"));
+  assert.doesNotMatch(body, /downloadOnlyPick/);
+  assert.match(body, /pickGuard\.cancel\(\);/);
+  assert.match(body, /beginPick\(\);/);
+  assert.match(page, /if \(seed\.trim\(\) && !external\) \{/);
+});
+
+test("any local load takes the page back from a connection", async () => {
+  const { readSrc } = await import("./helpers/kit.ts");
+  const page = readSrc("features/images/images-page.tsx");
+  const load = page.slice(page.indexOf("const handleLoad = useCallback("));
+  const head = load.slice(0, load.indexOf("if (pollTimer.current) clearTimeout(pollTimer.current);"));
+  assert.match(head, /setExternalModelId\(null\);/);
+});
+
+test("the connection Stop stays out of the startup bundle's api module", async () => {
+  const { readSrc } = await import("./helpers/kit.ts");
+  assert.doesNotMatch(readSrc("features/images/api.ts"), /target=connection/);
+  assert.match(readSrc("features/images/images-page.tsx"), /from "\.\/connection-cancel"/);
+});
+
+test("a connected pick hides ControlNet without clearing the local setup", async () => {
+  const { readSrc } = await import("./helpers/kit.ts");
+  const page = readSrc("features/images/images-page.tsx");
+  const effect = page.slice(page.indexOf("setAvailableControlNets([]);") - 120);
+  assert.match(effect.slice(0, 160), /if \(!controlnetSupported\) \{/);
+  assert.match(page, /\}, \[controlnetSupported, status\?\.family\]\);/);
+});

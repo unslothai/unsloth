@@ -5,5 +5,6 @@ import { createContext } from "react";
 
 export const CardSelectionContext = createContext<{
   selection: ReadonlySet<string>;
-  toggle: (key: string) => void;
+  /** `range` (a shift click) takes every entry between the last click and this one. */
+  toggle: (key: string, range?: boolean) => void;
 } | null>(null);

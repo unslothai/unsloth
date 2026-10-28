@@ -1,7 +1,30 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { HugeiconsIcon } from "@hugeicons/react";
 import { InferenceEnginePicker } from "./inference-engines";
+import { modelDisplayName } from "../model-config/model-identity";
+import { type RunSettingsNaming, RunSettingsPicker } from "./saved-run-settings-row";
+import {
+  adoptRememberedRunSettings,
+  deleteSavedRunSettings,
+  findSavedRunSettings,
+  getPinnedRunSettings,
+  getRunSettingsLoadedOnce,
+  isRunSettingsLimitReached,
+  newRunSettingsName,
+  normalizeSavedRunSettingsName,
+  noteRunSettingsLoadedOnce,
+  quantsSelectingRunSettings,
+  renameSavedRunSettings,
+  SAVED_RUN_SETTINGS_PER_MODEL_MAX,
+  saveRunSettings,
+  setPinnedRunSettings,
+  setSelectedRunSettings,
+  usePinnedRunSettings,
+  useSavedRunSettings,
+  useSelectedRunSettings,
+} from "../model-config/saved-run-settings";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -13,6 +36,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useLlamaCppBackend } from "@/hooks/use-llama-backend";
+import { useSliderDraft } from "@/hooks/use-slider-draft";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { InfoHint } from "@/components/ui/info-hint";
@@ -29,6 +53,7 @@ import { usePlatformStore } from "@/config/env";
 import {
   GPU_LAYERS_AUTO,
   fetchGgufStagedMetadata,
+  normalizeSpeculativeType,
   readPersistedGpuMemoryMode,
   readPersistedSpeculativeType,
   resolveStagedDiffusionClassification,
@@ -66,8 +91,17 @@ import {
   resolveFreeGpuCapacityGb,
   resolveMemoryCapacityGb,
 } from "@/hooks/gpu-vram";
-import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { ChevronDownStandardIcon, ChevronLeftStandardIcon } from "@/lib/chevron-icons";
+import {
+  DRAFTER_MODEL_SPEC_TYPES,
+  MLX_SPECULATIVE_TYPES,
+  type MlxDrafter,
+  mlxDrafterChoices,
+  mlxSpeculativeMode,
+  resolveSpeculativeType,
+} from "@/lib/speculative-modes";
 import { toast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
 import {
   type ReactNode,
   type Ref,
@@ -93,14 +127,22 @@ import {
   loadManagedLlamaFlags,
   subscribeLlamaFlagCatalog,
 } from "../api/llama-flags";
-import { type MemoryEstimate } from "../api/memory-estimate";
+import { type MemoryEstimate, type MlxOffloadablePart } from "../api/memory-estimate";
+import { fetchMlxDrafters } from "../api/mlx-drafters";
 import {
   resolveEstimateContext,
   resolveMlxEstimateContext,
   resolveMlxServedWindow,
   shouldRequestMemoryEstimate,
 } from "../model-config/estimate-context";
-import { resolveReclaimableMemoryCredit } from "../model-config/memory-fit";
+import {
+  MLX_OFFLOAD_SLIDER_AUTO,
+  mlxOffloadDecided,
+  mlxOffloadFromSlider,
+  mlxOffloadModePatch,
+  mlxOffloadSliderValue,
+  resolveReclaimableMemoryCredit,
+} from "../model-config/memory-fit";
 import {
   resolveResidentEstimateRequest,
   selectResidentEstimateSettings,
@@ -142,6 +184,7 @@ import {
   retainModelConfigDraft,
   setExtraArgsEditForDraft,
   setExtraArgsEditLoadableForDraft,
+  setModelConfigDraftPickedSet,
   setModelConfigDraftRemember,
   setModelConfigDraftSavedRemember,
   subscribeModelConfigDraft,
@@ -168,6 +211,7 @@ import {
   MLX_KV_QUANTS,
   mlxKvQuantLabel,
   type MlxKvQuant,
+  type MlxOffload,
   N_BATCH_LLAMA_DEFAULT,
   N_BATCH_MAX,
   N_BATCH_MIN,
@@ -185,11 +229,14 @@ import {
   savedContextPin,
   normalizeMaxSeqLength,
   normalizePerModelConfig,
+  PER_MODEL_CONFIG_UPDATED_EVENT,
   perModelConfigStorageChanged,
+  pinSpeculativeMode,
   readAdvancedSettingsOpen,
   resolveInitialConfig,
   saveAdvancedSettingsOpen,
   savePerModelConfig,
+  storedSpeculativeAuto,
   subscribeAdvancedSettingsOpen,
   VRAM_BUDGET_PERCENT_STEP,
   vramFractionToPercent,
@@ -207,37 +254,28 @@ import {
 } from "../sharing";
 import { ChatTemplateEditorDialog } from "./chat-template-editor-dialog";
 import { MemoryEstimateRow } from "./memory-estimate-row";
+import { LoadedPlacementRow } from "./loaded-placement-row";
 import type { ModelPickTarget } from "./model-selector/types";
+import type { ModelConfigFocus } from "../model-config/model-config-handoff";
+import { reconcileTensorSplit } from "@/hooks/gpu-tensor-split";
 import {
   NumericValueInput,
   type NumericValueInputHandle,
 } from "./numeric-value-input";
-import {
-  ChevronLeftIcon,
-} from "lucide-react";
 
 const ROW_CLASS = "flex min-h-8 items-center justify-between gap-3";
 const LABEL_CLASS =
   "min-w-0 truncate text-ui-13 font-medium leading-[1.25] tracking-nav text-foreground";
 const LABEL_CLASS_WRAP =
   "min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-foreground";
-// Same surface token as the panel's fields and textareas.
 const CONTROL_SURFACE =
   "rounded-full border-transparent bg-[var(--panel-input-surface)] hover:bg-[var(--panel-input-surface-hover)] dark:bg-[var(--panel-input-surface)] dark:hover:bg-[var(--panel-input-surface-hover)]";
-// One width for every typed field: a box that resized per keystroke would jump under the
-// caret. Narrow, so the label beside it is not clipped in a ~240px panel.
+// Fixed width so the box does not jump under the caret; narrow for a ~240px panel.
 const INPUT_WIDTH_CLASS = "w-[calc(84px*var(--ui-space-scale,1))] shrink-0";
-// A select holds one of a known set of values, so it sizes to that value.
 const SELECT_WIDTH_CLASS = "w-auto max-w-full shrink-0";
-// .panel-select-trigger carries the surface, padding and type; this adds the layout.
 const SELECT_TRIGGER_CLASS = `panel-select-trigger grid h-8! min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 ${SELECT_WIDTH_CLASS} [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0`;
-// .panel-field carries the surface and the value's alignment; the field adds its size.
 const NUMBER_INPUT_CLASS = `panel-field h-8 ${INPUT_WIDTH_CLASS}`;
 const TEXT_INPUT_CLASS = `panel-field h-8 ${INPUT_WIDTH_CLASS} min-w-0`;
-// Matches the Preset section's Save/Delete pair rather than the Button's own `sm` metrics.
-// Width is the label plus this padding, so a pill is never wider than what it says.
-const FOOTER_BUTTON_CLASS =
-  "h-9 w-auto px-4 rounded-full text-ui-13 font-medium tracking-nav";
 
 // Mirrors the backend's Auto default once GPU-only placement is impossible.
 const AUTO_OFFLOAD_CONTEXT_LENGTH = 8192;
@@ -254,8 +292,19 @@ const SPECULATIVE_TYPE_LABELS: Record<
   "mtp+ngram": "MTP+Ngram",
   off: "Off",
 };
+const MLX_SPECULATIVE_TYPE_LABELS: Record<
+  (typeof MLX_SPECULATIVE_TYPES)[number],
+  string
+> = {
+  auto: "Auto",
+  mtp: "MTP",
+  dflash: "DFlash",
+  dspark: "DSpark",
+  eagle3: "EAGLE-3",
+  ngram: "Ngram",
+  off: "Off",
+};
 
-// Lower-case where the value is the flag's own spelling, so the pick reads the same as the launch command.
 const LOAD_MODE_LABELS: Record<(typeof LOAD_MODES)[number], string> = {
   auto: "Auto",
   none: "None",
@@ -265,14 +314,10 @@ const LOAD_MODE_LABELS: Record<(typeof LOAD_MODES)[number], string> = {
   dio: "DirectIO",
 };
 
-// What "Don't reserve system RAM" vetoes: allocated or locked host weight buffers. Windows mmap can still hold the
-// file pages resident, which is what the DirectIO policy is for.
 // Mirrors _LOAD_MODE_MLOCK_VALUES | _LOAD_MODE_RESERVING_VALUES in llama_server_args.py.
 const RAM_RESERVING_LOAD_MODES = new Set(["none", "mlock", "mmap+mlock"]);
 
-/** What Model Memory does to this load mode, or null when the pick reaches the command line
- *  untouched: a row showing the pick alone would name a flag the child never sees. Keep
- *  resident is first, because it wins outright. */
+/** null when the pick reaches the command line untouched; Keep resident wins outright. */
 function loadModeOverrideNotice(
   mode: string | null,
   settings: ModelMemorySettings | null,
@@ -291,9 +336,7 @@ function loadModeOverrideNotice(
   return null;
 }
 
-/** The batch size llama-server will not go below for this load. Two is its own hard floor, and
- *  above that the floor follows the slots the launch SERVES, which is not always the number
- *  chosen here: a build without --kv-unified serves one slot however many are asked for. */
+/** Hard floor 2, else served slots; a build without --kv-unified serves one slot. */
 function effectiveBatchFloor(
   requestedSlots: number | null | undefined,
   limits:
@@ -313,6 +356,7 @@ function hasNonDefaultAdvanced(config: PerModelConfig): boolean {
     (config.speculativeType ?? "auto") !== "auto" ||
     config.specDraftNMax != null ||
     config.specDraftCacheDtype != null ||
+    config.specDraftModel != null ||
     config.nParallel != null ||
     config.reasoningBudget !== -1 ||
     config.reasoningBudgetMessage !== "" ||
@@ -324,8 +368,7 @@ function hasNonDefaultAdvanced(config: PerModelConfig): boolean {
     config.tensorParallel ||
     config.disableVision ||
     config.chatTemplateOverride != null ||
-    // Hidden flags can change what the model does, so a panel that opens collapsed over them says
-    // "defaults" about a load that is anything but.
+    // Hidden flags change behaviour, so do not open collapsed claiming defaults.
     (config.llamaExtraArgs != null && config.llamaExtraArgs.length > 0) ||
     (config.gpuMemoryMode ?? "auto") !== "auto" ||
     (config.gpuLayers != null && config.gpuLayers >= 0) ||
@@ -346,6 +389,7 @@ function withoutUnsupportedDiffusionSettings(
     (config.gpuMemoryMode ?? "auto") === "auto" &&
     config.gpuLayers == null &&
     config.nCpuMoe == null &&
+    config.tensorSplit == null &&
     config.reasoningBudget === -1 &&
     config.reasoningBudgetMessage === "" &&
     !config.tensorParallel &&
@@ -362,16 +406,14 @@ function withoutUnsupportedDiffusionSettings(
     gpuMemoryMode: "auto",
     gpuLayers: undefined,
     nCpuMoe: undefined,
+    tensorSplit: null,
     reasoningBudget: -1,
     reasoningBudgetMessage: "",
     tensorParallel: false,
     disableVision: false,
-    // the diffusion runner ignores the llama-server batch flags
     nBatch: null,
     nUbatch: null,
-    // The diffusion shim never appends llama-server flags to its command, but the load records
-    // them as though it had, so a box filled before classification flipped would leave the
-    // model running without what it says.
+    // The diffusion shim never passes llama-server flags but the load would record them.
     llamaExtraArgs: null,
     ...(hasUnsupportedGpuPick
       ? {
@@ -403,6 +445,7 @@ function reconcileConfigGpuSelection(
   const next = {
     ...supported,
     selectedGpuIds: reconciled.ids ?? undefined,
+    tensorSplit: reconcileTensorSplit(supported.tensorSplit, supported.selectedGpuIds, reconciled.ids),
     selectedGpuIndexKind:
       reconciled.ids === null ? undefined : reconciled.indexKind,
   };
@@ -471,9 +514,13 @@ function MaxSeqLengthSetting({
   windowUnknown?: boolean;
   hint?: string;
 }) {
-  // MLX sizes itself when unpinned, so the control is the GGUF path's Context Length and
-  // shows the length that will be served, not "Auto". A dash only while it is unknown.
   const label = isMlx ? "Context Length" : "Max Seq Length";
+  const { draft, sliderProps } = useSliderDraft(
+    // Clamped, or the first nudge would jump from the shown number to the bound.
+    Math.min(Math.max(value, MAX_SEQ_LENGTH_MIN), max),
+    onChange,
+  );
+  const dragging = draft !== null;
   return (
     <div className="space-y-2">
       <div className={ROW_CLASS}>
@@ -491,13 +538,13 @@ function MaxSeqLengthSetting({
         </div>
         <NumericValueInput
           ref={inputRef}
-          value={value}
+          value={draft ?? value}
           min={MAX_SEQ_LENGTH_MIN}
           max={inputMax}
           step={MAX_SEQ_LENGTH_STEP}
           onChange={onChange}
-          displayValue={isMlx && windowUnknown ? "—" : undefined}
-          derived={isMlx && !pinned}
+          displayValue={isMlx && windowUnknown && !dragging ? "—" : undefined}
+          derived={isMlx && !pinned && !dragging}
           ariaLabel={label}
           className={NUMBER_INPUT_CLASS}
           fixedWidth={true}
@@ -508,13 +555,94 @@ function MaxSeqLengthSetting({
         min={MAX_SEQ_LENGTH_MIN}
         max={max}
         step={MAX_SEQ_LENGTH_STEP}
-        // Outside the control's range it sits at the nearer edge, or the first nudge
-        // would step from the shown number onto the bound.
-        value={[Math.min(Math.max(value, MAX_SEQ_LENGTH_MIN), max)]}
-        onValueChange={([next]) => onChange(next)}
-        className="panel-slider"
+        {...sliderProps}
         aria-label={label}
       />
+    </div>
+  );
+}
+
+function GgufContextLengthSetting({
+  value,
+  autoValue,
+  min,
+  max,
+  nativeContextLength,
+  activeLoadedContext,
+  inputRef,
+  onChange,
+  renderWarning,
+}: {
+  value: number;
+  autoValue: number;
+  min: number;
+  max: number;
+  nativeContextLength: number | null;
+  activeLoadedContext: number | null;
+  inputRef?: Ref<NumericValueInputHandle>;
+  onChange: (value: number) => void;
+  renderWarning: (value: number) => ReactNode;
+}) {
+  const { draft, sliderProps } = useSliderDraft(value, onChange);
+  const shown = draft ?? value;
+  const isAuto = shown === 0;
+  return (
+    <div className="space-y-2">
+      <div className={ROW_CLASS}>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={LABEL_CLASS}>Context Length</span>
+          <InfoHint>
+            Drag all the way left for Auto, which picks a context that
+            fits while keeping GPU speed. Custom values request an exact
+            context; higher ones use more memory.
+            {isAuto && activeLoadedContext != null
+              ? ` Auto currently selected ${activeLoadedContext.toLocaleString()} tokens.`
+              : ""}
+            {nativeContextLength != null
+              ? ` This model's native context is ${nativeContextLength.toLocaleString()} tokens.`
+              : ""}
+          </InfoHint>
+        </div>
+        <NumericValueInput
+          ref={inputRef}
+          value={isAuto ? autoValue : shown}
+          min={min}
+          max={max}
+          step={1}
+          onChange={onChange}
+          displayValue={isAuto ? "Auto" : undefined}
+          ariaLabel="Context Length"
+          className={NUMBER_INPUT_CLASS}
+          fixedWidth={true}
+          size={8}
+        />
+      </div>
+      {/* Grouped so the warning sits 4px under the slider, as advice does elsewhere. */}
+      <div className="space-y-1">
+        {nativeContextLength != null ? (
+          <div className="space-y-1">
+            <Slider
+              min={0}
+              max={max}
+              step={128}
+              {...sliderProps}
+              aria-label="Context Length"
+              thumbValueText={(v) =>
+                v !== 0
+                  ? `${v.toLocaleString()} tokens`
+                  : activeLoadedContext != null
+                    ? `Auto, currently ${autoValue.toLocaleString()} tokens`
+                    : "Auto"
+              }
+            />
+            <div className="flex justify-between text-ui-10 text-muted-foreground">
+              <span>Auto</span>
+              <span>{max.toLocaleString()}</span>
+            </div>
+          </div>
+        ) : null}
+        {renderWarning(shown)}
+      </div>
     </div>
   );
 }
@@ -530,7 +658,8 @@ function AdvancedGpuSlider({
   min,
   max,
   onChange,
-  displayValue,
+  onDraft,
+  format,
   info,
   inputRef,
   step = 1,
@@ -541,12 +670,15 @@ function AdvancedGpuSlider({
   min: number;
   max: number;
   onChange: (value: number) => void;
-  displayValue?: string;
+  onDraft?: (value: number | null) => void;
+  format?: (value: number) => string | undefined;
   info?: ReactNode;
   inputRef?: Ref<NumericValueInputHandle>;
   step?: number;
   disabled?: boolean;
 }) {
+  const { draft, sliderProps } = useSliderDraft(value, onChange, onDraft);
+  const shown = draft ?? value;
   return (
     <div className="space-y-2">
       <div className={ROW_CLASS}>
@@ -556,12 +688,12 @@ function AdvancedGpuSlider({
         </div>
         <NumericValueInput
           ref={inputRef}
-          value={value}
+          value={shown}
           min={min}
           max={max}
           step={step}
           onChange={onChange}
-          displayValue={displayValue}
+          displayValue={format?.(shown)}
           ariaLabel={label}
           className={NUMBER_INPUT_CLASS}
           fixedWidth={true}
@@ -573,9 +705,7 @@ function AdvancedGpuSlider({
         min={min}
         max={max}
         step={step}
-        value={[value]}
-        onValueChange={([next]) => onChange(next)}
-        className="panel-slider"
+        {...sliderProps}
         aria-label={label}
         disabled={disabled}
       />
@@ -583,28 +713,22 @@ function AdvancedGpuSlider({
   );
 }
 
-// How much of each card a load may claim. SERVER-WIDE, not a per-model override: it replaces
-// two constants the fit reads. Driven in whole percent so a dragged value round-trips
-// exactly; the fraction is rebuilt at the API boundary.
+// Server-wide, not per model. Whole percents so a dragged value round-trips exactly.
 function VramBudgetRow() {
-  // macOS is gated here too: it reports no discrete GPUs, so the Metal path sizes itself from
-  // _APPLE_UNIFIED_MEMORY_FRACTION and fits with budget_frac = 1.0, and the slider would
-  // promise "applies on the next load" for a setting it ignores.
+  // macOS sizes Metal from _APPLE_UNIFIED_MEMORY_FRACTION and ignores this budget.
   const isMac = usePlatformStore((s) => s.deviceType === "mac");
   const [settings, setSettings] = useState<VramBudgetSettings | null>(null);
   const [percent, setPercent] = useState<number | null>(null);
+  const [draftPercent, setDraftPercent] = useState<number | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const adviceId = useId();
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
   const wasModelLoading = useRef(false);
-  // Closed while a Run is settling this budget: an edit made in that window would be flushed by
-  // the teardown alongside the load request.
+  // Locked while Run settles the budget, or an edit would be flushed with the load.
   const [locked, setLocked] = useState(isVramBudgetLocked);
   useEffect(() => subscribeVramBudgetLock(setLocked), []);
 
-  // Adopt what the last save or read published: the row's own GET races the PUT a previous
-  // unmount fired. A queued edit outranks the publish, or a save landing mid-drag would pull
-  // the slider out from under the pointer.
+  // A queued edit outranks the publish, or a save landing mid-drag would move the slider.
   useEffect(() => {
     if (isMac) {
       return;
@@ -621,7 +745,6 @@ function VramBudgetRow() {
   useEffect(() => {
     let cancelled = false;
     if (isMac) {
-      // Nothing to show, so do not even ask; the row is hidden below.
       return;
     }
     loadVramBudgetSettings().then((loaded) => {
@@ -637,9 +760,7 @@ function VramBudgetRow() {
     // deviceType settles once /api/health answers, so re-run if the seed guess flips.
   }, [isMac]);
 
-  // reloadRequired describes the running child, so it goes stale the moment a load finishes and
-  // nothing remounts this row. Only the falling edge: the read during a load answers about
-  // the child being replaced.
+  // reloadRequired goes stale when a load finishes; refresh on the falling edge only.
   useEffect(() => {
     const finished = wasModelLoading.current && !modelLoading;
     wasModelLoading.current = modelLoading;
@@ -647,8 +768,7 @@ function VramBudgetRow() {
       return;
     }
     let cancelled = false;
-    // Forced: a read that began before the load finished describes the child being replaced, and
-    // sharing it would republish the notice this refresh is clearing.
+    // Forced: an earlier read describes the child being replaced.
     loadVramBudgetSettings({ force: true }).then((loaded) => {
       if (cancelled || !loaded) {
         return;
@@ -660,9 +780,7 @@ function VramBudgetRow() {
     };
   }, [isMac, modelLoading]);
 
-  // Flush, do not drop: the timer is cleared so nothing fires against a torn-down view, but the
-  // fraction is still sent, since it is held nowhere else. The response only reaches
-  // subscribers, the view being gone.
+  // Flush, do not drop: the fraction is held nowhere else.
   useEffect(
     () => () => {
       if (saveTimer.current) {
@@ -678,12 +796,12 @@ function VramBudgetRow() {
     [],
   );
 
-  // A null response means an older backend; hide rather than render a dead control.
   if (isMac || !settings || percent === null) {
     return null;
   }
 
   const defaultPercent = vramFractionToPercent(settings.defaultFraction);
+  const shownPercent = draftPercent ?? percent;
   // Stored beats UNSLOTH_VRAM_FRACTION, so once the slider has been touched there is otherwise
   // no way back to inheriting it. Clearing is what the null the API accepts is for.
   const resetBudget = () => {
@@ -706,7 +824,7 @@ function VramBudgetRow() {
   };
   const commit = (next: number) => {
     setPercent(next);
-    // Debounced: the slider fires per pointer move, so a drag would be dozens of writes, each
+    // Debounced: a held arrow key commits every step, so one press would be dozens of writes, each
     // invalidating the read cache.
     if (saveTimer.current) {
       clearTimeout(saveTimer.current);
@@ -717,7 +835,7 @@ function VramBudgetRow() {
       flushVramBudgetSave()
         ?.then(setSettings)
         .catch((error: unknown) => {
-          // The client re-stages it, where the write generation can say whether it is still the newest intent.
+          // The client re-stages it, where the write generation can tell if it is still the newest.
           toast.error(
             error instanceof Error ? error.message : "Failed to save VRAM budget",
           );
@@ -733,8 +851,9 @@ function VramBudgetRow() {
         min={vramFractionToPercent(settings.minFraction)}
         max={vramFractionToPercent(settings.maxFraction)}
         step={VRAM_BUDGET_PERCENT_STEP}
-        displayValue={`${percent}%`}
+        format={(v) => `${v}%`}
         onChange={commit}
+        onDraft={setDraftPercent}
         disabled={locked}
         info={
           <div className="flex flex-col gap-1.5">
@@ -756,9 +875,9 @@ function VramBudgetRow() {
           </div>
         }
       />
-      {percent !== defaultPercent && (
+      {shownPercent !== defaultPercent && (
         <p id={adviceId} className="text-ui-11 text-amber-500">
-          {percent > defaultPercent
+          {shownPercent > defaultPercent
             ? "Above the default fits more context but leaves less slack, so a load can run out of memory. llama.cpp treats that as a hard failure rather than falling back."
             : "Below the default is safer on a shared GPU, but a tight fit may push layers onto the CPU and generate slowly."}
         </p>
@@ -783,7 +902,6 @@ function VramBudgetRow() {
   );
 }
 
-// GPU Memory placement controls, GGUF only. Slider ceilings come from the GGUF header dims;
 // --tensor-split is set per GPU row but not persisted per model.
 function GpuMemorySettings({
   config,
@@ -807,9 +925,9 @@ function GpuMemorySettings({
   const mode = config.gpuMemoryMode ?? "auto";
   const isManual = mode === "manual";
   const gpuLayers = config.gpuLayers ?? GPU_LAYERS_AUTO;
-  // Slider at Auto: llama.cpp --fit owns the layout, so MoE-offload does not apply.
+  // At Auto, llama.cpp --fit owns the layout, so MoE-offload does not apply.
   const autoLayers = isManual && gpuLayers < 0;
-  // Ceiling = layer count + 1 (llama.cpp counts the output layer as offloadable), else a fallback.
+  // llama.cpp counts the output layer as offloadable, hence +1.
   const gpuLayersMax = layerCount != null ? layerCount + 1 : 256;
   const nCpuMoe = config.nCpuMoe ?? 0;
   const moeLayersMax = moeLayerCount ?? 0;
@@ -819,12 +937,10 @@ function GpuMemorySettings({
   const pinnableDevices = gpuContext.devices ?? [];
   const gpuIndexKind = gpuContext.indexKind ?? null;
   const singleGpuInUse = (selectedGpuIds ?? gpuContext.ids ?? []).length <= 1;
-  // Multi-GPU only, with one backend-declared index namespace. null = automatic.
   const showGpuPicker = (gpuContext.ids?.length ?? 0) > 1;
   const isGpuChecked = (index: number) =>
     selectedGpuIds === null || selectedGpuIds.includes(index);
-  // The list order IS the device order the backend pins, so a re-checked GPU goes
-  // to the end rather than back to its numeric slot.
+  // List order is the device order the backend pins, so a re-checked GPU goes to the end.
   const orderedGpuIds = selectedGpuIds ?? gpuContext.ids ?? [];
   // Mirrors the backend's --tensor-split gate.
   const splitTotal = Math.max(0, Math.min(gpuLayers, gpuLayersMax));
@@ -840,7 +956,6 @@ function GpuMemorySettings({
   const tensorSplit = config.tensorSplit ?? null;
   const splitIsCustom =
     tensorSplit != null && tensorSplit.length === orderedGpuIds.length;
-  // Untouched: show a VRAM-proportional split and send nothing.
   const splitShares = showSplit
     ? distributeByWeight(
         splitScale,
@@ -855,10 +970,15 @@ function GpuMemorySettings({
   const setSplitShare = (id: number, value: number) => {
     const k = orderedGpuIds.indexOf(id);
     if (k < 0) return;
-    update({ tensorSplit: rebalanceSplit(splitScale, splitShares, k, value) });
+    update({
+      // Bind even an all-GPU split to the exact ordered set before it can be saved.
+      selectedGpuIds: [...orderedGpuIds],
+      selectedGpuIndexKind: gpuIndexKind,
+      tensorSplit: rebalanceSplit(splitScale, splitShares, k, value),
+    });
   };
   const commitGpuIds = (next: number[], nextSplit: number[] | null = null) => {
-    if (next.length === 0) return; // keep at least one GPU selected
+    if (next.length === 0) return;
     update({
       selectedGpuIds: next,
       selectedGpuIndexKind: gpuIndexKind,
@@ -873,7 +993,6 @@ function GpuMemorySettings({
         : [...orderedGpuIds, index],
     );
   };
-  // Selected devices in the order they will be given to the model, then the rest.
   const orderedPinnableDevices = [
     ...orderedGpuIds
       .map((id) => pinnableDevices.find((d) => d.index === id))
@@ -914,7 +1033,6 @@ function GpuMemorySettings({
         <Select
           value={mode}
           onValueChange={(v) =>
-            // Default clears every Manual-only setting.
             update(
               v === "manual"
                 ? { gpuMemoryMode: "manual" }
@@ -943,9 +1061,6 @@ function GpuMemorySettings({
           </SelectContent>
         </Select>
       </div>
-      {/* A fixed manual layer count is the one placement the budget cannot move, and a CPU-only host
-          has no GPU to act on, so "applies on the next load" would be false. Manual + Auto is
-          included: --fit-target still carries the budget to llama.cpp's fitter. */}
       {!isDiffusion && (!isManual || autoLayers) && gpuDevices.length > 0 && (
         <VramBudgetRow />
       )}
@@ -960,7 +1075,7 @@ function GpuMemorySettings({
             onChange={(v) =>
               update(v < 0 ? { gpuLayers: v, tensorSplit: null } : { gpuLayers: v })
             }
-            displayValue={autoLayers ? "Auto" : undefined}
+            format={(v) => (v < 0 ? "Auto" : undefined)}
             info={
               <>
                 Layers to keep on the GPU (--gpu-layers); the rest run on CPU.
@@ -1046,9 +1161,9 @@ function GpuMemorySettings({
                     </span>
                   </div>
                 )}
-                {/* Not for diffusion: that runner drives one device and matches_gpu_ids
-                    reduces the request to its lowest id, so the arrows would move a row
-                    without moving the model, under help text promising the opposite. */}
+                {/* Not for diffusion: that runner uses the lowest id, or splits in id
+                    order, so the arrows would move a row without moving the model, under
+                    help text promising the opposite. */}
                 {isGpuChecked(d.index) && !singleGpuInUse && !isDiffusion && (
                   <div className="flex shrink-0 items-center gap-0.5">
                     <button
@@ -1088,6 +1203,115 @@ function GpuMemorySettings({
 
 const MLX_KV_QUANT_AUTO = "auto";
 
+const MLX_OFFLOAD_SLIDERS = [
+  {
+    part: "experts",
+    key: "mlxExpertOffload",
+    label: "Experts on Disk",
+    hint: "Share of the MoE experts read from disk as they are needed instead of held in memory. Saves memory but slows generation a lot. 0% keeps every expert in memory; Auto leaves it to Unsloth.",
+  },
+  {
+    part: "ple",
+    key: "mlxPleOffload",
+    label: "PLE on Disk",
+    hint: "Share of the per-layer embedding tables read from disk instead of held in memory. Saves memory at a small cost to generation speed. 0% keeps them all in memory; Auto leaves it to Unsloth.",
+  },
+] as const satisfies readonly {
+  part: MlxOffloadablePart;
+  key: "mlxPleOffload" | "mlxExpertOffload";
+  label: string;
+  hint: string;
+}[];
+
+function MlxOffloadSettings({
+  config,
+  update,
+  offloadable,
+  decided,
+  notes,
+}: {
+  config: PerModelConfig;
+  update: (patch: Partial<PerModelConfig>) => void;
+  offloadable: readonly MlxOffloadablePart[];
+  decided: Record<MlxOffloadablePart, number | null> | null;
+  notes: Record<MlxOffloadablePart, string | null>;
+}) {
+  const sliders = MLX_OFFLOAD_SLIDERS.filter(
+    ({ part, key }) => offloadable.includes(part) || config[key] != null,
+  );
+  if (sliders.length === 0) return null;
+  const isManual = sliders.some(({ key }) => config[key] != null);
+  const shownNotes = sliders.map(({ part }) => notes[part]).filter(Boolean);
+  return (
+    <>
+      <div className={ROW_CLASS}>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={LABEL_CLASS}>Disk Offload</span>
+          <InfoHint>
+            <div className="flex flex-col gap-1.5">
+              <div>
+                <span className="font-medium">Default:</span> Unsloth reads
+                parts of the model from disk only when it would not otherwise
+                fit in memory.
+              </div>
+              <div>
+                <span className="font-medium">Manual:</span> set how much of
+                each part stays on disk.
+              </div>
+            </div>
+          </InfoHint>
+        </div>
+        <Select
+          value={isManual ? "manual" : "auto"}
+          onValueChange={(v) => {
+            if (v === "manual" && !decided) return;
+            update(
+              mlxOffloadModePatch(
+                v === "manual",
+                sliders.map(({ part, key }) => ({ key, decided: decided?.[part] ?? null })),
+              ),
+            );
+          }}
+        >
+          <SelectTrigger
+            animateRadius={false}
+            icon={ChevronDownStandardIcon}
+            iconClassName="size-3.5"
+            className={SELECT_TRIGGER_CLASS}
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+            <SelectItem value="auto">Default</SelectItem>
+            <SelectItem value="manual" disabled={!isManual && !decided}>
+              Manual
+            </SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+      {isManual &&
+        sliders.map(({ part, key, label, hint }) => (
+          <AdvancedGpuSlider
+            key={part}
+            label={label}
+            value={mlxOffloadSliderValue(config[key])}
+            min={MLX_OFFLOAD_SLIDER_AUTO}
+            max={100}
+            step={5}
+            onChange={(v) => update({ [key]: mlxOffloadFromSlider(v) })}
+            format={(v) => (v < 0 ? "Auto" : `${v}%`)}
+            info={hint}
+          />
+        ))}
+      {shownNotes.map((note) => (
+        <p key={note} className="text-ui-11 text-muted-foreground">
+          {note}
+        </p>
+      ))}
+    </>
+  );
+}
+
 function AdvancedSettingsToggle({
   checked,
   onCheckedChange,
@@ -1096,8 +1320,7 @@ function AdvancedSettingsToggle({
   onCheckedChange: (next: boolean) => void;
 }) {
   return (
-    // Ruled off from the context controls above, matching the estimate row's divider.
-    <div className={`${ROW_CLASS} border-t border-border pt-5`}>
+    <div className={ROW_CLASS}>
       <div className="flex min-w-0 items-center gap-1.5">
         <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-muted-foreground">
           Advanced settings
@@ -1117,6 +1340,44 @@ function AdvancedSettingsToggle({
   );
 }
 
+function useStoredPerModelConfig(
+  configId: string,
+  ggufVariant: string | null | undefined,
+) {
+  const [version, setVersion] = useState(0);
+  useEffect(() => {
+    const bump = () => setVersion((v) => v + 1);
+    window.addEventListener(PER_MODEL_CONFIG_UPDATED_EVENT, bump);
+    window.addEventListener("storage", bump);
+    return () => {
+      window.removeEventListener(PER_MODEL_CONFIG_UPDATED_EVENT, bump);
+      window.removeEventListener("storage", bump);
+    };
+  }, []);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: version is the storage write signal
+  return useMemo(
+    () => resolveInitialConfig(configId, ggufVariant),
+    [configId, ggufVariant, version],
+  );
+}
+
+function AdvancedGroup({
+  title,
+  children,
+}: {
+  title: string;
+  children: ReactNode;
+}) {
+  return (
+    <section aria-label={title} className="space-y-3 pt-2">
+      <h3 className="text-ui-10 font-semibold uppercase leading-none tracking-wider text-muted-foreground">
+        {title}
+      </h3>
+      <div className="space-y-5">{children}</div>
+    </section>
+  );
+}
+
 const GGUF_PARALLEL_HINT =
   "Decode slots (--parallel) for concurrent requests. Leave blank for the server " +
   "default. More slots share the context pool and use more VRAM.";
@@ -1131,11 +1392,25 @@ function ParallelSlotsRow({
   config,
   update,
   hint,
+  focusOnMount = false,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
   hint: string;
+  focusOnMount?: boolean;
 }) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (!focusOnMount) {
+      return;
+    }
+    // Next frame: the popover moves focus to itself after its children mount.
+    const frame = window.requestAnimationFrame(() => {
+      inputRef.current?.scrollIntoView({ block: "center" });
+      inputRef.current?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [focusOnMount]);
   return (
     <div className={ROW_CLASS}>
       <div className="flex min-w-0 items-center gap-1.5">
@@ -1143,6 +1418,7 @@ function ParallelSlotsRow({
         <InfoHint>{hint}</InfoHint>
       </div>
       <input
+        ref={inputRef}
         type="number"
         min={N_PARALLEL_MIN}
         max={N_PARALLEL_MAX}
@@ -1172,6 +1448,157 @@ function ParallelSlotsRow({
   );
 }
 
+/** Unset shows the mode the load would send. */
+function MlxSpeculativeRows({
+  config,
+  update,
+  speculativeFallback,
+  modelPath,
+}: {
+  config: PerModelConfig;
+  update: (patch: Partial<PerModelConfig>) => void;
+  speculativeFallback: string;
+  modelPath: string;
+}) {
+  const [drafters, setDrafters] = useState<MlxDrafter[]>([]);
+  useEffect(() => {
+    const controller = new AbortController();
+    setDrafters([]);
+    fetchMlxDrafters(modelPath, controller.signal)
+      .then((found) => !controller.signal.aborted && setDrafters(found))
+      .catch(() => {});
+    return () => controller.abort();
+  }, [modelPath]);
+  const mode = mlxSpeculativeMode(
+    config.speculativeType ??
+      resolveSpeculativeType(null, speculativeFallback, true),
+  );
+  return (
+    <>
+      <div className={ROW_CLASS}>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={LABEL_CLASS_WRAP}>Speculative Decoding</span>
+          <InfoHint>
+            Faster generation. Auto uses the first cached drafter (an MTP head
+            or assistant, then DFlash2, DFlash, DSpark, EAGLE-3), tunes the
+            draft length to this machine and drafts only while that is faster.
+            Choose a kind to force it. Every drafter also copies repeated text;
+            Ngram copies without one. Drafters are read from the local Hugging
+            Face cache, never downloaded.
+          </InfoHint>
+        </div>
+        <Select
+          value={mode}
+          onValueChange={(v) =>
+            update({
+              speculativeType: v,
+              specDraftNMax: DRAFT_N_MAX_SPEC_TYPES.has(v)
+                ? config.specDraftNMax
+                : null,
+              specDraftModel: DRAFTER_MODEL_SPEC_TYPES.has(v)
+                ? config.specDraftModel
+                : null,
+            })
+          }
+        >
+          <SelectTrigger
+            animateRadius={false}
+            icon={ChevronDownStandardIcon}
+            iconClassName="size-3.5"
+            className={SELECT_TRIGGER_CLASS}
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+            {MLX_SPECULATIVE_TYPES.map((type) => (
+              <SelectItem key={type} value={type}>
+                {MLX_SPECULATIVE_TYPE_LABELS[type]}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      {DRAFT_N_MAX_SPEC_TYPES.has(mode) && (
+        <div className={ROW_CLASS}>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className={LABEL_CLASS}>Draft Tokens</span>
+            <InfoHint>
+              Tokens per draft: up to the drafter's depth (3 for MTP heads),
+              every step drafts exactly this many, even when plain decoding would
+              be faster (a copy of repeated text replaces a draft when it should
+              yield more). Above that depth, or for Ngram, it is a
+              ceiling and Unsloth decodes plainly when drafting would be slower.
+              Leave blank to let Unsloth tune it for this machine.
+            </InfoHint>
+          </div>
+          <input
+            type="number"
+            min={1}
+            max={16}
+            step={1}
+            value={config.specDraftNMax ?? ""}
+            placeholder="auto"
+            onChange={(event) => {
+              const parsed = Number.parseInt(event.target.value, 10);
+              update(
+                pinSpeculativeMode(config, mode, {
+                  specDraftNMax: Number.isFinite(parsed)
+                    ? Math.max(1, Math.min(16, parsed))
+                    : null,
+                }),
+              );
+            }}
+            aria-label="Speculative decoding draft tokens"
+            className={NUMBER_INPUT_CLASS}
+          />
+        </div>
+      )}
+      {DRAFTER_MODEL_SPEC_TYPES.has(mode) && (
+        <div className={ROW_CLASS}>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className={LABEL_CLASS}>Drafter</span>
+            <InfoHint>
+              A drafter from the local Hugging Face cache that fits this
+              model. Auto uses the model's own head or the first cached drafter
+              named for it.
+            </InfoHint>
+          </div>
+          <Select
+            value={config.specDraftModel ?? "auto"}
+            onValueChange={(v) =>
+              update(
+                pinSpeculativeMode(config, mode, {
+                  specDraftModel: v === "auto" ? null : v,
+                }),
+              )
+            }
+          >
+            <SelectTrigger
+              animateRadius={false}
+              icon={ChevronDownStandardIcon}
+              iconClassName="size-3.5"
+              aria-label="Speculative decoding drafter"
+              className={SELECT_TRIGGER_CLASS}
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+              <SelectItem value="auto">Auto</SelectItem>
+              {mlxDrafterChoices(drafters, mode, config.specDraftModel ?? null).map(
+                ([repo, label]) => (
+                  <SelectItem key={repo} value={repo}>
+                    {label}
+                  </SelectItem>
+                ),
+              )}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
+    </>
+  );
+}
+
 function MlxAdvancedSettings({
   config,
   update,
@@ -1179,23 +1606,29 @@ function MlxAdvancedSettings({
   servedByMlx,
   int8PrefillAvailable,
   onInt8PrefillChange,
+  offloadable,
+  offloadDecided,
+  offloadNotes,
+  speculativeFallback,
+  modelPath,
   onEditTemplate,
   templateOutcome,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
-  /** What the backend reported for this exact setting on the loaded model. */
   outcome: string | null;
-  /** KV quantization is MLX-only; a CUDA safetensors model has no such control. */
   servedByMlx: boolean;
   int8PrefillAvailable: boolean;
   onInt8PrefillChange: (checked: boolean) => void;
+  offloadable: readonly MlxOffloadablePart[];
+  offloadDecided: Record<MlxOffloadablePart, number | null> | null;
+  offloadNotes: Record<MlxOffloadablePart, string | null>;
+  speculativeFallback: string;
+  modelPath: string;
   onEditTemplate: () => void;
-  /** Why the loaded model could not take the override it was given. */
   templateOutcome: string | null;
 }) {
   return (
-    // Same row spacing as the GGUF rows, whose fragment sits in the list above.
     <div className="flex flex-col gap-5">
       {servedByMlx && (
         <div className="space-y-1">
@@ -1239,7 +1672,6 @@ function MlxAdvancedSettings({
       ) : null}
         </div>
       )}
-      {/* An enabled choice stays visible so it can be turned off when availability is unknown. */}
       {servedByMlx && (int8PrefillAvailable || config.mlxInt8Prefill) && (
         <div className={ROW_CLASS}>
           <div className="flex min-w-0 items-center gap-1.5">
@@ -1260,7 +1692,24 @@ function MlxAdvancedSettings({
         </div>
       )}
       {servedByMlx && (
+        <MlxSpeculativeRows
+          config={config}
+          update={update}
+          speculativeFallback={speculativeFallback}
+          modelPath={modelPath}
+        />
+      )}
+      {servedByMlx && (
         <ParallelSlotsRow config={config} update={update} hint={MLX_PARALLEL_HINT} />
+      )}
+      {servedByMlx && (
+        <MlxOffloadSettings
+          config={config}
+          update={update}
+          offloadable={offloadable}
+          decided={offloadDecided}
+          notes={offloadNotes}
+        />
       )}
       <div className="space-y-1">
         <ChatTemplateSetting
@@ -1276,8 +1725,7 @@ function MlxAdvancedSettings({
   );
 }
 
-/** Mmap/Mlock, with the note that says when Settings wins. Its own component because it
- *  subscribes to the Model Memory settings and must keep following them. */
+/** Its own component because it must keep following the Model Memory settings. */
 function LoadModeRow({
   config,
   update,
@@ -1366,6 +1814,7 @@ function GgufAdvancedSettings({
   moeLayersInputRef,
   onExtraArgsLoadableChange,
   draftKey,
+  focusParallelSlots,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
@@ -1379,25 +1828,17 @@ function GgufAdvancedSettings({
   gpuDevices: SystemGpuDevice[];
   gpuLayersInputRef?: Ref<NumericValueInputHandle>;
   moeLayersInputRef?: Ref<NumericValueInputHandle>;
-  /** Which stored entries the extra-arguments row reads, most specific first. */
   onExtraArgsLoadableChange: (loadable: boolean) => void;
   draftKey: string;
+  focusParallelSlots: boolean;
 }) {
   const batchAdviceId = useId();
   const ubatchAdviceId = useId();
   const llamaBackend = useLlamaCppBackend();
-  // llama-server aborts below 2 and below the slot count, so the loader raises the emitted value
-  // to max(slots, 2). Surfaced so the number typed here is not silently different from the
-  // one that runs. With Slots blank only the hard floor of 2 is asserted.
-  // GGML_ASSERT(n_tokens_all <= cparams.n_batch) below 2, and
-  // GGML_ASSERT(n_outputs_max <= cparams.n_outputs_max) below the slot count.
+  // llama-server asserts batch >= 2 and >= slot count, so the loader raises it to max(slots, 2).
   const batchFloor = Math.max(2, config.nParallel ?? 2);
   const batchBelowFloor = config.nBatch != null && config.nBatch < batchFloor;
-  // llama.cpp runs at min(batch, ubatch) and the /status echo is the REQUESTED size, so the
-  // control would keep showing a value the server never used: batch 8 / ubatch 4096 measured 8.8x
-  // slower. Measured against the EMITTED batch, or the two advisories contradict, since batch 4 /
-  // slots 8 launches at 8. A blank batch runs llama.cpp's own 2048, which extras or
-  // LLAMA_ARG_BATCH can move without this page seeing it.
+  // llama.cpp runs at min(batch, ubatch) while /status echoes the request; judged on the emitted batch.
   const effectiveBatch =
     config.nBatch != null
       ? Math.max(config.nBatch, batchFloor)
@@ -1406,6 +1847,7 @@ function GgufAdvancedSettings({
     config.nUbatch != null && config.nUbatch > effectiveBatch;
   return (
     <>
+      <AdvancedGroup title="Memory">
       <div className={ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS}>KV Cache Dtype</span>
@@ -1441,6 +1883,38 @@ function GgufAdvancedSettings({
         </Select>
       </div>
 
+      <GpuMemorySettings
+        config={config}
+        update={update}
+        layerCount={layerCount}
+        moeLayerCount={moeLayerCount}
+        isDiffusion={isDiffusion}
+        gpuDevices={gpuDevices}
+        gpuLayersInputRef={gpuLayersInputRef}
+        moeLayersInputRef={moeLayersInputRef}
+      />
+
+      {!isDiffusion && (
+        <div className={ROW_CLASS}>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className={LABEL_CLASS}>Vision</span>
+            <InfoHint>
+              Loads the vision projector so the model can read images. Turning
+              it off frees that VRAM for more layers on the GPU. Text generation
+              is unaffected either way.
+            </InfoHint>
+          </div>
+          <Switch
+            className="panel-switch shrink-0"
+            aria-label="Vision"
+            checked={!config.disableVision}
+            onCheckedChange={(checked) => update({ disableVision: !checked })}
+          />
+        </div>
+      )}
+      </AdvancedGroup>
+
+      <AdvancedGroup title="Speed">
       <div className={ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS_WRAP}>Speculative Decoding</span>
@@ -1459,8 +1933,7 @@ function GgufAdvancedSettings({
               specDraftNMax: DRAFT_N_MAX_SPEC_TYPES.has(v)
                 ? config.specDraftNMax
                 : null,
-              // Dropped with the drafter, like the depth above: the draft context exists only while a
-              // separate model is loaded.
+              // The draft context exists only while a separate model is loaded.
               specDraftCacheDtype: SEPARATE_DRAFT_MODEL_SPEC_TYPES.has(v)
                 ? config.specDraftCacheDtype
                 : null,
@@ -1561,7 +2034,12 @@ function GgufAdvancedSettings({
         </div>
       )}
 
-      <ParallelSlotsRow config={config} update={update} hint={GGUF_PARALLEL_HINT} />
+      <ParallelSlotsRow
+        config={config}
+        update={update}
+        hint={GGUF_PARALLEL_HINT}
+        focusOnMount={focusParallelSlots}
+      />
 
       {!isDiffusion && (
         <div className="space-y-1">
@@ -1655,8 +2133,6 @@ function GgufAdvancedSettings({
         </div>
       )}
 
-      {/* withoutUnsupportedDiffusionSettings forces tensorParallel back to false and the diffusion
-          runner never reads it, so the switch flipped back under the pointer. */}
       {!isDiffusion && (
         <div className={ROW_CLASS}>
           <div className="flex min-w-0 items-center gap-1.5">
@@ -1668,47 +2144,32 @@ function GgufAdvancedSettings({
           </div>
           <Switch
             className="panel-switch shrink-0"
+            aria-label="Tensor Parallelism"
             checked={config.tensorParallel}
             onCheckedChange={(checked) => update({ tensorParallel: checked })}
           />
         </div>
       )}
+      </AdvancedGroup>
 
-      {/* withoutUnsupportedDiffusionSettings forces disableVision back to false on a diffusion model
-          and the runner never reads it, so the switch would flip back under the pointer. */}
-      {!isDiffusion && (
-        <div className={ROW_CLASS}>
-          <div className="flex min-w-0 items-center gap-1.5">
-            <span className={LABEL_CLASS}>Vision</span>
-            <InfoHint>
-              Loads the vision projector so the model can read images. Turning
-              it off frees that VRAM for more layers on the GPU. Text generation
-              is unaffected either way.
-            </InfoHint>
-          </div>
-          <Switch
-            className="panel-switch shrink-0"
-            checked={!config.disableVision}
-            onCheckedChange={(checked) => update({ disableVision: !checked })}
-          />
-        </div>
-      )}
-
+      <AdvancedGroup title="Output">
       {!isDiffusion && (
         <div className={ROW_CLASS}>
           <div className="flex min-w-0 items-center gap-1.5">
             <span className={LABEL_CLASS}>Reasoning Budget</span>
             <InfoHint>
-              Maximum thinking tokens. -1 is unlimited and 0 turns reasoning
-              off.
+              Maximum thinking tokens. Leave blank for unlimited; 0 turns
+              reasoning off.
             </InfoHint>
           </div>
+          {/* Blank, not -1: a literal -1 made the next digit typed read -15 and clamp back. */}
           <input
             type="number"
             min={-1}
             max={2_147_483_647}
             step={1}
-            value={config.reasoningBudget}
+            value={config.reasoningBudget === -1 ? "" : config.reasoningBudget}
+            placeholder="unlimited"
             onChange={(event) => {
               const raw = event.target.value;
               if (raw === "") {
@@ -1755,23 +2216,12 @@ function GgufAdvancedSettings({
         </div>
       )}
 
-      <GpuMemorySettings
-        config={config}
-        update={update}
-        layerCount={layerCount}
-        moeLayerCount={moeLayerCount}
-        isDiffusion={isDiffusion}
-        gpuDevices={gpuDevices}
-        gpuLayersInputRef={gpuLayersInputRef}
-        moeLayersInputRef={moeLayersInputRef}
-      />
-
       <ChatTemplateSetting config={config} onEditTemplate={onEditTemplate} />
+      </AdvancedGroup>
 
-      {/* Host-side knobs, after the ones that shape the model itself. All three are llama-server's
-          own, and the diffusion runner launches no llama-server, so they are hidden for it. */}
+      {/* llama-server-only knobs; the diffusion runner launches no llama-server. */}
       {!isDiffusion && (
-        <>
+        <AdvancedGroup title="Server">
           <LoadModeRow config={config} update={update} />
 
           <div className={ROW_CLASS}>
@@ -1849,27 +2299,21 @@ function GgufAdvancedSettings({
               className={NUMBER_INPUT_CLASS}
             />
           </div>
-        </>
-      )}
 
-      {/* Last, because it is the escape hatch for everything the rows above do not cover, and
-          llama.cpp's last-wins parsing means these really are appended after them. GGUF only. */}
-      {!isDiffusion && (
-        <ExtraArgsRow
-          config={config}
-          update={update}
-          onLoadableChange={onExtraArgsLoadableChange}
-          draftKey={draftKey}
-        />
+          {/* Last: llama.cpp parsing is last-wins, and these are appended after the rows above. */}
+          <ExtraArgsRow
+            config={config}
+            update={update}
+            onLoadableChange={onExtraArgsLoadableChange}
+            draftKey={draftKey}
+          />
+        </AdvancedGroup>
       )}
     </>
   );
 }
 
-/** Pass-through llama-server arguments for this model. llama-server documents 283 flags and
- *  Unsloth manages about 115, so the long tail is a text box rather than 168 more controls.
- *  The boundary is `validate_extra_args`; this row shows that judgement early, plus a check
- *  against the flags THIS build documents. */
+/** The long tail of llama-server flags; validate_extra_args is the real boundary. */
 function ExtraArgsRow({
   config,
   update,
@@ -1883,20 +2327,16 @@ function ExtraArgsRow({
 }) {
   const [catalog, setCatalog] = useState<LlamaFlagCatalog | null>(null);
   const adviceId = useId();
-  // What is typed, not what is stored (argv tokens). On the draft, or the second editor
-  // re-quotes a half-typed line into balanced text and judges it loadable.
+  // The typed draft, not stored tokens, or the other editor re-quotes half-typed input.
   const edit = useSyncExternalStore(
     subscribeModelConfigDraft,
     () => readExtraArgsEditForDraft(draftKey),
   );
   const external = formatExtraArgs(config.llamaExtraArgs);
-  // Comparing against what the edit published, not the config, is what stops a re-quote per
-  // keystroke. Reset and hydration drop the edit outright.
+  // Comparing against the edit's own source stops a re-quote per keystroke.
   const text = edit && edit.source === external ? edit.text : external;
 
-  // Re-read on invalidation, not only on mount: updating llama.cpp from the banner replaces the
-  // binary while this panel stays open, and the old catalogue would judge arity against help
-  // text that no longer describes the server.
+  // Re-read on invalidation: a llama.cpp update replaces the binary while the panel stays open.
   const [catalogEpoch, setCatalogEpoch] = useState(0);
   useEffect(
     () => subscribeLlamaFlagCatalog(() => setCatalogEpoch((epoch) => epoch + 1)),
@@ -1906,8 +2346,7 @@ function ExtraArgsRow({
     let cancelled = false;
     loadLlamaFlagCatalog().then((loaded) => {
       if (!cancelled) {
-        // Null is "cannot verify": adopted as well, or the row would keep checking against the
-        // previous binary after an update it cannot read.
+        // Adopt null (cannot verify) too, or the row checks against the previous binary.
         setCatalog(loaded);
       }
     });
@@ -1916,9 +2355,7 @@ function ExtraArgsRow({
     };
   }, [catalogEpoch]);
 
-  // Model Memory removes some of these before the launch: apply_model_memory_policy emits its
-  // own load mode and strips the rest, so an --mlock typed here would be shown, saved, and
-  // never passed. A failed read leaves the row quiet rather than claiming a removal.
+  // apply_model_memory_policy strips load-mode flags, so a typed --mlock would never be passed.
   const [modelMemory, setModelMemory] = useState<ModelMemorySettings | null>(
     null,
   );
@@ -1941,41 +2378,34 @@ function ExtraArgsRow({
   const diagnostics = diagnoseExtraArgs(text, catalog, {
     gpuSelectionActive: config.selectedGpuIds != null,
     manualGpuMemory: config.gpuMemoryMode === "manual",
-    // Only manual mode with a resolved layer count of 0 or more rewrites --tensor-split; at Auto
-    // layers the launcher drops it, so the value never reaches llama-server.
+    // Only manual mode with layers >= 0 rewrites --tensor-split; at Auto the launcher drops it.
     gpuLayers: config.gpuLayers,
-    // The same floor the batch control shows: with Slots blank the count is the server default
-    // this page cannot see, so only the hard 2 holds. A build that clamps serves one slot
-    // whatever is chosen, so an explicit Slots value must not raise the floor.
+    // A clamping build serves one slot, so an explicit Slots value must not raise the floor.
     batchFloor: effectiveBatchFloor(config.nParallel, catalog),
     keepResident: modelMemory?.keepResident ?? false,
     noRamReserve: modelMemory?.noRamReserve ?? false,
   });
   const tokenCount = parseExtraArgs(text).tokens.length;
 
-  // The panel owns the Load button, and an error here is one validate_extra_args would refuse.
-  // Reported up rather than only painted red, so the load is not started just to fail.
+  // Reported up so the load is not started just to fail.
   const loadable = extraArgsAreLoadable(diagnostics);
   useEffect(() => {
     onLoadableChange(loadable);
-    // On the draft too: only this row reads the raw text. An unprobed row may only LOWER the
-    // verdict, or it clears a refusal another row verified; a parse failure still holds.
+    // An unprobed row may only lower the verdict.
     if (catalog !== null || !loadable) {
       setExtraArgsEditLoadableForDraft(draftKey, loadable);
     }
-    // Deliberately no cleanup: collapsing Advanced settings unmounts this row while the tokens
-    // stay in the config and still go out with the load. The panel clears it on model change.
+    // No cleanup: the row unmounts on collapse but its tokens still load; cleared on model change.
   }, [loadable, onLoadableChange, draftKey, catalog]);
 
   const commit = (next: string) => {
     const { tokens } = parseExtraArgs(next);
-    // Before the update, so the config change it causes still matches this edit's own source.
+    // Before the update, so the resulting config change matches this edit's source.
     setExtraArgsEditForDraft(draftKey, {
       text: next,
       source: formatExtraArgs(tokens.length > 0 ? tokens : null),
     });
-    // null, not [], so the panel's own "no flags" reads the same as the stored one; toApiOverride
-    // turns it into the explicit [] that clears the server's copy.
+    // null, not []; toApiOverride turns it into the explicit [] that clears the server copy.
     update({ llamaExtraArgs: tokens.length > 0 ? tokens : null });
   };
 
@@ -1997,7 +2427,6 @@ function ExtraArgsRow({
           </div>
         </InfoHint>
       </div>
-      {/* Grouped so the notes sit 4px under the field, as advice does elsewhere. */}
       <div className="space-y-1">
         <div className="panel-text-surface h-20 w-full overflow-hidden corner-squircle">
           <textarea
@@ -2047,9 +2476,8 @@ interface ModelConfigPageProps {
   initialConfig?: PerModelConfig | null;
   isDiffusion?: boolean;
   variant?: "page" | "sidebar";
-  /** Page variant only: render the built-in "Run settings" title block. A host that already shows
-   *  the model name as its page heading turns this off. */
   showHeader?: boolean;
+  focusField?: ModelConfigFocus;
 }
 
 export function ModelConfigPage({
@@ -2062,11 +2490,12 @@ export function ModelConfigPage({
   isDiffusion = false,
   variant = "page",
   showHeader = true,
+  focusField,
 }: ModelConfigPageProps) {
-  const rememberId = useId();
+  const saveStatusId = useId();
+  const alwaysLoadId = useId();
   const platformDeviceType = usePlatformStore((s) => s.deviceType);
-  // Apple Silicon specifically, and used ONLY for wording: "Unified" is what Apple calls its
-  // pool, where an AMD APU's is "Shared". NOT the signal for capacity - see hasUnifiedMemory.
+  // Wording only ("Unified" vs "Shared"); not the capacity signal, see hasUnifiedMemory.
   const isAppleUnifiedMemory = usePlatformStore((s) => s.appleSilicon);
   const platformChatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
   const mlxKvQuantReason = useChatRuntimeStore((s) => s.mlxKvQuantReason);
@@ -2085,6 +2514,16 @@ export function ModelConfigPage({
     useShallow(selectResidentEstimateSettings),
   );
   const mlxKvQuantNote = useChatRuntimeStore((s) => s.mlxKvQuantNote);
+  const loadedMlxPleOffloadRequested = useChatRuntimeStore(
+    (s) => s.loadedMlxPleOffloadRequested,
+  );
+  const loadedMlxExpertOffloadRequested = useChatRuntimeStore(
+    (s) => s.loadedMlxExpertOffloadRequested,
+  );
+  const loadedMlxPleOffload = useChatRuntimeStore((s) => s.loadedMlxPleOffload);
+  const loadedMlxExpertOffload = useChatRuntimeStore((s) => s.loadedMlxExpertOffload);
+  const mlxPleOffloadReason = useChatRuntimeStore((s) => s.mlxPleOffloadReason);
+  const mlxExpertOffloadReason = useChatRuntimeStore((s) => s.mlxExpertOffloadReason);
   const loadedMlxKvQuantRequested = useChatRuntimeStore(
     (s) => s.loadedMlxKvQuantRequested,
   );
@@ -2100,7 +2539,6 @@ export function ModelConfigPage({
   const loadedMaxContextLength = useChatRuntimeStore(
     (s) => s.maxContextLength,
   );
-  // What settings are stored under, which is not always what loads; the probes keep target.id.
   const configId = target.configId ?? target.id;
   const targetIsNpu = isNpuModelId(target.id);
   const gpuDevices = useGpuDevices();
@@ -2121,8 +2559,7 @@ export function ModelConfigPage({
   };
   const draftKey = modelConfigDraftKey(configId, target.ggufVariant);
   const liveSignature = loadedConfigSignature(loadedConfig);
-  // LAYOUT, above the prime: a live change remounts under the same key, and only layout
-  // cleanups run before the new instance re-primes. Released passively it deleted its draft.
+  // Layout effect: only layout cleanups run before a same-key remount re-primes.
   useLayoutEffect(() => retainModelConfigDraft(draftKey), [draftKey]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: liveSignature summarizes loadedConfig
   useLayoutEffect(() => {
@@ -2154,8 +2591,7 @@ export function ModelConfigPage({
   const remember = draftSnapshot?.remember ?? initialFallback.remembered;
   const savedRemember =
     draftSnapshot?.savedRemember ?? initialFallback.remembered;
-  // The peer's row may be refusing what is typed while this editor has none: Advanced starts
-  // collapsed, and the check below judges the TOKENS, which formatExtraArgs rebalances.
+  // The peer's row may refuse text this editor has none of while Advanced is collapsed.
   const sharedExtraArgsEdit = useSyncExternalStore(
     subscribeModelConfigDraft,
     () => readExtraArgsEditForDraft(draftKey),
@@ -2165,19 +2601,16 @@ export function ModelConfigPage({
     sharedExtraArgsEdit.source === formatExtraArgs(configState.llamaExtraArgs);
   const sharedExtraArgsRefused =
     sharedExtraArgsCurrent && sharedExtraArgsEdit.loadable === false;
-  // This editor's row keeps its refusal after unmounting, so a peer that fixed the text lifts it.
   const sharedExtraArgsCleared =
     sharedExtraArgsCurrent && sharedExtraArgsEdit.loadable === true;
-  // The live config, for the async reads below: an effect that closed over it would hold
-  // whatever it was when the request started.
+  // Live config for async reads; a closure would hold the value from request start.
   const configRef = useRef(configState);
   configRef.current = configState;
   const rememberRef = useRef(remember);
   rememberRef.current = remember;
   const setConfig = useCallback(
     (action: SetStateAction<PerModelConfig>) => {
-      // A plain value REPLACES, as the useState setter this stands in for does. Merging left
-      // Reset's DEFAULT_PER_MODEL_CONFIG, which names no GPU field, unable to clear a pick.
+      // A plain value replaces, like useState; merging could not clear a GPU pick on Reset.
       patchModelConfigDraft(draftKey, (current) =>
         typeof action === "function" ? action(current) : action,
       );
@@ -2197,30 +2630,23 @@ export function ModelConfigPage({
     [draftKey],
   );
   const [speculativeFallback] = useState(readPersistedSpeculativeType);
-  // Same substitution as speculativeFallback: only "manual" is persisted per model, so an absent
-  // mode means "follow the standing preference" rather than Auto, and pricing the absence as
-  // Auto rated a Manual launch against the wrong plan.
+  // Only "manual" is persisted, so absent means the standing preference, not Auto.
   const [gpuMemoryModeFallback] = useState(readPersistedGpuMemoryMode);
   const [templateOpen, setTemplateOpen] = useState(false);
-  // Raised by the extra-arguments row when what is typed is something validate_extra_args would
-  // refuse. Held by the panel rather than the row, since the row unmounts whenever Advanced
-  // settings collapse while its tokens stay in the config.
+  // Held by the panel because the row unmounts when Advanced collapses.
   const [extraArgsLoadable, setExtraArgsLoadable] = useState(true);
-  // True until the server-row read below settles: a load started before it lands sends none of the
-  // row's settings, and with Remember unchecked it forgets the row it never read.
+  // A load before the server-row read lands would send none of its settings.
   const [extraArgsHydrating, setExtraArgsHydrating] = useState(
     () => !isDiffusion,
   );
-  // The row does not withdraw its own objection when it unmounts, or collapsing Advanced settings
-  // would re-enable Load for arguments the backend refuses. Only a different model retires it.
+  // Only a different model retires the row's objection, not its unmount.
   // biome-ignore lint/correctness/useExhaustiveDependencies: keyed on the model, not on the setter
   useEffect(() => {
     setExtraArgsLoadable(true);
     setExtraArgsHydrating(!isDiffusion);
   }, [configId, target.ggufVariant, target.isGguf, isDiffusion]);
 
-  // Compare against what the backend was asked for, not what it applied: staging a new value
-  // must retire a verdict that answered a different request.
+  // Compare to what was requested, so a staged value retires a verdict for a different request.
   const chatTemplateOutcome =
     isActiveModel &&
     (configState.chatTemplateOverride ?? null) ===
@@ -2230,7 +2656,7 @@ export function ModelConfigPage({
   const mlxKvQuantOutcome =
     isActiveModel &&
     (configState.mlxKvQuant ?? null) === (loadedMlxKvQuantRequested ?? null)
-      ?  // Both, not either: dropping the note promises savings before the offset where quantization actually starts.
+      ? // Both: dropping the note promises savings before quantization starts.
         [mlxKvQuantReason, mlxKvQuantNote].filter(Boolean).join(". ") || null
       : null;
   const servedByMlx = isServedByMlx(
@@ -2246,14 +2672,13 @@ export function ModelConfigPage({
     hfToken || null,
   );
   const [int8PrefillConfirmOpen, setInt8PrefillConfirmOpen] = useState(false);
-  // Read live, not snapshotted at mount: the sidebar copy stays mounted while collapsed.
+  // Read live: the sidebar copy stays mounted while collapsed.
   const advancedPreference = useSyncExternalStore(
     subscribeAdvancedSettingsOpen,
     readAdvancedSettingsOpen,
     () => null,
   );
-  // Until the switch is used anywhere, a model carrying non-default advanced values opens the
-  // section itself. Frozen at mount so editing a field back to its default cannot close it.
+  // Frozen at mount so editing a field back to default cannot close the section.
   const [autoOpenAdvanced, setAutoOpenAdvanced] = useState(() =>
     hasNonDefaultAdvanced(configState),
   );
@@ -2266,20 +2691,31 @@ export function ModelConfigPage({
       setAutoOpenAdvanced(true);
     }
   }, []);
-  // Frozen like the rest of the auto-open decision, so editing the width does not reopen the
-  // section the user just closed.
   const [initialMlxKvQuant] = useState(() => configState.mlxKvQuant ?? null);
   const [initialMlxInt8Prefill] = useState(
     () => configState.mlxInt8Prefill ?? false,
+  );
+  const [initialMlxOffload] = useState(
+    () => configState.mlxPleOffload != null || configState.mlxExpertOffload != null,
   );
   // Applicability stays live, unlike the snapshot above: MLX can become available after mount,
   // and a width that starts applying then has to surface.
   const autoOpenForMlxKvQuant = servedByMlx && initialMlxKvQuant != null;
   const autoOpenForMlxInt8Prefill = servedByMlx && initialMlxInt8Prefill;
+  const autoOpenForMlxOffload = servedByMlx && initialMlxOffload;
+  // Opened to change one field: show its section for this visit, leaving the saved switch alone.
+  const [revealForFocus, setRevealForFocus] = useState(focusField != null);
   const showAdvanced =
-    advancedPreference ??
-    (autoOpenAdvanced || autoOpenForMlxKvQuant || autoOpenForMlxInt8Prefill);
-  const toggleAdvanced = saveAdvancedSettingsOpen;
+    revealForFocus ||
+    (advancedPreference ??
+      (autoOpenAdvanced ||
+        autoOpenForMlxKvQuant ||
+        autoOpenForMlxInt8Prefill ||
+        autoOpenForMlxOffload));
+  const toggleAdvanced = (open: boolean) => {
+    setRevealForFocus(false);
+    saveAdvancedSettingsOpen(open);
+  };
   const contextInputRef = useRef<NumericValueInputHandle>(null);
   const maxSeqLengthInputRef = useRef<NumericValueInputHandle>(null);
   const gpuLayersInputRef = useRef<NumericValueInputHandle>(null);
@@ -2306,7 +2742,6 @@ export function ModelConfigPage({
     ? false
     : templateDefaults.loading;
 
-  // Fetch GGUF header dims to size the GPU Memory sliders; the context also fills in below.
   const contextFetchKey = target.isGguf && !sharedVariantUnresolved
     ? `${target.id}\n${target.ggufVariant ?? ""}\n${hfToken || ""}\n${nativePathToken ?? ""}`
     : null;
@@ -2367,23 +2802,17 @@ export function ModelConfigPage({
   ]);
   const stagedDims =
     fetchedStagedDims?.key === contextFetchKey ? fetchedStagedDims : null;
-  // Tri-state on purpose: an inconclusive probe stays undefined so onRun hands "unknown" on.
-  // Collapsing it to false would let a compare pane inherit another model's split (#7574).
+  // Tri-state on purpose: collapsing unknown to false lets a compare pane inherit another split.
   const classifiedIsDiffusion = resolveStagedDiffusionClassification(
     isDiffusion,
     stagedDims,
   );
   const resolvedIsDiffusion = classifiedIsDiffusion === true;
-  // Speech, music and ASR GGUFs the backend runs on its audio runtime: no llama-server launches,
-  // so none of its knobs apply. Their own options live under Advanced on the Audio page.
+  // Audio-runtime GGUFs launch no llama-server, so none of its knobs apply.
   const audioRuntimeGguf =
     target.isGguf && isAudioRuntimeGguf(target.id, target.meta.audioType);
 
-  // The one field on this page whose stored value the local config may never have seen:
-  // llama_extra_args can be set through the overrides API with no UI involved, so an empty box
-  // would read as "none" and the first edit would drop them. Fetched, not guessed. A verdict
-  // reached before the catalogue arrived did not know this build's flags, so while the row is
-  // unmounted the panel re-judges the config once the catalogue lands.
+  // llama_extra_args can be set via the API with no UI, so fetch rather than assume none.
   const [hiddenCatalogEpoch, setHiddenCatalogEpoch] = useState(0);
   useEffect(
     () =>
@@ -2399,31 +2828,23 @@ export function ModelConfigPage({
     }
     const args = configState.llamaExtraArgs;
     if (args == null || args.length === 0) {
-      // The row leaves its objection standing when it unmounts, because those tokens still go out
-      // with the load. Once there are none there is nothing to object to: Reset with Advanced
-      // collapsed used to leave Load disabled.
+      // Reset with Advanced collapsed must re-enable Load.
       setExtraArgsLoadable(true);
       return;
     }
     let cancelled = false;
     loadLlamaFlagCatalog().then((catalog) => {
       if (cancelled || !catalog) {
-        // Null is "cannot verify": leaving the standing verdict alone is the same benefit of the doubt
-        // the row gives an unprobed build.
         return;
       }
       const loadable = extraArgsAreLoadable(
         diagnoseExtraArgs(formatExtraArgs(args), catalog, {
           gpuSelectionActive: configState.selectedGpuIds != null,
           manualGpuMemory: configState.gpuMemoryMode === "manual",
-          // The server-wide default when the Slots field is blank: that is the count the launch will
-          // serve, and llama-server aborts on a batch below it.
           batchFloor: effectiveBatchFloor(configState.nParallel, catalog),
         }),
       );
-      // Only ever tightens. This judges the TOKENS, and formatExtraArgs quotes them back into a
-      // balanced string, so an unclosed quote the row objected to reads as fine here and raising
-      // the verdict would re-enable Load over unfinished input.
+      // Only ever tightens: formatExtraArgs rebalances quotes, so this cannot see unfinished input.
       if (!loadable) {
         setExtraArgsLoadable(false);
       }
@@ -2442,20 +2863,14 @@ export function ModelConfigPage({
     hiddenCatalogEpoch,
   ]);
 
-  // The server copy is shared by Desktop, LAN, and tunnel origins, so hydrate the whole
-  // remembered config here; localStorage is only the immediate seed. This also runs while
-  // Advanced is closed, since the row reaches every load whether or not it is shown.
+  // The server copy is shared across Desktop, LAN and tunnel origins; localStorage is only a seed.
   // biome-ignore lint/correctness/useExhaustiveDependencies: the model is the identity
   useEffect(() => {
     if (resolvedIsDiffusion) {
-      // A diffusion model runs through the shim, which appends no llama-server flags, so it keeps
-      // Load free of this read.
       setExtraArgsHydrating(false);
       return;
     }
-    // The order the auto-switch loader tries, and for the same reason: the settings UI keys a local
-    // row by the path it loads from while configId is a derived alias, so reading the alias
-    // first let an older entry stay the one API loads apply.
+    // Same order as the auto-switch loader: load path first, then the derived configId alias.
     const loadId = target.id;
     const fileVariant =
       !target.ggufVariant && loadId.toLowerCase().endsWith(".gguf")
@@ -2468,34 +2883,27 @@ export function ModelConfigPage({
       ...(fileVariant ? [`${loadId}:${fileVariant}`] : []),
       configId,
     ].filter((key, index, all) => all.indexOf(key) === index);
-    // The draft alone, never a string built from `keys`: the hosts derive different candidate
-    // lists. Retaining an unedited draft clears it, so a fresh editor still sees a newer row.
+    // The draft alone: hosts derive different candidate key lists.
     if (isExtraArgsHydratedForDraft(draftKey)) {
       setExtraArgsHydrating(false);
       return;
     }
     let cancelled = false;
-    // What the config held BEFORE the request went out. Anything else at the end of it was typed
-    // while the request was in flight, and sanitizing that would rewrite live input.
+    // Anything changed after this was typed in flight; sanitizing it would rewrite live input.
     const configAtStart = configRef.current;
     const storedAtStart = resolveInitialConfig(configId, target.ggufVariant);
     const rememberAtStart = rememberRef.current;
     const localAtStart = configAtStart.llamaExtraArgs;
-    // The denylist, not the catalogue: sanitizing a stored list needs only the flags Unsloth
-    // refuses, and that route answers without running `llama-server --help`. A last-resort
-    // release, so a request that never settles cannot disable Load for good.
+    // Last-resort release so a request that never settles cannot disable Load forever.
     const release = setTimeout(() => setExtraArgsHydrating(false), 15000);
     Promise.all([
-      // Resolved by the backend, which owns the rules; the local resolver stays as the fallback for
-      // a backend that predates the parameter.
       fetchLoadModelOverride(loadId, configId, target.ggufVariant, keys).then(
         (row) => panelOverrideRow(row, target.isGguf),
       ),
       target.isGguf ? loadManagedLlamaFlags() : null,
     ])
       .then(([resolvedOverride, managed]) => {
-        // Marked here rather than before the request: StrictMode replays the effect, so a key marked
-        // up front would leave the first fetch cancelled and the box never filled in development.
+        // Marked here, not before the request: StrictMode replays the effect.
         if (cancelled) {
           return;
         }
@@ -2504,27 +2912,21 @@ export function ModelConfigPage({
           tokens: resolvedOverride?.llama_extra_args ?? [],
           explicit: Array.isArray(resolvedOverride?.llama_extra_args),
         };
-        // Through the resolver, not a literal lookup: the backend folds identities and reads whole
-        // entries in its own order. Sanitised before it becomes a request, since hydrating turns a
-        // stored list into an EXPLICIT one that /load validates strictly, so an install upgraded
-        // across a denylist change would otherwise stop loading a model that worked yesterday.
+        // Sanitised because hydration makes the list explicit, which /load validates strictly.
         const stored = sanitizeStoredExtraArgs(
           resolvedArgs.tokens,
           managed?.managed ?? new Set<string>(),
-          // The host's bounds, not the constants: a Windows server takes 24 KiB and holds a
-          // quoted-command budget as well, so trimming to 32 KiB here sends a list /load 400s on.
+          // The host's bounds: Windows takes 24 KiB plus a quoted-command budget.
           {
             maxBytes: managed?.maxBytes,
             windowsCommandBudget: managed?.windowsCommandBudget,
           },
         );
-        // A list this build refuses can equally have come from local storage, saved by a build that
-        // still allowed it, and nothing else would catch it while Advanced stays collapsed.
+        // A list saved by an older, more permissive build can come from local storage too.
         const local = target.isGguf
           ? configRef.current.llamaExtraArgs
           : undefined;
-        // Kept for the merge below as well as for the box: a row that carries no arguments leaves the
-        // local list standing, and handing back a refused list would re-enable Load.
+        // Handing back a refused list would re-enable Load.
         let sanitizedLocal = localAtStart;
         if (local != null && local.length > 0 && local === localAtStart) {
           const cleaned = sanitizeStoredExtraArgs(
@@ -2544,8 +2946,6 @@ export function ModelConfigPage({
             );
           }
         }
-        // The row as it should be read: its own fields, with the arguments it carries sanitized against
-        // what this build refuses.
         const resolvedRow = resolvedOverride
           ? {
               ...resolvedOverride,
@@ -2558,9 +2958,7 @@ export function ModelConfigPage({
               llamaExtraArgs: sanitizedLocal,
             })
           : null;
-        // What hydration would leave in the config: the row's list when it carries one, this browser's
-        // when it does not. Judged as a whole, or a local flag the expanded row already refused is
-        // declared loadable by a verdict read off the empty server list.
+        // Judged as a whole, or an empty server list would clear a locally refused flag.
         const hydratedArgs = serverConfig?.llamaExtraArgs ?? stored;
         const hydratedIsLoadable =
           !target.isGguf || hydratedArgs.length === 0
@@ -2594,11 +2992,12 @@ export function ModelConfigPage({
         // edit made while the request was in flight.
         // The edited check is load-bearing: an edit the OTHER editor made before this read
         // started is already in configAtStart, so the comparison below reads as untouched.
+        // By value: the primed draft is a new object, so identity refused every row on a fresh editor.
         if (
           resolvedRow &&
           serverConfig &&
           !isModelConfigDraftEdited(draftKey) &&
-          configRef.current === configAtStart &&
+          perModelConfigsEqual(configRef.current, configAtStart) &&
           rememberRef.current === rememberAtStart
         ) {
           const storedConfig = resolveInitialConfig(
@@ -2608,36 +3007,32 @@ export function ModelConfigPage({
           if (perModelConfigStorageChanged(storedAtStart, storedConfig)) {
             return;
           }
-          setExtraArgsLoadable(hydratedIsLoadable);
-          replaceModelConfigDraft(draftKey, serverConfig, {
-            remember: true,
-            savedRemember: true,
-          });
-          if (hasNonDefaultAdvanced(serverConfig)) {
-            setAutoOpenAdvanced(true);
+          // Pinned, the row is the pinned set; a model loaded once with another must keep showing it.
+          if (!(loadedConfig && getPinnedRunSettings(configId, target.ggufVariant) !== null)) {
+            setExtraArgsLoadable(hydratedIsLoadable);
+            replaceModelConfigDraft(draftKey, serverConfig, {
+              remember: true,
+              savedRemember: true,
+            });
+            if (hasNonDefaultAdvanced(serverConfig)) {
+              setAutoOpenAdvanced(true);
+            }
           }
-          // Unconditionally, because savePerModelConfig says "no settings" by DELETING the entry: a merge
-          // that comes out default is a clear that has to travel. Skipping it stranded the old flag
-          // for model-selector's quick select; writing when no record exists is already a no-op.
+          // Unconditionally: savePerModelConfig clears by deleting, so a default merge must still travel.
           const rememberedConfig = fromApiOverride(
             resolvedRow,
             storedConfig.config,
           );
-          // Same budget as any other write, so the same clean-up: eviction is silent and still reports
-          // success, and a dropped model would keep applying its server row to API loads. Not a
-          // Forget: only the mirrored fields go.
+          // Eviction is silent, so drop evicted models' mirrored server fields (not a Forget).
           const hydrationEvicted: {
             modelId: string;
             ggufVariant: string | null;
           }[] = [];
-          // Checked for the same reason the Save path checks it: the write can fail outright and say so
-          // in the return rather than throwing. Marked saved regardless, the panel would claim the
-          // settings are remembered while quick select and background loads, which read
-          // resolveInitialConfig and never open this panel, still saw the stale record or none.
+          // The write can fail via its return value; do not claim settings are remembered then.
           const hydrationSaved = savePerModelConfig(
             configId,
             target.ggufVariant,
-            rememberedConfig,
+            storedSpeculativeAuto(rememberedConfig, !target.isGguf),
             hydrationEvicted,
           );
           setSavedRemember(hydrationSaved);
@@ -2649,10 +3044,7 @@ export function ModelConfigPage({
           return;
         }
         if (stored.length === 0) {
-          // An EXPLICIT empty row is a decision, not an absence: the settings page writes one when the
-          // box is cleared for a quant whose bare-repository row still carries arguments. Left
-          // undefined the panel omits the field on Load, and /load carries the resident model's
-          // arguments over. Only when nothing was typed here meanwhile.
+          // An explicit empty row is a decision; left undefined /load carries the resident args over.
           const local = configRef.current.llamaExtraArgs;
           if (resolvedArgs.explicit && local === undefined) {
             setExtraArgsLoadable(true);
@@ -2664,11 +3056,8 @@ export function ModelConfigPage({
           }
           return;
         }
-        // Read from a ref rather than inside the updater below: an updater must stay free of side
-        // effects (StrictMode calls it twice), and this decides one.
+        // Decided outside the updater, which must be side-effect free (StrictMode calls it twice).
         if (configRef.current.llamaExtraArgs !== undefined) {
-          // Typed into while this was in flight: the row is judging that text and its verdict is the
-          // live one, so this answer about the stored list must not overwrite either.
           return;
         }
         setExtraArgsLoadable(hydratedIsLoadable);
@@ -2678,8 +3067,7 @@ export function ModelConfigPage({
             ? { ...current, llamaExtraArgs: stored }
             : current,
         );
-        // The frozen snapshot above was taken before this answer arrived, so without this a model whose
-        // arguments live only on the server opens looking like every default. A preference wins.
+        // Server-only arguments arrive after the auto-open snapshot, so open Advanced now.
         setAutoOpenAdvanced(true);
       })
       .catch(() => {
@@ -2687,7 +3075,7 @@ export function ModelConfigPage({
         // overrides service far more clearly.
       })
       .finally(() => {
-        // Including the failure: an overrides service that is down must not leave Load disabled for good.
+        // Including failure: a down overrides service must not leave Load disabled.
         if (!cancelled) {
           setExtraArgsHydrating(false);
         }
@@ -2709,11 +3097,8 @@ export function ModelConfigPage({
     resolvedIsDiffusion,
     gpuDevices,
   );
-  // Held for the window where Run is waiting on a budget PUT rather than on the load it looks like it started.
   const [budgetSettling, setBudgetSettling] = useState(false);
-  // The budget is on no per-model field, so changing it leaves this page at its baseline and the
-  // Reload button disabled, with the row asking for a reload the user could not start. Read
-  // off the same publish the row uses.
+  // The budget is not a per-model field, so track its reload requirement separately.
   const [budgetReloadRequired, setBudgetReloadRequired] = useState(false);
   useEffect(
     () =>
@@ -2737,8 +3122,7 @@ export function ModelConfigPage({
   };
   const update = (patch: Partial<PerModelConfig>) => {
     handleSharedConfigEdit();
-    // Every control lands here and nothing else does: the hydration effect's own sanitising
-    // writes go through setConfig, and marking those would have the read refuse its result.
+    // Hydration writes go through setConfig; marking those would make the read refuse its result.
     markModelConfigDraftEdited(draftKey);
     setConfig((current) => ({
       ...reconcileConfigGpuSelection(current, resolvedIsDiffusion, gpuDevices),
@@ -2746,13 +3130,10 @@ export function ModelConfigPage({
     }));
   };
 
-  // True for every mode that takes a draft depth, DSpark included, so this gates the Draft
-  // Tokens row rather than naming a drafter.
   const showDraftTokens =
     config.speculativeType != null &&
     DRAFT_N_MAX_SPEC_TYPES.has(config.speculativeType);
-  // Narrower than the row above: the dtype needs a second context, and only the sidecar modes
-  // always load one. MTP may read baked-in heads out of the target GGUF.
+  // Only sidecar modes always load a second context; MTP may use heads in the target GGUF.
   const showSpecDraftCacheDtype =
     config.speculativeType != null &&
     SEPARATE_DRAFT_MODEL_SPEC_TYPES.has(config.speculativeType);
@@ -2760,8 +3141,7 @@ export function ModelConfigPage({
     target.meta.contextLength ?? stagedDims?.contextLength ?? null;
   const activeLoadedContext =
     isActiveModel && target.isGguf ? loadedContextLength : null;
-  // resolveLoadMaxSeqLength returns 0 for a builtin-default GGUF load before it looks at the
-  // resident context, so the estimate must not fall back to it either.
+  // resolveLoadMaxSeqLength returns 0 for a builtin-default GGUF load, so do not fall back to it.
   const activePresetSource = useChatRuntimeStore((s) => s.activePresetSource);
   const minContext = CONTEXT_LENGTH_MIN;
   const maxContext = Math.max(
@@ -2783,36 +3163,16 @@ export function ModelConfigPage({
     maxContext,
   );
   const contextIsAuto = config.customContextLength == null;
-  const contextInputValue = contextIsAuto
-    ? Math.min(
-        Math.max(
-          activeLoadedContext ?? AUTO_OFFLOAD_CONTEXT_LENGTH,
-          minContext,
-        ),
-        maxContext,
-      )
-    : contextValue;
-  const contextSliderValue = contextIsAuto ? 0 : contextValue;
-  const setContextLength = (v: number) => update({ customContextLength: v });
-  const setContextSliderValue = (v: number) =>
-    update({ customContextLength: v === 0 ? null : v });
   const rawBaseline = loadedConfig ?? DEFAULT_PER_MODEL_CONFIG;
   const baseline = resolvedIsDiffusion
     ? withoutUnsupportedDiffusionSettings(rawBaseline, gpuIndexKind)
     : rawBaseline;
-  const platform = usePlatformStore();
-  const targetIsMlx = isServedByMlx(
-    target.isGguf,
-    platform.deviceType,
-    platform.chatOnlyReason,
-  );
+  const targetIsMlx = servedByMlx;
   const pinsContextLength = targetIsMlx || targetIsNpu;
   const atBaseline = perModelConfigsEqual(config, baseline, {
     followGlobal: true,
   });
-  // The fitted value is an outcome, not an override. Auto stays at the default even
-  // when a loaded model reports less than its native context. A non-GGUF pin is an
-  // override too, read from whichever field it was saved in.
+  // The fitted value is an outcome, not an override.
   const contextAtDefault = !target.isGguf
     ? savedContextPin(config) == null
     : config.customContextLength == null;
@@ -2828,10 +3188,7 @@ export function ModelConfigPage({
         ? target.meta.contextLength
         : modelMaxPosition.maxPositionEmbeddings,
     ) ?? MAX_SEQ_LENGTH_MAX;
-  // The pin, else the length a self-sizing backend would serve, so the control states a
-  // context rather than declining to. Only an unread window falls back to the app default,
-  // and Reset clears the pin to null so no fallback may rebuild one from a runtime value.
-  // Reported as it stands, not snapped to the request step: 2,056 would read 2,048.
+  // Reported as is, not snapped to the request step.
   const servedWindow = (value: unknown) =>
     typeof value === "number" && Number.isFinite(value) && value > 0
       ? Math.floor(value)
@@ -2839,23 +3196,16 @@ export function ModelConfigPage({
   const mlxNativeWindow = targetIsMlx
     ? servedWindow(modelMaxPosition.maxPositionEmbeddings)
     : null;
-  // What a load would serve. The backend clamps an auto-sized window to the request
-  // ceiling, so a wider native one (Scout declares 10,485,760) would name a length no
-  // load can serve. Native above stays raw: metadata, not a promise.
+  // The backend clamps auto-sized windows to the request ceiling.
   const mlxProspectiveWindow =
     mlxNativeWindow == null
       ? null
       : Math.min(mlxNativeWindow, MAX_SEQ_LENGTH_MAX);
-  // An auto-fit-below-native GGUF shows activeLoadedContext while
-  // customContextLength stays null. If the user fixes GPU Layers (Manual) and
-  // remembers, pin that shown context so a later fresh load keeps the fitted
-  // placement instead of sending native/0 for fixed layers and recreating the OOM.
+  // Pin the shown fitted context when layers are fixed, or a fresh load recreates the OOM.
   const loadableConfig = resolvedIsDiffusion
     ? withoutUnsupportedDiffusionSettings(config, gpuIndexKind)
     : config;
-  // A model classified as diffusion after the box was typed into keeps the row's objection while
-  // the arguments are stripped from what loads, and the row does not withdraw it on unmount.
-  // Retired here, or Load stays disabled over arguments the request no longer carries.
+  // Reclassification as diffusion strips the args, so retire the row's objection here.
   // biome-ignore lint/correctness/useExhaustiveDependencies: keyed on the classification, not on the setter
   useEffect(() => {
     if (resolvedIsDiffusion) {
@@ -2869,8 +3219,6 @@ export function ModelConfigPage({
     loadableConfig.gpuLayers >= 0 &&
     loadableConfig.customContextLength == null &&
     activeLoadedContext != null;
-  // Kept as-is so isDefaultConfig clears a remembered override rather than pinning the
-  // app default; the write rule already settled which field holds the pin.
   const runtimeConfig = target.isGguf
     ? pinFixedLayerContext
       ? { ...loadableConfig, customContextLength: activeLoadedContext }
@@ -2878,10 +3226,7 @@ export function ModelConfigPage({
     : loadableConfig;
   const runtimeGpuMemoryMode =
     runtimeConfig.gpuMemoryMode ?? gpuMemoryModeFallback;
-  // Priced against the config that would actually load, at the context on screen. Diffusion
-  // stands down, since its runner allocates on a different plan. The tri-state is read as a
-  // tri-state, not through resolvedIsDiffusion: a GGUF still being classified may be
-  // DiffusionGemma, and guessing paints a footprint from the wrong plan that never clears.
+  // Read the classification as a tri-state: an unclassified GGUF may be DiffusionGemma.
   const memoryEstimateRequest =
     shouldRequestMemoryEstimate({
       isGguf: Boolean(target.isGguf),
@@ -2893,13 +3238,10 @@ export function ModelConfigPage({
           ggufVariant: target.ggufVariant ?? null,
           hfToken: hfToken || null,
           nativePathToken,
-          // The context the Load button sends, not the one the control displays: an unset length with no
-          // header yet shows 32,768 and loads at native.
+          // The context Load sends, not the displayed one (which shows 32,768 before the header).
           nCtx: resolveEstimateContext(
             runtimeConfig.customContextLength ?? null,
             activeLoadedContext,
-            // The two shapes where resolveLoadMaxSeqLength answers 0 before it reaches the resident
-            // context: --fit owns the sizing, or a builtin-default preset on a GGUF load.
             (target.isGguf === true &&
               runtimeGpuMemoryMode === "manual" &&
               (runtimeConfig.gpuLayers ?? GPU_LAYERS_AUTO) < 0) ||
@@ -2910,6 +3252,8 @@ export function ModelConfigPage({
             ? null
             : resolveMlxEstimateContext(savedContextPin(config)),
           mlxKvQuant: runtimeConfig.mlxKvQuant ?? null,
+          mlxPleOffload: targetIsMlx ? (runtimeConfig.mlxPleOffload ?? null) : null,
+          mlxExpertOffload: targetIsMlx ? (runtimeConfig.mlxExpertOffload ?? null) : null,
           nParallel: runtimeConfig.nParallel,
           nBatch: runtimeConfig.nBatch,
           nUbatch: runtimeConfig.nUbatch,
@@ -2918,8 +3262,13 @@ export function ModelConfigPage({
           // override sends null, which the backend reads as Auto, while the selector has been showing
           // the global fallback. With the global Off and an 11 GB DSpark sidecar in the repo, the row
           // charged the sidecar for a load that disables it.
-          speculativeType: runtimeConfig.speculativeType ?? speculativeFallback ?? null,
+          speculativeType: resolveSpeculativeType(
+            runtimeConfig.speculativeType,
+            speculativeFallback,
+            targetIsMlx,
+          ),
           specDraftNMax: runtimeConfig.specDraftNMax,
+          specDraftModel: targetIsMlx ? (runtimeConfig.specDraftModel ?? null) : null,
           specDraftCacheType: runtimeConfig.specDraftCacheDtype ?? null,
           tensorParallel: runtimeConfig.tensorParallel,
           disableVision: runtimeConfig.disableVision,
@@ -2935,6 +3284,24 @@ export function ModelConfigPage({
         }
       : null;
   const memoryEstimate = useMemoryEstimate(memoryEstimateRequest);
+  // The loaded model's reason answers only the request it was given.
+  const mlxOffloadNote = (
+    value: MlxOffload | undefined,
+    loadedRequested: MlxOffload,
+    reason: string | null,
+  ): string | null =>
+    isActiveModel && reason && (value ?? null) === (loadedRequested ?? null)
+      ? reason
+      : null;
+  const mlxOffloadNotes = {
+    ple: mlxOffloadNote(config.mlxPleOffload, loadedMlxPleOffloadRequested, mlxPleOffloadReason),
+    experts: mlxOffloadNote(
+      config.mlxExpertOffload,
+      loadedMlxExpertOffloadRequested,
+      mlxExpertOffloadReason,
+    ),
+  };
+  const mlxOffloadDecidedNow = mlxOffloadDecided(memoryEstimate);
   const mlxFittedWindow = targetIsMlx
     ? servedWindow(memoryEstimate.estimate?.contextFitted)
     : null;
@@ -2956,7 +3323,6 @@ export function ModelConfigPage({
     MAX_SEQ_LENGTH_MAX,
     Math.max(nativeMaxSeqLength, maxSeqLengthValue),
   );
-  // No resident credit without a reported context; pending settings cannot price it.
   // activeLoadedContext is GGUF-only; an MLX resident reports its served window here.
   const residentContext = servedWindow(
     targetIsMlx && isActiveModel ? loadedContextLength : activeLoadedContext,
@@ -2966,13 +3332,16 @@ export function ModelConfigPage({
     residentEstimateSettings,
     residentContext,
     targetIsMlx && !residentModelLoading
-      ? { kvQuant: loadedMlxKvQuantRequested ?? null }
+      ? {
+          kvQuant: loadedMlxKvQuantRequested ?? null,
+          pleOffload: loadedMlxPleOffload,
+          expertOffload: loadedMlxExpertOffload,
+        }
       : undefined,
   );
   const residentEstimate = useMemoryEstimate(residentEstimateRequest, {
     refreshMemory: true,
   });
-  // Only settled estimates can establish resident credit.
   const reclaimableEstimate =
     residentEstimateRequest &&
     residentEstimate.estimate?.available &&
@@ -2990,7 +3359,6 @@ export function ModelConfigPage({
     {
       cpuFallback: loadedCpuFallback,
       devices: gpuDevices,
-      // Fitted placement does not report its final layer count.
       gpuPlacementKnown:
         residentEstimateRequest?.gpuMemoryMode === "manual" &&
         residentEstimateRequest.gpuLayers != null &&
@@ -3001,17 +3369,10 @@ export function ModelConfigPage({
   );
   const [memoryBreakdownOpen, setMemoryBreakdownOpen] = useState(false);
   const inferenceGpu = useInferenceGpuInfo();
-  // A pin can only draw on the cards it names, so the verdict is measured against those: judging
-  // a one-card pin against a two-card total called an 8 GB load a fit on 16 GB it cannot reach.
+  // A pin can only use the cards it names, so judge the fit against those.
   const pinnedGpuIds = runtimeConfig.selectedGpuIds;
-  // Whether the devices THIS LOAD will use draw on one pool with the rest of the system, from
-  // the backend's per-device unified_memory flag rather than from the platform: adding VRAM to
-  // system RAM on a shared pool counts the same bytes twice. `.every()` is the right question
-  // for CAPACITY, since one independent-memory device means real VRAM beside system RAM: reading
-  // the host-wide flag collapsed totalCapacityGb from 143.5 to 15.5 GiB, and `.some()` under a pin
-  // reported 62.1. The empty set is excluded explicitly, since `[].every()` is true, and the Apple
-  // fallback stays host-wide, covering the window before the per-device probe lands. use-gpu-info.ts
-  // deliberately uses `.some()` for its own flag, which answers a different question.
+  // Per-device unified_memory, `.every()`: one discrete device means real VRAM beside RAM.
+  // `[].every()` is true, so the empty set is excluded; use-gpu-info.ts uses `.some()` on purpose.
   const hasUnifiedMemory = useMemo(() => {
     if (isAppleUnifiedMemory) return true;
     const governing =
@@ -3021,13 +3382,8 @@ export function ModelConfigPage({
     if (governing.length === 0) return false;
     return governing.every((device) => device.unifiedMemory === true);
   }, [gpuDevices, pinnedGpuIds, isAppleUnifiedMemory]);
-  // The VRAM Budget slider caps what the next load may claim per GPU, so the verdict is measured
-  // against the capped figure or the row contradicts the control above it. Subscribed as well
-  // as read once, since dragging must re-classify without a remount. Seeded with the loader's
-  // own default rather than a full card, since the read is async and null on failure.
-  // Seeded with the loader's own default: the read is async and returns null on an older backend, and
-  // in both windows the launch still applies VRAM_FRACTION_DEFAULT. Starting at 1 claimed a reserve
-  // no setting of that slider ever gives back.
+  // The budget slider caps per-GPU use; seeded with VRAM_FRACTION_DEFAULT, which loads apply
+  // until the async read lands (or on an older backend).
   const [memoryVramBudgetFraction, setMemoryVramBudgetFraction] =
     useState(DEFAULT_VRAM_FRACTION);
   useEffect(() => {
@@ -3045,22 +3401,14 @@ export function ModelConfigPage({
       unsubscribe();
     };
   }, []);
-  // What is free RIGHT NOW on the cards this load may use: _select_gpus admits on free-minus-
-  // reserve, not on totals. WARNS, never refuses: the bytes a pending load reclaims are mostly
-  // the resident model's own, which cannot be attributed per device from here. A fixed Manual
-  // placement is launched verbatim, so the server-wide budget never reaches the planner.
-  // A fixed Manual placement is launched verbatim -- load_model empties its probed GPU set and emits
-  // --gpu-layers N --fit off -- so the VRAM Budget never reaches the planner. Discounting capacity
-  // by it called a 16 GiB fixed placement on a 24 GiB card over budget at 50%. Auto is still budgeted.
+  // Fixed Manual placement launches verbatim (--fit off), so the VRAM budget does not apply.
   const memoryBudgetGovernsLaunch =
     runtimeGpuMemoryMode !== "manual" ||
     (runtimeConfig.gpuLayers ?? GPU_LAYERS_AUTO) < 0;
   const memoryEffectiveBudgetFraction = memoryBudgetGovernsLaunch
     ? memoryVramBudgetFraction
     : 1;
-  // _HOST_RAM_HEADROOM_MIB: the 2 GiB the loader keeps for the rest of the system before
-  // admitting an offloaded load. The HOST reading, not the sum-shaped one beside it, which is
-  // zeroed whenever ANY device shares system RAM. Hoisted for the free-capacity memo.
+  // _HOST_RAM_HEADROOM_MIB: the 2 GiB the loader keeps for the rest of the system.
   const memoryUsableSystemRamGb = Math.max(
     0,
     (inferenceGpu.systemRamAvailableHostGb || 0) - 2,
@@ -3069,10 +3417,7 @@ export function ModelConfigPage({
     0,
     2 - (inferenceGpu.systemRamAvailableHostGb || 0),
   );
-  // The rule itself lives in gpu-vram.ts, beside the aggregates it is built from and
-  // reachable from the test runner: memory-unified-apu.test.ts exercises the non-Apple
-  // unified path directly rather than reading these lines back as text, which is what
-  // broke twice as the block around them moved.
+  // The rule lives in gpu-vram.ts so tests exercise it directly.
   const {
     gb: memoryFreeGpuCapacityGb,
     known: memoryFreeGpuCapacityKnown,
@@ -3119,31 +3464,135 @@ export function ModelConfigPage({
       hostDedicatedGpuTotalGb: inferenceGpu.dedicatedMemoryTotalGb,
       hostSharesSystemRam: inferenceGpu.sharedMemory,
       systemRamTotalGb: inferenceGpu.systemRamTotalGb,
-      // The GENERAL signal, not the Apple-only one: a ROCm APU reports unified_memory per device and
-      // shares one pool exactly as Apple does, but reading appleSilicon here charged it as
-      // discrete VRAM PLUS host RAM, the same bytes twice.
+      // General signal: ROCm APUs share one pool like Apple, so appleSilicon would double count.
       unifiedMemory: hasUnifiedMemory,
-      // "One pool" and "how big is the pool" are different questions: Apple's memory_total_gb IS the
-      // machine's unified memory, while a ROCm APU's is a BIOS-carved window onto system RAM, so
-      // taking it as the ceiling reported 46.56 GiB on a 96 GiB machine.
+      // A ROCm APU's memory_total_gb is a BIOS window onto RAM, not the pool size.
       unifiedPoolReportedAsGpuMemory: isAppleUnifiedMemory,
     });
 
-  const rememberChanged = remember !== savedRemember;
-  const persistenceOnly = isActiveModel && atBaseline && rememberChanged;
-  const primaryActionLabel = persistenceOnly
-    ? remember
-      ? "Save settings"
-      : "Forget settings"
-    : isActiveModel
-      ? "Reload model"
-      : "Load model";
+  const storedRecord = useStoredPerModelConfig(configId, target.ggufVariant);
+  const matchesStored =
+    storedRecord.remembered &&
+    perModelConfigsEqual(
+      normalizePerModelConfig(storedSpeculativeAuto(runtimeConfig, targetIsMlx)),
+      storedRecord.config,
+    );
+  const modelName = modelDisplayName(configId);
+  const savedSets = useSavedRunSettings(configId);
+  const persistedSet = useSelectedRunSettings(configId, target.ggufVariant);
+  // undefined: follow what is stored. Shared, or the other editor saves this set's values elsewhere.
+  const pickedSet = draftSnapshot?.pickedSet;
+  const setPickedSet = useCallback(
+    (next: string | null | undefined) => setModelConfigDraftPickedSet(draftKey, next),
+    [draftKey],
+  );
+  const [naming, setNaming] = useState<RunSettingsNaming | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
+  useEffect(() => {
+    if (storedRecord.remembered && persistedSet === undefined) {
+      adoptRememberedRunSettings(configId, target.ggufVariant, storedRecord.config, modelName);
+    }
+  }, [storedRecord, persistedSet, configId, target.ggufVariant, modelName]);
+  const forSetStore = (next: PerModelConfig) =>
+    normalizePerModelConfig(storedSpeculativeAuto(next, targetIsMlx));
+  const persistedEntry =
+    typeof persistedSet === "string" ? findSavedRunSettings(savedSets, persistedSet) : null;
+  // Its record is gone, so the set no longer loads and Save would write defaults over it.
+  const selectionStale =
+    persistedEntry !== null &&
+    !extraArgsHydrating &&
+    !storedRecord.remembered &&
+    !savedRemember &&
+    !isDefaultConfig(forSetStore(persistedEntry.config));
+  useEffect(() => {
+    if (selectionStale) {
+      setSelectedRunSettings(configId, target.ggufVariant, null);
+      setPinnedRunSettings(configId, target.ggufVariant, null);
+    }
+  }, [selectionStale, configId, target.ggufVariant]);
+  const pinnedName = usePinnedRunSettings(configId, target.ggufVariant);
+  const pinnedEntry =
+    pinnedName === null ? null : findSavedRunSettings(savedSets, pinnedName);
+  const pinnedSet = pinnedEntry?.name ?? null;
+  // The runtime resolves auto fields, so match what the one-time load sent, not only saved sets.
+  const loadedOnceNamed = (loaded: PerModelConfig): string | null | undefined => {
+    const noted = getRunSettingsLoadedOnce(configId, target.ggufVariant);
+    if (!noted || !perModelConfigsEqual(forSetStore(loaded), forSetStore(noted.sent))) {
+      return undefined;
+    }
+    return noted.name === null || findSavedRunSettings(savedSets, noted.name)
+      ? noted.name
+      : undefined;
+  };
+  const inferOnce =
+    pinnedEntry !== null && pickedSet === undefined && loadedConfig != null && atBaseline;
+  // Record first, null (Default) included: a set holding the pin's values still names itself.
+  const notedOnce = inferOnce ? loadedOnceNamed(loadedConfig) : undefined;
+  const loadedOnce =
+    notedOnce !== undefined
+      ? notedOnce
+      : inferOnce &&
+          !perModelConfigsEqual(forSetStore(loadedConfig), forSetStore(pinnedEntry.config))
+        ? (savedSets.find((entry) =>
+            perModelConfigsEqual(forSetStore(loadedConfig), forSetStore(entry.config)),
+          )?.name ?? (isDefaultConfig(forSetStore(loadedConfig)) ? null : undefined))
+        : undefined;
+  // Held past the first edit, else Save writes into the pinned set. A new load drops it.
+  useEffect(() => {
+    if (loadedOnce !== undefined) setPickedSet(loadedOnce);
+  }, [loadedOnce, setPickedSet]);
+  const wantedSet =
+    pickedSet !== undefined
+      ? pickedSet
+      : loadedOnce !== undefined
+        ? loadedOnce
+        : selectionStale
+          ? null
+          : (persistedSet ?? null);
+  const selectedEntry =
+    wantedSet === null ? null : findSavedRunSettings(savedSets, wantedSet);
+  const selectedSet = selectedEntry?.name ?? null;
+  const loadsOnce = pinnedSet !== null && selectedSet !== pinnedSet;
+  const setUnsaved =
+    selectedEntry !== null &&
+    (!perModelConfigsEqual(forSetStore(runtimeConfig), forSetStore(selectedEntry.config)) ||
+      (!loadsOnce &&
+        ((persistedSet ?? null) !== selectedSet || (!matchesStored && !atDefault))));
+  // Arguments a load would refuse, or not read yet: saving them would store what cannot load.
+  const extraArgsBlocked =
+    (!extraArgsLoadable && !sharedExtraArgsCleared) ||
+    sharedExtraArgsRefused ||
+    extraArgsHydrating;
+  // Editing Default turns it into a new set, saved under this name on Save or Load.
+  const customName =
+    selectedSet === null && !atDefault ? newRunSettingsName(savedSets, modelName) : null;
+  const canSave = naming
+    ? normalizeSavedRunSettingsName(naming.name) !== ""
+    : selectedSet === null
+      ? !atDefault || (savedRemember && !loadsOnce)
+      : setUnsaved;
+  const pickEdited = selectedSet === null ? !atDefault : setUnsaved;
+  // Always mounted: a status appearing on save would move Load.
+  const saveStatus = naming
+    ? ""
+    : loadsOnce && !pickEdited
+      ? `Loads once. Next loads use ${pinnedSet}.`
+      : selectedSet === null
+        ? !atDefault
+          ? "Unsaved changes"
+          : savedRemember
+            ? "Saved settings will be forgotten"
+            : "Using the default settings"
+        : setUnsaved
+          ? "Unsaved changes"
+          : pinnedSet !== null
+            ? "Loads every time"
+            : "Saved for this model";
+  const primaryActionLabel = isActiveModel ? "Reload model" : "Load model";
 
   const [engineReady, setEngineReady] = useState(true);
   const commitDraft = () => {
-    // Same-click Load/Reload: a numeric draft the user just typed is flushed only by that input's
-    // blur handler, which runs after this click closure captured the stale value, so commit
-    // every numeric input imperatively.
+    // Numeric drafts flush on blur after this closure captured them, so commit imperatively.
     const committedContext = target.isGguf
       ? contextInputRef.current?.commit()
       : undefined;
@@ -3176,8 +3625,7 @@ export function ModelConfigPage({
       committedGpuLayers != null ||
       committedMoeLayers != null;
 
-    // The peer's focused input commits on blur during this click, into the shared draft, and
-    // the refs above reach only this editor's. So read the draft, not the render closure.
+    // The peer's focused input commits into the shared draft during this click.
     const liveDraftConfig = readModelConfigDraft(draftKey)?.config;
     const baseConfig = liveDraftConfig
       ? reconcileConfigGpuSelection(liveDraftConfig, resolvedIsDiffusion, gpuDevices)
@@ -3194,9 +3642,7 @@ export function ModelConfigPage({
             reasoningBudget: -1,
             reasoningBudgetMessage: "",
           };
-    // pinFixedLayerContext above was computed from the render-time config, before the same-click
-    // GPU Layers draft was committed, so recompute from effectiveConfig or a later fresh load
-    // recreates the OOM.
+    // Recompute from effectiveConfig: the same-click GPU Layers draft was not yet committed.
     const effectivePinFixedLayerContext =
       target.isGguf &&
       effectiveConfig.gpuMemoryMode === "manual" &&
@@ -3209,7 +3655,6 @@ export function ModelConfigPage({
         ? { ...effectiveConfig, customContextLength: activeLoadedContext }
         : effectiveConfig
       : runtimeConfig;
-    // Non-GGUF load substitutes the resolved max sequence length; recompute from the committed draft.
     const effectiveMaxSeqLengthValue =
       committedMaxSeqLength == null && !peerChanged
         ? maxSeqLengthValue
@@ -3218,24 +3663,33 @@ export function ModelConfigPage({
     return { effectiveConfig, effectiveRuntimeConfig, effectiveMaxSeqLengthValue };
   };
 
-  const persistConfig = (next: PerModelConfig) => {
+  const persistConfig = (next: PerModelConfig, keep = selectedSet !== null) => {
     // Judge what storage keeps: savePerModelConfig normalizes first, so the raw object over-reports.
-    const normalized = normalizePerModelConfig(next);
+    const normalized = normalizePerModelConfig(storedSpeculativeAuto(next, targetIsMlx));
     const evicted: { modelId: string; ggufVariant: string | null }[] = [];
-    const saved = remember
+    // Only remembered settings can be forgotten: a seeded or failed read must not delete unseen rows.
+    const forgets = !keep && savedRemember;
+    const saved = keep
       ? savePerModelConfig(configId, target.ggufVariant, normalized, evicted)
-      : deletePerModelConfig(configId, target.ggufVariant);
+      : forgets
+        ? deletePerModelConfig(configId, target.ggufVariant)
+        : true;
     // Mirror to the server so an API load gets these settings, not app defaults. Best-effort, and
     // skipped when the localStorage write failed or the two would permanently disagree. Gated on
     // auto-switch reach, not GGUF-ness: the resolver skips a materialized Ollama link, and a
     // native-path lease is the same.
     // A forget also drops the local records for every other spelling the server reports clearing.
-    if (saved && (target.apiLoadable ?? target.isGguf) && !nativePathToken) {
+    if (
+      saved &&
+      (keep || forgets) &&
+      (target.apiLoadable ?? target.isGguf) &&
+      !nativePathToken
+    ) {
       syncModelOverride(
         configId,
         target.ggufVariant,
-        remember ? normalized : null,
-        remember
+        keep ? normalized : null,
+        keep
           ? {
               resetReasoningBudget:
                 baseline.reasoningBudget !== -1 &&
@@ -3247,13 +3701,11 @@ export function ModelConfigPage({
           : undefined,
       );
     }
-    // Only once the write landed: a blocked or full localStorage leaves the values on screen,
-    // and clearing anyway let the next read replace them with the older stored row.
+    // Only once the write landed, or the next read replaces on-screen values with the old row.
     if (saved) {
       clearModelConfigDraftEdited(draftKey);
     }
-    // Saving can push the local map over budget and drop other models, whose server entries would
-    // keep applying with nothing able to forget them. Not a Forget: only mirrored fields go.
+    // Evicted models' server entries would keep applying; clear their mirrored fields.
     for (const dropped of evicted) {
       syncModelOverride(dropped.modelId, dropped.ggufVariant, null, {
         keepLaunchFlags: true,
@@ -3262,34 +3714,115 @@ export function ModelConfigPage({
     return { saved, defaultConfig: isDefaultConfig(normalized) };
   };
 
-  const finishPersist = (defaultConfig: boolean) => {
-    const nextRemember = remember && !defaultConfig;
+  const finishPersist = (
+    defaultConfig: boolean,
+    keep = selectedSet !== null,
+    message?: string,
+  ) => {
+    const nextRemember = keep && !defaultConfig;
     setSavedRemember(nextRemember);
     setRemember(nextRemember);
     toast.success(
-      nextRemember
-        ? "Settings saved."
-        : remember
-          ? "Default settings kept."
-          : "Settings forgotten.",
+      message ??
+        (nextRemember
+          ? "Settings saved."
+          : keep
+            ? "Default settings kept."
+            : "Settings forgotten."),
     );
   };
 
-  const handleSave = () => {
+  const keepSelection = (into: string | null) => {
+    setSelectedRunSettings(configId, target.ggufVariant, into);
+    setPickedSet(undefined);
+  };
+
+  // Each quant loads from its own record and override, so the others sharing a set follow its saves
+  // and deletes, or a Load there writes their stale values back over it.
+  const syncOtherQuants = (quants: readonly string[], stored: PerModelConfig | null) => {
+    const own = (target.ggufVariant ?? "").trim().toLowerCase();
+    const mirrors = (target.apiLoadable ?? target.isGguf) && !nativePathToken;
+    const evicted: { modelId: string; ggufVariant: string | null }[] = [];
+    for (const quant of quants) {
+      if (quant.toLowerCase() === own) {
+        continue;
+      }
+      const variant = quant || null;
+      const saved = stored
+        ? savePerModelConfig(configId, variant, stored, evicted)
+        : deletePerModelConfig(configId, variant);
+      if (saved && mirrors) {
+        syncModelOverride(configId, variant, stored);
+      }
+    }
+    // As persistConfig: a model dropped to fit the budget must not keep applying from the server.
+    for (const dropped of evicted) {
+      syncModelOverride(dropped.modelId, dropped.ggufVariant, null, {
+        keepLaunchFlags: true,
+      });
+    }
+  };
+  const saveSharedSet = (name: string, committed: PerModelConfig): boolean => {
+    const stored = forSetStore(committed);
+    if (!saveRunSettings(configId, name, stored)) {
+      return false;
+    }
+    syncOtherQuants(quantsSelectingRunSettings(configId, name), stored);
+    return true;
+  };
+  const saveSetError = (name: string) =>
+    isRunSettingsLimitReached(configId, name)
+      ? `This model already has ${SAVED_RUN_SETTINGS_PER_MODEL_MAX} saved settings. Delete one to save these.`
+      : "Couldn't save these settings.";
+
+  // From the committed config: a number blurred by this very click is not in customName yet.
+  const committedCustomName = (committed: PerModelConfig) =>
+    isDefaultConfig(forSetStore(committed)) ? null : newRunSettingsName(savedSets, modelName);
+
+  /** Saves without loading; ``into`` null saves an edited Default as its custom set, else forgets. */
+  const handleSave = (
+    into: string | null = selectedSet,
+    message?: string,
+    pinned = pinnedSet,
+  ): boolean => {
     if (sharedVariantUnresolved) {
-      return;
+      return false;
+    }
+    // As the Save button: the name box's Save and Enter must not persist before these settle.
+    if (stagedMetadataPending || budgetSettling) {
+      return false;
     }
     const { effectiveRuntimeConfig } = commitDraft();
-    const { saved, defaultConfig } = persistConfig(effectiveRuntimeConfig);
+    const target = into ?? committedCustomName(effectiveRuntimeConfig);
+    const keep = target !== null;
+    // Never a forget while pinned: the pinned set is what loads.
+    if (!keep && pinned !== null) {
+      return false;
+    }
+    if (keep && extraArgsBlocked) {
+      toast.error("Fix the extra arguments before saving.");
+      return false;
+    }
+    if (keep && !saveSharedSet(target, effectiveRuntimeConfig)) {
+      toast.error(saveSetError(target));
+      return false;
+    }
+    if (pinned !== null && target !== pinned) {
+      setPickedSet(target);
+      toast.success(message ?? `Saved "${target}".`);
+      return true;
+    }
+    const { saved, defaultConfig } = persistConfig(effectiveRuntimeConfig, keep);
     if (!saved) {
       toast.error("Couldn't save settings for this model.");
-      return;
+      return false;
     }
+    keepSelection(target);
     // The page stays mounted, so show a context pinFixedLayerContext stored (else it reads "Auto").
     // Not on a forget: that stored nothing, and pinning here would change the next load.
     // setConfig, not update: this mirrors what was just saved, so the draft must stay unedited.
     if (
-      remember &&
+      keep &&
       effectiveRuntimeConfig.customContextLength !== config.customContextLength
     ) {
       setConfig((current) => ({
@@ -3297,7 +3830,133 @@ export function ModelConfigPage({
         customContextLength: effectiveRuntimeConfig.customContextLength,
       }));
     }
-    finishPersist(defaultConfig);
+    finishPersist(defaultConfig, keep, message ?? (keep ? `Saved "${target}".` : undefined));
+    return true;
+  };
+
+  const applyToPanel = (next: PerModelConfig) => {
+    // As Reset: an edit that drops the raw arguments text.
+    handleSharedConfigEdit();
+    markModelConfigDraftEdited(draftKey);
+    clearExtraArgsEditForDraft(draftKey);
+    const applied: PerModelConfig = {
+      ...DEFAULT_PER_MODEL_CONFIG,
+      ...next,
+      // null, not absent: absent makes a reload inherit the running process's arguments.
+      llamaExtraArgs: next.llamaExtraArgs ?? null,
+    };
+    setConfig(applied);
+    // Stored tokens replace the text an objection was about; the collapsed check only ever tightens.
+    setExtraArgsLoadable(true);
+    return applied;
+  };
+
+  // The model loads with whatever was picked last: picking takes effect without a Save.
+  const pickSet = (name: string | null, pinned = pinnedSet) => {
+    // A load settling its budget already captured its config; a pick now would disagree with it.
+    if (budgetSettling) {
+      return;
+    }
+    setNaming(null);
+    const entry = name === null ? null : findSavedRunSettings(savedSets, name);
+    const next = entry?.config ?? DEFAULT_PER_MODEL_CONFIG;
+    if (pinned !== null && entry?.name !== pinned) {
+      applyToPanel(next);
+      setPickedSet(entry?.name ?? null);
+      return;
+    }
+    // What the panel shows, explicit argument clear included: an omitted field keeps the server's old flags.
+    const { saved, defaultConfig } = persistConfig(applyToPanel(next), entry !== null);
+    if (!saved) {
+      setPickedSet(entry?.name ?? null);
+      toast.error("Couldn't save settings for this model.");
+      return;
+    }
+    keepSelection(entry?.name ?? null);
+    setSavedRemember(entry !== null && !defaultConfig);
+    setRemember(entry !== null && !defaultConfig);
+  };
+
+  const deleteSet = (name: string) => {
+    const wasSelected = name === selectedSet;
+    const otherQuants = quantsSelectingRunSettings(configId, name);
+    if (!deleteSavedRunSettings(configId, name)) {
+      toast.error("Couldn't delete these settings.");
+      return;
+    }
+    syncOtherQuants(otherQuants, null);
+    if (name === pinnedSet) {
+      pickSet(wasSelected ? null : selectedSet, null);
+    } else if (wasSelected) {
+      pickSet(pinnedSet);
+    }
+    toast.success(`Deleted "${name}".`);
+  };
+
+  const setAlwaysLoad = (on: boolean) => {
+    if (!on) {
+      setPinnedRunSettings(configId, target.ggufVariant, null);
+      return;
+    }
+    const name = selectedSet ?? customName;
+    if (name === null || !setPinnedRunSettings(configId, target.ggufVariant, name)) {
+      return;
+    }
+    const message = `"${name}" now loads every time.`;
+    if (selectedSet === null || setUnsaved) {
+      if (!handleSave(name, message, name)) {
+        setPinnedRunSettings(configId, target.ggufVariant, pinnedSet);
+      }
+      return;
+    }
+    pickSet(selectedSet, selectedSet);
+    toast.success(message);
+  };
+
+  // Renames the selected set; an edited Default not saved yet gets named before it is created.
+  const editName =
+    selectedSet !== null
+      ? () => setNaming({ mode: "rename", name: selectedSet, target: selectedSet })
+      : customName !== null
+        ? () => setNaming({ mode: "new", name: customName })
+        : null;
+
+  const submitNaming = () => {
+    if (!naming) {
+      return;
+    }
+    const name = normalizeSavedRunSettingsName(naming.name);
+    if (!name) {
+      return;
+    }
+    if (naming.mode === "rename") {
+      if (name !== naming.target && !renameSavedRunSettings(configId, naming.target, name)) {
+        toast.error("Another saved setting already has that name.");
+        return;
+      }
+      if (pickedSet === naming.target) {
+        setPickedSet(name);
+      }
+      setNaming(null);
+      return;
+    }
+    if (findSavedRunSettings(savedSets, name)) {
+      toast.error("Another saved setting already has that name.");
+      return;
+    }
+    if (handleSave(name)) {
+      setNaming(null);
+    }
+  };
+
+  const onSaveClick = () => {
+    if (naming) {
+      submitNaming();
+    } else if (selectedSet !== null) {
+      handleSave(selectedSet);
+    } else {
+      handleSave(customName);
+    }
   };
 
   const handleRun = () => {
@@ -3307,23 +3966,24 @@ export function ModelConfigPage({
     if (budgetSettling) {
       return;
     }
-    const { effectiveConfig, effectiveRuntimeConfig, effectiveMaxSeqLengthValue } =
-      commitDraft();
-    // Recheck the committed draft so Save/Forget reloads when needed.
-    const effectivePersistenceOnly =
-      isActiveModel &&
-      perModelConfigsEqual(effectiveConfig, baseline, {
-        followGlobal: true,
-      }) &&
-      rememberChanged;
-    const { saved, defaultConfig } = persistConfig(effectiveRuntimeConfig);
-    if (effectivePersistenceOnly) {
-      if (!saved) {
-        toast.error("Couldn't save settings for this model.");
-        return;
+    const { effectiveRuntimeConfig, effectiveMaxSeqLengthValue } = commitDraft();
+    // Load saves into the set too (an edited Default becomes one), so the two never drift apart.
+    let loadSet = selectedSet ?? committedCustomName(effectiveRuntimeConfig);
+    if (loadSet !== null && !saveSharedSet(loadSet, effectiveRuntimeConfig)) {
+      toast.error(`${saveSetError(loadSet)} Loading with them anyway.`);
+      // Never select a set that was not created.
+      if (loadSet !== selectedSet) {
+        loadSet = null;
       }
-      finishPersist(defaultConfig);
-      return;
+    }
+    const onceOnly = pinnedSet !== null && loadSet !== pinnedSet;
+    const { saved } = onceOnly
+      ? { saved: true }
+      : persistConfig(effectiveRuntimeConfig, loadSet !== null);
+    if (onceOnly) {
+      setPickedSet(loadSet);
+    } else if (saved) {
+      keepSelection(loadSet);
     }
     if (!saved) {
       toast.error("Couldn't save these settings, loading with them anyway.");
@@ -3332,26 +3992,50 @@ export function ModelConfigPage({
       target.isGguf || pinsContextLength
         ? effectiveRuntimeConfig
         : { ...effectiveRuntimeConfig, maxSeqLength: effectiveMaxSeqLengthValue };
-    // Same reason as the numeric commits above: the budget row flushes on unmount,
-    // which for this click lands after onRun has staged the load, so that load (the
-    // very one the control promises) would use the old fraction. A failed save must
-    // not swallow the load, hence finally; nothing staged stays synchronous.
-    // Closed before the settle, not after: the control has to stop taking edits at
-    // the moment this click owns the fraction, or a drag landing in between is the
-    // very race the lock exists to remove.
+    // The budget row flushes on unmount, after onRun staged the load, so save it first. Locked
+    // before the settle so no drag lands in between.
+    // Recorded as the runtime resolves it: inherited speculative decoding takes the standing mode.
+    const onceSent = {
+      ...effectiveLoadConfig,
+      speculativeType:
+        normalizeSpeculativeType(effectiveLoadConfig.speculativeType) ??
+        readPersistedSpeculativeType(),
+    };
+    noteRunSettingsLoadedOnce(
+      configId,
+      target.ggufVariant,
+      onceOnly ? { name: loadSet, sent: onceSent } : null,
+    );
+    // The load strips arguments managed since they were saved, so record what it submits.
+    const onceArgs = onceSent.llamaExtraArgs;
+    if (onceOnly && target.isGguf && classifiedIsDiffusion !== true && onceArgs?.length) {
+      void loadManagedLlamaFlags()
+        .then((managed) => {
+          const cleaned = sanitizeStoredExtraArgs(
+            onceArgs,
+            managed?.managed ?? new Set<string>(),
+            {
+              maxBytes: managed?.maxBytes,
+              windowsCommandBudget: managed?.windowsCommandBudget,
+            },
+          );
+          if (cleaned.length === onceArgs.length) return;
+          noteRunSettingsLoadedOnce(configId, target.ggufVariant, {
+            name: loadSet,
+            sent: { ...onceSent, llamaExtraArgs: cleaned },
+          });
+        })
+        .catch(() => undefined);
+    }
     setVramBudgetLocked(true);
     const stagedBudget = settleVramBudgetSave();
     if (stagedBudget) {
-      // The click is answered by a network round trip now, so the button stays live for as long as
-      // that takes and a second click would run onRun twice.
+      // Stays busy during the round trip, or a second click runs onRun twice.
       setBudgetSettling(true);
-      // Caught, not voided: finally alone re-rejects into an unhandled rejection, and the load would
-      // proceed on the old fraction with nothing said.
+      // Caught, not voided: finally alone re-rejects as an unhandled rejection.
       void stagedBudget
         .catch((error: unknown) => {
-            // Dropped rather than left for the next flush: the picker teardown that onRun triggers flushes
-            // it, and that PUT would race the load request this click is about to send. Only the retry
-            // goes, never a newer edit staged over it.
+            // Drop the retry, or the teardown flush would race this load's request.
           dropVramBudgetRetry();
           toast.error(
             error instanceof Error ? error.message : "Failed to save VRAM budget",
@@ -3364,7 +4048,6 @@ export function ModelConfigPage({
         });
       return;
     }
-    // Nothing to wait for, so the control never actually closes for the user.
     setVramBudgetLocked(false);
     onRun(effectiveLoadConfig, classifiedIsDiffusion);
   };
@@ -3379,17 +4062,17 @@ export function ModelConfigPage({
       }}
     >
       {variant === "page" && showHeader && (
-        // -ml-1.5 cancels the icon's inset in its 28px circle, so the chevron starts on
-        // the same left edge as the rows below.
+        // -ml-2.75: the button's 6px inset plus the glyph's ~5px, so the stroke aligns with the rows.
         <div className="flex items-center gap-2.5 pb-5">
           {onBack && (
             <button
               type="button"
               onClick={onBack}
-              className="nav-icon-btn -ml-1.5 shrink-0 text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white"
+              className="nav-icon-btn -ml-2.75 shrink-0 text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white"
               aria-label="Back to model list"
             >
-              <ChevronLeftIcon
+              <HugeiconsIcon
+                icon={ChevronLeftStandardIcon}
                 className="size-4"
                 strokeWidth={1.75}
               />
@@ -3416,7 +4099,26 @@ export function ModelConfigPage({
       />
       <div className="space-y-5">
         {!target.isGguf && !targetIsMlx && !targetIsNpu && !classifiedIsDiffusion && !target.meta.isLora && !target.meta.audioType && (
-          <InferenceEnginePicker parallelism={config.engineParallelism ?? "tensor"} onParallelismChange={engineParallelism => update({ engineParallelism })} precision={config.enginePrecision ?? "auto"} onPrecisionChange={enginePrecision => update({ enginePrecision })} value={config.engine ?? "auto"} onChange={engine => update({ engine })} onReadyChange={setEngineReady} onUse={handleRun} gpuIds={config.selectedGpuIds} onGpuChange={ids => update({ selectedGpuIds: ids, selectedGpuIndexKind: "physical" })} />
+          <InferenceEnginePicker parallelism={config.engineParallelism ?? "tensor"} onParallelismChange={engineParallelism => update({ engineParallelism })} precision={config.enginePrecision ?? "auto"} onPrecisionChange={enginePrecision => update({ enginePrecision })} kvCacheDtype={config.engineKvCacheDtype ?? "auto"} onKvCacheDtypeChange={engineKvCacheDtype => update({ engineKvCacheDtype })} gpuMemoryUtilization={config.engineGpuMemoryUtilization ?? null} onGpuMemoryUtilizationChange={engineGpuMemoryUtilization => update({ engineGpuMemoryUtilization })} seed={config.engineSeed ?? null} onSeedChange={engineSeed => update({ engineSeed })} value={config.engine ?? "auto"} onChange={engine => update({ engine })} onReadyChange={setEngineReady} onUse={handleRun} gpuIds={config.selectedGpuIds} onGpuChange={ids => update({ selectedGpuIds: ids, selectedGpuIndexKind: "physical" })} />
+        )}
+        {/* LoRA adapters keep the precision they were trained in, so they get no switch. */}
+        {!target.isGguf && !targetIsMlx && !targetIsNpu && !classifiedIsDiffusion && !target.meta.isLora && !target.meta.audioType && (config.engine ?? "auto") === "auto" && (
+          <div className={ROW_CLASS}>
+            <div className="flex min-w-0 items-center gap-1.5">
+              <span className={LABEL_CLASS}>Load in 4-bit</span>
+              <InfoHint>
+                Quantizes the model to 4 bits as it loads, using about a quarter
+                of the memory. Turn it off to run the model in 16-bit, the same
+                precision as a 16-bit LoRA or full fine-tune.
+              </InfoHint>
+            </div>
+            <Switch
+              className="panel-switch shrink-0"
+              aria-label="Load in 4-bit"
+              checked={config.loadIn4bit !== false}
+              onCheckedChange={(checked) => update({ loadIn4bit: checked })}
+            />
+          </div>
         )}
         {audioRuntimeGguf ? (
           <p className="text-ui-12 leading-snug text-muted-foreground">
@@ -3447,91 +4149,53 @@ export function ModelConfigPage({
             onExpandedChange={setMemoryBreakdownOpen}
           />
         )}
+        {isActiveModel && target.isGguf && !audioRuntimeGguf ? (
+          // The same pool the estimate above names: "Unified" on Apple Silicon, "Shared" on other one-pool machines.
+          <LoadedPlacementRow
+            pool={singleMemoryPool ? (isAppleUnifiedMemory ? "unified memory" : "shared memory") : null}
+          />
+        ) : null}
         {target.isGguf && !audioRuntimeGguf && (
           <>
-            <div className="space-y-2">
-              <div className={ROW_CLASS}>
-                <div className="flex min-w-0 items-center gap-1.5">
-                  <span className={LABEL_CLASS}>Context Length</span>
-                  <InfoHint>
-                    Drag all the way left for Auto, which picks a context that
-                    fits while keeping GPU speed. Custom values request an exact
-                    context; higher ones use more memory.
-                    {contextIsAuto && activeLoadedContext != null
-                      ? ` Auto currently selected ${activeLoadedContext.toLocaleString()} tokens.`
-                      : ""}
-                    {nativeContextLength != null
-                      ? ` This model's native context is ${nativeContextLength.toLocaleString()} tokens.`
-                      : ""}
-                  </InfoHint>
-                </div>
-                <NumericValueInput
-                  ref={contextInputRef}
-                  value={contextInputValue}
-                  min={minContext}
-                  max={maxContext}
-                  step={1}
-                  onChange={setContextLength}
-                  displayValue={contextIsAuto ? "Auto" : undefined}
-                  ariaLabel="Context Length"
-                  className={NUMBER_INPUT_CLASS}
-                  fixedWidth={true}
-                  size={8}
-                />
-              </div>
-              {/* Grouped so the warning sits 4px under the slider, as advice does elsewhere. */}
-              <div className="space-y-1">
-                {nativeContextLength != null ? (
-                  <div className="space-y-1">
-                    <Slider
-                      min={0}
-                      max={maxContext}
-                      step={128}
-                      value={[contextSliderValue]}
-                      onValueChange={([v]) => setContextSliderValue(v)}
-                      className="panel-slider"
-                      aria-label="Context Length"
-                      // Position 0 is Auto, not a zero-token context, so aria-valuenow alone reads as a length no
-                      // model has. The number is only spoken once one exists.
-                      thumbValueText={(v) =>
-                        v !== 0
-                          ? `${v.toLocaleString()} tokens`
-                          : activeLoadedContext != null
-                            ? `Auto, currently ${contextInputValue.toLocaleString()} tokens`
-                            : "Auto"
-                      }
-                    />
-                    <div className="flex justify-between text-ui-10 text-muted-foreground">
-                      <span>Auto</span>
-                      <span>{maxContext.toLocaleString()}</span>
-                    </div>
-                  </div>
-                ) : null}
-                {!contextIsAuto &&
-                  isActiveModel &&
-                  loadedMaxContextLength != null &&
-                  contextValue > loadedMaxContextLength && (
-                    <p className="text-ui-11 text-amber-500">
-                      {isAppleUnifiedMemory ? (
-                        <>
-                          Above Studio&apos;s free-memory estimate (
-                          {loadedMaxContextLength.toLocaleString()} tokens). It
-                          may still load, but macOS may have to compress or swap
-                          other apps and generation may slow down.
-                        </>
-                      ) : (
-                        <>
-                          Exceeds estimated VRAM capacity (
-                          {loadedMaxContextLength.toLocaleString()} tokens). The
-                          model may use system RAM.
-                        </>
-                      )}
-                    </p>
-                  )}
-              </div>
-            </div>
+            <GgufContextLengthSetting
+              value={contextIsAuto ? 0 : contextValue}
+              autoValue={Math.min(
+                Math.max(
+                  activeLoadedContext ?? AUTO_OFFLOAD_CONTEXT_LENGTH,
+                  minContext,
+                ),
+                maxContext,
+              )}
+              min={minContext}
+              max={maxContext}
+              nativeContextLength={nativeContextLength}
+              activeLoadedContext={activeLoadedContext}
+              inputRef={contextInputRef}
+              onChange={(v) => update({ customContextLength: v === 0 ? null : v })}
+              renderWarning={(v) =>
+                isActiveModel &&
+                loadedMaxContextLength != null &&
+                v > loadedMaxContextLength && (
+                  <p className="text-ui-11 text-amber-500">
+                    {isAppleUnifiedMemory ? (
+                      <>
+                        Above Unsloth&apos;s free-memory estimate (
+                        {loadedMaxContextLength.toLocaleString()} tokens). It
+                        may still load, but macOS may have to compress or swap
+                        other apps and generation may slow down.
+                      </>
+                    ) : (
+                      <>
+                        Exceeds estimated VRAM capacity (
+                        {loadedMaxContextLength.toLocaleString()} tokens). The
+                        model may use system RAM.
+                      </>
+                    )}
+                  </p>
+                )
+              }
+            />
 
-            {/* Above the block it reveals, so expanding never moves the switch. */}
             <AdvancedSettingsToggle
               checked={showAdvanced}
               onCheckedChange={toggleAdvanced}
@@ -3553,6 +4217,7 @@ export function ModelConfigPage({
                 moeLayersInputRef={moeLayersInputRef}
                 draftKey={draftKey}
                 onExtraArgsLoadableChange={setExtraArgsLoadable}
+                focusParallelSlots={focusField === "parallelSlots"}
               />
             )}
           </>
@@ -3576,7 +4241,7 @@ export function ModelConfigPage({
               }
               hint={
                 targetIsNpu
-                  ? `Tokens of context FastFlowLM loads the model with. Unset, it loads ${NPU_DEFAULT_CONTEXT_LENGTH.toLocaleString()}, or the model's limit if that is lower.`
+                  ? `Context the NPU loads the model with. Default ${NPU_DEFAULT_CONTEXT_LENGTH.toLocaleString()}, or the model's limit if lower.`
                   : undefined
               }
               onChange={(value) =>
@@ -3601,6 +4266,11 @@ export function ModelConfigPage({
                         ? setInt8PrefillConfirmOpen(true)
                         : update({ mlxInt8Prefill: false })
                     }
+                    offloadable={memoryEstimate.estimate?.mlxOffloadable ?? []}
+                    offloadDecided={mlxOffloadDecidedNow}
+                    offloadNotes={mlxOffloadNotes}
+                    speculativeFallback={speculativeFallback}
+                    modelPath={target.id}
                     onEditTemplate={() => setTemplateOpen(true)}
                     templateOutcome={chatTemplateOutcome}
                   />
@@ -3613,31 +4283,81 @@ export function ModelConfigPage({
 
       {/* Stacked in both variants: a row that wraps on demand reflows when the same click that
           commits a draft mounts Save settings, moving Load out from under the cursor. */}
-      <div className="mt-5 flex flex-col gap-2 border-t border-border pt-5">
-        <div className="flex min-w-0 items-center gap-2">
+      <div
+        className={cn(
+          "mt-5",
+          // Sticky offsets start inside the scroller's 18px padding: -bottom-4.5 reaches the panel edge,
+          // and the negative margins cover that padding with the panel's fill.
+          variant === "page" &&
+            "sticky -bottom-4.5 z-10 -mb-4.5 -ml-7 -mr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] bg-popover pb-4.5 pl-7 pr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] dark:bg-sidebar",
+        )}
+      >
+      {/* pt-4.25 plus the 1px rule: 18px above the picker, as below the buttons. */}
+      <div className="flex flex-col gap-3.5 border-t border-border pt-4.25">
+        <RunSettingsPicker
+          modelName={modelName}
+          sets={savedSets}
+          selected={selectedSet}
+          pinned={pinnedSet}
+          customName={naming ? null : customName}
+          onEditName={editName}
+          compact={variant === "sidebar"}
+          naming={naming}
+          // Until the server copy is read: a pick before then could not forget a row it has not seen.
+          disabled={sharedVariantUnresolved || extraArgsHydrating || budgetSettling}
+          onPick={(name) => pickSet(name)}
+          onNamingChange={setNaming}
+          onNamingSubmit={submitNaming}
+          onDelete={setPendingDelete}
+        />
+        {/* Always rendered so a status change never moves the buttons; the sidebar's name box already does. */}
+        <div
+          className={cn(
+            "-mt-1.5 -mb-0.5 flex min-h-[calc(1.375em+0.25rem)] min-w-0 items-center gap-2",
+            naming && (variant === "sidebar" ? "hidden" : "invisible"),
+          )}
+        >
           <Checkbox
-            id={rememberId}
-            checked={remember}
-            onCheckedChange={(checked) => {
-              // Not in setRemember, which the save path calls again to settle the box. An
-              // unticked Remember is a pending Forget the next read would otherwise re-tick.
-              markModelConfigDraftEdited(draftKey);
-              setRemember(checked === true);
-            }}
+            id={alwaysLoadId}
+            className="size-3.5 rounded-full border-[color-mix(in_oklab,var(--foreground)_calc(30%*var(--contrast-edge-gain,1)),transparent)] disabled:opacity-70"
+            aria-label="Always load with these settings"
+            aria-describedby={saveStatusId}
+            checked={selectedSet !== null && selectedSet === pinnedSet}
+            disabled={
+              naming !== null ||
+              (selectedSet === null && customName === null) ||
+              sharedVariantUnresolved ||
+              extraArgsHydrating ||
+              budgetSettling
+            }
+            onCheckedChange={(checked) => setAlwaysLoad(checked === true)}
           />
           <label
-            htmlFor={rememberId}
-            className="cursor-pointer select-none truncate text-ui-13 text-foreground"
+            htmlFor={alwaysLoadId}
+            title={
+              selectedSet === null && customName === null
+                ? "Change a setting or pick a saved one to always load it"
+                : "Every load of this model uses these settings, even after you load it once with others"
+            }
+            className="shrink-0 cursor-pointer select-none text-ui-12 text-foreground/80 peer-disabled:cursor-default peer-disabled:opacity-70"
           >
-            Remember for this model
+            {variant === "sidebar" ? "Always load" : "Always load with these settings"}
           </label>
+          <p
+            id={saveStatusId}
+            aria-live="polite"
+            data-state={saveStatus === "Unsaved changes" ? "dirty" : undefined}
+            className="ml-auto min-w-0 truncate text-ui-11 leading-snug text-muted-foreground data-[state=dirty]:text-amber-600 dark:data-[state=dirty]:text-amber-400"
+            title={saveStatus || undefined}
+          >
+            {saveStatus}
+          </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {/* Primary action first, like the Preset row's Save/Delete. */}
           <Button
+            variant="dark"
             type="button"
             size="sm"
-            className={FOOTER_BUTTON_CLASS}
             disabled={
               sharedVariantUnresolved ||
               ((config.engine ?? "auto") !== "auto" && !engineReady) ||
@@ -3646,65 +4366,49 @@ export function ModelConfigPage({
               (!extraArgsLoadable && !sharedExtraArgsCleared) ||
               sharedExtraArgsRefused ||
               extraArgsHydrating ||
-              (isActiveModel &&
-                atBaseline &&
-                !rememberChanged &&
-                !budgetReloadRequired)
+              (isActiveModel && atBaseline && !budgetReloadRequired)
             }
             onClick={handleRun}
           >
             {primaryActionLabel}
           </Button>
-          {/* Hidden with nothing to save or forget, else never-remembered models show a dead Forget. */}
-          {!persistenceOnly && (remember || savedRemember) && (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className={FOOTER_BUTTON_CLASS}
-              // Same gates as Load: an unclassified model or an in-flight budget PUT would persist
-              // settings the load path strips or has already captured. Forget stores nothing, so
-              // broken saved arguments must not lock it.
-              disabled={
-                sharedVariantUnresolved ||
-                stagedMetadataPending ||
-                budgetSettling ||
-                (remember &&
-                  ((!extraArgsLoadable && !sharedExtraArgsCleared) ||
-                    sharedExtraArgsRefused ||
-                    extraArgsHydrating))
-              }
-              onClick={handleSave}
-            >
-              {remember ? "Save settings" : "Forget settings"}
-            </Button>
-          )}
+          {/* Saves without loading; an edited Default becomes its custom setting. */}
           <Button
             type="button"
             variant="outline"
             size="sm"
-            className={`${FOOTER_BUTTON_CLASS} text-muted-foreground`}
-            disabled={atDefault}
-            onClick={() => {
-              handleSharedConfigEdit();
-              // Reset writes through setConfig, not update, so it marks the draft itself.
-              markModelConfigDraftEdited(draftKey);
-              // And drops the raw edit: token equality alone would make the discarded text
-              // current again the moment a later value formatted to the same tokens.
-              clearExtraArgsEditForDraft(draftKey);
-              setConfig({
-                // null, not the default's absent: absent omits the field, and the load then INHERITS the
-                // running process's arguments, so a reload after Reset kept the flags the box says are gone.
-                ...DEFAULT_PER_MODEL_CONFIG,
-                llamaExtraArgs: null,
-              });
-            }}
+            // Same gates as Load: an unclassified model or an in-flight budget PUT would persist
+            // settings the load path strips or has already captured.
+            disabled={
+              sharedVariantUnresolved ||
+              !canSave ||
+              stagedMetadataPending ||
+              budgetSettling ||
+              ((selectedSet !== null || customName !== null) && extraArgsBlocked)
+            }
+            onClick={onSaveClick}
+          >
+            Save
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="text-muted-foreground"
+            disabled={
+              (pinnedSet !== null
+                ? selectedSet === pinnedSet && !setUnsaved
+                : atDefault && selectedSet === null) ||
+              extraArgsHydrating ||
+              budgetSettling
+            }
+            onClick={() => pickSet(pinnedSet)}
           >
             Reset
           </Button>
           {target.isGguf && (
             <SharedRunConfigControls
-              className={FOOTER_BUTTON_CLASS}
+              className="text-muted-foreground"
               target={target}
               config={config}
               ready={!extraArgsHydrating}
@@ -3718,6 +4422,7 @@ export function ModelConfigPage({
             />
           )}
         </div>
+      </div>
       </div>
 
       <ChatTemplateEditorDialog
@@ -3746,13 +4451,46 @@ export function ModelConfigPage({
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
-              className="!bg-destructive !text-destructive-foreground hover:!bg-destructive/90"
               onClick={() => {
                 update({ mlxInt8Prefill: true });
                 setInt8PrefillConfirmOpen(false);
               }}
             >
               Turn on
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog
+        open={pendingDelete !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPendingDelete(null);
+          }
+        }}
+      >
+        <AlertDialogContent size="sm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete &ldquo;{pendingDelete}&rdquo;?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingDelete !== null &&
+              quantsSelectingRunSettings(configId, pendingDelete).length > 0
+                ? "Anything that loads with these settings goes back to the default settings."
+                : "These saved settings will be removed for this model."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                if (pendingDelete !== null) {
+                  deleteSet(pendingDelete);
+                }
+                setPendingDelete(null);
+              }}
+            >
+              Delete
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

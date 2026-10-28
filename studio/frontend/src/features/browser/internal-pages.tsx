@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronDownStandardIcon, ChevronRightStandardIcon, ChevronUpStandardIcon } from "@/lib/chevron-icons";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -21,9 +22,6 @@ import { Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
-  ArrowDown01Icon,
-  ArrowRight01Icon,
-  ArrowUp01Icon,
   Cancel01Icon,
   Delete02Icon,
   FilterMailIcon,
@@ -42,6 +40,8 @@ import { BookmarkEditPopover, bookmarkTitle, removeBookmarkWithUndo } from "./bo
 import { type Bookmark, useBrowserBookmarksStore } from "./bookmarks-store";
 import { ClearBrowsingDataDialog } from "./clear-data-dialog";
 import { type DownloadItem, type HistoryItem, useBrowserHistoryStore } from "./history-store";
+import { formatSize, revealLabelKey } from "./download-format";
+import { openTarget } from "./download-open";
 import { LinkContextMenu, MenuRow } from "./link-context-menu";
 import { nativeDownloadsExist, revealNativeDownload } from "./native-downloads";
 import { SiteFavicon } from "./site-favicon";
@@ -58,22 +58,6 @@ function addDays(day: number, days: number): number {
   const date = new Date(day);
   date.setDate(date.getDate() + days);
   return date.getTime();
-}
-
-function formatSize(bytes: number, locale: string): string {
-  const units = ["byte", "kilobyte", "megabyte", "gigabyte"] as const;
-  let value = bytes;
-  let unit = 0;
-  while (value >= 1000 && unit < units.length - 1) {
-    value /= 1000;
-    unit++;
-  }
-  return new Intl.NumberFormat(locale, {
-    style: "unit",
-    unit: units[unit],
-    unitDisplay: "short",
-    maximumFractionDigits: value < 10 && unit > 0 ? 1 : 0,
-  }).format(value);
 }
 
 function PageShell({
@@ -138,13 +122,10 @@ function Row({
   title: string;
   detail: string;
   time: string;
-  /** The page it came from, for the right-click menu; null for a file from chat. */
   url: string | null;
   onOpen?: () => void;
   onRemove: () => void;
-  /** Rows of the right-click menu ahead of Remove, and what to do with focus as it closes. */
   menu?: { rows: ReactNode; onCloseAutoFocus?: (event: Event) => void };
-  /** Something placed over the row, such as the anchor of a popover it opens. */
   anchor?: ReactNode;
 }) {
   const t = useT();
@@ -161,12 +142,12 @@ function Row({
         </>
       }
     >
-      <li className="group/row relative flex items-center gap-1 rounded-xl pr-1 hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]">
+      <li className="group/row relative flex items-center gap-1 rounded-md pr-1 hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]">
         <button
           type="button"
           onClick={onOpen}
           disabled={!onOpen}
-          className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-xl px-3 py-2 text-start focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default"
+          className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-md px-3 py-2 text-start focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default"
         >
           {icon}
           <span className="min-w-0 flex-1">
@@ -234,7 +215,6 @@ const RANGE_LABELS = {
   month: { menu: "browser.pages.lastMonth", heading: "browser.pages.lastMonth" },
 } as const;
 
-/** The visit times a range keeps: from `since` up to but not including `until`. */
 function rangeBounds(range: HistoryRange, dates: DateRange | undefined): { since: number; until: number } {
   const today = startOfDay(Date.now());
   if (range === "today") return { since: today, until: Infinity };
@@ -311,7 +291,7 @@ function HistoryRow({
               type="button"
               aria-label={t("browser.pages.pageActions", { title })}
               className={cn(
-                "flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-lg text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                "flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                 HOVER_WASH,
                 OPEN_WASH,
                 "data-[state=open]:text-foreground",
@@ -341,7 +321,7 @@ function DayCard({ label, children }: { label: string; children: ReactNode }) {
   const t = useT();
   const [open, setOpen] = useState(true);
   return (
-    <section className={cn("overflow-hidden rounded-xl border border-border", CARD_WASH)}>
+    <section className={cn("overflow-hidden rounded-2xl border border-border", CARD_WASH)}>
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
@@ -351,7 +331,7 @@ function DayCard({ label, children }: { label: string; children: ReactNode }) {
       >
         <h2 className="text-ui-14 font-medium text-foreground">{label}</h2>
         <HugeiconsIcon
-          icon={open ? ArrowUp01Icon : ArrowDown01Icon}
+          icon={open ? ChevronUpStandardIcon : ChevronDownStandardIcon}
           strokeWidth={2}
           className="size-4 text-muted-foreground"
         />
@@ -366,17 +346,17 @@ function PageCrumbs({ current }: { current: string }) {
   const t = useT();
   const openSettings = (tab?: "browser") => useSettingsDialogStore.getState().openDialog(tab);
   const crumb =
-    "cursor-pointer rounded-md text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+    "cursor-pointer rounded-full text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
   return (
     <nav className="flex items-center gap-2 px-6 pt-4 text-ui-14" aria-label={current}>
       <button type="button" className={crumb} onClick={() => openSettings()}>
         {t("settings.dialog.title")}
       </button>
-      <HugeiconsIcon icon={ArrowRight01Icon} strokeWidth={2} className="size-3.5 text-muted-foreground" />
+      <HugeiconsIcon icon={ChevronRightStandardIcon} strokeWidth={2} className="size-3.5 text-muted-foreground" />
       <button type="button" className={crumb} onClick={() => openSettings("browser")}>
         {t("browser.settingsTitle")}
       </button>
-      <HugeiconsIcon icon={ArrowRight01Icon} strokeWidth={2} className="size-3.5 text-muted-foreground" />
+      <HugeiconsIcon icon={ChevronRightStandardIcon} strokeWidth={2} className="size-3.5 text-muted-foreground" />
       <span className="text-foreground" aria-current="page">
         {current}
       </span>
@@ -487,7 +467,7 @@ function SearchWithFilter({
           </DropdownMenu>
         </label>
       </PopoverAnchor>
-      <PopoverContent align="end" sideOffset={6} className="browser-menu w-auto rounded-2xl p-0">
+      <PopoverContent align="end" sideOffset={6} className="browser-menu w-auto rounded-xl p-0">
         <Calendar
           mode="range"
           selected={dates}
@@ -654,14 +634,6 @@ function HistoryPage({ tabId }: { tabId: string }) {
   );
 }
 
-/** Each platform's own name for showing a file in its folder. */
-function revealLabelKey() {
-  const platform = typeof navigator === "undefined" ? "" : navigator.userAgent;
-  if (/Mac/i.test(platform)) return "browser.pages.showInFinder" as const;
-  if (/Windows/i.test(platform)) return "browser.pages.showInExplorer" as const;
-  return "browser.pages.showInFolder" as const;
-}
-
 /** Desktop downloads missing from disk, by native id; rechecked on window focus. */
 function useMissingDownloads(downloads: DownloadItem[]) {
   const [missing, setMissing] = useState<ReadonlySet<string>>(() => new Set());
@@ -686,7 +658,7 @@ function useMissingDownloads(downloads: DownloadItem[]) {
 }
 
 const ROW_ACTION = cn(
-  "flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-lg text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+  "flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
   HOVER_WASH,
 );
 
@@ -694,12 +666,12 @@ function DownloadRow({
   item,
   time,
   deleted,
-  onRevealFailed,
+  onActionFailed,
 }: {
   item: DownloadItem;
   time: string;
   deleted: boolean;
-  onRevealFailed: () => void;
+  onActionFailed: () => void;
 }) {
   const t = useT();
   const locale = useLocale();
@@ -712,11 +684,14 @@ function DownloadRow({
     ? () =>
         void revealNativeDownload(nativeId).catch(() => {
           toast.error(t("browser.pages.revealFailed", { name: item.name }));
-          onRevealFailed();
+          onActionFailed();
         })
     : undefined;
-  // Files aren't kept; the row reopens the source page.
-  const open = item.url ? () => useBrowserStore.getState().openUrl(item.url ?? "", { newTab: true }) : undefined;
+  // As the Downloads button opens it: the saved file on the desktop, else this session's copy or the source page.
+  const open = openTarget({ ...item, nativeId, keptId: item.id }, (name) => {
+    toast.error(t("browser.downloads.openFailed", { name }));
+    onActionFailed();
+  });
   return (
     <LinkContextMenu
       url={item.url}
@@ -749,7 +724,7 @@ function DownloadRow({
         >
           <span
             className={cn(
-              "flex size-10 shrink-0 items-center justify-center rounded-lg",
+              "flex size-10 shrink-0 items-center justify-center rounded-md",
               "bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)]",
             )}
           >
@@ -855,7 +830,7 @@ function DownloadsPage() {
                     item={item}
                     time={timeFormat.format(item.downloadedAt)}
                     deleted={item.nativeId !== undefined && missing.has(item.nativeId)}
-                    onRevealFailed={recheck}
+                    onActionFailed={recheck}
                   />
                 ))}
               </DayCard>

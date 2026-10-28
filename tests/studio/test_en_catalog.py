@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""`_en_catalog.en_string` resolves the key it is asked for, and every key the drivers ask for exists.
-
-The drivers look controls up by `en_string(...)` in browser jobs that take minutes to reach the
-lookup. A key renamed in en.ts would surface there as a locator timeout; checked here, it fails in
-a second with the key's name.
-"""
+"""A key renamed in en.ts would otherwise show up as a locator timeout minutes into a browser job."""
 
 from __future__ import annotations
 
@@ -98,7 +93,7 @@ def test_a_key_resolves_by_its_full_path(sample, key, expected):
 
 @pytest.mark.parametrize("terminator", ["\n", "\r\n", "\r", "\u2028", "\u2029"])
 def test_a_continuation_over_any_line_terminator_contributes_nothing(terminator):
-    # Decoded directly: reading a file with read_text folds CR LF to LF before the tokenizer.
+    # Decoded directly: read_text folds CR LF to LF before the tokenizer.
     assert _decode(f'"a\\{terminator}b"') == "ab"
 
 
@@ -160,7 +155,6 @@ def test_a_comment_is_not_read_as_a_key(sample):
 def test_the_shipped_catalog_resolves():
     assert en_string("composerSettings.showContext")
     assert en_string("settings.chat.showResponseModel")
-    # Single-quoted in en.ts because it contains double quotes.
     assert en_string("shell.dialog.deleteChat.description").endswith('"{name}"?')
 
 
@@ -214,35 +208,22 @@ def test_both_import_forms_mark_a_catalog_driver(tmp_path, source, imports):
 COMPOSER_WORKFLOW = HERE.parents[1] / ".github" / "workflows" / "studio-composer-compatibility.yml"
 
 
-# Where each catalog driver runs, pinned literally: the step's `if:` and the matrix leg it
-# needs. A new driver, or a restructured workflow, updates this table with it.
 DRIVER_STEPS = {
     "playwright_composer_settings.py": (
         "matrix.suite == 'browsers'",
         {"suite": "browsers"},
-        # Continues `run_driver "<log>" \`, whose failure the loop turns into the exit status.
         "python tests/studio/playwright_composer_settings.py || status=1",
     ),
     "selenium_composer_safari.py": (
         "${{ !cancelled() && matrix.suite == 'safari' }}",
         {"os": "macos-latest", "suite": "safari"},
-        # Last command of a bash -e step, so its exit status is the step's.
         "python tests/studio/selenium_composer_safari.py",
     ),
 }
 
 
 def test_the_composer_workflow_runs_on_a_catalog_only_change():
-    """Both browser drivers find their controls through `_en_catalog.py`, and this workflow is
-    the one that runs them. A PR that changes only the reader has to run it too.
-
-    Deliberately literal rather than an evaluator of Actions expressions and shell: the reader
-    is listed by name in `pull_request.paths` with no other filter; every catalog driver is
-    in `DRIVER_STEPS`; and each runs from a step whose `if:` is exactly the pinned one, on a
-    matrix leg that exists, as exactly the pinned command line (so `|| true`, an `echo` of it,
-    or any other respelling fails). A workflow restructured some other way updates this test
-    with it.
-    """
+    """The composer workflow must run when only the catalog reader changes; its driver steps are pinned."""
     import yaml
 
     workflow = yaml.safe_load(COMPOSER_WORKFLOW.read_text(encoding = "utf-8"))

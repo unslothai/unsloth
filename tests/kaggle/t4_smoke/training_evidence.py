@@ -1,34 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Did the optimizer actually change the adapter? Shared by the payloads.
-
-A run that applied no update at all still reports healthily: the loss is finite
-because a forward pass computes one, `torch.compile` engages on the forward,
-and the BASE model generates text without any adapter. So each payload asserts
-some logged ``grad_norm`` was finite and non-zero -- which is only decidable
-where ``grad_norm`` was logged. A Trainer change that stops emitting the field
-leaves an EMPTY list, and the obvious `if norms and not applied` spelling
-collapses "no usable norm" and "no norm logged" into a pass.
-
-Failing on that silence would be a failure invented rather than found, so this
-stops depending on trainer telemetry: LoRA's B matrices are exactly zero until
-an optimizer step lands on them, so fingerprints taken before and after
-training answer the question directly.
-
-The tiny SFT payload (``run_t4_smoke.py``) instead reads its saved adapter back
-off disk and fails on an all-zero one (``verify_saved_adapter``); gptoss and
-grpo save no adapter, which is why the silence there was covered by nothing.
-
-Nothing here raises: a diagnostic that kills the payload it diagnoses leaves
-the leg reporting nothing at all.
-"""
+"""Fingerprints taken before and after training answer whether the optimizer ran, unlike grad_norm."""
 
 from __future__ import annotations
 
-# Substrings marking a LoRA parameter and, narrower, the B matrices. peft names
-# them `...lora_A.default.weight` / `lora_B...`; matched lowercased so a future
-# capitalisation cannot silently empty the set.
+# Matched lowercased so a capitalisation change cannot silently empty the set.
 LORA_MARKER = "lora_"
 LORA_B_MARKER = "lora_b"
 
@@ -42,19 +19,7 @@ def _is_finite(value) -> bool:
 
 
 def adapter_fingerprint(model) -> dict:
-    """Sum ``|w|`` over every LoRA parameter of ``model``.
-
-    Cheap: a rank-8 adapter is a few hundred small matrices, microseconds beside
-    the training step it brackets. Returns ``{"ok": False, "error": ...}``
-    rather than raising; ``ok`` false means the question could not be answered,
-    not that the answer was no.
-
-    A non-finite sum is the one refusal that IS an answer. NaN or infinite LoRA
-    weights are a broken run, and left as a number they are the strongest
-    possible pass (``NaN != finite`` reads as "the adapter changed"), so they
-    are flagged ``non_finite`` for ``update_verdict`` to name rather than
-    compare.
-    """
+    """Non-finite sums are flagged, because NaN compares as changed and would read as a strong pass."""
     try:
         total = 0.0
         b_total = 0.0
@@ -89,17 +54,7 @@ def adapter_fingerprint(model) -> dict:
 
 
 def adapter_update(before, after) -> dict:
-    """Compare two fingerprints. ``changed`` is the whole answer.
-
-    Two sums, not one, is what makes an exact float comparison safe to turn red
-    on. ``abs_sum`` moving is the general signal; ``b_abs_sum`` starts at
-    exactly 0.0 because peft zero-initialises every B matrix. For BOTH to be
-    bitwise unchanged after a real update, the optimizer would have to land
-    deltas cancelling to the last bit in two different summations at once.
-
-    A differing tensor count between readings is unusable rather than a change:
-    whatever it is, it is not evidence about the optimizer.
-    """
+    """Two sums make exact comparison safe: B starts at 0.0 and both sums would need to cancel bitwise."""
     before = before if isinstance(before, dict) else {}
     after = after if isinstance(after, dict) else {}
     if not (before.get("ok") and after.get("ok")):
@@ -110,8 +65,7 @@ def adapter_update(before, after) -> dict:
             or after.get("error")
             or "the adapter was not fingerprinted",
         }
-    # Rechecked here, not only where the sums were taken: an exact `!=` on a NaN
-    # is the most confident "it changed" this file can produce.
+    # Rechecked here: `!=` on NaN always reports a change.
     unusable = [
         f"{side}.{key}={reading[key]}"
         for side, reading in (("before", before), ("after", after))
@@ -146,24 +100,7 @@ def adapter_update(before, after) -> dict:
 
 
 def update_verdict(metrics, adapter = None) -> dict:
-    """Was an optimizer update applied? ``applied`` / ``not_applied`` /
-    ``non_finite`` / ``unverifiable``.
-
-    The adapter reading wins where it exists, being the thing grad norms are a
-    proxy FOR: gradients flowing into weights nobody updated is still a run that
-    trained nothing.
-
-    ``unverifiable`` -- no usable grad_norm logged AND no adapter reading -- is
-    a failure at the call sites: not because nothing was applied, which is
-    unknown, but because the leg can no longer show it exercised the training
-    path.
-
-    ``non_finite`` is decided FIRST and beats a healthy grad_norm: a finite norm
-    at step 1 says nothing about weights that went NaN at step 3.
-
-    Every call site treats anything but ``applied`` as a failure, so a verdict
-    added here cannot be silently dropped.
-    """
+    """The adapter reading wins over grad_norm; non_finite is decided first and beats a healthy norm."""
     rows = metrics or []
     norms = [row.get("grad_norm") for row in rows if row.get("grad_norm") is not None]
     usable = [g for g in norms if _is_finite(g) and float(g) != 0.0]

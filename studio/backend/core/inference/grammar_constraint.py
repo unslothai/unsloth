@@ -188,6 +188,33 @@ def _require_schema_object(schema, message: str) -> dict:
     return schema
 
 
+def grammar_from_json_schema(schema: dict) -> str:
+    if not LLGUIDANCE_AVAILABLE:
+        raise ResponseFormatError(MISSING_ENGINE_MESSAGE)
+    return _cached_grammar(_canonical_schema_json(schema), prelude_close = None)
+
+
+def grammar_from_gbnf(gbnf: str) -> str:
+    """A llama.cpp GBNF grammar as an llguidance one."""
+    if not LLGUIDANCE_AVAILABLE:
+        raise ResponseFormatError(MISSING_ENGINE_MESSAGE)
+    digest = hashlib.sha256(gbnf.encode("utf-8")).hexdigest()
+    return _memoized(f"{LLGUIDANCE_VERSION}:gbnf:{digest}", lambda: _compile_gbnf(gbnf))
+
+
+def _compile_gbnf(gbnf: str) -> str:
+    from llguidance.gbnf_to_lark import gbnf_to_lark
+
+    try:
+        grammar = _llg.LLMatcher.grammar_from_lark(gbnf_to_lark(gbnf))
+    except Exception as exc:
+        raise ResponseFormatError(f"invalid grammar: {exc}") from exc
+    error = _llg.LLMatcher.validate_grammar(grammar)
+    if error:
+        raise ResponseFormatError(f"invalid grammar: {error}")
+    return grammar
+
+
 def _reserved_token_text(tokenizer, token_id: int) -> str:
     try:
         return str(_unwrap_hf_tokenizer(tokenizer).convert_ids_to_tokens(int(token_id)))
@@ -370,12 +397,16 @@ def _canonical_schema_json(schema: dict) -> str:
 def _cached_grammar(schema_json: str, *, prelude_close: Optional[str]) -> str:
     digest = hashlib.sha256(schema_json.encode("utf-8")).hexdigest()
     key = f"{LLGUIDANCE_VERSION}:{prelude_close or ''}:" f"{_PRELUDE_MAX_TOKENS}:{digest}"
+    return _memoized(key, lambda: _compile_grammar(schema_json, prelude_close))
+
+
+def _memoized(key: str, build) -> str:
     with _CACHE_LOCK:
         cached = _GRAMMAR_CACHE.get(key)
         if cached is not None:
             _GRAMMAR_CACHE.move_to_end(key)
             return cached
-    grammar = _compile_grammar(schema_json, prelude_close)
+    grammar = build()
     with _CACHE_LOCK:
         _GRAMMAR_CACHE[key] = grammar
         cached_bytes = sum(len(value) for value in _GRAMMAR_CACHE.values())

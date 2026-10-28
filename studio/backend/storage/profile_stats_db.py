@@ -14,12 +14,14 @@ in that single pass, then memoised against per-source count/timestamp fingerprin
 is free until history changes.
 """
 
+import csv
+import io
 import json
 import threading
 import time
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from loggers import get_logger
 
@@ -30,8 +32,7 @@ from utils.paths import studio_db_path
 
 logger = get_logger(__name__)
 
-# Gaps longer than this end a sitting-at-the-keyboard stretch: without the cap a thread reopened a
-# week later would report a week-long chat.
+# Gap that ends a session, so a thread reopened a week later is not a week-long chat.
 SESSION_GAP_SECONDS = 30 * 60
 # Cap on the daily activity series handed to the UI (the heatmap draws a year).
 MAX_DAILY_DAYS = 366
@@ -40,9 +41,22 @@ MAX_TZ_OFFSET_MINUTES = 14 * 60
 # Top-N lists returned to the client.
 TOP_MODELS = 8
 RECENT_RUNS = 5
-# Serve a memoised payload for this long even when the fingerprint is unchanged, so a chat that is
-# mid-stream still refreshes promptly.
+# TTL even with an unchanged fingerprint, so a mid-stream chat still refreshes.
 CACHE_TTL_SECONDS = 20.0
+
+USAGE_CSV_COLUMNS = (
+    "time",
+    "date",
+    "source",
+    "model",
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "cached_tokens",
+)
+
+# (created_at_ms, source, model_id, prompt, completion, total, cached) for each counted response.
+UsageSink = Callable[[int, str, str, int, int, int, int], None]
 
 _cache_lock = threading.Lock()
 _cache: dict[str, dict[str, Any]] = {}
@@ -79,10 +93,7 @@ def _clean_str(value: Any) -> str:
 
 
 def _resolve_zone(tz_name: str, tz_offset_minutes: int):
-    """The caller's zone, preferring an IANA name over a single offset. A fixed offset is only correct
-    for the half of the year the caller happens to be in, so a winter message read during summer
-    lands an hour out and can cross midnight. An IANA name carries each date's own offset. The
-    offset stays as the fallback for callers that send no name, or hosts with no tzdata."""
+    """Prefers the IANA name: a fixed offset is wrong half the year and can shift dates past midnight."""
     if tz_name:
         try:
             return ZoneInfo(tz_name)
@@ -104,10 +115,7 @@ def _local_stamp(created_at_ms: int, zone) -> Optional[datetime]:
 
 
 def _streaks(days: set[date], today: date) -> dict[str, Any]:
-    """Current and longest run of consecutive active days. The current streak survives a day that has
-    not been used yet: a streak that ended yesterday is still "live" until today is over. Imported
-    history or a skewed client clock can date rows in the future; those are dropped up front so they
-    cannot pad the longest streak or be reported as the last active day either."""
+    """Current streak survives an unused today; rows dated after today are dropped so a skewed client clock cannot pad the longest streak."""
     days = {day for day in days if day <= today}
     if not days:
         return {"current": 0, "longest": 0, "lastActiveDay": None}
@@ -189,11 +197,17 @@ class _ApiUsageFold:
         self.completion_tokens = 0
         self.total_tokens = 0
         self.by_day: dict[date, int] = {}
+        self.requests_by_day: dict[date, int] = {}
         self.models: dict[str, dict[str, Any]] = {}
         self.requests = 0
 
 
-def _fold_api_usage(conn, zone, subject: str) -> _ApiUsageFold:
+def _fold_api_usage(
+    conn,
+    zone,
+    subject: str,
+    on_usage: Optional[UsageSink] = None,
+) -> _ApiUsageFold:
     fold = _ApiUsageFold()
     rows = conn.execute(
         """
@@ -214,12 +228,16 @@ def _fold_api_usage(conn, zone, subject: str) -> _ApiUsageFold:
         fold.total_tokens += total_tokens
         fold.requests += 1
 
-        stamp = _local_stamp(_as_int(row["created_at"]), zone)
+        created_at = _as_int(row["created_at"])
+        stamp = _local_stamp(created_at, zone)
         if stamp is not None:
             day = stamp.date()
             fold.by_day[day] = fold.by_day.get(day, 0) + total_tokens
+            fold.requests_by_day[day] = fold.requests_by_day.get(day, 0) + 1
 
         model_id = _clean_str(row["model"])
+        if on_usage is not None:
+            on_usage(created_at, "api", model_id, prompt_tokens, completion_tokens, total_tokens, 0)
         if model_id:
             model = fold.models.setdefault(
                 model_id,
@@ -236,6 +254,7 @@ def _merge_api_activity(chat: _MessageFold, api: _ApiUsageFold) -> None:
     for day, tokens in api.by_day.items():
         bucket = chat.by_day.setdefault(day, {"tokens": 0, "messages": 0, "threads": set()})
         bucket["tokens"] += tokens
+        bucket["apiRequests"] = bucket.get("apiRequests", 0) + api.requests_by_day.get(day, 0)
     for model_id, api_model in api.models.items():
         model = chat.models.setdefault(
             model_id,
@@ -246,13 +265,7 @@ def _merge_api_activity(chat: _MessageFold, api: _ApiUsageFold) -> None:
 
 
 def _fork_keepers(conn) -> dict[tuple[str, int, str], str]:
-    """For each original message, the one clone elected to stand in for it. A clone is normally ignored
-    because the original is counted instead. Once the original is gone, whether its thread was
-    deleted or just that row was pruned, the clones become the only record. Letting every sibling
-    count them would multiply the usage, so exactly one may. Electing per message rather than per
-    fork matters because fork_chat_thread copies one parent_id branch, not the whole thread: sibling
-    forks taken from a retry and a regeneration hold different rows, and a per-fork winner would
-    silently drop whatever only the loser carries."""
+    """Elects one clone per message, since a per-fork winner would drop rows only a losing fork has."""
     rows = conn.execute(
         """
         SELECT m.thread_id, m.created_at, m.role,
@@ -292,7 +305,11 @@ def _surviving_original_keys(conn) -> set[tuple[str, int, str]]:
     return {(row["thread_id"], _as_int(row["created_at"]), row["role"]) for row in rows}
 
 
-def _fold_messages(conn, zone) -> _MessageFold:
+def _fold_messages(
+    conn,
+    zone,
+    on_usage: Optional[UsageSink] = None,
+) -> _MessageFold:
     fold = _MessageFold()
     keepers = _fork_keepers(conn)
     surviving = _surviving_original_keys(conn)
@@ -337,16 +354,13 @@ def _fold_messages(conn, zone) -> _MessageFold:
             thread_messages = 0
             previous_created = None
 
-        # Compare mode stores one thread per pane under a shared pair_id and the sidebar shows them as a
-        # single conversation, so counting them twice inflates the chat total.
+        # Compare-mode panes share a pair_id and show as one conversation.
         conversation_id = row["pair_id"] or thread_id
 
-        # A fork is its own visible conversation, so it counts towards the chat total from the moment it exists, before
-        # any new turn is added.
+        # A fork is its own visible conversation, so it counts toward the chat total as soon as it exists.
         fold.threads.add(conversation_id)
 
-        # Forking clones the whole ancestry keeping each copy's timestamp, so skip a clone while the row
-        # it came from is still countable; once that original is gone the elected fork stands in.
+        # Forks clone ancestry with timestamps; skip clones while the original row still counts.
         source_id = row["forked_from_thread_id"]
         if source_id and created_at < _as_int(row["thread_created_at"]):
             original = (source_id, created_at, row["role"])
@@ -389,12 +403,14 @@ def _fold_messages(conn, zone) -> _MessageFold:
             usage = usage if isinstance(usage, dict) else {}
             timing = timing if isinstance(timing, dict) else {}
 
-            # llama.cpp reports its own counters under serverTimings when the provider sends no usage chunk, and
-            # the response-details sheet already falls back to these.
+            # llama.cpp reports serverTimings when no usage chunk is sent.
             server = metadata.get("serverTimings")
             server = server if isinstance(server, dict) else {}
 
-            prompt_tokens = _as_int(usage.get("promptTokens")) or _as_int(server.get("prompt_n"))
+            # prompt_n is only what llama.cpp evaluated; the usage chunk's promptTokens includes the cache hits.
+            prompt_tokens = _as_int(usage.get("promptTokens")) or (
+                _as_int(server.get("prompt_n")) + _as_int(server.get("cache_n"))
+            )
             completion_tokens = _as_int(usage.get("completionTokens")) or _as_int(
                 server.get("predicted_n")
             )
@@ -405,17 +421,15 @@ def _fold_messages(conn, zone) -> _MessageFold:
             if total_tokens == 0:
                 total_tokens = prompt_tokens + completion_tokens
 
+            cached_tokens = _as_int(usage.get("cachedTokens")) or _as_int(server.get("cache_n"))
             fold.prompt_tokens += prompt_tokens
             fold.completion_tokens += completion_tokens
             fold.total_tokens += total_tokens
-            fold.cached_tokens += _as_int(usage.get("cachedTokens")) or _as_int(
-                server.get("cache_n")
-            )
+            fold.cached_tokens += cached_tokens
             fold.tool_calls += _as_int(timing.get("toolCallCount"))
             message_tokens = total_tokens
 
-            # responseDetails carries the model that actually answered, which differs from the requested
-            # checkpoint whenever a provider routes or resolves an alias.
+            # responseDetails names the model that actually answered (provider routing/aliases).
             details = metadata.get("responseDetails")
             details = details if isinstance(details, dict) else {}
             model_id = _clean_str(details.get("responseModelId")) or _clean_str(
@@ -423,6 +437,16 @@ def _fold_messages(conn, zone) -> _MessageFold:
             )
             if model_id:
                 fold.note_model(model_id, message_tokens)
+            if on_usage is not None:
+                on_usage(
+                    created_at,
+                    "chat",
+                    model_id,
+                    prompt_tokens,
+                    completion_tokens,
+                    total_tokens,
+                    cached_tokens,
+                )
 
             speed = _as_float(timing.get("tokensPerSecond"))
             # llama.cpp reports absurd rates on no-op turns; ignore those.
@@ -460,24 +484,14 @@ def _daily_series(fold: _MessageFold, today: date, days: int) -> list[dict[str, 
                 "tokens": int(bucket["tokens"]) if bucket else 0,
                 "messages": int(bucket["messages"]) if bucket else 0,
                 "chats": len(bucket["threads"]) if bucket else 0,
+                "apiRequests": int(bucket.get("apiRequests", 0)) if bucket else 0,
             }
         )
     return series
 
 
 def _superseded(prefix: str = "r.") -> str:
-    """SQL for "a later run resumed from this one, so its counters live there". ``prefix`` must qualify
-    the outer row: the EXISTS subquery selects from the same table, so a bare column name would bind
-    to the subquery instead. ``create_run``'s resume claim sets ``resume_blocked`` and leaves
-    ``output_dir`` alone. Cancelling clears ``output_dir`` while setting the same flag, so the flag
-    alone cannot tell the two apart. ``delete_run`` never clears the flag, so the continuation has
-    to still be there; otherwise deleting it would strand the source at zero while its row and
-    metrics stay visible in history. The continuation also has to have reached the source's step.
-    ``create_run`` claims the source the moment a resume starts, but ``final_step`` is only written
-    on the first metric flush, so a continuation that fails before then would take the source's
-    completed work down with it. ``resumed_from_run_id`` records the lineage outright. Runs written
-    before that column existed fall back to matching ``output_dir``, which is weaker: cancelling a
-    continuation nulls its ``output_dir`` and breaks the match."""
+    """resume_blocked alone cannot tell resumed from cancelled, so a continuation must exist; prefix must qualify the outer row, not the EXISTS subquery."""
     return f"""
         {prefix}resume_blocked = 1
         AND EXISTS (
@@ -511,15 +525,12 @@ def _training_stats(conn) -> dict[str, Any]:
         """
     ).fetchone()
 
-    # A resumed run continues its source's counters, so only a run superseded by a resume is dropped: create_run's
-    # claim sets resume_blocked while leaving output_dir intact, whereas cancelling clears it, so a cancelled run
-    # keeps the work it did do.
+    # Only runs superseded by a resume are dropped: resume claims keep output_dir while cancels clear it, so cancelled runs keep their work.
     steps = conn.execute(
         f"SELECT COALESCE(SUM(r.final_step), 0) FROM training_runs r WHERE NOT ({_superseded()})"
     ).fetchone()[0]
 
-    # num_tokens is state.num_input_tokens_seen, a running total logged at each step, so summing the samples
-    # multiplies the real figure; take each run's final counter, the value get_run_metrics reports.
+    # num_tokens is a running total, so take each run's final value rather than summing.
     tokens = conn.execute(
         f"""
         SELECT COALESCE(SUM(run_tokens), 0) FROM (
@@ -555,8 +566,7 @@ def _training_stats(conn) -> dict[str, Any]:
         "recent": [
             {
                 "id": item["id"],
-                # A renamed run keeps the name the user gave it; otherwise fall back to the short model label rather
-                # than the full repo id.
+                # Renamed runs keep the user's name; else use the short model label, not the full repo id.
                 "name": _clean_str(item["display_name"]) or _model_label(item["model_name"] or ""),
                 "modelLabel": _model_label(item["model_name"] or ""),
                 "datasetLabel": _model_label(item["dataset_name"] or ""),
@@ -640,14 +650,12 @@ def compute_profile_stats(
         _merge_api_activity(fold, api_fold)
         training = _training_stats(conn)
 
-        # "Today" has to match the buckets above, or the newest column and the current streak drift by a day
-        # whenever the caller is elsewhere.
+        # 'Today' must use the same zone as the buckets or streaks drift by a day.
         today = (_local_stamp(int(time.time() * 1000), zone) or datetime.now()).date()
         streak = _streaks(set(fold.by_day.keys()), today)
         daily = _daily_series(fold, today, days)
 
-        # The grid stops at today and the streaks ignore anything later, so a skewed client clock would
-        # otherwise name a peak day that is nowhere in the chart.
+        # Ignore future days so a skewed client clock cannot name a peak outside the chart.
         past_days = {day: bucket for day, bucket in fold.by_day.items() if day <= today}
         peak_day = max(past_days.items(), key = lambda item: item[1]["tokens"], default = None)
         models = sorted(
@@ -736,3 +744,56 @@ def compute_profile_stats(
 def invalidate_profile_stats_cache() -> None:
     with _cache_lock:
         _cache.pop(current_account_id(), None)
+
+
+def _csv_text(value: str) -> str:
+    """Model ids are client-supplied; a leading formula character would run as a formula in a spreadsheet."""
+    return "'" + value if value[:1] in ("=", "+", "-", "@", "\t", "\r") else value
+
+
+def export_usage_csv(
+    tz_offset_minutes: int = 0,
+    tz_name: str = "",
+    *,
+    subject: str = "",
+) -> str:
+    """One CSV row per counted chat response or API request, oldest first, in the caller's timezone.
+    Counted by the same folds as ``compute_profile_stats`` with the same scoping (chat install-wide,
+    API receipts only for ``subject``), so the totals match the Profile tab."""
+    tz_offset_minutes = max(
+        -MAX_TZ_OFFSET_MINUTES, min(int(tz_offset_minutes), MAX_TZ_OFFSET_MINUTES)
+    )
+    zone = _resolve_zone(tz_name, tz_offset_minutes)
+    subject = canonical_api_subject(subject)
+    rows: list[tuple[int, str, str, int, int, int, int]] = []
+
+    def collect(*row) -> None:
+        if row[3] or row[4] or row[5]:
+            rows.append(row)
+
+    conn = get_connection()
+    try:
+        _fold_messages(conn, zone, on_usage = collect)
+        _fold_api_usage(conn, zone, subject, on_usage = collect)
+    finally:
+        conn.close()
+    rows.sort(key = lambda row: row[0])
+
+    out = io.StringIO()
+    writer = csv.writer(out, lineterminator = "\n")
+    writer.writerow(USAGE_CSV_COLUMNS)
+    for created_at, source, model_id, prompt, completion, total, cached in rows:
+        stamp = _local_stamp(created_at, zone)
+        writer.writerow(
+            [
+                stamp.strftime("%Y-%m-%d %H:%M:%S") if stamp else "",
+                _iso(stamp.date()) if stamp else "",
+                source,
+                _csv_text(model_id),
+                prompt,
+                completion,
+                total,
+                cached,
+            ]
+        )
+    return out.getvalue()

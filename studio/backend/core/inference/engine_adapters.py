@@ -34,6 +34,45 @@ def tool_parser_for_template(template, engine):
     return None
 
 
+_SGLANG_REASONING_PARSERS = {
+    "openai_gptoss": "gpt-oss",
+    "minimax_m2": "minimax",
+    "deepseek_v3": "deepseek-v3",
+    "deepseek_r1": "deepseek-r1",
+}
+
+
+def reasoning_parser_for_template(template, engine):
+    """Reasoning parser for the model's own thinking markup; None leaves the launch unchanged."""
+    parser = _vllm_reasoning_parser(template)
+    return parser if engine == "vllm" else _SGLANG_REASONING_PARSERS.get(parser, parser)
+
+
+def _vllm_reasoning_parser(template):
+    if not isinstance(template, str):
+        return None
+    if "<|channel|>" in template and "<|message|>" in template:
+        return "openai_gptoss"
+    if "<think>" not in template or "</think>" not in template:
+        return None
+    for marker, parser in (
+        ("<arg_key>", "glm45"),
+        ("<minimax:tool_call>", "minimax_m2"),
+        ("<|tool_calls_section_begin|>", "kimi_k2"),
+    ):
+        if marker in template:
+            return parser
+    # Per vLLM's reasoning_outputs.md: V3.1 / V3.2 gate on a `thinking` variable and answer untagged when
+    # it is off (deepseek_v3); R1, QwQ and Qwen3 Thinking-2507 open <think> in the prompt (deepseek_r1).
+    if "<｜Assistant｜>" in template:
+        if "reasoning_effort" in template:
+            return None
+        return "deepseek_v3" if "thinking" in template.replace("think>", "") else "deepseek_r1"
+    if "<|im_start|>" in template:
+        return "qwen3" if "enable_thinking" in template else "deepseek_r1"
+    return None
+
+
 def _release_at_least(version: str | None, floor: str) -> bool:
     from packaging.version import InvalidVersion, Version
     try:
@@ -57,8 +96,13 @@ class EngineAdapter:
         return {"VLLM_API_KEY" if self.name == "vllm" else "UNSLOTH_ENGINE_API_KEY": key}
 
     def environment(self, gpu_count):
-        if self.name == "vllm" and gpu_count > 1:
-            return {"VLLM_HOST_IP": "127.0.0.1"}
+        if self.name == "vllm":
+            # vLLM 0.30+ DeepSeek-OCR encoder kernel reads a plain-float LOG2E global, a NameError on
+            # Triton 3.7 (unslothai/unsloth#3911). The knob only lifts that error and is not in the cache key.
+            env = {"TRITON_ALLOW_NON_CONSTEXPR_GLOBALS": "1"}
+            if gpu_count > 1:
+                env["VLLM_HOST_IP"] = "127.0.0.1"
+            return env
         if self.name == "sglang" and gpu_count > 1:
             # Else SGLang rejects GPUs whose free memory differs >10%; KV pools size from the minimum anyway.
             return {
@@ -82,11 +126,16 @@ class EngineAdapter:
         served_model_name = None,
     ):
         options = options or {}
+        if options.get("gpu_memory_utilization"):
+            # A user ceiling only lowers Studio's measured budget: above it the engine would OOM.
+            memory_fraction = min(memory_fraction, options["gpu_memory_utilization"])
         tool_args = []
         if options.get("tool_parser"):
             tool_args = ["--tool-call-parser", options["tool_parser"]]
             if self.name == "vllm":
                 tool_args.append("--enable-auto-tool-choice")
+        if options.get("reasoning_parser"):
+            tool_args += ["--reasoning-parser", options["reasoning_parser"]]
         mode = options.get("parallelism", "tensor")
         parallel_args = ["--tensor-parallel-size", str(gpu_count if mode == "tensor" else 1)]
         if mode != "tensor":
@@ -204,7 +253,33 @@ class EngineAdapter:
             *parallel_args,
             *precision_args,
             *tool_args,
+            *(
+                ["--max-num-seqs", str(options["max_num_seqs"])]
+                if self.name == "vllm" and options.get("max_num_seqs")
+                else []
+            ),
+            *(
+                [
+                    "--kv-cache-dtype",
+                    # SGLang names the FP8 format; vLLM's "fp8" is the same E4M3 cache.
+                    "fp8_e4m3" if self.name == "sglang" else options["kv_cache_dtype"],
+                ]
+                if options.get("kv_cache_dtype")
+                else []
+            ),
+            *(
+                ["--random-seed" if self.name == "sglang" else "--seed", str(options["seed"])]
+                if options.get("seed") is not None
+                else []
+            ),
             *(["--trust-remote-code"] if trust_remote_code else []),
+            # Prefix caching is on by default in both; this only reports its hits in usage.
+            "--enable-prompt-tokens-details" if self.name == "vllm" else "--enable-cache-report",
+            *(
+                vllm_speculative_args(model)
+                if self.name == "vllm" and not options.get("no_speculative_config")
+                else []
+            ),
             *self.extra_args,
             "--host",
             "127.0.0.1",
@@ -242,8 +317,62 @@ ADAPTERS = {
         "--context-length",
         "--mem-fraction-static",
         ("--attention-backend", "triton", "--sampling-backend", "pytorch"),
+        True,
     ),
 }
+
+
+def _wsl_guest_to_host(path: str, nt: "bool | None" = None) -> str:
+    """`/mnt/c/x` (the path the Windows WSL engine is given) back to `C:\\x` for host-side reads."""
+    import os
+    import re
+
+    if (os.name == "nt" if nt is None else nt) and re.match(r"^/mnt/[a-zA-Z](/|$)", path):
+        return path[5].upper() + ":\\" + path[7:].replace("/", "\\")
+    return path
+
+
+def vllm_speculative_args(model) -> list[str]:
+    """`--speculative-config` for a merged Studio export that carries a drafter trained with the
+    fine-tune (drafter.json): its own MTP head, or the EAGLE-3 drafter in `<export>/eagle3`."""
+    import json
+    import os
+
+    if not isinstance(model, str):
+        return []
+    host = _wsl_guest_to_host(model)
+    if not os.path.isdir(host):
+        return []
+    try:
+        with open(os.path.join(host, "drafter.json"), encoding = "utf-8") as f:
+            info = json.load(f)
+    except (OSError, ValueError):
+        return []
+    if not isinstance(info, dict):
+        return []
+    # A drafter vLLM cannot run (llama.cpp-only EAGLE-3 targets, some MTP families) must not stop
+    # the model from starting.
+    if isinstance(info.get("engines"), dict) and not info["engines"].get("vllm"):
+        return []
+    steps = info.get("draft_steps") or 3
+    if info.get("strategy") == "mtp":
+        spec = {"method": "mtp", "num_speculative_tokens": int(steps)}
+    elif info.get("strategy") == "eagle3" and os.path.isfile(
+        os.path.join(host, "eagle3", "config.json")
+    ):
+        spec = {
+            "method": "eagle3",
+            # The path vLLM sees: the WSL guest's when the model path was translated for it.
+            "model": (
+                model.rstrip("/") + "/eagle3"
+                if host != model
+                else os.path.join(os.path.abspath(model), "eagle3")
+            ),
+            "num_speculative_tokens": int(steps),
+        }
+    else:
+        return []
+    return ["--speculative-config", json.dumps(spec, separators = (",", ":"))]
 
 
 def launch_arguments(
@@ -264,13 +393,8 @@ def launch_arguments(
 
 
 def memory_reserve_mib(engine: str, options: dict | None) -> int:
-    """MiB left outside the engine's budget, for what each engine allocates past it. On a 24 GB L4
-    with Qwen2.5-0.5B, vLLM's sampler warmup failed at 512 MiB and passed from 1536 (it scales with
-    the vocabulary, so larger ones need more); SGLang's CUDA graphs and NCCL buffers died mid-request
-    at 512 and passed from 2048. vLLM with TorchAO weights overruns by 2.4-4.8 GiB more (B200).
-    The warmup also grows with the card: vLLM raises its default max_num_seqs on large GPUs, and a
-    96 GB RTX PRO 6000 ran out of memory in the sampler warmup with 3 GiB left, so
-    ``gpu_memory_fraction`` keeps at least ``RESERVE_SHARE`` of each card free as well."""
+    """Reserve for allocations the engine does not budget; the warmup grows with vocabulary and card
+    size."""
     options = options or {}
     precision = options.get("precision", "auto")
     torchao = engine == "vllm" and (
@@ -283,43 +407,31 @@ def memory_reserve_mib(engine: str, options: dict | None) -> int:
 RESERVE_SHARE = 0.06
 
 
+MANAGED_ENGINE_BUDGET_FLOOR = 0.80
+
+
 def gpu_memory_fraction(
     gpu_ids: list[int],
     reserve_mib: int = 512,
     reserve_share: float = 0.0,
+    measure = None,
 ) -> float:
     """Budget every selected physical GPU after the previous resident is stopped.
 
     Reserve the larger of ``reserve_mib`` and ``reserve_share`` of each card for allocations the
-    engine does not budget. An unreadable
+    engine does not budget. ``measure`` returns (total, free) MiB per selected GPU; nvidia-smi
+    answers by default. An unreadable
     device is an actionable failure, never permission to fall back to a larger engine default.
     """
-    from utils.hardware.nvidia import _nvidia_smi_executable
     from utils.vram_budget_settings import get_vram_budget_fraction
-
     try:
-        result = subprocess.run(
-            [
-                _nvidia_smi_executable(),
-                "--id",
-                ",".join(str(gpu_id) for gpu_id in gpu_ids),
-                "--query-gpu=memory.total,memory.free",
-                "--format=csv,noheader,nounits",
-            ],
-            capture_output = True,
-            **windows_hidden_subprocess_kwargs(),
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = 60,
-            check = True,
-        )
-        rows = result.stdout.strip().splitlines()
+        rows = (measure or _nvidia_memory_rows)(gpu_ids)
         if len(rows) != len(gpu_ids):
             raise ValueError("Could not measure every selected GPU")
-        fraction = get_vram_budget_fraction()
-        for row in rows:
-            total, free = (float(value.strip()) for value in row.split(","))
+        # vLLM / SGLang cannot offload to the CPU, so a GGUF-only low budget must not shrink them;
+        # the per-load engine_gpu_memory_utilization still caps lower.
+        fraction = max(get_vram_budget_fraction(), MANAGED_ENGINE_BUDGET_FLOOR)
+        for total, free in rows:
             reserve = max(reserve_mib, reserve_share * total)
             if total <= 0 or free <= reserve or free > total:
                 raise ValueError("Insufficient available GPU memory")
@@ -332,3 +444,43 @@ def gpu_memory_fraction(
         raise RuntimeError(
             "Could not reserve memory on every selected GPU. Free GPU memory or select fewer GPUs and retry."
         ) from exc
+
+
+def _nvidia_memory_rows(gpu_ids: list[int]) -> list[tuple[float, float]]:
+    # R570+ MIG ids are CUDA devices: budget each slice; nvidia-smi --id takes physical ids.
+    try:
+        from utils.hardware import mig
+        slices = mig.rows_for(gpu_ids)
+    except Exception:
+        slices = None
+    if slices is not None:
+        if not all(float(r.get("memory_total_mib") or 0) > 0 for r in slices):
+            raise RuntimeError(
+                "The selected MIG GPU instance has no memory reading right now because the GPU "
+                "probe did not answer. Retry in a few seconds."
+            )
+        return [
+            (float(r["memory_total_mib"]), float(r.get("memory_free_mib") or 0)) for r in slices
+        ]
+    from utils.hardware.nvidia import _nvidia_smi_executable
+
+    result = subprocess.run(
+        [
+            _nvidia_smi_executable(),
+            "--id",
+            ",".join(str(gpu_id) for gpu_id in gpu_ids),
+            "--query-gpu=memory.total,memory.free",
+            "--format=csv,noheader,nounits",
+        ],
+        capture_output = True,
+        **windows_hidden_subprocess_kwargs(),
+        text = True,
+        encoding = "utf-8",
+        errors = "replace",
+        timeout = 60,
+        check = True,
+    )
+    return [
+        tuple(float(value.strip()) for value in row.split(","))
+        for row in result.stdout.strip().splitlines()
+    ]

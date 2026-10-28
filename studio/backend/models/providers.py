@@ -114,6 +114,10 @@ class ProviderCreate(BaseModel):
         None,
         description = "Optional RSA-encrypted API key to persist for this connection",
     )
+    shared: bool = Field(
+        False,
+        description = "Let every account on this installation use this connection (owner only)",
+    )
 
 
 class ProviderUpdate(BaseModel):
@@ -145,6 +149,10 @@ class ProviderUpdate(BaseModel):
     clear_api_key: bool = Field(
         False,
         description = "Explicitly remove the saved API key",
+    )
+    shared: Optional[bool] = Field(
+        None,
+        description = "Let every account on this installation use this connection (owner only)",
     )
 
 
@@ -185,6 +193,11 @@ class ProviderResponse(BaseModel):
     max_output_tokens: Optional[int] = Field(
         None,
         description = "Configured maximum Max Tokens cap for this connection",
+    )
+    shared: bool = Field(False, description = "Whether every account on this installation can use it")
+    shared_by_owner: bool = Field(
+        False,
+        description = "The installation owner shared this connection; this account can use but not edit it",
     )
     created_at: str = Field(..., description = "ISO 8601 creation timestamp")
     updated_at: str = Field(..., description = "ISO 8601 last-update timestamp")

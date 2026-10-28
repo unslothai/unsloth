@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""engine_stats must not attribute work to the tick its counter moved on.
-
-Neither token counter moves while the work happens, so the poll interval prices a window
-the work did not run in. The sides are not symmetric: add_prompt(n, n, t) makes the prompt
-counters a pair, metrics_on_prediction() passes n_gen and n_gen - 1, so generation
-throughput comes from llama.cpp's gauge or from nowhere. The clock is faked because the
-shared _drive helper polls at 1 ms on the real one.
-"""
+"""Attribute throughput to the window the work ran in, not the tick a counter moved on."""
 
 from __future__ import annotations
 
@@ -91,7 +84,6 @@ def test_a_prefill_is_priced_by_the_seconds_it_reports_with_it(monkeypatch):
     stats = _drive(snaps, monkeypatch)
 
     assert max(s["prompt_tok_s"] for s in stats) == 23.0
-    # What the old arithmetic (count / poll interval) would have said.
     assert 1837.0 / _TICK_S == 183.7
 
 
@@ -113,7 +105,6 @@ def test_deferred_requests_do_not_stretch_the_denominator(monkeypatch):
     stats = _drive(snaps, monkeypatch)
 
     assert max(s["prompt_tok_s"] for s in stats) == 5.0
-    # What charging the queued ticks would have said.
     assert round(100.0 / 80.0, 1) == 1.2
 
 
@@ -125,7 +116,7 @@ def test_work_already_running_at_the_first_poll_is_priced_whole(monkeypatch):
     ]
     stats = _drive(snaps, monkeypatch)
 
-    # 1637 tokens in the 40 seconds between the two readings.
+    # 1637 tokens in the 40 seconds between the two readings
     assert max(s["prompt_tok_s"] for s in stats) == 40.9
     assert 1637.0 / _TICK_S == 163.7
 
@@ -149,7 +140,6 @@ def test_the_decode_counter_reports_while_the_token_counters_are_still(monkeypat
     stats = _drive(snaps, monkeypatch)
 
     assert all(s["gen_tok_s"] == 0.0 for s in stats)
-    # Nothing on the first line: one sample is not a rate.
     assert [s.get("decode_calls_s") for s in stats] == [None, 2.0, 2.0, 2.0]
 
 
@@ -186,7 +176,6 @@ def test_a_zero_gauge_beside_moved_counters_is_still_a_reading(monkeypatch):
     stats = _drive(snaps, monkeypatch)
 
     assert [s["gen_tok_s"] for s in stats] == [20.0, 0.0, 20.0]
-    # What filling the gap from the counters would have said.
     assert 200.0 / 10.0 == 20.0
 
 
@@ -213,7 +202,6 @@ def test_seconds_that_resolve_before_their_tokens_are_kept_too(monkeypatch):
     stats = _drive(snaps, monkeypatch)
 
     assert [s["prompt_tok_s"] for s in stats] == [0.0, 0.0, 5.0, 5.0]
-    # What discarding the held seconds would have said for the third tick.
     assert 100.0 / 20.0 == 5.0
 
 
@@ -264,7 +252,7 @@ def test_a_non_finite_metric_value_never_reaches_the_line(monkeypatch):
         "llamacpp:prompt_tokens_total 10\n"
         "llamacpp:prompt_seconds_total 1\n"
     ).encode()
-    monkeypatch.setattr(ls.urllib.request, "urlopen", lambda *a, **k: _Resp(body))
+    monkeypatch.setattr(ls.urllib.request.OpenerDirector, "open", lambda *a, **k: _Resp(body))
 
     m = LlamaServerStatsLogger("http://127.0.0.1:0", _Capture())._scrape()
 

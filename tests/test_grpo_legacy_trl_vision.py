@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""TRL 0.22.x-0.23.x carries the whole multimodal batch through the GRPO step.
-
-Those versions have neither `forward_kwargs` nor `num_images`: `_generate_and_score_completions`
-hands the no-grad old/reference logprob pass four hand named processor tensors and saves the same
-four into the training batch. Once a singular `image` cell may hold several images, the counts
-decide how every vision tensor is sliced, and a processor that emits `spatial_shapes` or
-`num_tiles` loses them entirely. unslothai/unsloth#6960.
-
-The sources below are verbatim from trl 0.22.2 / 0.23.1 `grpo_trainer.py`, trimmed to the lines
-the rewrite anchors on, so the patcher is exercised against the text it will actually meet.
-"""
+"""TRL 0.22/0.23 passes four hand-named vision tensors, dropping spatial_shapes and num_tiles."""
 
 import textwrap
 
@@ -140,7 +130,9 @@ def _run_legacy(processor_output, inputs, completion_ids):
     import torch
 
     from unsloth.models.rl_replacements import (
+        _unsloth_grpo_clean_video_prompts,
         _unsloth_grpo_image_cell,
+        _unsloth_grpo_video_inputs,
         _unsloth_grpo_vision_inputs,
         _unsloth_reject_grpo_image_list,
         grpo_trainer__generate_and_score_completions,
@@ -153,11 +145,12 @@ def _run_legacy(processor_output, inputs, completion_ids):
         "torch": torch,
         "_unsloth_grpo_vision_inputs": _unsloth_grpo_vision_inputs,
         "_unsloth_grpo_image_cell": _unsloth_grpo_image_cell,
+        "_unsloth_grpo_clean_video_prompts": _unsloth_grpo_clean_video_prompts,
+        "_unsloth_grpo_video_inputs": _unsloth_grpo_video_inputs,
         # Injected on this TRL too now: its vLLM server path cannot carry a multi image row,
         # so the guard is handed the trainer and decides at runtime.
         "_unsloth_reject_grpo_image_list": _unsloth_reject_grpo_image_list,
         "prepare_multimodal_messages": lambda prompt, num_images = 1: prompt.append(num_images),
-        # Injected by the same rewrite for the text-only branch; TRL never sees it.
         "calculate_pad_tokens_in_prompt": lambda ids, keep, pad: torch.zeros(
             ids.shape[0], dtype = torch.long
         ),
@@ -319,9 +312,7 @@ def test_a_modern_trl_is_untouched_by_the_legacy_rewrite():
     assert patched.count('output["num_images"]') == 1, patched
 
 
-# ---------------------------------------------------------------------------------------------
 # The shuffle and the slice, on the layout 0.22.x-0.23.x leaves behind.
-# ---------------------------------------------------------------------------------------------
 
 
 def _legacy_split_pixel_values_by_grid(batch):
@@ -462,10 +453,7 @@ def test_a_legacy_grid_batch_whose_counts_do_not_span_the_samples_is_left_alone(
 
 
 def test_a_text_only_legacy_batch_does_not_pick_up_a_tokenizers_token_type_ids():
-    """Gemma 3's processor returns token_type_ids with no images at all
-    (transformers/models/gemma3/processing_gemma3.py, return_mm_token_type_ids defaults True),
-    and both PrefixGrouper and sequence packing are keyed on that name being absent. TRL 0.24.0
-    builds forward_kwargs only inside `if images is not None`, so it never sees them either."""
+    """A text-only batch must not pick up token_type_ids: PrefixGrouper and packing key on its absence."""
     import torch
 
     processor_output = {
@@ -504,7 +492,6 @@ def test_an_untruncated_token_type_ids_as_wide_as_prompt_plus_completion_is_drop
     import torch
 
     processor_output, inputs, completion_ids = _grid_batch()
-    # prompt_ids 5 wide, completion 3 wide: an 8 wide untruncated processor copy.
     processor_output["token_type_ids"] = torch.ones(2, 8, dtype = torch.long)
     trainer, output = _run_legacy(processor_output, inputs, completion_ids)
     for call in trainer.calls:
