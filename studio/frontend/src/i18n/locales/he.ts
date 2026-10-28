@@ -2437,7 +2437,7 @@ export const he = {
         gpuUnusableDetail: "זוהה, אך PyTorch אינו יכול להשתמש בו",
         detailedView: "תצוגה מפורטת",
         detailedViewDescription:
-          "הצגת עומס המעבד ועומס, טמפרטורה וצריכת חשמל של כל GPU בחלון הצף וכאן.",
+          "הצגת עומס המעבד ועומס, טמפרטורה וצריכת חשמל של כל GPU בחלון הצף.",
         cpuLoad: "עומס מעבד",
         gpuLoad: "עומס GPU",
         temperature: "טמפרטורה",
@@ -2470,6 +2470,10 @@ export const he = {
         used: "{value} בשימוש",
         free: "{value} פנוי",
         total: "{value} סה״כ",
+        usedOf: "{used} בשימוש מתוך {total}",
+        segmentUsed: "בשימוש ה-GPU",
+        segmentSystem: "בשימוש המערכת",
+        segmentAvailable: "זמין",
       },
       llamaBackend: {
         title: "מנוע הסקה GGUF",
@@ -2673,6 +2677,8 @@ export const he = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "זמן פעילות",
         processMemory: "זיכרון תהליך",
         notInstalled: "לא מותקן",
@@ -3438,6 +3444,7 @@ export const he = {
       desktopAppVersionUnavailable: "לא זמין",
       llamaCppVersion: "גרסת llama.cpp",
       audioCppVersion: "גרסת audio.cpp",
+      mlxVersion: "גרסת MLX",
       whisperCppVersion: "גרסת whisper.cpp",
       engines: {
         title: "מנועים",

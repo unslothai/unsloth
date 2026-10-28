@@ -2349,7 +2349,7 @@ export const ptBR = {
         gpuUnusableDetail: "Detectada, mas o PyTorch não consegue usá-la",
         detailedView: "Visualização detalhada",
         detailedViewDescription:
-          "Mostra a carga da CPU e a carga, temperatura e consumo de cada GPU na janela flutuante e aqui.",
+          "Mostra a carga da CPU e a carga, temperatura e consumo de cada GPU na janela flutuante.",
         cpuLoad: "Carga da CPU",
         gpuLoad: "Carga da GPU",
         temperature: "Temperatura",
@@ -2382,6 +2382,10 @@ export const ptBR = {
         used: "{value} usados",
         free: "{value} livres",
         total: "{value} total",
+        usedOf: "{used} em uso de {total}",
+        segmentUsed: "Em uso pela GPU",
+        segmentSystem: "Em uso pelo sistema",
+        segmentAvailable: "Disponível",
       },
       llamaBackend: {
         title: "GGUF inference engine",
@@ -2569,6 +2573,8 @@ export const ptBR = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "Tempo de atividade",
         processMemory: "Memória do processo",
         notInstalled: "Não instalado",
@@ -3322,6 +3328,7 @@ export const ptBR = {
       desktopAppVersionUnavailable: "Indisponível",
       llamaCppVersion: "Versão do llama.cpp",
       audioCppVersion: "Versão do audio.cpp",
+      mlxVersion: "Versão do MLX",
       whisperCppVersion: "Versão do whisper.cpp",
       engines: {
         title: "Motores",

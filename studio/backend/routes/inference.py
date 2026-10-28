@@ -58,6 +58,7 @@ from utils.account_context import (
 )
 from utils.security.consent import MANAGED_REMOTE_CODE_REFUSAL, managed_remote_code_refused
 from loggers import get_logger
+from utils.scan_memo import in_scan_memo
 from loggers.media_progress import (
     log_media_generation_progress,
     log_media_load_progress,
@@ -130,6 +131,7 @@ from core.inference.audio_errors import (
 )
 from core.inference.audio_cpp_outputs import NO_STEMS
 from core.inference import context_refusal
+from core.inference.gen_stepper import ThreadStepper
 from core.inference.context_window import (
     estimate_message_tokens as _estimate_message_tokens,
     estimate_messages_tokens as _estimate_messages_tokens,
@@ -1003,10 +1005,15 @@ def _truncate_middle_messages(messages: list, keep_ratio: float):
         return messages, 0
 
     new_messages = head + anchor
-    for grp in middle[first_kept:]:
-        new_messages.extend(grp)
-    for grp in tail:
-        new_messages.extend(grp)
+    kept = [msg for grp in middle[first_kept:] + tail for msg in grp]
+    # Merge the seam: strict templates (e.g. Mistral) reject two user turns in a row.
+    if kept and new_messages[-1].get("role") == kept[0].get("role") == "user":
+        new_messages[-1] = {
+            **new_messages[-1],
+            "content": _merge_user_content(new_messages[-1].get("content"), kept[0].get("content")),
+        }
+        kept = kept[1:]
+    new_messages.extend(kept)
     return new_messages, dropped
 
 
@@ -1163,6 +1170,20 @@ def _remember_passthrough_cut(
     prefix_boundary.remember(original, body.get("messages") or [], dropped, scope)
 
 
+async def _prepare_passthrough_cut(llama_backend, body: dict, policy: Optional[str]):
+    """(uncut messages, cut scope, messages a remembered cut dropped). Only truncate_oldest
+    remembers cuts, so every other policy skips the copy, the scope and the thread hop."""
+    if policy != "truncate_oldest":
+        return None, None, 0
+    uncut = list(body.get("messages") or [])
+    scope = _passthrough_cut_scope(llama_backend, body)
+    # Off the event loop: the history can hold megabytes of images.
+    dropped = await asyncio.to_thread(
+        _replay_passthrough_cut, body, policy, getattr(llama_backend, "context_length", None), scope
+    )
+    return uncut, scope, dropped
+
+
 def _anthropic_stream_error_event(exc, *, force: bool = False):
     """Return an Anthropic in-band stream error event when one is useful."""
     # Flag failed even when returning None: middleware must not claim a preview-owned model.
@@ -1242,28 +1263,40 @@ def _normalize_openai_passthrough_sse_line(
     raw_line: str, *, cap_parallel_tool_calls: bool = False
 ) -> str:
     """Relay comments, [DONE] and unparsable lines as-is; re-serialize only when a compat fix applies."""
+    return _normalize_openai_passthrough_sse_line_and_data(
+        raw_line, cap_parallel_tool_calls = cap_parallel_tool_calls
+    )[0]
+
+
+_SSE_LINE_UNPARSED = object()
+
+
+def _normalize_openai_passthrough_sse_line_and_data(
+    raw_line: str, *, cap_parallel_tool_calls: bool = False
+) -> tuple[str, Any]:
+    """The normalized line plus its decoded JSON when the check had to parse it, so the relay need not."""
     if not raw_line.startswith("data:"):
-        return raw_line
+        return raw_line, _SSE_LINE_UNPARSED
     # Fast path: skip the JSON parse when neither key appears in the line.
     if '"reasoning_content"' not in raw_line and not (
         cap_parallel_tool_calls and '"tool_calls"' in raw_line
     ):
-        return raw_line
+        return raw_line, _SSE_LINE_UNPARSED
     payload = raw_line[len("data:") :].lstrip()
     if payload.strip() in ("", "[DONE]"):
-        return raw_line
+        return raw_line, _SSE_LINE_UNPARSED
     try:
         obj = json.loads(payload)
     except Exception:
-        return raw_line
+        return raw_line, _SSE_LINE_UNPARSED
     if not isinstance(obj, dict):
-        return raw_line
+        return raw_line, obj
     changed = _add_empty_content_to_reasoning_deltas(obj)
     if cap_parallel_tool_calls and _drop_parallel_tool_call_deltas(obj):
         changed = True
     if not changed:
-        return raw_line
-    return "data: " + json.dumps(obj, separators = (",", ":"), ensure_ascii = False)
+        return raw_line, obj
+    return "data: " + json.dumps(obj, separators = (",", ":"), ensure_ascii = False), obj
 
 
 def _prompt_tokens_details(upstream):
@@ -7269,6 +7302,17 @@ def _monitor_openai_sse_line(
         data = json.loads(data_str)
     except json.JSONDecodeError:
         return None
+    return _monitor_openai_sse_data(monitor_id, data, context_length)
+
+
+def _monitor_openai_sse_data(
+    monitor_id: Optional[str],
+    data: Any,
+    context_length = None,
+) -> Optional[str]:
+    """Core of ``_monitor_openai_sse_line`` for a data line the caller already decoded."""
+    if not monitor_id:
+        return None
     if isinstance(data, dict):
         error_message = _monitor_openai_error_message(data)
         if error_message:
@@ -9493,6 +9537,23 @@ def _model_switch_allowed_for_request(fastapi_request) -> bool:
     return isinstance(scope, dict) and bool(scope.get(_ALLOW_MODEL_SWITCH_SCOPE_KEY))
 
 
+_SWITCH_PRECONDITION_SCOPE_KEY = "unsloth.switch_precondition"
+
+
+def require_for_model_switch(scope, check) -> None:
+    """Have this in-process request's switch call ``check()`` under the swap gate, just before it replaces the
+    loaded model; ``check`` raises to refuse. A scope key, so no HTTP client can set it."""
+    if isinstance(scope, dict):
+        scope[_SWITCH_PRECONDITION_SCOPE_KEY] = check
+
+
+def _check_switch_precondition(fastapi_request) -> None:
+    scope = getattr(fastapi_request, "scope", None)
+    check = scope.get(_SWITCH_PRECONDITION_SCOPE_KEY) if isinstance(scope, dict) else None
+    if callable(check):
+        check()
+
+
 _LOAD_ALONGSIDE_SCOPE_KEY = "unsloth.load_alongside"
 
 
@@ -9910,6 +9971,10 @@ def _loaded_satisfies(requested: str) -> bool:
         base, [active, public_model_id(active), getattr(backend, "_openai_advertised_id", None)]
     )
     if not matches:
+        # a fine-tuning job's "<run>/checkpoint-N" name for the folder loaded by path
+        trained = _trained_run_dir(requested)
+        matches = trained is not None and _norm_path(trained) == _norm_path(active)
+    if not matches:
         return False
     # Only llama.cpp carries a quant identity, so this backend can only match on the repo.
     if looks_like_quant(variant):
@@ -10001,6 +10066,39 @@ def _matches_any(requested: str, candidates) -> bool:
         if lowered == str(candidate).strip().lower():
             return True
     return False
+
+
+_TRAINED_CHECKPOINT = re.compile(r"checkpoint-\d+")
+
+
+def _trained_run_dir(model: Optional[str]) -> Optional[str]:
+    """The outputs folder a fine-tuning job names as ``<run>`` or ``<run>/checkpoint-<step>``."""
+    from utils.paths import outputs_root
+
+    if not isinstance(model, str) or "\\" in model:
+        return None
+    parts = model.split("/")
+    if len(parts) > 2 or (len(parts) == 2 and not _TRAINED_CHECKPOINT.fullmatch(parts[1])):
+        return None
+    if any(part in ("", ".", "..") or part != os.path.basename(part) for part in parts):
+        return None
+    try:
+        run_dir = outputs_root().joinpath(*parts)
+        return str(run_dir) if run_dir.is_dir() else None
+    except (OSError, ValueError):
+        return None
+
+
+def _resolve_trained_run_request(request) -> bool:
+    """Rewrites a run or checkpoint name on a load / unload request to its folder."""
+    trained = _trained_run_dir(request.model_path)
+    if not trained:
+        return False
+    from hub.utils.host_paths import note_resolved_handle
+
+    note_resolved_handle(request.model_path, trained)
+    request.model_path = trained
+    return True
 
 
 def _looks_like_local_path(value: str) -> bool:
@@ -10223,7 +10321,7 @@ async def _reject_unservable_model(
             ),
         )
 
-    still_indexing = torn = False
+    still_indexing = torn = trained = False
     try:
         if await asyncio.to_thread(_loaded_satisfies, requested_model):
             return
@@ -10308,7 +10406,10 @@ async def _reject_unservable_model(
             and base.strip().count("/") == 1
             and await asyncio.to_thread(local_gguf_torn_only, base)
         )
-        here = here or torn
+        trained = (
+            not here and await asyncio.to_thread(_trained_run_dir, requested_model) is not None
+        )
+        here = here or torn or trained
         switchable = downloaded and get_openai_auto_switch_enabled()
     except HTTPException:
         # A refusal decided above must propagate, not fall through to the resident model.
@@ -10318,7 +10419,7 @@ async def _reject_unservable_model(
         logger.debug("unservable-model check failed for %r: %s", requested_model, exc)
         if not quantified:
             return
-        downloaded = here = switchable = torn = False
+        downloaded = here = switchable = torn = trained = False
     if still_indexing:
         _raise_still_indexing(requested_model, fastapi_request)
     if gguf_hub_repo and not (quantified or here):
@@ -10351,6 +10452,12 @@ async def _reject_unservable_model(
             f"The model '{requested_model}' is only partly downloaded on this server, so it "
             "cannot be served. Finish the download in Unsloth Studio."
         )
+    elif trained:
+        status_code, code = 404, "model_not_found"
+        message = (
+            f"The fine-tuned model '{requested_model}' is not loaded. Load it in Unsloth "
+            "Studio, or with POST /api/inference/load, then retry."
+        )
     elif downloaded:
         status_code, code = 404, "model_not_found"
         message = (
@@ -10382,6 +10489,11 @@ async def _require_named_model_access(
     named_model: str, fastapi_request: Optional[Request] = None
 ) -> None:
     """Authorize a named model via the account catalog, or an uncached Hub ref via caller token."""
+    trained = await asyncio.to_thread(_trained_run_dir, named_model)
+    if trained is not None:
+        # a run name is no Hub id: the Hub allowlist would refuse it, so authorize the folder
+        await asyncio.to_thread(account_access.require_model_access, trained)
+        return
     try:
         await asyncio.to_thread(account_access.require_model_access, named_model)
         return
@@ -10885,8 +10997,13 @@ async def _maybe_auto_switch_model(
                     include_companion_scope = True,
                 )
         if resolved is None:
+            # A "<run>/checkpoint-N" name looks like a Hub id; the reject below refuses it instead.
+            trained = (
+                not reload_only
+                and await asyncio.to_thread(_trained_run_dir, requested_model) is not None
+            )
             # Not on disk. Opt-in: fetch in the background and ask the caller to retry.
-            if auto_switch_on and not reload_only:
+            if auto_switch_on and not reload_only and not trained:
                 await _maybe_auto_download_model(
                     requested_model,
                     fastapi_request,
@@ -11263,6 +11380,8 @@ async def _maybe_auto_switch_model(
                             _record_serving_alias()
                             return
                         require_no_foreign_generations(path = switch_path)
+                        # Last chance to refuse: held swap gates keep inference and loads from starting before it.
+                        _check_switch_precondition(fastapi_request)
                         # Order: variant-qualified keys before bare ids, load path before advertised id.
                         from utils.openai_auto_switch_settings import (
                             resolve_override_for_load,
@@ -14447,13 +14566,16 @@ def _mlx_estimate_fitted_context(config, model_dir: str, load_in_4bit: bool, kv_
 
 
 def _mlx_estimate_offload(
-    request, config, model_dir: str, load_in_4bit: bool, kv_bits: Optional[int]
-) -> tuple[dict, tuple]:
-    """``({"offload": (ple, experts)} or {}, offloadable parts)`` for an MLX load of *request*,
-    "auto" decided as the load does, on its route; neither if the load quantizes, which unsloth_zoo
+    request, config, model_identifier, model_dir: str, load_in_4bit: bool, kv_bits: Optional[int]
+) -> tuple[dict, tuple, Optional[dict]]:
+    """``({"offload": (ple, experts)} or {}, offloadable parts, baseline route)`` for an MLX load of
+    *request*, "auto" decided as the load does, on its route, with the target-only route an auto
+    drafter's costless check measures against; none of them if the load quantizes, which unsloth_zoo
     refuses."""
+    from core.inference import mlx_speculative
     from core.inference.mlx_inference import (
-        mlx_resolve_offload,
+        mlx_offload_route,
+        mlx_resolve_drafter_offload,
         mlx_vlm_snapshot_store_available,
         normalize_mlx_offload,
     )
@@ -14463,19 +14585,28 @@ def _mlx_estimate_offload(
     if load_in_4bit and not (
         checkpoint.get("quantization") or checkpoint.get("quantization_config")
     ):
-        return {}, ()
+        return {}, (), None
     vision = True if _mlx_estimate_speculates(request, model_dir) else None
     try:
         parts = mlx_offloadable_parts(model_dir, vision)
     except Exception as exc:
         logger.info("MLX offload eligibility unknown for %s: %s", model_dir, exc)
         parts = ()
-    offload = mlx_resolve_offload(
+    drafter = vision and mlx_speculative.offload_drafter(
+        request.speculative_type,
+        request.spec_draft_model,
+        model_dir = model_dir,
+        target_name = model_identifier,
+        allowed = _discoverable_drafters(model_identifier),
+    )
+    offload, alone = mlx_resolve_drafter_offload(
         model_dir,
         (
             normalize_mlx_offload(request.mlx_ple_offload),
             normalize_mlx_offload(request.mlx_expert_offload),
         ),
+        drafter or None,
+        auto = mlx_speculative.mlx_spec_mode(request.speculative_type) == "auto",
         pinned = request.max_seq_length or None,
         load_in_4bit = load_in_4bit,
         # As the load: any mlx-vlm route, a speculative text load included, keeps no history without the store.
@@ -14488,7 +14619,8 @@ def _mlx_estimate_offload(
     )
     *offload, step = offload
     route = {"offload": tuple(offload)} if any(offload) else {}
-    return ({**route, "prefill_chunk": step} if step else route), parts
+    route = {**route, "prefill_chunk": step} if step else route
+    return route, parts, alone and mlx_offload_route(alone)
 
 
 def _mlx_offload_warning(info: dict) -> Optional[str]:
@@ -14531,6 +14663,7 @@ def _mlx_estimate_drafter(
     ceiling,
     load_in_4bit: bool,
     offload_route: Optional[dict] = None,
+    baseline: Optional[dict] = None,
 ):
     """``((path, builtin), fitted context, speculates)`` of an MLX load of *request*: the drafter it
     would attach, chosen as the load chooses it, and whether it speculates at all (so loads through mlx-vlm)."""
@@ -14555,6 +14688,7 @@ def _mlx_estimate_drafter(
             source,
             load_in_4bit = load_in_4bit,
             costless = mode == "auto",
+            baseline = baseline,
             **(offload_route or {}),
         )
         if attaches:
@@ -17022,6 +17156,10 @@ async def load_model(
 
     GGUF models load via llama-server (llama.cpp) instead of Unsloth.
     """
+    named = request.model_path
+    if _resolve_trained_run_request(request):
+        # keeps the job's name as the served id, so chat and /v1/models answer to it
+        request._advertised_id = request._advertised_id or named
     return await _tunnel_safe_json(
         load_model_gated(request, fastapi_request, current_subject, user_initiated = True),
         label = "Model load",
@@ -17197,6 +17335,9 @@ async def load_model_gated(
                 )
             async with nullcontext() if new_slot else inference_lifecycle_gate():
                 _raise_if_sidecar_swap_in_progress()
+                if not new_slot:
+                    # An auto-switch beside checked before this gate: this load replaces a loaded model.
+                    _check_switch_precondition(fastapi_request)
                 # The 409 gate runs inside _load_model_impl, under the lifecycle gate, atomic with teardown.
                 if new_slot:
                     reload_gate = None
@@ -17267,11 +17408,14 @@ async def load_model_gated(
                             raise refusal_for(
                                 await asyncio.to_thread(chat_eviction_reports)
                             ) from exc
+                        # The new slot loads with no gate against chats: recheck before anything is unloaded.
+                        _check_switch_precondition(fastapi_request)
                         # An idle image or video model goes before any chat model, as gpu_residency orders it.
                         if await _free_for_chat(exc, evicted, media_only = True):
                             continue
                         # No chat may start on a victim between its pick and teardown.
                         async with inference_lifecycle_gate() if new_slot else nullcontext():
+                            _check_switch_precondition(fastapi_request)
                             victims = await asyncio.to_thread(
                                 model_slots.eviction_victims,
                                 extra,
@@ -17322,6 +17466,8 @@ async def load_model_gated(
                                     # The drain can outlast a sidecar install or a cancel: never unload for nothing.
                                     _raise_if_sidecar_swap_in_progress()
                                     _raise_if_load_cancelled(attempt, impl_kwargs)
+                                    # A user back during the drain keeps their model.
+                                    _check_switch_precondition(fastapi_request)
                                 else:
                                     _raise_or_cancel_active_generations(
                                         force = request.force_cancel_active,
@@ -17787,12 +17933,9 @@ async def _managed_engine_request(request):
 
 
 def _managed_engine_unsupported_controls(payload, model_info = None) -> bool:
-    """A spelled-out ``{"type": "text"}`` response_format is the default, not structured output."""
     reasoning = (model_info or {}).get("reasoning_flags") is not None
     return bool(
         payload.use_adapter is not None
-        or _response_format_constrains_decoding(payload)
-        or payload.continue_final_message
         or (
             not reasoning
             and (
@@ -19107,11 +19250,11 @@ async def _load_model_impl(
         _close_load_event(
             _load_event, model_log_label if native_grant_backed else config.identifier, None
         )
-        # Clear the idle-unload stash so the next /v1 request doesn't resurrect an old GGUF.
+        # Consume the reload stash: an MLX swap's chat context is restored, anything else dropped.
         from core.inference.llama_keepwarm import note_model_loaded
 
         if replacing:
-            note_model_loaded()
+            await asyncio.to_thread(note_model_loaded, backend)
             account_access.publish_resident(
                 "chat",
                 request.model_path,
@@ -20483,8 +20626,8 @@ async def estimate_memory(
             if mlx_kv_bits is not None and mlx_kv_quant_is_refused(model_dir, mlx_kv_bits):
                 mlx_kv_bits = None
             mlx_named_ctx = request.max_seq_length or 0
-            mlx_offload, mlx_offloadable = _mlx_estimate_offload(
-                request, config, model_dir, mlx_load_in_4bit, mlx_kv_bits
+            mlx_offload, mlx_offloadable, mlx_offload_baseline = _mlx_estimate_offload(
+                request, config, model_identifier, model_dir, mlx_load_in_4bit, mlx_kv_bits
             )
             mlx_drafter, mlx_fitted_ctx, mlx_speculates = _mlx_estimate_drafter(
                 request,
@@ -20493,6 +20636,7 @@ async def estimate_memory(
                 _mlx_estimate_ceiling(model_dir),
                 mlx_load_in_4bit,
                 mlx_offload,
+                mlx_offload_baseline,
             )
             mlx_route = {**({"vision": True} if mlx_speculates else {}), **mlx_offload}
             if not mlx_named_ctx and mlx_drafter is None:
@@ -20676,6 +20820,8 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
     ``_unload_model_impl`` (as preview awaits ``load_model_gated``), since the padded
     path returns a StreamingResponse, not the payload.
     """
+    # /load records a run name as its folder, so unload and cancel by the same spelling
+    _resolve_trained_run_request(request)
     return await _tunnel_safe_json(
         _unload_model_impl(request, current_subject), label = "Model unload"
     )
@@ -21292,6 +21438,7 @@ async def generate_stream(
                 presence_penalty = request.presence_penalty,
                 cancel_event = cancel_event,
             )
+            gen_step = ThreadStepper(gen).next
             _DONE = object()
             while True:
                 if cancel_event.is_set():
@@ -21300,7 +21447,7 @@ async def generate_stream(
                     # Flag failed so the middleware does not claim the model on a cancelled stream.
                     mark_response_failed(_gs_scope)
                     break
-                chunk = await asyncio.to_thread(next, gen, _DONE)
+                chunk = await gen_step(_DONE)
                 if chunk is _DONE:
                     if cancel_event.is_set():
                         mark_response_failed(_gs_scope)
@@ -30313,7 +30460,8 @@ async def produce_openai_chat_completions(
             _explicit_studio_tool_loop_requested(payload)
             or not _tools_outrank_response_format(payload, payload.tools)
         ):
-            if not model_info.get("is_mlx"):
+            _engine_grammar = model_info.get("engine") in ("vllm", "sglang")
+            if not (model_info.get("is_mlx") or _engine_grammar):
                 _raise_unsupported_openai_parameter(
                     "response_format",
                     "response_format needs a grammar engine, and the transformers backend "
@@ -30333,9 +30481,10 @@ async def produce_openai_chat_completions(
                     "decoding starts a new document rather than continuing the text before "
                     "it. Send the turn without continue_final_message.",
                 )
-            await asyncio.get_running_loop().run_in_executor(
-                _SCHEMA_VALIDATION_EXECUTOR, _reject_unhonorable_response_format, payload
-            )
+            if not _engine_grammar:
+                await asyncio.get_running_loop().run_in_executor(
+                    _SCHEMA_VALIDATION_EXECUTOR, _reject_unhonorable_response_format, payload
+                )
 
         # ── Audio TTS path: auto-route to audio generation ────
         # Whisper is ASR, not TTS, so it skips this branch and is handled in the audio input path below.
@@ -30486,6 +30635,7 @@ async def produce_openai_chat_completions(
                         yield _chat_role_chunk(completion_id, created, model_name)
 
                         gen = audio_input_generate()
+                        gen_step = ThreadStepper(gen).next
                         _DONE = object()
                         cancelled = False
                         while True:
@@ -30499,7 +30649,7 @@ async def produce_openai_chat_completions(
                                 api_monitor.finish(monitor_id, "cancelled")
                                 mark_current_response_failed()
                                 return
-                            chunk_text = await asyncio.to_thread(next, gen, _DONE)
+                            chunk_text = await gen_step(_DONE)
                             if chunk_text is _DONE:
                                 if cancel_event.is_set():
                                     cancelled = True
@@ -31355,6 +31505,7 @@ async def produce_openai_chat_completions(
                     context_refusal.open_slot()
                     # In a thread so the event loop stays free for disconnect detection.
                     gen = gguf_generate_with_tools()
+                    gen_step = ThreadStepper(gen).next
                     prev_text = ""
                     _gguf_display_strip = _StreamingDisplayStrip(
                         auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
@@ -31399,9 +31550,7 @@ async def produce_openai_chat_completions(
                             resume_before_next = False
                             await _park_admission(False)
 
-                        next_task = asyncio.create_task(
-                            asyncio.to_thread(next, gen, _tool_sentinel)
-                        )
+                        next_task = asyncio.create_task(gen_step(_tool_sentinel))
                         try:
                             # asyncio.wait never cancels next_task, matching the finally-drain shield.
                             wait_timeout = (
@@ -32077,6 +32226,7 @@ async def produce_openai_chat_completions(
 
                     # In a thread so the event loop stays free for disconnect detection.
                     gen = gguf_generate()
+                    gen_step = ThreadStepper(gen).next
                     prev_text = ""
                     reasoning_extractor = _new_chat_reasoning_extractor()
                     _stream_usage = None
@@ -32091,9 +32241,7 @@ async def produce_openai_chat_completions(
                             mark_current_response_failed()
                             api_monitor.finish(monitor_id, "cancelled")
                             return
-                        next_task = asyncio.create_task(
-                            asyncio.to_thread(next, gen, _gguf_sentinel)
-                        )
+                        next_task = asyncio.create_task(gen_step(_gguf_sentinel))
                         try:
                             # Stall-timeout wait: keepalive while the generator stays
                             # silent (e.g. no-tool prefill). asyncio.wait never cancels
@@ -32777,17 +32925,20 @@ async def produce_openai_chat_completions(
 
     # Classify capability flags from the loaded template.
     _sf_model_info = backend.models.get(backend.active_model_name, {})
-    # Only MLX and managed vLLM count their own prompt exactly, so only they are fitted first.
     _sf_fit_overflow = (
         _rolling_context_policy(payload)
-        if _sf_model_info.get("is_mlx") or _sf_model_info.get("engine") == "vllm"
+        if _sf_model_info.get("is_mlx") or _sf_model_info.get("engine") in ("vllm", "sglang")
         else None
     )
     if _sf_model_info.get("engine") in ("vllm", "sglang"):
         if _managed_engine_unsupported_controls(payload, _sf_model_info):
             raise _reject(
                 400,
-                "This engine integration does not support adapters, structured output, continuation or reasoning controls.",
+                "This engine integration does not support adapters or reasoning controls.",
+            )
+        if _continue_final_message(payload, thought = True) and not _continue_final_message(payload):
+            raise _reject(
+                400, "This engine cannot resume a response that stopped mid-thought. Use Retry."
             )
         from routes.managed_engine_chat import managed_tool_chat
 
@@ -32833,6 +32984,8 @@ async def produce_openai_chat_completions(
     # tool_choice asked directly: _tool_loop_unusable weighs it against GGUF's tools.
     _sf_recall_loop_usable = (
         payload.tool_choice != "none"
+        # Managed engines refuse tools on this path; their tool turns go through managed_tool_chat.
+        and _sf_model_info.get("engine") not in ("vllm", "sglang")
         and not _tool_loop_unusable
         and not _has_client_tool_contract
         and not _response_format_constrains_decoding(payload)
@@ -33218,6 +33371,7 @@ async def produce_openai_chat_completions(
                 yield _chat_role_chunk(completion_id, created, model_name)
 
                 gen = sf_generate_with_tools()
+                gen_step = ThreadStepper(gen).next
                 prev_text = ""
                 _sf_display_strip = _StreamingDisplayStrip(
                     auto_heal_tool_calls = _sf_auto_heal_tool_calls,
@@ -33252,9 +33406,7 @@ async def produce_openai_chat_completions(
                         return
 
                     # Keepalive so silent backend segments do not exceed proxy timeouts.
-                    _sf_next_task = asyncio.create_task(
-                        asyncio.to_thread(next, gen, _sf_tool_sentinel)
-                    )
+                    _sf_next_task = asyncio.create_task(gen_step(_sf_tool_sentinel))
                     wait_timeout = (
                         TOOL_APPROVAL_FLUSH_DELAY_S
                         if approval_flush_pending
@@ -33913,13 +34065,14 @@ async def produce_openai_chat_completions(
                 # Worker thread: a blocking _gen_lock in compare mode would otherwise freeze the loop.
                 _DONE = object()  # sentinel for generator exhaustion
                 gen = generate()
+                gen_step = ThreadStepper(gen).next
                 while True:
                     if cancel_event.is_set():
                         backend.reset_generation_state(cancel_event)
                         mark_current_response_failed()
                         break
                     # next(gen, _DONE) avoids StopIteration, which can't cross asyncio futures.
-                    _next_task = asyncio.create_task(asyncio.to_thread(next, gen, _DONE))
+                    _next_task = asyncio.create_task(gen_step(_DONE))
                     while True:
                         _done_tasks, _ = await asyncio.wait(
                             {_next_task},
@@ -35703,6 +35856,7 @@ async def _openai_catalog_with_aliases(quant_pins: bool = False) -> list[dict]:
 # compatibility alias for the canonical OpenAI path.
 @router.get("/models/", include_in_schema = False)
 @router.get("/models")
+@in_scan_memo
 async def openai_list_models(
     output_modalities: Optional[str] = None, current_subject: str = Depends(get_current_subject)
 ):
@@ -36310,11 +36464,12 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
                     )
                 _DONE = object()
                 gen = generate(prompt_ids) if budget != 0 else iter(())
+                gen_step = ThreadStepper(gen).next
                 prev = ""
                 while True:
                     if cancel_event.is_set():
                         break
-                    next_task = asyncio.create_task(asyncio.to_thread(next, gen, _DONE))
+                    next_task = asyncio.create_task(gen_step(_DONE))
                     while not (
                         await asyncio.wait(
                             {next_task}, timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S
@@ -43129,6 +43284,7 @@ async def anthropic_messages(
                     auto_heal_tool_calls = payload.auto_heal_tool_calls,
                     response_format = response_format,
                     parse_think = _think_parsing_expected(llama_backend, payload),
+                    context_overflow = _overflow_truncation_policy(payload),
                     **_reasoning_args,
                 )
             )
@@ -43156,6 +43312,7 @@ async def anthropic_messages(
                 cancel_event = cancel_event,
                 response_format = response_format,
                 parse_think = _think_parsing_expected(llama_backend, payload),
+                context_overflow = _overflow_truncation_policy(payload),
                 **_reasoning_args,
             )
         )
@@ -43481,6 +43638,7 @@ async def _anthropic_tool_stream(
             # The respawn refit records the refusal from the worker thread, so open the slot out here first.
             context_refusal.open_slot()
             gen = run_gen()
+            gen_step = ThreadStepper(gen).next
             _next_task = None
             # The in-loop poll fires only between events, so a mid-prefill disconnect needs a watcher.
             disconnect_watcher = asyncio.create_task(
@@ -43494,7 +43652,7 @@ async def _anthropic_tool_stream(
                         mark_response_failed(getattr(request, "scope", None))
                         return
                     # Stall keepalive: silent backend segments must not idle the SSE stream past proxy timeouts.
-                    _next_task = asyncio.create_task(asyncio.to_thread(next, gen, _sentinel))
+                    _next_task = asyncio.create_task(gen_step(_sentinel))
                     while True:
                         _done_tasks, _ = await asyncio.wait(
                             {_next_task},
@@ -43575,6 +43733,7 @@ async def _anthropic_plain_stream(
             captured_finish_reason = None
 
             gen = run_gen()
+            gen_step = ThreadStepper(gen).next
             _next_task = None
             # Watcher cancels on disconnect since the in-loop poll only runs between chunks, not mid-prefill.
             disconnect_watcher = asyncio.create_task(
@@ -43588,7 +43747,7 @@ async def _anthropic_plain_stream(
                         mark_response_failed(getattr(request, "scope", None))
                         return
                     # Stall keepalive each window while next(gen) runs in a worker.
-                    _next_task = asyncio.create_task(asyncio.to_thread(next, gen, _sentinel))
+                    _next_task = asyncio.create_task(gen_step(_sentinel))
                     while True:
                         _done_tasks, _ = await asyncio.wait(
                             {_next_task},
@@ -44275,6 +44434,7 @@ async def _anthropic_passthrough_stream(
     preserve_thinking = None,
     parse_think = True,
     thinking_budget_tokens = None,
+    context_overflow = None,
 ):
     """Streaming client-side pass-through: forward tools to llama-server and
     translate its stream to Anthropic SSE without executing anything."""
@@ -44402,29 +44562,64 @@ async def _anthropic_passthrough_stream(
         items_iter = None
         cancel_watcher = None
         disconnect_watcher = None
-        try:
-            upstream = _LlamaUpstream(llama_backend, "/v1/chat/completions")
-            async with aclosing(
-                upstream.stream_response(client, body, cancel_event, request)
-            ) as opening:
-                async for opened in opening:
-                    if opened is _LLAMA_STREAM_KEEPALIVE:
-                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
-                    else:
-                        resp = opened
-            first_token_deadline = upstream.first_token_deadline
-            if resp is None:
-                return
+        # Resolved by the route from the request field or UNSLOTH_CONTEXT_OVERFLOW; None keeps the 400.
+        _truncate_budget = _OVERFLOW_TRUNCATE_MAX_RETRIES if context_overflow else 0
 
-            # Headers flushed, so upstream 4xx must surface as in-band Anthropic error, not silent end_turn.
-            if resp.status_code != 200:
+        def _apply_passthrough_truncation(err_text: str) -> bool:
+            nonlocal _truncated_messages
+            dropped = _apply_measured_overflow_truncation(body, err_text, context_overflow)
+            if dropped is None:
+                return False
+            _truncated_messages += dropped
+            _remember_passthrough_cut(
+                _uncut_messages, body, context_overflow, _truncated_messages, _cut_scope
+            )
+            return True
+
+        try:
+            # Inside the try so a disconnect during the replay still releases the tracker.
+            _uncut_messages, _cut_scope, _truncated_messages = await _prepare_passthrough_cut(
+                llama_backend, body, context_overflow
+            )
+            upstream = _LlamaUpstream(llama_backend, "/v1/chat/completions")
+            while True:
+                async with aclosing(
+                    upstream.stream_response(client, body, cancel_event, request)
+                ) as opening:
+                    async for opened in opening:
+                        if opened is _LLAMA_STREAM_KEEPALIVE:
+                            yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                        else:
+                            resp = opened
+                first_token_deadline = upstream.first_token_deadline
+                if resp is None:
+                    return
+
+                if resp.status_code == 200:
+                    break
+
+                # Headers flushed, so upstream 4xx must surface as in-band Anthropic error, not silent end_turn.
                 _err_bytes = await resp.aread()
-                _err_text = _err_bytes.decode("utf-8", "replace")[:500]
+                _err_text = _err_bytes.decode("utf-8", "replace")
                 logger.error(
                     "anthropic passthrough upstream error: status=%s body=%s",
                     resp.status_code,
-                    _err_text,
+                    _err_text[:500],
                 )
+                # Opt-in overflow policy, as on /v1/chat/completions: shrink and retry instead of a 400.
+                if (
+                    _truncate_budget > 0
+                    and _classify_llama_generation_error(Exception(_err_text))
+                    and _apply_passthrough_truncation(_err_text)
+                ):
+                    _truncate_budget -= 1
+                    try:
+                        await resp.aclose()
+                    except Exception:
+                        pass
+                    resp = None
+                    continue
+                _err_text = _err_text[:500]
                 # The outer 200 stream headers are already flushed, so flag the failure: the
                 # middleware must not claim a preview-owned model on a passthrough whose
                 # upstream errored before any SSE.
@@ -44657,6 +44852,7 @@ async def _anthropic_passthrough_non_streaming(
     preserve_thinking = None,
     parse_think = True,
     thinking_budget_tokens = None,
+    context_overflow = None,
 ):
     body = _build_passthrough_payload(
         openai_messages,
@@ -44685,7 +44881,26 @@ async def _anthropic_passthrough_non_streaming(
     async with _LlamaUpstream(
         llama_backend, "/v1/chat/completions", cancel_event = cancel_event, request = request
     ) as upstream:
+        _truncate_budget = _OVERFLOW_TRUNCATE_MAX_RETRIES if context_overflow else 0
+        _uncut_messages, _cut_scope, _truncated_messages = await _prepare_passthrough_cut(
+            llama_backend, body, context_overflow
+        )
         resp = await upstream.post(body, timeout = _timeout)
+        # Opt-in overflow policy, as on /v1/chat/completions: shrink and retry instead of a 400.
+        while (
+            resp.status_code != 200
+            and _truncate_budget > 0
+            and _classify_llama_generation_error(Exception(resp.text))
+        ):
+            dropped = _apply_measured_overflow_truncation(body, resp.text, context_overflow)
+            if dropped is None:
+                break
+            _truncate_budget -= 1
+            _truncated_messages += dropped
+            _remember_passthrough_cut(
+                _uncut_messages, body, context_overflow, _truncated_messages, _cut_scope
+            )
+            resp = await upstream.post(body, timeout = _timeout)
 
         if resp.status_code != 200:
             _err_text = resp.text[:500]
@@ -45494,15 +45709,8 @@ async def _openai_passthrough_stream_admitted(
         client = _llama_stream_client()
         _truncate_policy = _overflow_truncation_policy(payload)
         _truncate_budget = _OVERFLOW_TRUNCATE_MAX_RETRIES if _truncate_policy else 0
-        _uncut_messages = list(body.get("messages") or [])
-        # Off the event loop: the history can hold megabytes of images.
-        _cut_scope = _passthrough_cut_scope(llama_backend, body)
-        _truncated_messages = await asyncio.to_thread(
-            _replay_passthrough_cut,
-            body,
-            _truncate_policy,
-            getattr(llama_backend, "context_length", None),
-            _cut_scope,
+        _uncut_messages, _cut_scope, _truncated_messages = await _prepare_passthrough_cut(
+            llama_backend, body, _truncate_policy
         )
         _context_was_truncated = _truncated_messages > 0
 
@@ -45899,15 +46107,16 @@ async def _openai_passthrough_stream_admitted(
                         yield raw_line + "\n\n"
                         monitor_done = True
                         break
-                    raw_line = _normalize_openai_passthrough_sse_line(
+                    raw_line, chunk_data = _normalize_openai_passthrough_sse_line_and_data(
                         raw_line,
                         cap_parallel_tool_calls = payload.parallel_tool_calls is False,
                     )
-                    data_text = raw_line[5:].strip()
-                    try:
-                        chunk_data = json.loads(data_text)
-                    except json.JSONDecodeError:
-                        chunk_data = None
+                    if chunk_data is _SSE_LINE_UNPARSED:
+                        data_text = raw_line[5:].strip()
+                        try:
+                            chunk_data = json.loads(data_text)
+                        except json.JSONDecodeError:
+                            chunk_data = None
                     if isinstance(chunk_data, dict):
                         if isinstance(chunk_data.get("id"), str):
                             last_chunk_id = chunk_data["id"]
@@ -45929,7 +46138,10 @@ async def _openai_passthrough_stream_admitted(
                             saw_stream_error = True
                             mark_response_failed(getattr(request, "scope", None))
                     if not client_wants_progress and _is_prefill_progress_only(chunk_data):
-                        _monitor_openai_sse_line(monitor_id, raw_line, llama_backend.context_length)
+                        # chunk_data decodes raw_line (a data: line), so skip the monitor's re-parse.
+                        _monitor_openai_sse_data(
+                            monitor_id, chunk_data, llama_backend.context_length
+                        )
                         if progress_keepalive.due():
                             yield _OPENAI_PREFILL_PROGRESS_SSE
                         continue
@@ -45969,10 +46181,17 @@ async def _openai_passthrough_stream_admitted(
                         yield finish_line + "\n\n"
                         saw_finish_reason = True
                     for out_line in out_lines:
-                        monitor_event = _monitor_openai_sse_line(
-                            monitor_id,
-                            out_line,
-                            llama_backend.context_length,
+                        monitor_event = (
+                            # The healer leaves chunk_data untouched whenever it relays raw_line.
+                            _monitor_openai_sse_data(
+                                monitor_id, chunk_data, llama_backend.context_length
+                            )
+                            if out_line is raw_line and chunk_data is not None
+                            else _monitor_openai_sse_line(
+                                monitor_id,
+                                out_line,
+                                llama_backend.context_length,
+                            )
                         )
                         if monitor_event == "error":
                             saw_stream_error = True
@@ -46263,15 +46482,8 @@ async def _openai_passthrough_non_streaming_upstream(
 
     _truncate_policy = _overflow_truncation_policy(payload)
     _truncate_budget = _OVERFLOW_TRUNCATE_MAX_RETRIES if _truncate_policy else 0
-    _uncut_messages = list(body.get("messages") or [])
-    # Off the event loop: the history can hold megabytes of images.
-    _cut_scope = _passthrough_cut_scope(llama_backend, body)
-    _truncated_messages = await asyncio.to_thread(
-        _replay_passthrough_cut,
-        body,
-        _truncate_policy,
-        getattr(llama_backend, "context_length", None),
-        _cut_scope,
+    _uncut_messages, _cut_scope, _truncated_messages = await _prepare_passthrough_cut(
+        llama_backend, body, _truncate_policy
     )
     _context_was_truncated = _truncated_messages > 0
 
@@ -46780,10 +46992,10 @@ async def diffusion_download_plan(
     await _refuse_disabled_nvfp4_checkpoint(request)
     from core.inference.diffusion import (
         get_diffusion_backend,
-        resolve_local_single_file,
         split_local_checkpoint_path,
         resolve_model_kind,
     )
+    from core.inference.diffusion_local_files import resolve_local_single_file
     from core.inference.diffusion_engine_router import predict_engine
     from core.inference.diffusion_hub_evidence import prefetch_for_pick
     from core.inference.sd_cpp_engine import ENGINE_MLX, ENGINE_SD_CPP
@@ -47020,10 +47232,10 @@ async def load_diffusion_model_gated(
     ]
     from core.inference.diffusion import (
         get_diffusion_backend,
-        resolve_local_single_file,
         split_local_checkpoint_path,
         resolve_model_kind,
     )
+    from core.inference.diffusion_local_files import resolve_local_single_file
     from core.inference.diffusion_device import (
         resolve_diffusion_device_target,
         resolve_selected_cuda_ordinal,

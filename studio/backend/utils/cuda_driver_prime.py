@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Run ``cuInit`` via ctypes (releases the GIL) before torch's first CUDA probe, which holds the GIL for the
-whole multi-second driver init and freezes the event loop. Idempotent; never raises. Concurrent callers wait on an
-Event rather than entering torch's GIL-holding call. ``UNSLOTH_STUDIO_DISABLE_CUDA_PRIME=1`` disables it.
-"""
+"""Early cuInit via ctypes before the torch CUDA probe, releasing the GIL; idempotent, never raises;
+UNSLOTH_STUDIO_DISABLE_CUDA_PRIME=1 disables it"""
 
 from __future__ import annotations
 

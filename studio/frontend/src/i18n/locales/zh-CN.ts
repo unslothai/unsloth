@@ -2306,7 +2306,7 @@ export const zhCN = {
         gpuUnusableDetail: "已检测到，但 PyTorch 无法使用",
         detailedView: "详细视图",
         detailedViewDescription:
-          "在浮动窗口和此处显示 CPU 负载以及每个 GPU 的负载、温度和功耗。",
+          "在浮动窗口中显示 CPU 负载以及每个 GPU 的负载、温度和功耗。",
         cpuLoad: "CPU 负载",
         gpuLoad: "GPU 负载",
         temperature: "温度",
@@ -2337,6 +2337,10 @@ export const zhCN = {
         used: "已用 {value}",
         free: "{value} 可用",
         total: "共 {value}",
+        usedOf: "已用 {used}，共 {total}",
+        segmentUsed: "GPU 已用",
+        segmentSystem: "系统已用",
+        segmentAvailable: "可用",
       },
       llamaBackend: {
         title: "GGUF 推理引擎",
@@ -2517,6 +2521,8 @@ export const zhCN = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "运行时长",
         processMemory: "进程内存",
         notInstalled: "未安装",
@@ -3248,6 +3254,7 @@ export const zhCN = {
       desktopAppVersionUnavailable: "不可用",
       llamaCppVersion: "llama.cpp 版本",
       audioCppVersion: "audio.cpp 版本",
+      mlxVersion: "MLX 版本",
       whisperCppVersion: "whisper.cpp 版本",
       engines: {
         title: "引擎",

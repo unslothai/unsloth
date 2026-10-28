@@ -2340,7 +2340,7 @@ export const hi = {
         gpuUnusableDetail: "पहचाना गया, लेकिन PyTorch इसका उपयोग नहीं कर सकता",
         detailedView: "विस्तृत दृश्य",
         detailedViewDescription:
-          "फ़्लोटिंग विंडो में और यहाँ CPU लोड तथा हर GPU का लोड, तापमान और पावर दिखाएँ।",
+          "फ़्लोटिंग विंडो में CPU लोड तथा हर GPU का लोड, तापमान और पावर दिखाएँ।",
         cpuLoad: "CPU लोड",
         gpuLoad: "GPU लोड",
         temperature: "तापमान",
@@ -2373,6 +2373,10 @@ export const hi = {
         used: "{value} उपयोग में",
         free: "{value} खाली",
         total: "{value} कुल",
+        usedOf: "{total} में से {used} उपयोग में",
+        segmentUsed: "GPU द्वारा उपयोग में",
+        segmentSystem: "सिस्टम द्वारा उपयोग में",
+        segmentAvailable: "उपलब्ध",
       },
       llamaBackend: {
         title: "GGUF इनफ़रेंस इंजन",
@@ -2559,6 +2563,8 @@ export const hi = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "अपटाइम",
         processMemory: "प्रोसेस मेमोरी",
         notInstalled: "इंस्टॉल नहीं है",
@@ -3311,6 +3317,7 @@ export const hi = {
       desktopAppVersionUnavailable: "उपलब्ध नहीं",
       llamaCppVersion: "llama.cpp संस्करण",
       audioCppVersion: "audio.cpp संस्करण",
+      mlxVersion: "MLX संस्करण",
       whisperCppVersion: "whisper.cpp संस्करण",
       engines: {
         title: "इंजन",

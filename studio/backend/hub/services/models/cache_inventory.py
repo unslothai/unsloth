@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import NamedTuple, Optional
 
 from loggers import get_logger
+from utils.scan_memo import in_scan_memo
 
 from hub.schemas.inventory import ModelFormat
 from hub.utils import inventory_scan as hf_cache_scan
@@ -864,6 +865,7 @@ async def _shared_cached_inventory_scan(name: str, scanner) -> _CachedInventoryS
     return _CachedInventoryScan(_last_confirmed_inventory.get(name, []), False)
 
 
+@in_scan_memo
 async def list_cached_gguf_response(hf_token: Optional[str] = None):
     """List GGUF repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     try:
@@ -1413,6 +1415,7 @@ def _scan_cached_models(
     return cached
 
 
+@in_scan_memo
 async def list_cached_models_response(hf_token: Optional[str] = None):
     """List non-GGUF model repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     try:

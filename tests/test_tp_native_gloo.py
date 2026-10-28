@@ -11,7 +11,6 @@ if multiprocessing.parent_process() is not None or getattr(
 ):
     os.environ["CUDA_VISIBLE_DEVICES"] = ""  # spawned gloo ranks: CPU only, also on GPU hosts
 
-import socket  # noqa: E402
 import sys  # noqa: E402
 import tempfile  # noqa: E402
 
@@ -36,9 +35,8 @@ _ADAM_EPS = 1e-6
 
 
 def _free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    from tests._rendezvous_port import free_port
+    return free_port()
 
 
 def _grads(model):

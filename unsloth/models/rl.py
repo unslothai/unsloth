@@ -119,12 +119,22 @@ _GRPO_VLLM_SYNC_FUNCTIONS = frozenset(
         "_sync_fsdp2_params_to_vllm",
     )
 )
+_ONLINE_DPO_VLLM_SYNC_FUNCTIONS = frozenset(
+    (
+        "_move_model_to_vllm",
+        "_move_model_to_vllm_inner",
+        "_sync_fsdp1_params_to_vllm",
+        "_sync_fsdp2_params_to_vllm",
+    )
+)
 
 
 def _strip_vllm_weight_loads(function, source, trainer_file):
     # GRPO's _move_model_to_vllm returns early under fast_inference (grpo_trainer__move_model_to_vllm),
     # and TRL's own vLLM (colocate or server) needs these lines to receive the trainer weights.
     if trainer_file == "grpo_trainer" and function in _GRPO_VLLM_SYNC_FUNCTIONS:
+        return source
+    if trainer_file == "online_dpo_trainer" and function in _ONLINE_DPO_VLLM_SYNC_FUNCTIONS:
         return source
     # Each pattern needs its literal; the line-anchored scans are slow on long sources.
     if "model_executor.driver_worker" in source:
@@ -4198,6 +4208,9 @@ def patch_functions(
                 + "args.top_k = -1\n"
             )
 
+            # The shared engine is local: a vllm_server would never get the trained weights.
+            if trainer_file == "online_dpo_trainer":
+                vllm_setter += " " * 12 + "args.vllm_mode='colocate'\n"
             if "grpo" in trainer_file and trl_version >= Version("0.18.0"):
                 vllm_setter += " " * 12 + "args.vllm_mode='colocate'\n"
                 if trl_version >= Version("0.23.0"):
@@ -4233,7 +4246,7 @@ def patch_functions(
         )
 
         if len(sampling_params) == 1:
-            sampling_params = sampling_params[0]
+            sampling_params = original_sampling_params = sampling_params[0]
             sampling_params = sampling_params.replace(
                 "guided_decoding=guided_decoding,",
                 "guided_decoding="
@@ -4256,19 +4269,24 @@ def patch_functions(
                 last_indentation = len(last_line) - len(last_line.lstrip())
 
                 extra = "**getattr(getattr(args, 'vllm_sampling_params', vLLMSamplingParams()), '_set_kwargs', {})"
+                # Merge, not two ** splats: a vllm_sampling_params key TRL also sets (top_p) is a TypeError.
                 to_replace = (
                     ",\n"
                     + " " * last_prev_indentation
+                    + "), "
                     + extra
-                    + ",\n"
+                    + "},\n"
                     + " " * last_indentation
                     + ")"
+                )
+                sampling_params = sampling_params.replace(
+                    "SamplingParams(", "SamplingParams(**{**dict(", 1
                 )
                 sampling_params = to_replace.join(sampling_params.rsplit(")", 1))
                 sampling_params = re.sub(r"[\,][\s]{0,}\,", ",", sampling_params)
 
-                new_vllm_part = (
-                    f"\n{' ' * 8}if {args}.use_vllm:\n{sampling_params}\n{' ' * 8}else:\n"
+                new_vllm_part = new_vllm_part.replace(
+                    " " * 12 + original_sampling_params, sampling_params, 1
                 )
 
         if trl_version >= Version("0.18.0"):
@@ -4884,8 +4902,8 @@ def _without_instance_bound_methods(obj):
 
 
 def _is_unsloth_fast_backbone(backbone):
-    from .llama import LlamaModel_fast_forward
-    return getattr(type(backbone), "forward", None) is LlamaModel_fast_forward
+    from .llama import LlamaModel_fast_forward, runs_fast_forward
+    return backbone is not None and runs_fast_forward(backbone, LlamaModel_fast_forward)
 
 
 def _text_prepended_position_ids(position_ids):

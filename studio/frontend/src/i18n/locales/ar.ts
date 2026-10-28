@@ -2334,7 +2334,7 @@ export const ar = {
         gpuUnusableDetail: "تم اكتشافه، لكن PyTorch لا يستطيع استخدامه",
         detailedView: "عرض مفصل",
         detailedViewDescription:
-          "اعرض حمل المعالج وحمل كل وحدة GPU وحرارتها واستهلاكها للطاقة في النافذة العائمة وهنا.",
+          "اعرض حمل المعالج وحمل كل وحدة GPU وحرارتها واستهلاكها للطاقة في النافذة العائمة.",
         cpuLoad: "حمل المعالج",
         gpuLoad: "حمل GPU",
         temperature: "الحرارة",
@@ -2367,6 +2367,10 @@ export const ar = {
         used: "{value} مستخدم",
         free: "{value} متاح",
         total: "{value} إجمالي",
+        usedOf: "{used} مستخدمة من {total}",
+        segmentUsed: "مستخدمة بواسطة GPU",
+        segmentSystem: "مستخدمة بواسطة النظام",
+        segmentAvailable: "متاحة",
       },
       llamaBackend: {
         title: "محرك استدلال GGUF",
@@ -2553,6 +2557,8 @@ export const ar = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "مدة التشغيل",
         processMemory: "ذاكرة العملية",
         notInstalled: "غير مثبّت",
@@ -3302,6 +3308,7 @@ export const ar = {
       desktopAppVersionUnavailable: "غير متاح",
       llamaCppVersion: "إصدار llama.cpp",
       audioCppVersion: "إصدار audio.cpp",
+      mlxVersion: "إصدار MLX",
       whisperCppVersion: "إصدار whisper.cpp",
       engines: {
         title: "المحركات",

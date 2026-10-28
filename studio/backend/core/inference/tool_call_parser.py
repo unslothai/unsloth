@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Backend-neutral tool-call parser shared by GGUF, safetensors, and MLX, so the safetensors + MLX
-agentic loop sees the same call shape llama-server gives GGUF. Formats:
-``<tool_call>{json}</tool_call>`` (Qwen / Hermes);
-``<function=name><parameter=k>v</parameter></function>`` (Qwen3.5 xml);
-``<|python_tag|>NAME.call(k="v", ...)`` and ``<|python_tag|>{"name":..., "parameters":...}``
-(Llama-3); bare ``{"name":..., "parameters":...}`` (Llama-3.2); ``[TOOL_CALLS]`` array /
-``name{json}`` / ``name[ARGS]{json}`` (Mistral v0.3 through Large 3);
-``<|tool_call>call:NAME{k:<|"|>v<|"|>}<tool_call|>`` (Gemma 4); the fullwidth-pipe envelopes of
-DeepSeek R1 / V3 / V3.1; ``<tool_call>NAME<arg_key>..<arg_value>..</tool_call>`` (GLM 4.5-4.7);
-and the ``<|tool_calls_section_begin|>`` form (Kimi K2). Missing closing tags / brackets are
-tolerated: models often truncate mid-stream."""
+"""Backend-neutral tool-call parser for all backends; tolerates missing closing tags from truncation."""
 
 # Lazy annotations keep the standalone python 3.9 import working.
 from __future__ import annotations
@@ -1113,6 +1103,18 @@ def _unmask_blocked_bodies(text: str, bodies: list) -> Optional[str]:
     return result if count == len(bodies) else None
 
 
+def _search_from_literal(pattern: re.Pattern, literal: str, text: str, pos: int):
+    """``pattern.search(text, pos)`` for a pattern whose every match starts with ``literal``: the regex is
+    tried only where ``find`` lands, not at every position (a lookbehind still sees the text before)."""
+    at = text.find(literal, pos)
+    while at >= 0:
+        m = pattern.match(text, at)
+        if m:
+            return m
+        at = text.find(literal, at + 1)
+    return None
+
+
 def _strip_gemma_wrapperless_calls(text: str, enabled_tool_names: Optional[set] = None) -> str:
     """Strips closed bare call:NAME{...} calls; non-promotable, quoted and unanchored ones stay visible; None strips every anchored closed non-execution call."""
     if _whole_content_is_json_value(text):
@@ -1127,7 +1129,7 @@ def _strip_gemma_wrapperless_calls(text: str, enabled_tool_names: Optional[set] 
     floor = blocked_markerless_prefix_end(text, cursor, enabled_tool_names)
     code_spans, code_from = None, 0
     while cursor < n:
-        m = _GEMMA_BARE_TC_RE.search(text, cursor)
+        m = _search_from_literal(_GEMMA_BARE_TC_RE, "call", text, cursor)
         if not m:
             out.append(text[cursor:])
             break

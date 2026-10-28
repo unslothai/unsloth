@@ -2269,7 +2269,7 @@ export const it = {
         gpuUnusableDetail: "Rilevata, ma PyTorch non può usarla",
         detailedView: "Vista dettagliata",
         detailedViewDescription:
-          "Mostra il carico della CPU e carico, temperatura e consumo di ogni GPU nella finestra mobile e qui.",
+          "Mostra il carico della CPU e carico, temperatura e consumo di ogni GPU nella finestra mobile.",
         cpuLoad: "Carico CPU",
         gpuLoad: "Carico GPU",
         temperature: "Temperatura",
@@ -2303,6 +2303,10 @@ export const it = {
         used: "In uso: {value}",
         free: "Disponibili: {value}",
         total: "Totale: {value}",
+        usedOf: "{used} in uso su {total}",
+        segmentUsed: "In uso dalla GPU",
+        segmentSystem: "In uso dal sistema",
+        segmentAvailable: "Disponibile",
       },
       llamaBackend: {
         title: "Motore di inferenza GGUF",
@@ -2490,6 +2494,8 @@ export const it = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "Tempo di attività",
         processMemory: "Memoria del processo",
         notInstalled: "Non installato",
@@ -3251,6 +3257,7 @@ export const it = {
       packageVersion: "Versione del pacchetto",
       llamaCppVersion: "Versione di llama.cpp",
       audioCppVersion: "Versione di audio.cpp",
+      mlxVersion: "Versione di MLX",
       whisperCppVersion: "Versione di whisper.cpp",
       engines: {
         title: "Motori",

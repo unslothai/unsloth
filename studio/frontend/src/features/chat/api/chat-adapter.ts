@@ -381,6 +381,7 @@ import type { CachedGgufRepo, CachedModelRepo } from "./chat-api";
 import {
   budgetImpliesTruncation,
   CONTINUE_INSTRUCTION,
+  carriedThought,
   continuationSeed,
   createContinuationMerger,
   hasRenderableContent,
@@ -2287,7 +2288,7 @@ export async function buildLocalTokenCountExtras(
         checkpoint: state.params.checkpoint,
       }),
       isMlx: state.loadedIsMlx === true,
-      isManagedEngine: state.loadedEngine === "vllm",
+      isManagedEngine: state.loadedEngine !== "auto",
       autoCompactEnabled: state.autoCompactEnabled,
     }),
   };
@@ -5208,17 +5209,20 @@ export function createOpenAIStreamAdapter(
       }
 
       // Carry reasoning only to a backend that can resume it.
-      const resumedThought =
-        continuation &&
-        resumesThought({
-          loadedIsGguf: runtime.loadedIsGguf,
-          loadedIsMlx: runtime.loadedIsMlx,
-          activeGgufVariant: runtime.activeGgufVariant,
-          activeNativePathToken: runtime.activeNativePathToken,
-          checkpoint: params.checkpoint,
-        })
-          ? (continuation.reasoning ?? "")
-          : "";
+      const resumedThought = continuation
+        ? carriedThought(continuation, {
+            resumesThought: resumesThought({
+              loadedIsGguf: runtime.loadedIsGguf,
+              loadedIsMlx: runtime.loadedIsMlx,
+              activeGgufVariant: runtime.activeGgufVariant,
+              activeNativePathToken: runtime.activeNativePathToken,
+              checkpoint: params.checkpoint,
+            }),
+            managedEngine:
+              !isExternalModelId(params.checkpoint) &&
+              runtime.loadedEngine !== "auto",
+          })
+        : "";
       const hasGeminiReplayContinuation = Boolean(
         continuation &&
           externalProvider?.providerType === "gemini" &&
@@ -5515,7 +5519,7 @@ export function createOpenAIStreamAdapter(
       const isMlxForCompaction =
         !isExternalModelId(params.checkpoint) && runtime.loadedIsMlx === true;
       const isManagedEngineForCompaction =
-        !isExternalModelId(params.checkpoint) && runtime.loadedEngine === "vllm";
+        !isExternalModelId(params.checkpoint) && runtime.loadedEngine !== "auto";
       // Taken once, so a retried request still carries it and the next turn does not.
       const compactNow =
         takeThreadCompactionRequest(resolvedThreadId) &&

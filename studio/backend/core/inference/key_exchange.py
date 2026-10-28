@@ -1,20 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-RSA key pair for encrypting API keys in transit.
-
-The frontend encrypts API keys with the server's public key before sending
-them; the backend decrypts with its private key before forwarding to external
-providers.
-
-The key pair is generated at server startup, lives only in memory, and is
-regenerated on each restart. The frontend fetches the public key via
-GET /api/providers/public-key on load.
-
-A per-request AES-256-GCM key carries the secret and RSA-OAEP wraps only that
-key: encrypting the secret under RSA directly would cap it at 190 bytes.
-"""
+"""RSA-OAEP wraps a per-request AES-256-GCM key (RSA alone caps at 190 bytes); keypair lives only in
+memory, new per start; GET /api/providers/public-key"""
 
 import base64
 import hashlib

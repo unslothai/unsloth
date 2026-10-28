@@ -2509,7 +2509,7 @@ export const sv = {
         gpuUnusableDetail: "Identifierad, men PyTorch kan inte använda den",
         detailedView: "Detaljerad vy",
         detailedViewDescription:
-          "Visa CPU-belastning samt belastning, temperatur och effekt för varje GPU i det flytande fönstret och här.",
+          "Visa CPU-belastning samt belastning, temperatur och effekt för varje GPU i det flytande fönstret.",
         cpuLoad: "CPU-belastning",
         gpuLoad: "GPU-belastning",
         temperature: "Temperatur",
@@ -2544,6 +2544,10 @@ export const sv = {
         used: "{value} används",
         free: "{value} ledigt",
         total: "{value} totalt",
+        usedOf: "{used} använt av {total}",
+        segmentUsed: "Används av GPU",
+        segmentSystem: "Används av systemet",
+        segmentAvailable: "Tillgängligt",
       },
       llamaBackend: {
         title: "GGUF-inferensmotor",
@@ -2752,6 +2756,8 @@ export const sv = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "Drifttid",
         processMemory: "Processminne",
         notInstalled: "Inte installerad",
@@ -3541,6 +3547,7 @@ export const sv = {
       desktopAppVersionUnavailable: "Inte tillgänglig",
       llamaCppVersion: "llama.cpp-version",
       audioCppVersion: "audio.cpp-version",
+      mlxVersion: "MLX-version",
       whisperCppVersion: "whisper.cpp-version",
       engines: {
         title: "Motorer",

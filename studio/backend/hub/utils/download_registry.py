@@ -1,12 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""HF cache inspection, download registry state, and orphan-worker reaping. Worker spawning and exit handling live in :mod:`hub.services.download_lifecycle`; this module owns the registry state machine plus the cache/marker inspection those workers depend on.
-
-Resume model: up to huggingface_hub 1.17 the HTTP transport supported true partial-file resume, opening ``<etag>.incomplete`` in append mode and sending ``Range: bytes={resume_size}-``. 1.18 replaced that with a process-unique ``<etag>.<nonce>.incomplete`` opened ``"wb"`` and unlinked on the way out, so no transport resumes within a file any more and a surviving partial is litter (see :func:`hf_partials_are_resumable`); resume is now whole-file only, with ``snapshot_download`` skipping shards already materialized. The XET transport CANNOT resume from a ``.incomplete`` partial at all, since ``hf_xet.download_files`` rewrites the destination from scratch, though network-level dedup still happens through the separate chunk cache these helpers never touch.
-
-Cross-transport corruption: a partial written by XET (or ``hf_transfer``'s parallel-Range writer) can be sparse, with a high reported size and zero-filled gaps below, and feeding it to the HTTP resumer would produce a correct-sized blob whose internal bytes are silently wrong. So transport markers are kept at the download's scope (repo for snapshots/datasets, variant for GGUF) and an HTTP partial is never inherited unless the marker proves the previous writer was the same single-stream sequential writer. Marker writes go through tmp+rename in :func:`prepare_cache_for_transport` before the worker hands off to ``snapshot_download``, so the next process always sees a consistent provenance signal.
-"""
+"""HF cache and registry; HTTP partials resume only if a marker proves a sequential writer (XET or
+hf_transfer partials can be sparse and silently wrong); XET cannot resume; markers written
+tmp+rename before snapshot_download handoff."""
 
 from __future__ import annotations
 

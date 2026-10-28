@@ -158,6 +158,11 @@ def estimate_messages_tokens(messages: list[dict]) -> int:
     return sum(estimate_message_tokens(message) for message in messages)
 
 
+def _ascii_count(text: str) -> int:
+    """Number of code points <= 127; ``errors = "ignore"`` drops every other one, surrogates included."""
+    return len(text) if text.isascii() else len(text.encode("ascii", "ignore"))
+
+
 def estimate_messages_tokens_dense(messages: list[dict]) -> int:
     """Estimate charging non-ASCII a token per character (2.1x undercount measured on CJK). Not the
     default: eviction must not be pessimistic."""
@@ -168,7 +173,7 @@ def estimate_messages_tokens_dense(messages: list[dict]) -> int:
         except Exception:
             total += 1
             continue
-        dense = sum(1 for char in text if ord(char) > 127)
+        dense = len(text) - _ascii_count(text)
         total += max(1, dense + (len(text) - dense) // 4)
     return total
 
@@ -192,15 +197,12 @@ def estimate_messages_tokens_conservative(
         except Exception:
             total += 1
             continue
-        wide = sum(1 for char in text if ord(char) > 127)
+        wide = len(text) - _ascii_count(text)
         if dense_ascii:
             total += max(1, wide + (len(text) - wide) // _DENSE_RUN_CHARS_PER_TOKEN)
             continue
         # ASCII only: a run of CJK is already charged a token a character above.
-        runs = sum(
-            sum(1 for char in match.group(0) if ord(char) <= 127)
-            for match in _DENSE_RUN_RE.finditer(text)
-        )
+        runs = sum(_ascii_count(match.group(0)) for match in _DENSE_RUN_RE.finditer(text))
         plain = len(text) - wide - runs
         total += max(1, wide + runs // _DENSE_RUN_CHARS_PER_TOKEN + plain // 4)
     return total
