@@ -1879,3 +1879,20 @@ class TestMetalAlongsideAdmission:
             _launch(tmp_path, monkeypatch, budget_bytes = 9 * 1024**3, **args)
         assert not backend.is_active
         assert _launch(tmp_path, monkeypatch, budget_bytes = 32 * 1024**3, **args)["cmd"]
+
+
+class TestAutoOnAMacWithRoomToSpare:
+    _ROOMY = dict(real_fit = True, budget_bytes = 64 * 1024**3, weights_bytes = 1024**3)
+
+    def test_auto_does_not_reserve_the_whole_native_window(self, tmp_path, monkeypatch):
+        captured = _launch(tmp_path, monkeypatch, n_ctx = 0, **self._ROOMY)
+        assert _ctx_values(captured["cmd"])[-1] == "65536"
+        assert captured["backend"]._max_context_length == NATIVE
+
+    def test_an_explicit_context_above_the_auto_default_still_loads(self, tmp_path, monkeypatch):
+        cmd = _launch(tmp_path, monkeypatch, n_ctx = 131072, **self._ROOMY)["cmd"]
+        assert _ctx_values(cmd)[-1] == "131072"
+
+    def test_a_shorter_native_window_keeps_its_own_length(self, tmp_path, monkeypatch):
+        cmd = _launch(tmp_path, monkeypatch, n_ctx = 0, native = 40960, **self._ROOMY)["cmd"]
+        assert _ctx_values(cmd)[-1] == "40960"
