@@ -2655,13 +2655,14 @@ def _skip_unloadable_rocm(accelerator: str) -> str:
 
 def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu") -> Optional[str]:
     """Never raises: None means no usable binary and tells the router to fall back to diffusers."""
-    accelerator = _skip_unloadable_rocm(accelerator)
     found = find_sd_cpp_binary()
     usable = bool(found) and _usable_or_discard_managed(found)
     if usable and not _needs_reinstall(found, accelerator):
         return found
     if not allow_install:
         return found
+    # Only once a fetch is due: an installed build may carry its runtime beside the binary.
+    accelerator = _skip_unloadable_rocm(accelerator)
     with _install_lock:
         found = find_sd_cpp_binary()
         usable = bool(found) and _usable_or_discard_managed(found)
@@ -2698,7 +2699,6 @@ def ensure_sd_server_binary(
     *, allow_install: bool = True, accelerator: str = "cpu"
 ) -> Optional[str]:
     """Installs sd-server even when an older sd-cli exists, since the archive ships both binaries."""
-    accelerator = _skip_unloadable_rocm(accelerator)
     found = find_sd_server_binary()
     usable = bool(found) and _usable_or_discard_managed(found)
     # Before _accelerator_changed, which says unchanged while the tree is in use.
@@ -2708,6 +2708,7 @@ def ensure_sd_server_binary(
         return found
     if not allow_install:
         return found
+    accelerator = _skip_unloadable_rocm(accelerator)
     with _install_lock:
         found = find_sd_server_binary()
         usable = bool(found) and _usable_or_discard_managed(found)

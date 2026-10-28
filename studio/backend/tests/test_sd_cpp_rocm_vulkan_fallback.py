@@ -3131,3 +3131,30 @@ def test_clearing_the_record_reprobes_the_rocm_runtime(fake_settings, monkeypatc
     sd_cpp_backend.clear_accelerator_runtime_failures()
     assert sd_cpp_backend._skip_unloadable_rocm("rocm") == "rocm"
     assert _noted_accelerators(fake_settings) == []
+
+
+@pytest.mark.parametrize(
+    "ensure, finder",
+    [
+        ("ensure_sd_cpp_binary", "find_sd_cpp_binary"),
+        ("ensure_sd_server_binary", "find_sd_server_binary"),
+    ],
+)
+def test_an_installed_rocm_build_is_kept_without_the_preflight(
+    fake_settings, monkeypatch, ensure, finder
+):
+    """A current ROCm install may carry its runtime beside the binary, which the bare-host probe cannot see."""
+    from core.inference import sd_cpp_backend
+
+    monkeypatch.setattr(sd_cpp_backend, "rocm_runtime_resolvable", lambda: False)
+    monkeypatch.setattr(sd_cpp_backend, finder, lambda: "/opt/sd/rocm/sd-bin")
+    monkeypatch.setattr(sd_cpp_backend, "_usable_or_discard_managed", lambda _b: True)
+    monkeypatch.setattr(sd_cpp_backend, "_needs_reinstall", lambda _b, accel: accel != "rocm")
+    monkeypatch.setattr(sd_cpp_backend, "_superseded_legacy_server", lambda *_a: False)
+    monkeypatch.setattr(
+        sd_cpp_backend, "_installer_module", lambda: pytest.fail("no install expected")
+    )
+    for allow_install in (True, False):
+        got = getattr(sd_cpp_backend, ensure)(allow_install = allow_install, accelerator = "rocm")
+        assert got == "/opt/sd/rocm/sd-bin"
+    assert _noted_accelerators(fake_settings) == []
