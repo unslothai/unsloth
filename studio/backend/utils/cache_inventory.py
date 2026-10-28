@@ -913,6 +913,8 @@ _size_flights: dict[str, threading.Lock] = {}
 _size_flights_lock = threading.Lock()
 # Background walks run one at a time: two stat-bound walks in one process only trade the GIL.
 _background_walk_lock = threading.Lock()
+# Caches with a background walk queued or running; the walk takes its flight only when it runs.
+_background_pending: set = set()
 
 
 def _flight_for(key: str) -> threading.Lock:
@@ -931,28 +933,54 @@ def _walk_and_remember(definition: CacheDefinition, epoch: int) -> dict:
     return entry
 
 
-def _refresh_in_background(definition: CacheDefinition) -> None:
-    """At most one walk per cache: one already running, foreground or not, stores the newer size anyway."""
-    flight = _flight_for(definition.key)
-    if not flight.acquire(blocking = False):
-        return
+def _refresh_in_background(definition: CacheDefinition) -> bool:
+    """At most one walk per cache; False when none could start, so the caller walks instead."""
+    key = definition.key
+    with _size_cache_lock:
+        if key in _background_pending:
+            return True
+        _background_pending.add(key)
 
     def walk() -> None:
         try:
             with _background_walk_lock:
-                with _size_cache_lock:
-                    epoch = _size_epochs.get(definition.key, 0)
-                _walk_and_remember(definition, epoch)
+                # Taken only once this walk can run, so a queued walk never holds up a read of its cache.
+                flight = _flight_for(key)
+                if not flight.acquire(blocking = False):
+                    return  # a foreground walk is storing a newer size
+                try:
+                    with _size_cache_lock:
+                        epoch = _size_epochs.get(key, 0)
+                        remembered = _size_cache.get(key)
+                    # Overtaken while queued: a purge, download or Recheck already replaced the old size.
+                    if (
+                        remembered is None
+                        or time.monotonic() - remembered[1] < _INVENTORY_TTL_SECONDS
+                    ):
+                        return
+                    _walk_and_remember(definition, epoch)
+                finally:
+                    flight.release()
         except Exception as exc:  # noqa: BLE001 - a failed refresh leaves the last size in place
-            logger.debug(f"Could not refresh the {definition.key} cache size: {exc}")
+            logger.debug(f"Could not refresh the {key} cache size: {exc}")
         finally:
-            flight.release()
+            with _size_cache_lock:
+                _background_pending.discard(key)
 
     try:
-        threading.Thread(target = walk, name = f"cache-size-{definition.key}", daemon = True).start()
+        threading.Thread(target = walk, name = f"cache-size-{key}", daemon = True).start()
     except Exception as exc:  # noqa: BLE001 - e.g. no thread left; the next read walks in the foreground
-        flight.release()
-        logger.debug(f"Could not start a {definition.key} cache size refresh: {exc}")
+        with _size_cache_lock:
+            _background_pending.discard(key)
+            remembered = _size_cache.get(key)
+            if (
+                remembered is not None
+                and time.monotonic() - remembered[1] >= _INVENTORY_TTL_SECONDS
+            ):
+                del _size_cache[key]
+        logger.debug(f"Could not start a {key} cache size refresh: {exc}")
+        return False
+    return True
 
 
 def _described(
@@ -960,9 +988,14 @@ def _described(
     *,
     refresh: bool,
     deferred: Optional[list] = None,
+    asked_at: Optional[float] = None,
 ) -> dict:
-    """``deferred`` collects the background refreshes for the caller to start, after its own walks."""
+    """``deferred`` collects the background refreshes for the caller to start, after its own walks.
+
+    ``asked_at`` is when the request arrived; a forced read accepts any walk begun after it.
+    """
     started = time.monotonic()
+    asked = started if asked_at is None else asked_at
     with _size_cache_lock:
         remembered = None if refresh else _size_cache.get(definition.key)
     if remembered is not None:
@@ -970,11 +1003,11 @@ def _described(
             return remembered[2]
         # A forced read (the Recheck button) still waits for a fresh walk below.
         if remembered[3] >= _BACKGROUND_WALK_SECONDS:
-            if deferred is None:
-                _refresh_in_background(definition)
-            else:
+            if deferred is not None:
                 deferred.append(definition)
-            return remembered[2]
+                return remembered[2]
+            if _refresh_in_background(definition):
+                return remembered[2]
     # One walk per cache at a time, or simultaneous misses (e.g. two open tabs) each pay a cold walk.
     with _flight_for(definition.key):
         with _size_cache_lock:
@@ -983,7 +1016,7 @@ def _described(
         # A forced read needs a walk that began after it asked.
         if remembered is not None:
             if refresh:
-                if remembered[0] >= started:
+                if remembered[0] >= asked:
                     return remembered[2]
             elif time.monotonic() - remembered[1] < _INVENTORY_TTL_SECONDS:
                 return remembered[2]
@@ -993,8 +1026,9 @@ def _described(
 def cache_inventory(*, refresh: bool = False) -> dict:
     # Started after the foreground walks, which would otherwise share the GIL with them.
     deferred: list = []
+    asked_at = time.monotonic()
     entries = [
-        _described(definition, refresh = refresh, deferred = deferred)
+        _described(definition, refresh = refresh, deferred = deferred, asked_at = asked_at)
         for definition in CACHE_DEFINITIONS
     ]
     for definition in deferred:
@@ -1011,6 +1045,8 @@ def cache_inventory(*, refresh: bool = False) -> dict:
         "reclaimable_bytes": reclaimable,
         "free_bytes": _free_bytes(),
         "total_disk_bytes": _total_disk_bytes(),
+        # Some size came from an expired walk that is being redone; asking again soon returns the new one.
+        "refreshing": bool(deferred),
     }
 
 
@@ -1294,7 +1330,8 @@ def _invalidate_hf_scans() -> None:
     except ImportError as exc:
         logger.debug(f"Could not invalidate the Hugging Face scans: {exc}")
         return
-    invalidate_hf_cache_scans()
+    # The purge already forgot the sizes it changed; the other Hugging Face caches keep theirs.
+    invalidate_hf_cache_scans(sizes = False)
 
 
 def invalidate_hf_rooted_sizes() -> None:

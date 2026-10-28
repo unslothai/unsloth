@@ -916,6 +916,7 @@ class CacheInventoryResponse(BaseModel):
     reclaimable_bytes: int
     free_bytes: Optional[int] = None
     total_disk_bytes: Optional[int] = None
+    refreshing: bool = False
 
 
 class CachePurgePayload(BaseModel):
