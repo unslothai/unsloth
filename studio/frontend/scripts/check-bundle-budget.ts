@@ -435,6 +435,10 @@ export const BUDGET = {
   // Full Access from a tool approval card (#15485: per-chat grant store and the card's confirm dialog) adds
   // 5,293 B raw / 1,953 B transfer to the eager chat chunk (5,940,337 -> 5,945,630 B raw, 1,835,497 ->
   // 1,837,450 B transfer against 8222149ee, Node 24, 85 chunks). Raised by that growth.
+  // The Trick or treat row (#15678) merged in between, unmeasured, and adds 29,984 B raw / 10,952 B transfer
+  // (5,942,150 -> 5,972,134 B raw, 1,836,750 -> 1,847,702 B transfer, ed9857c0c3 -> 39b8a6ce13, Node 24,
+  // 85 chunks): its color themes are read by the theme store at startup, and loading its dialog on first
+  // open saves 3 KB transfer but adds five startup chunks. Raised by that growth.
   // Settings > Agents > Desktop apps (the Claude Desktop and Codex Desktop cards, their model pickers, the shared
   // context window / MTP / keep-loaded run settings, API clients and strings) add +8,089 B raw / +2,495 B transfer
   // to the eager settings and locale chunks (6,935,466 -> 6,943,555 B raw, 2,085,390 -> 2,087,885 B transfer against
@@ -444,8 +448,10 @@ export const BUDGET = {
   // 1,801.9 KB transfer on Node 26.8.2, 1,806.1 KB transfer on Node 24.22, 85 chunks), and the Desktop apps still add
   // +8.0 KB raw / +2.5 KB transfer on top (merged: 5,845.6 KB raw, 1,804.4 KB transfer on Node 26, 1,808.6 KB on
   // Node 24). Re-measured: the merged size plus a few KB of headroom.
-  transferBytes: 1_856_000,
-  rawBytes: 6_000_000,
+  // Merged onto upstream main 987731ec56 (budget 1,849,773 B transfer / 5,989,442 B raw): upstream's budget plus
+  // the Desktop apps' +2,495 B transfer / +8,089 B raw.
+  transferBytes: 1_852_268,
+  rawBytes: 5_997_531,
 };
 
 // Chunk count is not budgeted: splitting a page out raises it while lowering bytes.
