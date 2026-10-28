@@ -393,8 +393,7 @@ class _StrictParseGate:
         brace_close = self._brace_close
         any_close = max(buffer.rfind("]", prev_len), brace_close, self._any_close)
         self._any_close = any_close
-        # Every opener _iter_bracket_spans can try, skipping those past the last closer as it does;
-        # regexes rerun since a tail match can still change.
+        # Openers _iter_bracket_spans would scan; regexes rerun since a tail match can still change.
         opens = []
         calls = self._calls
         for pos in calls[: bisect.bisect_right(calls, any_close)]:
