@@ -139,7 +139,9 @@ async def finetune(ctx: NodeContext) -> dict:
         payload = await ctx.call("GET", "/api/train/status")
         slot = _training(payload if isinstance(payload, dict) else {})
         if slot.step and (not slot.job_id or slot.job_id == job_id):
-            history["loss"] = status_losses(payload) or await loss_history(ctx, job_id) or history["loss"]
+            history["loss"] = (
+                status_losses(payload) or await loss_history(ctx, job_id) or history["loss"]
+            )
             ctx.partial(
                 "metrics",
                 {
@@ -185,7 +187,9 @@ async def finetune(ctx: NodeContext) -> dict:
         "steps": slot.step,
         "total": slot.total_steps,
         "job_id": job_id,
-        "loss_history": status_losses(payload) or await loss_history(ctx, job_id) or history["loss"],
+        "loss_history": status_losses(payload)
+        or await loss_history(ctx, job_id)
+        or history["loss"],
     }
     if holdout:
         metrics["train_rows"] = dataset.get("rows")
