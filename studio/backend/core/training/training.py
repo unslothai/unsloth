@@ -374,10 +374,11 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "gpu_ids": values.get("gpu_ids"),
         "s3_config": values.get("s3_config"),
         "disable_xet": values.get("disable_xet", False),
-        # Decision, embedding and MLX runs return through their own trainers before capture is wired.
+        # Decision, embedding, audio-dataset and MLX runs never wire capture; audio models are caught in the worker.
         "enable_activation_capture": bool(values.get("enable_activation_capture", False))
         and not values.get("is_embedding", False)
         and not values.get("is_decision", False)
+        and not values.get("is_dataset_audio", False)
         and device_backend != "mlx"
         and not is_apple_silicon_training_platform(),
     }

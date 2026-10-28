@@ -85,3 +85,17 @@ def test_a_new_step_starts_from_zero(tmp_path):
     record = json.loads((tmp_path / "activation_log.jsonl").read_text().splitlines()[-1])
     assert record["step"] == 1
     assert record["layers"]["0"]["mean_abs"] == pytest.approx([2.0] * H)
+
+
+def test_the_gradient_norm_spans_row_chunks(tmp_path):
+    # More rows than one chunk, in half precision, so the chunked fp32 reduction is what gets measured.
+    model, cap = _capture(tmp_path, checkpointed = False)
+    model.half()
+    rows = ac._GRAD_NORM_ROWS * 2 + 7
+    cap.mark_capture(step = 0)
+    model(
+        torch.full((1, rows, H), 0.5, dtype = torch.float16, requires_grad = True)
+    ).float().sum().backward()
+    cap.flush()
+    record = json.loads((tmp_path / "activation_log.jsonl").read_text().splitlines()[-1])
+    assert record["grad_norms"]["0"] == pytest.approx((rows * H) ** 0.5)

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Decision, embedding and MLX runs never wire the capture callback, so their config must not claim it."""
+"""Decision, embedding, audio-dataset and MLX runs never wire the capture callback, so their config must not claim it."""
 
 from types import SimpleNamespace
 
@@ -27,7 +27,7 @@ def _config(**extra):
     )
 
 
-@pytest.mark.parametrize("kind", ["is_embedding", "is_decision"])
+@pytest.mark.parametrize("kind", ["is_embedding", "is_decision", "is_dataset_audio"])
 def test_capture_is_off_for_runs_without_the_callback(host, kind):
     assert _config(**{kind: True})["enable_activation_capture"] is False
 

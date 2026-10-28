@@ -5221,6 +5221,16 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             )
 
         # Wire ActivationCaptureCallback for text/VLM models (audio models skipped, off by default)
+        if config.get("enable_activation_capture", False) and (
+            trainer.is_audio or trainer.is_audio_vlm
+        ):
+            event_queue.put(
+                {
+                    "type": "warning",
+                    "message": "Neuron activation capture is not available for audio models; this run records no Interpretability data.",
+                    "ts": time.time(),
+                }
+            )
         if (
             config.get("enable_activation_capture", False)
             and not trainer.is_audio

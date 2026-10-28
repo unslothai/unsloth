@@ -91,6 +91,7 @@ from transformers import (
 
 logger = logging.getLogger(__name__)
 
+_GRAD_NORM_ROWS = 512
 _CAN_TELL_BACKWARD = hasattr(torch._C, "_current_graph_task_id")
 
 
@@ -472,8 +473,14 @@ class ActivationCapture:
                 return
 
             with torch.no_grad():
-                # One backward per microbatch: the step's norm is over all of them.
-                sq = self._grad_sq.get(layer_idx, 0.0) + grad.detach().float().pow(2).sum().item()
+                # One backward per microbatch: the step's norm is over all of them. Row chunks keep the fp32
+                # copy small instead of a full [B, S, H] one.
+                rows = grad.detach().flatten(0, -2)
+                part = sum(
+                    torch.linalg.vector_norm(c, dtype = torch.float32).square()
+                    for c in rows.split(_GRAD_NORM_ROWS)
+                )
+                sq = self._grad_sq.get(layer_idx, 0.0) + float(part)
                 self._grad_sq[layer_idx] = sq
                 self._grad_buffer[layer_idx] = math.sqrt(sq)
 
