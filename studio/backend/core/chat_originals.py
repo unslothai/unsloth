@@ -1,18 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The original files of documents sent in chat.
-
-A chat keeps a document's extracted text for the model; the file itself (a PDF, a Word document, a
-workbook or a deck) is kept here so it can be opened as it looked. Each is stored once under its
-SHA-256, which the attachment records as ``{"original": {"sha256", "sizeBytes"}}``: a fork or an
-import copies the reference, never the bytes, and a retried send stores nothing new. While the python
-tool runs, any other attached file is kept too, so the tool can be handed a copy.
-
-A file no attachment references any more is removed by ``sweep``, once it is older than an hour, so
-one uploaded moments before its message is saved is never taken. A sweep that leaves such a file for
-being too new schedules another for when it is not.
-"""
+"""Original chat document files keyed by SHA-256; sweep removes unreferenced ones older than an
+hour, so a just-uploaded file is never removed."""
 
 from __future__ import annotations
 

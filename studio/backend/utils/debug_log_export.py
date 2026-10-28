@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Pack every log the viewer may read into one redacted ZIP.
-
-Same allowlist as the picker (`debug_log_sources.list_sources`) through the same
-`redact_log_text`, so the bundle can hold no file, and no credential, the tab
-would not have shown.
-
-The per-family cap upstream bounds FILES, not bytes, and the session log is
-never rotated. Hence two more bounds here, a tail per file and a budget across
-all of them, both cutting from the FRONT: the end of a log explains the problem.
-"""
+"""Packs viewer-readable logs into one redacted ZIP, trimming from the front since log ends matter."""
 
 from __future__ import annotations
 

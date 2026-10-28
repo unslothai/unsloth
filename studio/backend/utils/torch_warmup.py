@@ -1,12 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Import the ML stack on a background thread while the backend finishes booting.
-
-Started from the LAST line of main.py's lifespan: everything above is on the critical path to binding the socket and would contend for the GIL, and uvicorn binds as soon as the lifespan returns, so the warm overlaps serving rather than boot. Idempotent, never fatal (a failed stage is logged, left cold and retried by whoever needs it), and never half-initialised, since stages delegate to the module owning the cache.
-
-This does NOT make torch-dependent endpoints cheap while it runs: anything reaching get_device() blocks until the hardware stage finishes, so `async def` handlers there must use asyncio.to_thread.
-"""
+"""Imports the ML stack on a background thread, started last in main.py's lifespan so it overlaps
+serving; idempotent, never fatal, never half-initialised; torch endpoints block on get_device()
+until hardware stage ends, so async handlers must use asyncio.to_thread."""
 
 from __future__ import annotations
 

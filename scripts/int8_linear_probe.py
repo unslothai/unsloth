@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Examine which Linear layers the int8 dense-quant filter would select, to find the large M=1
-modulation/embedder projections that crash torch._int_mm (M>16). Loads each transformer on the
-META device (no weights, no GPU) from its base-repo config, lists nn.Linear fqn/in/out, and marks
-those that pass min_features=512. CPU-only, fast."""
+"""Finds M=1 modulation/embedder Linear layers that crash torch._int_mm (M>16) under int8 dense quant."""
 
 from __future__ import annotations
 
