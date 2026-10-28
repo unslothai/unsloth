@@ -20,7 +20,6 @@ def _base_main_window() -> dict:
 
 
 def test_shared_main_window_stays_decorated_for_macos() -> None:
-    # macOS overlay titlebar needs native decorations.
     assert _base_main_window()["decorations"] is True
 
 
