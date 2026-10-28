@@ -1112,6 +1112,9 @@ def _module_paths(module: str, importer: str) -> list[str]:
         base = importer_dir
         for _ in range(level - 1):
             base = base.parent
+        # The repo root is not a package: a relative import that reaches it (or climbs past it) cannot resolve.
+        if str(base) in ("", "."):
+            return []
         rest = module.lstrip(".")
         stem = base / rest.replace(".", "/") if rest else base
         return [f"{stem}.py", f"{stem}/__init__.py"]
