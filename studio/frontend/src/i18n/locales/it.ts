@@ -2112,6 +2112,13 @@ export const it = {
         moreThemes: "Altri temi",
         halloween: "Halloween",
       },
+      trickOrTreat: {
+        label: "Dolcetto o scherzetto",
+        description:
+          "Temi di Halloween e saluti spaventosi, fino al 1° novembre.",
+        open: "Apri",
+        showInSidebar: "Mostra nella barra laterale",
+      },
       custom: {
         chatWidth: {
           label: "Larghezza chat",
@@ -3420,6 +3427,7 @@ export const it = {
     back: "Indietro",
     footer: "Unsloth torna alla normalità alla mezzanotte del 1° novembre.",
     removeNow: "Rimuovi ora",
+    hideFromSidebar: "Nascondi dalla barra laterale",
     greeting: {
       boo: "Bu! Ti ho spaventato?",
       booName: "Bu! Ti ho spaventato, {name}?",

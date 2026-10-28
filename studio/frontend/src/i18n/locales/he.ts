@@ -729,6 +729,7 @@ export const he = {
     back: "חזרה",
     footer: "Unsloth יחזור לרגיל בחצות של 1 בנובמבר.",
     removeNow: "הסרה עכשיו",
+    hideFromSidebar: "הסתרה מסרגל הצד",
     greeting: {
       boo: "בו! הבהלתי אותך?",
       booName: "בו! הבהלתי אותך, {name}?",
@@ -2315,6 +2316,13 @@ export const he = {
         minimal: "מינימלית",
         moreThemes: "ערכות נושא נוספות",
         halloween: "האלווין",
+      },
+      trickOrTreat: {
+        label: "ממתק או תעלול",
+        description:
+          "ערכות נושא של ליל כל הקדושים וברכות מפחידות, עד 1 בנובמבר.",
+        open: "פתיחה",
+        showInSidebar: "הצגה בסרגל הצד",
       },
       custom: {
         chatWidth: {

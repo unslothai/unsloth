@@ -643,6 +643,7 @@ export const ar = {
     back: "رجوع",
     footer: "يعود Unsloth إلى طبيعته عند منتصف ليل 1 نوفمبر.",
     removeNow: "إزالة الآن",
+    hideFromSidebar: "إخفاء من الشريط الجانبي",
     greeting: {
       boo: "بوو! هل أخفتك؟",
       booName: "بوو! هل أخفتك يا {name}؟",
@@ -2211,6 +2212,13 @@ export const ar = {
         minimal: "بسيطة",
         moreThemes: "المزيد من السمات",
         halloween: "هالوين",
+      },
+      trickOrTreat: {
+        label: "حلوى أم خدعة",
+        description:
+          "سمات الهالوين وتحيات مخيفة حتى 1 نوفمبر.",
+        open: "فتح",
+        showInSidebar: "إظهار في الشريط الجانبي",
       },
       custom: {
         chatWidth: {

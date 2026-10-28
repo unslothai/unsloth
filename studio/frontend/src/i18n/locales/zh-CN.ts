@@ -642,6 +642,7 @@ export const zhCN = {
     back: "返回",
     footer: "Unsloth 将于 11 月 1 日零点恢复正常。",
     removeNow: "立即移除",
+    hideFromSidebar: "从侧边栏隐藏",
     greeting: {
       boo: "哇！吓到你了吗？",
       booName: "哇！吓到你了吗，{name}？",
@@ -2194,6 +2195,13 @@ export const zhCN = {
         minimal: "极简",
         moreThemes: "更多主题",
         halloween: "万圣节",
+      },
+      trickOrTreat: {
+        label: "不给糖就捣蛋",
+        description:
+          "万圣节主题和惊悚问候，持续到 11 月 1 日。",
+        open: "打开",
+        showInSidebar: "在侧边栏中显示",
       },
       custom: {
         chatWidth: {

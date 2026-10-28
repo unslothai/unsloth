@@ -643,6 +643,7 @@ export const ja = {
     back: "戻る",
     footer: "Unslothは11月1日の午前0時に元に戻ります。",
     removeNow: "今すぐ解除",
+    hideFromSidebar: "サイドバーから非表示",
     greeting: {
       boo: "ばあ！びっくりしました？",
       booName: "ばあ！{name}さん、びっくりしました？",
@@ -2193,6 +2194,13 @@ export const ja = {
         minimal: "ミニマル",
         moreThemes: "その他のテーマ",
         halloween: "ハロウィン",
+      },
+      trickOrTreat: {
+        label: "トリック・オア・トリート",
+        description:
+          "11月1日まで、ハロウィンのテーマと怖いあいさつを楽しめます。",
+        open: "開く",
+        showInSidebar: "サイドバーに表示",
       },
       custom: {
         chatWidth: {

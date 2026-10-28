@@ -644,6 +644,7 @@ export const es = {
     back: "Atrás",
     footer: "Unsloth vuelve a la normalidad a medianoche del 1 de noviembre.",
     removeNow: "Quitar ahora",
+    hideFromSidebar: "Ocultar de la barra lateral",
     greeting: {
       boo: "¡Bu! ¿Te asusté?",
       booName: "¡Bu! ¿Te asusté, {name}?",
@@ -2236,6 +2237,13 @@ export const es = {
         minimal: "Minimalista",
         moreThemes: "Más temas",
         halloween: "Halloween",
+      },
+      trickOrTreat: {
+        label: "Truco o trato",
+        description:
+          "Temas de Halloween y saludos terroríficos, hasta el 1 de noviembre.",
+        open: "Abrir",
+        showInSidebar: "Mostrar en la barra lateral",
       },
       custom: {
         chatWidth: {

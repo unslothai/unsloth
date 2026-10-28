@@ -52,6 +52,8 @@ const {
   pickHalloweenTheme,
   pickRandomHalloweenTheme,
   removeHalloween,
+  hideTrickOrTreatRow,
+  showTrickOrTreatRow,
   useHalloweenStore,
 } = await import("../src/features/halloween/halloween-store.ts");
 const { HALLOWEEN_THEME_IDS } = await import(
@@ -81,8 +83,20 @@ test("a Halloween pick remembers the theme from before, and removing hands it ba
   assert.equal(getPalette(), "matcha");
   const state = useHalloweenStore.getState();
   assert.equal(state.spookyGreetings, false);
-  assert.equal(state.removedYear, 2026);
+  assert.equal(state.hiddenYear, 2026);
   assert.equal(state.restorePalette, null);
+});
+
+test("the sidebar X hides the row without touching the theme, and settings brings it back", () => {
+  setPalette("standard");
+  pickHalloweenTheme("gothic");
+  useHalloweenStore.getState().setSpookyGreetings(true);
+  hideTrickOrTreatRow(new Date(2026, 9, 27));
+  assert.equal(useHalloweenStore.getState().hiddenYear, 2026);
+  assert.equal(getPalette(), "gothic");
+  assert.equal(useHalloweenStore.getState().spookyGreetings, true);
+  showTrickOrTreatRow();
+  assert.equal(useHalloweenStore.getState().hiddenYear, null);
 });
 
 test("removing keeps a theme picked outside Halloween", () => {
@@ -130,6 +144,14 @@ test("the sidebar row and dialog are gated on the season", () => {
   assert.match(sidebar, /\{showTrickOrTreat && \(\s*<NavItem/);
   assert.match(sidebar, /const showTrickOrTreat = useTrickOrTreatVisible\(\);/);
   assert.match(sidebar, /useHalloweenSeasonEnd\(\);/);
+  // Above More, with its own hide button.
+  assert.ok(
+    sidebar.indexOf('testId="nav-row-trick-or-treat"') <
+      sidebar.indexOf("{/* Unpinned destinations, behind one row. */}"),
+  );
+  assert.match(sidebar, /hideTrickOrTreatRow\(\);/);
+  const appearance = read("../src/features/settings/tabs/appearance-tab.tsx");
+  assert.match(appearance, /<TrickOrTreatSettingsRows \/>/);
   const select = read(
     "../src/features/settings/components/color-theme-select.tsx",
   );

@@ -97,6 +97,7 @@ import {
 /* eslint-enable no-restricted-imports */
 import { cn } from "@/lib/utils";
 import {
+  hideTrickOrTreatRow,
   useHalloweenSeasonEnd,
   useTrickOrTreatVisible,
 } from "@/features/halloween/halloween-store";
@@ -6215,6 +6216,35 @@ export function AppSidebar() {
                   </NavItem>
                 );
               })}
+              {showTrickOrTreat && (
+                <NavItem
+                  icon={CandyIcon}
+                  label={t("halloween.navLabel")}
+                  active={trickOrTreatOpen}
+                  testId="nav-row-trick-or-treat"
+                  className="group/halloween-item relative"
+                  onClick={() => setTrickOrTreatOpen(true)}
+                >
+                  <button
+                    type="button"
+                    aria-label={t("halloween.hideFromSidebar")}
+                    data-testid="nav-row-trick-or-treat-hide"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      hideTrickOrTreatRow();
+                    }}
+                    className="sidebar-row-action group-hover/halloween-item:opacity-100 group-hover/halloween-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto group-data-[collapsible=icon]:hidden"
+                  >
+                    <span className="sidebar-row-action-glyph">
+                      <HugeiconsIcon
+                        icon={Cancel01Icon}
+                        strokeWidth={1.75}
+                        className="size-4"
+                      />
+                    </span>
+                  </button>
+                </NavItem>
+              )}
               {/* Unpinned destinations, behind one row. */}
               {overflowNavIds.length > 0 && (
                 <SidebarMenuItem>
@@ -6375,15 +6405,6 @@ export function AppSidebar() {
                     </DropdownMenuContent>
                   </DropdownMenu>
                 </SidebarMenuItem>
-              )}
-              {showTrickOrTreat && (
-                <NavItem
-                  icon={CandyIcon}
-                  label={t("halloween.navLabel")}
-                  active={trickOrTreatOpen}
-                  testId="nav-row-trick-or-treat"
-                  onClick={() => setTrickOrTreatOpen(true)}
-                />
               )}
             </SidebarMenu>
           </SidebarGroupContent>

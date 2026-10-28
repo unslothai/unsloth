@@ -643,6 +643,7 @@ export const ru = {
     back: "Назад",
     footer: "Unsloth вернётся к обычному виду в полночь 1 ноября.",
     removeNow: "Убрать сейчас",
+    hideFromSidebar: "Скрыть с боковой панели",
     greeting: {
       boo: "Бу! Испугались?",
       booName: "Бу! Испугались, {name}?",
@@ -2221,6 +2222,13 @@ export const ru = {
         minimal: "Минималистичная",
         moreThemes: "Другие темы",
         halloween: "Хеллоуин",
+      },
+      trickOrTreat: {
+        label: "Сладость или гадость",
+        description:
+          "Темы Хэллоуина и жуткие приветствия до 1 ноября.",
+        open: "Открыть",
+        showInSidebar: "Показывать на боковой панели",
       },
       custom: {
         chatWidth: {

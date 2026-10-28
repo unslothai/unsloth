@@ -697,6 +697,7 @@ export const en = {
     back: "Back",
     footer: "Unsloth returns to normal at midnight on November 1.",
     removeNow: "Remove now",
+    hideFromSidebar: "Hide from sidebar",
     greeting: {
       boo: "Boo! Did I scare you?",
       booName: "Boo! Did I scare you, {name}?",
@@ -2275,6 +2276,13 @@ export const en = {
         minimal: "Minimal",
         moreThemes: "More themes",
         halloween: "Halloween",
+      },
+      trickOrTreat: {
+        label: "Trick or treat",
+        description:
+          "Halloween themes and spooky greetings, until November 1.",
+        open: "Open",
+        showInSidebar: "Show in sidebar",
       },
       custom: {
         chatWidth: {

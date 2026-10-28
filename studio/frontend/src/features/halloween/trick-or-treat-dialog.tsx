@@ -14,10 +14,12 @@ import {
 } from "@/features/settings/lib/color-themes";
 import { usePalette, useTheme } from "@/features/settings/stores/theme-store";
 import { useT } from "@/i18n";
+import {
+  ChevronLeftStandardIcon,
+  ChevronRightStandardIcon,
+} from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import {
-  ArrowLeft01Icon,
-  ArrowRight01Icon,
   CandyIcon,
   Moon02Icon,
   PumpkinIcon,
@@ -90,9 +92,8 @@ function ArrowBadge() {
   return (
     <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground">
       <HugeiconsIcon
-        icon={ArrowRight01Icon}
-        strokeWidth={2}
-        className="size-4"
+        icon={ChevronRightStandardIcon}
+        className="size-4 rtl:rotate-180"
       />
     </span>
   );
@@ -115,18 +116,18 @@ function ThemeGrid() {
             aria-pressed={selected}
             onClick={() => pickHalloweenTheme(id)}
             className={cn(
-              "flex cursor-pointer items-center gap-3 rounded-2xl border p-2.5 text-left outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring",
+              "flex min-w-0 cursor-pointer items-center gap-2.5 rounded-full border py-1.5 pr-4 pl-1.5 text-left outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring",
               selected ? "border-primary ring-1 ring-primary" : "border-border",
             )}
           >
             <span
               aria-hidden="true"
-              className="size-9 shrink-0 rounded-full border border-black/10 dark:border-white/15"
+              className="size-8 shrink-0 rounded-full border border-black/10 dark:border-white/15"
               style={{
-                background: `linear-gradient(135deg, ${colors.accent} 20%, ${colors.background} 95%)`,
+                background: `linear-gradient(135deg, ${colors.accent} 25%, ${colors.second ?? colors.background} 90%)`,
               }}
             />
-            <span className="min-w-0 font-medium text-sm leading-tight">
+            <span className="min-w-0 truncate whitespace-nowrap font-medium text-sm">
               {name}
             </span>
           </button>
@@ -160,7 +161,7 @@ export function TrickOrTreatDialog({
     >
       <DialogContent
         data-testid="trick-or-treat-dialog"
-        className="gap-0 overflow-hidden px-0 pt-0 pb-0 sm:max-w-[min(calc(544px*var(--ui-space-scale,1)),calc(100%-2rem))]"
+        className="gap-0 overflow-hidden px-0 pt-0 pb-0 sm:max-w-[min(calc(640px*var(--ui-space-scale,1)),calc(100%-2rem))]"
       >
         <div className="pointer-events-none absolute inset-x-0 top-0 h-48 bg-[radial-gradient(110%_100%_at_50%_0%,color-mix(in_oklab,var(--primary)_24%,transparent),transparent_70%)]" />
         {view === "home" && <NightSky />}
@@ -238,9 +239,8 @@ export function TrickOrTreatDialog({
                 className="flex size-8 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:bg-accent focus-visible:outline-none"
               >
                 <HugeiconsIcon
-                  icon={ArrowLeft01Icon}
-                  strokeWidth={2}
-                  className="size-4"
+                  icon={ChevronLeftStandardIcon}
+                  className="size-4 rtl:rotate-180"
                 />
               </button>
               <DialogTitle className="font-semibold text-lg">

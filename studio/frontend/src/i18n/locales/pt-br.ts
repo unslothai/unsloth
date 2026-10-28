@@ -644,6 +644,7 @@ export const ptBR = {
     back: "Voltar",
     footer: "O Unsloth volta ao normal à meia-noite de 1º de novembro.",
     removeNow: "Remover agora",
+    hideFromSidebar: "Ocultar da barra lateral",
     greeting: {
       boo: "Bu! Assustei você?",
       booName: "Bu! Assustei você, {name}?",
@@ -2228,6 +2229,13 @@ export const ptBR = {
         minimal: "Minimalista",
         moreThemes: "Mais temas",
         halloween: "Halloween",
+      },
+      trickOrTreat: {
+        label: "Doces ou travessuras",
+        description:
+          "Temas de Halloween e saudações assustadoras, até 1º de novembro.",
+        open: "Abrir",
+        showInSidebar: "Mostrar na barra lateral",
       },
       custom: {
         chatWidth: {

@@ -643,6 +643,7 @@ export const hi = {
     back: "वापस",
     footer: "Unsloth 1 नवंबर की आधी रात को सामान्य हो जाएगा।",
     removeNow: "अभी हटाएँ",
+    hideFromSidebar: "साइडबार से छिपाएं",
     greeting: {
       boo: "बू! डर गए क्या?",
       booName: "बू! डर गए क्या, {name}?",
@@ -2217,6 +2218,13 @@ export const hi = {
         minimal: "मिनिमल",
         moreThemes: "और थीम",
         halloween: "हैलोवीन",
+      },
+      trickOrTreat: {
+        label: "ट्रिक या ट्रीट",
+        description:
+          "1 नवंबर तक हैलोवीन थीम और डरावने अभिवादन।",
+        open: "खोलें",
+        showInSidebar: "साइडबार में दिखाएं",
       },
       custom: {
         chatWidth: {

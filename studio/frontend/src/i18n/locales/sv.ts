@@ -747,6 +747,7 @@ export const sv = {
     back: "Tillbaka",
     footer: "Unsloth återgår till det normala vid midnatt den 1 november.",
     removeNow: "Ta bort nu",
+    hideFromSidebar: "Dölj från sidofältet",
     greeting: {
       boo: "Bu! Blev du rädd?",
       booName: "Bu! Blev du rädd, {name}?",
@@ -2388,6 +2389,13 @@ export const sv = {
         minimal: "Minimal",
         moreThemes: "Fler teman",
         halloween: "Halloween",
+      },
+      trickOrTreat: {
+        label: "Bus eller godis",
+        description:
+          "Halloweenteman och kusliga hälsningar, till 1 november.",
+        open: "Öppna",
+        showInSidebar: "Visa i sidofältet",
       },
       custom: {
         chatWidth: {

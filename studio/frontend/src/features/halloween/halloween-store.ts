@@ -26,8 +26,8 @@ export function isHalloweenSeason(now: Date = new Date()): boolean {
 
 type HalloweenState = {
   spookyGreetings: boolean;
-  // Year the user chose "Remove now"; the row stays hidden for the rest of that October.
-  removedYear: number | null;
+  // Year the user hid the sidebar row; it stays hidden for the rest of that October.
+  hiddenYear: number | null;
   restorePalette: ColorThemeId | null;
   setSpookyGreetings: (on: boolean) => void;
 };
@@ -36,15 +36,15 @@ export const useHalloweenStore = create<HalloweenState>()(
   persist(
     (set) => ({
       spookyGreetings: false,
-      removedYear: null,
+      hiddenYear: null,
       restorePalette: null,
       setSpookyGreetings: (spookyGreetings) => set({ spookyGreetings }),
     }),
     {
       name: HALLOWEEN_STORAGE_KEY,
-      partialize: ({ spookyGreetings, removedYear, restorePalette }) => ({
+      partialize: ({ spookyGreetings, hiddenYear, restorePalette }) => ({
         spookyGreetings,
-        removedYear,
+        hiddenYear,
         restorePalette,
       }),
       merge: (persisted, current) => {
@@ -52,7 +52,7 @@ export const useHalloweenStore = create<HalloweenState>()(
         return {
           ...current,
           spookyGreetings: p.spookyGreetings === true,
-          removedYear: typeof p.removedYear === "number" ? p.removedYear : null,
+          hiddenYear: typeof p.hiddenYear === "number" ? p.hiddenYear : null,
           restorePalette:
             isColorThemeId(p.restorePalette) &&
             !isHalloweenThemeId(p.restorePalette)
@@ -92,14 +92,22 @@ export function removeHalloween(now: Date = new Date()): void {
   restoreNormalTheme();
   useHalloweenStore.setState({
     spookyGreetings: false,
-    removedYear: now.getFullYear(),
+    hiddenYear: now.getFullYear(),
   });
 }
 
+export function hideTrickOrTreatRow(now: Date = new Date()): void {
+  useHalloweenStore.setState({ hiddenYear: now.getFullYear() });
+}
+
+export function showTrickOrTreatRow(): void {
+  useHalloweenStore.setState({ hiddenYear: null });
+}
+
 export function useTrickOrTreatVisible(): boolean {
-  const removedYear = useHalloweenStore((s) => s.removedYear);
+  const hiddenYear = useHalloweenStore((s) => s.hiddenYear);
   const now = new Date();
-  return isHalloweenSeason(now) && removedYear !== now.getFullYear();
+  return isHalloweenSeason(now) && hiddenYear !== now.getFullYear();
 }
 
 export function useSpookyGreetings(): boolean {

@@ -644,6 +644,7 @@ export const fr = {
     back: "Retour",
     footer: "Unsloth redevient normal à minuit le 1er novembre.",
     removeNow: "Retirer maintenant",
+    hideFromSidebar: "Masquer de la barre latérale",
     greeting: {
       boo: "Bouh ! Je vous ai fait peur ?",
       booName: "Bouh ! Je vous ai fait peur, {name} ?",
@@ -2240,6 +2241,13 @@ export const fr = {
         minimal: "Minimale",
         moreThemes: "Plus de thèmes",
         halloween: "Halloween",
+      },
+      trickOrTreat: {
+        label: "Un bonbon ou un sort",
+        description:
+          "Thèmes d’Halloween et salutations effrayantes, jusqu’au 1er novembre.",
+        open: "Ouvrir",
+        showInSidebar: "Afficher dans la barre latérale",
       },
       custom: {
         chatWidth: {
