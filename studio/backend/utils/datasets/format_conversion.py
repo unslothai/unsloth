@@ -497,13 +497,13 @@ def convert_to_vlm_format(
         instruction_column = None
         uses_dynamic = False
 
-    def _convert_single_sample(sample):
-        """Image may be a PIL Image, local path, URL, or bare filename."""
+    def _convert_single_sample(sample, fetched = None):
+        """Image may be a PIL Image, local path, URL, or bare filename. ``fetched`` is the URL's image if already downloaded."""
         image_data = sample[image_column]
 
         if isinstance(image_data, str):
             if image_data.startswith(("http://", "https://")):
-                image_data = _fetch_row_image(image_data)
+                image_data = fetched if fetched is not None else _fetch_row_image(image_data)
             elif _image_lookup is not None and image_data in _image_lookup:
                 # Bare filename → resolve via HF repo lookup
                 from huggingface_hub import hf_hub_download
@@ -609,6 +609,9 @@ def convert_to_vlm_format(
     PROBE_SIZE = 200
     MAX_FAIL_RATE = 0.3
 
+    # Images the probe downloaded, by row; the conversion below reuses them instead of fetching them again.
+    probe_images = {}
+
     if has_urls and total > PROBE_SIZE:
         import time
         from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -623,8 +626,15 @@ def convert_to_vlm_format(
         probe_fail = 0
         probe_start = time.time()
 
+        def _probe_sample(index, sample):
+            url = sample[image_column]
+            if isinstance(url, str) and url.startswith(("http://", "https://")):
+                # Only a successful download is kept: a failed one is retried by the conversion.
+                probe_images[index] = _fetch_row_image(url)
+            return _convert_single_sample(sample, probe_images.get(index))
+
         with ThreadPoolExecutor(max_workers = num_workers) as executor:
-            futures = {executor.submit(_convert_single_sample, s): s for s in probe_samples}
+            futures = {executor.submit(_probe_sample, i, s): s for i, s in enumerate(probe_samples)}
             for future in as_completed(futures):
                 try:
                     future.result()
@@ -701,7 +711,9 @@ def convert_to_vlm_format(
 
             with ThreadPoolExecutor(max_workers = num_workers) as executor:
                 futures = {
-                    executor.submit(_convert_single_sample, s): i
+                    executor.submit(
+                        _convert_single_sample, s, probe_images.pop(batch_start + i, None)
+                    ): i
                     for i, s in enumerate(batch_samples)
                 }
                 batch_results = [None] * len(batch_samples)
