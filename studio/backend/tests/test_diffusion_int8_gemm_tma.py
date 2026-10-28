@@ -63,6 +63,13 @@ def test_sm120_probes_and_arms_the_tma_tile(monkeypatch):
     assert (g8._TMA_CONFIG[(12, 0)], True) in fake.probes
 
 
+def test_tma_tile_only_from_shape_min_m():
+    g8._DEVICE_TMA[0] = g8._TMA_CONFIG[(12, 0)]
+    assert g8.tma_tile_for(0, g8._SHAPE_MIN_M - 1) is None
+    assert g8.tma_tile_for(0, g8._SHAPE_MIN_M) == g8._TMA_CONFIG[(12, 0)]
+    assert g8.tma_tile_for(1, 19315) is None
+
+
 @pytest.mark.parametrize("value", ["0", "off", "false"])
 def test_kill_switch_keeps_pointer_loads_and_never_probes(monkeypatch, value):
     monkeypatch.setenv(g8.INT8_GEMM_TMA_ENV, value)
@@ -172,6 +179,12 @@ def test_tma_launch_failure_falls_back_to_pointer_loads_for_good(monkeypatch):
     assert g8.tma_call_count() == before
 
 
+def test_small_m_takes_the_pointer_kernel(monkeypatch):
+    calls = _armed(monkeypatch)
+    assert g8._run(_T((300, 4096)), _T((4096, 4096)), None, None, None) == "ptr-out"
+    assert calls == [("ptr", g8._ARCH_CONFIG[(12, 0)])]
+
+
 def test_misaligned_operands_skip_both_kernels(monkeypatch):
     calls = _armed(monkeypatch)
     assert g8._run(_T((2048, 4100)), _T((4096, 4100)), None, None, None) == "stock-out"
@@ -244,7 +257,7 @@ def test_compiled_swapped_linear_runs_the_tma_kernel_without_breaks():
     stock, fused = lin(), lin()
     holder = torch.nn.Sequential(fused)
     assert g8.install(holder) == 1
-    x = torch.randn(2, 300, 1024, device = "cuda", dtype = torch.bfloat16)
+    x = torch.randn(2, 600, 1024, device = "cuda", dtype = torch.bfloat16)  # M >= _SHAPE_MIN_M
     with torch.inference_mode():
         before = g8.tma_call_count()
         assert torch.equal(fused(x), stock(x))

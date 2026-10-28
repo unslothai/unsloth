@@ -72,7 +72,8 @@ _SHAPE_TILES: dict = {
 }
 _SHAPE_MIN_M = 1024
 
-# Same kernel and epilogue with host TMA descriptors for A / W, one tile for every shape (replaces _SHAPE_TILES there).
+# Same kernel and epilogue with host TMA descriptors for A / W, one tile for M >= _SHAPE_MIN_M (replaces
+# _SHAPE_TILES there); below that the pointer-load kernel is faster.
 _TMA_CONFIG = {(12, 0): (128, 128, 64, 8, 4, 4)}
 
 
@@ -446,6 +447,11 @@ def tile_for(index: Any, m: int, n: int, k: int) -> Optional[tuple]:
     return cfg
 
 
+def tma_tile_for(index: Any, m: int) -> Optional[tuple]:
+    tile = _DEVICE_TMA.get(index)
+    return None if m < _SHAPE_MIN_M else tile
+
+
 def _run(a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> Any:
     """Op body: the probed tile for this device and shape, else (launch failure, ``_aligned`` false) the stock
     epilogue."""
@@ -454,7 +460,7 @@ def _run(a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> Any:
     index = a.device.index
     cfg = tile_for(index, a.shape[0], w.shape[0], a.shape[1])
     if cfg is not None and w.stride(-1) == 1 and w.device == a.device and _aligned(a, w):
-        tma = _DEVICE_TMA.get(index)
+        tma = tma_tile_for(index, a.shape[0])
         if tma is not None:
             try:
                 out = _launch_tma(a, w, xs, ws, bias, tma)
