@@ -3398,6 +3398,14 @@ RL_FUNCTIONS["online_dpo_trainer"].append(online_dpo_trainer__move_model_to_vllm
 
 
 def _unsloth_vllm_load_state_dict(trainer, model):
+    deepspeed_plugin = getattr(trainer.accelerator.state, "deepspeed_plugin", None)
+    if getattr(trainer, "is_fsdp_enabled", False) or (
+        deepspeed_plugin is not None and getattr(deepspeed_plugin, "zero_stage", 0) == 3
+    ):
+        raise RuntimeError(
+            "Unsloth: Online DPO with use_vllm = True on TRL < 0.23 cannot sync sharded "
+            "(FSDP / DeepSpeed ZeRO-3) weights into vLLM. Upgrade TRL to 0.23 or later."
+        )
     model = trainer.accelerator.unwrap_model(model)
     trainer.llm.llm_engine.model_executor.driver_worker.model_runner.model.load_weights(
         model.state_dict().items()

@@ -5,6 +5,7 @@ import textwrap
 import types
 from contextlib import nullcontext
 
+import pytest
 import torch
 
 
@@ -191,6 +192,12 @@ def test_trl_022_inline_sync_reaches_trl_engine():
     trainer, rec = _trainer(dense)
     trainer._generate_vllm(types.SimpleNamespace(module = dense), ["p"])
     assert rec.loaded == ["weight", "bias"]
+
+    trainer, rec = _trainer(dense)
+    trainer.accelerator.state.deepspeed_plugin = types.SimpleNamespace(zero_stage = 3)
+    with pytest.raises(RuntimeError, match = "sharded"):
+        trainer._generate_vllm(dense, ["p"])
+    assert rec.loaded == []
 
     model = _lora_model()
     base = model.base_model.model.proj.base_layer.weight.detach().clone()
