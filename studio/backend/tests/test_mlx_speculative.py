@@ -168,16 +168,24 @@ def test_a_drafter_passed_over_keeps_its_reason_on_the_one_that_attaches(monkeyp
     for d, n, e in ((object(), 3, True), (object(), 4, False), (draft.drafter, 15, True)):
         assert spec._draft(d, False, n).controller.fixed_depth is e
 
-    def chosen(picked, fit):
+    def chosen(
+        picked,
+        fit,
+        stretch = lambda _: (None, None),
+    ):
         built.clear()
         result = spec.build_draft(
-            None, spec.SpecResolution("dflash", picked, copies = True), fits = fit
+            None, spec.SpecResolution("dflash", picked, copies = True), fits = fit, stretch = stretch
         )
         return result[1:] + (built[:],)
 
     assert chosen(sources[::2], fits) == ("dflash", spec.DRAFTER_NO_MEMORY, 4096, ["ok"])
     assert chosen(sources[:1], fits) == ("dflash", None, None, ["big"])
     assert chosen(sources[:1], lambda _: (None, None)) == ("dflash", None, None, ["big"])
+    assert chosen(sources[:1], fits, lambda _: (True, 2048)) == ("dflash", None, 2048, ["big"])
+    # Past MLX's own cap a chosen drafter is still passed over, as is one nothing can stretch.
+    for stretch in (lambda _: (False, None), None):
+        assert chosen(sources[:1], fits, stretch) == ("ngram", spec.DRAFTER_NO_MEMORY, None, [])
     assert chosen(sources[:2], fits) == ("dflash", spec.DRAFTER_INCOMPATIBLE, None, ["big"])
     assert chosen(sources[1:2], lambda _: (False, 4096)) == (
         "ngram",

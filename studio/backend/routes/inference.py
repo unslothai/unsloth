@@ -14725,8 +14725,9 @@ def _mlx_estimate_drafter(
         target_name = model_identifier,
         allowed = _discoverable_drafters(model_identifier),
     )
-    for source in resolution.sources:
-        attaches, fitted = mlx_drafter_fit(
+
+    def fit(source, **kwargs):
+        return mlx_drafter_fit(
             model_dir,
             ceiling,
             request.max_seq_length or None,
@@ -14734,14 +14735,19 @@ def _mlx_estimate_drafter(
             load_in_4bit = load_in_4bit,
             costless = mode == "auto",
             baseline = baseline,
+            **kwargs,
             **(offload_route or {}),
         )
+
+    for source in resolution.sources:
+        attaches, fitted = fit(source)
         if attaches:
             return (source.path, source.builtin), fitted, True
-    # Like the load: a chosen mode with none that fits attaches its first drafter.
-    if mode != "auto" and resolution.sources:
-        source = resolution.sources[0]
-        return (source.path, source.builtin), None, True
+    # Like the load: a chosen mode with none that fits attaches the first MLX's own cap admits.
+    for source in resolution.sources if mode != "auto" else ():
+        attaches, fitted = fit(source, reserve = False)
+        if attaches is not False:
+            return (source.path, source.builtin), fitted, True
     return None, None, True
 
 

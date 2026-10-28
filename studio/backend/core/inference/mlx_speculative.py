@@ -373,11 +373,12 @@ def build_draft(
     resolution: SpecResolution,
     *,
     fits,
+    stretch = None,
     draft_n_max: Optional[int] = None,
 ) -> tuple:
     """``(draft, kind, reason, context)`` for the first source ``fits`` accepts that builds, else copies
     alone when the mode allows. ``reason`` names a passed-over choice, so a substitute never attaches silently.
-    A chosen mode with none that fits attaches an unfit source, reserving no context."""
+    A chosen mode with none that fits attaches an unfit source ``stretch`` (its fit under MLX's own cap) admits."""
     from unsloth_zoo.mlx.speculative import companion_drafter, native_mtp_drafter
 
     if _carries_encoder_state(target):
@@ -408,16 +409,21 @@ def build_draft(
             unfit.append(source)
         elif ok is not None:  # priced, and the drafter would shrink it
             reason = AUTO_CONTEXT_COST
-    if unfit:
-        reason = DRAFTER_INCOMPATIBLE if incompatible else resolution.reason
+    roomy = []
     for source in unfit:
+        ok, context = stretch(source) if stretch else (False, None)
+        if ok is not False:
+            roomy.append((source, context))
+    if roomy:
+        reason = DRAFTER_INCOMPATIBLE if incompatible else resolution.reason
+    for source, context in roomy:
         logger.warning(
-            "MLX drafter %s (%s) is not priced to fit beside this model; attaching it as chosen",
+            "MLX drafter %s (%s) fits only in the prompt cache's share; attaching it as chosen",
             source.path,
             source.kind,
         )
         if (drafter := build(source)) is not None:
-            return _draft(drafter, resolution.copies, draft_n_max), source.kind, reason, None
+            return _draft(drafter, resolution.copies, draft_n_max), source.kind, reason, context
     if resolution.copies and resolution.mode != "auto":  # auto copies only alongside a drafter
         return _draft(None, True, draft_n_max), "ngram", reason, None
     return None, None, reason, None

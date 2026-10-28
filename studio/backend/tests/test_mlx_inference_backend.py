@@ -1336,11 +1336,17 @@ def test_an_auto_drafter_gets_offload_room_only_within_the_cap_where_it_then_fit
     ]
     plans.update({True: (0.5, 0.5, 8192)})
     assert resolve(True) == ((0.5, 0.5, 8192),) * 2 and len(asked) == 1
-    # An explicit drafter priced not to fit its room plan keeps the target-only plan, not all-on-disk.
+    # An explicit drafter priced not to fit its room plan, even under MLX's own cap, keeps the
+    # target-only plan, not all-on-disk.
     plans.update({True: (None, 1.0, None), False: (None, 0.78, 8192)})
     asked.clear()
     assert resolve(False) == ((None, 0.78, 8192), None)
-    assert asked[-1][4] == {"load_in_4bit": False, "offload": (None, 1.0), "prefill_chunk": None}
+    assert asked[-1][4] == {
+        "load_in_4bit": False,
+        "offload": (None, 1.0),
+        "prefill_chunk": None,
+        "reserve": False,
+    }
     fits.update(on = None)  # unpriceable: the load keeps it, so does the plan
     assert resolve(False) == ((None, 1.0, None), None)
 
@@ -4927,13 +4933,22 @@ def test_an_explicit_speculative_mode_loads_through_mlx_vlm_and_attaches_what_fi
     failing.clear()
     fit = lambda *a, **kw: fits.append(kw.get("vision")) or (None, None)
     monkeypatch.setattr(mlx_inference, "_fitted_context", fit)
-    monkeypatch.setattr(mlx_inference, "mlx_drafter_fit", lambda *a, **k: (False, None))
+    room = [True]  # whether the drafter fits under MLX's own cap, spending the prompt cache's share
+    monkeypatch.setattr(
+        mlx_inference,
+        "mlx_drafter_fit",
+        lambda *a, reserve = True, **k: (not reserve and room[-1], None),
+    )
     backend.load_model(config, max_seq_length = 0, speculative_type = "ngram")
     assert fits[-1] is True  # copies alone still load through mlx-vlm, so the fit prices that route
     fits.clear()
     backend.load_model(config, max_seq_length = 0, speculative_type = "dflash")
     assert backend._speculative_draft.drafter is not None and fits == [True]
     assert backend.models["org/text"]["spec_fallback_reason"] is None
+    room.append(False)
+    backend.load_model(config, max_seq_length = 0, speculative_type = "dflash")
+    assert backend._speculative_draft is None
+    assert backend.models["org/text"]["spec_fallback_reason"] == mlx_speculative.DRAFTER_NO_MEMORY
     backend.load_model(config, max_seq_length = 0, spec_draft_model = "org/d")
     assert fits[-2:] == [True, True]  # a named drafter enters the speculative route under Auto
     # ... and is a request, so a load that cannot honour it says why.
