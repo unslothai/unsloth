@@ -273,12 +273,13 @@ def _multi_lora_layers(model):
 
 def _routed_modules(model):
     """The modules a forward calls: dense LoRA layers and expert containers (their stacks are not modules)."""
-    from unsloth.kernels.multi_lora import MultiLoraExperts, MultiLoraLinear
-    return [
-        (n, m)
-        for n, m in model.named_modules()
-        if isinstance(m, (MultiLoraLinear, MultiLoraExperts))
-    ]
+    from unsloth.kernels import multi_lora
+
+    # An installed Unsloth older than the expert kernel still batches dense jobs.
+    kinds = tuple(
+        k for k in (multi_lora.MultiLoraLinear, getattr(multi_lora, "MultiLoraExperts", None)) if k
+    )
+    return [(n, m) for n, m in model.named_modules() if isinstance(m, kinds)]
 
 
 # As get_peft_regex's vision_tags: a text forward never reaches these, and alone they stay untrained too.
@@ -1025,16 +1026,22 @@ def _run(event_queue, stop_queue, config: dict, members: list) -> None:
     _send_status(event_queue, f"Configuring {U} LoRA adapters...")
     targets = _resolve_targets(model, config.get("target_modules"))
     use_rslora = bool(config.get("use_rslora", False))
-    injected = inject_multi_lora(
-        model,
-        targets,
-        U,
-        r = [int(m.config.get("lora_r", 16)) for m in live],
-        lora_alpha = [float(m.config.get("lora_alpha", 16)) for m in live],
-        use_rslora = use_rslora,
-    )
-    targets = sorted({name.rsplit(".", 1)[-1] for name in injected})
     expert_targets = _expert_targets(model, _lone_target_modules(config.get("target_modules")))
+    try:
+        injected = inject_multi_lora(
+            model,
+            targets,
+            U,
+            r = [int(m.config.get("lora_r", 16)) for m in live],
+            lora_alpha = [float(m.config.get("lora_alpha", 16)) for m in live],
+            use_rslora = use_rslora,
+        )
+    except ValueError as exc:
+        # Expert-only targets (e.g. just gate_up_proj on fused experts): the single job trains no dense layer either.
+        if not expert_targets or "No linear layers named" not in str(exc):
+            raise
+        injected = []
+    targets = sorted({name.rsplit(".", 1)[-1] for name in injected}) if injected else targets
     if expert_targets:
         from unsloth.kernels.multi_lora import inject_multi_lora_experts
         inject_multi_lora_experts(

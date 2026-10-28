@@ -963,3 +963,33 @@ def test_packing_is_refused_where_packed_documents_see_each_other(monkeypatch, t
     events, _, _ = _run(monkeypatch, PACKED[:2], max_seq_length = 24)
     assert seen == []
     assert all(_member_events(events, m["run_id"])[-1]["type"] == "complete" for m in PACKED[:2])
+
+
+def test_an_expert_only_moe_target_trains_batched(monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    events, _, _ = _run(
+        monkeypatch, MEMBERS[:2], base = _kind_base("moe"), target_modules = ["gate_up_proj"]
+    )
+    mine = _member_events(events, "job_b")
+    assert mine[-1]["type"] == "complete", mine[-1]
+    adapter = load_file(os.path.join(mine[0]["output_dir"], "adapter_model.safetensors"))
+    assert adapter and all(".mlp.experts." in k for k in adapter), sorted(adapter)[:3]
+    assert all(v.abs().max() > 0 for k, v in adapter.items() if k.endswith("lora_B.weight"))
+
+
+def test_routing_check_runs_on_a_kernel_without_expert_support(monkeypatch):
+    import sys
+    import types
+
+    import unsloth.kernels
+
+    multi_lora_trainer = mlt
+    from unsloth.kernels import multi_lora
+
+    model = torch.nn.Sequential(torch.nn.Linear(4, 4))
+    multi_lora.inject_multi_lora(model, ["0"], 2, 2, 2)
+    # An Unsloth release that predates the expert kernel: only the dense layer class exists.
+    old = types.SimpleNamespace(MultiLoraLinear = multi_lora.MultiLoraLinear)
+    monkeypatch.setattr(unsloth.kernels, "multi_lora", old)
+    monkeypatch.setitem(sys.modules, "unsloth.kernels.multi_lora", old)
+    assert [name for name, _ in multi_lora_trainer._routed_modules(model)] == ["0"]
