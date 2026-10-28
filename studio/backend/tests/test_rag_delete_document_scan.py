@@ -13,7 +13,12 @@ from core.rag import store
 from core.rag.chunking import Chunk
 from storage import rag_db
 
-pytestmark = pytest.mark.skipif(not rag_db.RAG_AVAILABLE, reason = "sqlite-vec is not installed")
+# Some interpreters (e.g. the python.org macOS build) are compiled without loadable SQLite
+# extensions, so vec0 cannot load even when the sqlite-vec package is installed.
+pytestmark = pytest.mark.skipif(
+    not rag_db.RAG_AVAILABLE or not hasattr(sqlite3.Connection, "enable_load_extension"),
+    reason = "sqlite-vec is not installed or this sqlite3 cannot load extensions",
+)
 
 DIM = 4
 WORDS = "alpha bravo charlie delta echo foxtrot golf hotel".split()
