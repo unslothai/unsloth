@@ -1056,14 +1056,19 @@ def _mirror_delete_route(monkeypatch, tmp_path):
         cache_inventory, "all_hf_cache_scans", lambda: [SimpleNamespace(repos = [fp8])]
     )
     monkeypatch.setattr(deletion.account_access, "require_installation_owner", lambda: None)
-    for name in ("_llama_cpp_blocks_delete", "_inference_backend_blocks_delete", "_audio_cpp_blocks_delete"):
+    for name in (
+        "_llama_cpp_blocks_delete",
+        "_inference_backend_blocks_delete",
+        "_audio_cpp_blocks_delete",
+    ):
         monkeypatch.setattr(deletion, name, lambda *_a, **_k: False)
     monkeypatch.setattr(deletion, "_video_blocks_delete", lambda *_a, **_k: None)
     deleted = []
     monkeypatch.setattr(
         deletion,
         "_delete_cached_model_blocking",
-        lambda repo_id, *_a, **_k: deleted.append(repo_id) or {"status": "deleted", "repo_id": repo_id},
+        lambda repo_id, *_a, **_k: deleted.append(repo_id)
+        or {"status": "deleted", "repo_id": repo_id},
     )
     return deletion, fp8, deleted
 
@@ -1112,7 +1117,9 @@ def test_a_download_into_the_mirror_blocks_deleting_the_base_row(monkeypatch, tm
         return True
 
     monkeypatch.setattr(deletion.downloads.registry, "begin_delete", begin_delete)
-    monkeypatch.setattr(deletion.downloads.registry, "end_delete", lambda key, _v: released.append(key))
+    monkeypatch.setattr(
+        deletion.downloads.registry, "end_delete", lambda key, _v: released.append(key)
+    )
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
             deletion.delete_cached_model_response(
