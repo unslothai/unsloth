@@ -888,6 +888,7 @@ def test_jobs_differing_only_in_member_fields_batch_in_queue_order(batching, tmp
         max_steps = 30,
         weight_decay = 0.05,
         warmup_steps = 10,
+        packing = False,
     )
     odd = _entry(tmp_path, "c", max_seq_length = 4096)
     last = _entry(tmp_path, "d", lora_r = 8, warmup_ratio = 0.1)
@@ -900,7 +901,6 @@ def test_jobs_differing_only_in_member_fields_batch_in_queue_order(batching, tmp
     [
         {"resume_from_checkpoint": "/runs/old"},
         {"eval_steps": 0.1},
-        {"packing": True},
         {"lora_dropout": 0.05},
         {"use_dora": True},
         {"use_loftq": True},
@@ -1061,7 +1061,7 @@ def test_compatible_queued_jobs_start_as_one_batch(batch_queue):
         jobs = [
             await _create(client, uploaded.id, suffix = "a", seed = 1),
             await _create(client, uploaded.id, suffix = "b", hyperparameters = {"n_epochs": 3}),
-            await _create(client, uploaded.id, suffix = "solo", extra_body = {"packing": True}),
+            await _create(client, uploaded.id, suffix = "solo", extra_body = {"use_dora": True}),
             await _create(client, uploaded.id, suffix = "c", extra_body = {"lora_r": 64}),
         ]
         gpu["busy"] = False
@@ -1247,7 +1247,7 @@ def test_a_single_or_incompatible_job_starts_exactly_as_before(batch_queue):
 
     async def flow():
         uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
-        first = await _create(client, uploaded.id, suffix = "first", extra_body = {"packing": True})
+        first = await _create(client, uploaded.id, suffix = "first", extra_body = {"use_dora": True})
         second = await _create(client, uploaded.id, suffix = "second")
         gpu["busy"] = False
         await openai_fine_tuning._drain_once()
@@ -1258,7 +1258,7 @@ def test_a_single_or_incompatible_job_starts_exactly_as_before(batch_queue):
     first, second, queued = _run(flow())
     assert calls["batch"] == []
     assert [q.alias for q in queued] == [second.id]
-    assert [(r.project_name, r.packing) for r in calls["start"]] == [
+    assert [(r.project_name, r.use_dora) for r in calls["start"]] == [
         ("first", True),
         ("second", False),
     ]

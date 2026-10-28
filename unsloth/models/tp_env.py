@@ -354,10 +354,16 @@ def _levels(model):
         return [model]
 
 
+def parallel_env_requested():
+    return any(
+        str(os.environ.get(name, "")).strip() not in ("", "1")
+        for name in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE")
+    )
+
+
 def install_tensor_parallel_env_trainer_init():
-    """Install the Trainer.__init__ wrapper at import: loads that all run inside model_init would otherwise
-    train in an unwrapped Trainer, without tensor parallel."""
-    if str(os.environ.get("UNSLOTH_TP_SIZE", "")).strip() in ("", "1"):
+    """Wrap Trainer.__init__ at import: model_init loads and non-Fast* models (encoders) would else train as plain DDP."""
+    if not parallel_env_requested():
         return False
     from transformers import Trainer
 

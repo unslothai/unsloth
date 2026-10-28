@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import os
 import queue
 import types
@@ -156,6 +157,7 @@ def _member_config(m):
         "warmup_steps": m.get("warmup_steps", 0),
         "weight_decay": m.get("weight_decay", 0.0),
         "gradient_accumulation_steps": 2,
+        "packing": m.get("packing", False),
     }
 
 
@@ -651,3 +653,214 @@ def test_a_state_space_model_trains_alone(monkeypatch, tmp_path):
     events, _, _ = _run(monkeypatch, MEMBERS[:2], base = base)
     assert [e["type"] for e in events if e.get("member_run_id")] == ["error", "error"]
     assert "state-space" in events[-1]["error"]
+
+
+PACKED = [
+    dict(
+        run_id = "job_a",
+        rows = 12,
+        batch_size = 2,
+        num_epochs = 2,
+        lr = 1e-2,
+        r = 4,
+        alpha = 8,
+        seed = 11,
+        packing = True,
+    ),
+    dict(
+        run_id = "job_b",
+        rows = 16,
+        batch_size = 1,
+        num_epochs = 1,
+        lr = 5e-3,
+        r = 8,
+        alpha = 16,
+        seed = 22,
+        packing = True,
+    ),
+    dict(run_id = "job_c", rows = 7, batch_size = 2, num_epochs = 1, lr = 2e-2, r = 2, alpha = 4, seed = 33),
+]
+
+
+def _final(events, run_id):
+    mine = _member_events(events, run_id)
+    losses = [e["loss"] for e in mine if e["type"] == "progress" and e["step"] > 0]
+    state = load_file(os.path.join(mine[0]["output_dir"], "adapter_model.safetensors"))
+    return losses, state
+
+
+def _spy_packed(monkeypatch):
+    seen = []
+    real = mlt._collate_packed
+
+    def spy(rows, slots, lengths):
+        batch = real(rows, slots, lengths)
+        seen.append(batch)
+        return batch
+
+    monkeypatch.setattr(mlt, "_collate_packed", spy)
+    return seen
+
+
+def test_packing_members_never_share_a_document_or_see_a_neighbour(monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    seen = _spy_packed(monkeypatch)
+    events, _, _ = _run(monkeypatch, PACKED, max_seq_length = 24)
+    assert seen
+    for batch in seen:
+        ids, pos, lengths = (
+            batch["adapter_ids"][0],
+            batch["position_ids"][0],
+            batch["packed_seq_lengths"],
+        )
+        starts = (pos == 0).nonzero().flatten()
+        assert starts.tolist() == (torch.cumsum(lengths, 0) - lengths).tolist()
+        # One adapter per document, and the label opening each document is never trained.
+        for start, n in zip(starts.tolist(), lengths.tolist()):
+            assert ids[start : start + n].unique().numel() == 1
+        assert (batch["labels"][0, starts[1:]] == -100).all()
+    rows_a = math.ceil(12 / 2)  # unpacked micro-batches per epoch
+    steps_a = max(e["step"] for e in _member_events(events, "job_a") if e["type"] == "progress")
+    assert steps_a < 2 * math.ceil(rows_a / 2)
+    neighbour = [
+        dict(PACKED[0]),
+        dict(PACKED[1], rows = 9, seed = 99, lr = 3e-2),
+        dict(PACKED[2], packing = True),
+    ]
+    other, _, _ = _run(monkeypatch, neighbour, max_seq_length = 24)
+    alone, _, _ = _run(monkeypatch, [PACKED[0]], max_seq_length = 24)
+    losses, state = _final(events, "job_a")
+    for run in (other, alone):
+        run_losses, run_state = _final(run, "job_a")
+        assert run_losses == pytest.approx(losses, rel = 1e-4)
+        for key in state:
+            torch.testing.assert_close(run_state[key], state[key], atol = 1e-5, rtol = 1e-4)
+
+
+def test_an_unpacked_member_beside_packed_ones_trains_as_it_would_alone(monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    mixed, _, _ = _run(monkeypatch, PACKED, max_seq_length = 24)
+    alone, _, _ = _run(monkeypatch, [PACKED[2]], max_seq_length = 24)
+    losses, state = _final(mixed, "job_c")
+    alone_losses, alone_state = _final(alone, "job_c")
+    assert losses == pytest.approx(alone_losses, rel = 1e-4)
+    for key in state:
+        torch.testing.assert_close(state[key], alone_state[key], atol = 1e-5, rtol = 1e-4)
+
+
+def test_packing_is_ignored_where_the_single_job_ignores_it(monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(mlt, "_packs", lambda model: False)
+    seen = _spy_packed(monkeypatch)
+    events, _, _ = _run(monkeypatch, PACKED[:1], max_seq_length = 24)
+    assert seen == []
+    steps = max(e["step"] for e in _member_events(events, "job_a") if e["type"] == "progress")
+    assert steps == 2 * math.ceil(math.ceil(12 / 2) / 2)
+
+
+@pytest.mark.parametrize("varlen", [True, False])
+def test_a_hybrid_packs_only_with_the_varlen_kernels(monkeypatch, varlen):
+    transformers = pytest.importorskip("transformers", minversion = "5.2")
+    from unsloth import trainer as unsloth_trainer
+
+    config = transformers.Qwen3_5TextConfig(
+        vocab_size = 64,
+        hidden_size = 32,
+        intermediate_size = 64,
+        num_hidden_layers = 2,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        head_dim = 8,
+        layer_types = ["linear_attention", "full_attention"],
+        linear_num_key_heads = 2,
+        linear_num_value_heads = 4,
+        linear_key_head_dim = 8,
+        linear_value_head_dim = 8,
+    )
+    model = transformers.Qwen3_5ForCausalLM(config)
+    calls = []
+
+    def patch(m):
+        calls.append(m)
+        return varlen
+
+    monkeypatch.setattr(unsloth_trainer, "patch_hybrid_linear_attention_varlen", patch)
+    assert mlt._packs(model) is varlen and calls == [model]
+    assert mlt._packs(_base()) is True
+
+
+def test_pack_rows_keeps_each_documents_labels_with_its_tokens():
+    rows = [([i] * n, [-100] + [i] * (n - 1)) for i, n in enumerate([5, 9, 3, 7, 4], start = 1)]
+    packed, lengths = mlt._pack_rows(rows, 12)
+    assert all(len(ids) <= 12 and sum(n) == len(ids) for (ids, _), n in zip(packed, lengths))
+    docs = sorted(
+        (ids[s : s + n], lab[s : s + n])
+        for (ids, lab), ns in zip(packed, lengths)
+        for s, n in zip([sum(ns[:k]) for k in range(len(ns))], ns)
+    )
+    assert docs == sorted(rows)
+
+
+def _force_member_loss_scale(monkeypatch, poison = None):
+    """fp16's per-member loss scale on this CPU run; ``poison`` = (slot, call) overflows that member there."""
+    monkeypatch.setattr(mlt, "_fp16_loss_scale", lambda fp16, n: mlt._MemberLossScale(n))
+    if poison is None:
+        return
+    real, calls = mlt._MemberLossScale.unscale_, []
+
+    def unscale_(self, slot, params):
+        if slot == poison[0]:
+            calls.append(slot)
+            if len(calls) == poison[1]:
+                for p in params:
+                    if p.grad is not None:
+                        p.grad.fill_(float("inf"))
+        return real(self, slot, params)
+
+    monkeypatch.setattr(mlt._MemberLossScale, "unscale_", unscale_)
+
+
+def test_member_loss_scale_trains_as_unscaled(batched_run, monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    events, _, _ = batched_run
+    _force_member_loss_scale(monkeypatch)
+    scaled, _, _ = _run(monkeypatch, MEMBERS)
+    for m in MEMBERS:
+        losses, state = _final(events, m["run_id"])
+        scaled_losses, scaled_state = _final(scaled, m["run_id"])
+        assert scaled_losses == pytest.approx(losses, rel = 1e-5)
+        for key in state:
+            torch.testing.assert_close(scaled_state[key], state[key], atol = 1e-6, rtol = 1e-5)
+
+
+def test_an_fp16_overflow_skips_only_that_members_step(monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    _force_member_loss_scale(monkeypatch)
+    clean, _, _ = _run(monkeypatch, MEMBERS)
+    _force_member_loss_scale(monkeypatch, poison = (0, 1))
+    hit, _, _ = _run(monkeypatch, MEMBERS)
+    for run_id in ("job_b", "job_c"):
+        losses, state = _final(clean, run_id)
+        hit_losses, hit_state = _final(hit, run_id)
+        assert hit_losses == losses
+        for key in state:
+            torch.testing.assert_close(hit_state[key], state[key], atol = 0, rtol = 0)
+    a = [e for e in _member_events(hit, "job_a") if e["type"] == "progress" and e["step"] > 0]
+    # Its first step was skipped: no gradient norm, and the next step trains at the rate it would have used.
+    assert a[0]["grad_norm"] is None and a[1]["grad_norm"] is not None
+    assert a[1]["learning_rate"] == a[0]["learning_rate"]
+    hit_a, clean_a = _final(hit, "job_a")[1], _final(clean, "job_a")[1]
+    assert any(not torch.equal(hit_a[k], clean_a[k]) for k in clean_a)
+
+
+def test_member_loss_scale_follows_grad_scaler_rules():
+    scale = mlt._MemberLossScale(2, init_scale = 8.0, growth_interval = 2)
+    p = torch.nn.Parameter(torch.zeros(3))
+    for _ in range(2):
+        p.grad = torch.full((3,), 16.0)
+        assert scale.unscale_(1, [p]) and torch.equal(p.grad, torch.full((3,), 2.0))
+    # Grown after growth_interval finite steps, as GradScaler does.
+    assert scale.scale == [8.0, 16.0]
+    p.grad = torch.tensor([1.0, float("nan"), 0.0])
+    assert not scale.unscale_(0, [p]) and p.grad is None
+    assert scale.scale == [4.0, 16.0] and scale.good_steps == [0, 2 % 2]
