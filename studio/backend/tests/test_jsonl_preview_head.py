@@ -71,6 +71,19 @@ def test_jsonl_preview_skips_the_arrow_json_reader(tmp_path, loader_calls):
     assert dataset[0]["messages"][2]["content"] == "r" * 50_000
 
 
+def test_mixed_nested_types_raise_instead_of_reaching_the_native_reader(tmp_path, loader_calls):
+    def row(search):
+        call = {"function": {"name": "s", "arguments": {"json_body": {"searchContent": search}}}}
+        return {"messages": [{"role": "assistant", "content": "", "tool_calls": [call]}]}
+
+    path = tmp_path / "train.jsonl"
+    _write_jsonl(path, [row("text"), row({"q": "x"})] * 50)
+    # Token preview reads 100 rows: an Arrow column cannot be both string and struct.
+    with pytest.raises((TypeError, ValueError)):
+        local._stream_file_preview_slice(path, 100)
+    assert loader_calls == []
+
+
 def test_columns_are_the_union_over_rows(tmp_path, loader_calls):
     path = tmp_path / "train.jsonl"
     _write_jsonl(path, [{"text": "a"}, {"text": "b", "label": 1}])
