@@ -2920,6 +2920,22 @@ def _refuse_tp_trainer_args(args, cpu_shards = False):
         )
 
 
+def _refuse_full_finetuning_fsdp2(model):
+    """Full finetuning on tp x native FSDP2 trains, but save_model (also every Trainer checkpoint) cannot gather
+    the whole model there yet: refuse before training instead of at the first save."""
+    if _has_peft_config(model):
+        return
+    from .tp_replica import _fsdp2_units, tp_root
+
+    if _fsdp2_units(tp_root(model)):
+        raise RuntimeError(
+            "Unsloth: full finetuning on a tensor parallel x native FSDP2 model cannot save the whole model "
+            "yet (Trainer.save_model and Trainer checkpoints). Use tensor parallel alone, or its DDP-style data "
+            "parallel (UNSLOTH_TP_SIZE without UNSLOTH_FSDP2), or native FSDP2 alone (UNSLOTH_FSDP2=1 without "
+            "UNSLOTH_TP_SIZE)." + _env_hint()
+        )
+
+
 def tp_trainer_setup(
     model = None,
     phase = "pre",
@@ -2951,6 +2967,7 @@ def tp_trainer_setup(
     cpu_shards = tp_mesh.device_type == "cpu"
     _tp_bnb_optim(trainer.args, cpu_shards)
     _refuse_tp_trainer_args(trainer.args, cpu_shards)
+    _refuse_full_finetuning_fsdp2(model)
     ddp_mesh = _ddp_mesh(model)
     dp_size, dp_rank = (dp_mesh.size(), dp_mesh.get_local_rank()) if dp_mesh is not None else (1, 0)
     trainer.accelerator.__dict__[_TP_DATA] = (dp_size, dp_rank)

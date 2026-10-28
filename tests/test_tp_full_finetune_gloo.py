@@ -143,7 +143,12 @@ def _case_env(rank, world, tmp, ckpt):
         save_strategy = "steps",
         save_steps = 2,
     )
-    trainer = SequentialTrainer(model = model, args = args, train_dataset = data)
+    try:
+        trainer = SequentialTrainer(model = model, args = args, train_dataset = data)
+    except RuntimeError as e:
+        if "full finetuning on a tensor parallel x native FSDP2" not in str(e):
+            raise
+        return {"refused": None, "trainer_refused": str(e)}
     trainer.train()
     is_tp = tp_native.is_tensor_parallel(trainer.model)
     state = (
@@ -360,6 +365,25 @@ def test_env_tp2_full_finetuning_trainer_matches_one_process():
     assert set(saved) == set(ref["saved"])
     for key, value in ref["saved"].items():
         torch.testing.assert_close(saved[key], value, rtol = 1e-4, atol = 2e-6, msg = key)
+
+
+def test_env_tp2_x_fsdp2_full_finetuning_is_refused_before_training():
+    # tp x native FSDP2 cannot gather the whole model for save_model / Trainer checkpoints: before the fix the
+    # run trained and then died at its first checkpoint (save_model refused, pointing at a missing adapter).
+    if _torch_below_2_7():
+        pytest.skip("torch < 2.7: tensor parallel x FSDP2 is refused at load")
+    with tempfile.TemporaryDirectory() as tmp:
+        ckpt = _save_checkpoint("llama", os.path.join(tmp, "ckpt"))
+        results = _spawn("env", 4, {"UNSLOTH_TP_SIZE": "2", "UNSLOTH_FSDP2": "1"}, tmp = tmp, ckpt = ckpt)
+    for res in results:
+        assert res["refused"] is None, res["refused"]  # the load itself is fine
+        assert "UNSLOTH_TP_SIZE without UNSLOTH_FSDP2" in res.get("trainer_refused", ""), res
+
+
+def _torch_below_2_7():
+    from packaging.version import Version
+
+    return Version(torch.__version__.split("+")[0]) < Version("2.7")
 
 
 def _torchao():
