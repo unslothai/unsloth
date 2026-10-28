@@ -718,12 +718,44 @@ class LinkLedger:
         return self._single + sum(size for size, links, met in self._multi.values() if met >= links)
 
 
-def _record_entry(entry: os.DirEntry, ledger: LinkLedger) -> None:
+class _OccupancyLedger:
+    """Disk occupancy includes shared files even when clearing cannot free them."""
+
+    def __init__(self) -> None:
+        self._seen: set[tuple] = set()
+        self.bytes = 0
+        self.by_device: dict[int, int] = {}
+        self.device_paths: dict[int, Path] = {}
+
+    def add(self, info, path: Path | str) -> None:
+        # Some network filesystems report st_ino 0: identify by path instead.
+        identity = (info.st_dev, info.st_ino) if info.st_ino else (info.st_dev, str(path))
+        if identity in self._seen:
+            return
+        self._seen.add(identity)
+        size = int(info.st_size)
+        self.bytes += size
+        self.by_device[info.st_dev] = self.by_device.get(info.st_dev, 0) + size
+        self.device_paths.setdefault(info.st_dev, Path(path).parent)
+
+
+def _record_entry(
+    entry: os.DirEntry,
+    ledger: LinkLedger,
+    occupancy: Optional[_OccupancyLedger] = None,
+) -> None:
     try:
-        stat = entry.stat(follow_symlinks = False)
+        # Windows DirEntry.stat zeroes st_dev, st_ino and st_nlink.
+        stat = (
+            os.stat(entry.path, follow_symlinks = False)
+            if occupancy is not None and os.name == "nt"
+            else entry.stat(follow_symlinks = False)
+        )
     except OSError:
         return
     ledger.add(stat)
+    if occupancy is not None:
+        occupancy.add(stat, entry.path)
 
 
 def _descendable(entry: os.DirEntry) -> bool:
@@ -731,7 +763,11 @@ def _descendable(entry: os.DirEntry) -> bool:
     return not _is_junction(entry.path)
 
 
-def _walk_into(stack: list, ledger: LinkLedger) -> int:
+def _walk_into(
+    stack: list,
+    ledger: LinkLedger,
+    occupancy: Optional[_OccupancyLedger] = None,
+) -> int:
     """Sizes every directory on the stack and below it; returns the entries seen.
 
     A uv or triton cache can hold millions of files, so the loop body is the whole cost: paths
@@ -755,6 +791,9 @@ def _walk_into(stack: list, ledger: LinkLedger) -> int:
                             if _descendable(entry):
                                 push(entry.path)
                             continue
+                        if occupancy is not None:
+                            _record_entry(entry, ledger, occupancy)
+                            continue
                         try:
                             found = entry.stat(follow_symlinks = False)
                         except OSError:
@@ -770,13 +809,23 @@ def _walk_into(stack: list, ledger: LinkLedger) -> int:
     return count
 
 
-def _measure_tree(path: Path, ledger: LinkLedger) -> int:
+def _measure_tree(
+    path: Path,
+    ledger: LinkLedger,
+    occupancy: Optional[_OccupancyLedger] = None,
+) -> int:
     """Size is left to the ledger: a multi-link inode's cost is only known after every root is walked."""
-    return _walk_into([os.fspath(path)], ledger)
+    return _walk_into([os.fspath(path)], ledger, occupancy)
 
 
-def _measure_root(root: Path, *, patterns: Optional[Iterable[str]] = None) -> tuple[int, int]:
-    ledger = LinkLedger()
+def _measure_root(
+    root: Path,
+    *,
+    patterns: Optional[Iterable[str]] = None,
+    ledger: Optional[LinkLedger] = None,
+    occupancy: Optional[_OccupancyLedger] = None,
+) -> tuple[int, int]:
+    ledger = LinkLedger() if ledger is None else ledger
     entries = 0
     try:
         if Path(root).is_symlink() or _is_junction(root) or not Path(root).is_dir():
@@ -797,11 +846,11 @@ def _measure_root(root: Path, *, patterns: Optional[Iterable[str]] = None) -> tu
                     if _descendable(entry):
                         subdirs.append(entry.path)
                     continue
-                _record_entry(entry, ledger)
+                _record_entry(entry, ledger, occupancy)
     except OSError as exc:
         logger.debug(f"Could not size {root}: {exc}")
     subdirs.reverse()
-    _walk_into(subdirs, ledger)
+    _walk_into(subdirs, ledger, occupancy)
     return ledger.freeable_bytes(), entries
 
 
@@ -829,6 +878,134 @@ def _resolve_roots(definition: CacheDefinition) -> list[Path]:
         seen.add(key)
         roots.append(path)
     return roots
+
+
+def _measurement_roots(definition: CacheDefinition) -> list[Path]:
+    """Remembered HF locations count towards storage, but never widen a purge."""
+    roots = _resolve_roots(definition)
+    if definition.key == "hf_hub":
+        from utils.hf_cache_settings import known_hf_hub_caches
+        roots.extend(known_hf_hub_caches())
+    elif definition.key in {"hf_datasets", "hf_xet", "hf_assets"}:
+        child = definition.key.removeprefix("hf_")
+        roots.extend(home / child for home in _hf_homes())
+    unique: list[Path] = []
+    protected = protected_paths()
+    for root in roots:
+        resolved = _safe_resolve(root)
+        if resolved is None or resolved in unique:
+            continue
+        # Never walk a protected root itself, or a link into one.
+        try:
+            assert_purgeable_root(root, protected = protected, trees = set(), keep = {})
+        except CachePurgeRefused:
+            continue
+        if any(_is_within(resolved, previous) for previous in unique):
+            continue
+        unique = [previous for previous in unique if not _is_within(previous, resolved)]
+        unique.append(resolved)
+    return unique
+
+
+def _system_disk_device():
+    # The volume /api/system and models_disk_usage report, wherever Studio lives.
+    try:
+        return Path(os.path.abspath(os.sep)).stat().st_dev
+    except OSError:
+        return None
+
+
+def _system_disk_occupancy(occupancy: _OccupancyLedger) -> int:
+    from utils.system_disk import _SAME_POOL_SLACK
+
+    device = _system_disk_device()
+    total = occupancy.by_device.get(device, 0)
+    if device is None:
+        return 0
+    try:
+        system = shutil.disk_usage(os.path.abspath(os.sep))
+    except (OSError, ValueError):
+        return total
+    for other, size in occupancy.by_device.items():
+        if other == device:
+            continue
+        # As models_disk_usage: APFS Data / btrfs subvolumes share the pool under another st_dev.
+        try:
+            usage = shutil.disk_usage(occupancy.device_paths[other])
+        except (OSError, ValueError):
+            continue
+        if usage.total == system.total and abs(usage.free - system.free) < _SAME_POOL_SLACK:
+            total += size
+    return total
+
+
+def _model_cache_action(root: Path, entry: os.DirEntry) -> dict:
+    """An identity for the existing guarded Hub action, never a path-delete grant."""
+    refused = {"delete_allowed": False}
+    try:
+        if (
+            not entry.name.startswith("models--")
+            or entry.is_symlink()
+            or _is_junction(entry.path)
+            or not entry.is_dir(follow_symlinks = False)
+        ):
+            return refused
+        from hub.utils.paths import is_valid_repo_id
+        from hub.utils.hf_cache_state import scoped_delete_root
+
+        repo_id = entry.name[len("models--") :].replace("--", "/")
+        if not is_valid_repo_id(repo_id):
+            return refused
+        candidate = _safe_resolve(Path(entry.path))
+        if candidate is None or candidate.parent != root or candidate.name != entry.name:
+            return refused
+        # cache_path is the repo directory; the Hub delete re-validates its root.
+        if scoped_delete_root("model", repo_id, str(candidate)) != root:
+            return refused
+        return {
+            "repo_id": repo_id,
+            "repo_type": "model",
+            "cache_path": str(candidate),
+            "delete_allowed": True,
+        }
+    except (ImportError, OSError, ValueError, RuntimeError):
+        return refused
+
+
+def cache_breakdown(key: str) -> dict:
+    """Read-only, on-demand HF directory breakdown; never accepts a browser path."""
+    if key not in {"hf_hub", "hf_datasets", "hf_xet", "hf_assets"}:
+        raise ValueError("Only Hugging Face caches have a directory breakdown.")
+    rows = []
+    occupancy = _OccupancyLedger()
+    for root in _measurement_roots(definition_for(key)):
+        try:
+            with os.scandir(root) as scan:
+                for entry in scan:
+                    if entry.is_symlink() or _is_junction(entry.path):
+                        continue
+                    before = occupancy.bytes
+                    if entry.is_dir(follow_symlinks = False):
+                        _measure_root(Path(entry.path), occupancy = occupancy)
+                    else:
+                        info = (
+                            os.stat(entry.path, follow_symlinks = False)
+                            if os.name == "nt"
+                            else entry.stat(follow_symlinks = False)
+                        )
+                        occupancy.add(info, entry.path)
+                    size = occupancy.bytes - before
+                    action = (
+                        _model_cache_action(root, entry)
+                        if key == "hf_hub"
+                        else {"delete_allowed": False}
+                    )
+                    rows.append(
+                        {"name": entry.name, "path": entry.path, "size_bytes": size, **action}
+                    )
+        except OSError:
+            continue
+    return {"entries": sorted(rows, key = lambda row: (-row["size_bytes"], row["path"]))}
 
 
 def describe_cache(definition: CacheDefinition) -> dict:
@@ -862,23 +1039,53 @@ def describe_cache(definition: CacheDefinition) -> dict:
         blocked_reason = _link_mode_refusal(definition.key)
         if blocked_reason is not None:
             purgeable = False
-    if definition.custom_measure is not None:
-        total, entries = (0, 0) if blocked_reason is not None else definition.custom_measure()
-    else:
-        total = 0
+    measured_paths = roots
+    system_disk_bytes = None
+    if definition.key in {"hf_hub", "hf_datasets", "hf_xet", "hf_assets"}:
+        # Occupancy is measured even where clearing is refused (e.g. under Documents).
+        measured_paths = _measurement_roots(definition)
         entries = 0
-        for root in measurable:
-            size, count = _measure_root(root, patterns = patterns)
-            total += size
+        clear_entries = 0
+        occupancy = _OccupancyLedger()
+        clear_ledger = LinkLedger()
+        clear_roots = {_safe_resolve(root) for root in measurable} if purgeable else set()
+        for root in measured_paths:
+            clearable = _safe_resolve(root) in clear_roots
+            _, count = _measure_root(
+                root,
+                patterns = patterns,
+                occupancy = occupancy,
+                ledger = clear_ledger if clearable else None,
+            )
             entries += count
+            if clearable:
+                clear_entries += count
+        total = occupancy.bytes
+        clear_size = clear_ledger.freeable_bytes()
+        system_disk_bytes = _system_disk_occupancy(occupancy)
+    else:
+        if definition.custom_measure is not None:
+            total, entries = (0, 0) if blocked_reason is not None else definition.custom_measure()
+        else:
+            total = entries = 0
+            for root in measurable:
+                size, count = _measure_root(root, patterns = patterns)
+                total += size
+                entries += count
+        clear_size = total
+        clear_entries = entries
     return {
         "key": definition.key,
         "group": definition.group,
         "opt_in": definition.opt_in,
         "paths": [str(root) for root in roots],
+        "measured_paths": [str(root) for root in measured_paths],
+        "clear_size_bytes": clear_size,
+        "clear_entry_count": clear_entries,
+        "system_disk_bytes": system_disk_bytes,
         "size_bytes": total,
         "entry_count": entries,
-        "present": bool(roots),
+        "present": bool(roots or measured_paths),
         "purgeable": bool(roots) and purgeable,
         "blocked_reason": blocked_reason,
     }
@@ -913,6 +1120,8 @@ _size_flights: dict[str, threading.Lock] = {}
 _size_flights_lock = threading.Lock()
 # Background walks run one at a time: two stat-bound walks in one process only trade the GIL.
 _background_walk_lock = threading.Lock()
+# Caches with a background walk queued or running; the walk takes its flight only when it runs.
+_background_pending: set = set()
 
 
 def _flight_for(key: str) -> threading.Lock:
@@ -931,28 +1140,54 @@ def _walk_and_remember(definition: CacheDefinition, epoch: int) -> dict:
     return entry
 
 
-def _refresh_in_background(definition: CacheDefinition) -> None:
-    """At most one walk per cache: one already running, foreground or not, stores the newer size anyway."""
-    flight = _flight_for(definition.key)
-    if not flight.acquire(blocking = False):
-        return
+def _refresh_in_background(definition: CacheDefinition) -> bool:
+    """At most one walk per cache; False when none could start, so the caller walks instead."""
+    key = definition.key
+    with _size_cache_lock:
+        if key in _background_pending:
+            return True
+        _background_pending.add(key)
 
     def walk() -> None:
         try:
             with _background_walk_lock:
-                with _size_cache_lock:
-                    epoch = _size_epochs.get(definition.key, 0)
-                _walk_and_remember(definition, epoch)
+                # Taken only once this walk can run, so a queued walk never holds up a read of its cache.
+                flight = _flight_for(key)
+                if not flight.acquire(blocking = False):
+                    return
+                try:
+                    with _size_cache_lock:
+                        epoch = _size_epochs.get(key, 0)
+                        remembered = _size_cache.get(key)
+                    # Overtaken while queued: a purge, download or Recheck already replaced the old size.
+                    if (
+                        remembered is None
+                        or time.monotonic() - remembered[1] < _INVENTORY_TTL_SECONDS
+                    ):
+                        return
+                    _walk_and_remember(definition, epoch)
+                finally:
+                    flight.release()
         except Exception as exc:  # noqa: BLE001 - a failed refresh leaves the last size in place
-            logger.debug(f"Could not refresh the {definition.key} cache size: {exc}")
+            logger.debug(f"Could not refresh the {key} cache size: {exc}")
         finally:
-            flight.release()
+            with _size_cache_lock:
+                _background_pending.discard(key)
 
     try:
-        threading.Thread(target = walk, name = f"cache-size-{definition.key}", daemon = True).start()
+        threading.Thread(target = walk, name = f"cache-size-{key}", daemon = True).start()
     except Exception as exc:  # noqa: BLE001 - e.g. no thread left; the next read walks in the foreground
-        flight.release()
-        logger.debug(f"Could not start a {definition.key} cache size refresh: {exc}")
+        with _size_cache_lock:
+            _background_pending.discard(key)
+            remembered = _size_cache.get(key)
+            if (
+                remembered is not None
+                and time.monotonic() - remembered[1] >= _INVENTORY_TTL_SECONDS
+            ):
+                del _size_cache[key]
+        logger.debug(f"Could not start a {key} cache size refresh: {exc}")
+        return False
+    return True
 
 
 def _described(
@@ -960,9 +1195,11 @@ def _described(
     *,
     refresh: bool,
     deferred: Optional[list] = None,
+    asked_at: Optional[float] = None,
 ) -> dict:
-    """``deferred`` collects the background refreshes for the caller to start, after its own walks."""
+    """``deferred`` collects background refreshes to start after the caller's walks; a forced read accepts any walk begun after ``asked_at``."""
     started = time.monotonic()
+    asked = started if asked_at is None else asked_at
     with _size_cache_lock:
         remembered = None if refresh else _size_cache.get(definition.key)
     if remembered is not None:
@@ -970,11 +1207,11 @@ def _described(
             return remembered[2]
         # A forced read (the Recheck button) still waits for a fresh walk below.
         if remembered[3] >= _BACKGROUND_WALK_SECONDS:
-            if deferred is None:
-                _refresh_in_background(definition)
-            else:
+            if deferred is not None:
                 deferred.append(definition)
-            return remembered[2]
+                return remembered[2]
+            if _refresh_in_background(definition):
+                return remembered[2]
     # One walk per cache at a time, or simultaneous misses (e.g. two open tabs) each pay a cold walk.
     with _flight_for(definition.key):
         with _size_cache_lock:
@@ -983,7 +1220,7 @@ def _described(
         # A forced read needs a walk that began after it asked.
         if remembered is not None:
             if refresh:
-                if remembered[0] >= started:
+                if remembered[0] >= asked:
                     return remembered[2]
             elif time.monotonic() - remembered[1] < _INVENTORY_TTL_SECONDS:
                 return remembered[2]
@@ -993,15 +1230,16 @@ def _described(
 def cache_inventory(*, refresh: bool = False) -> dict:
     # Started after the foreground walks, which would otherwise share the GIL with them.
     deferred: list = []
+    asked_at = time.monotonic()
     entries = [
-        _described(definition, refresh = refresh, deferred = deferred)
+        _described(definition, refresh = refresh, deferred = deferred, asked_at = asked_at)
         for definition in CACHE_DEFINITIONS
     ]
     for definition in deferred:
         _refresh_in_background(definition)
     total = sum(entry["size_bytes"] for entry in entries if entry["present"])
     reclaimable = sum(
-        entry["size_bytes"]
+        entry.get("clear_size_bytes", entry["size_bytes"])
         for entry in entries
         if entry["present"] and entry["purgeable"] and not entry["opt_in"]
     )
@@ -1011,6 +1249,7 @@ def cache_inventory(*, refresh: bool = False) -> dict:
         "reclaimable_bytes": reclaimable,
         "free_bytes": _free_bytes(),
         "total_disk_bytes": _total_disk_bytes(),
+        "refreshing": bool(deferred),
     }
 
 
@@ -1294,7 +1533,7 @@ def _invalidate_hf_scans() -> None:
     except ImportError as exc:
         logger.debug(f"Could not invalidate the Hugging Face scans: {exc}")
         return
-    invalidate_hf_cache_scans()
+    invalidate_hf_cache_scans(sizes = False)
 
 
 def invalidate_hf_rooted_sizes() -> None:

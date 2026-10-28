@@ -2103,6 +2103,34 @@ def transcode_video_to_mp4(source: Path, *, fps: int) -> bytes:
         target.unlink(missing_ok = True)
 
 
+def _shown_vp8_key_frames(container: Any, stream: Any) -> Optional[int]:
+    """Frames of a VP8 track whose every packet is a shown key frame (sd.cpp's WebM), from headers; else None."""
+    if getattr(stream.codec_context, "name", None) != "vp8":
+        return None
+    count = 0
+    try:
+        for packet in container.demux(stream):
+            size = int(packet.size)
+            if size == 0:
+                continue
+            head = bytes(memoryview(packet)[:10])
+            if len(head) < 10:
+                return None
+            tag = head[0] | (head[1] << 8) | (head[2] << 16)
+            # RFC 6386 9.1: bit 0 = 0 key frame, bit 4 show_frame, bits 5-23 first partition size
+            if (
+                tag & 0x1
+                or not tag & 0x10
+                or head[3:6] != b"\x9d\x01\x2a"
+                or (tag >> 5) > size - 10
+            ):
+                return None
+            count += 1
+    except Exception:  # noqa: BLE001
+        return None
+    return count or None
+
+
 def inspect_video(path: Path) -> tuple[int, int, int, bool]:
     """Return width, height, decoded frame count, and audio presence."""
     import av
@@ -2113,9 +2141,11 @@ def inspect_video(path: Path) -> tuple[int, int, int, bool]:
         height = int(stream.codec_context.height)
         frames = int(stream.frames or 0)
         has_audio = bool(container.streams.audio)
-        if frames <= 0:
-            frames = sum(1 for _ in container.decode(video = 0))
-    return width, height, frames, has_audio
+        counted = _shown_vp8_key_frames(container, stream) if frames <= 0 else frames
+    if counted is None:
+        with av.open(str(path)) as container:
+            counted = sum(1 for _ in container.decode(video = 0))
+    return width, height, counted, has_audio
 
 
 def _full_scale_constant(samples: Any) -> Optional[float]:

@@ -564,13 +564,17 @@ export function ResourcesTab() {
       !(metrics.modelsDisk && entry.key === "hf_hub") &&
       onSystemDisk(entry.paths),
   );
+  const diskBytes = (entry: (typeof cache.entries)[number]) =>
+    entry.systemDiskBytes ??
+    (systemEntries.includes(entry) ? entry.sizeBytes : 0);
   const modelsDiskGb =
-    (systemEntries.find((entry) => entry.key === "hf_hub")?.sizeBytes ?? 0) /
-    1e9;
+    cache.entries
+      .filter((entry) => entry.key === "hf_hub")
+      .reduce((sum, entry) => sum + diskBytes(entry), 0) / 1e9;
   const cachesDiskGb =
-    systemEntries
+    cache.entries
       .filter((entry) => entry.key !== "hf_hub")
-      .reduce((sum, entry) => sum + entry.sizeBytes, 0) / 1e9;
+      .reduce((sum, entry) => sum + diskBytes(entry), 0) / 1e9;
   const otherDiskGb = Math.max(
     0,
     metrics.diskUsed - modelsDiskGb - cachesDiskGb,
@@ -578,7 +582,7 @@ export function ResourcesTab() {
   const cacheValue = (diskGb: number) =>
     cache.inventory ? formatDiskSize(diskGb) : t("common.loading");
   const storageSegments: StorageSegment[] = [
-    ...(metrics.modelsDisk
+    ...(metrics.modelsDisk && modelsDiskGb === 0
       ? []
       : [
           {

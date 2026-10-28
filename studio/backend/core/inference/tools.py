@@ -12279,19 +12279,21 @@ DEEP_RESEARCH_TOOL = {
     "function": {
         "name": "deep_research",
         "description": (
-            "Start Deep Research on the user's question: a multi-step web investigation that "
-            "gathers current sources and writes a cited report, replacing your reply. The user "
-            "turned this on because they want researched answers, so call it for any question "
-            "about the world -- facts, events, laws, products, papers, prices, comparisons, "
-            "anything that may have changed since your training -- even when you think you know "
-            "the answer. Do not answer such questions from memory.\n"
-            "Do not call it for a message with no question in it, such as a hello or a thanks, or "
-            "for a request to write or transform text the user supplied.\n"
-            "If the topic is too vague to research well, do not call this yet: ask one short "
-            "clarifying question, then call it once the user has narrowed it down.\n"
-            "The question you pass is what gets researched, so make it specific and "
-            "self-contained: fold in what the conversation established rather than repeating "
-            "the user's words."
+            "Hand off the user's factual question or research request to Deep Research. This "
+            "workflow gathers current sources and writes a cited report that replaces your "
+            "reply. Call it before drafting an answer, outline, or report, even when you think "
+            "you know the answer. Do not use it only to look up individual details while "
+            "writing the report yourself.\n"
+            "Research requests include commands to investigate, compare, or write a report, "
+            "including detailed briefs in pasted text or attachments. They do not need to be "
+            "phrased as questions. A supplied research brief is not merely text to rewrite.\n"
+            "Do not call it for a hello, thanks, or a remark about you, or for a request only "
+            "to rewrite or transform supplied text without outside research. If the topic is "
+            "too vague to research well, ask one short clarifying question first.\n"
+            "Call once with a concise, self-contained question covering the whole request, "
+            "including its main topics and requested outputs. Summarize the brief in a few "
+            "sentences rather than copying it or answering it. Include relevant context from "
+            "the conversation so the research workflow can complete the report."
         ),
         "parameters": {
             "type": "object",
@@ -12299,8 +12301,9 @@ DEEP_RESEARCH_TOOL = {
                 "question": {
                     "type": "string",
                     "description": (
-                        "The specific, self-contained question to research. Not the user's raw "
-                        "message unless it already reads as one."
+                        "A concise, self-contained research brief in a few sentences: include the "
+                        "main topics and requested outputs, not just one detail to look up. "
+                        "Do not copy the full prompt or write the report in this argument."
                     ),
                 },
             },
@@ -15901,6 +15904,16 @@ def _window_context_tokens() -> int | None:
 
 def _dense_prefix_chars(text: str, token_budget: float) -> int:
     """Charges non-ASCII one token each: CJK runs 1.3-1.6 chars per token, so the share stays a share."""
+    # Escape-free ASCII costs 0.25 a char: the loop would stop at floor(budget * 4).
+    if (
+        type(text) is str
+        and type(token_budget) in (int, float)
+        and text.isascii()
+        and 0.0 <= token_budget < 2**50
+    ):
+        end = min(len(text), int(token_budget * 4))
+        if text.find("%", 0, end + 1) < 0:
+            return end
     spent = 0.0
     index = 0
     length = len(text)

@@ -2795,6 +2795,18 @@ class _SdState:
     def spawn_env(self) -> Optional[dict[str, str]]:
         return dict(self.child_env) or None
 
+    @property
+    def placed_ordinal(self) -> Optional[int]:
+        """Torch ordinal of ``physical_gpu_id``; without it card-sharing helpers (upsampler) split over all GPUs."""
+        if self.physical_gpu_id is None or self.off_torch_device is not None:
+            return None
+        try:
+            from utils.hardware import get_parent_visible_gpu_ids
+            visible = [int(i) for i in get_parent_visible_gpu_ids()]
+            return visible.index(int(self.physical_gpu_id))
+        except Exception:  # noqa: BLE001
+            return None
+
 
 def _offload_with_device_pin_impl(
     offload: tuple[str, ...] | list[str], binary: Optional[str], ordinal: Optional[int]

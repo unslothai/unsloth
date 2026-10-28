@@ -629,6 +629,37 @@ export const hi = {
     compactEmpty: "अभी कॉम्पैक्ट करने के लिए कुछ नहीं है",
     compactUnsupported: "कॉम्पैक्शन के लिए टूल सपोर्ट वाला GGUF या MLX मॉडल आवश्यक है",
   },
+  halloween: {
+    navLabel: "ट्रिक या ट्रीट…",
+    title: "ट्रिक या ट्रीट?!",
+    description:
+      "हमने Unsloth के लिए कुछ डरावनी चीज़ें तैयार की हैं, जो अक्टूबर के अंत तक रहेंगी।",
+    chooseTheme: "एक डरावनी थीम चुनें",
+    spookyGreetings: "डरावने अभिवादन",
+    spookyGreetingsDescription: "स्लॉथ नई चैट का स्वागत एक डर के साथ करता है।",
+    decorations: "मकड़ियाँ और चमगादड़",
+    decorationsDescription:
+      "हैलोवीन थीम पर कोनों में जाले, और कभी-कभी कोई मकड़ी या चमगादड़।",
+    surprise: "ट्रिक या ट्रीट!",
+    surpriseDescription: "स्लॉथ को आपके लिए थीम चुनने दें।",
+    themesTitle: "डरावनी थीम",
+    back: "वापस",
+    footer: "Unsloth 1 नवंबर की आधी रात को सामान्य हो जाएगा।",
+    removeNow: "अभी हटाएँ",
+    hideFromSidebar: "साइडबार से छिपाएं",
+    greeting: {
+      pumpkins: "कद्दू तराशे जा चुके हैं। आगे क्या?",
+      brewing: "चलो, कुछ जादू घोलें",
+      trickOrTreat: "ट्रिक या ट्रीट?",
+      manor: "हवेली में आपका स्वागत है",
+      manorName: "{name}, हवेली में आपका स्वागत है",
+      happyHalloween: "हैप्पी हैलोवीन",
+      happyHalloweenName: "हैप्पी हैलोवीन, {name}",
+      spirits: "आत्माएँ सुन रही हैं…",
+      mysteries: "आज रात हम कौन-से रहस्य खोलेंगे?",
+      conjure: "मैं आपके लिए क्या जादू करूँ?",
+    },
+  },
   welcome: {
     goodToSeeYou: "आपको देखकर अच्छा लगा",
     goodToSeeYouName: "{name}, आपको देखकर अच्छा लगा",
@@ -1423,7 +1454,7 @@ export const hi = {
       installingRuntime: "इंस्टॉल हो रहा है…",
       installRuntimeFailed: "रनटाइम इंस्टॉल नहीं हो सका।",
       installRuntimeError: "रनटाइम इंस्टॉल शुरू नहीं हो सका।",
-      unsupportedArch: "Windows सैंडबॉक्स (MXC) केवल x64 Windows पर चलता है, इसलिए यह इस PC पर उपलब्ध नहीं है।",
+      unsupportedArch: "Windows सैंडबॉक्स (MXC) केवल x64 और ARM64 Windows पर चलता है, इसलिए यह इस PC पर उपलब्ध नहीं है।",
       builtinNeedsUpdate:
         "Windows के बिल्ट-इन कंटेनर को बिल्ड {required} या नया चाहिए, और यह PC {current} चला रहा है। इसे बिना एडमिनिस्ट्रेटर चरण के उपयोग करने के लिए नवीनतम Windows अपडेट इंस्टॉल करें, या नीचे फ़ॉलबैक सैंडबॉक्स चालू करें।",
       unsupportedBuild: "Windows सैंडबॉक्स (MXC) के लिए Windows 11 24H2 (बिल्ड 26100) या नया चाहिए, इसलिए यह इस PC पर उपलब्ध नहीं है।",
@@ -2192,6 +2223,12 @@ export const hi = {
         classic: "क्लासिक",
         minimal: "मिनिमल",
         moreThemes: "और थीम",
+        halloween: "हैलोवीन",
+      },
+      trickOrTreat: {
+        label: "ट्रिक या ट्रीट",
+        description:
+          "1 नवंबर तक हैलोवीन थीम और डरावने अभिवादन।",
       },
       custom: {
         chatWidth: {
@@ -2513,6 +2550,10 @@ export const hi = {
           hideDetailsAction: "विवरण छिपाएँ",
           clearAction: "कैश साफ़ करें",
           clearOneAction: "साफ़ करें",
+          showFolders: "फ़ोल्डर दिखाएँ",
+          hideFolders: "फ़ोल्डर छिपाएँ",
+          previousLocations: "इसमें पिछले स्थान शामिल हैं। मुख्य साफ़ करें बटन मौजूदा कैश फ़ोल्डर पर लागू होता है। मॉडल बटन केवल चुनी गई कॉपी साफ़ करते हैं।",
+          clearModelDescription: "यह केवल इस कैश की गई कॉपी को हटाता है। ज़रूरत पड़ने पर इसे फिर से डाउनलोड किया जाएगा।",
           clearingAction: "साफ़ किया जा रहा है...",
           confirmTitle: "कैश की गई फ़ाइलें साफ़ करें?",
           confirmDescription: "इससे लगभग {size} खाली होगा।",
@@ -4214,7 +4255,6 @@ export const hi = {
       terminalStart: "> unsloth ट्रेनिंग शुरू हो रही है...",
       preparingResources: "> मॉडल और डेटासेट तैयार हो रहे हैं...",
       gettingReady: "> हम आपके रन के लिए सब कुछ तैयार कर रहे हैं...",
-      waitingForFirstStep: "> {message} | पहले स्टेप की प्रतीक्षा में... ({step})",
       resumingTraining: "ट्रेनिंग फिर से शुरू हो रही है...",
       startingTraining: "ट्रेनिंग शुरू हो रही है...",
       dataset: "डेटासेट",

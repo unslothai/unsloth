@@ -872,8 +872,10 @@ class UnslothTrainer:
     def _create_progress_callback(self):
         """Create a TrainerCallback for progress tracking. Reused by all training branches."""
         from transformers import TrainerCallback
+        from core.training.startup_progress import TrainingStartupProgress
 
         trainer_ref = self
+        startup = TrainingStartupProgress()
 
         class _ProgressCallback(TrainerCallback):
             # Throttled republish: without HF's tqdm bar a long eval looks stalled after the last step log.
@@ -884,10 +886,17 @@ class UnslothTrainer:
                 trainer_ref.session_start_step = state.global_step
                 if state.global_step > 0:
                     trainer_ref.training_start_time = time.time()
-                # on_log reports an empty status, else the UI stays on "Starting training...".
                 if trainer_ref.should_stop:
                     return
-                trainer_ref._update_progress(status_message = "Training in progress...")
+                trainer_ref._update_progress(status_message = startup.begin(args, state))
+
+            def on_step_begin(self, args, state, control, **kwargs):
+                if not trainer_ref.should_stop and (message := startup.step_begin()):
+                    trainer_ref._update_progress(status_message = message)
+
+            def on_substep_end(self, args, state, control, **kwargs):
+                if not trainer_ref.should_stop and (message := startup.substep_end()):
+                    trainer_ref._update_progress(status_message = message)
 
             def on_evaluate(self, args, state, control, **kwargs):
                 cls = type(self)
@@ -983,7 +992,7 @@ class UnslothTrainer:
                     eval_loss = logs.get("eval_loss", None),
                     is_run_summary = is_run_summary,
                     offload = trainer_ref._offload_snapshot(),
-                    status_message = "",
+                    status_message = "" if trainer_ref.should_stop else startup.log(logs) or "",
                 )
 
             def on_epoch_end(self, args, state, control, **kwargs):
@@ -996,6 +1005,8 @@ class UnslothTrainer:
                     logger.info(f"Stop detected at step {state.global_step}\n")
                     control.should_training_stop = True
                     return control
+                if message := startup.step_end(state):
+                    trainer_ref._update_progress(status_message = message)
 
         return _ProgressCallback()
 
@@ -1671,7 +1682,8 @@ class UnslothTrainer:
                     f"Access denied for '{model_name}'. This model is gated or private. "
                     f"Please add a Hugging Face token with access and try again."
                 )
-            logger.error(f"Error loading model: {e}")
+            # The traceback names the failing call; str(e) alone (e.g. "[WinError 6]") does not (#15583).
+            logger.error(f"Error loading model: {e}", exc_info = True)
             self._update_progress(error = error_msg, is_training = False)
             return False
         except Exception as e:
@@ -1693,7 +1705,7 @@ class UnslothTrainer:
                     f"Access denied for '{model_name}'. This model is gated or private. "
                     f"Please add a Hugging Face token with access and try again."
                 )
-            logger.error(f"Error loading model: {e}")
+            logger.error(f"Error loading model: {e}", exc_info = True)
             self._update_progress(error = error_msg, is_training = False)
             return False
         finally:
@@ -2482,14 +2494,16 @@ class UnslothTrainer:
                     codes = snac_model.encode(waveform)
 
                 all_codes = []
+                # One host copy per level: .item() is a device sync per scalar on CUDA.
+                c0, c1, c2 = (level[0].tolist() for level in codes[:3])
                 for i in range(codes[0].shape[1]):
-                    all_codes.append(codes[0][0][i].item() + AUDIO_OFFSET)
-                    all_codes.append(codes[1][0][2 * i].item() + AUDIO_OFFSET + 4096)
-                    all_codes.append(codes[2][0][4 * i].item() + AUDIO_OFFSET + (2 * 4096))
-                    all_codes.append(codes[2][0][(4 * i) + 1].item() + AUDIO_OFFSET + (3 * 4096))
-                    all_codes.append(codes[1][0][(2 * i) + 1].item() + AUDIO_OFFSET + (4 * 4096))
-                    all_codes.append(codes[2][0][(4 * i) + 2].item() + AUDIO_OFFSET + (5 * 4096))
-                    all_codes.append(codes[2][0][(4 * i) + 3].item() + AUDIO_OFFSET + (6 * 4096))
+                    all_codes.append(c0[i] + AUDIO_OFFSET)
+                    all_codes.append(c1[2 * i] + AUDIO_OFFSET + 4096)
+                    all_codes.append(c2[4 * i] + AUDIO_OFFSET + (2 * 4096))
+                    all_codes.append(c2[(4 * i) + 1] + AUDIO_OFFSET + (3 * 4096))
+                    all_codes.append(c1[(2 * i) + 1] + AUDIO_OFFSET + (4 * 4096))
+                    all_codes.append(c2[(4 * i) + 2] + AUDIO_OFFSET + (5 * 4096))
+                    all_codes.append(c2[(4 * i) + 3] + AUDIO_OFFSET + (6 * 4096))
 
                 if len(all_codes) == 0:
                     skipped += 1

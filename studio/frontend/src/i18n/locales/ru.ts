@@ -629,6 +629,37 @@ export const ru = {
     compactEmpty: "Пока нечего сжимать",
     compactUnsupported: "Для сжатия нужна модель GGUF или MLX с поддержкой инструментов",
   },
+  halloween: {
+    navLabel: "Сладость или гадость…",
+    title: "Сладость или гадость?!",
+    description:
+      "Мы приготовили для Unsloth немного страшилок до конца октября.",
+    chooseTheme: "Выберите жуткую тему",
+    spookyGreetings: "Жуткие приветствия",
+    spookyGreetingsDescription: "Ленивец встречает новые чаты страшилкой.",
+    decorations: "Пауки и летучие мыши",
+    decorationsDescription:
+      "Паутина по углам, а иногда паук или летучая мышь с темой Хэллоуина.",
+    surprise: "Сладость или гадость!",
+    surpriseDescription: "Пусть ленивец выберет тему за вас.",
+    themesTitle: "Жуткие темы",
+    back: "Назад",
+    footer: "Unsloth вернётся к обычному виду в полночь 1 ноября.",
+    removeNow: "Убрать сейчас",
+    hideFromSidebar: "Скрыть с боковой панели",
+    greeting: {
+      pumpkins: "Тыквы вырезаны. Что дальше?",
+      brewing: "Пора варить зелье",
+      trickOrTreat: "Сладость или гадость?",
+      manor: "Добро пожаловать в особняк",
+      manorName: "Добро пожаловать в особняк, {name}",
+      happyHalloween: "С Хэллоуином",
+      happyHalloweenName: "С Хэллоуином, {name}",
+      spirits: "Духи слушают…",
+      mysteries: "Какие тайны мы раскроем этой ночью?",
+      conjure: "Что мне наколдовать для вас?",
+    },
+  },
   welcome: {
     goodToSeeYou: "Рады вас видеть",
     goodToSeeYouName: "Рады вас видеть, {name}",
@@ -1422,7 +1453,7 @@ export const ru = {
       installingRuntime: "Установка…",
       installRuntimeFailed: "Не удалось установить среду.",
       installRuntimeError: "Не удалось начать установку среды.",
-      unsupportedArch: "Песочница Windows (MXC) работает только на Windows x64, поэтому на этом ПК она недоступна.",
+      unsupportedArch: "Песочница Windows (MXC) работает только на Windows x64 и ARM64, поэтому на этом ПК она недоступна.",
       builtinNeedsUpdate:
         "Встроенному контейнеру Windows нужна сборка {required} или новее, а на этом ПК установлена {current}. Установите последнее обновление Windows, чтобы использовать его без шага администратора, или включите резервную песочницу ниже.",
       unsupportedBuild: "Песочнице Windows (MXC) нужна Windows 11 24H2 (сборка 26100) или новее, поэтому на этом ПК она недоступна.",
@@ -2196,6 +2227,12 @@ export const ru = {
         classic: "Классическая",
         minimal: "Минималистичная",
         moreThemes: "Другие темы",
+        halloween: "Хеллоуин",
+      },
+      trickOrTreat: {
+        label: "Сладость или гадость",
+        description:
+          "Темы Хэллоуина и жуткие приветствия до 1 ноября.",
       },
       custom: {
         chatWidth: {
@@ -2519,6 +2556,10 @@ export const ru = {
           hideDetailsAction: "Скрыть подробности",
           clearAction: "Очистить кеши",
           clearOneAction: "Очистить",
+          showFolders: "Показать папки",
+          hideFolders: "Скрыть папки",
+          previousLocations: "Включает прежние расположения. Основная кнопка «Очистить» затрагивает текущую папку кэша. Кнопки моделей очищают только выбранную копию.",
+          clearModelDescription: "Будет удалена только эта копия в кэше. При необходимости она будет загружена снова.",
           clearingAction: "Очистка...",
           confirmTitle: "Очистить кешированные файлы?",
           confirmDescription: "Это освободит примерно {size}.",
@@ -4235,7 +4276,6 @@ export const ru = {
       terminalStart: "> обучение unsloth начинается...",
       preparingResources: "> Подготовка модели и датасета...",
       gettingReady: "> Мы готовим всё для вашего запуска...",
-      waitingForFirstStep: "> {message} | ожидание первого шага... ({step})",
       resumingTraining: "Продолжение обучения...",
       startingTraining: "начало обучения...",
       dataset: "Датасет",

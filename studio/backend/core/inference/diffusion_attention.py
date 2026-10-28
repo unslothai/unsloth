@@ -1831,7 +1831,6 @@ def _cudnn_attention_supported() -> bool:
 _SAGE_PROBE_CACHE: dict[tuple[str, str, int], str] = {}
 
 _SAGE_MAX_HEAD_DIM = 128  # sageattn raises above 128
-_SAGE_DTYPE_NAMES = ("float16", "bfloat16", "fp16", "bf16", "half")
 # SageAttention 2 lands near cos 0.9999 / rel-L1 0.01-0.03 vs fp32 here; a wrong-arch or broken build is far outside.
 _SAGE_MIN_COSINE = 0.99
 _SAGE_MAX_REL_L1 = 0.08

@@ -588,13 +588,6 @@ def _public_key(repo_id: str, repo_type: str) -> tuple[str, str, str]:
     return (hf_constants.ENDPOINT.rstrip("/"), repo_type, repo_id.lower())
 
 
-def _public_verdict(repo_id: str, repo_type: str) -> bool | None:
-    key = _public_key(repo_id, repo_type)
-    with _public_lock:
-        cached = _public_repos.get(key)
-    return cached[1] if cached is not None and cached[0] > time.monotonic() else None
-
-
 def _source_speaks_for_the_cache() -> bool:
     from utils.hub_settings import MODELSCOPE, active_source
     return active_source() != MODELSCOPE

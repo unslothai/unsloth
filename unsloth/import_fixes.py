@@ -7700,7 +7700,8 @@ def _sdpa_grad_layout_function():
 
         @staticmethod
         def forward(out):
-            return out.view_as(out)
+            # Not a view: view outputs reject in-place consumers; Inductor drops the clone.
+            return out.clone()
 
         @staticmethod
         def setup_context(ctx, inputs, output):

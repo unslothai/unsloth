@@ -8,6 +8,8 @@ import { sessionAccount, useLoginMode } from "../account-session";
 import { fetchAuthStatus, loginFromForm, loginWithPassword, setLoginMode, type TokenResponse } from "../login-client";
 import { Button } from "@/components/ui/button";
 import { MascotImg } from "@/components/mascot-img";
+import { useSpookyGreetings } from "@/features/halloween/halloween-store";
+import { pickSpookySloth } from "@/features/halloween/spooky-greetings";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Link, useNavigate } from "@tanstack/react-router";
@@ -76,6 +78,9 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
     password: string;
     token: TokenResponse;
   } | null>(null);
+  const spooky = useSpookyGreetings();
+  const [halloweenSloth] = useState(pickSpookySloth);
+  const spookySloth = isLoginMode && spooky ? halloweenSloth : null;
 
   useEffect(() => {
     if (deadlineAt === null) {
@@ -359,18 +364,23 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   if (statusLoading && initialized === null && error === null) return null;
 
   return (
-    <div className="w-full max-w-sm space-y-6">
-      <div className="space-y-1.5 text-center">
+    <div className="w-full space-y-7">
+      <div className="flex flex-col items-center gap-1.5 text-center">
         <MascotImg
-          src="Sloth emojis/large sloth wave.png"
+          src={
+            spookySloth
+              ? `Sloth emojis/${spookySloth.sloth}`
+              : "Sloth emojis/large sloth wave.png"
+          }
           className="mx-auto mb-2 h-20 w-20 object-contain"
+          style={spookySloth?.enlarge ? { scale: "1.15" } : undefined}
         />
-        <h2 className="text-2xl font-semibold text-foreground">{title}</h2>
-        <p className="text-muted-foreground">{subtitle}</p>
+        <h2 className="font-semibold text-ui-28 text-foreground leading-tight tracking-[-0.02em]">{title}</h2>
+        <p className="text-muted-foreground text-sm">{subtitle}</p>
       </div>
       {/* Not a live region: it re-renders every second, so it would be read aloud on every tick. */}
       {deadlineAt !== null && (
-        <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-center text-sm text-amber-600">
+        <p className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-center text-sm text-amber-600">
           {hasExpired(deadlineAt - nowMs) ? (
             <>
               This instance is shutting down: it was reachable on the network
@@ -386,7 +396,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
           )}
         </p>
       )}
-      <form className="space-y-5" onSubmit={handleSubmit}>
+      <form className="space-y-4" onSubmit={handleSubmit}>
         {passwordManagerUsername && (
           <input
             type="text"
@@ -405,6 +415,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
             <Input
               id="username"
               name="username"
+              className="h-11 px-4"
               autoComplete="username"
               autoCapitalize="none"
               spellCheck={false}
@@ -412,7 +423,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
               onChange={(event) => setEnteredUsername(event.target.value)}
               required
             />
-            <p id="setup-code-hint" className="text-sm text-muted-foreground">
+            <p id="setup-code-hint" className="text-muted-foreground text-xs leading-relaxed">
               First sign in? Paste the setup code your administrator gave you as the password.
             </p>
             <p className="text-sm text-muted-foreground">
@@ -428,7 +439,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
                 id="password"
                 aria-describedby={loginMode === "multi" ? "setup-code-hint" : undefined}
                 type={showPassword ? "text" : "password"}
-                className="pr-10"
+                className="h-11 pr-11 pl-4"
                 autoComplete="current-password"
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
@@ -439,7 +450,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
                 type="button"
                 variant="ghost"
                 size="icon"
-                className="absolute right-0 top-0 h-full px-3 text-muted-foreground hover:bg-transparent"
+                className="absolute top-1/2 right-1 size-9 -translate-y-1/2 rounded-full text-muted-foreground hover:bg-transparent hover:text-foreground"
                 onClick={() => setShowPassword((prev) => !prev)}
               >
                 {showPassword ? (
@@ -464,7 +475,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
                       changingFromSetupCode ? "current-setup-code-hint" : undefined
                     }
                     type={showPassword ? "text" : "password"}
-                    className="pr-10"
+                    className="h-11 pr-11 pl-4"
                     autoComplete="current-password"
                     value={password}
                     onChange={(event) => setPassword(event.target.value)}
@@ -475,7 +486,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
                     type="button"
                     variant="ghost"
                     size="icon"
-                    className="absolute right-0 top-0 h-full px-3 text-muted-foreground hover:bg-transparent"
+                    className="absolute top-1/2 right-1 size-9 -translate-y-1/2 rounded-full text-muted-foreground hover:bg-transparent hover:text-foreground"
                     onClick={() => setShowPassword((prev) => !prev)}
                   >
                     {showPassword ? (
@@ -488,7 +499,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
                 {changingFromSetupCode && (
                   <p
                     id="current-setup-code-hint"
-                    className="text-sm text-muted-foreground"
+                    className="text-muted-foreground text-xs leading-relaxed"
                   >
                     Paste the setup code you just signed in with as the current password.
                   </p>
@@ -501,7 +512,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
                 <Input
                   id="new-password"
                   type={showNewPassword ? "text" : "password"}
-                  className="pr-10"
+                  className="h-11 pr-11 pl-4"
                   autoComplete="new-password"
                   value={newPassword}
                   onChange={(event) => setNewPassword(event.target.value)}
@@ -512,7 +523,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
                   type="button"
                   variant="ghost"
                   size="icon"
-                  className="absolute right-0 top-0 h-full px-3 text-muted-foreground hover:bg-transparent"
+                  className="absolute top-1/2 right-1 size-9 -translate-y-1/2 rounded-full text-muted-foreground hover:bg-transparent hover:text-foreground"
                   onClick={() => setShowNewPassword((prev) => !prev)}
                 >
                   {showNewPassword ? (
@@ -528,6 +539,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
               <Input
                 id="confirm-password"
                 type="password"
+                className="h-11 px-4"
                 autoComplete="new-password"
                 value={confirmPassword}
                 onChange={(event) => setConfirmPassword(event.target.value)}
@@ -562,9 +574,9 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
         )}
 
         <Button
-          variant="dark"
+          variant="primary"
           type="submit"
-          className="mx-auto flex w-fit"
+          className="mt-2 h-11 w-full bg-control-accent [font-family:var(--font-heading)] text-[0.9375rem] font-semibold tracking-[0.02em] text-control-accent-foreground hover:bg-control-accent/85"
           disabled={
             loading ||
             statusLoading ||
@@ -592,7 +604,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       {showSwitchLink && (
         <p className="text-center text-sm text-muted-foreground">
           {switchText}
-          <Link to={switchLinkTo} className="text-primary hover:underline">
+          <Link to={switchLinkTo} className="font-medium text-primary hover:underline">
             {switchLinkText}
           </Link>
         </p>

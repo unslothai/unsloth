@@ -682,6 +682,38 @@ export const en = {
     compactEmpty: "Nothing to compact yet",
     compactUnsupported: "Compaction requires a GGUF or MLX model with tool support",
   },
+  // The sidebar's October "Trick or treat" row, its dialog, and the spooky chat greetings.
+  halloween: {
+    navLabel: "Trick or treat…",
+    title: "Trick or Treat?!",
+    description:
+      "We’ve been brewing a few frights for Unsloth, here for the rest of October.",
+    chooseTheme: "Choose a frightful theme",
+    spookyGreetings: "Spooky greetings",
+    spookyGreetingsDescription: "The sloth greets new chats with a scare.",
+    decorations: "Spiders and bats",
+    decorationsDescription:
+      "Webs, plus the odd spider or bat.",
+    surprise: "Trick or treat!",
+    surpriseDescription: "Let the sloth pick a theme for you.",
+    themesTitle: "Frightful themes",
+    back: "Back",
+    footer: "Unsloth returns to normal at midnight on November 1.",
+    removeNow: "Remove now",
+    hideFromSidebar: "Hide from sidebar",
+    greeting: {
+      pumpkins: "The pumpkins are carved. What’s next?",
+      brewing: "Let’s get brewing",
+      trickOrTreat: "Trick or treat?",
+      manor: "Welcome to the manor",
+      manorName: "Welcome to the manor, {name}",
+      happyHalloween: "Happy Halloween",
+      happyHalloweenName: "Happy Halloween, {name}",
+      spirits: "The spirits are listening…",
+      mysteries: "What mysteries shall we uncover tonight?",
+      conjure: "What can I conjure up for you?",
+    },
+  },
   // The empty chat's greeting; {name} is the user's nickname or first name.
   welcome: {
     goodToSeeYou: "Good to see you",
@@ -1477,7 +1509,7 @@ export const en = {
       installingRuntime: "Installing…",
       installRuntimeFailed: "The runtime install failed.",
       installRuntimeError: "Could not start the runtime install.",
-      unsupportedArch: "The Windows sandbox (MXC) only runs on x64 Windows, so it is not available on this PC.",
+      unsupportedArch: "The Windows sandbox (MXC) only runs on x64 and ARM64 Windows, so it is not available on this PC.",
       builtinNeedsUpdate: "Windows' built-in container needs build {required} or newer, and this PC runs {current}. Install the latest Windows update to use it without an administrator step, or turn on the fallback below.",
       unsupportedBuild: "The Windows sandbox (MXC) needs Windows 11 24H2 (build 26100) or newer, so it is not available on this PC.",
       permissionLabel: "Tool permissions",
@@ -2249,6 +2281,12 @@ export const en = {
         classic: "Classic",
         minimal: "Minimal",
         moreThemes: "More themes",
+        halloween: "Halloween",
+      },
+      trickOrTreat: {
+        label: "Trick or treat",
+        description:
+          "Halloween themes and spooky greetings, until November 1.",
       },
       custom: {
         chatWidth: {
@@ -2581,6 +2619,10 @@ export const en = {
           detailsAction: "Details",
           recheckAction: "Recheck",
           hideDetailsAction: "Hide details",
+          showFolders: "Show folders",
+          hideFolders: "Hide folders",
+          previousLocations: "Includes previous locations. The main Clear button affects the current cache folder. Model buttons clear only the selected copy.",
+          clearModelDescription: "This removes only this cached copy. It will be downloaded again when needed.",
           clearAction: "Clear caches",
           clearOneAction: "Clear",
           clearingAction: "Clearing...",
@@ -3926,11 +3968,11 @@ export const en = {
       attentionModules: "Attention modules",
       mlpModules: "MLP modules",
       targetModules: "Target Modules",
-      enableLora: "Enable LoRA",
+      enableLora: "LoRA",
       trainWithLora: "Train with LoRA",
-      stableRank: "Stable Rank",
-      memoryEfficient: "Memory Efficient",
-      weightDecomposed: "Weight-Decomposed",
+      stableRank: "Rank-stabilized LoRA",
+      memoryEfficient: "SVD-initialized LoRA",
+      weightDecomposed: "LoRA with multipliers",
       notSupportedAppleSilicon: "Not supported on Apple Silicon",
       doraNeedsVisionLayersOff: "Turn off vision layer training to use DoRA",
       optimization: "Optimization",
@@ -3941,7 +3983,7 @@ export const en = {
         "Optimization algorithm. 8-bit variants reduce memory usage. Fused is recommended for vision models.",
       optimizerTooltipMlx:
         "Optimization algorithm. AdamW is the default. Lion uses less memory but usually needs a lower learning rate.",
-      lrScheduler: "LR scheduler",
+      lrScheduler: "LR Scheduler",
       lrSchedulerTooltip:
         "How the learning rate changes over training. Linear decays steadily; cosine decays in a curve.",
       optimizerOptions: {
@@ -3958,7 +4000,7 @@ export const en = {
       },
       batchSize: "Batch Size",
       batchSizeTooltip: "Samples processed per step. Higher uses more VRAM.",
-      gradAccum: "Grad Accum",
+      gradAccum: "Grad Accum Steps",
       gradAccumTooltip: "Simulates larger batch sizes without extra VRAM.",
       weightDecay: "Weight Decay",
       weightDecayTooltip: "L2 regularization to prevent overfitting.",
@@ -4002,7 +4044,7 @@ export const en = {
       offloadPanelSweepNote: "The moving window shows the order layers are fetched in, slowed down to be visible; the numbers are measured on the last step.",
       offloadPanelCard: "GPU {index}",
       offloadPanelCardUnknown: "Unknown card",
-      gradCheckpoint: "Grad Checkpoint",
+      gradCheckpoint: "Grad Checkpointing",
       gradCheckpointTooltip:
         "Trade compute for memory by recomputing activations.",
       none: "None",
@@ -4256,7 +4298,6 @@ export const en = {
       terminalStart: "> unsloth training starts...",
       preparingResources: "> Preparing model and dataset...",
       gettingReady: "> We are getting everything ready for your run...",
-      waitingForFirstStep: "> {message} | waiting for first step... ({step})",
       resumingTraining: "Resuming training...",
       startingTraining: "starting training...",
       dataset: "Dataset",

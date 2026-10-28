@@ -196,10 +196,24 @@ def _available_host_bytes() -> Optional[int]:
     return None
 
 
+_DTYPE_SCALE_VS_BF16 = {"float32": 2.0, "float": 2.0, "float64": 4.0, "double": 4.0}
+
+
+def _dense_scale_vs_bf16(dtype: Any) -> float:
+    return _DTYPE_SCALE_VS_BF16.get(
+        str(dtype or "bfloat16").replace("torch.", "").strip().lower(), 1.0
+    )
+
+
 def _require_room_for_dense(config: dict, exc: Exception) -> None:
     """The load was planned at the hosted file's size: refuse the dense fallback when free memory cannot hold the
-    dense encoder, rather than let the OS kill the process mid-read (on Apple Silicon the same pool as the DiT)."""
-    need = float(config.get("dense_te_gb") or 0.0) * 1000**3
+    dense encoder, rather than let the OS kill the process mid-read (on Apple Silicon the same pool as the DiT).
+    ``dense_te_gb`` is bf16; a float32 load (fp16 promoted without bf16) needs twice that."""
+    need = (
+        float(config.get("dense_te_gb") or 0.0)
+        * 1000**3
+        * _dense_scale_vs_bf16(config.get("dtype"))
+    )
     free = _available_host_bytes()
     if need and free is not None and free < need:
         raise RuntimeError(

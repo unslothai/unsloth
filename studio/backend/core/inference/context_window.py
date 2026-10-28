@@ -412,16 +412,6 @@ _ARG_COMPACTION_AGGREGATE_LEAF_FLOOR = 256
 _ARG_COMPACTION_TOTAL_FLOOR_CHARS = 1024
 
 
-def _largest_leaf(value: Any) -> int:
-    if isinstance(value, str):
-        return len(value)
-    if isinstance(value, dict):
-        return max((_largest_leaf(item) for item in value.values()), default = 0)
-    if isinstance(value, list):
-        return max((_largest_leaf(item) for item in value), default = 0)
-    return 0
-
-
 def _total_leaves(value: Any) -> int:
     if isinstance(value, str):
         return len(value)
