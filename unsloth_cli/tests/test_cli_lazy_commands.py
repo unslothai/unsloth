@@ -7,8 +7,7 @@ Desktop runs `unsloth -h` as its health probe, so help, version and completion m
 importing and building every command module: a broken module has to fail them exactly as
 before. `unsloth studio run`, which Desktop starts the backend with, must not import train,
 the pydantic config, start, mcp, chat, inference, eval, export or doctor. A library import
-stays eager too. The table, used for help only when a command is still pending, must render
-exactly what the loaded commands render.
+stays eager too.
 """
 
 from __future__ import annotations
@@ -177,46 +176,6 @@ def test_a_named_command_loads_only_its_module():
     assert "unsloth_cli.commands.start" not in loaded
 
 
-def _render_help(group, width: int) -> str:
-    ctx = group.make_context("unsloth", [], resilient_parsing = True, terminal_width = width)
-    ctx.max_content_width = width
-    return group.get_help(ctx)
-
-
-@pytest.mark.parametrize("width", [40, 80, 200])
-@pytest.mark.parametrize("rich_help", [True, False])
-def test_table_renders_what_the_loaded_commands_render(monkeypatch, width, rich_help, lazy_group):
-    monkeypatch.setenv("COLUMNS", str(width))
-    if not rich_help:
-        monkeypatch.setattr(typer.core, "HAS_RICH", False)
-    group = lazy_group
-    from_table = _render_help(group, width)
-    assert any(group.commands.pending(name) for name in unsloth_cli._LAZY_COMMANDS)
-    for name in list(group.commands):
-        group.commands[name]
-    assert not any(group.commands.pending(name) for name in group.commands)
-    assert _render_help(group, width) == from_table
-
-
-def test_table_rows_match_the_loaded_commands(lazy_group):
-    group = lazy_group
-    ctx = group.make_context("unsloth", [], resilient_parsing = True)
-    group._listing += 1
-    stubs = {name: group.get_command(ctx, name) for name in unsloth_cli._LAZY_COMMANDS}
-    group._listing -= 1
-    for name, stub in stubs.items():
-        real = group.get_command(ctx, name)
-        assert real is not stub
-        assert real.name == stub.name == name
-        assert real.help == stub.help, name
-        assert real.short_help == stub.short_help, name
-        assert bool(real.hidden) == bool(stub.hidden), name
-        assert bool(real.deprecated) == bool(stub.deprecated), name
-        assert not getattr(real, "rich_help_panel", None), name
-        for limit in (10, 45, 80, 200):
-            assert real.get_short_help_str(limit) == stub.get_short_help_str(limit), name
-
-
 # What `unsloth -h` listed when every command module was imported up front.
 EAGER_ORDER = [
     "train",
@@ -244,16 +203,6 @@ def test_every_registered_command_has_a_fixed_position(lazy_group):
     assert names == [n for n in unsloth_cli._COMMAND_ORDER if n in names]
     kinds = [isinstance(group.commands[n], typer.core.TyperGroup) for n in names]
     assert kinds == sorted(kinds), "commands must precede sub-apps, as typer orders them"
-
-
-def test_completion_answers_from_the_table(lazy_group):
-    group = lazy_group
-    ctx = group.make_context("unsloth", [], resilient_parsing = True)
-    before = [(c.value, c.help) for c in group.shell_complete(ctx, "")]
-    assert any(group.commands.pending(name) for name in unsloth_cli._LAZY_COMMANDS)
-    for name in list(group.commands):
-        group.commands[name]
-    assert [(c.value, c.help) for c in group.shell_complete(ctx, "")] == before
 
 
 def test_former_module_attributes_still_resolve():
