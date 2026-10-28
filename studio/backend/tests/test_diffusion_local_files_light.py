@@ -17,6 +17,8 @@ def _probe(tmp_path, call: str) -> list:
     (tmp_path / "model.safetensors").write_bytes(b"")
     probe = (
         "import json, sys\n"
+        # cwd alone does not select this checkout under PYTHONSAFEPATH=1.
+        f"sys.path.insert(0, {str(_BACKEND)!r})\n"
         "from pathlib import Path\n"
         "from types import SimpleNamespace\n"
         f"d = Path({str(tmp_path)!r})\n"
@@ -28,6 +30,7 @@ def _probe(tmp_path, call: str) -> list:
         capture_output = True,
         text = True,
         cwd = str(_BACKEND),
+        timeout = 300,
     )
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout.strip().splitlines()[-1])
@@ -50,4 +53,31 @@ def test_catalog_classification_does_not_import_the_diffusion_stack(tmp_path):
         " display_name = d.name, id = str(d), path = str(d)))",
     )
     assert found is True
+    assert loaded is False
+
+
+_LOCAL_MODEL = (
+    "SimpleNamespace(model_id = None, display_name = 'flux1-dev', id = str(d), path = str(d),"
+    " model_format = 'safetensors', base_model = None)"
+)
+
+
+def test_classifying_a_local_image_checkpoint_does_not_import_the_diffusion_stack(tmp_path):
+    task, loaded = _probe(
+        tmp_path,
+        "__import__('hub.services.models.catalog_classification', fromlist = ['_'])"
+        f"._local_model_task({_LOCAL_MODEL})",
+    )
+    assert task == "text-to-image"
+    assert loaded is False
+
+
+def test_classifying_a_cached_non_video_repo_does_not_import_the_diffusion_stack(tmp_path):
+    task, loaded = _probe(
+        tmp_path,
+        "__import__('hub.services.models.catalog_classification', fromlist = ['_'])"
+        "._cached_repo_task(SimpleNamespace(repo_id = 'unsloth/Llama-3.2-1B-Instruct',"
+        " revisions = ()), None)",
+    )
+    assert task is None
     assert loaded is False

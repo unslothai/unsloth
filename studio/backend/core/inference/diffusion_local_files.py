@@ -19,6 +19,7 @@ def resolve_local_single_file(model_path: str) -> Optional[str]:
             (root / index).is_file() for index in ("model_index.json", FLUX3_INDEX)
         ):
             return None
+        # A PEFT adapter folder is not a base checkpoint; skip it so validation 400s before eviction
         if (root / "adapter_config.json").is_file():
             return None
 
