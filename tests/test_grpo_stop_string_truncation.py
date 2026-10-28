@@ -52,3 +52,5 @@ def test_only_length_exhausted_completions_without_eos_are_truncated(name):
         [5] * 40 + [EOS],
     ]
     assert _is_truncated(name, transform, completions, 128) == [False, True, False, False, False]
+    # max_completion_length=None is valid TRL config: fall back to the EOS/pad check alone.
+    assert _is_truncated(name, transform, completions, None) == [True, True, False, False, False]
