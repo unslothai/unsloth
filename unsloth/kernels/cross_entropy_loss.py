@@ -158,8 +158,7 @@ def _chunked_evict_policy(device):
 # A100 at Gemma 262144 was mixed across torch versions, so larger vocabs keep the default.
 # B200: 8192-wide chunks at 4 warps run 1.5-1.9x faster than one 65536-wide chunk at 32 warps
 # (128256 / 151936 / 262144 vocabs, bf16), since each program then needs a fraction of the registers.
-# sm120 (measured on RTX PRO 6000): the same 8192 / 4 config runs the chunked forward 1.09-1.41x faster
-# (128256 / 151936 / 262144 vocabs, bf16 and fp16, torch 2.10 and 2.14); 16K and 32K chunks tie with it.
+# sm120 (RTX PRO 6000): the same 8192 / 4 config is 1.09-1.41x faster; 16K and 32K chunks tie with it.
 _CHUNKED_FORWARD_CONFIGS = {
     (7, 5): (16384, 8, None),
     (8, 0): (16384, 8, 163840),
