@@ -1027,7 +1027,6 @@ exit 1
         assert_eq!(calls.matches("-h\n").count(), 1);
         assert_eq!(calls.matches("studio desktop-capabilities --json\n").count(), 1);
 
-        // The answer was cached: the next preflight runs `-h` alone.
         fs::write(bin.with_extension("calls"), "").unwrap();
         fs::write(bin.with_extension("cap_started"), "").unwrap();
         assert!(matches!(
@@ -1079,7 +1078,6 @@ exit 1
             "cli_unusable"
         );
 
-        // That answer was not cached.
         fs::remove_file(&modeh).unwrap();
         fs::write(&calls, "").unwrap();
         assert!(matches!(
@@ -1091,7 +1089,6 @@ exit 1
             .contains("studio desktop-capabilities --json\n"));
         remove_managed_capability_cache();
 
-        // Neither answers: `-h` still names it.
         fs::write(&modeh, "broken").unwrap();
         fs::write(&modecap, "broken").unwrap();
         assert_eq!(
@@ -1099,7 +1096,6 @@ exit 1
             "cli_unusable"
         );
 
-        // Only the capability probe fails.
         fs::remove_file(&modeh).unwrap();
         assert_eq!(
             reason_of(probe_managed_bin(bin.clone()).await),
