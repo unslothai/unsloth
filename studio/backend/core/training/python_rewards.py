@@ -287,8 +287,6 @@ class RewardWorker:
         self._workdir = tempfile.mkdtemp(prefix = "unsloth-rewards-")
         Path(self._workdir, "alive").touch()
         shutil.copyfile(_WORKER_SOURCE, os.path.join(self._workdir, "worker.py"))
-        with open(os.path.join(self._workdir, "rewards.json"), "w", encoding = "utf-8") as f:
-            json.dump({"specs": self.specs, "unsloth_helpers": _unsloth_helpers_path()}, f)
         global _reward_as_bytes
         try:
             from utils import sandbox_memory_limit
@@ -322,6 +320,11 @@ class RewardWorker:
                     popen_kwargs["pass_fds"] = tuple(self._prepared.pass_fds)
             self._proc = os_sandbox.spawn_prepared_launch(self._prepared, **popen_kwargs)
             self._job = _windows_job(self._proc)
+            # Only now: the worker waits for this before it runs any reward code.
+            _worker_io.put(
+                os.path.join(self._workdir, "rewards.json"),
+                {"specs": self.specs, "unsloth_helpers": _unsloth_helpers_path()},
+            )
             record = self._prepared.execution_record
             self.isolation = {
                 "backend": self._prepared.backend,
@@ -407,11 +410,15 @@ class RewardWorker:
         proc, self._proc = self._proc, None
         job, self._job = self._job, None
         if proc is not None and self._workdir:
-            try:
-                Path(self._workdir, "stop").touch()
-                proc.wait(timeout = 5)
-            except Exception:  # noqa: BLE001
+            if os.name == "nt" and job is None:
+                # No job: taskkill /T only reaches a reward's children while the worker lives.
                 _kill_tree(proc)
+            else:
+                try:
+                    Path(self._workdir, "stop").touch()
+                    proc.wait(timeout = 5)
+                except Exception:  # noqa: BLE001
+                    _kill_tree(proc)
             _kill_group(proc, job)
         elif job is not None:
             job.close()
