@@ -373,6 +373,26 @@ def _isolate_studio_home(_studio_home_root, monkeypatch):
             monkeypatch.setattr(module, "_schema_ready", set())
 
 
+def _drain_sandbox_movers(timeout: float = 30.0) -> None:
+    import threading
+
+    from .thread_drain import join_when_started
+    for thread in threading.enumerate():
+        if thread.name == "sandbox-migrate" and not join_when_started(thread, timeout = timeout):
+            raise RuntimeError("a background sandbox migration did not finish within 30s")
+
+
+@pytest.fixture(autouse = True)
+def _no_sandbox_mover_outlives_its_test(monkeypatch):
+    # get_sandbox_workdir starts a background mover that reads the legacy root from HOME when it gets
+    # scheduled, not when it starts: one left running moved the next test's legacy folder into the
+    # previous test's root. Requesting monkeypatch drains it before HOME is put back, so a late mover
+    # never reads the real home either.
+    _drain_sandbox_movers()
+    yield
+    _drain_sandbox_movers()
+
+
 def pytest_configure(config):
     config.addinivalue_line(
         "markers",
