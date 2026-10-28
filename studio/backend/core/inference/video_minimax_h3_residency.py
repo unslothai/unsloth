@@ -858,6 +858,8 @@ def install_h3_stream_prefetch(
                 group_payload_bytes(top) if top is not None else 0,
                 [group_payload_bytes(g) for g in blocks],
             )
+            # a streamed top-level group runs for the whole forward, so only keeping it hides its upload
+            prefetcher.keep_first = h3_stream_carry_enabled()
             # end() puts groups copied ahead but never run back on the host copy; kick() queues copies
             for name in ("end", "kick"):
                 setattr(prefetcher, name, _outside_inference_mode(getattr(prefetcher, name)))

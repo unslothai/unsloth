@@ -508,6 +508,12 @@ class GroupPrefetcher:
         carried = getattr(self, "carried", None)
         if carried:
             carried.discard(gid)
+        if gid in self.ready and self._keeps_for_next(gid):
+            # the next forward runs it first: re-uploading the same weights would only wait on the copy
+            self.__dict__.setdefault("carried", set()).add(gid)
+            self.stats["kept"] = self.stats.get("kept", 0) + 1
+            self._fill()
+            return
         if gid in self.ready:
             self._release(group, self.ready.pop(gid))
         else:
@@ -585,6 +591,20 @@ class GroupPrefetcher:
             ahead += 1
         if ahead < self.depth and self.pos >= len(self.order) and self.may_carry():
             self._carry(ahead)
+
+    def _keeps_for_next(self, gid: int) -> bool:
+        """``keep_first``: the group that opens the order and closes the forward (a top-level group) stays on the
+        device into the next forward, which needs it first; its footprint is the one that forward starts with."""
+        order = self.order
+        return bool(
+            getattr(self, "keep_first", False)
+            and self.active
+            and self.on_order
+            and order
+            and self.pos >= len(order)
+            and order[0] == gid
+            and self.may_carry()
+        )
 
     def carry_usable(self) -> bool:
         return bool(

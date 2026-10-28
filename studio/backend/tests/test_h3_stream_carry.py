@@ -144,3 +144,67 @@ def test_kill_switch_render_carries_nothing(monkeypatch):
         for _ in range(4):
             _forward(pf, groups)
     assert not gate and not pf.stats.get("carried") and _copies(log) == list("tabcde") * 4
+
+
+def _top_forward(pf, top, blocks):
+    """A streamed top-level group: onloaded before the first block, offloaded after the last."""
+    pf.begin()
+    pf.onload(top)
+    for g in blocks:
+        pf.onload(g)
+        pf.offload(g)
+    pf.offload(top)
+    pf.end()
+
+
+def _top_render(keep, steps = 6, nbytes = 10):
+    pf, groups, log = _cpu_prefetcher("tabcde", nbytes = nbytes, depth = 2)
+    pf.nbytes[id(groups[0])] = 2 * nbytes
+    pf.window = 2 * nbytes + 2 * nbytes
+    pf.keep_first = keep
+    top, blocks = groups[0], groups[1:]
+    _top_forward(pf, top, blocks)
+    log.clear()
+    peak_before = pf.peak_inflight_bytes
+    pipe = _h3_pipe(pf)
+    done = video._scheduler_step_carry(pipe, steps, lambda n: None, lambda: False)
+    with op.cross_forward_render(pipe):
+        with video._scheduler_step_progress(pipe, lambda n: None, done):
+            for i in range(steps):
+                _top_forward(pf, top, blocks)
+                if i < steps - 1:
+                    pipe.scheduler.step()
+        decode_view = (dict(pf.ready), set(pf.carried), pf.inflight_bytes)
+        op.end_cross_forward(pipe)
+    return pf, log, decode_view, peak_before
+
+
+def test_streamed_top_group_stays_for_the_next_forward():
+    pf, log, (ready, carried, inflight), peak_before = _top_render(keep = True)
+    copies = _copies(log)
+    # uploaded once, kept through the render; blocks still stream every forward
+    assert copies.count("t") == 1 and all(copies.count(b) == 6 for b in "abcde")
+    assert pf.stats["kept"] == 5
+    assert not ready and not carried and inflight == 0
+    assert pf.peak_inflight_bytes <= max(peak_before, pf.window)
+
+
+def test_without_keep_the_top_group_reuploads_every_forward():
+    pf, log, (ready, carried, inflight), _ = _top_render(keep = False)
+    assert _copies(log).count("t") == 6 and not pf.stats.get("kept")
+    assert not ready and not carried and inflight == 0
+
+
+def test_kept_top_group_is_released_when_the_render_is_cut_short():
+    pf, groups, log = _cpu_prefetcher("tabcde", depth = 2)
+    pf.keep_first = True
+    top, blocks = groups[0], groups[1:]
+    _top_forward(pf, top, blocks)
+    pipe = _h3_pipe(pf)
+    with pytest.raises(RuntimeError):
+        with op.cross_forward_render(pipe):
+            pf.armed = True
+            _top_forward(pf, top, blocks)
+            assert id(top) in pf.ready and id(top) in pf.carried
+            raise RuntimeError("cancelled")
+    assert not pf.ready and not pf.carried and pf.inflight_bytes == 0
