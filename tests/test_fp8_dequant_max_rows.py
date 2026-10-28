@@ -117,3 +117,34 @@ def test_autograd_function_uses_the_same_gate(monkeypatch, shape, scaled):
         y = F8.FbgemmFp8Linear_matmul.apply(X, w, s, None, "scaled_mm")
     assert y.shape == (1, 32, N)
     assert calls == ["scaled_mm" if scaled else "dequant"]
+
+
+def test_scaled_mm_asks_for_bf16_when_activations_are_fp16():
+    """torch 2.10's rowwise CUTLASS kernel writes bf16 bits into an fp16 output when there is no
+    bias: fp16 calls request bf16 and cast back; bf16 / fp32 are unchanged."""
+    assert F8._scaled_mm_out_dtype(torch.float16) is torch.bfloat16
+    assert F8._scaled_mm_out_dtype(torch.bfloat16) is torch.bfloat16
+    assert F8._scaled_mm_out_dtype(torch.float32) is torch.float32
+
+
+def test_every_rowwise_scaled_mm_call_uses_the_out_dtype_helper():
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(F8))
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_scaled_mm"
+    ]
+    out = {}
+    for node in calls:
+        for kw in node.keywords:
+            if kw.arg == "out_dtype":
+                out[node.lineno] = ast.unparse(kw.value)
+    # The backend probe asks for bf16 directly; every activation-dtype call goes through the helper.
+    data_calls = {line: v for line, v in out.items() if v != "torch.bfloat16"}
+    assert len(data_calls) >= 2, out
+    assert all(v.startswith("_scaled_mm_out_dtype(") for v in data_calls.values()), out

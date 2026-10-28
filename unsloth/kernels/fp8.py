@@ -1981,6 +1981,13 @@ if hasattr(torch._dynamo, "assume_constant_result"):
     _fp8_rowwise_backend = torch._dynamo.assume_constant_result(_fp8_rowwise_backend)
 
 
+def _scaled_mm_out_dtype(dtype):
+    """Rowwise torch._scaled_mm output dtype for activations of `dtype`. torch 2.10's rowwise CUTLASS
+    kernel picks its output element type from the bias dtype, so without a bias an fp16 output buffer
+    receives bf16 bits (every value garbage); ask for bf16 and let the caller cast back."""
+    return torch.bfloat16 if dtype == torch.float16 else dtype
+
+
 def _parse_fp8_dequant_max_rows(value):
     try:
         rows = int(str(value).strip())
@@ -2098,11 +2105,12 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
                 weight.t(),
                 scale_a = x_scale,
                 scale_b = weight_scale.to(torch.float32).view(1, -1),
-                out_dtype = x.dtype,
+                out_dtype = _scaled_mm_out_dtype(x.dtype),
                 use_fast_accum = True,
             )
             output = output + bias if bias is not None else output
-            # FbgemmFp8Linear keeps its bias in float32; only cast when it promoted (a no-op .to() aliases).
+            # fp16 comes back as bf16 (_scaled_mm_out_dtype) and FbgemmFp8Linear keeps its bias in float32:
+            # cast only when the dtype differs (a no-op .to() aliases).
             if output.dtype != x.dtype:
                 output = output.to(x.dtype)
             output = output.reshape(output_shape)
@@ -2317,7 +2325,7 @@ def _fp8_rowwise_direct(X, weight, weight_scale, bias, route):
             scale_b = (
                 weight_scale if weight_scale.dtype == torch.float32 else weight_scale.float()
             ).view(1, -1),
-            out_dtype = X.dtype,
+            out_dtype = _scaled_mm_out_dtype(X.dtype),
             use_fast_accum = True,
         )
     else:
@@ -2337,7 +2345,8 @@ def _fp8_rowwise_direct(X, weight, weight_scale, bias, route):
         output = torch_matmul(X, W_deq.t())
     if bias is not None:
         output = output + bias
-    # FbgemmFp8Linear keeps its bias in float32; only cast when it promoted (a no-op .to() aliases).
+    # fp16 comes back as bf16 (_scaled_mm_out_dtype) and FbgemmFp8Linear keeps its bias in float32:
+    # cast only when the dtype differs (a no-op .to() aliases).
     if output.dtype != X.dtype:
         output = output.to(X.dtype)
     return output.reshape(output_shape) if route == "scaled_mm" else output
