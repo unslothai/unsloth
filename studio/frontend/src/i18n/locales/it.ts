@@ -694,6 +694,8 @@ export const it = {
       guidedTour: "Tour guidato",
       help: "Aiuto",
       logOut: "Esci",
+      logOutNeedsPassword: "Imposta una password in Impostazioni > Accesso remoto prima di uscire, così potrai accedere di nuovo.",
+      logOutFailed: "Impossibile uscire in modo sicuro. Riprova tra un momento.",
       shutdown: "Arresta",
     },
     commandPalette: {
@@ -839,6 +841,11 @@ export const it = {
   },
   settings: {
     accounts: {
+      signsInAs: "Accede come {username}",
+      signsInAsOwner: "Accede come {alias} o {username}",
+      signInName: "Il tuo nome di accesso",
+      signInNameDescription: "Il nome da digitare per accedere quando questa installazione ha più di un account. Anche unsloth funziona sempre. Lascia vuoto per usare solo unsloth.",
+      signInNameSave: "Salva nome",
       title: "Account",
       description: "Crea account Unsloth privati. I nuovi utenti accedono con un codice di configurazione monouso e scelgono una password.",
       username: "Nome utente",

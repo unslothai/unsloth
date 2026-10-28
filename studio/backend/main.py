@@ -1373,15 +1373,33 @@ def _openapi_once() -> dict:
 app.openapi = _openapi_once
 
 
-@app.get(app.openapi_url, include_in_schema = False)
-async def openapi_json(request: Request):
-    schema = await asyncio.to_thread(app.openapi)
+# Rendered once per schema object, off the loop: a rebuilt schema (openapi_schema reset) is a new object.
+_openapi_body_cache: dict = {}
+
+
+def _openapi_body(root_path: str) -> bytes:
+    schema = app.openapi()
+    key = (root_path, app.root_path_in_servers)
+    cached = _openapi_body_cache.get(key)
+    if cached is not None and cached[0] is schema:
+        return cached[1]
+    served = schema
     # As FastAPI's built-in route: name the prefix a path-stripping proxy hides.
-    root_path = request.scope.get("root_path", "").rstrip("/")
     if root_path and app.root_path_in_servers:
         if root_path not in {server.get("url") for server in schema.get("servers", [])}:
-            schema = {**schema, "servers": [{"url": root_path}, *schema.get("servers", [])]}
-    return JSONResponse(schema)
+            served = {**schema, "servers": [{"url": root_path}, *schema.get("servers", [])]}
+    body = JSONResponse(served).body
+    if len(_openapi_body_cache) >= 8:
+        _openapi_body_cache.clear()
+    _openapi_body_cache[key] = (schema, body)
+    return body
+
+
+@app.get(app.openapi_url, include_in_schema = False)
+async def openapi_json(request: Request):
+    root_path = request.scope.get("root_path", "").rstrip("/")
+    body = await asyncio.to_thread(_openapi_body, root_path)
+    return Response(content = body, media_type = JSONResponse.media_type)
 
 
 if _DOCS_ASSETS_DIR.is_dir():

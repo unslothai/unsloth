@@ -846,6 +846,8 @@ export const en = {
       guidedTour: "Guided Tour",
       help: "Help",
       logOut: "Log out",
+      logOutNeedsPassword: "Set a password in Settings > Remote access before logging out, so you can sign back in.",
+      logOutFailed: "Couldn't log out safely. Try again in a moment.",
       shutdown: "Shutdown",
     },
     commandPalette: {
@@ -991,6 +993,11 @@ export const en = {
   },
   settings: {
     accounts: {
+      signsInAs: "Signs in as {username}",
+      signsInAsOwner: "Signs in as {alias} or {username}",
+      signInName: "Your sign-in name",
+      signInNameDescription: "The name you type to sign in when this installation has more than one account. unsloth always works too. Leave empty to use only unsloth.",
+      signInNameSave: "Save name",
       title: "Accounts",
       description: "Create private Unsloth accounts. New users sign in with a one-time setup code and choose a password.",
       username: "Username",
@@ -3919,11 +3926,11 @@ export const en = {
       attentionModules: "Attention modules",
       mlpModules: "MLP modules",
       targetModules: "Target Modules",
-      enableLora: "Enable LoRA",
+      enableLora: "LoRA",
       trainWithLora: "Train with LoRA",
-      stableRank: "Stable Rank",
-      memoryEfficient: "Memory Efficient",
-      weightDecomposed: "Weight-Decomposed",
+      stableRank: "Rank-stabilized LoRA",
+      memoryEfficient: "SVD-initialized LoRA",
+      weightDecomposed: "LoRA with multipliers",
       notSupportedAppleSilicon: "Not supported on Apple Silicon",
       doraNeedsVisionLayersOff: "Turn off vision layer training to use DoRA",
       optimization: "Optimization",
@@ -3934,7 +3941,7 @@ export const en = {
         "Optimization algorithm. 8-bit variants reduce memory usage. Fused is recommended for vision models.",
       optimizerTooltipMlx:
         "Optimization algorithm. AdamW is the default. Lion uses less memory but usually needs a lower learning rate.",
-      lrScheduler: "LR scheduler",
+      lrScheduler: "LR Scheduler",
       lrSchedulerTooltip:
         "How the learning rate changes over training. Linear decays steadily; cosine decays in a curve.",
       optimizerOptions: {
@@ -3951,7 +3958,7 @@ export const en = {
       },
       batchSize: "Batch Size",
       batchSizeTooltip: "Samples processed per step. Higher uses more VRAM.",
-      gradAccum: "Grad Accum",
+      gradAccum: "Grad Accum Steps",
       gradAccumTooltip: "Simulates larger batch sizes without extra VRAM.",
       weightDecay: "Weight Decay",
       weightDecayTooltip: "L2 regularization to prevent overfitting.",
@@ -3995,7 +4002,7 @@ export const en = {
       offloadPanelSweepNote: "The moving window shows the order layers are fetched in, slowed down to be visible; the numbers are measured on the last step.",
       offloadPanelCard: "GPU {index}",
       offloadPanelCardUnknown: "Unknown card",
-      gradCheckpoint: "Grad Checkpoint",
+      gradCheckpoint: "Grad Checkpointing",
       gradCheckpointTooltip:
         "Trade compute for memory by recomputing activations.",
       none: "None",

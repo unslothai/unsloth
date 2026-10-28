@@ -307,23 +307,6 @@ def _class_end(pattern: str, start: int) -> int:
     return closing if closing > start else -1
 
 
-def _ignored_by_the_loader(path: str, pattern: str) -> bool:
-    """Loader drops names in data_files.FILES_TO_IGNORE from globs unless the pattern is that file
-    itself."""
-    name = PurePosixPath(path).name
-    return name in _IGNORED_DATA_FILENAMES and PurePosixPath(pattern).name != name
-
-
-def _hidden_to_the_loader(path: str, pattern: str) -> bool:
-    """Loader skips hidden parts anywhere and dunder parts only in parents unless the pattern names them; data/__train.json is read."""
-    for prefix, parts in ((".", "parts"), ("__", "parent_parts")):
-        in_path = _marked_parts(path, prefix, parts)
-        in_pattern = _marked_parts(pattern, prefix, parts)
-        if len(in_path) != len(in_pattern):
-            return True
-    return False
-
-
 def _marked_parts(path: str, prefix: str, which: str) -> list[str]:
     parsed = PurePosixPath(path)
     parts = parsed.parts if which == "parts" else parsed.parent.parts
@@ -338,18 +321,42 @@ def _files_under_patterns(
 ) -> list[str]:
     """Card globs obey loader skip rules; module-written patterns are judged on what they plainly match."""
     matchers = [(pattern, _glob_to_regex(pattern)) for pattern in patterns]
-    return [
-        f
-        for f in data_files
-        if any(
-            m.match(f)
-            and not (
-                as_the_loader_would
-                and (_hidden_to_the_loader(f, p) or _ignored_by_the_loader(f, p))
-            )
-            for p, m in matchers
-        )
-    ]
+    if not as_the_loader_would:
+        return [f for f in data_files if any(m.match(f) for _, m in matchers)]
+    rules = [(m, _loader_path_facts(p)) for p, m in matchers]
+    kept = []
+    for f in data_files:
+        facts = None
+        for m, pattern_facts in rules:
+            if not m.match(f):
+                continue
+            if facts is None:
+                facts = _loader_path_facts(f)
+            if not _skipped_by_the_loader(facts, pattern_facts):
+                kept.append(f)
+                break
+    return kept
+
+
+def _loader_path_facts(path: str) -> tuple[int, int, str]:
+    """Hidden parts anywhere, dunder parts in parents, and the name."""
+    return (
+        len(_marked_parts(path, ".", "parts")),
+        len(_marked_parts(path, "__", "parent_parts")),
+        PurePosixPath(path).name,
+    )
+
+
+def _skipped_by_the_loader(
+    path_facts: tuple[int, int, str], pattern_facts: tuple[int, int, str]
+) -> bool:
+    """Loader skips hidden parts anywhere and dunder parts only in parents unless the pattern names them
+    (data/__train.json is read), and drops names in data_files.FILES_TO_IGNORE from globs unless the pattern is that
+    file itself."""
+    if path_facts[:2] != pattern_facts[:2]:
+        return True
+    name = path_facts[2]
+    return name in _IGNORED_DATA_FILENAMES and pattern_facts[2] != name
 
 
 def _common_parent(paths: list[str]) -> str:

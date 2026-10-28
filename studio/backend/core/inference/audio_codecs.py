@@ -249,7 +249,8 @@ class AudioCodecManager:
         if len(row) == 0:
             raise ValueError("No valid audio codes found after START_OF_SPEECH token")
 
-        codes = [t.item() - 128266 for t in row]
+        # One host copy; .tolist() yields the same Python scalars per element as .item()
+        codes = [t - 128266 for t in row.tolist()]
 
         # Redistribute into 3 SNAC layers (7 codes per frame → 1+2+4)
         layer_1, layer_2, layer_3 = [], [], []

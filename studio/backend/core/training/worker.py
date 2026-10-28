@@ -234,6 +234,38 @@ def _effective_training_load_in_4bit(
     return effective_training_load_in_4bit(config, model_load_target, hf_token)
 
 
+def _training_weight_prefetch(config, trainer, hf_token, event_queue):
+    """Resolve only the ordinary SFT checkpoint; uncertain routes keep the existing sequential load."""
+    try:
+        from .model_weight_prefetch import ModelWeightPrefetch, prefetch_repo
+        from utils.hf_cache_settings import get_hf_cache_paths
+        from utils.hardware import dataset_map_num_proc
+
+        repo = prefetch_repo(
+            config,
+            trainer,
+            load_in_4bit = lambda: _effective_training_load_in_4bit(
+                config, _resolve_cached_model_load_name(config), hf_token
+            ),
+            capabilities = sys.modules.get("unsloth.device_type"),
+            offline = _model_offline_mode_enabled(),
+            formatting_can_fork = (
+                not config.get("dataset_streaming", False) and (dataset_map_num_proc() or 1) > 1
+            ),
+        )
+        if repo is not None:
+            return ModelWeightPrefetch(
+                repo,
+                token = hf_token,
+                cache_dir = get_hf_cache_paths().hub_cache,
+                emit = event_queue.put,
+                should_stop = lambda: trainer.should_stop,
+            )
+    except Exception as error:  # noqa: BLE001
+        logger.info("Skipping model checkpoint prefetch: %s", error)
+    return None
+
+
 def _drop_model_pin(config: dict) -> str:
     config["model_snapshot_path"] = None
     return config["model_name"]
@@ -4880,7 +4912,12 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 return
 
         _send_status(event_queue, "Loading and formatting dataset...")
-        dataset, eval_dataset = _load_training_dataset()
+        from .model_weight_prefetch import prepare_dataset_with_prefetch
+
+        dataset, eval_dataset = prepare_dataset_with_prefetch(
+            _load_training_dataset,
+            _training_weight_prefetch(config, trainer, hf_token, event_queue),
+        )
 
         if dataset is None or trainer.should_stop:
             if trainer.should_stop:
