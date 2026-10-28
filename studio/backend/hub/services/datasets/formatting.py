@@ -185,6 +185,46 @@ def _serialize_preview_value(value):
     return str(value)
 
 
+class _DecodedPreviewRows:
+    """A preview Dataset whose rows decode once per request.
+
+    Detection, preview formatting and serialization each read the same few rows, and every
+    read of an Image or Audio cell decodes it again. Rows read by integer index or iteration
+    come from a per-request cache (a fresh dict each time, as the Dataset returns); everything
+    else, ``map``, ``features``, ``column_names``, column access, is the Dataset's own."""
+
+    def __init__(self, dataset):
+        self._dataset = dataset
+        self._rows = {}
+
+    def _row(self, index):
+        row = self._rows.get(index)
+        if row is None:
+            # A failed decode is not cached: the next read raises again, as it does uncached.
+            row = self._rows[index] = self._dataset[index]
+        return dict(row) if isinstance(row, dict) else row
+
+    def __len__(self):
+        return len(self._dataset)
+
+    def __iter__(self):
+        for index in range(len(self._dataset)):
+            yield self._row(index)
+
+    def __getitem__(self, key):
+        if type(key) is int and 0 <= key < len(self._dataset):
+            return self._row(key)
+        return self._dataset[key]
+
+    def __getattr__(self, name):
+        return getattr(self._dataset, name)
+
+
+def _decode_preview_rows_once(preview_slice):
+    from datasets import Dataset
+    return _DecodedPreviewRows(preview_slice) if type(preview_slice) is Dataset else preview_slice
+
+
 def _serialize_preview_rows(rows):
     return [
         {str(key): _serialize_preview_value(value) for key, value in dict(row).items()}
@@ -598,6 +638,7 @@ def check_format_response(
             PREVIEW_SIZE,
             allow_unlabeled_tier1_fallback = allow_unlabeled_tier1_fallback,
         )
+        preview_slice = _decode_preview_rows_once(preview_slice)
 
         result = check_dataset_format(preview_slice, is_vlm = request.is_vlm)
 
