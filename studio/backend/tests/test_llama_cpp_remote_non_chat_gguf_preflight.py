@@ -103,6 +103,16 @@ def test_adapter_repo_gguf_is_refused_from_its_header_alone(monkeypatch):
     assert requests == [("owner/model", "model-Q4_K_M.gguf")]
 
 
+def test_adapter_type_is_refused_from_a_prefix_cut_mid_kv(monkeypatch):
+    # An adapter that embeds its tokenizer can outgrow the 256 KiB probe.
+    message, _ = _probe(
+        monkeypatch,
+        header = _gguf_bytes(arch = "phi3", general_type = "adapter", declared_kv = 32),
+    )
+    assert message is not None
+    assert "LoRA adapter" in message
+
+
 def test_a_placeholder_arch_repo_gguf_is_refused(monkeypatch):
     # gguf-connector writes a literal 'pig'; the probe must normalise it like the disk check.
     message, _ = _probe(

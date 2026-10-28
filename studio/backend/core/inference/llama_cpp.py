@@ -20260,6 +20260,13 @@ class LlamaCppBackend:
     def _non_chat_gguf_refusal(self, gguf_path: str) -> Optional[str]:
         """Header-only refusal of adapter and media GGUFs: an adapter, a media architecture, or none
         at all once the header parsed."""
+        # Metadata, not filenames: an adapter may declare a chat arch; a merged LoRA is a full model.
+        # Checked before the walk gate: a type that was read is definitive even from a partial prefix.
+        if getattr(self, "_gguf_type", None) == "adapter":
+            return (
+                "This GGUF is a LoRA adapter and needs a matching base model. "
+                "Select a full model GGUF for chat, or use this adapter with its base model."
+            )
         arch = (self._architecture or "").strip().lower()
         # A media arch is KV 0 so a partial remote prefix can carry it; the walk still gates the no-arch fallback, since an incomplete read looks like none.
         if (
@@ -20269,12 +20276,6 @@ class LlamaCppBackend:
             and not getattr(self, "_gguf_header_parsed", False)
         ):
             return None
-        # Metadata, not filenames: an adapter may declare a chat arch; a merged LoRA is a full model.
-        if getattr(self, "_gguf_type", None) == "adapter":
-            return (
-                "This GGUF is a LoRA adapter and needs a matching base model. "
-                "Select a full model GGUF for chat, or use this adapter with its base model."
-            )
         if arch in self._PLACEHOLDER_ARCHES:
             # A placeholder arch counts as no architecture, so the name-based branch below decides the page.
             arch = ""
