@@ -22,6 +22,9 @@ on:
       - 'tests/studio/playwright_chat_autoscroll.py'
       - 'tests/studio/playwright_research_freeze.py'
       - 'tests/studio/playwright_research_review.py'
+      - 'tests/studio/playwright_pinned_chat_persistence.py'
+      - 'studio/backend/routes/chat_history.py'
+      - 'studio/backend/storage/studio_db.py'
       - 'tests/studio/playwright_heavy_thread.py'
       - 'tests/studio/probe_dismiss_guard.py'
       - 'tests/studio/playwright_nonmodal_menus.py'
@@ -64,6 +67,9 @@ on:
       - 'tests/studio/playwright_chat_autoscroll.py'
       - 'tests/studio/playwright_research_freeze.py'
       - 'tests/studio/playwright_research_review.py'
+      - 'tests/studio/playwright_pinned_chat_persistence.py'
+      - 'studio/backend/routes/chat_history.py'
+      - 'studio/backend/storage/studio_db.py'
       - 'tests/studio/playwright_heavy_thread.py'
       - 'tests/studio/probe_dismiss_guard.py'
       - 'tests/studio/playwright_nonmodal_menus.py'
@@ -480,6 +486,13 @@ jobs:
       - name: Browser smoke for research freeze
         working-directory: ${{ github.workspace }}
         run: python3 tests/studio/playwright_research_freeze.py
+
+      - name: Browser regression for pinned chat persistence
+        working-directory: ${{ github.workspace }}
+        timeout-minutes: 3
+        run: |
+          python3 -m pip install fastapi httpx pyjwt argon2-cffi cryptography huggingface_hub python-multipart structlog
+          python3 tests/studio/playwright_pinned_chat_persistence.py
 
       # A gate, not a measurement. The released and streamdown variants are positive controls
       # that MUST flicker: a run where neither collapses means the detector stopped seeing, not

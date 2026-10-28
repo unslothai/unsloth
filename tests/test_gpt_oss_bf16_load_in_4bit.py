@@ -47,6 +47,17 @@ def test_fused_4bit_refused_in_float16():
     loader_utils.refuse_gpt_oss_fused_4bit_float16(torch.float32)
 
 
+def test_fused_4bit_float32_refused_without_bfloat16():
+    # gpt-oss is FORCE_FLOAT32: without bfloat16 a float32 request still loads float16 weights, so the
+    # fused 4-bit path ran float16 hidden states into a float32 router (Half and Float addmm on T4).
+    with pytest.raises(NotImplementedError, match = "dtype = torch.float32 does not help"):
+        loader_utils.refuse_gpt_oss_fused_4bit_float16(torch.float32, supports_bfloat16 = False)
+    with pytest.raises(NotImplementedError, match = "overflow"):
+        loader_utils.refuse_gpt_oss_fused_4bit_float16(torch.float16, supports_bfloat16 = False)
+    loader_utils.refuse_gpt_oss_fused_4bit_float16(torch.float32, supports_bfloat16 = True)
+    loader_utils.refuse_gpt_oss_fused_4bit_float16(torch.bfloat16, supports_bfloat16 = False)
+
+
 def test_loader_refuses_before_the_fused_4bit_load():
     import inspect
 
@@ -54,7 +65,10 @@ def test_loader_refuses_before_the_fused_4bit_load():
 
     source = inspect.getsource(loader)
     branch = source.index("this gpt-oss checkpoint stores fused experts, so it loads")
-    assert "refuse_gpt_oss_fused_4bit_float16(dtype)" in source[branch - 300 : branch]
+    assert (
+        "refuse_gpt_oss_fused_4bit_float16(dtype, SUPPORTS_BFLOAT16)"
+        in source[branch - 300 : branch]
+    )
 
 
 def test_fused_checkpoint_detection():
