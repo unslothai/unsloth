@@ -215,7 +215,7 @@ fn rendering_plan(
     }
 
     // Wayland: DISABLE_DMABUF (FORCE_SHM hits bug 315436). X11: SHM, with compositing off below
-    // the fixed driver branch; DISABLE_DMABUF can leave no transport there.
+    // the minimum driver branch; DISABLE_DMABUF can leave no transport there.
     if nvidia_driver_loaded && !force_dmabuf {
         let missing_appimage_gles = is_appimage && !gles_usable;
         let reason = if missing_appimage_gles {
@@ -515,7 +515,7 @@ mod tests {
     }
 
     #[test]
-    fn nvidia_x11_on_a_fixed_branch_keeps_compositing_on() {
+    fn nvidia_x11_from_the_minimum_branch_keeps_compositing_on() {
         let composited = RenderingWorkaround::ForceSharedMemoryOnNvidia;
         let appimage: &[(&str, &str)] = &[(APPIMAGE, "/tmp/Unsloth.AppImage"), (X11_DISPLAY, ":0")];
         let native: &[(&str, &str)] = &[(X11_DISPLAY, ":0")];
