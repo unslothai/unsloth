@@ -1517,12 +1517,27 @@ def _local_stage_modules(pp_stage, parts, owned):
     return modules
 
 
-def _sync_trainable(model, group, src):
+def _sync_trainable(model, group, src, owners = None):
+    """Broadcast every trainable parameter from `src`. With `owners` ({id: pp ranks that loaded it}, from a
+    pipeline_sharded_loading model) a parameter listed there is synced only among its owners (from pp rank 0 if
+    it is one, else the lowest): a non-owner's copy may be built from a zero placeholder, and the split drops it
+    anyway. A single owner keeps its own copy."""
     import torch.distributed as dist
+    me = dist.get_rank(group) if owners is not None else None
     with torch.no_grad():
         for param in model.parameters():
-            if param.requires_grad:
+            if not param.requires_grad:
+                continue
+            held = owners.get(id(param)) if owners is not None else None
+            if held is None:
                 dist.broadcast(param.data, src = src, group = group)
+                continue
+            if len(held) < 2:
+                continue
+            root = 0 if 0 in held else min(held)
+            # Non-owners receive into scratch: their copy may be a zero-stride placeholder.
+            buf = param.data if me in held else torch.empty(param.shape, dtype = param.dtype, device = param.device)
+            dist.broadcast(buf, src = dist.get_global_rank(group, root), group = group)
 
 
 def _default_mesh(model):
@@ -1602,7 +1617,7 @@ def apply_pipeline_parallel(
     tuple_format = _layer_call_format(parts.decoder, parts.layers_name) == "tuple"
     bounds = derive_pp_split(model, total_stages, config)
     _refuse_shared_across_stages(parts, bounds)
-    from .pp_load import check_preloaded_split, release_preload_guards
+    from .pp_load import check_preloaded_split, loaded_by, release_preload_guards
 
     # pipeline_sharded_loading read only this rank's stages: the split must be the one it loaded.
     preloaded = check_preloaded_split(
@@ -1616,7 +1631,12 @@ def apply_pipeline_parallel(
     )
     dtype = config.activation_dtype or parts.embed.weight.dtype
     if config.sync_trainable and pp > 1:
-        _sync_trainable(model, pp_mesh.get_group(), dist.get_global_rank(pp_mesh.get_group(), 0))
+        owners = None
+        if preloaded is not None:
+            owners = loaded_by(parts, spec, pp, stages_per_rank, bounds)
+        _sync_trainable(
+            model, pp_mesh.get_group(), dist.get_global_rank(pp_mesh.get_group(), 0), owners
+        )
 
     donated_off = props["split_backward"] and allow_split_backward()
     pp_stage = PipelineParallel(

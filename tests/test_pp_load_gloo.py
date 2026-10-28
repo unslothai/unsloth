@@ -119,6 +119,11 @@ def _train(
     return losses, grads
 
 
+# PEFT-created tensors (not read from the checkpoint), and those whose init is derived from base weights.
+_ADAPTER_KEYS = ("lora_", "modules_to_save.", "trainable_tokens_")
+_DERIVED_KEYS = ("lora_magnitude_vector",)
+
+
 def _case_load(
     rank,
     world,
@@ -127,14 +132,23 @@ def _case_load(
     schedule = "gpipe",
     n_mb = 2,
     v = None,
+    peft = None,
 ):
     from torch.distributed.device_mesh import init_device_mesh
 
     ppl = _pp_load()
     mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("pp",))["pp"]
     config = ppn.PPConfig(stages_per_rank = v)
-    full = _peft(_load(ckpt))
-    full_lora = {n: p.detach().clone() for n, p in full.named_parameters() if "lora_" in n}
+    peft = peft or {}
+    full = _peft(_load(ckpt), **peft)
+    def lora(m):
+        return {
+            n: p
+            for n, p in m.named_parameters()
+            if "lora_" in n and not any(k in n for k in _DERIVED_KEYS)
+        }
+
+    full_lora = {n: p.detach().clone() for n, p in lora(full).items()}
     full_bytes = _storage_bytes(full)
     ids, labels = batch(full)
     pp_full = ppn.apply_pipeline_parallel(
@@ -143,7 +157,7 @@ def _case_load(
     full_after = _storage_bytes(full)
     seen, kept_numel = set(), 0
     for n, p in full.named_parameters():
-        if "lora_" not in n and id(p) not in seen:
+        if id(p) not in seen and not any(k in n for k in _ADAPTER_KEYS):
             seen.add(id(p))
             kept_numel += p.numel()
     with ppl.pipeline_sharded_loading(mesh, schedule = schedule, config = config) as state:
@@ -155,9 +169,9 @@ def _case_load(
         model(input_ids = ids)
     except RuntimeError as exc:
         unsplit = str(exc)
-    model = _peft(model)
-    lora_equal = set(full_lora) == {n for n, _ in model.named_parameters() if "lora_" in n} and all(
-        torch.equal(full_lora[n], p) for n, p in model.named_parameters() if "lora_" in n
+    model = _peft(model, **peft)
+    lora_equal = set(full_lora) == set(lora(model)) and all(
+        torch.equal(full_lora[n], p) for n, p in lora(model).items()
     )
     pp = ppn.apply_pipeline_parallel(
         model, mesh, n_microbatches = n_mb, schedule = schedule, config = config
@@ -218,10 +232,6 @@ def _case_refusals(rank, world, tmp, ckpt):
             model, mesh, config = ppn.PPConfig(layers_per_stage = [1, N_LAYERS - 1])
         ),
     )
-    with ppl.pipeline_sharded_loading(mesh, schedule = "gpipe"):
-        trainable_head = _peft(_load(ckpt), modules_to_save = ["lm_head"])
-    catch("trainable_placeholder_head", lambda: ppn.apply_pipeline_parallel(trainable_head, mesh))
-    out["trainable_placeholder_head:uncut"] = not ppn.is_pipeline_parallel(trainable_head)
     from transformers import AutoModelForCausalLM
 
     def quantized():
@@ -290,17 +300,23 @@ def _spawn(
 
 
 @pytest.mark.parametrize(
-    "arch,world,schedule,v,tie",
+    "arch,world,schedule,v,tie,peft",
     [
-        ("llama", 2, "gpipe", None, None),
-        ("qwen3", 2, "1f1b", None, None),
-        ("gemma3", 2, "gpipe", None, True),  # tied embedding: read on both ends
-        ("llama", 4, "gpipe", None, None),  # middle ranks hold neither the embedding nor the head
-        ("llama", 2, "interleaved1f1b", 2, None),
-        ("gemma3", 2, "zbvzerobubble", 2, True),  # V: rank 0 holds the first and the last stage
+        ("llama", 2, "gpipe", None, None, None),
+        ("qwen3", 2, "1f1b", None, None, None),
+        ("gemma3", 2, "gpipe", None, True, None),  # tied embedding: read on both ends
+        ("llama", 4, "gpipe", None, None, None),  # middle ranks hold neither the embedding nor the head
+        ("llama", 2, "interleaved1f1b", 2, None, None),
+        ("gemma3", 2, "zbvzerobubble", 2, True, None),  # V: rank 0 holds the first and the last stage
+        # Checkpoint-derived trainables (modules_to_save copies, DoRA magnitudes, trainable token rows) of
+        # weights another rank loaded: rank 0's copies come from placeholders and must not reach their owner.
+        ("llama", 2, "gpipe", None, None, {"modules_to_save": ["input_layernorm"]}),
+        ("llama", 4, "gpipe", None, None, {"modules_to_save": ["input_layernorm", "lm_head"]}),
+        ("llama", 2, "interleaved1f1b", 2, None, {"use_dora": True}),
+        ("qwen3", 2, "1f1b", None, None, {"trainable_token_indices": {"lm_head": [1, 2, 3]}}),
     ],
 )
-def test_sharded_loading_matches_full_load_then_split(arch, world, schedule, v, tie):
+def test_sharded_loading_matches_full_load_then_split(arch, world, schedule, v, tie, peft):
     if schedule in ("zbvzerobubble", "dualpipev"):
         import importlib
         if not importlib.import_module("unsloth.models.pp_schedules").v_schedules_supported():
@@ -308,7 +324,9 @@ def test_sharded_loading_matches_full_load_then_split(arch, world, schedule, v, 
     with tempfile.TemporaryDirectory() as ckpt:
         _save_checkpoint(arch, ckpt, tie = tie)
         n_mb = 4 if schedule != "gpipe" or world == 4 else 2
-        results = _spawn("load", world, ckpt = ckpt, schedule = schedule, n_mb = n_mb, v = v)
+        results = _spawn(
+            "load", world, ckpt = ckpt, schedule = schedule, n_mb = n_mb, v = v, peft = peft
+        )
     total_numel = None
     for rank, res in enumerate(results):
         stats = res["stats"]
@@ -359,10 +377,3 @@ def test_sharded_loading_refusals_leave_the_model_uncut():
         assert "another split" in (r["other_layers_per_stage"] or ""), r
         assert "16-bit safetensors checkpoints only" in (r["quantized"] or ""), r
         assert "pipeline schedule must be one of" in (r["unknown_schedule"] or ""), r
-    # Rank 0's head is a placeholder, rank 1's is real: both refuse together (no rank enters the split alone).
-    assert "lm_head" in (res[0]["trainable_placeholder_head"] or ""), res[0]
-    for r in res:
-        assert "trainable but not loaded on every rank" in (
-            r["trainable_placeholder_head"] or ""
-        ), r
-        assert r["trainable_placeholder_head:uncut"]

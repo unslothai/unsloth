@@ -18,6 +18,8 @@ safetensors checkpoint:
 get_peft_model then attaches full-size LoRA everywhere with the 1-GPU initialization, and
 apply_pipeline_parallel (which must use the same mesh, schedule and stage split, checked) replaces the
 placeholder layers, embedding and head by its pass-throughs and stubs. A forward before that is refused.
+Trainable tensors built from a weight (modules_to_save, DoRA, trainable tokens) are synced only from a rank
+that read that weight.
 16-bit checkpoints only.
 
     mesh = init_device_mesh("cuda", (pp,), mesh_dim_names = ("pp",))
@@ -169,8 +171,8 @@ def _preload_info(model):
 
 def check_preloaded_split(model, pp_mesh, schedule, stages_per_rank, bounds, local_stages, parts):
     """Called by apply_pipeline_parallel before it cuts the model: a model loaded by pipeline_sharded_loading
-    must be split exactly as it was loaded (its other layers are placeholders), and its placeholder embedding
-    / head must not be trainable (pp rank 0's copy would be broadcast). Returns the loaded module or None."""
+    must be split exactly as it was loaded (its other layers are placeholders). Returns the loaded module or
+    None."""
     holder, info = _preload_info(model)
     if info is None:
         return None
@@ -189,32 +191,33 @@ def check_preloaded_split(model, pp_mesh, schedule, stages_per_rank, bounds, loc
             f"{diff}. Pass apply_pipeline_parallel the mesh, schedule and PPConfig pipeline_sharded_loading "
             "used; the layers other stages own were never read."
         )
-    # A trainable copy (modules_to_save) of a placeholder is a plain zero tensor: judge by where it lives.
-    holds = (0 in info["local_stages"], len(info["bounds"]) - 1 in info["local_stages"])
-    trainable = [
-        n
-        for module, held in zip((parts.embed, parts.lm_head), holds)
-        if not held
-        for n, p in module.named_parameters()
-        if p.requires_grad
-    ]
-    # Only the ranks without that stage see it: decide together, or the others would enter the split's
-    # collectives alone.
-    import torch.distributed as dist
-
-    flag = torch.tensor([1.0 if trainable else 0.0], device = pp_mesh.device_type)
-    if pp_mesh.size() > 1:
-        dist.all_reduce(flag, op = dist.ReduceOp.MAX, group = pp_mesh.get_group())
-    if float(flag) > 0:
-        where = (
-            f"{trainable[:2]} are" if trainable else "the embedding / lm_head of another rank is"
-        )
-        raise ValueError(
-            f"Unsloth: {where} trainable but not loaded on every rank (pipeline_sharded_loading reads the "
-            "embedding / lm_head only where their stage lives); train them with a full load, or keep them "
-            "frozen."
-        )
     return holder
+
+
+def loaded_by(parts, spec, pp, stages_per_rank, bounds):
+    """{id(parameter): pp ranks that read it} for every parameter under a decoder layer, the embedding or the
+    head (PEFT's LoRA / modules_to_save / trainable-token tensors there included); the rest was read
+    everywhere. On a rank that did not read it, a trainable tensor derived from a weight (a modules_to_save copy, a DoRA magnitude, a
+    trainable token row) was built from a zero placeholder: apply_pipeline_parallel syncs each such tensor only
+    among the ranks that read it, never from pp rank 0's placeholder copy."""
+    from .pp_schedules import stage_indices
+
+    per_rank = [stage_indices(spec, r, pp, stages_per_rank) for r in range(pp)]
+    owners = {}
+
+    def add(module, ranks):
+        for p in module.parameters():
+            owners.setdefault(id(p), set()).update(ranks)
+
+    for i, layer in enumerate(parts.layers):
+        add(
+            layer,
+            {r for r, local in enumerate(per_rank) if any(bounds[k][0] <= i < bounds[k][1] for k in local)},
+        )
+    # A tied embedding / head is one parameter: read where either end lives (the union).
+    add(parts.embed, {r for r, local in enumerate(per_rank) if 0 in local})
+    add(parts.lm_head, {r for r, local in enumerate(per_rank) if len(bounds) - 1 in local})
+    return {k: frozenset(v) for k, v in owners.items()}
 
 
 def release_preload_guards(holder):
