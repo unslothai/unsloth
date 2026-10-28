@@ -1,12 +1,7 @@
-# DISABLED while diffusers-pin.txt's release carries every family: the requirement line is commented
-# out and every step of the git route does nothing. To re-enable for an unreleased model, uncomment it
-# with the new commit + archive-sha256 and add the minimum to _UNRELEASED_MIN_DIFFUSERS
-# (diffusion_families.py). When active it installs by default; UNSLOTH_DIFFUSERS_MAIN=0 opts out.
-#
-# The last one was FLUX.3 Image Klein: Diffusers support merged as huggingface/diffusers#15046 on
-# 2026-10-15, and until 0.42.0 shipped it ran from the commit below (main as of 2026-10-16, d42ebf9c,
-# the FLUX.3 prompt upsampler block, huggingface/diffusers#15058). Studio drops the upsampler step from
-# the blocks (diffusion_flux3.flux3_blocks).
+# DISABLED (line commented out) while diffusers-pin.txt's release carries every family. To re-enable,
+# uncomment with the new commit + archive-sha256 and add the minimum to _UNRELEASED_MIN_DIFFUSERS
+# (diffusion_families.py); when active it installs by default, UNSLOTH_DIFFUSERS_MAIN=0 opts out.
+# Last used for FLUX.3 Image Klein (huggingface/diffusers#15046, #15058) until 0.42.0 shipped.
 #
 # A pinned commit of Diffusers main, for models whose support has merged upstream but has not
 # reached a release yet. Qwen-Image-2.1 was the first: it merged on 2026-09-18, four weeks after
