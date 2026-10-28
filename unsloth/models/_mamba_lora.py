@@ -107,7 +107,11 @@ def mamba_raw_weight_adapters(mixer):
     return [name for name in leaves if _has_active_adapter(modules[name])] if leaves else leaves
 
 
-def _merged_weight(module, allow_multiple = False, names = None):
+def _merged_weight(
+    module,
+    allow_multiple = False,
+    names = None,
+):
     """``W + delta`` when that is exactly what the LoRA module computes, else None.
 
     ``names`` replaces the active adapters (one row of a PEFT mixed-adapter batch).
