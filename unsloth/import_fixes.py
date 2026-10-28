@@ -2167,12 +2167,8 @@ def _packed_row_varlen_kwargs(query, attention_mask, kwargs):
 
 
 def fix_transformers_flash_attention_mrope_packed_rows():
-    """Keep packed documents apart under flash attention when a model hands its decoder layers
-    the 3-row mRoPE ids instead of the text ids (Qwen3.5 / Qwen3.5-MoE on transformers 5.3).
-
-    Those ids cannot mark document starts, so flash attention ran one causal span over the
-    whole packed row; the boundaries come from Unsloth's `packed_seq_lengths` instead.
-    """
+    """Qwen3.5 / Qwen3.5-MoE on transformers 5.3 give decoder layers 3-row mRoPE ids, which cannot mark
+    document starts: take a packed row's boundaries from `packed_seq_lengths` instead."""
     try:
         from transformers.integrations import flash_attention as fa_integration
     except Exception:
