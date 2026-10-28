@@ -272,8 +272,11 @@ def test_hub_rows_with_timestamps_still_upload(monkeypatch):
 
     import datasets
 
-    rows = [{"q": f"q{i}", "a": f"a{i}", "at": datetime.datetime(2026, 1, 1, i)} for i in range(10)]
+    rows = [
+        {"q": f"q{i}", "a": f"a{i}", "at": datetime.datetime(2026, 1, 1, i), "x": float("nan")}
+        for i in range(10)
+    ]
     monkeypatch.setattr(datasets, "load_dataset", lambda *a, **k: datasets.Dataset.from_list(rows))
     loaded = training._load_rows({"source": "hf", "ref": "org/ds"}, None, None)
-    assert loaded[0]["at"] == "2026-01-01 00:00:00"
-    json.dumps(loaded)
+    assert loaded[0]["at"] == "2026-01-01 00:00:00" and loaded[0]["x"] is None
+    json.dumps(loaded, allow_nan = False)
