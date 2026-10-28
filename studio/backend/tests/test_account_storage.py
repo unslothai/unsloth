@@ -164,6 +164,25 @@ def test_retiring_an_account_releases_its_wal_keeper(account_home, module_name):
         keeper.execute("SELECT 1")
 
 
+def test_retirement_ignores_an_escaping_rag_link(account_home, monkeypatch, tmp_path):
+    from routes.accounts import retire_account_roots
+
+    monkeypatch.setattr("core.inference.mcp_client.close_mcp_sessions", lambda: None)
+    monkeypatch.setattr("core.inference.mcp_client.invalidate_tool_cache", lambda: None)
+    studio_db.reset_schema_state_for_tests()
+    workspace = run_as(ALICE, roots.workspace_root)
+    run_as(ALICE, studio_db.get_connection).close()
+    outside = tmp_path / "outside_rag"
+    outside.mkdir()
+    try:
+        (workspace / "rag").symlink_to(outside, target_is_directory = True)
+    except OSError:
+        pytest.skip("symlinks are not permitted here")
+    retire_account_roots(ALICE)
+    assert not workspace.exists()
+    assert outside.is_dir()
+
+
 def test_a_late_rag_open_does_not_reopen_a_retired_accounts_keeper(account_home):
     """An open that passed ensure_dir before deletion and resumes after retirement released the
     keeper must not leave a new one holding the workspace open."""
