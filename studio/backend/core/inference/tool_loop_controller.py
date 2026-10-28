@@ -149,6 +149,12 @@ def _unreadable_arguments_summary(fragment: str) -> dict[str, str]:
     }
 
 
+TRUNCATED_TOOL_TURN_MESSAGE = (
+    "The model stopped before completing its tool calls. These tool calls were not run. "
+    "Retry with smaller changes or more room for the response."
+)
+
+
 _ONE_SHOT_TOOLS = frozenset({"render_html"})
 
 NoopReason = Literal["duplicate", "disabled", "forced_mismatch", "render_html_repeat"]

@@ -789,6 +789,8 @@ export const ar = {
       guidedTour: "جولة إرشادية",
       help: "مساعدة",
       logOut: "تسجيل الخروج",
+      logOutNeedsPassword: "عيّن كلمة مرور في الإعدادات > الوصول عن بُعد قبل تسجيل الخروج، حتى تتمكن من تسجيل الدخول مرة أخرى.",
+      logOutFailed: "تعذّر تسجيل الخروج بأمان. حاول مرة أخرى بعد قليل.",
       shutdown: "إيقاف التشغيل",
     },
     commandPalette: {
@@ -933,6 +935,11 @@ export const ar = {
   },
   settings: {
     accounts: {
+      signsInAs: "يسجّل الدخول باسم {username}",
+      signsInAsOwner: "يسجّل الدخول باسم {alias} أو {username}",
+      signInName: "اسم تسجيل الدخول",
+      signInNameDescription: "الاسم الذي تكتبه لتسجيل الدخول عندما يكون في هذا التثبيت أكثر من حساب. يعمل unsloth دائمًا أيضًا. اتركه فارغًا لاستخدام unsloth فقط.",
+      signInNameSave: "حفظ الاسم",
       title: "الحسابات",
       description: "أنشئ حسابات Unsloth خاصة. يسجّل المستخدمون الجدد الدخول برمز إعداد يُستخدم مرة واحدة ثم يختارون كلمة مرور.",
       username: "اسم المستخدم",
@@ -1412,7 +1419,7 @@ export const ar = {
       installingRuntime: "جارٍ التثبيت…",
       installRuntimeFailed: "فشل تثبيت بيئة التشغيل.",
       installRuntimeError: "تعذر بدء تثبيت بيئة التشغيل.",
-      unsupportedArch: "يعمل وضع حماية Windows (MXC) على Windows x64 فقط، لذا فهو غير متاح على هذا الكمبيوتر.",
+      unsupportedArch: "يعمل وضع حماية Windows (MXC) على Windows x64 وARM64 فقط، لذا فهو غير متاح على هذا الكمبيوتر.",
       builtinNeedsUpdate:
         "تحتاج الحاوية المدمجة في Windows إلى الإصدار {required} أو أحدث، بينما يعمل هذا الكمبيوتر بالإصدار {current}. ثبّت آخر تحديث لـ Windows لاستخدامها دون خطوة مسؤول، أو فعّل وضع الحماية الاحتياطي أدناه.",
       unsupportedBuild: "يتطلب وضع حماية Windows (MXC) إصدار Windows 11 24H2 (البنية 26100) أو أحدث، لذا فهو غير متاح على هذا الكمبيوتر.",

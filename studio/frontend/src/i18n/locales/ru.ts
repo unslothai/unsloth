@@ -792,6 +792,8 @@ export const ru = {
       guidedTour: "Обзор интерфейса",
       help: "Справка",
       logOut: "Выйти",
+      logOutNeedsPassword: "Перед выходом задайте пароль в разделе Настройки > Удалённый доступ, чтобы потом снова войти.",
+      logOutFailed: "Не удалось безопасно выйти. Повторите попытку чуть позже.",
       shutdown: "Выключить",
     },
     commandPalette: {
@@ -936,6 +938,11 @@ export const ru = {
   },
   settings: {
     accounts: {
+      signsInAs: "Входит как {username}",
+      signsInAsOwner: "Входит как {alias} или {username}",
+      signInName: "Ваше имя для входа",
+      signInNameDescription: "Имя, которое вы вводите для входа, когда в этой установке больше одной учётной записи. unsloth тоже всегда работает. Оставьте пустым, чтобы использовать только unsloth.",
+      signInNameSave: "Сохранить имя",
       title: "Учётные записи",
       description: "Создавайте отдельные учётные записи Unsloth. Новые пользователи входят по одноразовому коду настройки и задают пароль.",
       username: "Имя пользователя",
@@ -1415,7 +1422,7 @@ export const ru = {
       installingRuntime: "Установка…",
       installRuntimeFailed: "Не удалось установить среду.",
       installRuntimeError: "Не удалось начать установку среды.",
-      unsupportedArch: "Песочница Windows (MXC) работает только на Windows x64, поэтому на этом ПК она недоступна.",
+      unsupportedArch: "Песочница Windows (MXC) работает только на Windows x64 и ARM64, поэтому на этом ПК она недоступна.",
       builtinNeedsUpdate:
         "Встроенному контейнеру Windows нужна сборка {required} или новее, а на этом ПК установлена {current}. Установите последнее обновление Windows, чтобы использовать его без шага администратора, или включите резервную песочницу ниже.",
       unsupportedBuild: "Песочнице Windows (MXC) нужна Windows 11 24H2 (сборка 26100) или новее, поэтому на этом ПК она недоступна.",

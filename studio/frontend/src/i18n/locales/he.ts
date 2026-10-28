@@ -875,6 +875,8 @@ export const he = {
       guidedTour: "סיור מודרך",
       help: "עזרה",
       logOut: "התנתקות",
+      logOutNeedsPassword: "לפני ההתנתקות, הגדירו סיסמה בהגדרות > גישה מרחוק כדי שתוכלו להתחבר שוב.",
+      logOutFailed: "לא ניתן היה להתנתק בבטחה. נסו שוב בעוד רגע.",
       shutdown: "כיבוי",
     },
     commandPalette: {
@@ -1019,6 +1021,11 @@ export const he = {
   },
   settings: {
     accounts: {
+      signsInAs: "מתחבר בתור {username}",
+      signsInAsOwner: "מתחבר בתור {alias} או {username}",
+      signInName: "שם ההתחברות שלך",
+      signInNameDescription: "השם שמקלידים כדי להתחבר כשבהתקנה הזו יש יותר מחשבון אחד. גם unsloth תמיד עובד. השאירו ריק כדי להשתמש רק ב-unsloth.",
+      signInNameSave: "שמירת השם",
       title: "חשבונות",
       description:
         "צור חשבונות Unsloth פרטיים. משתמשים חדשים יתחברו באמצעות קוד הגדרה חד-פעמי ויבחרו סיסמה.",
@@ -1523,7 +1530,7 @@ export const he = {
       installRuntimeFailed: "התקנת סביבת זמן הריצה נכשלה.",
       installRuntimeError: "לא ניתן להתחיל את התקנת סביבת זמן הריצה.",
       unsupportedArch:
-        "ארגז החול של Windows (MXC) פועל רק ב-Windows x64, ולכן אינו זמין במחשב זה.",
+        "ארגז החול של Windows (MXC) פועל רק ב-Windows x64 ו-ARM64, ולכן אינו זמין במחשב זה.",
       builtinNeedsUpdate:
         "המכל המובנה של Windows דורש גרסת build {required} ומעלה, והמחשב הזה מריץ {current}. התקינו את עדכון Windows האחרון כדי להשתמש בו בלי שלב מנהל, או הפעילו את ארגז החול החלופי שלמטה.",
       unsupportedBuild:

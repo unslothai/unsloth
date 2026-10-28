@@ -2482,14 +2482,16 @@ class UnslothTrainer:
                     codes = snac_model.encode(waveform)
 
                 all_codes = []
+                # One host copy per level: .item() is a device sync per scalar on CUDA.
+                c0, c1, c2 = (level[0].tolist() for level in codes[:3])
                 for i in range(codes[0].shape[1]):
-                    all_codes.append(codes[0][0][i].item() + AUDIO_OFFSET)
-                    all_codes.append(codes[1][0][2 * i].item() + AUDIO_OFFSET + 4096)
-                    all_codes.append(codes[2][0][4 * i].item() + AUDIO_OFFSET + (2 * 4096))
-                    all_codes.append(codes[2][0][(4 * i) + 1].item() + AUDIO_OFFSET + (3 * 4096))
-                    all_codes.append(codes[1][0][(2 * i) + 1].item() + AUDIO_OFFSET + (4 * 4096))
-                    all_codes.append(codes[2][0][(4 * i) + 2].item() + AUDIO_OFFSET + (5 * 4096))
-                    all_codes.append(codes[2][0][(4 * i) + 3].item() + AUDIO_OFFSET + (6 * 4096))
+                    all_codes.append(c0[i] + AUDIO_OFFSET)
+                    all_codes.append(c1[2 * i] + AUDIO_OFFSET + 4096)
+                    all_codes.append(c2[4 * i] + AUDIO_OFFSET + (2 * 4096))
+                    all_codes.append(c2[(4 * i) + 1] + AUDIO_OFFSET + (3 * 4096))
+                    all_codes.append(c1[(2 * i) + 1] + AUDIO_OFFSET + (4 * 4096))
+                    all_codes.append(c2[(4 * i) + 2] + AUDIO_OFFSET + (5 * 4096))
+                    all_codes.append(c2[(4 * i) + 3] + AUDIO_OFFSET + (6 * 4096))
 
                 if len(all_codes) == 0:
                     skipped += 1
