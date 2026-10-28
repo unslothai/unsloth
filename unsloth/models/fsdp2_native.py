@@ -3327,6 +3327,23 @@ def _install_trainer_hooks():
 
         Trainer._load_best_model = _load_best_model
 
+    original_mixed_mesh = getattr(Trainer, "_has_mixed_mesh_grads", None)
+    if original_mixed_mesh is not None:
+
+        @functools.wraps(original_mixed_mesh)
+        def _has_mixed_mesh_grads(self, model):
+            # _mixed_mesh_grad_norm skips our clip + fp16 unscale and sums 16-bit norms in 16 bits;
+            # native FSDP2 mixes replicated and sharded grads, so stay on the accelerator path.
+            if (
+                is_native_fsdp2(model)
+                or is_native_fsdp2(getattr(self, "model", None))
+                or _native_models(getattr(self, "accelerator", None))
+            ):
+                return False
+            return original_mixed_mesh(self, model)
+
+        Trainer._has_mixed_mesh_grads = _has_mixed_mesh_grads
+
     original_create_accelerator = getattr(Trainer, "create_accelerator_and_postprocess", None)
     if original_create_accelerator is not None:
 
