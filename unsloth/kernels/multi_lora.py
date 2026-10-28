@@ -772,6 +772,22 @@ def _zoo_stash_read_store(experts: nn.Module):
     return store
 
 
+def _adapter_groups(batch: MultiLoraBatch) -> list:
+    """(adapter or None, token rows) per adapter present; one host sync per batch, shared by every MoE layer."""
+    groups = batch.__dict__.get("_expert_groups")
+    if groups is None:
+        seg = batch.seg_start.tolist()
+        groups = [
+            (u, batch.sorted_idx[seg[u] : seg[u + 1]].long())
+            for u in range(batch.num_adapters)
+            if seg[u + 1] > seg[u]
+        ]
+        if seg[-1] < batch.num_tokens:
+            groups.append((None, batch.sorted_idx[seg[-1] :].long()))
+        batch.__dict__["_expert_groups"] = groups
+    return groups
+
+
 class MultiLoraExperts(nn.Module):
     """Frozen fused experts with per-adapter LoRA on ``parameter_names``.
 
@@ -865,14 +881,7 @@ class MultiLoraExperts(nn.Module):
             raise ValueError(
                 "Call set_multi_lora_batch(model, ...) with this batch's adapter ids first."
             )
-        seg = batch.seg_start.tolist()
-        groups = [
-            (u, batch.sorted_idx[seg[u] : seg[u + 1]].long())
-            for u in range(batch.num_adapters)
-            if seg[u + 1] > seg[u]
-        ]
-        if seg[-1] < batch.num_tokens:
-            groups.append((None, batch.sorted_idx[seg[-1] :].long()))
+        groups = _adapter_groups(batch)
         if len(groups) == 1:
             return self._run(groups[0][0], (hidden_states, *args))
         out = None

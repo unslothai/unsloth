@@ -11,6 +11,7 @@ import pytest
 import torch
 import unsloth  # noqa: F401
 
+from real_accelerator import has_real_cuda
 from unsloth.kernels import multi_lora as ml
 
 transformers = pytest.importorskip("transformers")
@@ -23,6 +24,11 @@ DENSE = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_p
 EXPERTS = ["mlp.experts.gate_up_proj", "mlp.experts.down_proj"]
 RANKS, ALPHAS = [2, 4, 3], [4.0, 8.0, 3.0]
 T = 6
+
+
+ON_CUDA = pytest.param(
+    "stash", "cuda", marks = pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA GPU")
+)
 
 
 @pytest.fixture(scope = "module")
@@ -67,14 +73,15 @@ def _ids():
     return torch.randint(0, 100, (3, T), generator = torch.Generator().manual_seed(1))
 
 
-@pytest.mark.parametrize("mode", ["stash", "fold"])
-def test_each_adapter_matches_its_lone_peft_run(base, monkeypatch, mode):
+@pytest.mark.parametrize("mode,device", [("stash", "cpu"), ("fold", "cpu"), ON_CUDA])
+def test_each_adapter_matches_its_lone_peft_run(base, monkeypatch, mode, device):
     if mode == "fold":
         monkeypatch.setattr(ml, "_zoo_stash_read_store", lambda experts: None)
+    base = copy.deepcopy(base).to(device)
     model, wrapped = _batched(base)
     assert len(wrapped) == 2 * len(model.model.language_model.layers)
-    ids = _ids()
-    ml.set_multi_lora_batch(model, torch.tensor([0, 1, 2]), seq_len = T)
+    ids = _ids().to(device)
+    ml.set_multi_lora_batch(model, torch.tensor([0, 1, 2], device = device), seq_len = T)
     out = model(input_ids = ids, use_cache = False).logits
     modes = {m.mode for m in model.modules() if isinstance(m, ml.MultiLoraExperts)}
     assert modes == {mode}
