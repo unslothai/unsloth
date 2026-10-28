@@ -1418,11 +1418,7 @@ def reduce_unsharded_trainable_grads(model):
             # (ignored_params) gets no reduce from it: average its local shard over the dp mesh here.
             if managed is False:
                 managed = _fsdp_managed_param_ids(model)
-            if (
-                managed is None
-                or id(param) in managed
-                or not _tp_shard_outside(param, mesh, dist)
-            ):
+            if managed is None or id(param) in managed or not _tp_shard_outside(param, mesh, dist):
                 continue
         seen.add(id(param))
         if getattr(param, "_unsloth_grad_all_reduce", False):

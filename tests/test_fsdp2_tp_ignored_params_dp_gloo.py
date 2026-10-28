@@ -58,7 +58,9 @@ def _case_tp_fsdp2_ignored(rank, world, tmp):
         native.FSDP2Config(param_dtype = torch.float32, mesh = mesh["dp"], ignored_params = ignored),
     )
     by_name = dict(model.named_parameters())
-    kept_tp = [n for n in names if isinstance(by_name[n], DTensor) and by_name[n].device_mesh.ndim == 1]
+    kept_tp = [
+        n for n in names if isinstance(by_name[n], DTensor) and by_name[n].device_mesh.ndim == 1
+    ]
     params = [p for p in model.parameters() if p.requires_grad]
     ref_by_name = dict(ref.named_parameters())
     ref_params = [p for p in ref.parameters() if p.requires_grad]
@@ -132,6 +134,9 @@ def test_tp_param_in_ignored_params_is_averaged_over_dp():
                     for n in la:
                         assert torch.equal(la[n], lb[n]), f"dp replicas differ at step {step}: {n}"
     for res in results:
-        assert res["norms"] == pytest.approx(res["ref_norms"], rel = 1e-5), (res["norms"], res["ref_norms"])
+        assert res["norms"] == pytest.approx(res["ref_norms"], rel = 1e-5), (
+            res["norms"],
+            res["ref_norms"],
+        )
         for n, ref in res["ref"].items():
             torch.testing.assert_close(res["full"][n], ref, rtol = 1e-4, atol = 1e-6, msg = n)
