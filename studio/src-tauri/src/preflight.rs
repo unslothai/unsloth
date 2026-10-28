@@ -25,7 +25,10 @@ pub(crate) use version::{
 #[cfg(test)]
 use backend::{backend_desktop_auth_status, backend_health};
 #[cfg(test)]
-use managed::{install_launch_cli_probe, install_launch_cli_probe_task};
+use managed::{
+    begin_launch_cli_probe, install_launch_cli_probe, install_launch_cli_probe_task,
+    launch_cli_probe_task,
+};
 #[cfg(test)]
 use managed::probe_managed_bin;
 #[cfg(test)]
@@ -1072,6 +1075,31 @@ exit 1
         });
         acquired_rx.await.unwrap();
         install_launch_cli_probe_task(other.bin.clone(), handle);
+        match probe_managed_bin(fake.bin.clone()).await {
+            ManagedProbe::Ready { .. } => {}
+            other => panic!("expected Ready, got {other:?}"),
+        }
+
+        // The setup thread has not handed over its probe yet when the preflight starts, and its
+        // spawn then holds the guard: the preflight still waits instead of spawning beside it.
+        let pending = begin_launch_cli_probe();
+        let (acquired_tx, acquired_rx) = tokio::sync::oneshot::channel();
+        let other_bin = other.bin.clone();
+        std::thread::spawn(move || {
+            let (held_tx, held_rx) = std::sync::mpsc::channel();
+            let handle = tauri::async_runtime::spawn_blocking(move || {
+                crate::process::with_studio_runtime_launch_guard(|| {
+                    let _ = held_tx.send(());
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                    Ok(true)
+                })
+            });
+            held_rx.recv().unwrap();
+            let _ = acquired_tx.send(());
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let _ = pending.send(Some(launch_cli_probe_task(other_bin, handle)));
+        });
+        acquired_rx.await.unwrap();
         match probe_managed_bin(fake.bin.clone()).await {
             ManagedProbe::Ready { .. } => {}
             other => panic!("expected Ready, got {other:?}"),

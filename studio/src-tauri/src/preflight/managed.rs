@@ -1057,13 +1057,18 @@ fn working_directory_reason() -> Option<String> {
 
 /// A `-h` probe started during app setup, so the first preflight does not wait for a Python start
 /// that could have overlapped the webview load.
-struct LaunchCliProbe {
+pub(super) struct LaunchCliProbe {
     bin: PathBuf,
     started: Instant,
     handle: tauri::async_runtime::JoinHandle<Result<bool, String>>,
 }
 
-static LAUNCH_CLI_PROBE: std::sync::Mutex<Option<LaunchCliProbe>> = std::sync::Mutex::new(None);
+type PendingLaunchCliProbe = tokio::sync::oneshot::Receiver<Option<LaunchCliProbe>>;
+
+/// Filled before the setup thread starts, so a preflight that beats the thread still waits for its
+/// spawn instead of reading the runtime launch guard as busy.
+static LAUNCH_CLI_PROBE: std::sync::Mutex<Option<PendingLaunchCliProbe>> =
+    std::sync::Mutex::new(None);
 
 /// Older than this, a launch answer no longer stands in for a fresh `-h`.
 const LAUNCH_CLI_PROBE_MAX_AGE: Duration = Duration::from_secs(30);
@@ -1074,41 +1079,58 @@ const LAUNCH_CLI_PROBE_MAX_AGE: Duration = Duration::from_secs(30);
 /// use of the async runtime builds it, so both happen on a plain thread, not the main thread that
 /// is loading the webview.
 pub(crate) fn start_launch_cli_probe() {
+    let pending = begin_launch_cli_probe();
     let spawned = std::thread::Builder::new()
         .name("launch-cli-probe".to_string())
-        .spawn(|| {
-            let Some(bin) = crate::process::find_unsloth_binary() else {
-                return;
-            };
-            if crate::process::managed_cli_context_error().is_none() {
-                install_launch_cli_probe(bin);
-            }
+        .spawn(move || {
+            let probe = crate::process::find_unsloth_binary()
+                .filter(|_| crate::process::managed_cli_context_error().is_none())
+                .map(spawn_launch_cli_probe);
+            let _ = pending.send(probe);
         });
     if let Err(error) = spawned {
-        // The first preflight then runs `-h` itself, as it always did.
+        // The sender went with the closure, so the preflight finds nothing and runs `-h` itself.
         warn!("Could not start the launch CLI probe: {error}");
     }
 }
 
-pub(super) fn install_launch_cli_probe(bin: PathBuf) {
+pub(super) fn begin_launch_cli_probe() -> tokio::sync::oneshot::Sender<Option<LaunchCliProbe>> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    if let Ok(mut slot) = LAUNCH_CLI_PROBE.lock() {
+        *slot = Some(receiver);
+    }
+    sender
+}
+
+fn spawn_launch_cli_probe(bin: PathBuf) -> LaunchCliProbe {
     let probe_bin = bin.clone();
     let handle =
         tauri::async_runtime::spawn(async move { run_cli_probe(&probe_bin, &["-h"]).await });
-    install_launch_cli_probe_task(bin, handle);
+    launch_cli_probe_task(bin, handle)
 }
 
+pub(super) fn launch_cli_probe_task(
+    bin: PathBuf,
+    handle: tauri::async_runtime::JoinHandle<Result<bool, String>>,
+) -> LaunchCliProbe {
+    LaunchCliProbe {
+        bin,
+        started: Instant::now(),
+        handle,
+    }
+}
+
+#[cfg(test)]
+pub(super) fn install_launch_cli_probe(bin: PathBuf) {
+    let _ = begin_launch_cli_probe().send(Some(spawn_launch_cli_probe(bin)));
+}
+
+#[cfg(test)]
 pub(super) fn install_launch_cli_probe_task(
     bin: PathBuf,
     handle: tauri::async_runtime::JoinHandle<Result<bool, String>>,
 ) {
-    let started = Instant::now();
-    if let Ok(mut slot) = LAUNCH_CLI_PROBE.lock() {
-        *slot = Some(LaunchCliProbe {
-            bin,
-            started,
-            handle,
-        });
-    }
+    let _ = begin_launch_cli_probe().send(Some(launch_cli_probe_task(bin, handle)));
 }
 
 /// `true` only for a passing launch `-h` on this CLI, taken once and recent; anything else is
@@ -1117,11 +1139,14 @@ pub(super) fn install_launch_cli_probe_task(
 /// A launch probe for any CLI is taken and awaited, not only this one's: its spawn holds the
 /// runtime launch guard, so a preflight spawning beside it would read the guard as busy.
 async fn launch_cli_probe_passed(bin: &Path) -> bool {
-    let probe = match LAUNCH_CLI_PROBE.lock() {
+    let pending = match LAUNCH_CLI_PROBE.lock() {
         Ok(mut slot) => slot.take(),
         Err(_) => None,
     };
-    let Some(probe) = probe else {
+    let Some(pending) = pending else {
+        return false;
+    };
+    let Ok(Some(probe)) = pending.await else {
         return false;
     };
     let passed = matches!(probe.handle.await, Ok(Ok(true)));
