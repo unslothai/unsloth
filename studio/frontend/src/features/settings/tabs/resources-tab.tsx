@@ -70,14 +70,8 @@ import {
 } from "../components/storage-overview";
 import { useMonitorOverlayStore } from "../stores/monitor-overlay-store";
 import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
-import {
-  ArrowUpRight01Icon,
-  CpuIcon,
-  GpuIcon,
-  HardDriveIcon,
-  RamMemoryIcon,
-} from "@hugeicons/core-free-icons";
-import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
+import { ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { LayersIcon } from "lucide-react";
 
 const POLL_MS = 3000;
@@ -155,7 +149,6 @@ function formatUptime(seconds: number | null | undefined): string {
 
 function MetricTile({
   label,
-  icon,
   value,
   detail,
   percent,
@@ -163,7 +156,6 @@ function MetricTile({
   extraDetail,
 }: {
   label: string;
-  icon: IconSvgElement;
   value: string;
   detail: string;
   // null = unknown (e.g. Windows ROCm perf counter); show a dash, not 0%.
@@ -175,39 +167,31 @@ function MetricTile({
   const safePercent = clampPercent(percent);
   return (
     <div className="flex min-w-0 flex-col gap-4 rounded-xl border border-border/60 bg-muted/20 p-4 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]">
-      {/* Same icon disc and accent pill as the Remote & LAN cards and the GPU rows. */}
-      <div className="flex min-w-0 items-start gap-3">
-        <div className="flex size-8 shrink-0 items-center justify-center icon-disc">
-          <HugeiconsIcon icon={icon} className="size-4 text-foreground" />
-        </div>
-        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-          <div className="flex min-w-0 items-center justify-between gap-2">
-            <span className="truncate text-sm font-medium text-foreground">
-              {label}
-            </span>
-            {showUsage ? (
-              <span
-                className={cn(
-                  "shrink-0 rounded-full px-2 py-1 text-ui-10 leading-none font-semibold tabular-nums",
-                  usagePillClass(percentKnown ? safePercent : null),
-                )}
-              >
-                {percentKnown ? formatPercent(safePercent) : "--"}
-              </span>
-            ) : null}
-          </div>
-          <span
-            title={detail}
-            className="truncate text-xs text-muted-foreground"
-          >
-            {detail}
+      <div className="flex min-w-0 flex-col gap-0.5">
+        <div className="flex min-w-0 items-center justify-between gap-2">
+          <span className="truncate text-sm font-medium text-foreground">
+            {label}
           </span>
-          {extraDetail ? (
-            <span className="whitespace-pre-line text-xs text-muted-foreground">
-              {extraDetail}
+          {/* Same accent pill as the GPU rows. */}
+          {showUsage ? (
+            <span
+              className={cn(
+                "shrink-0 rounded-full px-2 py-1 text-ui-10 leading-none font-semibold tabular-nums",
+                usagePillClass(percentKnown ? safePercent : null),
+              )}
+            >
+              {percentKnown ? formatPercent(safePercent) : "--"}
             </span>
           ) : null}
         </div>
+        <span title={detail} className="truncate text-xs text-muted-foreground">
+          {detail}
+        </span>
+        {extraDetail ? (
+          <span className="whitespace-pre-line text-xs text-muted-foreground">
+            {extraDetail}
+          </span>
+        ) : null}
       </div>
       {/* mt-auto: the meters of side-by-side tiles stay on one line. */}
       <div className="mt-auto flex min-w-0 flex-col gap-2.5">
@@ -698,7 +682,6 @@ export function ResourcesTab() {
         <div className="grid gap-2 py-3 sm:grid-cols-2 sm:[&>:last-child:nth-child(odd)]:col-span-2">
           <MetricTile
             label={t("settings.resources.liveMonitor.cpu")}
-            icon={CpuIcon}
             value={hostReading(cpuFrequencyLabel ?? cpuCoresLabel)}
             detail={
               hostUnread
@@ -711,7 +694,6 @@ export function ResourcesTab() {
           />
           <MetricTile
             label={t("settings.resources.liveMonitor.ram")}
-            icon={RamMemoryIcon}
             value={hostReading(
               `${formatGiB(metrics.ramUsed)} / ${formatGiB(metrics.ramTotal)}`,
             )}
@@ -726,7 +708,6 @@ export function ResourcesTab() {
           />
           <MetricTile
             label={t("settings.resources.liveMonitor.disk")}
-            icon={HardDriveIcon}
             value={hostReading(
               `${formatDiskSize(metrics.diskUsed)} / ${formatDiskSize(metrics.diskTotal)}`,
             )}
@@ -742,7 +723,6 @@ export function ResourcesTab() {
           {metrics.modelsDisk && (
             <MetricTile
               label={t("settings.resources.liveMonitor.modelsDisk")}
-              icon={HardDriveIcon}
               value={hostReading(
                 `${formatDiskSize(metrics.modelsDiskUsed)} / ${formatDiskSize(metrics.modelsDisk.total_gb)}`,
               )}
@@ -762,7 +742,6 @@ export function ResourcesTab() {
                 ? "settings.resources.gpu.memory"
                 : "settings.resources.liveMonitor.vram",
             )}
-            icon={GpuIcon}
             value={
               gpuUnknown
                 ? unknownLabel
@@ -1013,74 +992,66 @@ export function ResourcesTab() {
                 key={`${device.index ?? index}-${device.name ?? "gpu"}`}
                 className="flex min-w-0 flex-wrap items-start justify-between gap-x-4 gap-y-2 py-3 max-[992px]:flex-col max-[992px]:items-stretch"
               >
-                <div className="flex min-w-0 flex-1 items-start gap-3">
-                  <div className="flex size-8 shrink-0 items-center justify-center icon-disc">
-                    <HugeiconsIcon
-                      icon={GpuIcon}
-                      className="size-4 text-foreground"
-                    />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-medium text-foreground">
+                    {device.name ?? t("settings.resources.gpu.unknownDevice")}
                   </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-sm font-medium text-foreground">
-                      {device.name ?? t("settings.resources.gpu.unknownDevice")}
-                    </div>
-                    <div className="mt-1 flex min-w-0 items-center gap-2">
-                      <span className="truncate text-xs text-muted-foreground">
-                        {ordinal === undefined
-                          ? backendLabel
-                          : `${t("settings.resources.gpu.deviceWithIndex", {
-                              index: ordinal,
-                            })}, ${backendLabel}`}
-                      </span>
-                      {/* Same accent pill as the New tags, which stays legible
+                  <div className="mt-1 flex min-w-0 items-center gap-2">
+                    <span className="truncate text-xs text-muted-foreground">
+                      {ordinal === undefined
+                        ? backendLabel
+                        : `${t("settings.resources.gpu.deviceWithIndex", {
+                            index: ordinal,
+                          })}, ${backendLabel}`}
+                    </span>
+                    {/* Same accent pill as the New tags, which stays legible
                         on the light background. */}
-                      {hasSharedMemoryHeadroom(device) ? (
-                        <span className="text-xs text-muted-foreground">
-                          {t("settings.resources.gpu.sharedWithSystemRam")}
-                        </span>
-                      ) : sharedSplit ? (
-                        <span className="shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold tabular-nums text-control-accent">
-                          {percentText}
-                        </span>
-                      ) : (
-                        <span className="shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold tabular-nums text-control-accent">
-                          {percentText}{" "}
-                          {t("settings.resources.gpu.vramUtilization")}
-                        </span>
-                      )}
-                    </div>
-                    {/* Own line: beside the pill it truncates the backend label first. */}
-                    {sharedSplit && !hasSharedMemoryHeadroom(device) ? (
-                      <div className="mt-1 text-xs text-muted-foreground">
-                        {sharedSplit.dedicated > 0
-                          ? t("settings.resources.environment.vramWithShared", {
-                              vram: formatGiB(sharedSplit.dedicated),
-                              shared: formatGiB(sharedSplit.shared),
-                            })
-                          : t("settings.resources.gpu.sharedWithSystemRam")}
-                      </div>
-                    ) : null}
-                    {telemetry ? (
-                      <div className="mt-1 truncate text-xs tabular-nums text-muted-foreground">
-                        {[
-                          telemetry.loadPct !== null
-                            ? `${t("settings.resources.liveMonitor.gpuLoad")} ${formatPercent(telemetry.loadPct)}`
-                            : null,
-                          telemetry.temperatureC !== null
-                            ? formatTemperature(telemetry.temperatureC)
-                            : null,
-                          telemetry.powerDrawW !== null
-                            ? formatPower(
-                                telemetry.powerDrawW,
-                                telemetry.powerLimitW,
-                              )
-                            : null,
-                        ]
-                          .filter(Boolean)
-                          .join(" · ")}
-                      </div>
-                    ) : null}
+                    {hasSharedMemoryHeadroom(device) ? (
+                      <span className="text-xs text-muted-foreground">
+                        {t("settings.resources.gpu.sharedWithSystemRam")}
+                      </span>
+                    ) : sharedSplit ? (
+                      <span className="shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold tabular-nums text-control-accent">
+                        {percentText}
+                      </span>
+                    ) : (
+                      <span className="shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold tabular-nums text-control-accent">
+                        {percentText}{" "}
+                        {t("settings.resources.gpu.vramUtilization")}
+                      </span>
+                    )}
                   </div>
+                  {/* Own line: beside the pill it truncates the backend label first. */}
+                  {sharedSplit && !hasSharedMemoryHeadroom(device) ? (
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      {sharedSplit.dedicated > 0
+                        ? t("settings.resources.environment.vramWithShared", {
+                            vram: formatGiB(sharedSplit.dedicated),
+                            shared: formatGiB(sharedSplit.shared),
+                          })
+                        : t("settings.resources.gpu.sharedWithSystemRam")}
+                    </div>
+                  ) : null}
+                  {telemetry ? (
+                    <div className="mt-1 truncate text-xs tabular-nums text-muted-foreground">
+                      {[
+                        telemetry.loadPct !== null
+                          ? `${t("settings.resources.liveMonitor.gpuLoad")} ${formatPercent(telemetry.loadPct)}`
+                          : null,
+                        telemetry.temperatureC !== null
+                          ? formatTemperature(telemetry.temperatureC)
+                          : null,
+                        telemetry.powerDrawW !== null
+                          ? formatPower(
+                              telemetry.powerDrawW,
+                              telemetry.powerLimitW,
+                            )
+                          : null,
+                      ]
+                        .filter(Boolean)
+                        .join(" · ")}
+                    </div>
+                  ) : null}
                 </div>
                 {/* Meter under the figures, so it spans their width instead of
                     being squeezed into the gap beside them. Same 392px as the
