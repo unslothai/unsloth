@@ -387,6 +387,7 @@ def _tensor_descriptor() -> Any:
 
 def _launch_tma(a: Any, w: Any, xs: Any, ws: Any, bias: Any, cfg: tuple) -> Any:
     import torch
+    import triton
 
     k = _kernels()
     desc = _tensor_descriptor()
