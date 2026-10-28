@@ -5502,7 +5502,6 @@ def _create_embedding_progress_callback(
             self._start_step = state.global_step
             if state.global_step > 0:
                 self._training_start_time = time.time()
-            # Decision training shares this callback; loop entry is not a completed step.
             if should_stop():
                 return
             _send_status(event_queue, startup.begin(args, state))

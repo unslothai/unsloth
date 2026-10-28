@@ -127,7 +127,6 @@ def test_train_begin_reports_loop_entry_before_any_loss():
 
 
 def test_logging_reports_an_empty_status_so_the_active_one_is_sent_once():
-    # Publish loop entry and the first measured loss once; later logs keep the active status.
     owner = _make_owner()
     reported: list[str] = []
     owner.add_progress_callback(lambda progress: reported.append(progress.status_message))

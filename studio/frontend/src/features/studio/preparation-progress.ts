@@ -17,7 +17,7 @@ const PREPARATION_PHASES = new Set<TrainingPhase>([
   "configuring",
 ]);
 
-// These are emitted only by the real trainer callbacks, after resource preparation.
+// Mirrors core/training/startup_progress.py; only trainer callbacks emit these.
 export function hasTrainingLoopStarted(message: string): boolean {
   return /^(?:starting training loop|running first training step|first training step finished|training in progress)\b/i.test(message.trim());
 }

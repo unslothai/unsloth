@@ -885,7 +885,6 @@ class UnslothTrainer:
                 trainer_ref.session_start_step = state.global_step
                 if state.global_step > 0:
                     trainer_ref.training_start_time = time.time()
-                # No loss exists yet: report loop entry separately from the first optimizer step.
                 if trainer_ref.should_stop:
                     return
                 trainer_ref._update_progress(status_message = startup.begin(args, state))

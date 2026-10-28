@@ -323,8 +323,7 @@ export function TrainingStartOverlay({
     startFromResume && /^download/i.test(message)
       ? t("studio.trainingStart.resumingTraining")
       : message || t("studio.trainingStart.startingTraining");
-  // A trainer callback proves these resources are ready for the run. The cache
-  // scan may count a different repo subset; it must not imply a new download now.
+  // Resources are loaded once the loop runs; the cache scan's file subset would fake a download.
   const trainingLoopStarted = hasTrainingLoopStarted(message);
   const rawModelDownload = useModelDownloadProgress(
     trainingLoopStarted ? null : modelName,
