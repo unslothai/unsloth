@@ -10,6 +10,7 @@ use crate::desktop_backend_owner::{
 use backend::probe_existing_backends;
 use log::{info, warn};
 pub use managed::managed_install_ready;
+pub(crate) use managed::start_launch_cli_probe;
 use managed::probe_managed_install;
 use std::path::PathBuf;
 use types::{BackendProbe, ManagedProbe};
@@ -23,6 +24,8 @@ pub(crate) use version::{
 
 #[cfg(test)]
 use backend::{backend_desktop_auth_status, backend_health};
+#[cfg(test)]
+use managed::install_launch_cli_probe;
 #[cfg(test)]
 use managed::probe_managed_bin;
 #[cfg(test)]
@@ -973,6 +976,67 @@ exit 1
             ManagedProbe::Stale { .. }
         ));
         assert_eq!(fs::read_to_string(&calls).unwrap(), "-h\n");
+
+        remove_managed_capability_cache();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_passing_launch_help_probe_stands_in_for_the_first_preflight_only() {
+        use std::fs;
+
+        let _cache_guard = MANAGED_CAPABILITY_CACHE_TEST_LOCK.lock().await;
+        let _cache_home = ManagedCapabilityCacheHome::new("launch-help");
+        remove_managed_capability_cache();
+        let fake = fake_cli(
+            "launch-help",
+            r#"#!/bin/sh
+log="$0.calls"
+modeh="$0.modeh"
+printf '%s\n' "$*" >> "$log"
+if [ "$1" = "-h" ]; then
+  if [ -f "$modeh" ]; then exit 42; fi
+  exit 0
+fi
+if [ "$1" = "studio" ] && [ "$2" = "desktop-capabilities" ] && [ "$3" = "--json" ]; then
+  printf '{"desktop_protocol_version":1,"desktop_manageability_version":2,"supports_api_only":true,"supports_provision_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_install_ok":true,"version":"2026.8.4"}'
+  exit 0
+fi
+exit 1
+"#,
+        );
+        let bin = fake.bin.clone();
+        let calls = bin.with_extension("calls");
+        let modeh = bin.with_extension("modeh");
+        // Warm the capability cache so only `-h` is in play below.
+        assert!(matches!(probe_managed_bin(bin.clone()).await, ManagedProbe::Ready { .. }));
+
+        // Launch probe passes: the preflight reuses it, so `-h` ran once in all.
+        fs::write(&calls, "").unwrap();
+        install_launch_cli_probe(bin.clone());
+        assert!(matches!(probe_managed_bin(bin.clone()).await, ManagedProbe::Ready { .. }));
+        assert_eq!(fs::read_to_string(&calls).unwrap(), "-h\n");
+
+        // Taken once: the next preflight (a Retry) asks the CLI itself.
+        fs::write(&calls, "").unwrap();
+        assert!(matches!(probe_managed_bin(bin.clone()).await, ManagedProbe::Ready { .. }));
+        assert_eq!(fs::read_to_string(&calls).unwrap(), "-h\n");
+
+        // A failed launch probe is not trusted either way: the preflight asks again and decides.
+        fs::write(&modeh, "broken").unwrap();
+        fs::write(&calls, "").unwrap();
+        install_launch_cli_probe(bin.clone());
+        assert!(matches!(probe_managed_bin(bin.clone()).await, ManagedProbe::Stale { .. }));
+        assert_eq!(fs::read_to_string(&calls).unwrap(), "-h\n-h\n");
+
+        // A launch probe of another CLI is left alone and does not answer for this one.
+        fs::remove_file(&modeh).unwrap();
+        let other = fake_cli("launch-help-other", "#!/bin/sh\nexit 0\n");
+        install_launch_cli_probe(other.bin.clone());
+        fs::write(&calls, "").unwrap();
+        assert!(matches!(probe_managed_bin(bin.clone()).await, ManagedProbe::Ready { .. }));
+        assert_eq!(fs::read_to_string(&calls).unwrap(), "-h\n");
+        assert!(matches!(probe_managed_bin(other.bin.clone()).await, ManagedProbe::Stale { .. }));
 
         remove_managed_capability_cache();
     }
