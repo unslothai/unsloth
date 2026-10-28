@@ -125,3 +125,13 @@ def test_fast_inference_never_routes_to_a_vllm_server(tmp_path, monkeypatch):
     trainer = _patched_class(tmp_path)(model, args)
     assert trainer.vllm_mode == "colocate"
     assert trainer.llm is engine
+
+
+def test_vllm_sampling_params_override_trl_defaults(tmp_path, monkeypatch):
+    monkeypatch.delenv("RANK", raising = False)
+    model = types.SimpleNamespace(name_or_path = "tiny-model")
+    args = _args()
+    args.vllm_sampling_params = types.SimpleNamespace(_set_kwargs = {"temperature": 0.5})
+    trainer = _patched_class(tmp_path)(model, args)
+    assert trainer.generation_config["temperature"] == 0.5
+    assert trainer.generation_config["n"] == 2

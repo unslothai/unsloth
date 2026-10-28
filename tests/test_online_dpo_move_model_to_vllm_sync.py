@@ -194,6 +194,12 @@ def test_trl_022_inline_sync_reaches_trl_engine():
     assert rec.loaded == ["weight", "bias"]
 
     trainer, rec = _trainer(dense)
+    trainer._generate_vllm(
+        types.SimpleNamespace(module = types.SimpleNamespace(_orig_mod = dense)), ["p"]
+    )
+    assert rec.loaded == ["weight", "bias"]
+
+    trainer, rec = _trainer(dense)
     trainer.accelerator.state.deepspeed_plugin = types.SimpleNamespace(zero_stage = 3)
     with pytest.raises(RuntimeError, match = "sharded"):
         trainer._generate_vllm(dense, ["p"])

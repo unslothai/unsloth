@@ -3407,6 +3407,7 @@ def _unsloth_vllm_load_state_dict(trainer, model):
             "(FSDP / DeepSpeed ZeRO-3) weights into vLLM. Upgrade TRL to 0.23 or later."
         )
     model = trainer.accelerator.unwrap_model(model)
+    model = getattr(model, "_orig_mod", model)  # torch.compile wrapper
     trainer.llm.llm_engine.model_executor.driver_worker.model_runner.model.load_weights(
         model.state_dict().items()
     )

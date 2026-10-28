@@ -4245,13 +4245,18 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 last_indentation = len(last_line) - len(last_line.lstrip())
 
                 extra = "**getattr(getattr(args, 'vllm_sampling_params', vLLMSamplingParams()), '_set_kwargs', {})"
+                # Merge, not two ** splats: a vllm_sampling_params key TRL also sets (top_p) is a TypeError.
                 to_replace = (
                     ",\n"
                     + " " * last_prev_indentation
+                    + "), "
                     + extra
-                    + ",\n"
+                    + "},\n"
                     + " " * last_indentation
                     + ")"
+                )
+                sampling_params = sampling_params.replace(
+                    "SamplingParams(", "SamplingParams(**{**dict(", 1
                 )
                 sampling_params = to_replace.join(sampling_params.rsplit(")", 1))
                 sampling_params = re.sub(r"[\,][\s]{0,}\,", ",", sampling_params)
