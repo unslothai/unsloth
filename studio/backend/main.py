@@ -3142,6 +3142,33 @@ class _TunnelOnlyFrontend:
         await Response(status_code = 404)(scope, receive, send)
 
 
+def _match_assets_before_api_routes(app: FastAPI) -> None:
+    """Move the /assets mount `app.mount` just appended ahead of the API routes.
+
+    Routes match in order, so an asset request used to be tested against every API route first,
+    about half the cost of serving it, and a cold page load fetches over a hundred. No API route
+    starts with /assets/, so only asset requests match differently. An /assets mount from an
+    earlier call stays in front and keeps winning, as before.
+    """
+    from starlette.routing import Mount
+
+    routes = app.router.routes
+    if not routes:
+        return
+    mount = routes[-1]
+    if not (isinstance(mount, Mount) and mount.path == "/assets"):
+        return
+    routes.pop()
+    position = 0
+    while (
+        position < len(routes)
+        and isinstance(routes[position], Mount)
+        and routes[position].path == "/assets"
+    ):
+        position += 1
+    routes.insert(position, mount)
+
+
 def setup_frontend(
     app: FastAPI,
     build_path: Path,
@@ -3163,6 +3190,7 @@ def setup_frontend(
         if tunnel_only:
             assets_app = _TunnelOnlyFrontend(assets_app, app.state)
         app.mount("/assets", assets_app, name = "assets")
+        _match_assets_before_api_routes(app)
 
     def _frontend_request_allowed(request: Request) -> bool:
         return not tunnel_only or _is_remote_frontend_request(request.scope, app.state)

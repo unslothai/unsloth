@@ -1037,6 +1037,57 @@ class TestFrontendAssets:
         assert main_module.setup_frontend(mounted, tmp_path)
         assert mounted.state.frontend_mounted is True
 
+    def test_assets_mount_is_matched_before_the_api_routes(self, tmp_path, main_module):
+        """An asset request no longer walks every API route before reaching its mount; what it
+        gets back, and what the API and SPA routes answer, is unchanged."""
+        from fastapi.routing import APIRoute
+        from starlette.routing import Mount
+
+        (tmp_path / "index.html").write_text("<!doctype html><title>x</title>")
+        assets = tmp_path / "assets"
+        assets.mkdir()
+        (assets / "app-abc123.js").write_text("export const a = 1;" * 200, encoding = "utf-8")
+        app = FastAPI()
+
+        @app.get("/api/ping")
+        def ping():
+            return {"ok": True}
+
+        assert main_module.setup_frontend(app, tmp_path)
+        routes = app.router.routes
+        mount_at = next(
+            i for i, r in enumerate(routes) if isinstance(r, Mount) and r.path == "/assets"
+        )
+        api_at = [i for i, r in enumerate(routes) if isinstance(r, APIRoute)]
+        assert mount_at < min(api_at)
+        # The SPA catch-all still comes last, so it only answers what nothing else claims.
+        assert routes[-1].path == "/{full_path:path}"
+
+        client = TestClient(app, base_url = "http://127.0.0.1:8888", client = ("127.0.0.1", 40000))
+        response = client.get("/assets/app-abc123.js", headers = {"Accept-Encoding": "gzip"})
+        assert response.status_code == 200
+        assert response.text == "export const a = 1;" * 200
+        assert response.headers["cache-control"] == "public, max-age=31536000, immutable"
+        assert response.headers["content-encoding"] == "gzip"
+        assert client.get("/api/ping").json() == {"ok": True}
+        assert client.get("/assets/missing.js").status_code == 404
+        assert "<title>x</title>" in client.get("/some/spa/route").text
+
+    def test_a_second_setup_frontend_keeps_the_first_assets_mount_winning(
+        self, tmp_path, main_module
+    ):
+        """Embedded hosts can rerun run_server on one app; the first mount answered before and still does."""
+        first, second = tmp_path / "first", tmp_path / "second"
+        for root, body in ((first, "first"), (second, "second")):
+            (root / "assets").mkdir(parents = True)
+            (root / "index.html").write_text("<!doctype html>")
+            (root / "assets" / "app.js").write_text(body, encoding = "utf-8")
+        app = FastAPI()
+        assert main_module.setup_frontend(app, first)
+        assert main_module.setup_frontend(app, second)
+        client = TestClient(app, base_url = "http://127.0.0.1:8888", client = ("127.0.0.1", 40000))
+        assert client.get("/assets/app.js").text == "first"
+
     def test_desktop_frontend_is_available_only_through_live_tunnel(self, tmp_path, main_module):
         (tmp_path / "index.html").write_text("<!doctype html><title>remote</title>")
         assets = tmp_path / "assets"
