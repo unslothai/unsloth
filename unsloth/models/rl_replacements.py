@@ -739,8 +739,8 @@ def dpo_trainer_prepare_dataset(function_name, function):
 
 
 def _unsloth_dpo_reference_loadable(policy_sd, ref_sd):
-    # Plain, materialised tensors only (DTensor / FSDP2 / TP shards, offloaded meta weights cannot be
-    # copied in), same shapes, and the
+    # Plain, materialised tensors on both sides only (DTensor / FSDP2 / TP shards, quantized
+    # subclasses, offloaded meta weights cannot be copied in), same shapes, and the
     # same tying: an untied policy loaded into a tied reference writes twice into one tensor.
     if policy_sd.keys() != ref_sd.keys():
         return False
@@ -749,6 +749,7 @@ def _unsloth_dpo_reference_loadable(policy_sd, ref_sd):
         ref = ref_sd[key]
         if (
             type(value) is not torch.Tensor
+            or type(ref) is not torch.Tensor
             or value.shape != ref.shape
             or value.is_meta
             or ref.is_meta

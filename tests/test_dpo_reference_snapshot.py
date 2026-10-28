@@ -66,8 +66,10 @@ class _Policy(torch.nn.Module):
         self.head = torch.nn.Linear(2, out)
         if tied:
             self.head.weight = self.lin.weight
-        if offload:  # one meta tensor: two would also differ in tying (both data_ptr 0)
+        if offload == "meta":  # one meta tensor: two would also differ in tying (both data_ptr 0)
             self.head.weight = torch.nn.Parameter(self.head.weight.to("meta"))
+        elif offload == "quantized":  # e.g. TorchAO Int8Tensor from model_init_kwargs
+            self.head.weight = torch.nn.Parameter(self.head.weight.detach().as_subclass(_Shard))
 
 
 class _Shard(torch.Tensor):  # stands in for DTensor (FSDP2 / tensor parallel)
@@ -149,9 +151,16 @@ def test_explicit_reference_kept(monkeypatch):
         (_Policy, 3, False, False),
         (_Policy, 2, True, False),
         (_ShardedPolicy, 2, False, False),
-        (_Policy, 2, False, True),
+        (_Policy, 2, False, "meta"),
+        (_Policy, 2, False, "quantized"),
     ],
-    ids = ["resized", "untied_policy_tied_checkpoint", "sharded", "offloaded_reference"],
+    ids = [
+        "resized",
+        "untied_policy_tied_checkpoint",
+        "sharded",
+        "offloaded_reference",
+        "quantized_reference",
+    ],
 )
 def test_mismatched_reference_keeps_whole_checkpoint(monkeypatch, policy, out, tied, offload):
     # No tensor is copied, so the reference is never a policy / checkpoint hybrid.
