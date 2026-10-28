@@ -2008,7 +2008,8 @@ def _offline_quantize_to_fp8(
             del model
             for _ in range(2):
                 clean_gpu_cache()
-                gc.collect()
+                if gc.collect() == 0 and not gc.callbacks:
+                    break
             tokenizer.save_pretrained(partial)
             try:
                 os.rename(partial, new_model_name)

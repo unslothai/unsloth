@@ -178,8 +178,10 @@ def _maybe_prepare_vllm_for_resume(trainer):
     import gc
 
     for _ in range(3):
-        gc.collect()
+        collected = gc.collect()
         clean_gpu_cache()
+        if collected == 0 and not gc.callbacks:
+            break
 
 
 def _patch_resume_from_checkpoint_memory(trainer_class):

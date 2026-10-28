@@ -94,6 +94,28 @@ except:
 from pathlib import Path
 from peft import PeftModelForCausalLM, PeftModel
 
+
+def _collect_garbage(
+    passes = 3,
+    before = None,
+    after = None,
+):
+    """Up to `passes` full collections, `before` / `after` run around each, stopping after one that finds nothing.
+
+    A pass that finds no unreachable objects frees nothing and runs no finalizer, so the next pass walks the
+    same heap and finds nothing either. gc.callbacks run around every pass and may drop references, so with
+    any registered every pass still runs.
+    """
+    for _ in range(passes):
+        if before is not None:
+            before()
+        collected = gc.collect()
+        if after is not None:
+            after()
+        if collected == 0 and not gc.callbacks:
+            break
+
+
 __all__ = [
     "print_quantization_methods",
     "unsloth_save_model",
@@ -1460,9 +1482,7 @@ def unsloth_save_model(
 
     assert maximum_memory_usage > 0 and maximum_memory_usage <= 0.95
 
-    for _ in range(3):
-        clean_gpu_cache()
-        gc.collect()
+    _collect_garbage(before = clean_gpu_cache)
 
     save_method = save_method.lower().replace(" ", "_")
     raise_if_merging_mistral_format_view(model, save_method)
@@ -1965,11 +1985,12 @@ def unsloth_save_model(
 
     save_pretrained_settings["state_dict"] = None
 
+    # Dropping a tensor frees it by refcount. The loop allocates nothing, so the collect below
+    # finds every cycle a per-entry collect would have, at one full pass instead of one per 10 entries.
     for j, (key, value) in enumerate(state_dict.items()):
         state_dict[key] = None
         if j % 10 == 0:
             clean_gpu_cache()
-            gc.collect()
     state_dict = None
     del state_dict
     clean_gpu_cache()
@@ -1977,9 +1998,7 @@ def unsloth_save_model(
 
     shutil.rmtree(temporary_location, ignore_errors = True)
 
-    for _ in range(3):
-        clean_gpu_cache()
-        gc.collect()
+    _collect_garbage(before = clean_gpu_cache)
     return save_directory, username
 
 
@@ -2900,8 +2919,7 @@ def unsloth_save_pretrained_merged(
             maximum_memory_usage = maximum_memory_usage,
             datasets = datasets,
         )
-        for _ in range(3):
-            gc.collect()
+        _collect_garbage()
         return
 
     _torchao = _normalize_torchao_method(save_method)
@@ -2927,8 +2945,7 @@ def unsloth_save_pretrained_merged(
             maximum_memory_usage = maximum_memory_usage,
             datasets = datasets,
         )
-        for _ in range(3):
-            gc.collect()
+        _collect_garbage()
         return
 
     arguments = dict(locals())
@@ -2943,8 +2960,7 @@ def unsloth_save_pretrained_merged(
     del arguments["max_seq_length"]
     del arguments["install_missing_dependencies"]
     unsloth_save_model(**arguments)
-    for _ in range(3):
-        gc.collect()
+    _collect_garbage()
 
 
 @_model_parallel_refuses_save("push_to_hub_merged")
@@ -3026,8 +3042,7 @@ def unsloth_push_to_hub_merged(
             maximum_memory_usage = maximum_memory_usage,
             datasets = datasets,
         )
-        for _ in range(3):
-            gc.collect()
+        _collect_garbage()
         return
 
     _torchao = _normalize_torchao_method(save_method)
@@ -3055,8 +3070,7 @@ def unsloth_push_to_hub_merged(
             maximum_memory_usage = maximum_memory_usage,
             datasets = datasets,
         )
-        for _ in range(3):
-            gc.collect()
+        _collect_garbage()
         return
 
     arguments = dict(locals())
@@ -3072,8 +3086,7 @@ def unsloth_push_to_hub_merged(
     del arguments["max_seq_length"]
     del arguments["install_missing_dependencies"]
     unsloth_save_model(**arguments)
-    for _ in range(3):
-        gc.collect()
+    _collect_garbage()
 
 
 MODEL_CARD = """---
@@ -4864,10 +4877,7 @@ def unsloth_save_pretrained_gguf(
         if is_processor:
             tokenizer = tokenizer.tokenizer
 
-        for _ in range(3):
-            import gc
-            gc.collect()
-            clean_gpu_cache()
+        _collect_garbage(after = clean_gpu_cache)
 
         try:
             model_dtype = dtype_from_config(self.config)
@@ -6952,8 +6962,7 @@ def unsloth_generic_save_pretrained_merged(
             maximum_memory_usage = maximum_memory_usage,
             datasets = datasets,
         )
-        for _ in range(3):
-            gc.collect()
+        _collect_garbage()
         return
 
     _torchao = _normalize_torchao_method(save_method)
@@ -6979,8 +6988,7 @@ def unsloth_generic_save_pretrained_merged(
             maximum_memory_usage = maximum_memory_usage,
             datasets = datasets,
         )
-        for _ in range(3):
-            gc.collect()
+        _collect_garbage()
         return
 
     arguments = dict(locals())
@@ -6993,8 +7001,7 @@ def unsloth_generic_save_pretrained_merged(
     del arguments["max_seq_length"]
     del arguments["install_missing_dependencies"]
     unsloth_generic_save(**arguments)
-    for _ in range(3):
-        gc.collect()
+    _collect_garbage()
 
 
 # Like save_pretrained_merged: every rank calls it, rank 0 gathers, merges and uploads.
@@ -7102,8 +7109,7 @@ def unsloth_generic_push_to_hub_merged(
             maximum_memory_usage = maximum_memory_usage,
             datasets = datasets,
         )
-        for _ in range(3):
-            gc.collect()
+        _collect_garbage()
         return
 
     _torchao = _normalize_torchao_method(save_method)
@@ -7131,8 +7137,7 @@ def unsloth_generic_push_to_hub_merged(
             maximum_memory_usage = maximum_memory_usage,
             datasets = datasets,
         )
-        for _ in range(3):
-            gc.collect()
+        _collect_garbage()
         return
 
     arguments = dict(locals())
@@ -7148,8 +7153,7 @@ def unsloth_generic_push_to_hub_merged(
     del arguments["max_seq_length"]
     del arguments["install_missing_dependencies"]
     unsloth_generic_save(**arguments)
-    for _ in range(3):
-        gc.collect()
+    _collect_garbage()
 
 
 def _unsloth_save_torchao_with_attached_config(
@@ -7309,8 +7313,7 @@ def _unsloth_save_torchao_with_given_config(
     if untied_lm_head is not None:
         _untie_merged_checkpoint(save_directory, *untied_lm_head)
 
-    for _ in range(3):
-        gc.collect()
+    _collect_garbage()
 
     from transformers import (
         AutoModelForCausalLM,
@@ -7342,9 +7345,7 @@ def _unsloth_save_torchao_with_given_config(
 
     # Else the original stays resident on every GPU while device_map="auto" below loads a second copy.
     model_restore = _offload_model_for_quantize_subprocess(model)
-    for _ in range(3):
-        gc.collect()
-        clean_gpu_cache()
+    _collect_garbage(after = clean_gpu_cache)
 
     # The original stays offloaded until the quantized copy is saved AND released, else both are resident at once and the restore OOMs.
     try:
@@ -7381,9 +7382,7 @@ def _unsloth_save_torchao_with_given_config(
         _exc = sys.exc_info()[1]
         if _exc is not None:
             traceback.clear_frames(_exc.__traceback__)
-        for _ in range(3):
-            gc.collect()
-            clean_gpu_cache()
+        _collect_garbage(after = clean_gpu_cache)
         _restore_model_after_quantize_subprocess(model, model_restore)
 
     if os.path.exists(save_directory):
@@ -7880,9 +7879,7 @@ def _unsloth_save_compressed_tensors(
 
         # Free the in-memory model's CUDA memory before the subprocess loads its own copy, so the GPUs need not hold both. Best-effort, restored in finally.
         model_restore = _offload_model_for_quantize_subprocess(model)
-        for _ in range(3):
-            gc.collect()
-            clean_gpu_cache()
+        _collect_garbage(after = clean_gpu_cache)
 
         # Same boundary as the LoRA GGUF converter: False scrubs, it does not merely withhold.
         env = os.environ.copy()
@@ -7946,9 +7943,7 @@ def _unsloth_save_compressed_tensors(
             shutil.rmtree(calib_tmp, ignore_errors = True)
         if work_tmp is not None:
             shutil.rmtree(work_tmp, ignore_errors = True)
-        for _ in range(3):
-            gc.collect()
-            clean_gpu_cache()
+        _collect_garbage(after = clean_gpu_cache)
 
 
 @_model_parallel_refuses_save("save_pretrained_torchao")
@@ -8075,9 +8070,7 @@ def _unsloth_save_torchao(
 
         # Free the in-memory model's accelerator memory before reloading from disk, else it sits beside the copy and OOMs a device that fit the model once. Covers CUDA, XPU and multi-GPU dispatched shards, which a plain .to("cpu") cannot move.
         model_restore = _offload_model_for_quantize_subprocess(model)
-        for _ in range(3):
-            gc.collect()
-            clean_gpu_cache()
+        _collect_garbage(after = clean_gpu_cache)
 
         # Reload the staged 16bit checkpoint with torchao applied: bfloat16 is required, and device_map="auto" falls back to CPU, so this works on any hardware.
         print(f"Unsloth: Quantizing the merged model to torchao {kind}...")
@@ -8096,9 +8089,7 @@ def _unsloth_save_torchao(
         quantized_model.save_pretrained(out_dir, safe_serialization = safe_serialization)
         staged_tokenizer.save_pretrained(out_dir)
         del quantized_model
-        for _ in range(3):
-            gc.collect()
-            clean_gpu_cache()
+        _collect_garbage(after = clean_gpu_cache)
 
         cfg_path = os.path.join(out_dir, "config.json")
         cfg = {}
@@ -8146,15 +8137,11 @@ def _unsloth_save_torchao(
         _exc = sys.exc_info()[1]
         if _exc is not None:
             traceback.clear_frames(_exc.__traceback__)
-        for _ in range(3):
-            gc.collect()
-            clean_gpu_cache()
+        _collect_garbage(after = clean_gpu_cache)
         _restore_model_after_quantize_subprocess(model, model_restore)
         if work_tmp is not None:
             shutil.rmtree(work_tmp, ignore_errors = True)
-        for _ in range(3):
-            gc.collect()
-            clean_gpu_cache()
+        _collect_garbage(after = clean_gpu_cache)
 
 
 # Must match qat_scheme="int8-int4"; export_llm defaults (group_size 128, use_hqq true) do not.
@@ -8279,8 +8266,7 @@ def unsloth_save_pretrained_torchao(
             model_type = getattr(getattr(self, "config", None), "model_type", None),
         )
 
-    for _ in range(3):
-        gc.collect()
+    _collect_garbage()
 
 
 # quantization_type -> `optimum-cli export openvino` options. None and "fp16" still name a weight format: with none, optimum-intel int8-compresses every model over 1B parameters.
@@ -8542,8 +8528,7 @@ def _unsloth_save_openvino(
         return os.fspath(save_directory)
     finally:
         shutil.rmtree(work_tmp, ignore_errors = True)
-        for _ in range(3):
-            gc.collect()
+        _collect_garbage()
 
 
 @_model_parallel_refuses_save("save_pretrained_openvino")
