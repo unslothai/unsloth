@@ -54,6 +54,51 @@ class PythonRewardError(RuntimeError):
     pass
 
 
+ISOLATION_FIELD = "grpo_python_reward_isolation"
+# The sandbox's remediation is written for the chat tools; these say the same for a reward.
+_TOOL_WORDING = (
+    ("To isolate tool calls, ", "To isolate them, "),
+    ("; Unsloth picks it up within a minute, no restart needed.", ", then try again."),
+)
+
+
+def sandbox_refusal(reason: str, remediation: str = "") -> str:
+    """The one refusal Try it, Start and training show when Python rewards need an OS sandbox
+    this host cannot start: the fix in plain words, no internal error codes."""
+    from core.inference.os_sandbox import _FALLBACK_NOTE
+
+    detail = (remediation or "").replace(_FALLBACK_NOTE, "").strip()
+    for old, new in _TOOL_WORDING:
+        detail = detail.replace(old, new)
+    if not detail:
+        # "OS_ISOLATION_UNAVAILABLE: ... SandboxUnavailableError: why" -> "why"
+        detail = re.sub(r"^(?:[A-Z_]+:\s*)?(?:.*?\b\w+Error:\s*)?", "", str(reason)).strip()
+        detail = detail[:1].upper() + detail[1:]
+        if detail and not detail.endswith("."):
+            detail += "."
+    return (
+        f"Python rewards need the OS sandbox, and this system has none. {detail} To run them "
+        "with software safeguards only, which do not stop a reward from reading your files, "
+        "writing outside its folder or using the network, set Python reward isolation to Auto "
+        f'({ISOLATION_FIELD}: "auto").'
+    ).replace("  ", " ")
+
+
+def python_isolation_refusal(mode: str) -> Optional[str]:
+    """What a ``required`` run would be refused with on this host, or None. The same capability
+    check the reward worker's launch makes, so Start and Try it agree."""
+    if mode != "required":
+        return None
+    from core.inference import os_sandbox
+
+    capability = os_sandbox.capability_snapshot(
+        execution_kind = "python", selected_executable = sys.executable
+    )
+    if capability.available:
+        return None
+    return sandbox_refusal(capability.reason, capability.remediation)
+
+
 def _jsonable(value: Any) -> Any:
     if value is None or isinstance(value, (str, bool, int)):
         return value
@@ -180,9 +225,12 @@ class RewardWorker:
         *,
         mode: str = "auto",
         batch_timeout: float = BATCH_TIMEOUT_SECONDS,
+        strict: bool = True,
     ):
         self.specs = [{"name": s["name"], "entry": s["entry"], "code": s["code"]} for s in specs]
         self.mode = mode
+        # Training refuses a reward that does not load; Try it scores the others and names it.
+        self.strict = strict
         self.batch_timeout = batch_timeout
         self.isolation: dict[str, Any] = {}
         self._lock = threading.Lock()
@@ -251,7 +299,7 @@ class RewardWorker:
         except BaseException:
             self.close()
             raise
-        if ready.get("errors"):
+        if ready.get("errors") and self.strict:
             errors = ready["errors"]
             self.close()
             raise PythonRewardError(
@@ -285,6 +333,17 @@ class RewardWorker:
     def score(
         self, names: list[str], prompts: Any, completions: Any, kwargs: dict[str, Any]
     ) -> dict[str, list[Optional[float]]]:
+        scores, errors = self.score_each(names, prompts, completions, kwargs)
+        if errors:
+            raise PythonRewardError(
+                "; ".join(f"{name}: {message}" for name, message in sorted(errors.items()))
+            )
+        return scores
+
+    def score_each(
+        self, names: list[str], prompts: Any, completions: Any, kwargs: dict[str, Any]
+    ) -> tuple[dict[str, list[Optional[float]]], dict[str, str]]:
+        """Scores of the rewards that ran, and each failing reward's own error."""
         request = {
             "rewards": names,
             "prompts": _jsonable(prompts),
@@ -307,13 +366,7 @@ class RewardWorker:
             except PythonRewardError:
                 _kill_tree(self._proc)
                 raise
-        if result.get("errors"):
-            raise PythonRewardError(
-                "; ".join(
-                    f"{name}: {message}" for name, message in sorted(result["errors"].items())
-                )
-            )
-        return result["scores"]
+        return result.get("scores") or {}, result.get("errors") or {}
 
     def close(self) -> None:
         self._closed.set()
@@ -419,13 +472,9 @@ def _close_preview() -> None:
 def _start_preview_worker(specs: list[dict], mode: str) -> RewardWorker:
     from core.inference.os_sandbox import SandboxUnavailableError
     try:
-        return RewardWorker(specs, mode = mode, batch_timeout = 30.0).start()
+        return RewardWorker(specs, mode = mode, batch_timeout = 30.0, strict = False).start()
     except SandboxUnavailableError as exc:
-        raise PythonRewardError(
-            f"Python rewards need the OS sandbox, and it is not available here ({exc}). "
-            f"{exc.remediation or ''} Training refuses them the same way unless the run sets "
-            'grpo_python_reward_isolation to "auto".'
-        ) from exc
+        raise PythonRewardError(sandbox_refusal(str(exc), exc.remediation)) from exc
 
 
 def preview_python_scores(
@@ -436,10 +485,11 @@ def preview_python_scores(
     owner: Optional[str] = None,
     mode: str = "required",
     system_prompt: Optional[str] = None,
-) -> tuple[dict[str, Optional[float]], dict[str, Any]]:
+) -> tuple[dict[str, Optional[float]], dict[str, Any], dict[str, str]]:
     """Score one reply for the Try it box. The worker is kept warm for a couple of minutes,
     since the box re-scores on every edit. ``mode`` is the os_sandbox mode, as in training:
-    ``required`` refuses a host without OS isolation, ``auto`` is the opt-in to software safeguards."""
+    ``required`` refuses a host without OS isolation, ``auto`` is the opt-in to software safeguards.
+    Returns the scores, the worker's isolation and each failing reward's error."""
     # Keyed by account: a warm worker keeps the reward's module state, which must not carry one
     # account's rows into another account's scores.
     key = json.dumps(
@@ -494,7 +544,7 @@ def preview_python_scores(
             if entry["worker"] is None:
                 entry["worker"] = _start_preview_worker(specs, mode)
         worker = entry["worker"]
-        scores = worker.score([s["name"] for s in specs], prompts, completions, kwargs)
+        scores, errors = worker.score_each([s["name"] for s in specs], prompts, completions, kwargs)
         failed = False
     finally:
         with _preview_lock:
@@ -514,4 +564,4 @@ def preview_python_scores(
                 timer.start()
         if idle and not mapped and entry["worker"] is not None:
             entry["worker"].close()
-    return {name: values[0] for name, values in scores.items()}, worker.isolation
+    return {name: values[0] for name, values in scores.items()}, worker.isolation, errors

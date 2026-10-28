@@ -51,7 +51,6 @@ _REWARD_CALL_KEYS = (
     "log_metric",
     "environments",
 )
-PYTHON_REWARD_ISOLATION_FIELD = "grpo_python_reward_isolation"
 REWARD_ISOLATION_METRIC = "sandbox/python_rewards_os_isolation"
 DEFAULT_BETA = {"dpo": 0.1, "orpo": 0.1, "grpo": 0.0}
 # variant -> (loss_type, importance_sampling_level). dapo is TRL's and Unsloth's default; gspo is
@@ -822,8 +821,8 @@ def _reward_funcs(
     """In ``reward_specs`` order, since TRL pairs ``reward_weights`` with them by position.
     ``mode`` is the os_sandbox mode: ``required`` refuses a host without OS isolation, ``auto``
     is the user's opt-in to software safeguards. The worker's isolation is copied into ``isolation``."""
-    from core.inference.os_sandbox import _FALLBACK_NOTE, SandboxUnavailableError
-    from core.training.python_rewards import PythonRewardError
+    from core.inference.os_sandbox import SandboxUnavailableError
+    from core.training.python_rewards import PythonRewardError, sandbox_refusal
 
     python = [s for s in reward_specs if s.get("kind") == "python"]
     python_funcs = {}
@@ -831,14 +830,7 @@ def _reward_funcs(
         try:
             worker = worker_cls(python, mode = mode).start()
         except SandboxUnavailableError as exc:
-            # The sandbox's own fallback note says tools "still run", which reads wrong on a refusal.
-            remediation = (exc.remediation or "").replace(_FALLBACK_NOTE, "").strip()
-            raise PythonRewardError(
-                f"Python rewards need the OS sandbox, and it is not available here ({exc}). "
-                f"{remediation} To run them with software safeguards only, which do not "
-                "stop a reward from reading your files, writing outside its folder or using the "
-                f'network, set {PYTHON_REWARD_ISOLATION_FIELD} to "auto".'
-            ) from exc
+            raise PythonRewardError(sandbox_refusal(str(exc), exc.remediation)) from exc
         if worker.isolation.get("os_isolation"):
             logger.info("Python rewards run with %s", worker.isolation)
         else:

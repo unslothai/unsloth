@@ -263,9 +263,9 @@ def test_superseded_previews_are_bounded_and_not_kept_warm(monkeypatch):
             self.closed = False
             started.append(self)
 
-        def score(self, names, *_):
+        def score_each(self, names, *_):
             release.wait(10)
-            return {names[0]: [1.0]}
+            return {names[0]: [1.0]}, {}
 
         def close(self):
             self.closed = True
@@ -500,13 +500,30 @@ def test_import_and_preview_a_python_reward(client):
     assert body["isolation"] == {"backend": "none", "os_isolation": False}
 
 
-def test_preview_reports_a_broken_python_reward_as_a_400(client):
-    md = _python_md("boom", "def reward(completions, **kw):\n    return 1 / 0\n")
-    response = client.post(
-        "/api/rewards/preview", json = {"rewards": [{"markdown": md}], "completion": "x"}
+def test_a_broken_python_reward_fails_alone_in_the_preview(client):
+    # One reward's error sits on its own chip; the rule and the working Python reward still score.
+    boom = _python_md("boom", "def reward(completions, **kw):\n    return 1 / 0\n")
+    broken_load = _python_md(
+        "typo", "import no_such_module_xyz\n\ndef reward(completions, **kw):\n    return [1.0]\n"
     )
-    assert response.status_code == 400
-    assert "ZeroDivisionError" in response.json()["detail"]
+    payload = {
+        "rewards": [
+            {"name": "soft-xml-format"},
+            {"markdown": boom},
+            {"markdown": _python_md("one", ONE)},
+            {"markdown": broken_load},
+        ],
+        "completion": "<answer>x</answer>",
+        "python_reward_isolation": "auto",
+    }
+    response = client.post("/api/rewards/preview", json = payload)
+    assert response.status_code == 200, response.text
+    scores = {s["name"]: s for s in response.json()["scores"]}
+    assert scores["soft-xml-format"]["score"] == 0.5 and scores["soft-xml-format"]["error"] is None
+    assert scores["one"]["score"] == 1.0 and scores["one"]["error"] is None
+    assert scores["boom"]["score"] is None and "ZeroDivisionError" in scores["boom"]["error"]
+    assert scores["typo"]["score"] is None and "no_such_module_xyz" in scores["typo"]["error"]
+    assert response.json()["total"] == 1.5
 
 
 def _preview_as(client, account_id, payload):
@@ -587,7 +604,19 @@ def test_a_python_preview_needs_the_os_sandbox_unless_opted_out(client):
     assert client.worker_modes == ["required", "auto"]
 
 
-def test_a_python_preview_without_the_os_sandbox_is_a_400(client, monkeypatch):
+# What a stock Colab VM reports: os_sandbox's own wording, written for the chat tools.
+COLAB_REASON = (
+    "OS_ISOLATION_UNAVAILABLE: the bubblewrap live probe could not run: SandboxUnavailableError: "
+    "bubblewrap (bwrap) is not installed on this host"
+)
+COLAB_REMEDIATION = (
+    "bubblewrap (bwrap) is not installed. To isolate tool calls, run `sudo apt-get install -y "
+    "bubblewrap`; Unsloth picks it up within a minute, no restart needed. Python and Terminal "
+    "still run, with software safeguards only and no OS isolation."
+)
+
+
+def test_a_python_preview_without_the_os_sandbox_keeps_the_rule_scores(client, monkeypatch):
     from core.inference.os_sandbox import SandboxUnavailableError
 
     class NoSandbox:
@@ -595,16 +624,59 @@ def test_a_python_preview_without_the_os_sandbox_is_a_400(client, monkeypatch):
             pass
 
         def start(self):
-            raise SandboxUnavailableError("no bubblewrap", remediation = "Install bubblewrap.")
+            raise SandboxUnavailableError(COLAB_REASON, remediation = COLAB_REMEDIATION)
 
     monkeypatch.setattr(python_rewards, "RewardWorker", NoSandbox)
     md = _python_md("one", ONE)
     response = client.post(
-        "/api/rewards/preview", json = {"rewards": [{"markdown": md}], "completion": "x"}
+        "/api/rewards/preview",
+        json = {
+            "rewards": [{"name": "soft-xml-format"}, {"markdown": md}],
+            "completion": "<answer>x</answer>",
+        },
     )
-    assert response.status_code == 400
-    detail = response.json()["detail"]
-    assert "no bubblewrap" in detail and "grpo_python_reward_isolation" in detail
+    assert response.status_code == 200, response.text
+    rule, python = response.json()["scores"]
+    assert rule["score"] == 0.5 and rule["error"] is None
+    assert python["score"] is None
+    assert python["error"] == python_rewards.sandbox_refusal(COLAB_REASON, COLAB_REMEDIATION)
+
+
+def test_try_it_start_and_training_refuse_in_the_same_plain_words(monkeypatch):
+    from core.inference import os_sandbox
+
+    text = python_rewards.sandbox_refusal(COLAB_REASON, COLAB_REMEDIATION)
+    assert "OS_ISOLATION_UNAVAILABLE" not in text and "Error:" not in text
+    assert text.count("not installed") == 1
+    assert "still run" not in text and "tool calls" not in text and "within a minute" not in text
+    assert "sudo apt-get install -y bubblewrap`, then try again." in text
+    assert 'grpo_python_reward_isolation: "auto"' in text
+
+    monkeypatch.setattr(
+        os_sandbox,
+        "capability_snapshot",
+        lambda **kw: os_sandbox.SandboxCapability(
+            backend = "bubblewrap",
+            available = False,
+            reason = COLAB_REASON,
+            remediation = COLAB_REMEDIATION,
+        ),
+    )
+    assert python_rewards.python_isolation_refusal("required") == text
+    assert python_rewards.python_isolation_refusal("auto") is None
+    specs = [{**_spec("py-len", LEN_REWARD), "weight": 1.0}]
+    with pytest.raises(PythonRewardError) as err:
+        rl._reward_funcs(
+            specs, RewardWorker, python_rewards.make_python_reward_funcs, rewards.make_reward_func
+        )
+    assert str(err.value) == text
+
+
+def test_a_refusal_without_remediation_drops_the_internal_codes():
+    text = python_rewards.sandbox_refusal(
+        "OS_ISOLATION_UNAVAILABLE: probe failed: SandboxUnavailableError: no user namespaces"
+    )
+    assert "No user namespaces." in text and "OS_ISOLATION" not in text and "Error" not in text
 
 
 def _os_sandbox_available() -> bool:
@@ -807,3 +879,21 @@ def test_a_preview_prompt_has_the_turns_training_gives_the_reward(client):
         system_prompt = "be brief",
     )[0][0]["prompt"]
     assert _preview_as(client, "acct-a", payload) == len(trained) * 10 + 1 == 31
+
+
+def test_start_refuses_python_rewards_before_the_model_loads():
+    # The admit step runs before any worker or model load; the refusal used to come ~2 min later.
+    import inspect
+
+    import routes.training as training_routes
+
+    source = inspect.getsource(training_routes._admit_training_request)
+    check = source.index("python_isolation_refusal, request.grpo_python_reward_isolation")
+    assert check < source.index("training_kwargs = {")
+    assert "raise HTTPException(status_code = 400, detail = refusal)" in source[check:]
+
+
+def test_isolation_status_route_reports_what_start_would_say(client, monkeypatch):
+    monkeypatch.setattr(python_rewards, "python_isolation_refusal", lambda mode: f"no ({mode})")
+    assert client.get("/api/rewards/python-isolation").json() == {"refusal": "no (required)"}
+    assert client.get("/api/rewards/python-isolation?mode=auto").json() == {"refusal": "no (auto)"}

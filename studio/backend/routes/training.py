@@ -2192,6 +2192,15 @@ async def _admit_training_request(
             raise HTTPException(status_code = 404, detail = str(exc)) from exc
         except RewardError as exc:
             raise HTTPException(status_code = 400, detail = str(exc)) from exc
+        if any(spec.get("kind") == "python" for spec in reward_specs):
+            from core.training.python_rewards import python_isolation_refusal
+
+            # Refused here, not minutes later once the model has loaded.
+            refusal = await asyncio.to_thread(
+                python_isolation_refusal, request.grpo_python_reward_isolation
+            )
+            if refusal:
+                raise HTTPException(status_code = 400, detail = refusal)
 
     device_backend = getattr(_hw.DEVICE, "value", "") or ""
     training_optimizer = normalize_training_optimizer_for_device(
