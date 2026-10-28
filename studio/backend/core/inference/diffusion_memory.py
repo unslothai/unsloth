@@ -6204,7 +6204,12 @@ PIN_CREDIT_MAPPED_ENV = "UNSLOTH_DIFFUSION_PIN_CREDIT_MAPPED"
 def _pin_available_mib(available_mib: int) -> int:
     """Under a cgroup limit, the reading with clean mapped page cache credited (pins replace the checkpoint's mmap
     views), taken whole rather than added to ``available_mib``: the lists move between two samples."""
-    if str(os.environ.get(PIN_CREDIT_MAPPED_ENV, "")).strip().lower() in ("0", "off", "false", "no"):
+    if str(os.environ.get(PIN_CREDIT_MAPPED_ENV, "")).strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    ):
         return available_mib
     try:
         from utils import host_memory

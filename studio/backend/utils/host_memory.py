@@ -50,7 +50,12 @@ _V1_TOTAL_FILE_KEYS = (
 _V1_LOCAL_FILE_KEYS = ("inactive_file", "active_file", "mapped_file", "dirty", "writeback")
 
 
-def _reclaimable_file_bytes(path: str, *, v1: bool, credit_mapped: bool = False) -> int:
+def _reclaimable_file_bytes(
+    path: str,
+    *,
+    v1: bool,
+    credit_mapped: bool = False,
+) -> int:
     """Droppable page cache in bytes: inactive_file + (active_file - mapped - dirty - writeback, conservative).
 
     shmem/tmpfs is on the anon LRU, never counted. Not crediting active_file counted twice-read models as used.

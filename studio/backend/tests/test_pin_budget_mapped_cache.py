@@ -48,7 +48,9 @@ def cg(tmp_path, monkeypatch):
     monkeypatch.setattr(
         psutil,
         "virtual_memory",
-        lambda: types.SimpleNamespace(total = host["total"], available = host["available"], percent = 20.0),
+        lambda: types.SimpleNamespace(
+            total = host["total"], available = host["available"], percent = 20.0
+        ),
     )
     return types.SimpleNamespace(root = root, proc = proc, host = host)
 
@@ -80,8 +82,13 @@ def test_same_live_set_reads_the_same_budget_on_either_lru_list(cg):
 
 def test_kill_switch_restores_the_uncredited_budget(cg, monkeypatch):
     _scope(
-        cg, limit = 70 * GIB, current = 60 * GIB, anon = 40 * GIB,
-        inactive_file = 0, active_file = 20 * GIB, file_mapped = 20 * GIB,
+        cg,
+        limit = 70 * GIB,
+        current = 60 * GIB,
+        anon = 40 * GIB,
+        inactive_file = 0,
+        active_file = 20 * GIB,
+        file_mapped = 20 * GIB,
     )
     monkeypatch.setenv(dm.PIN_CREDIT_MAPPED_ENV, "0")
     assert dm._pin_budget_mib() == 0  # 10 GiB headroom is under the 10.5 GiB reserve
@@ -92,8 +99,13 @@ def test_kill_switch_restores_the_uncredited_budget(cg, monkeypatch):
 def test_an_earlier_reading_is_not_added_to_the_credited_one(cg, monkeypatch):
     """The pages moved to the active list after the first reading credited them from the inactive list."""
     _scope(
-        cg, limit = 70 * GIB, current = 60 * GIB, anon = 40 * GIB,
-        inactive_file = 0, active_file = 20 * GIB, file_mapped = 20 * GIB,
+        cg,
+        limit = 70 * GIB,
+        current = 60 * GIB,
+        anon = 40 * GIB,
+        inactive_file = 0,
+        active_file = 20 * GIB,
+        file_mapped = 20 * GIB,
     )
     monkeypatch.setattr(dm, "_available_system_memory_mib", lambda: 30 * 1024)
     assert dm._pin_budget_mib() == 30 * 1024 - _reserve(70)
@@ -101,8 +113,14 @@ def test_an_earlier_reading_is_not_added_to_the_credited_one(cg, monkeypatch):
 
 def test_dirty_and_writeback_pages_stay_uncredited(cg):
     _scope(
-        cg, limit = 32 * GIB, current = 30 * GIB, inactive_file = 2 * GIB, active_file = 10 * GIB,
-        file_mapped = 4 * GIB, file_dirty = 1 * GIB, file_writeback = 1 * GIB,
+        cg,
+        limit = 32 * GIB,
+        current = 30 * GIB,
+        inactive_file = 2 * GIB,
+        active_file = 10 * GIB,
+        file_mapped = 4 * GIB,
+        file_dirty = 1 * GIB,
+        file_writeback = 1 * GIB,
     )
     assert host_memory.cgroup_headroom_mib() == 8 * 1024
     assert host_memory.credited_cgroup_headroom_mib() == 12 * 1024
@@ -112,8 +130,13 @@ def test_dirty_and_writeback_pages_stay_uncredited(cg):
 def test_shmem_is_never_credited(cg):
     """tmpfs pages count in file_mapped when mapped but live on the anon LRU, so they are in neither *_file list."""
     _scope(
-        cg, limit = 32 * GIB, current = 24 * GIB, shmem = 12 * GIB,
-        inactive_file = 2 * GIB, active_file = 0, file_mapped = 12 * GIB,
+        cg,
+        limit = 32 * GIB,
+        current = 24 * GIB,
+        shmem = 12 * GIB,
+        inactive_file = 2 * GIB,
+        active_file = 0,
+        file_mapped = 12 * GIB,
     )
     assert host_memory.credited_cgroup_headroom_mib() == 10 * 1024
     assert dm._pin_budget_mib() == 10 * 1024 - _reserve(32)
@@ -121,20 +144,30 @@ def test_shmem_is_never_credited(cg):
 
 def test_host_memavailable_still_bounds_the_credit(cg):
     _scope(
-        cg, limit = 70 * GIB, current = 60 * GIB, inactive_file = 0,
-        active_file = 20 * GIB, file_mapped = 20 * GIB,
+        cg,
+        limit = 70 * GIB,
+        current = 60 * GIB,
+        inactive_file = 0,
+        active_file = 20 * GIB,
+        file_mapped = 20 * GIB,
     )
     cg.host["available"] = 15 * GIB
     assert dm._pin_budget_mib() == 15 * 1024 - _reserve(70)
-    cg.host["available"] = 6 * GIB  # tighter than the cgroup reading: no credit, low-RAM reserve applies
+    cg.host["available"] = (
+        6 * GIB
+    )  # tighter than the cgroup reading: no credit, low-RAM reserve applies
     assert dm._pin_budget_mib() == 0
 
 
 def test_tightest_level_binds_with_the_credit(cg):
     """An ancestor limit with sibling usage still binds after the leaf's mapped pages are credited."""
     leaf = _scope(
-        cg, limit = 70 * GIB, current = 60 * GIB, inactive_file = 0,
-        active_file = 20 * GIB, file_mapped = 20 * GIB,
+        cg,
+        limit = 70 * GIB,
+        current = 60 * GIB,
+        inactive_file = 0,
+        active_file = 20 * GIB,
+        file_mapped = 20 * GIB,
     )
     parent = leaf.parent
     _write(parent / "memory.max", str(72 * GIB))
@@ -156,9 +189,15 @@ def test_v1_hierarchical_mapped_pages_are_credited(cg):
     _write(d / "memory.limit_in_bytes", str(64 * GIB))
     _write(d / "memory.usage_in_bytes", str(60 * GIB))
     _stat(
-        d, inactive_file = 50 * GIB, active_file = 50 * GIB, mapped_file = 50 * GIB,
-        total_inactive_file = 2 * GIB, total_active_file = 18 * GIB, total_mapped_file = 16 * GIB,
-        total_dirty = 1 * GIB, total_writeback = 0,
+        d,
+        inactive_file = 50 * GIB,
+        active_file = 50 * GIB,
+        mapped_file = 50 * GIB,
+        total_inactive_file = 2 * GIB,
+        total_active_file = 18 * GIB,
+        total_mapped_file = 16 * GIB,
+        total_dirty = 1 * GIB,
+        total_writeback = 0,
     )
     # Uncredited: 64 - (60 - 2 - 1) = 7 GiB. Credited: 64 - (60 - 2 - 17) = 23 GiB.
     assert host_memory.cgroup_headroom_mib() == 7 * 1024
@@ -186,8 +225,12 @@ def test_unreadable_stat_never_raises(cg):
 def test_integrated_gpu_still_never_pins(cg, monkeypatch):
     """The credit only sizes the budget; the integrated-GPU refusal ahead of it is untouched."""
     _scope(
-        cg, limit = 70 * GIB, current = 60 * GIB, inactive_file = 0,
-        active_file = 20 * GIB, file_mapped = 20 * GIB,
+        cg,
+        limit = 70 * GIB,
+        current = 60 * GIB,
+        inactive_file = 0,
+        active_file = 20 * GIB,
+        file_mapped = 20 * GIB,
     )
     monkeypatch.setattr(dm, "host_pinning_allowed", lambda device = None: False)
     monkeypatch.delenv(dm.GROUP_OFFLOAD_PIN_ENV, raising = False)
