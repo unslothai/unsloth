@@ -1422,7 +1422,7 @@ export const ru = {
       installingRuntime: "Установка…",
       installRuntimeFailed: "Не удалось установить среду.",
       installRuntimeError: "Не удалось начать установку среды.",
-      unsupportedArch: "Песочница Windows (MXC) работает только на Windows x64, поэтому на этом ПК она недоступна.",
+      unsupportedArch: "Песочница Windows (MXC) работает только на Windows x64 и ARM64, поэтому на этом ПК она недоступна.",
       builtinNeedsUpdate:
         "Встроенному контейнеру Windows нужна сборка {required} или новее, а на этом ПК установлена {current}. Установите последнее обновление Windows, чтобы использовать его без шага администратора, или включите резервную песочницу ниже.",
       unsupportedBuild: "Песочнице Windows (MXC) нужна Windows 11 24H2 (сборка 26100) или новее, поэтому на этом ПК она недоступна.",
@@ -4342,7 +4342,6 @@ export const ru = {
       terminalStart: "> обучение unsloth начинается...",
       preparingResources: "> Подготовка модели и датасета...",
       gettingReady: "> Мы готовим всё для вашего запуска...",
-      waitingForFirstStep: "> {message} | ожидание первого шага... ({step})",
       resumingTraining: "Продолжение обучения...",
       startingTraining: "начало обучения...",
       dataset: "Датасет",

@@ -1419,7 +1419,7 @@ export const ko = {
       installingRuntime: "설치 중…",
       installRuntimeFailed: "런타임을 설치하지 못했습니다.",
       installRuntimeError: "런타임 설치를 시작하지 못했습니다.",
-      unsupportedArch: "Windows 샌드박스(MXC)는 x64 Windows에서만 실행되므로 이 PC에서는 사용할 수 없습니다.",
+      unsupportedArch: "Windows 샌드박스(MXC)는 x64 및 ARM64 Windows에서만 실행되므로 이 PC에서는 사용할 수 없습니다.",
       builtinNeedsUpdate:
         "Windows 기본 제공 컨테이너에는 빌드 {required} 이상이 필요하지만 이 PC는 {current}입니다. 관리자 단계 없이 사용하려면 최신 Windows 업데이트를 설치하거나 아래의 대체 샌드박스를 켜세요.",
       unsupportedBuild: "Windows 샌드박스(MXC)는 Windows 11 24H2(빌드 26100) 이상이 필요하므로 이 PC에서는 사용할 수 없습니다.",
@@ -4301,7 +4301,6 @@ export const ko = {
       terminalStart: "> unsloth 학습을 시작합니다...",
       preparingResources: "> 모델과 데이터셋을 준비하는 중...",
       gettingReady: "> 실행을 위한 모든 준비를 하는 중...",
-      waitingForFirstStep: "> {message} | 첫 스텝을 기다리는 중... ({step})",
       resumingTraining: "학습을 재개하는 중...",
       startingTraining: "학습을 시작하는 중...",
       dataset: "데이터셋",

@@ -1562,7 +1562,7 @@ export const sv = {
       installRuntimeError:
         "Det gick inte att starta installationen av körmiljön.",
       unsupportedArch:
-        "Windows-sandlådan (MXC) körs bara på x64-Windows, så den är inte tillgänglig på den här datorn.",
+        "Windows-sandlådan (MXC) körs bara på x64- och ARM64-Windows, så den är inte tillgänglig på den här datorn.",
       builtinNeedsUpdate:
         "Windows inbyggda container kräver version {required} eller senare, och den här datorn kör {current}. Installera den senaste Windows-uppdateringen för att använda den utan administratörssteg, eller slå på reservsandlådan nedan.",
       unsupportedBuild:
@@ -4560,7 +4560,6 @@ export const sv = {
       terminalStart: "> unsloth-träningen startar ...",
       preparingResources: "> Förbereder modell och datauppsättning ...",
       gettingReady: "> Vi förbereder allt för din körning ...",
-      waitingForFirstStep: "> {message} | väntar på första steget ... ({step})",
       resumingTraining: "Återupptar träning ...",
       startingTraining: "startar träning ...",
       dataset: "Datauppsättning",

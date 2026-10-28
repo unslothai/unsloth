@@ -1424,7 +1424,7 @@ export const de = {
       installingRuntime: "Wird installiert…",
       installRuntimeFailed: "Die Installation der Laufzeit ist fehlgeschlagen.",
       installRuntimeError: "Die Installation der Laufzeit konnte nicht gestartet werden.",
-      unsupportedArch: "Die Windows-Sandbox (MXC) läuft nur unter x64-Windows und ist auf diesem PC daher nicht verfügbar.",
+      unsupportedArch: "Die Windows-Sandbox (MXC) läuft nur unter x64- und ARM64-Windows und ist auf diesem PC daher nicht verfügbar.",
       builtinNeedsUpdate: "Der integrierte Windows-Container benötigt Build {required} oder neuer, auf diesem PC läuft {current}. Installiere das neueste Windows-Update, um ihn ohne Administratorschritt zu nutzen, oder aktiviere unten die Ausweich-Sandbox.",
       unsupportedBuild: "Die Windows-Sandbox (MXC) braucht Windows 11 24H2 (Build 26100) oder neuer und ist auf diesem PC daher nicht verfügbar.",
       permissionLabel: "Tool-Berechtigungen",
@@ -4384,8 +4384,6 @@ export const de = {
       terminalStart: "> Unsloth-Training beginnt...",
       preparingResources: "> Modell und Datensatz werden vorbereitet...",
       gettingReady: "> Wir bereiten alles für Ihren Lauf vor...",
-      waitingForFirstStep:
-        "> {message} | warte auf ersten Schritt... ({step})",
       resumingTraining: "Training wird fortgesetzt...",
       startingTraining: "Training wird gestartet...",
       dataset: "Datensatz",

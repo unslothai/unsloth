@@ -1419,7 +1419,7 @@ export const ar = {
       installingRuntime: "جارٍ التثبيت…",
       installRuntimeFailed: "فشل تثبيت بيئة التشغيل.",
       installRuntimeError: "تعذر بدء تثبيت بيئة التشغيل.",
-      unsupportedArch: "يعمل وضع حماية Windows (MXC) على Windows x64 فقط، لذا فهو غير متاح على هذا الكمبيوتر.",
+      unsupportedArch: "يعمل وضع حماية Windows (MXC) على Windows x64 وARM64 فقط، لذا فهو غير متاح على هذا الكمبيوتر.",
       builtinNeedsUpdate:
         "تحتاج الحاوية المدمجة في Windows إلى الإصدار {required} أو أحدث، بينما يعمل هذا الكمبيوتر بالإصدار {current}. ثبّت آخر تحديث لـ Windows لاستخدامها دون خطوة مسؤول، أو فعّل وضع الحماية الاحتياطي أدناه.",
       unsupportedBuild: "يتطلب وضع حماية Windows (MXC) إصدار Windows 11 24H2 (البنية 26100) أو أحدث، لذا فهو غير متاح على هذا الكمبيوتر.",
@@ -4310,7 +4310,6 @@ export const ar = {
       terminalStart: "> يبدأ تدريب Unsloth...",
       preparingResources: "> جارٍ تحضير النموذج ومجموعة البيانات...",
       gettingReady: "> نُجهّز كل شيء لعملية التدريب...",
-      waitingForFirstStep: "> {message} | في انتظار الخطوة الأولى... ({step})",
       resumingTraining: "جارٍ استئناف التدريب...",
       startingTraining: "جارٍ بدء التدريب...",
       dataset: "مجموعة البيانات",

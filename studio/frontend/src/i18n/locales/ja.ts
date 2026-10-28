@@ -1421,7 +1421,7 @@ export const ja = {
       installingRuntime: "インストール中…",
       installRuntimeFailed: "ランタイムのインストールに失敗しました。",
       installRuntimeError: "ランタイムのインストールを開始できませんでした。",
-      unsupportedArch: "Windows サンドボックス (MXC) は x64 版 Windows でのみ動作するため、この PC では使用できません。",
+      unsupportedArch: "Windows サンドボックス (MXC) は x64 版および ARM64 版 Windows でのみ動作するため、この PC では使用できません。",
       builtinNeedsUpdate:
         "Windows の組み込みコンテナーにはビルド {required} 以降が必要ですが、この PC は {current} です。管理者の手順なしで使うには最新の Windows Update をインストールするか、下のフォールバック サンドボックスをオンにしてください。",
       unsupportedBuild: "Windows サンドボックス (MXC) には Windows 11 24H2 (ビルド 26100) 以降が必要なため、この PC では使用できません。",
@@ -4260,7 +4260,6 @@ export const ja = {
       terminalStart: "> unsloth トレーニングを開始します...",
       preparingResources: "> モデルとデータセットを準備中...",
       gettingReady: "> 実行の準備を整えています...",
-      waitingForFirstStep: "> {message} | 最初のステップを待機中... ({step})",
       resumingTraining: "トレーニングを再開しています...",
       startingTraining: "トレーニングを開始しています...",
       dataset: "データセット",

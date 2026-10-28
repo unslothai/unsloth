@@ -1530,7 +1530,7 @@ export const he = {
       installRuntimeFailed: "התקנת סביבת זמן הריצה נכשלה.",
       installRuntimeError: "לא ניתן להתחיל את התקנת סביבת זמן הריצה.",
       unsupportedArch:
-        "ארגז החול של Windows (MXC) פועל רק ב-Windows x64, ולכן אינו זמין במחשב זה.",
+        "ארגז החול של Windows (MXC) פועל רק ב-Windows x64 ו-ARM64, ולכן אינו זמין במחשב זה.",
       builtinNeedsUpdate:
         "המכל המובנה של Windows דורש גרסת build {required} ומעלה, והמחשב הזה מריץ {current}. התקינו את עדכון Windows האחרון כדי להשתמש בו בלי שלב מנהל, או הפעילו את ארגז החול החלופי שלמטה.",
       unsupportedBuild:
@@ -4430,7 +4430,6 @@ export const he = {
       terminalStart: "> אימון unsloth מתחיל...",
       preparingResources: "> מכין מודל ומערך נתונים...",
       gettingReady: "> מכינים הכל לקראת ההרצה שלך...",
-      waitingForFirstStep: "> {message} | ממתין לצעד ראשון... ({step})",
       resumingTraining: "מחדש אימון...",
       startingTraining: "מתחיל אימון...",
       dataset: "מערך נתונים",

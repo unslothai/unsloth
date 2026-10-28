@@ -1423,7 +1423,7 @@ export const hi = {
       installingRuntime: "इंस्टॉल हो रहा है…",
       installRuntimeFailed: "रनटाइम इंस्टॉल नहीं हो सका।",
       installRuntimeError: "रनटाइम इंस्टॉल शुरू नहीं हो सका।",
-      unsupportedArch: "Windows सैंडबॉक्स (MXC) केवल x64 Windows पर चलता है, इसलिए यह इस PC पर उपलब्ध नहीं है।",
+      unsupportedArch: "Windows सैंडबॉक्स (MXC) केवल x64 और ARM64 Windows पर चलता है, इसलिए यह इस PC पर उपलब्ध नहीं है।",
       builtinNeedsUpdate:
         "Windows के बिल्ट-इन कंटेनर को बिल्ड {required} या नया चाहिए, और यह PC {current} चला रहा है। इसे बिना एडमिनिस्ट्रेटर चरण के उपयोग करने के लिए नवीनतम Windows अपडेट इंस्टॉल करें, या नीचे फ़ॉलबैक सैंडबॉक्स चालू करें।",
       unsupportedBuild: "Windows सैंडबॉक्स (MXC) के लिए Windows 11 24H2 (बिल्ड 26100) या नया चाहिए, इसलिए यह इस PC पर उपलब्ध नहीं है।",
@@ -4321,7 +4321,6 @@ export const hi = {
       terminalStart: "> unsloth ट्रेनिंग शुरू हो रही है...",
       preparingResources: "> मॉडल और डेटासेट तैयार हो रहे हैं...",
       gettingReady: "> हम आपके रन के लिए सब कुछ तैयार कर रहे हैं...",
-      waitingForFirstStep: "> {message} | पहले स्टेप की प्रतीक्षा में... ({step})",
       resumingTraining: "ट्रेनिंग फिर से शुरू हो रही है...",
       startingTraining: "ट्रेनिंग शुरू हो रही है...",
       dataset: "डेटासेट",

@@ -1417,7 +1417,7 @@ export const zhCN = {
       installingRuntime: "正在安装…",
       installRuntimeFailed: "运行时安装失败。",
       installRuntimeError: "无法开始安装运行时。",
-      unsupportedArch: "Windows 沙箱 (MXC) 仅支持 x64 版 Windows，因此在此电脑上不可用。",
+      unsupportedArch: "Windows 沙箱 (MXC) 仅支持 x64 和 ARM64 版 Windows，因此在此电脑上不可用。",
       builtinNeedsUpdate:
         "Windows 内置容器需要版本 {required} 或更高，而这台电脑运行的是 {current}。安装最新的 Windows 更新即可无需管理员步骤使用它，或在下方开启备用沙盒。",
       unsupportedBuild: "Windows 沙箱 (MXC) 需要 Windows 11 24H2（版本 26100）或更高版本，因此在此电脑上不可用。",
@@ -4212,7 +4212,6 @@ export const zhCN = {
       terminalStart: "> Unsloth 训练开始...",
       preparingResources: "> 正在准备模型和数据集...",
       gettingReady: "> 正在为本次运行做好准备...",
-      waitingForFirstStep: "> {message} | 正在等待首个训练步...（{step}）",
       resumingTraining: "正在继续训练...",
       startingTraining: "正在开始训练...",
       dataset: "数据集",
