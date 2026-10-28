@@ -264,3 +264,19 @@ def test_the_real_benchmark_node_can_close_the_loop():
     assert not errors, errors
     plan = compile_flow(parsed)
     assert plan.feedback["loop"]["source"] == "bench"
+
+
+def test_a_recipe_names_the_local_model_to_load_before_each_round():
+    from core.flows.nodes.data import local_model
+
+    recipe = {
+        "model_providers": [{"name": "local", "is_local": True}, {"name": "api"}],
+        "model_configs": [
+            {"alias": "writer", "provider": "local", "model": "unsloth/Qwen3-1.7B-GGUF", "gguf_variant": "Q4_K_M"},
+            {"alias": "unused", "provider": "local", "model": "other/model"},
+        ],
+        "columns": [{"name": "ticket", "column_type": "llm-text", "model_alias": "writer"}],
+    }
+    assert local_model(recipe) == {"repo": "unsloth/Qwen3-1.7B-GGUF", "variant": "Q4_K_M"}
+    recipe["model_configs"][0]["provider"] = "api"
+    assert local_model(recipe) is None

@@ -97,6 +97,10 @@ async def recipe_group(ctx: NodeContext) -> dict:
     if not isinstance(compiled, dict):
         raise FlowNodeError("Put this step inside a Data Recipe group")
     body = declarative_recipe(compiled.get("recipe"))
+    local = local_model(body)
+    if local:
+        # Something earlier in the run (a Benchmark, a Loop round) may have swapped the Chat model.
+        await ctx.ensure_model("chat", local)
     checked = await ctx.call("POST", f"{RECIPES}/validate", json = {"recipe": body})
     if isinstance(checked, dict) and checked.get("valid") is False:
         problems = [
@@ -111,6 +115,32 @@ async def recipe_group(ctx: NodeContext) -> dict:
     return await run_recipe(
         ctx, body, {k: saved[k] for k in ("run_config", "merge_batches") if k in saved}
     )
+
+
+def local_model(recipe: dict) -> Optional[dict]:
+    """The one named model the recipe's local-provider columns use, if it names one."""
+    local = {
+        p.get("name")
+        for p in recipe.get("model_providers") or []
+        if isinstance(p, dict) and p.get("is_local") is True
+    }
+    used = {
+        c.get("model_alias")
+        for c in recipe.get("columns") or []
+        if isinstance(c, dict) and str(c.get("column_type") or "").startswith("llm-")
+    }
+    picks = {
+        (str(mc["model"]).strip(), str(mc.get("gguf_variant") or "").strip())
+        for mc in recipe.get("model_configs") or []
+        if isinstance(mc, dict)
+        and mc.get("provider") in local
+        and mc.get("alias") in used
+        and str(mc.get("model") or "").strip().lower() not in ("", "local")
+    }
+    if len(picks) != 1:
+        return None
+    repo, variant = picks.pop()
+    return {"repo": repo, "variant": variant or None}
 
 
 async def run_recipe(ctx: NodeContext, body: dict, run: dict[str, Any]) -> dict:
