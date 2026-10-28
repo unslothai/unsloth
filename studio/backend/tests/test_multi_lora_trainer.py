@@ -739,7 +739,6 @@ def test_member_loss_scale_follows_grad_scaler_rules():
     for _ in range(2):
         p.grad = torch.full((3,), 16.0)
         assert scale.unscale_(1, [p]) and torch.equal(p.grad, torch.full((3,), 2.0))
-    # Grown after growth_interval finite steps, as GradScaler does.
     assert scale.scale == [8.0, 16.0]
     p.grad = torch.tensor([1.0, float("nan"), 0.0])
     assert not scale.unscale_(0, [p]) and p.grad is None

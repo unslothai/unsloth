@@ -447,7 +447,7 @@ class _PerMemberLR:
     def __init__(self, optimizer, schedulers: list):
         self.optimizer = optimizer
         self.schedulers = schedulers
-        # Members whose fp16 step overflowed this step: they keep their rate, as the single job's skipped step does.
+        # fp16 members that overflowed keep their rate, as the single job's skipped step does.
         self.skip = set()
         self._apply()
 
@@ -472,8 +472,7 @@ class _PerMemberLR:
 
 
 class _MemberLossScale:
-    """One fp16 loss scale per member, with torch.amp.GradScaler's defaults and rules: a shared scale would let one
-    member's overflow skip every member's step and set the scale the others train with."""
+    """Per-member fp16 loss scale with GradScaler's rules: a shared one lets one member's overflow skip every step."""
 
     def __init__(
         self,
@@ -486,8 +485,7 @@ class _MemberLossScale:
         self.growth_interval = growth_interval
 
     def scale_backward(self, logits, adapter_ids):
-        """Scales the gradient reaching each token's logits by its member's scale, in fp32 before the fp16
-        backward, as GradScaler scales the loss: a logit's gradient comes only from its own member's loss."""
+        """GradScaler's loss scaling per token, in fp32: a logit's gradient comes only from its member's loss."""
         import torch
 
         scale = torch.tensor(self.scale, dtype = torch.float32, device = logits.device)
@@ -1139,8 +1137,7 @@ def _build_sft_trainer(
             self.round_losses = torch.zeros(U)
             self.member_norms = torch.zeros(U)
             self.skipped = set()
-            # fp16: each member's loss carries its own scale (the members share no trainable weight, so each
-            # adapter's gradient holds only its own), replacing accelerate's one GradScaler.
+            # Replaces accelerate's one GradScaler: members share no trainable weight.
             self.loss_scale = _fp16_loss_scale(fp16, U)
             if self.loss_scale is not None:
                 self.accelerator.scaler = None
@@ -1316,7 +1313,6 @@ def _build_sft_trainer(
                 self.progress(
                     member,
                     float(self.round_losses[member.slot]),
-                    # An overflowed fp16 step has no gradient norm, as in the single job's logs.
                     None if member.slot in self.skipped else float(self.member_norms[member.slot]),
                     elapsed,
                     self.step_lrs[member.slot],
