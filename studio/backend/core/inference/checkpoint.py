@@ -501,7 +501,11 @@ def fit_checkpoint_context(
             dropped = reset_dropped
             is_new_epoch = True
             projected, block = _project(fitted)
-            current_tokens = count_tokens(projected)
+            # Holding the whole turn in progress can keep most of the transcript. Bounded against
+            # prompt_target, which is at least hold_target, so both comparisons below stay exact.
+            current_tokens = bounded_prompt_count(
+                projected, count_tokens, prompt_target, estimate_message = estimate_message
+            )
             measured = projected
             if current_tokens <= hold_target:
                 break
@@ -518,7 +522,9 @@ def fit_checkpoint_context(
         if block:
             projected = _without_block(fitted)
             block = ""
-            current_tokens = count_tokens(projected)
+            current_tokens = bounded_prompt_count(
+                projected, count_tokens, prompt_target, estimate_message = estimate_message
+            )
             measured = projected
     if current_tokens > prompt_target:
         # let the rolling fit retry from the originals; any projection made here would be discarded by `_fit_context`

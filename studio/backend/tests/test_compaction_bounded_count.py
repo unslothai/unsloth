@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
@@ -33,9 +35,11 @@ class _Counter:
         self.counted: list[int] = []
 
     def __call__(self, messages: list[dict]) -> int:
-        tokens = int(
-            sum(len(str(m.get("content") or "")) for m in messages) / self.chars_per_token
-        ) + 4 * len(messages)
+        chars = sum(
+            len(str(m.get("content") or "")) + len(json.dumps(m.get("tool_calls") or []))
+            for m in messages
+        )
+        tokens = int(chars / self.chars_per_token) + 4 * len(messages)
         self.counted.append(tokens)
         if tokens > COUNT_LIMIT:
             raise RuntimeError("llama-server timed out counting the prompt")
@@ -99,12 +103,191 @@ def test_a_transcript_that_fits_despite_its_estimate_gets_its_exact_count():
     assert bounded_prompt_count(messages, count, exact) == exact
 
 
+def test_a_transcript_proven_over_but_small_gets_its_exact_count():
+    # Old whitespace the estimate overstates 24x, then a dense question: a slice proves it over,
+    # but the whole is under twice the threshold, so it is counted exactly, since a refusal's
+    # diagnosis subtracts exact counts from it.
+    messages = [
+        SYSTEM,
+        {"role": "user", "content": "\n" * 60_000},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": "dense " * 10_000},
+    ]
+    counted: list[int] = []
+
+    def count(fitted):
+        tokens = sum(
+            len(m["content"]) // (4 if m["content"].startswith("dense") else 48) for m in fitted
+        )
+        counted.append(tokens)
+        return tokens
+
+    exact = count(messages)
+    counted.clear()
+    assert bounded_prompt_count(messages, count, 10_000) == exact
+    assert len(counted) == 2  # the slice, then the whole
+
+
 def test_an_over_proof_compares_like_the_exact_count():
     count = _Counter(6.0)
     messages = _transcript(400)
     bounded = bounded_prompt_count(messages, count, CONTEXT)
     assert bounded > CONTEXT
     assert max(count.counted) <= COUNT_LIMIT
+
+
+def _tool_exchanges(count: int, result_chars: int) -> list[dict]:
+    messages = []
+    for index in range(count):
+        messages.append(
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": f"call{index}",
+                        "type": "function",
+                        "function": {"name": "python", "arguments": "{}"},
+                    }
+                ],
+            }
+        )
+        messages.append(
+            {"role": "tool", "tool_call_id": f"call{index}", "content": "r" * result_chars}
+        )
+    return messages
+
+
+QUESTION = {"role": "user", "content": "What is 2+2?"}
+SYSTEM = {"role": "system", "content": "you are helpful"}
+# Uneven turns: almost all of each transcript sits in one evictable turn.
+UNEVEN = {
+    "one huge old message": [
+        SYSTEM,
+        {"role": "user", "content": "x" * 1_200_000},
+        {"role": "assistant", "content": "ok"},
+        QUESTION,
+    ],
+    "one old turn of many tool calls": [
+        SYSTEM,
+        {"role": "user", "content": "run the job"},
+        *_tool_exchanges(100, 12_000),
+        {"role": "assistant", "content": "done"},
+        QUESTION,
+    ],
+    "one old tool call with huge arguments": [
+        SYSTEM,
+        {"role": "user", "content": "write the file"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "write",
+                    "type": "function",
+                    "function": {
+                        "name": "edit_file",
+                        "arguments": json.dumps({"text": "y" * 1_200_000}),
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "write", "content": "written"},
+        {"role": "assistant", "content": "done"},
+        QUESTION,
+    ],
+}
+
+
+@pytest.mark.parametrize("shape", sorted(UNEVEN))
+def test_rolling_fits_when_one_old_turn_holds_most_of_the_transcript(shape):
+    count = _Counter(4.0)
+    fitted, truncation = fit_rolling_context(
+        UNEVEN[shape], context_length = CONTEXT, max_tokens = 64, count_tokens = count
+    )
+    assert truncation["fits"] is True
+    assert fitted[-1] is QUESTION
+    assert max(count.counted) <= COUNT_LIMIT
+
+
+@pytest.mark.parametrize("shape", sorted(UNEVEN))
+@pytest.mark.parametrize("force_reset", (False, True))
+def test_checkpoint_resets_when_one_old_turn_holds_most_of_the_transcript(shape, force_reset):
+    count = _Counter(4.0)
+    fitted, truncation = fit_checkpoint_context(
+        UNEVEN[shape],
+        context_length = CONTEXT,
+        max_tokens = 64,
+        count_tokens = count,
+        can_reset = True,
+        searchable = True,
+        force_reset = force_reset,
+    )
+    assert truncation["fits"] is True
+    assert truncation["checkpoint_started"] is True
+    assert fitted[-1] is QUESTION
+    assert max(count.counted) <= COUNT_LIMIT
+
+
+def test_checkpoint_reset_releases_a_long_turn_in_progress_without_counting_it_whole():
+    # A reset first holds the whole turn in progress; counting that hold must not time out.
+    history = [SYSTEM]
+    for index in range(20):
+        history.append({"role": "user", "content": f"q{index} " + "w " * 500})
+        history.append({"role": "assistant", "content": "a " * 500})
+    task = {"role": "user", "content": "Do the task."}
+    messages = [*history, task, *_tool_exchanges(100, 12_000)]
+    count = _Counter(4.0)
+    _, truncation = fit_checkpoint_context(
+        messages,
+        context_length = CONTEXT,
+        max_tokens = 64,
+        count_tokens = count,
+        can_reset = True,
+        searchable = True,
+    )
+    assert truncation["fits"] is True
+    assert truncation["checkpoint_started"] is True
+    assert max(count.counted) <= COUNT_LIMIT
+
+
+def test_a_newest_message_far_over_the_window_is_refused_not_raised():
+    messages = [
+        SYSTEM,
+        {"role": "user", "content": "old"},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": "x" * 1_200_000},
+    ]
+    _, truncation = fit_rolling_context(
+        messages, context_length = CONTEXT, max_tokens = 64, count_tokens = _Counter(4.0)
+    )
+    assert truncation["fits"] is False
+
+
+def test_a_slice_the_template_refuses_falls_back_to_the_whole_count():
+    messages = _transcript(40)
+    whole = len(messages)
+
+    def count(fitted):
+        if len(fitted) != whole:
+            raise RuntimeError("llama-server could not render the chat template")
+        return 10**6
+
+    assert bounded_prompt_count(messages, count, CONTEXT) == 10**6
+
+
+def test_a_slice_opens_on_a_user_turn_and_only_removes_text():
+    from core.inference.context_window import _newest_slice, estimate_message_tokens
+
+    for messages in UNEVEN.values():
+        sizes = [estimate_message_tokens(message) for message in messages]
+        newest = _newest_slice(messages, sizes, 2 * CONTEXT)
+        assert newest[0] is SYSTEM
+        assert newest[1]["role"] == "user"
+        assert newest[-1] is QUESTION
+        assert sum(len(str(m.get("content"))) for m in newest) < sum(
+            len(str(m.get("content"))) for m in messages
+        )
 
 
 def _timing_out_client():
