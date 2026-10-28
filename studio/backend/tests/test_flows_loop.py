@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import asyncio
+import copy
 
 import pytest
 
@@ -294,11 +295,17 @@ def test_a_recipe_step_validates_against_the_seed_it_runs_on(monkeypatch, tmp_pa
     seed.write_text('{"origin": "fresh"}\n')
     monkeypatch.setattr(data, "local_seed_path", lambda ref: str(seed))
     routes, _ = _routes(["job1"])
+    checked = []
+
+    def recording(method, path, params, body):
+        if path == "/api/data-recipe/validate":
+            checked.append(copy.deepcopy(body))
+        return routes(method, path, params, body)
+
     ctx = _Ctx(
-        routes,
+        recording,
         params = {RECIPE_PARAM: _compiled(_flow()), "rows": 1},
         inputs = {"seed": {"kind": "dataset", "source": "local", "ref": "loop-seed"}},
     )
     asyncio.run(data.recipe_group(ctx))
-    checked = next(c[3] for c in ctx.calls if c[1] == "/api/data-recipe/validate")
-    assert checked["recipe"]["seed_config"]["source"] == {"seed_type": "local", "path": str(seed)}
+    assert checked[0]["recipe"]["seed_config"]["source"] == {"seed_type": "local", "path": str(seed)}
