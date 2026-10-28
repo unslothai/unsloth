@@ -21,6 +21,9 @@ const FORCE_DMABUF: &str = "WEBKIT_FORCE_DMABUF_RENDERER";
 // Turns accelerated compositing off outright, a level above the transport switches above.
 // Presence alone is an operator override; compositing_disabled_by says which values turn it off.
 const DISABLE_COMPOSITING: &str = "WEBKIT_DISABLE_COMPOSITING_MODE";
+// Composited video goes through GStreamer GL, which cannot create a context on NVIDIA with the
+// AppImage's bundled GStreamer: frames stay black. Without it WebKit uses the sink main already uses.
+const GST_DISABLE_GL_SINK: &str = "WEBKIT_GST_DISABLE_GL_SINK";
 // Ours, not WebKit's; compositing_setting parses it.
 const DISABLE_COMPOSITING_SETTING: &str = "UNSLOTH_WEBKIT_DISABLE_COMPOSITING";
 // The variables we set, so a relaunch (process::restart keeps env) tells ours from an operator's.
@@ -49,6 +52,8 @@ enum RenderingWorkaround {
     /// Only for a confirmed NVIDIA host: FORCE_DMABUF stands down the patched isNVIDIA() check so
     /// selection reaches FORCE_SHM. Unpatched libraries ignore it.
     ForceSharedMemoryOnNvidia,
+    /// The same, plus the non-GL video sink the bundled GStreamer needs.
+    ForceSharedMemoryOnNvidiaAppImage,
     DisableCompositingOnNvidiaX11,
     /// Compositing off on top of the NVIDIA Wayland transport, not instead of it: since
     /// WebKitGTK 2.53 non-composited mode still renders over DMA-BUF (#13875).
@@ -63,6 +68,9 @@ impl RenderingWorkaround {
         match self {
             Self::ForceSharedMemory => &[FORCE_SHARED_MEMORY],
             Self::ForceSharedMemoryOnNvidia => &[FORCE_SHARED_MEMORY, FORCE_DMABUF],
+            Self::ForceSharedMemoryOnNvidiaAppImage => {
+                &[FORCE_SHARED_MEMORY, FORCE_DMABUF, GST_DISABLE_GL_SINK]
+            }
             Self::DisableCompositingOnNvidiaX11 => {
                 &[FORCE_SHARED_MEMORY, FORCE_DMABUF, DISABLE_COMPOSITING]
             }
@@ -228,7 +236,13 @@ fn rendering_plan(
         } else if requested(false)
             || nvidia_driver_branch.is_some_and(|branch| branch >= NVIDIA_COMPOSITING_MIN_BRANCH)
         {
-            RenderingWorkaround::ForceSharedMemoryOnNvidia
+            // An operator's own video sink choice stays.
+            let operator_sink = env(GST_DISABLE_GL_SINK).is_some() && !ours(GST_DISABLE_GL_SINK);
+            if is_appimage && !operator_sink {
+                RenderingWorkaround::ForceSharedMemoryOnNvidiaAppImage
+            } else {
+                RenderingWorkaround::ForceSharedMemoryOnNvidia
+            }
         } else {
             RenderingWorkaround::DisableCompositingOnNvidiaX11
         };
@@ -508,7 +522,10 @@ mod tests {
         for branch in [610, 615, 700] {
             assert_eq!(
                 plan_on_nvidia_branch(appimage, branch),
-                RenderingPlan::Apply(composited, NVIDIA_APPIMAGE_X11_REASON)
+                RenderingPlan::Apply(
+                    RenderingWorkaround::ForceSharedMemoryOnNvidiaAppImage,
+                    NVIDIA_APPIMAGE_X11_REASON
+                )
             );
             assert_eq!(
                 plan_on_nvidia_branch(native, branch),
@@ -516,6 +533,60 @@ mod tests {
             );
         }
         assert!(!composited.variables().contains(&DISABLE_COMPOSITING));
+    }
+
+    #[test]
+    fn a_composited_appimage_uses_the_non_gl_video_sink() {
+        let appimage: &[(&str, &str)] = &[(APPIMAGE, "/tmp/Unsloth.AppImage"), (X11_DISPLAY, ":0")];
+        assert_eq!(
+            RenderingWorkaround::ForceSharedMemoryOnNvidiaAppImage.variables(),
+            &[FORCE_SHARED_MEMORY, FORCE_DMABUF, GST_DISABLE_GL_SINK]
+        );
+        assert!(!RenderingWorkaround::ForceSharedMemoryOnNvidia
+            .variables()
+            .contains(&GST_DISABLE_GL_SINK));
+        // The opt-out composites too, so it needs the same sink.
+        let opted_out = [appimage, &[(DISABLE_COMPOSITING_SETTING, "0")]].concat();
+        assert_eq!(
+            plan_on_nvidia_branch(&opted_out, 580),
+            RenderingPlan::Apply(
+                RenderingWorkaround::ForceSharedMemoryOnNvidiaAppImage,
+                NVIDIA_APPIMAGE_X11_REASON
+            )
+        );
+        // An operator's sink choice, either way, is left alone.
+        for value in ["0", "1"] {
+            let operator = [appimage, &[(GST_DISABLE_GL_SINK, value)]].concat();
+            assert_eq!(
+                plan_on_nvidia_branch(&operator, 615),
+                RenderingPlan::Apply(
+                    RenderingWorkaround::ForceSharedMemoryOnNvidia,
+                    NVIDIA_APPIMAGE_X11_REASON
+                ),
+                "{value}"
+            );
+        }
+        // Our own value from an earlier launch is not an operator's.
+        let relaunched = [
+            appimage,
+            &[
+                (GST_DISABLE_GL_SINK, "1"),
+                (FORCE_SHARED_MEMORY, "1"),
+                (FORCE_DMABUF, "1"),
+                (
+                    APPLIED_WORKAROUND,
+                    "WEBKIT_DMABUF_RENDERER_FORCE_SHM,WEBKIT_FORCE_DMABUF_RENDERER,WEBKIT_GST_DISABLE_GL_SINK",
+                ),
+            ],
+        ]
+        .concat();
+        assert_eq!(
+            plan_on_nvidia_branch(&relaunched, 615),
+            RenderingPlan::Apply(
+                RenderingWorkaround::ForceSharedMemoryOnNvidiaAppImage,
+                NVIDIA_APPIMAGE_X11_REASON
+            )
+        );
     }
 
     #[test]
@@ -1305,7 +1376,7 @@ mod tests {
         assert_eq!(
             plan_on_graphics(nvidia_x11_off, true),
             RenderingPlan::Apply(
-                RenderingWorkaround::ForceSharedMemoryOnNvidia,
+                RenderingWorkaround::ForceSharedMemoryOnNvidiaAppImage,
                 NVIDIA_APPIMAGE_X11_REASON
             )
         );
