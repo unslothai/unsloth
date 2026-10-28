@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""HF download subprocess (SIGKILL stops chunk threads); resume needs single-stream writes, enforced
-by HF_HUB_DISABLE_XET=1, HF_HUB_ENABLE_HF_TRANSFER=0 (http), max_workers=1, purge of unprovable
-.incomplete blobs."""
+"""HF download subprocess (SIGKILL stops chunk threads); resume needs single-stream writes per file, enforced
+by HF_HUB_DISABLE_XET=1, HF_HUB_ENABLE_HF_TRANSFER=0 (http), one writer per blob, purge of unprovable
+.incomplete blobs. Files overlap only over HTTP with resumable partials (see :func:`_file_workers`)."""
 
 from __future__ import annotations
 
@@ -42,6 +42,23 @@ from hub.utils.resumable_partials import restore_resumable_partials
 
 # Put huggingface_hub's 1.17 HTTP writer back: the SIGKILL then restart loop reads .incomplete for its resume offset, and 1.18+ leaves nothing to read.
 _PARTIALS_RESUMABLE = restore_resumable_partials()
+
+# Files fetched at once over HTTP. Each file is still one sequential writer under huggingface_hub's per-blob lock, so every partial resumes from its length; overlapping them only hides per-request latency and per-connection caps. huggingface_hub's own default is 8.
+_HTTP_FILE_WORKERS = 4
+
+
+def _file_workers(mode: str) -> int:
+    """``snapshot_download(max_workers=...)`` for *mode*. Xet stays one file at a time: hf_xet already fans out inside a file, its buffers scale per file, and a killed Xet file restarts from zero. HTTP overlaps files only where an interrupted partial resumes (:func:`hf_partials_are_resumable`), so a kill never costs more than the at-most-one in-flight file it costs serially."""
+    if mode != "http":
+        return 1
+    try:
+        from hub.utils.hf_cache_state import hf_partials_are_resumable
+        if not hf_partials_are_resumable():
+            return 1
+    except Exception:  # noqa: BLE001 - an unanswerable probe keeps the serial writer
+        return 1
+    return _HTTP_FILE_WORKERS
+
 
 # typing.Union, not `str | bool | None`: an alias is evaluated on import and PEP 604 raises below 3.10.
 HfTokenArg = Union[str, bool, None]
@@ -669,7 +686,7 @@ def _download_snapshot(
         repo_id = repo_id,
         token = _hf_token_arg(hf_token),
         ignore_patterns = ignore_patterns,
-        max_workers = 1,
+        max_workers = _file_workers(mode),
         tqdm_class = tqdm_class,
     )
     if info is None:
@@ -818,7 +835,7 @@ def _download_gguf_variant(
         repo_id = repo_id,
         token = _hf_token_arg(hf_token),
         allow_patterns = targets,
-        max_workers = 1,
+        max_workers = _file_workers(mode),
         tqdm_class = tqdm_class,
     )
     _verify_completed_download(
@@ -919,7 +936,7 @@ def _download_scoped_snapshot(
         repo_id = repo_id,
         token = _hf_token_arg(hf_token),
         allow_patterns = files,
-        max_workers = 1,
+        max_workers = _file_workers(mode),
         tqdm_class = tqdm_class,
     )
     if info is None:
@@ -992,7 +1009,7 @@ def _download_dataset(
         "repo_id": repo_id,
         "token": _hf_token_arg(hf_token),
         "repo_type": "dataset",
-        "max_workers": 1,
+        "max_workers": _file_workers(mode),
         "tqdm_class": tqdm_class,
     }
     if isinstance(commit_hash, str) and commit_hash.strip():
