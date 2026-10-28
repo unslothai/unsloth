@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { QueryDraftContext } from "./query-draft-context";
+import type { QueryDraft } from "./utils/query-draft";
 import { readGenerationProgress } from "./lib/generation-progress";
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import { authFetch, getAuthSessionEpoch } from "@/features/auth";
@@ -41,6 +43,7 @@ import {
   useLayoutEffect,
   useMemo,
   useRef,
+  useState,
 } from "react";
 import { toast } from "sonner";
 import { useBrowserAgentStore } from "@/features/browser/agent/agent-store";
@@ -3253,10 +3256,12 @@ function ThreadAutoSwitch({
 }
 
 function ThreadNewChatSwitch({
+  onReady,
   nonce,
   paused,
   newThreadSwitchStateRef,
 }: {
+  onReady: (nonce: string, threadId: string) => void;
   nonce: string;
   paused: boolean;
   newThreadSwitchStateRef: { current: NewThreadSwitchState };
@@ -3357,6 +3362,8 @@ function ThreadNewChatSwitch({
           const switchStateNow = newThreadSwitchStateRef.current;
           if (switchStateNow.attempt === attempt) {
             switchStateNow.landedAttempt = attempt;
+            const threadId = aui.threads().getState().mainThreadId;
+            if (threadId) onReady(nonce, threadId);
           }
         }
         if (!clearAfterSwitch) return;
@@ -3379,7 +3386,7 @@ function ThreadNewChatSwitch({
       },
     );
     useChatRuntimeStore.getState().setActiveThreadId(null);
-  }, [aui, isLoading, newThreadSwitchStateRef, nonce, paused]);
+  }, [aui, isLoading, newThreadSwitchStateRef, nonce, onReady, paused]);
 
   // Reassert this view's thread if a stale switch lands anyway.
   useEffect(() => {
@@ -4322,6 +4329,7 @@ export function ChatRuntimeProvider({
   pairId,
   projectId,
   initialThreadId,
+  queryDraft = null,
   newThreadNonce,
   syncActiveThreadId = true,
   listThreads = true,
@@ -4334,6 +4342,7 @@ export function ChatRuntimeProvider({
   pairId?: string;
   projectId?: string | null;
   initialThreadId?: string;
+  queryDraft?: QueryDraft | null;
   newThreadNonce?: string;
   syncActiveThreadId?: boolean;
   listThreads?: boolean;
@@ -4342,6 +4351,22 @@ export function ChatRuntimeProvider({
   onCompactionCountChange?: (threadId: string, count: number) => void;
 }): ReactElement {
   const signalReady = useAppShellReadySignal();
+  const [readyQueryThread, setReadyQueryThread] = useState<{
+    nonce: string;
+    threadId: string;
+  } | null>(null);
+  const onNewThreadReady = useCallback((nonce: string, threadId: string) => {
+    if (nonce.startsWith("query-")) setReadyQueryThread({ nonce, threadId });
+  }, []);
+  const queryDraftContext = useMemo(
+    () => queryDraft ? {
+      draft: queryDraft,
+      threadId: readyQueryThread?.nonce === newThreadNonce
+        ? readyQueryThread?.threadId ?? null
+        : null,
+    } : null,
+    [queryDraft, readyQueryThread, newThreadNonce],
+  );
   // A ref so the memo never sees it change and rebuild the runtime.
   const backgroundedRef = useRef(backgrounded);
   backgroundedRef.current = backgrounded;
@@ -4445,6 +4470,7 @@ export function ChatRuntimeProvider({
         )}
         {!initialThreadId && newThreadNonce && (
           <ThreadNewChatSwitch
+            onReady={onNewThreadReady}
             nonce={newThreadNonce}
             paused={backgrounded}
             newThreadSwitchStateRef={newThreadSwitchStateRef}
@@ -4452,7 +4478,9 @@ export function ChatRuntimeProvider({
         )}
         {/* The view stays mounted (only CSS-hidden) while off-route so the run stays attached and the
             stream alive; unmounting aborts generation. */}
-        {children}
+        <QueryDraftContext.Provider value={queryDraftContext}>
+          {children}
+        </QueryDraftContext.Provider>
         </ComparePaneContext.Provider>
       </ToolPaneScopeContext.Provider>
       </ChatProjectScopeContext.Provider>

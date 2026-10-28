@@ -435,8 +435,13 @@ export const BUDGET = {
   // Full Access from a tool approval card (#15485: per-chat grant store and the card's confirm dialog) adds
   // 5,293 B raw / 1,953 B transfer to the eager chat chunk (5,940,337 -> 5,945,630 B raw, 1,835,497 ->
   // 1,837,450 B transfer against 8222149ee, Node 24, 85 chunks). Raised by that growth.
-  transferBytes: 1_838_821,
-  rawBytes: 5_959_458,
+  // Query links (#14570) defer draft persistence to a 722 B on-use chunk. Literal parsing, auth
+  // continuation and composer isolation add 2,757 B raw / 1,204 B transfer against 85676c3396:
+  // 5,977,895 -> 5,980,652 B raw; 1,849,311 -> 1,850,515 B transfer (Node 24, same lockfile, 85 chunks).
+  // That base already exceeds the old budget by 18,437 B raw / 10,490 B transfer. Rebaseline to the
+  // measured current build plus 160 B raw / 189 B transfer, keeping that drift separate from this PR.
+  transferBytes: 1_850_704,
+  rawBytes: 5_980_812,
 };
 
 // Chunk count is not budgeted: splitting a page out raises it while lowering bytes.

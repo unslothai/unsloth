@@ -65,8 +65,9 @@ def installed_frontend(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("osname", ["posix", "nt"])
+@pytest.mark.parametrize("preview", [False, True])
 def test_start_vite_picks_the_platform_process_group(
-    monkeypatch, no_signals, installed_frontend, osname
+    monkeypatch, no_signals, installed_frontend, osname, preview
 ) -> None:
     captured: dict = {}
     monkeypatch.setattr(robust.os, "name", osname)
@@ -80,8 +81,9 @@ def test_start_vite_picks_the_platform_process_group(
     if osname == "nt":
         monkeypatch.setattr(robust.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200, raising = False)
 
-    robust.start_vite(5199)
+    robust.start_vite(5199, preview = preview)
 
+    assert captured["cmd"][1:3] == ["run", "preview" if preview else "dev"]
     assert "--strictPort" in captured["cmd"], "a drifting port must fail, not pick another"
     if osname == "nt":
         assert captured["kw"]["creationflags"] == 0x200

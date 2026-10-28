@@ -14,6 +14,9 @@ export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/login",
   staticData: { title: "Login", isAuthFlow: true },
-  beforeLoad: () => requireGuest(),
+  validateSearch: (search: Record<string, unknown>): { q?: string } => ({
+    q: typeof search.q === "string" ? search.q : undefined,
+  }),
+  beforeLoad: ({ search }) => requireGuest(search.q),
   component: LoginPage,
 });

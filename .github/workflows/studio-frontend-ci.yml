@@ -17,6 +17,7 @@ on:
 
       - 'tests/studio/playwright_strip_ansi_smoke.py'
       - 'tests/studio/playwright_composer_icons.py'
+      - 'tests/studio/playwright_chat_query.py'
       - 'tests/studio/playwright_tooltip_switch.py'
       - 'tests/studio/playwright_titlebar_blur.py'
       - 'tests/studio/playwright_chat_autoscroll.py'
@@ -62,6 +63,7 @@ on:
       - 'tests/studio/test_frontend_dep_removal.py'
       - 'tests/studio/playwright_strip_ansi_smoke.py'
       - 'tests/studio/playwright_composer_icons.py'
+      - 'tests/studio/playwright_chat_query.py'
       - 'tests/studio/playwright_tooltip_switch.py'
       - 'tests/studio/playwright_titlebar_blur.py'
       - 'tests/studio/playwright_chat_autoscroll.py'
@@ -363,6 +365,11 @@ jobs:
             tests/studio/test_heavy_thread_measurement_integrity.py \
             tests/studio/test_heavy_thread_gap_contract.py \
             tests/studio/test_code_block_flicker_contract.py -q
+
+      - name: Query-link routing and draft isolation
+        working-directory: ${{ github.workspace }}
+        timeout-minutes: 4
+        run: python3 tests/studio/playwright_chat_query.py
 
       # Keep data settings separate from the shorter checks. Each group owns its cache.
       # The step bound is the smaller one, leaving the job 25 minutes for the steps before it: a

@@ -61,11 +61,13 @@ function mountForm(
   switched = false,
   failTransitionOnce = false,
   desktop: { continued: boolean; calls: string[] } | null = null,
+  q?: string,
 ) {
   const state: unknown[] = [];
   let cursor = 0;
   const effects: (() => void)[] = [];
   const routes: string[] = [];
+  const searches: ({ q?: string } | undefined)[] = [];
   const transitions: string[] = [];
   const api = loadWithStubs<{
     AuthForm: (props: { mode: string }) => StubElement | null;
@@ -143,10 +145,12 @@ function mountForm(
     "@/components/ui/label": { Label: "Label" },
     "@tanstack/react-router": {
       Link: "Link",
+      useSearch: () => ({ q }),
       useNavigate:
         () =>
-        ({ to }: { to: string }) => {
+        ({ to, search }: { to: string; search?: { q?: string } }) => {
           routes.push(to);
+          searches.push(search);
         },
     },
     "@hugeicons/core-free-icons": { ViewIcon: "ViewIcon", ViewOffSlashIcon: "ViewOffSlashIcon" },
@@ -182,6 +186,7 @@ function mountForm(
   return {
     render,
     routes,
+    searches,
     transitions,
     initialize: async (mode = "login") => {
       render(mode);
@@ -682,13 +687,32 @@ test("a rejected refresh during a password change still drops the stored session
   assert.ok(requests.some((path) => path.endsWith("/api/auth/login")));
 });
 
+for (const switched of [false, true]) {
+  test(`query survives login with account replacement=${switched}`, async (t) => {
+    environment(t);
+    globalThis.fetch = async (path) => String(path).endsWith("/status")
+      ? Response.json({ initialized: true, requires_password_change: false, login_mode: "multi" })
+      : Response.json({ ...token, must_change_password: true });
+    const q = 'literal {"x":1} & more';
+    const form = mountForm(client(), { access: null, change: false }, switched, false, null, q);
+    let tree = await form.initialize();
+    const change = elements(tree).find((element) => element.props.id === "username")?.props.onChange as (event: unknown) => void;
+    change({ target: { value: "alice" } });
+    tree = form.render();
+    const submit = elements(tree).find((element) => element.type === "form")?.props.onSubmit as (event: unknown) => Promise<void>;
+    await submit({ preventDefault() {} });
+    assert.deepEqual(form.transitions, [`alice@a1:/change-password?q=${encodeURIComponent(q)}`]);
+    assert.deepEqual(form.searches, switched ? [] : [{ q }]);
+  });
+}
+
 test("desktop single mode offers Continue as owner instead of the seeded-password setup page", async (t) => {
   environment(t);
   // A desktop owner who never set a password: the server still reports the seeded one.
   globalThis.fetch = async () =>
     Response.json({ initialized: true, requires_password_change: true, login_mode: "single" });
   const desktop = { continued: true, calls: [] as string[] };
-  const form = mountForm(client(), { access: null, change: false }, false, false, desktop);
+  const form = mountForm(client(), { access: null, change: false }, false, false, desktop, "owner query");
   const tree = await form.initialize();
   assert.deepEqual(form.routes, []);
   assert.doesNotMatch(textContent(tree), /seeded credentials/);
@@ -699,6 +723,7 @@ test("desktop single mode offers Continue as owner instead of the seeded-passwor
   (owner.props.onClick as () => void)();
   await tick();
   assert.deepEqual(desktop.calls, ["continue"]);
+  assert.deepEqual(form.searches, [{ q: "owner query" }]);
   assert.deepEqual(form.routes, ["/chat"]);
 });
 

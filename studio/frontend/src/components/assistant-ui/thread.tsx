@@ -455,6 +455,10 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { RefreshGlyph } from "@/lib/refresh-icon";
 import { useNavigate } from "@tanstack/react-router";
 import {
+  QueryDraftContext,
+  isQueryDraftScope,
+} from "@/features/chat/query-draft-context";
+import {
   ArrowDownIcon,
   ArrowUpIcon,
   Columns2Icon,
@@ -3917,13 +3921,19 @@ const Composer: FC<{
 
   // The shared draft, restored on every chat switch; a temporary chat never reads or writes it.
   const incognito = useChatRuntimeStore((s) => s.incognito);
-  const draftScope = incognito ? INCOGNITO_DRAFT_SCOPE : referenceThreadId;
-  const draftKey = composerDraftKey();
+  const queryDraftContext = useContext(QueryDraftContext);
+  const queryDraft = queryDraftContext?.draft;
+  const queryDraftReady =
+    !queryDraft || queryDraftContext?.threadId === composerIdentity;
+  const restoringQueryTextRef = useRef<{ id: string; text: string } | null>(null);
+  const draftScope =
+    queryDraft?.id ?? (incognito ? INCOGNITO_DRAFT_SCOPE : referenceThreadId);
+  const draftKey = queryDraft?.id ?? composerDraftKey();
   // Text that came from Compare or another tab, so saving it back can't overwrite a newer write.
   const remoteDraftRef = useRef<string | null>(null);
   const [draftSource] = useState(() => Symbol("chat composer"));
   // Whose pastes are on screen: a temporary chat's never cross into the saved draft, nor back.
-  const pasteScopeShownRef = useRef<string | null>(draftScope);
+  const pasteScopeShownRef = useRef<string | null>(queryDraft ? null : draftScope);
   // unsent pasted File objects need a separate slot because they exist only in memory
   const pasteDraftKey = composerPasteDraftKey();
   const lastDraftScopeRef = useRef(draftScope);
@@ -3933,15 +3943,18 @@ const Composer: FC<{
   const draftSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // draftScope re-runs the restore on every chat switch, though the key stays the same.
   useEffect(() => {
+    if (!queryDraftReady) return;
     const composer = aui.composer();
     if (!composer.getState().isEditing) return;
     if (draftScope === INCOGNITO_DRAFT_SCOPE) {
       composer.setText("");
       return;
     }
-    const draft = adoptLegacyDraft(draftScope)
-      ? (readComposerDraft(draftKey) ?? "")
-      : latestDraft();
+    const draft = queryDraft
+      ? queryDraft.text
+      : adoptLegacyDraft(draftScope)
+        ? (readComposerDraft(draftKey) ?? "")
+        : latestDraft();
     // A save that raced the send still holds the sent text, so restoring it
     // would undo the clear. Clear rather than return early, which would leave
     // the previous thread's text on screen under this one.
@@ -3951,22 +3964,26 @@ const Composer: FC<{
         clearTimeout(draftSaveTimerRef.current);
         draftSaveTimerRef.current = null;
       }
-      writeComposerDraft(draftKey, "");
+      if (queryDraft) {
+        queryDraft.text = "";
+        queryDraft.save();
+      } else writeComposerDraft(draftKey, "");
       composer.setText("");
       return;
     }
+    if (queryDraft) restoringQueryTextRef.current = { id: queryDraft.id, text: draft };
     composer.setText(draft);
-  }, [draftScope, draftKey, aui]);
+  }, [draftScope, draftKey, queryDraft, queryDraftReady, aui]);
   // Compare's composer or another tab, so whichever is on screen shows the latest draft.
   useEffect(() => {
-    if (draftScope === INCOGNITO_DRAFT_SCOPE) return;
+    if (queryDraft || draftScope === INCOGNITO_DRAFT_SCOPE) return;
     return subscribeDraft(draftSource, (text) => {
       const composer = aui.composer();
       if (!composer.getState().isEditing) return;
       remoteDraftRef.current = text;
       composer.setText(text);
     });
-  }, [draftScope, draftSource, aui]);
+  }, [draftScope, draftSource, queryDraft, aui]);
   // The saved-prompt menu and the prompt storage dialog fill the composer
   // directly, bypassing the guard. Text appearing after the send was put there
   // deliberately, so retire. Read live, or a
@@ -3980,12 +3997,16 @@ const Composer: FC<{
   }, [composerText, draftKey, aui]);
   // Separate from the text restore, which must stay keyed on the draft alone.
   useEffect(() => {
+    if (!queryDraftReady) return;
     const composer = aui.composer();
     if (!composer.getState().isEditing) return;
     if (restoredPasteScopeRef.current === draftScope) return;
     if (
       (pasteScopeShownRef.current === INCOGNITO_DRAFT_SCOPE) !==
-      (draftScope === INCOGNITO_DRAFT_SCOPE)
+      (draftScope === INCOGNITO_DRAFT_SCOPE) ||
+      (pasteScopeShownRef.current !== draftScope &&
+        (isQueryDraftScope(pasteScopeShownRef.current) ||
+          isQueryDraftScope(draftScope)))
     ) {
       const pasted = composer
         .getState()
@@ -4014,7 +4035,7 @@ const Composer: FC<{
         const text = pastedTextOf((attachment as { file?: File }).file);
         return text === undefined ? [] : [text];
       });
-    const missing = readPasteDraft(pasteDraftKey).filter((text) => {
+    const missing = (queryDraft?.pastes ?? readPasteDraft(pasteDraftKey)).filter((text) => {
       const at = shown.indexOf(text);
       if (at === -1) return true;
       shown.splice(at, 1);
@@ -4038,10 +4059,18 @@ const Composer: FC<{
         restoredPasteScopeRef.current = draftScope;
       }
     });
-  }, [draftScope, pasteDraftKey, composerAttachmentSignature, aui]);
+  }, [
+    draftScope,
+    pasteDraftKey,
+    queryDraft,
+    queryDraftReady,
+    composerAttachmentSignature,
+    aui,
+  ]);
   // Keyed on the paste identities, never their bodies, so typing beside a
   // megabyte paste does not rewrite it to localStorage every 300ms.
   useEffect(() => {
+    if (!queryDraftReady) return;
     if (
       draftScope === INCOGNITO_DRAFT_SCOPE ||
       restoredPasteScopeRef.current !== draftScope
@@ -4055,9 +4084,26 @@ const Composer: FC<{
         const text = pastedTextOf((attachment as { file?: File }).file);
         return text === undefined ? [] : [text];
       });
-    writePasteDraft(pasteDraftKey, pastes);
-  }, [composerAttachmentSignature, draftScope, pasteDraftKey, aui]);
+    if (queryDraft) {
+      queryDraft.pastes = pastes;
+      queryDraft.save();
+    } else writePasteDraft(pasteDraftKey, pastes);
+  }, [
+    composerAttachmentSignature,
+    draftScope,
+    pasteDraftKey,
+    queryDraft,
+    queryDraftReady,
+    aui,
+  ]);
   useEffect(() => {
+    if (!queryDraftReady) return;
+    const restoringQuery = restoringQueryTextRef.current;
+    if (queryDraft && restoringQuery?.id === queryDraft.id) {
+      // setText publishes asynchronously in some browsers; do not save the pre-restore snapshot.
+      if (composerText !== restoringQuery.text) return;
+      restoringQueryTextRef.current = null;
+    }
     // After a thread switch composerText can still hold what was on screen
     // before the restore; skip that cycle so it can't overwrite the draft.
     if (lastDraftScopeRef.current !== draftScope) {
@@ -4067,11 +4113,23 @@ const Composer: FC<{
     if (draftScope === INCOGNITO_DRAFT_SCOPE) return;
     if (composerText === remoteDraftRef.current) return;
     remoteDraftRef.current = null;
+    if (queryDraft) {
+      queryDraft.text = composerText;
+      queryDraft.save();
+      return;
+    }
     publishDraft(composerText, draftSource);
     const t = setTimeout(() => writeComposerDraft(draftKey, composerText), 300);
     draftSaveTimerRef.current = t;
     return () => clearTimeout(t);
-  }, [composerText, draftScope, draftKey, draftSource]);
+  }, [
+    composerText,
+    draftScope,
+    draftKey,
+    draftSource,
+    queryDraft,
+    queryDraftReady,
+  ]);
   const draftScopeRef = useRef(draftScope);
   useEffect(() => {
     draftKeyRef.current = draftKey;
@@ -4093,12 +4151,18 @@ const Composer: FC<{
       clearTimeout(draftSaveTimerRef.current);
       draftSaveTimerRef.current = null;
     }
+    if (queryDraft) {
+      queryDraft.text = "";
+      queryDraft.pastes = [];
+      queryDraft.save();
+      return;
+    }
     // A temporary chat's send was never the stored draft.
     if (draftScopeRef.current === INCOGNITO_DRAFT_SCOPE) return;
     publishDraft("", draftSource);
     writeComposerDraft(composerDraftKey(), "");
     writePasteDraft(composerPasteDraftKey(), []);
-  }, [draftSource]);
+  }, [draftSource, queryDraft]);
   // react-textarea-autosize re-measures only on value change or window resize,
   // not on the width swap from expanding, so it keeps the taller height and
   // leaves a stray blank row. Nudge a resize whenever input width changes.

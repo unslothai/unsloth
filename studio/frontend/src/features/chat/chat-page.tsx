@@ -287,6 +287,8 @@ import {
   resolveComparePaneThreadIds,
 } from "./utils/compare-pane-threads";
 import { isChatThreadDeleted } from "./utils/chat-thread-tombstones";
+import { chatQueryParam } from "./utils/chat-query-param";
+import { getQueryDraft } from "./query-draft-context";
 import {
   getStoredChatThread,
   isExpectedBackgroundChatStorageError,
@@ -2607,6 +2609,8 @@ export type ChatSearch = {
   compare?: string;
   new?: string;
   project?: string;
+  /** A query to start a new chat with, as a browser search-engine shortcut sends it. */
+  q?: string;
 };
 
 export function validateChatSearch(search: Record<string, unknown>): ChatSearch {
@@ -2615,6 +2619,7 @@ export function validateChatSearch(search: Record<string, unknown>): ChatSearch 
     compare: typeof search.compare === "string" ? search.compare : undefined,
     new: typeof search.new === "string" ? search.new : undefined,
     project: typeof search.project === "string" ? search.project : undefined,
+    q: chatQueryParam(search.q),
   };
 }
 
@@ -4894,6 +4899,7 @@ export function ChatPage({
             <BrowserOverlaidContext.Provider value={baseBackgrounded}>
             <ChatActiveContext.Provider value={active && !baseBackgrounded}>
               <ChatRuntimeProvider
+                queryDraft={getQueryDraft(baseView.mode === "single" ? baseView.newThreadNonce : undefined, incognito)}
                 modelType="base"
                 projectId={baseView.projectId}
                 initialThreadId={
