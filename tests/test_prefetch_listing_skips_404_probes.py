@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The weights_at_root prefetch lists the repo once and skips the modules.json / root index probes for files the
-listing proves absent. The patterns handed to the downloader must be exactly what the unconditional probes give,
+"""The weights_at_root prefetch lists the repo once and skips the root index probe when the listing proves the
+index absent. The modules.json probe always runs, since its 404 records the cached absence that
+FastSentenceTransformer's offline gate reads. The patterns handed to the downloader must be exactly what the unconditional probes give,
 model_info must be called exactly as often as before, and any failed or empty listing must probe as before."""
 
 import json
@@ -156,10 +157,18 @@ def test_patterns_match_the_unconditional_probes(hub, monkeypatch, listing, kwar
     assert [d for d in base["downloads"] if d not in dropped] == head["downloads"]
 
 
-def test_a_plain_repo_makes_no_404_probe(hub):
+def test_a_plain_repo_skips_only_the_index_probe(hub):
     got = hub(PLAIN)
-    assert got["downloads"] == []
+    assert got["downloads"] == [("modules.json", None, None)]
     assert got["infos"] == [(None, None)]
+
+
+def test_modules_json_is_probed_even_when_the_listing_lacks_it(hub):
+    """The 404 writes the .no_exist marker FastSentenceTransformer._modules_json_for_gating reads offline to tell
+    "not a sentence-transformers repo" from "could not check"; skipping it would make that offline load refuse."""
+    for listing in (PLAIN, SHARDED):
+        got = hub(listing)
+        assert [d[0] for d in got["downloads"]][:1] == ["modules.json"], listing
 
 
 def test_listed_files_are_still_probed_with_the_load_ref(hub):

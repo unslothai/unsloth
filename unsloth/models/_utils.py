@@ -3343,7 +3343,7 @@ def _fetch_repo_siblings(
     token = None,
     revision = None,
 ):
-    """The repo file listing from one model_info call, or None on any failure. Shared by the probes below and the auto format prune, which would otherwise each reach the Hub."""
+    """The repo file listing from one model_info call, or None on any failure. Shared by the root index probe and the auto format prune, which would otherwise each reach the Hub."""
     try:
         from huggingface_hub import HfApi
         return HfApi().model_info(model_name, revision = revision, token = token).siblings
@@ -3367,7 +3367,6 @@ def _st_weighted_subfolder_paths(
     token = None,
     revision = None,
     cache_dir = None,
-    siblings = _SIBLINGS_NOT_FETCHED,
 ):
     """Best-effort: which subfolder modules of this sentence-transformers repo hold weights the load reads? Returns their declared paths, or () for anything else and on any failure.
 
@@ -3382,8 +3381,6 @@ def _st_weighted_subfolder_paths(
 
         from unsloth_zoo.hf_cache_state import _ST_WEIGHTED_MODULE_TYPES
 
-        if _listing_lacks(siblings, "modules.json"):
-            return ()  # not a sentence-transformers repo; the download would only 404
         path = hf_hub_download(
             model_name,
             "modules.json",
@@ -3650,7 +3647,8 @@ def maybe_prefetch_hf_snapshot(
         and not (isinstance(subfolder, str) and subfolder.strip("/"))
     ):
         # The auto format prune below lists the repo anyway (use_safetensors=None, no tf/flax); list it first so the
-        # modules.json / index probes skip files the repo does not ship instead of each paying a 404 round trip.
+        # root index probe skips an index the repo does not ship instead of paying a 404 round trip. The modules.json
+        # probe always runs: its 404 records the cached absence FastSentenceTransformer's offline gate reads.
         if use_safetensors is None and not (from_tf or from_flax):
             repo_listing["siblings"] = _fetch_repo_siblings(
                 model_name,
@@ -3662,7 +3660,6 @@ def maybe_prefetch_hf_snapshot(
             token = token,
             revision = revision,
             cache_dir = cache_dir,
-            **repo_listing,
         )
         index_subfolders = _root_index_weight_subfolders(
             model_name,
