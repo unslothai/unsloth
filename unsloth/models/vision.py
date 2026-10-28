@@ -3728,7 +3728,6 @@ class FastBaseModel:
         _attn_class, _attn_supports_sdpa = attention_class_for_load(
             model_class, _builds_remote_class, _remote_class, supports_sdpa
         )
-        _explicit_flex = requests_flex_attention(kwargs.get("attn_implementation", None))
         attn_impl = resolve_attention_implementation(
             _attn_class,
             auto_config,
@@ -3736,6 +3735,7 @@ class FastBaseModel:
             supports_sdpa = _attn_supports_sdpa,
             dtype = attn_dtype,
         )
+        _explicit_flex = requests_flex_attention(kwargs.get("attn_implementation", None))
 
         # FP8 models: get_model_name already redirected to the BF16 sibling if the model ships FP8 weights, so just update it here for sanity.
         auto_config.model_name = model_name
