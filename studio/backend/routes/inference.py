@@ -49990,8 +49990,7 @@ async def _batched_openai_images(
     guidance: float,
     expected_load: Any,
 ) -> Optional[dict]:
-    """Batch compatible diffusers requests, or return None to render individually.
-    sd.cpp and MLX lack prompt lists; FLUX.3 renders one image per call."""
+    """Diffusers only: sd.cpp/MLX lack prompt lists; FLUX.3 renders one image per call."""
     from core.inference import image_request_batching
     from core.inference.diffusion_engine_router import ENGINE_DIFFUSERS, active_engine_name
     from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
@@ -50010,8 +50009,7 @@ async def _batched_openai_images(
     ):
         return None
 
-    # Set by a Stop during a model change, as for a generation queued on the engine's slot. It also stops
-    # the ticket the batch's generate() binds its own cancel to, so a Stop after the wait still lands.
+    # Also stops the ticket generate() binds to, so a Stop after the wait still lands.
     ticket = GenerationTicket()
     stopped = TicketStopEvent(ticket)
 
@@ -50215,7 +50213,6 @@ async def _generate_openai_images(
         "workflow": result.get("workflow"),
         "created_at": float(created),
     }
-    # Keep per-image seeds and the request's base seed for gallery replay.
     per_image_seeds = result.get("seeds")
 
     def _persist() -> list[ImageGenerationData]:

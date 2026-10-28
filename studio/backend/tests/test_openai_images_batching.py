@@ -56,7 +56,6 @@ class _Backend:
             self.waiters.remove(cancel)
 
     def stop_during_a_model_change(self) -> None:
-        """What a Stop does to generations waiting on the slot while a model changes."""
         for cancel in list(self.waiters):
             cancel.set()
 
@@ -77,7 +76,7 @@ class _Backend:
     ) -> dict:
         if self.before_generate is not None:
             self.before_generate()
-        # As the real engine: bind this generation's cancel to the caller's ticket, then refuse if it is set.
+        # As the real engine: bind cancel to the ticket, then refuse if set.
         import threading
 
         from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
@@ -143,8 +142,6 @@ def _waiting() -> int:
 
 
 def _post_while_rendering(app, backend, bodies: list[dict], waiting: int) -> list[httpx.Response]:
-    """Submit concurrent requests; release the engine once ``waiting`` have queued."""
-
     async def run():
         transport = httpx.ASGITransport(app = app)
         async with httpx.AsyncClient(transport = transport, base_url = "http://studio") as client:
@@ -173,7 +170,6 @@ def test_waiting_compatible_requests_render_as_one_call_and_each_gets_its_own_im
     ]
     responses = _post_while_rendering(app, backend, bodies, waiting = 3)
     assert [len(r.json()["data"]) for r in responses] == [2, 1, 1]
-    # Arrival order may vary; each request's images stay together.
     [call] = backend.calls
     assert call["batch_size"] == 4 and call["seed"] is None
     assert call["prompt"] == call["prompts"][0]
@@ -183,7 +179,6 @@ def test_waiting_compatible_requests_render_as_one_call_and_each_gets_its_own_im
         ("a fox", 6),
         ("an owl", 20),
     ]
-    # Preserve each request's gallery recipe.
     by_prompt = {}
     for record in saved:
         by_prompt.setdefault(record["prompt"], []).append(
@@ -287,7 +282,6 @@ def test_a_stop_during_a_real_model_change_reaches_a_generation_that_starts_afte
         with generation_ticket(ticket):
             with pytest.raises(RuntimeError, match = DIFFUSION_CANCELLED_MSG):
                 engine.generate(prompt = "a fox", width = 256, height = 256)
-    # A request no Stop reached reaches the engine's own refusal instead of the cancel.
     with generation_ticket(GenerationTicket()):
         with pytest.raises(RuntimeError) as exc:
             engine.generate(prompt = "a fox", width = 256, height = 256)
@@ -317,8 +311,7 @@ def test_a_stop_while_a_failed_batch_unwinds_keeps_its_requests_from_rendering_a
 
 
 def test_a_batch_stops_waiting_when_the_generation_it_queued_behind_ends(studio):
-    # A generation that takes the slot next must not keep the batch waiting, or a steady stream of
-    # other generations would starve it.
+    # A later slot holder must not keep the batch waiting (starvation).
     app, backend, saved = studio
 
     async def run():

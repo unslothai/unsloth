@@ -14438,8 +14438,7 @@ class DiffusionBackend:
 
     @contextmanager
     def generation_waiter(self, cancel: threading.Event):
-        """Registers a request waiting to generate outside ``generate``, so a Stop during a model change
-        sets ``cancel`` as it cancels the generations queued on the slot."""
+        """Register an outside waiter so a Stop during a model change sets ``cancel``."""
         with self._generation_cancel_lock:
             self._queued_generate_cancels.add(cancel)
         try:
@@ -14449,8 +14448,7 @@ class DiffusionBackend:
                 self._queued_generate_cancels.discard(cancel)
 
     def generation_holder(self) -> Optional[object]:
-        """What holds the generation slot: the running generation's cancel, the lock itself during a model
-        change or an admission, else None. A different object means a different holder."""
+        """Slot holder identity: running cancel, the lock (model change/admission), or None."""
         with self._generation_cancel_lock:
             if self._active_generate_cancel is not None:
                 return self._active_generate_cancel

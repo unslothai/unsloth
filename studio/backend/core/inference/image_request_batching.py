@@ -106,8 +106,7 @@ async def generate(
     run_batch: Callable[[list[str], list[int]], Awaitable[dict[str, Any]]],
     shared_outcome: Callable[[BaseException], bool] = lambda exc: False,
 ) -> Optional[dict[str, Any]]:
-    """Return this request's batch result, or None to render individually.
-    Exceptions accepted by ``shared_outcome`` propagate to all batch members."""
+    """Return the batch result or None; ``shared_outcome`` errors reach all members."""
     cap = batch_max()
     if cap <= 1 or n >= cap:
         return None

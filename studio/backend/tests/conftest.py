@@ -176,7 +176,6 @@ def _forget_mcp_discovery_state():
 
 @pytest.fixture(autouse = True)
 def _forget_queued_media_requests():
-    # Prevent queued requests and open batches from leaking between tests.
     def _forget():
         video_routes = sys.modules.get("routes.video")
         if video_routes is not None:

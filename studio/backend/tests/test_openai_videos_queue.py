@@ -33,7 +33,6 @@ def _drain() -> None:
 
 
 def _delete_in_background(client, video_id: str) -> tuple:
-    """Send a DELETE on another thread, as a client would while the drain is busy with the video."""
     import threading
     import time
 
@@ -51,7 +50,6 @@ def _render_one(
     backend,
     prompt = "first",
 ) -> dict:
-    """Start a video and hold it rendering until the gate opens."""
     backend.gate.clear()
     job = _create(client, {"prompt": prompt}).json()
     assert job["status"] in ("queued", "in_progress")
@@ -93,7 +91,6 @@ def test_queued_videos_start_first_in_first_out_and_a_new_create_waits_behind_th
     backend.gate.set()
     _wait_terminal(client, first["id"])
 
-    # New requests must join the queue even when the engine is idle.
     c = client.post("/v1/videos", json = {"prompt": "c"}).json()
     assert c["status"] == "queued"
     assert [entry.id for entry in video_routes._VIDEO_QUEUE] == [a["id"], b["id"], c["id"]]
@@ -302,7 +299,7 @@ def test_a_delete_during_a_start_that_does_not_settle_is_refused_rather_than_rep
 def test_a_queued_video_of_a_disabled_account_never_starts(client, backend):
     first = _render_one(client, backend)
     client.post("/v1/videos", json = {"prompt": "theirs"})
-    # No such account is enabled in this Studio home, as after an admin disables it.
+    # Account not enabled here, as after an admin disables it.
     video_routes._VIDEO_QUEUE[0].account = _OTHER
     backend.gate.set()
     _wait_terminal(client, first["id"])
@@ -374,7 +371,6 @@ def test_a_queued_job_reports_the_size_and_seconds_an_immediate_start_would(clie
     backend.gate.set()
     _wait_terminal(client, first["id"])
     _drain()
-    # Once completed, seconds is the saved clip's own duration, for an immediate start too.
     started = _wait_terminal(client, queued["id"])
     assert (started["size"], started["model"]) == (
         immediate_shape["size"],

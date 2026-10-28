@@ -38,8 +38,7 @@ class GenerationTicket:
 
 
 class TicketStopEvent(threading.Event):
-    """An event that also stops ``ticket`` when set, for code that cancels by setting events, so the stop
-    reaches a generation that binds to the ticket later."""
+    """Event that also stops ``ticket``, reaching generations that bind to it later."""
 
     def __init__(self, ticket: GenerationTicket) -> None:
         super().__init__()

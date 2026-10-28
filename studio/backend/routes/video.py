@@ -2143,7 +2143,6 @@ def _new_video_id() -> str:
 
 
 def _video_seed(body: VideoJobCreateRequest) -> int:
-    # Keep the seed stable across queueing and retries.
     return body.seed if body.seed is not None else _secrets.randbelow(2**53)
 
 
@@ -2177,7 +2176,6 @@ async def _start_openai_video(
     seed: int,
     created_at: Optional[int] = None,
 ):
-    """Start a video with the supplied job ID, seed, and creation time."""
     from core.inference.gpu_arbiter import VIDEO
     from core.inference.media_auto_switch import (
         maybe_auto_switch_media_model,
@@ -2380,8 +2378,7 @@ async def _start_openai_video(
     return _job_to_openai(job)
 
 
-# In-memory FIFO queue; jobs start as their submitting account.
-# Waiting jobs are lost on restart.
+# In-memory FIFO (lost on restart); jobs start as their submitting account.
 VIDEO_QUEUE_POLL_S = 2.0
 VIDEO_QUEUE_MAX = 64
 VIDEO_QUEUE_MAX_PER_ACCOUNT = 32
@@ -2416,7 +2413,6 @@ _video_start_locks: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asynci
 
 
 def _video_start_lock() -> asyncio.Lock:
-    # Serialize queued starts on each event loop.
     loop = asyncio.get_running_loop()
     lock = _video_start_locks.get(loop)
     if lock is None:
@@ -2431,7 +2427,6 @@ def _video_engine_busy() -> bool:
 
 
 def _refusal_error(exc: BaseException) -> dict:
-    """Extract a refusal's code and message, sanitizing unexpected errors."""
     from core.inference.gpu_arbiter import GpuBusyForAnotherAccountError
 
     if isinstance(exc, GpuBusyForAnotherAccountError):
@@ -2502,8 +2497,7 @@ def _own_queued_videos() -> list[VideoJob]:
 def _queued_job_display(
     body: VideoJobCreateRequest, inputs: _VideoCreateInputs
 ) -> tuple[str, str, str]:
-    """Model, size and seconds as an immediate start reports them. The loaded model's are read only when it
-    is the one that will render, and then a managed account must be allowed it, as on an immediate start."""
+    """Mirror an immediate start; loaded-model values only if it renders and the account may use it."""
     from core.inference.gpu_arbiter import VIDEO
     from core.inference.media_auto_switch import resident_answers_media_request
     from core.inference.video import get_video_backend
@@ -2603,7 +2597,6 @@ async def _create_or_queue_openai_video(
 
 
 def _fail_queued_video(entry: _QueuedVideo, exc: BaseException) -> None:
-    """Persist a refused start as a failed job."""
     error = _refusal_error(exc)
     job = _VideoJob(
         id = entry.id,
@@ -2629,8 +2622,7 @@ def _drop_queued_video(entry: _QueuedVideo) -> None:
 
 
 async def _settle_failed_queued_video(entry: _QueuedVideo, exc: BaseException) -> None:
-    """Record a refused start as a failed job and drop it from the queue. ``starting`` stays set while
-    the record is written, so a DELETE waits for it and then deletes the record."""
+    """``starting`` stays set while writing, so a DELETE waits then deletes the record."""
     entry.starting = True
     try:
         await asyncio.to_thread(_fail_queued_video, entry, exc)
@@ -2642,11 +2634,9 @@ async def _settle_failed_queued_video(entry: _QueuedVideo, exc: BaseException) -
 
 
 def _queued_account_active(account: AccountContext) -> bool:
-    """A queued video starts only while its account is still enabled."""
     if account.is_owner:
         return True
     from auth.storage import get_account_by_id
-
     return get_account_by_id(account.account_id) is not None
 
 
@@ -2693,7 +2683,6 @@ async def _start_queued_video(entry: _QueuedVideo) -> bool:
                 logger.exception("Could not start queued video %s", entry.id)
             await _settle_failed_queued_video(entry, exc)
             return True
-        # Started: a DELETE waiting on this entry now finds the running job instead.
         _drop_queued_video(entry)
         entry.starting = False
     return True
