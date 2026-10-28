@@ -884,7 +884,6 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                     unload_extra_models, _user_pinned, True
                 ):
                     await asyncio.to_thread(release_chat_gpu_claim)
-                # An MLX primary lives on the orchestrator while the llama backend sits empty.
                 mlx = None if backend.is_loaded else _resident_mlx(_peek_inference_backend())
                 resident = backend if backend.is_loaded else mlx
                 # Purging the stash mid-reload would race the restore.

@@ -9227,7 +9227,6 @@ def test_the_load_route_pins_and_other_load_surfaces_do_not(monkeypatch):
     monkeypatch.setattr(inference_route, "_load_model_impl", _already_loaded)
     request = LoadRequest(model_path = "unsloth/A-GGUF")
 
-    # An MLX primary is held by the orchestrator, which idle unload asks instead.
     standard = SimpleNamespace(active_model_name = "/models/Qwen-MLX", _loaded_by_user_action = False)
     monkeypatch.setattr(inference_route, "_peek_inference_backend", lambda: standard)
 
@@ -9327,7 +9326,6 @@ def test_idle_unload_frees_an_api_loaded_mlx_primary_and_the_next_request_reload
         calls.append(request)
         orch.active_model_name = request.model_path
         orch.models = {request.model_path: {"is_mlx": True}}
-        # The load route's orchestrator branch, which restores a kept chat context.
         kw.note_model_loaded(orch)
 
     _wire_on(monkeypatch, resolves_to = None, backend = llama, recorder = _load)
