@@ -167,7 +167,6 @@ def test_a_recently_changed_file_is_not_remembered(tmp_path, monkeypatch, walks)
     _skip(path, 3000)
     assert walks["skip"] == 2
     assert not gm._WALK_MEMO
-    # Older than the settle window (mtime and ctime), it is remembered.
     monkeypatch.setattr(gm.time, "time_ns", lambda: os.stat(path).st_ctime_ns + 3_000_000_001)
     _skip(path, 3000)
     _skip(path, 3000)
@@ -240,7 +239,7 @@ def test_memo_is_bounded_lru(tmp_path, monkeypatch):
         paths.append(p)
     for i, p in enumerate(paths[:4]):
         _skip(p, 100 + i)
-    _skip(paths[0], 100)  # refresh: most recently used
+    _skip(paths[0], 100)
     _skip(paths[4], 104)
     _skip(paths[5], 105)
     assert len(gm._WALK_MEMO) == 4
