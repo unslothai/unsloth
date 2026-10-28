@@ -1004,7 +1004,7 @@ export function ResourcesTab() {
                 label: t("settings.resources.gpu.segmentUsed"),
                 bytes: isFiniteNumber(used) ? used : 0,
                 value: usedText,
-                color: STORAGE_COLORS.green,
+                color: "bg-control-accent",
               },
               ...(usedBySystem > 0
                 ? [
@@ -1086,17 +1086,6 @@ export function ResourcesTab() {
                       </>
                     ) : null}
                   </span>
-                  {telemetryParts.length > 0 ? (
-                    // Breaks between readings, never inside "612 / 700 W".
-                    <span className="flex flex-wrap gap-x-1 text-xs tabular-nums text-muted-foreground">
-                      {telemetryParts.map((part, partIndex) => (
-                        <span key={part} className="whitespace-nowrap">
-                          {partIndex > 0 ? "· " : null}
-                          {part}
-                        </span>
-                      ))}
-                    </span>
-                  ) : null}
                   <span className="text-xs text-muted-foreground">
                     {t("settings.resources.gpu.usedOf", {
                       used: usedText,
@@ -1124,6 +1113,11 @@ export function ResourcesTab() {
                       barClassName="h-1.5 rounded-full"
                     />
                   )}
+                  {telemetryParts.length > 0 ? (
+                    <span className="text-ui-11 tabular-nums text-muted-foreground">
+                      {telemetryParts.join(" · ")}
+                    </span>
+                  ) : null}
                 </div>
               </div>
             );
