@@ -84,7 +84,9 @@ def _peft(model, **extra):
     kw = dict(
         r = 4, lora_alpha = 8, target_modules = "all-linear", init_lora_weights = False, lora_dropout = 0.0
     )
-    fast = extra.pop("_fast", False)  # Unsloth's fast PiSSA / MiCA swap, as FastLanguageModel.get_peft_model
+    fast = extra.pop(
+        "_fast", False
+    )  # Unsloth's fast PiSSA / MiCA swap, as FastLanguageModel.get_peft_model
     kw.update(extra)
     with _lora_init().fast_lora_init() if fast else contextlib.nullcontext():
         return get_peft_model(model, LoraConfig(**kw)).train()
@@ -463,7 +465,18 @@ def test_sharded_loading_refusals_leave_the_model_uncut():
 
 @pytest.mark.parametrize(
     "init",
-    ["pissa", "pissa_niter_2", "olora", "mica", "loftq", "corda", "lora_ga", True, "gaussian", "orthogonal"],
+    [
+        "pissa",
+        "pissa_niter_2",
+        "olora",
+        "mica",
+        "loftq",
+        "corda",
+        "lora_ga",
+        True,
+        "gaussian",
+        "orthogonal",
+    ],
 )
 def test_lora_inits_leave_placeholders_storage_free(init):
     """Every PEFT init on a layer whose base weight is a placeholder (another stage reads it) leaves it zero-stride
@@ -477,11 +490,9 @@ def test_lora_inits_leave_placeholders_storage_free(init):
     kw = dict(r = 4, lora_alpha = 8, target_modules = ["0"], init_lora_weights = init)
     if init == "lora_ga":
         from peft import LoraGAConfig
-
         kw["lora_ga_config"] = LoraGAConfig()
     if init == "corda":
         from peft.tuners.lora.config import CordaConfig
-
         kw["corda_config"] = CordaConfig()
     if init == "loftq":
         # LoraConfig refuses "loftq" without scipy (absent here); LoftQ's own quantizer never runs on a placeholder.

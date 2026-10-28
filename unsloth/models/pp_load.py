@@ -80,7 +80,14 @@ def _refuse_unsplit_forward(
 
 
 # PEFT LoraLayer initializers that read the base weight (and most rewrite it with a dense residual).
-_WEIGHT_INITS = ("pissa_init", "olora_init", "mica_init", "corda_init", "loftq_init", "lora_ga_init")
+_WEIGHT_INITS = (
+    "pissa_init",
+    "olora_init",
+    "mica_init",
+    "corda_init",
+    "loftq_init",
+    "lora_ga_init",
+)
 _SKIPS_PLACEHOLDER = "_unsloth_pp_skips_placeholder"
 
 
@@ -97,9 +104,18 @@ def _placeholder_aware(name, original):
         # full residual) for an adapter the split drops. Keep the global RNG in step with a full load:
         # PEFT's pissa_niter_N draws one sketch through torch.svd_lowrank (the other inits draw nothing).
         init_lora_weights = args[0] if args else kwargs.get("init_lora_weights")
-        if name == "pissa_init" and isinstance(init_lora_weights, str) and "_niter_" in init_lora_weights:
+        if (
+            name == "pissa_init"
+            and isinstance(init_lora_weights, str)
+            and "_niter_" in init_lora_weights
+        ):
             weight = self.get_base_layer().weight
-            torch.randn(min(weight.shape[-2:]), self.r[adapter_name], dtype = torch.float32, device = weight.device)
+            torch.randn(
+                min(weight.shape[-2:]),
+                self.r[adapter_name],
+                dtype = torch.float32,
+                device = weight.device,
+            )
         return None
 
     init.__name__ = init.__qualname__ = name

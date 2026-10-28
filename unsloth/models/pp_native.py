@@ -962,7 +962,9 @@ def _check_schedule(model, spec, props):
     if props["split_backward"] and not split_backward_keeps_function_nodes():
         compiled = compiled_blocks(model)
         if compiled:
-            shown = ", ".join(compiled[:3]) + (f" and {len(compiled) - 3} more" if len(compiled) > 3 else "")
+            shown = ", ".join(compiled[:3]) + (
+                f" and {len(compiled) - 3} more" if len(compiled) > 3 else ""
+            )
             raise ValueError(
                 f"Unsloth: the {spec.name} pipeline schedule splits each backward into an input and a weight "
                 f"pass, which torch {torch.__version__} cannot run over torch.compile'd blocks ({shown}): its "
