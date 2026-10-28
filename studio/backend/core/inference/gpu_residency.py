@@ -631,9 +631,8 @@ def mlx_replaced_credit_mib(orch) -> int:
 
 
 def mlx_cache_bounded(entry: dict, slots: int = 1) -> bool:
-    """Whether the loaded MLX model's cache stops at the context it was priced at: a cache window or a per-request
-    budget. Without either its growth has no ceiling to reserve; batched vision rows (more than one slot) drop the
-    window."""
+    """Whether the loaded MLX cache stops at its priced context (a cache window or a per-request budget); batched
+    vision rows (more than one slot) drop the window."""
     if slots > 1 and entry.get("context_unbounded_when_batched"):
         return False
     return entry.get("context_length_enforced") is True or bool(entry.get("mlx_context_budget"))
@@ -924,8 +923,8 @@ def settle_unpriced_chat_beside_media(policy: str) -> None:
 
 
 def forget_media_price(owner: str, cancel: Any = None) -> None:
-    """Drop ``owner``'s recorded price: a resident that changed renderer is no longer what was priced. Gives up on
-    ``cancel`` like refuse_unless_fits: an evictor holding the lock is waiting for our drain."""
+    """Drop ``owner``'s price after a renderer change. Gives up on ``cancel``: an evictor holding the lock awaits our
+    drain."""
     while not arb._lock.acquire(timeout = 0.05):
         if cancel is not None and cancel.is_set():
             from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG

@@ -11816,7 +11816,6 @@ def _note_mlx_slots(backend, slots: int) -> None:
     if isinstance(growth, dict):
         growth["slots"] = max(int(growth.get("slots", 1)), int(slots))
         if not _mlx_cache_bounded(entry, growth["slots"]):
-            # Now wide enough to batch vision rows past the window: unpriced, as at load.
             entry.pop("mlx_growth")
 
 
@@ -18976,8 +18975,7 @@ async def _load_model_impl(
                 if mlx_chat_need is not None:
                     from core.inference.gpu_residency import mlx_replaced_credit_mib
 
-                    # Every load spawns a fresh worker in its slot. An outgoing llama-server earns no credit: its
-                    # footprint mixes CPU-only buffers with Metal ones, and only the latter come off the wired budget.
+                    # No llama-server credit: its footprint mixes CPU-only buffers with Metal ones.
                     mlx_credit_mib = await asyncio.to_thread(mlx_replaced_credit_mib, backend)
                 handoff_kwargs.update(
                     _chat_fit_kwargs(
@@ -19366,7 +19364,6 @@ async def _load_model_impl(
             _resident_entry["gpu_ids_requested"] = (
                 list(request.gpu_ids) if request.gpu_ids else None
             )
-            # Unbounded, the estimate is no ceiling: the entry stays unpriced, so media beside it evicts or refuses.
             if mlx_chat_need is not None and _mlx_cache_bounded(
                 _resident_entry, mlx_chat_need[1]["slots"]
             ):
@@ -46866,7 +46863,7 @@ def _mlx_fallback_load_gate(request, gpu_ordinal, multi_model_mode):
             ):
                 if ref and _repo_is_in_the_hub_cache(ref) is not True:
                     _note_load_fetched_with_a_request_token(ref, request.hf_token)
-            # The MLX price no longer describes the diffusers renderer: chat loads beside it treat it as unpriced.
+            # The MLX price does not describe the diffusers renderer.
             forget_media_price(DIFFUSION, cancel)
             return start()
 
