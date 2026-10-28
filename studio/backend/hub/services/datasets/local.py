@@ -202,12 +202,6 @@ def _build_local_dataset_items() -> list[LocalDatasetItem]:
     return items
 
 
-def _json_int(text: str) -> int | float:
-    # Arrow's JSON reader reads an integer outside int64 as float64; from_list would overflow.
-    value = int(text)
-    return value if -(2**63) <= value < 2**63 else float(value)
-
-
 def _jsonl_head(path: Path, preview_size: int) -> list[dict] | None:
     """First ``preview_size`` JSON Lines objects via the stdlib: pyarrow's threaded JSON reader segfaults on mixed-type columns (#15681). ``None`` if not JSON Lines."""
     rows = []
@@ -218,7 +212,7 @@ def _jsonl_head(path: Path, preview_size: int) -> list[dict] | None:
             if not line.strip():
                 continue
             try:
-                row = json.loads(line, parse_int = _json_int)
+                row = json.loads(line)
             except ValueError:
                 return None
             if not isinstance(row, dict):
@@ -227,6 +221,23 @@ def _jsonl_head(path: Path, preview_size: int) -> list[dict] | None:
     # Columns are the union over rows, as the Arrow reader builds them (from_list reads row 0's keys).
     keys = list(dict.fromkeys(key for row in rows for key in row))
     return [{key: row.get(key) for key in keys} for row in rows]
+
+
+def _jsonl_rows_dataset(rows: list[dict]):
+    import io
+
+    import pyarrow as pa
+    import pyarrow.json as paj
+    from datasets import Dataset
+
+    try:
+        return Dataset.from_list(rows)
+    except (OverflowError, pa.ArrowException):
+        # Values from_list cannot type (int64 overflow, big ints beside floats): the Arrow JSON reader
+        # types them as the loader does. One block without threads: the crash in #15681 is threaded.
+        data = "".join(json.dumps(row) + "\n" for row in rows).encode("utf-8")
+        options = paj.ReadOptions(use_threads = False, block_size = len(data))
+        return Dataset(paj.read_json(io.BytesIO(data), read_options = options))
 
 
 def _stream_file_preview_slice(path: Path, preview_size: int, **load_kwargs):
@@ -240,7 +251,7 @@ def _stream_file_preview_slice(path: Path, preview_size: int, **load_kwargs):
         if not load_kwargs:
             rows = _jsonl_head(path, preview_size)
             if rows is not None:
-                return (Dataset.from_list(rows), None) if rows else None
+                return (_jsonl_rows_dataset(rows), None) if rows else None
         loader = "json"
     elif name.endswith((".csv", ".tsv")):
         loader = "csv"

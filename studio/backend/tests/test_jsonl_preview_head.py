@@ -84,11 +84,21 @@ def test_mixed_nested_types_raise_instead_of_reaching_the_native_reader(tmp_path
     assert loader_calls == []
 
 
-def test_integers_outside_int64_preview_as_floats_like_the_loader(tmp_path, loader_calls):
+@pytest.mark.parametrize(
+    "lines, expected",
+    [
+        (['{"id": 9223372036854775808}', '{"id": 1}'], [9223372036854775808.0, 1.0]),
+        (['{"id": 9223372036854775807}', '{"id": 9223372036854775808}'], [2.0**63, 2.0**63]),
+        (['{"v": 9007199254740993}', '{"v": 1.5}'], [9007199254740992.0, 1.5]),
+    ],
+)
+def test_numbers_from_list_cannot_type_preview_like_the_loader(
+    tmp_path, loader_calls, lines, expected
+):
     path = tmp_path / "train.jsonl"
-    path.write_text('{"text": "a", "id": 9223372036854775808}\n{"text": "b", "id": 1}\n')
+    path.write_text("".join(line + "\n" for line in lines), encoding = "utf-8")
     dataset, _ = local._stream_file_preview_slice(path, 10)
-    assert dataset["id"] == [9223372036854775808.0, 1.0] and loader_calls == []
+    assert dataset[dataset.column_names[0]] == expected and loader_calls == []
 
 
 def test_columns_are_the_union_over_rows(tmp_path, loader_calls):
