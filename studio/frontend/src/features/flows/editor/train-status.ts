@@ -114,13 +114,18 @@ export function trainView(input: {
   const objective = String(params.objective ?? "sft");
   const prompt = String(params.prompt_column ?? "").trim();
   const response = String(params.response_column ?? "").trim();
-  if (objective === "sft" && !!prompt !== !!response)
+  const mapping = params.custom_format_mapping;
+  const mapped = !!mapping && typeof mapping === "object" && Object.keys(mapping).length > 0;
+  const sftColumns = objective === "sft" && !mapped;
+  if (sftColumns && !!prompt !== !!response)
     return {
       state: "setup",
       detail: "Set both columns, or leave both blank",
       history: [],
       reward: false,
     };
+  if (sftColumns && prompt && prompt === response)
+    return { state: "setup", detail: "Use two different columns", history: [], reward: false };
   const rewards = Array.isArray(params.rewards)
     ? params.rewards.filter((r) => String(r?.name ?? "").trim())
     : [];

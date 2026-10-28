@@ -78,6 +78,20 @@ test("the node walks needs dataset, setup, ready, training, adapter ready, stopp
     trainView({ ...base, params: { ...base.params, prompt_column: "q" } }).state,
     "setup",
   );
+  assert.equal(
+    trainView({
+      ...base,
+      params: { ...base.params, prompt_column: "q", response_column: "q" },
+    }).detail,
+    "Use two different columns",
+  );
+  assert.equal(
+    trainView({
+      ...base,
+      params: { ...base.params, prompt_column: "q", custom_format_mapping: { q: "user" } },
+    }).state,
+    "ready",
+  );
   assert.equal(trainView(base).state, "ready");
   const live = trainView({
     ...base,
