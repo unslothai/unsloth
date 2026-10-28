@@ -5019,6 +5019,7 @@ export const de = {
       description: "Was das Modell schreiben soll",
       presetLabel: "Vorlage für den Systemprompt",
       presets: {
+        reasoningTags: "Lösungsweg- + Lösungs-Tags",
         notebook: "Begründung + Antwort-Tags",
         none: "Kein Systemprompt",
         custom: "Eigener",

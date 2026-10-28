@@ -140,22 +140,26 @@ export function PromptFormatSection(): ReactElement {
                 </p>
               )}
             </div>
-            <Input
-              type="number"
-              inputMode="numeric"
-              min={0}
-              max={1000}
-              step={10}
-              aria-label={t("rl.prompt.warmupSteps")}
-              className="h-8 w-[calc(110px*var(--ui-space-scale,1))] shrink-0 self-center text-right text-xs"
-              value={s.warmupSteps}
-              onChange={(e) => {
-                const n = Number.parseInt(e.target.value, 10);
-                s.setWarmupSteps(
-                  Number.isFinite(n) ? Math.min(1000, Math.max(0, n)) : 0,
-                );
-              }}
-            />
+            {/* A number Input's flex item is its wrapper span, which gets only the width
+                classes: shrink-0 on the field let the span shrink and the field spill out. */}
+            <div className="shrink-0 self-center">
+              <Input
+                type="number"
+                inputMode="numeric"
+                min={0}
+                max={1000}
+                step={10}
+                aria-label={t("rl.prompt.warmupSteps")}
+                className="h-8 w-[calc(110px*var(--ui-space-scale,1))] text-right text-xs"
+                value={s.warmupSteps}
+                onChange={(e) => {
+                  const n = Number.parseInt(e.target.value, 10);
+                  s.setWarmupSteps(
+                    Number.isFinite(n) ? Math.min(1000, Math.max(0, n)) : 0,
+                  );
+                }}
+              />
+            </div>
           </div>
         )}
       </div>
@@ -169,7 +173,15 @@ export function PromptFormatSection(): ReactElement {
           ariaLabel={t("rl.prompt.presetLabel")}
           size="compact"
           options={[
-            { value: "notebook", label: t("rl.prompt.presets.notebook") },
+            {
+              value: "notebook",
+              // The preset is the reasoning format's prompt while that is on.
+              label: t(
+                s.reasoning
+                  ? "rl.prompt.presets.reasoningTags"
+                  : "rl.prompt.presets.notebook",
+              ),
+            },
             { value: "none", label: t("rl.prompt.presets.none") },
             { value: "custom", label: t("rl.prompt.presets.custom") },
           ]}

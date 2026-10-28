@@ -4944,6 +4944,7 @@ export const ar = {
       description: "ما يُطلب من النموذج كتابته",
       presetLabel: "إعداد مسبق لموجّه النظام",
       presets: {
+        reasoningTags: "وسوم خطوات الحل + الحل",
         notebook: "وسوم التفكير والإجابة",
         none: "بدون موجّه نظام",
         custom: "مخصص",

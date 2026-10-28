@@ -5024,6 +5024,7 @@ export const en = {
       description: "What the model is asked to write",
       presetLabel: "System prompt preset",
       presets: {
+        reasoningTags: "Working out + solution tags",
         notebook: "Reasoning + answer tags",
         none: "No system prompt",
         custom: "Custom",

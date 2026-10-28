@@ -5030,6 +5030,7 @@ export const fr = {
       description: "Ce que le modèle doit écrire",
       presetLabel: "Préréglage du prompt système",
       presets: {
+        reasoningTags: "Balises de raisonnement + solution",
         notebook: "Balises raisonnement + réponse",
         none: "Aucun prompt système",
         custom: "Personnalisé",

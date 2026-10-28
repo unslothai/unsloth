@@ -4935,6 +4935,7 @@ export const ko = {
       description: "모델에게 쓰게 할 내용",
       presetLabel: "시스템 프롬프트 프리셋",
       presets: {
+        reasoningTags: "풀이 + 정답 태그",
         notebook: "추론 + 답변 태그",
         none: "시스템 프롬프트 없음",
         custom: "사용자 지정",

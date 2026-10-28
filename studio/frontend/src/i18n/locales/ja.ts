@@ -4894,6 +4894,7 @@ export const ja = {
       description: "モデルに書かせる内容",
       presetLabel: "システムプロンプトのプリセット",
       presets: {
+        reasoningTags: "途中式 + 解答タグ",
         notebook: "推論 + 回答タグ",
         none: "システムプロンプトなし",
         custom: "カスタム",

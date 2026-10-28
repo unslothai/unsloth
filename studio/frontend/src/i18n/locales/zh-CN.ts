@@ -4846,6 +4846,7 @@ export const zhCN = {
       description: "要求模型写出的内容",
       presetLabel: "系统提示预设",
       presets: {
+        reasoningTags: "推导 + 答案标签",
         notebook: "推理 + 答案标签",
         none: "无系统提示",
         custom: "自定义",

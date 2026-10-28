@@ -4955,6 +4955,7 @@ export const hi = {
       description: "मॉडल से क्या लिखवाना है",
       presetLabel: "सिस्टम प्रॉम्प्ट प्रीसेट",
       presets: {
+        reasoningTags: "हल की प्रक्रिया + समाधान टैग",
         notebook: "तर्क + उत्तर टैग",
         none: "कोई सिस्टम प्रॉम्प्ट नहीं",
         custom: "कस्टम",

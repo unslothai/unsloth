@@ -4976,6 +4976,7 @@ export const ru = {
       description: "Что модель должна написать",
       presetLabel: "Шаблон системного промпта",
       presets: {
+        reasoningTags: "Теги решения и ответа",
         notebook: "Теги рассуждения и ответа",
         none: "Без системного промпта",
         custom: "Свой",

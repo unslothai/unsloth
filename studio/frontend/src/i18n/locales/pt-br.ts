@@ -4978,6 +4978,7 @@ export const ptBR = {
       description: "O que o modelo deve escrever",
       presetLabel: "Predefinição do prompt de sistema",
       presets: {
+        reasoningTags: "Tags de raciocínio + solução",
         notebook: "Tags de raciocínio + resposta",
         none: "Sem prompt de sistema",
         custom: "Personalizado",

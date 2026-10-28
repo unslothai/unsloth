@@ -5092,6 +5092,7 @@ export const he = {
       description: "מה המודל מתבקש לכתוב",
       presetLabel: "הגדרה קבועה של הנחיית מערכת",
       presets: {
+        reasoningTags: "תגיות דרך פתרון + פתרון",
         notebook: "תגיות נימוק + תשובה",
         none: "ללא הנחיית מערכת",
         custom: "מותאם אישית",

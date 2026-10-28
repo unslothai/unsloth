@@ -5018,6 +5018,7 @@ export const es = {
       description: "Lo que se le pide escribir al modelo",
       presetLabel: "Preajuste del prompt de sistema",
       presets: {
+        reasoningTags: "Etiquetas de razonamiento + solución",
         notebook: "Etiquetas de razonamiento + respuesta",
         none: "Sin prompt de sistema",
         custom: "Personalizado",

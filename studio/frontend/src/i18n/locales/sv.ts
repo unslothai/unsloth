@@ -5238,6 +5238,7 @@ export const sv = {
       description: "Vad modellen ombeds skriva",
       presetLabel: "Förinställning för systemprompt",
       presets: {
+        reasoningTags: "Lösningsgång- + lösningstaggar",
         notebook: "Resonemang- + svarstaggar",
         none: "Ingen systemprompt",
         custom: "Anpassad",
