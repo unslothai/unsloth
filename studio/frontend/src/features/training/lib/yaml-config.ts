@@ -4,6 +4,7 @@
 import {
   GRPO_VARIANTS,
   type GrpoRewardSelection,
+  type GrpoPythonRewardIsolation,
   type GrpoVariant,
   type TrainingObjective,
 } from "@/types/training";
@@ -142,6 +143,7 @@ export function serializeConfigToYaml(
             temperature: state.grpoTemperature,
             epsilon_high: state.grpoEpsilonHigh,
             mask_truncated_completions: state.grpoMaskTruncatedCompletions,
+            python_reward_isolation: state.grpoPythonRewardIsolation,
             enable_thinking: state.grpoEnableThinking,
             system_prompt: state.grpoSystemPrompt,
             rewards: state.grpoRewards,
@@ -163,6 +165,7 @@ export interface YamlRlSettings {
   grpoTemperature?: number;
   grpoEpsilonHigh?: number | null;
   grpoMaskTruncatedCompletions?: boolean;
+  grpoPythonRewardIsolation?: GrpoPythonRewardIsolation;
   grpoEnableThinking?: boolean;
   grpoSystemPrompt?: string;
   grpoRewards?: GrpoRewardSelection[];
@@ -245,6 +248,12 @@ function parseRlSection(rl: unknown): YamlRlSettings {
   set("grpoEpsilonHigh", inRange(r.epsilon_high, 0, 1, true));
   if (typeof r.mask_truncated_completions === "boolean") {
     out.grpoMaskTruncatedCompletions = r.mask_truncated_completions;
+  }
+  if (
+    r.python_reward_isolation === "required" ||
+    r.python_reward_isolation === "auto"
+  ) {
+    out.grpoPythonRewardIsolation = r.python_reward_isolation;
   }
   if (typeof r.enable_thinking === "boolean") {
     out.grpoEnableThinking = r.enable_thinking;

@@ -79,10 +79,8 @@ export {
   listRewards,
   previewRewards,
 } from "./api/rewards-api";
-export type {
-  RewardPreviewResponse,
-  RewardRecord,
-} from "./api/rewards-api";
+export { usePythonRewardRefusal } from "./hooks/use-python-reward-refusal";
+export type { RewardPreviewResponse, RewardRecord } from "./api/rewards-api";
 export { effectiveSystemPrompt } from "./lib/rl-system-prompt";
 export { previewCell, useRlWorkspaceStore } from "./stores/rl-workspace-store";
 export { rlChartKeys } from "./lib/rl-chart-keys";

@@ -1758,6 +1758,8 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         setGrpoVariant: (grpoVariant) => setUserEdit({ grpoVariant }),
         setGrpoMaskTruncatedCompletions: (grpoMaskTruncatedCompletions) =>
           setUserEdit({ grpoMaskTruncatedCompletions }),
+        setGrpoPythonRewardIsolation: (grpoPythonRewardIsolation) =>
+          setUserEdit({ grpoPythonRewardIsolation }),
         setGrpoEpsilonHigh: (grpoEpsilonHigh) =>
           setUserEdit({ grpoEpsilonHigh }),
         setGrpoRewards: (grpoRewards) => setUserEdit({ grpoRewards }),
