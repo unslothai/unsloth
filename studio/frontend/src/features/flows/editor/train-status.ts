@@ -126,3 +126,16 @@ export function sparklinePath(
     })
     .join("");
 }
+
+/** The adapter path Chat lists for a flow's run folder; the node only knows the folder's name. */
+export function adapterPathFor(
+  loras: { adapter_path?: unknown }[],
+  run: string,
+): string | null {
+  const found = loras.find(
+    (l) =>
+      typeof l.adapter_path === "string" &&
+      l.adapter_path.split(/[/\\]+/).filter(Boolean).at(-1) === run,
+  );
+  return found ? (found.adapter_path as string) : null;
+}

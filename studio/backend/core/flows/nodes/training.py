@@ -78,6 +78,8 @@ async def finetune(ctx: NodeContext) -> dict:
     response_col = str(ctx.params.get("response_column") or "").strip()
     if isinstance(mapping, dict) and mapping:
         config["custom_format_mapping"] = mapping
+    elif prompt_col and prompt_col == response_col:
+        raise FlowNodeError("The prompt and the response need different columns")
     elif prompt_col and response_col:
         config["custom_format_mapping"] = {prompt_col: "user", response_col: "assistant"}
     elif prompt_col or response_col:
@@ -137,7 +139,7 @@ async def finetune(ctx: NodeContext) -> dict:
         payload = await ctx.call("GET", "/api/train/status")
         slot = _training(payload if isinstance(payload, dict) else {})
         if slot.step and (not slot.job_id or slot.job_id == job_id):
-            history["loss"] = await loss_history(ctx, job_id) or history["loss"]
+            history["loss"] = status_losses(payload) or await loss_history(ctx, job_id) or history["loss"]
             ctx.partial(
                 "metrics",
                 {
@@ -183,7 +185,7 @@ async def finetune(ctx: NodeContext) -> dict:
         "steps": slot.step,
         "total": slot.total_steps,
         "job_id": job_id,
-        "loss_history": await loss_history(ctx, job_id) or history["loss"],
+        "loss_history": status_losses(payload) or await loss_history(ctx, job_id) or history["loss"],
     }
     if holdout:
         metrics["train_rows"] = dataset.get("rows")
@@ -193,7 +195,6 @@ async def finetune(ctx: NodeContext) -> dict:
             "kind": "checkpoint",
             "name": run,
             "base_model": config["model_name"],
-            "output_dir": details.get("output_dir"),
         },
         "metrics": metrics,
         "holdout": holdout,
@@ -207,6 +208,15 @@ def downsample(values: list, points: int = HISTORY_POINTS) -> list:
     return [values[min(len(values) - 1, round(i * stride))] for i in range(points - 1)] + [
         values[-1]
     ]
+
+
+def status_losses(payload: Any) -> list:
+    """The loss history /api/train/status already carries, so a poll needs no second request."""
+    found = payload.get("metric_history") if isinstance(payload, dict) else None
+    losses = found.get("loss") if isinstance(found, dict) else None
+    if not isinstance(losses, list):
+        return []
+    return downsample([round(float(v), 4) for v in losses if isinstance(v, (int, float))])
 
 
 async def loss_history(ctx: NodeContext, job_id: str) -> list:
