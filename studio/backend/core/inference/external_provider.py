@@ -1563,6 +1563,21 @@ class ExternalProviderClient:
         headers.update(provider_info.get("extra_headers", {}))
         return headers
 
+    def _chat_headers(self, thread_id: Optional[str]) -> dict[str, str]:
+        """Add OpenCode Go's stable conversation ID only to its own chat requests."""
+        headers = self._auth_headers()
+        base = urlparse(self.base_url)
+        if (
+            thread_id
+            and base.scheme == "https"
+            and base.hostname == "opencode.ai"
+            and (base.path == "/inference/go" or base.path.startswith("/inference/go/"))
+        ):
+            # Hash the ID to keep it header-safe and avoid sending the raw conversation ID.
+            headers["x-opencode-session"] = hashlib.sha256(thread_id.encode("utf-8")).hexdigest()
+            headers["User-Agent"] = "unsloth-studio"
+        return headers
+
     def _is_openai_compatible(self) -> bool:
         """Return False for providers needing request/response translation (e.g. Anthropic)."""
         from core.inference.providers import get_provider_info
@@ -1692,6 +1707,7 @@ class ExternalProviderClient:
                 response_format,
                 stream = stream if self.provider_type == "custom" else True,
                 compaction_fallback = compaction_fallback,
+                thread_id = thread_id,
             ):
                 yield line
             return
@@ -1883,7 +1899,7 @@ class ExternalProviderClient:
                 _loopback_http_client if getattr(self, "_managed_loopback", False) else _client(),
                 url,
                 body,
-                headers = self._auth_headers(),
+                headers = self._chat_headers(thread_id),
                 timeout = self._stream_timeout,
             ) as response:
                 if response.status_code != 200:
@@ -5431,6 +5447,7 @@ class ExternalProviderClient:
         response_format: Optional[dict[str, Any]] = None,
         stream: bool = True,
         compaction_fallback: Optional[CompactionFallback] = None,
+        thread_id: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """Responses takes input and instructions, not messages; presence_penalty and top_k are dropped."""
         import json as _json
@@ -5967,7 +5984,7 @@ class ExternalProviderClient:
                     "POST",
                     url,
                     json = attempt_body,
-                    headers = self._auth_headers(),
+                    headers = self._chat_headers(thread_id),
                     timeout = self._stream_timeout,
                 ) as response:
                     if response.status_code != 200:
@@ -6018,6 +6035,7 @@ class ExternalProviderClient:
                                     tool_choice = tool_choice,
                                     response_format = response_format,
                                     stream = stream,
+                                    thread_id = thread_id,
                                 ):
                                     yield fallback_line
                                 return
