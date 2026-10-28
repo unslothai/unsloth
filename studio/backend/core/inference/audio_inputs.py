@@ -464,6 +464,36 @@ def _derived(directory: Path, stem: str) -> list[Path]:
         return []
 
 
+_UNLISTED = object()
+
+
+def _derived_index(directory: Path) -> Optional[dict[str, list[Path]]]:
+    """``_derived`` for every id-shaped stem from one listing: an id has no dot, so a name matching
+    ``{stem}.*.wav`` is one whose part before its first dot is the stem. Case folds as pathlib's
+    glob does on this platform; None (use ``_derived``) where that cannot be matched exactly."""
+    fold = os.path.normcase
+    insensitive = fold("A") != "A"
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return None
+    index: dict[str, list[Path]] = {}
+    for name in names:
+        if insensitive and not name.isascii():
+            return None
+        folded = fold(name)
+        key, dot, _rest = folded.partition(".")
+        if dot and folded.endswith(".wav") and len(folded) >= len(key) + 5:
+            index.setdefault(key, []).append(directory / name)
+    return index
+
+
+def _derived_from(index: Optional[dict[str, list[Path]]], directory: Path, stem: str) -> list[Path]:
+    if index is None or not _valid_id(stem):
+        return _derived(directory, stem)
+    return index.get(os.path.normcase(stem), [])
+
+
 def _remove(directory: Path, input_id: str) -> bool:
     wav = directory / f"{input_id}.wav"
     existed = wav.is_file()
@@ -509,6 +539,7 @@ def sweep(
         now = _now()
         removed = 0
         live: list[tuple[float, str, int]] = []
+        derived: Any = _UNLISTED
         for sidecar in directory.glob("*.json"):
             input_id = sidecar.stem
             meta = _read_sidecar(sidecar)
@@ -517,8 +548,11 @@ def sweep(
             if input_id != keep and _touched(meta) + ttl <= now:
                 removed += _remove(directory, input_id)
                 continue
+            if derived is _UNLISTED:
+                # One listing for every live input instead of a glob per input.
+                derived = _derived_index(directory)
             size = _size(directory / f"{input_id}.wav") + sum(
-                _size(p) for p in _derived(directory, input_id)
+                _size(p) for p in _derived_from(derived, directory, input_id)
             )
             live.append((_touched(meta), input_id, size))
         live.sort(reverse = True)

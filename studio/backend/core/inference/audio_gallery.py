@@ -148,6 +148,29 @@ def _clip_bytes(audio_id: str) -> int:
     return total
 
 
+def _under_caps(directory: Path, cap: int, byte_cap: int) -> bool:
+    """Every clip WAV, owned or not, fits both caps, so the clips the prune would rank (a subset)
+    fit too and nothing goes; decided from names and sizes without reading any sidecar."""
+    try:
+        paths = _clip_wavs(directory)
+    except OSError:
+        return False
+    if cap > 0 and len(paths) > cap:
+        return False
+    if byte_cap <= 0:
+        return True
+    total = 0
+    for path in paths:
+        for counted in (path, directory / f"{path.stem}.source.wav"):
+            try:
+                total += counted.stat().st_size
+            except OSError:
+                pass
+        if total > byte_cap:
+            return False
+    return True
+
+
 def _prune_to_cap() -> int:
     """Best-effort; only Unsloth-owned pairs are pruned, archived and pinned clips are exempt, and an unreadable flag store skips the prune"""
     cap = _max_clips()
@@ -159,6 +182,8 @@ def _prune_to_cap() -> int:
     try:
         # Select AND delete under one lock, as clear() does; choosing victims from a snapshot lets an archive land and be deleted anyway.
         with gallery_flags.exclusive(directory, require_file_lock = True):
+            if _under_caps(directory, cap, byte_cap):
+                return 0
             # By age, not display order: a clip dragged down is not older. Pinned clips are exempt.
             entries = [e for e in _list_audio_entries() if not e[0].get("pinned")]
             entries.sort(key = lambda e: _mtime(gallery_dir() / f"{e[0]['id']}.wav"), reverse = True)
