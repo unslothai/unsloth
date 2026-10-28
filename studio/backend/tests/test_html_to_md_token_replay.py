@@ -125,11 +125,28 @@ def test_a_multi_pass_page_is_tokenized_once(monkeypatch):
     assert len(feeds) == 1
 
 
-def test_a_page_with_an_article_records_from_its_second_pass(monkeypatch):
+def test_a_whole_page_pass_known_to_follow_the_main_scope_replays(monkeypatch):
+    # four articles and no <main>: article scope and main scope are fed, the whole-page pass replays
     feeds = _feeds(monkeypatch)
     h2m._TITLE_BUTTON_CACHE.clear()
-    html_to_markdown(PAGES["many_articles"], main_content = True)
+    html_to_markdown(PAGES["many_articles_no_main"], main_content = True)
     assert len(feeds) == 2
+
+
+def test_passes_that_cannot_be_foreseen_are_fed_without_recording(monkeypatch):
+    recorded = []
+    real = h2m._MarkdownRenderer.feed
+
+    def spy(self, data):
+        recorded.append(self._record is not None)
+        return real(self, data)
+
+    monkeypatch.setattr(h2m._MarkdownRenderer, "feed", spy)
+    for name in ("one_article", "many_articles"):
+        h2m._TITLE_BUTTON_CACHE.clear()
+        recorded.clear()
+        html_to_markdown(PAGES[name], main_content = True)
+        assert recorded and not any(recorded), name
 
 
 def test_plain_conversion_is_untouched(monkeypatch):

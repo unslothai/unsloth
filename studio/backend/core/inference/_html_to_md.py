@@ -2175,9 +2175,9 @@ class _TokenLog:
 
     def __init__(self, armed: bool) -> None:
         self.events: list | None = None
-        # Recording costs a little, so a pass records only when another pass is known to follow:
-        # from the start when the page has no <article> (the main scope always runs next),
-        # else from the second pass on.
+        # Recording costs a little, so a pass records only when html_to_markdown knows another
+        # pass will follow it (set before each scope pass); a pass that turns out not to be the
+        # last (a scoring or title-button pass) is still fed, as before.
         self.armed = armed
 
 
@@ -2211,7 +2211,6 @@ def _new_renderer(
             renderer.feed(source_html)
             renderer.close()
             tokens.events, renderer._record = renderer._record, None
-            tokens.armed = True
         else:
             renderer.replay(tokens.events)
         renderer.flush_pending()
@@ -2376,8 +2375,9 @@ def _visible_len(line: str) -> int:
 
 # Scoped conversions shorter than this are rejected as main content, e.g. an empty article stub
 _MIN_MAIN_CONTENT_CHARS = 200
-# Without this text no tag can tokenize as <article>, so the article scope finds nothing.
+# Without this text no tag can tokenize as <article> / <main>, so that scope finds nothing.
 _ARTICLE_START = re.compile(r"<article", re.IGNORECASE)
+_MAIN_START = re.compile(r"<main", re.IGNORECASE)
 
 
 def html_to_markdown(
@@ -2401,10 +2401,15 @@ def html_to_markdown(
             source_html, "article", site_links, span_limit, tokens
         )
         if length < _MIN_MAIN_CONTENT_CHARS or articles > 1:
+            # With no <main> the main scope scores 0, so the whole-page pass below runs.
+            tokens.armed = _MAIN_START.search(source_html) is None and (
+                articles > 2 or length < _MIN_MAIN_CONTENT_CHARS
+            )
             main_length, main_rendered, _, main_visible = _select_main_scope_render(
                 source_html, "main", site_links, span_limit, tokens
             )
             if articles > 2 and main_length < _MIN_MAIN_CONTENT_CHARS:
+                tokens.armed = False
                 main_length, full_rendered = _render_main_document(
                     source_html, site_links, span_limit, tokens
                 )
@@ -2416,6 +2421,7 @@ def html_to_markdown(
                 length, rendered = main_length, main_rendered
         if length < _MIN_MAIN_CONTENT_CHARS:
             if not full_rendered:
+                tokens.armed = False
                 _, full_rendered = _render_main_document(
                     source_html, site_links, span_limit, tokens
                 )
