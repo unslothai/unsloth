@@ -56,6 +56,7 @@ class _Routing(threading.local):
 _routing = _Routing()
 _warned = set()
 _CACHE = "_unsloth_raw_weight_cache"
+_TUNER_LAYER = None
 _RAW_READ_CLASSES = {}
 
 
@@ -87,9 +88,23 @@ def _has_active_adapter(module):
     return False
 
 
+def _tuner_layer_class():
+    global _TUNER_LAYER
+    if _TUNER_LAYER is None:
+        try:
+            from peft.tuners.tuners_utils import BaseTunerLayer
+        except Exception:
+            return ()
+        _TUNER_LAYER = BaseTunerLayer
+    return _TUNER_LAYER
+
+
 def mamba_raw_weight_adapters(mixer):
     """Names of the mixer's raw-weight leaves that carry an active, unmerged adapter."""
-    return [name for name in _RAW_WEIGHT_LEAVES if _has_active_adapter(mixer._modules.get(name))]
+    # Runs on every mixer forward, eval and decode included: plain leaves leave after one isinstance.
+    modules, tuner = mixer._modules, _TUNER_LAYER or _tuner_layer_class()
+    leaves = [name for name in _RAW_WEIGHT_LEAVES if isinstance(modules.get(name), tuner)]
+    return [name for name in leaves if _has_active_adapter(modules[name])] if leaves else leaves
 
 
 def _merged_weight(module, allow_multiple = False):
@@ -200,16 +215,16 @@ def _raw_read_class(cls):
 
     def weight(self):
         # Armed per thread (nn.DataParallel replicas share their leaves' __dict__ contents).
+        # Entries are pushed only for leaves whose adapter is active and unmerged at forward start.
         for module, effective, label in reversed(_routing.raw):
             if module is not self:
                 continue
-            if _has_active_adapter(self):
-                if effective is None:
-                    effective = _eval_weight(self)
-                if effective is not None:
-                    return effective
-                if not torch.compiler.is_compiling():
-                    _warn_raw_read(label)
+            if effective is None:
+                effective = _eval_weight(self)
+            if effective is not None:
+                return effective
+            if not torch.compiler.is_compiling():
+                _warn_raw_read(label)
             break
         return super(sub, self).weight
 
