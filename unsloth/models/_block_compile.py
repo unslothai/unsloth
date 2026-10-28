@@ -452,15 +452,23 @@ def _auto_off(auto, why):
     _auto_note(f"Unsloth: block CUDA graphs stay off ({why}).")
 
 
-def _auto_static_reason(layer, hidden_states):
-    """Why auto mode never turns graphs on for this run (None: it may)."""
-    if not hidden_states.is_cuda:
-        return "not a CUDA tensor"
+def _auto_platform_reason():
+    """Why auto mode can never turn graphs on in this process (None: it may)."""
     if getattr(torch.version, "hip", None):
         return "ROCm"
     from packaging.version import Version
     if Version(torch.__version__.split("+")[0]) < Version(_AUTO_MIN_TORCH):
         return f"torch < {_AUTO_MIN_TORCH}"
+    return None
+
+
+def _auto_static_reason(layer, hidden_states):
+    """Why auto mode never turns graphs on for this run (None: it may)."""
+    if not hidden_states.is_cuda:
+        return "not a CUDA tensor"
+    why = _auto_platform_reason()
+    if why is not None:
+        return why
     try:
         import torch.distributed as dist
         if dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1:
@@ -1839,7 +1847,9 @@ def patch_block_compile(model):
             continue
         _wrap(cls, _COMPILE_OPTIONS, len(kinds.get(cls, ())) or 1)
         wrapped.append(cls.__name__)
-    if _COMPILE_OPTIONS.get("triton.cudagraphs") or _CUDAGRAPH_MODE == "auto":
+    if _COMPILE_OPTIONS.get("triton.cudagraphs") or (
+        _CUDAGRAPH_MODE == "auto" and _auto_platform_reason() is None
+    ):
         _watch_hidden_states(model)
     if _CUDAGRAPH_MODE == "auto":
         # A new model decides again: a launch-bound model loaded first must not turn graphs on for

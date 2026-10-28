@@ -270,3 +270,29 @@ def test_a_new_model_decides_again(monkeypatch):
     assert bc._CUDAGRAPH_STATE["auto"]["phase"] == "probe"
     model.train()
     assert _step(model.layers, calls) == ["plain", "plain"]
+
+
+@pytest.mark.parametrize(
+    "version, hip, hooked",
+    [("2.14.1", None, True), ("2.12.1+cu128", None, False), ("2.14.1", "7.0", False)],
+)
+def test_auto_hooks_the_model_only_where_graphs_can_turn_on(monkeypatch, version, hip, hooked):
+    """The hidden-states watcher only serves graphs: no forward hook where auto can never use them."""
+    monkeypatch.setattr(bc, "_CUDAGRAPH_MODE", "auto")
+    monkeypatch.setattr(torch, "__version__", version)
+    monkeypatch.setattr(torch.version, "hip", hip, raising = False)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(bc, "_torch_supported", lambda: True)
+
+    class HookDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+
+        def forward(self, hidden_states, **kwargs):
+            return self.proj(hidden_states)
+
+    model = torch.nn.Module()
+    model.layers = torch.nn.ModuleList([HookDecoderLayer(), HookDecoderLayer()])
+    assert bc.patch_block_compile(model) == ["HookDecoderLayer"]
+    assert model.__dict__.get("_unsloth_watch_hidden_states", False) is hooked
