@@ -1031,7 +1031,8 @@ def mask_to_png(mask: Any) -> bytes:
 
     array = (mask.to("cpu").numpy().astype("uint8")) * 255
     buffer = io.BytesIO()
-    Image.fromarray(array, mode = "L").save(buffer, format = "PNG", optimize = True)
+    # Every zlib level is lossless; optimize=True only buys a few KB for several times the encode time.
+    Image.fromarray(array, mode = "L").save(buffer, format = "PNG", compress_level = 1)
     return buffer.getvalue()
 
 
