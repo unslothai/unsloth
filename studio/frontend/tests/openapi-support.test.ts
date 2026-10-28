@@ -155,7 +155,6 @@ test("without a flag (older backend) the schema probe decides as before", async 
 });
 
 test("the flag and the schema probe agree on what a current backend serves", async () => {
-  // Same verdict either way, so the repair behaves the same whichever path decides.
   const schema = readGuardProbe(true, documentWith(GUARDED));
   const flag = await resolveGuardProbe(true, async () => {
     throw new Error("must not probe");

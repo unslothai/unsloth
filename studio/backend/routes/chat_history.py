@@ -351,8 +351,7 @@ class ChatProjectPatch(BaseModel):
     updatedAt: Optional[int] = None
 
 
-# The legacy chat-title repair writes only behind these guards. Advertised on the thread lists the sidebar already
-# loads, so the frontend need not fetch the whole /openapi.json to learn it (it still does for older backends).
+# Advertised on the thread lists so the title repair skips fetching /openapi.json (older backends still need it).
 _THREAD_PATCH_GUARD_FIELDS = ("expectedTitle", "expectedOpeningMessageId")
 THREAD_PATCH_GUARDS = all(
     name in ChatThreadPatch.model_fields for name in _THREAD_PATCH_GUARD_FIELDS

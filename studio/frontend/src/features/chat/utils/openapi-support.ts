@@ -36,7 +36,6 @@ export function readAdvertisedPatchGuards(data: unknown): boolean | null {
   return typeof value === "boolean" ? value : null;
 }
 
-/** The advertised flag settles it at once; without one (an older backend) fall back to the schema probe. */
 export async function resolveGuardProbe(
   advertised: boolean | null,
   probeSchema: () => Promise<GuardProbe>,

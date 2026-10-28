@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The thread lists the sidebar loads advertise the chat-title repair guards, so the frontend no longer fetches
-the ~1 MB /openapi.json to learn one flag. The flag is derived from the same model the schema probe reads, so the
-two answers cannot drift, and /openapi.json still declares the fields for older frontends."""
+"""Thread lists advertise the title-repair guards; /openapi.json must still declare them for older frontends."""
 
 import os
 import sys
@@ -59,7 +57,6 @@ def test_sidebar_rows_advertise_the_guards(app):
 def test_flag_agrees_with_the_schema_older_frontends_probe(app):
     client = TestClient(app)
     document = client.get("/openapi.json").json()
-    # Older frontends still read this; it must keep declaring the fields.
     assert _schema_declares_guards(document) is True
     assert client.get("/api/chat/threads").json()["threadPatchGuards"] == _schema_declares_guards(
         document

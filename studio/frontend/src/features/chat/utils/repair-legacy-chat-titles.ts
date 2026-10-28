@@ -52,7 +52,7 @@ async function probeServedSchema(): Promise<GuardProbe> {
   }
 }
 
-/** The thread list the repair came from advertises the guards; only an older backend needs the schema probe. */
+/** Every repair starts from a thread list, so the advertised flag is already known when present. */
 function backendEnforcesTitleGuard(): Promise<boolean> {
   guardSupport ??= (async () => {
     const probe = await resolveGuardProbe(
