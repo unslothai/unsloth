@@ -2286,6 +2286,8 @@ def family_prequant_filename(
 
 # diffusers 0.37.0 requires Python >= 3.10
 _DIFFUSERS_DROPPED_PY39 = "0.37.0"
+# diffusers 0.42.0 requires Python >= 3.11, so a 3.10 install stays on 0.41.0 (diffusers-pin.txt).
+_DIFFUSERS_DROPPED_PY310 = "0.42.0"
 _MAX_PIPELINE_MANIFEST_BYTES = 1 << 20
 
 # First diffusers release exporting each class; every probed class must be listed, since an unlisted one reads as available.
@@ -2310,9 +2312,9 @@ _PIPELINE_MIN_DIFFUSERS: dict[str, str] = {
     "QwenImage21Pipeline": "0.41.0",
     # 0.39.0 drops Edge's use_native_flow_schedule; 0.40.0 resolves a group-offloaded transformer's device as the CPU.
     "Cosmos3OmniPipeline": "0.41.0",
-    # FLUX.3 Image Klein (huggingface/diffusers#15046) is in no release yet, so the first one that can carry it is
-    # 0.42.0. Main and the PR branch both report 0.41.0.dev0, which reads as the 0.41.0 release that lacks it, so the
-    # listing probes the module file instead (``_PIPELINE_PROBE_FILES``).
+    # FLUX.3 Image Klein (huggingface/diffusers#15046) first shipped in 0.42.0, which needs Python 3.11. A main build
+    # from before it (d42ebf9c, the pin until 0.42.1) reports 0.41.0.dev0, which reads as the 0.41.0 release that
+    # lacks it, so the listing probes the module file instead (``_PIPELINE_PROBE_FILES``).
     "Flux3ModularPipeline": "0.42.0",
     "Flux3DistilledModularPipeline": "0.42.0",
     "Krea2Pipeline": "0.39.0",
@@ -2597,18 +2599,21 @@ def _twin_only_component(component: Path) -> bool:
     return any(is_fp16_twin(n) for n in names) and not any(is_default_weight(n) for n in names)
 
 
-# Minimums that name a release which does not EXIST yet. ``pip install -U 'diffusers>=0.41.0'`` has
-# no candidate today, so quoting it as the remedy sends someone to a command that cannot succeed.
+# Minimums that name a release which does not EXIST yet. ``pip install -U 'diffusers>=X'`` has
+# no candidate then, so quoting it as the remedy sends someone to a command that cannot succeed.
 # Studio installs the pinned main build for exactly these classes (studio/backend/requirements/
 # diffusers-main.txt), so the remedy is to put that back, not to chase a release. Delete an entry
-# here the moment its version ships, which is the same moment diffusers-pin.txt moves to it.
-_UNRELEASED_MIN_DIFFUSERS: frozenset = frozenset({"0.42.0"})
+# here the moment its version ships, which is the same moment diffusers-pin.txt moves to it
+# (0.42.0 left with the 0.42.1 pin).
+_UNRELEASED_MIN_DIFFUSERS: frozenset = frozenset()
 # The pinned main build's requires-python (the installer's DIFFUSERS_MAIN_MIN_PYTHON).
 _DIFFUSERS_MAIN_MIN_PYTHON = (3, 11)
 
 # Classes whose presence a version number cannot answer: an unreleased model on a diffusers main build that reports
 # the same x.y.0.dev0 as the release without it. The listing checks the file that defines the class, relative to the
-# installed diffusers package, which needs no import. Delete an entry once its release is the pin.
+# installed diffusers package, which needs no import. Delete an entry once no supported install can still hold such
+# a build: FLUX.3's stay while the startup repair leaves the retired d42ebf9c build (0.41.0.dev0) in place until the
+# next update replaces it with 0.42.1.
 _PIPELINE_PROBE_FILES: dict[str, str] = {
     "Flux3ModularPipeline": "modular_pipelines/flux3/modular_pipeline.py",
     "Flux3DistilledModularPipeline": "modular_pipelines/flux3/modular_pipeline.py",
@@ -2747,6 +2752,20 @@ def _too_old_message(pipeline_class: str, family_name: str, installed: str) -> s
             "build of diffusers main for this and that build is not here, which almost always "
             "means the install had no working git (check with: git --version) or could not reach "
             f"github.com. {remedy}"
+        )
+    if _version_tuple(minimum) >= _version_tuple(_DIFFUSERS_DROPPED_PY310):
+        if sys.version_info[:2] < (3, 11):
+            # The installer pins 0.41.0 below 3.11, so an update cannot reach this release either.
+            return (
+                f"'{family_name}' needs diffusers >= {minimum} ({pipeline_class}); this "
+                f"environment has diffusers {installed}. That release needs Python 3.11 or newer "
+                f"and this is Python {sys.version_info[0]}.{sys.version_info[1]}, so updating "
+                "Unsloth cannot install it here. Reinstall Unsloth on Python 3.11+."
+            )
+        return (
+            f"'{family_name}' needs diffusers >= {minimum} ({pipeline_class}); this environment "
+            f"has diffusers {installed}. {DIFFUSERS_UPDATE_REMEDY} On a plain pip install: "
+            f"pip install -U 'diffusers>={minimum}' (that release needs Python >= 3.11)."
         )
     remedy = (
         f"{DIFFUSERS_UPDATE_REMEDY} On a plain pip install: pip install -U 'diffusers>={minimum}'."
