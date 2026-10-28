@@ -90,7 +90,7 @@ export function Q4nxConvertCard() {
       icon={CpuIcon}
       chipTint="var(--chart-1)"
       title="Convert a GGUF to Q4NX (AMD NPU)"
-      description="Turn a Q4_0, Q4_1 or Q4_K_M GGUF you already have into a FastFlowLM folder for Ryzen AI NPUs (XDNA 2). No training or GPU needed."
+      description="Convert a Q4_0, Q4_1 or Q4_K_M GGUF to Q4NX. Only supported on AMD NPUs."
       titleAction={
         <SegmentedControl
           value={source}
@@ -152,8 +152,7 @@ export function Q4nxConvertCard() {
                 : "text-xs text-muted-foreground"
             }
           >
-            {result?.text ??
-              "Runs as a drop-in for a FastFlowLM catalog model of the same family and size."}
+            {result?.text ?? "No training or GPU needed."}
           </p>
           <Button variant="dark" disabled={!canConvert} onClick={handleConvert}>
             {running && <Spinner />}

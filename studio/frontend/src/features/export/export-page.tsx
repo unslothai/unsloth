@@ -2103,10 +2103,10 @@ export function ExportPage() {
                                     </div>
                                     <div className="text-xs text-muted-foreground">
                                       {destination !== "local"
-                                        ? "Saves locally only: pick a local destination."
+                                        ? "Local destination only."
                                         : q4nxSourceSelected
-                                          ? "Converts the Q4 GGUF into a FastFlowLM folder for Ryzen AI NPUs (XDNA 2), next to the GGUFs."
-                                          : "Needs Q4_0, Q4_1 or Q4_K_M in the selection."}
+                                          ? "Adds a Q4NX copy next to the GGUFs. Only supported on AMD NPUs."
+                                          : "Needs Q4_0, Q4_1 or Q4_K_M."}
                                     </div>
                                   </div>
                                   <Switch
