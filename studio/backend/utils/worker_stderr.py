@@ -527,11 +527,39 @@ def _tail_sink_to_stderr(
         pass
 
 
+def _is_windows_console(stream) -> bool:
+    """A console stream calls WriteConsoleW on whatever fd 2 is now, so on the sink every write fails with WinError 6 (#15583)."""
+    buffer = getattr(stream, "buffer", None)
+    # Under -u / PYTHONUNBUFFERED the buffer IS the raw console object.
+    raw = getattr(buffer, "raw", buffer)
+    return type(raw).__name__ == "_WindowsConsoleIO"
+
+
+def _rebind_console_stderr():
+    console = sys.stderr
+    if not _is_windows_console(console):
+        return None
+    try:
+        replacement = open(
+            2,
+            "w",
+            buffering = 1,
+            encoding = "utf-8",
+            errors = "backslashreplace",
+            closefd = False,
+        )
+    except OSError:
+        return None
+    sys.stderr = replacement
+    return console, replacement
+
+
 def _stop_mirror(
     inherited_fd: int,
     pump: threading.Thread,
     stop = None,
     relay = None,
+    rebound = None,
 ) -> None:
     """The pump must be a daemon or BaseProcess._bootstrap waits forever; multiprocessing prints tracebacks before atexit, so drain here still catches them."""
     try:
@@ -542,6 +570,9 @@ def _stop_mirror(
         os.dup2(inherited_fd, 2)
     except OSError:
         pass
+    else:
+        if rebound is not None and sys.stderr is rebound[1]:
+            sys.stderr = rebound[0]
     if stop is not None:
         # fd 2 no longer points at the sink, so the next empty read is the end, not a pause.
         stop.set()
@@ -601,6 +632,7 @@ def install_worker_stderr_mirror(
         sink.close()
         return False
     os.close(writer_fd)
+    rebound = _rebind_console_stderr()
     stop = threading.Event()
     relay = _MirrorRelay(inherited, _MIRROR_RELAY_CHUNKS)
     pump = threading.Thread(
@@ -610,7 +642,7 @@ def install_worker_stderr_mirror(
         daemon = True,
     )
     pump.start()
-    atexit.register(_stop_mirror, inherited, pump, stop, relay)
+    atexit.register(_stop_mirror, inherited, pump, stop, relay, rebound)
     return True
 
 
