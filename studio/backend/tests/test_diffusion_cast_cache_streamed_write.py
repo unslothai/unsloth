@@ -339,10 +339,10 @@ def test_a_weight_changed_on_the_device_is_never_read_from_the_host(pipe_dir, sl
     hook.pre_forward(dense)
     key = _unsampled_cast_key(cand)
     with torch.no_grad():
-        dense.get_parameter(key).add_(1)  # in place on the device: the kept host copy is stale now
+        dense.get_parameter(key).add_(1)  # the kept host copy is stale now
     reader = CC._Reader(dense, lambda: None)
     other = next(n for n, _d, _s in cand.names if n != key and "weight" in n)
     assert reader.tensor(other).device.type == "cpu" and sleeps == []
     with pytest.raises(NotImplementedError):
-        reader.tensor(key)  # waits out the onload, then reads the device copy (meta cannot be read)
+        reader.tensor(key)  # waits, then reads the device copy
     assert sleeps
