@@ -235,6 +235,19 @@ def allow_split_backward():
 _SINGLE_BACKWARD_MODULES = ("unsloth.kernels.fast_lora",)
 
 
+def _unwrap_callable(value):
+    """The function under bound methods and functools.partial layers, in any nesting: patch_peft_model installs
+    the MLP kernel as MethodType(partial(apply_lora_mlp, inplace=False), mlp) for Cohere (see _fused_lora_modules)."""
+    for _ in range(16):
+        if isinstance(value, functools.partial):
+            value = value.func
+        elif hasattr(value, "__func__"):
+            value = value.__func__
+        else:
+            break
+    return value
+
+
 def single_backward_kernels(model):
     """Unsloth fused LoRA kernels attached to `model` (apply_qkv / apply_o / the MLP forward). Their backward
     reuses saved activations in place, so it can run once per forward only; a zero-bubble schedule runs the
@@ -243,7 +256,7 @@ def single_backward_kernels(model):
     for module in model.modules():
         candidates = list(module.__dict__.values()) + [getattr(type(module), "forward", None)]
         for value in candidates:
-            fn = getattr(value, "__func__", value)
+            fn = _unwrap_callable(value)
             if callable(fn) and getattr(fn, "__module__", None) in _SINGLE_BACKWARD_MODULES:
                 found.add(getattr(fn, "__name__", repr(fn)))
     return sorted(found)

@@ -543,3 +543,29 @@ def test_schedule_names_normalize():
     assert sched.schedule_spec("zbv").name == "zbvzerobubble"
     assert sched.schedule_spec("looped_bfs").name == "loopedbfs"
     assert sched.schedule_spec("GPipe").name == "gpipe"
+
+
+def test_single_backward_kernels_unwraps_partials():
+    # patch_peft_model binds Cohere's MLP kernel as MethodType(partial(apply_lora_mlp, inplace=False), mlp).
+    import functools
+
+    sched = sys.modules["unsloth.models.pp_schedules"]
+
+    def apply_lora_mlp_swiglu(self, X, inplace = True):  # stands in for fast_lora's fused MLP kernel
+        raise AssertionError("not called")
+
+    apply_lora_mlp_swiglu.__module__ = "unsloth.kernels.fast_lora"
+    cohere = functools.partial(apply_lora_mlp_swiglu, inplace = False)
+    installs = {
+        "plain": lambda m: types.MethodType(apply_lora_mlp_swiglu, m),
+        "partial": lambda m: types.MethodType(cohere, m),
+        "nested_partial": lambda m: types.MethodType(functools.partial(cohere), m),
+        "unbound_partial": lambda m: cohere,
+    }
+    for attr in ("forward", "_unsloth_forward"):
+        for kind, install in installs.items():
+            mlp = torch.nn.Linear(2, 2)
+            setattr(mlp, attr, install(mlp))
+            model = torch.nn.Sequential(mlp)
+            assert sched.single_backward_kernels(model) == ["apply_lora_mlp_swiglu"], (attr, kind)
+    assert sched.single_backward_kernels(torch.nn.Sequential(torch.nn.Linear(2, 2))) == []
