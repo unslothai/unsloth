@@ -269,6 +269,12 @@ def _balanced_json_span(text: str, start: int) -> int | None:
     return None
 
 
+# Unrolled loops with nothing after them never backtrack; possessive quantifiers need Python 3.11+.
+_BRACE_SKIP_RE = re.compile(r'[^"{}]*')
+_BRACE_SKIP_GEMMA_RE = re.compile(r'[^"{}<]*(?:<(?!\|"\|>)[^"{}<]*)*')
+_JSON_STRING_BODY_RE = re.compile(r'[^"\\]*(?:\\.[^"\\]*)*', re.DOTALL)
+
+
 def _balanced_brace_end(
     content: str,
     brace_start: int,
@@ -278,30 +284,32 @@ def _balanced_brace_end(
     """Index of the brace matching brace_start, or None; shared with core/inference/tool_call_parser.py."""
     if brace_start >= len(content) or content[brace_start] != "{":
         return None
+    n = len(content)
+    skip = _BRACE_SKIP_GEMMA_RE.match if gemma_quotes else _BRACE_SKIP_RE.match
+    string_body = _JSON_STRING_BODY_RE.match
     depth = 0
     i = brace_start
-    in_string = False
-    in_gemma_string = False
-    while i < len(content):
-        if gemma_quotes and not in_string and content.startswith(_GEMMA_QUOTE, i):
-            in_gemma_string = not in_gemma_string
-            i += len(_GEMMA_QUOTE)
-            continue
+    while i < n:
+        i = skip(content, i).end()
+        if i >= n:
+            return None
         ch = content[i]
-        if in_gemma_string:
+        if ch == "<":
+            close = content.find(_GEMMA_QUOTE, i + len(_GEMMA_QUOTE))
+            if close < 0:
+                return None
+            i = close + len(_GEMMA_QUOTE)
+            continue
+        if ch == '"':
+            i = string_body(content, i + 1).end()
+            # The body stops at the closing quote, at the end, or before a trailing lone backslash.
+            if i >= n or content[i] != '"':
+                return None
             i += 1
             continue
-        if in_string:
-            if ch == "\\" and i + 1 < len(content):
-                i += 2
-                continue
-            if ch == '"':
-                in_string = False
-        elif ch == '"':
-            in_string = True
-        elif ch == "{":
+        if ch == "{":
             depth += 1
-        elif ch == "}":
+        else:
             depth -= 1
             if depth == 0:
                 return i
@@ -392,7 +400,15 @@ def _iter_bracket_spans(
         ("name", _MISTRAL_BRACKET_RE),
         ("rehearsal", _REHEARSAL_RE),
     )
-    nexts = {kind: rx.search(text, start) for kind, rx in specs}
+    # Each regex needs its case-sensitive literal tag, so str.find gates it exactly.
+    has_calls_tag = text.find("[TOOL_CALLS]", start) >= 0
+    nexts = {
+        "array": _MISTRAL_ARRAY_RE.search(text, start) if has_calls_tag else None,
+        "name": _MISTRAL_BRACKET_RE.search(text, start) if has_calls_tag else None,
+        "rehearsal": (
+            _REHEARSAL_RE.search(text, start) if text.find("[ARGS]", start) >= 0 else None
+        ),
+    }
     if not any(nexts.values()):
         return
     last_brace_close = text.rfind("}")
@@ -1034,10 +1050,14 @@ def _tool_call_markup_spans(text: str) -> list[tuple[int, int]]:
 
 def _think_spans_outside_tool_markup(text: str) -> list[tuple[int, int]]:
     """A think tag opening inside a tool-call span is argument data, so it is not a reasoning block."""
-    think_spans = [m.span() for m in _THINK_TAG_RE.finditer(text)]
+    think_spans = (
+        [m.span() for m in _THINK_TAG_RE.finditer(text)]
+        if "<think>" in text or "[THINK]" in text
+        else []
+    )
     call_spans = _tool_call_markup_spans(text)
     # Prefilled reasoning: the template opens <think> in the prompt, so a leading span skips calls rehearsed there.
-    close = _THINK_CLOSE_RE.search(text)
+    close = _THINK_CLOSE_RE.search(text) if "</think>" in text or "[/THINK]" in text else None
     if close is not None:
         opener = _THINK_OPEN_RE.search(text)
         if (

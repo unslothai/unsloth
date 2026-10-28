@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Ulysses context parallelism for hybrid models: Gated DeltaNet layers and Hugging Face attention.
-
-Linear attention scans run sequentially over the whole sequence, so a sequence shard cannot run its
-scan alone. Ulysses exchanges the projected q / k / v / beta / gate inputs from sequence shards to
-head shards, runs the short conv and the chunked scan over the full sequence for a subset of heads,
-and exchanges the output back before the gated norm and the output projection.
-"""
+"""Ulysses context parallelism for hybrid models: scans need the full sequence, so they run on heads."""
 
 import functools
 import inspect

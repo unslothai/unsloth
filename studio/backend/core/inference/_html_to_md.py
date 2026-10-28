@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Minimal HTML-to-Markdown converter using only the standard library.
-
-Replaces the external ``html2text`` (GPL-3.0) dependency with a ~250-line
-``html.parser.HTMLParser`` subclass. Covers headings, links, bold/italic,
-lists, tables, blockquotes, code blocks, and entity decoding.
-
-``main_content=True`` also applies a readability-style heuristic: scope
-conversion to the page's ``<article>`` (else ``<main>``) subtree when it
-carries substantial text, and strip known boilerplate fragments (skip-links,
-error placeholders, session banners, cookie prompts) from the result.
-"""
+"""Stdlib HTML-to-Markdown (replaces GPL html2text); main_content=True scopes to article/main."""
 
 from __future__ import annotations
 

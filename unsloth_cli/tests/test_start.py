@@ -2763,6 +2763,272 @@ def test_connect_codex_no_launch(fake_studio, tmp_path):
     assert (home / "unsloth_api.config.toml").exists()
 
 
+def test_codex_keeps_the_users_mcp_servers(fake_studio, tmp_path, monkeypatch):
+    tomllib = pytest.importorskip("tomllib")
+    source_home = tmp_path / "user-codex"
+    source_home.mkdir()
+    user_config = source_home / "config.toml"
+    user_config.write_text(
+        'model = "cloud-model"\n\n'
+        '[mcp_servers.weather]\ncommand = "python3"\nargs = ["weather.py"]\n\n'
+        '[mcp_servers.weather.env]\nUNITS = "metric"\n\n'
+        '[mcp_servers.docs]\nurl = "http://127.0.0.1:9000/mcp"\n'
+    )
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    home = tmp_path / "agents" / "codex"
+
+    result = CliRunner().invoke(start.start_app, ["codex", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    config = tomllib.loads((home / "config.toml").read_text())
+    assert config["mcp_servers"] == {
+        "weather": {"command": "python3", "args": ["weather.py"], "env": {"UNITS": "metric"}},
+        "docs": {"url": "http://127.0.0.1:9000/mcp"},
+    }
+    assert "model" not in config
+    assert config["model_providers"]["unsloth_api"]["base_url"].endswith("/v1")
+
+    user_config.write_text('[mcp_servers.docs]\nurl = "http://127.0.0.1:9000/mcp"\n')
+    result = CliRunner().invoke(start.start_app, ["codex", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    config = tomllib.loads((home / "config.toml").read_text())
+    assert config["mcp_servers"] == {"docs": {"url": "http://127.0.0.1:9000/mcp"}}
+    assert user_config.read_text() == '[mcp_servers.docs]\nurl = "http://127.0.0.1:9000/mcp"\n'
+
+
+def test_codex_keeps_mcp_servers_added_in_the_saved_home(fake_studio, tmp_path, monkeypatch):
+    tomllib = pytest.importorskip("tomllib")
+    user_home = tmp_path / "user-home"
+    (user_home / ".codex").mkdir(parents = True)
+    (user_home / ".codex" / "config.toml").write_text('[mcp_servers.docs]\nurl = "http://d/mcp"\n')
+    monkeypatch.setenv("HOME", str(user_home))
+    monkeypatch.setenv("USERPROFILE", str(user_home))
+    monkeypatch.delenv("CODEX_HOME", raising = False)
+    home = tmp_path / "agents" / "codex"
+
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    with (home / "config.toml").open("a") as f:
+        f.write('\n[mcp_servers.local]\ncommand = "local-server"\n')
+    # The shell that ran the recipe has CODEX_HOME set to the saved home.
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    result = CliRunner().invoke(start.start_app, ["codex", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    config = tomllib.loads((home / "config.toml").read_text())
+    assert config["mcp_servers"] == {
+        "docs": {"url": "http://d/mcp"},
+        "local": {"command": "local-server"},
+    }
+
+    (user_home / ".codex" / "config.toml").write_text("")
+    monkeypatch.delenv("CODEX_HOME")
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    config = tomllib.loads((home / "config.toml").read_text())
+    assert config["mcp_servers"] == {"local": {"command": "local-server"}}
+
+
+def test_codex_mcp_servers_follow_a_custom_codex_home_through_the_recipe(
+    fake_studio, tmp_path, monkeypatch
+):
+    tomllib = pytest.importorskip("tomllib")
+    user_home = tmp_path / "user-home"
+    (user_home / ".codex").mkdir(parents = True)
+    monkeypatch.setenv("HOME", str(user_home))
+    monkeypatch.setenv("USERPROFILE", str(user_home))
+    custom = tmp_path / "custom-codex"
+    custom.mkdir()
+    (custom / "config.toml").write_text('[mcp_servers.custom]\nurl = "http://c/mcp"\n')
+    monkeypatch.setenv("CODEX_HOME", str(custom))
+    home = tmp_path / "agents" / "codex"
+
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    result = CliRunner().invoke(start.start_app, ["codex", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    config = tomllib.loads((home / "config.toml").read_text())
+    assert config["mcp_servers"] == {"custom": {"url": "http://c/mcp"}}
+
+
+def test_codex_drops_a_removed_server_with_subtables_added_in_the_saved_home(
+    fake_studio, tmp_path, monkeypatch
+):
+    tomllib = pytest.importorskip("tomllib")
+    source_home = tmp_path / "user-codex"
+    source_home.mkdir()
+    (source_home / "config.toml").write_text('[mcp_servers.docs]\nurl = "http://d/mcp"\n')
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    home = tmp_path / "agents" / "codex"
+
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    with (home / "config.toml").open("a") as f:
+        f.write('\n[mcp_servers.docs.env]\nUNITS = "metric"\n')
+        f.write('\n[[mcp_servers.docs.env_vars]]\nname = "TOKEN"\nsource = "local"\n')
+    (source_home / "config.toml").write_text('[mcp_servers.keep]\nurl = "http://k/mcp"\n')
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    config = tomllib.loads((home / "config.toml").read_text())
+    assert config["mcp_servers"] == {"keep": {"url": "http://k/mcp"}}
+
+
+def test_codex_session_from_a_saved_home_reads_its_origin(fake_studio, tmp_path, monkeypatch):
+    tomllib = pytest.importorskip("tomllib")
+    source_home = tmp_path / "user-codex"
+    source_home.mkdir()
+    (source_home / "config.toml").write_text('[mcp_servers.docs]\nurl = "http://d/mcp"\n')
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    saved = tmp_path / "agents" / "codex"
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    with (saved / "config.toml").open("a") as f:
+        f.write('\n[mcp_servers.local]\ncommand = "local-server"')
+
+    (source_home / "config.toml").write_text('[mcp_servers.fresh]\nurl = "http://f/mcp"\n')
+    monkeypatch.setenv("CODEX_HOME", str(saved))
+    session = tmp_path / "session"
+    start.write_codex_config("http://h", {"id": "m"}, session, keep_mcp_servers = True)
+    config = tomllib.loads((session / "config.toml").read_text())
+    assert config["mcp_servers"] == {
+        "local": {"command": "local-server"},
+        "fresh": {"url": "http://f/mcp"},
+    }
+
+    (source_home / "config.toml").write_text(
+        '[mcp_servers.fresh]\nurl = "http://f/mcp"\n\n[mcp_servers.local]\nurl = "http://l/mcp"\n'
+    )
+    start.write_codex_config("http://h", {"id": "m"}, session, keep_mcp_servers = True)
+    config = tomllib.loads((session / "config.toml").read_text())
+    assert config["mcp_servers"] == {
+        "local": {"url": "http://l/mcp"},
+        "fresh": {"url": "http://f/mcp"},
+    }
+
+
+def test_codex_carries_mcp_servers_written_as_root_keys(fake_studio, tmp_path, monkeypatch):
+    tomllib = pytest.importorskip("tomllib")
+    source_home = tmp_path / "user-codex"
+    source_home.mkdir()
+    (source_home / "config.toml").write_text(
+        'mcp_servers.docs.command = "python3"\n'
+        'mcp_servers.docs.env = { "API KEY" = "x" }\n'
+        'mcp_servers.notes = { url = "http://n/mcp", tools = { search = { enabled = false } } }\n'
+    )
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    home = tmp_path / "agents" / "codex"
+
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    config = tomllib.loads((home / "config.toml").read_text())
+    assert (
+        config["mcp_servers"]
+        == tomllib.loads((source_home / "config.toml").read_text())["mcp_servers"]
+    )
+
+
+def test_codex_reads_mcp_servers_from_a_config_with_a_bom(fake_studio, tmp_path, monkeypatch):
+    tomllib = pytest.importorskip("tomllib")
+    source_home = tmp_path / "user-codex"
+    source_home.mkdir()
+    (source_home / "config.toml").write_bytes(
+        b'\xef\xbb\xbf[mcp_servers.docs]\nurl = "http://d/mcp"\n'
+    )
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    home = tmp_path / "agents" / "codex"
+
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    config = tomllib.loads((home / "config.toml").read_text())
+    assert config["mcp_servers"] == {"docs": {"url": "http://d/mcp"}}
+
+
+def test_toml_chunks_split_only_at_real_table_headers():
+    text = (
+        'model = "m"\n'
+        '[mcp_servers.notes]\nargs = ["-c", """echo "hi""""]\nm = [\n[1],\n]\ns = """\n[fake]\n"""\n'
+        "[model_providers.unsloth_api]\nname = 'x'\n"
+    )
+    chunks = start._toml_chunks(text)
+    assert "".join(chunks) == text
+    assert [start._toml_table_path(c) for c in chunks] == [
+        None,
+        ("mcp_servers", "notes"),
+        ("model_providers", "unsloth_api"),
+    ]
+
+
+def test_codex_keeps_saved_servers_when_the_source_is_newer_toml(
+    fake_studio, tmp_path, monkeypatch
+):
+    tomllib = pytest.importorskip("tomllib")
+    source_home = tmp_path / "user-codex"
+    source_home.mkdir()
+    (source_home / "config.toml").write_text('[mcp_servers.docs]\nurl = "http://d/mcp"\n')
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    home = tmp_path / "agents" / "codex"
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+
+    # A multi-line inline table is TOML 1.1: Codex reads it, tomllib does not.
+    (source_home / "config.toml").write_text(
+        '[mcp_servers.docs]\nurl = "http://d/mcp"\nenv = {\n  UNITS = "metric",\n}\n'
+    )
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    config = tomllib.loads((home / "config.toml").read_text())
+    assert config["mcp_servers"] == {"docs": {"url": "http://d/mcp"}}
+
+
+def test_codex_saved_home_outlives_the_session_it_was_made_in(fake_studio, tmp_path, monkeypatch):
+    tomllib = pytest.importorskip("tomllib")
+    source_home = tmp_path / "user-codex"
+    source_home.mkdir()
+    (source_home / "config.toml").write_text('[mcp_servers.docs]\nurl = "http://d/mcp"\n')
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    session = tmp_path / "session"
+    start.write_codex_config("http://h", {"id": "m"}, session, keep_mcp_servers = True)
+
+    monkeypatch.setenv("CODEX_HOME", str(session))
+    saved = tmp_path / "agents" / "codex"
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    shutil.rmtree(session)
+    monkeypatch.setenv("CODEX_HOME", str(saved))
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    config = tomllib.loads((saved / "config.toml").read_text())
+    assert config["mcp_servers"] == {"docs": {"url": "http://d/mcp"}}
+
+
+def test_codex_remembers_an_empty_custom_codex_home(fake_studio, tmp_path, monkeypatch):
+    tomllib = pytest.importorskip("tomllib")
+    user_home = tmp_path / "user-home"
+    (user_home / ".codex").mkdir(parents = True)
+    (user_home / ".codex" / "config.toml").write_text('[mcp_servers.unrelated]\nurl = "http://u"\n')
+    monkeypatch.setenv("HOME", str(user_home))
+    monkeypatch.setenv("USERPROFILE", str(user_home))
+    custom = tmp_path / "custom-codex"
+    custom.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(custom))
+    home = tmp_path / "agents" / "codex"
+
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    (custom / "config.toml").write_text('[mcp_servers.fresh]\nurl = "http://f/mcp"\n')
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    config = tomllib.loads((home / "config.toml").read_text())
+    assert config["mcp_servers"] == {"fresh": {"url": "http://f/mcp"}}
+
+
+def test_codex_carries_mcp_servers_with_multiline_values(fake_studio, tmp_path, monkeypatch):
+    tomllib = pytest.importorskip("tomllib")
+    source_home = tmp_path / "user-codex"
+    source_home.mkdir()
+    (source_home / "config.toml").write_text(
+        '[mcp_servers.notes]\ncommand = "notes"\nargs = ["--banner", """\n[welcome]\nhi"""]\n\n'
+        '[mcp_servers.docs]\nurl = "http://d/mcp"\n'
+    )
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    home = tmp_path / "agents" / "codex"
+
+    result = CliRunner().invoke(start.start_app, ["codex", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    config = tomllib.loads((home / "config.toml").read_text())
+    assert config["model_providers"]["unsloth_api"]["base_url"].endswith("/v1")
+    assert config["mcp_servers"] == {
+        "notes": {"command": "notes", "args": ["--banner", "[welcome]\nhi"]},
+        "docs": {"url": "http://d/mcp"},
+    }
+
+
 def test_connect_codex_as_subagent_preserves_cloud_parent(fake_studio, tmp_path, monkeypatch):
     monkeypatch.setattr(start, "_codex_supports_model_catalog", lambda: True)
     source_home = tmp_path / "user-codex"

@@ -32,33 +32,31 @@ import {
 import { useIsAccountOwner } from "@/features/auth";
 import {
   loadLanAccess,
+  loadMultiModelEnabled,
   publishLanUrls,
   useSettingsDialogStore,
 } from "@/features/settings";
 // Not through the barrel: these pull in chat, which every barrel importer would then load.
-import { RAISED_SURFACE } from "@/features/library/surface";
+import {
+  type ApiExampleKind,
+  ApiExampleTabNav,
+} from "@/features/settings/components/api-example-tabs";
 import { AudioApiExamples } from "@/features/settings/components/audio-api-examples";
 import { DecisionApiSection } from "@/features/settings/components/decision-api-section";
 import { MediaApiExamples } from "@/features/settings/components/media-api-examples";
-import {
-  UsageExamples,
-  useApiTunnelPref,
-} from "@/features/settings/components/usage-examples";
+import { useApiTunnelPref } from "@/features/settings/components/usage-examples";
 import { remoteApiOrigin } from "@/features/settings/api/remote-access-state";
 import { getApiBase, isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
-import { AiSpeechIcon, MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
   ApiIcon,
   ArrowDataTransferVerticalIcon,
   Cancel01Icon,
+  Clock01Icon,
   CodeIcon,
-  BotIcon,
   ComputerTerminal01Icon,
-  Image01Icon,
-  TaskDone01Icon,
   Delete02Icon,
   FileSearchIcon,
   FlashIcon,
@@ -67,7 +65,6 @@ import {
   RemoveCircleIcon,
   Search01Icon,
   Settings02Icon,
-  Timer01Icon,
 } from "@hugeicons/core-free-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { PauseIcon } from "@/lib/media-control-icons";
@@ -315,6 +312,55 @@ function openApiSettings(): void {
   useSettingsDialogStore.getState().openDialog("api-keys");
 }
 
+function MultiModelHint({
+  servedCount,
+}: {
+  servedCount: number;
+}): ReactElement | null {
+  const keepLoaded = useChatRuntimeStore((s) => s.keepModelsLoaded);
+  const isOwner = useIsAccountOwner();
+  // Store defaults to off: without the read the hint flashes for users who have it on.
+  const [known, setKnown] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    loadMultiModelEnabled("Failed to read the multiple models setting").then(
+      (enabled) => {
+        if (cancelled) return;
+        useChatRuntimeStore.getState().setKeepModelsLoaded(enabled);
+        setKnown(true);
+      },
+      () => undefined,
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  if (!known || keepLoaded || servedCount > 1) return null;
+  return (
+    <>
+      {" · "}
+      {isOwner ? (
+        <>
+          Enable loading multiple models in{" "}
+          <button
+            type="button"
+            className="font-medium text-foreground underline underline-offset-2 hover:text-primary"
+            onClick={() =>
+              useSettingsDialogStore.getState().openDialog("resources", {
+                scrollTarget: "resources-model-memory",
+              })
+            }
+          >
+            Settings
+          </button>
+        </>
+      ) : (
+        "One model at a time"
+      )}
+    </>
+  );
+}
+
 function Stat({
   label,
   value,
@@ -422,7 +468,7 @@ function Fact({
           <HugeiconsIcon
             icon={icon}
             strokeWidth={1.75}
-            className="size-3.5 shrink-0 text-muted-foreground"
+            className="size-[1em] shrink-0 text-muted-foreground"
           />
         ) : null}
         {children}
@@ -587,7 +633,7 @@ const RequestRow = memo(function RequestRow({
             }
           >
             <HugeiconsIcon
-              icon={Timer01Icon}
+              icon={Clock01Icon}
               strokeWidth={1.75}
               className="size-3"
             />
@@ -860,8 +906,6 @@ function RequestDetail({
   );
 }
 
-type QuickStartKind = "chat" | "media" | "audio" | "decision" | "agents";
-
 function QuickStart({
   baseUrl,
   model,
@@ -870,18 +914,8 @@ function QuickStart({
   model: string | null;
 }): ReactElement {
   const choices = useApiExampleChoices(baseUrl, "curl");
-  const isOwner = useIsAccountOwner();
-  const [useTunnel, setUseTunnel] = useApiTunnelPref();
-  const [kind, setKind] = useState<QuickStartKind>("chat");
-  const kinds: { id: QuickStartKind; label: string; icon: IconSvgElement }[] = [
-    { id: "chat", label: "Chat", icon: MessageCircleIcon },
-    { id: "media", label: "Images / Video", icon: Image01Icon },
-    { id: "audio", label: "Audio", icon: AiSpeechIcon },
-    ...(isOwner
-      ? [{ id: "decision" as const, label: "Decision", icon: TaskDone01Icon }]
-      : []),
-    { id: "agents", label: "Agents", icon: BotIcon },
-  ];
+  const [useTunnel] = useApiTunnelPref();
+  const [kind, setKind] = useState<ApiExampleKind>("chat");
   return (
     <div className="flex flex-col items-center gap-4 px-6 py-12 text-center">
       <span className="flex size-10 items-center justify-center icon-disc text-muted-foreground">
@@ -901,32 +935,7 @@ function QuickStart({
             : "Load a model, then send a request to see it here."}
         </p>
       </div>
-      <nav aria-label="Example" className="flex flex-wrap justify-center gap-1">
-        {kinds.map((entry) => (
-          <button
-            key={entry.id}
-            type="button"
-            aria-current={entry.id === kind ? "page" : undefined}
-            onClick={() => setKind(entry.id)}
-            className={cn(
-              "flex h-9 shrink-0 items-center gap-2 rounded-full px-3.5 font-heading text-ui-15 text-foreground/80 transition-colors hover:text-foreground",
-              // On a card, so a step above it, not the card colour.
-              entry.id === kind &&
-                cn(
-                  RAISED_SURFACE,
-                  "font-medium text-foreground dark:bg-accent",
-                ),
-            )}
-          >
-            <HugeiconsIcon
-              icon={entry.icon}
-              strokeWidth={1.75}
-              className="size-4 shrink-0"
-            />
-            {entry.label}
-          </button>
-        ))}
-      </nav>
+      <ApiExampleTabNav kind={kind} onChange={setKind} className="justify-center" />
       {kind === "chat" ? (
         <div className="w-full max-w-2xl text-left">
           <ApiExampleBox
@@ -946,14 +955,8 @@ function QuickStart({
             <MediaApiExamples useTunnel={useTunnel} showHeading={false} />
           ) : kind === "audio" ? (
             <AudioApiExamples useTunnel={useTunnel} showHeading={false} />
-          ) : kind === "decision" ? (
-            <DecisionApiSection showHeading={false} />
           ) : (
-            <UsageExamples
-              useTunnel={useTunnel}
-              onUseTunnelChange={setUseTunnel}
-              agentsOnly={true}
-            />
+            <DecisionApiSection showHeading={false} />
           )}
         </div>
       )}
@@ -1418,7 +1421,8 @@ export function ApiMonitorPage(): ReactElement {
                 pinOnClick={true}
                 hoverClassName="rounded-full transition-colors group-hover:bg-muted dark:group-hover:bg-chat-icon-bg-hover"
                 padX={2}
-                className="-my-1 -ml-2 h-6 min-w-(--full) [--icon-size:--spacing(3.5)] [&>button]:rounded-full"
+                fitContent={true}
+                className="-mx-2 -my-1 h-6 font-sans text-ui-12 tabular-nums [--icon-size:--spacing(3.5)] [&>button]:rounded-full"
                 used={used}
                 total={windowSize}
                 promptTokens={last?.prompt_tokens ?? undefined}
@@ -1438,7 +1442,7 @@ export function ApiMonitorPage(): ReactElement {
         </dl>
         <dl className={FACT_CELL}>
           {rowStats.avgDurationMs != null ? (
-            <Fact label="Total time, average per request" icon={Timer01Icon}>
+            <Fact label="Total time, average per request" icon={Clock01Icon}>
               <span className="tabular-nums">
                 {formatDuration(rowStats.avgDurationMs)}
               </span>
@@ -1461,10 +1465,12 @@ export function ApiMonitorPage(): ReactElement {
   };
   return (
     <>
-      {/* Model picker where Chat keeps it; sticky, so the log scrolls under it. */}
+      {/* In the macOS titlebar row like Chat's header; click-through so the row still drags. */}
       <div
         className={cn(
-          "sticky top-0 z-30 flex min-h-[calc(48px*var(--ui-space-scale,1))] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)]",
+          "pointer-events-none sticky top-0 z-40 flex min-h-[calc(48px*var(--ui-space-scale,1))] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)]",
+          !isMobileShell &&
+            "-mt-[calc(var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))-var(--studio-content-top-inset,0px))]",
           isMobileShell
             ? "pl-12"
             : pinned
@@ -1474,7 +1480,7 @@ export function ApiMonitorPage(): ReactElement {
                 : "pl-[calc(0.5rem*var(--ui-space-scale,1)+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]",
         )}
       >
-        <div data-tour="api-toolbar" className="flex min-w-0 max-w-full">
+        <div data-tour="api-toolbar" className="pointer-events-auto flex min-w-0 max-w-full">
           <ApiModelLoadControls
             runtime={runtime}
             activeModel={data?.active_model}
@@ -1646,6 +1652,7 @@ export function ApiMonitorPage(): ReactElement {
             {served.length === 0 ? (
               <p className="text-ui-12 text-muted-foreground">
                 No models loaded
+                <MultiModelHint servedCount={0} />
               </p>
             ) : (
               <div className="@container/served flex flex-col gap-2">
@@ -1653,13 +1660,15 @@ export function ApiMonitorPage(): ReactElement {
                   {served.length === 1
                     ? "1 model answering requests"
                     : `${served.length} models answering requests`}
+                  <MultiModelHint servedCount={served.length} />
                 </p>
-                <div className="flex flex-col gap-3 @3xl/served:grid @3xl/served:grid-cols-[minmax(0,max-content)_auto_auto_auto_auto_1fr] @3xl/served:items-center @3xl/served:gap-x-6 @3xl/served:gap-y-1.5">
+                {/* Not fixed widths: they left a short value's slack before the next column. */}
+                <div className="flex flex-col gap-3 @3xl/served:grid @3xl/served:grid-cols-[minmax(0,max-content)_auto_auto_auto_auto_1fr] @3xl/served:items-center @3xl/served:gap-x-10 @3xl/served:gap-y-1.5">
                   {served.map((model) => (
                     // A subgrid, not `contents`: the row needs a box (gaps included) to hover.
                     <div
                       key={model.checkpoint}
-                      className="group/row flex flex-wrap items-center gap-x-3 gap-y-1 @md/served:gap-x-4 @3xl/served:col-span-full @3xl/served:grid @3xl/served:grid-cols-subgrid @3xl/served:gap-x-6"
+                      className="group/row flex flex-wrap items-center gap-x-3 gap-y-1 @md/served:gap-x-4 @3xl/served:col-span-full @3xl/served:grid @3xl/served:grid-cols-subgrid @3xl/served:gap-x-10"
                     >
                       <span className="order-1 flex min-w-0 flex-1 items-center gap-1 text-ui-12 @max-3xl/served:basis-full @max-3xl/served:items-start @3xl/served:order-none">
                         <span

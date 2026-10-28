@@ -158,13 +158,26 @@ def _held_rehearsal_tail_len(
     unrestricted: bool = False,
 ) -> int:
     """Length of a trailing bare tool-name token held while streaming so the name does not leak; also call:NAME{ prefixes, seen only once the brace arrives."""
+    # Restricted mode: same NAME[ARGS] bound as llama_cpp._held_rehearsal_tail_len.
+    limit = (
+        len(text)
+        if unrestricted
+        else max(
+            (len(name) for name in _active_tool_names(active_tools) if isinstance(name, str)),
+            default = 0,
+        )
+        + len("[ARGS]")
+    )
     i = len(text)
-    while i > 0 and not text[i - 1].isspace():
+    stop = max(0, i - limit - 1)
+    while i > stop and not text[i - 1].isspace():
         i -= 1
     tail = text[i:]
     held = (
         len(tail)
-        if tail and _is_rehearsal_prefix(tail, active_tools, unrestricted = unrestricted)
+        if tail
+        and len(tail) <= limit
+        and _is_rehearsal_prefix(tail, active_tools, unrestricted = unrestricted)
         else 0
     )
     return max(

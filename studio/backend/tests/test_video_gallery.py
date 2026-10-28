@@ -88,6 +88,18 @@ def test_list_paginates_with_limit_offset():
     assert len(gallery.list_videos(offset = 4)) == 1
 
 
+def test_listing_resolves_the_folder_once(monkeypatch):
+    for i in range(4):
+        _save_with_mtime(f"p{i}", float(i))
+    calls = []
+    real = gallery.gallery_dir
+    monkeypatch.setattr(gallery, "gallery_dir", lambda: calls.append(1) or real())
+    listed = gallery.list_videos()
+    assert len(calls) == 1
+    assert [r["prompt"] for r in listed] == ["p3", "p2", "p1", "p0"]
+    assert [r["order_at"] for r in listed] == [3.0, 2.0, 1.0, 0.0]
+
+
 def test_video_path_rejects_unsafe_ids():
     assert gallery.video_path("../../etc/passwd") is None
     assert gallery.video_path("/etc/passwd") is None
@@ -680,6 +692,63 @@ def test_gif_export_uses_one_clip_wide_palette(monkeypatch, hold):
     assert info["loop"] == 0  # NETSCAPE loop 0 = forever
     assert all(d in (8, 9) for d in info["delays"]), info["delays"]
     assert sum(info["delays"]) in (99, 100, 101)
+
+
+_GIF_PEAK_RSS_SCRIPT = r"""
+from fractions import Fraction
+import av, numpy as np
+import core.inference.video_gallery as vg
+
+vg._GIF_HOLD_BYTES = 0
+side, n = 720, 300
+rgb = np.zeros((side, side, 3), np.uint8)
+rgb[..., 0] = np.arange(side, dtype = np.uint8)[None, :]
+
+
+def _frames(path, step, width, height):
+    for _ in range(n):
+        yield av.VideoFrame.from_ndarray(rgb, format = "rgb24")
+
+
+def _peak_kib():
+    # VmHWM is per address space; ru_maxrss would carry over the forking parent's peak
+    with open("/proc/self/status") as f:
+        return int(next(line for line in f if line.startswith("VmHWM:")).split()[1])
+
+
+vg._gif_scaled_frames = _frames
+before = _peak_kib()
+gif = vg._transcode_gif_palette(None, Fraction(12), 1, side, side, n)
+assert gif.startswith(b"GIF8")
+print((_peak_kib() - before) // 1024)
+"""
+
+
+def test_gif_export_two_pass_does_not_queue_the_clip_in_palettegen():
+    """With frames over _GIF_HOLD_BYTES the palette pass must not hold them either: 300 720p frames are 445 MiB if
+    FFmpeg queues them all before palettegen sees EOF."""
+    import subprocess
+    import sys
+
+    from core.inference import video_gallery as vg
+
+    pytest.importorskip("numpy")
+    if not os.path.exists("/proc/self/status"):
+        pytest.skip("peak RSS is read from /proc/self/status (Linux only)")
+    if not vg._gif_palette_supported():
+        pytest.skip("this PyAV build has no palettegen / paletteuse / gif encoder")
+    backend = Path(vg.__file__).resolve().parents[2]
+    result = subprocess.run(
+        [sys.executable, "-c", _GIF_PEAK_RSS_SCRIPT],
+        cwd = backend,
+        env = {**os.environ, "PYTHONPATH": str(backend)},
+        capture_output = True,
+        text = True,
+        timeout = 300,
+    )
+    assert result.returncode == 0, result.stderr[-2000:]
+    growth_mib = int(result.stdout.split()[-1])
+    assert growth_mib < 160, f"peak RSS grew {growth_mib} MiB"
 
 
 def test_gif_export_palette_path_caps_frames_and_edge(monkeypatch):

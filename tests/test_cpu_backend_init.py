@@ -40,6 +40,7 @@ print("PROBE " + json.dumps({
     "fast": [c.__name__ for c in unsloth.FastLanguageModel.__mro__],
     "modules": mods,
     "trainer_file": getattr(sys.modules.get("unsloth.trainer"), "__file__", None),
+    "dataprep": [n for n in ("load_ebook_dataset", "RawTextDataLoader", "TextPreprocessor") if hasattr(unsloth, n)],
 }))
 """
 
@@ -100,6 +101,55 @@ def test_no_accelerator_loads_the_cpu_backend():
     assert (
         probe["trainer_file"] is None
     ), "unsloth.trainer must be the CPU shim, not unsloth/trainer.py"
+    # The dataprep helpers the GPU backend exports, without loading synthetic.py.
+    assert probe["dataprep"] == ["load_ebook_dataset", "RawTextDataLoader", "TextPreprocessor"]
+
+
+_PICKLE_PROBE = r"""
+import json, multiprocessing, pickle, sys
+import unsloth
+from unsloth import RawTextDataLoader, TextPreprocessor, load_ebook_dataset
+objs = [TextPreprocessor(), RawTextDataLoader, load_ebook_dataset]
+roundtrip = [pickle.loads(pickle.dumps(o)) is not None for o in objs]
+# A spawned worker (datasets num_proc / DataLoader workers on macOS) imports the classes back fresh.
+with multiprocessing.get_context("spawn").Pool(1) as pool:
+    spawned = pool.apply(len, (objs,))
+print("PROBE " + json.dumps({
+    "device_type": unsloth.DEVICE_TYPE,
+    "roundtrip": roundtrip,
+    "spawned": spawned,
+    "synthetic": "unsloth.dataprep.synthetic" in sys.modules,
+}))
+"""
+
+
+@pytest.mark.skipif(not _zoo_has_cpu_backend(), reason = "unsloth_zoo without the CPU backend")
+def test_cpu_dataprep_exports_pickle_into_spawned_workers():
+    pytest.importorskip("torch")
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("UNSLOTH_ALLOW_CPU", "UNSLOTH_DISABLE_CPU_FALLBACK")
+    }
+    env.update(
+        {
+            "UNSLOTH_FORCE_CPU": "1",
+            "UNSLOTH_FORCE_GPU_PATH": "1",
+            "PYTHONPATH": os.pathsep.join(filter(None, [str(_ROOT), env.get("PYTHONPATH")])),
+        }
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", _PICKLE_PROBE], capture_output = True, text = True, env = env, timeout = 1200
+    )
+    probe = next(
+        (json.loads(line[6:]) for line in out.stdout.splitlines() if line.startswith("PROBE ")),
+        None,
+    )
+    assert probe is not None, out.stderr[-3000:]
+    assert probe["device_type"] == "cpu"
+    assert probe["roundtrip"] == [True, True, True]
+    assert probe["spawned"] == 3
+    assert probe["synthetic"] is False
 
 
 def test_gpu_host_never_loads_the_cpu_backend():

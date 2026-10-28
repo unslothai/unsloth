@@ -41,6 +41,13 @@ function reportRevealError(
 }
 
 /** "Open chat folder" (desktop only). Compare chats outside a project get no item. */
+/** None for a compare chat outside a project. */
+export function chatFolderSessionId(item: SidebarItem): string | undefined {
+  return item.type === "single" || item.projectId
+    ? sandboxSessionIdFor(getSidebarItemThreadIds(item)[0] ?? item.id, item.projectId)
+    : undefined;
+}
+
 export function OpenChatFolderItem({
   item,
   Item = DropdownMenuItem,
@@ -50,10 +57,7 @@ export function OpenChatFolderItem({
 }) {
   const t = useT();
   const threadIds = getSidebarItemThreadIds(item);
-  const sandboxSessionId =
-    item.type === "single" || item.projectId
-      ? sandboxSessionIdFor(threadIds[0] ?? item.id, item.projectId)
-      : undefined;
+  const sandboxSessionId = chatFolderSessionId(item);
   if (!sandboxSessionId) return null;
   if (!isTauri) return <OpenChatFolderUnavailableItem Item={Item} />;
   return (
@@ -96,10 +100,7 @@ export function UploadToChatFolderItem({
   Item?: ComponentType<ComponentProps<typeof DropdownMenuItem>>;
 }) {
   const t = useT();
-  const sandboxSessionId =
-    item.type === "single" || item.projectId
-      ? sandboxSessionIdFor(getSidebarItemThreadIds(item)[0] ?? item.id, item.projectId)
-      : undefined;
+  const sandboxSessionId = chatFolderSessionId(item);
   if (!sandboxSessionId) return null;
   return (
     <Item

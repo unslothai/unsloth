@@ -1,33 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Resumable checkpoints for diffusion (image / future video) LoRA training.
-
-A diffusion run used to write exactly one thing, the deployable adapter, at the very end, so a stop
-at step 11 left the AdamW moments, the LR-schedule position, the RNG streams and the step counter to
-die with the subprocess: restarting the same configuration began again at step 1. This module is the
-single writer and the single reader of the state that makes a run continuable.
-
-Layout, under the run's own ``output_dir`` (so the resumed run keeps writing into the same folder
-the adapter is published from): ``<output_dir>/pytorch_lora_weights.safetensors`` is the deployable
-adapter (unchanged), and each ``checkpoint-<N>/`` holds ``trainer_state.json`` (manifest +
-completion marker), ``adapter_model.safetensors`` (peft-format LoRA tensors),
-``ema_adapter.safetensors`` (the EMA shadow, when ema_decay > 0), ``optimizer.pt``, ``scheduler.pt``
-and ``rng_state.pt`` (torch CPU + per-device CUDA RNG states).
-
-``trainer_state.json`` is written LAST inside a hidden staging directory, and the whole staging
-directory is then promoted with a single ``os.replace``. A process killed at any point leaves either
-the previous checkpoint or a ``.tmp-checkpoint-*`` directory that no scanner ever matches, never a
-half-written ``checkpoint-<N>`` that looks valid.
-
-Identity: every bundle records the training identity it belongs to (family, base repo + revision,
-dataset fingerprint, LoRA targets/rank/alpha, precision). ``preflight_resume`` compares that against
-the incoming request and refuses a mismatch with a user-facing reason, so the start route can reject
-BEFORE it evicts the resident GPU model.
-
-``kind`` ("image" today) is carried in both the manifest and the identity so a future video trainer
-can write and validate its own bundles through this same code without a format change.
-"""
+"""Resumable diffusion LoRA checkpoints, promoted atomically; preflight_resume refuses an identity
+mismatch BEFORE the start route evicts the resident GPU model"""
 
 from __future__ import annotations
 

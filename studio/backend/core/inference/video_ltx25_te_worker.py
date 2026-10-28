@@ -1,19 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""LTX-2.5 Gemma 4 text encoder, in a spawned worker on the transformers 5.10 sidecar.
-
-The server process runs Studio's default transformers, which has no ``Gemma4UnifiedForConditionalGeneration``. This
-entry point runs in a fresh spawned interpreter: it prepends ``.venv_t5_510`` to ``sys.path`` BEFORE anything imports
-transformers (the same activation the chat / training workers use), loads the encoder and tokenizer from the LTX-2.5
-pack, and answers encode requests with the packed hidden states diffusers' ``LTX2Pipeline._get_gemma_prompt_embeds``
-computes (every hidden state stacked on a last axis and flattened, left padding to ``max_sequence_length``).
-
-Protocol (multiprocessing queues): the worker sends ``{"type": "ready", ...}`` once the model is loaded, then answers
-``{"type": "encode", "id", "prompts", "max_sequence_length"}`` with ``{"type": "embeds", "id", "embeds", "mask"}``
-(host tensors; bf16 ``[B, L, hidden * (layers + 1)]`` and int64 ``[B, L]``); ``{"type": "shutdown"}`` ends it. Any
-failure is ``{"type": "error", "error": "..."}``. Must import nothing heavy at module level.
-"""
+"""LTX-2.5 Gemma 4 encoder worker; prepends .venv_t5_510 to sys.path before any transformers import;
+must import nothing heavy at module level"""
 
 from __future__ import annotations
 
