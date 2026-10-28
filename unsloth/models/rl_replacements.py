@@ -3381,7 +3381,6 @@ def online_dpo_trainer__move_model_to_vllm(function_name, function):
     if function_name != "_move_model_to_vllm":
         return function
     function = grpo_trainer__move_model_to_vllm(function_name, function)
-    # TRL's server path batches the per-tensor updates inside weight_update().
     return re.sub(
         r"^([ \t]+)return _unsloth_vllm_sync_peft_merged\(self\)\n",
         r"\1if self.vllm_mode == 'server' and self.accelerator.is_main_process and hasattr(self.vllm_client, 'weight_update'):\n"
@@ -3407,7 +3406,7 @@ def _unsloth_vllm_load_state_dict(trainer, model):
             "(FSDP / DeepSpeed ZeRO-3) weights into vLLM. Upgrade TRL to 0.23 or later."
         )
     model = trainer.accelerator.unwrap_model(model)
-    model = getattr(model, "_orig_mod", model)  # torch.compile wrapper
+    model = getattr(model, "_orig_mod", model)
     trainer.llm.llm_engine.model_executor.driver_worker.model_runner.model.load_weights(
         model.state_dict().items()
     )
