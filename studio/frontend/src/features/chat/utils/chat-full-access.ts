@@ -5,6 +5,8 @@ export interface ChatFullAccessGrant {
   runId: string;
   threadId: string;
   sessionId: string;
+  /** chatPermissionChoiceVersion when granted: a later explicit choice voids an unadopted grant. */
+  choiceVersion?: number;
 }
 
 export type ChatFullAccessGrants = Readonly<Record<string, ChatFullAccessGrant>>;

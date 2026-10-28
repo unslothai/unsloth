@@ -5598,7 +5598,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   grantChatFullAccess: (grant) =>
     set((state) => {
       if (!grant.runId || !grant.sessionId) return state;
-      grant = { ...grant, threadId: grant.threadId || state.chatFullAccessThreadByRunId[grant.runId] || "" };
+      grant = {
+        ...grant,
+        threadId: grant.threadId || state.chatFullAccessThreadByRunId[grant.runId] || "",
+        choiceVersion: state.chatPermissionChoiceVersion,
+      };
       const grants = { ...state.chatFullAccessGrants, [grant.runId]: grant };
       return {
         chatFullAccessGrants: grants,
@@ -5614,13 +5618,16 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const grant = state.chatFullAccessGrants[runId];
       const recorded = state.chatFullAccessThreadByRunId[runId];
       if (recorded && recorded !== threadId) return state;
-      if (recorded === threadId && (!grant || grant.threadId)) return state;
-      const grants = grant && !grant.threadId
-        ? { ...state.chatFullAccessGrants, [runId]: { ...grant, threadId } }
-        : state.chatFullAccessGrants;
+      const runThreads = recorded
+        ? state.chatFullAccessThreadByRunId
+        : { ...state.chatFullAccessThreadByRunId, [runId]: threadId };
+      if (!grant || grant.threadId) return recorded ? state : { chatFullAccessThreadByRunId: runThreads };
+      const grants = { ...state.chatFullAccessGrants };
+      if (grant.choiceVersion === state.chatPermissionChoiceVersion) grants[runId] = { ...grant, threadId };
+      else delete grants[runId];
       return {
         chatFullAccessGrants: grants,
-        chatFullAccessThreadByRunId: { ...state.chatFullAccessThreadByRunId, [runId]: threadId },
+        chatFullAccessThreadByRunId: runThreads,
         chatFullAccessPendingRunId: state.chatFullAccessPendingRunId === runId ? null : state.chatFullAccessPendingRunId,
         ...chatFullAccessPermissionPatch(state, grants, state.activeThreadId),
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
@@ -5629,11 +5636,15 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   clearUnadoptedChatFullAccessRun: (runId) =>
     set((state) => {
       const grant = state.chatFullAccessGrants[runId];
-      if (!grant || grant.threadId) return state;
+      const dropGrant = !!grant && !grant.threadId;
+      if (!dropGrant && !Object.hasOwn(state.chatFullAccessThreadByRunId, runId)) return state;
+      const runThreads = { ...state.chatFullAccessThreadByRunId };
+      delete runThreads[runId];
       const grants = { ...state.chatFullAccessGrants };
-      delete grants[runId];
+      if (dropGrant) delete grants[runId];
       return {
         chatFullAccessGrants: grants,
+        chatFullAccessThreadByRunId: runThreads,
         chatFullAccessPendingRunId: state.chatFullAccessPendingRunId === runId
           ? null : state.chatFullAccessPendingRunId,
       };

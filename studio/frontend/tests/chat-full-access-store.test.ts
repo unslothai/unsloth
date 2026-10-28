@@ -135,3 +135,27 @@ test("only explicit permission changes advance the version used by pending upgra
   state().setBypassPermissions(false);
   assert.equal(state().chatPermissionChoiceVersion, first + 2);
 });
+
+test("a lower mode chosen before first-turn adoption is not undone by the adoption", async () => {
+  const { state } = await boot("chat-full-revoke-before-adopt");
+  state().grantChatFullAccess({ runId: "run-new", threadId: "", sessionId: "project-shared" });
+  assert.ok(state().chatFullAccessGrants["run-new"]);
+  state().setActiveThreadId("chat-a");
+  state().setPermissionMode("off");
+  state().adoptChatFullAccessRun("run-new", "chat-a");
+  assert.equal(state().permissionMode, "off");
+  assert.equal(state().bypassPermissions, false);
+  assert.equal(Object.keys(state().chatFullAccessGrants).length, 0);
+});
+
+test("finished runs that never used the shortcut leave nothing behind", async () => {
+  const { state } = await boot("chat-full-run-cleanup");
+  state().setActiveThreadId("chat-a");
+  const epoch = state().queuedSettingsEpoch;
+  for (let i = 0; i < 3; i++) {
+    state().adoptChatFullAccessRun(`run-${i}`, "chat-a");
+    state().clearUnadoptedChatFullAccessRun(`run-${i}`);
+  }
+  assert.deepEqual(state().chatFullAccessThreadByRunId, {});
+  assert.equal(state().queuedSettingsEpoch, epoch);
+});
