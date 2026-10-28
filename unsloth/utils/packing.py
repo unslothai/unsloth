@@ -443,20 +443,6 @@ def _iter_stateful_mixers(model):
     return found
 
 
-def _iter_gated_delta_modules(model):
-    return [
-        m for m, kind in _iter_stateful_mixers(model) if kind in ("gated_delta", "gated_delta_qkv")
-    ]
-
-
-def _iter_mamba2_modules(model):
-    return [m for m, kind in _iter_stateful_mixers(model) if kind == "ssd"]
-
-
-def _iter_short_conv_modules(model):
-    return [m for m, kind in _iter_stateful_mixers(model) if kind == "short_conv"]
-
-
 def _callable_accepts_named_seq_idx(fn) -> Optional[str]:
     # A **kwargs-only hub stub does not count: it may drop seq_idx.
     try:
