@@ -1618,8 +1618,7 @@ fn main_window_needs_hiding(
     }
 }
 
-/// The reap takes seconds (~18s worst case on Windows). The hide only lands once the event loop
-/// runs again, so never call this on the main thread right before blocking it.
+/// The hide only lands once the event loop runs again: never call this on the main thread before blocking it.
 fn hide_main_window_for_quit(app: &tauri::AppHandle) -> bool {
     let hide = main_window_on_screen(app);
     // Not get_webview_window: that is None while browser views are children of the window.
@@ -1637,7 +1636,7 @@ fn main_window_on_screen(app: &tauri::AppHandle) -> bool {
     })
 }
 
-/// Confirm, hide, reap, in that order; returns whether to exit. Steps injected for the tests.
+/// Confirm, hide, reap, in that order; returns whether to exit.
 fn quit_sequence(
     confirm: impl Fn() -> bool,
     hide: impl FnOnce() -> bool,
