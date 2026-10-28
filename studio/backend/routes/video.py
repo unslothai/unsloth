@@ -2523,13 +2523,14 @@ def _own_queued_videos() -> list[VideoJob]:
     ]
 
 
-def _keyframe_canvas(fam, h3_task, reference: Optional[str], last_frame: Optional[str]):
+def _keyframe_canvas(fam, h3_task, reference: Optional[str], last_frame: Optional[str], size = None):
     """The backend's canvas for these keyframes, routing input_reference as begin_generate does."""
     from core.inference.video import VideoBackend
     from core.inference.video_minimax_h3 import H3_TASK_REFERENCES
 
     first = None if h3_task == H3_TASK_REFERENCES else reference
-    return VideoBackend._resolve_keyframes(fam, h3_task, first, last_frame, None, None)
+    width, height = size if size is not None else (None, None)
+    return VideoBackend._resolve_keyframes(fam, h3_task, first, last_frame, width, height)
 
 
 def _queued_job_display(
@@ -2568,8 +2569,8 @@ def _queued_job_display(
     if fam is not None:
         try:
             _refuse_family_inputs(fam, h3_task, body, reference, inputs)
-            if inputs.size is None and (reference is not None or body.last_frame):
-                canvas = _keyframe_canvas(fam, h3_task, reference, body.last_frame)
+            if reference is not None or body.last_frame:
+                canvas = _keyframe_canvas(fam, h3_task, reference, body.last_frame, inputs.size)
         except VideoShapeError as exc:
             raise _openai_video_error(400, str(exc), param = _shape_error_param(exc, body))
         except ValueError as exc:

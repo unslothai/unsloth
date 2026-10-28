@@ -584,6 +584,21 @@ def test_a_queued_start_holds_an_inference_slot_so_a_switch_cannot_evict_a_runni
     assert _wait_terminal(client, queued["id"])["status"] == "completed"
 
 
+def test_an_oversized_reference_with_an_explicit_size_is_refused_rather_than_queued(client, backend):
+    from test_openai_videos_route import _reference_image_bytes
+
+    png = _reference_image_bytes("PNG", (5000, 100))
+    wide = {"input_reference": ("frame.png", png, "image/png")}
+    _render_one(client, backend)
+    try:
+        r = _create(client, {"prompt": "wide", "size": "768x512"}, wide)
+        assert r.status_code == 400, r.text
+        assert r.json()["error"]["param"] == "input_reference"
+        assert "4096" in r.json()["error"]["message"]
+    finally:
+        backend.gate.set()
+
+
 def test_a_queued_image_to_video_job_reports_the_canvas_of_its_reference(client, backend):
     from test_openai_videos_route import _reference_image_bytes
 
