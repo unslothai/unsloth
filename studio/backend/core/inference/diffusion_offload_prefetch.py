@@ -593,8 +593,7 @@ class GroupPrefetcher:
             self._carry(ahead)
 
     def _keeps_for_next(self, gid: int) -> bool:
-        """``keep_first``: the group that opens the order and closes the forward (a top-level group) stays on the
-        device into the next forward, which needs it first; its footprint is the one that forward starts with."""
+        """``keep_first``: keep the top-level group on device; the next forward needs it first."""
         order = self.order
         return bool(
             getattr(self, "keep_first", False)
@@ -1203,8 +1202,7 @@ def cross_forward_render(pipe: Any, enabled: bool = True) -> Iterator[list]:
 
 
 def end_cross_forward(pipe: Any) -> int:
-    """Disarm ``pipe``'s prefetchers and drop what they carried (decode entry of a render without a step callback).
-    Returns the carried copies they have read so far."""
+    """Disarm ``pipe``'s prefetchers, drop their carry; returns carried copies read so far."""
     hits = 0
     for pf in _pipe_prefetchers(pipe):
         try:

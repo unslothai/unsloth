@@ -70,7 +70,6 @@ def test_forwards_after_the_first_read_the_carry_and_nothing_reaches_the_decode(
     log.clear()
     ticks, (ready, carried, inflight), hits = _h3_render(pf, groups, steps = 6)
     assert ticks == [1, 2, 3, 4, 5]
-    # forwards 2..6 read two carried groups each; the last forward carries nothing on
     assert pf.stats["carried_hits"] == 10 and hits == 10
     assert not ready and not carried and inflight == 0
     assert pf.stats.get("carried_dropped", 0) == 0
@@ -159,7 +158,6 @@ def test_kill_switch_render_carries_nothing(monkeypatch):
 
 
 def _top_forward(pf, top, blocks):
-    """A streamed top-level group: onloaded before the first block, offloaded after the last."""
     pf.begin()
     pf.onload(top)
     for g in blocks:
@@ -198,7 +196,6 @@ def _top_render(
 def test_streamed_top_group_stays_for_the_next_forward():
     pf, log, (ready, carried, inflight), peak_before = _top_render(keep = True)
     copies = _copies(log)
-    # uploaded once, kept through the render; blocks still stream every forward
     assert copies.count("t") == 1 and all(copies.count(b) == 6 for b in "abcde")
     assert pf.stats["kept"] == 5
     assert not ready and not carried and inflight == 0
