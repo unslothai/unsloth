@@ -676,7 +676,11 @@ _PROBE_SHAPES = (
 )
 
 
-def _probe(index: int, cfg: tuple, tma: bool = False) -> bool:
+def _probe(
+    index: int,
+    cfg: tuple,
+    tma: bool = False,
+) -> bool:
     import torch
 
     launch = _launch_tma if tma else _launch
@@ -1355,7 +1359,10 @@ def _swap_on(
         logger.info(
             "diffusion.int8_gemm: %d int8 Linear(s) %s on sm_%d%d%s%s%s",
             count,
-            ("run the fused-dequant GEMM (bf16 out" + (", TMA loads)" if _DEVICE_TMA.get(index) else ")"))
+            (
+                "run the fused-dequant GEMM (bf16 out"
+                + (", TMA loads)" if _DEVICE_TMA.get(index) else ")")
+            )
             if gemm
             else "keep cuBLAS",
             *torch.cuda.get_device_capability(index),

@@ -14,14 +14,25 @@ from core.inference import diffusion_int8_gemm as g8
 
 
 def _reset():
-    for d in (g8._DEVICE_CFG, g8._DEVICE_TILES, g8._DEVICE_TMA, g8._UNLISTED_PROBE, g8._UNLISTED_OK):
+    for d in (
+        g8._DEVICE_CFG,
+        g8._DEVICE_TILES,
+        g8._DEVICE_TMA,
+        g8._UNLISTED_PROBE,
+        g8._UNLISTED_OK,
+    ):
         d.clear()
     g8._UNLISTED_CARDS.clear()
 
 
 @pytest.fixture(autouse = True)
 def _clean(monkeypatch):
-    for name in (g8.INT8_GEMM_ENV, g8.INT8_GEMM_TMA_ENV, g8.INT8_GEMM_TILES_ENV, g8.INT8_GEMM_UNLISTED_ENV):
+    for name in (
+        g8.INT8_GEMM_ENV,
+        g8.INT8_GEMM_TMA_ENV,
+        g8.INT8_GEMM_TILES_ENV,
+        g8.INT8_GEMM_UNLISTED_ENV,
+    ):
         monkeypatch.delenv(name, raising = False)
     _reset()
     yield
@@ -29,7 +40,13 @@ def _clean(monkeypatch):
 
 
 class _Fake:
-    def __init__(self, monkeypatch, cap, probe = True, tma_probe = True):
+    def __init__(
+        self,
+        monkeypatch,
+        cap,
+        probe = True,
+        tma_probe = True,
+    ):
         self.probes = []
         monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
         monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index = None: cap)
@@ -39,7 +56,11 @@ class _Fake:
         monkeypatch.setattr(g8, "_op", lambda: "op")
         monkeypatch.setattr(g8, "_tensor_descriptor", lambda: object())
 
-        def fake_probe(index, cfg, tma = False):
+        def fake_probe(
+            index,
+            cfg,
+            tma = False,
+        ):
             self.probes.append((cfg, tma))
             if tma and isinstance(tma_probe, Exception):
                 raise tma_probe
@@ -202,7 +223,9 @@ def _tma_ready() -> bool:
         return False
 
 
-needs_tma = pytest.mark.skipif(not _tma_ready(), reason = "needs an sm90+ NVIDIA GPU and Triton host descriptors")
+needs_tma = pytest.mark.skipif(
+    not _tma_ready(), reason = "needs an sm90+ NVIDIA GPU and Triton host descriptors"
+)
 
 
 @needs_tma
