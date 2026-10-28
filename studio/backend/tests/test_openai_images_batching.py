@@ -33,6 +33,8 @@ class _Backend:
         self.waiters: list = []
         self.before_generate = None
         self.is_loaded = True
+        # Stands for the generation holding the slot; a new object is a new generation.
+        self.holder = object()
 
     def status(self) -> dict:
         return {
@@ -42,8 +44,8 @@ class _Backend:
             "base_repo": None,
         }
 
-    def generation_running(self) -> bool:
-        return self.rendering
+    def generation_holder(self):
+        return self.holder if self.rendering else None
 
     @contextlib.contextmanager
     def generation_waiter(self, cancel):
@@ -314,6 +316,34 @@ def test_a_stop_while_a_failed_batch_unwinds_keeps_its_requests_from_rendering_a
     assert responses[0].status_code == responses[1].status_code
 
 
+def test_a_batch_stops_waiting_when_the_generation_it_queued_behind_ends(studio):
+    # A generation that takes the slot next must not keep the batch waiting, or a steady stream of
+    # other generations would starve it.
+    app, backend, saved = studio
+
+    async def run():
+        transport = httpx.ASGITransport(app = app)
+        async with httpx.AsyncClient(transport = transport, base_url = "http://studio") as client:
+            backend.rendering = True
+            sent = [
+                asyncio.ensure_future(
+                    client.post("/v1/images/generations", json = _b64({"prompt": p}))
+                )
+                for p in ("a fox", "a cat")
+            ]
+            await _until(lambda: _waiting() >= 2)
+            backend.holder = object()
+            await _until(lambda: backend.calls, timeout = 2.0)
+            backend.rendering = False
+            return await asyncio.gather(*sent)
+
+    responses = asyncio.run(run())
+    assert all(r.status_code == 200 for r in responses)
+    [call] = backend.calls
+    assert sorted(call["prompts"]) == ["a cat", "a fox"]
+    assert len(saved) == 2
+
+
 def test_a_request_that_finds_the_engine_idle_renders_at_once_alone(studio):
     app, backend, _saved = studio
 
@@ -411,13 +441,18 @@ def test_a_cap_of_one_turns_batching_off(monkeypatch):
     assert batching._OPEN == {}
 
 
-def test_the_diffusers_engine_reports_running_only_while_a_generation_holds_its_slot():
+def test_the_diffusers_engine_names_each_slot_holder_apart():
     import threading
 
     from core.inference.diffusion import DiffusionBackend
 
     engine = DiffusionBackend()
-    assert engine.generation_running() is False
-    with engine._generation_slot(threading.Event()):
-        assert engine.generation_running() is True
-    assert engine.generation_running() is False
+    assert engine.generation_holder() is None
+    first, second = threading.Event(), threading.Event()
+    with engine._generation_slot(first):
+        assert engine.generation_holder() is first
+    with engine._model_transition_slot():
+        assert engine.generation_holder() not in (None, first)
+    with engine._generation_slot(second):
+        assert engine.generation_holder() is second
+    assert engine.generation_holder() is None

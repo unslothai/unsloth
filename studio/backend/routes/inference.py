@@ -50002,9 +50002,9 @@ async def _batched_openai_images(
         generation_ticket,
     )
 
-    running = getattr(backend, "generation_running", None)
+    holder = getattr(backend, "generation_holder", None)
     if (
-        running is None
+        holder is None
         or active_engine_name() != ENGINE_DIFFUSERS
         or status.get("family") in FLUX3_FAMILY_NAMES
     ):
@@ -50015,13 +50015,21 @@ async def _batched_openai_images(
     ticket = GenerationTicket()
     stopped = TicketStopEvent(ticket)
 
+    # Wait only for the generation found on arrival, so a later one taking the slot cannot starve the batch.
+    arrived_behind: list = []
+
     def busy() -> bool:
         if stopped.is_set():
             raise RuntimeError(DIFFUSION_CANCELLED_MSG)
         try:
-            return bool(running())
+            current = holder()
         except Exception:  # noqa: BLE001 -- no busy signal; render individually
             return False
+        if current is None:
+            return False
+        if not arrived_behind:
+            arrived_behind.append(current)
+        return current is arrived_behind[0]
 
     async def run_batch(prompts: list[str], seeds: list[int]) -> dict:
         with generation_ticket(ticket):

@@ -14448,8 +14448,13 @@ class DiffusionBackend:
             with self._generation_cancel_lock:
                 self._queued_generate_cancels.discard(cancel)
 
-    def generation_running(self) -> bool:
-        return self._generate_lock.locked()
+    def generation_holder(self) -> Optional[object]:
+        """What holds the generation slot: the running generation's cancel, the lock itself during a model
+        change or an admission, else None. A different object means a different holder."""
+        with self._generation_cancel_lock:
+            if self._active_generate_cancel is not None:
+                return self._active_generate_cancel
+        return self._generate_lock if self._generate_lock.locked() else None
 
     def generate_progress(self) -> dict[str, Any]:
         """Live per-step progress for an in-flight generation (lock-free read)."""
