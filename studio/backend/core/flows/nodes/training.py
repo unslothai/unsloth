@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import random
 import secrets
 import time
@@ -78,6 +79,8 @@ async def finetune(ctx: NodeContext) -> dict:
     response_col = str(ctx.params.get("response_column") or "").strip()
     if isinstance(mapping, dict) and mapping:
         config["custom_format_mapping"] = mapping
+    elif prompt_col and prompt_col == response_col:
+        raise FlowNodeError("The prompt and the response need different columns")
     elif prompt_col and response_col:
         config["custom_format_mapping"] = {prompt_col: "user", response_col: "assistant"}
     elif prompt_col or response_col:
@@ -137,7 +140,9 @@ async def finetune(ctx: NodeContext) -> dict:
         payload = await ctx.call("GET", "/api/train/status")
         slot = _training(payload if isinstance(payload, dict) else {})
         if slot.step and (not slot.job_id or slot.job_id == job_id):
-            history["loss"] = await loss_history(ctx, job_id) or history["loss"]
+            history["loss"] = (
+                status_losses(payload) or await loss_history(ctx, job_id) or history["loss"]
+            )
             ctx.partial(
                 "metrics",
                 {
@@ -183,7 +188,9 @@ async def finetune(ctx: NodeContext) -> dict:
         "steps": slot.step,
         "total": slot.total_steps,
         "job_id": job_id,
-        "loss_history": await loss_history(ctx, job_id) or history["loss"],
+        "loss_history": status_losses(payload)
+        or await loss_history(ctx, job_id)
+        or history["loss"],
     }
     if holdout:
         metrics["train_rows"] = dataset.get("rows")
@@ -193,7 +200,6 @@ async def finetune(ctx: NodeContext) -> dict:
             "kind": "checkpoint",
             "name": run,
             "base_model": config["model_name"],
-            "output_dir": details.get("output_dir"),
         },
         "metrics": metrics,
         "holdout": holdout,
@@ -207,6 +213,15 @@ def downsample(values: list, points: int = HISTORY_POINTS) -> list:
     return [values[min(len(values) - 1, round(i * stride))] for i in range(points - 1)] + [
         values[-1]
     ]
+
+
+def status_losses(payload: Any) -> list:
+    """The loss history /api/train/status already carries, so a poll needs no second request."""
+    found = payload.get("metric_history") if isinstance(payload, dict) else None
+    losses = found.get("loss") if isinstance(found, dict) else None
+    if not isinstance(losses, list):
+        return []
+    return downsample([round(float(v), 4) for v in losses if isinstance(v, (int, float))])
 
 
 async def loss_history(ctx: NodeContext, job_id: str) -> list:
@@ -230,18 +245,40 @@ def holdout_row_ids(total: int, percent: int, seed: int) -> list[int]:
     return sorted(order[:count])
 
 
+def _too_many(rows: int) -> FlowNodeError:
+    return FlowNodeError(
+        f"{rows} rows is too many to hold out from here; set Hold out % to 0 or use a smaller slice"
+    )
+
+
+def _hub_rows(dataset: dict, token: Any, end: Optional[int]) -> Any:
+    """A Hub split, without downloading more than the hold-out can use: a slice streams just its
+    rows, and a split the Hub says is over the cap is refused before anything is fetched."""
+    from datasets import Dataset, load_dataset, load_dataset_builder
+
+    ref, subset = str(dataset["ref"]), dataset.get("subset") or None
+    split = dataset.get("split") or "train"
+    if end is not None:
+        if end + 1 > HOLDOUT_MAX_ROWS:
+            raise _too_many(end + 1)
+        streamed = load_dataset(ref, subset, split = split, token = token, streaming = True)
+        return Dataset.from_list(list(streamed.take(end + 1)))
+    try:
+        known = load_dataset_builder(ref, subset, token = token).info.splits[split].num_examples
+    except Exception:
+        known = None
+    if known and known > HOLDOUT_MAX_ROWS:
+        raise _too_many(known)
+    return load_dataset(ref, subset, split = split, token = token)
+
+
 def _load_rows(dataset: dict, token: Any, end: Optional[int]) -> list[dict]:
     from datasets import load_dataset
 
     from core.flows.nodes.data import local_seed_path
 
     if dataset.get("source") == "hf":
-        loaded = load_dataset(
-            str(dataset["ref"]),
-            dataset.get("subset") or None,
-            split = dataset.get("split") or "train",
-            token = token,
-        )
+        loaded = _hub_rows(dataset, token, end)
     else:
         path = local_seed_path(dataset.get("ref"))
         builder = next((b for ext, b in LOADERS.items() if path.endswith(ext)), None)
@@ -253,10 +290,12 @@ def _load_rows(dataset: dict, token: Any, end: Optional[int]) -> list[dict]:
     if end is not None:
         loaded = loaded.select(range(min(len(loaded), end + 1)))
     if len(loaded) > HOLDOUT_MAX_ROWS:
-        raise FlowNodeError(
-            f"{len(loaded)} rows is too many to hold out from here; set Hold out % to 0 or use a smaller slice"
-        )
-    return loaded.to_list()
+        raise _too_many(len(loaded))
+    # Timestamps and decimals in unused columns would stop the JSONL upload; NaN and inf become null.
+    return [
+        json.loads(json.dumps(row, default = str), parse_constant = lambda _: None)
+        for row in loaded.to_list()
+    ]
 
 
 async def holdout_split(
@@ -365,6 +404,7 @@ async def chat_checkpoint(ctx: NodeContext) -> dict:
     if not name:
         raise FlowNodeError("Chat With Checkpoint needs a checkpoint")
     deadline = time.monotonic() + 3600
+    previous = await active_chat_model(ctx)
     ctx.set_status("loading_model", f"Loading {name}")
     try:
         trained = await trained_models.resolve_by(
@@ -389,14 +429,54 @@ async def chat_checkpoint(ctx: NodeContext) -> dict:
         raise FlowNodeError(f"Could not load {name}: {exc}") from None
     ctx.resident.clear()
     ctx.set_status("running")
-    prompt = as_text(ctx.inputs.get("prompt")) or str(ctx.params.get("prompt") or "")
-    if not prompt.strip():
-        raise FlowNodeError("The prompt is empty")
-    text = await ctx.llm_text(
-        model = None,
-        system = "",
-        prompt = prompt,
-        max_tokens = int(ctx.params.get("max_tokens") or 512),
-        seed = ctx.seed,
-    )
+    try:
+        prompt = as_text(ctx.inputs.get("prompt")) or str(ctx.params.get("prompt") or "")
+        if not prompt.strip():
+            raise FlowNodeError("The prompt is empty")
+        text = await ctx.llm_text(
+            model = None,
+            system = "",
+            prompt = prompt,
+            max_tokens = int(ctx.params.get("max_tokens") or 512),
+            seed = ctx.seed,
+        )
+    finally:
+        # Put back the chat model the adapter replaced: a Data Recipe step on the next run needs it loaded.
+        await restore_chat_model(ctx, previous, trained.ref)
     return {"text": strip_think(text)}
+
+
+async def active_chat_model(ctx: NodeContext) -> Optional[dict]:
+    try:
+        status = await ctx.call("GET", "/api/inference/status")
+    except FlowNodeError:
+        return None
+    model = status.get("model_identifier") if isinstance(status, dict) else None
+    if not isinstance(model, str) or not model.strip():
+        return None
+    return {"repo": model, "variant": status.get("gguf_variant") or None}
+
+
+async def restore_chat_model(ctx: NodeContext, previous: Optional[dict], replaced_by: str) -> None:
+    from studio_mcp import loading
+
+    if not previous or loading._same_id(previous["repo"], replaced_by):
+        return
+    label = previous["repo"] + (f" ({previous['variant']})" if previous["variant"] else "")
+    ctx.set_status("loading_model", f"Loading {label} again")
+    try:
+        await loading.load_llm(
+            ctx.caller,
+            None,
+            model = previous["repo"],
+            variant = previous["variant"],
+            max_seq_length = FLOW_CHAT_CONTEXT,
+            load_in_4bit = True,
+            hf_token = None,
+            kind = "llm",
+            deadline = time.monotonic() + 1800,
+        )
+        note_loaded(ctx, "llm", previous["repo"])
+        ctx.resident.clear()
+    except Exception as exc:
+        ctx.log(f"Could not load {label} again; load it before the next run ({exc})", "warning")

@@ -311,6 +311,8 @@ def route_detail(body: bytes) -> str:
             detail = data["error"].get("message")
         if isinstance(detail, list):
             detail = "; ".join(str(d.get("msg") if isinstance(d, dict) else d) for d in detail[:5])
+        if isinstance(detail, dict) and detail.get("message"):
+            detail = detail["message"]
         if detail:
             return str(detail)
     return "Unsloth Studio refused the request"

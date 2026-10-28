@@ -3,6 +3,7 @@
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { authFetch } from "@/features/auth";
 import { setTrainingCompareHandoff } from "@/features/chat/lib/training-compare-handoff";
 import { cn } from "@/lib/utils";
 import { useNavigate } from "@tanstack/react-router";
@@ -14,6 +15,7 @@ import type { NodeLook } from "./node-looks";
 import {
   TRAIN_STATE_LABEL,
   type TrainState,
+  adapterPathFor,
   sparklinePath,
   trainView,
 } from "./train-status";
@@ -82,8 +84,19 @@ function TrainNodeBody({ node }: { node: FlowNode }) {
     error: runtime.error,
   });
   const checkpoint = runtime.outputs?.checkpoint as
-    | { base_model?: string; output_dir?: string }
+    | { base_model?: string; name?: string }
     | undefined;
+  const chat = async () => {
+    // A flow sees its run folder by name only; this session's adapter list has the path Chat matches on.
+    const listed = await authFetch("/api/models/loras")
+      .then((r) => (r.ok ? r.json() : null))
+      .catch(() => null);
+    setTrainingCompareHandoff(
+      checkpoint?.base_model ?? null,
+      adapterPathFor(listed?.loras ?? [], checkpoint?.name ?? ""),
+    );
+    void navigate({ to: "/chat" });
+  };
   return (
     <>
       <NodeFieldRows rows={keyFields(node)} />
@@ -113,11 +126,7 @@ function TrainNodeBody({ node }: { node: FlowNode }) {
             className="nodrag self-start"
             onClick={(event) => {
               event.stopPropagation();
-              setTrainingCompareHandoff(
-                checkpoint.base_model ?? null,
-                checkpoint.output_dir ?? null,
-              );
-              void navigate({ to: "/chat" });
+              void chat();
             }}
           >
             Chat with it

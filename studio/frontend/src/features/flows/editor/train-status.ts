@@ -94,12 +94,16 @@ export function trainView(input: {
     return { state: "setup", detail: "Name a base model", history: [] };
   const prompt = String(params.prompt_column ?? "").trim();
   const response = String(params.response_column ?? "").trim();
-  if (!!prompt !== !!response)
+  const mapping = params.custom_format_mapping;
+  const mapped = !!mapping && typeof mapping === "object" && Object.keys(mapping).length > 0;
+  if (!mapped && !!prompt !== !!response)
     return {
       state: "setup",
       detail: "Set both columns, or leave both blank",
       history: [],
     };
+  if (!mapped && prompt && prompt === response)
+    return { state: "setup", detail: "Use two different columns", history: [] };
   const pct = num(params.holdout_percent) ?? 0;
   return {
     state: "ready",
@@ -125,4 +129,17 @@ export function sparklinePath(
       return `${i ? "L" : "M"}${x},${y}`;
     })
     .join("");
+}
+
+/** The adapter path Chat lists for a flow's run folder; the node only knows the folder's name. */
+export function adapterPathFor(
+  loras: { adapter_path?: unknown }[],
+  run: string,
+): string | null {
+  const found = loras.find(
+    (l) =>
+      typeof l.adapter_path === "string" &&
+      l.adapter_path.split(/[/\\]+/).filter(Boolean).at(-1) === run,
+  );
+  return found ? (found.adapter_path as string) : null;
 }

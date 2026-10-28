@@ -9,7 +9,7 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { trainView, sparklinePath } = await import(
+const { trainView, sparklinePath, adapterPathFor } = await import(
   "../src/features/flows/editor/train-status.ts"
 );
 
@@ -56,6 +56,20 @@ test("the node walks needs dataset, setup, ready, training, adapter ready, stopp
     trainView({ ...base, params: { ...base.params, prompt_column: "q" } }).state,
     "setup",
   );
+  assert.equal(
+    trainView({
+      ...base,
+      params: { ...base.params, prompt_column: "q", response_column: "q" },
+    }).detail,
+    "Use two different columns",
+  );
+  assert.equal(
+    trainView({
+      ...base,
+      params: { ...base.params, prompt_column: "q", custom_format_mapping: { q: "user" } },
+    }).state,
+    "ready",
+  );
   assert.equal(trainView(base).state, "ready");
   const live = trainView({
     ...base,
@@ -87,4 +101,15 @@ test("sparkline spans the box and stays flat for a constant series", () => {
   const path = sparklinePath([3, 2, 1], 100, 20);
   assert.ok(path.startsWith("M0.0,1.0") && path.endsWith("L100.0,19.0"), path);
   assert.ok(!sparklinePath([1, 1, 1], 100, 20).includes("NaN"));
+});
+
+test("Chat with it finds the adapter by the run folder's name", () => {
+  const loras = [
+    { adapter_path: "/out/run-1/checkpoint-10" },
+    { adapter_path: "/out/run-1/" },
+    { adapter_path: "C:\\out\\run-2" },
+  ];
+  assert.equal(adapterPathFor(loras, "run-1"), "/out/run-1/");
+  assert.equal(adapterPathFor(loras, "run-2"), "C:\\out\\run-2");
+  assert.equal(adapterPathFor(loras, "run-3"), null);
 });
