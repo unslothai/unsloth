@@ -188,6 +188,7 @@ export function useColumnCount(
   minColumnWidth = 200,
   maxColumns = 5,
   baseGap?: number,
+  wideColumnWidth?: number,
 ): number {
   const [columns, setColumns] = useState(4);
   useEffect(() => {
@@ -196,8 +197,10 @@ export function useColumnCount(
     const measure = () => {
       const gap = parseFloat(getComputedStyle(element).columnGap) || 0;
       const scale = baseGap && gap > 0 ? gap / baseGap : 1;
-      const fit = Math.floor((element.clientWidth + gap) / (minColumnWidth * scale + gap));
-      setColumns(Math.max(2, Math.min(maxColumns, fit)));
+      const fits = (width: number) =>
+        Math.floor((element.clientWidth + gap) / (width * scale + gap));
+      const wide = wideColumnWidth ? fits(wideColumnWidth) : 0;
+      setColumns(Math.max(2, Math.min(maxColumns, fits(minColumnWidth)), wide));
     };
     measure();
     const observer = new ResizeObserver(measure);
@@ -208,6 +211,6 @@ export function useColumnCount(
       observer.disconnect();
       unsubscribe();
     };
-  }, [ref, minColumnWidth, maxColumns, baseGap]);
+  }, [ref, minColumnWidth, maxColumns, baseGap, wideColumnWidth]);
   return columns;
 }
