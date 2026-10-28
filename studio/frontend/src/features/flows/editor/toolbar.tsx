@@ -5,35 +5,20 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useReactFlow } from "@xyflow/react";
-import { memo, useState } from "react";
+import { memo } from "react";
 import { toast } from "sonner";
 import { newId, useDocStore } from "../stores/doc-store";
-import { useRuntimeStore } from "../stores/runtime-store";
 import { useUiStore } from "../stores/ui-store";
 import {
-  DownloadRunDialog,
-  PlanDialog,
-  RunDialog,
-  ShareDialog,
-  collectFlowParams,
-} from "./dialogs";
-import {
   ArrowLeft01Icon,
-  GameController01Icon,
   GridViewIcon,
   HierarchySquare02Icon,
-  InformationCircleIcon,
   MagnetIcon,
-  PlayIcon,
   Redo02Icon,
-  Share08Icon,
   StickyNote01Icon,
-  StopIcon,
   Undo02Icon,
 } from "./icon-data";
 import { autoLayout } from "./layout";
-import { runFlow, stopFlow } from "./run-controller";
-import { flushSave } from "./use-autosave";
 import { groupSelection } from "./use-editor-shortcuts";
 
 const SAVE_LABEL: Record<string, string> = {
@@ -50,19 +35,17 @@ function IconButton({
   onClick,
   disabled,
   active,
-  outline,
 }: {
-  icon: typeof PlayIcon;
+  icon: typeof MagnetIcon;
   label: string;
   onClick: () => void;
   disabled?: boolean;
   active?: boolean;
-  outline?: boolean;
 }) {
   return (
     <Button
       type="button"
-      variant={outline ? "outline" : "ghost"}
+      variant="ghost"
       size="icon-sm"
       aria-label={label}
       title={label}
@@ -79,30 +62,14 @@ function IconButton({
   );
 }
 
-function ToolbarImpl({
-  onBack,
-  onPlay,
-  onApp,
-}: { onBack: () => void; onPlay: () => void; onApp?: () => void }) {
+function ToolbarImpl({ onBack }: { onBack: () => void }) {
   const name = useDocStore((s) => s.meta.name);
   const kind = useDocStore((s) => s.meta.kind);
-  const playsChat = useDocStore((s) =>
-    s.graph.nodeOrder.some((id) => {
-      const n = s.graph.nodes[id];
-      return n?.type === "chat.output" && !n.disabled;
-    }),
-  );
   const canUndo = useDocStore((s) => s.past.length > 0);
   const canRedo = useDocStore((s) => s.future.length > 0);
   const saveState = useUiStore((s) => s.saveState);
   const snap = useUiStore((s) => s.snapToGrid);
-  const runStatus = useRuntimeStore((s) => s.runStatus);
-  const running =
-    runStatus === "running" ||
-    runStatus === "queued" ||
-    runStatus === "cancelling";
   const { getInternalNode, getViewport, fitView } = useReactFlow();
-  const [dialog, setDialog] = useState<"run" | "plan" | "share" | null>(null);
 
   return (
     <div className="grid h-12 shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 border-border border-b bg-background px-2 text-foreground">
@@ -212,84 +179,6 @@ function ToolbarImpl({
         />
       </div>
 
-      <div className="flex items-center justify-self-end gap-2">
-        <IconButton
-          icon={InformationCircleIcon}
-          label="What this flow needs"
-          onClick={() => setDialog("plan")}
-          outline={true}
-        />
-        <IconButton
-          icon={Share08Icon}
-          label="Share"
-          outline={true}
-          onClick={() =>
-            void flushSave().then((saved) => saved && setDialog("share"))
-          }
-        />
-        {onApp && kind === "pipeline" && (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={onApp}
-            title="Open this flow as a simple form with its results"
-            data-testid="flows-open-app"
-          >
-            <HugeiconsIcon icon={GridViewIcon} size={15} /> Open as app
-          </Button>
-        )}
-        {(kind === "story" || kind === "world" || playsChat) && (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={onPlay}
-            data-testid="flows-play"
-          >
-            <HugeiconsIcon icon={GameController01Icon} size={15} /> Play
-          </Button>
-        )}
-        {running ? (
-          <Button
-            type="button"
-            variant="destructive"
-            size="sm"
-            onClick={() => void stopFlow()}
-            disabled={runStatus === "cancelling"}
-            data-testid="flows-stop"
-          >
-            <HugeiconsIcon icon={StopIcon} size={14} />{" "}
-            {runStatus === "cancelling" ? "Stopping…" : "Stop"}
-          </Button>
-        ) : (
-          <Button
-            type="button"
-            variant="dark"
-            size="sm"
-            onClick={() =>
-              collectFlowParams().length ? setDialog("run") : void runFlow()
-            }
-            title="Run (Ctrl+Enter)"
-            data-testid="flows-run"
-          >
-            <HugeiconsIcon icon={PlayIcon} size={14} /> Run
-          </Button>
-        )}
-      </div>
-      <RunDialog
-        open={dialog === "run"}
-        onOpenChange={(open) => setDialog(open ? "run" : null)}
-      />
-      <PlanDialog
-        open={dialog === "plan"}
-        onOpenChange={(open) => setDialog(open ? "plan" : null)}
-      />
-      <ShareDialog
-        open={dialog === "share"}
-        onOpenChange={(open) => setDialog(open ? "share" : null)}
-      />
-      <DownloadRunDialog />
     </div>
   );
 }

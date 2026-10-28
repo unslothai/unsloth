@@ -122,7 +122,7 @@ test("Run asks the plan before starting and holds the run when models must downl
   assert.match(dialogs, /pending\?\.models ===\s*modelSignature\(useDocStore\.getState\(\)\.graph\.nodes\)/);
   assert.match(dialogs, /downloadsConfirmed: same/);
   assert.match(src, /setPendingRun\(\{ options: \{ \.\.\.options \}, plan, models: signature \}\)/);
-  assert.match(readSrc("features/flows/editor/toolbar.tsx"), /<DownloadRunDialog \/>/);
+  assert.match(readSrc("features/flows/editor/run-bar.tsx"), /<DownloadRunDialog \/>/);
 });
 
 test("enabling a disabled block changes the model signature", () => {

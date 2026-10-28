@@ -25,7 +25,6 @@ import { ensureCatalog } from "../stores/catalog-loader";
 import { needsNewerStudio } from "../stores/catalog-store";
 import { documentSignature, useDocStore } from "../stores/doc-store";
 import { usePinsStore } from "../stores/pins-store";
-import { useRuntimeStore } from "../stores/runtime-store";
 import { useUiStore } from "../stores/ui-store";
 import { FlowCanvas } from "./canvas";
 import { CapabilityBanner } from "./capability-banner";
@@ -35,6 +34,7 @@ import { Palette } from "./palette";
 import { placementPosition } from "./placement";
 import { QuickAdd } from "./quick-add";
 import { detachRun, hydrateRuntime } from "./run-controller";
+import { RunBar } from "./run-bar";
 import { RunDrawer } from "./run-drawer";
 import { Toolbar } from "./toolbar";
 import {
@@ -46,6 +46,10 @@ import {
 import { useEditorShortcuts } from "./use-editor-shortcuts";
 
 const SAVE_WAIT_MS = 10_000;
+// The shell gives this chat-like route no top inset; start below the titlebar on Mac and
+// Windows the way Train and Recipe Studio do.
+const BELOW_TITLEBAR =
+  "pt-[var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))]";
 
 /** Saves, then leaves; a failed or stuck save asks instead of leaving the user stuck. */
 function leaveAfterSave(go: () => void): void {
@@ -76,8 +80,6 @@ function EditorBody({
 }: { flowId: string; readOnly: boolean }) {
   const navigate = useNavigate();
   const paletteOpen = useUiStore((s) => s.paletteOpen);
-  const drawerOpen = useUiStore((s) => s.drawerOpen);
-  const runStatus = useRuntimeStore((s) => s.runStatus);
   const { screenToFlowPosition } = useReactFlow();
   useEditorShortcuts(!readOnly);
   // The Nodes panel owns the left edge here: the app sidebar unpins (Desktop peeks it from the
@@ -103,23 +105,11 @@ function EditorBody({
 
   return (
     <div
-      className="flows-editor flex h-full min-h-0 w-full flex-col bg-background text-foreground"
+      className={`flows-editor flex h-full min-h-0 w-full flex-col bg-background ${BELOW_TITLEBAR} text-foreground`}
       data-testid="flows-editor"
     >
       <Toolbar
         onBack={() => leaveAfterSave(() => void navigate({ to: "/flows" }))}
-        onPlay={() =>
-          leaveAfterSave(
-            () =>
-              void navigate({ to: "/flows/$flowId/play", params: { flowId } }),
-          )
-        }
-        onApp={() =>
-          leaveAfterSave(
-            () =>
-              void navigate({ to: "/flows/$flowId/app", params: { flowId } }),
-          )
-        }
       />
       {readOnly && (
         <Alert className="rounded-none border-x-0 border-t-0 py-2">
@@ -135,17 +125,26 @@ function EditorBody({
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="relative min-h-0 flex-1">
             <FlowCanvas readOnly={readOnly} />
-            {!drawerOpen && runStatus && (
-              <Button
-                type="button"
-                variant="outline"
-                size="xs"
-                onClick={() => useUiStore.getState().setDrawer(true, "run")}
-                className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full capitalize shadow-sm"
-              >
-                Run: {runStatus}
-              </Button>
-            )}
+            <RunBar
+              onPlay={() =>
+                leaveAfterSave(
+                  () =>
+                    void navigate({
+                      to: "/flows/$flowId/play",
+                      params: { flowId },
+                    }),
+                )
+              }
+              onApp={() =>
+                leaveAfterSave(
+                  () =>
+                    void navigate({
+                      to: "/flows/$flowId/app",
+                      params: { flowId },
+                    }),
+                )
+              }
+            />
           </div>
           <RunDrawer />
         </div>
