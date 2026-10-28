@@ -1186,7 +1186,11 @@ def _read_enabled_skill_text(
         except SkillError:
             raise
         except (FileNotFoundError, NotADirectoryError) as exc:
-            raise SkillError(f"Skill resource '{path.as_posix()}' was not found.") from exc
+            # Small models retry with a chat attachment's name or sandbox path until told otherwise.
+            raise SkillError(
+                f"Skill resource '{path.as_posix()}' was not found in the skill's folder. "
+                "Chat attachments are not skill resources."
+            ) from exc
         except (OSError, ValueError) as exc:
             raise SkillError("Skill resource path must stay inside the skill directory.") from exc
         raw = _read_limited(
