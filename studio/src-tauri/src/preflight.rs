@@ -1011,28 +1011,26 @@ exit 1
         let bin = fake.bin.clone();
         let calls = bin.with_extension("calls");
         let modeh = bin.with_extension("modeh");
-        // Warm the capability cache so only `-h` is in play below.
         assert!(matches!(probe_managed_bin(bin.clone()).await, ManagedProbe::Ready { .. }));
 
-        // Launch probe passes: the preflight reuses it, so `-h` ran once in all.
+        // Reused once: `-h` ran once in all, and a Retry asks again.
         fs::write(&calls, "").unwrap();
         install_launch_cli_probe(bin.clone());
         assert!(matches!(probe_managed_bin(bin.clone()).await, ManagedProbe::Ready { .. }));
         assert_eq!(fs::read_to_string(&calls).unwrap(), "-h\n");
 
-        // Taken once: the next preflight (a Retry) asks the CLI itself.
         fs::write(&calls, "").unwrap();
         assert!(matches!(probe_managed_bin(bin.clone()).await, ManagedProbe::Ready { .. }));
         assert_eq!(fs::read_to_string(&calls).unwrap(), "-h\n");
 
-        // A failed launch probe is not trusted either way: the preflight asks again and decides.
+        // A failed launch probe is asked again.
         fs::write(&modeh, "broken").unwrap();
         fs::write(&calls, "").unwrap();
         install_launch_cli_probe(bin.clone());
         assert!(matches!(probe_managed_bin(bin.clone()).await, ManagedProbe::Stale { .. }));
         assert_eq!(fs::read_to_string(&calls).unwrap(), "-h\n-h\n");
 
-        // A launch probe of another CLI is left alone and does not answer for this one.
+        // Another CLI's probe does not answer for this one.
         fs::remove_file(&modeh).unwrap();
         let other = fake_cli("launch-help-other", "#!/bin/sh\nexit 0\n");
         install_launch_cli_probe(other.bin.clone());
@@ -1063,8 +1061,7 @@ exit 1
         );
         let other = fake_cli("launch-guard-other", "#!/bin/sh\nexit 0\n");
 
-        // A launch probe (here for another CLI) is mid-spawn, holding the guard, when the
-        // preflight starts: the preflight waits for it instead of reading the guard as busy.
+        // A launch probe mid-spawn holds the guard: the preflight waits instead of reading busy.
         let (acquired_tx, acquired_rx) = tokio::sync::oneshot::channel();
         let handle = tauri::async_runtime::spawn_blocking(move || {
             crate::process::with_studio_runtime_launch_guard(|| {
@@ -1080,8 +1077,7 @@ exit 1
             other => panic!("expected Ready, got {other:?}"),
         }
 
-        // The setup thread has not handed over its probe yet when the preflight starts, and its
-        // spawn then holds the guard: the preflight still waits instead of spawning beside it.
+        // Same, while the setup thread has not handed its probe over yet.
         let pending = begin_launch_cli_probe();
         let (acquired_tx, acquired_rx) = tokio::sync::oneshot::channel();
         let other_bin = other.bin.clone();

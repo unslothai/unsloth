@@ -1055,8 +1055,6 @@ fn working_directory_reason() -> Option<String> {
     Some(context_reason(&error))
 }
 
-/// A `-h` probe started during app setup, so the first preflight does not wait for a Python start
-/// that could have overlapped the webview load.
 pub(super) struct LaunchCliProbe {
     bin: PathBuf,
     started: Instant,
@@ -1065,19 +1063,14 @@ pub(super) struct LaunchCliProbe {
 
 type PendingLaunchCliProbe = tokio::sync::oneshot::Receiver<Option<LaunchCliProbe>>;
 
-/// Filled before the setup thread starts, so a preflight that beats the thread still waits for its
-/// spawn instead of reading the runtime launch guard as busy.
+/// Filled before the setup thread runs, so an early preflight still waits for its spawn.
 static LAUNCH_CLI_PROBE: std::sync::Mutex<Option<PendingLaunchCliProbe>> =
     std::sync::Mutex::new(None);
 
-/// Older than this, a launch answer no longer stands in for a fresh `-h`.
 const LAUNCH_CLI_PROBE_MAX_AGE: Duration = Duration::from_secs(30);
 
-/// Start the managed CLI's `-h` probe now; the first preflight for the same CLI reuses a passing
-/// answer. Nothing else changes: no install, no context, or a failed probe leaves it to the
-/// preflight's own fresh `-h`. Returns at once: finding the CLI touches the disk, and the first
-/// use of the async runtime builds it, so both happen on a plain thread, not the main thread that
-/// is loading the webview.
+/// The first preflight for the same CLI reuses a passing `-h` from here. Off the main thread:
+/// finding the CLI touches the disk and the runtime's first use builds it.
 pub(crate) fn start_launch_cli_probe() {
     let pending = begin_launch_cli_probe();
     let spawned = std::thread::Builder::new()
@@ -1089,7 +1082,7 @@ pub(crate) fn start_launch_cli_probe() {
             let _ = pending.send(probe);
         });
     if let Err(error) = spawned {
-        // The sender went with the closure, so the preflight finds nothing and runs `-h` itself.
+        // The dropped sender makes the preflight run `-h` itself.
         warn!("Could not start the launch CLI probe: {error}");
     }
 }
@@ -1133,11 +1126,8 @@ pub(super) fn install_launch_cli_probe_task(
     let _ = begin_launch_cli_probe().send(Some(launch_cli_probe_task(bin, handle)));
 }
 
-/// `true` only for a passing launch `-h` on this CLI, taken once and recent; anything else is
-/// `false` and the caller runs `-h` itself.
-///
-/// A launch probe for any CLI is taken and awaited, not only this one's: its spawn holds the
-/// runtime launch guard, so a preflight spawning beside it would read the guard as busy.
+/// `true` only for a recent passing launch `-h` on this CLI, taken once. Any CLI's probe is
+/// awaited: its spawn holds the runtime launch guard, which a spawn beside it reads as busy.
 async fn launch_cli_probe_passed(bin: &Path) -> bool {
     let pending = match LAUNCH_CLI_PROBE.lock() {
         Ok(mut slot) => slot.take(),
@@ -1184,7 +1174,7 @@ pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
     }
 
     // Always run `-h` first: a matching fingerprint does not prove the CLI still launches.
-    // A passing one from this launch counts; a failed one is asked again, so failures read as before.
+    // A passing launch probe stands in; a failed one is asked again.
     let cli_probe = if launch_cli_probe_passed(&bin).await {
         Ok(true)
     } else {
