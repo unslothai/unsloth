@@ -459,17 +459,33 @@ export function MusicRail({
 
 export function MusicOutput({
   modelReady,
+  loading,
+  onChooseModel,
   ...props
-}: Omit<ComponentProps<typeof TtsOutput>, "emptyText"> & {
+}: Omit<ComponentProps<typeof TtsOutput>, "emptyTitle" | "emptyText" | "emptyActions"> & {
   modelReady: boolean;
+  loading: boolean;
+  onChooseModel: () => void;
 }) {
   return (
     <TtsOutput
       {...props}
+      emptyTitle={
+        modelReady ? "Your music will appear here" : loading ? undefined : "Create music"
+      }
       emptyText={
         modelReady
-          ? "Generated music lands here. Write lyrics or a description, then press Generate."
-          : "Generated music lands here. Load a music model, write lyrics or a description, and press Generate."
+          ? "Add a description or lyrics on the left, then select Generate."
+          : loading
+            ? "Loading your music model…"
+            : "Describe a sound or add lyrics. Choose a model to get started."
+      }
+      emptyActions={
+        !modelReady && !loading ? (
+          <Button type="button" variant="outline" size="sm" onClick={onChooseModel}>
+            Choose music model
+          </Button>
+        ) : undefined
       }
     />
   );

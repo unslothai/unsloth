@@ -1,30 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Build an int8 ConvRot weight-only text-encoder checkpoint for the Unsloth TE prequant path.
-
-Every decoder projection of the dense encoder (q/k/v/o and gate/up/down in each
-``model.language_model.layers.N``, or ``model.layers.N`` for a text-only Qwen3) is rotated by
-the group-256 Hadamard and stored int8 with a float32 per-output-channel scale (``diffusion_te_prequant.quantize_int8_convrot_weight``); the
-vision tower, embedding table and norms are copied bf16, bit for bit; ``lm_head`` is left out
-(the pipelines that load this file read hidden states only). Each quantized Linear carries a
-``<name>.comfy_quant`` JSON blob naming the format, and the header is the plain-tensor container
-the TE prequant loader reads (``tensor_names`` + ``unsloth_format`` + ``unsloth_metadata``).
-
-Reads one source tensor at a time, so host RAM peaks at about the output size. Deterministic: the
-same source and group give a byte-identical file.
-
-  python scripts/build_te_int8_convrot_checkpoint.py \\
-      --base Qwen/Qwen-Image-2.1 --family qwen-image-2.1 \\
-      --out Qwen-Image-2.1-text_encoder-INT8-ConvRot.safetensors
-
-``--load transformers`` builds any other encoder from the module the pipeline instantiates (``--te-class``, default
-the config's architecture): the dense encoder is loaded with ``from_pretrained`` and its runtime state dict is
-written, so the keys are the ones the loader's strict ``load_state_dict`` expects even where a checkpoint stores an
-older layout (Qwen2.5-VL's ``model.layers`` / ``visual``). Every Linear whose module name matches
-``diffusion_te_prequant.TE_INT8_CONVROT_LINEAR`` is quantized: decoder q/k/v/o + gate/up/down (Qwen, Llama, Mistral,
-Gemma; never a vision tower, which names its blocks differently) and T5's SelfAttention q/k/v/o + DenseReluDense.
-"""
+"""Int8 ConvRot TE checkpoint, group-256 Hadamard; keys must match the strict load_state_dict the
+loader expects; lm_head omitted, pipelines read hidden states only"""
 
 from __future__ import annotations
 

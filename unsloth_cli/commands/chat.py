@@ -6,7 +6,6 @@ from types import SimpleNamespace
 from typing import List, Optional
 
 import typer
-from rich.console import Console
 
 from unsloth_cli._inference import (
     SpeculativeType,
@@ -257,6 +256,8 @@ def chat(
     """Start an interactive chat with a model (loads once, stays warm)."""
     if not verbose:
         configure_quiet_logging()
+
+    from rich.console import Console
 
     console = Console()
     err = Console(stderr = True)

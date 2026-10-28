@@ -846,6 +846,8 @@ export const en = {
       guidedTour: "Guided Tour",
       help: "Help",
       logOut: "Log out",
+      logOutNeedsPassword: "Set a password in Settings > Remote access before logging out, so you can sign back in.",
+      logOutFailed: "Couldn't log out safely. Try again in a moment.",
       shutdown: "Shutdown",
     },
     commandPalette: {
@@ -991,6 +993,11 @@ export const en = {
   },
   settings: {
     accounts: {
+      signsInAs: "Signs in as {username}",
+      signsInAsOwner: "Signs in as {alias} or {username}",
+      signInName: "Your sign-in name",
+      signInNameDescription: "The name you type to sign in when this installation has more than one account. unsloth always works too. Leave empty to use only unsloth.",
+      signInNameSave: "Save name",
       title: "Accounts",
       description: "Create private Unsloth accounts. New users sign in with a one-time setup code and choose a password.",
       username: "Username",
@@ -1470,7 +1477,7 @@ export const en = {
       installingRuntime: "Installing…",
       installRuntimeFailed: "The runtime install failed.",
       installRuntimeError: "Could not start the runtime install.",
-      unsupportedArch: "The Windows sandbox (MXC) only runs on x64 Windows, so it is not available on this PC.",
+      unsupportedArch: "The Windows sandbox (MXC) only runs on x64 and ARM64 Windows, so it is not available on this PC.",
       builtinNeedsUpdate: "Windows' built-in container needs build {required} or newer, and this PC runs {current}. Install the latest Windows update to use it without an administrator step, or turn on the fallback below.",
       unsupportedBuild: "The Windows sandbox (MXC) needs Windows 11 24H2 (build 26100) or newer, so it is not available on this PC.",
       permissionLabel: "Tool permissions",
@@ -2397,7 +2404,7 @@ export const en = {
         gpuUnusableDetail: "Detected, but PyTorch cannot use it",
         detailedView: "Detailed view",
         detailedViewDescription:
-          "Show CPU load and each GPU's load, temperature and power in the floating window and here.",
+          "Show CPU load and each GPU's load, temperature and power in the floating window.",
         cpuLoad: "CPU load",
         gpuLoad: "GPU load",
         temperature: "Temperature",
@@ -2430,6 +2437,10 @@ export const en = {
         used: "{value} used",
         free: "{value} free",
         total: "{value} total",
+        usedOf: "{used} used of {total}",
+        segmentUsed: "Used by GPU",
+        segmentSystem: "Used by system",
+        segmentAvailable: "Available",
       },
       llamaBackend: {
         title: "GGUF inference engine",
@@ -3915,11 +3926,11 @@ export const en = {
       attentionModules: "Attention modules",
       mlpModules: "MLP modules",
       targetModules: "Target Modules",
-      enableLora: "Enable LoRA",
+      enableLora: "LoRA",
       trainWithLora: "Train with LoRA",
-      stableRank: "Stable Rank",
-      memoryEfficient: "Memory Efficient",
-      weightDecomposed: "Weight-Decomposed",
+      stableRank: "Rank-stabilized LoRA",
+      memoryEfficient: "SVD-initialized LoRA",
+      weightDecomposed: "LoRA with multipliers",
       notSupportedAppleSilicon: "Not supported on Apple Silicon",
       doraNeedsVisionLayersOff: "Turn off vision layer training to use DoRA",
       optimization: "Optimization",
@@ -3930,7 +3941,7 @@ export const en = {
         "Optimization algorithm. 8-bit variants reduce memory usage. Fused is recommended for vision models.",
       optimizerTooltipMlx:
         "Optimization algorithm. AdamW is the default. Lion uses less memory but usually needs a lower learning rate.",
-      lrScheduler: "LR scheduler",
+      lrScheduler: "LR Scheduler",
       lrSchedulerTooltip:
         "How the learning rate changes over training. Linear decays steadily; cosine decays in a curve.",
       optimizerOptions: {
@@ -3947,7 +3958,7 @@ export const en = {
       },
       batchSize: "Batch Size",
       batchSizeTooltip: "Samples processed per step. Higher uses more VRAM.",
-      gradAccum: "Grad Accum",
+      gradAccum: "Grad Accum Steps",
       gradAccumTooltip: "Simulates larger batch sizes without extra VRAM.",
       weightDecay: "Weight Decay",
       weightDecayTooltip: "L2 regularization to prevent overfitting.",
@@ -3991,7 +4002,7 @@ export const en = {
       offloadPanelSweepNote: "The moving window shows the order layers are fetched in, slowed down to be visible; the numbers are measured on the last step.",
       offloadPanelCard: "GPU {index}",
       offloadPanelCardUnknown: "Unknown card",
-      gradCheckpoint: "Grad Checkpoint",
+      gradCheckpoint: "Grad Checkpointing",
       gradCheckpointTooltip:
         "Trade compute for memory by recomputing activations.",
       none: "None",
@@ -4345,7 +4356,7 @@ export const en = {
   // The Scheduled page: prompts that run on a schedule, each run answered in a new chat.
   scheduledTasks: {
     title: "Scheduled",
-    description: "Run prompts on a schedule with your loaded model.",
+    description: "Run prompts on a schedule with any of your models.",
     newTask: "New task",
     upcoming: "Upcoming",
     // Column headers over the list, and the Repeats value of a monthly task.

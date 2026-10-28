@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Native bf16 on a ROCm card, by gfx target.
-
-``torch.cuda.is_bf16_supported()`` returns True on every HIP build without looking at the device.
-bf16 math needs MFMA (gfx908+ CDNA), WMMA or bf16 dot (gfx11+) per llvm/lib/Target/AMDGPU/AMDGPU.td;
-GCN, Vega and RDNA1/2 emulate it through fp32, so they get float16, as pre-Ampere NVIDIA does.
-``UNSLOTH_STUDIO_ROCM_BF16=1`` restores torch's answer everywhere; ``=0`` forces float16.
-"""
+"""bf16 only on gfx908+ (CDNA) or gfx11+; other ROCm cards get float16 since torch always says yes."""
 
 from __future__ import annotations
 

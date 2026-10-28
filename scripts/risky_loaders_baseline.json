@@ -782,9 +782,9 @@
       "file": "unsloth_cli/commands/eval.py",
       "rule": "unsafe-deserialize",
       "sink": "yaml.load",
-      "digest": "99bb2a156edb2dfc",
+      "digest": "7a94da1fd84a23da",
       "count": 1,
-      "reason": "_TaskYamlLoader subclasses yaml.SafeLoader; it only adds a tag for lm-eval's !function references."
+      "reason": "_task_yaml_loader() returns a yaml.SafeLoader subclass; it only adds a tag for lm-eval's !function references."
     },
     {
       "file": "unsloth_cli/commands/studio.py",

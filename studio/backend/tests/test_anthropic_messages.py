@@ -3373,6 +3373,47 @@ class TestAnthropicMessagesToolRouting:
 
         assert captured.get("thinking_budget_tokens") == expected
 
+    @pytest.mark.parametrize(
+        ("env", "field", "expected"),
+        [
+            (None, None, None),
+            ("truncate_oldest", None, "truncate_oldest"),
+            (None, "truncate_middle", "truncate_middle"),
+            ("truncate_oldest", "error", None),
+        ],
+    )
+    @pytest.mark.parametrize("stream", [False, True])
+    def test_context_overflow_reaches_anthropic_client_tool_passthrough(
+        self, monkeypatch, stream, env, field, expected
+    ):
+        import routes.inference as inf_mod
+        from fastapi.responses import JSONResponse
+
+        if env is None:
+            monkeypatch.delenv("UNSLOTH_CONTEXT_OVERFLOW", raising = False)
+        else:
+            monkeypatch.setenv("UNSLOTH_CONTEXT_OVERFLOW", env)
+        _mock_backend(monkeypatch)
+        captured = {}
+
+        async def _passthrough(*args, **kwargs):
+            captured.update(kwargs)
+            return JSONResponse({"type": "message", "content": []})
+
+        helper = (
+            "_anthropic_passthrough_stream" if stream else "_anthropic_passthrough_non_streaming"
+        )
+        monkeypatch.setattr(inf_mod, helper, _passthrough)
+        payload = _basic_payload(
+            stream = stream,
+            tools = [{"name": "lookup", "input_schema": {"type": "object"}}],
+            **({} if field is None else {"context_overflow": field}),
+        )
+
+        _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
+
+        assert captured.get("context_overflow") == expected
+
     @pytest.mark.parametrize("budget", [None, 128])
     @pytest.mark.parametrize("stream", [False, True])
     def test_passthrough_puts_thinking_budget_on_the_llama_server_body(

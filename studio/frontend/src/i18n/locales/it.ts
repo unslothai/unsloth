@@ -694,6 +694,8 @@ export const it = {
       guidedTour: "Tour guidato",
       help: "Aiuto",
       logOut: "Esci",
+      logOutNeedsPassword: "Imposta una password in Impostazioni > Accesso remoto prima di uscire, così potrai accedere di nuovo.",
+      logOutFailed: "Impossibile uscire in modo sicuro. Riprova tra un momento.",
       shutdown: "Arresta",
     },
     commandPalette: {
@@ -839,6 +841,11 @@ export const it = {
   },
   settings: {
     accounts: {
+      signsInAs: "Accede come {username}",
+      signsInAsOwner: "Accede come {alias} o {username}",
+      signInName: "Il tuo nome di accesso",
+      signInNameDescription: "Il nome da digitare per accedere quando questa installazione ha più di un account. Anche unsloth funziona sempre. Lascia vuoto per usare solo unsloth.",
+      signInNameSave: "Salva nome",
       title: "Account",
       description: "Crea account Unsloth privati. I nuovi utenti accedono con un codice di configurazione monouso e scelgono una password.",
       username: "Nome utente",
@@ -1318,7 +1325,7 @@ export const it = {
       installingRuntime: "Installazione…",
       installRuntimeFailed: "Installazione del runtime non riuscita.",
       installRuntimeError: "Impossibile avviare l'installazione del runtime.",
-      unsupportedArch: "La sandbox di Windows (MXC) funziona solo su Windows x64, quindi non è disponibile su questo PC.",
+      unsupportedArch: "La sandbox di Windows (MXC) funziona solo su Windows x64 e ARM64, quindi non è disponibile su questo PC.",
       builtinNeedsUpdate: "Il container integrato di Windows richiede la build {required} o successiva, e questo PC esegue {current}. Installa l'ultimo aggiornamento di Windows per usarlo senza un passaggio da amministratore, oppure attiva la sandbox di riserva qui sotto.",
       unsupportedBuild: "La sandbox di Windows (MXC) richiede Windows 11 24H2 (build 26100) o successivo, quindi non è disponibile su questo PC.",
       permissionLabel: "Autorizzazioni strumenti",
@@ -2269,7 +2276,7 @@ export const it = {
         gpuUnusableDetail: "Rilevata, ma PyTorch non può usarla",
         detailedView: "Vista dettagliata",
         detailedViewDescription:
-          "Mostra il carico della CPU e carico, temperatura e consumo di ogni GPU nella finestra mobile e qui.",
+          "Mostra il carico della CPU e carico, temperatura e consumo di ogni GPU nella finestra mobile.",
         cpuLoad: "Carico CPU",
         gpuLoad: "Carico GPU",
         temperature: "Temperatura",
@@ -2303,6 +2310,10 @@ export const it = {
         used: "In uso: {value}",
         free: "Disponibili: {value}",
         total: "Totale: {value}",
+        usedOf: "{used} in uso su {total}",
+        segmentUsed: "In uso dalla GPU",
+        segmentSystem: "In uso dal sistema",
+        segmentAvailable: "Disponibile",
       },
       llamaBackend: {
         title: "Motore di inferenza GGUF",

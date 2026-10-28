@@ -12438,3 +12438,66 @@ def test_a_background_tracked_load_keeps_the_request_cancel_and_no_user_warnings
         assert seen["load_cancel_event"] is attempt.cancel_event
         assert seen["warnings"] is (not background)
         assert attempt.cancel_event.is_set() is background
+
+
+def test_an_unattended_switch_beside_rechecks_after_the_load_gate_before_replacing_the_primary(
+    monkeypatch,
+):
+    # Keep multiple models loaded: the switch checks before load_model_gated takes the load gate,
+    # so a user load that lands during that wait must still refuse a load onto the primary.
+    from contextlib import asynccontextmanager
+    from starlette.requests import Request
+    from core.scheduled_tasks import scheduler
+
+    _reset_keepwarm()
+    monkeypatch.setattr(kw, "_inflight", 1)
+    stamp = [1.0]
+    checks = []
+    loads = []
+    backend, _ = _wired(monkeypatch, _FakeBackend("org/A-GGUF"), ("org/B-GGUF", None, "org/B-GGUF"))
+    monkeypatch.setattr(kw, "attended_stamp", lambda: stamp[0])
+    monkeypatch.setattr(inference_route, "_switch_loads_beside", lambda *_: True)
+    monkeypatch.setattr(inference_route, "_raise_if_sidecar_swap_in_progress", lambda: None)
+
+    @asynccontextmanager
+    async def waited_load_gate():
+        stamp[0] = 2.0  # the user's own load finishes while this one queues for the gate
+        yield
+
+    monkeypatch.setattr(kw, "model_load_gate", waited_load_gate)
+
+    async def select_primary(_request):
+        return None  # as for a managed-engine or NPU primary: the load would replace it
+
+    monkeypatch.setattr(inference_route, "_select_load_slot", select_primary)
+
+    async def tracked_load(request, *_a, **_k):
+        loads.append(request.model_path)
+        backend.model_identifier = request.model_path
+        return {}
+
+    monkeypatch.setattr(inference_route, "_run_tracked_load_model_impl", tracked_load)
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "headers": [],
+            "query_string": b"",
+        }
+    )
+    swap = types.SimpleNamespace(attended = 1.0)
+
+    def require_away():
+        checks.append(stamp[0])
+        try:
+            scheduler._require_still_away(swap)
+        except scheduler.RunFailed:
+            raise HTTPException(409, "model_busy") from None
+
+    inference_route.require_for_model_switch(request.scope, require_away)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route._maybe_auto_switch_model("org/B-GGUF", request, "tester"))
+    assert exc.value.status_code == 409
+    assert checks == [1.0, 2.0]
+    assert loads == [] and backend.model_identifier == "org/A-GGUF"
