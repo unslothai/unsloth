@@ -356,3 +356,25 @@ def test_fine_tune_continues_a_wired_checkpoint_as_an_adapter(monkeypatch):
     with pytest.raises(RuntimeError, match = "started"):
         asyncio.run(training.finetune(ctx))
     assert started[0]["model_name"] == "/out/run1" and started[0]["model_format"] == "adapter"
+
+
+@run_async
+async def test_identical_seed_rows_reuse_one_upload_across_runs(monkeypatch):
+    from core.flows.nodes import data
+
+    monkeypatch.setattr(data, "local_seed_path", lambda ref: str(ref))
+    eng, seen, _ = _engine()
+    names = []
+    upload = eng._upload_rows
+
+    async def counted(ctx, rows, name):
+        names.append(name)
+        return await upload(ctx, rows, name)
+
+    eng._upload_rows = counted
+    on = await _run(eng, loop_doc(rounds = 2))
+    off = await _run(eng, loop_doc(rounds = 2, feedback = False))
+    assert on.status == off.status == "completed"
+    # Round 1 is all fresh rows in both runs: one upload, the same seed dataset for both.
+    assert names.count("loop-loop-round-1") == 1
+    assert seen[0] == seen[2]

@@ -809,6 +809,7 @@ class FlowEngine:
         self._gpu_lock: Optional[GpuLease] = None
         self._warming: dict[tuple, asyncio.Task] = {}
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._seed_uploads: dict[tuple[str, str], dict] = {}
         self.handlers: Optional[dict] = None
         self.mint_key: Callable[[AccountContext], tuple[str, Optional[int]]] = (
             flow_caller.mint_run_key
@@ -2091,6 +2092,25 @@ class FlowEngine:
 
         return await upload_rows(ctx, rows, name)
 
+    async def _seed_upload(self, ctx: NodeContextImpl, rows: list[dict], name: str) -> dict:
+        """Identical seed rows reuse one upload, so the recipe step's cache can hand back the same
+        dataset: two Loops on the same flow seed share round 1 and with it the probe/test split."""
+        from core.flows.nodes.data import local_seed_path
+
+        key = (ctx._rs.account.account_id, hashlib.sha256(json.dumps(rows, sort_keys = True).encode()).hexdigest())
+        found = self._seed_uploads.get(key)
+        if found is not None:
+            try:
+                local_seed_path(found["ref"])
+                return dict(found)
+            except FlowNodeError:
+                pass
+        found = await self._upload_rows(ctx, rows, name)
+        self._seed_uploads[key] = found
+        while len(self._seed_uploads) > 256:
+            self._seed_uploads.pop(next(iter(self._seed_uploads)))
+        return dict(found)
+
     async def _rounds(
         self,
         rs: RunState,
@@ -2176,7 +2196,7 @@ class FlowEngine:
                     str(scorer_params.get("reference_column") or ""),
                 )
                 fed = sum(1 for row in rows if row["origin"] == "failure")
-                seed = await self._upload_rows(ctx, rows, f"loop-{nid}-round-{r + 1}")
+                seed = await self._seed_upload(ctx, rows, f"loop-{nid}-round-{r + 1}")
                 override(seed_node, seed_port, seed)
                 for b in carry:
                     if b in last:
