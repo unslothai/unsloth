@@ -385,7 +385,7 @@ function useRovingModelList({
   const rawListboxId = useId();
   const listboxId = `model-picker-${rawListboxId.replace(/:/g, "")}`;
   const [rovingOptionKey, setRovingOptionKey] = useState<string | null>(null);
-  // Every row asks for its index, so a scan per row made a render O(N^2) in the list length.
+  // Looked up once per row: indexOf here made each render O(N^2).
   const optionIndexByKey = useMemo(() => firstIndexByKey(optionKeys), [optionKeys]);
 
   const preferredOptionKey =
