@@ -80,11 +80,15 @@ def _worker(rank, world, port, out, path):
         restore = _mark_blocks(model)
         try:
             index = _block_index(model)
-            native.shard_model(model, native.FSDP2Config(param_dtype = torch.float32, fit_layout = False))
+            native.shard_model(
+                model, native.FSDP2Config(param_dtype = torch.float32, fit_layout = False)
+            )
             model.train()
             opt = torch.optim.SGD(model.parameters(), lr = 0.1)
             for step in range(STEPS):
-                ids = torch.randint(3, 256, (2, 16), generator = torch.Generator().manual_seed(10 * rank + step))
+                ids = torch.randint(
+                    3, 256, (2, 16), generator = torch.Generator().manual_seed(10 * rank + step)
+                )
                 model(input_ids = ids, labels = ids, use_cache = False).loss.backward()
                 opt.step()
                 opt.zero_grad(set_to_none = True)
@@ -109,7 +113,6 @@ def _worker(rank, world, port, out, path):
         out.put("ok")
     except Exception as exc:
         import traceback
-
         out.put({"error": f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"})
     finally:
         os.environ.pop("UNSLOTH_BLOCK_CUDAGRAPHS", None)
