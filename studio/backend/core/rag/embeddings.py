@@ -737,9 +737,7 @@ _ST_COUNT_CACHE_SIZE = 4096
 
 def _st_token_counter(model_name: str | None = None) -> Callable[[str], int]:
     """Reads the tokenizer per call under _compute_lock; caching it would outlive an unload.
-    Counts are memoized per text like the llama-server counter, but only for the tokenizer
-    that produced them: a reload or a model switch empties the memo, and it holds the
-    tokenizer weakly so an unload still frees it."""
+    The count memo is tied to that tokenizer by a weakref: a switch empties it, an unload frees it."""
     counts: dict[str, int] = {}
     counted_by: list = [None]
 
@@ -756,7 +754,7 @@ def _st_token_counter(model_name: str | None = None) -> Callable[[str], int]:
             memo = counted_by[0] is not None and type(t) is str
             known = counts.get(t) if memo else None
             if known is not None:
-                # Same environment a tokenize would leave behind.
+                # Leave the environment a tokenize would.
                 if os.environ.get("TOKENIZERS_PARALLELISM") != "false":
                     os.environ["TOKENIZERS_PARALLELISM"] = "false"
                 return known

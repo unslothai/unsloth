@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The sentence-transformers token counter tokenizes a repeated text once, but only
-for the tokenizer that counted it."""
+"""The sentence-transformers counter memoizes per text, per tokenizer."""
 
 import gc
 import os
