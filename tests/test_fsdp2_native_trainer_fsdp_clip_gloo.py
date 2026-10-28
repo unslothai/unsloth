@@ -149,7 +149,9 @@ def _case_trainer_clip(native):
     t.accelerator._models.append(model)
     model.zero_grad(set_to_none = True)
     (model(x).float() * 50.0).backward()
-    grads = [p.grad.full_tensor() if isinstance(p.grad, DTensor) else p.grad for p in model.parameters()]
+    grads = [
+        p.grad.full_tensor() if isinstance(p.grad, DTensor) else p.grad for p in model.parameters()
+    ]
     dtypes = sorted({str(g.dtype) for g in grads})
     fp64 = math.sqrt(sum(float(g.double().square().sum()) for g in grads))
     one_gpu = float(torch.nn.utils.get_total_norm([g.clone() for g in grads], 2.0))
@@ -157,7 +159,14 @@ def _case_trainer_clip(native):
     want = float(native.native_clip_grad_norm_(list(model.parameters()), math.inf))
     mixed = float(t._mixed_mesh_grad_norm(model, math.inf)) if t._mixed_mesh_grad_norm else None
     got = float(t._clip_grad_norm(model))
-    return {"got": got, "want": want, "mixed": mixed, "one_gpu": one_gpu, "fp64": fp64, "dtypes": dtypes}
+    return {
+        "got": got,
+        "want": want,
+        "mixed": mixed,
+        "one_gpu": one_gpu,
+        "fp64": fp64,
+        "dtypes": dtypes,
+    }
 
 
 def _mllama():
