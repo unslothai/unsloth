@@ -115,3 +115,11 @@ def test_objects_without_an_arrow_view_walk_the_column():
         0,
         2,
     ]
+
+
+@pytest.mark.parametrize("fmt", ["numpy", "pandas"])
+def test_formatted_datasets_keep_the_column_walk(fmt):
+    # Under a numpy / pandas format a null float reads back as NaN, which the walk keeps.
+    dataset = Dataset.from_dict({"text": [1.0, None, float("nan"), 2.0]}).with_format(fmt)
+
+    assert list(format_conversion._non_null_rows(dataset, "text")) == _reference(dataset, "text")
