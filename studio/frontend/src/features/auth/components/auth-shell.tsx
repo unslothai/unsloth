@@ -16,7 +16,7 @@ export function AuthShell({ children }: { children: ReactNode }) {
           alt=""
           className="size-4 object-contain"
         />
-        <span className="font-medium">Unsloth Studio</span>
+        <span className="font-medium">Unsloth</span>
       </div>
     </div>
   );

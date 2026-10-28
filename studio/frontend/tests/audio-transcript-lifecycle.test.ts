@@ -26,9 +26,10 @@ test("macOS termination checks unsaved transcripts before allowing exit", () => 
     native.indexOf("fn cleanup_child_processes"),
   );
   assert.match(predicate, /\|\| renderer.unsaved_transcript/);
+  // The terminate path may also hold on for other reasons (a window to hide), never fewer.
   assert.match(
     native,
-    /begin_or_attach_termination\(quit_requires_confirmation\(app\)\)/,
+    /begin_or_attach_termination\(\s*quit_requires_confirmation\(app\)/,
   );
   assert.match(native, /&& confirm_quit_with_unsaved_transcript\(&app\)/);
 });

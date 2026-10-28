@@ -555,7 +555,9 @@ export async function resolveToolConfirmation(
   sessionId: string,
   approvalId: string,
   decision: "allow" | "deny",
+  fullAccess = false,
 ): Promise<boolean> {
+  const epoch = getAuthSessionEpoch();
   const response = await authFetch("/api/inference/tool-confirm", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -563,12 +565,15 @@ export async function resolveToolConfirmation(
       session_id: sessionId,
       approval_id: approvalId,
       decision,
+      ...(fullAccess ? { permission_mode: "full" } : {}),
     }),
   });
   // Ahead of parseJsonOrThrow, which folds every non-ok status into one bare Error.
   if (response.status === 404) throw new ToolApprovalGoneError();
-  const parsed = await parseJsonOrThrow<{ resolved?: boolean }>(response);
-  return parsed.resolved === true;
+  const parsed = await parseJsonOrThrow<{ resolved?: boolean; full_access_granted?: boolean }>(response);
+  // An older server may allow this call while ignoring the requested upgrade.
+  return getAuthSessionEpoch() === epoch && parsed.resolved === true &&
+    (!fullAccess || parsed.full_access_granted === true);
 }
 
 export interface CachedGgufRepo {

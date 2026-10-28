@@ -599,6 +599,20 @@ def _apple_wired_headroom_bytes() -> Optional[int]:
     return max(0, int((cap_bytes - in_use) * _APPLE_WIRED_CEILING_FRACTION))
 
 
+def _apple_budget_beside_media_mib(held_mib: int, unallocated_mib: int) -> int:
+    """Unified-memory budget beside resident media: price off the working set, unallocated part off available RAM."""
+    from utils.hardware.hardware import _metal_recommended_working_set_bytes
+    import psutil
+
+    mib = 1024 * 1024
+    working_set = _metal_recommended_working_set_bytes() or int(psutil.virtual_memory().total)
+    available = int(psutil.virtual_memory().available)
+    left = working_set // mib - held_mib
+    if available > 0:
+        left = min(left, available // mib - unallocated_mib)
+    return max(0, int(left * _APPLE_UNIFIED_MEMORY_FRACTION))
+
+
 def _gpu_plan_mib(total_bytes: int, on: list[int], gpus) -> dict[int, int]:
     """MiB this load holds per GPU: an even share, capped at what each card had free, since
     --fit on offloads the rest to CPU."""
@@ -20011,6 +20025,16 @@ class LlamaCppBackend:
                 for name in candidates
                 if name.lower().endswith(".gguf") and not _is_root_dflash_drafter_path(name)
             ]
+            eligible = [
+                name
+                for name in candidates
+                if _is_root_dflash_drafter_path(name)
+                and Path(name).name not in rejected
+                # Before ranking, as dflash_plan_files: the fetch refuses a half-listed set, and returning one would end the loop.
+                and split_listing_is_complete(candidates, name)
+            ]
+            if not eligible:
+                return None
             # Same size bound as dflash_plan_files: header reads only after download, a drafter is a few layers of its target, and an unlisted size keeps the candidate.
             sizes = self._remote_root_gguf_sizes(hf_repo, hf_token)
             try:
@@ -20020,13 +20044,9 @@ class LlamaCppBackend:
             files = sorted(
                 (
                     name
-                    for name in candidates
-                    if _is_root_dflash_drafter_path(name)
-                    and Path(name).name not in rejected
-                    # Before ranking, as dflash_plan_files: the fetch refuses a half-listed set, and returning one would end the loop.
-                    and split_listing_is_complete(candidates, name)
+                    for name in eligible
                     # Whole set, not the picked shard: each half of a split weight can sit under the target while the set does not.
-                    and not (
+                    if not (
                         target_bytes and _drafter_set_bytes(sizes, Path(name).name) >= target_bytes
                     )
                 ),
@@ -25543,6 +25563,26 @@ class LlamaCppBackend:
 
                     # Unified-memory budget (0 off Apple Silicon) for the no-GPU Metal cap below.
                     _apple_budget_mib = self._apple_metal_memory_budget_bytes() // (1024 * 1024)
+                    _metal_media_mib, _metal_media_unallocated_mib = (
+                        self._metal_media_mib() if _apple_budget_mib > 0 else (0, 0)
+                    )
+                    if _metal_media_mib:
+                        # 0 would mean "not Apple Silicon" and skip every Metal check.
+                        _apple_budget_mib = max(
+                            1,
+                            min(
+                                _apple_budget_mib,
+                                _apple_budget_beside_media_mib(
+                                    _metal_media_mib, _metal_media_unallocated_mib
+                                ),
+                            ),
+                        )
+                    _metal_media_wired_mib = int(
+                        _metal_media_unallocated_mib * _APPLE_WIRED_CEILING_FRACTION
+                    )
+
+                    def _apple_wired_left_mib(wired_bytes: int) -> int:
+                        return max(0, wired_bytes // (1024 * 1024) - _metal_media_wired_mib)
 
                     if tensor_parallel and tp_gpus:
                         # The planner can shrink ctx/KV, not weights or the MTP reserve.
@@ -26386,8 +26426,7 @@ class LlamaCppBackend:
                                     )
                             # Past free memory macOS swaps; past the wired limit the machine panics.
                             _apple_wired_mib = int(
-                                self._apple_metal_wired_ceiling_bytes()
-                                // (1024 * 1024)
+                                _apple_wired_left_mib(self._apple_metal_wired_ceiling_bytes())
                                 * max(0.0, 1.0 - _flat_mtp_reserve)
                             )
                             if (
@@ -26441,8 +26480,7 @@ class LlamaCppBackend:
                         # Past the wired limit Metal refuses, so it is the harder ceiling when readable.
                         _fit_wired_mib = (
                             int(
-                                self._apple_metal_wired_ceiling_bytes()
-                                // (1024 * 1024)
+                                _apple_wired_left_mib(self._apple_metal_wired_ceiling_bytes())
                                 * max(0.0, 1.0 - _flat_mtp_reserve)
                             )
                             if _vram_fit_ctx
@@ -26491,6 +26529,8 @@ class LlamaCppBackend:
                         # them, so it must see the same wired limit the refusals do.
                         if not _caller_owns_budget and not _paravirtual_cpu_forced:
                             _metal_fit_target_floor_mib = self._metal_fit_target_floor_mib()
+                            if _metal_fit_target_floor_mib > 0:
+                                _metal_fit_target_floor_mib += _metal_media_wired_mib
 
                         if (
                             intent.refuse_partial_gpu_fit
@@ -26507,7 +26547,8 @@ class LlamaCppBackend:
                             wired_bytes = self._apple_metal_wired_headroom_bytes()
                             if wired_bytes is not None:
                                 wired_mib = int(
-                                    wired_bytes // (1024 * 1024) * max(0.0, 1.0 - _flat_mtp_reserve)
+                                    _apple_wired_left_mib(wired_bytes)
+                                    * max(0.0, 1.0 - _flat_mtp_reserve)
                                 )
                                 budget_mib = min(budget_mib, wired_mib)
                             need_mib = math.ceil(
@@ -33709,6 +33750,21 @@ class LlamaCppBackend:
 
         return media_unallocated_mib()
 
+    def _metal_media_mib(self) -> tuple[int, int]:
+        """(price, unallocated) MiB of media resident on Apple's GPU, plus MLX chat growth beside them."""
+        if self not in _serving_backends_snapshot():
+            return 0, 0
+        from core.inference.gpu_residency import (
+            _mlx_chat_unallocated_mib,
+            media_held_mib,
+            media_unallocated_mib,
+        )
+
+        held = media_held_mib().get(0, 0)
+        if not held:
+            return 0, 0
+        return held, media_unallocated_mib().get(0, 0) + (_mlx_chat_unallocated_mib() or 0)
+
     def _note_server_pid(self, pid: int) -> None:
         if getattr(self, "_owns_pidfile", True):
             self._record_server_pid(pid)
@@ -36767,6 +36823,7 @@ class LlamaCppBackend:
         sandbox_level: Optional[str] = None,
         compact_context: bool = False,
         website_policy: Optional[dict] = None,
+        live_permissions = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -36816,6 +36873,10 @@ class LlamaCppBackend:
         permission_mode, bypass_permissions = normalize_tool_permissions(
             permission_mode, bypass_permissions
         )
+        from state.tool_approvals import LiveToolPermissions, bind_permission_upgrade
+
+        if live_permissions is None:
+            live_permissions = LiveToolPermissions(session_id, cancel_event)
         sandbox_level = normalize_sandbox_level(sandbox_level)
         stream_tool_execution = account_tool_stream(stream_tool_execution)
 
@@ -38892,6 +38953,9 @@ class LlamaCppBackend:
                     # Bypass wins here too, so a direct internal caller with both
                     # flags never prompts. "auto" pauses only high-risk calls; "off"
                     # pauses only a high-risk python/terminal call without OS isolation.
+                    permission_mode, bypass_permissions = live_permissions.apply(
+                        permission_mode, bypass_permissions
+                    )
                     needs_confirm = needs_tool_confirmation(
                         confirm_tool_calls = bool(confirm_tool_calls),
                         bypass_permissions = bypass_permissions,
@@ -38918,6 +38982,9 @@ class LlamaCppBackend:
                     approval_id = new_approval_id() if needs_confirm else ""
                     decision_slot = (
                         begin_tool_decision(session_id, approval_id) if needs_confirm else None
+                    )
+                    bind_permission_upgrade(
+                        decision_slot, live_permissions, eligible = image_share is None
                     )
                     if needs_confirm:
                         note_host_access(approval_id, decision.tool_name, decision.arguments)
@@ -38954,6 +39021,11 @@ class LlamaCppBackend:
                         )
                         # Read before decision_slot is dropped in the deny branch.
                         _decision_reason = decision_reason(decision_slot)
+                        permission_mode, bypass_permissions = live_permissions.apply(
+                            permission_mode, bypass_permissions
+                        )
+                        if bypass_permissions:
+                            strict_isolation = False
                         if _decision is not None and _decision != "deny":
                             # tool_approved first: the route forwards it before retaking the model slot.
                             yield decision.tool_approved_event(approval_id)
