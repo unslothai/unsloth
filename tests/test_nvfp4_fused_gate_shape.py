@@ -146,3 +146,13 @@ def test_split_k_per_capability(N, monkeypatch, cap, sms, dx, M, n_out, k_red, s
     monkeypatch.setattr(N, "_device_capability", lambda index: cap)
     monkeypatch.setattr(N, "_sm_count", lambda index: sms)
     assert N._fused_config(M, n_out, k_red, torch.device("cuda", 0), dx)[-1] == split
+
+
+@pytest.mark.parametrize("cap", [(8, 0), (8, 9), (12, 0)])
+@pytest.mark.parametrize("dx", [False, True])
+def test_unaligned_k_stays_dense_in_both_directions(N, monkeypatch, cap, dx):
+    # dX reduces over N, so K must be checked apart from inner.
+    assert _decide(N, monkeypatch, cap, 16, 4096, 4096, dx)
+    assert not _decide(N, monkeypatch, cap, 16, 4096, 4112, dx)
+    assert not _decide(N, monkeypatch, cap, 16, 4112, 4096, dx)
+    assert _decide(N, monkeypatch, cap, 16, 4096, 4112, dx, mode = "1")

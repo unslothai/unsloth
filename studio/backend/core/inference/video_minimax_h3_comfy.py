@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MiniMax-H3 denoisers in ComfyUI's layout for ``load_comfy_quant_transformer``: key map (fused qkv split by thirds,
-``mlp.fc1`` ``[gate; value]`` -> SwiGLU ``[value; gate]``, rows move whole so codes and scales stay exact), the pruned
-curve adaLN from ``adaln_t_table``'s shape, and the float32 tensors the pruned model keeps. The partition (fl2va /
-ref2va) is not in the tensors, so it comes from the file name."""
+"""MiniMax-H3 denoisers in ComfyUI layout: fused qkv split by thirds; mlp.fc1 [gate; value] ->
+SwiGLU [value; gate], rows moved whole so codes and scales stay exact; pruned adaLN curve sized
+from adaln_t_table; float32 tensors kept; partition is not in the tensors: read it from the file
+name."""
 
 from __future__ import annotations
 
@@ -188,6 +188,8 @@ def load_h3_comfy_transformer(
     fp8_backend: Optional[str],
     target: Any = None,
     logger: Any = None,
+    # H3's pin / stream / residency path is built on torchao weights: dequantize what torchao does not take
+    fp8_storage: Optional[bool] = False,
 ) -> Any:
     """The H3 denoiser of a ComfyUI-quantized file, int8 / fp8 codes kept, curve adaLN installed."""
     from .diffusion_comfy_quant import load_comfy_quant_transformer
@@ -210,6 +212,7 @@ def load_h3_comfy_transformer(
         },
         int8_backend = int8_backend,
         fp8_backend = fp8_backend,
+        fp8_storage = fp8_storage,
         family = "minimax-h3",
         target = target,
         logger = logger,

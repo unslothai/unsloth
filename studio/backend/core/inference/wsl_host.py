@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Managed engines on native Windows run inside a private WSL2 distro that Studio owns.
-
-Studio stays a Windows process: it enables WSL (one UAC prompt), imports a pinned Ubuntu rootfs
-as its own distro, and drives everything through ``wsl.exe`` argv lists. The engine's HTTP
-server is reached through WSL2's localhost forwarding. The user's own distros are never touched.
-"""
+"""Native-Windows engines run in a private WSL2 distro Studio imports and drives via wsl.exe,
+reached over localhost forwarding; user's distros never touched."""
 
 from __future__ import annotations
 
@@ -29,9 +25,10 @@ ROOTFS = {
     "size": 356739129,
 }
 UV = {
-    "url": "https://github.com/astral-sh/uv/releases/download/0.12.19/uv-x86_64-unknown-linux-gnu.tar.gz",
-    "sha256": "23bf5552d220e0842b65c862097b2ebaeba0064b74eda5e565e77fd25969d8c8",
-    "size": 19831732,
+    "url": "https://github.com/astral-sh/uv/releases/download/0.13.5/uv-x86_64-unknown-linux-gnu.tar.gz",
+    "sha256": "f68d291c75783122dad58ab77def0e13f3233f358731db5d6d7e8715603b928f",
+    "size": 16682639,
+    "version": "0.13.5",
 }
 # AMD: ROCm from AMD's apt repo plus the DXG bridge .deb (HSA reaches the Windows driver via /dev/dxg).
 # The repo key ships with Studio: repo.radeon.com serves it at a mutable URL, breaking a pinned download.
@@ -113,9 +110,7 @@ appendWindowsPath=false
 root=/mnt/
 """
 
-# Runs the engine in its own process group. The engine exits when Studio closes the stdin
-# pipe, which happens on stop and when Studio itself dies, so vLLM never outlives its owner.
-# A non-interactive sh gives background jobs /dev/null as stdin, hence the fd 3 duplicate.
+# Engine runs in its own process group, exits when Studio closes stdin, so vLLM never outlives it; fd 3 copies stdin since background jobs get /dev/null.
 RUNNER = """#!/bin/sh
 exec 3<&0
 setsid "$@" </dev/null &
@@ -238,8 +233,7 @@ def boot_id() -> int:
 
 def decode(raw: bytes) -> str:
     """wsl.exe writes its own messages as UTF-16LE; guest programs write UTF-8."""
-    # Localized messages can open with a non-ASCII character, so no single byte identifies
-    # UTF-16; UTF-8 text never carries NULs and CJK UTF-16 is almost never valid UTF-8.
+    # Localized text may start non-ASCII; UTF-8 never has NULs, CJK UTF-16 is rarely valid UTF-8.
     if raw[:2] == b"\xff\xfe" or b"\x00" in raw:
         return raw.decode("utf-16-le", errors = "replace").lstrip("\ufeff")
     try:
@@ -384,8 +378,7 @@ def guest_command(
     if exe is None:
         raise RuntimeError("WSL is not installed.")
     secrets = secrets or {}
-    # `withhold` keys the caller chose not to send (an anonymous load) must not ride in on the
-    # user's own WSLENV either.
+    # Withheld keys (anonymous load) must not ride in via the user's WSLENV.
     windows_env = {key: value for key, value in os.environ.items() if key.upper() not in withhold}
     windows_env.update(secrets)
     shared = [item for item in windows_env.get("WSLENV", "").split(":") if item]
@@ -562,9 +555,14 @@ def ensure_distro(
         guest(["mkdir", "-p", f"{GUEST_ROOT}/bin"])
         put(f"{GUEST_ROOT}/owner.json", owner)
     put(f"{GUEST_ROOT}/bin/run-engine", RUNNER, "755")
+    # The pinned release, not merely a uv: an older guest uv (0.12.x) still trusts the emSign roots.
     try:
-        guest(["test", "-x", f"{GUEST_ROOT}/bin/uv"])
-    except RuntimeError:
+        installed = re.search(
+            r"^uv (\S+)", guest([f"{GUEST_ROOT}/bin/uv", "--version"], timeout = 60), re.M
+        )
+    except (RuntimeError, subprocess.TimeoutExpired):
+        installed = None
+    if not installed or installed.group(1) != UV["version"]:
         archive = download(UV, "uv-x86_64-unknown-linux-gnu.tar.gz", progress, cancel)
         guest(
             [
@@ -584,8 +582,7 @@ def prepare(
     cancel = None,
     platform = "cuda",
 ) -> None:
-    """Everything before the engine's own packages. Raises ``Waiting`` for a user step."""
-    # vLLM and SGLang installs share one download, one elevation prompt and one distro import.
+    """Everything before the engine's own packages; raises Waiting for a user step; vLLM and SGLang share one download, prompt and distro import."""
     with _PREPARE_LOCK:
         _prepare(progress, cancel, platform)
 

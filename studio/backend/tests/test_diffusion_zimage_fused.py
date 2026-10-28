@@ -54,7 +54,7 @@ def test_fuse_linears_rejects_mismatched_parts():
 def test_fuse_linears_plain_bf16_matches_and_shares_storage():
     parts = [torch.nn.Linear(16, 8, bias = False) for _ in range(3)]
     x = torch.randn(5, 16)
-    # One GEMM over the stacked weights: split GEMMs can round differently (AVX512 BLAS, AMD EPYC 9B45).
+    # one GEMM over stacked weights: split GEMMs can round differently on some BLAS
     ref = torch.nn.functional.linear(x, torch.cat([p.weight for p in parts]))
     fused = zf._fuse_linears(parts)
     assert zf._share_storage(fused, parts)
@@ -90,7 +90,6 @@ def test_fuse_linears_rotated_parts_share_one_rotation():
     assert torch.equal(
         fused(x), torch.nn.functional.linear(xr, torch.cat([p.weight for p in parts]))
     )
-    # the rotation acts on the shared input axis: the fused rows reproduce each rotated projection
     assert torch.allclose(fused(x), torch.cat([p(x) for p in parts], dim = -1), atol = 1e-5)
 
 
@@ -132,7 +131,7 @@ def _block(quant: str):
 
         config = Int8DynamicActivationInt8WeightConfig(set_inductor_config = False)
         if quant == "int8_convrot":
-            try:  # the Int8Tensor the hosted checkpoints carry; torchao <= 0.17 defaults to the legacy tensor
+            try:  # torchao <= 0.17 defaults to the legacy tensor
                 config = Int8DynamicActivationInt8WeightConfig(version = 2, set_inductor_config = False)
             except TypeError:
                 pass
@@ -157,8 +156,7 @@ def _inputs(seq = 96):
 @needs_cuda
 @pytest.mark.parametrize("quant", ["bf16", "int8", "int8_convrot"])
 def test_compiled_block_stays_within_the_compile_floor(quant):
-    # Not bit-identical to stock compiled (fusion boundaries move bf16 roundings): bar = stock compile's distance from eager.
-    # int8_convrot: rotated q/k/v fuse into ONE rotated Linear (one rotation + one act quant), same floor.
+    # not bit-identical to stock compiled (fusion moves bf16 roundings): bar is stock's eager gap
     if quant != "bf16":
         pytest.importorskip("torchao.quantization")
     blk = _block(quant)
@@ -171,9 +169,6 @@ def test_compiled_block_stays_within_the_compile_floor(quant):
         )
     x, mask, freqs, adaln = _inputs()
     if quant == "int8_convrot":
-        # Under Studio's emulate_precision_casts the rotated, fused block (one rotation + act quant for q/k/v, the int8
-        # projections without torchao 0.17's zero-point pass) stays as close to eager as the stock compile (torch 2.11:
-        # both bit-identical to eager; torch 2.12's compiled act quant is not eager-exact on either side).
         from core.inference.diffusion_convrot import is_rotated_linear
 
         with torch.no_grad(), torch._inductor.config.patch(emulate_precision_casts = True):

@@ -78,9 +78,16 @@ def _divides(old, n, k):
     return all(n % t[1] == 0 and k % t[2] == 0 for t in old)
 
 
+@pytest.fixture
+def no_smem_fit(ac, monkeypatch):
+    # The dims fit alone: on a card with less shared memory (L4, A10: 101,376 B) the smem fit also steps the
+    # heuristic dX down to 3 stages, which the smem tests below cover.
+    monkeypatch.setattr(ac, "_device_smem_per_block", lambda *a, **k: None)
+
+
 @pytest.mark.parametrize("hidden,inter", SHAPES + [(2048, 1024)])
 @pytest.mark.parametrize("which", ["heuristic", "default"])
-def test_fallback_tiles_divide_each_gemm(ac, hidden, inter, which):
+def test_fallback_tiles_divide_each_gemm(ac, no_smem_fit, hidden, inter, which):
     fn = ac._get_heuristic_configs if which == "heuristic" else ac._get_default_configs
     old = OLD_HEURISTIC if which == "heuristic" else OLD_DEFAULT
     for kwargs, (n, k) in _gemms(hidden, inter):
@@ -104,7 +111,7 @@ def test_working_shapes_keep_exact_configs(ac, hidden, inter, which):
         assert [c.__dict__ for c in new] == [c.__dict__ for c in fn()]
 
 
-def test_no_dims_keeps_old_configs(ac):
+def test_no_dims_keeps_old_configs(ac, no_smem_fit):
     assert _tiles(ac._get_heuristic_configs()) == OLD_HEURISTIC
     assert _tiles(ac._get_default_configs()) == OLD_DEFAULT
 
@@ -182,11 +189,16 @@ def test_heuristic_shrunk_dx_is_not_stepped(ac, monkeypatch):
     assert (dx.BLOCK_SIZE_K, dx.num_stages) == (128, 4)
 
 
-@pytest.mark.parametrize("smem", [None, 65536])
-def test_heuristic_unknown_or_tiny_smem_keeps_config(ac, monkeypatch, smem):
-    # Unknown limit, or one the step-down does not fit either (81,920 B): keep today's config.
-    _device(ac, monkeypatch, (8, 9), smem)
+def test_heuristic_unknown_smem_keeps_config(ac, monkeypatch):
+    _device(ac, monkeypatch, (8, 9), None)
     assert _tiles(ac._get_heuristic_configs(n_dim = 1536, k_dim = 2048)) == OLD_HEURISTIC
+
+
+def test_heuristic_tiny_smem_steps_down_until_it_fits(ac, monkeypatch):
+    _device(ac, monkeypatch, (8, 9), 65536)
+    configs = ac._get_heuristic_configs(n_dim = 1536, k_dim = 2048)
+    for kind, c in zip(("fwd", "dX", "dW"), configs):
+        assert ac._estimate_smem(kind, c, 2, 2, (8, 9)) <= 65536
 
 
 def test_default_configs_not_stepped(ac, monkeypatch):

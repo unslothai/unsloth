@@ -9,6 +9,7 @@ import types
 from pathlib import Path
 
 import pytest
+from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -109,7 +110,7 @@ sys.exit(0 if "auto-tuning completed" in text and "auto-tuning failed" not in te
 """
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA GPU")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA GPU")
 def test_real_tuning_under_compile_keeps_the_tuned_configs(tmp_path):
     # Real Triton autotuning launched from a compiled caller: no fallback to the default configs.
     import os

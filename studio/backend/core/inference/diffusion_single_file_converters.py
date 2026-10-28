@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Original-layout (ComfyUI / reference repo) single files -> diffusers state dicts for Krea 2 and
-HunyuanImage 2.1, which diffusers ships without a single-file converter.
-
-Rules only rename, split rows or reorder whole rows, never columns: ``diffusion_comfy_quant`` traces
-each int8 / fp8 row (and GGUF block) back to its source and refuses anything else. Unknown keys raise.
-No module-level torch import: ``diffusion.py`` imports this on every load.
-"""
+"""Krea 2 / HunyuanImage 2.1 single files to diffusers; row-wise renames and splits only, never
+columns; unknown keys raise; no module-level torch import"""
 
 from __future__ import annotations
 
@@ -411,7 +406,12 @@ def converted_host_bytes(
                 numel *= int(dim)
         except Exception:  # noqa: BLE001
             continue
-        verdict = dequantized(key) if dequantized is not None else None
+        if dequantized is None:
+            verdict = None
+        elif getattr(dequantized, "wants_meta", False):
+            verdict = dequantized(key, meta)
+        else:
+            verdict = dequantized(key)
         if verdict is not None:
             total += numel * int(verdict) * _ST_ITEMSIZE[target]
             continue
@@ -440,11 +440,14 @@ class HostRamBudget:
         path: str,
         why: str,
         logger: Any = None,
+        *,
+        fp8_widen_chosen: bool = False,
     ) -> None:
         from .diffusion_small_host import (
             host_ram_check_disabled,
             host_ram_mib,
             host_reserve_mib,
+            single_file_host_reserve_mib,
         )
 
         self.path, self.why, self.logger = path, why, logger
@@ -464,7 +467,11 @@ class HostRamBudget:
         if available is None:
             return
         self.available_mib = int(available)
-        self.reserve_mib = host_reserve_mib(total)
+        # Capped only for a load the fp8-storage rule chose to widen, so the two never disagree; any other load
+        # (no fp8 storage option, LoRA, int8 / nvfp4 layers) keeps the proportional small-host reserve.
+        self.reserve_mib = (
+            single_file_host_reserve_mib(total) if fp8_widen_chosen else host_reserve_mib(total)
+        )
         # Armed by the file size here, and by the widened estimate in ``check``: a 900 MiB nvfp4 file widens
         # to 3.6 GiB of bf16. Only a load small on disk AND in its estimate is never checked.
         try:
@@ -574,10 +581,15 @@ def load_original_layout_transformer(
     path: str,
     sf_kwargs: dict,
     logger: Any = None,
+    *,
+    fp8_storage: bool = False,
+    fp8_widen_chosen: bool = False,
 ) -> Any:
     """Load a plain original-layout safetensors file for a class without ``from_single_file``
     (Krea 2 on diffusers 0.40). ``sf_kwargs`` = the ``from_single_file`` kwargs. Cast like
-    ``from_pretrained`` (``_keep_in_fp32_modules`` stay fp32); strict on keys and shapes."""
+    ``from_pretrained`` (``_keep_in_fp32_modules`` stay fp32); strict on keys and shapes. ``fp8_storage``
+    keeps fp8 Linears as fp8 with unit scales; ``fp8_widen_chosen``: the fp8-storage rule chose to widen it, so the
+    host RAM refusal uses that rule's reserve."""
     import torch
     from diffusers.loaders import single_file_model as sfm
 
@@ -604,14 +616,72 @@ def load_original_layout_transformer(
         keep = [keep]
     # Before any read: fp8 widened to bf16 (13B Krea 2: ~26 GB) used to OOM the whole app.
     budget = HostRamBudget(
-        path, f"widening its weights to {str(dtype).replace('torch.', '')}", logger
+        path,
+        f"widening its weights to {str(dtype).replace('torch.', '')}",
+        logger,
+        fp8_widen_chosen = bool(fp8_widen_chosen) and not fp8_storage,
     )
-    budget.check(converted_host_bytes(path, dtype, keep_fp32 = keep))
+    budget.check(
+        converted_host_bytes(
+            path,
+            dtype,
+            keep_fp32 = keep,
+            dequantized = fp8_stored_estimate(keep) if fp8_storage else None,
+        )
+        + (_fp8_stored_scale_bytes(path, keep) if fp8_storage else 0)
+    )
     with budget:
-        return _load_original_layout(transformer_cls, path, config, mapping_fn, keep, dtype, logger)
+        return _load_original_layout(
+            transformer_cls, path, config, mapping_fn, keep, dtype, logger, fp8_storage
+        )
 
 
-def _load_original_layout(transformer_cls, path, config, mapping_fn, keep, dtype, logger) -> Any:
+def fp8_stored_estimate(keep: Any = ()) -> Any:
+    """``dequantized`` for fp8 storage: 2-D fp8 ``.weight`` outside ``keep`` stays mmapped (0); later widens are
+    charged live."""
+    keep = tuple(keep or ())
+
+    def verdict(key: str, meta: Optional[dict] = None) -> Any:
+        meta = meta or {}
+        if (
+            str(meta.get("dtype")) in ("F8_E4M3", "F8_E5M2")
+            and len(meta.get("shape") or ()) == 2
+            and key.endswith(".weight")
+            and not any(m in key.split(".") for m in keep)
+        ):
+            return 0
+        return None
+
+    verdict.wants_meta = True
+    return verdict
+
+
+def _fp8_stored_scale_bytes(path: str, keep: Any = ()) -> int:
+    from .diffusion_comfy_quant import _read_header
+
+    try:
+        header, _base = _read_header(str(path))
+    except Exception:  # noqa: BLE001
+        return 0
+    header.pop("__metadata__", None)
+    verdict = fp8_stored_estimate(keep)
+    return sum(
+        4 * int((meta.get("shape") or (0,))[0])
+        for key, meta in header.items()
+        if verdict(key, meta) == 0
+    )
+
+
+def _load_original_layout(
+    transformer_cls,
+    path,
+    config,
+    mapping_fn,
+    keep,
+    dtype,
+    logger,
+    fp8_storage = False,
+) -> Any:
     import torch
     from accelerate import init_empty_weights
     from safetensors.torch import load_file
@@ -631,7 +701,10 @@ def _load_original_layout(transformer_cls, path, config, mapping_fn, keep, dtype
             f"{name} does not match {transformer_cls.__name__}: {len(missing)} missing "
             f"(e.g. {missing[:1]}), {len(unexpected)} unused (e.g. {unexpected[:1]})"
         )
-    for key, value in converted.items():
+    fp8_dtypes = {getattr(torch, n) for n in ("float8_e4m3fn", "float8_e5m2") if hasattr(torch, n)}
+    modules = dict(model.named_modules()) if fp8_storage else {}
+    stored: list = []
+    for key, value in list(converted.items()):
         want = torch.float32 if any(m in key.split(".") for m in keep) else dtype
         if not value.is_floating_point():
             continue
@@ -639,14 +712,45 @@ def _load_original_layout(transformer_cls, path, config, mapping_fn, keep, dtype
             raise ValueError(
                 f"{key}: {tuple(value.shape)} in the file, {tuple(wanted[key].shape)} in the model"
             )
+        fqn = key[: -len(".weight")]
+        if (
+            value.dtype in fp8_dtypes
+            and want == dtype
+            and key.endswith(".weight")
+            and isinstance(modules.get(fqn), torch.nn.Linear)
+        ):
+            stored.append(fqn)
+            continue
         if value.dtype != want:
             charge_cast(value, want)
             converted[key] = value.to(want)
+    if stored:
+        from .diffusion_native_quant import NATIVE_FP8, native_linear_class
+        cls = native_linear_class()
+        for fqn in stored:
+            parent_name, _, leaf = fqn.rpartition(".")
+            parent = model.get_submodule(parent_name) if parent_name else model
+            codes = converted.pop(fqn + ".weight")
+            charge_host_ram(codes.shape[0] * 4)  # the unit scale; the codes stay as read
+            layer = cls(
+                getattr(parent, leaf).to(dtype),
+                NATIVE_FP8,
+                codes = codes,
+                scale = torch.ones(codes.shape[0], 1, dtype = torch.float32),
+            )
+            setattr(parent, leaf, layer)
+            converted[fqn + ".weight_q"] = layer.weight_q
+            converted[fqn + ".weight_scale"] = layer.weight_scale
     model.load_state_dict(converted, strict = True, assign = True)
+    if stored:
+        from .diffusion_comfy_quant import FP8_STORED_ATTR
+        setattr(model, FP8_STORED_ATTR, len(stored))
     model.eval()
     if logger is not None:
         logger.info(
-            "diffusion.single_file: %s loaded from an original-layout file",
+            "diffusion.single_file: %s loaded from an original-layout file (%d fp8 layers stored as fp8, "
+            "widened per layer)",
             transformer_cls.__name__,
+            len(stored),
         )
     return model

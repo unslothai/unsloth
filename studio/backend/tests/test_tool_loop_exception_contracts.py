@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""What each tool loop does when a local tool raises.
-
-``_session_in_flight`` no longer swallows exceptions, so a failing ``python`` /
-``terminal`` / ``edit_file`` call now propagates instead of coming back as
-``"Unknown tool: <name>"``. ``studio_tool_loop`` and ``safetensors_agentic``
-already turned that into a model-visible result; ``llama_cpp`` did not, so a bad
-argument killed the whole GGUF answer.
-
-Each loop is asserted against its own contract, not forced into one shape.
-Reuses the fake llama-server and fake-transport harnesses next door, so no
-model, subprocess, GPU or network is involved.
-"""
+"""Each tool loop must turn a raising local tool into a model-visible result, not an aborted reply."""
 
 from __future__ import annotations
 
@@ -32,8 +21,7 @@ def _shared_setup_1(monkeypatch):
     return loop_mod, studio_h
 
 
-# Backend root plus the tests dir: the two harnesses this borrows sit alongside
-# and import as top-level modules.
+# The two borrowed harnesses sit alongside and import as top-level modules.
 _TESTS_DIR = str(Path(__file__).resolve().parent)
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 for _entry in (_BACKEND_DIR, _TESTS_DIR):
@@ -76,11 +64,7 @@ def _gguf_events(
     [("python", BAD_PYTHON), ("terminal", {"command": 42})],
 )
 def test_a_raising_local_tool_does_not_kill_the_gguf_answer(monkeypatch, tool_name, arguments):
-    """The GGUF loop must report the tool's failure and keep answering.
-
-    Unguarded, the per-iteration handler re-raises, the route reports a generic
-    internal error, and the user loses a reply the model could have corrected.
-    """
+    """A raising local tool must yield one tool_end and let the GGUF loop keep answering."""
     events, _payloads = _gguf_events(monkeypatch, arguments, tool_name)
 
     ends = [e for e in events if e.get("type") == "tool_end"]
@@ -114,9 +98,6 @@ def test_the_failing_tool_result_reaches_the_model(monkeypatch):
     tool_messages = [m for m in payloads[1]["messages"] if m.get("role") == "tool"]
     assert tool_messages, payloads[1]["messages"]
     assert REAL_ERROR in json.dumps(tool_messages)
-
-
-# ── The external-provider loop ────────────────────────────────────
 
 
 def test_the_studio_loop_reports_the_real_error_and_continues(monkeypatch):
@@ -189,17 +170,8 @@ def test_the_studio_loop_still_reports_a_genuinely_unknown_tool(monkeypatch):
     assert ends[0]["result"] == "Unknown tool: no_such_tool_at_all"
 
 
-# ── The duplicate-call ledger ─────────────────────────────────────
-
-
 def test_a_repeated_failing_call_stays_bounded(monkeypatch):
-    """The result's classification changes, so check the loop still ends.
-
-    ``"Unknown tool: python"`` matches no ``TOOL_ERROR_PREFIXES``, so a failed
-    call was filed as a *success* and an identical retry refused. ``"Error:
-    ..."`` is a failure, so the retry is allowed -- right, since the model can
-    now see what went wrong, but only while the loop stays bounded.
-    """
+    """Failed calls count as errors, so retries are allowed, but a repeating failure must still end."""
     loop_mod, studio_h = _shared_setup_1(monkeypatch)
 
     executions: list[dict] = []
@@ -230,7 +202,6 @@ def test_a_repeated_failing_call_stays_bounded(monkeypatch):
         studio_h._DONE,
     ]
     max_calls = 4
-    # More identical turns scripted than the budget allows.
     transport = studio_h.FakeTransport([list(bad_turn) for _ in range(max_calls + 6)])
     lines = studio_h._run(
         transport,
@@ -245,8 +216,6 @@ def test_a_repeated_failing_call_stays_bounded(monkeypatch):
     )
     ends = studio_h._events(lines, "tool_end")
     assert ends, "no tool_end at all"
-    # Every execution reports the real error; the trailing card is the
-    # controller's budget notice, which is how the loop says it stopped.
     executed_ends = [e for e in ends if REAL_ERROR in e["result"]]
     assert len(executed_ends) == len(executions), [e["result"] for e in ends]
     assert "limit was reached" in ends[-1]["result"], ends[-1]["result"]
@@ -254,15 +223,8 @@ def test_a_repeated_failing_call_stays_bounded(monkeypatch):
     assert transport.turns, "the loop consumed every scripted turn instead of stopping"
 
 
-# ── research_runs stays outside the blast radius ──────────────────
-
-
 def test_research_only_calls_tools_that_are_not_session_guarded():
-    """research_runs has no enclosing tool handler, so it must stay clear.
-
-    Its safety is a property of which tools it names. Grow that list with a
-    guarded tool and this fails until research_runs handles them too.
-    """
+    """research_runs has no tool handler, so it must name only tools that are not session-guarded."""
     import ast
     import inspect
 

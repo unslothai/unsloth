@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Kernel install pieces shared by Studio setup, the training worker, the SSM runtime and
-`unsloth install-kernels [names]`.
-
-Imports only stdlib, wheel_utils and child_stdio so setup and torch-less hosts can import it.
-The CLI is wheel-only (never a source build) and uses --no-deps so torch is never touched.
-"""
+"""Kernel install helpers; imports only stdlib, wheel_utils and child_stdio so torch-less hosts can
+import; CLI is wheel-only with --no-deps"""
 
 from __future__ import annotations
 
@@ -99,10 +95,7 @@ def install_prebuilt(
 
 
 def hipcc_gcc_install_dir() -> str | None:
-    """Highest-numbered ``/usr/lib/gcc/x86_64-linux-gnu/<N>`` that has BOTH the gcc runtime dir AND
-    ``/usr/include/c++/<N>`` headers, or None. Ubuntu 24.04 ships gcc-14 runtime but not
-    ``/usr/include/c++/14``; ROCm clang-20 picks the highest runtime dir, finds no ``<cstdlib>``,
-    and the HIP build fails, hence ``--gcc-install-dir``. Mirrors studio/setup.sh (PR #5301)."""
+    """Newest gcc runtime with C++ headers too; ROCm clang takes the highest runtime dir, headers or not."""
     if not sys.platform.startswith("linux") or platform.machine().lower() != "x86_64":
         return None
     for ver in (14, 13, 12, 11):
@@ -415,7 +408,7 @@ def resolve_wheel_url(name: str, env: dict[str, str] | None) -> str | None:
     return _PINNED[name].wheel_url(env)
 
 
-# FlashAttention 2 needs sm80. mamba_ssm's Triton kernels also run on sm75 with Triton 3.4+
+# FlashAttention 2 needs sm80. mamba_ssm's Triton kernels also run on sm70 / sm75 with Triton 3.4+
 # (torch 2.8+), the same rule unsloth_zoo's patch_mamba_ssm_pre_ampere_fallback applies, which
 # turns the fast path off anywhere else, so the wheel would go unused there.
 _GPU_GATED = ("flash_attn", "mamba_ssm")
@@ -427,11 +420,7 @@ _TRITON: dict = {}
 
 
 def _triton_version(run: Callable[..., subprocess.CompletedProcess]) -> tuple[int, int] | None:
-    """The `triton` module's version, as unsloth_zoo reads it. Probed once per runner.
-
-    Asked of the module, not the `triton` distribution: pytorch-triton and other
-    providers ship the same import under another name.
-    """
+    """Read from the triton module, not the distribution, since other providers ship the same import."""
     if run not in _TRITON:
         try:
             result = run(
@@ -459,13 +448,13 @@ def _pre_ampere_skip_reason(
     forced = os.environ.get("UNSLOTH_MAMBA_PRE_AMPERE_FAST", "").strip()
     if forced in ("0", "1"):
         return None if forced == "1" else "UNSLOTH_MAMBA_PRE_AMPERE_FAST=0 turns off"
-    if capability < (7, 5):
-        return "needs sm80, or sm75 with Triton 3.4+"
+    if capability < (7, 0):
+        return "needs sm80, or sm70+ with Triton 3.4+"
     triton = _triton_version(run)
     if triton is not None and triton >= _MAMBA_SM75_MIN_TRITON:
         return None
     found = "missing" if triton is None else "%d.%d" % triton
-    return f"needs sm80, or sm75 with Triton 3.4+ (torch 2.8+), and Triton is {found}"
+    return f"needs sm80, or sm70+ with Triton 3.4+ (torch 2.8+), and Triton is {found}"
 
 
 def _gpu_capability(run: Callable[..., subprocess.CompletedProcess]) -> tuple[int, int] | None:

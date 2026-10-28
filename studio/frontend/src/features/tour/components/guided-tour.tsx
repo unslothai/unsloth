@@ -1,17 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronLeftStandardIcon, ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   Cancel01Icon,
-  CheckmarkCircle01Icon,
+  CheckmarkCircle02Icon,
 } from "@hugeicons/core-free-icons";
-import {
-  ChevronLeftIcon,
-  ChevronRightIcon,
-} from "lucide-react";
 import { Dialog as DialogPrimitive } from "radix-ui";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -21,7 +18,7 @@ import { computeCardPos, padded, pickPlacement } from "../lib/layout";
 import { SpotlightOverlay } from "./spotlight-overlay";
 import type { Placement, Rect, TourStep } from "../types";
 
-type GuidedTourProps = { open: boolean; onOpenChange: (open: boolean) => void; steps: TourStep[]; onSkip: () => void; onComplete: () => void; celebrate?: boolean }; // confetti on complete only
+type GuidedTourProps = { open: boolean; onOpenChange: (open: boolean) => void; steps: TourStep[]; onSkip: () => void; onComplete: () => void; celebrate?: boolean };
 
 export function GuidedTour({
   open,
@@ -46,8 +43,7 @@ export function GuidedTour({
   const rafRef = useRef<number | null>(null);
   const lastRectRef = useRef<Rect | null>(null);
 
-  // Rewound during render: an effect runs after the onEnter effect below, so reopening would fire
-  // the last step's onEnter (Chat's compare step navigates) before rewinding to the first.
+  // Rewound during render, or reopening would fire the last step's onEnter before rewinding.
   const [wasOpen, setWasOpen] = useState(open);
   if (open !== wasOpen) {
     setWasOpen(open);
@@ -64,9 +60,7 @@ export function GuidedTour({
     return padded(targetRect, pad, vw, vh);
   }, [step?.target, targetRect, vw, vh]);
 
-  // Cleanup, not a second effect: a step is then also left when the tour unmounts mid-step, as a
-  // page hiding its tour on navigation does. Without it onEnter's side effects leak onto the next
-  // page, and a persisted one (the sidebar pin) is never put back.
+  // Cleanup so a step is also left on unmount, or onEnter side effects (sidebar pin) leak.
   useEffect(() => {
     if (!open || !step) return;
     void step.onEnter?.();
@@ -105,15 +99,17 @@ export function GuidedTour({
     let raf = 0;
     let t = 0;
 
-    function findTarget(): HTMLElement | null {
-      const found = document.querySelector(sel);
-      if (!(found instanceof HTMLElement)) return null;
-      return found;
-    }
-
     function isUsableTarget(candidate: HTMLElement): boolean {
       const r = candidate.getBoundingClientRect();
       return r.width >= 6 && r.height >= 6;
+    }
+
+    // First visible match: Images and Video share Train targets, and a hidden page stays mounted earlier in the DOM.
+    function findTarget(): HTMLElement | null {
+      const found = [...document.querySelectorAll(sel)].filter(
+        (c): c is HTMLElement => c instanceof HTMLElement,
+      );
+      return found.find(isUsableTarget) ?? found[0] ?? null;
     }
 
     function rectChanged(a: Rect | null, b: Rect): boolean {
@@ -255,7 +251,7 @@ export function GuidedTour({
                   <SpotlightOverlay rect={spotlightRect} vw={vw} vh={vh} maskId={maskId} />
                   {spotlightRect && (
                     <motion.div
-                      className="fixed z-[51] pointer-events-none rounded-[22px] ring-1 ring-[rgb(255_255_255_/_calc(0.1*var(--contrast-edge-gain,1)))]"
+                      className="fixed z-[51] pointer-events-none rounded-2xl ring-1 ring-[rgb(255_255_255_/_calc(0.1*var(--contrast-edge-gain,1)))]"
                       initial={false}
                       animate={{
                         left: spotlightRect.x,
@@ -293,7 +289,7 @@ export function GuidedTour({
                     // Plain rounded, no corner-squircle: at this radius superellipse(2)
                     // hugs the corner about twice as tightly as the arc, which reads as a
                     // boxed-in card rather than a rounded one.
-                    "relative overflow-hidden rounded-[28px]",
+                    "relative overflow-hidden rounded-3xl",
                     "bg-white/95 text-foreground ring-1 ring-[rgb(0_0_0_/_calc(0.1*var(--contrast-edge-gain,1)))] dark:bg-zinc-900/96 dark:text-zinc-100 dark:ring-[rgb(255_255_255_/_calc(0.12*var(--contrast-edge-gain,1)))]",
                     "shadow-[0_30px_120px_rgba(0,0,0,0.35)]",
                   )}
@@ -317,7 +313,7 @@ export function GuidedTour({
                   />
                   {/* Rounded to match the card. A square-cornered rectangle here reads as a
                       second, boxier outline whenever it is not clipped to the card's radius. */}
-                  <div className="absolute inset-x-0 top-0 h-20 rounded-t-[28px] bg-gradient-to-b from-control-accent/18 via-control-accent/6 to-transparent dark:from-control-accent/24 dark:via-control-accent/12" />
+                  <div className="absolute inset-x-0 top-0 h-20 rounded-t-3xl bg-gradient-to-b from-control-accent/18 via-control-accent/6 to-transparent dark:from-control-accent/24 dark:via-control-accent/12" />
                   <div className="absolute -left-14 -top-16 size-44 rounded-full bg-control-accent/20 blur-2xl dark:bg-control-accent/26" />
                   <div className="absolute -right-14 -bottom-16 size-44 rounded-full bg-cyan-300/18 blur-2xl dark:bg-cyan-300/24" />
 
@@ -363,11 +359,11 @@ export function GuidedTour({
                       <div className="flex items-center gap-2">
                         <Button
                           variant="outline"
-                          className="border-[rgb(0_0_0_/_calc(0.1*var(--contrast-edge-gain,1)))] bg-white/70 text-foreground hover:bg-white hover:text-foreground dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.07*var(--contrast-wash-gain,1)))] dark:text-zinc-100 dark:hover:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))]"
+                          className="text-foreground hover:text-foreground dark:text-zinc-100"
                           disabled={idx === 0}
                           onClick={() => setIdx((i) => Math.max(0, i - 1))}
                         >
-                          <ChevronLeftIcon className="size-4" />
+                          <HugeiconsIcon icon={ChevronLeftStandardIcon} className="size-4" />
                           Back
                         </Button>
                         {isLast ? (
@@ -376,7 +372,7 @@ export function GuidedTour({
                             className="bg-control-accent text-control-accent-foreground hover:bg-control-accent/90"
                             onClick={() => requestClose("complete")}
                           >
-                            <HugeiconsIcon icon={CheckmarkCircle01Icon} className="size-4" />
+                            <HugeiconsIcon icon={CheckmarkCircle02Icon} className="size-4" />
                             Done
                           </Button>
                         ) : (
@@ -386,7 +382,7 @@ export function GuidedTour({
                             onClick={() => setIdx((i) => Math.min(total - 1, i + 1))}
                           >
                             Next
-                            <ChevronRightIcon className="size-4" />
+                            <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-4" />
                           </Button>
                         )}
                       </div>

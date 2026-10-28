@@ -2,16 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * A wrong TRUE here keeps weights the user did not ask for; a wrong FALSE reloads for
- * nothing. Both answers depend on strings the BACKEND chose, which differ on two axes:
- *
- *   host      a snapshot path is POSIX on Linux and macOS, a drive path or UNC share on
- *             Windows, /mnt/<letter> under WSL; separators and case fold differently
- *   version   older backends published no model_identifier, or put the RAW path in
- *             active_model; a native lease withholds it on every version
- *
- * The table is those two crossed with the model kinds Unsloth loads. Every row states the
- * answer the USER needs, not the one the code happens to give.
+ * A wrong TRUE keeps the wrong weights; backend strings vary by host and backend version.
+ * Each row states the answer the user needs.
  */
 
 import assert from "node:assert/strict";
@@ -40,7 +32,6 @@ const REPO = "unsloth/Qwen3-0.6B-GGUF";
 const OTHER = "unsloth/gemma-4-12b-GGUF";
 const Q = "Q4_K_M";
 
-// One snapshot of one repo, spelled the way each host spells it.
 const SNAP = {
   linux:
     "/home/dev/.cache/huggingface/hub/models--unsloth--Qwen3-0.6B-GGUF/snapshots/a1b2c3",
@@ -59,7 +50,6 @@ const FILE = {
 
 const ROWS: Row[] = [];
 
-// ── The pinned cached row, the shape #8893 was reported on ───────────────────
 for (const [host, snap] of Object.entries(SNAP)) {
   ROWS.push({
     host,
@@ -117,7 +107,6 @@ for (const [host, snap] of Object.entries(SNAP)) {
   });
 }
 
-// ── Windows spells one directory several ways, and means one directory ───────
 ROWS.push({
   host: "win",
   what: "forward slashes name the same directory as backslashes",
@@ -151,7 +140,6 @@ ROWS.push({
   resident: true,
 });
 
-// ── POSIX is case-SENSITIVE, and two files can differ by case alone ──────────
 ROWS.push({
   host: "linux",
   what: "two snapshot dirs differing only in case are different directories",
@@ -171,7 +159,6 @@ ROWS.push({
   resident: false,
 });
 
-// ── The unpinned cached row: the repo id IS the load identifier ──────────────
 for (const host of ["linux", "mac", "win", "wsl"]) {
   ROWS.push({
     host,
@@ -189,7 +176,6 @@ for (const host of ["linux", "mac", "win", "wsl"]) {
   });
 }
 
-// ── A standalone .gguf: one file, no quant to choose between ─────────────────
 for (const [host, file] of Object.entries(FILE)) {
   ROWS.push({
     host,
@@ -214,7 +200,6 @@ for (const [host, file] of Object.entries(FILE)) {
   });
 }
 
-// ── Safetensors and MLX: no quant at all on either side ──────────────────────
 ROWS.push({
   host: "mac",
   what: "an MLX repo is resident under its own id with no variant either side",
@@ -253,7 +238,6 @@ ROWS.push({
   resident: false,
 });
 
-// ── Nothing is loaded ────────────────────────────────────────────────────────
 for (const active of [null, undefined, ""]) {
   ROWS.push({
     host: "any",
@@ -268,7 +252,6 @@ for (const active of [null, undefined, ""]) {
   });
 }
 
-// ── Older Unsloth backends, i.e. an install that predates these fields ────────
 ROWS.push({
   host: "old-install",
   what: "a status with no model_identifier field falls back to the display id",
@@ -298,7 +281,6 @@ ROWS.push({
   resident: false,
 });
 
-// ── A native-lease load withholds the raw path on every version ──────────────
 ROWS.push({
   host: "native-lease",
   what: "a leased file matches the label it was granted under",
@@ -333,7 +315,6 @@ ROWS.push({
   resident: false,
 });
 
-// ── The documented false negative, pinned so it cannot drift into a true ─────
 ROWS.push({
   host: "any",
   what:
@@ -374,14 +355,8 @@ test("the matrix covers every host and backend shape it claims to", () => {
 });
 
 /**
- * A KNOWN limit, pinned here so it is a decision rather than a surprise.
- *
- * normalizeModelIdentity folds case under /mnt/<single letter>/ because that is where WSL
- * mounts a Windows drive, and Windows is case-insensitive. A Linux host with a real
- * single-letter mount point gets the same treatment, so two files there differing only in
- * case read as one. Fixing it needs a platform signal the browser does not have, and the
- * comparator is shared with the Hub, so this stays as-is: the cost is one skipped reload
- * for a path shape no Unsloth install creates on its own.
+ * Known limit: case is folded under /mnt/<letter> for WSL, which over-matches real Linux mounts.
+ * The browser has no platform signal to fix it.
  */
 test("case folding under /mnt/<letter> is WSL-shaped, and known to over-match on Linux", () => {
   assert.equal(
@@ -395,7 +370,6 @@ test("case folding under /mnt/<letter> is WSL-shaped, and known to over-match on
     ),
     true,
   );
-  // Any other Linux mount point is compared case-sensitively, as it must be.
   assert.equal(
     residentModelMatchesPick(
       {

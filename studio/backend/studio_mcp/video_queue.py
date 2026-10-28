@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Videos queued over MCP. Unsloth Studio makes one video at a time and refuses a second while one runs, so an agent submitting a shot list would have to retry each clip itself. generate_video instead queues a refused clip here, in order, and a background task per account submits each one once the video before it ends; get_job and cancel take the queue id.
-
-The queue lives only as long as the Unsloth Studio MCP server process: a restart drops every queued video that has not started. It is per account, shared by that account's keys, and an id from another account reads as unknown."""
+"""Queues videos Studio refused while busy, submitting each in order once the previous one ends; per
+account; lost on MCP server restart"""
 
 from __future__ import annotations
 
@@ -43,8 +42,9 @@ PROGRESS = "/api/inference/video/generate-progress"
 class QueuedVideo:
     id: str
     account_id: str
-    caller: Caller = field(repr = False)
-    body: dict = field(repr = False)
+    # Dropped once settled: the body can carry ~40 MiB of reference images and the caller its token.
+    caller: Optional[Caller] = field(repr = False)
+    body: Optional[dict] = field(repr = False)
     hints: Optional[dict] = field(default = None, repr = False)
     # queued, submitted, failed or cancelled.
     status: str = "queued"
@@ -143,6 +143,8 @@ def _settle(
     if waiting and item in waiting:
         waiting.remove(item)
     item.status, item.error, item.posting = status, error, False
+    # Only _submit reads these, and only while queued; a settled record answers get_job alone.
+    item.body, item.hints, item.caller = None, None, None
 
 
 async def _wait_for_running(caller: Caller) -> None:

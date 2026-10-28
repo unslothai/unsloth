@@ -1,20 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Derived HugeIcons shared between the sidebar and page tabs, so the same visual language appears everywhere.
-
 import type { IconSvgElement } from "@hugeicons/react";
 import { BubbleChatIcon, TestTube01Icon } from "@hugeicons/core-free-icons";
 
-// TestTube01Icon's last 2 paths are interior bubbles; slice to the first 3 (outline + cap + liquid line). Original export untouched.
+// Drop the last 2 paths (interior bubbles).
 export const TestTubeOutlineIcon = TestTube01Icon.slice(
   0,
   3,
 ) as typeof TestTube01Icon;
 
-// HugeIcons' own message-circle, which this icon set does not ship: BubbleChatIcon is that same
-// round bubble with a second path drawing the three dots inside it, so the first path alone is it.
-// This is the glyph for a chat anywhere in the app. Original export untouched.
+// BubbleChatIcon's first path alone is HugeIcons' message-circle, which this set lacks.
 export const MessageCircleIcon = BubbleChatIcon.slice(
   0,
   1,
@@ -36,8 +32,7 @@ export const SheetIcon: IconSvgElement = [
   ],
 ];
 
-// HugeIcons' folder-plus (stroke rounded), from @hugeicons/core-free-icons 4.3.5; the 4.1 installed
-// here predates it. The glyph for a project's sources.
+// From @hugeicons/core-free-icons 4.3.5; the installed 4.1 predates it.
 export const FolderPlusIcon: IconSvgElement = [
   [
     "path",
@@ -84,7 +79,17 @@ const speechStroke = {
   strokeWidth: "1.5",
 } as const;
 
+// Audio everywhere: ai-speech without its sparkle, the last two bars filled out (5-21, 11-15) into the space it left.
 export const AiSpeechIcon: IconSvgElement = [
+  ["path", { d: "M12 7V17", ...speechStroke, key: "0" }],
+  ["path", { d: "M16 5L16 21", ...speechStroke, key: "1" }],
+  ["path", { d: "M20 11L20 15", ...speechStroke, key: "2" }],
+  ["path", { d: "M8 3V21", ...speechStroke, key: "3" }],
+  ["path", { d: "M4 9V15", ...speechStroke, key: "4" }],
+];
+
+// Text to Speech: hugeicons' ai-speech as drawn, sparkle included.
+export const TextToSpeechIcon: IconSvgElement = [
   ["path", { d: "M12 7V17", ...speechStroke, key: "0" }],
   ["path", { d: "M16 11L16 19", ...speechStroke, key: "1" }],
   ["path", { d: "M20 11L20 14", ...speechStroke, key: "2" }],
@@ -100,18 +105,32 @@ export const AiSpeechIcon: IconSvgElement = [
   ],
 ];
 
-export const TextToSpeechIcon: IconSvgElement = [
-  ["path", { d: "M13 9L13 17", ...speechStroke, key: "0" }],
-  ["path", { d: "M17 7L17 19", ...speechStroke, key: "1" }],
-  ["path", { d: "M21 11L21 15", ...speechStroke, key: "2" }],
-  ["path", { d: "M9 15V21", ...speechStroke, key: "3" }],
-  ["path", { d: "M5 15V17", ...speechStroke, key: "4" }],
-  [
-    "path",
-    {
-      d: "M7.5 3.5V11M7.5 11H6M7.5 11H9M12 4.5C12 3.67157 11.3284 3 10.5 3H4.5C3.67157 3 3 3.67157 3 4.5",
-      ...speechStroke,
-      key: "5",
-    },
-  ],
+/** `icon` with an accent dot; colours go in `style` because HugeiconsIcon overwrites child stroke attributes. */
+export function withNoticeDot(icon: IconSvgElement): IconSvgElement {
+  return [
+    ...icon,
+    [
+      "circle",
+      {
+        cx: "19",
+        cy: "5",
+        r: "3.75",
+        key: "notice-dot",
+        style: {
+          fill: "var(--primary)",
+          stroke: "var(--icon-dot-ring, var(--sidebar))",
+          strokeWidth: 2.5,
+          paintOrder: "stroke",
+        },
+      },
+    ],
+  ] as unknown as IconSvgElement;
+}
+
+// Speedometer: open-bottom dial broken where the needle points; HugeIcons' DashboardSpeed icons are framed or half-dial.
+export const SpeedMeterIcon: IconSvgElement = [
+  ["path", { d: "M4.929 19.571A10 10 0 0 1 16.226 3.437", stroke: "currentColor", strokeLinecap: "round", strokeWidth: "1.5", key: "0" }],
+  ["path", { d: "M21.063 8.274A10 10 0 0 1 19.071 19.571", stroke: "currentColor", strokeLinecap: "round", strokeWidth: "1.5", key: "1" }],
+  ["circle", { cx: "12", cy: "12.5", r: "2.25", stroke: "currentColor", strokeWidth: "1.5", key: "2" }],
+  ["path", { d: "M13.59 10.91L18.01 6.49", stroke: "currentColor", strokeLinecap: "round", strokeWidth: "1.5", key: "3" }],
 ];

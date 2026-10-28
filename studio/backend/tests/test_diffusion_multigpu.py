@@ -339,7 +339,7 @@ def test_refine_plan_for_multigpu(monkeypatch):
     }
     monkeypatch.setattr(dm, "_loaded_component_mib", lambda pipe: sizes)
     monkeypatch.setattr(mg, "secondary_resident_limit_mib", lambda o, mode: 12750)
-    monkeypatch.setattr(mg, "best_secondary", lambda selection, probes = None: 1)
+    monkeypatch.setattr(mg, "best_secondary", lambda selection, probes = None, **_: 1)
     assert mg.refine_plan_for_multigpu(object(), plan) is plan
     with mg.selection_scope(mg.make_selection(0, [0, 1])):
         refined = mg.refine_plan_for_multigpu(object(), plan)
@@ -480,6 +480,42 @@ def test_execution_device_reports_the_primary_of_a_split_pipeline(monkeypatch):
     assert pipe.device == torch.device("cpu")
     del transformer._unsloth_split_home
     assert pipe.device == before
+
+
+def test_execution_device_reports_the_primary_of_a_split_modular_pipeline(monkeypatch):
+    """ModularPipeline reports its first component's card (the text encoder, on the secondary): step 0 device mismatch."""
+    monkeypatch.setattr(mg, "_SPLIT_EVER_PLACED", True)
+    import importlib
+
+    try:
+        diffusers = importlib.import_module("diffusers")
+    except (ImportError, RuntimeError) as exc:
+        pytest.skip(f"diffusers is not importable here: {type(exc).__name__}")
+    ModularPipeline = getattr(diffusers, "ModularPipeline", None)
+    if ModularPipeline is None:
+        pytest.skip("this diffusers has no modular pipelines")
+
+    class Mod(torch.nn.Linear):
+        @property
+        def device(self):
+            return self.weight.device
+
+    class Pipe(ModularPipeline):
+        def __init__(self, text_encoder, transformer):
+            self._component_specs = {"text_encoder": None, "transformer": None}
+            self.text_encoder = text_encoder
+            self.transformer = transformer
+
+    text_encoder = Mod(1, 1).to("meta")  # the secondary card of the split
+    transformer = Mod(1, 1)  # the primary
+    pipe = Pipe(text_encoder, transformer)
+    assert pipe.device == torch.device("meta")  # stock: the first component's card
+    mg.install_execution_device_patch()
+    transformer._unsloth_split_home = torch.device("cpu")
+    assert pipe._execution_device == torch.device("cpu")
+    assert pipe.device == torch.device("cpu")
+    del transformer._unsloth_split_home
+    assert pipe.device == torch.device("meta")  # no split: diffusers' own answer again
 
 
 def test_place_split_and_fallback(monkeypatch):
@@ -956,6 +992,30 @@ def test_offload_torch_hooks_are_stripped_from_the_replica():
     assert calls == []
 
 
+def test_the_conditioning_block_cache_stays_with_the_source():
+    """FLUX.3's conditioning-block cache lives in the source's __dict__ and holds source-card tensors; the replica gets
+    the states through the forwarded call, so a copy would stay on the source card and never be cleared."""
+    dit = _Dit()
+    states = {"temb": torch.ones(2, 4)}
+    dit.__dict__["_unsloth_cond_cache"] = {("key",): states}
+    replica = mg.build_replica(dit, torch.device("cpu"))
+    assert "_unsloth_cond_cache" not in replica.__dict__
+    assert dit.__dict__["_unsloth_cond_cache"] == {("key",): states}
+    out = replica(
+        hidden_states = torch.ones(1, 4),
+        timestep = torch.tensor(1.0),
+        encoder_hidden_states = torch.ones(1, 4),
+    )[0]
+    assert torch.equal(
+        out,
+        dit(
+            hidden_states = torch.ones(1, 4),
+            timestep = torch.tensor(1.0),
+            encoder_hidden_states = torch.ones(1, 4),
+        )[0],
+    )
+
+
 def test_predicted_branch_hits_and_stays_exact():
     torch.manual_seed(0)
     dit = _Dit()
@@ -964,7 +1024,8 @@ def test_predicted_branch_hits_and_stays_exact():
     router, _replicas = _router(dit)
     out = _cfg_loop(dit, latents.clone(), steps = 6)
     assert torch.equal(out, reference)
-    assert router.stats["predicted_hits"] == 5 and router.stats["predicted_misses"] == 0
+    # the replica's first call (it may compile) runs unpredicted, after the primary branch
+    assert router.stats["predicted_hits"] == 4 and router.stats["predicted_misses"] == 0
     assert router.stats["replica_calls"] == 5
 
 
@@ -989,7 +1050,7 @@ def test_mispredicted_branch_is_recomputed_exactly():
     router, _replicas = _router(dit)
     out = loop(5)
     assert torch.equal(out, reference)
-    assert router.stats["predicted_hits"] == 0 and router.stats["predicted_misses"] == 4
+    assert router.stats["predicted_hits"] == 0 and router.stats["predicted_misses"] == 3
     assert router.stats["replica_calls"] == 4
 
 
@@ -1013,7 +1074,7 @@ def test_inline_recomputed_scalars_are_predicted_by_value():
     router, _replicas = _router(dit)
     out = loop(6)
     assert torch.equal(out, reference)
-    assert router.stats["predicted_hits"] == 5 and router.stats["predicted_misses"] == 0
+    assert router.stats["predicted_hits"] == 4 and router.stats["predicted_misses"] == 0
 
 
 def test_bitwise_equal_on_an_expanded_scalar():
@@ -1070,7 +1131,7 @@ def test_post_load_split_keeps_the_original_plan_as_fallback(monkeypatch):
     }
     monkeypatch.setattr(dm, "_loaded_component_mib", lambda pipe: sizes)
     monkeypatch.setattr(mg, "secondary_resident_limit_mib", lambda o, mode: 12750)
-    monkeypatch.setattr(mg, "best_secondary", lambda selection, probes = None: 1)
+    monkeypatch.setattr(mg, "best_secondary", lambda selection, probes = None, **_: 1)
     with mg.selection_scope(mg.make_selection(0, [0, 1])):
         refined = mg.refine_plan_for_multigpu(object(), plan)
     assert refined.fallback_plan is plan
@@ -1116,7 +1177,7 @@ def test_post_load_split_keeps_vae_tiling(monkeypatch):
     }
     monkeypatch.setattr(dm, "_loaded_component_mib", lambda pipe: sizes)
     monkeypatch.setattr(mg, "secondary_resident_limit_mib", lambda o, mode: 12750)
-    monkeypatch.setattr(mg, "best_secondary", lambda selection, probes = None: 1)
+    monkeypatch.setattr(mg, "best_secondary", lambda selection, probes = None, **_: 1)
     with mg.selection_scope(mg.make_selection(0, [0, 1])):
         refined = mg.refine_plan_for_multigpu(object(), plan)
     assert refined.secondary_ordinal == 1
@@ -1171,7 +1232,7 @@ def test_in_place_edit_after_launch_rejects_the_prediction():
         router, _replicas = _router(dit)
         out = loop(5)
     assert torch.equal(out, reference)
-    assert router.stats["predicted_hits"] == 0 and router.stats["predicted_misses"] == 4
+    assert router.stats["predicted_hits"] == 0 and router.stats["predicted_misses"] == 3
     router.prefetched = {id(uncond): (uncond, uncond)}
     router.pending = {
         "leaves": [],
@@ -1415,6 +1476,169 @@ def test_branch_with_a_cache_object_stays_on_the_primary():
     assert mg._holds_opaque_tensors({"kv_cache": _Cache()})
 
 
+class _KVLayer:
+    """Qwen-Image-2.1's ``QwenImage21KVLayerCache``: one layer's prefix K, filled by the prefill."""
+
+    def __init__(self):
+        self.k = None
+
+
+class _KVCache:
+    """Qwen-Image-2.1's ``QwenImage21KVCache``: the per-layer holders sit in a list inside the cache object."""
+
+    def __init__(self, layers):
+        self.layer_caches = [_KVLayer() for _ in range(layers)]
+
+
+class _PrefixKVDit(_Dit):
+    """Step 0 stores the prefix K (``extract``); later steps concatenate it with the step's own (``cached``)."""
+
+    # (thread, mode, cache) per layer read; on the class, so the replica's copy logs here too
+    seen: list = []
+
+    def forward(
+        self,
+        hidden_states,
+        timestep,
+        encoder_hidden_states,
+        kv_cache = None,
+        kv_cache_mode = None,
+        return_dict = False,
+    ):
+        out = self.proj(hidden_states) * timestep
+        prefix = self.proj(encoder_hidden_states)
+        for layer in kv_cache.layer_caches:
+            self.seen.append((threading.current_thread(), kv_cache_mode, kv_cache))
+            if kv_cache_mode == "extract":
+                layer.k = prefix.clone()
+            else:
+                out = out + torch.cat([layer.k, out], dim = 0)[: out.shape[0]].sum(0)
+        return (out,)
+
+
+def _kv_render(
+    dit,
+    latents,
+    steps = 5,
+):
+    cond, neg = (
+        torch.randn(3, 4, generator = torch.Generator().manual_seed(1)),
+        torch.randn(3, 4, generator = torch.Generator().manual_seed(2)),
+    )
+    caches = (_KVCache(2), _KVCache(2))
+    for i in range(steps):
+        t = torch.tensor(1.0 - i / steps)
+        mode = "extract" if i == 0 else "cached"
+        a, b = (
+            dit(
+                hidden_states = latents,
+                timestep = t,
+                encoder_hidden_states = e,
+                kv_cache = c,
+                kv_cache_mode = mode,
+            )[0]
+            for e, c in zip((cond, neg), caches)
+        )
+        latents = latents - 0.1 * (b + 4.0 * (a - b))
+    return latents, caches
+
+
+def test_prefix_kv_cache_branch_runs_on_the_replica_against_its_own_copy():
+    torch.manual_seed(0)
+    dit = _PrefixKVDit()
+    latents = torch.randn(2, 4)
+    references = [_kv_render(dit, latents.clone())[0] for _ in range(2)]
+    router, replicas = _router(dit)
+    main = threading.current_thread()
+    for render in range(2):
+        _PrefixKVDit.seen.clear()
+        out, (cond_cache, neg_cache) = _kv_render(dit, latents.clone())
+        assert torch.equal(out, references[render])
+        assert all(th is main for th, mode, _c in _PrefixKVDit.seen if mode == "extract")
+        assert neg_cache.layer_caches[0].k is not None
+        # the replica reads its own copy, never the pipeline's (mutable) object
+        replica_caches = [c for th, mode, c in _PrefixKVDit.seen if th is not main]
+        assert replica_caches and all(
+            c is not neg_cache and c is not cond_cache for c in replica_caches
+        )
+        router.end_render()
+    assert router.describe()["disabled_reason"] is None and router.describe()["armed"]
+    assert router.stats["steps_parallel"] >= 6
+    assert router.stats["kv_cache_copies"] == 2
+    assert router.stats["kv_prefill_primary_calls"] == 2
+    assert router.kv_mirrors == {}  # dropped at end_render
+
+
+def test_prefix_kv_cache_too_large_for_the_replica_card_stays_on_the_primary(monkeypatch):
+    torch.manual_seed(0)
+    dit = _PrefixKVDit()
+    latents = torch.randn(2, 4)
+    reference = _kv_render(dit, latents.clone())[0]
+    # the replica (no weights to speak of) passes admission with exactly 1 GiB free; the cache on top of it does not
+    monkeypatch.setattr(mg, "_free_total_mib", lambda ordinal: (1024, 2048))
+    router, replicas = _router(dit)
+    copies = []
+    real_walk = mg._walk_cache
+
+    def walk(
+        obj,
+        move,
+        found,
+        depth = 0,
+    ):
+        if move is not None and depth == 0:
+            copies.append(obj)
+        return real_walk(obj, move, found, depth)
+
+    monkeypatch.setattr(mg, "_walk_cache", walk)
+    main = threading.current_thread()
+    _PrefixKVDit.seen.clear()
+    out, _caches = _kv_render(dit, latents.clone())
+    assert torch.equal(out, reference)
+    assert copies == [] and router.stats["kv_cache_copies"] == 0
+    assert router.stats["kv_cache_declined"] == 1  # probed once per cache, not per step
+    assert all(th is main for th, _mode, _c in _PrefixKVDit.seen)
+    # declined for this render only: the replica stays built and armed
+    assert replicas and router.replica is not None
+    assert router.describe()["disabled_reason"] is None
+    router.end_render()
+    assert router.kv_declined == {}
+
+
+def test_opaque_detection_sees_tensors_in_a_list_of_value_holders():
+    cache = _KVCache(2)
+    assert not mg._holds_opaque_tensors({"kv_cache": cache})  # empty before the prefill
+    cache.layer_caches[1].k = torch.ones(2)
+    assert mg._holds_opaque_tensors({"kv_cache": cache})
+    # a filled cache in cached mode is copied for the replica, the rest of the call is checked as before
+    kwargs = {"kv_cache": cache, "kv_cache_mode": "cached", "x": torch.ones(1)}
+    assert mg._prefix_kv_mode(kwargs) == "cached"
+    assert not mg._holds_opaque_tensors(mg._without_prefix_kv((), kwargs))
+    assert mg._prefix_kv_mode({**kwargs, "kv_cache_mode": "extract"}) == "extract"
+    assert mg._prefix_kv_mode({**kwargs, "kv_cache_mode": None}) is None
+    # a prefill stays on the primary even when its cache could not be copied, or is returned (FLUX.2)
+    assert mg._is_prefill({"kv_cache": object(), "kv_cache_mode": "extract"})
+    assert mg._is_prefill({"kv_cache_mode": "extract"}) and not mg._is_prefill(kwargs)
+    longer = _KVCache(2)
+    longer.layer_caches[1].k = torch.ones(3)
+    assert mg._call_signature((), kwargs) != mg._call_signature((), {**kwargs, "kv_cache": longer})
+
+
+def test_replica_failure_is_reported_in_the_status():
+    torch.manual_seed(0)
+    dit = _Dit()
+
+    def broken():
+        raise RuntimeError("no card")
+
+    router = mg.CfgParallelRouter(dit, primary = "cpu", secondary = "cpu", replica_factory = broken)
+    dit.forward = router
+    _cfg_loop(dit, torch.randn(2, 4), steps = 3)
+    info = router.describe()
+    assert info["armed"] is False and info["replica_failures"] == 1
+    assert info["disabled_reason"].startswith("replica unavailable")
+
+
 def test_split_video_request_is_guarded_on_every_card():
     from core.inference import video as vid
 
@@ -1538,7 +1762,7 @@ def test_force_mode_refines_a_resident_plan(monkeypatch):
     }
     monkeypatch.setattr(dm, "_loaded_component_mib", lambda pipe: sizes)
     monkeypatch.setattr(mg, "secondary_resident_limit_mib", lambda o, mode: 12750)
-    monkeypatch.setattr(mg, "best_secondary", lambda selection, probes = None: 1)
+    monkeypatch.setattr(mg, "best_secondary", lambda selection, probes = None, **_: 1)
     with mg.selection_scope(mg.make_selection(0, [0, 1])):
         assert mg.refine_plan_for_multigpu(object(), plan) is plan
         monkeypatch.setenv(mg.MULTIGPU_ENV, "force")
@@ -1865,7 +2089,7 @@ def test_refinement_keeps_an_explicit_cpu_offload(monkeypatch):
     }
     monkeypatch.setattr(dm, "_loaded_component_mib", lambda pipe: sizes)
     monkeypatch.setattr(mg, "secondary_resident_limit_mib", lambda o, mode: 12750)
-    monkeypatch.setattr(mg, "best_secondary", lambda selection, probes = None: 1)
+    monkeypatch.setattr(mg, "best_secondary", lambda selection, probes = None, **_: 1)
     legacy = _plan(explicit_offload = True)
     assert legacy.estimates.get("explicit_cpu_offload")
     moded = _plan(explicit_offload = True, requested_mode = "auto")
@@ -2352,6 +2576,46 @@ def test_router_stays_on_the_source_for_a_forced_eager_render_and_the_compile_th
     assert torch.equal(out, reference) and router.stats["replica_calls"] == 3
 
 
+def test_router_keeps_the_forward_signature_callers_filter_on():
+    """FLUX.3's modular denoise step filters kwargs by forward's signature; a bare router dropped img_ids/txt_ids."""
+    import inspect
+
+    class Dit(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.lin = torch.nn.Linear(4, 4)
+
+        def forward(
+            self,
+            hidden_states,
+            encoder_hidden_states = None,
+            timestep = None,
+            img_ids = None,
+            txt_ids = None,
+            return_dict = True,
+        ):
+            assert img_ids is not None and txt_ids is not None, "the ids were filtered out"
+            return (self.lin(hidden_states) + img_ids.sum() + txt_ids.sum(),)
+
+    dit = Dit()
+    router = mg.CfgParallelRouter(dit, primary = "cpu", secondary = "cpu")
+    dit.forward = router
+    fields = {"img_ids": torch.zeros(2, 4), "txt_ids": torch.zeros(3, 4), "guidance_hint": 1.0}
+    # the call diffusers' modular_pipelines/flux3/denoise.py makes
+    accepted = set(inspect.signature(dit.forward).parameters)
+    kwargs = {k: v for k, v in fields.items() if k in accepted}
+    assert sorted(kwargs) == ["img_ids", "txt_ids"]
+    x = torch.randn(1, 4)
+    out = dit(
+        hidden_states = x,
+        encoder_hidden_states = None,
+        timestep = torch.ones(1),
+        return_dict = False,
+        **kwargs,
+    )[0]
+    assert torch.equal(out, dit.lin(x))
+
+
 def test_replica_blocks_get_their_own_compile_guard():
     from core.inference.diffusion_speed import guard_compiled_blocks
 
@@ -2365,3 +2629,149 @@ def test_replica_blocks_get_their_own_compile_guard():
     guard = getattr(wrapped, "_unsloth_compile_guard", None)
     assert guard is not None and guard is not source_guard
     assert replica.__dict__.get("_unsloth_compile_guard") is guard
+
+
+def test_replica_builds_inside_inference_mode_from_torchao_int8_weights():
+    # Regression: building inside inference_mode raised "Cannot set version_counter" on torchao int8 weights.
+    pytest.importorskip("torchao")
+    from torchao.quantization import quantize_
+
+    from core.inference.diffusion_transformer_quant import TQ_INT8, _make_quant_config
+
+    torch.manual_seed(0)
+    dit = torch.nn.Sequential(torch.nn.Linear(64, 64), torch.nn.GELU(), torch.nn.Linear(64, 64))
+    with torch.no_grad():
+        quantize_(dit, _make_quant_config(TQ_INT8))
+    assert type(dit[0].weight).__module__.startswith("torchao")
+    x = torch.randn(8, 64)
+    with torch.inference_mode():
+        replica = mg.build_replica(dit, torch.device("cpu"))
+        assert torch.equal(replica(x), dit(x))
+    assert replica[0].weight is not dit[0].weight
+
+
+class _ScaleDit(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.register_buffer("scale", torch.ones(4))
+
+    def forward(
+        self,
+        hidden_states,
+        timestep,
+        encoder_hidden_states,
+        return_dict = False,
+    ):
+        return (hidden_states * self.scale * timestep + encoder_hidden_states.sum(),)
+
+
+def test_probe_sees_an_in_place_edit_of_an_inference_tensor():
+    with torch.inference_mode():
+        dit = _ScaleDit()
+        assert dit.scale.is_inference()
+    fp, probe = mg.weights_fingerprint(dit), mg.weights_probe(dit)
+    with torch.inference_mode():
+        dit.scale.mul_(3.0)
+    # no version counter on an inference tensor: the fingerprint cannot see the edit, the probe does
+    assert mg.weights_fingerprint(dit) == fp
+    assert probe is not None and mg.weights_probe(dit) != probe
+    assert mg.weights_probe(_Dit()) is None
+
+
+def test_probe_stays_inside_inference_weights_past_two_to_the_24_bytes():
+    # 3072 x 3072 bf16 = 18,874,368 bytes: a float32 linspace puts its last sample at n, one past the end
+    with torch.inference_mode():
+        dit = torch.nn.Linear(3072, 3072, bias = False, dtype = torch.bfloat16)
+        dit.weight.fill_(1.0)
+        dit.weight.view(-1)[-1] = 2.0
+    probe = mg.weights_probe(dit)
+    assert probe is not None and len(probe) == mg._PROBE_SAMPLES
+    with torch.inference_mode():
+        dit.weight.view(-1)[-1] = -2.0  # flips the high (last) byte of the last element
+    assert mg.weights_probe(dit) != probe  # the last byte is sampled
+
+
+def test_an_in_place_edit_of_inference_weights_rebuilds_the_replica_on_the_next_render():
+    with torch.inference_mode():
+        dit = _ScaleDit()
+        router, replicas = _router(dit)
+        latents = torch.randn(2, 4)
+        _cfg_loop(dit, latents.clone(), steps = 3)
+        router.end_render()
+        assert len(replicas) == 1 and router.stats["replica_rebuilds"] == 0
+        _cfg_loop(dit, latents.clone(), steps = 3)
+        router.end_render()
+        assert len(replicas) == 1  # unchanged weights: the probe matches, no rebuild
+        dit.scale.mul_(3.0)
+        _cfg_loop(dit, latents.clone(), steps = 3)
+    assert router.stats["replica_rebuilds"] == 1 and len(replicas) == 2
+    assert router.disabled_reason is None
+
+
+def test_invalidate_cfg_replica_drops_a_built_replica():
+    class Pipe:
+        pass
+
+    pipe = Pipe()
+    dit = _Dit()
+    router, replicas = _router(dit)
+    mg._CFG_ROUTERS[pipe] = router
+    try:
+        with torch.no_grad():
+            _cfg_loop(dit, torch.randn(2, 4), steps = 2)
+        assert router.replica is not None
+        assert mg.invalidate_cfg_replica(pipe, "test") is True
+        assert router.replica is None and router.stats["replica_rebuilds"] == 1
+        with torch.no_grad():
+            _cfg_loop(dit, torch.randn(2, 4), steps = 2)
+        assert len(replicas) == 2
+    finally:
+        mg._CFG_ROUTERS.pop(pipe, None)
+
+
+@pytest.mark.parametrize("dynamic", [None, False])
+def test_a_warm_signature_never_compiles_on_a_changed_number(dynamic):
+    # A warm call runs beside the other side, so it must never compile (FX tracing is process-wide up to 2.13).
+    compiles = []
+
+    def backend(gm, _example_inputs):
+        compiles.append(1)
+        return gm.forward
+
+    @torch.compile(backend = backend, dynamic = dynamic)
+    def fn(x, scale, k, kw):
+        return x * scale + k + kw["s"]
+
+    x = torch.randn(4)
+    warm: set = set()
+    calls = [
+        (1.0, 1, 0.5),
+        (2.0, 1, 0.5),
+        (3.0, 1, 0.5),
+        (3.0, 2, 0.5),
+        (3.0, 3, 0.5),
+        (4.5, 7, 0.25),
+        (4.5, 0, 0.25),
+        (4.5, 1, 0.25),
+        (4.5, 7, 0.25),
+        (5.5, 1, 0.25),
+    ]
+    for scale, k, s in calls:
+        sig = mg._call_signature((x, scale, k), {"kw": {"s": s}})
+        before = len(compiles)
+        fn(x, scale, k, {"s": s})
+        if sig in warm:
+            assert len(compiles) == before, (scale, k, s)
+        mg._note_warm(warm, sig)
+    torch._dynamo.reset()
+
+
+def test_warm_signature_keys_on_storage_offset_and_autocast():
+    base = torch.zeros(8)
+    a = mg._call_signature((base[:4],), {})
+    assert mg._call_signature((base[4:],), {}) != a
+    with torch.autocast("cpu", dtype = torch.bfloat16):
+        assert mg._call_signature((base[:4],), {}) != a
+    with torch.autocast("cpu", enabled = False, cache_enabled = False):
+        assert mg._call_signature((base[:4],), {}) != a
+    assert mg._call_signature((base[:4],), {}) == a

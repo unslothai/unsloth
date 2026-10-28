@@ -258,3 +258,24 @@ def test_per_row_and_per_tensor_scales_key_apart():
     per_tensor = cc._tensor_signature(FakeFp8([64, 256], (1,)))
     assert per_row != per_tensor
     assert "block_size=1,full" in per_row and "block_size=full,full" in per_tensor
+
+
+def _stored_fp8(fmt):
+    from core.inference.diffusion_native_quant import NATIVE_FP8, native_linear_class
+
+    m = _model()
+    lin = m[0]
+    fp8 = getattr(torch, fmt)
+    w = lin.weight.detach().float()
+    scale = w.abs().amax(dim = 1, keepdim = True) / torch.finfo(fp8).max
+    m[0] = native_linear_class()(lin, NATIVE_FP8, codes = (w / scale).to(fp8), scale = scale)
+    return m
+
+
+def test_stored_fp8_formats_key_apart_and_each_keys_stable():
+    """E4M3 and E5M2 codes decode through different integer graphs, so they never share a bundle."""
+    e4, e5 = _stored_fp8("float8_e4m3fn"), _stored_fp8("float8_e5m2")
+    assert e4[0].fp8_format == "float8_e4m3fn" and e5[0].fp8_format == "float8_e5m2"
+    assert _key(e4, "fp8") != _key(e5, "fp8")
+    assert _key(e4, "fp8") == _key(_stored_fp8("float8_e4m3fn"), "fp8")
+    assert _key(e5, "fp8") == _key(_stored_fp8("float8_e5m2"), "fp8")

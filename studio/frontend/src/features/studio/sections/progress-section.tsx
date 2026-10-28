@@ -47,11 +47,11 @@ import {
   FolderExportIcon,
   Notebook01Icon,
   RamMemoryIcon,
-  StopIcon,
   TaskDone01Icon,
   TemperatureIcon,
   ZapIcon,
 } from "@hugeicons/core-free-icons";
+import { StopIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { type ReactElement, type ReactNode, useState } from "react";
@@ -173,7 +173,6 @@ export function ProgressSection({
     await navigate({ to: "/chat" });
   };
 
-  // A finished run can be exported to GGUF: deep-link to Export with this run preselected.
   const exportRunName = data.outputDir
     ? (data.outputDir.replace(/[/\\]+$/, "").split(/[/\\]/).pop() || null)
     : null;
@@ -223,7 +222,7 @@ export function ProgressSection({
     ? data.currentGradNorm
     : (lastValue(data.gradNormHistory) ?? data.currentGradNorm);
 
-  // Prefer the run's saved snapshot when present (#6853); History shows blanks, never form values.
+  // History shows blanks, never form values.
   const cfg = configOverride ?? (isHistorical ? undefined : config);
   const cfgEpochs = cfg?.epochs;
   const cfgBatchSize = cfg?.batchSize;
@@ -237,7 +236,7 @@ export function ProgressSection({
   const cfgLoraDropout = cfg?.loraDropout;
   const cfgLoraVariant = cfg?.loraVariant;
 
-  // Mirror the training form: on Mac the MLX backend runs CUDA optimizers as AdamW.
+  // On Mac the MLX backend runs CUDA optimizers as AdamW.
   const effectiveOptimizer =
     platformDeviceType === "mac" &&
     OPTIMIZER_OPTIONS.some((o) => o.value === cfgOptimizerType)
@@ -295,7 +294,7 @@ export function ProgressSection({
             <Button
               size="sm"
               variant="outline"
-              className="h-8 gap-1.5 text-xs"
+              className="gap-1.5 text-xs"
               onClick={handleExportGguf}
             >
               <HugeiconsIcon icon={FolderExportIcon} className="size-3.5" />
@@ -306,7 +305,7 @@ export function ProgressSection({
             <Button
               size="sm"
               variant="outline"
-              className="h-8 gap-1.5 text-xs"
+              className="gap-1.5 text-xs"
               disabled={enablingDecisionApi}
               onClick={handleUseInDecisionApi}
             >
@@ -375,7 +374,7 @@ export function ProgressSection({
           )}
 
           {data.error && (
-            <p className="rounded-2xl border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-red-500 leading-relaxed">
+            <p className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-red-500 leading-relaxed">
               {data.error}
             </p>
           )}
@@ -383,7 +382,7 @@ export function ProgressSection({
           {data.warnings.length > 0 && (
             <div
               aria-live="polite"
-              className="flex gap-2 rounded-2xl border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs leading-relaxed text-amber-700 dark:text-amber-300"
+              className="flex gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs leading-relaxed text-amber-700 dark:text-amber-300"
             >
               <HugeiconsIcon
                 icon={Alert02Icon}
@@ -486,7 +485,7 @@ function LiveGpuPanel({
               onChange={(e) => setSelectedGpu(Number(e.target.value))}
               // At the 16px coarse-pointer floor a 24px box clips descenders, and a long
               // device name widens the row past the viewport.
-              className="h-6 cursor-pointer rounded-md border border-border bg-popover px-1.5 py-0.5 text-ui-11 text-popover-foreground outline-none hover:bg-muted focus:border-ring transition-colors font-medium appearance-none pointer-coarse:h-auto pointer-coarse:min-w-0 pointer-coarse:max-w-full"
+              className="h-6 cursor-pointer rounded-full border border-border bg-popover px-1.5 py-0.5 text-ui-11 text-popover-foreground outline-none hover:bg-muted focus:border-ring transition-colors font-medium appearance-none pointer-coarse:h-auto pointer-coarse:min-w-0 pointer-coarse:max-w-full"
               title="Select GPU"
             >
               {gpus.map((device, index) => (
@@ -625,7 +624,7 @@ function ConfigPopoverButton({
           <p className="text-xs font-semibold">{t("studio.progress.configLabel")}</p>
           {configItems.map((group) => (
             <div key={group.section} className="flex flex-col gap-1">
-              <p className="text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground">
+              <p className="text-ui-11 font-semibold text-muted-foreground">
                 {group.section}
               </p>
               {group.rows.map(([label, value]) => (
@@ -682,7 +681,7 @@ function TrainingHeaderActions({
           variant="destructive"
           size="sm"
           className={cn(
-            "h-8 rounded-full px-3.5 text-xs shadow-sm",
+            "rounded-full text-xs shadow-sm",
             stopRequested ? "cursor-not-allowed opacity-60" : "cursor-pointer",
           )}
           onClick={() => onOpenStopDialog(true)}
@@ -734,11 +733,11 @@ function MilestoneCallout({
   }
 
   return (
-    <div className="corner-squircle rounded-2xl border border-border/60 bg-muted/30 px-3 py-2.5">
+    <div className="corner-squircle rounded-lg border border-border/60 bg-muted/30 px-3 py-2.5">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           {!showCompletedHint && (
-            <p className="text-ui-10 font-medium uppercase tracking-[0.12em] text-muted-foreground">
+            <p className="text-ui-11 font-medium text-muted-foreground">
               {t("studio.training.milestone")}
             </p>
           )}
@@ -833,7 +832,7 @@ function GpuStat({
   }
 
   return (
-    <div className="corner-squircle flex flex-col gap-2 rounded-2xl border border-border/50 bg-background/60 p-3">
+    <div className="corner-squircle flex flex-col gap-2 rounded-lg border border-border/50 bg-background/60 p-3">
       <div className="flex items-center justify-between text-xs">
         <span className="flex items-center gap-1.5 text-muted-foreground">
           {icon}

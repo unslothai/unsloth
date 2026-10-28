@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Triton-fused GroupNorm / channel RMS norm for eagerly decoded image and video VAEs.
-
-CUDA GroupNorm has no channels-last kernel, so every norm copies NHWC <-> NCHW; these kernels read any layout,
-write channels-last with fp32 statistics. ``install(vae)`` patches instances (never classes), each falling back
-to stock on a new exception. NVIDIA CUDA + Triton >= 3.3 only; ``UNSLOTH_VAE_FUSED=0`` disables.
-"""
+"""Triton GroupNorm/RMS norm for eager VAE decode (NVIDIA CUDA, Triton>=3.3); patches instances
+never classes; falls back to stock on new exception; UNSLOTH_VAE_FUSED=0 off"""
 
 from __future__ import annotations
 
@@ -16,6 +12,8 @@ import threading
 import types
 from functools import lru_cache
 from typing import Any, Optional
+
+from .rocm_bf16 import is_rocm_torch
 
 VAE_FUSED_ENV = "UNSLOTH_VAE_FUSED"
 _FALSE = ("0", "false", "no", "off")
@@ -51,8 +49,7 @@ def _toolchain_ok() -> bool:
         return True
 
 
-# Loop-bound-only args are not specialized (else ~70 JIT variants on a tiled Wan decode); strides and C stay
-# specialized so channel-contiguous loads vectorize.
+# Loop-bound args not specialized (avoids ~70 JIT variants); strides and C stay specialized so channel-contiguous loads vectorize.
 _SHAPE_ARGS = {
     "_rms_act": ("T", "H", "W", "Ho", "Wo", "ph", "pw", "To", "front", "n_cache"),
     "_bias_residual": ("P", "T", "HW", "W"),
@@ -454,7 +451,7 @@ def runtime_ok() -> bool:
         import torch
     except Exception:  # noqa: BLE001
         return False
-    if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
+    if not torch.cuda.is_available() or is_rocm_torch(torch):
         return False
     return _triton_version_ok() and _toolchain_ok() and _kernels() is not None
 
@@ -901,9 +898,7 @@ def _fast_wan_attention(block: Any) -> Any:
     def fast(x: Any) -> Any:
         identity = x
         b, c, t, h, w = x.shape
-        y = rms_norm_act(
-            x, block.norm, False
-        )  # (b, c, t, h, w) channels-last_3d: (b, t, h, w, c) in memory
+        y = rms_norm_act(x, block.norm, False)
         y = y.permute(0, 2, 1, 3, 4).reshape(b * t, c, h, w)  # a channels-last view, no copy
         qkv = F.conv2d(y, block.to_qkv.weight, block.to_qkv.bias)
         qkv = qkv.permute(0, 2, 3, 1).reshape(b * t, h * w, 3 * c)
@@ -992,10 +987,7 @@ def _guard(
     logger: Any,
     oom_stock: bool = False,
 ) -> None:
-    """``module.forward = fast`` until it raises something ``stock`` does not; then stock for good.
-
-    Causal-cache state is snapshotted and restored before the stock retry so a half-failed fast path cannot desync
-    the decode. ``oom_stock``: an OOM retries stock for that call only."""
+    """Falls back to stock for good once fast raises what stock does not; causal-cache state is restored before the stock retry; OOM retries stock once."""
 
     def forward(*args, **kwargs):
         if getattr(module, "_unsloth_vae_fused_failed", False):
@@ -1077,14 +1069,18 @@ def _fast_norm(norm: Any, act: bool) -> Any:
     return fast
 
 
-def install_group_norm_vae(vae: Any, logger: Any = None) -> int:
+def install_group_norm_vae(
+    vae: Any,
+    logger: Any = None,
+    encoder: bool = True,
+) -> int:
     """Patch every eligible ResnetBlock2D / GroupNorm of a 2-D (AutoencoderKL-family) VAE. Returns patch count."""
     torch = _torch()
     if vae is None or not runtime_ok():
         return 0
     n = 0
     fused_act_norms = set()
-    for part_name in ("encoder", "decoder"):
+    for part_name in ("encoder", "decoder") if encoder else ("decoder",):
         part = getattr(vae, part_name, None)
         if part is None:
             continue
@@ -1161,7 +1157,6 @@ def uninstall(vae: Any) -> None:
 
 
 _WAN_VAES = frozenset({"AutoencoderKLWan", "AutoencoderKLQwenImage", "AutoencoderKLQwenImage21"})
-_CACHE_T = 2
 
 
 def _is_rms(norm: Any) -> bool:
@@ -1375,13 +1370,17 @@ def _fast_wan_residual_up(block: Any) -> Any:
     return fast
 
 
-def install_wan_vae(vae: Any, logger: Any = None) -> int:
+def install_wan_vae(
+    vae: Any,
+    logger: Any = None,
+    encoder: bool = True,
+) -> int:
     """Patch the residual blocks, causal convs and output heads of a Wan-lineage VAE. Returns patch count."""
     torch = _torch()
     if vae is None or not runtime_ok():
         return 0
     n = 0
-    for part_name in ("encoder", "decoder"):
+    for part_name in ("encoder", "decoder") if encoder else ("decoder",):
         part = getattr(vae, part_name, None)
         if part is None:
             continue
@@ -1484,12 +1483,15 @@ _TILE_PEAK_FACTOR = 24
 
 
 def _tile_batch_cap(vae: Any, z: Any) -> int:
-    """Tiles per decoder call: env override, else what half the free VRAM holds, at most 4."""
+    """Tiles per decoder call."""
     raw = os.environ.get(TILE_BATCH_ENV, "").strip()
     if raw.isdigit() and int(raw) > 0:
         return int(raw)
     try:
-        free, _ = _torch().cuda.mem_get_info(z.device)
+        from .diffusion_memory import user_budget_reserve_bytes
+
+        free, total = _torch().cuda.mem_get_info(z.device)
+        free = max(0, int(free) - user_budget_reserve_bytes(z.device, total))
         norm_out = getattr(getattr(vae, "decoder", None), "norm_out", None)
         c_last = int(norm_out.gamma.numel()) if norm_out is not None else 128
         px = int(vae.tile_sample_min_height) * int(vae.tile_sample_min_width)
@@ -1617,9 +1619,7 @@ def _wan_batched_tiled_decode(
     if patch is not None:
         from diffusers.models.autoencoders.autoencoder_kl_wan import unpatchify
         dec = unpatchify(dec, patch_size = patch)
-    if (
-        clamp
-    ):  # as the class's stock tiled_decode: Wan and Qwen-Image-2.1 clamp, Qwen-Image does not
+    if clamp:  # as stock tiled_decode: Wan and Qwen-Image-2.1 clamp, Qwen-Image does not
         dec = torch.clamp(dec, min = -1.0, max = 1.0)
     if not return_dict:
         return (dec,)
@@ -1810,12 +1810,16 @@ def _hv_causal_mask(
     return mask
 
 
-def install_hv15_vae(vae: Any, logger: Any = None) -> int:
+def install_hv15_vae(
+    vae: Any,
+    logger: Any = None,
+    encoder: bool = True,
+) -> int:
     torch = _torch()
     if vae is None or not runtime_ok():
         return 0
     n = 0
-    for part_name in ("encoder", "decoder"):
+    for part_name in ("encoder", "decoder") if encoder else ("decoder",):
         part = getattr(vae, part_name, None)
         if part is None:
             continue
@@ -2114,16 +2118,20 @@ def install(
     vae: Any,
     logger: Any = None,
     level: str = "fused",
+    encoder: bool = True,
 ) -> int:
-    """Install every fused path that applies to ``vae``'s class. Returns the number of patched modules."""
+    """Install every fused path that applies to ``vae``'s class. Returns the number of patched modules.
+
+    ``encoder=False`` patches the decoder only, for a family whose denoising attends to the encoded conditioning clip at
+    every step, which amplifies the fused passes' rounding into a different sample (video_families.vae_fused_encoder)."""
     if vae is None or not will_install(vae):
         return 0
     done = getattr(vae, "_unsloth_vae_fused_installed", 0)
     if done:
         return done  # idempotent: a dual-DiT family runs the speed layer once per expert over the same VAE
-    n = _install(vae, logger)
+    n = _install(vae, logger, encoder)
     if not n and type(vae).__name__ not in SUPPORTED_VAES:
-        n = install_structural(vae, logger)
+        n = install_structural(vae, logger)  # decoder only, so it honours encoder=False as is
         if n:
             vae._unsloth_vae_fused_structural = True
     # Only where measured faster, and only when a fused pass feeds a conv (relaid weights alone slow LTX-2's decode).
@@ -2142,16 +2150,20 @@ def install(
     return n
 
 
-def _install(vae: Any, logger: Any = None) -> int:
+def _install(
+    vae: Any,
+    logger: Any = None,
+    encoder: bool = True,
+) -> int:
     name = type(vae).__name__
     if name in ("AutoencoderKL", "AutoencoderKLFlux2"):
-        n = install_group_norm_vae(vae, logger)
+        n = install_group_norm_vae(vae, logger, encoder)
         return n + (install_vectorised_blend(vae) if n else 0)
     if name in _WAN_VAES:
-        n = install_wan_vae(vae, logger)
+        n = install_wan_vae(vae, logger, encoder)
         return n + (install_vectorised_blend(vae) if n else 0)
     if name == "AutoencoderKLHunyuanVideo15":
-        n = install_hv15_vae(vae, logger)
+        n = install_hv15_vae(vae, logger, encoder)
         return n + (install_vectorised_blend(vae) if n else 0)
     if name == "AutoencoderKLLTX2Video":
         if not _ltx2_convs_fusable(vae):

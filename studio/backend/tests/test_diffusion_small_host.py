@@ -1,17 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Small-host load route (``diffusion_small_host.py``): host-RAM pre-check, decision table, the memory-mapped
-conversions, and the plan the route pins.
-
-Sizes are the ones a Kaggle T4 (fp16 only, 15 GB, 31 GB host RAM) sees: FLUX.1-schnell stores a 22.7 GB bf16
-transformer and an 8.9 GB bf16 T5; Qwen-Image a 38.9 GB transformer and a 15.8 GB Qwen2.5-VL. CPU only.
-"""
+"""Small-host load route checks, sized to a Kaggle T4 (15 GB GPU, 31 GB host RAM); CPU only."""
 
 from __future__ import annotations
 
 import json
 import struct
+import sys
 import types
 
 import pytest
@@ -61,7 +57,6 @@ def _decide(
 def test_flux1_on_a_31gb_fp16_host_takes_the_route():
     d = _decide(FLUX1)
     assert d.engaged and d.refuse is None
-    # only the large bf16 components load memory-mapped; the fp32 CLIP and VAE convert as before
     assert d.storage_dtypes == {"transformer": "bfloat16", "text_encoder_2": "bfloat16"}
     assert d.dense_host_mib > KAGGLE_AVAILABLE
     assert d.route_host_mib == 22700 // 2
@@ -75,7 +70,6 @@ def test_unet_and_large_vae_are_budgeted_at_their_converted_size():
     }
     d = _decide(comps, total = 8 * 1024, available = 6000)
     assert d.engaged
-    # only a DiT is stored as int8; the UNet and VAE convert dense on the host, the encoder stays memory-mapped
     assert d.route_host_mib == 4900 + 600
     assert d.refuse is not None
     assert (
@@ -92,7 +86,6 @@ def test_qwen_image_fp32_promoted_takes_the_route():
 
 def test_large_host_and_bf16_cards_are_untouched():
     assert not _decide(FLUX1, total = 230 * 1024, available = 220 * 1024).engaged
-    # bf16 compute loads a bf16 repo memory-mapped already: never routed, whatever the host
     assert not _decide(FLUX1, dtype = torch.bfloat16).engaged
     assert not _decide(FLUX1, device = "mps").engaged
     assert not _decide({"transformer": sh.StoredComponent("transformer", 9000, "float16")}).engaged
@@ -110,6 +103,179 @@ def test_refuses_before_loading_when_even_the_route_cannot_fit(monkeypatch):
     assert d.engaged and d.refuse and "Not enough system RAM" in d.refuse
     monkeypatch.setenv(sh.HOST_RAM_CHECK_ENV, "0")
     assert _decide(QWEN, dtype = torch.float32, total = 16 * 1024, available = 14000).refuse is None
+
+
+# #14513: Qwen-Image GGUF on a 48 GB Windows host with a 16 GB fixed pagefile. The GGUF DiT is already built (and
+# already out of both readings), so only the 16.7 GB bf16 encoder converts; its fp16 load committed ~2x dense.
+QWEN_GGUF_COMPANIONS = {
+    "text_encoder": sh.StoredComponent("text_encoder", 16717, "bfloat16"),
+    "vae": sh.StoredComponent("vae", 242, "bfloat16"),
+}
+WIN_TOTAL = 48 * 1024
+
+
+def test_windows_commit_headroom_routes_a_dense_load_that_fits_physical_ram():
+    # physical RAM alone says the dense load fits, which is what crashed
+    base = _decide(QWEN_GGUF_COMPANIONS, total = WIN_TOTAL, available = 30 * 1024)
+    assert not base.engaged and base.dense_commit_mib == 2 * base.dense_host_mib
+    d = _decide(
+        QWEN_GGUF_COMPANIONS, total = WIN_TOTAL, available = 30 * 1024, host_commit_mib = 30 * 1024
+    )
+    assert d.engaged and d.refuse is None and d.commit_mib == 30 * 1024
+    assert d.storage_dtypes == {"text_encoder": "bfloat16"}
+    assert "commit headroom" in d.reason
+    # enough commit for the source views plus the converted copy: dense, as before
+    d = _decide(
+        QWEN_GGUF_COMPANIONS, total = WIN_TOTAL, available = 30 * 1024, host_commit_mib = 50 * 1024
+    )
+    assert not d.engaged and "commit headroom" in d.reason
+
+
+def test_pread_read_components_need_no_source_view_commit():
+    # with the encoder read through pread (Windows, safetensors >= 0.8), the #14513 load commits ~one fp16 copy and
+    # stays dense on the reporter's headroom; a diffusers-loaded or mmap-read component still counts its view
+    te = sh.StoredComponent("text_encoder", 16717, "bfloat16", 0, "transformers")
+    comps = {"text_encoder": te, "vae": QWEN_GGUF_COMPANIONS["vae"]}
+    mapped = _decide(comps, total = WIN_TOTAL, available = 30 * 1024, host_commit_mib = 30 * 1024)
+    read = _decide(
+        comps,
+        total = WIN_TOTAL,
+        available = 30 * 1024,
+        host_commit_mib = 30 * 1024,
+        pread_libraries = ("transformers",),
+    )
+    assert mapped.engaged and not read.engaged
+    assert read.dense_commit_mib == read.dense_host_mib
+    dit = {"transformer": sh.StoredComponent("transformer", 20000, "bfloat16", 0, "diffusers")}
+    d = _decide(dit, total = 128 * 1024, available = 100 * 1024, pread_libraries = ("transformers",))
+    assert d.dense_commit_mib == 2 * d.dense_host_mib
+
+
+def test_stored_components_record_the_loading_library(tmp_path):
+    from safetensors.torch import save_file
+
+    (tmp_path / "model_index.json").write_text(
+        json.dumps(
+            {
+                "text_encoder": ["transformers", "Qwen2_5_VLForConditionalGeneration"],
+                "vae": ["diffusers", "X"],
+            }
+        )
+    )
+    for name in ("text_encoder", "vae", "transformer"):
+        (tmp_path / name).mkdir()
+        save_file(
+            {"w": torch.zeros(8, 8, dtype = torch.bfloat16)},
+            str(tmp_path / name / "model.safetensors"),
+        )
+    comps = sh.stored_components(tmp_path)
+    assert comps["text_encoder"].library == "transformers"
+    assert comps["vae"].library == "diffusers"
+    assert comps["transformer"].library == ""
+
+
+def test_commit_headroom_only_routes_and_never_refuses():
+    # the route's refusal stays on physical RAM: commit can grow with a system-managed pagefile
+    d = _decide(QWEN_GGUF_COMPANIONS, total = WIN_TOTAL, available = 30 * 1024, host_commit_mib = 0)
+    assert d.engaged and d.refuse is None
+    d = _decide(QWEN_GGUF_COMPANIONS, total = WIN_TOTAL, available = 4000, host_commit_mib = 60 * 1024)
+    assert d.engaged and d.refuse and "Not enough system RAM" in d.refuse
+
+
+def test_unreadable_commit_keeps_every_decision():
+    # Linux / macOS (and an unreadable Windows counter) pass None: byte-identical decisions to the physical check
+    for comps, dtype, total, available, lora in [
+        (FLUX1, torch.float16, KAGGLE_TOTAL, KAGGLE_AVAILABLE, False),
+        (FLUX1, torch.float16, 64 * 1024, 58 * 1024, False),
+        (FLUX1, torch.float16, KAGGLE_TOTAL, KAGGLE_AVAILABLE, True),
+        (QWEN, torch.float32, 16 * 1024, 14000, False),
+        (QWEN_GGUF_COMPANIONS, torch.float16, WIN_TOTAL, 30 * 1024, False),
+    ]:
+        a = _decide(comps, dtype, total, available, lora_active = lora)
+        b = _decide(comps, dtype, total, available, lora_active = lora, host_commit_mib = None)
+        assert (a.engaged, a.refuse, a.reason, a.storage_dtypes) == (
+            b.engaged,
+            b.refuse,
+            b.reason,
+            b.storage_dtypes,
+        )
+    # FLUX.1 fp16 with 58 GB free on a 64 GB host stays dense (no transient margin on the physical side)
+    assert not _decide(FLUX1, total = 64 * 1024, available = 58 * 1024).engaged
+
+
+def test_lora_with_tight_commit_keeps_the_dense_denoiser():
+    d = _decide(
+        FLUX1, total = 128 * 1024, available = 100 * 1024, host_commit_mib = 20 * 1024, lora_active = True
+    )
+    assert (
+        not d.engaged and d.refuse is None and "LoRA" in d.reason and "commit headroom" in d.reason
+    )
+
+
+def test_host_ram_limit_env_caps_the_guard_view(monkeypatch):
+    monkeypatch.setattr(dm, "_host_ram_capacity_mib", lambda: 32000)
+    monkeypatch.setattr(dm, "_available_system_memory_mib", lambda: 20000)
+    monkeypatch.setattr(dm, "_windows_commit_headroom_mib", lambda: 25000)
+    monkeypatch.setenv(sh.HOST_RAM_LIMIT_ENV, "6144")
+    assert sh.host_ram_mib() == (6144, 6144)
+    assert sh.host_commit_mib() == 6144
+    monkeypatch.setenv(sh.HOST_RAM_LIMIT_ENV, "90000")
+    assert sh.host_ram_mib() == (32000, 20000)
+    assert sh.host_commit_mib() == 25000
+    monkeypatch.setenv(sh.HOST_RAM_LIMIT_ENV, "not-a-number")
+    assert sh.host_ram_mib() == (32000, 20000)
+    # no commit reading (Linux / macOS) stays None under the hook
+    monkeypatch.setattr(dm, "_windows_commit_headroom_mib", lambda: None)
+    monkeypatch.setenv(sh.HOST_RAM_LIMIT_ENV, "6144")
+    assert sh.host_commit_mib() is None
+
+
+def test_windows_commit_headroom_reader_reports_a_value_on_windows():
+    # the reader once called an unexported kernel32 name and silently returned None, leaving the guard on the
+    # physical reading; on Windows it must reach the real API, elsewhere None is by design
+    if sys.platform != "win32":
+        assert dm._windows_commit_headroom_mib() is None
+        return
+    value = dm._windows_commit_headroom_mib()
+    assert value is not None and value >= 0
+
+
+def test_the_pipeline_decision_passes_the_commit_headroom_and_logs_a_dense_decision(
+    tmp_path, monkeypatch
+):
+    from core.inference import diffusion as dif
+
+    records = []
+
+    class _LogSpy:
+        def info(self, event, *args):
+            records.append(event % args if args else event)
+
+    monkeypatch.setattr(dif, "host_ram_mib", lambda: (WIN_TOTAL, 30 * 1024))
+    monkeypatch.setattr(dif, "stored_components", lambda snapshot: dict(QWEN_GGUF_COMPANIONS))
+    monkeypatch.setattr(dif, "logger", _LogSpy())
+
+    monkeypatch.setattr(dif, "pread_available", lambda: False)
+
+    def decide(commit):
+        monkeypatch.setattr(dif, "host_commit_mib", lambda: commit)
+        return dif.DiffusionBackend()._small_host_decision(
+            str(tmp_path),
+            {"transformer": object()},
+            types.SimpleNamespace(device = "cuda"),
+            torch.float16,
+            lora_active = False,
+        )
+
+    d = decide(None)
+    assert not d.engaged and d.refuse is None
+    assert records[-1] == f"diffusion.small_host: engaged=False ({d.reason})"
+    d = decide(30 * 1024)
+    assert d.engaged and d.refuse is None and d.commit_mib == 30 * 1024
+    assert (
+        records[-1].startswith("diffusion.small_host: engaged=True (")
+        and "commit headroom" in records[-1]
+    )
 
 
 def test_lora_keeps_the_dense_load():
@@ -176,7 +342,7 @@ def test_t5_kept_fp32_layers_are_budgeted_and_variants_ignored(tmp_path):
         "transformer": sh.StoredComponent("transformer", 4000, "bfloat16"),
         "text_encoder_2": sh.StoredComponent("text_encoder_2", 9084, "bfloat16", 1920),
     }
-    # the streamed encoder's ``wo`` converts to fp32 on the host: 1920 MiB stored -> 3840 MiB loaded
+    # the streamed encoder's wo converts to fp32 on the host: 1920 MiB stored -> 3840 MiB
     assert _decide(tiny).route_host_mib == 2000 + 3840
 
 
@@ -209,7 +375,7 @@ def test_streamed_encoder_keeps_linear_storage_and_reports_compute_dtype():
             self.wo = torch.nn.Linear(128, 64, bias = False)
 
         def forward(self, x):
-            # T5's pattern: the parent reads wo.weight.dtype BEFORE wo runs
+            # T5's pattern: the parent reads wo.weight.dtype before wo runs
             h = self.wi(x)
             return self.wo(h.to(self.wo.weight.dtype))
 
@@ -221,7 +387,7 @@ def test_streamed_encoder_keeps_linear_storage_and_reports_compute_dtype():
             self.embed = torch.nn.Embedding(100, 64)
             self.block = Block()
             self.norm = torch.nn.LayerNorm(64)
-            # computed at init, never stored: fp32 in the dense fp16 load too (RoPE inv_freq)
+            # init-time buffer (RoPE inv_freq): fp32 even in the dense fp16 load
             self.register_buffer("inv_freq", torch.rand(8), persistent = False)
 
         @property
@@ -234,9 +400,7 @@ def test_streamed_encoder_keeps_linear_storage_and_reports_compute_dtype():
     torch.manual_seed(0)
     enc = Enc()
     for p in enc.parameters():
-        p.data = p.data.to(
-            torch.bfloat16
-        )  # the stored-dtype load: parameters bf16, init-time buffers fp32
+        p.data = p.data.to(torch.bfloat16)
     dense = Enc()
     dense.load_state_dict({k: v.float() for k, v in enc.state_dict().items()})
     dense.inv_freq = enc.inv_freq.clone()
@@ -252,15 +416,15 @@ def test_streamed_encoder_keeps_linear_storage_and_reports_compute_dtype():
     sh.prepare_streamed_encoder_(enc, torch.float32)
     # the first float parameter's owner converts so .dtype reports the compute dtype
     assert enc.dtype == torch.float32
-    assert enc.block.wi.weight.dtype == torch.bfloat16  # memory-mapped storage stays
+    assert enc.block.wi.weight.dtype == torch.bfloat16
     assert (
         HookRegistry.check_if_exists_or_initialize(enc.block.wi).get_hook("layerwise_casting")
         is not None
     )
-    assert enc.block.wo.weight.dtype == torch.float32  # kept-fp32 converts now
+    assert enc.block.wo.weight.dtype == torch.float32
     ids = torch.randint(0, 100, (2, 7))
     with torch.no_grad():
-        assert torch.equal(enc(ids), dense(ids))  # bf16 -> fp32 is exact
+        assert torch.equal(enc(ids), dense(ids))
 
 
 def _group_plan(**kw):
@@ -298,7 +462,6 @@ def test_route_plan_streams_encoders_and_keeps_what_fits(monkeypatch):
     plan = DiffusionBackend._small_host_plan(None, pipe, _group_plan(), None, log)
     assert plan.offload_policy == dm.OFFLOAD_GROUP and plan.stream_text_encoders
     assert plan.stream_transformer and plan.resident_transformer_mib == 12599 - 3072 - 2048 - 160
-    # a plan that already keeps everything resident, or a pipe the route did not touch, is left alone
     none = _group_plan(offload_policy = dm.OFFLOAD_NONE)
     assert DiffusionBackend._small_host_plan(None, pipe, none, None, log) is none
     other = _group_plan()

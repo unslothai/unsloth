@@ -213,8 +213,7 @@ def list_transcripts(
 
 
 def set_archived(transcript_id: str, archived: bool) -> dict | None:
-    # No require_file_lock, as audio_gallery.set_flags: only clear(), which DELETES on a
-    # flag, has to fail closed when the lock is unavailable.
+    # No require_file_lock, as audio_gallery.set_flags: only clear() must fail closed without it.
     directory = gallery_dir()
     with gallery_flags.exclusive(directory):
         record = _read(directory, transcript_id)

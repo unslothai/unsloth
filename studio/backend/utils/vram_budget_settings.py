@@ -1,14 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Persisted VRAM budget fraction: how much of each GPU a load may claim.
-
-The fit reserves a slice of every card the model and KV cache may not use, covering fragmentation, the per-device CUDA context and MoE routing. That slice was two hard-coded 0.97 constants in ``core.inference.llama_cpp`` (``_CTX_FIT_VRAM_FRACTION``, ``_GPU_PIN_VRAM_FRACTION``), so the only way to trade it for context was to edit the source.
-
-Raising the fraction hands the reserve back as context and the load can then OOM, which llama.cpp takes as a hard crash rather than a graceful degrade; lowering it pushes tight fits into CPU offload, which is what 0.90 did in #5106. Neither direction is free, so the default stays exactly where it was and an unset budget must resolve to ``VRAM_FRACTION_DEFAULT``.
-
-Precedence, matching ``openai_auto_switch_settings``: a stored value wins, the environment is a standalone startup default, the constant is the last resort.
-"""
+"""Persisted fraction of each GPU a load may claim; the rest is reserved for fragmentation, the CUDA
+context and MoE routing. Raising it risks llama.cpp OOM, lowering it pushes tight fits to CPU
+offload. Stored value beats the environment, which beats VRAM_FRACTION_DEFAULT."""
 
 from __future__ import annotations
 
@@ -24,7 +19,8 @@ VRAM_BUDGET_SETTING_KEY = "vram_budget_fraction"
 VRAM_FRACTION_ENV_VAR = "UNSLOTH_VRAM_FRACTION"
 
 # Mirrored in per-model-config.ts as percent for the slider, a pair test_vram_budget_settings.py pins together. The default is the historical _CTX_FIT_VRAM_FRACTION / _GPU_PIN_VRAM_FRACTION.
-VRAM_FRACTION_MIN = 0.80
+# 0.10, not 0: at 0 every GGUF load runs on the CPU. vLLM / SGLang cannot offload and keep engine_adapters.MANAGED_ENGINE_BUDGET_FLOOR.
+VRAM_FRACTION_MIN = 0.10
 VRAM_FRACTION_MAX = 1.00
 VRAM_FRACTION_DEFAULT = 0.97
 
@@ -35,8 +31,7 @@ VRAM_FRACTION_DECIMALS = 3
 _CACHE_TTL_S = 2.0
 _cache_lock = threading.Lock()
 _cache: dict[tuple[str, str], tuple[float, Any]] = {}
-# Bumped on every write: a read that began before it must not cache its stale value, or the new
-# budget appears to revert for the rest of the TTL.
+# Bumped on every write so a read that began earlier does not cache a stale value.
 _generation: dict[tuple[str, str], int] = {}
 
 # Retries converge; the bound only stops a write storm spinning here forever.

@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Recipe strings that become path segments must not hold a path separator: column names become
-`<tmp>/<record id>_<column>.py` in the code validator, and GitHub seed repo names become
-`<base>/<owner>__<name>` in the scraper."""
+"""Recipe strings that become path segments stay inside their folder: column names
+(`<tmp>/<record id>_<column>.py`, sanitized), processor names (`processors-files/<name>/`) and
+GitHub seed repo names (`<base>/<owner>__<name>`)."""
 
 import sys
 import types
@@ -20,44 +20,127 @@ _PLUGIN_SRC = _BACKEND / "plugins/data-designer-github-repo-seed/src"
 _B = chr(92)
 
 _ESCAPING_NAMES = ["x/../../marker", ".." + _B + ".." + _B + "x"]
+_SLASH_NAMES = ["pros/cons", "input/output", "Q/A", "a" + _B + "b"]
 
 
-@pytest.mark.parametrize("name", _ESCAPING_NAMES)
-def test_a_column_name_that_names_a_path_is_refused(name):
-    recipe = {"columns": [{"name": name, "column_type": "expression", "expr": "1"}]}
-    # build_config_builder is what validate, preview and the job worker all call.
-    with pytest.raises(ValueError):
-        service.build_config_builder(recipe)
-
-
-@pytest.mark.parametrize("name", _ESCAPING_NAMES)
-def test_a_validator_target_that_names_a_path_is_refused(name):
-    # The target can be a seed column whose name comes from the seed file, not from `columns`.
+@pytest.mark.parametrize(
+    "name", _SLASH_NAMES + _ESCAPING_NAMES + ["answer", "a.b", "Step 1: answer"]
+)
+def test_any_column_or_validator_target_name_passes(name):
     column = {
         "name": "lint",
         "column_type": "validation",
         "validator_type": "code",
-        "validator_params": {"code_lang": "python"},
         "target_columns": ["code", name],
     }
-    with pytest.raises(ValueError):
-        service.build_config_builder({"columns": [column]})
+    service.validate_recipe_names(
+        {"columns": [{"name": name}, column], "processors": [{"name": "drop"}]}
+    )
 
 
-@pytest.mark.parametrize("name", [".", ".."])
-def test_a_dot_only_processor_name_is_refused(name):
-    # Data Designer writes processor batches under processors-files/<name>/.
+@pytest.mark.parametrize("name", ["drop", "drop.v2", "pros and cons"])
+def test_a_single_folder_processor_name_passes(name):
+    service.validate_recipe_names(
+        {"processors": [{"name": name, "processor_type": "schema_transform"}]}
+    )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        ".",
+        "..",
+        "../x",
+        "a/../../x",
+        ".." + _B + "x",
+        "/etc/x",
+        _B + "x",
+        "C:x",
+        "c:" + _B + "x",
+        "pros/cons",
+        "a/b/c",
+        "x/../y",
+        "a" + _B + "b",
+    ],
+)
+def test_a_processor_name_that_is_not_one_folder_is_refused(name):
+    # Data Designer writes processor batches under processors-files/<name>/ and previews to
+    # processors-files/<name>.parquet without creating a nested parent.
     recipe = {"processors": [{"name": name, "processor_type": "schema_transform"}]}
     with pytest.raises(ValueError):
         service.validate_recipe_names(recipe)
 
 
-@pytest.mark.parametrize("name", ["answer", "code_v2", "a.b", "Question 1", "Step 1: answer"])
-def test_ordinary_column_names_pass(name):
-    service.validate_recipe_names({"columns": [{"name": name}], "processors": [{"name": "drop"}]})
+@pytest.fixture
+def python_validator(monkeypatch):
+    # The two methods below are data_designer 0.5.4's PythonValidator, verbatim: the patch must keep
+    # writing and reading back the same module name.
+    class PythonValidator:
+        def _write_code_to_file(self, row, code_column, path):
+            with open(
+                f"{path}/{self._get_module_name(row[RECORD_ID], code_column)}.py", "w"
+            ) as file:
+                file.write(row[code_column])
+
+        @staticmethod
+        def _get_module_name(record_id, column_name):
+            return f"{record_id}_{column_name}"
+
+    RECORD_ID = "internal_code_record_id"
+    module = types.ModuleType("data_designer.engine.validators.python")
+    module.PythonValidator = PythonValidator
+    module.RECORD_ID_COLUMN_NAME = RECORD_ID
+    for name in ("data_designer", "data_designer.engine", "data_designer.engine.validators"):
+        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    service._apply_data_designer_python_validator_path_patch()
+    service._apply_data_designer_python_validator_path_patch()
+    return PythonValidator, RECORD_ID
 
 
-def test_job_with_an_escaping_column_name_is_refused_before_it_starts(monkeypatch):
+@pytest.mark.parametrize("name", _SLASH_NAMES + _ESCAPING_NAMES + ["code", "Q 1"])
+def test_code_validator_file_stays_in_its_temp_folder(tmp_path, python_validator, name):
+    validator_cls, record_id = python_validator
+    box = tmp_path / "box" / "tmp"
+    box.mkdir(parents = True)
+    validator_cls()._write_code_to_file({record_id: "rid", name: "x = 1\n"}, name, str(box))
+
+    written = [p for p in tmp_path.rglob("*") if p.is_file()]
+    assert [p.parent for p in written] == [box]
+    module = validator_cls._get_module_name("rid", name)
+    assert written[0].name == module + ".py"
+    assert written[0].read_text() == "x = 1\n"
+    assert validator_cls._get_module_name("rid", name) == module
+    if name == "code":
+        assert module == "rid_code"
+
+
+def test_different_names_that_sanitize_alike_get_different_files(python_validator):
+    validator_cls, _ = python_validator
+    assert validator_cls._get_module_name("r", "a/b") != validator_cls._get_module_name("r", "a_b")
+    assert validator_cls._get_module_name("r", "a/b") != validator_cls._get_module_name(
+        "r", "a" + _B + "b"
+    )
+
+
+def test_job_with_a_slash_column_name_starts(monkeypatch):
+    import routes.data_recipe.jobs as jobs_routes
+    from models.data_recipe import RecipePayload
+
+    started = []
+    monkeypatch.setattr(
+        jobs_routes,
+        "get_job_manager",
+        lambda: type("M", (), {"start": lambda self, **k: started.append(k) or "job"})(),
+    )
+    recipe = {"columns": [{"name": "pros/cons", "column_type": "expression", "expr": "1"}]}
+    jobs_routes.create_job(
+        RecipePayload(recipe = recipe), request = None, credential = ("u", None), via_api_key = False
+    )
+    assert len(started) == 1
+
+
+def test_job_with_an_escaping_processor_name_is_refused_before_it_starts(monkeypatch):
     import routes.data_recipe.jobs as jobs_routes
     from models.data_recipe import RecipePayload
 
@@ -67,7 +150,10 @@ def test_job_with_an_escaping_column_name_is_refused_before_it_starts(monkeypatc
         "get_job_manager",
         lambda: type("M", (), {"start": lambda self, **k: started.append(k)})(),
     )
-    recipe = {"columns": [{"name": "x/../../marker", "column_type": "expression", "expr": "1"}]}
+    recipe = {
+        "columns": [{"name": "a", "column_type": "expression", "expr": "1"}],
+        "processors": [{"name": "../../marker", "processor_type": "schema_transform"}],
+    }
     with pytest.raises(HTTPException) as exc:
         jobs_routes.create_job(
             RecipePayload(recipe = recipe), request = None, credential = ("u", None), via_api_key = False

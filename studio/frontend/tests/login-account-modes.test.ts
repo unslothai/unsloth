@@ -60,6 +60,7 @@ function mountForm(
   },
   switched = false,
   failTransitionOnce = false,
+  desktop: { continued: boolean; calls: string[] } | null = null,
   q?: string,
 ) {
   const state: unknown[] = [];
@@ -95,7 +96,16 @@ function mountForm(
       },
     },
     "@/components/app-readiness": { useAppShellReadySignal: () => () => {} },
-    "@/lib/api-base": base,
+    "@/lib/api-base": desktop ? { ...base, isTauri: true } : base,
+    "../tauri-auto-auth": {
+      clearDesktopSignedOut: async () => {
+        desktop?.calls.push("clear");
+      },
+      continueAsDesktopOwner: async () => {
+        desktop?.calls.push("continue");
+        return desktop?.continued ?? false;
+      },
+    },
     "@/lib/account-transition": {
       normalizeAccountUsername: transition.normalizeAccountUsername,
       transitionBrowserAccount: async (
@@ -103,7 +113,7 @@ function mountForm(
         route: string,
         commit: () => void,
       ) => {
-        // Transitions key on the immutable account id when the server sent one, since usernames are reusable.
+        // Usernames are reusable, so key on the immutable account id when available.
         const identity =
           typeof account === "string"
             ? { username: account, accountId: null }
@@ -127,6 +137,10 @@ function mountForm(
     "../login-client": client,
     "@/components/ui/button": { Button: "Button" },
     "@/components/mascot-img": { MascotImg: "MascotImg" },
+    "@/features/halloween/halloween-store": { useSpookyGreetings: () => false },
+    "@/features/halloween/spooky-greetings": {
+      pickSpookySloth: () => ({ sloth: "", enlarge: false }),
+    },
     "@/components/ui/input": { Input: "Input" },
     "@/components/ui/label": { Label: "Label" },
     "@tanstack/react-router": {
@@ -139,7 +153,8 @@ function mountForm(
           searches.push(search);
         },
     },
-    "lucide-react": { Eye: "Eye", EyeOff: "EyeOff" },
+    "@hugeicons/core-free-icons": { ViewIcon: "ViewIcon", ViewOffSlashIcon: "ViewOffSlashIcon" },
+    "@hugeicons/react": { HugeiconsIcon: "HugeiconsIcon" },
     "../api": {
       refreshSession: async () => true,
       refreshSessionOutcome: async () => session.outcome ?? "ok",
@@ -679,7 +694,7 @@ for (const switched of [false, true]) {
       ? Response.json({ initialized: true, requires_password_change: false, login_mode: "multi" })
       : Response.json({ ...token, must_change_password: true });
     const q = 'literal {"x":1} & more';
-    const form = mountForm(client(), { access: null, change: false }, switched, false, q);
+    const form = mountForm(client(), { access: null, change: false }, switched, false, null, q);
     let tree = await form.initialize();
     const change = elements(tree).find((element) => element.props.id === "username")?.props.onChange as (event: unknown) => void;
     change({ target: { value: "alice" } });
@@ -690,3 +705,76 @@ for (const switched of [false, true]) {
     assert.deepEqual(form.searches, switched ? [] : [{ q }]);
   });
 }
+
+test("desktop single mode offers Continue as owner instead of the seeded-password setup page", async (t) => {
+  environment(t);
+  // A desktop owner who never set a password: the server still reports the seeded one.
+  globalThis.fetch = async () =>
+    Response.json({ initialized: true, requires_password_change: true, login_mode: "single" });
+  const desktop = { continued: true, calls: [] as string[] };
+  const form = mountForm(client(), { access: null, change: false }, false, false, desktop, "owner query");
+  const tree = await form.initialize();
+  assert.deepEqual(form.routes, []);
+  assert.doesNotMatch(textContent(tree), /seeded credentials/);
+  const owner = elements(tree).find(
+    (element) => element.type === "Button" && textContent(element).trim() === "Continue as owner",
+  );
+  assert.ok(owner);
+  (owner.props.onClick as () => void)();
+  await tick();
+  assert.deepEqual(desktop.calls, ["continue"]);
+  assert.deepEqual(form.searches, [{ q: "owner query" }]);
+  assert.deepEqual(form.routes, ["/chat"]);
+});
+
+test("desktop Continue as owner that the server refuses keeps the form with a hint", async (t) => {
+  environment(t);
+  globalThis.fetch = async () =>
+    Response.json({ initialized: true, requires_password_change: false, login_mode: "single" });
+  const desktop = { continued: false, calls: [] as string[] };
+  const form = mountForm(client(), { access: null, change: false }, false, false, desktop);
+  const owner = elements(await form.initialize()).find(
+    (element) => element.type === "Button" && textContent(element).trim() === "Continue as owner",
+  );
+  (owner?.props.onClick as () => void)();
+  await tick();
+  assert.deepEqual(form.routes, []);
+  assert.match(textContent(form.render()), /Sign in with your username and password/);
+});
+
+test("multi mode asks for credentials, names the owner's sign-in name and offers no owner shortcut", async (t) => {
+  environment(t);
+  globalThis.fetch = async () =>
+    Response.json({ initialized: true, requires_password_change: true, login_mode: "multi" });
+  for (const desktop of [null, { continued: true, calls: [] as string[] }]) {
+    const form = mountForm(client(), { access: null, change: false }, false, false, desktop);
+    const tree = await form.initialize();
+    assert.match(textContent(tree), /Installation owner\? Sign in as unsloth, or the sign-in name/);
+    assert.doesNotMatch(textContent(tree), /Continue as owner/);
+    assert.deepEqual(form.routes, []);
+  }
+});
+
+test("a desktop password sign-in clears the explicit sign-out", async (t) => {
+  environment(t);
+  globalThis.fetch = async (input: RequestInfo | URL) =>
+    String(input).endsWith("/status")
+      ? Response.json({ initialized: true, requires_password_change: false, login_mode: "multi" })
+      : Response.json(token);
+  const desktop = { continued: false, calls: [] as string[] };
+  const form = mountForm(client(), { access: null, change: false }, false, false, desktop);
+  let tree = await form.initialize();
+  const set = (id: string, value: string) =>
+    (elements(tree).find((element) => element.props.id === id)?.props.onChange as (
+      event: unknown,
+    ) => void)({ target: { value } });
+  set("username", "riley");
+  tree = form.render();
+  set("password", "owner-password");
+  tree = form.render();
+  const formElement = elements(tree).find((element) => element.type === "form");
+  (formElement?.props.onSubmit as (event: unknown) => void)({ preventDefault() {} });
+  await tick();
+  await tick();
+  assert.deepEqual(desktop.calls, ["clear"]);
+});

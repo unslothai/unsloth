@@ -29,9 +29,12 @@ import {
   TRAINING_UI_PREFERENCE_KEYS,
 } from "@/features/training";
 import { FLOATING_PANEL_POSITION_KEYS } from "@/hooks/floating-panel-position";
-import { NOTIFICATION_PREF_KEYS } from "@/hooks/use-notification-frequency";
+import {
+  NOTIFICATION_PREF_KEYS,
+  type NotificationChannel,
+} from "@/hooks/use-notification-frequency";
 import { useHfTokenValidation } from "@/hooks";
-import { LOCALE_STORAGE_KEY, useT } from "@/i18n";
+import { LOCALE_STORAGE_KEY, type TranslationKey, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import {
   SPELLCHECK_STORAGE_KEY,
@@ -40,7 +43,6 @@ import {
 } from "@/lib/spellcheck";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { Check, Eye, EyeOff } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
   type HelperPrecacheSettings,
@@ -68,9 +70,9 @@ import {
   LIBRARY_SETTINGS_STORAGE_KEY,
   LIBRARY_VIEW_STORAGE_KEY,
 } from "@/features/library";
+import { DesktopInstallTypeControl } from "../components/full-install-dialog";
 import { ChangePasswordDialog } from "../components/change-password-dialog";
 import { DesktopRepairControl } from "../components/desktop-repair-control";
-import { DeveloperModeSection } from "../components/developer-mode-section";
 import {
   DesktopUpdateControl,
   DesktopUpdateNote,
@@ -92,12 +94,33 @@ import { KEYBOARD_SHORTCUTS_STORAGE_KEY } from "../stores/keyboard-shortcuts-sto
 import { INTERFACE_SCALE_STORAGE_KEY } from "../stores/interface-scale-store";
 import { SETTINGS_PANEL_PREFS_STORAGE_KEY } from "../stores/settings-panel-prefs-store";
 import { CHAT_PROJECT_ATTACHMENT_TARGET_KEY } from "@/features/chat/utils/project-attachment-target";
+import { Tick02Icon } from "@/lib/tick-icon";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { ViewIcon, ViewOffSlashIcon } from "@hugeicons/core-free-icons";
+
+// whisper.cpp rides along with llama.cpp's card, so it has no line of its own.
+const UPDATE_REMINDER_CHANNELS: {
+  channel: NotificationChannel;
+  name: string;
+  hintKey?: TranslationKey;
+}[] = [
+  { channel: "unsloth", name: "Unsloth" },
+  {
+    channel: "llama",
+    name: "llama.cpp",
+    hintKey: "settings.general.notifications.llamaHint",
+  },
+  {
+    channel: "audio",
+    name: "audio.cpp",
+    hintKey: "settings.general.notifications.audioHint",
+  },
+];
 
 // Keys cleared by "Reset all local preferences". NEVER include auth/session keys here -- that
 // would log the user out (unsloth_auth_token, unsloth_auth_refresh_token, and
 // unsloth_auth_must_change_password are excluded).
 const PREFS_KEYS: string[] = [
-  // Appearance
   "theme",
   "palette",
   "unsloth_appearance_customization",
@@ -112,15 +135,12 @@ const PREFS_KEYS: string[] = [
   LIBRARY_SETTINGS_STORAGE_KEY,
   LIBRARY_VIEW_STORAGE_KEY,
   LIBRARY_CHATS_PREFS_STORAGE_KEY,
-  // Grouping, sort and the manual row order.
   SIDEBAR_ORGANIZATION_STORAGE_KEY,
   "unsloth_settings_active_tab",
   SETTINGS_PANEL_PREFS_STORAGE_KEY,
-  // Rebound chords. Without this a reset leaves the user on shortcuts they asked to throw away, and
-  // a chord bound to something unusable has no escape hatch from this button.
+  // Rebound chords, so a bad binding has an escape hatch.
   KEYBOARD_SHORTCUTS_STORAGE_KEY,
-  // Outranks the install-wide setting, so a reset that left it behind would keep ignoring
-  // transport changes made elsewhere.
+  // Outranks the install-wide setting, so it must be cleared too.
   TRANSPORT_MODE_STORAGE_KEY,
   DOWNLOAD_DIR_STORAGE_KEY,
   // Chat runtime prefs
@@ -143,29 +163,20 @@ const PREFS_KEYS: string[] = [
   "unsloth_load_settings",
   "unsloth_model_advanced_settings",
   "unsloth_chat_load_on_selection",
-  // Model selector settings ("Select model settings" group)
   "unsloth_chat_expand_quantizations",
   "unsloth_chat_show_all_quantizations",
-  // The memory bar's opt-in. Reset All advertises restoring defaults and this feature's default is
-  // off, so leaving the key out left it switched on across a reset that said it had turned
-  // everything back. Spelled out rather than imported as CHAT_SHOW_MEMORY_BAR_KEY, for the same
-  // reason the note above gives: it lives in chat-runtime-store, which is in an import cycle with
-  // this file, so the constant would still be in its temporal dead zone when this module-scope list
-  // is built. A test pins this literal against the store's constant so the two cannot drift apart
-  // silently.
+  // Spelled out, not CHAT_SHOW_MEMORY_BAR_KEY: chat-runtime-store is in an import cycle with this
+  // file. A test pins this literal against the store's constant.
   "unsloth_chat_show_memory_bar",
   "unsloth_models_fit_on_device_only",
-  // Chat presets
   "unsloth_chat_custom_presets",
   "unsloth_chat_active_preset",
   "unsloth_chat_system_prompts",
   "unsloth_chat_system_prompts_migrated",
-  // Training UI prefs
   "unsloth_training_config_v1",
   "unsloth_prev_max_steps",
   "unsloth_prev_save_steps",
   ...TRAINING_UI_PREFERENCE_KEYS,
-  // Profile personalization
   "unsloth_user_profile",
   "unsloth_profile_activity_chart",
   // Guided tour flags
@@ -181,12 +192,11 @@ const PREFS_KEYS: string[] = [
   ...Object.values(FLOATING_PANEL_POSITION_KEYS),
   // Voice settings
   "unsloth_voice_settings",
-  // Retired keys. The onboarding wizard is gone, but installs that ran it still
-  // carry its flag, so a reset has to clear it or the orphan outlives the app.
+  // Retired keys: installs that ran the old onboarding wizard still carry its flag.
   "unsloth_onboarding_done",
 ];
 
-// Set by resetAllPrefs so the unmount-commit effect skips writing back the in-memory draft.
+// Set by resetAllPrefs so the unmount commit skips writing back the in-memory draft.
 let resetInProgress = false;
 
 function resetAllPrefs() {
@@ -269,7 +279,7 @@ export function GeneralTab() {
     draftRef.current = draftToken;
   }, [draftToken]);
 
-  // Commit on unmount (dialog close / tab switch), skipped during the reset-prefs flow.
+  // Commit on unmount (dialog close / tab switch), skipped during reset.
   useEffect(() => {
     return () => {
       if (resetInProgress || !tokenEditedRef.current) return;
@@ -335,8 +345,7 @@ export function GeneralTab() {
     setHfToken("");
   };
 
-  // Only show the success tick after the authenticated validation endpoint confirms this token:
-  // a saved token alone may still be malformed, expired, or revoked.
+  // Only after the validation endpoint confirms the token: a saved one may be expired or revoked.
   const tokenIsCurrent =
     draftToken.trim().length > 0 && draftToken.trim() === (hfToken ?? "");
   const tokenValidation = useHfTokenValidation(hfToken ?? "");
@@ -431,7 +440,7 @@ export function GeneralTab() {
     try {
       const settings = await updatePreviewSharing(enabled);
       setPreviewSharing(settings);
-      // Toggling sharing changes whether /api/train/runs returns preview_sig, so refresh the grid.
+      // Sharing toggles whether /api/train/runs returns preview_sig.
       emitTrainingRunsChanged();
     } catch (error) {
       setPreviewSharingError(
@@ -448,7 +457,7 @@ export function GeneralTab() {
     setIsRevokingPreview(true);
     try {
       await rotatePreviewLinks();
-      // The secret rotated, so any preview_sig the history grid holds is stale.
+      // The secret rotated, so held preview_sig values are stale.
       emitTrainingRunsChanged();
       setRevokePreviewOpen(false);
       toast.success(t("settings.general.previewSharing.revoked"));
@@ -500,7 +509,7 @@ export function GeneralTab() {
         </p>
       </header>
 
-      {/* Desktop-only, and self-gating: outside the desktop app both render
+      {/* Desktop-only, and self-gating: outside the desktop app these render
           nothing and the section keeps just the version rows. */}
       <StudioVersionSection>
         {isTauri ? (
@@ -509,6 +518,7 @@ export function GeneralTab() {
             <DesktopUpdateNote />
           </div>
         ) : null}
+        <DesktopInstallTypeControl />
       </StudioVersionSection>
 
       <SettingsSection title={t("settings.general.account")}>
@@ -550,24 +560,23 @@ export function GeneralTab() {
                 }}
                 onBlur={commitToken}
                 className={cn(
-                  "h-8 w-full font-mono text-xs",
+                  "h-control w-full font-mono text-xs",
                   tokenValidated ? "pr-14" : "pr-8",
                 )}
               />
               {tokenValidated ? (
-                // Decorative: pointer-events-none lets clicks reach the input underneath.
                 <span
                   className="pointer-events-none absolute right-7 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center text-emerald-600 duration-150 animate-in fade-in zoom-in dark:text-emerald-500"
                   role="img"
                   aria-label={t("settings.general.tokenValidated")}
                 >
-                  <Check className="size-4" strokeWidth={2.5} />
+                  <HugeiconsIcon icon={Tick02Icon} className="size-4" strokeWidth={2.5} />
                 </span>
               ) : null}
               <button
                 type="button"
                 onClick={() => setShowToken((s) => !s)}
-                className="absolute right-1.5 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground"
+                className="absolute right-1.5 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground"
                 aria-label={
                   showToken
                     ? t("settings.general.hideToken")
@@ -576,9 +585,9 @@ export function GeneralTab() {
                 tabIndex={-1}
               >
                 {showToken ? (
-                  <EyeOff className="size-3.5" />
+                  <HugeiconsIcon icon={ViewOffSlashIcon} className="size-3.5" />
                 ) : (
-                  <Eye className="size-3.5" />
+                  <HugeiconsIcon icon={ViewIcon} className="size-3.5" />
                 )}
               </button>
             </div>
@@ -586,7 +595,6 @@ export function GeneralTab() {
               type="button"
               variant="outline"
               size="sm"
-              className="h-8"
               disabled={!draftToken && !hfToken}
               onClick={clearHfToken}
             >
@@ -621,6 +629,173 @@ export function GeneralTab() {
           <Switch checked={spellCheck} onCheckedChange={setSpellCheck} />
         </SettingsRow>
       </SettingsSection>
+
+      {/* Owner-only like the installation-wide block below: its routes are. */}
+      {isOwner ? <DocumentsRagSection /> : null}
+
+      <SettingsSection title={t("settings.general.notifications.sectionTitle")}>
+        <SettingsRow
+          label={t("settings.general.notifications.showLoadedModels")}
+          description={t(
+            "settings.general.notifications.showLoadedModelsDescription",
+          )}
+        >
+          <Switch
+            checked={showLoadedModels}
+            onCheckedChange={setShowLoadedModels}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.general.notifications.updateReminders")}
+          description={t(
+            "settings.general.notifications.updateRemindersDescription",
+          )}
+          className="pb-1"
+        />
+        <div className="flex flex-col pb-3">
+          {UPDATE_REMINDER_CHANNELS.map(({ channel, name, hintKey }) => (
+            <div
+              key={channel}
+              data-settings-label={name}
+              className="flex items-start justify-between gap-4 py-1.5"
+            >
+              <div className="flex min-w-0 items-baseline gap-2">
+                <span className="text-sm text-foreground">{name}</span>
+                {hintKey ? (
+                  <span className="truncate text-xs text-muted-foreground">
+                    {t(hintKey)}
+                  </span>
+                ) : null}
+              </div>
+              <NotificationFrequencySelect
+                channel={channel}
+                label={`${t("settings.general.notifications.updateReminders")}: ${name}`}
+              />
+            </div>
+          ))}
+        </div>
+      </SettingsSection>
+
+      {isOwner ? (
+        <>
+      <SettingsSection
+        title={t("settings.general.previewSharing.sectionTitle")}
+      >
+        <SettingsRow
+          label={t("settings.general.previewSharing.enableLabel")}
+          description={t("settings.general.previewSharing.enableDescription")}
+          below={
+            previewSharingError ? (
+              <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
+                {previewSharingError}
+              </span>
+            ) : null
+          }
+        >
+          <Switch
+            checked={previewSharing?.enabled ?? false}
+            disabled={!previewSharing || isSavingPreviewSharing}
+            onCheckedChange={(enabled) => void savePreviewSharing(enabled)}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.general.previewSharing.revokeLabel")}
+          description={t("settings.general.previewSharing.revokeDescription")}
+        >
+          <Button
+            variant="destructive"
+            size="sm"
+            onClick={() => setRevokePreviewOpen(true)}
+            className="text-destructive hover:text-destructive"
+          >
+            {t("settings.general.previewSharing.revokeAction")}
+          </Button>
+        </SettingsRow>
+      </SettingsSection>
+
+      <HubSettingsSection />
+
+      <SettingsSection title={t("settings.general.downloads.sectionTitle")}>
+        <DownloadTransportRow />
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.general.uploads.sectionTitle")}>
+        <SettingsRow
+          label={t("settings.general.uploads.maxUploadSize")}
+          description={t("settings.general.uploads.maxUploadSizeDescription", {
+            defaultSize: String(
+              uploadLimit?.defaultUploadSizeMb ?? DEFAULT_UPLOAD_LIMIT_MB,
+            ),
+          })}
+          below={
+            uploadLimitError ? (
+              <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
+                {uploadLimitError}
+              </span>
+            ) : null
+          }
+        >
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5">
+              <Input
+                type="number"
+                min={uploadLimit?.minUploadSizeMb ?? 1}
+                max={uploadLimit?.maxAllowedUploadSizeMb ?? 8192}
+                step={1}
+                value={draftUploadLimit}
+                aria-label={t("settings.general.uploads.maxUploadSize")}
+                onChange={(event) => setDraftUploadLimit(event.target.value)}
+                className="h-control w-24"
+              />
+              <span className="text-xs font-medium text-muted-foreground">
+                MB
+              </span>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={isSavingUploadLimit}
+              onClick={() => void saveUploadLimit()}
+            >
+              {isSavingUploadLimit ? t("common.saving") : t("common.save")}
+            </Button>
+          </div>
+        </SettingsRow>
+      </SettingsSection>
+
+
+      <SettingsSection title={t("settings.general.helperLlm.sectionTitle")}>
+        <SettingsRow
+          label={t("settings.general.helperLlm.preloadOnStartup")}
+          description={t(
+            "settings.general.helperLlm.preloadOnStartupDescription",
+          )}
+          below={
+            helperPrecache?.disabledByEnv ? (
+              <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-muted-foreground">
+                {t("settings.general.helperLlm.disabledByEnv")}
+              </span>
+            ) : helperPrecacheError ? (
+              <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
+                {helperPrecacheError}
+              </span>
+            ) : null
+          }
+        >
+          <Switch
+            checked={helperPrecache?.enabled ?? false}
+            disabled={
+              !helperPrecache ||
+              isSavingHelperPrecache ||
+              helperPrecache.disabledByEnv
+            }
+            onCheckedChange={(enabled) => void saveHelperPrecache(enabled)}
+          />
+        </SettingsRow>
+      </SettingsSection>
+
+        </>
+      ) : null}
 
       {isTauri ? (
         <SettingsSection title={t("settings.general.startup.sectionTitle")}>
@@ -690,184 +865,11 @@ export function GeneralTab() {
         </SettingsSection>
       ) : null}
 
-      <SettingsSection title={t("settings.general.notifications.sectionTitle")}>
-        <SettingsRow
-          label={t("settings.general.notifications.showLoadedModels")}
-          description={t(
-            "settings.general.notifications.showLoadedModelsDescription",
-          )}
-        >
-          <Switch
-            checked={showLoadedModels}
-            onCheckedChange={setShowLoadedModels}
-          />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.general.notifications.showUnslothUpdates")}
-          description={t(
-            "settings.general.notifications.showUnslothUpdatesDescription",
-          )}
-        >
-          <NotificationFrequencySelect
-            channel="unsloth"
-            label={t("settings.general.notifications.showUnslothUpdates")}
-          />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.general.notifications.showLlamaUpdates")}
-          description={t(
-            "settings.general.notifications.showLlamaUpdatesDescription",
-          )}
-        >
-          <NotificationFrequencySelect
-            channel="llama"
-            label={t("settings.general.notifications.showLlamaUpdates")}
-          />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.general.notifications.showAudioCppUpdates")}
-          description={t(
-            "settings.general.notifications.showAudioCppUpdatesDescription",
-          )}
-        >
-          <NotificationFrequencySelect
-            channel="audio"
-            label={t("settings.general.notifications.showAudioCppUpdates")}
-          />
-        </SettingsRow>
-      </SettingsSection>
-
-      {/* Installation-wide settings: owner-only routes, so a managed account gets no dead controls. */}
-      {isOwner ? (
-        <>
       <SettingsSection
-        title={t("settings.general.previewSharing.sectionTitle")}
-      >
-        <SettingsRow
-          label={t("settings.general.previewSharing.enableLabel")}
-          description={t("settings.general.previewSharing.enableDescription")}
-          below={
-            previewSharingError ? (
-              <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
-                {previewSharingError}
-              </span>
-            ) : null
-          }
-        >
-          <Switch
-            checked={previewSharing?.enabled ?? false}
-            disabled={!previewSharing || isSavingPreviewSharing}
-            onCheckedChange={(enabled) => void savePreviewSharing(enabled)}
-          />
-        </SettingsRow>
-        <SettingsRow
-          destructive={true}
-          label={t("settings.general.previewSharing.revokeLabel")}
-          description={t("settings.general.previewSharing.revokeDescription")}
-        >
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setRevokePreviewOpen(true)}
-            className="text-destructive hover:text-destructive hover:border-destructive/60"
-          >
-            {t("settings.general.previewSharing.revokeAction")}
-          </Button>
-        </SettingsRow>
-      </SettingsSection>
-
-      <DocumentsRagSection />
-
-      <HubSettingsSection />
-
-      <SettingsSection title={t("settings.general.downloads.sectionTitle")}>
-        <DownloadTransportRow />
-      </SettingsSection>
-
-      <SettingsSection title={t("settings.general.uploads.sectionTitle")}>
-        <SettingsRow
-          label={t("settings.general.uploads.maxUploadSize")}
-          description={t("settings.general.uploads.maxUploadSizeDescription", {
-            defaultSize: String(
-              uploadLimit?.defaultUploadSizeMb ?? DEFAULT_UPLOAD_LIMIT_MB,
-            ),
-          })}
-          below={
-            uploadLimitError ? (
-              <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
-                {uploadLimitError}
-              </span>
-            ) : null
-          }
-        >
-          <div className="flex items-center gap-2">
-            <div className="flex items-center gap-1.5">
-              <Input
-                type="number"
-                min={uploadLimit?.minUploadSizeMb ?? 1}
-                max={uploadLimit?.maxAllowedUploadSizeMb ?? 8192}
-                step={1}
-                value={draftUploadLimit}
-                aria-label={t("settings.general.uploads.maxUploadSize")}
-                onChange={(event) => setDraftUploadLimit(event.target.value)}
-                className="h-8 w-24"
-              />
-              <span className="text-xs font-medium text-muted-foreground">
-                MB
-              </span>
-            </div>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={isSavingUploadLimit}
-              onClick={() => void saveUploadLimit()}
-            >
-              {isSavingUploadLimit ? t("common.saving") : t("common.save")}
-            </Button>
-          </div>
-        </SettingsRow>
-      </SettingsSection>
-
-
-      <SettingsSection title={t("settings.general.helperLlm.sectionTitle")}>
-        <SettingsRow
-          label={t("settings.general.helperLlm.preloadOnStartup")}
-          description={t(
-            "settings.general.helperLlm.preloadOnStartupDescription",
-          )}
-          below={
-            helperPrecache?.disabledByEnv ? (
-              <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-muted-foreground">
-                {t("settings.general.helperLlm.disabledByEnv")}
-              </span>
-            ) : helperPrecacheError ? (
-              <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
-                {helperPrecacheError}
-              </span>
-            ) : null
-          }
-        >
-          <Switch
-            checked={helperPrecache?.enabled ?? false}
-            disabled={
-              !helperPrecache ||
-              isSavingHelperPrecache ||
-              helperPrecache.disabledByEnv
-            }
-            onCheckedChange={(enabled) => void saveHelperPrecache(enabled)}
-          />
-        </SettingsRow>
-      </SettingsSection>
-
-      <DeveloperModeSection />
-        </>
-      ) : null}
-
-      <SettingsSection
+        danger={true}
         title={t("settings.general.resetPreferences.sectionTitle")}
       >
         <SettingsRow
-          destructive={true}
           label={t("settings.general.resetPreferences.label")}
           description={t("settings.general.resetPreferences.description")}
         >
@@ -875,7 +877,7 @@ export function GeneralTab() {
             variant="outline"
             size="sm"
             onClick={() => setConfirmOpen(true)}
-            className="text-destructive hover:text-destructive hover:border-destructive/60"
+            className="text-destructive hover:text-destructive"
           >
             {t("settings.general.resetPreferences.action")}
           </Button>
@@ -902,7 +904,7 @@ export function GeneralTab() {
             </Button>
             <Button
               onClick={resetAllPrefs}
-              className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
+              variant="destructive"
             >
               {t("settings.general.resetPreferences.confirmAction")}
             </Button>
@@ -928,9 +930,9 @@ export function GeneralTab() {
               {t("common.cancel")}
             </Button>
             <Button
+              variant="destructive"
               onClick={() => void revokePreviewLinks()}
               disabled={isRevokingPreview}
-              className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
             >
               {isRevokingPreview
                 ? t("settings.general.previewSharing.revoking")

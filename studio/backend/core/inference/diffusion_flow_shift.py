@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Rebuild the loaded scheduler at ComfyUI's static sigma shift (shipped schedulers differ, e.g.
-Qwen-Image dynamic ~2.0 + terminal stretch vs 3.1), unless the checkpoint ships its own sampling
-grid. No torch/diffusers imports."""
+"""Rebuilds the loaded scheduler at ComfyUI static sigma shift unless the checkpoint ships its own
+grid; no torch or diffusers imports."""
 
 from __future__ import annotations
 
@@ -17,6 +16,11 @@ COMFY_SIGMAS_ENV = "UNSLOTH_DIFFUSION_COMFY_SIGMAS"
 
 def comfy_sigmas_enabled() -> bool:
     return os.environ.get(COMFY_SIGMAS_ENV, "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+# The scheduler's float32 s*t / (1 + (s - 1)*t): e^mu past 80 overflows to NaN sigmas; below -5, 1 + (s - 1) cancels
+# (sigma_max already 1.07 at mu -8, inf at -20).
+FLUX_MU_RANGE = (-5.0, 80.0)
 
 
 def flux_mu_shift(mu: float) -> float:
@@ -68,6 +72,31 @@ def apply_comfy_flow_shift(
         return False
     if logger is not None:
         logger.info("scheduler flow shift set to %s (ComfyUI default)", shift)
+    return True
+
+
+def apply_scheduler_overrides(
+    pipe: Any,
+    overrides: Any,
+    logger: Any = None,
+) -> bool:
+    """Rebuild ``pipe.scheduler`` with a family's ``scheduler_overrides`` (the publisher's sampling config). True when
+    it changed; a scheduler that rejects them keeps the shipped schedule."""
+    pairs = dict(overrides or ())
+    scheduler = getattr(pipe, "scheduler", None)
+    config = getattr(scheduler, "config", None)
+    if not pairs or scheduler is None or config is None:
+        return False
+    if all(config.get(k) == v for k, v in pairs.items()):
+        return False
+    try:
+        pipe.scheduler = type(scheduler).from_config(config, **pairs)
+    except Exception as exc:  # noqa: BLE001 - keep the shipped schedule rather than fail the load
+        if logger is not None:
+            logger.warning("scheduler overrides %s not applied: %s", pairs, exc)
+        return False
+    if logger is not None:
+        logger.info("scheduler rebuilt with the family's overrides %s", pairs)
     return True
 
 
@@ -215,7 +244,13 @@ def requested_flow_shift(
             raise ValueError(f"Base and max shift must be between 0 and {SHIFT_MAX:g}.")
     if not width or not height:
         raise ValueError("Base / max shift needs the output width and height.")
-    return flux_mu_shift(comfy_model_sampling_flux_mu(hi, lo, int(width), int(height)))
+    mu = comfy_model_sampling_flux_mu(hi, lo, int(width), int(height))
+    if not FLUX_MU_RANGE[0] <= mu <= FLUX_MU_RANGE[1]:
+        raise ValueError(
+            f"Base {lo:g} / max shift {hi:g} at {int(width)}x{int(height)} gives no usable noise "
+            "schedule; bring them closer to the defaults (0.5 / 1.15)."
+        )
+    return flux_mu_shift(mu)
 
 
 def scheduler_with_flow_shift(scheduler: Any, shift: float) -> Any:

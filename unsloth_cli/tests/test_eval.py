@@ -338,6 +338,28 @@ def test_unsloth_backend_writes_results(env, tmp_path):
     assert saved["results"]["gsm8k"]["exact_match,strict"] == 0.42
 
 
+def test_default_output_keeps_every_run(env, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(evalmod, "time", SimpleNamespace(time = lambda: 1761480000), raising = False)
+    for model in ("org/base", "org/tuned", "org/tuned"):
+        result = _run(model, "--tasks", "gsm8k")
+        assert result.exit_code == 0, result.output
+    saved = sorted(p.parent.name for p in (tmp_path / "eval_results").rglob("results.json"))
+    assert saved == ["org_base_1761480000", "org_tuned_1761480000", "org_tuned_1761480001"], saved
+
+
+@pytest.mark.skipif(sys.version_info < (3, 10), reason = "the Studio backend needs Python 3.10+")
+@pytest.mark.parametrize(
+    "model", ["org/tuned", "./my model/ckpt-100", "/abs/lora/", "C:\\x\\y", "~/", "", "x" * 300]
+)
+def test_run_dir_name_matches_studio(model, monkeypatch):
+    pytest.importorskip("structlog")
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "studio" / "backend"))
+    from utils.paths import default_run_dir_name
+
+    assert evalmod._run_dir_name(model) == default_run_dir_name(model)
+
+
 def _adapter(tmp_path, tokenizer = False):
     adapter = tmp_path / "lora"
     adapter.mkdir()

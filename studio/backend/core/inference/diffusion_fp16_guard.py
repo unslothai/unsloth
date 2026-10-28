@@ -1,14 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Keep bf16-native DiTs in float16 on fp16-only cards (T4 / sm75) instead of promoting them to float32.
-
-``rescale_post_norm``: a branch that overflows float16 but feeds an RMSNorm is divided by a power of two s before the
-overflow point and that norm's eps by s**2, since ``rms_norm(y / s, eps / s**2) == rms_norm(y, eps)`` (no clamping).
-Attention scales its input (q / k RMSNorm eps scaled too; v and the bias-free out projection are linear); the FFN scales
-the ``w3`` half of the gate. Hooks sit on the parents and call ``to_q`` / ``w1`` / ... at run time, so a later LoRA or
-quantized Linear sees the same rescale. Kill switch: ``UNSLOTH_STUDIO_FP16_GUARD=0`` restores the float32 promotion.
-"""
+"""Keeps bf16 DiTs in float16 on fp16-only cards by pre-scaling; hooks run at call time so a later
+LoRA or quantized Linear sees the same rescale; UNSLOTH_STUDIO_FP16_GUARD=0 disables."""
 
 from __future__ import annotations
 

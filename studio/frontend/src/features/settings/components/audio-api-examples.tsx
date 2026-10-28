@@ -1,23 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { SegmentedPill } from "@/components/segmented-control";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { usePlatformStore } from "@/config/env";
 import { useT } from "@/i18n";
 import type { TranslationKey } from "@/i18n";
-import { copyToClipboard } from "@/lib/copy-to-clipboard";
-import { Tick02Icon } from "@/lib/tick-icon";
-import { cn } from "@/lib/utils";
-import { Copy01Icon } from "@hugeicons/core-free-icons";
+import { isTauri } from "@/lib/api-base";
+import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
-import {
-  type ReactNode,
-  useEffect,
-  useId,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   KeylessApiAccessExposure,
   KeylessApiAccessScope,
@@ -39,7 +38,6 @@ import {
   AUDIO_RUN_WORKFLOWS,
   type AudioApiExample,
   type AudioApiLang,
-  type AudioApiOs,
   type AudioApiTab,
   type AudioRunWorkflow,
   audioApiExampleFor,
@@ -50,7 +48,12 @@ import {
   langFromStored,
   pickAudioApiModel,
 } from "./audio-api-snippets";
-import { HighlightedCode } from "./usage-examples";
+import {
+  ExampleCodeBox,
+  ExampleField,
+  ExampleToggle,
+  useExampleOs,
+} from "./api-example-parts";
 
 const LANGS: { id: AudioApiLang; label: string }[] = [
   { id: "curl", label: "curl" },
@@ -72,54 +75,24 @@ const RUN_LABEL: Record<AudioRunWorkflow, TranslationKey> = {
   edit: "settings.apiKeys.audioApi.edit",
 };
 
-function Pill({
-  active,
-  pillGroup,
-  onClick,
-  children,
-}: {
-  active: boolean;
-  pillGroup: string;
-  onClick: () => void;
-  children: ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-pressed={active}
-      className={cn(
-        "relative rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-        active
-          ? "text-foreground"
-          : "text-muted-foreground hover:text-foreground",
-      )}
-    >
-      {active && <SegmentedPill group={pillGroup} />}
-      {children}
-    </button>
-  );
-}
-
 export function AudioApiExamples({
   apiKey,
   useTunnel,
   keylessScope = "off",
   keylessExposure = null,
+  showHeading = true,
 }: {
   apiKey?: string | null;
+  showHeading?: boolean;
   useTunnel: boolean;
   keylessScope?: KeylessApiAccessScope;
   keylessExposure?: KeylessApiAccessExposure | null;
 }) {
   const t = useT();
-  const pillId = useId();
-  const deviceType = usePlatformStore((s) => s.deviceType);
   const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
   const serverUrl = usePlatformStore((s) => s.serverUrl);
   const setStoredTab = useSettingsPanelPrefsStore((s) => s.setApiAudioExample);
   const setStoredLang = useSettingsPanelPrefsStore((s) => s.setApiExampleLang);
-  const setStoredOs = useSettingsPanelPrefsStore((s) => s.setApiExampleOs);
   const [storedPrefs] = useState(() => useSettingsPanelPrefsStore.getState());
   const [tab, setTab] = useState<AudioApiTab>(
     AUDIO_API_TABS.find((id) => id === storedPrefs.apiAudioExample) ?? "speak",
@@ -128,13 +101,9 @@ export function AudioApiExamples({
   const [lang, setLang] = useState<AudioApiLang>(
     langFromStored(storedPrefs.apiExampleLang),
   );
-  const [os, setOs] = useState<AudioApiOs>(
-    storedPrefs.apiExampleOs ?? (deviceType === "windows" ? "windows" : "unix"),
-  );
   // null until /v1/models answers, so a slow or failed listing never claims nothing is downloaded.
   const [models, setModels] = useState<AudioApiModel[] | null>(null);
   const [autoSwitch, setAutoSwitch] = useState<boolean | null>(null);
-  const [copied, setCopied] = useState(false);
   const [pageModel, setPageModel] = useState<{
     example: AudioApiExample;
     model: string;
@@ -161,7 +130,8 @@ export function AudioApiExamples({
   }, [audioApiRequested]);
 
   useEffect(() => {
-    if (scrollTarget !== "api-keys-audio-api") return;
+    // The API page's copy (no heading) must not answer, or the dialog's never scrolls.
+    if (!showHeading || scrollTarget !== "api-keys-audio-api") return;
     const section = sectionRef.current;
     if (!section) return;
     // Consumed only after the user scrolls: clearing it re-runs this effect, whose cleanup stops the pinning.
@@ -184,7 +154,7 @@ export function AudioApiExamples({
       window.clearTimeout(timer);
       for (const name of events) window.removeEventListener(name, release);
     };
-  }, [scrollTarget]);
+  }, [scrollTarget, showHeading]);
 
   useEffect(() => watchAudioModels(listOpenAIAudioModels, setModels), []);
 
@@ -206,7 +176,12 @@ export function AudioApiExamples({
 
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   const base =
-    useTunnel && cloudflareUrl ? cloudflareUrl : (serverUrl ?? origin);
+    useTunnel && cloudflareUrl
+      ? cloudflareUrl
+      : isTauri
+        ? (serverUrl ?? origin)
+        : origin;
+  const [os, setOs] = useExampleOs(base);
   const key = audioApiKey(apiKey, {
     base,
     tunnel: useTunnel && !!cloudflareUrl,
@@ -244,132 +219,108 @@ export function AudioApiExamples({
   const shikiLang =
     lang === "curl" ? (os === "windows" ? "powershell" : "bash") : lang;
 
-  const handleCopy = async () => {
-    if (await copyToClipboard(snippet)) {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1800);
+  const pickExample = (next: string) => {
+    const workflow = AUDIO_RUN_WORKFLOWS.find((id) => id === next);
+    if (workflow) {
+      setRun(workflow);
+      setTab("workflows");
+      setStoredTab("workflows");
+      return;
     }
+    const nextTab = AUDIO_API_TABS.find((id) => id === next);
+    if (nextTab) {
+      setTab(nextTab);
+      setStoredTab(nextTab);
+    }
+  };
+
+  const pickLang = (next: AudioApiLang) => {
+    setLang(next);
+    const stored = audioLangToStore(
+      useSettingsPanelPrefsStore.getState().apiExampleLang,
+      next,
+    );
+    if (stored) setStoredLang(stored);
   };
 
   return (
     <section
       ref={sectionRef}
       data-settings-label={t("settings.apiKeys.audioApi.title")}
-      className="flex min-w-0 max-w-full scroll-mt-6 flex-col"
+      className="flex min-w-0 max-w-full scroll-mt-6 flex-col gap-4"
     >
-      <h2 className="settings-heading mb-1 text-sm font-semibold">
-        {t("settings.apiKeys.audioApi.title")}
-      </h2>
-      <p className="mb-2 text-xs leading-relaxed text-muted-foreground">
-        {t("settings.apiKeys.audioApi.description")}
-      </p>
-      <div className="min-w-0 max-w-full overflow-hidden rounded-lg border border-border bg-muted/20">
-        <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-2 gap-y-1 border-b border-border px-2 py-1.5">
-          <div className="isolate flex min-w-0 flex-wrap items-center gap-0.5">
-            {AUDIO_API_TABS.map((id) => (
-              <Pill
-                key={id}
-                active={tab === id}
-                pillGroup={`${pillId}-tab`}
-                onClick={() => {
-                  setTab(id);
-                  setStoredTab(id);
-                }}
-              >
-                {t(TAB_LABEL[id])}
-              </Pill>
-            ))}
-          </div>
-          <div className="isolate flex min-w-0 flex-wrap items-center gap-0.5">
-            {LANGS.map((item) => (
-              <Pill
-                key={item.id}
-                active={lang === item.id}
-                pillGroup={`${pillId}-lang`}
-                onClick={() => {
-                  setLang(item.id);
-                  const stored = audioLangToStore(
-                    useSettingsPanelPrefsStore.getState().apiExampleLang,
-                    item.id,
-                  );
-                  if (stored) setStoredLang(stored);
-                }}
-              >
-                {item.label}
-              </Pill>
-            ))}
-          </div>
-        </div>
-        {tab === "workflows" ? (
-          <div className="isolate flex min-w-0 flex-wrap items-center gap-0.5 border-b border-border px-2 py-1.5">
-            {AUDIO_RUN_WORKFLOWS.map((id) => (
-              <Pill
-                key={id}
-                active={run === id}
-                pillGroup={`${pillId}-run`}
-                onClick={() => setRun(id)}
-              >
-                {t(RUN_LABEL[id])}
-              </Pill>
-            ))}
-          </div>
-        ) : null}
-        {lang === "curl" ? (
-          <div className="isolate flex min-w-0 items-center gap-0.5 border-b border-border px-2 py-1.5">
-            <Pill
-              active={os === "unix"}
-              pillGroup={`${pillId}-os`}
-              onClick={() => {
-                setOs("unix");
-                setStoredOs("unix");
-              }}
-            >
-              {t("settings.apiKeys.osUnix")}
-            </Pill>
-            <Pill
-              active={os === "windows"}
-              pillGroup={`${pillId}-os`}
-              onClick={() => {
-                setOs("windows");
-                setStoredOs("windows");
-              }}
-            >
-              {t("settings.apiKeys.osWindows")}
-            </Pill>
-          </div>
-        ) : null}
-        <div className="relative min-w-0">
-          <button
-            type="button"
-            onClick={handleCopy}
-            className="absolute right-2 top-2 z-10 flex items-center gap-1 rounded border border-border bg-background/80 px-1.5 py-1 text-ui-11 text-muted-foreground backdrop-blur transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            aria-label={t("settings.apiKeys.copySnippet")}
-          >
-            <HugeiconsIcon
-              icon={copied ? Tick02Icon : Copy01Icon}
-              className={cn("size-3.5", copied && "text-emerald-600")}
-            />
-            {copied ? t("settings.apiKeys.copied") : t("settings.apiKeys.copy")}
-          </button>
-          <HighlightedCode
-            key={snippet}
-            code={snippet}
-            language={shikiLang}
-            label={t("settings.apiKeys.audioApi.title")}
-            redactFromReload={Boolean(apiKey)}
-          />
-        </div>
-        {placeholder || needsLoad ? (
-          <div className="flex min-w-0 flex-col gap-1 border-t border-border px-3 py-2.5 text-ui-11 leading-snug text-muted-foreground">
-            {placeholder ? (
-              <span>{t("settings.apiKeys.audioApi.placeholderModel")}</span>
-            ) : null}
-            {needsLoad ? (
-              <span>{t("settings.apiKeys.audioApi.autoSwitchOff")}</span>
-            ) : null}
-          </div>
-        ) : null}
+      <div className="flex flex-col gap-1">
+        {showHeading && (
+          <h2 className="settings-heading flex items-center gap-2 text-base font-semibold font-heading">
+            <HugeiconsIcon icon={AiSpeechIcon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground" />
+            {t("settings.apiKeys.audioApi.title")}
+          </h2>
+        )}
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          {t("settings.apiKeys.audioApi.description")}
+        </p>
       </div>
+      <div className="@container">
+        <div className="grid grid-cols-1 items-start gap-3 @[34rem]:grid-cols-3">
+          <ExampleField label={t("settings.apiKeys.exampleKind")}>
+            {/* One picker for the tabs and the workflows that used to sit in a second row. */}
+            <Select value={example} onValueChange={pickExample}>
+              <SelectTrigger
+                aria-label={t("settings.apiKeys.exampleKind")}
+                className="w-full rounded-lg"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent align="start">
+                {/* Grouped too, so these line up with the workflow items. */}
+                <SelectGroup>
+                  {AUDIO_API_TABS.filter((id) => id !== "workflows").map(
+                    (id) => (
+                      <SelectItem key={id} value={id}>
+                        {t(TAB_LABEL[id])}
+                      </SelectItem>
+                    ),
+                  )}
+                </SelectGroup>
+                <SelectGroup>
+                  <SelectLabel>{t(TAB_LABEL.workflows)}</SelectLabel>
+                  {AUDIO_RUN_WORKFLOWS.map((id) => (
+                    <SelectItem key={id} value={id}>
+                      {t(RUN_LABEL[id])}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </ExampleField>
+        </div>
+      </div>
+      {placeholder || needsLoad ? (
+        <div className="flex min-w-0 flex-col gap-1 text-ui-11 leading-relaxed text-muted-foreground">
+          {placeholder ? (
+            <p>{t("settings.apiKeys.audioApi.placeholderModel")}</p>
+          ) : null}
+          {needsLoad ? (
+            <p>{t("settings.apiKeys.audioApi.autoSwitchOff")}</p>
+          ) : null}
+        </div>
+      ) : null}
+      <ExampleCodeBox
+        code={snippet}
+        language={shikiLang}
+        label={t("settings.apiKeys.audioApi.title")}
+        redactFromReload={Boolean(apiKey)}
+        pills={
+          <ExampleToggle
+            label={t("settings.apiKeys.exampleLanguage")}
+            value={lang}
+            options={LANGS}
+            onChange={pickLang}
+          />
+        }
+        os={os}
+        onOsChange={setOs}
+      />
     </section>
   );
 }

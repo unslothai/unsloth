@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "@typescript/typescript6";
 import { classifyUnslothSupport } from "../src/features/hub/lib/unsloth-support.ts";
+import { ggufRepoParams } from "../src/lib/model-size.ts";
 
 // Execute the production mapper without loading React, the Hub client or the network hooks.
 const source = readFileSync(
@@ -15,7 +16,7 @@ const start = source.indexOf("function makeMapModel(");
 assert.notEqual(start, -1);
 const end = source.indexOf("\n}\n", start) + 2;
 const makeMapModel = new Function(
-  "classifyUnslothSupport", "EMBEDDING_TAGS", "isGgufLike", "estimateSizeFromDtypes", "detectBaseModel",
+  "classifyUnslothSupport", "EMBEDDING_TAGS", "isGgufLike", "estimateSizeFromDtypes", "detectBaseModel", "ggufRepoParams",
   ts.transpileModule(source.slice(start, end), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText +
     "; return makeMapModel;",
 )(
@@ -24,9 +25,9 @@ const makeMapModel = new Function(
   (id: string) => id.endsWith("-GGUF"),
   () => undefined,
   () => null,
+  ggufRepoParams,
 );
 
-// Tag sets as the Hub API returns them for these repositories.
 const GPT2 = ["pytorch", "tf", "jax", "tflite", "onnx", "safetensors"];
 const MINILM = ["pytorch", "tf", "rust", "onnx", "safetensors", "openvino"];
 

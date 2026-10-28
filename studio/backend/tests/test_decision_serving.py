@@ -223,6 +223,23 @@ def test_shutdown_ends_a_gpu_worker(home, client, gpu):
     assert client.get("/api/settings/systemone").json()["loaded_device"] is None
 
 
+def test_a_chat_load_ends_an_idle_gpu_worker(home, client, gpu, monkeypatch):
+    from core.inference import gpu_arbiter
+
+    monkeypatch.setattr(gpu_arbiter, "_owner", None)
+    assert _put(client, enabled = True, model = _fine_tune(home, "laya_served_1")).status_code == 200
+    assert _post(client).status_code == 200
+    gpu_arbiter.acquire_for(gpu_arbiter.CHAT)
+    with laya_runtime._run_lock:
+        gpu_arbiter.acquire_for(gpu_arbiter.CHAT, lambda: None)
+    assert gpu.closed == 0
+    gpu_arbiter.acquire_for(gpu_arbiter.CHAT, lambda: None)
+    assert gpu.closed == 1
+    assert client.get("/api/settings/systemone").json()["loaded_model"] is None
+    assert _post(client).status_code == 200
+    assert gpu.placed == ["cuda", "cuda"]
+
+
 def test_training_takes_the_gpu_from_a_load_in_flight_or_a_model_it_missed(home, client, gpu):
     def training_starts():
         gpu.training, gpu.on_build = True, None
@@ -639,6 +656,127 @@ def test_a_chat_model_that_takes_the_gpu_stops_the_reload(home, client, clef, mo
     assert len(clef.agents) == 2
 
 
+def test_an_image_load_ends_an_idle_clef_worker(home, client, clef):
+    from core.inference import gpu_arbiter
+
+    assert (
+        _put(client, enabled = True, model = _clef_fine_tune(home, "clef_served_1")).status_code == 200
+    )
+    assert _post(client).status_code == 200
+    gpu_arbiter.acquire_for(gpu_arbiter.DIFFUSION, lambda: None)
+    assert clef.agents[0].closed
+    assert client.get("/api/settings/systemone").json()["loaded_model"] is None
+
+
+def test_a_load_claimed_as_the_eviction_starts_keeps_the_idle_worker(
+    home, client, clef, monkeypatch
+):
+    from core.inference import gpu_arbiter
+
+    assert (
+        _put(client, enabled = True, model = _clef_fine_tune(home, "clef_served_1")).status_code == 200
+    )
+    assert _post(client).status_code == 200
+    run_lock, claimed = laya_runtime._run_lock, laya_runtime._loaded
+
+    class ClaimedInTheGap:
+        def acquire(self, *args, **kwargs):
+            laya_runtime._loading = claimed
+            return run_lock.acquire(*args, **kwargs)
+
+        def release(self):
+            run_lock.release()
+
+    monkeypatch.setattr(laya_runtime, "_loading", None)
+    monkeypatch.setattr(laya_runtime, "_run_lock", ClaimedInTheGap())
+    unloads = laya_runtime._unloads
+    gpu_arbiter.acquire_for(gpu_arbiter.DIFFUSION, lambda: None)
+    assert not clef.agents[0].closed
+    assert laya_runtime._unloads == unloads
+
+
+@pytest.mark.parametrize("owner", ["chat", "diffusion"])
+@pytest.mark.parametrize("policy, ends", [("off", True), ("fit", False), ("always", False)])
+def test_only_off_ends_an_idle_worker_on_a_load(
+    home, client, clef, monkeypatch, owner, policy, ends
+):
+    from core.inference import gpu_arbiter
+
+    for name in ("_residents", "_media_needs", "_accounts"):
+        monkeypatch.setattr(gpu_arbiter, name, {})
+    assert (
+        _put(client, enabled = True, model = _clef_fine_tune(home, "clef_served_1")).status_code == 200
+    )
+    assert _post(client).status_code == 200
+    gpu_arbiter.acquire_for(owner, lambda: None, policy = policy)
+    assert clef.agents[0].closed is ends
+    assert (client.get("/api/settings/systemone").json()["loaded_model"] is None) is ends
+    if not ends:
+        assert _post(client).status_code == 200 and len(clef.agents) == 1
+
+
+@pytest.mark.parametrize("loading", ["chat", "diffusion", "video"])
+def test_a_decision_waits_for_a_gpu_load_in_flight_after_the_eviction(
+    home, client, clef, monkeypatch, loading
+):
+    from core.inference import gpu_arbiter, gpu_residency
+
+    assert (
+        _put(client, enabled = True, model = _clef_fine_tune(home, "clef_served_1")).status_code == 200
+    )
+    assert _post(client).status_code == 200
+    gpu_arbiter.acquire_for(gpu_arbiter.DIFFUSION, lambda: None)
+    assert clef.agents[0].closed
+    monkeypatch.setattr(gpu_residency, "chat_load_in_flight", lambda: loading == "chat")
+    monkeypatch.setattr(gpu_arbiter, "_media_loading", lambda owner: owner == loading)
+    if loading != "chat":
+        monkeypatch.setitem(gpu_arbiter._residents, loading, None)
+    response = _post(client)
+    assert response.status_code == 409 and response.json()["detail"]["error_type"] == "gpu_busy"
+    assert len(clef.agents) == 1
+    monkeypatch.setattr(gpu_residency, "chat_load_in_flight", lambda: False)
+    monkeypatch.setattr(gpu_arbiter, "_media_loading", lambda owner: False)
+    assert _post(client).status_code == 200 and len(clef.agents) == 2
+
+
+def test_a_cpu_media_load_or_a_settled_gpu_leaves_a_decision_load_alone(
+    home, client, clef, monkeypatch
+):
+    from core.inference import gpu_arbiter
+
+    monkeypatch.setattr(gpu_arbiter, "_media_loading", lambda owner: True)
+    for owner in (gpu_arbiter.DIFFUSION, gpu_arbiter.VIDEO):
+        monkeypatch.delitem(gpu_arbiter._residents, owner, raising = False)
+    assert (
+        _put(client, enabled = True, model = _clef_fine_tune(home, "clef_served_1")).status_code == 200
+    )
+    assert _post(client).status_code == 200 and len(clef.agents) == 1
+
+
+def test_a_decision_load_waits_while_the_arbiter_is_mid_acquire(home, client, clef, monkeypatch):
+    from core.inference import gpu_arbiter
+
+    assert (
+        _put(client, enabled = True, model = _clef_fine_tune(home, "clef_served_1")).status_code == 200
+    )
+    with gpu_arbiter._lock:
+        response = _post(client)
+    assert response.status_code == 409 and response.json()["detail"]["error_type"] == "gpu_busy"
+    assert not clef.agents and laya_runtime._loading is None
+    assert _post(client).status_code == 200
+
+
+def test_a_resident_worker_answers_during_a_gpu_load(home, client, clef, monkeypatch):
+    from core.inference import gpu_residency
+
+    assert (
+        _put(client, enabled = True, model = _clef_fine_tune(home, "clef_served_1")).status_code == 200
+    )
+    assert _post(client).status_code == 200
+    monkeypatch.setattr(gpu_residency, "chat_load_in_flight", lambda: True)
+    assert _post(client).status_code == 200 and len(clef.agents) == 1
+
+
 def test_a_clef_worker_that_fails_the_warm_up_is_retired(home, client, clef, monkeypatch):
     from core.systemone import clef_runtime
 
@@ -727,7 +865,7 @@ def test_a_chat_model_that_takes_the_gpu_during_the_warm_up_retires_the_reload(
     assert client.get("/api/settings/systemone").json()["loaded_model"] is None
 
 
-def test_a_settings_change_during_the_reloads_lookup_stops_its_worker(
+def test_a_settings_change_during_the_reloads_lookup_never_starts_its_worker(
     home, client, clef, monkeypatch
 ):
     from core.systemone import clef_runtime
@@ -762,7 +900,7 @@ def test_a_settings_change_during_the_reloads_lookup_stops_its_worker(
     laya_runtime.unload(reload_after_training = True)
     clef.training = False
     _reload_finished()
-    assert stopped == [True]
+    assert stopped == [] and len(clef.agents) == 1
     settings = client.get("/api/settings/systemone").json()
     assert settings["loaded_model"] is settings["loading_model"] is settings["error"] is None
 
@@ -795,10 +933,10 @@ def test_a_clef_worker_that_never_reports_ready_is_stopped(monkeypatch):
     calls = []
 
     class Process:
-        exitcode = None
+        exitcode = pid = None
 
         def __init__(self, **kwargs):
-            self.child = kwargs["args"][0]
+            self.child = kwargs["args"][1]
 
         def start(self):
             # A live child holds its own end of the pipe, so the parent sees silence, not EOF.
@@ -835,10 +973,10 @@ def test_a_training_run_stops_a_clef_worker_still_loading(monkeypatch):
     calls = []
 
     class Process:
-        exitcode = None
+        exitcode = pid = None
 
         def __init__(self, **kwargs):
-            self.child = kwargs["args"][0]
+            self.child = kwargs["args"][1]
 
         def start(self):
             # A live child holds its own end of the pipe, so the parent sees silence, not EOF.
@@ -869,6 +1007,114 @@ def test_a_training_run_stops_a_clef_worker_still_loading(monkeypatch):
             del child.close
             child.close()
     assert "kill" in calls
+
+
+def test_unsloth_shutting_down_stops_a_clef_worker_still_loading(monkeypatch):
+    from core.systemone import clef_runtime
+    from utils import process_lifetime
+
+    calls = []
+
+    class Process:
+        exitcode = pid = None
+
+        def __init__(self, **kwargs):
+            self.child = kwargs["args"][1]
+
+        def start(self):
+            held.append(self.child)
+            self.child.close = lambda: None
+
+        def join(self, timeout = None):
+            calls.append("join")
+
+        def is_alive(self):
+            return "kill" not in calls
+
+        def kill(self):
+            calls.append("kill")
+
+    held = []
+    reads = iter([False])
+    monkeypatch.setattr(process_lifetime, "is_process_shutting_down", lambda: next(reads, True))
+    monkeypatch.setattr(clef_runtime._CTX, "Process", Process)
+    monkeypatch.setattr(clef_runtime, "LOAD_TIMEOUT_S", 600)
+    try:
+        started = time.monotonic()
+        with pytest.raises(clef_runtime.ClefWorkerError, match = "stopped while it loaded"):
+            clef_runtime.ClefAgent("unused")
+        assert time.monotonic() - started < 30
+    finally:
+        for child in held:
+            del child.close
+            child.close()
+    assert "kill" in calls
+
+
+def _running(pid):
+    try:
+        with open(f"/proc/{pid}/stat", encoding = "utf-8") as stat:
+            return stat.read().rsplit(")", 1)[1].split()[0] != "Z"
+    except OSError:
+        return False
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "PDEATHSIG is Linux only")
+def test_a_loading_clef_worker_dies_with_unsloth(tmp_path):
+    import signal
+    import subprocess
+
+    # The worker's load never returns, as a long GPU load would: its first import blocks.
+    (tmp_path / "torch").mkdir()
+    (tmp_path / "torch" / "__init__.py").write_text(
+        "import os, time\n"
+        "with open(os.environ['CLEF_WORKER_PID'], 'w') as f:\n"
+        "    f.write(str(os.getpid()))\n"
+        "time.sleep(600)\n",
+        encoding = "utf-8",
+    )
+    pid_file = tmp_path / "worker.pid"
+    unsloth = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import threading\n"
+            "from core.systemone.clef_runtime import ClefAgent\n"
+            "threading.Thread(target = ClefAgent, args = ('unused',)).start()\n"
+            "threading.Event().wait()\n",
+        ],
+        cwd = Path(laya_runtime.__file__).resolve().parents[2],
+        env = dict(os.environ, PYTHONPATH = str(tmp_path), CLEF_WORKER_PID = str(pid_file)),
+    )
+    worker = None
+    try:
+        deadline = time.monotonic() + 60
+        while worker is None and time.monotonic() < deadline:
+            text = pid_file.read_text(encoding = "utf-8") if pid_file.exists() else ""
+            worker = int(text) if text else None
+            time.sleep(0.1)
+        assert worker is not None, "the Clef worker never started loading"
+        unsloth.kill()
+        unsloth.wait()
+        deadline = time.monotonic() + 15
+        while _running(worker) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert not _running(worker)
+    finally:
+        unsloth.kill()
+        unsloth.wait()
+        if worker is not None and _running(worker):
+            os.kill(worker, signal.SIGKILL)
+
+
+def test_shutdown_ends_a_clef_worker(home, client, clef):
+    assert (
+        _put(client, enabled = True, model = _clef_fine_tune(home, "clef_served_1")).status_code == 200
+    )
+    assert _post(client).status_code == 200
+    laya_runtime.shutdown()
+    assert clef.agents[0].closed
+    assert client.get("/api/settings/systemone").json()["loaded_device"] is None
 
 
 def test_the_catalog_offers_the_stock_clef_models():

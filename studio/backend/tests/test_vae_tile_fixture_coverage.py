@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Every image / video family has a pinned VAE config in the seam guard's fixture.
-
-test_vae_tile_geometry.py checks this too, but it needs torch and diffusers, so it only runs in the
-path-filtered seam-guard job. #12775 / #12777 added qwen-image-layered after the guard (#12766) had
-been tested, and nothing on their PRs read the fixture: the seam guard went red on main. This copy
-needs neither, so Backend CI catches a new family without its VAE config on the PR that adds it.
-"""
+"""Each family needs a pinned VAE config in the seam fixture; this copy runs without torch."""
 
 from __future__ import annotations
 

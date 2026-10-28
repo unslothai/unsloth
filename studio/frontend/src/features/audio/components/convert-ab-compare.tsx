@@ -106,7 +106,7 @@ export function ABCompare({
           className="w-full rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         />
       ) : (
-        <output className="flex h-12 w-full items-center justify-center rounded-md border border-border text-ui-12 text-muted-foreground">
+        <output className="flex h-12 w-full items-center justify-center rounded-full border border-border text-ui-12 text-muted-foreground">
           {current.unavailable ?? "Loading audio…"}
         </output>
       )}

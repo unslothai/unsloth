@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Disk-backed persistence for generated images.
-
-Each image is a PNG under ``workspace_root()/images`` with its recipe embedded as PNG text chunks:
-an ``unsloth`` JSON blob (the source of truth) plus an Automatic1111-style ``parameters`` string,
-so a downloaded PNG carries its own settings. The route owns the schema; this only stores files.
-"""
+"""Image PNGs in workspace_root()/images; recipe in an unsloth JSON text chunk (source of truth)"""
 
 from __future__ import annotations
 
@@ -50,6 +45,10 @@ _IMG2IMG_WORKFLOWS = ("img2img", "inpaint", "outpaint", "edit", "upscale")
 
 def _params_text(meta: dict[str, Any]) -> str:
     """Automatic1111-style ``parameters`` string for cross-tool interop."""
+    from core.inference.diffusion_hires import infotext_fields as hires_infotext, infotext_meta
+
+    # A Hires fix image is written the way A1111 writes one: Size is the base pass, Hires upscale the factor.
+    meta = infotext_meta(meta)
     # The caption the model encoded (FLUX.3 prompt upsampler): other tools reproduce the image from this line. The
     # typed prompt stays in the Unsloth chunk.
     lines = [str(meta.get("enhanced_prompt") or meta.get("prompt", ""))]
@@ -73,6 +72,19 @@ def _params_text(meta: dict[str, Any]) -> str:
         f"Seed: {meta.get('seed')}, Size: {meta.get('width')}x{meta.get('height')}, "
         f"Model: {meta.get('model', '')}"
     )
+    # webui infotext names (processing.create_infotext).
+    if meta.get("variation_strength"):
+        fields += (
+            f", Variation seed: {meta.get('variation_seed')}, "
+            f"Variation seed strength: {meta['variation_strength']}"
+        )
+    if meta.get("clip_skip"):
+        fields += f", Clip skip: {meta['clip_skip']}"
+    if meta.get("cfg_rescale"):
+        fields += f", CFG rescale: {meta['cfg_rescale']}"
+    # webui opts.emphasis infotext: a prompt run with weighting off replays literally there too.
+    if meta.get("prompt_weighting") is False:
+        fields += ", Emphasis: None"
     if meta.get("workflow") in _IMG2IMG_WORKFLOWS and meta.get("strength") is not None:
         fields += f", Denoising strength: {meta['strength']}"
     # A1111 inpaint keys (modules/processing.py), only when this inpaint applied them.
@@ -82,9 +94,14 @@ def _params_text(meta: dict[str, Any]) -> str:
         fields += ", Inpaint area: Only masked"
         if meta.get("inpaint_padding") is not None:
             fields += f", Masked area padding: {meta['inpaint_padding']}"
+    fields += hires_infotext(meta)
     # Static flow shift, read back by the paste parser; base / max shift stay in the recipe chunk only.
     if meta.get("shift") is not None:
         fields += f", Shift: {meta['shift']}"
+    # ADetailer's own keys (adetailer/args.py), so a paste into Studio or a webui with ADetailer restores the pass.
+    if meta.get("detailer"):
+        from core.inference.diffusion_detailer import infotext_fields
+        fields += infotext_fields(meta["detailer"])
     if meta.get("generator"):
         fields += f", Version: {meta['generator']}"
     lines.append(fields)
@@ -152,8 +169,7 @@ def save(image: Any, meta: dict[str, Any]) -> dict[str, Any]:
     data = _png_bytes(image, meta)
     directory = gallery_dir()
     final_path = directory / f"{image_id}.png"
-    # Write to a dotted temp (skipped by the *.png glob) then atomically rename, so a crash mid-write never leaves a
-    # truncated {id}.png in the listing.
+    # Dotted temp (skipped by the *.png glob) then atomic rename: no truncated PNG in the listing.
     tmp_path = directory / f".{image_id}.png.tmp"
     try:
         tmp_path.write_bytes(data)
@@ -164,17 +180,21 @@ def save(image: Any, meta: dict[str, Any]) -> dict[str, Any]:
         except OSError:
             pass
         raise
-    return _record(image_id, meta)
+    return _record(image_id, meta, directory = directory)
 
 
 def _record(
     image_id: str,
     meta: dict[str, Any],
     flags: Optional[dict[str, dict[str, Any]]] = None,
+    *,
+    directory: Optional[Path] = None,
 ) -> dict[str, Any]:
+    if directory is None:
+        directory = gallery_dir()
     # flags are library state, not recipe: they come from the sidecar store, never the PNG chunk
     if flags is None:
-        flags = gallery_flags.read(gallery_dir())
+        flags = gallery_flags.read(directory)
     return {
         **meta,
         "id": image_id,
@@ -182,7 +202,7 @@ def _record(
         **gallery_flags.flags_for(flags, image_id),
         # The server's own sort key, so a client re-sort agrees with it (created_at can differ).
         "order_at": gallery_flags.order_rank(
-            flags, image_id, _mtime(gallery_dir() / f"{image_id}.png")
+            flags, image_id, _mtime(directory / f"{image_id}.png")
         ),
     }
 
@@ -191,9 +211,10 @@ def image_path(image_id: str) -> Optional[Path]:
     """Resolve an id to its on-disk PNG, or None if missing / unsafe."""
     if not _ID_RE.match(image_id):
         return None
-    path = gallery_dir() / f"{image_id}.png"
+    directory = gallery_dir()
+    path = directory / f"{image_id}.png"
     try:
-        path.resolve().relative_to(gallery_dir().resolve())
+        path.resolve().relative_to(directory.resolve())
     except ValueError:
         return None
     return path if path.is_file() else None
@@ -206,8 +227,7 @@ def image_b64(image_id: str) -> Optional[str]:
     return base64.b64encode(path.read_bytes()).decode("ascii")
 
 
-# Required recipe keys (GalleryImage fields minus id/url). A PNG missing any is skipped as foreign, so a hand-dropped
-# or older-schema file cannot 500 the listing.
+# A PNG missing any required key is skipped as foreign so it cannot 500 the listing.
 _REQUIRED_META = ("prompt", "width", "height", "steps", "guidance", "seed", "created_at")
 
 
@@ -216,8 +236,7 @@ def _read_meta(path: Path, *, strict_io: bool = False) -> Optional[dict[str, Any
 
     try:
         with Image.open(path) as im:
-            # _png_bytes writes the chunk before IDAT, so the header parse has it; im.text would
-            # decode every pixel looking for chunks after IDAT.
+            # The chunk is written before IDAT; im.text would decode every pixel to find later chunks.
             raw = im.info.get(_META_KEY) or im.text.get(_META_KEY)  # type: ignore[attr-defined]
     except OSError as exc:
         if strict_io and exc.errno not in (None, errno.ENOENT):
@@ -237,10 +256,7 @@ def _read_meta(path: Path, *, strict_io: bool = False) -> Optional[dict[str, Any
 
 
 def owned_image_path(image_id: str) -> Optional[Path]:
-    """Resolve an id to its PNG only when it is an Unsloth-owned image (a readable recipe chunk),
-    else None. The serve route uses this instead of image_path() so a guessed stem for a
-    hand-dropped foreign PNG -- which list_images/delete/clear already treat as not ours -- can't
-    be streamed out. Mirrors the delete/clear ownership guard."""
+    """Returns None unless the PNG is Unsloth-owned, so a guessed id cannot stream a hand-dropped file."""
     path = image_path(image_id)
     if path is None or _read_meta(path) is None:
         return None
@@ -276,27 +292,14 @@ def list_images(
     valid: Optional[Callable[[dict[str, Any]], bool]] = None,
     archived: bool = False,
 ) -> list[dict[str, Any]]:
-    """A window of images for infinite scroll: pinned first (most recently pinned leading), then
-    newest-first by file mtime (or the manual key once dragged).
-
-    mtime is a cheap stat ~= generation order, so a large gallery isn't opened in full just to
-    sort; only the window's recipes are read. limit=None returns everything from ``offset`` on.
-
-    ``archived`` selects WHICH shelf to page over, it does not widen one: False lists only active
-    images, True lists only archived ones. The archived section needs its own scrollable page, so
-    a chat-style "include archived" flag would not do.
-
-    ``valid`` (optional) filters records BEFORE pagination, so ``offset`` / ``limit`` and has_more
-    all count over the accepted-record domain. Pass the route's schema validator: a record with
-    every required key (so ``_read_meta`` accepts it) but a wrong value type would otherwise be
-    counted here yet dropped after slicing, stalling infinite scroll at offset 0."""
+    """Pinned first, then mtime; archived selects a shelf, never widens; valid filter runs before paging."""
     try:
-        paths = list(gallery_dir().glob("*.png"))
+        directory = gallery_dir()
+        paths = list(directory.glob("*.png"))
     except OSError:
         return []
-    flags = gallery_flags.read(gallery_dir())
-    # Both the shelf split and the pin sort run on file stems, BEFORE any recipe is read, so they cost one dict lookup
-    # per file and leave the early break below intact.
+    flags = gallery_flags.read(directory)
+    # Shelf split and pin sort use file stems before any recipe read, keeping the early break intact.
     paths = [p for p in paths if gallery_flags.is_archived(flags, p.stem) == archived]
     paths.sort(
         key = lambda p: (
@@ -305,16 +308,14 @@ def list_images(
         ),
         reverse = True,
     )
-    # Page over READABLE records, not raw files: filtering a foreign PNG out of an already-sliced window would drop
-    # valid images and make has_more wrong. Known limit: this re-reads headers from newest down to `offset+limit` per
-    # page, so a deep scroll is O(offset) header-opens.
+    # Page over readable records, not raw files, or has_more is wrong. Deep scroll is O(offset).
     want = None if limit is None else offset + limit
     records = []
     for path in paths:
         meta = _read_meta(path)
         if meta is None:
             continue
-        record = _record(path.stem, meta, flags)
+        record = _record(path.stem, meta, flags, directory = directory)
         if valid is not None and not valid(record):
             continue
         records.append(record)
@@ -332,8 +333,7 @@ def set_flags(
     """Patch one image's pin/archive flags and return its updated record, or None when the id is
     not an Unsloth-owned image. Ownership-gated like delete: a guessed stem for a hand-dropped
     foreign PNG must not become flaggable (and so listable under a shelf we own)."""
-    # Ownership check and write under one lock, so a concurrent clear cannot delete the file between them and leave this
-    # reporting success for an image that is already gone.
+    # Check and write under one lock so a concurrent clear cannot delete the file between them.
     with gallery_flags.exclusive(gallery_dir()):
         path = owned_image_path(image_id)
         if path is None:
@@ -406,21 +406,10 @@ def delete(image_id: str) -> bool:
 
 
 def clear(include_archived: bool = False) -> int:
-    """Delete Unsloth-owned gallery PNGs (readable recipe chunk); return how many were removed.
-
-    Archived images are SPARED by default: archiving is how a user sets something aside, so a
-    "clear the gallery" action that destroyed the archive would defeat it. Pass
-    include_archived=True to remove those too.
-
-    Raises FlagsUnavailable when the archive has to be spared but the flag store cannot be read.
-    Fail CLOSED: read() answers "nothing is archived" for an unreadable store, which here would
-    quietly delete the very archive this promises to keep.
-
-    Foreign PNGs are preserved: list_images already hides them, so clear must not destroy them."""
+    """Owned PNGs only; archived spared unless include_archived; fails closed if flags unreadable."""
     removed = 0
     directory = gallery_dir()
-    # Hold the flag lock across the whole read-then-delete: an archive landing mid-loop would otherwise be judged active
-    # from the stale snapshot and deleted, after its PATCH had already reported success.
+    # Hold the flag lock across read-then-delete, or an archive landing mid-loop gets deleted.
     with gallery_flags.exclusive(directory):
         # read flags BEFORE listing: nothing is unlinked if the store turns out to be untrusted
         flags = {} if include_archived else gallery_flags.read_trusted(directory)
@@ -440,8 +429,7 @@ def clear(include_archived: bool = False) -> int:
                 cleared.append(path.stem)
             except OSError:
                 continue
-        # Nothing left for an unreadable store to protect once every image we own is gone, so this is where the escape
-        # hatch escapes: replace it, or every later default clear still refuses.
+        # Every owned image is gone, so replace the untrusted store or later clears keep refusing.
         if include_archived and not gallery_flags.is_trusted(directory):
             gallery_flags.reset_locked(directory)
         else:

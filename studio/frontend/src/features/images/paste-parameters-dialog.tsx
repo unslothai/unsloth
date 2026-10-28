@@ -11,6 +11,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
+import { isModEnter } from "@/features/settings/lib/keyboard-shortcuts";
 
 const EXAMPLE =
   "a sloth hiking, <lora:sloth-style:0.8>\nNegative prompt: blurry\nSteps: 28, Sampler: DPM++ 2M, Schedule type: Karras, CFG scale: 6, Seed: 12345, Size: 832x1216";
@@ -65,7 +66,7 @@ export function PasteParametersDialog({
             value={text}
             onChange={(e) => onTextChange(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+              if (isModEnter(e)) {
                 e.preventDefault();
                 void apply();
               }

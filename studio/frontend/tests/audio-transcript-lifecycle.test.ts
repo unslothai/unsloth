@@ -128,7 +128,6 @@ test("the previous result is replaced only after its replacement model is ready"
 });
 
 test("leaving the page lets a transcription finish into history; the input card owns the microphone", () => {
-  // The input card records; the page stays mounted when hidden, so hiding it must end a recording too.
   assert.doesNotMatch(source, /getUserMedia|stopAndDiscardRecording/);
   assert.match(
     readSrc("features/audio/hooks/use-audio-source.ts"),
@@ -172,18 +171,20 @@ test("logout checks unsaved transcripts before revoking the session or navigatin
   assert.ok(protection);
   const sidebarTree = parse(sidebar);
   const handlers: string[] = [];
+  // The menu item and the shortcut both call this one handler.
   function findLogout(node: ts.Node) {
     if (
-      ts.isArrowFunction(node) &&
+      (ts.isArrowFunction(node) || ts.isFunctionDeclaration(node)) &&
       node.modifiers?.some((item) => item.kind === ts.SyntaxKind.AsyncKeyword) &&
-      node.body.getText(sidebarTree).includes("await logout()")
+      node.body?.getText(sidebarTree).includes("await logout()")
     ) {
       handlers.push(node.getText(sidebarTree));
     }
     ts.forEachChild(node, findLogout);
   }
   findLogout(sidebarTree);
-  assert.equal(handlers.length, 2);
+  assert.equal(handlers.length, 1);
+  assert.equal((sidebar.match(/void signOut\(\)/g) ?? []).length, 2);
   const execute = (expression: string, scope: Record<string, unknown>) => {
     const { outputText } = ts.transpileModule(`return (${expression});`, {
       compilerOptions: { target: ts.ScriptTarget.ES2022 },
@@ -230,6 +231,8 @@ test("logout checks unsaved transcripts before revoking the session or navigatin
         window,
         Event,
         AUTH_SESSION_ENDING_EVENT: eventName,
+        isTauri: false,
+        isOwner: true,
         logout: async () => {
           events.push("logout");
         },

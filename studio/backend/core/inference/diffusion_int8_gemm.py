@@ -1,41 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""int8 x int8 GEMM with torchao's dequant epilogue in the kernel: bf16 out instead of an int32 ``_int_mm`` output.
-
-The stock torchao W8A8 linear writes the int32 accumulator to HBM (4 bytes per output element) and the next compiled
-kernel reads it back to apply ``(c * x_scale) * w_scale``. Here one Triton kernel does the GEMM and the epilogue and
-writes bf16, so every int8 Linear writes half the bytes and its consumer (norm, RoPE, SwiGLU, act quant) reads half.
-
-NUMERICS: the Linear output is bit-identical to torchao's epilogue, eager and compiled under Studio's
-``emulate_precision_casts``: ``bf16(bf16(r(c) * xs) * ws)`` (+ bias as a bf16 add), where ``r`` rounds the int32
-accumulator to bf16 when the activation scale is bf16 (int32 * bf16 promotes to bf16, via fp32: two roundings) and to
-fp32 when it is fp32.
-The activation quant is torchao's own math, so Inductor still fuses it into the producer. A compiled block is NOT
-bit-identical end to end: the consumer reductions (LayerNorm / RMSNorm Welford) that used to fuse the epilogue now
-read bf16 and Inductor re-tiles them, a rounding-order change smaller than compiled-vs-eager (LPIPS-gated).
-
-Per-arch gate: sm80 / sm89 / sm120 on (measured), everything else stock. sm75: Triton cannot lower the int8 dot;
-sm100: Triton int8 is slower than cuBLAS. ROCm (weight-only int8 there) and CPU never reach it.
-Tiles: one default per arch plus a per-shape table (``_SHAPE_TILES``) for the shapes where another tile measured
-faster; every tile is probed bit-exact per device, and a tile that fails falls back to the arch default. All tiles
-accumulate in int32, so the output does not depend on the tile.
-
-Kill switch: ``UNSLOTH_DIFFUSION_INT8_GEMM=0``; ``=1`` also enables it on an unmeasured arch (still probe-gated).
-``UNSLOTH_DIFFUSION_INT8_GEMM_TILES=0`` keeps the arch default tile for every shape.
-
-ConvRot Linears (MiniMax-H3, Qwen-Image-2.1 ConvRot) run ``ConvRotLinear.forward``'s own rotation first, so eager
-output stays bit-identical; kill switch ``UNSLOTH_DIFFUSION_INT8_GEMM_CONVROT=0``.
-
-Rotated Linears on the archs ``diffusion_convrot_quant`` covers run the rotation and the act quant as ONE kernel
-(``rotq_i8``, codes and scales bit-identical, probed per device). Where the fused GEMM is off but that kernel is on
-(sm100), only the rotated Linears are swapped and their GEMM is cuBLAS ``_int_mm`` with torchao's epilogue, op for
-op. Kill switch ``UNSLOTH_DIFFUSION_INT8_ROTQUANT=0``.
-
-A block-streamed denoiser installs against its onload device (``install(..., device = ...)``): group offload's
-``swap_tensors`` keeps each Parameter's identity and the forward reads the payload off the live Parameter, so every
-call sees the onloaded copy. Kill switch ``UNSLOTH_DIFFUSION_INT8_GEMM_STREAMED=0``.
-"""
+"""int8 GEMM with torchao dequant epilogue in Triton, bf16 out; sm80/sm89/sm120 measured, other sm80+ behind a
+bit-exact probe and a latency check (UNSLOTH_DIFFUSION_INT8_GEMM_UNLISTED=0 keeps them stock), sm100 / sm103 stock
+(ROCm and CPU never reach it); Linear output bit-identical, compiled block not end to end;
+UNSLOTH_DIFFUSION_INT8_GEMM=0 disables."""
 
 from __future__ import annotations
 
@@ -44,11 +13,14 @@ import threading
 import types
 from functools import lru_cache
 from typing import Any, Optional
+from .rocm_bf16 import is_rocm_torch
 
 INT8_GEMM_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM"
 INT8_GEMM_CONVROT_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_CONVROT"
 INT8_GEMM_STREAMED_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_STREAMED"
 INT8_GEMM_TILES_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_TILES"
+INT8_SWIGLU_STREAMED_ENV = "UNSLOTH_DIFFUSION_INT8_SWIGLU_STREAMED"
+INT8_GEMM_UNLISTED_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_UNLISTED"
 _MIN_TRITON = (3, 2)
 # torch._int_mm needs M > 16; below that the stock path (safe_int_mm padding) stays in charge.
 _MIN_ROWS = 17
@@ -58,6 +30,9 @@ _OP_NAMESPACE = "unsloth_studio"
 _OP_NAME = "int8_mm_dequant"
 _REC = "_unsloth_i8_gemm"
 _MARK = "_unsloth_i8_gemm_prev"
+# on a SwiGLU MLP whose down projection takes its codes from the gate / value halves
+_FF_MARK = "_unsloth_i8_gemm_swiglu_prev"
+_SWIGLU_FF_CLASSES = ("QwenImage21SwiGLUFeedForward",)
 _NO_PREV = object()
 _LOCK = threading.Lock()
 _OP_HANDLE: Any = None
@@ -77,11 +52,13 @@ _ARCH_CONFIG = {
     (8, 9): (256, 128, 128, 8, 8, 3),  # L4
     (12, 0): (128, 128, 64, 8, 4, 4),  # RTX PRO 6000
 }
-# When the arch tile does not fit this part's shared memory.
+# When the arch tile does not fit this part's shared memory, and the unlisted archs' tile (64 KB of stages: fits 99 KB).
 _FALLBACK_CONFIG = (128, 128, 64, 8, 4, 4)
+# Measured slower than cuBLAS: not probed unless forced.
+_UNLISTED_SKIP = ((10, 0), (10, 3))
 
-# Per-shape tiles: (major, minor) -> ((N_lo, N_hi, K_lo, K_hi, tile), ...), first match wins, bounds inclusive,
-# M >= _SHAPE_MIN_M only. No L4 rule on purpose: per-GEMM wins there cost s/step end to end (power-capped clocks).
+# First match wins, bounds inclusive. No L4 rule on purpose: power-capped clocks lose end to end.
+# (major, minor) -> ((N_lo, N_hi, K_lo, K_hi, tile), ...), M >= _SHAPE_MIN_M only.
 _SHAPE_TILES: dict = {
     (12, 0): (
         # MiniMax-H3 fused QKV / FFN in
@@ -113,6 +90,11 @@ def streamed_enabled() -> bool:
     return raw not in ("0", "off", "false", "no")
 
 
+def swiglu_streamed_enabled() -> bool:
+    raw = (os.environ.get(INT8_SWIGLU_STREAMED_ENV) or "").strip().lower()
+    return raw not in ("0", "off", "false", "no")
+
+
 def tiles_enabled() -> bool:
     raw = (os.environ.get(INT8_GEMM_TILES_ENV) or "").strip().lower()
     return raw not in ("0", "off", "false", "no")
@@ -129,6 +111,33 @@ def _triton_version_ok(version: Optional[str] = None) -> bool:
 
     match = re.match(r"(\d+)\.(\d+)", version)
     return bool(match) and (int(match.group(1)), int(match.group(2))) >= _MIN_TRITON
+
+
+def unlisted_mode() -> str:
+    """'off', 'force' (no latency check) or 'auto' for the sm80+ archs without an ``_ARCH_CONFIG`` tile."""
+    gemm = int8_gemm_mode()
+    if gemm != "auto":
+        return gemm
+    raw = (os.environ.get(INT8_GEMM_UNLISTED_ENV) or "").strip().lower()
+    if raw in ("0", "off", "false", "no"):
+        return "off"
+    if raw in ("1", "on", "true", "yes", "force"):
+        return "force"
+    return "auto"
+
+
+def unlisted_arch(capability: Optional[tuple]) -> bool:
+    if capability is None:
+        return False
+    cap = (int(capability[0]), int(capability[1]))
+    return cap >= (8, 0) and cap not in _ARCH_CONFIG
+
+
+def unlisted_wanted(capability: Optional[tuple], mode: Optional[str] = None) -> bool:
+    mode = unlisted_mode() if mode is None else mode
+    if mode == "off" or not unlisted_arch(capability):
+        return False
+    return mode == "force" or (int(capability[0]), int(capability[1])) not in _UNLISTED_SKIP
 
 
 def arch_config(capability: Optional[tuple], mode: Optional[str] = None) -> Optional[tuple]:
@@ -247,9 +256,7 @@ def reference(a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> Any:
         a = torch.cat([a, a.new_zeros((_MIN_ROWS - m, a.shape[1]))])
     c = torch._int_mm(a, w.t())[:m]
     y = (c * xs.reshape(-1, 1)).to(torch.bfloat16)
-    y = y * ws.reshape(
-        -1
-    )  # bf16 scales: a bf16 product; fp32 (prequant) scales: fp32 until after the bias (v2)
+    y = y * ws.reshape(-1)
     if bias is not None:
         y = y + bias
     return y.to(torch.bfloat16)
@@ -332,6 +339,8 @@ def _run(a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> Any:
                 _DEVICE_TILES[index] = ()  # drop the shape tiles, keep the probed default
                 return _run(a, w, xs, ws, bias)
             _DEVICE_CFG[index] = None
+            if index in _UNLISTED_CARDS:
+                _UNLISTED_PROBE[index] = False
     return reference(a, w, xs, ws, bias)
 
 
@@ -376,7 +385,10 @@ def shape_tiles(capability: Optional[tuple]) -> tuple:
 def device_config(index: int) -> Optional[tuple]:
     """Probe once per device: arch gate, Triton, op registration, then a launch that must match the eager torchao
     epilogue bit for bit (bf16 and fp32 activation scales, bias, ragged M / N / K). None keeps the stock path. Each
-    per-shape tile is probed the same way; one that fails leaves its shapes on the default tile."""
+    per-shape tile is probed the same way; one that fails leaves its shapes on the default tile. Unlisted archs:
+    ``unlisted_config``, re-read per call so its switch acts between loads."""
+    if index in _UNLISTED_CARDS:
+        return unlisted_config(index)
     if index in _DEVICE_CFG:
         return _DEVICE_CFG[index]
     cfg = None
@@ -385,12 +397,15 @@ def device_config(index: int) -> Optional[tuple]:
         import torch
         if (
             torch.cuda.is_available()
-            and not getattr(torch.version, "hip", None)
+            and not is_rocm_torch(torch)
             and _triton_version_ok()
             and _kernels() is not None
             and _op() is not None
         ):
             cap = torch.cuda.get_device_capability(index)
+            if unlisted_arch(cap):
+                _UNLISTED_CARDS.add(index)
+                return unlisted_config(index)
             want = arch_config(cap)
             for cand in (want, _FALLBACK_CONFIG) if want is not None else ():
                 if cand is not None and _probe(index, cand):
@@ -406,6 +421,99 @@ def device_config(index: int) -> Optional[tuple]:
     except Exception:  # noqa: BLE001
         cfg = None
     _DEVICE_TILES[index] = rules if cfg is not None else ()
+    _DEVICE_CFG[index] = cfg
+    return cfg
+
+
+_UNLISTED_CARDS: set = set()
+_UNLISTED_PROBE: dict = {}
+_UNLISTED_OK: dict = {}
+_UNLISTED_TIMING: dict = {}
+# (M, N, K): Qwen-Image-2.1 attention projection, MLP in, MLP down
+_UNLISTED_LATENCY_SHAPES = ((2048, 4096, 4096), (2048, 12288, 4096), (2048, 4096, 12288))
+
+
+def _unlisted_latency(index: int, cfg: tuple) -> dict:
+    """{"fused": us, "stock": us} summed over ``_UNLISTED_LATENCY_SHAPES``, each arm captured in a CUDA graph and
+    replayed, best of seven interleaved rounds. Stock = cuBLAS ``_int_mm``; its epilogue fuses into the consumer, so
+    each arm ends in one read of its output (int32 for stock, bf16 here) standing in for that consumer."""
+    import torch
+    from .diffusion_cuda_graph import CAPTURE_MODE, _capturing, synchronize_outside_capture
+
+    dev = torch.device("cuda", index)
+    g = torch.Generator(device = "cpu").manual_seed(5)
+    ops = []
+    for m, n, k in _UNLISTED_LATENCY_SHAPES:
+        a = torch.randint(-127, 128, (m, k), generator = g, dtype = torch.int8).to(dev)
+        w = torch.randint(-127, 128, (n, k), generator = g, dtype = torch.int8).to(dev)
+        xs = torch.full((m,), 1e-3, device = dev, dtype = torch.bfloat16)
+        ws = torch.full((n,), 1e-3, device = dev, dtype = torch.bfloat16)
+        ops.append((a, w, xs, ws))
+    fns = {
+        "fused": lambda a, w, xs, ws: _launch(a, w, xs, ws, None, cfg).amax(),
+        "stock": lambda a, w, xs, ws: torch._int_mm(a, w.t()).amax(),
+    }
+    reps = 2
+    graphs = {}
+    with torch.cuda.device(dev):
+        side = torch.cuda.Stream(dev)
+        side.wait_stream(torch.cuda.current_stream(dev))
+        with torch.cuda.stream(side):
+            for fn in fns.values():
+                for op in ops:
+                    fn(*op)  # compile / autotune outside the capture
+        torch.cuda.current_stream(dev).wait_stream(side)
+        synchronize_outside_capture(dev)
+        for name, fn in fns.items():
+            graph = torch.cuda.CUDAGraph()
+            with _capturing(), torch.cuda.graph(graph, capture_error_mode = CAPTURE_MODE):
+                for _ in range(reps):
+                    for op in ops:
+                        fn(*op)
+            graphs[name] = graph
+        for graph in graphs.values():
+            graph.replay()
+        synchronize_outside_capture(dev)
+        start, end = torch.cuda.Event(enable_timing = True), torch.cuda.Event(enable_timing = True)
+        best = {name: float("inf") for name in graphs}
+        for _ in range(7):
+            for name, graph in graphs.items():
+                start.record()
+                graph.replay()
+                end.record()
+                end.synchronize()
+                best[name] = min(best[name], start.elapsed_time(end) * 1000.0 / reps)
+        del graphs
+    return best
+
+
+def unlisted_config(index: int) -> Optional[tuple]:
+    """Unlisted sm80+ card: ``_FALLBACK_CONFIG`` when it passed the bit-exact probe (once per device) and the latency
+    check (once per (device, mode); skipped under force), else None. Outside any trace / capture."""
+    import torch
+
+    mode = unlisted_mode()
+    cfg = None
+    try:
+        if unlisted_wanted(torch.cuda.get_device_capability(index), mode):
+            if index not in _UNLISTED_PROBE:
+                _UNLISTED_PROBE[index] = _probe(index, _FALLBACK_CONFIG)
+            if _UNLISTED_PROBE[index]:
+                key = (index, mode)
+                if key not in _UNLISTED_OK:
+                    ok = True
+                    if mode != "force":
+                        try:
+                            timing = _unlisted_latency(index, _FALLBACK_CONFIG)
+                            _UNLISTED_TIMING[index] = {k: round(v, 1) for k, v in timing.items()}
+                            ok = timing["fused"] <= timing["stock"]
+                        except Exception:  # noqa: BLE001 - main's path stays
+                            ok = False
+                    _UNLISTED_OK[key] = ok
+                cfg = _FALLBACK_CONFIG if _UNLISTED_OK[key] else None
+    except Exception:  # noqa: BLE001
+        cfg = None
+    _DEVICE_TILES[index] = ()
     _DEVICE_CFG[index] = cfg
     return cfg
 
@@ -430,9 +538,7 @@ def _probe(index: int, cfg: tuple) -> bool:
             xs = (torch.rand(m, generator = g) * 0.02 + 1e-4).to(torch.bfloat16)
             xs = (xs.float() if xs32 else xs).to(dev)
             ws = (torch.rand(n, generator = g) * 0.002 + 1e-5).to(torch.bfloat16).to(dev)
-            ws = (
-                ws.float() if xs32 else ws
-            )  # fp32 weight scales + bias: the prequant (v2) rounding order
+            ws = ws.float() if xs32 else ws
             b = (torch.randn(n, generator = g) * 0.1).to(torch.bfloat16).to(dev) if bias else None
             if not torch.equal(_launch(a, w, xs, ws, b, cfg), reference(a, w, xs, ws, b)):
                 return False
@@ -441,7 +547,9 @@ def _probe(index: int, cfg: tuple) -> bool:
         ws = torch.ones(w.shape[0], device = dev, dtype = torch.bfloat16)
         if not torch.equal(_launch(a, w, xs, ws, None, cfg), reference(a, w, xs, ws, None)):
             return False
-        torch.cuda.synchronize(dev)
+        from .diffusion_cuda_graph import synchronize_outside_capture
+
+        synchronize_outside_capture(dev)
         return True
     except Exception:  # noqa: BLE001 - out of shared memory, compile failure, ...
         return False
@@ -575,6 +683,14 @@ def stock_gemm(xq: Any, wq: Any, xs: Any, ws: Any, bias: Any) -> Any:
     return y.to(torch.bfloat16)
 
 
+def _payload(kind: str, weight: Any) -> tuple:
+    """(int8 [N, K], scale [N]) off the live parameter, never a cached alias (a moved weight must not go stale)."""
+    if kind == "v1":
+        impl = weight.original_weight_tensor.tensor_impl
+        return impl.int_data, impl.scale.reshape(-1)
+    return weight.qdata, weight.scale.reshape(-1)
+
+
 def _linear_forward(self: Any, x: Any) -> Any:
     """``nn.Linear.forward`` for a torchao int8 dynamic weight: torchao's activation quant (fused with the ConvRot
     rotation where that kernel is on), then the fused-dequant GEMM, or cuBLAS + torchao's epilogue where it is not."""
@@ -586,12 +702,7 @@ def _linear_forward(self: Any, x: Any) -> Any:
     kind, group, rotq, weight, fused = rec
     if self.weight is not weight:  # weight replaced since install (reload / LoRA bake): stock
         return type(self).forward(self, x)
-    # Payload off the live parameter, never a cached alias: a moved weight must not leave a stale device or pin a copy.
-    if kind == "v1":
-        impl = weight.original_weight_tensor.tensor_impl
-        wq, ws = impl.int_data, impl.scale.reshape(-1)
-    else:
-        wq, ws = weight.qdata, weight.scale.reshape(-1)
+    wq, ws = _payload(kind, weight)
     if wq.device != x.device:
         return type(self).forward(self, x)
     lead = x.shape[:-1]
@@ -622,6 +733,166 @@ def _linear_forward(self: Any, x: Any) -> Any:
     else:
         y = stock_gemm(xq, wq, xs, ws, self.bias)
     return y.reshape(*lead, y.shape[-1])
+
+
+def _hooked(module: Any) -> bool:
+    """A forward (pre-)hook, own or global, or an instance ``forward``: a fused path skipping ``module`` would bypass it."""
+    import torch
+
+    d = module.__dict__
+    if "forward" in d or d.get("_forward_hooks") or d.get("_forward_pre_hooks"):
+        return True
+    nn_module = torch.nn.modules.module
+    return bool(nn_module._global_forward_hooks or nn_module._global_forward_pre_hooks)
+
+
+def _swapped_rec(module: Any) -> Optional[tuple]:
+    """Record of a Linear we swapped with its install-time weight and no offload / forward hook or override, else None:
+    the shared paths run the GEMM without calling the module, so any of those would be bypassed."""
+    import torch
+
+    d = module.__dict__
+    rec = d.get(_REC)
+    if rec is None or _MARK not in d or "_diffusers_hook" in d or "_hf_hook" in d:
+        return None
+    if getattr(d.get("forward"), "__func__", None) is not _linear_forward:
+        return None
+    if d.get("_forward_hooks") or d.get("_forward_pre_hooks"):
+        return None
+    nn_module = torch.nn.modules.module
+    if nn_module._global_forward_hooks or nn_module._global_forward_pre_hooks:
+        return None
+    if module.weight is not rec[3]:
+        return None
+    return rec
+
+
+def shared_rotq_linears(x: Any, linears: tuple) -> Optional[list]:
+    """``[m(x) for m in linears]`` with one shared rotation + act quant; None when any is not covered."""
+    import torch
+
+    if x.dtype != torch.bfloat16 or not x.is_cuda or x.numel() < _MIN_ROWS * x.shape[-1]:
+        return None
+    recs = [_swapped_rec(m) for m in linears]
+    if any(r is None or not r[2] for r in recs):
+        return None
+    kind, group = recs[0][0], recs[0][1]
+    if any(r[0] != kind or r[1] != group for r in recs):
+        return None
+    parts = [_payload(r[0], r[3]) for r in recs]
+    if any(wq.device != x.device for wq, _ in parts):
+        return None
+    from .diffusion_convrot_quant import convrot_act_quant
+
+    q = convrot_act_quant(x.reshape(-1, x.shape[-1]), group, kind == "v2")
+    if q is None:
+        return None
+    xq, xs = q
+    lead = x.shape[:-1]
+    outs = []
+    for m, r, (wq, ws) in zip(linears, recs, parts):
+        if r[4]:
+            y = _OP_HANDLE(xq, wq, xs.reshape(-1), ws, m.bias)
+        else:
+            y = stock_gemm(xq, wq, xs, ws, m.bias)
+        outs.append(y.reshape(*lead, y.shape[-1]))
+    return outs
+
+
+def _swiglu_down(down: Any, gate: Any, value: Any) -> Optional[Any]:
+    """``down(silu(gate) * value)`` via the fused SwiGLU rotation + quant, else None."""
+    import torch
+
+    rec = _swapped_rec(down)
+    if rec is None:
+        return None
+    kind, group, rotq, weight, fused = rec
+    if (
+        not rotq
+        or gate.dtype != torch.bfloat16
+        or value.dtype != torch.bfloat16
+        or not gate.is_cuda
+        or gate.shape != value.shape
+        or gate.shape[-1] != down.in_features
+        or gate.numel() < _MIN_ROWS * gate.shape[-1]
+    ):
+        return None
+    wq, ws = _payload(kind, weight)
+    if wq.device != gate.device:
+        return None
+    from .diffusion_convrot_quant import convrot_swiglu_act_quant
+
+    k = gate.shape[-1]
+    q = convrot_swiglu_act_quant(gate.reshape(-1, k), value.reshape(-1, k), group, kind == "v2")
+    if q is None:
+        return None
+    xq, xs = q
+    if fused:
+        y = _OP_HANDLE(xq, wq, xs.reshape(-1), ws, down.bias)
+    else:
+        y = stock_gemm(xq, wq, xs, ws, down.bias)
+    return y.reshape(*gate.shape[:-1], y.shape[-1])
+
+
+def _plain_silu(act: Any) -> bool:
+    """``act`` is an exact, unhooked ``nn.SiLU`` (the fused prologue hard-codes SiLU); ``type() is`` avoids a graph break."""
+    from torch import nn
+    return type(act) is nn.SiLU and not _hooked(act)
+
+
+def _swiglu_ff_forward(self: Any, hidden_states: Any) -> Any:
+    """``QwenImage21SwiGLUFeedForward.forward`` on the shared and SwiGLU-fused quants."""
+    pair = shared_rotq_linears(hidden_states, (self.gate_layer, self.proj))
+    if pair is None:
+        gate, value = self.gate_layer(hidden_states), self.proj(hidden_states)
+    else:
+        gate, value = pair
+    y = _swiglu_down(self.out, gate, value) if _plain_silu(self.activation_fn) else None
+    if y is None:
+        return self.out(self.activation_fn(gate) * value)
+    return y
+
+
+def _swiglu_on(index: int) -> bool:
+    from .diffusion_convrot_quant import _SWIGLU_DEVICE, rotquant_swiglu_enabled
+    return rotquant_swiglu_enabled() and bool(_SWIGLU_DEVICE.get(index))
+
+
+def _swiglu_ff_eligible(module: Any) -> bool:
+    from torch import nn
+
+    if type(module).__name__ not in _SWIGLU_FF_CLASSES or "forward" in module.__dict__:
+        return False
+    parts = [getattr(module, n, None) for n in ("gate_layer", "proj", "out")]
+    if any(p is None or _REC not in p.__dict__ for p in parts):
+        return False
+    act = getattr(module, "activation_fn", None)
+    if type(act) is not nn.SiLU or "forward" in act.__dict__:
+        return False
+    # only a rotated down projection on the fused rotation kernel gains (its input is the product)
+    return bool(parts[2].__dict__[_REC][2])
+
+
+def _install_swiglu_ff(
+    transformer: Any,
+    index: int,
+    streamed: bool = False,
+) -> int:
+    """Patch the eligible SwiGLU MLPs on card ``index`` (``streamed``: also host-resident ones)."""
+    count = 0
+    for module in transformer.modules():
+        if _FF_MARK in module.__dict__:
+            count += 1
+            continue
+        if not _swiglu_ff_eligible(module):
+            continue
+        card = _weight_card(module.out)
+        if card != index and not (streamed and card is None):
+            continue
+        module.__dict__[_FF_MARK] = True
+        module.forward = types.MethodType(_swiglu_ff_forward, module)
+        count += 1
+    return count
 
 
 def linear_from_q(q: Any, xs: Any, weight: Any, bias: Any) -> Optional[Any]:
@@ -708,16 +979,42 @@ def _gates(capability: Optional[tuple]) -> tuple:
     return gemm, rotq
 
 
+def _unlisted_rotated(index: int) -> bool:
+    """Unlisted card: ``rotq_h16`` armed for it (probe + its own latency check). Takes no ``diffusion_int8_fused``
+    lock: its SwiGLU fusion reaches this through ``rotated_ff`` while holding it."""
+    if not convrot_enabled():
+        return False
+    try:
+        from . import diffusion_convrot_quant as cq
+        from .diffusion_int8_fused import _act_quant_device_ok, _act_quant_op
+
+        actq = None
+        if (index, cq.unlisted_mode()) not in cq._UNLISTED_DEVICE:
+            actq = _act_quant_op() if _act_quant_device_ok(index) else None
+        return bool(cq.unlisted_device_ok(index, actq))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def rotated_swapped(index: int) -> Optional[bool]:
+    """On an unlisted card (outside any trace): True when rotated Linears go through this swap (fused GEMM and the
+    ``rotq_h16`` rotation + act quant both on), so the Qwen-Image-2.1 / Z-Image stock fusions stand down. False keeps
+    them, exactly as on main. None on a listed arch (``_gates`` decides)."""
+    import torch
+
+    cap = torch.cuda.get_device_capability(index)
+    if not unlisted_arch(cap) or _gates(cap)[1] or int8_gemm_mode() == "off":
+        return None
+    return _unlisted_rotated(index) and device_config(index) is not None
+
+
 def install(
     transformer: Any,
     logger: Any = None,
     offload_active: bool = False,
     device: Any = None,
 ) -> int:
-    """Idempotent; returns the (candidate) count. Must run before the first compiled forward.
-
-    ``device``: the onload device of a block-streamed denoiser, whose weights sit on the host between blocks; the
-    probe runs there and the swap happens now. Without it an offloaded denoiser keeps the stock path."""
+    """Idempotent, returns the candidate count; must run before the first compiled forward; block-streamed denoisers need device or keep stock path."""
     if int8_gemm_mode() == "off" or transformer is None:
         return 0
     if device is not None:
@@ -734,11 +1031,13 @@ def install(
     try:
         import torch
 
-        if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
+        if not torch.cuda.is_available() or is_rocm_torch(torch):
             return 0
         if not _triton_version_ok() or _kernels() is None:
             return 0
-        gemm, rotq = _gates(torch.cuda.get_device_capability(torch.cuda.current_device()))
+        cap = torch.cuda.get_device_capability(torch.cuda.current_device())
+        gemm, rotq = _gates(cap)
+        gemm = gemm or unlisted_wanted(cap)
         if not (gemm or rotq):
             return 0
     except Exception:  # noqa: BLE001
@@ -776,11 +1075,7 @@ def _swap(
             dev = torch.device(device)
         except Exception:  # noqa: BLE001
             return 0
-        if (
-            dev.type != "cuda"
-            or getattr(torch.version, "hip", None)
-            or not torch.cuda.is_available()
-        ):
+        if dev.type != "cuda" or is_rocm_torch(torch) or not torch.cuda.is_available():
             return 0
     else:
         dev = resident_cuda_device(transformer)
@@ -793,7 +1088,7 @@ def _swap(
         return 0
 
     index = dev.index if dev.index is not None else torch.cuda.current_device()
-    return _swap_on(transformer, logger, index)
+    return _swap_on(transformer, logger, index, streamed = device is not None)
 
 
 def _split_cards(transformer: Any) -> tuple:
@@ -803,7 +1098,7 @@ def _split_cards(transformer: Any) -> tuple:
 
         from .diffusion_layer_split import is_layer_split
 
-        if getattr(torch.version, "hip", None) or not is_layer_split(transformer):
+        if is_rocm_torch(torch) or not is_layer_split(transformer):
             return ()
         devices = {p.device for p in transformer.parameters()}
     except Exception:  # noqa: BLE001
@@ -819,7 +1114,12 @@ def _weight_card(module: Any) -> Optional[int]:
     return dev.index if dev is not None and dev.type == "cuda" else None
 
 
-def _swap_on(transformer: Any, logger: Any, index: int) -> int:
+def _swap_on(
+    transformer: Any,
+    logger: Any,
+    index: int,
+    streamed: bool = False,
+) -> int:
     """Swap the eligible int8 Linears of ``transformer`` against card ``index``'s probed kernels. On a layer split
     (several cards) only the Linears whose weight sits on ``index``."""
     global _OP_HANDLE
@@ -833,7 +1133,26 @@ def _swap_on(transformer: Any, logger: Any, index: int) -> int:
     from .diffusion_convrot_quant import rotquant_device_config
 
     gemm = device_config(index) is not None
-    rotq = any(r[1] is not None for _, r in recs) and rotquant_device_config(index) is not None
+    rotated = any(r[1] is not None for _, r in recs)
+    rotq = rotated and rotquant_device_config(index) is not None
+    if gemm and rotated and not rotq and index in _UNLISTED_CARDS:
+        # unlisted card: rotated Linears only with rotq_h16; else the stock fusions keep them, as on main
+        rotq = _unlisted_rotated(index)
+        if not rotq:
+            recs = [(m, r) for m, r in recs if r[1] is None]
+            if logger is not None:
+                logger.info(
+                    "diffusion.int8_gemm: rotated Linears keep the stock path on cuda:%d (rotq_h16 off)",
+                    index,
+                )
+    if not gemm and logger is not None and _UNLISTED_TIMING.get(index):
+        t = _UNLISTED_TIMING[index]
+        logger.info(
+            "diffusion.int8_gemm: fused-dequant GEMM kept off on cuda:%d (latency check: %.0f vs %.0f us cuBLAS)",
+            index,
+            t["fused"],
+            t["stock"],
+        )
     if not gemm:
         # no fused GEMM here: only rotated Linears gain (one kernel instead of rotation GEMM + act quant)
         recs = [(m, r) for m, r in recs if r[1] is not None] if rotq else []
@@ -870,13 +1189,43 @@ def _swap_on(transformer: Any, logger: Any, index: int) -> int:
             module.__dict__[_MARK] = module.__dict__.get("forward", _NO_PREV)
             module.forward = types.MethodType(_linear_forward, module)
             count += 1
+        ff = (
+            _install_swiglu_ff(
+                transformer,
+                index,
+                streamed = streamed and not multi and swiglu_streamed_enabled(),
+            )
+            if rotq
+            else 0
+        )
     if logger is not None and count:
+        from .diffusion_convrot_quant import _H16_DEVICE
+        timing = _UNLISTED_TIMING.get(index) if gemm else None
         logger.info(
-            "diffusion.int8_gemm: %d int8 Linear(s) %s on sm_%d%d%s",
+            "diffusion.int8_gemm: %d int8 Linear(s) %s on sm_%d%d%s%s%s",
             count,
             "run the fused-dequant GEMM (bf16 out)" if gemm else "keep cuBLAS",
             *torch.cuda.get_device_capability(index),
-            ", ConvRot rotation fused into the act quant" if rotq else "",
+            f" (latency check: {timing['fused']:.0f} vs {timing['stock']:.0f} us cuBLAS)"
+            if timing
+            else "",
+            (
+                ", ConvRot rotation fused into the act quant ("
+                + ("H16 x H16 kernel" if _H16_DEVICE.get(index) else "dense rotation kernel")
+                + ")"
+            )
+            if rotq
+            else "",
+            (
+                f", one act quant for gate / value on {ff} SwiGLU MLP(s)"
+                + (
+                    " + the SiLU product fused into the down projection's act quant"
+                    if _swiglu_on(index)
+                    else ""
+                )
+            )
+            if ff
+            else "",
         )
     return count
 
@@ -928,6 +1277,10 @@ def uninstall(transformer: Any = None) -> None:
     cancel_first_call(transformer, "int8_gemm")
     with _LOCK:
         for module in transformer.modules():
+            if module.__dict__.pop(_FF_MARK, None) is not None:
+                fwd = module.__dict__.get("forward")
+                if getattr(fwd, "__func__", None) is _swiglu_ff_forward:
+                    module.__dict__.pop("forward", None)
             prev = module.__dict__.pop(_MARK, None)
             if prev is None:
                 continue
@@ -939,7 +1292,8 @@ def uninstall(transformer: Any = None) -> None:
 
 
 def is_installed(module: Any) -> bool:
-    return _MARK in getattr(module, "__dict__", {})
+    d = getattr(module, "__dict__", {})
+    return _MARK in d or _FF_MARK in d
 
 
 def call_count() -> int:

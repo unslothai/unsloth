@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Issue #9807: a backend streaming id-less, index-based deltas reuses one slot
-// for several calls, so the adapter glued their arguments into an unparsable
-// `{"url":"a"}{"url":"b"}`. The boundary is the end of a top-level JSON object,
-// not a change of name: the reported stream calls one tool three times.
+// Id-less index-based deltas reuse one slot; the call boundary is the end of a top-level
+// JSON object, not a name change.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -116,7 +114,6 @@ test("a healthy call replays byte for byte", () => {
 });
 
 test("the _raw marker never reaches a backend as a tool parameter", () => {
-  // `_raw` is the adapter's marker for text it could not parse.
   assert.equal(
     toolCallReplayArguments('{"query":"a"}{"query":"b"}', {
       _raw: '{"query":"a"}{"query":"b"}',
@@ -137,10 +134,8 @@ test("arguments that are not one JSON object fall back rather than replay", () =
   assert.equal(toolCallReplayArguments(undefined, undefined), "{}");
 });
 
-// chat-adapter.ts cannot be imported, so lift the loop as
-// tests/pr9057-video-simulation.test.ts does: a re-implementation passes while
-// the adapter stays broken, which is how this defect survived
-// tool-call-delta-index.test.ts.
+// chat-adapter.ts cannot be imported, so lift the real loop: a re-implementation would pass
+// while the adapter stays broken.
 const adapterSource = readSrc("features/chat/api/chat-adapter.ts");
 
 function liftBetween(what: string, from: string, to: string): string {
@@ -151,7 +146,6 @@ function liftBetween(what: string, from: string, to: string): string {
   return adapterSource.slice(start, end);
 }
 
-/** The two helpers the loop calls, declared beside `toolCallParts`. */
 function liftSplitHelpers(): string {
   const lifted = liftBetween(
     "split helpers",
@@ -173,7 +167,6 @@ function liftDeltaLoop(): string {
     loopStart >= 0,
     "the delta.tool_calls loop moved in chat-adapter.ts",
   );
-  // Searching back for `if (` truncated the slice once the condition moved into a variable.
   const gate = adapterSource.indexOf(
     "if (forcePublish || canPublish(",
     loopStart,
@@ -213,14 +206,8 @@ interface LoopPart {
 }
 
 /**
- * The lifted loop, with the locals it closes over supplied by hand.
- *
- * `mintPartIds` picks which `resolveToolPartId` the loop closes over. The
- * accumulation tests want the identity, because they assert which call an id
- * lands on and the spelling is noise. The card tests want the shipped mint,
- * `<backend id>:<uuid>`, because whether the backend's id finds the card the
- * deltas drew is the whole question there, and under the identity every id
- * finds one whether or not the two halves ever agreed.
+ * `mintPartIds`: accumulation tests use identity ids; card tests use the shipped
+ * `<backend id>:<uuid>` mint, under which mismatched halves actually fail to match.
  */
 function makeStream(mintPartIds = false): {
   feed: (batch: DeltaCall[], finished?: boolean) => boolean;
@@ -321,7 +308,6 @@ test("the stream from #9807 becomes one call per JSON object", () => {
 });
 
 test("a call at another index is not overwritten when a slot splits", () => {
-  // Writing back through the old position deleted the neighbour.
   const parts = run([
     [{ index: 0, function: { name: "alpha", arguments: '{"a":1}' } }],
     [{ index: 1, function: { name: "beta", arguments: '{"b":2}' } }],
@@ -373,7 +359,6 @@ test("a call born from a split is state, so it does not wait to publish", () => 
     ]),
     true,
   );
-  // Or the pacing gate holds it back and Stop persists without it.
   assert.equal(
     stream.feed([
       { index: 0, function: { name: "beta", arguments: '{"b":2}' } },
@@ -462,8 +447,6 @@ test("whitespace chunked after a closing brace is not a new call", () => {
 });
 
 test("a late id claims the call still being written, never a closed one", () => {
-  // The id has to land on the half-written third call; appending to either of
-  // the closed ones is the gluing this change is about.
   const parts = run([
     [
       {
@@ -485,7 +468,6 @@ test("a late id claims the call still being written, never a closed one", () => 
 });
 
 test("a name-only delta for the next call does not rename the finished one", () => {
-  // The name arrives before its arguments, so there is nothing to split on.
   const parts = run([
     [{ index: 0, function: { name: "alpha", arguments: '{"a":1}' } }],
     [{ index: 0, function: { name: "beta" } }],
@@ -501,7 +483,6 @@ test("a name-only delta for the next call does not rename the finished one", () 
 });
 
 test("an id arriving after one closed object opens a call, not a claim", () => {
-  // A late id claims its slot only while that call is still being written.
   const parts = run([
     [{ index: 0, function: { name: "alpha", arguments: '{"a":1}' } }],
     [{ id: "call_b", index: 0, function: { name: "beta", arguments: '{"b":2}' } }],
@@ -536,8 +517,6 @@ test("a late id opens its own call when every call in the slot has closed", () =
 });
 
 test("an opening delta after a closed call does not claim it", () => {
-  // The conventional opening delta: id and name, empty arguments. Landing it
-  // on the finished card glues the arguments that follow onto that one.
   const parts = run([
     [{ index: 0, function: { name: "alpha", arguments: '{"a":1}' } }],
     [{ id: "call_b", index: 0, function: { name: "beta", arguments: "" } }],
@@ -574,8 +553,6 @@ test("a name held for the next call grows across deltas", () => {
 });
 
 test("whitespace carrying the repeated name is not the next call", () => {
-  // A repeated name with the trailing whitespace chunked separately is still
-  // that call's; parking it merged the two into "alphabeta".
   const parts = run([
     [{ index: 0, function: { name: "alpha", arguments: '{"a":1}' } }],
     [{ index: 0, function: { name: "alpha", arguments: " " } }],
@@ -589,8 +566,7 @@ test("whitespace carrying the repeated name is not the next call", () => {
 });
 
 test("metadata announced with a name waits for that call", () => {
-  // Gemini stows the thought signature for the call being announced, so a
-  // name-only delta carrying one describes the next call, not the closed one.
+  // Gemini stows the signature for the call being announced, i.e. the next one.
   const parts = run([
     [{ index: 0, function: { name: "alpha", arguments: '{"a":1}' } }],
     [
@@ -614,7 +590,6 @@ test("metadata announced with a name waits for that call", () => {
 });
 
 test("the resumable scan agrees with scanning from the start", () => {
-  // Only safe while it agrees with restarting, for every chunking.
   const pieces = [
     ..."{}\"\\ abc:,1[]".split(""),
     '\\"',
@@ -646,11 +621,7 @@ test("the resumable scan agrees with scanning from the start", () => {
 });
 
 test("one argument streamed a character at a time is scanned once", () => {
-  // Rescanning per fragment made a 20 KB argument cost over a second on the
-  // thread that paints the stream. Counted, not timed: a resumable scan
-  // parses once per object however many deltas it arrived in, a restarting
-  // one parses every closed object again on every delta. A wall-clock ratio
-  // agreed, with too little margin for a loaded runner.
+  // Counted, not timed: wall-clock ratios are too noisy on a loaded runner.
   const parses = (size: number, feed: (text: string) => unknown): number => {
     const real = JSON.parse;
     let calls = 0;
@@ -683,15 +654,12 @@ test("one argument streamed a character at a time is scanned once", () => {
     );
   }
 
-  // The shape it replaces, measured the same way, so the test says what it
-  // guards against rather than only asserting a number.
   const restarting = parses(2000, splitTopLevelJsonObjects);
   assert.ok(
     restarting > 2000,
     `restarting from the beginning parsed ${restarting} times, so this test is no longer measuring the difference it was written for`,
   );
 
-  // And the loop still reads it as one call, whatever the scan costs.
   const stream = makeStream();
   const payload = '{"code":"' + "x".repeat(400) + '"}';
   stream.feed([{ index: 0, function: { name: "write", arguments: "" } }]);
@@ -702,7 +670,6 @@ test("one argument streamed a character at a time is scanned once", () => {
 });
 
 test("metadata arriving alone stays on the call that closed", () => {
-  // No name, so nothing announces another call: the signature is this one's.
   const parts = run([
     [{ index: 0, function: { name: "alpha", arguments: '{"a":1}' } }],
     [{ index: 0, extra_content: { google: { thought_signature: "SIG" } } }],
@@ -715,9 +682,7 @@ test("metadata arriving alone stays on the call that closed", () => {
 });
 
 test("a name resent or grown after a call closed invents nothing", () => {
-  // Indistinguishable from a second no-argument call to the same tool, so
-  // take the reading that does not run a tool twice. A grown name announces
-  // the next call, so its provisional card is reaped unfilled at the boundary.
+  // Ambiguous with a second no-arg call; prefer the reading that does not run a tool twice.
   for (const resent of ["alpha", "alpha_long"]) {
     const stream = makeStream();
     stream.feed([{ index: 0, function: { name: "alpha", arguments: '{"a":1}' } }]);
@@ -728,10 +693,7 @@ test("a name resent or grown after a call closed invents nothing", () => {
 });
 
 test("an argument fragment that is not a string does not abort the stream", () => {
-  // llama-server has shipped `arguments` as a decoded object rather than the
-  // string the API specifies, and the chunk is cast rather than validated.
-  // A serialized object is one complete arguments document, so a further fragment
-  // in the same slot is the next parallel call rather than a continuation.
+  // llama-server has shipped `arguments` as a decoded object; one object is a whole document.
   const parts = run([
     [
       {
@@ -763,7 +725,6 @@ test("a fragment that does not open an object does not open a call", () => {
 });
 
 test("metadata announced with a name is merged, not replaced", () => {
-  // Two fields of one call, and replay needs both.
   const parts = run([
     [{ index: 0, function: { name: "alpha", arguments: '{"a":1}' } }],
     [
@@ -793,7 +754,6 @@ test("metadata announced with a name is merged, not replaced", () => {
 });
 
 test("an MCP tool that really takes _raw keeps it", () => {
-  // The marker is the pairing, not the key: `_raw` is not reserved.
   assert.equal(
     toolCallReplayArguments('{"url":"a"}{"url":"b"}', {
       _raw: '{"url":"a"}{"url":"b"}',
@@ -811,11 +771,8 @@ test("an MCP tool that really takes _raw keeps it", () => {
 });
 
 test("a name waiting for arguments does not cross a turn boundary", () => {
-  // The next turn restarts the delta index at 0.
   const stream = makeStream();
   stream.feed([{ index: 0, function: { name: "A", arguments: '{"a":1}' } }]);
-  // The name-only delta rides the same chunk as finish_reason, which is how a
-  // clear placed before the deltas let the name through.
   stream.feed([{ index: 0, function: { name: "B" } }], true);
   stream.feed([{ index: 0, function: { name: "C", arguments: '{"c":3}' } }]);
 
@@ -826,7 +783,6 @@ test("a name waiting for arguments does not cross a turn boundary", () => {
 });
 
 test("metadata on several name fragments is merged, not replaced", () => {
-  // The name accumulates across fragments, so the metadata has to as well.
   const parts = run([
     [{ index: 0, function: { name: "alpha", arguments: '{"a":1}' } }],
     [
@@ -851,8 +807,6 @@ test("metadata on several name fragments is merged, not replaced", () => {
 });
 
 test("a resent name does not rename the call it closed", () => {
-  // Concatenating gave "alphabeta", which the backend never executes. Once the
-  // name is read as the closed call's, so is the metadata beside it.
   const stream = makeStream();
   stream.feed([
     {
@@ -877,7 +831,6 @@ test("a resent name does not rename the call it closed", () => {
 });
 
 test("an id stamped after the object closed claims that call", () => {
-  // Reading the late id as another call left the finished one provisional.
   for (const late of [
     { id: "call_a", index: 0 },
     { id: "call_a", index: 0, function: { name: "alpha" } },
@@ -904,9 +857,6 @@ test("an id stamped after the object closed claims that call", () => {
 });
 
 test("a new name arriving with whitespace opens its own call", () => {
-  // A different name opens the next call rather than renaming the finished
-  // one, which gave "alphabeta" and an unnamed second card. The whitespace
-  // rides the announcing delta and is valid JSON, so both still parse.
   const parts = run([
     [{ index: 0, function: { name: "alpha", arguments: '{"a":1}' } }],
     [{ index: 0, function: { name: "beta", arguments: " " } }],
@@ -920,8 +870,7 @@ test("a new name arriving with whitespace opens its own call", () => {
 });
 
 test("a call announced by name is placed where it was announced", () => {
-  // The backend orders by when a call was announced, so a card appended where
-  // its arguments turned up reads C before B while the backend runs B first.
+  // The backend orders by announcement, not by where arguments turned up.
   const parts = run([
     [{ index: 0, function: { name: "A", arguments: '{"a":1}' } }],
     [{ index: 0, function: { name: "B" } }],
@@ -937,8 +886,6 @@ test("a call announced by name is placed where it was announced", () => {
 });
 
 test("a late id claims the last call a bundled delta opened", () => {
-  // A provider bundling several calls can stamp the last one's real id later;
-  // marking that card owned sent the id to a third, empty card.
   const parts = run([
     [{ index: 0, function: { name: "alpha", arguments: '{"a":1}{"b":2}' } }],
     [{ id: "call_b", index: 0 }],
@@ -954,7 +901,6 @@ test("a late id claims the last call a bundled delta opened", () => {
 });
 
 test("two calls announced at once keep the order they were announced in", () => {
-  // Both record the same position, so splicing at it put the later first.
   const parts = run([
     [{ index: 0, function: { name: "A", arguments: '{"a":1}' } }],
     [{ index: 1, function: { name: "B", arguments: '{"b":1}' } }],
@@ -971,8 +917,6 @@ test("two calls announced at once keep the order they were announced in", () => 
 });
 
 test("a rejected resend gives up its place too", () => {
-  // The place goes with the announcement, and a name read as a resent
-  // announced nothing, so the call that opens takes its own arrival.
   const stream = makeStream();
   stream.feed([{ index: 0, function: { name: "A", arguments: '{"a":1}' } }]);
   stream.feed([{ index: 0, function: { name: "A_long" } }]);
@@ -988,8 +932,6 @@ test("a rejected resend gives up its place too", () => {
 });
 
 test("a catalog holding both web and web_search splits either way round", () => {
-  // Both are in Studio's own catalog, so a shared prefix is no evidence either
-  // way; reading it as evidence swallowed the second announcement.
   for (const [first, second] of [
     ["web_search", "web"],
     ["web", "web_search"],
@@ -1007,8 +949,6 @@ test("a catalog holding both web and web_search splits either way round", () => 
 });
 
 test("a name bringing an object over an announcement is the next call", () => {
-  // An announcement has no object to close, so the next call's name grew into
-  // it: "alpha_longbeta" and "zetabeta" match no tool.
   for (const announced of ["alpha_long", "zeta"]) {
     const stream = makeStream();
     stream.feed([{ index: 0, function: { name: "alpha", arguments: '{"a":1}' } }]);
@@ -1023,8 +963,7 @@ test("a name bringing an object over an announcement is the next call", () => {
 });
 
 test("a dropped card gives its id back to the next round", () => {
-  // The backend never reserves the filtered fork's card id, so holding it here
-  // made the next round mint tool_call_2 against the backend's tool_call_1.
+  // The backend never reserves the filtered fork's card id.
   const stream = makeStream();
   stream.feed([{ index: 0, function: { name: "alpha", arguments: '{"a":1}{' } }]);
   stream.feed([], true);
@@ -1040,9 +979,7 @@ test("a dropped card gives its id back to the next round", () => {
 });
 
 test("a provider claiming a minted id displaces the card holding it", () => {
-  // tool_call_<n> is not reserved to Unsloth. Resolving the claim through the
-  // id-less call's binding merged the two into one card, losing a call. The
-  // backend reserves provider ids before minting; do the same on the claim.
+  // tool_call_<n> is not Unsloth-reserved; the backend reserves provider ids before minting.
   const stream = makeStream();
   stream.feed([{ index: 0, function: { name: "alpha", arguments: '{"a":1}' } }]);
   stream.feed([
@@ -1059,9 +996,7 @@ test("a provider claiming a minted id displaces the card holding it", () => {
 });
 
 test("a card taking a late provider id gives its minted id back", () => {
-  // The backend never reserves a minted id for a call the provider went on to
-  // name, so holding it made the next call at that index mint tool_call_1
-  // against the backend's tool_call_0.
+  // The backend never reserves a minted id for a call the provider later named.
   const stream = makeStream();
   stream.feed([{ index: 0, function: { name: "alpha", arguments: '{"a":1}' } }]);
   stream.feed([{ id: "call_a", index: 0, function: { arguments: "" } }]);
@@ -1077,10 +1012,7 @@ test("a card taking a late provider id gives its minted id back", () => {
 });
 
 test("a claim on a split-born card renumbers every minted card", () => {
-  // A split marks every born card but the last _has_stable_id, so reading
-  // that as provider-owned let the claim merge them: "alphabeta", arguments
-  // glued. The backend reserves the claim then numbers the id-less calls in
-  // order, so matching it means renumbering all of them.
+  // The backend reserves the claim, then numbers id-less calls in order.
   const stream = makeStream();
   stream.feed([
     { index: 0, function: { name: "alpha", arguments: '{"a":1}{"b":2}{"c":3}' } },
@@ -1101,9 +1033,7 @@ test("a claim on a split-born card renumbers every minted card", () => {
 });
 
 test("a born call carries only the metadata of the delta that opened it", () => {
-  // The merged fields belong to the call the slot was holding; carried onto a
-  // born call they put one call's signature on another, and Gemini validates a
-  // signature against the functionCall part it was returned on.
+  // Gemini validates a signature against the functionCall part it was returned on.
   const stream = makeStream();
   stream.feed([
     { index: 0, function: { name: "alpha" }, extra_content: { parked: 1 } },
@@ -1125,10 +1055,7 @@ test("a born call carries only the metadata of the delta that opened it", () => 
 });
 
 test("a claim in a later round leaves an earlier round's card alone", () => {
-  // The backend's card ledger is append-only, so a card from a finished round
-  // keeps its number however a later round spells its ids. Renumbering it put
-  // the two sides one apart from the third round on, and the backend's events
-  // for the renamed card reached whatever had taken its old id.
+  // The backend card ledger is append-only, so a finished round's card keeps its number.
   const stream = makeStream(true);
   stream.feed([{ index: 0, function: { name: "alpha", arguments: '{"a":1}' } }]);
   stream.feed([], true);
@@ -1151,10 +1078,7 @@ test("a claim in a later round leaves an earlier round's card alone", () => {
 });
 
 test("a dropped card gives back the provider id that aliased it", () => {
-  // A card that took a late id answers to a run-unique part id, so the id the
-  // provider sent is a second key pointing at it. Releasing only the part id
-  // left tool_call_1 reserved, and the next round minted tool_call_2 where
-  // the backend minted tool_call_1.
+  // The provider id is a second key for a late-id card, so release both.
   const stream = makeStream(true);
   stream.feed([{ index: 0, function: { name: "alpha", arguments: '{}{"x":' } }]);
   stream.feed([{ id: "tool_call_1", index: 0, function: { arguments: "" } }]);
@@ -1172,9 +1096,7 @@ test("a dropped card gives back the provider id that aliased it", () => {
 });
 
 test("a card that never got a name is dropped when the turn ends", () => {
-  // _normalized_call rejects a nameless call before it reserves a card id, so
-  // a card kept for one holds a number the backend gives the next round, and
-  // that round's events land on the blank card instead.
+  // _normalized_call rejects a nameless call before reserving a card id.
   const stream = makeStream();
   stream.feed([{ index: 0, function: { arguments: '{"a":1}' } }]);
   assert.equal(stream.parts.length, 1);
@@ -1189,9 +1111,6 @@ test("a card that never got a name is dropped when the turn ends", () => {
 });
 
 test("a claim that turns out not to be a call gives the number back", () => {
-  // The displacement happens as the claim lands, but a nameless call is not a
-  // call: the backend reserves nothing for it and keeps tool_call_0 for the
-  // valid one, so a card left at tool_call_1 is one its execution events miss.
   const stream = makeStream();
   stream.feed([{ index: 0, function: { name: "alpha", arguments: '{"a":1}' } }]);
   stream.feed([{ id: "tool_call_0", index: 1, function: { arguments: '{"b":2}' } }]);
@@ -1205,10 +1124,7 @@ test("a claim that turns out not to be a call gives the number back", () => {
 });
 
 test("a repeated name's metadata waits for the call it announced", () => {
-  // The same tool twice on one slot, the second announced by a name-only
-  // delta carrying its own signature. Merging it where it landed overwrote
-  // the closed call's and left the new one unsigned, and Gemini validates a
-  // signature against the call it is replayed on.
+  // Gemini validates a signature against the call it is replayed on.
   const stream = makeStream();
   stream.feed([
     {
@@ -1232,8 +1148,6 @@ test("a repeated name's metadata waits for the call it announced", () => {
 });
 
 test("a repeated name that announced nothing keeps its metadata", () => {
-  // No object followed, so the repeated name really was that call's resent and
-  // the signature riding it is that call's too.
   const stream = makeStream();
   stream.feed([
     {
@@ -1252,8 +1166,7 @@ test("a repeated name that announced nothing keeps its metadata", () => {
 });
 
 test("parked metadata follows the card a late id renames", () => {
-  // The signature waits under the id the card was minted with, so it has to
-  // move with the card or the turn-end sweep drops what the backend keeps.
+  // The signature is keyed by the minted id, so it must move with the card.
   const stream = makeStream(true);
   stream.feed([
     {
@@ -1273,8 +1186,6 @@ test("parked metadata follows the card a late id renames", () => {
 });
 
 test("parked metadata follows the card a claim renumbers", () => {
-  // Same entry, other mover: a provider claiming the spelling a minted card
-  // holds renumbers every minted card in the round.
   const stream = makeStream(true);
   stream.feed([
     {
@@ -1300,7 +1211,6 @@ test("parked metadata follows the card a claim renumbers", () => {
 });
 
 test("a stable id naming a longer tool opens its own call", () => {
-  // Reading "web_search" as "web" grown gave the id to the completed card.
   const parts = run([
     [{ index: 0, function: { name: "web", arguments: '{"a":1}' } }],
     [{ id: "call_b", index: 0, function: { name: "web_search", arguments: "" } }],
@@ -1317,8 +1227,7 @@ test("a stable id naming a longer tool opens its own call", () => {
 });
 
 test("a fork whose object never closed is dropped when the turn ends", () => {
-  // A stream stopping after `{"a":1}{` is not marked truncated, so the lone
-  // brace persists as a card nothing completes. The backend holds it too.
+  // A stream stopping after `{"a":1}{` is not marked truncated; the backend keeps it too.
   const stream = makeStream();
   stream.feed([{ index: 0, function: { name: "a", arguments: '{"a":1}{' } }]);
   assert.deepEqual(shape(stream.parts), [
@@ -1341,8 +1250,6 @@ test("a fork that does close its object is kept", () => {
 });
 
 test("metadata from a resent name goes to the call that runs", () => {
-  // No call is invented for a name read as a resent, so its signature has
-  // nowhere else to go and the card would replay without it.
   const stream = makeStream();
   stream.feed([{ index: 0, function: { name: "alpha", arguments: '{"a":1}' } }]);
   stream.feed([
@@ -1355,9 +1262,7 @@ test("metadata from a resent name goes to the call that runs", () => {
 });
 
 test("a provider-hosted tool event does not end the provider turn", () => {
-  // Hosted events ride a whole chunk, `choices` and all, and leave the turn
-  // open; ordinary Unsloth tool events are bare {"type": "tool_start"}.
-  // A backend skill preload is also bare, but happens BEFORE the provider turn.
+  // Hosted events ride whole chunks; Unsloth tool events and skill preloads are bare.
   const guarded = liftBetween(
     "the hosted-event guard",
     "const toolEvent = (",
@@ -1367,7 +1272,6 @@ test("a provider-hosted tool event does not end the provider turn", () => {
     guarded,
     /if \(!chunk\.choices && toolEvent\.tool_name !== "studio_load_skill"\) \{\s*endProviderTurn\(\);/,
   );
-  // Execute the actual lifted guard, not a hand-written copy of its condition.
   const js = ts.transpileModule(`${guarded}\n}`, {
     compilerOptions: { target: ts.ScriptTarget.ES2022 },
   }).outputText;
@@ -1386,8 +1290,6 @@ test("a provider-hosted tool event does not end the provider turn", () => {
 });
 
 test("a late id does not rescue a fork whose object never closed", () => {
-  // _call_is_finished holds the fork back on its arguments alone, so a card
-  // kept because an id reached it is one no tool_start or tool_end can reach.
   const stream = makeStream();
   stream.feed([{ index: 0, function: { name: "a", arguments: '{}{"x":' } }]);
   stream.feed([{ id: "call_z", index: 0, function: { arguments: "" } }]);
@@ -1403,8 +1305,6 @@ test("a late id does not rescue a fork whose object never closed", () => {
 });
 
 test("only the announced call takes the place reserved for it", () => {
-  // B was announced before C opened. The calls B's arguments introduce were
-  // never announced, so they are numbered as the arguments arrive.
   const parts = run([
     [{ index: 0, function: { name: "A", arguments: '{"a":1}' } }],
     [{ index: 0, function: { name: "B" } }],
@@ -1421,8 +1321,7 @@ test("only the announced call takes the place reserved for it", () => {
 });
 
 test("the empty status between rounds ends the provider turn", () => {
-  // A round of only disabled calls emits no tool_start, and a [DONE] upstream
-  // sends no finish_reason, so this is the only boundary there is.
+  // Disabled-only rounds emit no tool_start and [DONE] sends no finish_reason.
   const branch = liftBetween(
     "the tool_status branch",
     "const toolStatusText = (",
@@ -1432,8 +1331,6 @@ test("the empty status between rounds ends the provider turn", () => {
 });
 
 test("the announced call keeps its own metadata when its delta splits", () => {
-  // The parked signature is B's; the one riding the arguments belongs to the
-  // call that delta closes, the last. The backend divides them the same way.
   const parts = run([
     [{ index: 0, function: { name: "A", arguments: '{"a":1}' } }],
     [{ index: 0, function: { name: "B" }, extra_content: { sig: "parked" } }],
@@ -1456,8 +1353,6 @@ test("the announced call keeps its own metadata when its delta splits", () => {
 });
 
 test("a second call to the same tool keeps that tool's name", () => {
-  // The index is reused with arguments alone, and a blank name is no tool:
-  // the backend drops the call and the card here names nothing.
   const parts = run([
     [{ index: 0, function: { name: "alpha", arguments: '{"a":1}' } }],
     [{ index: 0, function: { arguments: '{"a":2}' } }],
@@ -1470,8 +1365,7 @@ test("a second call to the same tool keeps that tool's name", () => {
 });
 
 test("a snapshot repeated to carry the id claims the call", () => {
-  // Snapshot servers resend the whole call, so the id arrives on a verbatim
-  // repeat and opening a second call runs the tool twice.
+  // Snapshot servers resend the whole call, so the id may arrive on a verbatim repeat.
   const parts = run([
     [{ index: 0, function: { name: "alpha", arguments: '{"a":1}' } }],
     [{ id: "call_a", index: 0, function: { name: "alpha", arguments: '{"a":1}' } }],
@@ -1484,7 +1378,6 @@ test("a snapshot repeated to carry the id claims the call", () => {
 });
 
 test("a second call that differs anywhere still opens its own", () => {
-  // The claim above is exact repeats only.
   const parts = run([
     [{ index: 0, function: { name: "alpha", arguments: '{"a":1}' } }],
     [{ id: "call_b", index: 0, function: { name: "alpha", arguments: '{"a":2}' } }],
@@ -1500,9 +1393,7 @@ test("a second call that differs anywhere still opens its own", () => {
 });
 
 test("an id-less card answers to the id the backend mints for it", () => {
-  // The backend addresses tool_start at tool_call_<n>. Without the binding,
-  // resolveToolPartId mints "<id>:<uuid>" and no card is found: #9807's four
-  // calls ended the turn holding eight cards.
+  // The backend addresses tool_start at tool_call_<n>; without the binding no card matches.
   const stream = makeStream(true);
   for (const url of ["a", "b", "c", "d"]) {
     stream.feed([{ index: 0, function: { name: "fetch", arguments: `{"url":"${url}"}` } }]);
@@ -1526,7 +1417,6 @@ test("an id-less card answers to the id the backend mints for it", () => {
 });
 
 test("a call the provider named still resolves through the minted part id", () => {
-  // Unchanged for streams that carry ids: still keyed on "<id>:<uuid>".
   const stream = makeStream(true);
   stream.feed([{ id: "call_a", index: 0, function: { name: "alpha", arguments: '{"a":1}' } }]);
 
@@ -1539,8 +1429,6 @@ test("a call the provider named still resolves through the minted part id", () =
 });
 
 test("a provider id spelled tool_call_0 keeps its own card", () => {
-  // tool_call_<n> is not reserved to Unsloth. A provider using that spelling
-  // must not have the card taken from it by the id-less call beside it.
   const stream = makeStream(true);
   stream.feed([
     { id: "tool_call_0", index: 0, function: { name: "alpha", arguments: '{"a":1}' } },
@@ -1553,8 +1441,6 @@ test("a provider id spelled tool_call_0 keeps its own card", () => {
 });
 
 test("several calls opened by one delta each get their own card id", () => {
-  // The cards are minted before any joins the parts array, so the ids have to
-  // be reserved as they are handed out or all three collide.
   const stream = makeStream(true);
   stream.feed([
     { index: 0, function: { name: "fetch", arguments: '{"a":1}{"b":2}{"c":3}' } },
@@ -1566,9 +1452,7 @@ test("several calls opened by one delta each get their own card id", () => {
 });
 
 test("the marker is only recognised by the text that proves it", () => {
-  // Threads written before argsText was kept carry { _raw } with nothing to
-  // compare against. Reading the value's shape instead would discard a real
-  // _raw argument and gain nothing: the wrapped form raises no Extra data.
+  // Older threads carry { _raw } with no argsText to compare against.
   const glued = '{"url":"https://example.com/1"}{"query":"search"}';
   assert.equal(toolCallReplayArguments(glued, { _raw: glued }), "{}");
   assert.equal(
@@ -1589,7 +1473,6 @@ test("an empty _raw is an argument, not the marker", () => {
 });
 
 test("a tool that really takes a _raw parameter keeps it either way", () => {
-  // _raw is not reserved and an MCP server's schema is its own.
   assert.equal(
     toolCallReplayArguments('{"_raw":"hello"}', { _raw: "hello" }),
     '{"_raw":"hello"}',
@@ -1620,7 +1503,6 @@ test("string fragments pass through byte-exact and junk contributes nothing", ()
 });
 
 test("the adapter's delta site reads arguments through the helper", () => {
-  // Pinned so a tidy-up cannot bring the payload-dropping typeof-ternary back.
   assert.ok(
     adapterSource.includes(
       "const deltaArgs = streamedToolCallArguments(",
@@ -1637,7 +1519,6 @@ test("a delta whose arguments arrive as a decoded object keeps its payload", () 
         index: 0,
         function: {
           name: "web_search",
-          // What llama-server has actually shipped, cast or not.
           arguments: { query: "value" } as unknown as string,
         },
       },
@@ -1650,11 +1531,7 @@ test("a delta whose arguments arrive as a decoded object keeps its payload", () 
 });
 
 test("a decoded object lands exactly where its string spelling would", () => {
-  // The whole contract: serializing puts the object on the path the accumulator
-  // already has for text, so every downstream rule -- the object boundary that
-  // opens the next parallel call, the id that keeps a snapshot on its own -- reads
-  // it the same either way. Pinned as a pair so a later change cannot give the two
-  // dialects different answers, which is the one way this helper can mislead.
+  // Object and string arguments must get identical answers downstream; pinned as a pair.
   const asObject = (a: unknown) => a as unknown as string;
   for (const [label, objectStream, stringStream] of [
     [

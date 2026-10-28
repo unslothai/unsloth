@@ -686,3 +686,48 @@ class TestKeptSlotReport(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_single_file_image_need_reads_fp8_from_the_header(tmp_path, monkeypatch):
+    """The residency estimate prices a single file like the load planner: a plain fp8 file named without 'fp8'
+    widens ~2x, a bf16 file named 'fp8' does not."""
+    import types
+
+    import torch
+    from safetensors.torch import save_file
+
+    import core.inference.diffusion as dmod
+    import core.inference.diffusion_engine_router as router
+    import core.inference.diffusion_families as dfam
+    import core.inference.gpu_residency as gr
+    from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS
+
+    fam = types.SimpleNamespace(name = "krea-2", single_file_is_pipeline = False)
+    monkeypatch.setattr(dfam, "detect_family_for_pick", lambda *a, **k: fam)
+    monkeypatch.setattr(dfam, "resolve_base_repo", lambda f, b: b)
+    monkeypatch.setattr(dfam, "prefer_ungated_mirror", lambda r: r)
+    monkeypatch.setattr(router, "predict_engine", lambda *a, **k: ENGINE_DIFFUSERS)
+    monkeypatch.setattr(dmod, "_image_variant_hint", lambda *a, **k: None)
+    monkeypatch.setattr(
+        dmod.DiffusionBackend, "_companion_cache_bytes", staticmethod(lambda *a, **k: 1 << 20)
+    )
+
+    def need(path):
+        monkeypatch.setattr(gr, "_cached_pick", lambda repo, name: str(path))
+        request = types.SimpleNamespace(
+            model_path = "org/krea",
+            gguf_filename = path.name,
+            text_encoder_file = None,
+            vae_file = None,
+            model_kind = "single_file",
+            family_override = None,
+            base_repo = "org/base",
+        )
+        return gr._image_need(request, 0)[0]
+
+    plain = tmp_path / "krea2.safetensors"
+    save_file({"blocks.0.weight": torch.zeros(2048, 2048, dtype = torch.float8_e4m3fn)}, str(plain))
+    dense = tmp_path / "krea2_fp8.safetensors"
+    save_file({"blocks.0.weight": torch.zeros(1024, 2048, dtype = torch.bfloat16)}, str(dense))
+    # Both files are 4 MiB on disk: only the one that stores fp8 widens on load.
+    assert need(plain) > need(dense)

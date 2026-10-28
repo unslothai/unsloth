@@ -8,6 +8,11 @@ import pytest
 from core.inference import diffusion_vae_tiling as vt
 
 torch = pytest.importorskip("torch")
+from torch.torch_version import TorchVersion  # noqa: E402
+
+# A CUDA build's version tag: Studio reads ROCm from the "+rocm" tag too (AMD SDK / Radeon wheels leave
+# torch.version.hip unset), so a test that fakes NVIDIA clears both.
+_CUDA_TORCH_VERSION = TorchVersion(str(torch.__version__).split("+")[0] + "+cu130")
 
 
 @pytest.fixture
@@ -35,6 +40,7 @@ def test_other_decoders_retain_their_adaptive_budget(monkeypatch, decoder, other
     vae, z = decoder
     if other_path == "cuda":
         monkeypatch.setattr(torch.version, "hip", None)
+        monkeypatch.setattr(torch, "__version__", _CUDA_TORCH_VERSION, raising = False)
     elif other_path == "cpu":
         z.device.type = "cpu"
     else:

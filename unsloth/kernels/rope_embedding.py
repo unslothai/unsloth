@@ -11,6 +11,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import functools
+import os
 import weakref
 import triton
 import triton.language as tl
@@ -98,30 +99,30 @@ def _rope_embedding_QK(
     K,
     K_out,
     q_batch_stride,
-    q_seq_stride,
+    q_seq_stride: tl.constexpr,  # 4096 n_heads * head_dim (6144 fused QKV, 128 contiguous)
     q_head_stride,
-    q_dim_stride,
+    q_dim_stride: tl.constexpr,  # 1
     qo_batch_stride,
-    qo_seq_stride,
+    qo_seq_stride: tl.constexpr,  # 4096 or 128
     qo_head_stride,
-    qo_dim_stride,
+    qo_dim_stride: tl.constexpr,  # 1
     k_batch_stride,
-    k_seq_stride,
+    k_seq_stride: tl.constexpr,  # 1024 n_kv_heads * head_dim
     k_head_stride,
-    k_dim_stride,
+    k_dim_stride: tl.constexpr,  # 1
     ko_batch_stride,
-    ko_seq_stride,
+    ko_seq_stride: tl.constexpr,  # 1024 or 128
     ko_head_stride,
-    ko_dim_stride,
+    ko_dim_stride: tl.constexpr,  # 1
     cos,
-    cos_row_stride,
+    cos_row_stride,  # runtime: a SymInt in compiled graphs
     sin,
     sin_row_stride,
     rope_embedding_indices,
     seqlen,
-    n_heads_Q,
-    n_heads_K,
-    n_groups_Q,
+    n_heads_Q: tl.constexpr,  # 32
+    n_heads_K: tl.constexpr,  # 8 (0 without K)
+    n_groups_Q: tl.constexpr,  # 1
     half_head_dim: tl.constexpr,
     BACKWARD_PASS: tl.constexpr,
     HAS_ROPE_INDICES: tl.constexpr,
@@ -153,6 +154,9 @@ def _rope_embedding_QK(
             rot_position = tl.load(rope_embedding_indices + row_position).to(tl.int32)
     else:
         rot_position = row_position % seqlen
+    if LONG_INDEXING:
+        # cos / sin tables past 2**31 elements need a 64-bit row offset.
+        rot_position = rot_position.to(tl.int64)
 
     sin1 = tl.load(sin + rot_position * sin_row_stride + col_offsets, mask = mask, other = 0)
     cos1 = tl.load(cos + rot_position * cos_row_stride + col_offsets, mask = mask, other = 0)
@@ -270,7 +274,7 @@ def _rope_launch(Q, Q_out, K, K_out, cos, sin, rope_ptr, has_indices, backward, 
         n_groups_K = (n_heads_K + HEADS_K - 1) // HEADS_K
     if rope_ptr is None:
         rope_ptr = cos  # never read without HAS_ROPE_INDICES
-    tensors = (Q, Q_out, K, K_out)
+    tensors = (Q, Q_out, K, K_out, cos, sin)
     wrap(_rope_embedding_QK)[(batch * seq_len, n_groups_Q + n_groups_K)](
         Q,
         Q_out,
@@ -429,7 +433,7 @@ class Fast_RoPE_Embedding_QK(torch.autograd.Function):
 
         if has_indices:
             # TRL's rotary indices are always int32, so the cast is only for safety.
-            rope_ptr = rope_indices.reshape(-1).to(dtype = torch.int32, device = Q.device)
+            rope_ptr = rope_indices.reshape(-1).to(dtype = torch.int32, device = Q.device).contiguous()
         else:
             rope_ptr = None
 
@@ -635,6 +639,54 @@ def _fast_rope_embedding_eager(Q, K, cos, sin, rope_embedding_indices):
 _fast_rope_embedding_untraced = torch.compiler.disable(_fast_rope_embedding_eager)
 
 
+# Decode RoPE in one launch instead of ~12 per layer per token; UNSLOTH_DECODE_FUSED_ROPE=0 disables it.
+DECODE_FUSED_ROPE = os.environ.get("UNSLOTH_DECODE_FUSED_ROPE", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+)
+
+
+def decode_rope_inplace(Q, K, cos, sin, position_ids):
+    """Rotate decode Q, K in place; False (nothing written) where the kernel does not apply."""
+    if not DECODE_FUSED_ROPE or torch.compiler.is_compiling():
+        return False
+    if Q.device.type != "cuda" or K.device != Q.device or Q.dim() != 4 or K.dim() != 4:
+        return False
+    batch, _, seq_len, head_dim = Q.shape
+    if (
+        seq_len != 1
+        or K.shape[0] != batch
+        or K.shape[2] != 1
+        or K.shape[3] != head_dim
+        or head_dim % 2
+    ):
+        return False
+    if position_ids is None or position_ids.numel() != batch:
+        return False
+    cos2, sin2 = cos.squeeze(), sin.squeeze()
+    if (
+        cos2.dim() != 2
+        or cos2.shape != sin2.shape
+        or cos2.shape[-1] != head_dim
+        or cos2.dtype != Q.dtype  # the unfused path multiplies in Q's dtype
+        or sin2.dtype != Q.dtype
+        or K.dtype != Q.dtype
+        or cos2.device != Q.device
+        or sin2.device != Q.device
+        or cos2.stride(-1) != 1
+        or sin2.stride(-1) != 1
+    ):
+        return False
+    # The kernel indexes positions densely; an int32 last-column slice keeps its row stride.
+    rope_ptr = position_ids.reshape(-1).to(dtype = torch.int32, device = Q.device).contiguous()
+    # No host drain: cross-device copies already order after Q's stream (a drain cost split decode ~40%).
+    with torch_gpu_device(Q.device):
+        _rope_qk(Q, K, Q, K, cos2, sin2, rope_ptr, True, False, _eager_kernel)
+    return True
+
+
 def fast_rope_embedding(
     Q,
     K,
@@ -652,7 +704,9 @@ def fast_rope_embedding(
         return _fast_rope_embedding_untraced(Q, K, cos, sin, rope_embedding_indices)
     cos, sin = cos.squeeze(), sin.squeeze()
     if rope_embedding_indices is not None:
-        rope_ptr = rope_embedding_indices.reshape(-1).to(dtype = torch.int32, device = Q.device)
+        rope_ptr = (
+            rope_embedding_indices.reshape(-1).to(dtype = torch.int32, device = Q.device).contiguous()
+        )
         return torch.ops.unsloth.rope_embedding_qk(Q, K, cos, sin, rope_ptr, False)
     Q_out = torch.ops.unsloth.rope_embedding(Q.transpose(1, 2), cos, sin, False).transpose(1, 2)
     K_out = torch.ops.unsloth.rope_embedding(K.transpose(1, 2), cos, sin, False).transpose(1, 2)

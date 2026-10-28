@@ -8,8 +8,6 @@ import { queryDrafts } from "@/features/chat/query-draft-context";
 import { requireAuth } from "../auth-guards";
 import { Route as rootRoute } from "./__root";
 
-// RootLayout renders ChatPage persistently (so it survives leaving the tab); this
-// route only owns the URL, auth gate, and search validation.
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/chat",

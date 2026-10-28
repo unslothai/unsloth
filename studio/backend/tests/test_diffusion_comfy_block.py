@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for ComfyUI ``nvfp4`` / ``mxfp8`` single files (``diffusion_comfy_block.py`` + the loader).
-
-Synthetic files are written in ComfyUI's on-disk layout by an encoder here that shares no code with the
-module under test: nvfp4 codes packed EVEN column in the HIGH nibble, block scales placed by the cuBLAS
-128x4 tile formula (offset computed per element, not by a reshape). The reference dequant reads every
-value back through that same formula, so a layout mistake in either direction fails bit-exactly.
-"""
+"""ComfyUI nvfp4 and mxfp8 single-file tests; the encoder shares no code with the module under test."""
 
 from __future__ import annotations
 
@@ -824,51 +818,88 @@ def _rss_anon_now():
     return None
 
 
-@pytest.mark.parametrize("fmt", ["nvfp4", "mxfp8"])
-def test_block_dequant_is_checked_for_its_peak_intermediates(monkeypatch, fmt):
-    """The fallback dequantization builds int32 / float32 intermediates several times the bf16 output; the
-    check before it must cover the measured peak, not only the output."""
-    import threading
-    import time
+_PEAK_PROBE = r"""
+import ctypes, json, sys, threading, time
 
-    import core.inference.diffusion_single_file_converters as conv
+sys.path.insert(0, sys.argv[2])
+import torch
+import core.inference.diffusion_comfy_block as cb
+import core.inference.diffusion_single_file_converters as conv
+
+fmt = sys.argv[1]
+
+
+def rss_anon(trim):
+    if trim:
+        ctypes.CDLL("libc.so.6").malloc_trim(0)  # hand freed heap back, so RssAnon is what is live
+    with open("/proc/self/status") as status:
+        for line in status:
+            if line.startswith("RssAnon:"):
+                return int(line.split()[1]) * 1024
+
+
+rows, cols = 4096, 4096
+gen = torch.Generator().manual_seed(1)
+if fmt == "nvfp4":
+    codes = torch.randint(0, 256, (rows, cols // 2), dtype = torch.uint8, generator = gen)
+    scale = torch.randint(56, 64, (rows, cols // 16), dtype = torch.uint8, generator = gen)
+    scale = scale.view(torch.float8_e4m3fn)
+else:
+    codes = torch.randint(0, 120, (rows, cols), dtype = torch.uint8, generator = gen)
+    codes = codes.view(torch.float8_e4m3fn)
+    scale = torch.randint(120, 130, (rows, cols // 32), dtype = torch.uint8, generator = gen)
+seen = []
+conv.charge_host_ram = lambda n: seen.append(int(n))
+
+
+def measure():
+    peak, stop = [0], [False]
+
+    def sample():
+        while not stop[0]:
+            peak[0] = max(peak[0], rss_anon(False))
+            time.sleep(0.0005)
+
+    start = rss_anon(True)
+    thread = threading.Thread(target = sample, daemon = True)
+    thread.start()
+    out = cb.dequant_block(fmt, codes, scale, tensor_scale = 0.01, dtype = torch.bfloat16)
+    stop[0] = True
+    thread.join()
+    assert out.shape == (rows, cols)
+    return peak[0] - start
+
+
+growth = min(measure() for _ in range(3))
+print("PEAK " + json.dumps({"seen": seen, "growth": growth}))
+"""
+
+
+@pytest.mark.parametrize("fmt", ["nvfp4", "mxfp8"])
+def test_block_dequant_is_checked_for_its_peak_intermediates(fmt):
+    """The fallback dequantization builds int32 / float32 intermediates several times the bf16 output; the
+    check before it must cover the measured peak, not only the output.
+
+    Measured in a fresh process: RssAnon is process-wide, and in a long-lived pytest worker the
+    allocator state and threads left by earlier tests added a steady ~7 MB to every reading (CI saw
+    0.88 of a growth that measures 0.98-1.07 on its own, for the same torch build)."""
+    import subprocess
+    import sys
+    from pathlib import Path
 
     if _rss_anon_bytes() is None:
         pytest.skip("needs /proc/self/status RssAnon")
-    rows, cols = 4096, 4096
-    gen = torch.Generator().manual_seed(1)
-    if fmt == "nvfp4":
-        codes = torch.randint(0, 256, (rows, cols // 2), dtype = torch.uint8, generator = gen)
-        scale = torch.randint(56, 64, (rows, cols // 16), dtype = torch.uint8, generator = gen)
-        scale = scale.view(torch.float8_e4m3fn)
-    else:
-        codes = torch.randint(0, 120, (rows, cols), dtype = torch.uint8, generator = gen)
-        codes = codes.view(torch.float8_e4m3fn)
-        scale = torch.randint(120, 130, (rows, cols // 32), dtype = torch.uint8, generator = gen)
-    seen = []
-    monkeypatch.setattr(conv, "charge_host_ram", lambda n: seen.append(int(n)))
-
-    def measure():
-        peak, stop = [0], [False]
-
-        def sample():
-            while not stop[0]:
-                peak[0] = max(peak[0], _rss_anon_now())
-                time.sleep(0.0005)
-
-        _rss_anon_bytes()  # trim first, so the baseline is what is live
-        start = _rss_anon_now()
-        thread = threading.Thread(target = sample, daemon = True)
-        thread.start()
-        out = cb.dequant_block(fmt, codes, scale, tensor_scale = 0.01, dtype = torch.bfloat16)
-        stop[0] = True
-        thread.join()
-        assert out.shape == (rows, cols)
-        return peak[0] - start
-
-    # RssAnon is process-wide: anything else live in the worker only adds to it (CI saw 0.89 of a
-    # growth that measures 0.96-1.08 alone), so the least of a few runs is the dequant's own peak.
-    growth = min(measure() for _ in range(3))
+    backend = str(Path(__file__).resolve().parents[1])
+    proc = subprocess.run(
+        [sys.executable, "-c", _PEAK_PROBE, fmt, backend],
+        capture_output = True,
+        text = True,
+        timeout = 600,
+    )
+    line = [l for l in proc.stdout.splitlines() if l.startswith("PEAK ")]
+    assert proc.returncode == 0 and line, proc.stdout[-2000:] + proc.stderr[-4000:]
+    result = json.loads(line[-1][len("PEAK ") :])
+    seen, growth = result["seen"], result["growth"]
     assert seen and max(seen) >= 0.9 * growth, (seen, growth)
 
 
