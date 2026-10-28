@@ -1092,7 +1092,6 @@ export const de = {
       about: "Info",
       data: "Daten",
       agents: "Agenten",
-      mcp: "MCP",
       debugging: "Protokolle",
       voice: "Sprachfunktionen",
       keyboardShortcuts: "Kürzel",
@@ -3165,24 +3164,33 @@ export const de = {
         "Erreiche dieses Unsloth von deinen anderen Geräten über dein lokales Netzwerk oder eine temporäre öffentliche URL.",
     },
     mcp: {
-      title: "Unsloth MCP",
-      description: "Lass Coding-Agenten Unsloth über MCP nutzen und wähle, welche Tools sie bekommen.",
       keyHint: "Agenten melden sich mit einem Unsloth-Studio-API-Schlüssel an.",
       createKey: "API-Schlüssel erstellen",
       tools: {
         title: "Tools",
+        count: "{on} von {total} an",
+        choose: "Tools auswählen",
+        dialogTitle: "Unsloth MCP-Tools",
+        turnAllOn: "Alle einschalten",
+        groupToggle: "Alle Tools in {group}",
         description: "Agenten sehen ein deaktiviertes Tool nie, und Aufrufe dafür werden abgelehnt. Bereits verbundene Agenten sehen die Änderung, sobald sie sich neu verbinden.",
-        loadError: "Die Unsloth MCP-Tools konnten nicht geladen werden.",
         saveError: "Die Einstellung für das Unsloth MCP-Tool konnte nicht gespeichert werden.",
+        groups: {
+          models: "Modelle",
+          generate: "Generieren",
+          training: "Training und Export",
+          library: "Daten und Bibliothek",
+          jobs: "Jobs",
+          other: "Sonstiges",
+        },
       },
       status: {
         on: "An",
         off: "Aus",
       },
-      agentsRow: {
-        title: "Unsloth MCP",
+      apiKeysRow: {
         label: "Agentenzugriff",
-        open: "MCP-Einstellungen öffnen",
+        open: "In Agenten öffnen",
       },
       toolLabels: {
         studioStatus: "Status",

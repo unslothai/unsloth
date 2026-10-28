@@ -1091,7 +1091,6 @@ export const hi = {
       about: "परिचय",
       data: "डेटा",
       agents: "एजेंट",
-      mcp: "MCP",
       debugging: "लॉग",
       voice: "आवाज़",
       keyboardShortcuts: "शॉर्टकट",
@@ -3128,24 +3127,33 @@ export const hi = {
         "इस Unsloth तक अपने दूसरे डिवाइस से पहुँचें, अपने लोकल नेटवर्क या एक अस्थायी सार्वजनिक URL से।",
     },
     mcp: {
-      title: "Unsloth MCP",
-      description: "कोडिंग एजेंट को MCP के ज़रिए Unsloth इस्तेमाल करने दें और चुनें कि उन्हें कौन-से टूल मिलें।",
       keyHint: "एजेंट Unsloth API कुंजी से साइन इन करते हैं।",
       createKey: "API कुंजी बनाएँ",
       tools: {
         title: "टूल",
+        count: "{total} में से {on} चालू",
+        choose: "टूल चुनें",
+        dialogTitle: "Unsloth MCP टूल",
+        turnAllOn: "सभी चालू करें",
+        groupToggle: "{group} के सभी टूल",
         description: "आपके बंद किए गए टूल को एजेंट कभी नहीं देखते, और उसके कॉल अस्वीकार कर दिए जाते हैं। पहले से जुड़े एजेंट दोबारा कनेक्ट होने पर बदलाव देखते हैं।",
-        loadError: "Unsloth MCP टूल लोड नहीं हो सके।",
         saveError: "Unsloth MCP टूल की सेटिंग सहेजी नहीं जा सकी।",
+        groups: {
+          models: "मॉडल",
+          generate: "जनरेट करें",
+          training: "ट्रेनिंग और एक्सपोर्ट",
+          library: "डेटा और लाइब्रेरी",
+          jobs: "जॉब",
+          other: "अन्य",
+        },
       },
       status: {
         on: "चालू",
         off: "बंद",
       },
-      agentsRow: {
-        title: "Unsloth MCP",
+      apiKeysRow: {
         label: "एजेंट एक्सेस",
-        open: "MCP सेटिंग्स खोलें",
+        open: "एजेंट में खोलें",
       },
       toolLabels: {
         studioStatus: "स्थिति",

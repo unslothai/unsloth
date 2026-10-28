@@ -1090,7 +1090,6 @@ export const ja = {
       voice: "音声",
       data: "データ",
       agents: "エージェント",
-      mcp: "MCP",
       debugging: "ログ",
       keyboardShortcuts: "ショートカット",
     },
@@ -3094,24 +3093,33 @@ export const ja = {
         "ローカルネットワークまたは一時的な公開URLを介して、他のデバイスからこのUnslothにアクセスできます。",
     },
     mcp: {
-      title: "Unsloth MCP",
-      description: "コーディングエージェントが MCP 経由で Unsloth を使えるようにし、使えるツールを選べます。",
       keyHint: "エージェントは Unsloth の API キーでサインインします。",
       createKey: "API キーを作成",
       tools: {
         title: "ツール",
+        count: "{total} 個中 {on} 個がオン",
+        choose: "ツールを選択",
+        dialogTitle: "Unsloth MCP ツール",
+        turnAllOn: "すべてオンにする",
+        groupToggle: "{group} のすべてのツール",
         description: "オフにしたツールはエージェントに表示されず、呼び出しも拒否されます。すでに接続中のエージェントには、再接続したときに変更が反映されます。",
-        loadError: "Unsloth MCP のツールを読み込めませんでした。",
         saveError: "Unsloth MCP のツール設定を保存できませんでした。",
+        groups: {
+          models: "モデル",
+          generate: "生成",
+          training: "トレーニングとエクスポート",
+          library: "データとライブラリ",
+          jobs: "ジョブ",
+          other: "その他",
+        },
       },
       status: {
         on: "オン",
         off: "オフ",
       },
-      agentsRow: {
-        title: "Unsloth MCP",
+      apiKeysRow: {
         label: "エージェントアクセス",
-        open: "MCP 設定を開く",
+        open: "エージェントで開く",
       },
       toolLabels: {
         studioStatus: "ステータス",

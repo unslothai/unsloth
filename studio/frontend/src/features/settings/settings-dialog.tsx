@@ -30,7 +30,6 @@ import {
   EnergyRectangleIcon,
   InternetIcon,
   HelpCircleIcon,
-  McpServerIcon,
   HomeWifiIcon,
   LibrariesIcon,
   PaintBrush02Icon,
@@ -105,7 +104,6 @@ const TAB_LOADERS = {
     import("./tabs/remote-lan-tab").then((m) => ({ default: m.RemoteLanTab })),
   agents: () =>
     import("./tabs/agents-tab").then((m) => ({ default: m.AgentsTab })),
-  mcp: () => import("./tabs/mcp-tab").then((m) => ({ default: m.McpTab })),
   debugging: () =>
     import("./tabs/debugging-tab").then((m) => ({ default: m.DebuggingTab })),
   about: () =>
@@ -246,12 +244,6 @@ const TABS: TabDef[] = [
     id: "agents",
     labelKey: "settings.tabs.agents",
     icon: BotIcon,
-  },
-  {
-    id: "mcp",
-    labelKey: "settings.tabs.mcp",
-    icon: McpServerIcon,
-    badgeKey: "common.new",
   },
   {
     id: "voice",
@@ -472,7 +464,6 @@ export function SettingsDialog() {
     "api-keys": null,
     "remote-lan": null,
     agents: null,
-    mcp: null,
     debugging: null,
     about: null,
   });

@@ -1087,7 +1087,6 @@ export const ko = {
       about: "정보",
       data: "데이터",
       agents: "에이전트",
-      mcp: "MCP",
       debugging: "로그",
       voice: "음성",
       keyboardShortcuts: "단축키",
@@ -3107,24 +3106,33 @@ export const ko = {
         "로컬 네트워크나 임시 공개 URL을 통해 다른 기기에서 이 Unsloth에 접속합니다.",
     },
     mcp: {
-      title: "Unsloth MCP",
-      description: "코딩 에이전트가 MCP로 Unsloth를 사용하게 하고, 사용할 수 있는 도구를 고릅니다.",
       keyHint: "에이전트는 Unsloth API 키로 로그인합니다.",
       createKey: "API 키 만들기",
       tools: {
         title: "도구",
+        count: "{total}개 중 {on}개 켜짐",
+        choose: "도구 선택",
+        dialogTitle: "Unsloth MCP 도구",
+        turnAllOn: "모두 켜기",
+        groupToggle: "{group}의 모든 도구",
         description: "끈 도구는 에이전트에게 보이지 않으며 해당 도구 호출은 거부됩니다. 이미 연결된 에이전트는 다시 연결할 때 변경 사항이 반영됩니다.",
-        loadError: "Unsloth MCP 도구를 불러오지 못했습니다.",
         saveError: "Unsloth MCP 도구 설정을 저장하지 못했습니다.",
+        groups: {
+          models: "모델",
+          generate: "생성",
+          training: "학습 및 내보내기",
+          library: "데이터 및 라이브러리",
+          jobs: "작업",
+          other: "기타",
+        },
       },
       status: {
         on: "켜짐",
         off: "꺼짐",
       },
-      agentsRow: {
-        title: "Unsloth MCP",
+      apiKeysRow: {
         label: "에이전트 액세스",
-        open: "MCP 설정 열기",
+        open: "에이전트에서 열기",
       },
       toolLabels: {
         studioStatus: "상태",

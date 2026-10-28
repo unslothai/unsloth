@@ -1145,7 +1145,6 @@ export const en = {
       apiKeys: "API",
       remoteLan: "Remote & LAN",
       agents: "Agents",
-      mcp: "MCP",
       keyboardShortcuts: "Shortcuts",
       debugging: "Logs",
       about: "About",
@@ -3328,24 +3327,33 @@ export const en = {
       },
     },
     mcp: {
-      title: "Unsloth MCP",
-      description: "Let coding agents use Unsloth over MCP, and choose which tools they get.",
       keyHint: "Agents sign in with an Unsloth API key.",
       createKey: "Create an API key",
       tools: {
         title: "Tools",
+        count: "{on} of {total} on",
+        choose: "Choose tools",
+        dialogTitle: "Unsloth MCP tools",
+        turnAllOn: "Turn all on",
+        groupToggle: "All {group} tools",
         description: "Agents never see a tool you turn off, and calls to it are refused. Agents already connected see the change when they reconnect.",
-        loadError: "Couldn't load the Unsloth MCP tools.",
         saveError: "Couldn't save the Unsloth MCP tool setting.",
+        groups: {
+          models: "Models",
+          generate: "Generate",
+          training: "Training and export",
+          library: "Data and library",
+          jobs: "Jobs",
+          other: "Other",
+        },
       },
       status: {
         on: "On",
         off: "Off",
       },
-      agentsRow: {
-        title: "Unsloth MCP",
+      apiKeysRow: {
         label: "Agent access",
-        open: "Open MCP settings",
+        open: "Open in Agents",
       },
       toolLabels: {
         studioStatus: "Status",

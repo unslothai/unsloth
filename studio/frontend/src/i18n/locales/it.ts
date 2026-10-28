@@ -993,7 +993,6 @@ export const it = {
       apiKeys: "API",
       remoteLan: "Remoto e LAN",
       agents: "Agenti",
-      mcp: "MCP",
       debugging: "Log",
       about: "Informazioni",
       keyboardShortcuts: "Scorciatoie",
@@ -3067,24 +3066,33 @@ export const it = {
         "Raggiungi questo Unsloth dagli altri tuoi dispositivi, tramite la rete locale o un URL pubblico temporaneo.",
     },
     mcp: {
-      title: "Unsloth MCP",
-      description: "Consenti agli agenti di programmazione di usare Unsloth tramite MCP e scegli quali strumenti ricevono.",
       keyHint: "Gli agenti accedono con una chiave API di Unsloth.",
       createKey: "Crea una chiave API",
       tools: {
         title: "Strumenti",
+        count: "{on} di {total} attivi",
+        choose: "Scegli gli strumenti",
+        dialogTitle: "Strumenti MCP di Unsloth",
+        turnAllOn: "Attiva tutti",
+        groupToggle: "Tutti gli strumenti di {group}",
         description: "Gli agenti non vedono mai uno strumento che disattivi, e le chiamate a quello strumento vengono rifiutate. Gli agenti già connessi vedono la modifica quando si riconnettono.",
-        loadError: "Impossibile caricare gli strumenti di Unsloth MCP.",
         saveError: "Impossibile salvare l’impostazione dello strumento di Unsloth MCP.",
+        groups: {
+          models: "Modelli",
+          generate: "Generazione",
+          training: "Addestramento ed esportazione",
+          library: "Dati e libreria",
+          jobs: "Processi",
+          other: "Altro",
+        },
       },
       status: {
         on: "Attivo",
         off: "Disattivo",
       },
-      agentsRow: {
-        title: "Unsloth MCP",
+      apiKeysRow: {
         label: "Accesso degli agenti",
-        open: "Apri le impostazioni MCP",
+        open: "Apri in Agenti",
       },
       toolLabels: {
         studioStatus: "Stato",

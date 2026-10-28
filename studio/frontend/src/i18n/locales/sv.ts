@@ -1203,7 +1203,6 @@ export const sv = {
       apiKeys: "API",
       remoteLan: "Fjärråtkomst och LAN",
       agents: "Agenter",
-      mcp: "MCP",
       keyboardShortcuts: "Genvägar",
       debugging: "Loggar",
       about: "Om",
@@ -3336,24 +3335,33 @@ export const sv = {
         "Anslut till denna Unsloth från andra enheter, via ditt lokala nätverk eller en tillfällig offentlig URL.",
     },
     mcp: {
-      title: "Unsloth MCP",
-      description: "Låt kodagenter använda Unsloth via MCP och välj vilka verktyg de får.",
       keyHint: "Agenter loggar in med en API-nyckel för Unsloth.",
       createKey: "Skapa en API-nyckel",
       tools: {
         title: "Verktyg",
+        count: "{on} av {total} på",
+        choose: "Välj verktyg",
+        dialogTitle: "Unsloth MCP-verktyg",
+        turnAllOn: "Slå på alla",
+        groupToggle: "Alla verktyg i {group}",
         description: "Agenter ser aldrig ett verktyg som du stänger av, och anrop till det nekas. Agenter som redan är anslutna ser ändringen när de ansluter igen.",
-        loadError: "Det gick inte att läsa in verktygen för Unsloth MCP.",
         saveError: "Det gick inte att spara inställningen för verktyget i Unsloth MCP.",
+        groups: {
+          models: "Modeller",
+          generate: "Generera",
+          training: "Träning och export",
+          library: "Data och bibliotek",
+          jobs: "Jobb",
+          other: "Övrigt",
+        },
       },
       status: {
         on: "På",
         off: "Av",
       },
-      agentsRow: {
-        title: "Unsloth MCP",
+      apiKeysRow: {
         label: "Agentåtkomst",
-        open: "Öppna MCP-inställningar",
+        open: "Öppna i Agenter",
       },
       toolLabels: {
         studioStatus: "Status",

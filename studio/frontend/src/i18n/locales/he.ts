@@ -1176,7 +1176,6 @@ export const he = {
       apiKeys: "API",
       remoteLan: "שליטה מרחוק ורשת מקומית",
       agents: "סוכנים",
-      mcp: "MCP",
       keyboardShortcuts: "קיצורי דרך",
       debugging: "יומנים",
       about: "אודות",
@@ -3237,24 +3236,33 @@ export const he = {
         "גש ל-Unsloth זה מהמכשירים האחרים שלך, דרך הרשת המקומית או באמצעות כתובת URL ציבורית זמנית.",
     },
     mcp: {
-      title: "Unsloth MCP",
-      description: "אפשר לסוכני קוד להשתמש ב-Unsloth דרך MCP, ובחר אילו כלים הם מקבלים.",
       keyHint: "סוכנים מתחברים עם מפתח API של Unsloth.",
       createKey: "יצירת מפתח API",
       tools: {
         title: "כלים",
+        count: "{on} מתוך {total} פעילים",
+        choose: "בחירת כלים",
+        dialogTitle: "כלי Unsloth MCP",
+        turnAllOn: "הפעל הכול",
+        groupToggle: "כל הכלים של {group}",
         description: "סוכנים אף פעם לא רואים כלי שכיבית, וקריאות אליו נדחות. סוכנים שכבר מחוברים רואים את השינוי כשהם מתחברים מחדש.",
-        loadError: "לא ניתן לטעון את הכלים של Unsloth MCP.",
         saveError: "לא ניתן לשמור את הגדרת הכלי של Unsloth MCP.",
+        groups: {
+          models: "מודלים",
+          generate: "יצירה",
+          training: "אימון וייצוא",
+          library: "נתונים וספרייה",
+          jobs: "משימות",
+          other: "אחר",
+        },
       },
       status: {
         on: "פועל",
         off: "כבוי",
       },
-      agentsRow: {
-        title: "Unsloth MCP",
+      apiKeysRow: {
         label: "גישת סוכנים",
-        open: "פתח את הגדרות MCP",
+        open: "פתח בסוכנים",
       },
       toolLabels: {
         studioStatus: "סטטוס",

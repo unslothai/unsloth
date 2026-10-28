@@ -82,7 +82,7 @@ test("saving tools sends only the full turned-off list", async () => {
       tools: [{ name: "cancel", area: "cancel", enabled: false }],
     }),
   );
-  const saved = await c.api.updateMcpTool("cancel", false);
+  const saved = await c.api.updateMcpTools({ cancel: false });
   assert.deepEqual(saved.tools, [
     { name: "cancel", area: "cancel", enabled: false },
   ]);

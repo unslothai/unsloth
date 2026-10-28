@@ -1086,7 +1086,6 @@ export const zhCN = {
       voice: "语音",
       data: "数据",
       agents: "智能体",
-      mcp: "MCP",
       debugging: "日志",
       keyboardShortcuts: "快捷键",
     },
@@ -3065,24 +3064,33 @@ export const zhCN = {
         "通过局域网或临时公开 URL，从其他设备访问此 Unsloth。",
     },
     mcp: {
-      title: "Unsloth MCP",
-      description: "让编码智能体通过 MCP 使用 Unsloth，并选择它们可用的工具。",
       keyHint: "智能体使用 Unsloth API 密钥登录。",
       createKey: "创建 API 密钥",
       tools: {
         title: "工具",
+        count: "已开启 {on}/{total}",
+        choose: "选择工具",
+        dialogTitle: "Unsloth MCP 工具",
+        turnAllOn: "全部开启",
+        groupToggle: "{group}中的全部工具",
         description: "智能体看不到你关闭的工具，对它的调用也会被拒绝。已连接的智能体会在重新连接后看到变化。",
-        loadError: "无法加载 Unsloth MCP 工具。",
         saveError: "无法保存 Unsloth MCP 工具设置。",
+        groups: {
+          models: "模型",
+          generate: "生成",
+          training: "训练与导出",
+          library: "数据与媒体库",
+          jobs: "任务",
+          other: "其他",
+        },
       },
       status: {
         on: "开",
         off: "关",
       },
-      agentsRow: {
-        title: "Unsloth MCP",
+      apiKeysRow: {
         label: "智能体访问",
-        open: "打开 MCP 设置",
+        open: "在智能体中打开",
       },
       toolLabels: {
         studioStatus: "状态",

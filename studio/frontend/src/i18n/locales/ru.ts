@@ -1090,7 +1090,6 @@ export const ru = {
       about: "О программе",
       data: "Данные",
       agents: "Агенты",
-      mcp: "MCP",
       debugging: "Журналы",
       voice: "Голос",
       keyboardShortcuts: "Сочетания",
@@ -3135,24 +3134,33 @@ export const ru = {
         "Откройте этот Unsloth с других устройств: через локальную сеть или временный публичный URL.",
     },
     mcp: {
-      title: "Unsloth MCP",
-      description: "Разрешите агентам для программирования работать с Unsloth через MCP и выберите, какие инструменты им доступны.",
       keyHint: "Агенты входят с ключом API Unsloth.",
       createKey: "Создать ключ API",
       tools: {
         title: "Инструменты",
+        count: "Включено {on} из {total}",
+        choose: "Выбрать инструменты",
+        dialogTitle: "Инструменты Unsloth MCP",
+        turnAllOn: "Включить все",
+        groupToggle: "Все инструменты группы «{group}»",
         description: "Агенты не видят отключённый вами инструмент, а вызовы к нему отклоняются. Уже подключённые агенты увидят изменение после повторного подключения.",
-        loadError: "Не удалось загрузить инструменты Unsloth MCP.",
         saveError: "Не удалось сохранить настройку инструмента Unsloth MCP.",
+        groups: {
+          models: "Модели",
+          generate: "Генерация",
+          training: "Обучение и экспорт",
+          library: "Данные и библиотека",
+          jobs: "Задачи",
+          other: "Другое",
+        },
       },
       status: {
         on: "Вкл.",
         off: "Выкл.",
       },
-      agentsRow: {
-        title: "Unsloth MCP",
+      apiKeysRow: {
         label: "Доступ агентов",
-        open: "Открыть настройки MCP",
+        open: "Открыть в разделе «Агенты»",
       },
       toolLabels: {
         studioStatus: "Состояние",

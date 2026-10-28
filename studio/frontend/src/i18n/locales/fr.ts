@@ -1092,7 +1092,6 @@ export const fr = {
       about: "À propos",
       data: "Données",
       agents: "Agents",
-      mcp: "MCP",
       debugging: "Journaux",
       voice: "Voix",
       keyboardShortcuts: "Raccourcis",
@@ -3166,24 +3165,33 @@ export const fr = {
         "Accédez à cet Unsloth depuis vos autres appareils, via votre réseau local ou une URL publique temporaire.",
     },
     mcp: {
-      title: "Unsloth MCP",
-      description: "Permettez aux agents de code d’utiliser Unsloth via MCP et choisissez les outils qu’ils obtiennent.",
       keyHint: "Les agents se connectent avec une clé API Unsloth.",
       createKey: "Créer une clé API",
       tools: {
         title: "Outils",
+        count: "{on} sur {total} activés",
+        choose: "Choisir les outils",
+        dialogTitle: "Outils MCP d'Unsloth",
+        turnAllOn: "Tout activer",
+        groupToggle: "Tous les outils {group}",
         description: "Les agents ne voient jamais un outil que vous désactivez, et les appels vers cet outil sont refusés. Les agents déjà connectés voient le changement lorsqu’ils se reconnectent.",
-        loadError: "Impossible de charger les outils d’Unsloth MCP.",
         saveError: "Impossible d’enregistrer le paramètre de l’outil d’Unsloth MCP.",
+        groups: {
+          models: "Modèles",
+          generate: "Génération",
+          training: "Entraînement et export",
+          library: "Données et bibliothèque",
+          jobs: "Tâches",
+          other: "Autres",
+        },
       },
       status: {
         on: "Activé",
         off: "Désactivé",
       },
-      agentsRow: {
-        title: "Unsloth MCP",
+      apiKeysRow: {
         label: "Accès des agents",
-        open: "Ouvrir les paramètres MCP",
+        open: "Ouvrir dans Agents",
       },
       toolLabels: {
         studioStatus: "État",

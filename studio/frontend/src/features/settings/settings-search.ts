@@ -235,7 +235,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.apiKeys.accessTokens",
     "settings.apiKeys.audioApi.title",
     "settings.apiKeys.decisionApi.title",
-    "settings.mcp.agentsRow.title",
+    "settings.apiKeys.mcp.title",
     "settings.general.modelAutoSwitch.keepKv",
   ],
   // the English card labels cannot match localized keys, so the header carries both entries.
@@ -245,7 +245,6 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.agents.title",
     "settings.agents.description",
     "settings.agents.intro",
-    "settings.mcp.agentsRow.title",
     "settings.agents.agent",
     "settings.agents.model",
     "settings.agents.quantization",
@@ -254,11 +253,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.agents.remote.title",
     "settings.agents.passthrough.title",
     "settings.agents.dryRun.title",
-  ],
-  mcp: [
-    "settings.mcp.title",
     "settings.apiKeys.mcp.title",
-    "settings.mcp.tools.title",
   ],
   connections: [],
   voice: [
@@ -417,7 +412,7 @@ const OWNER_ONLY_ENTRIES: ReadonlySet<TranslationKey> = new Set([
   "settings.sandbox.toolsSection",
   "settings.sandbox.python",
   "settings.sandbox.terminal",
-  "settings.mcp.agentsRow.title",
+  "settings.apiKeys.mcp.title",
   "settings.general.modelAutoSwitch.keepKv",
   "settings.chat.toolResultLimit",
   "settings.chat.firstTokenLabel",

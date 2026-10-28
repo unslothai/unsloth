@@ -11,7 +11,7 @@ import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
-/** Agent access status with a link to Settings > MCP. Owner-only callers. */
+/** Agent access status with a link to its settings in Settings > Agents. Owner-only callers. */
 export function UnslothStudioMcpRow(): ReactElement {
   const t = useT();
   const [enabled, setEnabled] = useState<boolean | null>(null);
@@ -36,17 +36,21 @@ export function UnslothStudioMcpRow(): ReactElement {
         : t("settings.mcp.status.off");
 
   return (
-    <SettingsSection title={t("settings.mcp.agentsRow.title")}>
+    <SettingsSection title={t("settings.apiKeys.mcp.title")}>
       <SettingsRow
-        label={t("settings.mcp.agentsRow.label")}
+        label={t("settings.mcp.apiKeysRow.label")}
         description={status}
       >
         <Button
           variant="outline"
           size="sm"
-          onClick={() => useSettingsDialogStore.getState().setActiveTab("mcp")}
+          onClick={() =>
+            useSettingsDialogStore
+              .getState()
+              .openDialog("agents", { scrollTarget: "agents-mcp" })
+          }
         >
-          {t("settings.mcp.agentsRow.open")}
+          {t("settings.mcp.apiKeysRow.open")}
           <HugeiconsIcon
             icon={ChevronRightStandardIcon}
             className="ml-1 size-3.5"

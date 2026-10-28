@@ -11,7 +11,6 @@ export const OWNER_ONLY_SETTINGS_TABS: ReadonlySet<SettingsTab> = new Set<Settin
   "resources",
   "remote-lan",
   "agents",
-  "mcp",
   "debugging",
 ]);
 

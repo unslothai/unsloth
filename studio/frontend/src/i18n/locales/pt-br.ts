@@ -1091,7 +1091,6 @@ export const ptBR = {
       voice: "Voz",
       data: "Dados",
       agents: "Agentes",
-      mcp: "MCP",
       debugging: "Registros",
       keyboardShortcuts: "Atalhos",
     },
@@ -3137,24 +3136,33 @@ export const ptBR = {
         "Acesse este Unsloth dos seus outros dispositivos, pela rede local ou por uma URL pública temporária.",
     },
     mcp: {
-      title: "Unsloth MCP",
-      description: "Permita que agentes de código usem o Unsloth via MCP e escolha quais ferramentas eles recebem.",
       keyHint: "Os agentes entram com uma chave de API do Unsloth.",
       createKey: "Criar uma chave de API",
       tools: {
         title: "Ferramentas",
+        count: "{on} de {total} ativadas",
+        choose: "Escolher ferramentas",
+        dialogTitle: "Ferramentas MCP do Unsloth",
+        turnAllOn: "Ativar todas",
+        groupToggle: "Todas as ferramentas de {group}",
         description: "Os agentes nunca veem uma ferramenta que você desativa, e as chamadas a ela são recusadas. Agentes já conectados veem a mudança quando se reconectam.",
-        loadError: "Não foi possível carregar as ferramentas do Unsloth MCP.",
         saveError: "Não foi possível salvar a configuração da ferramenta do Unsloth MCP.",
+        groups: {
+          models: "Modelos",
+          generate: "Gerar",
+          training: "Treinamento e exportação",
+          library: "Dados e biblioteca",
+          jobs: "Tarefas",
+          other: "Outras",
+        },
       },
       status: {
         on: "Ativado",
         off: "Desativado",
       },
-      agentsRow: {
-        title: "Unsloth MCP",
+      apiKeysRow: {
         label: "Acesso de agentes",
-        open: "Abrir configurações de MCP",
+        open: "Abrir em Agentes",
       },
       toolLabels: {
         studioStatus: "Status",

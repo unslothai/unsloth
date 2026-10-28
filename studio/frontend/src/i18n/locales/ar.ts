@@ -1087,7 +1087,6 @@ export const ar = {
       about: "حول",
       data: "البيانات",
       agents: "الوكلاء",
-      mcp: "MCP",
       debugging: "السجلات",
       voice: "الصوت",
       keyboardShortcuts: "الاختصارات",
@@ -3119,24 +3118,33 @@ export const ar = {
         "الوصول إلى Unsloth من أجهزتك الأخرى عبر شبكتك المحلية أو عنوان URL عام مؤقت.",
     },
     mcp: {
-      title: "Unsloth MCP",
-      description: "اسمح لوكلاء البرمجة باستخدام Unsloth عبر MCP، واختر الأدوات التي يحصلون عليها.",
       keyHint: "يسجّل الوكلاء الدخول بمفتاح API لـ Unsloth.",
       createKey: "إنشاء مفتاح API",
       tools: {
         title: "الأدوات",
+        count: "{on} من {total} مفعّلة",
+        choose: "اختيار الأدوات",
+        dialogTitle: "أدوات Unsloth MCP",
+        turnAllOn: "تفعيل الكل",
+        groupToggle: "كل أدوات {group}",
         description: "لا يرى الوكلاء أي أداة تعطّلها، ويُرفض أي استدعاء لها. الوكلاء المتصلون بالفعل يرون التغيير عند إعادة الاتصال.",
-        loadError: "تعذّر تحميل أدوات Unsloth MCP.",
         saveError: "تعذّر حفظ إعداد أداة Unsloth MCP.",
+        groups: {
+          models: "النماذج",
+          generate: "التوليد",
+          training: "التدريب والتصدير",
+          library: "البيانات والمكتبة",
+          jobs: "المهام",
+          other: "أخرى",
+        },
       },
       status: {
         on: "مفعّل",
         off: "متوقف",
       },
-      agentsRow: {
-        title: "Unsloth MCP",
+      apiKeysRow: {
         label: "وصول الوكلاء",
-        open: "فتح إعدادات MCP",
+        open: "فتح في الوكلاء",
       },
       toolLabels: {
         studioStatus: "الحالة",
