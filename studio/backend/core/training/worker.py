@@ -4897,7 +4897,6 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 return
 
         _send_status(event_queue, "Loading and formatting dataset...")
-        # Overlap checkpoint I/O only, never model placement: formatting needs the probed tokenizer.
         from .model_weight_prefetch import prepare_dataset_with_prefetch
 
         dataset, eval_dataset = prepare_dataset_with_prefetch(
