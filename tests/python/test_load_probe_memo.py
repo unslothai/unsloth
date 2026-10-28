@@ -48,6 +48,10 @@ def _count_probes(monkeypatch):
     return calls
 
 
+# On Apple Silicon with MLX the FastModel hand-off goes to the MLX loader, which needs real weights.
+@pytest.mark.skipif(
+    getattr(unsloth, "_IS_MLX", False), reason = "the MLX loader needs real safetensors"
+)
 def test_delegated_load_probes_config_and_adapter_once(tmp_path, monkeypatch):
     # Granite is not one of FastLanguageModel's own families, so it hands off to FastModel, which used to probe again.
     from unsloth import FastLanguageModel
