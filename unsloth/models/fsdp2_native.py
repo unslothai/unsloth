@@ -1141,7 +1141,9 @@ def _keep_unsharded_for_block_cudagraphs(model):
                 pass
     if not per_block:
         return 0
-    keeper = _BlockWeightKeep([tuple(e) for e in per_block.values()], _block_cudagraphs_keep_budget())
+    keeper = _BlockWeightKeep(
+        [tuple(e) for e in per_block.values()], _block_cudagraphs_keep_budget()
+    )
     keep, nbytes, _ = keeper.apply()
     for block, _, _ in keeper.blocks:
         block.__dict__["_unsloth_block_flex_observer"] = keeper.observe

@@ -48,7 +48,12 @@ def _mark_blocks(model, bc):
         if cls.__name__.endswith("DecoderLayer") and cls not in restore:
             original = cls.forward
 
-            def forward(self, *args, _original = original, **kwargs):
+            def forward(
+                self,
+                *args,
+                _original = original,
+                **kwargs,
+            ):
                 seen = ((), {}) if self.__dict__.get("_test_no_mask") else (args[1:], kwargs)
                 if note is not None:
                     note(self, *seen)
@@ -116,7 +121,16 @@ def _sizes(model):
     return sizes
 
 
-def _run(native, bc, rank, attn, graphs, switch_to = None, no_mask = (), budget_blocks = None):
+def _run(
+    native,
+    bc,
+    rank,
+    attn,
+    graphs,
+    switch_to = None,
+    no_mask = (),
+    budget_blocks = None,
+):
     os.environ["UNSLOTH_BLOCK_CUDAGRAPHS"] = "1" if graphs else "0"
     bc._COMPILE_OPTIONS["triton.cudagraphs"] = graphs  # read at import, as _block_compile does
     model = _build(attn)
@@ -143,7 +157,9 @@ def _run(native, bc, rank, attn, graphs, switch_to = None, no_mask = (), budget_
             opt.zero_grad(set_to_none = True)
             losses.append(float(loss.detach()))
             sizes.append(_sizes(model))
-        off = [bool(layer.__dict__.get("_unsloth_block_graphs_off")) for layer in model.model.layers]
+        off = [
+            bool(layer.__dict__.get("_unsloth_block_graphs_off")) for layer in model.model.layers
+        ]
         return {"losses": losses, "sizes": sizes, "graphs_off": off}
     finally:
         for cls, original in restore.items():
@@ -171,7 +187,6 @@ def _worker(rank, world, port, out, path):
         out.put("ok")
     except Exception as exc:
         import traceback
-
         out.put({"error": f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"})
     finally:
         os.environ.pop("UNSLOTH_BLOCK_CUDAGRAPHS", None)
