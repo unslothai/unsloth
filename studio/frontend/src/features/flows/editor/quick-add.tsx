@@ -1,15 +1,23 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { HugeiconsIcon } from "@hugeicons/react";
-import { Command } from "cmdk";
+import {
+  Command,
+  CommandEmpty,
+  CommandInput,
+  CommandItem,
+  CommandList,
+  CommandShortcut,
+} from "@/components/ui/command";
 import { useEffect, useMemo, useRef } from "react";
 import { useCatalogStore } from "../stores/catalog-store";
 import { useUiStore } from "../stores/ui-store";
 import type { NodeSpec } from "../types";
 import { compatibleSpecs } from "./connection-rules";
 import { nodeIcon } from "./icons";
+import { NodeIconTile } from "./node-card";
 import { addNodeConnected } from "./node-factory";
+import { CATEGORY_TONES } from "./node-tones";
 
 export function QuickAdd() {
   const quickAdd = useUiStore((s) => s.quickAdd);
@@ -51,7 +59,7 @@ export function QuickAdd() {
   return (
     <div
       ref={ref}
-      className="fixed z-50 w-80 overflow-hidden rounded-xl border border-white/10 bg-zinc-900/98 text-zinc-100 shadow-2xl shadow-black/60"
+      className="fixed z-50 w-80 overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground shadow-[var(--popup-shadow)]"
       style={{ left, top }}
       data-testid="flows-quick-add"
     >
@@ -64,20 +72,19 @@ export function QuickAdd() {
           }
         }}
       >
-        <Command.Input
+        <CommandInput
           // biome-ignore lint/a11y/noAutofocus: the popover exists to type into
           autoFocus={true}
           placeholder={
             quickAdd.from ? "Add a connected node…" : "Search nodes…"
           }
-          className="w-full border-white/10 border-b bg-transparent px-3 py-2.5 text-sm outline-none placeholder:text-zinc-500"
         />
-        <Command.List className="max-h-80 overflow-y-auto p-1">
-          <Command.Empty className="px-3 py-6 text-center text-xs text-zinc-500">
+        <CommandList className="max-h-80">
+          <CommandEmpty className="text-xs text-muted-foreground">
             No matching nodes
-          </Command.Empty>
+          </CommandEmpty>
           {options.map(({ spec, port }) => (
-            <Command.Item
+            <CommandItem
               key={spec.type}
               value={`${spec.title} ${spec.type} ${spec.category} ${spec.description}`}
               onSelect={() => {
@@ -89,21 +96,20 @@ export function QuickAdd() {
                 );
                 setQuickAdd(null);
               }}
-              className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-[13px] aria-selected:bg-white/10"
+              className="cursor-pointer px-2 py-1.5"
             >
-              <HugeiconsIcon
+              <NodeIconTile
                 icon={nodeIcon(spec.icon)}
-                size={15}
-                strokeWidth={1.8}
-                style={{ color: categories[spec.category]?.color }}
+                tone={CATEGORY_TONES[spec.category]}
+                accent={categories[spec.category]?.color}
               />
               <span className="flex-1 truncate">{spec.title}</span>
-              <span className="text-[10px] text-zinc-500">
+              <CommandShortcut className="tracking-normal">
                 {categories[spec.category]?.title ?? spec.category}
-              </span>
-            </Command.Item>
+              </CommandShortcut>
+            </CommandItem>
           ))}
-        </Command.List>
+        </CommandList>
       </Command>
     </div>
   );
