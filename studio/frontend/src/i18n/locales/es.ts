@@ -4275,8 +4275,6 @@ export const es = {
       preparingResources: "> Preparando modelo y conjunto de datos...",
       gettingReady:
         "> Estamos dejando todo listo para tu ejecución...",
-      waitingForFirstStep:
-        "> {message} | esperando el primer paso... ({step})",
       resumingTraining: "Reanudando entrenamiento...",
       startingTraining: "iniciando entrenamiento...",
       dataset: "Conjunto de datos",

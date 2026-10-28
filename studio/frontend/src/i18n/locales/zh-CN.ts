@@ -4105,7 +4105,6 @@ export const zhCN = {
       terminalStart: "> Unsloth 训练开始...",
       preparingResources: "> 正在准备模型和数据集...",
       gettingReady: "> 正在为本次运行做好准备...",
-      waitingForFirstStep: "> {message} | 正在等待首个训练步...（{step}）",
       resumingTraining: "正在继续训练...",
       startingTraining: "正在开始训练...",
       dataset: "数据集",

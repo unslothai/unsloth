@@ -4323,7 +4323,6 @@ export const he = {
       terminalStart: "> אימון unsloth מתחיל...",
       preparingResources: "> מכין מודל ומערך נתונים...",
       gettingReady: "> מכינים הכל לקראת ההרצה שלך...",
-      waitingForFirstStep: "> {message} | ממתין לצעד ראשון... ({step})",
       resumingTraining: "מחדש אימון...",
       startingTraining: "מתחיל אימון...",
       dataset: "מערך נתונים",

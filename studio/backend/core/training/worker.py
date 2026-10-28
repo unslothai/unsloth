@@ -5542,6 +5542,9 @@ def _create_embedding_progress_callback(
     """TrainerCallback that reports embedding training progress to the parent. ``should_stop`` is
     polled in on_train_begin and on_step_end, so a stop signal arriving mid-run is seen."""
     from transformers import TrainerCallback
+    from core.training.startup_progress import TrainingStartupProgress
+
+    startup = TrainingStartupProgress()
 
     class _EmbeddingProgressCallback(TrainerCallback):
         _start_step = 0
@@ -5551,10 +5554,17 @@ def _create_embedding_progress_callback(
             self._start_step = state.global_step
             if state.global_step > 0:
                 self._training_start_time = time.time()
-            # Progress events carry an empty status, else the parent keeps showing "Starting...".
             if should_stop():
                 return
-            _send_status(event_queue, "Training in progress...")
+            _send_status(event_queue, startup.begin(args, state))
+
+        def on_step_begin(self, args, state, control, **kwargs):
+            if not should_stop() and (message := startup.step_begin()):
+                _send_status(event_queue, message)
+
+        def on_substep_end(self, args, state, control, **kwargs):
+            if not should_stop() and (message := startup.substep_end()):
+                _send_status(event_queue, message)
 
         def on_log(
             self,
@@ -5605,7 +5615,7 @@ def _create_embedding_progress_callback(
                     "grad_norm": logs.get("grad_norm"),
                     "num_tokens": getattr(state, "num_input_tokens_seen", None),
                     "eval_loss": logs.get("eval_loss"),
-                    "status_message": "",
+                    "status_message": "" if should_stop() else startup.log(logs) or "",
                     "ts": time.time(),
                 }
             )
@@ -5615,6 +5625,8 @@ def _create_embedding_progress_callback(
                 logger.info("Embedding training: stop at step %d", state.global_step)
                 control.should_training_stop = True
                 return control
+            if message := startup.step_end(state):
+                _send_status(event_queue, message)
 
     return _EmbeddingProgressCallback()
 

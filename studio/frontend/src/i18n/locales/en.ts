@@ -4256,7 +4256,6 @@ export const en = {
       terminalStart: "> unsloth training starts...",
       preparingResources: "> Preparing model and dataset...",
       gettingReady: "> We are getting everything ready for your run...",
-      waitingForFirstStep: "> {message} | waiting for first step... ({step})",
       resumingTraining: "Resuming training...",
       startingTraining: "starting training...",
       dataset: "Dataset",

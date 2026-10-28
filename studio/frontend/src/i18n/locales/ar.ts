@@ -4203,7 +4203,6 @@ export const ar = {
       terminalStart: "> يبدأ تدريب Unsloth...",
       preparingResources: "> جارٍ تحضير النموذج ومجموعة البيانات...",
       gettingReady: "> نُجهّز كل شيء لعملية التدريب...",
-      waitingForFirstStep: "> {message} | في انتظار الخطوة الأولى... ({step})",
       resumingTraining: "جارٍ استئناف التدريب...",
       startingTraining: "جارٍ بدء التدريب...",
       dataset: "مجموعة البيانات",
