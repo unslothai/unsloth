@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""xformers' grouped (5-D, GQA) forward follows the current CUDA device, not the tensors' device.
-
-With a device_map that puts layers on a second card, every no-grad forward of such a layer (eval,
-the GRPO / DPO reference forward, the forward of a reentrant gradient checkpoint) ran the grouped
-layout with the current device still cuda:0 and returned wrong attention, then NaN loss. The
-xformers call now runs with the tensors' card as the current device."""
+"""xformers' grouped (5-D, GQA) forward follows the current CUDA device, not the tensors'."""
 
 import contextlib
 
@@ -48,7 +43,6 @@ def test_guard_is_a_noop_on_the_current_device(monkeypatch):
 
 
 def test_run_attention_calls_xformers_on_the_tensor_device(monkeypatch):
-    """The dispatcher itself, not only the helper: the xformers call sees Q's card as current."""
     if not torch.cuda.is_available() or torch.cuda.device_count() < 2 or ad.xformers is None:
         pytest.skip("needs 2 CUDA devices and xformers")
     seen = []

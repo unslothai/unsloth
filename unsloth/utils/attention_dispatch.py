@@ -402,9 +402,7 @@ def _xformers_rejects_fp32(device) -> bool:
 
 
 def _on_tensor_device(X):
-    """Make X's card the current device for an xformers call. Its grouped (5-D, GQA) forward reads
-    the current device rather than the tensors', so a device_map layer on another card got wrong
-    attention (NaN loss in every no-grad forward). A no-op when X is already on the current card."""
+    """xformers' grouped (5-D) forward uses the current device, not X's: wrong attention / NaN under device_map."""
     if (
         DEVICE_TYPE in ("cuda", "hip")
         and X.is_cuda
