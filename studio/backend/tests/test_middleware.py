@@ -1038,8 +1038,6 @@ class TestFrontendAssets:
         assert mounted.state.frontend_mounted is True
 
     def test_assets_mount_is_matched_before_the_api_routes(self, tmp_path, main_module):
-        """An asset request no longer walks every API route before reaching its mount; what it
-        gets back, and what the API and SPA routes answer, is unchanged."""
         from fastapi.routing import APIRoute
         from starlette.routing import Mount
 
@@ -1060,7 +1058,6 @@ class TestFrontendAssets:
         )
         api_at = [i for i, r in enumerate(routes) if isinstance(r, APIRoute)]
         assert mount_at < min(api_at)
-        # The SPA catch-all still comes last, so it only answers what nothing else claims.
         assert routes[-1].path == "/{full_path:path}"
 
         client = TestClient(app, base_url = "http://127.0.0.1:8888", client = ("127.0.0.1", 40000))
@@ -1076,7 +1073,7 @@ class TestFrontendAssets:
     def test_a_second_setup_frontend_keeps_the_first_assets_mount_winning(
         self, tmp_path, main_module
     ):
-        """Embedded hosts can rerun run_server on one app; the first mount answered before and still does."""
+        """Embedded hosts rerun run_server on one app; the first /assets mount still wins."""
         first, second = tmp_path / "first", tmp_path / "second"
         for root, body in ((first, "first"), (second, "second")):
             (root / "assets").mkdir(parents = True)

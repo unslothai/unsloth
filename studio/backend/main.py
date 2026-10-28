@@ -3143,13 +3143,9 @@ class _TunnelOnlyFrontend:
 
 
 def _match_assets_before_api_routes(app: FastAPI) -> None:
-    """Move the /assets mount `app.mount` just appended ahead of the API routes.
+    """Move the just-appended /assets mount ahead of the API routes, behind any earlier /assets mount.
 
-    Routes match in order, so an asset request used to be tested against every API route first,
-    about half the cost of serving it, and a cold page load fetches over a hundred. No API route
-    starts with /assets/, so only asset requests match differently. An /assets mount from an
-    earlier call stays in front and keeps winning, as before.
-    """
+    No API route matches /assets/..., so only asset requests change: they stop walking every API route."""
     from starlette.routing import Mount
 
     routes = app.router.routes
