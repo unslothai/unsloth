@@ -41,43 +41,128 @@ def _checkpoint_sort_key(checkpoint_path: Path) -> tuple[int, int, str]:
     return (1, 0, str(checkpoint_path))
 
 
-def _infer_base_model_from_history(checkpoint_dir: Path) -> Optional[str]:
-    """Best-effort base-model lookup using persisted Unsloth run metadata."""
+class _HistoryRows:
+    """One scan's view of the run history: one connection, each query run and each config parsed at most once."""
+
+    _FAILED = object()
+
+    def __init__(self) -> None:
+        self._conn = None
+        self._suffix_rows: Optional[list] = None
+        self._generated_rows: Optional[list] = None
+        self._project_names: dict = {}
+
+    def connection(self):
+        # A failed open is retried by the next run, as each run opened its own connection before.
+        if self._conn is None:
+            self._conn = get_connection()
+        return self._conn
+
+    def suffix_rows(self) -> list:
+        if self._suffix_rows is None:
+            self._suffix_rows = (
+                self.connection()
+                .execute(
+                    """
+                SELECT model_name, output_dir, started_at
+                FROM training_runs
+                WHERE output_dir IS NOT NULL
+                ORDER BY started_at DESC
+                """
+                )
+                .fetchall()
+            )
+        return self._suffix_rows
+
+    def generated_rows(self) -> list:
+        if self._generated_rows is None:
+            self._generated_rows = (
+                self.connection()
+                .execute(
+                    """
+                SELECT model_name, config_json
+                FROM training_runs
+                ORDER BY started_at DESC
+                """
+                )
+                .fetchall()
+            )
+        return self._generated_rows
+
+    def project_name(self, index: int, config_json) -> Optional[str]:
+        cached = self._project_names.get(index, self._FAILED)
+        if cached is self._FAILED:
+            project_name = None
+            if config_json:
+                try:
+                    project_name = extract_project_name(json.loads(config_json))
+                except (TypeError, json.JSONDecodeError):
+                    project_name = None
+            self._project_names[index] = cached = project_name
+        return cached
+
+    def close(self) -> None:
+        if self._conn is not None:
+            conn, self._conn = self._conn, None
+            conn.close()
+
+
+def _infer_base_model_from_history(
+    checkpoint_dir: Path, history: Optional[_HistoryRows] = None
+) -> Optional[str]:
+    """Best-effort base-model lookup using persisted Unsloth run metadata.
+
+    ``history`` shares one connection and its rows across a scan; without it the lookup opens and closes its own."""
+    if history is None:
+        history = _HistoryRows()
+        try:
+            return _infer_base_model_from_history(checkpoint_dir, history)
+        finally:
+            try:
+                history.close()
+            except Exception:
+                pass
+
     checkpoint_name = checkpoint_dir.name
     resolved_checkpoint_dir = str(checkpoint_dir.resolve())
 
     try:
-        conn = get_connection()
+        conn = history.connection()
     except Exception:
         return None
 
     try:
-        exact_rows = conn.execute(
-            """
-            SELECT model_name
-            FROM training_runs
-            WHERE output_dir IN (?, ?)
-            ORDER BY started_at DESC
-            """,
-            (
-                resolved_checkpoint_dir,
-                str(checkpoint_dir),
-            ),
-        ).fetchall()
-        for row in exact_rows:
-            model_name = row["model_name"]
-            if model_name:
-                return model_name
+        exact_dirs = (resolved_checkpoint_dir, str(checkpoint_dir))
+        # Exact matches are a subset of the suffix rows, already newest first. Only runs started at
+        # the same instant under different models leave the pick to SQLite's tie order: ask it then.
+        matches = [
+            row
+            for row in history.suffix_rows()
+            if row["output_dir"] in exact_dirs and row["model_name"]
+        ]
+        if matches:
+            newest = matches[0]
+            if all(
+                row["model_name"] == newest["model_name"]
+                for row in matches
+                if row["started_at"] == newest["started_at"]
+            ):
+                return newest["model_name"]
+            exact_rows = conn.execute(
+                """
+                SELECT model_name
+                FROM training_runs
+                WHERE output_dir IN (?, ?)
+                ORDER BY started_at DESC
+                """,
+                exact_dirs,
+            ).fetchall()
+            for row in exact_rows:
+                model_name = row["model_name"]
+                if model_name:
+                    return model_name
 
-        suffix_rows = conn.execute(
-            """
-            SELECT model_name, output_dir
-            FROM training_runs
-            WHERE output_dir IS NOT NULL
-            ORDER BY started_at DESC
-            """
-        ).fetchall()
-        for row in suffix_rows:
+        for row in history.suffix_rows():
             output_dir = str(row["output_dir"] or "").rstrip("/\\")
             if not (
                 output_dir.endswith(f"/{checkpoint_name}")
@@ -93,37 +178,27 @@ def _infer_base_model_from_history(checkpoint_dir: Path) -> Optional[str]:
             return None
 
         timestamp = int(parts[1])
-        generated_rows = conn.execute(
-            """
-            SELECT model_name, config_json
-            FROM training_runs
-            ORDER BY started_at DESC
-            """
-        ).fetchall()
-        for row in generated_rows:
+        # The name depends only on (model, project) for this timestamp, and most runs share a few pairs.
+        expected_names: dict = {}
+        for index, row in enumerate(history.generated_rows()):
             model_name = row["model_name"]
             if not model_name:
                 continue
 
-            project_name = None
-            config_json = row["config_json"]
-            if config_json:
-                try:
-                    project_name = extract_project_name(json.loads(config_json))
-                except (TypeError, json.JSONDecodeError):
-                    project_name = None
+            project_name = history.project_name(index, row["config_json"])
 
-            expected_dir_name = build_default_output_dir_name(
-                model_name,
-                project_name,
-                timestamp = timestamp,
-            )
+            key = (model_name, project_name)
+            expected_dir_name = expected_names.get(key)
+            if expected_dir_name is None:
+                expected_dir_name = expected_names[key] = build_default_output_dir_name(
+                    model_name,
+                    project_name,
+                    timestamp = timestamp,
+                )
             if expected_dir_name == checkpoint_name:
                 return model_name
     except Exception:
         return None
-    finally:
-        conn.close()
 
     return None
 
@@ -257,6 +332,19 @@ def scan_checkpoints(
     """
     if outputs_dir is None:
         outputs_dir = str(outputs_root())
+    history = _HistoryRows()
+    try:
+        return _scan_checkpoints(outputs_dir, include_decision, history)
+    finally:
+        try:
+            history.close()
+        except Exception:
+            pass
+
+
+def _scan_checkpoints(
+    outputs_dir: str, include_decision: bool, history: _HistoryRows
+) -> List[Tuple[str, List[Tuple[str, str, Optional[float]]], dict]]:
     models = []
     outputs_path = resolve_output_dir(outputs_dir)
 
@@ -319,7 +407,7 @@ def scan_checkpoints(
 
             # Fallback: "unsloth_Llama-3.2-3B-Instruct_1771227800" -> "unsloth/Llama-3.2-3B-Instruct".
             if not metadata.get("base_model"):
-                metadata["base_model"] = _infer_base_model_from_history(item)
+                metadata["base_model"] = _infer_base_model_from_history(item, history)
 
             if not metadata.get("base_model"):
                 name_part = model_segment_from_default_output_dir_name(item.name)
