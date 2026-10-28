@@ -125,13 +125,6 @@ def _lora_dropout_p(
     return p if p < 1 else None
 
 
-def _lora_B_bias(proj):
-    adapter = _active_lora_adapter(proj)
-    if adapter is None:
-        return None
-    return proj.lora_B[adapter].bias
-
-
 def lora_bias_blocks_fused(proj):
     return not FUSED_LORA_BIAS and _has_active_lora_bias(proj)
 
