@@ -655,19 +655,87 @@ def _batch_key(entry: _Queued) -> Optional[tuple]:
 
 
 _MOE_COUNT_KEYS = ("num_experts", "n_routed_experts", "num_local_experts")
+# Fused-expert MoE families the batched trainer runs (multi_lora_trainer.BATCHED_MOE_MODEL_TYPES); transformers 4.x
+# holds their experts as per-expert Linears, which train alone.
+_BATCHED_MOE_TYPES = frozenset({"qwen3_moe", "qwen3_5_moe", "qwen3_5_moe_text"})
+# State-space and convolution mixers: their recurrent state and conv windows are not checked batched. Gated DeltaNet
+# (Qwen3.5 / Qwen3-Next "linear_attention" layers) is, and is not matched here.
+_SSM_MODEL_TYPES = frozenset(
+    {
+        "mamba",
+        "mamba2",
+        "falcon_mamba",
+        "falcon_h1",
+        "jamba",
+        "zamba",
+        "zamba2",
+        "nemotron_h",
+        "bamba",
+        "granitemoehybrid",
+        "lfm2",
+        "lfm2_moe",
+        "lfm2_vl",
+        "plamo2",
+        "hymba",
+        "mamba_ssm",
+    }
+)
+_SSM_LAYER_TYPES = ("mamba", "ssm", "conv", "mamba2")
+_SSM_KEYS = (
+    "ssm_state_size",
+    "mamba_d_state",
+    "mamba_n_heads",
+    "mamba_d_conv",
+    "state_size",
+    "conv_L_cache",
+)
+
+
+def _configs(config: dict) -> list[dict]:
+    return [c for c in (config, config.get("text_config") or {}) if isinstance(c, dict) and c]
 
 
 def _moe_config(config: dict) -> bool:
-    for cfg in (config, config.get("text_config") or {}):
+    for cfg in _configs(config):
         count = next((cfg[k] for k in _MOE_COUNT_KEYS if cfg.get(k) is not None), None)
         if count is not None:
             return isinstance(count, int) and count > 0
     return False
 
 
+def _moe_batches(config: dict) -> bool:
+    import transformers
+    configs = _configs(config)
+    return (
+        int(transformers.__version__.split(".")[0]) >= 5
+        and any(c.get("model_type") in _BATCHED_MOE_TYPES for c in configs)
+        and not any(c.get("output_router_logits") for c in configs)
+    )
+
+
+def _ssm_config(config: dict) -> bool:
+    for cfg in _configs(config):
+        if cfg.get("model_type") in _SSM_MODEL_TYPES:
+            return True
+        kinds = (
+            cfg.get("layer_types")
+            or cfg.get("layers_block_type")
+            or cfg.get("hybrid_override_pattern")
+        )
+        if isinstance(kinds, str):
+            kinds = [kinds]
+        if isinstance(kinds, (list, tuple)) and any(
+            isinstance(k, str) and any(tag in k.lower() for tag in _SSM_LAYER_TYPES) for k in kinds
+        ):
+            return True
+        if any(cfg.get(k) is not None for k in _SSM_KEYS):
+            return True
+    return False
+
+
 async def _trains_alone(request: TrainingStartRequest) -> bool:
     """Outside what the batched trainer runs: text-diffusion models (own denoising objective), saved LoRA
-    adapters (continued in place alone) and MoE models (fused experts train via target_parameters alone)."""
+    adapters (continued in place alone), state-space / conv mixers, and MoE layouts it has no expert LoRA for."""
     from utils.models.diffusion_lm import diffusion_lm_profile_for_model
     from utils.models.model_config import _read_raw_config_json, get_base_model_from_lora_identifier
 
@@ -680,7 +748,9 @@ async def _trains_alone(request: TrainingStartRequest) -> bool:
             config = _read_raw_config_json(request.model_name, request.hf_token)
         except Exception:
             return True
-        return config is None or _moe_config(config)
+        if config is None or _ssm_config(config):
+            return True
+        return _moe_config(config) and not _moe_batches(config)
 
     return await asyncio.to_thread(probe)
 
