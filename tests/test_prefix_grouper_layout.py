@@ -203,17 +203,24 @@ def test_cuda_layout_reads_the_device_once_and_copies_once():
     ref = pg._build_group_layout_reference(ids, 128, 0, 8, lp)
     got = pg.build_group_layout(ids, 128, 0, 8, lp)
     _assert_same(ref, got)
-    torch.cuda.synchronize()
-    with warnings.catch_warnings(record = True) as caught:
-        warnings.simplefilter("always")
-        torch.cuda.set_sync_debug_mode("warn")
-        try:
-            pg.build_group_layout(ids, 128, 0, 8, lp)
-        finally:
-            torch.cuda.set_sync_debug_mode(0)
-    syncs = [w for w in caught if "synchroniz" in str(w.message).lower()]
-    # one device to host read of the ids + one host to device copy of the index tables
-    assert len(syncs) <= 2, [str(w.message) for w in syncs]
+
+    def syncs(fn):
+        torch.cuda.synchronize()
+        with warnings.catch_warnings(record = True) as caught:
+            warnings.simplefilter("always")
+            torch.cuda.set_sync_debug_mode("warn")
+            try:
+                fn(ids, 128, 0, 8, lp)
+            finally:
+                torch.cuda.set_sync_debug_mode(0)
+        # Count the per-operation reports, not set_sync_debug_mode's "prototype feature" notice.
+        return [str(w.message) for w in caught if "called a synchronizing" in str(w.message)]
+
+    # The counter sees the token-by-token build's reads (cstart, ids, contiguity, ...).
+    assert len(syncs(pg._build_group_layout_reference)) > 2
+    # One device to host read of the ids + one host to device copy of the index tables.
+    got_syncs = syncs(pg.build_group_layout)
+    assert len(got_syncs) <= 2, got_syncs
 
 
 def _outcome(fn, *args, **kwargs):
