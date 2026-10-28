@@ -720,9 +720,18 @@ class MultiLoraExpertParam(nn.Module):
     def num_adapters(self) -> int:
         return len(self.lora_A)
 
-    def grouped_mm_factors(self, adapter: int) -> tuple:
-        """Zoo's stash format: (first (E, in, r), second (E, r, out), scaling, E), delta = X @ first @ second."""
+    def grouped_mm_factors(
+        self,
+        adapter: int,
+        reversed_io: bool = False,
+    ) -> tuple:
+        """Zoo's stash format: (first (E, in, r), second (E, r, out), scaling, E), delta = X @ first @ second.
+
+        ``reversed_io``: input-major experts PEFT reads as (E, out, in); Zoo's extractor then takes lora_B as the
+        input side and lora_A as the output side (_reversed_lora_weights_for_grouped_mm)."""
         A, B = self.lora_A[adapter], self.lora_B[adapter]
+        if reversed_io:
+            return B.contiguous(), A.contiguous(), self.scales[adapter], self.num_experts
         return (
             A.transpose(1, 2).contiguous(),
             B.transpose(1, 2).contiguous(),
@@ -810,6 +819,10 @@ class MultiLoraExperts(nn.Module):
             p.requires_grad_(False)
         self.parameter_names = tuple(parameter_names)
         self.transposed = bool(getattr(base, "is_transposed", False))
+        # Shapes follow PEFT (which ignores this flag), the stash follows Zoo's extractor.
+        self.reversed_io = not self.transposed and bool(
+            getattr(base, "_unsloth_grouped_mm_format", False)
+        )
         self.adapters = nn.ModuleDict()
         for name in self.parameter_names:
             param = getattr(base, name)
@@ -838,7 +851,11 @@ class MultiLoraExperts(nn.Module):
             return None
         for name in self.parameter_names:
             store.pop(name, None)
-            setattr(base, _stash_name(name), self.adapters[name].grouped_mm_factors(adapter))
+            setattr(
+                base,
+                _stash_name(name),
+                self.adapters[name].grouped_mm_factors(adapter, self.reversed_io),
+            )
         try:
             out = base(*args)
         finally:
