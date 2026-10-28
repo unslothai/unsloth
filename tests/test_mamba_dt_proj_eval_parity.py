@@ -135,6 +135,9 @@ def _install_legacy_reference_ops(monkeypatch, arch):
         "selective_scan_fn": _selective_scan_ref,
         "selective_state_update": _selective_state_update_ref,
         "_lazy_load_causal_conv1d": lambda: (_causal_conv1d_update_ref, _causal_conv1d_ref),
+        # transformers < 4.56 binds the causal_conv1d ops as module globals instead of lazily.
+        "causal_conv1d_fn": _causal_conv1d_ref,
+        "causal_conv1d_update": _causal_conv1d_update_ref,
     }
     for name, fn in ops.items():
         monkeypatch.setattr(modeling, name, fn, raising = False)
