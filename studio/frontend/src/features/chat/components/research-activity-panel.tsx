@@ -33,18 +33,17 @@ import { RefreshGlyph } from "@/lib/refresh-icon";
 import { FileGlyph } from "@/lib/file-icon";
 import {
   DashedLineCircleIcon as CircleDashedIcon,
+  Delete02Icon,
   Telescope02Icon,
+  LinkSquare02Icon,
+  Edit03Icon,
+  PlusSignIcon,
+  Cancel01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   ArrowDown,
-  ArrowUp,
-  Check,
-  ExternalLink,
-  Pencil,
-  Plus,
-  Trash2,
-  X,
+  ArrowUpIcon,
 } from "lucide-react";
 import {
   useCallback,
@@ -72,6 +71,7 @@ import {
   useResearchRunStore,
 } from "../stores/research-run-store";
 import type { ResearchRunStatus } from "../types/research";
+import { Tick02Icon } from "@/lib/tick-icon";
 
 const terminalStatuses = new Set<ResearchRunStatus>([
   "completed",
@@ -80,8 +80,7 @@ const terminalStatuses = new Set<ResearchRunStatus>([
 ]);
 const ACTIVITY_FOLLOW_SETTLE_MS = 450;
 const ACTIVITY_BOTTOM_THRESHOLD_PX = 24;
-// 2px, not 1, matching use-intent-aware-autoscroll: HiDPI subpixel rounding leaves a fractional
-// gap that a 1px threshold reads as unpinned, keeping the follow loop running forever.
+// 2px, matching use-intent-aware-autoscroll: HiDPI subpixel gaps break a 1px threshold.
 const ACTIVITY_PINNED_THRESHOLD_PX = 2;
 
 function useResearchActivityScroll(runId: string) {
@@ -101,7 +100,6 @@ function useResearchActivityScroll(runId: string) {
     let animationFrame: number | null = null;
     let settleTimer: number | null = null;
     let settleCheckDue = false;
-    // Layout signal since the last frame. True so the first frame after mount follows.
     let layoutChanged = true;
 
     const distanceFromBottom = () =>
@@ -114,16 +112,13 @@ function useResearchActivityScroll(runId: string) {
     const requestTick = () => {
       if (animationFrame === null) animationFrame = requestAnimationFrame(tick);
     };
-    // A reflow with no DOM mutation (a `font-display: swap` webfont landing, say) reaches neither
-    // observer, so the rest of the window is covered by one deferred check rather than every frame.
+    // Reflows without DOM mutation (webfont swap) reach no observer; one deferred check covers them.
     const scheduleSettleCheck = () => {
       if (settleTimer !== null) return;
       const remaining = followUntil - performance.now();
       if (remaining <= 0) return;
       settleTimer = window.setTimeout(() => {
         settleTimer = null;
-        // The timer lands on the deadline and its tick a frame later, so the window has closed by then;
-        // this grants that tick one last follow pass rather than dropping it to the reconcile.
         settleCheckDue = true;
         requestTick();
       }, remaining);
@@ -136,8 +131,7 @@ function useResearchActivityScroll(runId: string) {
         const pinned = distanceFromBottom() <= ACTIVITY_PINNED_THRESHOLD_PX;
         if (!pinned) element.scrollTop = element.scrollHeight;
         updateAtBottom(true);
-        // Chaining on the window alone forced a layout every frame for the whole run; growth that leaves
-        // the view unpinned is the signal, and a quiet frame defers to the settle check.
+        // Only chain while layout changed or unpinned; chaining every frame forced constant layout.
         if (layoutChanged || !pinned) {
           layoutChanged = false;
           requestTick();
@@ -157,10 +151,7 @@ function useResearchActivityScroll(runId: string) {
     const detach = () => {
       detached = true;
       followUntil = 0;
-      // Cancel every pending follow step, not just the settle check. A frame queued before the detach
-      // still runs, falls through to the reconcile below, and reads a flick shorter than the bottom
-      // threshold as still-at-bottom: "Latest" never appears and nothing corrects it.
-      // followLayout returns early from here on, so nothing corrects it.
+      // Cancel every pending follow step: a queued frame would misread a short flick as at-bottom.
       if (animationFrame !== null) {
         cancelAnimationFrame(animationFrame);
         animationFrame = null;
@@ -317,7 +308,7 @@ function ActivityIcon({
   const className = "size-3.5";
   if (activity.state === "running") return <Spinner className={className} />;
   if (activity.state === "failed")
-    return <X className={cn(className, "text-destructive")} />;
+    return <HugeiconsIcon icon={Cancel01Icon} className={cn(className, "text-destructive")} />;
   if (activity.state === "cancelled")
     return (
       <HugeiconsIcon
@@ -331,7 +322,7 @@ function ActivityIcon({
   if (activity.kind === "report") return <FileGlyph className={className} />;
   if (activity.action === "fetch" || activity.action === "search")
     return <InternetGlyph className={className} />;
-  return <Check className={className} />;
+  return <HugeiconsIcon icon={Tick02Icon} className={className} />;
 }
 
 const ActivityRow = memo(function ActivityRow({
@@ -452,7 +443,7 @@ const ActivityRow = memo(function ActivityRow({
               </span>
             ) : null}
           </span>
-          <ExternalLink className="mt-0.5 size-3 opacity-0 transition-opacity group-hover/source:opacity-100" />
+          <HugeiconsIcon icon={LinkSquare02Icon} className="mt-0.5 size-3 opacity-0 transition-opacity group-hover/source:opacity-100" />
         </button>
       ))}
       {activity.evidenceSources?.map((source) => (
@@ -648,7 +639,7 @@ function PlanReview({ runId }: { runId: string }): ReactElement | null {
                         disabled={index === 0}
                         aria-label={`Move step ${index + 1} up`}
                       >
-                        <ArrowUp />
+                        <ArrowUpIcon />
                       </Button>
                       <Button
                         variant="ghost"
@@ -676,7 +667,7 @@ function PlanReview({ runId }: { runId: string }): ReactElement | null {
                         }}
                         aria-label={`Remove step ${index + 1}`}
                       >
-                        <Trash2 />
+                        <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} />
                       </Button>
                     </div>
                     <Textarea
@@ -721,7 +712,7 @@ function PlanReview({ runId }: { runId: string }): ReactElement | null {
                     });
                   }}
                 >
-                  <Plus /> Add step
+                  <HugeiconsIcon icon={PlusSignIcon} /> Add step
                 </Button>
               </div>
             ) : (
@@ -760,7 +751,7 @@ function PlanReview({ runId }: { runId: string }): ReactElement | null {
               variant="outline"
               onClick={() => setEditing(runId, !editing)}
             >
-              <Pencil /> {editing ? "Preview plan" : "Edit plan"}
+              <HugeiconsIcon icon={Edit03Icon} /> {editing ? "Preview plan" : "Edit plan"}
             </Button>
             <div className="flex flex-col-reverse gap-2 sm:flex-row">
               <Button variant="ghost" onClick={() => setOpen(runId, false)}>
@@ -951,7 +942,7 @@ export function ResearchActivityPanel({
             onClick={onClose}
             aria-label="Close research activity"
           >
-            <X />
+            <HugeiconsIcon icon={Cancel01Icon} />
           </Button>
         </div>
         {session.connection === "reconnecting" ? (

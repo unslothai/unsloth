@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useNativeFileDrop } from "@/features/native-intents/use-native-file-drop";
+import { useTheme } from "@/features/settings/stores/theme-store";
 import {
   Background,
   BackgroundVariant,
@@ -79,10 +80,10 @@ function portTypeOf(edge: FlowEdge): string {
 }
 
 function minimapColor(node: RfNode): string {
-  if (node.type !== "flowNode") return "#27272a";
+  if (node.type !== "flowNode") return "var(--muted)";
   const doc = useDocStore.getState().graph.nodes[node.id];
   const spec = doc ? getSpec(doc.type) : undefined;
-  return spec ? categoryColor(spec.category) : "#52525b";
+  return spec ? categoryColor(spec.category) : "var(--muted-foreground)";
 }
 
 function insideRect(
@@ -124,6 +125,7 @@ function groupMembership(
 }
 
 export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
+  const colorMode = useTheme().resolved;
   const graph = useDocStore((s) => s.graph);
   const selectedNodes = useUiStore((s) => s.selectedNodes);
   const selectedEdges = useUiStore((s) => s.selectedEdges);
@@ -500,29 +502,29 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
         onlyRenderVisibleElements={nodes.length > VISIBLE_ONLY_THRESHOLD}
         nodesDraggable={!readOnly}
         nodesConnectable={!readOnly}
-        colorMode="dark"
+        colorMode={colorMode}
         proOptions={PRO_OPTIONS}
         fitView={true}
         fitViewOptions={FIT_VIEW_OPTIONS}
-        className="flows-canvas bg-zinc-950"
+        className="flows-canvas bg-background"
       >
         <Background
           variant={BackgroundVariant.Dots}
           gap={20}
           size={1.2}
-          color="#3f3f46"
+          color="color-mix(in oklab, var(--foreground) 28%, transparent)"
         />
         <MiniMap
           pannable={true}
           zoomable={true}
           nodeColor={minimapColor}
           nodeStrokeWidth={0}
-          maskColor="rgba(9,9,11,0.7)"
-          className="!rounded-lg !border !border-white/10 !bg-zinc-900"
+          maskColor="color-mix(in oklab, var(--background) 70%, transparent)"
+          className="!rounded-lg !border !border-border !bg-card"
         />
         <Controls
           showInteractive={false}
-          className="!rounded-lg !border !border-white/10 !shadow-none"
+          className="!rounded-lg !border !border-border !shadow-none"
         />
         <SelectedNodeToolbar readOnly={readOnly} />
       </ReactFlow>

@@ -145,12 +145,20 @@ def mxfp4_packed_matmul(
 def _mxfp4_packed_matmul(x, packed, scale, transpose, out, bias):
     rows = x.numel() // x.shape[-1] if x.shape[-1] else 0
     # dX (transpose) stays on decode + cuBLAS: the fused kernel only wins it for a few wide shapes.
-    if not transpose and _zoo_mxfp4_matmul is not None and rows <= _FUSED_MAX_ROWS and x.is_cuda:
-        if mxfp4_gemm_available(x.device, x.dtype):
+    if _zoo_mxfp4_matmul is not None and rows <= _FUSED_MAX_ROWS and x.is_cuda:
+        fused = mxfp4_gemm_available(x.device, x.dtype)
+        if fused and not transpose:
             return _zoo_mxfp4_matmul(x, packed, scale, trans = transpose, out = out, bias = bias)
-        if _zoo_mxfp4_kernel_verified is not None and _zoo_mxfp4_kernel_verified(x.device, x.dtype):
+        if (
+            not fused
+            and _zoo_mxfp4_kernel_verified is not None
+            and _zoo_mxfp4_kernel_verified(x.device, x.dtype)
+        ):
             # Below sm_80 decode + cuBLAS beats the tile kernel, but only the tile kernel never builds the
-            # 16-bit weight: decode in chunks of output rows when the weight does not fit.
+            # 16-bit weight: decode in chunks of weight rows when the weight does not fit. dX (the backward of
+            # such a forward) is bounded the same way.
+            if transpose:
+                return _bounded_dense_matmul_t(x, packed, scale, out)
             return _bounded_dense_matmul(x, packed, scale, out, bias)
     weight = dequantize_mxfp4_packed(packed, scale, x.dtype)
     if transpose:
@@ -271,7 +279,60 @@ def _bounded_dense_matmul_eager(
         state[0] = step * row_bytes // 2
 
 
+def _bounded_dense_matmul_t_eager(
+    x,
+    packed,
+    scale,
+    out = None,
+):
+    """``x @ W`` (the dX of ``x @ W^T``) under the same budget as ``_bounded_dense_matmul_eager``: the whole W
+    when it allocates, else row chunks of W whose products are summed in fp32, else the tile kernel."""
+    N, half = packed.shape
+    K = half * 2
+    dtype, device = x.dtype, x.device
+    row_bytes = K * x.element_size()
+    key = device.index
+    state = _DENSE_BUDGET.get(key)
+    if state is not None:
+        state[1] -= 1
+        if state[1] <= 0:
+            _DENSE_BUDGET.pop(key, None)
+            state = None
+    if state is None or N * row_bytes <= state[0]:
+        try:
+            weight = torch.empty((N, K), dtype = dtype, device = device)
+            weight = dequantize_mxfp4_packed(packed, scale, dtype, out = weight)
+            return torch.matmul(x, weight, out = out)
+        except torch.cuda.OutOfMemoryError:
+            weight = None
+        state = _DENSE_BUDGET[key] = [_free_bytes(device) // 2, _DENSE_RETRY_CALLS]
+    lead = x.shape[:-1]
+    x2 = x.reshape(-1, N)
+    # Each chunk holds its 16-bit decode and the fp32 copy the fp32 product reads.
+    chunk_row_bytes = row_bytes + K * 4
+    while True:
+        step = min(N, state[0] // chunk_row_bytes)
+        if step < _DENSE_MIN_CHUNK_ROWS:
+            return _zoo_mxfp4_matmul(x, packed, scale, trans = True, out = out)
+        try:
+            buffer = torch.empty((step, K), dtype = dtype, device = device)
+            acc = torch.zeros((x2.shape[0], K), dtype = torch.float32, device = device)
+            for r0 in range(0, N, step):
+                r1 = min(N, r0 + step)
+                weight = dequantize_mxfp4_packed(
+                    packed[r0:r1], scale[r0:r1], dtype, out = buffer[: r1 - r0]
+                )
+                # fp32 products: a 16-bit chunk product can overflow even when the sum fits.
+                acc.addmm_(x2[:, r0:r1].float(), weight.float())
+            y = acc.to(dtype).view(*lead, K)
+            return y if out is None else out.copy_(y)
+        except torch.cuda.OutOfMemoryError:
+            buffer = weight = acc = None
+        state[0] = step * chunk_row_bytes // 2
+
+
 _bounded_dense_matmul_op = None
+_bounded_dense_matmul_t_op = None
 try:
 
     @torch.library.custom_op("unsloth::mxfp4_bounded_dense_matmul", mutates_args = ())
@@ -286,6 +347,29 @@ try:
 
 except Exception:
     _bounded_dense_matmul_op = None
+try:
+
+    @torch.library.custom_op("unsloth::mxfp4_bounded_dense_matmul_t", mutates_args = ())
+    def _bounded_dense_matmul_t_op(
+        x: torch.Tensor, packed: torch.Tensor, scale: torch.Tensor
+    ) -> torch.Tensor:
+        return _bounded_dense_matmul_t_eager(x, packed, scale, None)
+
+    @_bounded_dense_matmul_t_op.register_fake
+    def _(x, packed, scale):
+        return x.new_empty((*x.shape[:-1], packed.shape[1] * 2))
+
+except Exception:
+    _bounded_dense_matmul_t_op = None
+
+
+def _bounded_dense_matmul_t(x, packed, scale, out):
+    if torch.compiler.is_compiling():
+        if _bounded_dense_matmul_t_op is None:
+            return torch.matmul(x, dequantize_mxfp4_packed(packed, scale, x.dtype), out = out)
+        y = _bounded_dense_matmul_t_op(x, packed, scale)
+        return y if out is None or out.shape != y.shape else out.copy_(y)
+    return _bounded_dense_matmul_t_eager(x, packed, scale, out)
 
 
 def _bounded_dense_matmul(x, packed, scale, out, bias):
@@ -733,8 +817,7 @@ def install_compressed_tensors_keep_packed() -> bool:
     return True
 
 
-# PEFT merge on a packed base: `weight.data += delta` would hit a throwaway decode, silently a no-op.
-# Merge densifies to an exact-decode nn.Linear (bytes kept aside); unmerging the last adapter restores them.
+# PEFT merge: weight.data += delta silently no-ops on packed base; merge densifies, unmerge restores
 
 _PACKED_STATE = "_unsloth_mxfp4_packed_state"
 

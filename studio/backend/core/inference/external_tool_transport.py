@@ -23,8 +23,7 @@ from typing import Any
 from core.inference.external_provider import ExternalProviderClient, _is_kimi_k3
 
 
-# /inference/cancel and the model-load path only set a threading.Event, so an asyncio consumer has to poll it. Same
-# interval as the Codex client's watcher.
+# The cancel paths only set a threading.Event, so poll it (same interval as the Codex client).
 _CANCEL_POLL_S = 0.05
 
 
@@ -44,10 +43,7 @@ class OAICompatTransport:
     """
 
     heals_text_tool_calls = True
-    # the client sanitizes raw upstream lines on arrival
-    # ExternalProviderClient sanitizes every raw upstream line at the point it arrives, before any translation. What it
-    # yields on top of that is this server's own synthesized frames (a provider-hosted image or web-search result),
-    # which a second pass in the loop could no longer tell apart.
+    # The client already sanitized upstream lines; what remains here is our own synthesized frames.
     sanitizes_provider_frames = True
 
     def __init__(
@@ -126,11 +122,8 @@ class OAICompatTransport:
             if truncation_line:
                 yield truncation_line
 
-        # "Resume the trailing assistant turn", so it is only ever true of the first request. Once a tool runs the
-        # conversation ends with a role="tool" result (or a role="user" no-op note), and vLLM / llama.cpp would splice
-        # the generation prompt off the end of *that* message: the model continues the tool output instead of answering
-        # it, or the chat template raises and the server 400s. Re-read the fitted tail every turn rather than replaying
-        # the flag the transport was constructed with.
+        # Re-derived each turn: a tool or user message at the end must not be resumed as an
+        # assistant turn.
         continue_final_message = bool(self._continue_final_message) and bool(
             messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "assistant"
         )
@@ -155,19 +148,7 @@ class OAICompatTransport:
     async def _cancellable(
         upstream: AsyncIterator[str], cancel_event: threading.Event
     ) -> AsyncIterator[str]:
-        """Relay ``upstream``, ending as soon as ``cancel_event`` is set.
-
-        ``stream_chat_completion`` takes no cancel_event, and /inference/cancel
-        and the model-load path only set the flag: nothing else can reach the
-        provider socket. Relying on the route closing this generator does not
-        cover them, because a closed generator is only noticed at the next yield
-        and Stop arrives while the read is parked. Without this race the read
-        stays parked until the provider emits again, so Stop keeps consuming
-        billed tokens and a model load waits behind a stalled upstream.
-        Cancelling the pending read raises inside the upstream generator at its
-        own await, which runs the ``finally`` that closes the httpx response;
-        calling aclose() here instead would hit "generator already executing".
-        """
+        """Races each read against cancel_event; do not aclose() here, it raises generator already executing."""
         iterator = upstream.__aiter__()
         watcher = asyncio.ensure_future(_await_cancel(cancel_event))
         try:
@@ -190,8 +171,7 @@ class OAICompatTransport:
                 yield line
         finally:
             watcher.cancel()
-            # The pre-existing teardown: the route or the loop closing this generator still reaches the provider stream
-            # through here.
+            # Teardown path: the route or loop closing this generator still reaches the provider stream here.
             aclose = getattr(upstream, "aclose", None)
             if aclose is not None:
                 with contextlib.suppress(RuntimeError, GeneratorExit, StopAsyncIteration):

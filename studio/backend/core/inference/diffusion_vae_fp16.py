@@ -21,10 +21,7 @@ _SCALE_LOG2 = 8
 
 
 def _scale_plan(decoder: Any) -> Optional[tuple]:
-    """(convs, norms) scaling the residual stream after ``up_blocks[0]``'s upsampler; None for other layouts.
-
-    ``(conv, divide_weight)``: unscaled input divides weight + bias, already-scaled input (shortcut, later upsamplers)
-    only bias. ``norms`` read the scaled stream, so their eps shrinks by scale**2."""
+    """Unscaled inputs divide weight and bias, scaled ones only bias; norm eps shrinks by scale squared."""
     import torch
 
     up_blocks = list(getattr(decoder, "up_blocks", None) or ())

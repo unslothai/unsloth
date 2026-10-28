@@ -614,7 +614,8 @@ def test_training_start_is_refused_while_another_holder_has_the_lease(no_lease):
         refusal = arb.lease_refusal()
         assert refusal is not None
         source = open(training.__file__, encoding = "utf-8").read()
-        start = source.index("async def start_training(")
+        # start_training and start_training_batch both run their guards through _prepare_training_request.
+        start = source.index("async def _prepare_training_request(")
         assert "lease_refusal()" in source[start : start + 1500]
         start = source.index("async def start_diffusion_training(")
         assert "lease_refusal()" in source[start : start + 1500]

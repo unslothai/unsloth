@@ -174,8 +174,7 @@ def _serialize_preview_value(value):
             value.keys() - {"bytes", "path"}
         ):
             return _serialize_binary_value(raw)
-        # A decoded Audio cell becomes one float per sample under the soundfile fallback, so ten preview
-        # rows of a few seconds each are tens of MB of JSON and the client dies rendering it.
+        # Decoded audio is a float per sample; tens of MB of JSON kills the client.
         if "sampling_rate" in value and _is_sample_sequence(value.get("array")):
             return _serialize_decoded_audio(value)
         return {str(key): _serialize_preview_value(item) for key, item in value.items()}
@@ -336,11 +335,7 @@ def _load_any_cached_hf_preview_slice(
     preview_size: int,
     hf_token: Optional[str] = None,
 ):
-    # Both paths return real rows off disk without asking the Hub: the raw slice reads the
-    # snapshot, the processed one loads with local_files_only=True and drops the falsy
-    # sentinel. Neither reaches the network, so read first and gate the answer: reading our
-    # own disk is not the leak, handing it back is. Gating first probed /auth-check for a
-    # prefer-local request that had ruled the network out and then missed the cache anyway.
+    # Media task from name and path hints alone, for a GGUF header that settles nothing; cloud files must never be opened, and callers differ on unrecognised names.
     if not _cached_preview_visible(request):
         return None
     cached_preview = _load_cached_hf_preview_slice(request, preview_size)
@@ -356,10 +351,7 @@ def _load_any_cached_hf_preview_slice(
             return None
     if cached_preview is None:
         return None
-    # The shared gate, not the raw check: the outer guard has already let a cached PUBLIC
-    # dataset through for the anonymous sentinel, and vetoing it again here turned that into
-    # a local-cache-miss 404 for a preview the caller was entitled to. is_cached is True
-    # because the rows are in hand by now.
+    # Shared gate, not the raw check: a cached PUBLIC dataset is already allowed.
     if cached_read_refused(
         hf_token,
         repo_id = request.dataset_name,
@@ -591,16 +583,7 @@ def check_format_response(
     *,
     allow_unlabeled_tier1_fallback: bool = False,
 ) -> CheckFormatResponse:
-    """
-    Check if a dataset requires manual column mapping.
-
-    HF datasets: tier 1 loads a single requested split/subset file (avoids
-    resolving thousands of files); tier 2 falls back to full streaming. Local
-    files load directly. Plain `def` so FastAPI runs the blocking IO in a
-    thread-pool. The deprecated alias opts into the single-file fallback that
-    its previous implementation used, preserving source column order when the
-    only data filename has no split label.
-    """
+    """Plain def so FastAPI runs the blocking dataset IO in a thread pool, not on the event loop."""
     hf_token = account_hf_token(hf_token)
     account_path(request.dataset_name, reference = True)
     visible_cached_path(getattr(request, "local_path", None), "dataset")
@@ -701,13 +684,7 @@ def check_format_response(
 def ai_assist_mapping_response(
     request: AiAssistMappingRequest, hf_token: Optional[str] = None
 ) -> AiAssistMappingResponse:
-    """
-    Run the LLM-assisted dataset conversion advisor (user-triggered).
-
-    Multi-pass analysis with a 7B helper model: classify dataset type, generate
-    a conversion strategy, then validate it. Falls back to simple column
-    classification if the advisor fails.
-    """
+    """User-triggered 7B-model advisor; on failure it falls back to simple column classification."""
     hf_token = account_hf_token(hf_token)
     account_path(request.dataset_name, reference = True)
     visible_cached_path(getattr(request, "local_path", None), "dataset")

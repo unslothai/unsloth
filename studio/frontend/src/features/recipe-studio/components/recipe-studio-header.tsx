@@ -12,10 +12,10 @@ import {
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Alert02Icon,
-  AlertDiamondIcon,
   CookBookIcon,
   FloppyDiskIcon,
   FlowConnectionIcon,
+  AlertCircleIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type KeyboardEvent, type ReactElement, useState } from "react";
@@ -171,7 +171,7 @@ export function RecipeStudioHeader({
                   >
                     <HugeiconsIcon
                       icon={
-                        w.severity === "error" ? AlertDiamondIcon : Alert02Icon
+                        w.severity === "error" ? AlertCircleIcon : Alert02Icon
                       }
                       className={`mt-0.5 size-3 shrink-0 ${w.severity === "error" ? "text-destructive" : RECIPE_STUDIO_WARNING_ICON_TONE}`}
                     />

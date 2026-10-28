@@ -13,8 +13,7 @@ from typing import Any, Optional
 
 from .diffusion_families import IDEOGRAM4_FAMILY_NAME
 
-# The planner DECIDED against the seed, unlike never having asked: the pull kept the dense shards, so
-# the loader must not re-take the decision and fetch the artifact inline.
+# Planner declined (dense shards kept): the loader must not re-decide and fetch the artifact inline.
 PIPELINE_SEED_DECLINED = "__declined__"
 
 DENOISER_COMPONENT = "transformer"
@@ -190,10 +189,7 @@ def denoiser_prequant_pipe_kwargs(
 
 
 def prequant_artifact_label(source: Any, module: Any = None) -> Optional[str]:
-    """``prequant:<repo>/<file>`` for a hosted artifact, ``prequant:<path>`` for a local override;
-    the scheme alone cannot tell either from a runtime quantise. ``module`` is the seeded denoiser,
-    which carries the file that really loaded: a repo holding only ``fallback_filename`` serves
-    that one, and ``source.filename`` would then name a file nobody fetched."""
+    """Labels the file that loaded (on module), since a fallback-only repo serves a different file."""
     if source is None:
         return None
     kind = getattr(source, "kind", None)

@@ -2074,14 +2074,17 @@ class FlowEngine:
             return [r for r in value if isinstance(r, dict)]
         if isinstance(value, dict) and isinstance(value.get("rows"), list):
             return [r for r in value["rows"] if isinstance(r, dict)]
-        if not isinstance(value, dict) or value.get("kind") != "dataset":
+        if not isinstance(value, dict) or value.get("kind") != "dataset" or not value.get("ref"):
             return []
         from core.flows.nodes.data import recipe_rows
         from core.flows.nodes.training import _load_rows
 
+        from core.training.account_jobs import account_hf_token
+
         if value.get("source") == "recipe" and value.get("job_id"):
             return await recipe_rows(ctx, str(value["job_id"]))
-        return await asyncio.to_thread(_load_rows, value)
+        token = account_hf_token(getattr(ctx.caller, "hf_token", None))
+        return await asyncio.to_thread(_load_rows, value, token, None)
 
     async def _upload_rows(self, ctx: NodeContextImpl, rows: list[dict], name: str) -> dict:
         from core.flows.nodes.data import upload_rows
@@ -2123,6 +2126,7 @@ class FlowEngine:
         feed = params.get("feedback") is not False
         failure_percent = int(params.get("failure_percent") if params.get("failure_percent") is not None else 50)
         seed_rows = int((plan.nodes[seed_node].get("params") or {}).get("rows") or 50)
+        scorer_params = plan.nodes[scorer].get("params") or {}
         rs.set_status(nid, "running")
         history: list[dict] = []
         failures: list[dict] = []
@@ -2154,7 +2158,13 @@ class FlowEngine:
                 key = (*(iteration or ()), r)
                 child = Env(env)
                 child.values[nid] = {}
-                rows = loop_rounds.seed_rows(failures if feed else [], seed_rows, failure_percent)
+                rows = loop_rounds.seed_rows(
+                    failures if feed else [],
+                    seed_rows,
+                    failure_percent,
+                    str(scorer_params.get("prompt_column") or ""),
+                    str(scorer_params.get("reference_column") or ""),
+                )
                 fed = sum(1 for row in rows if row["origin"] == "failure")
                 seed = await self._upload_rows(ctx, rows, f"loop-{nid}-round-{r + 1}")
                 override(seed_node, seed_port, seed)

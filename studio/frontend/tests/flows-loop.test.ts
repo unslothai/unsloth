@@ -54,7 +54,7 @@ test("a score step's failures into a dataset seed is a feedback wire, and never 
     { id: "a", source: "gen", source_port: "dataset", target: "train", target_port: "dataset", kind: "data" },
     { id: "b", source: "train", source_port: "holdout", target: "bench", target_port: "dataset", kind: "data" },
     { id: "c", source: "bench", source_port: "failures", target: "gen", target_port: "seed", kind: "feedback" },
-  ];
+  ] as const;
   assert.equal(wouldCreateCycle(edges, "train", "bench"), false);
   // Without a score output, failures is just json and cannot go into a dataset.
   const plain = { ...bench, outputs: [bench.outputs[1]] };

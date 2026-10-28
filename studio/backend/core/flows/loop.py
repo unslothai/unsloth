@@ -13,12 +13,11 @@ import json
 import random
 from typing import Any, Optional
 
-FIELDS = {
-    "failed_prompt": ("prompt", "input", "question", "instruction", "user"),
-    "failed_reference": ("reference", "expected", "answer", "target", "label", "assistant"),
-    "failed_output": ("output", "prediction", "response", "generated", "completion"),
-}
-SEED_COLUMNS = ("origin", *FIELDS)
+# Same guesses as the Benchmark node, so a failed row maps the way it was scored.
+PROMPT_KEYS = ("prompt", "instruction", "question", "input", "query", "user")
+REFERENCE_KEYS = ("response", "output", "answer", "completion", "reference", "target", "assistant")
+OUTPUT_KEYS = ("model_output", "output", "prediction", "generated")
+FIELDS = ("failed_prompt", "failed_reference", "failed_output")
 # A string this long from a test row is the row itself, not a shared label like "billing".
 LEAK_MIN_CHARS = 16
 
@@ -46,14 +45,27 @@ def _text(value: Any) -> str:
     return json.dumps(value, ensure_ascii = False)
 
 
-def failure_row(failure: Any) -> Optional[dict]:
+def failure_row(failure: Any, prompt_column: str = "", reference_column: str = "") -> Optional[dict]:
     if not isinstance(failure, dict):
         return None
     lowered = {str(k).lower(): v for k, v in failure.items()}
-    row = {"origin": "failure"}
-    for column, keys in FIELDS.items():
-        row[column] = next((_text(lowered[k]) for k in keys if k in lowered), "")
-    return row if any(row[c] for c in FIELDS) else None
+    output = next((k for k in OUTPUT_KEYS if k in lowered), None)
+    rest = [k for k in lowered if k not in (output, "reason", "origin")]
+
+    def pick(named: str, guesses: tuple[str, ...], skip: Optional[str]) -> Optional[str]:
+        if named and named.lower() in lowered:
+            return named.lower()
+        return next((k for k in guesses if k in rest and k != skip), None)
+
+    prompt = pick(prompt_column, PROMPT_KEYS, None)
+    reference = pick(reference_column, REFERENCE_KEYS, prompt)
+    row = {
+        "origin": "failure",
+        "failed_prompt": _text(lowered.get(prompt)) if prompt else "",
+        "failed_reference": _text(lowered.get(reference)) if reference else "",
+        "failed_output": _text(lowered.get(output)) if output else "",
+    }
+    return row if row["failed_prompt"] else None
 
 
 def _strings(value: Any) -> list[str]:
@@ -78,10 +90,16 @@ def drop_test_rows(failures: list[dict], test_rows: list[dict]) -> list[dict]:
     return [f for f in failures if not any(s in banned for s in _strings(f))]
 
 
-def seed_rows(failures: list[dict], rows: int, failure_percent: int) -> list[dict]:
+def seed_rows(
+    failures: list[dict],
+    rows: int,
+    failure_percent: int,
+    prompt_column: str = "",
+    reference_column: str = "",
+) -> list[dict]:
     """``rows`` seed rows: up to ``failure_percent`` of them rewrite a failure (cycled), the rest are fresh."""
     rows = max(1, rows)
-    kept = [r for r in (failure_row(f) for f in failures) if r]
+    kept = [r for r in (failure_row(f, prompt_column, reference_column) for f in failures) if r]
     take = min(rows, round(rows * failure_percent / 100)) if kept else 0
     found = [dict(kept[i % len(kept)]) for i in range(take)]
     found += [{"origin": "fresh", **{c: "" for c in FIELDS}} for _ in range(rows - take)]

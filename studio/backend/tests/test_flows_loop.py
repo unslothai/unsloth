@@ -237,3 +237,30 @@ async def test_stops_at_the_target_test_score_and_keeps_the_best_checkpoint():
     outputs = rs.nodes["loop"].outputs
     assert len(seen) == 2 and outputs["history"]["stopped"] == "target"
     assert outputs["score"] == 75.0 and outputs["checkpoint"]["name"] == "run2"
+
+
+def test_benchmark_failures_map_to_the_seed_columns():
+    failure = {"ticket": "I was charged twice", "queue": "billing", "model_output": "shipping", "reason": "no match"}
+    assert loop_rounds.failure_row(failure, "ticket", "queue") == {
+        "origin": "failure",
+        "failed_prompt": "I was charged twice",
+        "failed_reference": "billing",
+        "failed_output": "shipping",
+    }
+    lm_eval = {"question": "q", "target": "a", "model_output": "b"}
+    assert loop_rounds.failure_row(lm_eval)["failed_reference"] == "a"
+    assert loop_rounds.failure_row({"model_output": "x"}) is None
+
+
+def test_the_real_benchmark_node_can_close_the_loop():
+    d = loop_doc()
+    d["nodes"][3]["type"] = "train.benchmark"
+    d["nodes"][1]["type"] = "recipe.generate"
+    d["groups"][1]["kind"] = "recipe"
+    d["nodes"].append(
+        node("col", "recipe.column", group = "R", column = {"name": "ticket", "column_type": "sampler", "sampler_type": "uuid", "params": {}})
+    )
+    parsed, errors = parse_document(d)
+    assert not errors, errors
+    plan = compile_flow(parsed)
+    assert plan.feedback["loop"]["source"] == "bench"

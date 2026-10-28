@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { NodeRuntime } from "../stores/runtime-store";
+import { IDLE_RUNTIME, useRuntimeStore } from "../stores/runtime-store";
 import type { FlowNode } from "../types";
 import { loopView } from "./loop-status";
+import type { NodeLook } from "./node-looks";
 
 const W = 232;
 const H = 36;
@@ -61,10 +62,8 @@ function ScoreSparkline({
   );
 }
 
-export function LoopNodeBody({
-  node,
-  runtime,
-}: { node: FlowNode; runtime: NodeRuntime }) {
+function LoopNodeBody({ node }: { node: FlowNode }) {
+  const runtime = useRuntimeStore((s) => s.nodes[node.id]) ?? IDLE_RUNTIME;
   const view = loopView({
     status: runtime.status,
     params: node.params,
@@ -102,3 +101,5 @@ export function LoopNodeBody({
     </div>
   );
 }
+
+export const LOOP_LOOK: NodeLook = { Body: LoopNodeBody, ownsOutputs: true };

@@ -771,13 +771,16 @@ def refine_plan_for_multigpu(
         # refuse a split that is lighter than the plan it replaces (the text encoder then streamed from host memory
         # beside an idle second card).
         primary_limit = max(int(primary_limit), int(budget))
-    headroom = int(
-        plan.estimates.get("measured_runtime_headroom_mib")
-        or plan.estimates.get("calibrated_headroom_mib")
+    measured_headroom = plan.estimates.get("measured_runtime_headroom_mib")
+    flat_headroom = (
+        plan.estimates.get("calibrated_headroom_mib")
         or plan.estimates.get("calibrated_split_headroom_mib")
         or plan.estimates.get("runtime_headroom_mib")
-        or 0
     )
+    headroom = int(measured_headroom or flat_headroom or 0)
+    if plan.estimates.get("measured_omits_references"):
+        # A split has no resident groups to stream back, so a reference request needs the flat headroom.
+        headroom = max(headroom, int(flat_headroom or 0))
     overhead = int(plan.estimates.get("base_overhead_mib") or 0)
     rejected: list[PlacementCandidate] = []
     if plan.offload_policy != "none":

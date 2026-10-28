@@ -19,7 +19,6 @@ import { acquireDragOverlay, releaseDragOverlay } from "@/components/ui/panel-dr
 const DRAG_SLOP = 4
 /** A compatibility click lands immediately after pointer-up. */
 const CLICK_COMPAT_WINDOW_MS = 300
-/** Arrow-key resize step for keyboard users. */
 const RESIZE_STEP = 16
 
 type DragState = {
@@ -29,7 +28,6 @@ type DragState = {
 }
 
 export type PanelResizeHandleProps = {
-  /** Which edge of the panel the handle sits on. */
   edge: "left" | "right"
   open: boolean
   width: number
@@ -50,42 +48,22 @@ export type PanelResizeHandleProps = {
   scale?: number
   label: string
   toggleLabel: string
-  /**
-   * Translated tooltip copy; the caller owns the translation layer. Optional
-   * only for `hideTooltip`, which has no copy to translate.
-   */
   collapseHint?: string
   expandHint?: string
   dragHint?: string
-  /** Shown in the tooltip when the panel has a toggle shortcut. */
   shortcut?: string
-  /** Bare handle, no tooltip: for a panel that answers the hover itself. */
   hideTooltip?: boolean
-  /** Told when the pointer arrives at or leaves the handle. */
   onHoverChange?: (hovered: boolean) => void
   dataSlot?: string
   className?: string
-  /** Mirrors the live width onto :root for chrome outside the panel. */
   rootVar?: string
-  /**
-   * Narrower element for `cssVar`, replacing `target()` under
-   * PANEL_RESIZE_SCOPED_VARS_ENABLED. Must hold every consumer and nothing
-   * else: the write invalidates inherited style for everything below it.
-   */
+  /** Narrower `cssVar` target under PANEL_RESIZE_SCOPED_VARS_ENABLED; must hold every consumer. */
   scopedTarget?: () => HTMLElement | null
-  /**
-   * The elements that actually read `rootVar`, replacing
-   * `document.documentElement` under PANEL_RESIZE_SCOPED_VARS_ENABLED. Empty
-   * means no consumer, so the write is skipped.
-   */
+  /** Consumers of `rootVar` under PANEL_RESIZE_SCOPED_VARS_ENABLED; empty skips the write. */
   rootVarTargets?: () => HTMLElement[]
 }
 
-/**
- * A draggable panel edge: drag to resize, click to collapse or expand. Arrow
- * keys resize, Home restores the default. The width is painted straight to the
- * target while dragging and only persisted on release.
- */
+/** Drag to resize, click to collapse; the width is painted while dragging and persisted on release. */
 export function PanelResizeHandle({
   edge,
   open,
@@ -123,17 +101,12 @@ export function PanelResizeHandle({
   const [isMacPlatform] = React.useState(() => getClientPlatform().includes("mac"))
   const hint = shortcut ? shortcut.replace("Mod", isMacPlatform ? "⌘" : "Ctrl+") : null
 
-  // Cached on pointer down so no DOM walk per move.
   const targetRef = React.useRef<HTMLElement | null>(null)
   const frameRef = React.useRef(0)
   const pendingRef = React.useRef(0)
-  // What the pointer asked for, before the viewport cap. Committing the capped
-  // value instead would quietly downgrade a stored preference on a narrow window.
+  // Pre-cap value, so a narrow window cannot downgrade the stored preference.
   const rawRef = React.useRef(0)
-  // When a pointer sequence last ended. The browser's compatibility click
-  // lands in the same tick, so only a click that close behind is a duplicate.
-  // A timestamp cannot go stale the way an armed flag does: a genuine cancel
-  // emits no click, and a later assistive-tech click still gets through.
+  // The compatibility click lands in the same tick; a timestamp cannot go stale like a flag.
   const handledAtRef = React.useRef(0)
   const committedRef = React.useRef(width)
   React.useEffect(() => {
@@ -144,11 +117,9 @@ export function PanelResizeHandle({
     scaleRef.current = scale
   }, [scale])
 
-  // Where `rootVar` is painted, resolved once on pointer down. Always
-  // [document.documentElement] with the flag off, which is what shipped.
+  // Where `rootVar` is painted, resolved on pointer down; documentElement with the flag off.
   const rootTargetsRef = React.useRef<HTMLElement[]>([])
-  // Whether THIS handle is holding the cursor overlay. endDrag also runs as the
-  // effect cleanup, where no drag happened and nothing was acquired.
+  // Whether THIS handle holds the overlay; endDrag also runs as cleanup with nothing held.
   const overlayHeldRef = React.useRef(false)
 
   const paint = React.useCallback(
@@ -163,8 +134,7 @@ export function PanelResizeHandle({
     [cssVar, rootVar],
   )
 
-  // Resizing relayouts the whole shell, and pointermove fires faster than the
-  // display refreshes, so coalesce to one paint per frame.
+  // pointermove outpaces the display; coalesce to one paint per frame.
   const paintWidth = React.useCallback(
     (px: number) => {
       pendingRef.current = px
@@ -178,16 +148,14 @@ export function PanelResizeHandle({
   )
 
   const endDrag = React.useCallback(() => {
-    // Only a sequence that actually started can produce a compatibility click.
-    // This also runs as the effect cleanup, where no drag happened.
+    // Only a started sequence can produce a compatibility click; this also runs as cleanup.
     if (dragRef.current) handledAtRef.current = Date.now()
     dragRef.current = null
     if (frameRef.current) {
       cancelAnimationFrame(frameRef.current)
       frameRef.current = 0
     }
-    // Hand the property back to the committed value. A commit re-renders with
-    // the new width; a cancel or a no-commit drag keeps DOM and store in step.
+    // Restore the committed value so DOM and store stay in step on cancel or no-commit.
     paint(`${committedRef.current * scaleRef.current}px`)
     if (rootVar) {
       for (const el of rootTargetsRef.current) el.style.removeProperty(rootVar)
@@ -206,8 +174,6 @@ export function PanelResizeHandle({
     if (event.button !== 0) return
     event.preventDefault()
     event.currentTarget.setPointerCapture(event.pointerId)
-    // Resolved once per drag, never per frame: the write is what costs, and a
-    // DOM walk here is already how `target()` worked.
     targetRef.current =
       (PANEL_RESIZE_SCOPED_VARS_ENABLED && scopedTarget?.()) || target()
     rootTargetsRef.current = !rootVar
@@ -229,7 +195,6 @@ export function PanelResizeHandle({
   const handlePointerMove = (event: React.PointerEvent<HTMLButtonElement>) => {
     const drag = dragRef.current
     if (!drag) return
-    // A panel whose handle is on its left edge grows as the pointer moves left.
     const delta = (edge === "left" ? -1 : 1) * (event.clientX - drag.startX)
     if (!drag.moved && Math.abs(delta) < DRAG_SLOP) return
     drag.moved = true
@@ -263,21 +228,16 @@ export function PanelResizeHandle({
     }
     // A drag below the minimum leaves the stored width alone.
     if (!open) return
-    // Capped: the visible edge is already at the cap, so an outward pull cannot
-    // express intent beyond it. Committing would silently lower the larger
-    // hidden preference. A deliberate inward drag still commits.
+    // Capped: an outward pull cannot express intent past the cap, so do not lower the stored preference.
     if (stored > max && rawRef.current >= max) return
-    // Commit what was asked for, not the capped paint, so a drag on a narrow
-    // window cannot shrink a larger stored preference. setWidth clamps.
+    // Commit the raw request, not the capped paint, so narrow windows keep the preference.
     setWidth(rawRef.current)
   }
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
-    // The collapse/expand the label advertises, for keyboard users. Pointer-up
-    // handles it for the mouse; a synthesized click never reaches it.
+    // Keyboard collapse/expand; pointer-up handles the mouse.
     if (event.key === "Enter" || event.key === " ") {
-      // preventDefault cancels the native click, so nothing follows to guard
-      // against; arming here would swallow the next assistive-tech click.
+      // preventDefault cancels the native click; arming here would swallow the next AT click.
       event.preventDefault()
       onToggle()
       return
@@ -325,8 +285,7 @@ export function PanelResizeHandle({
           }}
           onKeyDown={handleKeyDown}
           onClick={() => {
-            // Switch and voice control activate by dispatching a bare click
-            // with no pointer or key events, which nothing else here catches.
+            // Switch and voice control dispatch a bare click with no pointer or key events.
             if (Date.now() - handledAtRef.current < CLICK_COMPAT_WINDOW_MS) return
             onToggle()
           }}
@@ -349,7 +308,6 @@ export function PanelResizeHandle({
               : edge === "left"
                 ? "cursor-w-resize!"
                 : "cursor-e-resize!",
-            // Sits exactly on the panel border so hover recolours one line.
             "after:absolute after:inset-y-0 after:w-px after:bg-transparent after:transition-colors after:duration-150",
             edge === "left" ? "after:left-1" : "after:right-1",
             "hover:after:bg-sidebar-ring/25 data-dragging:after:bg-sidebar-ring/25",

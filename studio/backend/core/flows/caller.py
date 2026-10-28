@@ -30,6 +30,7 @@ FLOW_PREFIXES = tuple(
             "/api/library/",
             "/api/flows/assets",
             "/api/hub/",
+            "/api/benchmarks/evals/",
         )
     )
 )
