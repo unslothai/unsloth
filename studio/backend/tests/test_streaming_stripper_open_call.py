@@ -114,10 +114,26 @@ _TRIGGERS = (
     "[TOOL_CALLS][]",
     "<|tool_call>call:web_search{q:1}<tool_call|>",
     "<｜tool▁calls▁begin｜>x<｜tool▁calls▁end｜>",
+    # Kimi K2: only ``<|tool_call`` sees these, as neither holds ``<tool_call``.
+    "<|tool_calls_section_begin|><|tool_call_begin|>x<|tool_call_end|><|tool_calls_section_end|>",
+    "<|tool_call_begin|>x<|tool_call_end|>",
     "<think>t</think>",
     "\n</think>\n",
     "\ncall:web_search{q:1}\n",
 )
+
+
+def test_every_strip_sentinel_is_an_open_call_trigger():
+    """A new strip arm adds its literal to ``_STRIP_SENTINELS``; the gate must see it too. The two
+    left out have no arm a non-final strip runs, and a final strip cuts them with the open call."""
+    from core.inference import tool_call_parser as parser
+
+    missing = (
+        set(parser._STRIP_SENTINELS)
+        - {parser._GEMMA_BARE_SENTINEL}
+        - set(parser._OPEN_CALL_TRIGGERS)
+    )
+    assert missing == {"<|python_tag|>", "<|content_invoke_tool_json|>"}, missing
 
 
 @pytest.mark.parametrize("trigger", _TRIGGERS)
