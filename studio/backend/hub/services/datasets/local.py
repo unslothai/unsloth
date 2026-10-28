@@ -202,6 +202,12 @@ def _build_local_dataset_items() -> list[LocalDatasetItem]:
     return items
 
 
+def _json_int(text: str) -> int | float:
+    # Arrow's JSON reader reads an integer outside int64 as float64; from_list would overflow.
+    value = int(text)
+    return value if -(2**63) <= value < 2**63 else float(value)
+
+
 def _jsonl_head(path: Path, preview_size: int) -> list[dict] | None:
     """First ``preview_size`` JSON Lines objects via the stdlib: pyarrow's threaded JSON reader segfaults on mixed-type columns (#15681). ``None`` if not JSON Lines."""
     rows = []
@@ -212,7 +218,7 @@ def _jsonl_head(path: Path, preview_size: int) -> list[dict] | None:
             if not line.strip():
                 continue
             try:
-                row = json.loads(line)
+                row = json.loads(line, parse_int = _json_int)
             except ValueError:
                 return None
             if not isinstance(row, dict):

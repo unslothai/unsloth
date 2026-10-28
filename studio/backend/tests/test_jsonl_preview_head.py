@@ -84,6 +84,13 @@ def test_mixed_nested_types_raise_instead_of_reaching_the_native_reader(tmp_path
     assert loader_calls == []
 
 
+def test_integers_outside_int64_preview_as_floats_like_the_loader(tmp_path, loader_calls):
+    path = tmp_path / "train.jsonl"
+    path.write_text('{"text": "a", "id": 9223372036854775808}\n{"text": "b", "id": 1}\n')
+    dataset, _ = local._stream_file_preview_slice(path, 10)
+    assert dataset["id"] == [9223372036854775808.0, 1.0] and loader_calls == []
+
+
 def test_columns_are_the_union_over_rows(tmp_path, loader_calls):
     path = tmp_path / "train.jsonl"
     _write_jsonl(path, [{"text": "a"}, {"text": "b", "label": 1}])
