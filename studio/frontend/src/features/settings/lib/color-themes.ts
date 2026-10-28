@@ -409,7 +409,7 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
     },
   },
   pumpkin: {
-    name: "Pumpkin Patch",
+    name: "Pumpkin",
     light: {
       accent: "#b84800",
       background: "#fff3e3",
@@ -454,7 +454,7 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
     },
   },
   alien: {
-    name: "Little Green Men",
+    name: "Martian",
     light: {
       accent: "#007a33",
       background: "#eefff4",
@@ -529,7 +529,7 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
     },
   },
   "black-cat": {
-    name: "Hocus Pocus",
+    name: "Coven",
     light: {
       accent: "#6a1fd6",
       background: "#f6f1ff",
