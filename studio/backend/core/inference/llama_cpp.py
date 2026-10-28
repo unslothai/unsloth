@@ -134,6 +134,7 @@ from core.inference.llama_server_args import (
     fit_target_margin_in,
     MANAGED_DIO_FLAGS,
     no_reserve_requires_dio,
+    load_mode_support,
     resolve_launch_load_mode,
     resolve_effective_load_state,
     resolve_effective_memory_state,
@@ -29048,7 +29049,7 @@ class LlamaCppBackend:
                 _resolved_load_mode = load_mode or _fit_load_mode
                 _load_mode_managed, _mem_extras = apply_load_mode_policy(
                     _mem_extras,
-                    supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                    supports_load_mode = load_mode_support(server_caps),
                     weights_in_host_memory = _mem_host_resident,
                     requested_load_mode = _resolved_load_mode,
                     settings = _mem_settings,
@@ -29062,7 +29063,7 @@ class LlamaCppBackend:
                 def _ask(pair, env_view):
                     return resolve_launch_load_mode(
                         extra_args,
-                        supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                        supports_load_mode = load_mode_support(server_caps),
                         weights_in_host_memory = _mem_host_resident,
                         gpu_offload_confirmed = _mem_gpu_offload_confirmed,
                         requested_load_mode = _resolved_load_mode,
@@ -29138,7 +29139,7 @@ class LlamaCppBackend:
                     def _for(pair, env_view):
                         return resolve_launch_load_mode(
                             extra_args,
-                            supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                            supports_load_mode = load_mode_support(server_caps),
                             weights_in_host_memory = host_resident,
                             gpu_offload_confirmed = confirmed,
                             requested_load_mode = _resolved_load_mode,
