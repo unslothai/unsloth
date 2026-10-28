@@ -1721,9 +1721,7 @@ def _dtype_seen():
 def test_packed_fp32_rows_under_autocast_run_in_the_autocast_dtype(
     monkeypatch, case, autocast, dtype, packed, expected
 ):
-    """SDPA is an autocast lower precision op, so fp32 Q / K / V under fp16 / bf16 autocast are the
-    autocast dtype by the time any attention kernel sees them. The packed wrapper casts them first, so
-    the varlen checks see what SDPA would run; other dtypes and unpacked calls are left as they are."""
+    """Packed fp32 Q / K / V under autocast reach the varlen checks in the dtype SDPA runs in."""
     seen, orig = _dtype_seen()
     hpa._ORIG_SDPA[0] = orig
     monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
@@ -1738,11 +1736,9 @@ def test_packed_fp32_rows_under_autocast_run_in_the_autocast_dtype(
     with context:
         out, _ = hpa._sdpa_packed_varlen(module, q, k, v, mask, scaling = 0.25, **kwargs)
         ref = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask = mask, scale = 0.25)
-    # A row the varlen kernels do not take (CPU here) reaches the wrapped sdpa exactly as given.
     assert seen == [(dtype, dtype, dtype)]
     assert out.dtype == ref.dtype
     torch.testing.assert_close(out, ref, atol = 0, rtol = 0)
-    # The varlen checks of a packed row see the dtype SDPA runs in.
     if packed:
         with context:
             assert {t.dtype for t in hpa._autocast_float32(q, k, v)} == {expected}
@@ -1751,9 +1747,7 @@ def test_packed_fp32_rows_under_autocast_run_in_the_autocast_dtype(
 @pytest.mark.parametrize("autocast", [torch.bfloat16, torch.float16])
 @pytest.mark.parametrize("n_kv", [2, 8])
 def test_packed_fp32_fallback_rows_keep_their_gradients(monkeypatch, autocast, n_kv):
-    """A packed fp32 row that still falls back (no varlen kernel: CPU, a window or shape varlen refuses)
-    trains exactly as before: transformers repeats GQA's K / V heads before autocast casts them, so dK / dV
-    reduce over the head groups in fp32. Casting first would round that reduction to fp16 / bf16."""
+    """Fallback rows must get uncast Q / K / V: GQA's dK / dV reduce in fp32 after repeat_kv."""
     from transformers.integrations.sdpa_attention import sdpa_attention_forward
 
     hpa._ORIG_SDPA[0] = sdpa_attention_forward

@@ -96,7 +96,6 @@ def _mask_is_block_causal(
 
 
 def _autocast_dtype(device_type):
-    """The autocast dtype for device_type, or None when autocast is off there."""
     try:
         enabled = torch.is_autocast_enabled(device_type)
         return torch.get_autocast_dtype(device_type) if enabled else None
@@ -110,9 +109,7 @@ def _autocast_dtype_differs(query) -> bool:
 
 
 def _autocast_float32(query, key, value):
-    """fp32 Q / K / V under fp16 / bf16 autocast, cast as autocast casts SDPA's inputs (a lower precision
-    op): full finetuning's fp32 q_norm / k_norm leave Q and K in fp32, which kept packed rows on the
-    dense-mask SDPA path. Anything else is returned unchanged."""
+    """Cast fp32 Q / K / V to the autocast dtype as SDPA would (fp32 q_norm / k_norm in full finetuning)."""
     if not (query.dtype == key.dtype == value.dtype == torch.float32):
         return query, key, value
     dtype = _autocast_dtype(query.device.type)
@@ -442,8 +439,7 @@ def _sdpa_packed_varlen(
             HF_PACKED_ATTENTION_STATS["fallback"] += 1
         return orig(module, query, key, value, attention_mask, *args, **named, **kwargs)
     block_varlen = kwargs.pop(BLOCK_VARLEN_KWARG, None)
-    # The wrapped sdpa gets Q / K / V as given: autocast casts them there after transformers' repeat_kv,
-    # so GQA's dK / dV reduce in fp32. Only the varlen kernels take the autocast dtype copies.
+    # Fallback gets the uncast Q / K / V so GQA's dK / dV reduce in fp32 after repeat_kv.
     given = (query, key, value)
     if kwargs.get("packed_seq_lengths") is not None and not _disabled():
         query, key, value = _autocast_float32(query, key, value)
