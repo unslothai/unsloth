@@ -2,10 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
 """`import unsloth` must not import the openai SDK itself (about 0.6 s), while a broken openai
-install still reads as unavailable through `transformers.utils.is_openai_available`.
-
-Before: unsloth/models/_utils.py ran `from openai import OpenAI` at module level whenever openai
-was installed, only to flip the transformers check to False when that import failed."""
+install still reads as unavailable through `transformers.utils.is_openai_available`."""
 
 import os
 import subprocess
