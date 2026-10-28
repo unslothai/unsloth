@@ -1182,6 +1182,19 @@ def cross_forward_render(pipe: Any, enabled: bool = True) -> Iterator[list]:
                 pass
 
 
+def end_cross_forward(pipe: Any) -> int:
+    """Disarm ``pipe``'s prefetchers and drop what they carried (decode entry of a render without a step callback).
+    Returns the carried copies they have read so far."""
+    hits = 0
+    for pf in _pipe_prefetchers(pipe):
+        try:
+            _disarm(pf)
+            hits += int(pf.stats.get("carried_hits", 0))
+        except Exception:  # noqa: BLE001 - leave the render's own error to surface
+            pass
+    return hits
+
+
 _UNKNOWN = object()
 
 

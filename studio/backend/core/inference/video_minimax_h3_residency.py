@@ -768,6 +768,18 @@ def defer_streamed_block_pins(
 
 
 H3_STREAM_PREFETCH_ENV = "UNSLOTH_H3_STREAM_PREFETCH"
+H3_STREAM_CARRY_ENV = "UNSLOTH_H3_STREAM_CARRY"
+
+
+def h3_stream_carry_enabled() -> bool:
+    """Carry the next forward's first streamed groups (the 12 GB top-level group) across H3 steps;
+    ``UNSLOTH_H3_STREAM_CARRY=0`` off."""
+    return str(os.environ.get(H3_STREAM_CARRY_ENV, "")).strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
 
 
 def h3_stream_prefetch_depth(block_bytes: list, default_depth: int) -> int:
