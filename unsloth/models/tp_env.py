@@ -369,10 +369,16 @@ def _levels(model):
         return [model]
 
 
+def parallel_env_requested():
+    """UNSLOTH_TP_SIZE or UNSLOTH_PP_SIZE set to anything but 1 (the Trainer wrapper applies or refuses it)."""
+    return any(str(os.environ.get(name, "")).strip() not in ("", "1") for name in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE"))
+
+
 def install_tensor_parallel_env_trainer_init():
-    """Install the Trainer.__init__ wrapper at import: loads that all run inside model_init would otherwise
-    train in an unwrapped Trainer, without tensor parallel."""
-    if str(os.environ.get("UNSLOTH_TP_SIZE", "")).strip() in ("", "1"):
+    """Install the Trainer.__init__ wrapper at import: loads that all run inside model_init, and models
+    that never load through FastLanguageModel / FastModel (a FastSentenceTransformer encoder), would
+    otherwise train in an unwrapped Trainer as plain DDP. Under UNSLOTH_PP_SIZE the wrapper refuses."""
+    if not parallel_env_requested():
         return False
     from transformers import Trainer
 
