@@ -11,6 +11,7 @@ import {
   hubWithdrawsSoleQuant,
   loadPickerGgufVariants,
 } from "./gguf-discovery";
+import { firstIndexByKey } from "./option-index";
 
 import { ModelMemoryBar } from "@/components/model-memory-bar";
 import { shouldRefreshPickerInventoryOnMount } from "@/components/resource-picker/picker-tab-policy";
@@ -384,22 +385,24 @@ function useRovingModelList({
   const rawListboxId = useId();
   const listboxId = `model-picker-${rawListboxId.replace(/:/g, "")}`;
   const [rovingOptionKey, setRovingOptionKey] = useState<string | null>(null);
+  // Every row asks for its index, so a scan per row made a render O(N^2) in the list length.
+  const optionIndexByKey = useMemo(() => firstIndexByKey(optionKeys), [optionKeys]);
 
   const preferredOptionKey =
-    selectedOptionKey && optionKeys.includes(selectedOptionKey)
+    selectedOptionKey && optionIndexByKey.has(selectedOptionKey)
       ? selectedOptionKey
       : (optionKeys[0] ?? null);
   const activeOptionKey =
-    rovingOptionKey && optionKeys.includes(rovingOptionKey)
+    rovingOptionKey && optionIndexByKey.has(rovingOptionKey)
       ? rovingOptionKey
       : preferredOptionKey;
 
   const getOptionDomId = useCallback(
     (optionKey: string) => {
-      const index = optionKeys.indexOf(optionKey);
-      return index === -1 ? undefined : `${listboxId}-option-${index}`;
+      const index = optionIndexByKey.get(optionKey);
+      return index === undefined ? undefined : `${listboxId}-option-${index}`;
     },
-    [listboxId, optionKeys],
+    [listboxId, optionIndexByKey],
   );
 
   const focusOption = useCallback(
@@ -422,7 +425,7 @@ function useRovingModelList({
         return;
       }
 
-      const currentIndex = optionKeys.indexOf(fromOptionKey);
+      const currentIndex = optionIndexByKey.get(fromOptionKey) ?? -1;
       let nextIndex = currentIndex === -1 ? 0 : currentIndex;
       if (direction === "next") {
         if (currentIndex >= optionKeys.length - 1) {
@@ -446,7 +449,7 @@ function useRovingModelList({
       setRovingOptionKey(nextOptionKey);
       focusOption(nextOptionKey);
     },
-    [focusOption, onNavigatePastEnd, onNavigatePastStart, optionKeys],
+    [focusOption, onNavigatePastEnd, onNavigatePastStart, optionIndexByKey, optionKeys],
   );
 
   const getOptionProps = useCallback(
