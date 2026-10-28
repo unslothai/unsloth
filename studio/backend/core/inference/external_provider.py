@@ -15,6 +15,7 @@ import random
 import re
 import threading
 import time
+import uuid
 import weakref
 import wave
 from typing import Any, AsyncGenerator, Awaitable, Callable, Literal, NamedTuple, Optional, Union
@@ -1567,13 +1568,16 @@ class ExternalProviderClient:
         headers = self._auth_headers()
         base = urlparse(self.base_url)
         if (
-            thread_id
-            and base.scheme == "https"
+            base.scheme == "https"
             and base.hostname == "opencode.ai"
             and (base.path == "/inference/go" or base.path.startswith("/inference/go/"))
         ):
-            # Hashed so the raw conversation ID never leaves Studio.
-            headers["x-opencode-session"] = hashlib.sha256(thread_id.encode("utf-8")).hexdigest()
+            # Hashed so the raw conversation ID never leaves Studio; titles and probes have no thread.
+            headers["x-opencode-session"] = (
+                hashlib.sha256(thread_id.encode("utf-8")).hexdigest()
+                if thread_id
+                else uuid.uuid4().hex
+            )
             headers["User-Agent"] = "unsloth-studio"
         return headers
 
@@ -7092,17 +7096,18 @@ class ExternalProviderClient:
                 body["max_tokens"] = max_tokens
 
         url = f"{self.base_url}/chat/completions"
+        headers = self._chat_headers(None)
         response = await _client().post(
             url,
             json = body,
-            headers = self._auth_headers(),
+            headers = headers,
             timeout = self._timeout,
         )
         if "max_tokens" in body and _rejects_max_tokens(response.status_code, response.text):
             response = await _client().post(
                 url,
                 json = _with_max_completion_tokens(body),
-                headers = self._auth_headers(),
+                headers = headers,
                 timeout = self._timeout,
             )
         response.raise_for_status()

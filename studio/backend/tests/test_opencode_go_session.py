@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import asyncio
+import json
 
 import httpx
 import pytest
@@ -95,3 +96,36 @@ def test_opencode_go_responses_sends_conversation_session(monkeypatch):
     asyncio.run(run())
     assert len(requests) == 1
     assert requests[0].headers.get("x-opencode-session")
+
+
+def test_opencode_go_request_without_thread_still_sends_session(monkeypatch):
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        if json.loads(request.content).get("stream"):
+            return httpx.Response(
+                200, headers = {"content-type": "text/event-stream"}, content = "data: [DONE]\n\n"
+            )
+        return httpx.Response(
+            200, json = {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+        )
+
+    async def run():
+        async with httpx.AsyncClient(transport = httpx.MockTransport(handler)) as http:
+            monkeypatch.setattr(ep, "_client", lambda: http)
+            client = ep.ExternalProviderClient(
+                "custom", "https://opencode.ai/inference/go/v1", "key"
+            )
+            async for _ in client.stream_chat_completion(
+                messages = [{"role": "user", "content": "title this"}],
+                model = "test-model",
+            ):
+                pass
+            await client.chat_completion(
+                messages = [{"role": "user", "content": "ping"}], model = "test-model"
+            )
+
+    asyncio.run(run())
+    assert len(requests) == 2
+    assert all(request.headers.get("x-opencode-session") for request in requests)
