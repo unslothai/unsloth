@@ -755,13 +755,20 @@ def copy_response_body(
 ) -> int:
     """Stream ``response`` into ``write`` and return the byte count. Raises StalledDownload when a
     window passes with too few bytes, and TruncatedDownload when the body ends short of
-    ``total_bytes``; both are retryable, so the caller's loop reconnects. Chunks stay small so a
-    trickling connection returns often enough for the window check to run."""
+    ``total_bytes``; both are retryable, so the caller's loop reconnects.
+
+    A real HTTPResponse is read with read1, which returns what one receive brings: read(n) waits
+    for all n bytes, so a trickle would block it for hours and the window check would never run.
+    Anything else (file:// bodies, test doubles) keeps plain read."""
+    if isinstance(response, http.client.HTTPResponse):
+        read = response.read1
+    else:
+        read = response.read
     downloaded = 0
     window_start = time.monotonic()
     window_bytes = 0
     while True:
-        chunk = response.read(chunk_size)
+        chunk = read(chunk_size)
         if not chunk:
             break
         write(chunk)

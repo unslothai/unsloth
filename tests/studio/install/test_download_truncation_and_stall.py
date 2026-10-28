@@ -155,3 +155,77 @@ def test_the_last_bytes_arriving_slowly_do_not_count_as_a_stall(monkeypatch):
     monkeypatch.setattr(CORE, "DOWNLOAD_STALL_WINDOW_SECONDS", 0.0)
     n = CORE.copy_response_body(_Trickle(1, 0.0), lambda _b: None, total_bytes = 1)
     assert n == 1
+
+
+class _TrickleServer:
+    """The first `slow` requests get the full Content-Length but one byte every 50 ms, for at most
+    ten seconds; later requests get the whole body at once."""
+
+    def __init__(self, slow: int) -> None:
+        self.slow = slow
+        self.requests = 0
+        server = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                server.requests += 1
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(PAYLOAD)))
+                self.end_headers()
+                try:
+                    if server.requests <= server.slow:
+                        for i in range(200):
+                            self.wfile.write(PAYLOAD[i : i + 1])
+                            self.wfile.flush()
+                            time.sleep(0.05)
+                    else:
+                        self.wfile.write(PAYLOAD)
+                        self.wfile.flush()
+                except OSError:
+                    pass  # the client gave up on the trickle
+                self.close_connection = True
+
+            def log_message(self, *args):
+                pass
+
+        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.httpd.daemon_threads = True
+        self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}/node.tar.gz"
+        self.thread = threading.Thread(target = self.httpd.serve_forever, daemon = True)
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
+def test_a_real_trickling_connection_is_abandoned_within_the_window(monkeypatch):
+    """read(n) on an HTTPResponse waits for all n bytes, so the watchdog only works if the copy
+    returns per receive. With the old read the call blocks until the server gives up (~10 s)."""
+    import urllib.request
+
+    monkeypatch.setattr(CORE, "DOWNLOAD_STALL_WINDOW_SECONDS", 0.3)
+    with _TrickleServer(slow = 1) as srv:
+        start = time.monotonic()
+        with urllib.request.urlopen(srv.url, timeout = 10) as response:
+            with pytest.raises(CORE.StalledDownload):
+                CORE.copy_response_body(
+                    response, lambda _b: None, total_bytes = int(response.headers["Content-Length"])
+                )
+        assert time.monotonic() - start < 3.0
+
+
+@pytest.mark.parametrize("which", ["node", "llama"])
+def test_download_file_reconnects_after_a_real_trickle(monkeypatch, tmp_path, which):
+    monkeypatch.setattr(CORE, "DOWNLOAD_STALL_WINDOW_SECONDS", 0.3)
+    download_file = NODE.download_file if which == "node" else LLAMA.download_file
+    with _TrickleServer(slow = 1) as srv:
+        destination = tmp_path / "node.tar.gz"
+        start = time.monotonic()
+        download_file(srv.url, destination)
+        assert srv.requests == 2
+        assert time.monotonic() - start < 5.0
+    assert destination.read_bytes() == PAYLOAD
