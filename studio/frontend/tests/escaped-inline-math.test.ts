@@ -283,3 +283,16 @@ test("incomplete code spans preserve escaped dollars while streaming", () => {
     }
   }
 });
+
+test("escaped currency in a long streamed reply stays within the streaming budget", () => {
+  const section =
+    "## Pricing\n\nThe plan has **two** tiers, a [docs](https://example.com) link and `code`.\n\n- first item\n- second item\n\n```python\nprint(1)\n```\n\n";
+  const reply = `The plan costs \\$20 per month, or \\$200 per year.\n\n${section.repeat(200)}`;
+  const started = performance.now();
+  for (let end = 500; end <= reply.length; end += 500) {
+    const chunk = reply.slice(0, end);
+    assert.equal(normalizeEscapedInlineMath(chunk), chunk);
+  }
+  const elapsed = performance.now() - started;
+  assert.ok(elapsed < 500, `streaming took ${elapsed.toFixed(1)}ms`);
+});

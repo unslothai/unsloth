@@ -433,6 +433,29 @@ function hasLikelyMathCloser(markdown: string, offset: number): boolean {
   return false;
 }
 
+function hasEscapedMathCandidate(markdown: string): boolean {
+  for (
+    let open = markdown.indexOf("\\$");
+    open >= 0;
+    open = markdown.indexOf("\\$", open + 2)
+  ) {
+    for (
+      let close = markdown.indexOf("\\$", open + 2);
+      close >= 0 && close - open - 2 <= MAX_BODY_LENGTH;
+      close = markdown.indexOf("\\$", close + 2)
+    ) {
+      const body = markdown.slice(open + 2, close);
+      if (body.includes("\n") || body.includes("\r")) {
+        break;
+      }
+      if (looksLikeEscapedInlineMath(body)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 function escapedMathRanges(markdown: string): EscapedMathRange[] {
   const masked = markdown.replace(CURRENCY_OPENER_RE, (opener, offset) =>
     hasLikelyMathCloser(markdown, offset) ? opener : MASKED_DOLLAR,
@@ -481,7 +504,7 @@ function escapedMathRanges(markdown: string): EscapedMathRange[] {
 
 /** Runs before currency and streaming repair. */
 export function normalizeEscapedInlineMath(markdown: string): string {
-  if (!markdown.includes("\\$")) {
+  if (!hasEscapedMathCandidate(markdown)) {
     return markdown;
   }
   const ranges = escapedMathRanges(markdown);
