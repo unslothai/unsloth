@@ -150,34 +150,27 @@ def test_repeated_call_is_cached():
     assert stripper.strip(text) is stripper.strip(text)
 
 
-def test_scan_is_amortized_not_quadratic():
-    """Prose-only text must cost constant work per token, not grow with length; compared as a ratio."""
-    import time
+def test_scan_is_amortized_not_quadratic(monkeypatch):
+    """Prose-only text costs constant work per token: the sentinel scan resumes where it stopped.
 
-    def elapsed(fn, tokens):
-        text = ""
-        start = time.perf_counter()
-        for token in tokens:
-            text += token
-            fn(text)
-        return time.perf_counter() - start
+    Counts the characters handed to the sentinel scan instead of timing, so it does not depend on how
+    fast the full strip is (a cheaper full strip once made a ratio against it meaningless)."""
+    scanned = []
+    real = tool_call_parser._first_sentinel
 
-    short = ["word " for _ in range(300)]
-    long = ["word " for _ in range(1200)]
+    def counting(text, start, *args, **kwargs):
+        scanned.append(len(text) - max(start, 0))
+        return real(text, start, *args, **kwargs)
 
-    def incremental(tokens):
-        stripper = StreamingMarkupStripper(ENABLED)
-        return elapsed(stripper.strip, tokens)
-
-    # 4x the tokens: the reference rescans everything (~16x), the incremental one resumes
-    # (~4x). Ratios rather than absolutes keep this meaningful on a noisy CI box.
-    reference_growth = elapsed(_reference_strip, long) / max(elapsed(_reference_strip, short), 1e-9)
-    incremental_growth = incremental(long) / max(incremental(short), 1e-9)
-
-    assert incremental_growth < reference_growth / 2, (
-        f"incremental cost grew {incremental_growth:.1f}x vs the reference's "
-        f"{reference_growth:.1f}x; expected roughly linear against its quadratic"
-    )
+    monkeypatch.setattr(tool_call_parser, "_first_sentinel", counting)
+    stripper = StreamingMarkupStripper(ENABLED)
+    text = ""
+    for _ in range(1200):
+        text += "word "
+        assert stripper.strip(text) == text
+    overlap = tool_call_parser._SENTINEL_MAX_LEN
+    # Rescanning from the start every token would read about len(text) ** 2 / 10 (3.6M).
+    assert sum(scanned) <= len(text) + 1200 * overlap, sum(scanned)
 
 
 # Each case diverged from the reference strip before its guard was added.

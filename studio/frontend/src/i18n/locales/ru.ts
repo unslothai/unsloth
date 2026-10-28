@@ -792,6 +792,8 @@ export const ru = {
       guidedTour: "Обзор интерфейса",
       help: "Справка",
       logOut: "Выйти",
+      logOutNeedsPassword: "Перед выходом задайте пароль в разделе Настройки > Удалённый доступ, чтобы потом снова войти.",
+      logOutFailed: "Не удалось безопасно выйти. Повторите попытку чуть позже.",
       shutdown: "Выключить",
     },
     commandPalette: {
@@ -936,6 +938,11 @@ export const ru = {
   },
   settings: {
     accounts: {
+      signsInAs: "Входит как {username}",
+      signsInAsOwner: "Входит как {alias} или {username}",
+      signInName: "Ваше имя для входа",
+      signInNameDescription: "Имя, которое вы вводите для входа, когда в этой установке больше одной учётной записи. unsloth тоже всегда работает. Оставьте пустым, чтобы использовать только unsloth.",
+      signInNameSave: "Сохранить имя",
       title: "Учётные записи",
       description: "Создавайте отдельные учётные записи Unsloth. Новые пользователи входят по одноразовому коду настройки и задают пароль.",
       username: "Имя пользователя",
@@ -1415,7 +1422,7 @@ export const ru = {
       installingRuntime: "Установка…",
       installRuntimeFailed: "Не удалось установить среду.",
       installRuntimeError: "Не удалось начать установку среды.",
-      unsupportedArch: "Песочница Windows (MXC) работает только на Windows x64, поэтому на этом ПК она недоступна.",
+      unsupportedArch: "Песочница Windows (MXC) работает только на Windows x64 и ARM64, поэтому на этом ПК она недоступна.",
       builtinNeedsUpdate:
         "Встроенному контейнеру Windows нужна сборка {required} или новее, а на этом ПК установлена {current}. Установите последнее обновление Windows, чтобы использовать его без шага администратора, или включите резервную песочницу ниже.",
       unsupportedBuild: "Песочнице Windows (MXC) нужна Windows 11 24H2 (сборка 26100) или новее, поэтому на этом ПК она недоступна.",
@@ -2345,7 +2352,7 @@ export const ru = {
         gpuUnusableDetail: "Обнаружен, но PyTorch не может его использовать",
         detailedView: "Подробный вид",
         detailedViewDescription:
-          "Показывать загрузку CPU, а также загрузку, температуру и мощность каждой GPU в плавающем окне и здесь.",
+          "Показывать загрузку CPU, а также загрузку, температуру и мощность каждой GPU в плавающем окне.",
         cpuLoad: "Загрузка CPU",
         gpuLoad: "Загрузка GPU",
         temperature: "Температура",
@@ -2379,6 +2386,10 @@ export const ru = {
         used: "{value} использовано",
         free: "{value} свободно",
         total: "{value} всего",
+        usedOf: "Занято {used} из {total}",
+        segmentUsed: "Занято GPU",
+        segmentSystem: "Занято системой",
+        segmentAvailable: "Доступно",
       },
       llamaBackend: {
         title: "Движок инференса GGUF",
@@ -2508,6 +2519,10 @@ export const ru = {
           hideDetailsAction: "Скрыть подробности",
           clearAction: "Очистить кеши",
           clearOneAction: "Очистить",
+          showFolders: "Показать папки",
+          hideFolders: "Скрыть папки",
+          previousLocations: "Включает прежние расположения. Основная кнопка «Очистить» затрагивает текущую папку кэша. Кнопки моделей очищают только выбранную копию.",
+          clearModelDescription: "Будет удалена только эта копия в кэше. При необходимости она будет загружена снова.",
           clearingAction: "Очистка...",
           confirmTitle: "Очистить кешированные файлы?",
           confirmDescription: "Это освободит примерно {size}.",
@@ -4224,7 +4239,6 @@ export const ru = {
       terminalStart: "> обучение unsloth начинается...",
       preparingResources: "> Подготовка модели и датасета...",
       gettingReady: "> Мы готовим всё для вашего запуска...",
-      waitingForFirstStep: "> {message} | ожидание первого шага... ({step})",
       resumingTraining: "Продолжение обучения...",
       startingTraining: "начало обучения...",
       dataset: "Датасет",

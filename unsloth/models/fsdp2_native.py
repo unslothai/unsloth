@@ -1010,8 +1010,9 @@ def _skip_free_unsharded_param():
     return None
 
 
-def _compiled_block_modules(model):
-    """ids of every module inside a decoder block _block_compile wrapped (and did not turn off)."""
+def _compiled_block_modules(model, roots = None):
+    """ids of every module inside a decoder block _block_compile wrapped (and did not turn off);
+    `roots` (a dict) collects id -> block module."""
     inside = set()
     for module in model.modules():
         if id(module) in inside or not getattr(
@@ -1020,21 +1021,41 @@ def _compiled_block_modules(model):
             continue
         if module.__dict__.get("_unsloth_block_mode", 1) == 0:
             continue
-        inside.update(id(m) for m in module.modules())
+        for m in module.modules():
+            inside.add(id(m))
+            if roots is not None:
+                roots[id(m)] = module
     return inside
+
+
+def _block_cudagraphs_keep_budget():
+    """Per rank bytes of gathered block weights kept for block CUDA graphs. LoRA keeps only the
+    adapters (T4 Qwen3-0.6B: 0.04 GiB); a sharded full finetune keeps every block weight in fp32
+    (1.64 GiB per rank there) for graphs that measured no faster."""
+    try:
+        return float(os.environ.get("UNSLOTH_BLOCK_CUDAGRAPHS_FSDP2_KEEP_GB", "0.5")) * 2**30
+    except ValueError:
+        return 0.5 * 2**30
+
+
+def _gib(nbytes):
+    # LoRA adapters are tens of MiB: "0.00 GiB" read as nothing kept.
+    return f"{nbytes / 2**30:.2f} GiB" if nbytes >= 2**30 / 10 else f"{nbytes / 2**20:.1f} MiB"
 
 
 def _keep_unsharded_for_block_cudagraphs(model):
     """FSDP2 frees gathered params at reshard, moving their addresses so block CUDA graphs re-record every
     step (2 x T4 Qwen3 LoRA: 6 records, 0 replays). Keep the storage; the next all-gather refills it in place.
-    Only weights inside compiled blocks: the rest (embeddings, head, final norm) never enter a block graph."""
+    Only weights inside compiled blocks: the rest (embeddings, head, final norm) never enter a block graph.
+    Over the budget nothing is kept and those blocks run without graphs (never recorded)."""
     if not _block_cudagraphs_requested():
         return 0
-    blocks = _compiled_block_modules(model)
+    roots = {}
+    blocks = _compiled_block_modules(model, roots)
     if not blocks:
         return 0
     FSDPModule = _fsdp_module_class()
-    kept, nbytes = 0, 0
+    candidates, nbytes = [], 0
     for module in model.modules():
         if not isinstance(module, FSDPModule):
             continue
@@ -1046,25 +1067,44 @@ def _keep_unsharded_for_block_cudagraphs(model):
             if getattr(fsdp_param, "_unsloth_keep_unsharded", False):
                 continue
             info = getattr(fsdp_param, "_module_info", None)
-            if id(getattr(info, "module", None)) not in blocks:
+            owner = id(getattr(info, "module", None))
+            if owner not in blocks:
                 continue
             if not callable(getattr(type(fsdp_param), "free_unsharded_param", None)):
-                return kept  # a torch without this FSDP2 internal: graphs re-record as before
-            fsdp_param.free_unsharded_param = _skip_free_unsharded_param
-            fsdp_param._unsloth_keep_unsharded = True
-            kept += 1
+                return 0  # a torch without this FSDP2 internal: graphs re-record as before
+            candidates.append((fsdp_param, roots[owner]))
             try:
-                dtype = getattr(fsdp_param, "param_dtype", None) or fsdp_param.orig_dtype
+                # param_dtype / orig_dtype are set at FSDP2's lazy init (first forward), after this.
+                dtype = (
+                    getattr(fsdp_param, "param_dtype", None)
+                    or getattr(getattr(group, "mp_policy", None), "param_dtype", None)
+                    or fsdp_param.sharded_param.dtype
+                )
                 nbytes += fsdp_param._orig_size.numel() * dtype.itemsize
             except Exception:
                 pass
-    if kept:
+    if not candidates:
+        return 0
+    budget = _block_cudagraphs_keep_budget()
+    if nbytes > budget:
+        layers = {id(block): block for _, block in candidates}
+        for block in layers.values():
+            block.__dict__["_unsloth_block_graphs_off"] = True
         _print_rank0(
-            f"Unsloth: UNSLOTH_BLOCK_CUDAGRAPHS=1 under native FSDP2 keeps the gathered weights of "
-            f"{kept} parameters allocated ({nbytes / 2**30:.2f} GiB per rank) so the block CUDA graphs "
-            "replay instead of re-recording every step."
+            f"Unsloth: UNSLOTH_BLOCK_CUDAGRAPHS=1 under native FSDP2 would keep {_gib(nbytes)} "
+            f"per rank of gathered block weights allocated (budget {_gib(budget)}, "
+            f"UNSLOTH_BLOCK_CUDAGRAPHS_FSDP2_KEEP_GB); {len(layers)} blocks run without CUDA graphs."
         )
-    return kept
+        return 0
+    for fsdp_param, _ in candidates:
+        fsdp_param.free_unsharded_param = _skip_free_unsharded_param
+        fsdp_param._unsloth_keep_unsharded = True
+    _print_rank0(
+        f"Unsloth: UNSLOTH_BLOCK_CUDAGRAPHS=1 under native FSDP2 keeps the gathered weights of "
+        f"{len(candidates)} parameters allocated ({_gib(nbytes)} per rank) so the block CUDA graphs "
+        "replay instead of re-recording every step."
+    )
+    return len(candidates)
 
 
 def _post_shard(
@@ -1489,6 +1529,22 @@ def _refuse_block_swap(model):
         )
 
 
+def _frozen_weights_are_vllm_engine_storage(model):
+    """True if weights are views of a vLLM engine's (`llm.shared_weights`), found on the model or base_model.model."""
+    seen = set()
+    stack = [model]
+    while stack:
+        m = stack.pop()
+        if m is None or id(m) in seen or not isinstance(m, torch.nn.Module):
+            continue
+        seen.add(id(m))
+        if getattr(m.__dict__.get("vllm_engine"), "shared_weights", False):
+            return True
+        modules = m.__dict__.get("_modules", {})
+        stack.extend(modules.get(name) for name in ("base_model", "model"))
+    return False
+
+
 def shard_model(model, config: Optional[FSDP2Config] = None):
     """fully_shard each unit of `find_shard_units`, then the root (embeddings, final norm, lm_head,
     leftovers). Pass the outermost module the loop calls (the PeftModel for LoRA). Idempotent."""
@@ -1536,6 +1592,19 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
                 f"(fully_shard(ignored_params), torch 2.7+); this is torch {torch.__version__}."
             )
         config = dataclasses.replace(config, shard_frozen = False)
+    if (
+        config.shard_frozen is None
+        and _supports_ignored_params(fully_shard)
+        and _frozen_weights_are_vllm_engine_storage(model)
+    ):
+        from .fsdp2_perf import _env_tristate as _replicate_env
+        if _replicate_env("UNSLOTH_FSDP2_REPLICATE_FROZEN") is None:
+            # Sharding engine-owned weights frees nothing and adds a shard per rank (3B GRPO OOMs on a T4).
+            config = dataclasses.replace(config, shard_frozen = False)
+            _print_rank0(
+                "Unsloth: native FSDP2 keeps the frozen weights replicated: they are the vLLM engine's "
+                "weights (fast_inference), so sharding them would copy them, not free them."
+            )
     device = _shard_device(model, config.device)
     dist = _ensure_process_group(device, config.backend, config.timeout)
     if device.type == "cuda":
@@ -3286,6 +3355,23 @@ def _install_trainer_hooks():
             native_load_model_checkpoint(model, self.state.best_model_checkpoint)
 
         Trainer._load_best_model = _load_best_model
+
+    original_mixed_mesh = getattr(Trainer, "_has_mixed_mesh_grads", None)
+    if original_mixed_mesh is not None:
+
+        @functools.wraps(original_mixed_mesh)
+        def _has_mixed_mesh_grads(self, model):
+            # _mixed_mesh_grad_norm skips our clip + fp16 unscale and sums 16-bit norms in 16 bits;
+            # native FSDP2 mixes replicated and sharded grads, so stay on the accelerator path.
+            if (
+                is_native_fsdp2(model)
+                or is_native_fsdp2(getattr(self, "model", None))
+                or _native_models(getattr(self, "accelerator", None))
+            ):
+                return False
+            return original_mixed_mesh(self, model)
+
+        Trainer._has_mixed_mesh_grads = _has_mixed_mesh_grads
 
     original_create_accelerator = getattr(Trainer, "create_accelerator_and_postprocess", None)
     if original_create_accelerator is not None:

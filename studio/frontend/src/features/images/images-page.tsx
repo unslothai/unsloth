@@ -5920,8 +5920,7 @@ export function ImagesPage({
                 resolveDownloadFootprint={resolveDownloadFootprint}
                 onEject={status?.loaded ? handleUnload : undefined}
                 variant="ghost"
-                className="!h-[calc(34px*var(--ui-space-scale,1))] max-w-full gap-1 overflow-hidden pl-3 pr-1 @[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2"
-                triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"
+                className="ml-1.5 max-w-full overflow-hidden !pl-2.5 !pr-1.5 !h-[var(--studio-chat-control-height,34px)]"
                 task={IMAGE_GEN_TASKS}
                 catalog={IMAGE_CATALOG}
                 opaqueKind={opaqueKind}

@@ -430,8 +430,10 @@ export const BUDGET = {
   // with startup code (chat-settings-api, sidebar-organization-keys) split into their own eager chunks, plus the
   // mount hook and store wiring: +3,074 B raw / +2,025 B transfer (6,958,762 -> 6,961,836 B raw, 2,099,260 ->
   // 2,101,285 B transfer against 9c397197e0, Node 24, 106 -> 109 chunks). Raised by that growth.
-  transferBytes: 2_103_210,
-  rawBytes: 6_976_629,
+  // Mermaid, node-forge and js-yaml load on first use: -998.5 KB raw / -260.1 KB transfer against 4e673d32e.
+  // Lowered by that, so the headroom stays what it was and a regression of that size fails here.
+  transferBytes: 1_836_868,
+  rawBytes: 5_954_165,
 };
 
 // Chunk count is not budgeted: splitting a page out raises it while lowering bytes.

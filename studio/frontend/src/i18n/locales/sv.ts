@@ -893,6 +893,8 @@ export const sv = {
       guidedTour: "Guidad tur",
       help: "Hjälp",
       logOut: "Logga ut",
+      logOutNeedsPassword: "Ange ett lösenord under Inställningar > Fjärråtkomst innan du loggar ut, så att du kan logga in igen.",
+      logOutFailed: "Det gick inte att logga ut säkert. Försök igen om en stund.",
       shutdown: "Stäng av",
     },
     commandPalette: {
@@ -1039,6 +1041,11 @@ export const sv = {
   },
   settings: {
     accounts: {
+      signsInAs: "Loggar in som {username}",
+      signsInAsOwner: "Loggar in som {alias} eller {username}",
+      signInName: "Ditt inloggningsnamn",
+      signInNameDescription: "Namnet du skriver för att logga in när installationen har mer än ett konto. unsloth fungerar alltid också. Lämna tomt för att bara använda unsloth.",
+      signInNameSave: "Spara namn",
       title: "Konton",
       description:
         "Skapa privata Unsloth-konton. Nya användare loggar in med en engångskod för konfiguration och väljer ett lösenord.",
@@ -1555,7 +1562,7 @@ export const sv = {
       installRuntimeError:
         "Det gick inte att starta installationen av körmiljön.",
       unsupportedArch:
-        "Windows-sandlådan (MXC) körs bara på x64-Windows, så den är inte tillgänglig på den här datorn.",
+        "Windows-sandlådan (MXC) körs bara på x64- och ARM64-Windows, så den är inte tillgänglig på den här datorn.",
       builtinNeedsUpdate:
         "Windows inbyggda container kräver version {required} eller senare, och den här datorn kör {current}. Installera den senaste Windows-uppdateringen för att använda den utan administratörssteg, eller slå på reservsandlådan nedan.",
       unsupportedBuild:
@@ -2509,7 +2516,7 @@ export const sv = {
         gpuUnusableDetail: "Identifierad, men PyTorch kan inte använda den",
         detailedView: "Detaljerad vy",
         detailedViewDescription:
-          "Visa CPU-belastning samt belastning, temperatur och effekt för varje GPU i det flytande fönstret och här.",
+          "Visa CPU-belastning samt belastning, temperatur och effekt för varje GPU i det flytande fönstret.",
         cpuLoad: "CPU-belastning",
         gpuLoad: "GPU-belastning",
         temperature: "Temperatur",
@@ -2544,6 +2551,10 @@ export const sv = {
         used: "{value} används",
         free: "{value} ledigt",
         total: "{value} totalt",
+        usedOf: "{used} använt av {total}",
+        segmentUsed: "Används av GPU",
+        segmentSystem: "Används av systemet",
+        segmentAvailable: "Tillgängligt",
       },
       llamaBackend: {
         title: "GGUF-inferensmotor",
@@ -2705,6 +2716,10 @@ export const sv = {
           hideDetailsAction: "Dölj detaljer",
           clearAction: "Rensa cacheminnen",
           clearOneAction: "Rensa",
+          showFolders: "Visa mappar",
+          hideFolders: "Dölj mappar",
+          previousLocations: "Inkluderar tidigare platser. Huvudknappen Rensa påverkar den aktuella cachemappen. Modellknapparna rensar bara den valda kopian.",
+          clearModelDescription: "Detta tar bara bort den här cachade kopian. Den laddas ned igen vid behov.",
           clearingAction: "Rensar...",
           confirmTitle: "Rensa cachade filer?",
           confirmDescription: "Detta frigör ungefär {size}.",
@@ -4442,7 +4457,6 @@ export const sv = {
       terminalStart: "> unsloth-träningen startar ...",
       preparingResources: "> Förbereder modell och datauppsättning ...",
       gettingReady: "> Vi förbereder allt för din körning ...",
-      waitingForFirstStep: "> {message} | väntar på första steget ... ({step})",
       resumingTraining: "Återupptar träning ...",
       startingTraining: "startar träning ...",
       dataset: "Datauppsättning",

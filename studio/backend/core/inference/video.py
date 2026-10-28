@@ -11409,13 +11409,7 @@ class VideoBackend:
                     else None
                 ),
                 "h3_task": getattr(state, "h3_task", None),
-                "defaults": {
-                    "num_frames": fam.default_num_frames,
-                    "fps": fam.default_fps,
-                    "frame_step": fam.frame_step,
-                    "frame_offset": fam.frame_offset,
-                    "resolution_presets": [list(p) for p in fam.resolution_presets],
-                },
+                "defaults": _family_shape_defaults(fam),
             }
             return status, state
 
@@ -11460,8 +11454,10 @@ class VideoBackend:
         video_id: Optional[str] = None,
         expected_state: Optional[object] = None,
         live_preview: Optional[bool] = None,
+        before_commit: Optional[Callable[[], None]] = None,
     ) -> dict[str, int]:
-        """Returns at once (proxy caps ~100 s). VIDEO_NOT_LOADED_MSG and VIDEO_GENERATION_BUSY_MSG map to 409."""
+        """Returns at once (proxy caps ~100 s). VIDEO_NOT_LOADED_MSG and VIDEO_GENERATION_BUSY_MSG map to 409.
+        ``before_commit`` runs under the lock just before the reservation; raising aborts it."""
         if input_reference is not None and (first_frame is not None or reference_images):
             raise ValueError(
                 "input_reference cannot be combined with explicit conditioning inputs."
@@ -11530,6 +11526,8 @@ class VideoBackend:
                 validate_video_request_shape(
                     state.family, width = width, height = height, num_frames = run_num_frames
                 )
+                if before_commit is not None:
+                    before_commit()
                 self._generate_job_active = True
                 self._generate_job_token = job_token
                 self._generate_job_account = current_account_id()
@@ -13165,7 +13163,7 @@ class VideoBackend:
                 if image is None:
                     return None
                 path = Path(scratch) / f"{name}.png"
-                image.save(path, format = "PNG")
+                image.save(path, format = "PNG", compress_level = 1)
                 return str(path)
 
             init_img = stage(first_frame, "first")
@@ -13720,6 +13718,16 @@ def get_video_backend() -> VideoBackend:
         if _backend is None:
             _backend = VideoBackend()
         return _backend
+
+
+def _family_shape_defaults(fam) -> dict:
+    return {
+        "num_frames": fam.default_num_frames,
+        "fps": fam.default_fps,
+        "frame_step": fam.frame_step,
+        "frame_offset": fam.frame_offset,
+        "resolution_presets": [list(p) for p in fam.resolution_presets],
+    }
 
 
 def generation_in_flight() -> bool:

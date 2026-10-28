@@ -180,17 +180,21 @@ def save(image: Any, meta: dict[str, Any]) -> dict[str, Any]:
         except OSError:
             pass
         raise
-    return _record(image_id, meta)
+    return _record(image_id, meta, directory = directory)
 
 
 def _record(
     image_id: str,
     meta: dict[str, Any],
     flags: Optional[dict[str, dict[str, Any]]] = None,
+    *,
+    directory: Optional[Path] = None,
 ) -> dict[str, Any]:
+    if directory is None:
+        directory = gallery_dir()
     # flags are library state, not recipe: they come from the sidecar store, never the PNG chunk
     if flags is None:
-        flags = gallery_flags.read(gallery_dir())
+        flags = gallery_flags.read(directory)
     return {
         **meta,
         "id": image_id,
@@ -198,7 +202,7 @@ def _record(
         **gallery_flags.flags_for(flags, image_id),
         # The server's own sort key, so a client re-sort agrees with it (created_at can differ).
         "order_at": gallery_flags.order_rank(
-            flags, image_id, _mtime(gallery_dir() / f"{image_id}.png")
+            flags, image_id, _mtime(directory / f"{image_id}.png")
         ),
     }
 
@@ -207,9 +211,10 @@ def image_path(image_id: str) -> Optional[Path]:
     """Resolve an id to its on-disk PNG, or None if missing / unsafe."""
     if not _ID_RE.match(image_id):
         return None
-    path = gallery_dir() / f"{image_id}.png"
+    directory = gallery_dir()
+    path = directory / f"{image_id}.png"
     try:
-        path.resolve().relative_to(gallery_dir().resolve())
+        path.resolve().relative_to(directory.resolve())
     except ValueError:
         return None
     return path if path.is_file() else None
@@ -289,10 +294,11 @@ def list_images(
 ) -> list[dict[str, Any]]:
     """Pinned first, then mtime; archived selects a shelf, never widens; valid filter runs before paging."""
     try:
-        paths = list(gallery_dir().glob("*.png"))
+        directory = gallery_dir()
+        paths = list(directory.glob("*.png"))
     except OSError:
         return []
-    flags = gallery_flags.read(gallery_dir())
+    flags = gallery_flags.read(directory)
     # Shelf split and pin sort use file stems before any recipe read, keeping the early break intact.
     paths = [p for p in paths if gallery_flags.is_archived(flags, p.stem) == archived]
     paths.sort(
@@ -309,7 +315,7 @@ def list_images(
         meta = _read_meta(path)
         if meta is None:
             continue
-        record = _record(path.stem, meta, flags)
+        record = _record(path.stem, meta, flags, directory = directory)
         if valid is not None and not valid(record):
             continue
         records.append(record)

@@ -65,6 +65,7 @@ from core.inference.tool_loop_controller import (
     _WORKSPACE_READ_TOOLS,
     BROWSER_TOOL_NAMES,
     REPEATABLE_TOOL_NAMES,
+    TRUNCATED_TOOL_TURN_MESSAGE,
     ToolLoopController,
     _reruns_after_new_work,
     append_deferred_nudges,
@@ -158,13 +159,26 @@ def _held_rehearsal_tail_len(
     unrestricted: bool = False,
 ) -> int:
     """Length of a trailing bare tool-name token held while streaming so the name does not leak; also call:NAME{ prefixes, seen only once the brace arrives."""
+    # Restricted mode: same NAME[ARGS] bound as llama_cpp._held_rehearsal_tail_len.
+    limit = (
+        len(text)
+        if unrestricted
+        else max(
+            (len(name) for name in _active_tool_names(active_tools) if isinstance(name, str)),
+            default = 0,
+        )
+        + len("[ARGS]")
+    )
     i = len(text)
-    while i > 0 and not text[i - 1].isspace():
+    stop = max(0, i - limit - 1)
+    while i > stop and not text[i - 1].isspace():
         i -= 1
     tail = text[i:]
     held = (
         len(tail)
-        if tail and _is_rehearsal_prefix(tail, active_tools, unrestricted = unrestricted)
+        if tail
+        and len(tail) <= limit
+        and _is_rehearsal_prefix(tail, active_tools, unrestricted = unrestricted)
         else 0
     )
     return max(
@@ -1273,6 +1287,31 @@ def run_safetensors_tool_loop(
             next_call_id += len(tool_calls)
             # Strip a leading bare-JSON call from kept content, since _strip_tool_markup_final only knows XML.
             content_text = strip_leading_bare_json_call(content_text, _enabled_tool_names)
+
+        # Transformers/MLX report the finished turn here; never run a healed, token-cut call.
+        turn_stats = (generation_stats_holder or {}).get("stats") or {}
+        if tool_calls and (
+            turn_stats.get("truncated")
+            or turn_stats.get("finish_reason") in ("length", "content_filter")
+        ):
+            if provisional_render_html_started and not provisional_resolved:
+                provisional_resolved = True
+                yield {
+                    "type": "tool_end",
+                    "tool_name": "render_html",
+                    "tool_call_id": provisional_render_html_id,
+                    "result": TRUNCATED_TOOL_TURN_MESSAGE,
+                    "provenance": _tool_event_provenance(provisional = True),
+                }
+            # Empty status resets the route cursor; send only text not already streamed.
+            display = _strip_streaming_display(cumulative_display)
+            notice = display[len(last_emitted) :] + ("\n\n" if display else "")
+            yield {"type": "status", "text": ""}
+            yield {
+                "type": "content",
+                "text": notice + TRUNCATED_TOOL_TURN_MESSAGE,
+            }
+            return
 
         if final_attempt_done:
             if content_text:

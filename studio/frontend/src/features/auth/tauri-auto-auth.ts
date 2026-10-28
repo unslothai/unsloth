@@ -19,7 +19,8 @@ import {
 
 type DesktopAuthResponse =
   | { access_token: string; refresh_token: string }
-  | { login_required: true; login_mode: "multi" };
+  | { login_required: true; login_mode: "multi" }
+  | { signed_out: true };
 
 type TauriAutoAuthOptions = {
   force?: boolean;
@@ -32,6 +33,18 @@ let tauriLoginRequired = false;
 
 export function isTauriLoginRequired(): boolean {
   return tauriLoginRequired;
+}
+
+// A shell marker file, not localStorage: WebView2 writes lazily, so a quick quit lost the sign-out.
+export async function markDesktopSignedOut(): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("desktop_mark_signed_out");
+  tauriLoginRequired = true;
+}
+
+export async function clearDesktopSignedOut(): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("desktop_clear_signed_out");
 }
 
 const TAURI_AUTH_FAILURE_FALLBACK =
@@ -81,6 +94,14 @@ async function doTauriAutoAuth(options: TauriAutoAuthOptions): Promise<boolean> 
   try {
     const { invoke } = await import("@tauri-apps/api/core");
     const tokens = await invoke<DesktopAuthResponse>("desktop_auth");
+    if ("signed_out" in tokens) {
+      tauriLoginRequired = true;
+      clearAuthTokens();
+      clearTauriAuthFailure();
+      const { router } = await import("@/app/router");
+      await router.navigate({ to: "/login", replace: true });
+      return options.force === true;
+    }
     if ("login_required" in tokens) {
       tauriLoginRequired = true;
       // A managed account signs in in the document; do not discard the session it holds.
@@ -143,4 +164,10 @@ export function tauriAutoAuth(
     );
   }
   return pending.promise;
+}
+
+export async function continueAsDesktopOwner(): Promise<boolean> {
+  await clearDesktopSignedOut();
+  await tauriAutoAuth({ force: true });
+  return !tauriLoginRequired && hasAuthToken();
 }

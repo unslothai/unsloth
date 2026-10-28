@@ -61,11 +61,10 @@ def _set_compile_cache_tag(tag: Optional[str]) -> None:
     current = getattr(_cc, "cache_key_tag", None)
     if not isinstance(current, str):
         return
-    parts = [p for p in current.split(";") if p and not p.startswith(_CACHE_TAG_PREFIX)]
-    if tag:
-        parts.append(_CACHE_TAG_PREFIX + tag)
+    from .diffusion_compile_config import canonical_compile_cache_tag
+
     try:
-        _cc.cache_key_tag = ";".join(parts)
+        _cc.cache_key_tag = canonical_compile_cache_tag(current, _CACHE_TAG_PREFIX, tag)
     except Exception:  # noqa: BLE001
         pass
 
