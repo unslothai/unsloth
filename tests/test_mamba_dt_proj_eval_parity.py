@@ -13,6 +13,8 @@ import copy
 import importlib
 import importlib.util
 import pathlib
+import pickle
+import subprocess
 import sys
 import threading
 import warnings
@@ -258,6 +260,18 @@ def test_cached_weight_follows_updates_and_adapter_switches(monkeypatch, arch):
     torch.testing.assert_close(_logits(model, ids), unmerged, rtol = 1e-5, atol = 1e-6)
 
 
+@pytest.mark.parametrize("arch", ARCHS)
+def test_cached_weight_follows_data_reassignment(monkeypatch, arch):
+    # `p.data = t` (custom LoRA inits, dtype casts at save time) keeps id(p) and p._version.
+    model = _trained(monkeypatch, arch, ["dt_proj"])
+    ids = _ids()
+    first = _logits(model, ids)
+    for p in helpers._lora_param(model, "dt_proj", "B"):
+        p.data = p.data * -1.5
+    assert torch.equal(_logits(model, ids), _logits(_merged(model), ids))
+    assert not torch.equal(_logits(model, ids), first)
+
+
 def test_concurrent_eval_threads_each_see_the_adapter(monkeypatch):
     # nn.DataParallel replicas and serving threads run forwards concurrently: the effective weight
     # is armed per thread, so one thread finishing cannot disarm another mid-forward.
@@ -281,6 +295,29 @@ def test_concurrent_eval_threads_each_see_the_adapter(monkeypatch):
     if errors:
         raise errors[0]
     assert len(results) == 20 and all(results)
+
+
+def test_pickled_model_loads_without_unsloth_and_drops_the_cache(monkeypatch, tmp_path):
+    # torch.save(model) / pickle must stay loadable in a process that never ran the patch, and the
+    # cached W + delta must not ride along in the payload (or in a deepcopy).
+    model = _trained(monkeypatch, "mamba", ["dt_proj"])
+    _logits(model, _ids())
+    cache = sys.modules["_unsloth_mamba_lora_under_test"]._CACHE
+    leaf = model.base_model.model.backbone.layers[0].mixer.dt_proj
+    assert cache in leaf.__dict__, "eval forward did not cache W + delta"
+    data = pickle.dumps(model)
+    assert b"_RawRead_" not in data
+    assert cache.encode() not in data
+    assert cache not in copy.deepcopy(leaf).__dict__
+    path = tmp_path / "model.pkl"
+    path.write_bytes(data)
+    code = (
+        "import pickle, sys; m = pickle.load(open(sys.argv[1], 'rb')); "
+        "print(type(m.base_model.model.backbone.layers[0].mixer.dt_proj).__qualname__)"
+    )
+    out = subprocess.run([sys.executable, "-c", code, str(path)], capture_output = True, text = True)
+    assert out.returncode == 0, out.stderr[-2000:]
+    assert out.stdout.strip() == type(leaf).__mro__[1].__qualname__
 
 
 def test_unfoldable_adapter_warns_on_raw_read(monkeypatch):

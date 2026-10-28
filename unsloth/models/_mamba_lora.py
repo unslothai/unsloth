@@ -22,6 +22,7 @@ autograd, cached across no-grad forwards until a weight, the active adapters or 
 unmerged eval and generate match ``merge_and_unload`` and ``disable_adapter()`` gives the base model.
 """
 
+import copyreg
 import functools
 import inspect
 import sys
@@ -134,17 +135,31 @@ def _merged_weight(module, allow_multiple = False):
 
 
 def _cache_key(module):
+    # `p.data = t` keeps id(p) and p._version but moves the storage (and can change the dtype), so
+    # data_ptr / dtype are part of the key too. In-place writes through `p.data` stay invisible.
     base = module.get_base_layer().weight
     key = [
         tuple(module.active_adapters),
         id(base),
         base._version,
+        base.data_ptr(),
+        base.dtype,
         torch.is_inference_mode_enabled(),
     ]
     for name in module.active_adapters:
         if name in module.lora_A:
             a, b = module.lora_A[name].weight, module.lora_B[name].weight
-            key += [id(a), a._version, id(b), b._version, module.scaling.get(name)]
+            key += [
+                id(a),
+                a._version,
+                a.data_ptr(),
+                a.dtype,
+                id(b),
+                b._version,
+                b.data_ptr(),
+                b.dtype,
+                module.scaling.get(name),
+            ]
     return tuple(key)
 
 
@@ -198,13 +213,26 @@ def _raw_read_class(cls):
             break
         return super(sub, self).weight
 
+    def __reduce_ex__(self, protocol):
+        # Pickle / deepcopy as the plain adapter layer without the cached W + delta, so a saved model
+        # loads where this module never ran; the next mixer forward installs the property again.
+        state = self.__dict__.copy()
+        state.pop(_CACHE, None)
+        return copyreg._reconstructor, (cls, object, None), state
+
     qualname = "_RawRead_" + "_".join(f"{cls.__module__}.{cls.__qualname__}".split("."))
     sub = type(
         cls.__name__,
         (cls,),
-        {"weight": property(weight), "__module__": __name__, "__qualname__": qualname, _MARK: True},
+        {
+            "weight": property(weight),
+            "__reduce_ex__": __reduce_ex__,
+            "__module__": __name__,
+            "__qualname__": qualname,
+            _MARK: True,
+        },
     )
-    globals()[qualname] = sub  # importable by qualname, so pickle / deepcopy still work
+    globals()[qualname] = sub  # resolvable by qualname (torch.compile, introspection)
     _RAW_READ_CLASSES[cls] = sub
     return sub
 
