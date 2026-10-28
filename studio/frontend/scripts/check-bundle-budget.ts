@@ -437,8 +437,10 @@ export const BUDGET = {
   // gating and per-reward Try it errors in the eager rewards section and catalog), measured at 2fe7715056.
   // Sample answers (#12999): +1,158 B raw / +347 B transfer over #12995 (the card's loading, waiting
   // and error strings in the eager catalog), measured at 7eb8c86831.
-  transferBytes: 2_114_116,
-  rawBytes: 7_011_557,
+  // Format warm-up (#13000): +1,797 B raw / +590 B transfer over #12999 (the reasoning-format switch,
+  // warm-up row and their strings in the eager prompt section and catalog), measured at 93c5927c2c.
+  transferBytes: 2_114_706,
+  rawBytes: 7_013_354,
 };
 
 // Chunk count is not budgeted: splitting a page out raises it while lowering bytes.
