@@ -136,6 +136,11 @@ export const en = {
     more: "More",
     addressPlaceholder: "Search or enter a URL",
     local: "Local",
+    browserUse: {
+      label: "Browser use",
+      description: "Let models control the in-built browser",
+      unavailable: "Load a model that can call tools to let it use the browser.",
+    },
     suggested: "Suggested",
     suggestedMenu: {
       open: "Open",
@@ -2373,6 +2378,7 @@ export const en = {
       liveMonitor: {
         title: "Live monitor",
         apiTitle: "API monitor",
+        apiDescription: "See what other apps send to this server's API as it arrives.",
         summary: "Live requests, errors, and token usage",
         status: "{active} active · {recent} recent · {model}",
         noModelLoaded: "no model loaded",
@@ -2391,7 +2397,7 @@ export const en = {
         gpuUnusableDetail: "Detected, but PyTorch cannot use it",
         detailedView: "Detailed view",
         detailedViewDescription:
-          "Show CPU load and each GPU's load, temperature and power in the floating window and here.",
+          "Show CPU load and each GPU's load, temperature and power in the floating window.",
         cpuLoad: "CPU load",
         gpuLoad: "GPU load",
         temperature: "Temperature",
@@ -2424,6 +2430,10 @@ export const en = {
         used: "{value} used",
         free: "{value} free",
         total: "{value} total",
+        usedOf: "{used} used of {total}",
+        segmentUsed: "Used by GPU",
+        segmentSystem: "Used by system",
+        segmentAvailable: "Available",
       },
       llamaBackend: {
         title: "GGUF inference engine",
@@ -2616,6 +2626,8 @@ export const en = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "Uptime",
         processMemory: "Process memory",
         notInstalled: "Not installed",
@@ -3361,6 +3373,7 @@ export const en = {
       desktopAppVersionUnavailable: "Unavailable",
       llamaCppVersion: "llama.cpp Version",
       audioCppVersion: "audio.cpp Version",
+      mlxVersion: "MLX Version",
       whisperCppVersion: "whisper.cpp Version",
       engines: {
         title: "Engines",
@@ -3496,7 +3509,7 @@ export const en = {
       datasetLabel: "Dataset",
       datasetTooltip: "The training data used to fine-tune the model.",
       hfTokenDescription: "Required for gated or private models and datasets.",
-      uploadLocalLabel: "Or upload a local file",
+      uploadLocalLabel: "Upload a local file",
       sourceBrowse: "Browse",
       releaseToUpload: "Release to upload",
       loadYaml: "Load YAML",
@@ -4340,7 +4353,7 @@ export const en = {
   // The Scheduled page: prompts that run on a schedule, each run answered in a new chat.
   scheduledTasks: {
     title: "Scheduled",
-    description: "Run prompts on a schedule with your loaded model.",
+    description: "Run prompts on a schedule with any of your models.",
     newTask: "New task",
     upcoming: "Upcoming",
     // Column headers over the list, and the Repeats value of a monthly task.
@@ -4620,6 +4633,7 @@ export const en = {
       modelsTitle: "No fine-tuned models yet",
       modelsDescription: "Models you train or export in Unsloth show up here.",
       createFolder: "Create folder",
+      generateImage: "Generate an image",
       generateVideo: "Generate a video",
       generateAudio: "Generate audio",
       trainModel: "Train a model",

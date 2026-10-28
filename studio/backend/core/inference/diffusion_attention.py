@@ -1,37 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Select the diffusion transformer's attention backend.
-
-diffusers' ``transformer.set_attention_backend(name)`` dispatcher swaps the SDPA kernel,
-validating hardware/package at set time (default ``native`` = ``F.scaled_dot_product_attention``).
-Attention is bandwidth-bound, so a better kernel is a real win orthogonal to weight quantisation
-(it speeds the QK/PV matmuls torchao never touches) and composes with torch.compile.
-
-  auto  - the best *exact* backend for the device. On NVIDIA CUDA that is cuDNN fused attention
-          (``_native_cudnn``). Torch's SDPA dispatch is a HEURISTIC, not a guarantee, and that is
-          the reason to pin it: re-measured on torch 2.12 / B200 at Qwen-Image's 1024px shape
-          (B=1 H=24 N=4352 D=128 bf16) the default ALREADY lands on cuDNN, so pinning is
-          bitwise-identical and near free (compiled 1.599s -> 1.572s, 1.02x; eager 0.93x, the
-          per-call sdpa_kernel wrapper cost, which compile folds away) -- but FLASH and EFFICIENT
-          at that same shape run 3.9x and 9.0x slower. Pinning is insurance against the heuristic
-          picking one of those on another card, head_dim or torch build. On Blackwell (SM100+) auto
-          leaves native when torch's own dispatch picks cuDNN at every DiT head dim and the run dtype
-          (same kernel, no per-call wrapper; ``UNSLOTH_DIFFUSION_BLACKWELL_NATIVE_ATTN=0`` keeps the
-          pin). Elsewhere stays ``native``. Only upgrades when a speed profile is active, so ``speed_mode=off`` stays
-          bit-identical.
-  native - force the default SDPA (bit-identical reference).
-  cudnn  - cuDNN fused attention (exact; NVIDIA).
-  flash / flash3 / flash4 - FlashAttention 2 / 3 (Hopper) / 4 (SM100); exact, kernel-gated.
-  sage   - SageAttention 2 (INT8 QK); quantized, small quality cost. A pip SageAttention 2 when installed, else the
-           kernels-community build from the Hugging Face kernels hub (``sage_hub``, Ampere / Ada / Hopper).
-  xformers / aiter - memory-efficient (NVIDIA) / AITER (AMD ROCm).
-  flash on ROCm - only when the DAO-AILab ROCm build passes an on-card check; ``auto`` also needs a block timing win
-          (``UNSLOTH_DIFFUSION_ROCM_FLASH``: auto | 0 | 1). The timing persists per toolchain and geometry under
-          the Studio cache (``UNSLOTH_DIFFUSION_ROCM_FLASH_CACHE_DIR``), so a restart reads it instead of re-timing.
-
-Best-effort: an unavailable backend falls back to the diffusers default. torch/diffusers lazy.
-"""
+"""Attention backend: auto picks cuDNN on NVIDIA with a speed profile (Blackwell stays native if
+torch picks cuDNN, unless UNSLOTH_DIFFUSION_BLACKWELL_NATIVE_ATTN=0); native, cudnn,
+flash/flash3/flash4, sage, xformers, aiter; unavailable falls back to native; torch/diffusers
+lazy."""
 
 from __future__ import annotations
 
@@ -974,6 +947,21 @@ _ROCM_FLASH_GATE_LOCK = threading.Lock()
 # The native SDPA baseline the in-memory verdicts were timed against; when it moves (a later load re-enables or disables
 # the fused SDPA kernels), both in-memory caches are dropped and the disk cache, keyed on it, decides again.
 _ROCM_FLASH_BASELINE: list = [None]
+# ``torch.fx.experimental.symbolic_shapes.statically_known_true`` when this torch's Dynamo traces it in graph (no
+# guard), else None. Resolved outside tracing, when the dispatch guard installs.
+_ROCM_FLASH_STATICALLY_KNOWN_TRUE: list = [None]
+
+
+def _resolve_statically_known_true() -> None:
+    try:
+        from torch._dynamo import trace_rules
+        from torch.fx.experimental.symbolic_shapes import statically_known_true
+
+        name = "torch.fx.experimental.symbolic_shapes.statically_known_true"
+        if name in trace_rules.manual_torch_name_rule_map:
+            _ROCM_FLASH_STATICALLY_KNOWN_TRUE[0] = statically_known_true
+    except Exception:  # noqa: BLE001 - older torch: the direct comparison stays
+        pass
 
 
 def _sync_rocm_flash_baseline() -> None:
@@ -1050,7 +1038,11 @@ def _rocm_flash_length_reason(query: Any, key: Any) -> Optional[str]:
             return None
         h, d, geometries = match[0][2], match[0][3], tuple(sorted(match[1]))
         b_bucket = _rocm_flash_batch_bucket(batch)
-        joint = kv == seq  # self / joint attention: one symbol, so no guard
+        # Self / joint attention: keys and queries share one length symbol. ``statically_known_true`` answers that
+        # without a guard, so cross attention (an independent key length) never specialises on the query length.
+        # A torch whose Dynamo cannot trace it (2.6) compares directly, which guards.
+        known = _ROCM_FLASH_STATICALLY_KNOWN_TRUE[0]
+        joint = known(kv == seq) if known is not None else kv == seq
         kv_bucket = None if joint else _rocm_flash_bucket(kv)
         # Guard only where the route changes, so neighbouring same-verdict buckets reuse this graph.
         segments = _rocm_flash_traced_segments(
@@ -2182,6 +2174,7 @@ def _rocm_flash_reroute_reason(query: Any, key: Any, value: Any, attn_mask: Any)
 
 
 def _install_rocm_flash_dispatch_guard() -> bool:
+    _resolve_statically_known_true()
     try:
         import torch
         torch.compiler.assume_constant_result(_rocm_flash_traced_reason)

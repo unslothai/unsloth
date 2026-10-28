@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""``general.*`` reader for GGUF headers, used by ``detect_mmproj_file`` to
-pair weights and projectors via ``general.base_model.0.repo_url``."""
+"""GGUF general.* reader; detect_mmproj_file pairs projectors via general.base_model.0.repo_url."""
 
 from __future__ import annotations
 
@@ -359,6 +358,108 @@ _FIXED_VTYPE_SIZES: Dict[int, int] = {
     12: 8,
 }
 
+_U64_AT = struct.Struct("<Q").unpack_from
+_STRING_SCAN_CHUNK = 1 << 18
+# Longer entries are left to the caller's own per-entry loop, which owns the length checks.
+_STRING_SCAN_MAX = 1 << 20
+
+
+def _can_rewind(f) -> bool:
+    """False for forward-only streams and ``mmap`` before 3.13: the walks seek back after reading ahead."""
+    seekable = getattr(f, "seekable", None)
+    try:
+        return bool(seekable()) if callable(seekable) else False
+    except Exception:  # noqa: BLE001 -- unknown wrapper: take the per-entry path
+        return False
+
+
+def skip_gguf_strings(f, count: int) -> int:
+    """Skip up to ``count`` GGUF strings (u64 length + bytes) through one buffer; return how many,
+    with ``f`` at the next. Stops at an entry over 1 MiB, a length cut short by EOF, or a stream
+    that cannot rewind, so the caller's per-entry loop handles the rest exactly as before."""
+    if not _can_rewind(f):
+        return 0
+    unpack = _U64_AT
+    buf = b""
+    size = pos = done = 0
+    while True:
+        i = done
+        try:
+            for i in range(done, count):
+                n = unpack(buf, pos)[0]
+                if n > _STRING_SCAN_MAX:
+                    break
+                pos += 8 + n
+            else:
+                i = count
+        except struct.error:  # length field not in the buffer
+            pass
+        done = i
+        if done == count or pos + 8 <= size:
+            break
+        # The buffer ends at the file position; refill from buf[pos].
+        if pos >= size:
+            if pos > size:
+                f.seek(pos - size, 1)
+            buf = f.read(_STRING_SCAN_CHUNK)
+        else:
+            buf = buf[pos:] + f.read(_STRING_SCAN_CHUNK)
+        pos = 0
+        size = len(buf)
+        if size < 8:
+            break
+    f.seek(pos - size, 1)
+    return done
+
+
+def take_gguf_strings_by_first_byte(
+    f, count: int, first_bytes: frozenset[int]
+) -> Tuple[int, list[bytes]]:
+    """``skip_gguf_strings`` that returns ``(entries read, raw entries whose first byte is in
+    first_bytes)``; also stops at an entry cut short by EOF, leaving ``f`` at it."""
+    kept: list[bytes] = []
+    if not _can_rewind(f):
+        return 0, kept
+    unpack = _U64_AT
+    keep = kept.append
+    buf = b""
+    size = pos = done = 0
+    eof = False
+    while True:
+        i = done
+        try:
+            for i in range(done, count):
+                n = unpack(buf, pos)[0]
+                end = pos + 8 + n
+                if end > size or n > _STRING_SCAN_MAX:
+                    break
+                if n and buf[pos + 8] in first_bytes:
+                    keep(buf[pos + 8 : end])
+                pos = end
+            else:
+                i = count
+        except struct.error:  # length field not in the buffer
+            pass
+        progressed = i > done
+        done = i
+        if done == count:
+            break
+        if pos + 8 <= size and unpack(buf, pos)[0] > _STRING_SCAN_MAX:
+            break
+        if eof and not progressed:
+            break
+        # pos never passes size here; refill with at least the whole next entry.
+        want = _STRING_SCAN_CHUNK
+        if pos + 8 <= size:
+            want = max(want, 8 + unpack(buf, pos)[0])
+        more = f.read(want)
+        eof = len(more) < want
+        buf = buf[pos:] + more
+        pos = 0
+        size = len(buf)
+    f.seek(pos - size, 1)
+    return done, kept
+
 
 def _skip_gguf_value(f, vtype: int) -> bool:
     """Advance past one GGUF value. ``f.seek(.., 1)`` past EOF is legal on a regular file, so truncation is caught on the next read; return False only for unknown types or sanity-bound overflow."""
@@ -379,7 +480,7 @@ def _skip_gguf_value(f, vtype: int) -> bool:
         if alen > 1 << 30:
             return False
         if atype == 8:
-            for _ in range(alen):
+            for _ in range(alen - skip_gguf_strings(f, alen)):
                 slen_bytes = f.read(8)
                 if len(slen_bytes) < 8:
                     return False

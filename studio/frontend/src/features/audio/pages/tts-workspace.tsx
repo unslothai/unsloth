@@ -511,6 +511,7 @@ export function TtsOutput({
   handleDeleteClip,
   fallbackClip,
   handleDownloadFallbackClip,
+  emptyTitle,
   emptyText,
   emptyActions,
   handleClearGallery,
@@ -574,6 +575,7 @@ export function TtsOutput({
       canStop: boolean;
       onStop: () => void;
     } | null;
+    emptyTitle?: string;
     emptyText: string;
     emptyActions?: ReactNode;
     freshClipId: string | null;
@@ -752,7 +754,14 @@ export function TtsOutput({
           />
         ) : (
           <div className="grid justify-items-center gap-3">
-            <p className="text-ui-13 text-muted-foreground">{emptyText}</p>
+            {emptyTitle ? (
+              <div className="grid gap-1 text-center">
+                <h2 className="text-ui-14 font-medium text-foreground">{emptyTitle}</h2>
+                <p className="text-ui-13 text-muted-foreground">{emptyText}</p>
+              </div>
+            ) : (
+              <p className="text-ui-13 text-muted-foreground">{emptyText}</p>
+            )}
             {emptyActions}
           </div>
         )}

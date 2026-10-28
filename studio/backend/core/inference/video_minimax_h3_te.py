@@ -1,49 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Load MiniMax-H3's Qwen3-VL conditioner from a hosted QUANTIZED checkpoint.
-
-The H3 Diffusers path runs every component under ``ComponentsManager.enable_auto_cpu_offload``,
-so its VRAM floor is the LARGEST SINGLE RESIDENT COMPONENT, not their sum. The released bfloat16
-conditioner is 66.7 GB and the released denoiser is 66.3 GB, which is why seeding a 20 GB
-pre-quantized denoiser moved that floor by nothing at all: the encoder simply became the largest
-component instead. The encoder is the only remaining lever.
-
-``diffusion_te_prequant`` cannot serve this one. Its artifacts are layerwise-fp8 STORAGE casts of
-a dense encoder saved as ``torch.load``-able state dicts, which halve the bytes but keep every
-released tensor. The hosted H3 conditioner is a different artifact in two independent ways, and
-both savings stack:
-
-  1. It carries 50 of the released 64 decoder layers, and no ``lm_head`` and no final ``norm``
-     (47.97 GiB against 62.14 GiB for ``MiniMaxAI/MiniMax-H3`` ``text_encoder/``).
-  2. Those 50 layers' four attention and three MLP projections are ConvRot INT8
-     (25.28 GiB, i.e. 27.14 GB resident).
-
-Dropping the tail is LOSSLESS here, not an approximation. MiniMax-H3 conditions the transformer on
-``hidden_states[50]`` of the conditioner and never touches the language-model head -- see
-``diffusers/modular_pipelines/minimax_h3/modular_pipeline.py`` (``text_encoder_layer`` returns 50,
-"MiniMax-H3 reads `hidden_states[50]`, not the final one") and ``.../encoders.py``
-``get_qwen3vl_prompt_embeds``, which calls ``text_encoder.model(..., output_hidden_states=True)``
-and returns ``outputs.hidden_states[text_encoder_layer]``. Decoder layers 51-64 and ``lm_head``
-therefore cannot influence the conditioning by construction. Comparing the hosted file's tensor
-names against ``MiniMaxAI/MiniMax-H3``'s own shard index confirms the artifact drops EXACTLY that
-set and nothing else: 902 names that map 1:1 onto the released ones, the remainder being decoder
-layers 50-63 (0-based), ``model.language_model.norm.weight`` and ``lm_head.weight``.
-
-There is one mechanical catch, and it is the reason this module builds 51 layers rather than 50.
-``output_hidden_states`` yields ``[embeddings, layer_0_out, ..., layer_{N-1}_out]`` where the LAST
-entry is post-``norm``. A stack truncated to exactly 50 layers therefore returns a NORMALIZED
-``hidden_states[50]``, which is not the conditioning the released weights were trained against;
-diffusers refuses that case outright (``encoders.py``: "The last hidden state of a stack truncated
-to exactly 50 layers is post-norm"). Building a 51st slot that passes its input through unchanged
-puts ``hidden_states[50]`` back where it belongs -- the raw output after 50 real layers, bit-identical
-to what the full 64-layer conditioner produces there -- for no weights and no compute, and keeps
-``len(layers) == config.num_hidden_layers`` honest so the diffusers guard passes on a true statement.
-
-Best-effort throughout, exactly like ``diffusion_prequant``: any missing / unreadable / mismatched
-artifact returns None and the caller loads the released bfloat16 encoder instead. Inert with
-nothing configured.
-"""
+"""Qwen3-VL conditioner (50 of 64 layers, no lm_head/norm, ConvRot INT8); lossless as H3 reads
+hidden_states[50]; 51st pass-through slot avoids post-norm and keeps
+len(layers)==config.num_hidden_layers (diffusers guard); inert unless configured; bad artifacts
+fall back to released bf16 encoder."""
 
 from __future__ import annotations
 
@@ -426,10 +387,11 @@ def h3_te_stream_enabled() -> bool:
     )
 
 
-def h3_te_pin_allowed(payload_bytes: int = 0) -> bool:
+def h3_te_pin_allowed(payload_bytes: int = 0, device: Any = None) -> bool:
     """Whether ``payload_bytes`` (at least one arena) may be pinned. The full payload, not one arena: the hosted
     weights are mmap views already counted as available, so pinning them takes that much. Honours the group offload
-    pin switch and the ~1 GiB pinned cap of Windows / WSL. Never raises."""
+    pin switch and the ~1 GiB pinned cap of Windows / WSL. ``device``: the onload target (None: the current one).
+    Never raises."""
     try:
         import os
 
@@ -438,7 +400,7 @@ def h3_te_pin_allowed(payload_bytes: int = 0) -> bool:
         from .host_pinning import host_pinning_allowed
 
         forced = str(os.environ.get(GROUP_OFFLOAD_PIN_ENV, "")).strip().lower()
-        if forced in ("0", "off", "false", "no") or not host_pinning_allowed():
+        if forced in ("0", "off", "false", "no") or not host_pinning_allowed(device):
             return False
         if forced in ("1", "on", "true", "yes"):
             return True
@@ -462,6 +424,17 @@ def _module_payload_bytes(module: Any) -> int:
 
 def _round_up(value: int, multiple: int) -> int:
     return (value + multiple - 1) // multiple * multiple
+
+
+def _pinned_arena(size: int) -> Any:
+    import torch
+
+    from .diffusion_memory import registered_pinned_empty
+
+    arena = registered_pinned_empty(size)
+    if arena is not None:
+        return arena
+    return torch.empty(size, dtype = torch.uint8, pin_memory = True)
 
 
 def pin_module_in_place(
@@ -499,11 +472,7 @@ def pin_module_in_place(
         slot = next((a for a in arenas if a[0].numel() - a[1] >= need), None)
         if slot is None:
             size = max(int(arena_bytes), 1 << (need - 1).bit_length())
-            arena = (
-                _arena_factory(size)
-                if _arena_factory is not None
-                else torch.empty(size, dtype = torch.uint8, pin_memory = True)
-            )
+            arena = _arena_factory(size) if _arena_factory is not None else _pinned_arena(size)
             slot = [arena, 0]
             arenas.append(slot)
         offset = slot[1]
@@ -566,7 +535,7 @@ def stream_h3_text_encoder(
     if not stream:
         pin = False
     elif pin is None:
-        pin = h3_te_pin_allowed(_module_payload_bytes(text_encoder))
+        pin = h3_te_pin_allowed(_module_payload_bytes(text_encoder), onload)
     if pin:
         try:
             pin_module_in_place(text_encoder)

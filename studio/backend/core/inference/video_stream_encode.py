@@ -1,12 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Encode a Wan or MiniMax-H3 clip while its VAE is still decoding.
-
-The streamed mp4 is used only when its frames equal the final frames bit for bit, else the clip is encoded as
-before. H3 declares its audio stream up front as ``encode_x264`` does and muxes the soundtrack at the end.
-``UNSLOTH_STUDIO_VIDEO_STREAM_ENCODE=0`` turns it off.
-"""
+"""Encodes a Wan or MiniMax-H3 clip while its VAE decodes; the streamed mp4 is used only if its
+frames equal the final frames bit for bit, else re-encoded; H3 declares audio up front (as
+encode_x264) and muxes it last; UNSLOTH_STUDIO_VIDEO_STREAM_ENCODE=0 disables."""
 
 from __future__ import annotations
 

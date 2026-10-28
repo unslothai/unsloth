@@ -1283,6 +1283,118 @@ def test_auto_offload_is_planned_as_the_load_is_priced(monkeypatch):
     assert request["prefill_step"] == 8192
 
 
+def test_an_auto_drafter_gets_offload_room_only_within_the_cap_where_it_then_fits(monkeypatch):
+    from core.inference import mlx_inference as mi
+
+    plans, fits, asked = {}, {"on": True}, []
+    monkeypatch.setattr(
+        mi, "mlx_resolve_offload", lambda d, knobs, drafter = None, **_: plans[bool(drafter)]
+    )
+    monkeypatch.setattr(mi, "mlx_checkpoint_window", lambda d: 32768)
+    monkeypatch.setattr(
+        mi,
+        "mlx_drafter_fit",
+        lambda d, ceiling, pinned, source, **kw: asked.append(
+            (ceiling, pinned, source.path, source.builtin, kw)
+        )
+        or (fits["on"], None),
+    )
+    resolve = lambda auto, drafter = ("/head", True): mi.mlx_resolve_drafter_offload(
+        "/snap", ("auto", "auto"), drafter, auto = auto, pinned = None, load_in_4bit = False
+    )
+    cases = [  # (with the drafter, without it, the auto plan)
+        ((0.5, 0.53, 4096), (0.5, 0.5, 8192), "room"),
+        ((None, 0.04, 4096), (None, None, 8192), "room"),
+        ((0.5, 0.55, 4096), (0.5, 0.5, 8192), "alone"),
+        ((0.55, 0.5, 4096), (0.5, 0.5, 8192), "alone"),
+        ((None, 0.05, 4096), (None, None, 8192), "alone"),
+    ]
+    for room, alone, chosen in cases:
+        plans.update({True: room, False: alone})
+        assert resolve(True) == ({"room": room, "alone": alone}[chosen], alone)
+        assert resolve(False) == (room, None)  # an explicit mode's drafter always gets its room
+    assert resolve(True, None) == resolve(False, None) == (alone, None)
+    # Room only the costless fit would then use: asked on the room plan against the target-only one.
+    plans.update({True: (0.5, 0.53, 4096), False: (0.5, 0.5, 8192)})
+    asked.clear(), fits.update(on = False)
+    assert resolve(True) == ((0.5, 0.5, 8192),) * 2
+    assert asked == [
+        (
+            32768,
+            None,
+            "/head",
+            True,
+            {
+                "load_in_4bit": False,
+                "costless": True,
+                "baseline": {"offload": (0.5, 0.5), "prefill_chunk": 8192},
+                "offload": (0.5, 0.53),
+                "prefill_chunk": 4096,
+            },
+        )
+    ]
+    plans.update({True: (0.5, 0.5, 8192)})
+    assert resolve(True) == ((0.5, 0.5, 8192),) * 2 and len(asked) == 1
+    # An explicit drafter priced not to fit its room plan keeps the target-only plan, not all-on-disk.
+    plans.update({True: (None, 1.0, None), False: (None, 0.78, 8192)})
+    asked.clear()
+    assert resolve(False) == ((None, 0.78, 8192), None)
+    assert asked[-1][4] == {"load_in_4bit": False, "offload": (None, 1.0), "prefill_chunk": None}
+    fits.update(on = None)  # unpriceable: the load keeps it, so does the plan
+    assert resolve(False) == ((None, 1.0, None), None)
+
+
+def test_an_auto_load_fits_its_drafter_against_the_target_only_plan(monkeypatch, tmp_path):
+    pytest.importorskip("mlx.core")
+    from core.inference import mlx_inference as mi
+    from core.inference import mlx_memory as mm
+    from core.inference import mlx_speculative
+
+    fits = []
+
+    class _Loader:
+        @staticmethod
+        def from_pretrained(name, **kwargs):
+            kwargs["offload"](str(tmp_path)), kwargs["offload"](str(tmp_path))  # as unsloth_zoo may
+            model = SimpleNamespace(
+                _src_path = str(tmp_path), _unsloth_offload = {"experts": {"on_disk_bytes": 1}}
+            )
+            return model, SimpleNamespace()
+
+    loader = types.ModuleType("unsloth_zoo.mlx.loader")
+    loader.FastMLXModel = _Loader
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.loader", loader)
+    monkeypatch.setattr(mm, "mlx_offload_planner", lambda: object())
+    monkeypatch.setattr(
+        mi,
+        "mlx_resolve_offload",
+        lambda d, knobs, drafter = None, **_: (
+            ((None, 0.52, 4096) if drafter else (None, 0.5, 8192))
+            if "auto" in knobs
+            else (*knobs, None)
+        ),
+    )
+    monkeypatch.setattr(mi, "_classify_mlx_audio_type", lambda *a, **k: None)
+    monkeypatch.setattr(
+        mi.MLXInferenceBackend, "_resolve_context_lengths", lambda *a: (8192, 8192, 8192)
+    )
+    source = mlx_speculative.DrafterSource("mtp", str(tmp_path), True)
+    monkeypatch.setattr(mlx_speculative, "speculation_refusal", lambda **_k: None)
+    monkeypatch.setattr(
+        mlx_speculative,
+        "resolve_speculation",
+        lambda mode, *_a, **_k: mlx_speculative.SpecResolution(mode, (source,)),
+    )
+    monkeypatch.setattr(mi, "mlx_drafter_fit", lambda *a, **kw: fits.append(kw) or (True, None))
+    config = SimpleNamespace(identifier = "org/moe", is_vision = True, is_lora = False)
+
+    mi.MLXInferenceBackend().load_model(config, max_seq_length = 0)
+    assert (fits[-1]["offload"], fits[-1]["prefill_chunk"]) == ((None, 0.52), 4096)
+    assert fits[-1]["baseline"] == {"offload": (None, 0.5), "prefill_chunk": 8192}
+    mi.MLXInferenceBackend().load_model(config, max_seq_length = 0, speculative_type = "mtp")
+    assert fits[-1]["offload"] == (None, 0.52) and fits[-1]["baseline"] is None
+
+
 @pytest.mark.parametrize("decided_on_mlx_vlm", [False, True])
 def test_a_load_falling_back_to_mlx_lm_plans_auto_offload_again(monkeypatch, decided_on_mlx_vlm):
     pytest.importorskip("mlx.core")
@@ -1304,7 +1416,7 @@ def test_a_load_falling_back_to_mlx_lm_plans_auto_offload_again(monkeypatch, dec
             return SimpleNamespace(config = {}), SimpleNamespace()
 
     def resolve(model_dir, knobs, **kw):
-        plans.append((knobs, kw["vision"]))
+        plans.append((knobs, kw["vision"], kw.get("drafter")))
         # A plan for the mlx-vlm route differs from the one mlx-lm needs, so a reused plan shows.
         return (None, 0.25, 4096) if kw["vision"] else (None, 1.0, 8192)
 
@@ -1327,7 +1439,10 @@ def test_a_load_falling_back_to_mlx_lm_plans_auto_offload_again(monkeypatch, dec
     config = SimpleNamespace(identifier = "org/moe", is_vision = False, is_lora = False)
 
     mi.MLXInferenceBackend().load_model(config, speculative_type = "dflash")
-    assert plans[-1] == (("auto", "auto"), None)
+    # The speculative mlx-vlm plan makes room for the drafter; the mlx-lm one, which does not speculate, does not.
+    assert plans == [(("auto", "auto"), True, ("/drafter", False))] * decided_on_mlx_vlm + [
+        (("auto", "auto"), None, None)
+    ]
     assert applied == [{"ple": None, "experts": 1.0}]
 
 
@@ -3858,6 +3973,154 @@ def test_mlx_prompt_cache_covers_hybrid_recurrent_layouts(monkeypatch):
 
     history.insert("hybrid", list(range(40)), hybrid)
     assert tuple(range(30)) in history._lru.entries["hybrid"]
+
+
+def test_mlx_prompt_cache_resume_restores_the_newest_entries_under_the_same_load(tmp_path):
+    mx = pytest.importorskip("mlx.core")
+    pytest.importorskip("mlx_lm")
+    from mlx_lm.models.cache import KVCache
+
+    from core.inference.mlx_inference import (
+        MLXInferenceBackend,
+        VLMPromptSnapshotStore,
+        _MLXPromptCacheHistory,
+    )
+
+    def kv(n, seed):
+        entry = KVCache()
+        rows = mx.random.normal((1, 2, n, 4), key = mx.random.key(seed)).astype(mx.float16)
+        entry.update_and_fetch(rows, rows + 1)
+        return [entry]
+
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    (model_dir / "model.safetensors").write_bytes(b"weights")
+
+    def backend(window = None):
+        loaded = MLXInferenceBackend()
+        loaded.active_model_name = str(model_dir)
+        loaded._kv_cache_window = window
+        loaded._prompt_cache_history = _MLXPromptCacheHistory(6, 1 << 30)
+        loaded._vlm_snapshot_store = VLMPromptSnapshotStore(1 << 30)
+        return loaded
+
+    saved = backend()
+    saved._prompt_cache_history.insert("k", list(range(8)), kv(8, 0))
+    newest = kv(12, 1)
+    saved._prompt_cache_history.insert("k|other", list(range(12)), newest)
+    saved._vlm_snapshot_store.store("k|img", list(range(6)), kv(6, 2))
+    saved._vlm_snapshot_store.store("k|img", [9] * 5, kv(5, 3), replay = True)
+    out = tmp_path / "save"
+    out.mkdir()
+    manifest = saved.save_prompt_cache_for_resume(str(out))
+    assert [slot["store"] for slot in manifest["slots"]] == ["text", "vlm", "vlm"]
+
+    restored = backend()
+    assert restored.restore_prompt_cache_for_resume(manifest) == 3
+    [(key, tokens, cache, _)] = restored._prompt_cache_history.resume_entries()
+    assert (key, tokens) == ("k|other", list(range(12)))
+    assert mx.array_equal(cache[0].state[0], newest[0].state[0]).item()
+    with pytest.raises(KeyError):
+        restored._prompt_cache_history._lru._trie.get("k", list(range(8)))
+    vlm = restored._vlm_snapshot_store.resume_entries()
+    assert [(key, prefix, replay) for key, prefix, _, replay in vlm] == [
+        ("k|img", list(range(6)), False),
+        ("k|img", [9] * 5, True),
+    ]
+
+    assert backend(window = 64).restore_prompt_cache_for_resume(manifest) == 0
+    (model_dir / "model.safetensors").write_bytes(b"rewritten weights")
+    assert backend().restore_prompt_cache_for_resume(manifest) == 0
+
+    # A turn over the LRU budget is held outside it, and still kept.
+    over_budget = _MLXPromptCacheHistory(6, 1)
+    over_budget.insert("k", list(range(8)), kv(8, 4))
+    assert [tokens for _, tokens, _, _ in over_budget.resume_entries()] == [list(range(8))]
+
+
+def test_mlx_vlm_resume_keeps_the_boundary_an_edited_turn_extends():
+    mx = pytest.importorskip("mlx.core")
+    pytest.importorskip("mlx_lm")
+    from mlx_lm.models.cache import KVCache
+
+    from core.inference.mlx_inference import VLMPromptSnapshotStore
+
+    def kv(n):
+        entry = KVCache()
+        rows = mx.zeros((1, 2, n, 4), dtype = mx.float16)
+        entry.update_and_fetch(rows, rows)
+        return [entry]
+
+    store = VLMPromptSnapshotStore(1 << 30)
+    store.store("k", list(range(12)), kv(12))
+    store.store("k", list(range(14)), kv(14), replay = True)
+    # The edit keeps the first 4 tokens; the old, longer boundary is then touched last.
+    edited = [*range(4), 90, 91]
+    store.store("k", list(range(4)), kv(4))
+    store.store("k", edited, kv(6), replay = True)
+    store._touch(("k", tuple(range(12))))
+    assert [(prefix, replay) for _, prefix, _, replay in store.resume_entries()] == [
+        (list(range(4)), False),
+        (edited, True),
+    ]
+
+
+def test_mlx_prompt_cache_resume_keys_on_the_weights_the_load_read(tmp_path, monkeypatch):
+    mx = pytest.importorskip("mlx.core")
+    pytest.importorskip("mlx_lm")
+    from mlx_lm.models.cache import KVCache
+
+    from core.inference.mlx_inference import MLXInferenceBackend, _MLXPromptCacheHistory
+
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    weights = model_dir / "model.safetensors"
+    weights.write_bytes(b"weights")
+
+    def loaded():
+        backend = MLXInferenceBackend()
+        backend.active_model_name = str(model_dir)
+        backend._resume_files = backend._resume_weight_files()  # what load_model records
+        backend._prompt_cache_history = _MLXPromptCacheHistory(6, 1 << 30)
+        entry = KVCache()
+        rows = mx.zeros((1, 2, 8, 4), dtype = mx.float16)
+        entry.update_and_fetch(rows, rows)
+        backend._prompt_cache_history.insert("k", list(range(8)), [entry])
+        return backend
+
+    def save(backend):
+        out = tmp_path / f"save-{len(list(tmp_path.glob('save-*')))}"
+        out.mkdir()
+        return backend.save_prompt_cache_for_resume(str(out))
+
+    old = loaded()
+    manifest = save(old)
+    assert manifest is not None
+    # Replaced while the old weights are resident: their KV must neither be saved nor restored.
+    weights.write_bytes(b"replaced weights")
+    assert save(old) is None
+    assert loaded().restore_prompt_cache_for_resume(manifest) == 0
+
+    # The same bounds as llama-server's slot save.
+    monkeypatch.setenv("UNSLOTH_SLOT_SAVE_MAX_BYTES", "1")
+    assert save(loaded()) is None
+
+
+def test_mlx_resume_cache_loads_only_mlx_cache_classes(tmp_path):
+    import collections
+    import pickle
+
+    mx = pytest.importorskip("mlx.core")
+    from core.inference.mlx_inference import load_resume_cache, save_resume_cache
+
+    from mlx_lm.models.cache import make_prompt_cache
+
+    path = str(tmp_path / "cache.safetensors")
+    # Outside the MLX modules, and inside them but not a class.
+    for refused in (collections.OrderedDict(), make_prompt_cache):
+        save_resume_cache(path, "k", [1], [mx.zeros(2), refused])
+        with pytest.raises(pickle.UnpicklingError):
+            load_resume_cache(path)
 
 
 def _audio_model(module_paths = ("audio_tower",), model_type = "gemma3n"):
@@ -7749,6 +8012,74 @@ def test_a_text_load_batch_row_carries_one_bos_as_the_single_path_does(monkeypat
     backend._reads_vision = False
     session.admit({}, "gemma")
     assert added == ["hi", "hi", "<s>hi", "<s>hi"]
+
+
+@pytest.mark.parametrize("speculative", (None, "draft"))
+def test_a_vision_row_times_its_prefill_wherever_the_batch_runs_it(monkeypatch, speculative):
+    from core.inference import mlx_inference
+
+    engine = _batch_engine(monkeypatch)
+    monkeypatch.setattr(engine, "GenerationRequest", SimpleNamespace, raising = False)
+    monkeypatch.setattr(engine, "SamplingParams", dict, raising = False)
+    monkeypatch.setattr(engine, "BatchRowRefused", RuntimeError, raising = False)
+    monkeypatch.setattr(engine, "vlm_batch_adds_special_tokens", lambda *a: True, raising = False)
+    backend = _vlm_backend(monkeypatch, markers = None)
+    plan = SimpleNamespace(
+        prompt = "hi",
+        images = None,
+        max_tokens = 16,
+        sampling = {},
+        processors = None,
+        think_prefix = "",
+        stream = _vlm_row(backend),
+    )
+    backend._plan_vlm_request = lambda request: plan
+    backend._reads_vision = False
+    session = _open_vision_session([])
+    session.backend, session._adapter_state, session._resumes_rows = backend, None, False
+    session._speculative = speculative
+    clock = [0.0]
+    monkeypatch.setattr(mlx_inference.time, "perf_counter", lambda: clock[0])
+
+    def prefill():
+        clock[0] += 2.0
+
+    steps = []
+
+    def events(waiting = None):
+        steps.append(None)
+        if len(steps) == 1:
+            if not speculative:
+                prefill()
+            yield SimpleNamespace(index = 0, delta = "a", result = None)
+            return
+        clock[0] += 1.0
+        result = SimpleNamespace(
+            finish_reason = "length", prompt_token_count = 1000, token_ids = [1] * 10
+        )
+        vars(result).update(_DRAFTS)
+        yield SimpleNamespace(index = 0, delta = "", result = result)
+
+    def add(request):
+        if speculative:
+            prefill()
+        else:
+            # A plain add() only prepares the row; that time is not its prefill.
+            clock[0] += 3.0
+        return 0
+
+    session.stream = SimpleNamespace(
+        add = add,
+        step = lambda: list(events()),
+        iter_step = events,
+    )
+    session.admit({}, "r")
+    while session.rows_in_flight:
+        list(session.step())
+
+    timings = session.take_stats("r")["timings"]
+    assert timings["prompt_per_second"] == pytest.approx(500.0)
+    assert timings["predicted_per_second"] == pytest.approx(10.0)
 
 
 def test_a_resident_vision_row_resumes_from_the_snapshot_store_and_reports_it(monkeypatch):

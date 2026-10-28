@@ -2,19 +2,20 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import contextlib
+import functools
 import json
 import os
 import re
 import shutil
 import sys
 import tempfile
+import time
 from importlib.metadata import PackageNotFoundError, version
 from importlib.util import find_spec
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import List, Optional, Tuple
 
 import typer
-import yaml
 
 _HUB_REPO_RE = re.compile(r"[\w.\-]+/[\w.\-]+")
 _TOKENIZER_FILES = ("tokenizer_config.json", "tokenizer.json", "tokenizer.model")
@@ -254,13 +255,17 @@ def _base_vocab_size(model: str) -> int:
     return getattr(getattr(config, "text_config", None) or config, "vocab_size", 0) or 0
 
 
-class _TaskYamlLoader(yaml.SafeLoader):
-    """safe_load that tolerates lm-eval's custom tags (!function utils.fn)."""
+@functools.cache
+def _task_yaml_loader():
+    import yaml
 
+    class _TaskYamlLoader(yaml.SafeLoader):
+        """safe_load that tolerates lm-eval's custom tags (!function utils.fn)."""
 
-_TaskYamlLoader.add_multi_constructor(
-    "!", lambda loader, suffix, node: getattr(node, "value", None)
-)
+    _TaskYamlLoader.add_multi_constructor(
+        "!", lambda loader, suffix, node: getattr(node, "value", None)
+    )
+    return _TaskYamlLoader
 
 
 def _doc_column(key: str) -> str:
@@ -298,15 +303,19 @@ def make_dataset_task(
         ],
         "metric_list": [{"metric": "exact_match", "aggregation": "mean", "higher_is_better": True}],
     }
+    import yaml
+
     out_dir.mkdir(parents = True, exist_ok = True)
     (out_dir / f"{name}.yaml").write_text(yaml.safe_dump(spec, sort_keys = False), encoding = "utf-8")
 
 
 def _yaml_task_name(path: Path) -> Tuple[str, bool]:
     """(registered name, needs its directory on the include path)."""
+    import yaml
+
     text = path.read_text(encoding = "utf-8")
     try:
-        spec = yaml.load(text, Loader = _TaskYamlLoader)
+        spec = yaml.load(text, Loader = _task_yaml_loader())
     except yaml.YAMLError as e:
         raise ValueError(f"Invalid YAML in custom task file '{path}': {e}") from e
     if not isinstance(spec, dict):
@@ -442,6 +451,16 @@ def _render_results(results: dict) -> None:
     Console().print(table)
 
 
+def _run_dir_name(model: str) -> str:
+    # Mirrors utils.paths.default_run_dir_name, which cannot be imported here: the Studio backend fails on Python 3.9.
+    raw = model.strip()
+    is_path = (
+        "\\" in raw or raw.startswith(("/", "~", ".")) or os.path.isabs(raw) or raw[1:2] == ":"
+    )
+    base = PureWindowsPath(raw).name if is_path else raw.replace("/", "_")
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", base)[:200].strip("._-") or "model"
+
+
 def _fail(message: str, code: int = 2):
     typer.echo(f"Error: {message}", err = True)
     raise typer.Exit(code = code)
@@ -507,8 +526,11 @@ def evaluate(
     target_key: str = typer.Option(
         "answer", "--target-key", help = "Answer field for a .jsonl/.csv dataset task."
     ),
-    output_dir: Path = typer.Option(
-        Path("./eval_results"), "--output-dir", "-o", help = "Directory for results.json."
+    output_dir: Optional[Path] = typer.Option(
+        None,
+        "--output-dir",
+        "-o",
+        help = "Directory for results.json. Default: a new eval_results/<model>_<time> folder per run.",
     ),
     confirm_run_unsafe_code: bool = typer.Option(
         False,
@@ -539,6 +561,8 @@ def evaluate(
         limit = int(limit) if limit >= 1 else limit
     if max_seq_length <= 0:
         _fail("--max-seq-length must be a positive integer.")
+    if output_dir is None:
+        run_name, stamp = _run_dir_name(model), int(time.time())
     # find_spec, not import: lm_eval imports transformers, which must come after unsloth
     if "lm_eval" not in sys.modules and find_spec("lm_eval") is None:
         _fail("evaluation requires lm-eval. Install it with `pip install unsloth[eval]`.", code = 1)
@@ -735,7 +759,18 @@ def evaluate(
         _fail("evaluation returned no results.", code = 1)
 
     _render_results(results)
-    output_dir.mkdir(parents = True, exist_ok = True)
+    if output_dir is None:
+        # Parent first: on Windows a leaf mkdir under a stray eval_results file raises FileExistsError too.
+        Path("eval_results").mkdir(exist_ok = True)
+        while True:
+            output_dir = Path("eval_results") / f"{run_name}_{stamp}"
+            try:
+                output_dir.mkdir()
+                break
+            except FileExistsError:
+                stamp += 1
+    else:
+        output_dir.mkdir(parents = True, exist_ok = True)
     results_path = output_dir / "results.json"
     results_path.write_text(json.dumps(results, indent = 2, default = _json_default), encoding = "utf-8")
     typer.echo(f"Saved results to: {results_path}")
