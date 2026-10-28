@@ -98,11 +98,15 @@ export function RlSamplesCard({
   const t = useT();
   const [groups, setGroups] = useState<RlSampleGroup[]>([]);
   const [index, setIndex] = useState<number | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [pollError, setPollError] = useState<string | null>(null);
   const lastSeq = useRef(0);
 
   useEffect(() => {
     setGroups([]);
     setIndex(null);
+    setLoaded(false);
+    setPollError(null);
     lastSeq.current = 0;
     if (!jobId) {
       return;
@@ -111,12 +115,19 @@ export function RlSamplesCard({
     const poll = async () => {
       try {
         const fresh = await getRlSamples(jobId, lastSeq.current);
-        if (!stopped && fresh.length > 0) {
+        if (stopped) return;
+        setLoaded(true);
+        setPollError(null);
+        if (fresh.length > 0) {
           lastSeq.current = fresh[fresh.length - 1].seq;
           setGroups((prev) => [...prev, ...fresh].slice(-KEEP_GROUPS));
         }
-      } catch {
-        // A missed poll is retried on the next tick.
+      } catch (err) {
+        // Shown, and retried on the next tick while training.
+        if (!stopped) {
+          setLoaded(true);
+          setPollError(err instanceof Error ? err.message : String(err));
+        }
       }
     };
     poll();
@@ -132,8 +143,35 @@ export function RlSamplesCard({
     };
   }, [jobId, isTraining]);
 
+  const errorLine = pollError && (
+    <p className="text-ui-11p5 text-destructive">
+      {t("rl.samples.pollError", { error: pollError })}
+    </p>
+  );
   if (groups.length === 0) {
-    return null;
+    return (
+      <Card size="sm">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-1.5 text-sm">
+            {t("rl.samples.title")}
+            <NewBadge />
+          </CardTitle>
+          <p className="text-ui-11p5 text-muted-foreground/85">
+            {t("rl.samples.description")}
+          </p>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-2">
+          {errorLine}
+          <p className="text-ui-11p5 text-muted-foreground">
+            {!loaded
+              ? t("rl.samples.loadingAnswers")
+              : isTraining
+                ? t("rl.samples.waitingFirst")
+                : t("rl.samples.noneKept")}
+          </p>
+        </CardContent>
+      </Card>
+    );
   }
   // null follows the newest group as it arrives.
   const shown = index === null ? groups.length - 1 : index;
@@ -181,6 +219,7 @@ export function RlSamplesCard({
         </p>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
+        {errorLine}
         <div className="grid gap-2 rounded-xl bg-muted/40 p-3 text-ui-11p5 md:grid-cols-[minmax(0,1fr)_minmax(0,14rem)]">
           <div className="min-w-0">
             <p className="text-ui-10 uppercase tracking-[0.05em] text-muted-foreground/70">

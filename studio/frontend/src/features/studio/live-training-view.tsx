@@ -215,10 +215,13 @@ export function LiveTrainingView(): ReactElement {
         {runtime.rlMetricHistory.length > 0 ? (
           <Suspense fallback={null}>
             <RlChartsGrid history={runtime.rlMetricHistory} />
-            <RlSamplesCard
-              jobId={runtime.jobId}
-              isTraining={viewData.isTrainingRunning}
-            />
+            {/* GRPO logs "reward"; DPO/ORPO never send sample answers. */}
+            {runtime.rlMetricHistory.some((p) => "reward" in p.values) && (
+              <RlSamplesCard
+                jobId={runtime.jobId}
+                isTraining={viewData.isTrainingRunning}
+              />
+            )}
           </Suspense>
         ) : null}
       </div>
