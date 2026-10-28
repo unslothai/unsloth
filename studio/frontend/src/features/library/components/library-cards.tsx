@@ -321,10 +321,12 @@ function FolderCard({
 }
 
 const CARD_ROW_GAP = "gap-y-6";
+// gap-5 (Masonry) and gap-x-5 (CardGrid) at 100%.
+const CARD_COLUMN_GAP_PX = 20;
 
 function useCardColumns(container: RefObject<HTMLDivElement | null>): number {
   const { minWidth, max } = CARD_COLUMNS[useLibrarySettingsStore((s) => s.cardSize)];
-  return useColumnCount(container, minWidth, max);
+  return useColumnCount(container, minWidth, max, CARD_COLUMN_GAP_PX);
 }
 
 export function Masonry<T>({

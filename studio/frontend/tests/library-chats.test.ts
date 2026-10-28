@@ -507,7 +507,24 @@ test("every library toolbar's search narrows with the header row, so it never re
   for (const file of ["features/library/components/library-toolbar.tsx", "features/library/chats/chats-toolbar.tsx"]) {
     assert.match(readSrc(file), /w-\[clamp\(10rem,calc\(100cqw-30rem\),min\(15rem,24vw\)\)\]/, file);
   }
-  assert.match(readSrc("features/library/components/library-header.tsx"), /className="@container /);
+  assert.match(readSrc("features/library/components/library-header.tsx"), /"@container flex"/);
+});
+
+test("a library toolbar too wide for the row stacks under the title instead of covering it", () => {
+  const header = readSrc("features/library/components/library-header.tsx");
+  // Measured from the unwrapped tools, so the wrapped stacked toolbar cannot flip it back.
+  assert.match(header, /setStacked\(needed \+ GAP_PX \+ titleRoom > bar\.clientWidth\)/);
+  assert.match(header, /\{stacked \? \[heading, bar\] : \[bar, heading\]\}/);
+  assert.match(header, /reserve=\{covered && !stacked \? controlsWidth \+ GAP_PX : 0\}/);
+});
+
+test("library card columns widen with the interface zoom and text size", () => {
+  const cards = readSrc("features/library/components/library-cards.tsx");
+  assert.match(cards, /useColumnCount\(container, minWidth, max, CARD_COLUMN_GAP_PX\)/);
+  const hooks = readSrc("features/library/hooks.ts");
+  assert.match(hooks, /const scale = baseGap && gap > 0 \? gap \/ baseGap : 1;/);
+  assert.match(hooks, /\(minColumnWidth \* scale \+ gap\)/);
+  assert.match(hooks, /subscribeLayoutScale\(measure\)/);
 });
 
 test("the library header row casts a light shadow once stuck", () => {
