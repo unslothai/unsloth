@@ -38,7 +38,6 @@ def _run_console_script(
     stop_studio_run: bool = False,
     broken: str = "",
 ):
-    """Run the console-script path in a fresh interpreter, optionally with one module broken."""
     stop = ""
     breaker = ""
     if broken:
@@ -141,7 +140,6 @@ def test_a_broken_unrelated_module_does_not_block_studio_run():
 
 @pytest.fixture
 def lazy_group(monkeypatch):
-    """A group built as a real dispatch builds it, with the other commands still pending."""
     monkeypatch.setattr(unsloth_cli, "_load_every_command", False)
     return typer.main.get_command(unsloth_cli.app)
 
