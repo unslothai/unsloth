@@ -19,14 +19,15 @@ def test_diffusion_re_exports_the_same_function():
     assert diffusion.resolve_local_single_file is diffusion_local_files.resolve_local_single_file
 
 
-def test_scanning_a_models_folder_does_not_import_the_diffusion_stack(tmp_path):
+def _probe(tmp_path, call: str) -> list:
     (tmp_path / "model.safetensors").write_bytes(b"")
     probe = (
         "import json, sys\n"
         "from pathlib import Path\n"
-        "from core.inference.diffusion_local_files import resolve_local_single_file\n"
-        f"sole = resolve_local_single_file({str(tmp_path)!r})\n"
-        "print(json.dumps([sole, 'core.inference.diffusion' in sys.modules]))\n"
+        "from types import SimpleNamespace\n"
+        f"d = Path({str(tmp_path)!r})\n"
+        f"found = {call}\n"
+        "print(json.dumps([found, 'core.inference.diffusion' in sys.modules]))\n"
     )
     result = subprocess.run(
         [sys.executable, "-c", probe],
@@ -35,15 +36,24 @@ def test_scanning_a_models_folder_does_not_import_the_diffusion_stack(tmp_path):
         cwd = str(_BACKEND),
     )
     assert result.returncode == 0, result.stderr
-    sole, loaded = json.loads(result.stdout.strip().splitlines()[-1])
-    assert sole == "model.safetensors"
+    return json.loads(result.stdout.strip().splitlines()[-1])
+
+
+def test_scanning_a_models_folder_does_not_import_the_diffusion_stack(tmp_path):
+    found, loaded = _probe(
+        tmp_path,
+        "[m.path for m in __import__('routes.models', fromlist = ['_'])._scan_models_dir(d)]",
+    )
+    assert found == [str(tmp_path)]
     assert loaded is False
 
 
-def test_the_listing_and_catalog_paths_use_the_light_module():
-    for relative in ("routes/models.py", "hub/services/models/catalog_classification.py"):
-        source = (_BACKEND / relative).read_text(encoding = "utf-8")
-        assert (
-            "from core.inference.diffusion_local_files import resolve_local_single_file" in source
-        )
-        assert "from core.inference.diffusion import resolve_local_single_file" not in source
+def test_catalog_classification_does_not_import_the_diffusion_stack(tmp_path):
+    found, loaded = _probe(
+        tmp_path,
+        "'model.safetensors' in __import__('hub.services.models.catalog_classification',"
+        " fromlist = ['_'])._local_family_needles(SimpleNamespace(model_id = None,"
+        " display_name = d.name, id = str(d), path = str(d)))",
+    )
+    assert found is True
+    assert loaded is False
