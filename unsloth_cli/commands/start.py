@@ -8183,7 +8183,7 @@ def pi(
     ]
     # --ignore-scripts matches Pi's documented install recipe (its README notes Pi needs no install scripts), so accepting the prompt skips dependency lifecycle scripts.
     with _session_config("pi", launch, persist = persist) as home:
-        # Pi resolves its config dir from PI_CODING_AGENT_DIR first (getAgentDir() prefers it over $HOME/.pi/agent), so pin it at the session dir: an inherited PI_CODING_AGENT_DIR in the user's shell would otherwise send Pi to their real config and skip our provider/key. HOME stays the user's, so the shell commands Pi runs keep their git and gh setup. The key rides in the config rather than the env.
+        # getAgentDir() prefers PI_CODING_AGENT_DIR over $HOME/.pi/agent, so pin it here or an inherited value skips our provider/key. HOME stays the user's so Pi's shell commands keep git and gh.
         pi_agent_dir = home / ".pi" / "agent"
         write_pi_config(
             base,
