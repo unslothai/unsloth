@@ -2163,7 +2163,11 @@ async def _create_openai_video(
 
 
 def _refuse_family_inputs(
-    fam, h3_task, body: VideoJobCreateRequest, reference: Optional[str], inputs: "_VideoCreateInputs"
+    fam,
+    h3_task,
+    body: VideoJobCreateRequest,
+    reference: Optional[str],
+    inputs: "_VideoCreateInputs",
 ) -> None:
     """Family-specific shape, fps and conditioning checks, run before a switch or a queued wait."""
     from core.inference.video import assert_first_frame_pipeline_available
@@ -2427,6 +2431,7 @@ def _video_start_lock() -> asyncio.Lock:
 
 def _video_engine_busy() -> bool:
     from core.inference.video import get_video_backend
+
     backend = get_video_backend()
     progress = backend.generate_progress() or {}
     return bool(progress.get("active")) or bool(backend.loading_repo_ids())
