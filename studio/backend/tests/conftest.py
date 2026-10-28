@@ -103,6 +103,13 @@ def _no_vae_structural_verdict_cache(monkeypatch):
     monkeypatch.setenv("UNSLOTH_VAE_FUSED_STRUCTURAL_CACHE", "0")
 
 
+@pytest.hookimpl(trylast = True)
+def pytest_collection_modifyitems(config, items):
+    """After xdist tags grouped tests; see tests/_shared/xdist_group_check.py."""
+    from xdist_group_check import check
+    check(config, items)
+
+
 @pytest.fixture(autouse = True)
 def _no_deleted_torch_config_entries():
     """A test that leaves a dynamo / inductor config entry deleted errors at its own teardown; see
