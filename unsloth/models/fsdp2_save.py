@@ -102,16 +102,29 @@ def _mesh_ranks(mesh):
 
 
 def mesh_writer_rank(model):
-    """Lowest global rank holding any of the model's parameters: a sub-mesh without rank 0 never
-    gathers there. Every parameter's mesh counts: under tensor parallel x FSDP2 a frozen weight's
-    mesh is this rank's tp group alone, so its first rank differs between groups while the LoRA
-    weights' dp x tp mesh names the one writer."""
+    """Lowest global rank in the model's save group. TP x FSDP2 uses the full DP x TP slice;
+    otherwise parameter and FSDP meshes identify the ranks, including sub-meshes without rank 0."""
     dist = _dist()
     if dist is None:
         return 0
     DTensor = _dtensor_class()
     ranks = set()
     if isinstance(model, torch.nn.Module):
+        # TP and FSDP meshes are orthogonal slices of the same root mesh. Select
+        # the whole DP x TP slice, keeping any pipeline dimensions fixed.
+        tp_mesh = model.__dict__.get("_unsloth_tp_mesh")
+        dp_mesh = model.__dict__.get("_unsloth_tp_dp_mesh")
+        if tp_mesh is not None and dp_mesh is not None:
+            from torch.distributed.device_mesh import _mesh_resources
+
+            root = _mesh_resources.get_root_mesh(tp_mesh)
+            names = set(tp_mesh.mesh_dim_names + dp_mesh.mesh_dim_names)
+            coord = root.get_coordinate()
+            index = tuple(
+                slice(None) if name in names else coord[i]
+                for i, name in enumerate(root.mesh_dim_names)
+            )
+            return int(root.mesh[index].min())
         if DTensor is not None:
             for p in model.parameters():
                 if isinstance(p, DTensor):
