@@ -329,7 +329,6 @@ export function ExportPage() {
 
   const [destination, setDestination] = useState<"local" | "hub">("local");
   // The converter writes beside the GGUFs, so a Hub-only export has nowhere to put it.
-  // Q4NX output only runs on a Ryzen AI NPU, so its controls stay hidden without one.
   const [npuStatus] = useNpuStatus();
   const hasNpu = !!npuStatus?.supported;
   const effectiveNpuQ4nx =
