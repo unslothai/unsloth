@@ -74,6 +74,7 @@ __all__ = [
 
 import json
 import logging
+import math
 import os
 import random
 import time
@@ -89,6 +90,12 @@ from transformers import (
 )
 
 logger = logging.getLogger(__name__)
+
+_CAN_TELL_BACKWARD = hasattr(torch._C, "_current_graph_task_id")
+
+
+def _in_backward() -> bool:
+    return torch._C._current_graph_task_id() != -1
 
 
 # ---------------------------------------------------------------------------
@@ -157,10 +164,11 @@ class ActivationCapture:
         self._buffer: Dict[int, Dict[str, List[float]]] = {}
         # { layer_idx -> gradient_norm }
         self._grad_buffer: Dict[int, float] = {}
-        # Tracks which layer indices have already been captured this step
-        # so gradient-checkpointing re-runs don't overwrite clean data.
+        # Per-step sums across gradient-accumulation microbatches; _buffer / _grad_buffer hold their means / norms.
+        self._act_sums: Dict = {}
+        self._grad_sq: Dict[int, float] = {}
+        # Fallback dedup of checkpoint recomputes when torch cannot say it is inside backward.
         self._captured_layers: set = set()
-        self._captured_grad_layers: set = set()
         self._should_capture: bool = False
         self._step: int = 0
         self._loss: Optional[float] = None
@@ -413,9 +421,8 @@ class ActivationCapture:
         def hook(module, inputs, output):
             if not self._should_capture:
                 return
-            # Deduplicate: gradient-checkpointing re-runs the forward pass
-            # for checkpointed segments; ignore the recomputed activation.
-            if key in self._captured_layers:
+            # Gradient checkpointing re-runs the forward inside backward; that is the same microbatch again.
+            if _in_backward() if _CAN_TELL_BACKWARD else key in self._captured_layers:
                 return
 
             # The standard decoder-layer output is (hidden_states, ...) or
@@ -431,11 +438,11 @@ class ActivationCapture:
                 # flatten(0, -2) merges all leading dims before channels,
                 # making this robust to 2-D, 3-D, and 4-D hidden states.
                 flat = hidden.detach().flatten(0, -2)[..., sampled].float()  # [*, K]
-                mean_abs = flat.abs().mean(dim = 0).tolist()
-                mean = flat.mean(dim = 0).tolist()
-
-            buf_key = layer_idx if kind == "layer" else f"{layer_idx}_mlp"
-            self._buffer[buf_key] = {"mean_abs": mean_abs, "mean": mean}
+                buf_key = layer_idx if kind == "layer" else f"{layer_idx}_mlp"
+                n, sum_abs, total = self._act_sums.get(buf_key, (0, 0.0, 0.0))
+                n, sum_abs, total = n + flat.shape[0], sum_abs + flat.abs().sum(dim = 0), total + flat.sum(dim = 0)
+                self._act_sums[buf_key] = (n, sum_abs, total)
+                self._buffer[buf_key] = {"mean_abs": (sum_abs / n).tolist(), "mean": (total / n).tolist()}
             self._captured_layers.add(key)
 
         return hook
@@ -451,9 +458,6 @@ class ActivationCapture:
         def hook(module, grad_input, grad_output):
             if not self._should_capture:
                 return
-            # Deduplicate for gradient checkpointing
-            if layer_idx in self._captured_grad_layers:
-                return
 
             # grad_output is a tuple; first element is the gradient w.r.t output
             grad = grad_output[0] if isinstance(grad_output, tuple) else grad_output
@@ -461,11 +465,10 @@ class ActivationCapture:
                 return
 
             with torch.no_grad():
-                # Compute L2 norm of the gradient
-                grad_norm = grad.detach().float().norm().item()
-                self._grad_buffer[layer_idx] = grad_norm
-
-            self._captured_grad_layers.add(layer_idx)
+                # One backward per microbatch: the step's norm is over all of them.
+                sq = self._grad_sq.get(layer_idx, 0.0) + grad.detach().float().pow(2).sum().item()
+                self._grad_sq[layer_idx] = sq
+                self._grad_buffer[layer_idx] = math.sqrt(sq)
 
         return hook
 
@@ -486,7 +489,8 @@ class ActivationCapture:
         self._step = step
         self._loss = loss
         self._captured_layers.clear()
-        self._captured_grad_layers.clear()
+        self._act_sums.clear()
+        self._grad_sq.clear()
 
     def flush(self):
         """Write the buffered stats to JSONL and reset capture state.
