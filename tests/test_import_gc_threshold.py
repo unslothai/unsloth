@@ -18,6 +18,7 @@
 import ast
 import gc
 import importlib
+import importlib.machinery
 import importlib.util
 import pathlib
 import sys
@@ -127,6 +128,46 @@ def test_a_failed_import_is_restored_by_the_next_import(import_gc):
     del sys.modules["_unsloth_gc_probe_pkg"]
     with pytest.raises(ModuleNotFoundError):
         importlib.import_module("_unsloth_gc_missing_two")
+    assert gc.get_threshold() == _stored(700, 11, 12)
+    # Inert until the next raise / restore removes it outside finder iteration.
+    assert import_gc._hook.module is None
+
+
+def test_the_restoring_import_still_reaches_the_next_finder(import_gc):
+    # sys.meta_path is iterated live: a hook removing itself would skip BuiltinImporter here.
+    gc.set_threshold(700, 11, 12)
+    module = _in_flight("_unsloth_gc_probe_builtin")
+    import_gc.raise_gc_threshold(module)
+    hook_at = sys.meta_path.index(import_gc._hook)
+    builtin_at = sys.meta_path.index(importlib.machinery.BuiltinImporter)
+    sys.meta_path.insert(hook_at + 1, sys.meta_path.pop(builtin_at))
+    del sys.modules["_unsloth_gc_probe_builtin"]
+    saved = sys.modules.pop("_string", None)
+    try:
+        importlib.import_module("_string")
+    finally:
+        if saved is not None:
+            sys.modules["_string"] = saved
+        sys.meta_path.insert(builtin_at, sys.meta_path.pop(hook_at + 1))
+    assert gc.get_threshold() == _stored(700, 11, 12)
+
+
+def test_a_retry_after_a_failed_import_rearms_and_then_removes_the_hook(import_gc):
+    gc.set_threshold(700, 11, 12)
+    import_gc.raise_gc_threshold(_in_flight("_unsloth_gc_probe_retry"))
+    del sys.modules["_unsloth_gc_probe_retry"]
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("_unsloth_gc_missing_three")
+    module = _in_flight("_unsloth_gc_probe_retry")
+    try:
+        import_gc.raise_gc_threshold(module)
+        assert gc.get_threshold()[0] == import_gc.IMPORT_THRESHOLD
+        with pytest.raises(ModuleNotFoundError):
+            importlib.import_module("_unsloth_gc_missing_four")
+        assert gc.get_threshold()[0] == import_gc.IMPORT_THRESHOLD
+        import_gc.restore_gc_threshold()
+    finally:
+        sys.modules.pop("_unsloth_gc_probe_retry", None)
     assert gc.get_threshold() == _stored(700, 11, 12)
     assert not any(isinstance(f, import_gc._RestoreAfterFailedImport) for f in sys.meta_path)
 
