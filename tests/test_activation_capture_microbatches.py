@@ -105,3 +105,41 @@ def test_the_gradient_norm_spans_row_chunks(tmp_path):
 def test_a_non_positive_interval_is_refused_up_front(tmp_path, interval):
     with pytest.raises(ValueError, match = "capture_interval"):
         ac.ActivationCaptureConfig(output_dir = str(tmp_path), capture_interval = interval)
+
+
+def _state(step, max_steps = 10):
+    return SimpleNamespace(global_step = step, max_steps = max_steps, log_history = [{"loss": 9.9}])
+
+
+def _records(tmp_path):
+    return [
+        json.loads(line) for line in (tmp_path / "activation_log.jsonl").read_text().splitlines()
+    ]
+
+
+def test_a_snapshot_carries_the_loss_of_its_own_step(tmp_path):
+    model, cap = _capture(tmp_path, checkpointed = False)
+    cb = ac.ActivationCaptureCallback(cap)
+    cb.on_train_begin(None, _state(0), None)
+    cb.on_step_begin(None, _state(0), None)
+    model(torch.ones(1, 1, H, requires_grad = True)).sum().backward()
+    cb.on_step_end(None, _state(1), None)
+    # Nothing written until the step's own log arrives; the 9.9 in log_history is an older step's.
+    assert _records(tmp_path) == []
+    cb.on_log(None, _state(1), None, logs = {"loss": 2.5})
+    assert [(r["step"], r["loss"]) for r in _records(tmp_path)] == [(0, 2.5)]
+
+
+def test_a_step_without_a_log_is_written_without_a_loss(tmp_path):
+    model, cap = _capture(tmp_path, checkpointed = False)
+    cb = ac.ActivationCaptureCallback(cap)
+    cb.on_train_begin(None, _state(0), None)
+    cb.on_step_begin(None, _state(0), None)
+    model(torch.ones(1, 1, H, requires_grad = True)).sum().backward()
+    cb.on_step_end(None, _state(1), None)
+    # A forward after the step (eval) must not land in the held snapshot.
+    model(torch.full((1, 1, H), 100.0))
+    cb.on_step_begin(None, _state(1), None)
+    records = _records(tmp_path)
+    assert [(r["step"], r["loss"]) for r in records] == [(0, None)]
+    assert records[0]["layers"]["0"]["mean_abs"] == pytest.approx([1.0] * H)

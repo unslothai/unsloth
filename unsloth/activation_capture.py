@@ -581,6 +581,7 @@ class ActivationCaptureCallback(TrainerCallback):
 
     def __init__(self, capture: ActivationCapture):
         self.capture = capture
+        self._pending = False
 
     def on_train_begin(
         self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs
@@ -592,25 +593,52 @@ class ActivationCaptureCallback(TrainerCallback):
     def on_step_begin(
         self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs
     ):
+        # A step whose log never came still gets written, without a loss rather than a stale one.
+        self._flush_pending()
         step = state.global_step
         interval = self.capture.config.capture_interval
         is_on_interval = step % interval == 0
         is_last_step = state.max_steps > 0 and step == state.max_steps - 1
 
         if is_on_interval or is_last_step:
-            loss = state.log_history[-1].get("loss") if state.log_history else None
-            self.capture.mark_capture(step = step, loss = loss)
+            self.capture.mark_capture(step = step, loss = None)
 
     def on_step_end(
         self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs
     ):
-        self.capture.flush()
+        # The step's loss is logged after on_step_end, so hold the snapshot until on_log.
+        self._pending = self.capture._should_capture
+        self.capture._should_capture = False
+
+    def on_log(
+        self,
+        args: TrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        logs = None,
+        **kwargs,
+    ):
+        # global_step has advanced past the captured step index by now.
+        if (
+            self._pending
+            and logs
+            and "loss" in logs
+            and state.global_step == self.capture._step + 1
+        ):
+            self.capture._loss = logs["loss"]
+            self._flush_pending()
+
+    def _flush_pending(self):
+        if self._pending:
+            self._pending = False
+            self.capture.flush()
 
     def on_train_end(
         self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs
     ):
         # Final flush in case the very last step was on an interval boundary
         # and the callback had armed capture but training ended atomically.
+        self._flush_pending()
         self.capture.flush()
         self.capture.detach()
         print(
