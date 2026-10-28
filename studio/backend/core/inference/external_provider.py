@@ -1564,7 +1564,6 @@ class ExternalProviderClient:
         return headers
 
     def _chat_headers(self, thread_id: Optional[str]) -> dict[str, str]:
-        """Add OpenCode Go's stable conversation ID only to its own chat requests."""
         headers = self._auth_headers()
         base = urlparse(self.base_url)
         if (
@@ -1573,7 +1572,7 @@ class ExternalProviderClient:
             and base.hostname == "opencode.ai"
             and (base.path == "/inference/go" or base.path.startswith("/inference/go/"))
         ):
-            # Hash the ID to keep it header-safe and avoid sending the raw conversation ID.
+            # Hashed so the raw conversation ID never leaves Studio.
             headers["x-opencode-session"] = hashlib.sha256(thread_id.encode("utf-8")).hexdigest()
             headers["User-Agent"] = "unsloth-studio"
         return headers

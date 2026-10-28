@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""OpenCode Go requires a stable session header for each conversation."""
 
 import asyncio
 
@@ -12,11 +11,9 @@ from core.inference import external_provider as ep
 
 @pytest.mark.parametrize("stream", [True, False])
 def test_opencode_go_chat_sends_conversation_session(monkeypatch, stream):
-    """Requests from the same conversation carry the same OpenCode session ID."""
     requests = []
 
     def handler(request):
-        """Capture the real outgoing request and supply a minimal completion."""
         requests.append(request)
         if stream:
             return httpx.Response(
@@ -27,7 +24,6 @@ def test_opencode_go_chat_sends_conversation_session(monkeypatch, stream):
         )
 
     async def run():
-        """Send two chat requests through the provider client."""
         async with httpx.AsyncClient(transport = httpx.MockTransport(handler)) as http:
             monkeypatch.setattr(ep, "_client", lambda: http)
             client = ep.ExternalProviderClient(
@@ -51,18 +47,15 @@ def test_opencode_go_chat_sends_conversation_session(monkeypatch, stream):
 
 @pytest.mark.parametrize("base_url", ["https://example.org/v1", "https://opencode.ai/inference/v1"])
 def test_other_providers_do_not_receive_opencode_session(monkeypatch, base_url):
-    """OpenCode-specific session identifiers are not sent to other providers."""
     requests = []
 
     def handler(request):
-        """Capture the unrelated provider request."""
         requests.append(request)
         return httpx.Response(
             200, headers = {"content-type": "text/event-stream"}, content = "data: [DONE]\n\n"
         )
 
     async def run():
-        """Exercise the same chat path against an unrelated provider."""
         async with httpx.AsyncClient(transport = httpx.MockTransport(handler)) as http:
             monkeypatch.setattr(ep, "_client", lambda: http)
             client = ep.ExternalProviderClient("custom", base_url, "key")
@@ -79,16 +72,13 @@ def test_other_providers_do_not_receive_opencode_session(monkeypatch, base_url):
 
 
 def test_opencode_go_responses_sends_conversation_session(monkeypatch):
-    """The Responses API path sends a session header too."""
     requests = []
 
     def handler(request):
-        """Capture a Responses request and return an empty completed response."""
         requests.append(request)
         return httpx.Response(200, json = {"id": "resp_test", "status": "completed", "output": []})
 
     async def run():
-        """Send a Responses request through the actual provider client."""
         async with httpx.AsyncClient(transport = httpx.MockTransport(handler)) as http:
             monkeypatch.setattr(ep, "_client", lambda: http)
             client = ep.ExternalProviderClient(
