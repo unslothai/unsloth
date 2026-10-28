@@ -38,7 +38,7 @@ def _stock_path_route(route: Any) -> bool:
 
 
 def _included_router_parts(entry: Any):
-    """(prefix, original_router) for FastAPI's lazily-included router entry (exact class), else None."""
+    """(prefix, original_router) for FastAPI's lazy included-router entry, else None."""
     cls = type(entry)
     if cls.__name__ != "_IncludedRouter" or cls.__module__ != "fastapi.routing":
         return None

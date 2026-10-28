@@ -115,7 +115,6 @@ def studio_app():
 def test_the_studio_app_guards_most_of_its_route_table(studio_app):
     routes = studio_app.router.routes
     guarded = [entry for entry in routes if "matches" in vars(entry)]
-    # Everything but the catch-alls and the routes registered after main.py's last line.
     assert len(guarded) >= len(routes) * 0.8, (len(guarded), len(routes))
 
 
