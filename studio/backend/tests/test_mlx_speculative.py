@@ -168,8 +168,6 @@ def test_a_drafter_passed_over_keeps_its_reason_on_the_one_that_attaches(monkeyp
     for d, n, e in ((object(), 3, True), (object(), 4, False), (draft.drafter, 15, True)):
         assert spec._draft(d, False, n).controller.fixed_depth is e
 
-    # A chosen mode where nothing fits, priced or not, attaches its drafter anyway, reserving no context,
-    # after any that fits but does not build; one that fits nowhere and does not build leaves copies alone.
     def chosen(picked, fit):
         built.clear()
         result = spec.build_draft(

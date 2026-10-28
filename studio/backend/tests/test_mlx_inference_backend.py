@@ -4930,7 +4930,6 @@ def test_an_explicit_speculative_mode_loads_through_mlx_vlm_and_attaches_what_fi
     monkeypatch.setattr(mlx_inference, "mlx_drafter_fit", lambda *a, **k: (False, None))
     backend.load_model(config, max_seq_length = 0, speculative_type = "ngram")
     assert fits[-1] is True  # copies alone still load through mlx-vlm, so the fit prices that route
-    # A chosen mode's drafter priced not to fit attaches anyway, and the context is fitted without it.
     fits.clear()
     backend.load_model(config, max_seq_length = 0, speculative_type = "dflash")
     assert backend._speculative_draft.drafter is not None and fits == [True]

@@ -14707,8 +14707,7 @@ def _mlx_estimate_drafter(
             return (source.path, source.builtin), fitted, True
         if not index:
             first = attaches
-    # As the load does, a mode the user chose with none that fits attaches its first drafter; one
-    # that cannot be sized is left out of the price rather than leaving no price.
+    # Like the load: a chosen mode with none that fits attaches its first drafter, if it was sized.
     if mode != "auto" and first is False:
         source = resolution.sources[0]
         return (source.path, source.builtin), None, True

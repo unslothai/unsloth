@@ -849,10 +849,8 @@ class TestEstimateMemoryRoute:
         _estimate(model_path = "org/model")
         _estimate(model_path = "o/m", speculative_type = "ngram", mlx_kv_quant = "auto", mlx_kv_bits = 8)
         _estimate(model_path = "org/model", spec_draft_model = "org/d")  # named under Auto
-        fit = "unfit"  # nothing fits: the chosen mode still charges its first drafter, fitted without it
+        fit = "unfit"
         assert _estimate(model_path = "org/model", speculative_type = "mtp").context_fitted == 24576
-        # A first drafter that cannot be sized is the one the load attaches: the target is priced alone,
-        # not with an unfit drafter that never loads.
         for fit in ("unsized", "mixed"):
             _estimate(model_path = "org/model", speculative_type = "mtp")
         assert [route for *_, route in priced] == [True] * 3 + [None] * 2 + [True] * 5

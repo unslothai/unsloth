@@ -377,8 +377,7 @@ def build_draft(
 ) -> tuple:
     """``(draft, kind, reason, context)`` for the first source ``fits`` accepts that builds, else copies
     alone when the mode allows. ``reason`` names a passed-over choice, so a substitute never attaches silently.
-    A mode the user chose still prefers a source that fits, but attaches one that does not rather than none:
-    that one reserves no context."""
+    A chosen mode with none that fits attaches an unfit source, reserving no context."""
     from unsloth_zoo.mlx.speculative import companion_drafter, native_mtp_drafter
 
     if _carries_encoder_state(target):
@@ -405,7 +404,7 @@ def build_draft(
             if (drafter := build(source)) is not None:
                 return _draft(drafter, resolution.copies, draft_n_max), source.kind, reason, context
         elif resolution.mode != "auto":
-            reason = DRAFTER_NO_MEMORY  # stands only if a source that fits attaches instead
+            reason = DRAFTER_NO_MEMORY
             unfit.append(source)
         elif ok is not None:  # priced, and the drafter would shrink it
             reason = AUTO_CONTEXT_COST

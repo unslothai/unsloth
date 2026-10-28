@@ -1152,8 +1152,7 @@ def mlx_resolve_drafter_offload(model_dir, knobs, drafter, *, auto: bool, **pric
 
     room = mlx_resolve_offload(model_dir, knobs, drafter = drafter, **priced)
     if not auto:
-        # A chosen drafter attaches either way, so room it still does not fit in (nothing fits: all on
-        # disk, no step) would only slow the load.
+        # A chosen drafter attaches anyway; room it still does not fit in would only slow the load.
         if "auto" in knobs and fits(room) is False:
             return mlx_resolve_offload(model_dir, knobs, **priced), None
         return room, None
@@ -5567,7 +5566,6 @@ class MLXInferenceBackend:
         # TurboQuant's layout is not one the planner prices, and a refused one stays full width:
         # fit either at full width, which only ever under-promises.
         _requested_bits = None if self._turboquant else _normalize_mlx_kv_bits(kv_bits)
-        # Only a drafter that shrank the context fitted it; otherwise the context is fitted for the target alone.
         _fitted_ctx, _eligibility = (
             (_drafter_ctx, _eligibility)
             if _drafter_ctx is not None
