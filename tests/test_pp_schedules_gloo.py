@@ -628,6 +628,55 @@ def test_compiled_blocks_refused_for_split_backward_on_affected_torch(monkeypatc
     ppn._check_schedule(torch.nn.Sequential(torch.nn.Linear(2, 2)), spec, split)  # nothing compiled
 
 
+def test_forward_calling_compiled_function_refused_for_split_backward(monkeypatch):
+    # unsloth_zoo's generated unsloth_compiled_module_* files keep the class forward eager and call a module-level
+    # compiled function from it (Gemma3MLP.forward -> Gemma3MLP_forward), through torch_compile_with_fallback's
+    # functools.wraps wrapper. Its backward is a CompiledFunctionBackward node: torch <= 2.12's split backward fails
+    # on it after the cut ("_input_metadata is invalid"), as on a compiled block.
+    import functools
+
+    sched = sys.modules["unsloth.models.pp_schedules"]
+    split = {"interleaved": True, "split_backward": True}
+
+    def eager(self, x):
+        return torch.nn.functional.linear(x, self.weight, self.bias)
+
+    compiled = torch.compile(eager, dynamic = False)
+
+    @functools.wraps(compiled)
+    def dispatch(*args, **kwargs):  # unsloth_zoo _eager_during_decode's shape
+        return compiled(*args, **kwargs)
+
+    dispatch.__wrapped__ = eager
+    dispatch._unsloth_compiled_func = compiled
+
+    def block_calling(target):
+        scope = {"Block_forward": target}
+        exec("def forward(self, x):\n    return Block_forward(self, x)\n", scope)
+        cls = type("Block", (torch.nn.Linear,), {"forward": scope["forward"]})
+        block = torch.nn.Linear(2, 2)
+        block.__class__ = cls
+        return torch.nn.Sequential(torch.nn.Linear(2, 2), block)
+
+    for kind, target in {"torch_compile": compiled, "zoo_wrapper": dispatch}.items():
+        assert sched.compiled_blocks(block_calling(target)) == ["1"], kind
+        spec = sched.schedule_spec("interleavedzerobubble")
+        monkeypatch.setattr(ppn, "split_backward_keeps_function_nodes", lambda: False)
+        with pytest.raises(ValueError, match = "cannot run over torch.compile'd blocks"):
+            ppn._check_schedule(block_calling(target), spec, split)
+        monkeypatch.setattr(ppn, "split_backward_keeps_function_nodes", lambda: True)
+        ppn._check_schedule(block_calling(target), spec, split)  # torch >= 2.13: allowed
+    # A compiled helper captured from an enclosing scope (a closure, not a global) is found too.
+    def closure_forward(self, x):
+        return compiled(self, x)
+
+    closure_block = torch.nn.Linear(2, 2)
+    closure_block.__class__ = type("Block", (torch.nn.Linear,), {"forward": closure_forward})
+    assert sched.compiled_blocks(torch.nn.Sequential(torch.nn.Linear(2, 2), closure_block)) == ["1"]
+    # An eager helper called the same way is not a compiled block.
+    assert sched.compiled_blocks(block_calling(eager)) == []
+
+
 def test_single_backward_kernels_unwraps_partials():
     # patch_peft_model binds Cohere's MLP kernel as MethodType(partial(apply_lora_mlp, inplace=False), mlp).
     import functools
