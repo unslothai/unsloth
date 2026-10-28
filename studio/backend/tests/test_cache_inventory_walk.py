@@ -116,7 +116,9 @@ def test_the_walk_sizes_exactly_what_the_reference_walk_sizes(awkward_tree, patt
     if patterns is None:
         # Sanity on the oracle itself: the outside-linked and unreadable bytes are not counted.
         nested = sum(100 + a * 10 + d for a in range(4) for d in range(3))
-        assert expected == (11 + nested + 5000, 7)
+        # Root bypasses permission checks (capabilities(7) CAP_DAC_OVERRIDE), so it reads the locked dirs.
+        locked = 900 + 800 + 700 if getattr(os, "geteuid", lambda: -1)() == 0 else 0
+        assert expected == (11 + nested + 5000 + locked, 7)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "symlinks need POSIX semantics")
