@@ -314,6 +314,8 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "max_grad_norm": _coerce_optional_nonneg_float(
             "max_grad_norm", values.get("max_grad_norm")
         ),
+        "adam_beta1": values.get("adam_beta1", 0.9),
+        "adam_beta2": values.get("adam_beta2", 0.999),
         "max_grad_value": _coerce_optional_nonneg_float(
             "max_grad_value", values.get("max_grad_value")
         ),

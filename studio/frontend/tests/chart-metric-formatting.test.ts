@@ -9,6 +9,7 @@ import test from "node:test";
 import {
   formatAxisMetric,
   formatMetric,
+  rewardLogLabel,
 } from "../src/features/studio/sections/charts/utils.ts";
 
 test("a large metric keeps every digit", () => {
@@ -48,8 +49,15 @@ test("padding after a decimal point is still trimmed", () => {
 test("negative zero reads as zero", () => {
   assert.equal(formatMetric(-0), "0");
   assert.equal(formatAxisMetric(-0), "0");
-  // toFixed rounds this to "-0" before the trim sees it.
-  assert.equal(formatAxisMetric(-0.000001), "0");
+});
+
+test("tiny axis ticks stay distinct instead of all reading 0", () => {
+  const ticks = [0, 0.0000125, 0.000025, 0.0000375, 0.00005].map(
+    formatAxisMetric,
+  );
+  assert.deepEqual(ticks, ["0", "1.25e-5", "2.5e-5", "3.75e-5", "5e-5"]);
+  assert.equal(formatAxisMetric(-0.000001), "-1e-6");
+  assert.equal(formatAxisMetric(0.002), "0.002");
 });
 
 test("a non-finite metric is still reported as zero", () => {
@@ -75,4 +83,12 @@ test("no formatted metric is shorter than its integer part", () => {
       }
     }
   }
+});
+
+test("reward series use the reward's id, as the Rewards card spells it", () => {
+  assert.equal(
+    rewardLogLabel("rewards/answer_length_bonus/mean"),
+    "answer-length-bonus",
+  );
+  assert.equal(rewardLogLabel("rewards/exact_answer"), "exact-answer");
 });

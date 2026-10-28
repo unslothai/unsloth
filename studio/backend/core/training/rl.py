@@ -25,9 +25,10 @@ RL_ROLES = {
     "orpo": ("prompt", "chosen", "rejected", "system"),
     "grpo": ("prompt", "answer", "system"),
 }
+# DPO/ORPO prompts may be implicit, as TRL reads them: the turns chosen and rejected share.
 _REQUIRED_ROLES = {
-    "dpo": ("prompt", "chosen", "rejected"),
-    "orpo": ("prompt", "chosen", "rejected"),
+    "dpo": ("chosen", "rejected"),
+    "orpo": ("chosen", "rejected"),
     "grpo": ("prompt",),
 }
 _AUTO_ROLE_NAMES = {
@@ -281,10 +282,10 @@ def format_rl_dataset(
             )
 
     def convert(row: dict) -> dict:
-        value = row[roles["prompt"]]
+        value = row[roles["prompt"]] if "prompt" in roles else []
         extra_input = row.get("input")
         if (
-            roles["prompt"] == "instruction"
+            roles.get("prompt") == "instruction"
             and "input" not in roles.values()
             and (mapping or {}).get("input") != _IGNORE_ROLE
             and isinstance(value, str)
@@ -323,7 +324,8 @@ def format_rl_dataset(
                 chosen[: len(mapped)]
             ) == _strip_nulls(mapped)
             if (
-                not repeats_prompt
+                "prompt" in roles
+                and not repeats_prompt
                 and chosen[0]["role"] == "assistant"
                 and rejected[0]["role"] == "assistant"
             ):
@@ -341,6 +343,12 @@ def format_rl_dataset(
                     prompt = [{"role": "system", "content": str(system)}] + prompt
                 out["prompt"] = prompt
                 out["chosen"], out["rejected"] = chosen[shared:], rejected[shared:]
+            elif "prompt" not in roles:
+                raise ValueError(
+                    f"{objective.upper()} without a prompt column needs chosen and rejected as "
+                    "conversations that start with the same user turn. Map a Prompt column under "
+                    "Column roles."
+                )
             else:
                 out["chosen"] = _split_conversation(row[roles["chosen"]])[1]
                 out["rejected"] = _split_conversation(row[roles["rejected"]])[1]
@@ -996,13 +1004,15 @@ def build_rl_trainer(
             world = max(int(os.environ.get("WORLD_SIZE") or 1), 1)
         except ValueError:
             world = 1
-        batch = int(grpo_base.get("per_device_train_batch_size") or 1) * world
-        per_step = batch * int(grpo_base.get("gradient_accumulation_steps") or 1)
-        if per_step % num_generations:
-            # TRL wants a generation batch divisible by both the global batch and num_generations.
-            group = batch * num_generations // math.gcd(batch, num_generations)
-            grpo_base["generation_batch_size"] = -(-per_step // group) * group
-        prompts = grpo_base.get("generation_batch_size", per_step) // num_generations
+        device_batch = int(grpo_base.get("per_device_train_batch_size") or 1)
+        others = world * int(grpo_base.get("gradient_accumulation_steps") or 1)
+        if (device_batch * others) % num_generations:
+            # Like Unsloth's own GRPO bump: grow the batch until a step holds whole prompt groups,
+            # and leave generation_batch_size / steps_per_generation to TRL's defaults.
+            unit = num_generations // math.gcd(others, num_generations)
+            device_batch = -(-device_batch // unit) * unit
+            grpo_base["per_device_train_batch_size"] = device_batch
+        prompts = device_batch * others // num_generations
         try:
             rows = len(train_dataset)
         except TypeError:

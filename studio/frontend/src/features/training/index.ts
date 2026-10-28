@@ -3,6 +3,7 @@
 
 export {
   hasSeparateStreamingEvalSplit,
+  sftLearningRate,
   useTrainingConfigStore,
 } from "./stores/training-config-store";
 export {

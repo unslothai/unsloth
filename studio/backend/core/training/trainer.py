@@ -123,6 +123,12 @@ _CPT_EMBEDDING_TARGETS = ("embed_tokens", "lm_head")
 STREAMING_EVAL_MAX_SAMPLES = 500
 
 
+def _optimizer_overrides(training_args) -> dict:
+    """Explicit clipping and AdamW betas; unset keeps each branch's own default."""
+    keys = ("max_grad_norm", "adam_beta1", "adam_beta2")
+    return {k: float(training_args[k]) for k in keys if training_args.get(k) is not None}
+
+
 def _build_report_targets(training_args) -> list[str] | str:
     report_to: list[str] = []
     if training_args.get("enable_wandb", False):
@@ -1107,6 +1113,7 @@ class UnslothTrainer:
 
         if extra_args:
             config.update(extra_args)
+        config.update(_optimizer_overrides(training_args))
 
         return config
 
@@ -4896,6 +4903,8 @@ class UnslothTrainer:
                     logger.info(
                         f"Sequence packing: {'enabled' if packing_enabled else 'disabled'}\n"
                     )
+
+            config_args.update(_optimizer_overrides(training_args))
 
             # Audio codec overrides - BiCodec/DAC use the text SFTTrainer path
             if self._audio_type == "bicodec":
