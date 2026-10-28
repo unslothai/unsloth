@@ -2482,12 +2482,18 @@ class UnslothTrainer:
 
                 all_codes = []
                 frames = codes[0].shape[1]
+                code_lists = None
+                # Plain integer tensors only: subclasses, odd containers and short levels keep the
+                # scalar loop below, exceptions included.
                 if (
-                    isinstance(codes, (list, tuple))
+                    type(codes) in (list, tuple)
                     and len(codes) >= 3
                     and all(
-                        isinstance(level, torch.Tensor)
+                        type(level) is torch.Tensor
                         and level.layout == torch.strided
+                        and level.device.type in ("cpu", "cuda")
+                        and level.dtype
+                        in (torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64)
                         and level.dim() == 2
                         and level.shape[0] >= 1
                         for level in codes[:3]
@@ -2495,9 +2501,15 @@ class UnslothTrainer:
                     and codes[1].shape[1] >= 2 * frames
                     and codes[2].shape[1] >= 4 * frames
                 ):
-                    # Every index below is in bounds: one host copy per level instead of seven
-                    # scalar reads (each a device sync on GPU) per frame. Same ints, same order.
-                    c0, c1, c2 = (level[0].tolist() for level in codes[:3])
+                    try:
+                        # One host copy per level instead of seven scalar reads (each a device
+                        # sync on GPU) per frame. Same Python ints, same order.
+                        code_lists = tuple(level[0].tolist() for level in codes[:3])
+                    except Exception:
+                        # A functional tensor passes the checks above but has no storage to copy.
+                        code_lists = None
+                if code_lists is not None:
+                    c0, c1, c2 = code_lists
                     for i in range(frames):
                         all_codes.append(c0[i] + AUDIO_OFFSET)
                         all_codes.append(c1[2 * i] + AUDIO_OFFSET + 4096)

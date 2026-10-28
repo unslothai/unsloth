@@ -84,7 +84,12 @@ def _run(method, rows, *, stop_after, plain, dtype, events, monkeypatch):
 
         def encode(self, waveform):
             row = int(waveform[0, 0, 0].item())
-            levels = _codes_for(row, dtype)
+            if dtype == "functional":
+                levels = [
+                    torch._to_functional_tensor(level) for level in _codes_for(row, torch.int64)
+                ]
+            else:
+                levels = _codes_for(row, dtype)
             return levels if plain else _Levels(levels)
 
     class Logger:
@@ -170,9 +175,17 @@ def _run(method, rows, *, stop_after, plain, dtype, events, monkeypatch):
     return (dataset.to_dict(), dataset._fingerprint), events
 
 
-@pytest.mark.parametrize("dtype", [torch.int64, torch.int32, torch.int16, torch.float32])
+_FAST_DTYPES = [torch.int64, torch.int32, torch.int16, torch.uint8]
+# Floats and functional tensors (no storage, so .tolist() raises where .item() works) must take
+# the scalar loop in full.
+_SCALAR_LOOP_DTYPES = [torch.float32, "functional"]
+
+
+@pytest.mark.parametrize("dtype", _FAST_DTYPES + _SCALAR_LOOP_DTYPES)
 @pytest.mark.parametrize("stop_after", [None, 57])
 def test_fast_path_matches_scalar_loop(monkeypatch, dtype, stop_after):
+    if dtype == "functional" and not hasattr(torch, "_to_functional_tensor"):
+        pytest.skip("torch has no functional tensors")
     method = _load_method()
     calls = {"tolist": 0, "item": 0}
     real_tolist, real_item = torch.Tensor.tolist, torch.Tensor.item
@@ -213,9 +226,12 @@ def test_fast_path_matches_scalar_loop(monkeypatch, dtype, stop_after):
     assert fast == slow
     assert fast_events == slow_events
     assert any(event[0] == "warning" for event in fast_events)  # the error rows were exercised
+    assert calls["tolist"] == 0
+    if dtype in _SCALAR_LOOP_DTYPES:
+        assert fast_calls["item"] == calls["item"]
+        return
     # The fast path ran: whole-level copies, and only the waveform reads and malformed rows use .item().
     assert fast_calls["tolist"] > 0
-    assert calls["tolist"] == 0
     assert fast_calls["item"] < calls["item"] // 5
 
 
