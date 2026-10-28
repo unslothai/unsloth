@@ -990,7 +990,7 @@ def test_the_drafter_drop_precedes_the_flags_it_feeds():
     guard believes it dropped."""
     src = _load_model_source()
     gate_at = src.index("_pv_draft_unpinnable = bool(")
-    assert gate_at < src.index("spec_flags = self._build_speculative_flags(")
+    assert gate_at < src.index("built = self._build_speculative_flags(")
     assert gate_at < src.index("cmd.extend(str(a) for a in _emit_extra_args)")
     assert gate_at < src.index("_pv_draft_cpu_pin = [")
 

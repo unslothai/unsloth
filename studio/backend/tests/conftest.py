@@ -312,6 +312,12 @@ def _reset_gpu_query_cache():
         backend = getattr(llama, "LlamaCppBackend", None)
         if backend is not None and "_NVML_ROWS" in vars(backend):
             backend._NVML_ROWS = []
+        # Same for the id provenance the last GPU probe recorded: a torch-ordinal or MIG probe
+        # leaving False made a later CUDA launch skip its PCIe link probe.
+        if backend is not None and "_GPU_IDS_ARE_PCI_INDICES" in vars(backend):
+            backend._GPU_IDS_ARE_PCI_INDICES = None
+        if backend is not None and "_MIG_DEVICE_SNAPSHOT" in vars(backend):
+            backend._MIG_DEVICE_SNAPSHOT = None
 
     _reset()
     yield
@@ -1122,6 +1128,23 @@ def _drop_the_settings_memo_between_tests():
 
 
 @pytest.fixture(autouse = True)
+def _drop_the_model_memory_memo_between_tests():
+    """The same 2 s clock for the Model Memory toggles (utils.model_memory_settings).
+
+    test_an_uncontended_read_still_caches reads keep_resident=True through a patched store and
+    leaves it memoized, so the next test on that worker inside the TTL sees "Keep model in GPU
+    memory" on: model_memory_owns_placement() turns true and the spill planner stands down.
+    """
+    settings = sys.modules.get("utils.model_memory_settings")
+    if settings is not None:
+        settings._cache.clear()
+    yield
+    settings = sys.modules.get("utils.model_memory_settings")
+    if settings is not None:
+        settings._cache.clear()
+
+
+@pytest.fixture(autouse = True)
 def _drop_the_idle_reload_stash_between_tests():
     """Clear keepwarm's stash via _set_last_unloaded per test, so no later test reloads another's model."""
     from core.inference import llama_keepwarm as _keepwarm
@@ -1220,3 +1243,27 @@ def _kernel_lock_dir(tmp_path_factory):
 def _isolated_kernel_install_locks(monkeypatch, _kernel_lock_dir):
     # Tests never take (or create) the environment's real kernel install locks.
     monkeypatch.setenv("UNSLOTH_KERNEL_LOCK_DIR", _kernel_lock_dir)
+
+
+@pytest.fixture(autouse = True)
+def _planner_tests_see_every_cpu(request, monkeypatch):
+    """The spill planner declines when the process's CPU affinity is narrower than the logical
+    count, so a cpuset-pinned runner or ``taskset`` made unrelated planner cells abstain. Planner
+    modules see every logical CPU; a test of the affinity rule patches its own mask over this."""
+    if not hasattr(os, "sched_getaffinity"):
+        return
+    module = getattr(request, "module", None)
+    if not getattr(module, "__name__", "").rpartition(".")[2].startswith("test_offload_planner"):
+        return
+
+    def _every_cpu(_pid = 0):
+        logical = None
+        psutil_mod = sys.modules.get("psutil")
+        if psutil_mod is not None and hasattr(psutil_mod, "cpu_count"):
+            try:
+                logical = psutil_mod.cpu_count(logical = True)
+            except Exception:
+                logical = None
+        return set(range(int(logical or os.cpu_count() or 1)))
+
+    monkeypatch.setattr(os, "sched_getaffinity", _every_cpu)

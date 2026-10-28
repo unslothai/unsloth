@@ -78,7 +78,7 @@ _RATE_RATIOS: dict[Access, float] = {
     Access.KV_CACHE: 20.1,
 }
 
-# Coarse constant bracketed by measured dense 49.4 and MoE 66.9 GiB/s
+# Prefill bandwidth GiB/s, between dense 49.4 and MoE 66.9 on PCIe 5 x16; default for link_gib_s.
 PREFILL_STREAM_GIB_S = 55.0
 
 # Multi-group spills cost more than the sum (contention), measured 6%
@@ -110,8 +110,10 @@ class HostProfile:
     """
 
     threads: int = REFERENCE_HOST_THREADS
-    #: Unified-memory hosts, where spilling moves nothing.
+    # Unified-memory hosts: spilling moves nothing.
     unified_memory: bool = False
+    # Host-to-device prefill rate; generation never crosses the link.
+    link_gib_s: float = PREFILL_STREAM_GIB_S
 
     @property
     def generation_slowdown(self) -> float:
@@ -167,7 +169,10 @@ def prefill_penalty_ms_per_token(
     n_ubatch: int = 512,
     host: HostProfile | None = None,
 ) -> float:
-    """Uses full bytes, not activated ones, since a 512-token ubatch selects nearly every expert anyway."""
+    """Uses full bytes, not activated ones, since a 512-token ubatch selects nearly every expert anyway.
+
+    Reads ``host`` only for ``unified_memory`` and ``link_gib_s``: this regime is link-bound, not core-bound.
+    """
     host = host or HostProfile()
     if host.unified_memory:
         return 0.0
@@ -175,8 +180,31 @@ def prefill_penalty_ms_per_token(
     host_bytes = sum(g.bytes_total for g in placement.host_groups) + placement.kv_host_bytes
     if host_bytes <= 0 or n_ubatch <= 0:
         return 0.0
-    per_ubatch_ms = (host_bytes / GIB) / PREFILL_STREAM_GIB_S * 1000.0
-    return per_ubatch_ms / float(n_ubatch)
+    return _prefill_per_ubatch_ms(placement, host) / float(n_ubatch)
+
+
+def _prefill_per_ubatch_ms(placement: Placement, host: HostProfile | None = None) -> float:
+    """Milliseconds to stream every host-side byte once, i.e. per micro-batch."""
+    host_bytes = sum(g.bytes_total for g in placement.host_groups) + placement.kv_host_bytes
+    if host_bytes <= 0:
+        return 0.0
+    host = host or HostProfile()
+    link_gib_s = host.link_gib_s if host.link_gib_s > 0.0 else PREFILL_STREAM_GIB_S
+    return (host_bytes / GIB) / link_gib_s * 1000.0
+
+
+def prefill_penalty_ms(
+    placement: Placement,
+    n_prompt: int,
+    n_ubatch: int = 512,
+    host: HostProfile | None = None,
+) -> float:
+    """Extra milliseconds to prefill ``n_prompt`` tokens."""
+    host = host or HostProfile()
+    if host.unified_memory or n_prompt <= 0 or n_ubatch <= 0:
+        return 0.0
+    batches = -(-int(n_prompt) // int(n_ubatch))
+    return batches * _prefill_per_ubatch_ms(placement, host)
 
 
 def rank(
@@ -191,7 +219,7 @@ def rank(
         (
             c,
             n_generated * generation_penalty_ms(c, host)
-            + n_prompt * prefill_penalty_ms_per_token(c, n_ubatch, host),
+            + prefill_penalty_ms(c, n_prompt, n_ubatch, host),
         )
         for c in candidates
     ]

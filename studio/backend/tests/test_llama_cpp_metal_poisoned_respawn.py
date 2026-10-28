@@ -663,7 +663,7 @@ def test_the_replacement_load_starts_its_own_poller(tmp_path, monkeypatch):
     monkeypatch.setattr(
         _stats,
         "maybe_start_stats_logger",
-        lambda base_url, logger, headers = None: started.append(base_url) or _Poller(),
+        lambda base_url, logger, headers = None, **_kw: started.append(base_url) or _Poller(),
     )
     backend, gguf = h.cuda_backend(tmp_path)
     caps = dict(h.CAPS, supports_metrics = True)
