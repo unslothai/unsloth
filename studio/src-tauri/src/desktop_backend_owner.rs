@@ -1715,8 +1715,7 @@ mod tests {
         }
     }
 
-    /// Answers liveness only after `stall` (a backend whose warm-up holds the GIL), then the
-    /// desktop-login compatibility POST at once, as a live backend does.
+    /// First liveness answer delayed by `stall` (warm-up holding the GIL); desktop-login gets 401.
     async fn owned_backend_that_answers_after(stall: Duration) -> u16 {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;
@@ -1762,7 +1761,6 @@ mod tests {
         assert!(stall > LOCAL_HTTP_TIMEOUT);
         assert!(stall < crate::process::PORT_VALIDATION_PROBE_TIMEOUT);
 
-        // The default budget gives up while the backend is still busy: the old validation path.
         let port = owned_backend_that_answers_after(stall).await;
         let owner = BackendOwnerState::from_metadata(
             std::env::temp_dir().join("unsloth-gil-stall-default-budget.json"),
@@ -1771,7 +1769,6 @@ mod tests {
         let probe = probe_owned_backend_state(owner, Some(port), false).await;
         assert!(!matches!(probe, OwnedBackendProbe::Verified(_)), "{probe:?}");
 
-        // The validation budget waits the stall out and verifies on the first attempt.
         let port = owned_backend_that_answers_after(stall).await;
         let owner = BackendOwnerState::from_metadata(
             std::env::temp_dir().join("unsloth-gil-stall-validation-budget.json"),

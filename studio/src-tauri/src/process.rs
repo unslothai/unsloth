@@ -3611,9 +3611,7 @@ async fn generic_backend_health_ok(port: u16, timeout: Duration) -> bool {
 
 /// Doubling backoff: each probe costs two requests against a busy backend.
 const PORT_VALIDATION_RETRY_MIN: Duration = Duration::from_millis(250);
-/// Per-request budget of a validation probe: the health watchdog's, not the 2s default. Right after
-/// TAURI_PORT the backend's warm-up can hold the GIL for seconds; a 2s probe then times out and backs
-/// off, so the port was announced seconds after the backend could answer.
+/// The health watchdog's per-request budget: warm-up right after TAURI_PORT can hold the GIL past 2s.
 pub(crate) const PORT_VALIDATION_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const PORT_VALIDATION_RETRY_MAX: Duration = Duration::from_secs(5);
 
@@ -5889,8 +5887,6 @@ mod managed_cli_working_dir_tests {
 mod port_validation_budget_tests {
     #[test]
     fn port_validation_probes_use_the_validation_budget() {
-        // Both probes, owned and generic, or a GIL stall right after TAURI_PORT costs 2s timeouts
-        // plus backoff before server-port.
         let src = include_str!("process.rs").replace("\r\n", "\n");
         let start = src
             .find("async fn validate_candidate_port(")
