@@ -333,15 +333,25 @@ def _mlx_image_need(request: Any, fam: Any) -> Optional[tuple[int, int]]:
         fetch_base_snapshot,
         get_mlx_diffusion_backend,
         plan_for_load,
+        resolve_variant_base,
     )
 
     gguf = _cached_pick(request.model_path, request.gguf_filename)
     if gguf is None:
         return None
     # Offline only; raises when the text encoder and VAE are not downloaded yet.
-    base_dir = fetch_base_snapshot(
-        resolve_base_repo(fam, request.base_repo), None, local_files_only = True
-    )
+    base = resolve_base_repo(fam, request.base_repo)
+    if not request.base_repo:
+        # As the load resolves it: a named variant (Z-Image vs Turbo) reads its own base.
+        base = resolve_variant_base(
+            request.model_path,
+            fam,
+            None,
+            request.gguf_filename,
+            fallback = base,
+            local_files_only = True,
+        )
+    base_dir = fetch_base_snapshot(base, None, local_files_only = True)
     headroom = decode_headroom_bytes(get_mlx_diffusion_backend()._rt())
     plan = plan_for_load(gguf, base_dir, headroom_bytes = headroom)
     if plan.source != "plan":
@@ -883,6 +893,12 @@ def media_fit_kwargs(
     if need:
         kwargs["need_mib"] = need
     return kwargs
+
+
+def forget_media_price(owner: str) -> None:
+    """Drop ``owner``'s recorded price: a resident that changed renderer is no longer what was priced."""
+    with arb._lock:
+        arb._media_needs.pop(owner, None)
 
 
 def refuse_unless_fits(

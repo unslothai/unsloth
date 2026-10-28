@@ -853,7 +853,15 @@ def test_an_mlx_routed_image_load_is_priced_from_its_quantization_plan(monkeypat
         router, "predict_engine", lambda *a, **k: picks.append(k["engine"]) or ENGINE_MLX
     )
     monkeypatch.setattr(gr, "_cached_pick", lambda repo, name: "/m.gguf")
-    monkeypatch.setattr(mdb, "fetch_base_snapshot", lambda *a, **k: "/base")
+    fetched = []
+    monkeypatch.setattr(
+        mdb, "fetch_base_snapshot", lambda base, *a, **k: fetched.append(base) or "/base"
+    )
+    monkeypatch.setattr(
+        mdb,
+        "resolve_variant_base",
+        lambda repo, f, tok, name, *, fallback, local_files_only: "org/variant",
+    )
     monkeypatch.setattr(
         mdb, "get_mlx_diffusion_backend", lambda: types.SimpleNamespace(_rt = lambda: None)
     )
@@ -871,6 +879,9 @@ def test_an_mlx_routed_image_load_is_priced_from_its_quantization_plan(monkeypat
         engine = "auto",
     )
     assert gr._image_need(request, 0) == (4096, 4)
-    assert picks == ["auto"]
+    assert picks == ["auto"] and fetched == ["org/base"]
+    # No base named: the load's variant resolution picks it, not the family default.
+    request.base_repo = None
+    assert gr._image_need(request, 0) == (4096, 4) and fetched[-1] == "org/variant"
     plan.source = "ram_rule"
     assert gr._image_need(request, 0) is None

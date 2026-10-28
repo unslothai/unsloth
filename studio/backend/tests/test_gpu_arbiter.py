@@ -209,6 +209,15 @@ def test_a_priced_mlx_chat_load_does_not_join_an_unpriced_image(cores, monkeypat
     assert (arb.DIFFUSION in arb.residents()) is (priced or refused)
 
 
+def test_a_renderer_change_forgets_the_media_price(cores):
+    import core.inference.gpu_residency as res
+
+    arb.acquire_for(arb.DIFFUSION, lambda: None, policy = "fit", need_mib = {0: 4096})
+    assert arb._media_needs.get(arb.DIFFUSION) == {0: 4096}
+    res.forget_media_price(arb.DIFFUSION)
+    assert arb.DIFFUSION not in arb._media_needs and arb.DIFFUSION in arb.residents()
+
+
 @pytest.mark.parametrize("managed", [False, True])
 def test_always_refuses_an_image_load_that_does_not_fit_without_evicting(cores, managed):
     from utils.account_context import AccountContext, run_as

@@ -403,6 +403,16 @@ def test_only_a_bounded_mlx_cache_is_priced_and_its_admitted_width_never_shrinks
     assert "if mlx_chat_need is not None and _mlx_cache_bounded(_resident_entry):" in source
 
 
+def test_the_mlx_diffusers_fallback_forgets_the_mlx_price():
+    import inspect
+    source = inspect.getsource(inf._mlx_fallback_load_gate)
+    assert (
+        source.index("refuse_unless_fits(")
+        < source.index("forget_media_price(DIFFUSION)")
+        < source.index("return start()")
+    )
+
+
 def test_an_mlx_load_is_credited_what_it_replaces_and_more_rows_reprice_it():
     import inspect
 
