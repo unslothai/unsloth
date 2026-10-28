@@ -8,6 +8,8 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
+import uuid
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import quote
@@ -164,10 +166,113 @@ async def recipe_group(ctx: NodeContext) -> dict:
         )
     mode = "preview" if ctx.params.get("mode") == "preview" else "full"
     run = run_settings(compiled.get("run"), int(ctx.params.get("rows") or 0), mode, body)
-    return await run_recipe(ctx, body, run)
+    return await run_recipe(ctx, body, run, history = RunHistory(ctx))
 
 
-async def run_recipe(ctx: NodeContext, body: dict, run: dict[str, Any]) -> dict:
+class RunHistory:
+    """A Recipe Dataset run as a Recipe Studio execution record, so its Runs view reads it like Recipe Studio's."""
+
+    def __init__(self, ctx: Optional[NodeContext] = None):
+        self.flow_id = getattr(ctx, "flow_id", None)
+        self.node_id = getattr(ctx, "node_id", None)
+        self.enabled = bool(self.flow_id and self.node_id)
+        self.record: dict[str, Any] = {}
+        self.seq = 0
+
+    def start(self, job_id: str, run: dict) -> None:
+        self.record = {
+            "id": uuid.uuid4().hex,
+            "recipeId": f"flow:{self.flow_id}:{self.node_id}",
+            "jobId": job_id,
+            "kind": run.get("execution_type") or "full",
+            "run_name": None,
+            "status": "pending",
+            "rows": int(run.get("rows") or 0),
+            "createdAt": int(time.time() * 1000),
+            "finishedAt": None,
+            "recipeSignature": "",
+            "dataset": [],
+            "datasetTotal": 0,
+            "datasetPage": 1,
+            "datasetPageSize": 20,
+            "log_lines": [],
+        }
+
+    async def update(self, **fields: Any) -> None:
+        if not self.enabled or not self.record:
+            return
+        self.seq += 1
+        self.record.update(fields, lastEventId = self.seq)
+        if (
+            self.record["status"] in ("completed", "error", "cancelled")
+            and not self.record["finishedAt"]
+        ):
+            self.record["finishedAt"] = int(time.time() * 1000)
+        from storage import flows_db
+
+        try:
+            await asyncio.to_thread(
+                flows_db.save_recipe_run, self.flow_id, self.node_id, dict(self.record)
+            )
+        except Exception:  # a run never fails because its history could not be written
+            pass
+
+    async def status(self, status: Any) -> None:
+        if not isinstance(status, dict):
+            return
+        keep = (
+            "status",
+            "stage",
+            "current_column",
+            "completed_columns",
+            "progress",
+            "column_progress",
+            "batch",
+            "source_progress",
+            "model_usage",
+            "artifact_path",
+            "error",
+        )
+        fields = {k: status[k] for k in keep if k in status}
+        if fields.get("status") == "completed":
+            fields.pop("status")  # finish() marks it done once its rows are in the record
+        if isinstance(status.get("rows"), int):
+            fields["rows"] = status["rows"]
+        await self.update(**fields)
+
+    async def finish(
+        self, ctx: NodeContext, job_id: str, preview: list, total: Any, kept: Optional[list]
+    ) -> None:
+        """``kept`` is every row when the step already read them all (a run with no saved artifact)."""
+        if not self.enabled:
+            return
+        rows, analysis = preview, None
+        if self.record.get("kind") == "preview":
+            # The view pages a preview from the record alone, as Recipe Studio does: keep every row.
+            try:
+                rows = kept if kept is not None else await recipe_rows(ctx, job_id)
+            except FlowNodeError:
+                pass
+        try:
+            analysis = await ctx.call("GET", f"{RECIPES}/jobs/{quote(job_id, safe = '')}/analysis")
+        except FlowNodeError:
+            pass
+        if self.record.get("kind") == "preview":
+            total = len(rows)
+        await self.update(
+            status = "completed",
+            dataset = rows,
+            datasetTotal = total if isinstance(total, int) else len(rows),
+            analysis = analysis if isinstance(analysis, dict) else None,
+        )
+
+
+async def run_recipe(
+    ctx: NodeContext,
+    body: dict,
+    run: dict[str, Any],
+    history: Optional[RunHistory] = None,
+) -> dict:
     """One Data Designer job for ``body``: its dataset (parquet if saved, else rows), a preview."""
     seed = ctx.inputs.get("seed")
     if isinstance(seed, dict) and seed.get("kind") == "dataset":
@@ -181,8 +286,17 @@ async def run_recipe(ctx: NodeContext, body: dict, run: dict[str, Any]) -> dict:
     if not job_id:
         raise FlowNodeError("Unsloth Studio did not start the recipe")
 
+    history = history or RunHistory()
+    history.start(job_id, run)
+    await history.update(status = "pending")
+
     async def cancel() -> None:
         await ctx.call("POST", f"{RECIPES}/jobs/{quote(job_id, safe = '')}/cancel")
+
+    async def job_status() -> Any:
+        status = await ctx.call("GET", f"{RECIPES}/jobs/{quote(job_id, safe = '')}/status")
+        await history.status(status)
+        return status
 
     def parse(status: Any) -> tuple[str, Optional[dict], Optional[str]]:
         state = str(status.get("status") or "") if isinstance(status, dict) else ""
@@ -198,25 +312,30 @@ async def run_recipe(ctx: NodeContext, body: dict, run: dict[str, Any]) -> dict:
             return "cancelled", shown, "The recipe was cancelled"
         return "running", shown, None
 
-    status = await poll_job(
-        ctx,
-        status = lambda: ctx.call("GET", f"{RECIPES}/jobs/{quote(job_id, safe = '')}/status"),
-        parse = parse,
-        cancel = cancel,
-        interval = POLL_S,
-    )
+    try:
+        status = await poll_job(ctx, status = job_status, parse = parse, cancel = cancel, interval = POLL_S)
+    except BaseException as exc:
+        if history.record.get("status") not in ("error", "cancelled"):
+            failed = isinstance(exc, FlowNodeError)
+            await history.update(status = "error" if failed else "cancelled", error = str(exc) or None)
+        raise
     preview: list = []
+    total = None
     try:
         page = await ctx.call(
             "GET", f"{RECIPES}/jobs/{quote(job_id, safe = '')}/dataset", params = {"limit": 20}
         )
         if isinstance(page, dict):
             preview = [row for row in page.get("dataset") or [] if isinstance(row, dict)]
+            total = page.get("total")
     except FlowNodeError:
         pass
     rows = status.get("rows") if isinstance(status, dict) else None
     artifact = status.get("artifact_path") if isinstance(status, dict) else None
-    if isinstance(artifact, str) and artifact.strip():
+    saved = isinstance(artifact, str) and artifact.strip()
+    kept = None if saved else await recipe_rows(ctx, job_id)
+    await history.finish(ctx, job_id, preview, total, kept)
+    if saved:
         ref = f"recipes/{Path(artifact.strip()).name}/parquet-files"
         dataset = {
             "kind": "dataset",
@@ -226,7 +345,6 @@ async def run_recipe(ctx: NodeContext, body: dict, run: dict[str, Any]) -> dict:
             "rows": rows,
         }
     else:
-        kept = await recipe_rows(ctx, job_id)
         if not kept:
             raise FlowNodeError("The Data Recipe produced no rows")
         dataset = await upload_rows(ctx, kept, f"recipe-{job_id}")

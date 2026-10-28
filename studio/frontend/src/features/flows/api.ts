@@ -191,6 +191,22 @@ export const nodeHistory = (flowId: string, nodeId: string) =>
     `/${encodeURIComponent(flowId)}/nodes/${encodeURIComponent(nodeId)}/history`,
   );
 
+export const recipeRuns = (flowId: string, nodeId: string, limit: number) =>
+  request<{ executions: Record<string, unknown>[] }>(
+    `/${encodeURIComponent(flowId)}/nodes/${encodeURIComponent(nodeId)}/recipe-runs?limit=${limit}`,
+  );
+
+export const recipeRun = (flowId: string, nodeId: string, runId: string) =>
+  request<Record<string, unknown> & { dataset?: unknown; datasetTotal?: unknown }>(
+    `/${encodeURIComponent(flowId)}/nodes/${encodeURIComponent(nodeId)}/recipe-runs/${encodeURIComponent(runId)}`,
+  );
+
+export const datasetRows = (value: unknown, offset: number, limit: number) =>
+  request<import("./dataset/dataset-value").DatasetRowsPage>(
+    "/dataset-rows",
+    json("POST", { value, offset, limit }),
+  );
+
 export interface ImportReport {
   missing_models: PlanModel[];
   warnings: string[];

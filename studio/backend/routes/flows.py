@@ -771,6 +771,49 @@ def node_history(
     return {"entries": flows_db.node_output_history(flow_id, node_id, limit)}
 
 
+@router.get("/{flow_id}/nodes/{node_id}/recipe-runs")
+def recipe_runs(
+    flow_id: str,
+    node_id: str,
+    limit: int = Query(50, ge = 1, le = 200),
+) -> dict:
+    """A Recipe Dataset step's runs as Recipe Studio execution records, newest first."""
+    _flow_or_404(flow_id)
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", node_id):
+        raise HTTPException(status_code = 400, detail = "Invalid node id")
+    return {"executions": flows_db.recipe_runs(flow_id, node_id, limit)}
+
+
+@router.get("/{flow_id}/nodes/{node_id}/recipe-runs/{run_id}")
+def recipe_run(flow_id: str, node_id: str, run_id: str) -> dict:
+    """One run with its rows."""
+    _flow_or_404(flow_id)
+    record = flows_db.recipe_run(flow_id, node_id, run_id)
+    if record is None:
+        raise HTTPException(status_code = 404, detail = "Run not found")
+    return record
+
+
+class DatasetRowsBody(BaseModel):
+    value: dict[str, Any]
+    offset: int = Field(0, ge = 0, le = 100_000)
+    limit: int = Field(20, ge = 1, le = 100)
+
+
+@router.post("/dataset-rows")
+def dataset_rows(request: Request, body: DatasetRowsBody) -> dict:
+    """A page of a flow `dataset` value's rows (Hub, uploaded or Data Recipe), for the viewers."""
+    from core.flows.dataset_rows import DatasetRowsError
+    from core.flows.dataset_rows import dataset_rows as read_rows
+
+    try:
+        return read_rows(body.value, body.offset, body.limit, _hf_token(request))
+    except DatasetRowsError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+
+
 @router.get("/{flow_id}/latest-outputs")
 def latest_outputs(flow_id: str) -> dict:
     _flow_or_404(flow_id)

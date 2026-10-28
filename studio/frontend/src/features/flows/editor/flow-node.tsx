@@ -23,6 +23,8 @@ import {
 import type { RfNode } from "./derive-rf";
 import { nodeIcon } from "./icons";
 import { MediaThumb, isMediaValue } from "./media";
+import { isDatasetValue } from "../dataset/dataset-value";
+import { DatasetOutput } from "./dataset-output";
 import { StructuredBadge, isStructuredValue } from "./value-viewers";
 
 /** Below this zoom the text is unreadable anyway; hiding it (layout kept, so handles stay put)
@@ -140,7 +142,11 @@ function OutputValues({
   outputs,
   spec,
 }: { outputs: Record<string, unknown>; spec: NodeSpec }) {
-  for (const port of spec.outputs) {
+  // A Preview node declares no outputs; what it shows is the value it received.
+  const ports = spec.outputs.length
+    ? spec.outputs
+    : Object.keys(outputs).map((id) => ({ id }));
+  for (const port of ports) {
     const value = outputs[port.id];
     if (isMediaValue(value)) {
       return (
@@ -168,9 +174,10 @@ function OutputValues({
       );
     }
   }
-  for (const port of spec.outputs) {
+  for (const port of ports) {
     const value = outputs[port.id];
     if (value === undefined || value === null) continue;
+    if (isDatasetValue(value)) return <DatasetOutput value={value} compact />;
     if (isStructuredValue(value)) return <StructuredBadge value={value} />;
     if (typeof value === "string") {
       return (

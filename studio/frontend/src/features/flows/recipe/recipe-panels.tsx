@@ -375,6 +375,18 @@ export function RecipePanel({ node }: { node: FlowNode }) {
         </select>
       </div>
       <div className="flex flex-wrap items-center gap-1.5">
+        {(["preview", "runs"] as const).map((view) => (
+          <button
+            key={view}
+            type="button"
+            onClick={() =>
+              useUiStore.getState().setRecipeRuns({ groupId, view })
+            }
+            className={`${BUTTON} capitalize`}
+          >
+            {view}
+          </button>
+        ))}
         <button
           type="button"
           onClick={() => void runCheck()}
