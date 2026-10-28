@@ -96,7 +96,6 @@ def test_cancelled_wait_abandons_the_step_only():
         with pytest.raises(asyncio.CancelledError):
             await task
         release.set()
-        # The abandoned step still ran; its value is dropped, as with to_thread.
         return await step(None)
 
     assert asyncio.run(run()) == "next"
