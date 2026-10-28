@@ -4133,7 +4133,6 @@ export const ja = {
       terminalStart: "> unsloth トレーニングを開始します...",
       preparingResources: "> モデルとデータセットを準備中...",
       gettingReady: "> 実行の準備を整えています...",
-      waitingForFirstStep: "> {message} | 最初のステップを待機中... ({step})",
       resumingTraining: "トレーニングを再開しています...",
       startingTraining: "トレーニングを開始しています...",
       dataset: "データセット",

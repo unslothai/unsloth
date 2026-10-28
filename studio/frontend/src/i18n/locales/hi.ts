@@ -4194,7 +4194,6 @@ export const hi = {
       terminalStart: "> unsloth ट्रेनिंग शुरू हो रही है...",
       preparingResources: "> मॉडल और डेटासेट तैयार हो रहे हैं...",
       gettingReady: "> हम आपके रन के लिए सब कुछ तैयार कर रहे हैं...",
-      waitingForFirstStep: "> {message} | पहले स्टेप की प्रतीक्षा में... ({step})",
       resumingTraining: "ट्रेनिंग फिर से शुरू हो रही है...",
       startingTraining: "ट्रेनिंग शुरू हो रही है...",
       dataset: "डेटासेट",

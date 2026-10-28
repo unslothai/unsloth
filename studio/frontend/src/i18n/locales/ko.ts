@@ -4174,7 +4174,6 @@ export const ko = {
       terminalStart: "> unsloth 학습을 시작합니다...",
       preparingResources: "> 모델과 데이터셋을 준비하는 중...",
       gettingReady: "> 실행을 위한 모든 준비를 하는 중...",
-      waitingForFirstStep: "> {message} | 첫 스텝을 기다리는 중... ({step})",
       resumingTraining: "학습을 재개하는 중...",
       startingTraining: "학습을 시작하는 중...",
       dataset: "데이터셋",

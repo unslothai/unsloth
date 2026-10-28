@@ -4258,7 +4258,6 @@ export const it = {
       terminalStart: "> avvio dell'addestramento con Unsloth...",
       preparingResources: "> Preparazione del modello e del dataset...",
       gettingReady: "> Stiamo preparando tutto per il tuo run...",
-      waitingForFirstStep: "> {message} | in attesa del primo step... ({step})",
       resumingTraining: "Ripresa dell'addestramento...",
       startingTraining: "avvio dell'addestramento...",
       dataset: "Dataset",
