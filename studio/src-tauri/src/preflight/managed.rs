@@ -1158,13 +1158,34 @@ pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
         };
     }
 
-    // Always run `-h` first: a matching fingerprint does not prove the CLI still launches.
-    // A passing one from this launch counts; a failed one is asked again, so failures read as before.
-    let cli_probe = if launch_cli_probe_passed(&bin).await {
-        Ok(true)
-    } else {
-        run_cli_probe(&bin, &["-h"]).await
+    // Fingerprint taken before any probe, so an answer is cached against the tree the CLI read.
+    let fingerprint_before = managed_bin_fingerprint(&bin);
+    let cache_hit = fingerprint_before
+        .as_ref()
+        .is_some_and(|fingerprint| read_cached_capability(fingerprint).is_some());
+
+    // `-h` always decides first: a matching fingerprint does not prove the CLI still launches, and a
+    // CLI whose `-h` fails is unusable even if `desktop-capabilities` answers. A passing one from this
+    // launch counts; a failed one is asked again, so failures read as before. Awaited before any
+    // spawn below, which would otherwise find the runtime launch guard held by it.
+    let launch_help_passed = launch_cli_probe_passed(&bin).await;
+    let help_probe = async {
+        if launch_help_passed {
+            Ok(true)
+        } else {
+            run_cli_probe(&bin, &["-h"]).await
+        }
     };
+
+    // On a cache miss both Python starts overlap instead of running one after the other. Joined
+    // in this task, so the two spawns still take the runtime launch guard one at a time.
+    let (cli_probe, capability_probe) = if cache_hit {
+        (help_probe.await, None)
+    } else {
+        let (help, capability) = tokio::join!(help_probe, probe_cli_capability(&bin));
+        (help, Some(capability))
+    };
+
     match cli_probe {
         // The CLI was never asked, so do not report a broken install.
         Err(error) => {
@@ -1193,20 +1214,16 @@ pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
         Ok(true) => {}
     }
 
-    // Fingerprint taken before the probe, so the answer is cached against the tree the CLI read.
-    let fingerprint_before = managed_bin_fingerprint(&bin);
-    if let Some(fingerprint) = fingerprint_before.as_ref() {
-        if read_cached_capability(fingerprint).is_some() {
-            info!(
-                "Managed preflight: using cached desktop capability for {:?} in {}ms",
-                bin,
-                started.elapsed().as_millis()
-            );
-            return ManagedProbe::Ready { bin };
-        }
-    }
+    let Some(capability_probe) = capability_probe else {
+        info!(
+            "Managed preflight: using cached desktop capability for {:?} in {}ms",
+            bin,
+            started.elapsed().as_millis()
+        );
+        return ManagedProbe::Ready { bin };
+    };
 
-    let capability = match probe_cli_capability(&bin).await {
+    let capability = match capability_probe {
         Ok(capability) => capability,
         Err(error) => {
             info!(
