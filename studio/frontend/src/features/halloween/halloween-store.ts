@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import {
@@ -23,6 +23,17 @@ export const HALLOWEEN_STORAGE_KEY = "unsloth_halloween";
 export function isHalloweenSeason(now: Date = new Date()): boolean {
   return now.getMonth() === 9;
 }
+
+/** Milliseconds to the coming local midnight on November 1, or null outside October. */
+export function msUntilSeasonEnd(now: Date = new Date()): number | null {
+  if (!isHalloweenSeason(now)) {
+    return null;
+  }
+  return new Date(now.getFullYear(), 10, 1).getTime() - now.getTime();
+}
+
+// setTimeout overflows past ~24.8 days and sleep stalls timers, so re-arm in bounded steps.
+const SEASON_CHECK_MAX_MS = 6 * 60 * 60 * 1000;
 
 type HalloweenState = {
   spookyGreetings: boolean;
@@ -115,12 +126,37 @@ export function useSpookyGreetings(): boolean {
   return on && isHalloweenSeason();
 }
 
-/** Outside October, hand back the pre-Halloween theme, including one a synced device re-applies. */
+/** Outside October, hand back the pre-Halloween theme, including one a synced device re-applies.
+ *  An open session flips at midnight on November 1, and rechecks on focus after a sleep. */
 export function useHalloweenSeasonEnd(): void {
   const { palette } = usePalette();
+  const [inSeason, setInSeason] = useState(() => isHalloweenSeason());
   useEffect(() => {
-    if (!isHalloweenSeason() && isHalloweenThemeId(palette)) {
+    if (!inSeason) {
+      return;
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const check = () => {
+      clearTimeout(timer);
+      const left = msUntilSeasonEnd();
+      if (left === null) {
+        setInSeason(false);
+        return;
+      }
+      timer = setTimeout(check, Math.min(left, SEASON_CHECK_MAX_MS));
+    };
+    check();
+    window.addEventListener("focus", check);
+    document.addEventListener("visibilitychange", check);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener("focus", check);
+      document.removeEventListener("visibilitychange", check);
+    };
+  }, [inSeason]);
+  useEffect(() => {
+    if (!inSeason && isHalloweenThemeId(palette)) {
       restoreNormalTheme();
     }
-  }, [palette]);
+  }, [palette, inSeason]);
 }

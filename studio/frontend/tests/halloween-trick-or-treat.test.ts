@@ -49,6 +49,7 @@ const { getPalette, setPalette } = await import(
 const {
   HALLOWEEN_STORAGE_KEY,
   isHalloweenSeason,
+  msUntilSeasonEnd,
   pickHalloweenTheme,
   pickRandomHalloweenTheme,
   removeHalloween,
@@ -179,4 +180,18 @@ test("Happy Halloween joins the greetings on October 30 and 31 only", async () =
   const before = draw(new Date(2026, 9, 29, 23, 59));
   assert.equal(before.size, 4);
   assert.ok(!before.has("halloween.greeting.happyHalloween"));
+});
+
+test("an open session knows how long until midnight on November 1", () => {
+  const hour = 60 * 60 * 1000;
+  assert.equal(msUntilSeasonEnd(new Date(2026, 9, 31, 23, 0)), hour);
+  assert.equal(msUntilSeasonEnd(new Date(2026, 9, 1, 0, 0)), 31 * 24 * hour);
+  assert.equal(msUntilSeasonEnd(new Date(2026, 10, 1, 0, 0)), null);
+  const hook = read("../src/features/halloween/halloween-store.ts");
+  assert.match(
+    hook,
+    /setTimeout\(check, Math\.min\(left, SEASON_CHECK_MAX_MS\)\)/,
+  );
+  assert.match(hook, /addEventListener\("visibilitychange", check\)/);
+  assert.match(hook, /\}, \[palette, inSeason\]\);/);
 });
