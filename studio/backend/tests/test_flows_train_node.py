@@ -265,3 +265,15 @@ def test_polls_read_the_loss_from_the_status_payload():
     assert training.status_losses({"metric_history": {"loss": [2.0, 1.0]}}) == [2.0, 1.0]
     assert training.status_losses({"metric_history": None}) == []
     assert training.status_losses(None) == []
+
+
+def test_hub_rows_with_timestamps_still_upload(monkeypatch):
+    import datetime
+
+    import datasets
+
+    rows = [{"q": f"q{i}", "a": f"a{i}", "at": datetime.datetime(2026, 1, 1, i)} for i in range(10)]
+    monkeypatch.setattr(datasets, "load_dataset", lambda *a, **k: datasets.Dataset.from_list(rows))
+    loaded = training._load_rows({"source": "hf", "ref": "org/ds"}, None, None)
+    assert loaded[0]["at"] == "2026-01-01 00:00:00"
+    json.dumps(loaded)

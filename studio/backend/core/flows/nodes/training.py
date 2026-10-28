@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import random
 import secrets
 import time
@@ -368,7 +369,8 @@ def _load_rows(dataset: dict, token: Any, end: Optional[int]) -> list[dict]:
         raise FlowNodeError(
             f"{len(loaded)} rows is too many to hold out from here; set Hold out % to 0 or use a smaller slice"
         )
-    return loaded.to_list()
+    # Timestamps, decimals and the like in unused columns would stop the JSONL upload.
+    return [json.loads(json.dumps(row, default = str)) for row in loaded.to_list()]
 
 
 async def holdout_split(
