@@ -726,7 +726,6 @@ class _Flux3SingleBlock(_Lin):
 
 
 class _Flux3Hooked(torch.nn.Module):
-
     def __init__(self):
         super().__init__()
         self.transformer_blocks = torch.nn.ModuleList([_Flux3ModeBlock() for _ in range(2)])
@@ -768,7 +767,6 @@ class _ZImageBlock(_Lin):
 
 
 class _ZImageHooked(torch.nn.Module):
-
     def __init__(self):
         super().__init__()
         self.context_refiner = torch.nn.ModuleList([_ZImageBlock()])
@@ -800,7 +798,6 @@ class _MossBlock(_Lin):
 
 
 class _MossHooked(torch.nn.Module):
-
     def __init__(self):
         super().__init__()
         self.layers = torch.nn.ModuleList([_MossBlock() for _ in range(2)])
@@ -828,7 +825,6 @@ class _H3Block(_Lin):
 
 
 class _H3Hooked(torch.nn.Module):
-
     def __init__(self):
         super().__init__()
         self.transformer_blocks = torch.nn.ModuleList([_H3Block() for _ in range(2)])
