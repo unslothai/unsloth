@@ -228,14 +228,24 @@ def test_setup_ps1_block_never_fails(tmp_path, opt_out, expect_call):
     footer = next(i for i, line in enumerate(lines) if line == "# Footer")
     block = "\n".join(lines[start : footer - 1])
     venv = tmp_path / "venv"
-    (venv / "Scripts").mkdir(parents = True)
     marker = tmp_path / "called"
-    fake = venv / "Scripts" / "python.exe"
-    fake.write_text(f'#!{BASH}\n: > "{marker}"\necho noisy >&2\nexit 7\n', encoding = "utf-8")
-    fake.chmod(0o755)
     studio = tmp_path / "studio"
     studio.mkdir()
-    (studio / "precompile_bytecode.py").write_text("", encoding = "utf-8")
+    if os.name == "nt":
+        # Windows runs only real executables: a real venv python, and a helper that marks, is noisy and exits 7.
+        import venv as venv_module
+        venv_module.EnvBuilder(with_pip = False).create(venv)
+        (studio / "precompile_bytecode.py").write_text(
+            f"import pathlib, sys\npathlib.Path(r'{marker}').touch()\n"
+            "sys.stderr.write('noisy\\n')\nsys.exit(7)\n",
+            encoding = "utf-8",
+        )
+    else:
+        (venv / "Scripts").mkdir(parents = True)
+        fake = venv / "Scripts" / "python.exe"
+        fake.write_text(f'#!{BASH}\n: > "{marker}"\necho noisy >&2\nexit 7\n', encoding = "utf-8")
+        fake.chmod(0o755)
+        (studio / "precompile_bytecode.py").write_text("", encoding = "utf-8")
     script = "\n".join(
         [
             "$ErrorActionPreference = 'Stop'",
@@ -248,7 +258,16 @@ def test_setup_ps1_block_never_fails(tmp_path, opt_out, expect_call):
             '"reached-the-footer exit=$LASTEXITCODE"',
         ]
     )
-    env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)}
+    if os.name == "nt":
+        # PowerShell on Windows needs SystemRoot and friends; only the switches under test are cleared.
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if k
+            not in ("UV_COMPILE_BYTECODE", "UNSLOTH_STUDIO_COMPILE_BYTECODE", "UNSLOTH_SETUP_RERUN")
+        }
+    else:
+        env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)}
     if opt_out:
         env[opt_out[0]] = opt_out[1]
     result = subprocess.run(
