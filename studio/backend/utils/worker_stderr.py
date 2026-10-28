@@ -66,12 +66,6 @@ def _utf8_edge_bounds(data: bytes, *, trim_end: bool = True) -> "tuple[int, int]
     return start, end
 
 
-def _without_partial_utf8_edges(data: bytes, *, trim_end: bool = True) -> bytes:
-    """``trim_end`` is off at EOF, where a trailing 0xC0+ byte is a complete cp1252 character, not a severed one."""
-    start, end = _utf8_edge_bounds(data, trim_end = trim_end)
-    return data[start:end]
-
-
 def decode_worker_stderr(data: bytes, *, ends_at_eof: bool = True) -> str:
     """UTF-8 before cp1252: cp1252 has a meaning for almost every byte, so the stricter encoding goes first."""
     text: str | None = None

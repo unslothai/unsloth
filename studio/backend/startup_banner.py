@@ -35,15 +35,6 @@ def stdout_supports_color() -> bool:
         return False
 
 
-def print_port_in_use_notice(original_port: int, new_port: int) -> None:
-    """Message when the requested port is taken and another is chosen."""
-    msg = f"Port {original_port} is in use, using port {new_port} instead."
-    if stdout_supports_color():
-        _safe_print(f"\033[38;5;245m{msg}\033[0m")
-    else:
-        _safe_print(msg)
-
-
 def print_studio_stop_hint() -> None:
     """Print the trailing stop hint + closing divider, separate from the
     banner so callers can interleave content (e.g. a reachability check)."""

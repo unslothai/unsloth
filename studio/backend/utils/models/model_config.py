@@ -3364,23 +3364,6 @@ def detect_gguf_model_remote(repo_id: str, hf_token: Optional[str] = None) -> Op
     return None
 
 
-def download_gguf_file(
-    repo_id: str,
-    filename: str,
-    hf_token: Optional[str] = None,
-) -> str:
-    """Download a specific GGUF file from a HF repo; returns the local path."""
-    from huggingface_hub import hf_hub_download
-
-    local_path = hf_hub_download(
-        repo_id = repo_id,
-        filename = filename,
-        token = hf_token,
-        cache_dir = active_hf_hub_cache(),
-    )
-    return local_path
-
-
 # Cache embedding detection per session to avoid repeated HF API calls
 _embedding_detection_cache: Dict[tuple, bool] = {}
 

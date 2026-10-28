@@ -129,10 +129,6 @@ def update_download_size_bytes(
     return None
 
 
-def _parse_installed_at(value: object) -> Optional[datetime]:
-    return _flow.parse_installed_at(value)
-
-
 def parse_base_build(tag: object) -> Optional[int]:
     """Numeric base build from a release tag. Handles both a plain ``bNNNN`` and a mix-build tag like ``b9596-mix-<sha>`` (anchored at the start, so the mix suffix does not defeat it). None for anything not starting with ``bNNNN``."""
     if not isinstance(tag, str):
