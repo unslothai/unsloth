@@ -2125,7 +2125,7 @@ def _shown_vp8_key_frames(container: Any, stream: Any) -> Optional[int]:
             ):
                 return None
             count += 1
-    except Exception:  # noqa: BLE001 - full decode raises the real error
+    except Exception:  # noqa: BLE001
         return None
     return count or None
 
