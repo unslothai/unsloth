@@ -458,6 +458,7 @@ _BATCH_MEMBER_FIELDS = frozenset(
         "weight_decay",
         "warmup_steps",
         "warmup_ratio",
+        "packing",
     }
 )
 _BATCH_OPTIMIZERS = ("adamw_8bit", "adamw_torch")
@@ -621,7 +622,6 @@ def _batchable(request: TrainingStartRequest) -> bool:
         and not (request.hf_dataset or request.dataset_streaming or request.s3_config is not None)
         and not (request.resume_from_checkpoint or request.start_request_id)
         and not (request.local_eval_datasets or evaluation_enabled(request.eval_steps))
-        and not request.packing
         and request.lora_dropout == 0
         and not (request.use_dora or request.use_loftq)
         and not (
@@ -672,6 +672,13 @@ async def _trains_alone(request: TrainingStartRequest) -> bool:
     from utils.models.model_config import _read_raw_config_json, get_base_model_from_lora_identifier
 
     def probe() -> bool:
+        from core.training.account_jobs import account_path
+
+        # Path guard first: a managed account's share path must not be touched (SMB sign-in); start_training refuses it.
+        try:
+            account_path(request.model_name, reference = True)
+        except HTTPException:
+            return True
         if diffusion_lm_profile_for_model(request.model_name, request.hf_token):
             return True
         if get_base_model_from_lora_identifier(request.model_name, request.hf_token) is not None:
@@ -729,7 +736,7 @@ async def _start_queued(entry: _Queued) -> bool:
         if _training_busy():
             return False
         group = _batch_for(entry)
-        if len(group) > 1 and await _trains_alone(entry.request):
+        if len(group) > 1 and await arun_as(entry.account, _trains_alone(entry.request)):
             group = [entry]
         if len(group) > 1:
             outcome = await _start_batch(group)

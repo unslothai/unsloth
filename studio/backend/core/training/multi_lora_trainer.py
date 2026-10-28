@@ -35,6 +35,8 @@ class _Member:
     config: dict
     tokenizer: Any = None
     rows: list = field(default_factory = list)
+    # Per packed row, its documents' lengths; empty when unpacked.
+    seq_lengths: list = field(default_factory = list)
     output_dir: str = ""
     total_steps: int = 0
     steps_per_epoch: int = 1
@@ -284,6 +286,15 @@ def _check_routed(model, device) -> None:
         )
 
 
+def _text_tokenizer(tokenizer):
+    """A vision model's processor reads a text-only call's first argument as images; the single job unwraps it."""
+    from transformers import ProcessorMixin
+
+    if isinstance(tokenizer, ProcessorMixin) and hasattr(tokenizer, "tokenizer"):
+        return tokenizer.tokenizer
+    return tokenizer
+
+
 def _member_tokenizer(tokenizer, model_name: str, final_format: str):
     from utils.datasets.chat_templates import get_training_chat_template
     if getattr(tokenizer, "chat_template", None) or final_format not in (
@@ -436,6 +447,8 @@ class _PerMemberLR:
     def __init__(self, optimizer, schedulers: list):
         self.optimizer = optimizer
         self.schedulers = schedulers
+        # fp16 members that overflowed keep their rate, as the single job's skipped step does.
+        self.skip = set()
         self._apply()
 
     def _apply(self) -> None:
@@ -443,8 +456,9 @@ class _PerMemberLR:
             group["lr"] = scheduler.get_last_lr()[0]
 
     def step(self) -> None:
-        for scheduler in self.schedulers:
-            scheduler.step()
+        for slot, scheduler in enumerate(self.schedulers):
+            if slot not in self.skip:
+                scheduler.step()
         self._apply()
 
     def get_last_lr(self) -> list:
@@ -455,6 +469,193 @@ class _PerMemberLR:
 
     def load_state_dict(self, state: dict) -> None:
         pass
+
+
+class _MemberLossScale:
+    """Per-member fp16 loss scale with GradScaler's rules: a shared one lets one member's overflow skip every step."""
+
+    def __init__(
+        self,
+        members: int,
+        init_scale: float = 2.0**16,
+        growth_interval: int = 2000,
+    ):
+        self.scale = [init_scale] * members
+        self.good_steps = [0] * members
+        self.growth_interval = growth_interval
+
+    def scale_backward(self, logits, adapter_ids):
+        """GradScaler's loss scaling per token, in fp32: a logit's gradient comes only from its member's loss."""
+        import torch
+
+        scale = torch.tensor(self.scale, dtype = torch.float32, device = logits.device)
+        per_token = scale[adapter_ids.to(logits.device).clamp_min(0)]
+        per_token = per_token[:, None, None] if per_token.dim() == 1 else per_token[..., None]
+        logits.register_hook(lambda grad: grad * per_token)
+        return logits
+
+    def unscale_(self, slot: int, params: list) -> bool:
+        """Unscales the member's gradients; False (and its gradients dropped) when any is not finite."""
+        import torch
+
+        grads = [p.grad for p in params if p.grad is not None]
+        finite = True
+        if grads:
+            torch._foreach_mul_(grads, 1.0 / self.scale[slot])
+            # One host read per member, not one per tensor.
+            flags = [torch.isfinite(g).all().to(grads[0].device) for g in grads]
+            finite = bool(torch.stack(flags).all())
+        if finite:
+            self.good_steps[slot] += 1
+            if self.good_steps[slot] == self.growth_interval:
+                self.scale[slot] *= 2.0
+                self.good_steps[slot] = 0
+        else:
+            self.scale[slot] *= 0.5
+            self.good_steps[slot] = 0
+            for p in params:
+                p.grad = None
+        return finite
+
+
+def _fp16_loss_scale(fp16: bool, members: int) -> Optional[_MemberLossScale]:
+    return _MemberLossScale(members) if fp16 else None
+
+
+def _packs(model) -> bool:
+    """Whether the single job packs here (unsloth.trainer blocklist, packed-kwargs and hybrid varlen gates)."""
+    try:
+        from unsloth import trainer as unsloth_trainer
+        from unsloth.utils.packing import _enable_hf_packed_attention, mark_allow_overlength
+
+        if getattr(model.config, "is_encoder_decoder", False) or any(
+            t in unsloth_trainer.PADDING_FREE_BLOCKLIST
+            for t in unsloth_trainer.get_transformers_model_type(model.config)
+        ):
+            return False
+        if not unsloth_trainer._forward_accepts_packing_kwargs(model):
+            return False
+        # Gated DeltaNet / conv state would carry from one document into the next without the varlen kernels.
+        if unsloth_trainer._is_hybrid_linear_attention_model(
+            model
+        ) and not unsloth_trainer.patch_hybrid_linear_attention_varlen(model):
+            return False
+        mark_allow_overlength(model)
+        _enable_hf_packed_attention()
+        if not _packed_forward_isolated(model):
+            # Members share a row, so a leak here would mix jobs, not just one job's documents.
+            logger.warning(
+                "Batched training: packed documents are not isolated on this model; not packing"
+            )
+            return False
+    except Exception as exc:
+        logger.info("Batched training: packing unavailable (%s)", exc)
+        return False
+    return True
+
+
+def _packed_forward_isolated(model) -> bool:
+    """Measured: Qwen3.5 on transformers 5.3 passes every static check yet its full attention crossed documents."""
+    import torch
+
+    embeddings = model.get_input_embeddings()
+    device, vocab = embeddings.weight.device, embeddings.num_embeddings
+    generator = torch.Generator().manual_seed(0)
+    first = torch.randint(0, vocab, (48,), generator = generator).to(device)
+    second = torch.randint(0, vocab, (32,), generator = generator).to(device)
+
+    def logits(ids, lengths):
+        positions = torch.cat([torch.arange(n) for n in lengths]).to(device)
+        out = model(
+            input_ids = ids[None],
+            position_ids = positions[None],
+            packed_seq_lengths = torch.tensor(lengths, dtype = torch.int32, device = device),
+            use_cache = False,
+        ).logits
+        return out[0, -len(second) :].float()
+
+    training = model.training
+    model.eval()
+    try:
+        with torch.no_grad():
+            alone = logits(second, [len(second)])
+            packed = logits(torch.cat([first, second]), [len(first), len(second)])
+    finally:
+        model.train(training)
+    return bool((packed - alone).abs().mean() <= 0.05 * alone.abs().mean())
+
+
+def _pack_num_proc(tokenizer) -> Optional[int]:
+    """The single job's packing workers: TRL packs each worker's shard on its own, so the count moves the rows."""
+    from core.training.trainer import _tokenizer_blocks_map_workers
+    from utils.hardware import dataset_map_num_proc
+
+    try:
+        from unsloth_zoo.dataset_num_proc import get_dataset_num_proc
+    except ImportError:
+        from unsloth.dataset_num_proc import get_dataset_num_proc
+    return get_dataset_num_proc(
+        dataset_map_num_proc(
+            1 if _tokenizer_blocks_map_workers(tokenizer) else None, serial_as_none = False
+        )
+    )
+
+
+def _pack_rows(
+    rows: list,
+    max_length: int,
+    num_proc: Optional[int] = None,
+) -> tuple[list, list]:
+    """The single job's packing (TRL's default strategy) of one member's documents into rows of max_length."""
+    import dataclasses
+    import inspect
+
+    from datasets import Dataset
+    from trl import SFTConfig
+    from trl.data_utils import pack_dataset
+
+    dataset = Dataset.from_dict({"input_ids": [r[0] for r in rows], "labels": [r[1] for r in rows]})
+    if "strategy" in inspect.signature(pack_dataset).parameters:
+        strategy = next(
+            (f.default for f in dataclasses.fields(SFTConfig) if f.name == "packing_strategy"),
+            "bfd",
+        )
+        packed = pack_dataset(
+            dataset, max_length, strategy = strategy, map_kwargs = {"num_proc": num_proc}
+        )
+    else:
+        packed = pack_dataset(dataset, max_length, map_kwargs = {"num_proc": num_proc})
+    ids = [list(x) for x in packed["input_ids"]]
+    # Wrapped packing (TRL < 0.20) keeps no boundaries: one sequence per row, as the single job trains it.
+    lengths = (
+        [list(n) for n in packed["seq_lengths"]]
+        if "seq_lengths" in packed.column_names
+        else [[len(x)] for x in ids]
+    )
+    return [(x, list(lab)) for x, lab in zip(ids, packed["labels"])], lengths
+
+
+def _collate_packed(rows: list, slots: list, lengths: list) -> dict:
+    """One padding-free row as the single job packs it, each token routed to its member, no label across documents."""
+    import torch
+
+    seq = [n for row in lengths for n in row]
+    input_ids = torch.tensor([t for ids, _ in rows for t in ids], dtype = torch.long)
+    labels = torch.tensor([t for _, lab in rows for t in lab], dtype = torch.long)
+    sizes = torch.tensor(seq, dtype = torch.long)
+    starts = torch.cumsum(sizes, 0) - sizes
+    labels[starts[1:]] = -100
+    position_ids = torch.arange(len(input_ids)) - torch.repeat_interleave(starts, sizes)
+    adapter_ids = torch.repeat_interleave(
+        torch.tensor(slots, dtype = torch.long), torch.tensor([len(ids) for ids, _ in rows])
+    )
+    return {
+        "input_ids": input_ids[None],
+        "labels": labels[None],
+        "position_ids": position_ids[None],
+        "packed_seq_lengths": sizes.to(torch.int32),
+        "adapter_ids": adapter_ids[None],
+    }
 
 
 def _collate(rows: list, slots: list, pad_id: int) -> dict:
@@ -689,25 +890,51 @@ def _run(event_queue, stop_queue, config: dict, members: list) -> None:
         )
     trainer.load_in_4bit = load_in_4bit
     trainer.is_cpt = False
-    model, tokenizer = trainer.model, trainer.tokenizer
+    model, processor = trainer.model, trainer.tokenizer
+    tokenizer = _text_tokenizer(processor)
     max_length = int(config.get("max_seq_length") or 2048)
     model_cap = getattr(model, "max_seq_length", None)
     if isinstance(model_cap, int) and 0 < model_cap < max_length:
         max_length = model_cap
 
     _send_status(event_queue, "Tokenizing datasets...")
+    from utils.datasets.pretokenized import PRETOKENIZED_FORMAT
+
+    packs = pack_workers = None
     for member in members:
         if member.done:
             continue
         try:
-            member.tokenizer, member.rows = _tokenize_member(
-                datasets.pop(member.run_id),
+            info = datasets.pop(member.run_id)
+            final_format = (
+                str(info.get("final_format", "")).lower() if isinstance(info, dict) else ""
+            )
+            member_tok, member.rows = _tokenize_member(
+                info,
                 tokenizer,
                 member.config,
                 model_name,
                 max_length,
                 vocab_size = int(model.get_input_embeddings().num_embeddings),
             )
+            # Saved as the single job saves it: the full processor (preprocessor_config.json for export).
+            member.tokenizer = processor if member_tok is tokenizer else member_tok
+            # The single job turns packing off for pre-tokenized rows, whose labels packing would drop.
+            if member.config.get("packing") and final_format != PRETOKENIZED_FORMAT:
+                if packs is None:
+                    packs = _packs(model)
+                    pack_workers = _pack_num_proc(processor) if packs else None
+                if packs:
+                    documents = len(member.rows)
+                    member.rows, member.seq_lengths = _pack_rows(
+                        member.rows, max_length, pack_workers
+                    )
+                    logger.info(
+                        "Batched training: %s packs %d documents into %d rows",
+                        member.run_id,
+                        documents,
+                        len(member.rows),
+                    )
         except Exception as exc:
             member.done = True
             _send(
@@ -858,6 +1085,7 @@ def _build_sft_trainer(
         tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
     )
     pad_id = 0 if pad_id is None else int(pad_id)
+    packed = any(m.seq_lengths for m in live)
     bf16 = fp16 = False
     if device.type == "cuda":
         from unsloth import is_bfloat16_supported
@@ -908,6 +1136,11 @@ def _build_sft_trainer(
             self.round = []
             self.round_losses = torch.zeros(U)
             self.member_norms = torch.zeros(U)
+            self.skipped = set()
+            # Replaces accelerate's one GradScaler: members share no trainable weight.
+            self.loss_scale = _fp16_loss_scale(fp16, U)
+            if self.loss_scale is not None:
+                self.accelerator.scaler = None
             self.step_lrs = [float(m.config.get("learning_rate", 2e-4)) for m in live]
             self.start = time.time()
 
@@ -961,7 +1194,7 @@ def _build_sft_trainer(
             samples = []
             counts = None
             for k in range(num_batches):
-                rows, slots = [], []
+                rows, slots, lengths = [], [], []
                 for member in self.round:
                     window = windows[member.slot]
                     if k < len(window):
@@ -969,11 +1202,21 @@ def _build_sft_trainer(
                         member.num_tokens += sum(len(ids) for ids, _ in picked)
                         rows.extend(picked)
                         slots.extend([member.slot] * len(picked))
+                        lengths.extend(
+                            member.seq_lengths[r]
+                            if member.seq_lengths
+                            else [len(member.rows[r][0])]
+                            for r in window[k]
+                        )
                 if not rows:
                     # Every member's window is shorter here (an epoch end); the step keeps its size.
                     samples.append({"multi_lora_empty": torch.zeros(1)})
                     continue
-                batch = _collate(rows, slots, pad_id)
+                batch = (
+                    _collate_packed(rows, slots, lengths)
+                    if packed
+                    else _collate(rows, slots, pad_id)
+                )
                 found = adapter_token_counts(batch["labels"], batch["adapter_ids"], U).cpu()
                 counts = found if counts is None else counts + found
                 samples.append(batch)
@@ -990,12 +1233,23 @@ def _build_sft_trainer(
             if "multi_lora_empty" in inputs:
                 return torch.zeros((), device = self.args.device, requires_grad = True)
             ids = inputs["adapter_ids"]
-            set_multi_lora_batch(self.model, ids, seq_len = inputs["input_ids"].shape[1])
-            logits = model(
-                input_ids = inputs["input_ids"],
-                attention_mask = inputs["attention_mask"],
-                use_cache = False,
-            ).logits
+            if "position_ids" in inputs:
+                set_multi_lora_batch(self.model, ids)
+                logits = model(
+                    input_ids = inputs["input_ids"],
+                    position_ids = inputs["position_ids"],
+                    packed_seq_lengths = inputs["packed_seq_lengths"],
+                    use_cache = False,
+                ).logits
+            else:
+                set_multi_lora_batch(self.model, ids, seq_len = inputs["input_ids"].shape[1])
+                logits = model(
+                    input_ids = inputs["input_ids"],
+                    attention_mask = inputs["attention_mask"],
+                    use_cache = False,
+                ).logits
+            if self.loss_scale is not None:
+                logits = self.loss_scale.scale_backward(logits.float(), ids)
             loss, per = per_adapter_loss(
                 logits,
                 inputs["labels"],
@@ -1017,7 +1271,14 @@ def _build_sft_trainer(
             # The rate this step uses, as a lone job reports it (read before the scheduler moves).
             self.step_lrs = [group["lr"] for group in self.optimizer.param_groups]
             drop_absent_adapter_grads_(self.model)
-            self.accelerator.unscale_gradients()
+            self.skipped = set()
+            if self.loss_scale is None:
+                self.accelerator.unscale_gradients()
+            else:
+                for member in self.round:
+                    if not self.loss_scale.unscale_(member.slot, member.params):
+                        self.skipped.add(member.slot)
+                self.lr_scheduler.skip = self.skipped
             self.member_norms = clip_grad_norm_per_adapter_(self.model, max_norm).float().cpu()
             return self.member_norms.norm()
 
@@ -1052,7 +1313,7 @@ def _build_sft_trainer(
                 self.progress(
                     member,
                     float(self.round_losses[member.slot]),
-                    float(self.member_norms[member.slot]),
+                    None if member.slot in self.skipped else float(self.member_norms[member.slot]),
                     elapsed,
                     self.step_lrs[member.slot],
                 )

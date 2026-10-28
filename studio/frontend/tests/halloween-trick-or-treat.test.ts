@@ -258,7 +258,7 @@ test("spiders and bats are on by default and stay off once turned off", async ()
   assert.match(deco, /const reduced = useReducedMotionConfig\(\);/);
   assert.match(
     deco,
-    /if \(roll < 0\.25\) \{\s*later\([^;]*spider\);\s*\} else if \(roll < 0\.5\) \{\s*later\([^;]*bats\);/,
+    /if \(roll < 1 \/ 3\) \{\s*later\([^;]*spider\);\s*\} else if \(roll < 2 \/ 3\) \{\s*later\([^;]*bats\);/,
   );
   const css = read("../src/index.css");
   // The global reduced-motion rules would end the fade at once.

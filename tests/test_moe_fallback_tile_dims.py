@@ -26,6 +26,8 @@ MOE_DIR = ROOT / "unsloth" / "kernels" / "moe"
 # Fixed tiles before the fix: (BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_warps, num_stages)
 OLD_HEURISTIC = ((64, 128, 128, 8, 3), (64, 64, 256, 8, 4), (64, 64, 256, 8, 4))
 OLD_DEFAULT = ((128, 128, 64, 8, 3),) * 3
+# Heuristic dW when K leaves BLOCK_SIZE_K 64 and 128 divides N (gpt-oss gate_up: N = 5760, K = 2880).
+WIDE_DW = (64, 128, 64, 8, 3)
 
 # (hidden_size, moe_intermediate_size)
 SHAPES = [(2048, 1408), (2048, 768), (4096, 1536), (2880, 2880), (4096, 14336), (1024, 352)]
@@ -87,14 +89,30 @@ def no_smem_fit(ac, monkeypatch):
 
 @pytest.mark.parametrize("hidden,inter", SHAPES + [(2048, 1024)])
 @pytest.mark.parametrize("which", ["heuristic", "default"])
-def test_fallback_tiles_divide_each_gemm(ac, no_smem_fit, hidden, inter, which):
+def test_fallback_tiles_divide_each_gemm(ac, no_smem_fit, monkeypatch, hidden, inter, which):
+    monkeypatch.setattr(ac, "_wide_dw_device_ok", lambda device = None: True)
     fn = ac._get_heuristic_configs if which == "heuristic" else ac._get_default_configs
     old = OLD_HEURISTIC if which == "heuristic" else OLD_DEFAULT
     for kwargs, (n, k) in _gemms(hidden, inter):
         tiles = _tiles(fn(n_dim = 2 * kwargs["intermediate_dim"], k_dim = kwargs["hidden_dim"]))
-        for tile, old_tile in zip(tiles, old):
+        for kind, tile, old_tile in zip(("fwd", "dX", "dW"), tiles, old):
             m, bn, bk, warps, stages = tile
             assert n % bn == 0 and k % bk == 0, (which, hidden, inter, n, k, tile)
+            if (
+                which == "heuristic"
+                and kind == "dW"
+                and bk == 64
+                and n % 128 == 0
+                and n * k >= 768 * 1024
+            ):
+                assert tile == WIDE_DW, (
+                    hidden,
+                    inter,
+                    n,
+                    k,
+                    tile,
+                )  # K left BLOCK_SIZE_K 64: wider N tile
+                continue
             assert bn >= 16 and bk >= 16
             assert bn <= old_tile[1] and bk <= old_tile[2]
             assert (m, warps, stages) == (old_tile[0], old_tile[3], old_tile[4])
@@ -121,6 +139,25 @@ def test_1408_backward_k_shrinks(ac):
     _, dx, dw = ac._get_heuristic_configs(n_dim = 2048, k_dim = 1408)
     assert (dx.BLOCK_SIZE_K, dw.BLOCK_SIZE_K) == (128, 128)
     assert (dx.BLOCK_SIZE_N, dw.BLOCK_SIZE_N) == (64, 64)
+
+
+def test_heuristic_dw_widens_n_when_k_leaves_64(ac, monkeypatch):
+    monkeypatch.setattr(ac, "_wide_dw_device_ok", lambda device = None: True)
+    # gpt-oss-20b: GEMM1 N = 5760, K = 2880 -> dW 64 x 128 x 64 at 3 stages; fwd / dX tiles unchanged.
+    fwd, dx, dw = ac._get_heuristic_configs(n_dim = 5760, k_dim = 2880)
+    assert _tiles((fwd, dx)) == ((64, 128, 64, 8, 3), (64, 64, 64, 8, 4))
+    assert _tiles((dw,)) == (WIDE_DW,)
+    # GEMM2 N = 2880: 128 does not divide it, so dW keeps the fitted 64 x 64 x 64 at 4 stages.
+    assert _tiles(ac._get_heuristic_configs(n_dim = 2880, k_dim = 2880)[2:]) == ((64, 64, 64, 8, 4),)
+    # K = 1408 keeps BLOCK_SIZE_K 128 and K = 352 drops to 32: neither is widened.
+    assert _tiles(ac._get_heuristic_configs(n_dim = 2048, k_dim = 1408)[2:]) == ((64, 64, 128, 8, 4),)
+    assert _tiles(ac._get_heuristic_configs(n_dim = 2048, k_dim = 352)[2:]) == ((64, 64, 32, 8, 4),)
+    # A small N x K output keeps the fitted tile: half the programs leave the card idle.
+    assert _tiles(ac._get_heuristic_configs(n_dim = 1024, k_dim = 576)[2:]) == ((64, 64, 64, 8, 4),)
+    assert _tiles(ac._get_heuristic_configs(n_dim = 1024, k_dim = 192)[2:]) == ((64, 64, 64, 8, 4),)
+    assert _tiles(ac._get_heuristic_configs(n_dim = 1024, k_dim = 960)[2:]) == (WIDE_DW,)
+    # the fallback (autotune failed) configs are not touched
+    assert _tiles(ac._get_default_configs(n_dim = 5760, k_dim = 2880)[2:]) == ((128, 128, 64, 8, 3),)
 
 
 def test_fit_block_size_edges(ac):
@@ -230,3 +267,26 @@ def test_smem_limit_follows_the_current_device(ac, monkeypatch):
     assert ac._device_smem_per_block() == 166912
     current["index"] = 1
     assert ac._device_smem_per_block() == 101376
+
+
+@pytest.mark.parametrize(
+    "available,hip,capability,ok",
+    [
+        (True, None, (7, 5), False),
+        (True, None, (8, 0), True),
+        (True, None, (10, 0), True),
+        (True, "7.1", (11, 5), False),
+        (False, None, (8, 0), False),
+    ],
+)
+def test_wide_dw_tile_only_on_sm80_plus_nvidia(ac, monkeypatch, available, hip, capability, ok):
+    # T4 (sm75): the 128-wide dW tile was 7-9x slower than 64 x 64 (fp16, torch 2.14); ROCm unmeasured.
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: available)
+    monkeypatch.setattr(torch.version, "hip", hip)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: capability)
+    assert ac._wide_dw_device_ok() is ok
+
+
+def test_t4_keeps_the_fitted_dw_tile(ac, no_smem_fit, monkeypatch):
+    monkeypatch.setattr(ac, "_wide_dw_device_ok", lambda device = None: False)
+    assert _tiles(ac._get_heuristic_configs(n_dim = 5760, k_dim = 2880)[2:]) == ((64, 64, 64, 8, 4),)

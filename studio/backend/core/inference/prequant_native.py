@@ -7,6 +7,7 @@ the caller falls back to the torchao reader; UNSLOTH_PREQUANT_NATIVE_REBUILD=0 d
 from __future__ import annotations
 
 import dataclasses
+import functools
 import json
 import os
 from typing import Any, Optional
@@ -177,6 +178,12 @@ def _granularity_name(g: Any) -> str:
     return type(g).__name__
 
 
+@functools.lru_cache(maxsize = None)
+def _constructor_params(cls: Any) -> frozenset:
+    import inspect
+    return frozenset(inspect.signature(cls.__new__).parameters)
+
+
 def _rebuild_int8(
     name: str, entry: dict, tensors: dict, used: set, api: dict, v1: Optional[dict]
 ) -> Any:
@@ -242,9 +249,7 @@ def _rebuild_int8(
 
     if "Int8Tensor" not in api:
         raise _Unsupported(f"{name}: this torchao has no Int8Tensor")
-    import inspect
-
-    params = inspect.signature(api["Int8Tensor"].__new__).parameters
+    params = _constructor_params(api["Int8Tensor"])
     kwargs: dict = {}
     if act_fields is not None:
         kwargs["act_quant_kwargs"] = _decode(act, api, name)

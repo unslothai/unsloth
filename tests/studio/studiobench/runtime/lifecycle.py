@@ -524,6 +524,15 @@ def authenticate(
     return auth
 
 
+# Update offers (llama.cpp, whisper.cpp, audio.cpp, Unsloth) arrive on the network's schedule and float over
+# the composer from the overlay rail, so a run that happens to get one clicks into it and times out. Mirrors
+# studio/frontend/src/hooks/use-notification-frequency.ts; a selftest keeps the two in step.
+QUIET_NOTIFICATION_CHANNELS = ("llama", "whisper", "audio", "unsloth")
+QUIET_NOTIFICATIONS = {
+    f"unsloth_{channel}_notification_frequency": "off" for channel in QUIET_NOTIFICATION_CHANNELS
+}
+
+
 def seed_init_script(
     auth: StudioAuth,
     providers: list[ProviderSeed],
@@ -540,6 +549,7 @@ def seed_init_script(
             {p.id: p.api_key for p in providers if p.api_key}
         ),
         "unsloth_chat_connections_enabled": "true",
+        **QUIET_NOTIFICATIONS,
     }
     for k, v in (extra_local_storage or {}).items():
         payload[k] = v if isinstance(v, str) else json.dumps(v)

@@ -187,6 +187,7 @@ function loadStore(
   emitted: unknown[] = [],
   session: { epoch: number } = { epoch: 0 },
   starsUndone: string[] = [],
+  prepareChatAttachmentDeletion: (attachmentId: string) => Promise<void> = async () => {},
 ) {
   return loadWithStubs<{
     useLibraryStore: zustand.UseBoundStore<
@@ -207,6 +208,7 @@ function loadStore(
     "@/features/chat": {
       deleteFineTunedModel: async () => {},
       emitChatAttachmentDeleted: (event: unknown) => emitted.push(event),
+      prepareChatAttachmentDeletion,
     },
     "@/features/model-picker": {
       usePinnedModelsStore: {
@@ -382,6 +384,42 @@ test("deleting a chat attachment tells an open chat to drop it", async () => {
   await store.getState().removeItem("attachment:m%3A1:content-part-x");
   await store.getState().removeItem("upload:a");
   assert.deepEqual(emitted, [{ messageId: "m:1", attachmentId: "content-part-x" }]);
+});
+
+test("a chat attachment is not deleted when an open chat could not drop it afterwards", async () => {
+  const emitted: unknown[] = [];
+  const deleted: string[] = [];
+  const prepared: string[] = [];
+  let chunkLoads = false;
+  const store = loadStore(
+    {
+      getLibrary: async () => ({
+        items: [item("attachment:m%3A1:content-part-sha256-ab")],
+        folders: [],
+      }),
+      deleteLibraryItem: async (id: string) => {
+        deleted.push(id);
+      },
+    },
+    emitted,
+    { epoch: 0 },
+    [],
+    async (attachmentId) => {
+      prepared.push(attachmentId);
+      if (!chunkLoads) throw new Error("Failed to fetch dynamically imported module");
+    },
+  );
+  await store.getState().refresh();
+  await assert.rejects(store.getState().removeItem("attachment:m%3A1:content-part-sha256-ab"));
+  assert.deepEqual(deleted, []);
+  assert.deepEqual(emitted, []);
+
+  chunkLoads = true;
+  await store.getState().removeItem("attachment:m%3A1:content-part-sha256-ab");
+  await store.getState().removeItem("upload:a");
+  assert.deepEqual(prepared, ["content-part-sha256-ab", "content-part-sha256-ab"]);
+  assert.deepEqual(deleted, ["attachment:m%3A1:content-part-sha256-ab", "upload:a"]);
+  assert.deepEqual(emitted, [{ messageId: "m:1", attachmentId: "content-part-sha256-ab" }]);
 });
 
 function loadDownloads(

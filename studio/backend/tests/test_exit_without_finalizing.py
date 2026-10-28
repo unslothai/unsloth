@@ -40,7 +40,6 @@ def test_threads_then_atexit_hooks_run_and_stdout_is_flushed():
     )
 
     assert result.returncode == 0, result.stderr
-    # A pipe is block-buffered, so a missing flush drops both lines.
     assert result.stdout.endswith("thread finished\natexit hook\n"), result.stdout
     assert "unreachable" not in result.stdout
     assert "finalized" not in result.stdout, "interpreter finalization ran"

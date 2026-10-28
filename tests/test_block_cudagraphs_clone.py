@@ -848,3 +848,38 @@ def test_flex_block_mask_calls_run_without_graphs(monkeypatch, mask):
         layer(x, attention_mask = value).sum().backward()
         assert x.grad is not None
     assert set(seen) == ({"plain"} if mask == "block_mask" else {"graphs"})
+
+
+def test_block_mask_calls_are_recorded_for_the_fsdp2_keep(monkeypatch):
+    """The observer runs on the first BlockMask call and again once a non-BlockMask call regraphs."""
+    monkeypatch.setattr(torch, "compile", lambda fn, **kwargs: fn)
+
+    class FlexKeepDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+
+        def forward(
+            self,
+            hidden_states,
+            attention_mask = None,
+            **kwargs,
+        ):
+            return self.proj(hidden_states)
+
+    bc._wrap(FlexKeepDecoderLayer, {**bc._COMPILE_OPTIONS, "triton.cudagraphs": True})
+    layer = FlexKeepDecoderLayer().train()
+    calls = []
+    layer.__dict__["_unsloth_block_flex_observer"] = lambda m: calls.append(
+        m.__dict__["_unsloth_block_flex_only"]
+    )
+    for mask in (BlockMask(), BlockMask(), None, BlockMask(), None):
+        layer(torch.randn(2, 16, 8, requires_grad = True), attention_mask = mask).sum().backward()
+    assert calls == [True, False]
+    assert layer.__dict__["_unsloth_block_flex_only"] is False
+
+    dense = FlexKeepDecoderLayer().train()
+    dense.__dict__["_unsloth_block_flex_observer"] = lambda m: calls.append("dense")
+    for mask in (None, BlockMask()):
+        dense(torch.randn(2, 16, 8, requires_grad = True), attention_mask = mask).sum().backward()
+    assert calls == [True, False]  # graphed first: never dropped from the keep set
