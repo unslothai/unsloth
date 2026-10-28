@@ -351,7 +351,10 @@ def _graphs_unsafe_moe(layer):
         )
         layer.__dict__["_unsloth_block_graphs_moe"] = moe
         if moe:
-            _rank0_note("moe", "Unsloth: block CUDA graphs skip MoE layers; they run compiled without graphs.")
+            _rank0_note(
+                "moe",
+                "Unsloth: block CUDA graphs skip MoE layers; they run compiled without graphs.",
+            )
     return moe
 
 
@@ -360,7 +363,10 @@ def _flex_block_mask_call(args, kwargs):
     each call (StaticInputIdxMismatch is outside the re-record limit); Gemma3 was slower with graphs."""
     for value in (*args, *kwargs.values()):
         if type(value).__name__ == "BlockMask":
-            _rank0_note("flex", "Unsloth: block CUDA graphs skip flex attention blocks; they run compiled without graphs.")
+            _rank0_note(
+                "flex",
+                "Unsloth: block CUDA graphs skip flex attention blocks; they run compiled without graphs.",
+            )
             return True
     return False
 
