@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import torch
-import gc
 import contextlib
 import math
 import functools
