@@ -159,7 +159,67 @@ def _case_env(rank, world, tmp, ckpt):
     }
 
 
-CASES = {"api": _case_api, "env": _case_env}
+def _qat_config(kind):
+    import torch as _t
+    from torchao.quantization import (
+        Int4WeightOnlyConfig,
+        Int8DynamicActivationIntxWeightConfig,
+        IntxWeightOnlyConfig,
+    )
+    from torchao.quantization.granularity import PerAxis, PerGroup
+
+    return {
+        "int4": lambda: Int4WeightOnlyConfig(group_size = 16),
+        "int8_group": lambda: IntxWeightOnlyConfig(weight_dtype = _t.int8, granularity = PerGroup(16)),
+        "int8_axis": lambda: IntxWeightOnlyConfig(weight_dtype = _t.int8, granularity = PerAxis(0)),
+        "int8_int4": lambda: Int8DynamicActivationIntxWeightConfig(
+            weight_dtype = _t.int4, weight_granularity = PerGroup(16)
+        ),
+    }[kind]()
+
+
+def _case_qat(rank, world, tmp, kind, lora, kv_heads = 2):
+    """QAT (torchao QATConfig prepare, as Unsloth's qat_scheme) on full finetuning or under LoRA."""
+    from peft import LoraConfig, get_peft_model
+    from torch.distributed.device_mesh import init_device_mesh
+    from torchao.quantization import quantize_
+    from torchao.quantization.qat import QATConfig
+
+    from unsloth.models import tp_native as tpn
+
+    repo, overrides = ARCHS["llama"]
+    overrides = {**overrides, "hidden_size": 32, "intermediate_size": 64, "num_attention_heads": 4,
+                 "num_key_value_heads": kv_heads, "head_dim": 8}
+
+    def make():
+        model = build(repo, overrides, lora = False)
+        decoder = model.model.layers
+        quantize_(decoder, QATConfig(_qat_config(kind), step = "prepare"))
+        if lora:
+            torch.manual_seed(1)
+            config = LoraConfig(r = 4, lora_alpha = 8, target_modules = "all-linear", init_lora_weights = False)
+            model = get_peft_model(model, config)
+        else:
+            model.requires_grad_(True)
+        return model
+
+    ref, model = make(), make()
+    mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("tp",))
+    try:
+        tpn.apply_tensor_parallel(model, mesh["tp"])
+    except ValueError as e:
+        return {"refused": str(e)}
+    fq = sum(type(m).__name__ == "FakeQuantizedLinear" for m in model.modules())
+    ids = _batch(ref)
+    return {
+        "refused": None,
+        "fake_quantized": fq,
+        "ref": _full_ft_train(ref, ids, 3, _clip_fp64),
+        "tp": _full_ft_train(model, ids, 3, tpn.tp_clip_grad_norm_),
+    }
+
+
+CASES = {"api": _case_api, "env": _case_env, "qat": _case_qat}
 
 
 def _worker(rank, world, port, case, tmp, env, kwargs):
@@ -179,7 +239,7 @@ def _worker(rank, world, port, case, tmp, env, kwargs):
 
     import torch.distributed as dist
 
-    if case == "api":
+    if case in ("api", "qat"):
         error = _import_checkout_unsloth()
         if error is not None:
             torch.save({"skip": error}, os.path.join(tmp, f"result_{rank}.pt"))
@@ -267,3 +327,57 @@ def test_env_tp2_full_finetuning_trainer_matches_one_process():
     for key, value in ref["saved"].items():
         torch.testing.assert_close(saved[key], value, rtol = 1e-4, atol = 2e-6, msg = key)
 
+
+def _torchao():
+    try:
+        from torchao.quantization.qat import QATConfig  # noqa: F401
+    except Exception:
+        return False
+    return True
+
+
+@pytest.mark.skipif(not _torchao(), reason = "torchao QAT not installed")
+@pytest.mark.parametrize(
+    "kind,lora,kv_heads",
+    [
+        ("int4", False, 2),
+        ("int8_group", False, 2),
+        ("int4", True, 2),
+        ("int8_group", True, 2),
+        # num_key_value_heads < tp: the replicated key / value projections fake quantize whole rows.
+        ("int4", True, 1),
+        ("int4", False, 1),
+    ],
+)
+def test_tp2_qat_weight_only_matches_one_process(kind, lora, kv_heads):
+    with tempfile.TemporaryDirectory() as tmp:
+        results = _spawn("qat", 2, tmp = tmp, kind = kind, lora = lora, kv_heads = kv_heads)
+    for rank, res in enumerate(results):
+        assert res["refused"] is None, res["refused"]  # main: "does not support QAT fake quantization"
+        assert res["fake_quantized"] > 0
+        ref_grads, ref_losses, ref_norms = res["ref"]
+        grads, losses, norms = res["tp"]
+        assert set(grads) == set(ref_grads) and ref_grads
+        for name in ref_grads:
+            torch.testing.assert_close(grads[name], ref_grads[name], rtol = 1e-4, atol = 1e-6, msg = name)
+        # Step 1 is exact; afterwards a weight that differs by fp32 reduction-order noise can round to the
+        # neighbouring quantization level (a step function), which shows up as ~1e-4 in the later losses.
+        assert losses[0] == pytest.approx(ref_losses[0], rel = 1e-6), (rank, losses, ref_losses)
+        assert norms[0] == pytest.approx(ref_norms[0], rel = 1e-5), (rank, norms, ref_norms)
+        assert losses == pytest.approx(ref_losses, rel = 5e-4), (rank, losses, ref_losses)
+        assert norms == pytest.approx(ref_norms, rel = 5e-3), (rank, norms, ref_norms)
+
+
+@pytest.mark.skipif(not _torchao(), reason = "torchao QAT not installed")
+@pytest.mark.parametrize(
+    "kind,needle",
+    [
+        ("int8_axis", "per-row (PerAxis) scale spans the in_features"),
+        ("int8_int4", "QAT fake quantization of activations"),
+    ],
+)
+def test_tp2_qat_inexact_schemes_are_refused(kind, needle):
+    with tempfile.TemporaryDirectory() as tmp:
+        results = _spawn("qat", 2, tmp = tmp, kind = kind, lora = False)
+    for res in results:
+        assert needle in (res["refused"] or ""), res["refused"]

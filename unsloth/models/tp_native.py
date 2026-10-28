@@ -6,7 +6,8 @@
     model = FastLanguageModel.get_peft_model(model, ...)  # LoRA first: same init as 1 GPU
     apply_tensor_parallel(model, init_device_mesh("cuda", (tp,), mesh_dim_names = ("tp",))["tp"])
 
-LoRA / QLoRA or full finetuning (trainable base weights as Shard DTensors) on dense decoders.
+LoRA / QLoRA or full finetuning (trainable base weights as Shard DTensors) on dense decoders; QAT with
+weight-only fake quantization whose scales stay inside a shard (models/tp_native._check_qat).
 Custom loop (torchrun --nproc_per_node tp):
 
     params = [p for p in model.parameters() if p.requires_grad]  # DTensors (keep plain ones in their own group)
@@ -812,6 +813,8 @@ def _tp_lora_parameters(proj, bias = False):
     """get_lora_parameters(_bias) on local shards; row bias is None (the region adds it after the reduce)."""
     weight, base = _weight(proj)
     W = _local(weight)
+    if not bias:  # as kernels/utils.py get_lora_parameters (get_lora_parameters_bias does not fake quantize)
+        W = _fake_quantized(base, W)
     W_quant = getattr(W, "quant_state", None)
     b = None
     rows = proj.__dict__.get("_unsloth_tp_kv_rows")
@@ -861,7 +864,7 @@ def _is_params4bit(t):
     return any(cls.__name__ == "Params4bit" for cls in type(t).__mro__)
 
 
-def _refuse_base(path, proj_module, weight, base):
+def _refuse_base(path, proj_module, weight, base, style = None, tp = 1):
     cls = type(base).__name__
     if weight is None:
         raise ValueError(f"Unsloth: '{path}' ({cls}) has no dense weight (GPTQ / AWQ?).")
@@ -891,11 +894,7 @@ def _refuse_base(path, proj_module, weight, base):
             or getattr(module, "weight_fake_quantizer", None) is not None
             or getattr(module, "activation_fake_quantizer", None) is not None
         ):
-            # The TP projection forward and get_lora_parameters run plain matmuls on the local shards.
-            raise ValueError(
-                f"Unsloth: tensor parallelism v1 does not support QAT fake quantization ({path}: "
-                f"{type(module).__name__})."
-            )
+            _check_qat(path, module, base, style, tp)
     if (
         not _is_params4bit(weight)
         and _preloaded(weight) is None
@@ -910,6 +909,77 @@ def _refuse_base(path, proj_module, weight, base):
         )
     # A trainable base weight (full finetuning) is a Shard DTensor like the LoRA B / A shards: its local
     # gradient is already complete, and a replicated row bias gets the whole gradient on every rank.
+
+
+def _qat_split_problem(fq, style, local_in):
+    """None when weight fake quantizer `fq` gives on this rank's shard exactly the rows / columns it gives on the
+    whole weight (its scales never reduce across the sharded dimension), else why not."""
+    cls = type(fq).__name__
+    config = getattr(fq, "config", None)
+    if next(fq.parameters(), None) is not None or next(fq.buffers(), None) is not None:
+        return f"{cls} keeps learned / static quantization parameters for the whole weight"
+    if cls == "Int4WeightFakeQuantizer":
+        group = getattr(config, "group_size", None)
+        if style == COLWISE:
+            return None  # per-row fp8 scale and per-group int4 scales: rows are whole on every rank
+        if getattr(config, "activation_dtype", None) != torch.bfloat16:
+            return "its per-row float8 weight scale spans the in_features row projections shard"
+        if not isinstance(group, int) or local_in % group:
+            return f"in_features / tp = {local_in} is not a multiple of its group size {group}"
+        return None
+    if cls == "IntxFakeQuantizer":
+        if getattr(config, "range_learning", False) or not getattr(config, "is_dynamic", True):
+            return "range learning / static scales cover the whole weight"
+        granularity = getattr(config, "granularity", None)
+        kind = type(granularity).__name__
+        if kind == "PerGroup":
+            if style == COLWISE or local_in % granularity.group_size == 0:
+                return None
+            return (
+                f"in_features / tp = {local_in} is not a multiple of its group size {granularity.group_size}"
+            )
+        if kind == "PerRow" or (kind == "PerAxis" and getattr(granularity, "axis", None) == 0):
+            if style == COLWISE:
+                return None
+            return f"its per-row ({kind}) scale spans the in_features row projections shard"
+        return f"granularity {kind} reduces across the sharded dimension"
+    return f"{cls} is not a weight fake quantizer tensor parallelism knows the numerics of"
+
+
+def _check_qat(path, module, base, style, tp):
+    """QAT under tensor parallelism: dynamic weight-only fake quantization whose scales stay inside a shard
+    (int4 / int8 per-group, per-row on column projections) runs on the local shard, exactly as on one GPU;
+    anything that would need the whole weight or a whole activation row is refused."""
+    if getattr(module, "activation_fake_quantizer", None) is not None:
+        raise ValueError(
+            f"Unsloth: tensor parallelism does not support QAT fake quantization of activations ({path}: "
+            f"{type(module).__name__}): its per-token scales need the whole input row, which row parallel "
+            "projections hold 1 / tp of. Use a weight-only qat_scheme ('int4', 'int8', 'cactus')."
+        )
+    fq = getattr(module, "weight_fake_quantizer", None)
+    if module is not base or fq is None or type(module).__name__ != "FakeQuantizedLinear":
+        raise ValueError(
+            f"Unsloth: tensor parallelism does not support QAT fake quantization in {type(module).__name__} "
+            f"({path}): only torchao FakeQuantizedLinear base weights with a weight fake quantizer."
+        )
+    if style is None:
+        return
+    if style == KV_REPLICATED:
+        style = COLWISE  # whole rows and whole in_features on every rank: column-like for the fake quantizer
+    weight = base._parameters.get("weight")
+    in_features = _logical_shape(weight, base)[1] if weight is not None else 0
+    problem = _qat_split_problem(fq, style, in_features // max(int(tp), 1))
+    if problem is not None:
+        raise ValueError(
+            f"Unsloth: tensor parallelism cannot shard the QAT weight fake quantization of '{path}' "
+            f"({type(fq).__name__}) exactly: {problem}."
+        )
+
+
+def _fake_quantized(base, W):
+    """The local shard through the base layer's QAT weight fake quantizer (as FakeQuantizedLinear.forward)."""
+    fq = base._modules.get("weight_fake_quantizer")
+    return W if fq is None else fq(W)
 
 
 def _active_adapter(proj):
@@ -1342,7 +1412,7 @@ def _tp_projection_forward(self, x, *args, **kwargs):
 
 def _tp_projection_compute(self, x):
     weight, base = _weight(self)
-    W = _local(weight)
+    W = _fake_quantized(base, _local(weight))
     bias = (
         base.bias if self._unsloth_tp_style != ROWWISE else None
     )  # row bias: once, after the reduce
@@ -1618,7 +1688,7 @@ def apply_tensor_parallel(
         for proj in region.projs:
             path = f"{region.path}.{proj.name}"
             weight, base = _weight(proj.module)
-            _refuse_base(path, proj.module, weight, base)
+            _refuse_base(path, proj.module, weight, base, proj.style, tp)
             _refuse_adapter(path, proj.module)
             _check_preloaded(path, proj, weight, base, tp_mesh)
             if id(weight) in covered:

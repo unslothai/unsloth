@@ -199,7 +199,6 @@ _REFUSED_LOAD_FLAGS = (
     ("fast_inference", "vLLM (fast_inference = True)"),
     ("load_in_8bit", "8-bit weights (load_in_8bit = True; load in 4-bit or 16-bit)"),
     ("load_in_fp8", "fp8 weights (load_in_fp8)"),
-    ("qat_scheme", "QAT (qat_scheme)"),
 )
 
 
@@ -258,7 +257,9 @@ def tensor_parallel_env_load(fn):
         mesh = layout.tp_mesh
         _DEPTH["load"] += 1
         try:
-            if _four_bit(values, fn) or not layout.sharded_loading or _is_adapter(values):
+            # QAT swaps the loaded Linears for torchao FakeQuantizedLinear copies: load in full, shard later.
+            qat = values.get("qat_scheme") is not None
+            if _four_bit(values, fn) or not layout.sharded_loading or _is_adapter(values) or qat:
                 return fn(
                     *args, **kwargs
                 )  # full load; get_peft_model shards it (Params4bit included)
