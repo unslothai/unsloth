@@ -895,6 +895,26 @@ def media_fit_kwargs(
     return kwargs
 
 
+def settle_unpriced_chat_beside_media(policy: str) -> None:
+    """Media resident beside a chat model that turned out unpriced: When they fit evicts it, Always refuses."""
+    if policy not in ("fit", "always") or not _on_metal():
+        return
+    from utils.account_context import current_account_id
+
+    with arb._lock:
+        arb._sync_from_view()
+        media = [name for name in MEDIA_OWNERS if name in arb._residents]
+        if not media:
+            return
+        if policy == "always":
+            raise arb.refusal_for(
+                [slot for name in media for slot in arb.resident_slots(name)],
+                arb.KIND_LABELS[media[0]],
+            )
+        for name in media:
+            _evict_resident(name, current_account_id(), None, [])
+
+
 def forget_media_price(owner: str) -> None:
     """Drop ``owner``'s recorded price: a resident that changed renderer is no longer what was priced."""
     with arb._lock:

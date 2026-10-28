@@ -209,6 +209,21 @@ def test_a_priced_mlx_chat_load_does_not_join_an_unpriced_image(cores, monkeypat
     assert (arb.DIFFUSION in arb.residents()) is (priced or refused)
 
 
+@pytest.mark.parametrize("policy", ["off", "fit", "always"])
+def test_an_unpriced_chat_load_settles_beside_media_as_its_policy_says(cores, monkeypatch, policy):
+    import core.inference.gpu_residency as res
+
+    monkeypatch.setattr(res, "_on_metal", lambda: True)
+    res.settle_unpriced_chat_beside_media(policy)  # nothing resident
+    arb.acquire_for(arb.DIFFUSION, lambda: None, policy = "fit", need_mib = {0: 4096})
+    with pytest.raises(arb.MultiModelAlwaysRefusal) if policy == "always" else nullcontext():
+        res.settle_unpriced_chat_beside_media(policy)
+    assert (arb.DIFFUSION in arb.residents()) is (policy != "fit")
+    monkeypatch.setattr(res, "_on_metal", lambda: False)
+    res.settle_unpriced_chat_beside_media("fit")
+    assert (arb.DIFFUSION in arb.residents()) is (policy != "fit")
+
+
 def test_a_renderer_change_forgets_the_media_price(cores):
     import core.inference.gpu_residency as res
 

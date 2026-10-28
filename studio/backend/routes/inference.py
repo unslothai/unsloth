@@ -18969,16 +18969,18 @@ async def _load_model_impl(
                     clamp_parallel_slots(_n_parallel),
                 )
                 mlx_credit_mib = 0
-                if mlx_chat_need is not None and replacing:
+                if mlx_chat_need is not None:
                     from core.inference.gpu_residency import (
                         gguf_replaced_credit_mib,
                         mlx_replaced_credit_mib,
                     )
 
-                    # Whichever primary is serving goes before this load starts.
-                    mlx_credit_mib = await asyncio.to_thread(
-                        mlx_replaced_credit_mib, backend
-                    ) + await asyncio.to_thread(gguf_replaced_credit_mib, llama_backend)
+                    # Every load spawns a fresh worker in its slot; a primary load also stops llama-server.
+                    mlx_credit_mib = await asyncio.to_thread(mlx_replaced_credit_mib, backend)
+                    if replacing:
+                        mlx_credit_mib += await asyncio.to_thread(
+                            gguf_replaced_credit_mib, llama_backend
+                        )
                 handoff_kwargs.update(
                     _chat_fit_kwargs(
                         config,
@@ -19373,6 +19375,21 @@ async def _load_model_impl(
                     **mlx_chat_need[1],
                     "footprint_mib": mlx_worker_footprint_mib(backend),
                 }
+            elif mlx_chat_need is not None:
+                # Admitted at a price the loaded cache does not keep to: settle as an unpriced load would have.
+                from core.inference.gpu_arbiter import (
+                    GpuBusyForAnotherAccountError,
+                    MultiModelAlwaysRefusal,
+                )
+                from core.inference.gpu_residency import settle_unpriced_chat_beside_media
+                try:
+                    await asyncio.to_thread(settle_unpriced_chat_beside_media, multi_model_mode)
+                except (MultiModelAlwaysRefusal, GpuBusyForAnotherAccountError) as exc:
+                    await asyncio.to_thread(backend.unload_model, config.identifier)
+                    await asyncio.to_thread(backend._shutdown_subprocess, 5.0)
+                    if isinstance(exc, GpuBusyForAnotherAccountError):
+                        raise exc.as_http_exception() from exc
+                    raise
 
         if request._advertised_id:
             backend._openai_advertised_id = request._advertised_id
