@@ -213,7 +213,6 @@ _STOP_NOTICE_INTERVAL = 0.1
 _DISPATCH_POLL_INTERVAL = 0.5
 _DISPATCH_STOP_TIMEOUT = 5.0
 _DISPATCH_IDLE_TIMEOUT = 30.0
-_DISPATCH_DRAIN_TIMEOUT = 5.0
 _CANCELLED_ROWS_GRACE = 5.0
 
 # Transformers TTS only; generous since _ensure_subprocess_alive already catches dead workers.

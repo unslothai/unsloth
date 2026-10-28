@@ -3277,14 +3277,6 @@ def _gguf_conversion_name_matches(hit_name: str, base: str) -> bool:
     return name == base or name in {f"{base}-gguf", f"{base}_gguf", f"{base}.gguf"}
 
 
-def _gguf_files_for_pick(names: list[str], picked: str) -> Optional[list[str]]:
-    """The complete downloadable file family for a picked GGUF. llama-server opens split siblings implicitly,
-    so a single selected shard is not a usable plan, and incomplete published families are rejected.
-    Deferred to the loader so the plan offered here and the transfer name one set."""
-    from core.rag.embed_llama_server import LlamaServerBackend
-    return LlamaServerBackend._split_family(names, picked)
-
-
 def _pick_downloadable_gguf(names: list[str]) -> Optional[list[str]]:
     """Pick the loader's preferred GGUF, skipping torn split families."""
     from core.rag.embed_llama_server import LlamaServerBackend

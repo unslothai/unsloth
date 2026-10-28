@@ -37,7 +37,6 @@ _MAX_HEADER_BYTES = 256 << 20
 _COPY_CHUNK = 16 << 20
 _DISK_MARGIN = 256 << 20
 _METADATA_TIMEOUT = 10.0
-_RANGE_TIMEOUT = 60.0
 # "image-diffusion-unsupported" is an image / video family this install cannot run yet; still rebuilt.
 _MEDIA_TASKS = frozenset({"text-to-image", "text-to-video", "image-diffusion-unsupported"})
 
