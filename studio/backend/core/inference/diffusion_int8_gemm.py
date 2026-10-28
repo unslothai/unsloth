@@ -95,10 +95,9 @@ _ARCH_CONFIG = {
     (8, 9): (256, 128, 128, 8, 8, 3),  # L4
     (12, 0): (128, 128, 64, 8, 4, 4),  # RTX PRO 6000
 }
-# When the arch tile does not fit this part's shared memory, and the unlisted archs' tile: 4 stages of a 128x64 +
-# 64x128 int8 tile pair are 64 KB, inside a 99 KB part (sm86 / sm89 / sm120).
+# When the arch tile does not fit this part's shared memory, and the unlisted archs' tile (64 KB of stages: fits 99 KB).
 _FALLBACK_CONFIG = (128, 128, 64, 8, 4, 4)
-# Measured slower than cuBLAS: never probed unless forced.
+# Measured slower than cuBLAS: not probed unless forced.
 _UNLISTED_SKIP = ((10, 0), (10, 3))
 
 # First match wins, bounds inclusive. No L4 rule on purpose: power-capped clocks lose end to end.
@@ -470,9 +469,9 @@ def device_config(index: int) -> Optional[tuple]:
 
 
 _UNLISTED_CARDS: set = set()
-_UNLISTED_PROBE: dict = {}  # index -> fallback tile passed the bit-exact probe
-_UNLISTED_OK: dict = {}  # (index, mode) -> latency verdict
-_UNLISTED_TIMING: dict = {}  # index -> {"fused": us, "stock": us}
+_UNLISTED_PROBE: dict = {}
+_UNLISTED_OK: dict = {}
+_UNLISTED_TIMING: dict = {}
 # (M, N, K): Qwen-Image-2.1 attention projection, MLP in, MLP down
 _UNLISTED_LATENCY_SHAPES = ((2048, 4096, 4096), (2048, 12288, 4096), (2048, 4096, 12288))
 
