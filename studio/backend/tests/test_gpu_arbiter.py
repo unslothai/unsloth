@@ -231,6 +231,13 @@ def test_a_renderer_change_forgets_the_media_price(cores):
     assert arb._media_needs.get(arb.DIFFUSION) == {0: 4096}
     res.forget_media_price(arb.DIFFUSION)
     assert arb.DIFFUSION not in arb._media_needs and arb.DIFFUSION in arb.residents()
+    # An evictor holding the lock waits on this fallback's drain: a cancelled fallback lets go.
+    import threading
+
+    cancel = threading.Event()
+    cancel.set()
+    with arb._lock, pytest.raises(RuntimeError):
+        res.forget_media_price(arb.DIFFUSION, cancel)
 
 
 @pytest.mark.parametrize("managed", [False, True])

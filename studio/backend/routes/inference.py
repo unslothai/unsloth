@@ -46867,7 +46867,7 @@ def _mlx_fallback_load_gate(request, gpu_ordinal, multi_model_mode):
                 if ref and _repo_is_in_the_hub_cache(ref) is not True:
                     _note_load_fetched_with_a_request_token(ref, request.hf_token)
             # The MLX price no longer describes the diffusers renderer: chat loads beside it treat it as unpriced.
-            forget_media_price(DIFFUSION)
+            forget_media_price(DIFFUSION, cancel)
             return start()
 
     return gate

@@ -878,10 +878,12 @@ def test_an_mlx_routed_image_load_is_priced_from_its_quantization_plan(monkeypat
         base_repo = "org/base",
         engine = "auto",
     )
-    assert gr._image_need(request, 0) == (4096, 4)
+    untiled = -(-mdb.UNTILED_DECODE_HEADROOM_BYTES // MIB)
+    # Weights from the plan at the load's headroom; the reservation is the untiled decode peak.
+    assert gr._image_need(request, 0) == (4096, untiled)
     assert picks == ["auto"] and fetched == ["org/base"]
     # No base named: the load's variant resolution picks it, not the family default.
     request.base_repo = None
-    assert gr._image_need(request, 0) == (4096, 4) and fetched[-1] == "org/variant"
+    assert gr._image_need(request, 0) == (4096, untiled) and fetched[-1] == "org/variant"
     plan.source = "ram_rule"
     assert gr._image_need(request, 0) is None

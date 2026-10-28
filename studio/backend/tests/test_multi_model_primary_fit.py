@@ -408,7 +408,7 @@ def test_the_mlx_diffusers_fallback_forgets_the_mlx_price():
     source = inspect.getsource(inf._mlx_fallback_load_gate)
     assert (
         source.index("refuse_unless_fits(")
-        < source.index("forget_media_price(DIFFUSION)")
+        < source.index("forget_media_price(DIFFUSION, cancel)")
         < source.index("return start()")
     )
 

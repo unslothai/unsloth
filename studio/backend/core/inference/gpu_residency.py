@@ -329,6 +329,7 @@ def _mlx_image_need(request: Any, fam: Any) -> Optional[tuple[int, int]]:
     """(weights MiB, decode headroom MiB) for an MLX image load: the quantization plan it will take, from headers."""
     from core.inference.diffusion_families import resolve_base_repo
     from core.inference.mlx_diffusion_backend import (
+        UNTILED_DECODE_HEADROOM_BYTES,
         decode_headroom_bytes,
         fetch_base_snapshot,
         get_mlx_diffusion_backend,
@@ -357,7 +358,9 @@ def _mlx_image_need(request: Any, fam: Any) -> Optional[tuple[int, int]]:
     if plan.source != "plan":
         return None
     mib = 1024 * 1024
-    return (plan.planned_bytes - headroom) // mib, -(-headroom // mib)
+    # The renderer picks tiling from its own process's free memory, blind to a chat worker: reserve the untiled peak.
+    reserve = max(headroom, UNTILED_DECODE_HEADROOM_BYTES)
+    return (plan.planned_bytes - headroom) // mib, -(-reserve // mib)
 
 
 def _video_need(request: Any, gpu_ordinal: Optional[int]) -> Optional[tuple[int, int]]:
@@ -915,10 +918,17 @@ def settle_unpriced_chat_beside_media(policy: str) -> None:
             _evict_resident(name, current_account_id(), None, [])
 
 
-def forget_media_price(owner: str) -> None:
-    """Drop ``owner``'s recorded price: a resident that changed renderer is no longer what was priced."""
-    with arb._lock:
+def forget_media_price(owner: str, cancel: Any = None) -> None:
+    """Drop ``owner``'s recorded price: a resident that changed renderer is no longer what was priced. Gives up on
+    ``cancel`` like refuse_unless_fits: an evictor holding the lock is waiting for our drain."""
+    while not arb._lock.acquire(timeout = 0.05):
+        if cancel is not None and cancel.is_set():
+            from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+            raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+    try:
         arb._media_needs.pop(owner, None)
+    finally:
+        arb._lock.release()
 
 
 def refuse_unless_fits(
