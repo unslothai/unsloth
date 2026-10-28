@@ -4,6 +4,7 @@
 """The compiled-cache clear acts on the directory unsloth_zoo.compiler writes to and nothing else:
 UNSLOTH_COMPILE_LOCATION when set, else unsloth_compiled_cache in the CWD, else the temp fallback."""
 
+import os
 import tempfile
 from pathlib import Path
 
@@ -117,6 +118,28 @@ def test_an_uncreatable_location_falls_back_to_the_temp_dir_like_the_compiler(
     assert not (fallback / MODULE).exists()
     assert (fallback / "notes.txt").is_file()
     assert (launch / "unsloth_compiled_cache" / MODULE).is_file()
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason = "needs a POSIX permission bit that is enforced",
+)
+def test_a_read_only_location_also_clears_the_temp_dir_the_compiler_fell_back_to(
+    tmp_path, monkeypatch, launch
+):
+    pinned = tmp_path / "ro" / "ucc"
+    pinned.mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_COMPILE_LOCATION", str(pinned))
+    fallback = tmp_path / "tmp" / "ucc"
+    _write(fallback / MODULE)
+    pinned.chmod(0o555)
+    try:
+        assert cache_cleanup.get_existing_cache_dirs() == [pinned, fallback]
+        cache_cleanup.clear_unsloth_compiled_cache()
+    finally:
+        pinned.chmod(0o755)
+
+    assert not (fallback / MODULE).exists()
 
 
 def test_a_creatable_location_never_reaches_the_temp_dir(tmp_path, monkeypatch, launch):

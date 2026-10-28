@@ -59,16 +59,23 @@ def _configured_cache_dirs() -> List[Path]:
         location = Path(raw) if configured else Path.cwd() / raw
     except (OSError, RuntimeError, ValueError):
         return []
+    dirs: List[Path] = []
     if _makedirs_could_succeed(location):
-        return [location]
+        dirs.append(location)
+        # makedirs passes on an existing read-only dir, then the compiler's write fails over to the temp dir.
+        try:
+            if not (location.is_dir() and not os.access(location, os.W_OK | os.X_OK)):
+                return dirs
+        except OSError:
+            return dirs
     # basename, as the compiler does it; an empty one (a trailing separator) would make the temp dir itself the cache.
     leaf = os.path.basename(raw)
     if not leaf:
-        return []
+        return dirs
     try:
-        return [Path(tempfile.gettempdir()) / leaf]
+        return dirs + [Path(tempfile.gettempdir()) / leaf]
     except (OSError, RuntimeError, ValueError):
-        return []
+        return dirs
 
 
 def get_existing_cache_dirs() -> List[Path]:
