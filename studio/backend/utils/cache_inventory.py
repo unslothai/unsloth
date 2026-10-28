@@ -930,6 +930,8 @@ def invalidate_cache_size(key: str) -> None:
 
 _size_flights: dict[str, threading.Lock] = {}
 _size_flights_lock = threading.Lock()
+# Background walks run one at a time: two stat-bound walks in one process only trade the GIL.
+_background_walk_lock = threading.Lock()
 
 
 def _flight_for(key: str) -> threading.Lock:
@@ -956,9 +958,10 @@ def _refresh_in_background(definition: CacheDefinition) -> None:
 
     def walk() -> None:
         try:
-            with _size_cache_lock:
-                epoch = _size_epochs.get(definition.key, 0)
-            _walk_and_remember(definition, epoch)
+            with _background_walk_lock:
+                with _size_cache_lock:
+                    epoch = _size_epochs.get(definition.key, 0)
+                _walk_and_remember(definition, epoch)
         except Exception as exc:  # noqa: BLE001 - a failed refresh leaves the last size in place
             logger.debug(f"Could not refresh the {definition.key} cache size: {exc}")
         finally:

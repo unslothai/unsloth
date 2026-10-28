@@ -230,3 +230,34 @@ def test_a_background_walk_overtaken_by_a_purge_does_not_store_its_size(monkeypa
     release.set()
     # The purge's own read waits for the stale walk, then walks again rather than keep 20.
     assert cache_inventory._described(definition, refresh = False)["size_bytes"] == 0
+
+
+def test_background_walks_run_one_at_a_time(monkeypatch, clean_memo):
+    """Two stat-bound walks in one process only fight over the GIL."""
+    running: list = []
+    peak: list = []
+    lock = threading.Lock()
+    first_pass = {"uv": True, "triton": True}
+
+    def describe(target):
+        if first_pass.pop(target.key, False):
+            return {"key": target.key, "size_bytes": 1}
+        with lock:
+            running.append(target.key)
+            peak.append(len(running))
+        time.sleep(0.2)
+        with lock:
+            running.remove(target.key)
+        return {"key": target.key, "size_bytes": 2}
+
+    monkeypatch.setattr(cache_inventory, "describe_cache", describe)
+    for key in ("uv", "triton"):
+        cache_inventory._described(definition_for(key), refresh = False)
+        _expire(key, walk_seconds = 30)
+    for key in ("uv", "triton"):
+        assert cache_inventory._described(definition_for(key), refresh = False)["size_bytes"] == 1
+    for _ in range(100):
+        if all(cache_inventory._size_cache[key][2]["size_bytes"] == 2 for key in ("uv", "triton")):
+            break
+        time.sleep(0.05)
+    assert peak == [1, 1]
