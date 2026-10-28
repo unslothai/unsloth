@@ -356,7 +356,10 @@ def _levels(model):
 
 def parallel_env_requested():
     """UNSLOTH_TP_SIZE or UNSLOTH_PP_SIZE set to anything but 1 (the Trainer wrapper applies or refuses it)."""
-    return any(str(os.environ.get(name, "")).strip() not in ("", "1") for name in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE"))
+    return any(
+        str(os.environ.get(name, "")).strip() not in ("", "1")
+        for name in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE")
+    )
 
 
 def install_tensor_parallel_env_trainer_init():

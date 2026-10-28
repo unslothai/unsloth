@@ -33,7 +33,11 @@ def _load_tp_env(monkeypatch, calls):
     models.__path__ = [os.path.join(REPO, "unsloth", "models")]
     utils = types.ModuleType("unsloth.models._utils")
     utils.patch_gradient_accumulation_fix = calls.append
-    for name, module in (("unsloth", pkg), ("unsloth.models", models), ("unsloth.models._utils", utils)):
+    for name, module in (
+        ("unsloth", pkg),
+        ("unsloth.models", models),
+        ("unsloth.models._utils", utils),
+    ):
         monkeypatch.setitem(sys.modules, name, module)
     spec = importlib.util.spec_from_file_location(
         "unsloth.models.tp_env", os.path.join(REPO, "unsloth", "models", "tp_env.py")
@@ -98,9 +102,13 @@ def test_wrapper_refuses_pp_size_alone(monkeypatch):
     torch = pytest.importorskip("torch")
     _set_env(monkeypatch, {"UNSLOTH_PP_SIZE": "2", "WORLD_SIZE": "2"})
     _load_tp_env(monkeypatch, [])
-    tree = ast.parse(open(os.path.join(REPO, "unsloth", "models", "_utils.py"), encoding = "utf-8").read())
+    tree = ast.parse(
+        open(os.path.join(REPO, "unsloth", "models", "_utils.py"), encoding = "utf-8").read()
+    )
     fn = next(
-        n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_tensor_parallel_env_trainer_pre"
+        n
+        for n in tree.body
+        if isinstance(n, ast.FunctionDef) and n.name == "_tensor_parallel_env_trainer_pre"
     )
     ns = {"__name__": "unsloth.models._utils", "__package__": "unsloth.models", "os": os}
     exec(compile(ast.Module(body = [fn], type_ignores = []), "_utils.py", "exec"), ns)
