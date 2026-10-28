@@ -314,7 +314,9 @@ def _case_env(
                 eval_dataset = data,
             )
         )
-        res["evaluate"] = _raised(lambda: res.__setitem__("eval_loss", trainer.evaluate(data)["eval_loss"]))
+        res["evaluate"] = _raised(
+            lambda: res.__setitem__("eval_loss", trainer.evaluate(data)["eval_loss"])
+        )
         res["lion"] = _raised(
             lambda: SequentialTrainer(
                 model = model,

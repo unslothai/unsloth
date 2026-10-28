@@ -33,7 +33,15 @@ def _seeded_train(model, ids, steps, clip, seed):
     return _train(model, ids, steps, clip)
 
 
-def _case_parity(rank, world, tmp, repo, overrides, lora_kwargs, dropout_seed = None):
+def _case_parity(
+    rank,
+    world,
+    tmp,
+    repo,
+    overrides,
+    lora_kwargs,
+    dropout_seed = None,
+):
     from safetensors.torch import load_file
     from torch.distributed.device_mesh import init_device_mesh
 
@@ -67,7 +75,9 @@ def _case_parity(rank, world, tmp, repo, overrides, lora_kwargs, dropout_seed = 
         "moe_synced": all(b.__dict__.get("_unsloth_tp_size") == world for b in plan.moe_blocks),
         "generated": tuple(generated.shape),
         "saved_ref": load_file(os.path.join(ref_dir, "adapter_model.safetensors")),
-        "saved_tp": load_file(os.path.join(tp_dir, "adapter_model.safetensors")) if rank == 0 else None,
+        "saved_tp": load_file(os.path.join(tp_dir, "adapter_model.safetensors"))
+        if rank == 0
+        else None,
     }
 
 
@@ -98,7 +108,11 @@ def _worker(rank, world, port, case, tmp, kwargs):
         dist.destroy_process_group()
 
 
-def _spawn(case, world = 2, **kwargs):
+def _spawn(
+    case,
+    world = 2,
+    **kwargs,
+):
     ctx = multiprocessing.get_context("spawn")
     port = _free_port()
     with tempfile.TemporaryDirectory() as tmp:
@@ -151,7 +165,10 @@ def test_tp2_moe_runs_replicated_and_matches_one_process():
     "overrides,lora_kwargs",
     [
         ({}, {"lora_dropout": 0.25}),  # lora_dropout: column input replicated, row input sharded
-        ({"attention_dropout": 0.25}, {"lora_dropout": 0.25}),  # + eager attention probabilities, per head
+        (
+            {"attention_dropout": 0.25},
+            {"lora_dropout": 0.25},
+        ),  # + eager attention probabilities, per head
     ],
     ids = ["lora_dropout", "attention_and_lora_dropout"],
 )
@@ -161,7 +178,10 @@ def test_tp2_dropout_draws_one_process_masks(overrides, lora_kwargs):
     )
     res = _check(results)
     # Dropout really ran: another seed gives another first loss.
-    assert res["other_loss"] != pytest.approx(res["ref"][2][0], rel = 1e-6), (res["other_loss"], res["ref"][2])
+    assert res["other_loss"] != pytest.approx(res["ref"][2][0], rel = 1e-6), (
+        res["other_loss"],
+        res["ref"][2],
+    )
 
 
 def test_tp2_attention_dropout_in_a_fused_kernel_is_refused():

@@ -712,7 +712,10 @@ def _case_trainer(
             )
         for key, overrides in {
             "checkpoints": {"save_strategy": "steps", "save_steps": 1},
-            "eval": {"eval_strategy": "steps", "eval_steps": 1},  # evaluates over dp (test_tp_eval_gloo.py)
+            "eval": {
+                "eval_strategy": "steps",
+                "eval_steps": 1,
+            },  # evaluates over dp (test_tp_eval_gloo.py)
             "optim_8bit": {"optim": "adamw_bnb_8bit"},
         }.items():
             refusals[key] = _raised(

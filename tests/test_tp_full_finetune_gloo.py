@@ -112,7 +112,12 @@ def _case_env(rank, world, tmp, ckpt):
         def _get_train_sampler(self, *args, **kwargs):
             return torch.utils.data.SequentialSampler(self.train_dataset)
 
-    def load(model_name, load_in_4bit = True, full_finetuning = False, **kwargs):
+    def load(
+        model_name,
+        load_in_4bit = True,
+        full_finetuning = False,
+        **kwargs,
+    ):
         model = AutoModelForCausalLM.from_pretrained(
             model_name, torch_dtype = torch.float32, attn_implementation = "eager"
         )
@@ -130,8 +135,13 @@ def _case_env(rank, world, tmp, ckpt):
     data = _Rows(list(torch.randint(0, 1000, (3 * 4, 9), generator = g)))
     out_dir = os.path.join(tmp, f"out{world}")
     args = _trainer_args(
-        out_dir, 2, max_steps = 3, adam_epsilon = _ADAM_EPS, learning_rate = 1e-3,
-        save_strategy = "steps", save_steps = 2,
+        out_dir,
+        2,
+        max_steps = 3,
+        adam_epsilon = _ADAM_EPS,
+        learning_rate = 1e-3,
+        save_strategy = "steps",
+        save_steps = 2,
     )
     trainer = SequentialTrainer(model = model, args = args, train_dataset = data)
     trainer.train()
@@ -178,7 +188,14 @@ def _qat_config(kind):
     }[kind]()
 
 
-def _case_qat(rank, world, tmp, kind, lora, kv_heads = 2):
+def _case_qat(
+    rank,
+    world,
+    tmp,
+    kind,
+    lora,
+    kv_heads = 2,
+):
     """QAT (torchao QATConfig prepare, as Unsloth's qat_scheme) on full finetuning or under LoRA."""
     from peft import LoraConfig, get_peft_model
     from torch.distributed.device_mesh import init_device_mesh
@@ -188,8 +205,14 @@ def _case_qat(rank, world, tmp, kind, lora, kv_heads = 2):
     from unsloth.models import tp_native as tpn
 
     repo, overrides = ARCHS["llama"]
-    overrides = {**overrides, "hidden_size": 32, "intermediate_size": 64, "num_attention_heads": 4,
-                 "num_key_value_heads": kv_heads, "head_dim": 8}
+    overrides = {
+        **overrides,
+        "hidden_size": 32,
+        "intermediate_size": 64,
+        "num_attention_heads": 4,
+        "num_key_value_heads": kv_heads,
+        "head_dim": 8,
+    }
 
     def make():
         model = build(repo, overrides, lora = False)
@@ -197,7 +220,9 @@ def _case_qat(rank, world, tmp, kind, lora, kv_heads = 2):
         quantize_(decoder, QATConfig(_qat_config(kind), step = "prepare"))
         if lora:
             torch.manual_seed(1)
-            config = LoraConfig(r = 4, lora_alpha = 8, target_modules = "all-linear", init_lora_weights = False)
+            config = LoraConfig(
+                r = 4, lora_alpha = 8, target_modules = "all-linear", init_lora_weights = False
+            )
             model = get_peft_model(model, config)
         else:
             model.requires_grad_(True)
@@ -255,7 +280,13 @@ def _worker(rank, world, port, case, tmp, env, kwargs):
             dist.destroy_process_group()
 
 
-def _spawn(case, world, env = None, tmp = None, **kwargs):
+def _spawn(
+    case,
+    world,
+    env = None,
+    tmp = None,
+    **kwargs,
+):
     ctx = multiprocessing.get_context("spawn")
     port = _free_port()
     procs = [
@@ -318,7 +349,10 @@ def test_env_tp2_full_finetuning_trainer_matches_one_process():
     for rank, res in enumerate(results):
         assert res["refused"] is None, res["refused"]  # main: "does not support full finetuning"
         assert res["is_tp"]
-        assert res["losses"] == pytest.approx(ref["losses"], rel = 1e-5), (res["losses"], ref["losses"])
+        assert res["losses"] == pytest.approx(ref["losses"], rel = 1e-5), (
+            res["losses"],
+            ref["losses"],
+        )
         assert res["grad_norms"] == pytest.approx(ref["grad_norms"], rel = 1e-4)
         _assert_state(res["state"], ref["state"], f"rank {rank}")
         assert "unsloth_tp" in res["ckpt_files"] and "model.safetensors" in res["ckpt_files"]
@@ -353,7 +387,9 @@ def test_tp2_qat_weight_only_matches_one_process(kind, lora, kv_heads):
     with tempfile.TemporaryDirectory() as tmp:
         results = _spawn("qat", 2, tmp = tmp, kind = kind, lora = lora, kv_heads = kv_heads)
     for rank, res in enumerate(results):
-        assert res["refused"] is None, res["refused"]  # main: "does not support QAT fake quantization"
+        assert res["refused"] is None, res[
+            "refused"
+        ]  # main: "does not support QAT fake quantization"
         assert res["fake_quantized"] > 0
         ref_grads, ref_losses, ref_norms = res["ref"]
         grads, losses, norms = res["tp"]

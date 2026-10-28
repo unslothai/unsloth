@@ -65,9 +65,7 @@ def _case_eval(rank, world, tmp, dp, tp):
         per_device_eval_batch_size = 1,
         dataloader_drop_last = False,
     )
-    trainer = SequentialTrainer(
-        model = model, args = args, train_dataset = data, eval_dataset = held_out
-    )
+    trainer = SequentialTrainer(model = model, args = args, train_dataset = data, eval_dataset = held_out)
     trainer.train()
     history = trainer.state.log_history
     final = trainer.evaluate()
@@ -142,7 +140,11 @@ def _worker(rank, world, port, case, tmp, kwargs):
         dist.destroy_process_group()
 
 
-def _spawn(case, world = 2, **kwargs):
+def _spawn(
+    case,
+    world = 2,
+    **kwargs,
+):
     ctx = multiprocessing.get_context("spawn")
     port = _free_port()
     with tempfile.TemporaryDirectory() as tmp:
@@ -168,10 +170,16 @@ def test_trainer_evaluates_a_tensor_parallel_model_like_one_process(dp, tp):
     if "skip" in ref:
         pytest.skip(f"import unsloth failed on this host: {ref['skip']}")
     results = _spawn("eval", dp * tp, dp = dp, tp = tp)
-    assert len(ref["losses"]) == 3 and len(ref["eval_losses"]) == 4  # 3 during training + evaluate()
+    assert (
+        len(ref["losses"]) == 3 and len(ref["eval_losses"]) == 4
+    )  # 3 during training + evaluate()
     assert ref["predictions"].shape[0] == 7
     for rank, res in enumerate(results):
-        assert res["losses"] == pytest.approx(ref["losses"], rel = 1e-5), (rank, res["losses"], ref["losses"])
+        assert res["losses"] == pytest.approx(ref["losses"], rel = 1e-5), (
+            rank,
+            res["losses"],
+            ref["losses"],
+        )
         assert res["eval_losses"] == pytest.approx(ref["eval_losses"], rel = 1e-5), (
             rank,
             res["eval_losses"],
@@ -179,7 +187,10 @@ def test_trainer_evaluates_a_tensor_parallel_model_like_one_process(dp, tp):
         )
         assert res["final_eval"] == pytest.approx(ref["final_eval"], rel = 1e-5)
         assert res["predict_loss"] == pytest.approx(ref["predict_loss"], rel = 1e-5)
-        assert res["predictions"].shape == ref["predictions"].shape, (rank, res["predictions"].shape)
+        assert res["predictions"].shape == ref["predictions"].shape, (
+            rank,
+            res["predictions"].shape,
+        )
         torch.testing.assert_close(res["predictions"], ref["predictions"], rtol = 1e-4, atol = 1e-5)
         assert torch.equal(res["label_ids"], ref["label_ids"])
 
@@ -191,7 +202,9 @@ def test_cached_generate_through_a_wrapped_tp_forward_matches_one_process():
     assert ref["error"] is None, ref["error"]
     results = _spawn("generate", 2, tp = 2)
     for rank, res in enumerate(results):
-        assert res["wrapped"], "the GRPO hidden states wrapper was not installed: the test proves nothing"
+        assert res[
+            "wrapped"
+        ], "the GRPO hidden states wrapper was not installed: the test proves nothing"
         assert res["error"] is None, (rank, res["error"])
         assert torch.equal(res["out"], ref["out"]), (rank, res["out"], ref["out"])
         assert res["replica_after"] is False

@@ -86,7 +86,9 @@ def _case_qlora(rank, world, tmp):
     mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("tp",))
     tpn.apply_tensor_parallel(model, mesh["tp"])
     k = model.base_model.model.model.layers[0].self_attn.k_proj
-    k_local = bnb.functional.dequantize_4bit(k.base_layer.weight.data, k.base_layer.weight.quant_state)
+    k_local = bnb.functional.dequantize_4bit(
+        k.base_layer.weight.data, k.base_layer.weight.quant_state
+    )
     # generate gathers a whole replica (the 4-bit k_proj regathered from the ranks' head rows).
     generated = model.generate(
         input_ids = torch.zeros(1, 2, dtype = torch.long), max_new_tokens = 2, pad_token_id = 0
@@ -138,7 +140,13 @@ def _worker(rank, world, port, case, tmp, env, kwargs):
             dist.destroy_process_group()
 
 
-def _spawn(case, world = 2, env = None, ckpt_overrides = None, **kwargs):
+def _spawn(
+    case,
+    world = 2,
+    env = None,
+    ckpt_overrides = None,
+    **kwargs,
+):
     ctx = multiprocessing.get_context("spawn")
     port = _free_port()
     with tempfile.TemporaryDirectory() as tmp:
@@ -184,7 +192,11 @@ def test_kv_heads_below_tp_are_replicated_per_rank():
 @pytest.mark.parametrize(
     "arch,world,overrides",
     [
-        ("gemma3", 2, KV1),  # one KV head, trainable q_norm / k_norm (k_norm on the replicated head)
+        (
+            "gemma3",
+            2,
+            KV1,
+        ),  # one KV head, trainable q_norm / k_norm (k_norm on the replicated head)
         ("llama", 2, KV1),
         ("llama_bias", 2, KV1),  # k / v biases narrowed to the head
         ("llama", 4, KV1),  # 4 ranks reading one KV head

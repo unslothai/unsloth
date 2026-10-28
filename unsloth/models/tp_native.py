@@ -313,7 +313,10 @@ def _refuse_dropout(model, layers):
 
 def _region_dropout_p(module, model):
     """Whether a region can draw dropout in training (other than lora_dropout, which the projection handles)."""
-    if module.__dict__.get("_unsloth_tp_kind") == "attention" and _attention_dropout(model) is not None:
+    if (
+        module.__dict__.get("_unsloth_tp_kind") == "attention"
+        and _attention_dropout(model) is not None
+    ):
         return True
     for name, sub in module.named_modules():
         if "lora_dropout" in name:
@@ -813,7 +816,9 @@ def _tp_lora_parameters(proj, bias = False):
     """get_lora_parameters(_bias) on local shards; row bias is None (the region adds it after the reduce)."""
     weight, base = _weight(proj)
     W = _local(weight)
-    if not bias:  # as kernels/utils.py get_lora_parameters (get_lora_parameters_bias does not fake quantize)
+    if (
+        not bias
+    ):  # as kernels/utils.py get_lora_parameters (get_lora_parameters_bias does not fake quantize)
         W = _fake_quantized(base, W)
     W_quant = getattr(W, "quant_state", None)
     b = None
@@ -864,7 +869,14 @@ def _is_params4bit(t):
     return any(cls.__name__ == "Params4bit" for cls in type(t).__mro__)
 
 
-def _refuse_base(path, proj_module, weight, base, style = None, tp = 1):
+def _refuse_base(
+    path,
+    proj_module,
+    weight,
+    base,
+    style = None,
+    tp = 1,
+):
     cls = type(base).__name__
     if weight is None:
         raise ValueError(f"Unsloth: '{path}' ({cls}) has no dense weight (GPTQ / AWQ?).")
@@ -935,9 +947,7 @@ def _qat_split_problem(fq, style, local_in):
         if kind == "PerGroup":
             if style == COLWISE or local_in % granularity.group_size == 0:
                 return None
-            return (
-                f"in_features / tp = {local_in} is not a multiple of its group size {granularity.group_size}"
-            )
+            return f"in_features / tp = {local_in} is not a multiple of its group size {granularity.group_size}"
         if kind == "PerRow" or (kind == "PerAxis" and getattr(granularity, "axis", None) == 0):
             if style == COLWISE:
                 return None
@@ -1236,7 +1246,13 @@ def _full_mask(shape, dim, rank, tp, p, like):
     return mask.narrow(dim, rank * shape[dim], shape[dim]).contiguous()
 
 
-def _tp_dropout(state, input, p = 0.5, training = True, inplace = False):
+def _tp_dropout(
+    state,
+    input,
+    p = 0.5,
+    training = True,
+    inplace = False,
+):
     if not training or p == 0 or state.bypass or state.phase == 0:
         # Replicated activations: every rank draws the same mask as one process (same RNG, same shape).
         return F.dropout(input, p, training, inplace)
@@ -1246,7 +1262,9 @@ def _tp_dropout(state, input, p = 0.5, training = True, inplace = False):
                 f"Unsloth: dropout on the row projection output inside {state.path} runs before its bias, which "
                 "tensor parallelism adds after the reduce; set that dropout to 0."
             )
-        return F.dropout(input, p, training, inplace)  # linear in the partial sums: same mask everywhere
+        return F.dropout(
+            input, p, training, inplace
+        )  # linear in the partial sums: same mask everywhere
     if state.kind == "attention" and input.dim() >= 3 and input.shape[1] == state.local_heads:
         dim = 1  # [batch, local heads, ...]: attention probabilities
     elif state.kind == "mlp" and input.shape[-1] == state.local_width:
@@ -1262,29 +1280,37 @@ def _tp_dropout(state, input, p = 0.5, training = True, inplace = False):
 
 def _dropout_mode_class():
     from torch.overrides import TorchFunctionMode
-
     class _TPDropoutMode(TorchFunctionMode):
         def __init__(self, state):
             super().__init__()
             self.state = state
 
-        def __torch_function__(self, func, types, args = (), kwargs = None):
+        def __torch_function__(
+            self,
+            func,
+            types,
+            args = (),
+            kwargs = None,
+        ):
             kwargs = kwargs or {}
             if func is F.dropout:
                 return _tp_dropout(self.state, *args, **kwargs)
             if func is torch.dropout:
                 return _tp_dropout(self.state, *args, **kwargs)
-            if func is F.scaled_dot_product_attention and (
-                kwargs.get("dropout_p", args[4] if len(args) > 4 else 0.0) or 0.0
-            ) > 0:
+            if (
+                func is F.scaled_dot_product_attention
+                and (kwargs.get("dropout_p", args[4] if len(args) > 4 else 0.0) or 0.0) > 0
+            ):
                 raise RuntimeError(
                     f"Unsloth: {self.state.path} passes dropout_p > 0 to scaled_dot_product_attention, which "
                     "draws the mask inside the kernel and cannot be split over the tp ranks' heads; use the eager "
                     "attention or set the attention dropout to 0."
                 )
-            if func in _UNSPLIT_DROPOUTS and (args[2] if len(args) > 2 else kwargs.get("training", True)) and (
-                args[1] if len(args) > 1 else kwargs.get("p", 0.5)
-            ) > 0:
+            if (
+                func in _UNSPLIT_DROPOUTS
+                and (args[2] if len(args) > 2 else kwargs.get("training", True))
+                and (args[1] if len(args) > 1 else kwargs.get("p", 0.5)) > 0
+            ):
                 raise RuntimeError(
                     f"Unsloth: tensor parallelism supports plain dropout only; {func.__name__} inside "
                     f"{self.state.path} is not supported."
@@ -1308,7 +1334,11 @@ def _dropout_region_forward(module, forward):
     mode_class = _dropout_mode_class()
 
     def forward_with_tp_dropout(*args, **kwargs):
-        if module.__dict__.get("_unsloth_tp_gathered") or not module.training or not torch.is_grad_enabled():
+        if (
+            module.__dict__.get("_unsloth_tp_gathered")
+            or not module.training
+            or not torch.is_grad_enabled()
+        ):
             return forward(*args, **kwargs)
         state = _DropoutState(module)
         module.__dict__["_unsloth_tp_dropout"] = state
@@ -1577,7 +1607,8 @@ def _mark_tokenizers(chain):
 
 def _has_lora_dropout(model):
     return any(
-        "lora_dropout" in name and isinstance(m, nn.Dropout) and m.p > 0 for name, m in model.named_modules()
+        "lora_dropout" in name and isinstance(m, nn.Dropout) and m.p > 0
+        for name, m in model.named_modules()
     )
 
 
@@ -1741,7 +1772,12 @@ def apply_tensor_parallel(
         module._unsloth_tp_kind = region.kind
         module._unsloth_tp_coord = (rank, tp)
         module._unsloth_tp_local_width = next(
-            (_logical_shape(*_weight(p.module))[1] // tp for p in region.projs if p.style == ROWWISE), None
+            (
+                _logical_shape(*_weight(p.module))[1] // tp
+                for p in region.projs
+                if p.style == ROWWISE
+            ),
+            None,
         )
 
         def state_of(module = module):
@@ -3252,7 +3288,6 @@ def _tp_trainer_save_model(
         save_tp_adapter(self.model, output_dir)
     else:
         from .tp_replica import tp_collective
-
         model = self.model
         # The whole model is gathered to rank 0, which runs the model's own (1-GPU) save_pretrained.
         tp_collective(model, "save_model", lambda: model.save_pretrained(output_dir), "all")
@@ -3368,11 +3403,17 @@ def _install_tp_accelerate_hooks():
             sync["synced"] = True
         return tp_clip_grad_norm_(parameters, max_norm)
 
-    def gather_for_metrics(self, input_data, use_gather_object = False):
+    def gather_for_metrics(
+        self,
+        input_data,
+        use_gather_object = False,
+    ):
         # accelerate's gather_for_metrics with the gather over dp only: the eval loader is sharded over dp
         # (prepare_data_loader above), so its remainder truncation is the dp-sized world's.
         if _TP_GATHER not in self.__dict__:
-            return original_gather_for_metrics(self, input_data, use_gather_object = use_gather_object)
+            return original_gather_for_metrics(
+                self, input_data, use_gather_object = use_gather_object
+            )
         from accelerate.utils import recursively_apply
 
         dp_mesh = self.__dict__[_TP_GATHER]
