@@ -10,7 +10,8 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { trainView, sparklinePath, rewardMax, rewardText } = await import(
+const { trainView, sparklinePath, rewardMax, rewardText, adapterPathFor } =
+  await import(
   "../src/features/flows/editor/train-status.ts"
 );
 const { paramVisible } = await import(
@@ -143,4 +144,15 @@ test("reward max is the best weighted sum of the rules", () => {
   assert.equal(rewardMax([{ name: "exact-answer", weight: 1 }], rules), 2);
   assert.equal(rewardMax([{ name: "numeric-close", weight: -1 }], rules), 2);
   assert.equal(rewardMax([{ name: "gone", weight: 1 }], rules), null);
+});
+
+test("Chat with it finds the adapter by the run folder's name", () => {
+  const loras = [
+    { adapter_path: "/out/run-1/checkpoint-10" },
+    { adapter_path: "/out/run-1/" },
+    { adapter_path: "C:\\out\\run-2" },
+  ];
+  assert.equal(adapterPathFor(loras, "run-1"), "/out/run-1/");
+  assert.equal(adapterPathFor(loras, "run-2"), "C:\\out\\run-2");
+  assert.equal(adapterPathFor(loras, "run-3"), null);
 });

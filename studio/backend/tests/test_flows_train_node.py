@@ -156,6 +156,7 @@ def test_live_metrics_stream_to_the_node_as_a_partial(monkeypatch):
     assert ctx.partials[0][1]["loss_history"] == [2.0, 1.5]
     assert out["metrics"]["loss_history"] == [2.0, 1.5]
     assert out["holdout"] is None
+    assert out["checkpoint"]["name"] == "run-1" and "output_dir" not in out["checkpoint"]
 
 
 def test_holdout_splits_only_the_sliced_rows(monkeypatch):
@@ -253,3 +254,14 @@ def test_reward_history_reads_the_status_rl_log():
         "reward_max": 2.5,
     }
     assert training.reward_history({}) == [] and training.reward_metrics([], 2.5) == {}
+
+def test_one_column_for_both_roles_is_refused():
+    ctx = _Ctx(_recipe_routes([]), prompt_column = "q", response_column = "q")
+    with pytest.raises(FlowNodeError, match = "different columns"):
+        asyncio.run(training.finetune(ctx))
+
+
+def test_polls_read_the_loss_from_the_status_payload():
+    assert training.status_losses({"metric_history": {"loss": [2.0, 1.0]}}) == [2.0, 1.0]
+    assert training.status_losses({"metric_history": None}) == []
+    assert training.status_losses(None) == []
