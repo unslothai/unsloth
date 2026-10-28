@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""/openapi.json is ~1 MB; rendering it took ~13 ms on the event loop on every fetch. It is rendered once per schema,
-off the loop, and the bytes and headers are exactly what JSONResponse produced."""
+"""/openapi.json is rendered once per schema, off the loop, byte-identical to JSONResponse."""
 
 from __future__ import annotations
 
@@ -52,8 +51,7 @@ def test_a_rebuilt_schema_is_served_afresh(main_module):
     path = "/api/__openapi_cache_probe"
     app.add_api_route(path, lambda: {"ok": True}, methods = ["GET"])
     try:
-        # Newer FastAPI drops the cached schema on a route change; older ones wait for a reset. Either way a
-        # rebuilt schema is a new object, and the served bytes must follow it.
+        # Some FastAPI versions keep the cached schema after a route change: reset it explicitly.
         app.openapi_schema = None
         assert path in client.get("/openapi.json").json()["paths"]
         assert client.get("/openapi.json").content == JSONResponse(app.openapi()).body

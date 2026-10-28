@@ -1358,8 +1358,7 @@ def _openapi_once() -> dict:
 app.openapi = _openapi_once
 
 
-# Rendering the ~1 MB schema to JSON is ~13 ms; do it once per (schema object, root_path), off the loop. Keyed by the
-# schema object itself, so anything that rebuilds it (openapi_schema reset to None) is rendered afresh.
+# Rendered once per schema object, off the loop: a rebuilt schema (openapi_schema reset) is a new object.
 _openapi_body_cache: dict = {}
 
 
