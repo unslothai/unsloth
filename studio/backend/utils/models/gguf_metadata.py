@@ -366,8 +366,7 @@ _STRING_SCAN_MAX = 1 << 20
 
 
 def _can_rewind(f) -> bool:
-    """The buffered walks read ahead and seek back. Without a working ``seekable()`` (a forward-only
-    stream, or ``mmap`` before 3.13) the caller's per-entry loop runs instead."""
+    """False for forward-only streams and ``mmap`` before 3.13: the walks seek back after reading ahead."""
     seekable = getattr(f, "seekable", None)
     try:
         return bool(seekable()) if callable(seekable) else False
@@ -419,10 +418,8 @@ def skip_gguf_strings(f, count: int) -> int:
 def take_gguf_strings_by_first_byte(
     f, count: int, first_bytes: frozenset[int]
 ) -> Tuple[int, list[bytes]]:
-    """Read up to ``count`` GGUF strings like ``skip_gguf_strings`` and return
-    ``(entries read, raw entries whose first byte is in first_bytes)``. Stops early at an
-    entry over 1 MiB or one cut short by EOF, leaving ``f`` at it. A stream that cannot seek
-    back reads nothing here."""
+    """``skip_gguf_strings`` that returns ``(entries read, raw entries whose first byte is in
+    first_bytes)``; also stops at an entry cut short by EOF, leaving ``f`` at it."""
     kept: list[bytes] = []
     if not _can_rewind(f):
         return 0, kept

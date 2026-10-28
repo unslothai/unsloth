@@ -2661,7 +2661,6 @@ _MISS = object()
 
 # GGUF unsigned value-type id -> byte width (uint8, uint16, uint32, uint64).
 _GGUF_UINT_WIDTHS = {0: 1, 2: 2, 4: 4, 10: 8}
-# First bytes of the vocabulary entries kept as markup candidates: b"<" and b"[".
 _GGUF_MARKUP_FIRST_BYTES = frozenset(b"<[")
 
 
