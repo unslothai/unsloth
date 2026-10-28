@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Static-buffer CUDA-graph capture of ONE denoiser forward, for the diffusion backends.
-
-Each denoiser module gets a ``GraphedForward`` in its INSTANCE ``__dict__`` under ``forward``.
-Not a proxy: the pipelines read ``.dtype`` / ``.config`` / ``.cache_context`` off the transformer.
-Not a hook: hooks move ``nn.Module._call_impl`` off its fast path and offload owns the hook list.
-"""
+"""Static-buffer CUDA graph of a denoiser forward, kept in instance __dict__; not a proxy or hook."""
 
 from __future__ import annotations
 

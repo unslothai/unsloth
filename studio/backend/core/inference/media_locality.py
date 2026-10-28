@@ -1,19 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Proving a media model is already downloaded, before the switch evicts anything for it.
-
-Auto-switch never downloads. That promise is easy to state and hard to keep, because the index
-only sees CHECKPOINTS: a GGUF or single-file pick loads its text encoders and VAE from a
-companion base repo, HiDream-I1 fetches a 16 GB Llama encoder no amount of pipeline on disk
-accounts for, and an LTX-2.3 checkpoint pulls VAE, audio and connector artifacts the planner
-only recognises by name. Any of those would let one API request spend tens of gigabytes.
-
-So locality is verified through the same download planner ``/images/download-plan`` serves, and
-the answer is tri-state: complete, incomplete by some number of bytes, or unverifiable. Zero
-bytes from a planner that failed is not evidence of a complete cache, and the switch refuses on
-anything short of proof.
-"""
+"""Proves a media model is downloaded via the download planner (tri-state); refuses unless complete;
+auto-switch never downloads; a planner failure is not proof."""
 
 from __future__ import annotations
 

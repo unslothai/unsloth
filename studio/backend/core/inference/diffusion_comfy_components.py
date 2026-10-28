@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Separate text-encoder / VAE files (ComfyUI ``models/text_encoders``, ``models/vae``) beside a single-file DiT.
-
-Each file is classified from its header, assigned to the base pipeline slot whose class it fits, renamed under a
-rule that loads strictly, and built from the base repo's config (which still supplies configs and tokenizers).
-fp8, nvfp4 and mxfp8 dequantize, int8 ConvRot stays int8, every other ComfyUI quant format is refused by name.
-"""
+"""ComfyUI text-encoder and VAE files beside a single-file DiT; fp8, nvfp4 and mxfp8 dequantize,
+int8 ConvRot stays int8, other ComfyUI quant formats are refused by name"""
 
 from __future__ import annotations
 

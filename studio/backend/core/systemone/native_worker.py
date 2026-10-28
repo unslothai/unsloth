@@ -1,14 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Decisions from a GGUF on a private loopback llama-server (``POST /v1/systemone``).
-
-Ported from wasimysaid's native worker in #12770. The server is Studio's own llama.cpp. Clef answers
-are rebuilt with the formatter the PyTorch path uses, so the public response does not depend on the
-backend (llama.cpp's own confidence is a normalised formula, PyTorch's the winning probability).
-GGUF-only models (Kev, lev, Nimble, OpenJev, Laya GGUFs) have no Studio reference, so llama.cpp's
-answer is the reference: checked, then passed through.
-"""
+"""Private loopback llama-server at POST /v1/systemone; Clef answers rebuilt with the PyTorch
+formatter so the public response does not depend on the backend; GGUF-only models are checked,
+then passed through"""
 
 from __future__ import annotations
 

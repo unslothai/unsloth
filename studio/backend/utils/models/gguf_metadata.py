@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""``general.*`` reader for GGUF headers, used by ``detect_mmproj_file`` to
-pair weights and projectors via ``general.base_model.0.repo_url``."""
+"""GGUF general.* reader; detect_mmproj_file pairs projectors via general.base_model.0.repo_url."""
 
 from __future__ import annotations
 
