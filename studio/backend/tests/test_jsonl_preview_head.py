@@ -101,6 +101,13 @@ def test_numbers_from_list_cannot_type_preview_like_the_loader(
     assert dataset[dataset.column_names[0]] == expected and loader_calls == []
 
 
+def test_a_float_after_the_preview_rows_types_the_column_like_the_loader(tmp_path, loader_calls):
+    path = tmp_path / "train.jsonl"
+    _write_jsonl(path, [{"output": 7}] * 20 + [{"output": 1.5}])
+    dataset, _ = local._stream_file_preview_slice(path, 10)
+    assert dataset["output"] == [7.0] * 10 and isinstance(dataset["output"][0], float)
+
+
 def test_columns_are_the_union_over_rows(tmp_path, loader_calls):
     path = tmp_path / "train.jsonl"
     _write_jsonl(path, [{"text": "a"}, {"text": "b", "label": 1}])
