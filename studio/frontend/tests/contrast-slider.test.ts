@@ -280,7 +280,6 @@ test("text and lines head away from whatever they are drawn on", () => {
       "a surface scope leaves body text on the other surface's target",
     );
   }
-  // Images and Video take the palette border, so the root derivation already covers them.
   assert.doesNotMatch(CSS, /\.diffusion-surface \{\s*--border-base/);
 });
 
