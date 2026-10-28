@@ -1417,7 +1417,6 @@ def apply_model_memory_policy(
         managed.extend(MANAGED_DIO_FLAGS)
     lock = keep_resident_lock_flags(supports_load_mode)
     if keep_resident and not no_ram_reserve and weights_in_host_memory and lock:
-        # Before the extras, like the managed block.
         managed.extend(lock)
         tokens = strip_shadowing_flags(
             tokens,
