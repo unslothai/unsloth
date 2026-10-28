@@ -357,13 +357,9 @@ def usable_host_ram_mib() -> Optional[int]:
     return usable_mib(system_available_mib(), cgroup_headroom_mib())
 
 
-def mapped_cache_credit_mib() -> int:
-    """MiB the binding cgroup headroom gains when clean mapped file pages count as reclaimable; 0 without a limit."""
-    plain = cgroup_headroom_mib(cgroup_memory_budgets())
-    if plain is None:
-        return 0
-    credited = cgroup_headroom_mib(cgroup_memory_budgets(credit_mapped = True))
-    return max(0, int(credited or 0) - int(plain))
+def credited_cgroup_headroom_mib() -> Optional[int]:
+    """``cgroup_headroom_mib`` with clean mapped file pages counted as reclaimable, from one read per level."""
+    return cgroup_headroom_mib(cgroup_memory_budgets(credit_mapped = True))
 
 
 def host_ram_capacity_mib() -> Optional[int]:

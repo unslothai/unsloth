@@ -89,13 +89,23 @@ def test_kill_switch_restores_the_uncredited_budget(cg, monkeypatch):
     assert dm._pin_budget_mib() == 30 * 1024 - _reserve(70)
 
 
+def test_an_earlier_reading_is_not_added_to_the_credited_one(cg, monkeypatch):
+    """The pages moved to the active list after the first reading credited them from the inactive list."""
+    _scope(
+        cg, limit = 70 * GIB, current = 60 * GIB, anon = 40 * GIB,
+        inactive_file = 0, active_file = 20 * GIB, file_mapped = 20 * GIB,
+    )
+    monkeypatch.setattr(dm, "_available_system_memory_mib", lambda: 30 * 1024)
+    assert dm._pin_budget_mib() == 30 * 1024 - _reserve(70)
+
+
 def test_dirty_and_writeback_pages_stay_uncredited(cg):
     _scope(
         cg, limit = 32 * GIB, current = 30 * GIB, inactive_file = 2 * GIB, active_file = 10 * GIB,
         file_mapped = 4 * GIB, file_dirty = 1 * GIB, file_writeback = 1 * GIB,
     )
     assert host_memory.cgroup_headroom_mib() == 8 * 1024
-    assert host_memory.mapped_cache_credit_mib() == 4 * 1024
+    assert host_memory.credited_cgroup_headroom_mib() == 12 * 1024
     assert dm._pin_budget_mib() == 12 * 1024 - _reserve(32)
 
 
@@ -105,7 +115,7 @@ def test_shmem_is_never_credited(cg):
         cg, limit = 32 * GIB, current = 24 * GIB, shmem = 12 * GIB,
         inactive_file = 2 * GIB, active_file = 0, file_mapped = 12 * GIB,
     )
-    assert host_memory.mapped_cache_credit_mib() == 0
+    assert host_memory.credited_cgroup_headroom_mib() == 10 * 1024
     assert dm._pin_budget_mib() == 10 * 1024 - _reserve(32)
 
 
@@ -136,7 +146,7 @@ def test_tightest_level_binds_with_the_credit(cg):
 
 def test_no_limit_is_unchanged(cg):
     cg.proc.write_text("0::/\n", encoding = "utf-8")
-    assert host_memory.mapped_cache_credit_mib() == 0
+    assert host_memory.credited_cgroup_headroom_mib() is None
     assert dm._pin_budget_mib() == 80 * 1024 - int(94 * 1024 * dm._PIN_RESERVE_FRACTION)
 
 
@@ -152,7 +162,7 @@ def test_v1_hierarchical_mapped_pages_are_credited(cg):
     )
     # Uncredited: 64 - (60 - 2 - 1) = 7 GiB. Credited: 64 - (60 - 2 - 17) = 23 GiB.
     assert host_memory.cgroup_headroom_mib() == 7 * 1024
-    assert host_memory.mapped_cache_credit_mib() == 16 * 1024
+    assert host_memory.credited_cgroup_headroom_mib() == 23 * 1024
     assert dm._pin_budget_mib() == 23 * 1024 - _reserve(64)
 
 
@@ -163,13 +173,13 @@ def test_v1_level_counters_without_totals(cg):
     _write(d / "memory.usage_in_bytes", str(14 * GIB))
     _stat(d, inactive_file = 1 * GIB, active_file = 6 * GIB, mapped_file = 2 * GIB)
     assert host_memory.cgroup_headroom_mib() == 7 * 1024
-    assert host_memory.mapped_cache_credit_mib() == 2 * 1024
+    assert host_memory.credited_cgroup_headroom_mib() == 9 * 1024
 
 
 def test_unreadable_stat_never_raises(cg):
     d = _scope(cg, limit = 32 * GIB, current = 20 * GIB)
     _write(d / "memory.stat", "garbage\nactive_file x\n")
-    assert host_memory.mapped_cache_credit_mib() == 0
+    assert host_memory.credited_cgroup_headroom_mib() == 12 * 1024
     assert dm._pin_budget_mib() == 12 * 1024 - _reserve(32)
 
 
