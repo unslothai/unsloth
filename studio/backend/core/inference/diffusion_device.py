@@ -419,6 +419,9 @@ def resolve_auto_cuda_ordinal() -> Optional[int]:
         visible = hw.get_parent_visible_gpu_ids()
         if len(visible) < 2:
             return None
+        if hw._cuda_instance_ids_active():
+            # MIG instance ordinals are not nvidia-smi rows; keep card 0 explicit.
+            return 0
         if not hw._cuda_order_matches_smi():
             # No ranking (rows are not ordinals), but on cards that are not provably identical keep the
             # current card explicit, so a pooled thread left on another card cannot preflight against it.
@@ -494,11 +497,16 @@ def resolve_auto_cuda_ordinal() -> Optional[int]:
 def smi_free_total_mib(ordinal: int) -> tuple[Optional[int], Optional[int]]:
     """(free, total) MiB of torch ordinal ``ordinal`` from nvidia-smi, so a card can be sized without a CUDA context
     on it. (None, None) wherever ``resolve_auto_cuda_ordinal`` would not trust the rows (ROCm, a CUDA order other
-    than nvidia-smi's, a mask naming no card, an integrated or MIG card, missing telemetry). Never raises."""
+    than nvidia-smi's, a mask naming no card, an integrated or MIG card, missing telemetry). An R570+ MIG instance
+    ordinal is sized from that instance's own slice row, or (None, None) when it was not read. Never raises."""
     try:
         from utils.hardware import hardware as hw
 
-        if hw.IS_ROCM or not hw._cuda_order_matches_smi():
+        if hw.IS_ROCM:
+            return None, None
+        if hw._cuda_instance_ids_active():
+            return hw._cuda_instance_free_total_mib(int(ordinal))
+        if not hw._cuda_order_matches_smi():
             return None, None
         visible = hw.get_parent_visible_gpu_ids()
         if not 0 <= int(ordinal) < len(visible):

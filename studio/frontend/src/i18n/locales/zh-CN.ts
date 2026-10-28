@@ -139,6 +139,11 @@ export const zhCN = {
     more: "更多",
     addressPlaceholder: "搜索或输入网址",
     local: "本地",
+    browserUse: {
+      label: "浏览器操作",
+      description: "允许模型控制内置浏览器",
+      unavailable: "请加载支持工具调用的模型，才能让它使用浏览器。",
+    },
     suggested: "推荐",
     suggestedMenu: {
       open: "打开",
@@ -2282,6 +2287,7 @@ export const zhCN = {
       liveMonitor: {
         title: "实时监控",
         apiTitle: "API 监控",
+        apiDescription: "实时查看其他应用发送到此服务器 API 的内容。",
         summary: "实时请求、错误和 token 用量",
         status: "{active} 个进行中 · {recent} 个近期请求 · {model}",
         noModelLoaded: "未加载模型",
@@ -2511,6 +2517,8 @@ export const zhCN = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "运行时长",
         processMemory: "进程内存",
         notInstalled: "未安装",
@@ -3242,6 +3250,7 @@ export const zhCN = {
       desktopAppVersionUnavailable: "不可用",
       llamaCppVersion: "llama.cpp 版本",
       audioCppVersion: "audio.cpp 版本",
+      mlxVersion: "MLX 版本",
       whisperCppVersion: "whisper.cpp 版本",
       engines: {
         title: "引擎",

@@ -139,6 +139,11 @@ export const ko = {
     more: "더보기",
     addressPlaceholder: "검색어 또는 URL 입력",
     local: "로컬",
+    browserUse: {
+      label: "브라우저 사용",
+      description: "모델이 내장 브라우저를 제어하도록 허용",
+      unavailable: "브라우저를 사용하게 하려면 도구를 호출할 수 있는 모델을 불러오세요.",
+    },
     suggested: "추천",
     suggestedMenu: {
       open: "열기",
@@ -2304,6 +2309,7 @@ export const ko = {
       liveMonitor: {
         title: "실시간 모니터",
         apiTitle: "API 모니터",
+        apiDescription: "다른 앱이 이 서버의 API로 보내는 내용을 도착하는 대로 확인합니다.",
         summary: "진행 중인 요청, 오류 및 토큰 사용량",
         status: "진행 중 {active}개 · 최근 {recent}개 · {model}",
         noModelLoaded: "로드된 모델 없음",
@@ -2541,6 +2547,8 @@ export const ko = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "가동 시간",
         processMemory: "프로세스 메모리",
         notInstalled: "설치되지 않음",
@@ -3286,6 +3294,7 @@ export const ko = {
       desktopAppVersionUnavailable: "확인할 수 없음",
       llamaCppVersion: "llama.cpp 버전",
       audioCppVersion: "audio.cpp 버전",
+      mlxVersion: "MLX 버전",
       whisperCppVersion: "whisper.cpp 버전",
       engines: {
         title: "엔진",

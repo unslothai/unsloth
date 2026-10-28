@@ -255,11 +255,105 @@ try:
 except Exception:  # noqa: BLE001 - a broken shim must never break user code
     pass
 
-# Approved host calls keep chat-installed packages importable, including Python started by Terminal.
-# Append only after the normal site setup; no .pth execution or stdlib/installed-package shadowing.
+
+# Approved host calls import chat-installed packages through a last-resort finder, NOT sys.path: a folder on
+# sys.path exposes its *.dist-info to importlib.metadata, so entry-point autoload (pytest11, ...) would run
+# chat-planted code the command never named. Metadata answers only an exact name with no explicit path.
+class _HostPackagesFinder:
+    _skip = frozenset(("sitecustomize", "usercustomize"))
+
+    def __init__(self, folder):
+        self._folder = folder
+
+    def find_spec(
+        self,
+        name,
+        path = None,
+        target = None,
+    ):
+        import importlib.machinery
+
+        if "." not in name:
+            if path is not None or name in self._skip:
+                return None
+            return importlib.machinery.PathFinder.find_spec(name, [self._folder])
+        parent, _, _ = name.rpartition(".")
+        module = sys.modules.get(parent)
+        spec = getattr(module, "__spec__", None)
+        if spec is None or spec.submodule_search_locations is None:
+            return None
+        # Only namespace packages: a regular package's submodules come from its own __path__ alone.
+        pkgutil_style = spec.origin not in (None, "namespace")
+        if pkgutil_style and not self._extends_path(spec.origin):
+            return None
+        portion = os.path.join(self._folder, *parent.split("."))
+        if not os.path.isdir(portion):
+            return None
+        found = importlib.machinery.PathFinder.find_spec(name, [portion])
+        if found is not None:
+            # The portion extend_path / PEP 420 would have collected; a _NamespacePath drops it on sys.path changes.
+            search = getattr(module, "__path__", None)
+            if search is not None and hasattr(search, "append") and portion not in list(search):
+                search.append(portion)
+        return found
+
+    _extends = {}
+
+    @classmethod
+    def _extends_path(cls, origin):
+        # Open only if __init__ declares extend_path / declare_namespace at module level (try body / else /
+        # finally count, an except handler may not have run); text, imports or calls under if/def do not.
+        if origin not in cls._extends:
+            try:
+                import ast
+                with open(origin, "rb") as f:
+                    tree = ast.parse(f.read())
+                cls._extends[origin] = any(map(cls._declares_namespace, cls._top_level(tree.body)))
+            except Exception:  # noqa: BLE001 - an unreadable __init__ is treated as a regular package
+                cls._extends[origin] = False
+        return cls._extends[origin]
+
+    @classmethod
+    def _top_level(cls, body):
+        import ast
+        for node in body:
+            yield node
+            if isinstance(node, ast.Try):
+                for block in (node.body, node.orelse, node.finalbody):
+                    yield from cls._top_level(block)
+
+    @staticmethod
+    def _declares_namespace(node):
+        import ast
+
+        def call_of(value, name, args):
+            if not isinstance(value, ast.Call) or value.keywords:
+                return False
+            func = value.func
+            called = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+            return called == name and [getattr(a, "id", None) for a in value.args] == args
+
+        if isinstance(node, ast.Assign):
+            return any(getattr(t, "id", None) == "__path__" for t in node.targets) and call_of(
+                node.value, "extend_path", ["__path__", "__name__"]
+            )
+        return isinstance(node, ast.Expr) and call_of(node.value, "declare_namespace", ["__name__"])
+
+    def find_distributions(self, context = None):
+        name = getattr(context, "name", None)
+        # An explicit path is the caller's scope, already served by the stock path finder.
+        if not name or "path" in getattr(context, "__dict__", {}):
+            return iter(())
+        import importlib.metadata
+
+        return importlib.metadata.MetadataPathFinder.find_distributions(
+            importlib.metadata.DistributionFinder.Context(name = name, path = [self._folder])
+        )
+
+
 _host_packages = os.environ.get("_UNSLOTH_HOST_SESSION_PACKAGES")
-if _host_packages and _host_packages not in sys.path:
-    sys.path.append(_host_packages)
+if _host_packages and not any(isinstance(f, _HostPackagesFinder) for f in sys.meta_path):
+    sys.meta_path.append(_HostPackagesFinder(_host_packages))
 
 
 # Helper modules the approved script imports by name come from the chat folder, after everything

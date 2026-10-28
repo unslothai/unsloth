@@ -2391,6 +2391,8 @@ def _cuda_cards_identical(gpu_ids: Optional[list[int]] = None) -> Optional[bool]
         return None
     from . import gpu_query
 
+    if gpu_ids is not None and _cuda_instance_ids_active():
+        return None
     count = get_physical_gpu_count()
     wanted = list(range(count)) if gpu_ids is None else list(gpu_ids)
     # Hardware re-detection (a swapped card) bumps the static generation.
@@ -2438,6 +2440,34 @@ def _nvidia_mig_gpu_indices_or_none() -> Optional[set[int]]:
         return None if mode is None else instances | mode
     except Exception:
         return None
+
+
+def _cuda_instance_ids_active() -> bool:
+    """Whether GPU ids are R570+ MIG CUDA instance ordinals, which nvidia-smi rows (physical cards) never key."""
+    try:
+        return _get_parent_visible_gpu_spec().get("index_kind") == "cuda_device"
+    except Exception:
+        return False
+
+
+def _cuda_instance_free_total_mib(ordinal: int) -> tuple[Optional[int], Optional[int]]:
+    """(free, total) MiB of CUDA device ``ordinal`` from its own MIG instance row (NVML slice memory), or
+    (None, None) when that slice was not read. Never another card's figures. Never raises."""
+    try:
+        from . import mig
+
+        rows = mig.visible_devices(fresh = True)
+        if rows is None or not 0 <= int(ordinal) < len(rows):
+            return None, None
+        row = rows[int(ordinal)]
+        total = int(row.get("memory_total_mib") or 0)
+        free = int(row.get("memory_free_mib") or 0)
+        # A failed refresh keeps identities with zero memory: unknown, not a full card.
+        if total <= 0:
+            return None, None
+        return min(max(free, 0), total), total
+    except Exception:
+        return None, None
 
 
 _cuda_ordinal_rows_cache: Dict[tuple, tuple[Optional[list[int]], float]] = {}
@@ -2622,6 +2652,14 @@ def _context_free_cuda_memory_info(
         if used_bytes is None:
             return None
         return _free_in_torch_scope(total_bytes, used_bytes / (1024**3))
+
+    if not IS_ROCM and parent_visible_spec.get("index_kind") == "cuda_device":
+        free_mib, total_mib = _cuda_instance_free_total_mib(idx)
+        if free_mib is None or total_mib is None:
+            return None
+        if abs(total_mib * 1024**2 - total_bytes) > max(total_bytes // 100, 16 * 1024**2):
+            return None
+        return _free_in_torch_scope(total_bytes, (total_mib - free_mib) / 1024)
 
     # Prefer the vendor CLI: both nvidia-smi and amd-smi run out of process, so querying an idle backend leaves no context resident here.
     visible_ids = parent_visible_spec["numeric_ids"]
@@ -2874,8 +2912,8 @@ def get_gpu_summary() -> Dict[str, Any]:
 
 
 def get_package_versions() -> Dict[str, Optional[str]]:
-    """Installed versions of unsloth / torch / transformers / cuda via importlib.metadata, no subprocess; missing packages yield None."""
-    packages = ("unsloth", "torch", "transformers")
+    """Installed versions of unsloth / torch / transformers / mlx and torch's GPU runtimes, no subprocess; missing packages yield None."""
+    packages = ("unsloth", "torch", "transformers", "mlx")
     versions: Dict[str, Optional[str]] = {}
 
     for name in packages:
@@ -4574,6 +4612,15 @@ def get_gpu_utilization() -> Dict[str, Any]:
 
     if device == DeviceType.CUDA:
         parent_visible_spec = _get_parent_visible_gpu_spec()
+        if not IS_ROCM and parent_visible_spec.get("index_kind") == "cuda_device":
+            result = get_visible_gpu_utilization()
+            if result.get("index_kind") == "cuda_device":
+                return _gpu_utilization_payload(
+                    device,
+                    result.get("devices", []),
+                    parent_visible_gpu_ids = result.get("parent_visible_gpu_ids", []),
+                    index_kind = "cuda_device",
+                )
         result = _smi_visible_utilization(parent_visible_spec)
         if result is not None and "devices" in result:
             devices = result["devices"]

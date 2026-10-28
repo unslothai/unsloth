@@ -4481,13 +4481,16 @@ def quantization_config_is_bnb_4bit(quantization_config):
     return quantization_config_selects_bnb_4bit(quantization_config)
 
 
-def refuse_gpt_oss_fused_4bit_float16(dtype):
-    """Fused 4-bit experts compute in the model dtype and overflow float16 (split classes keep down_projs fp32)."""
-    if dtype != torch.float16:
+def refuse_gpt_oss_fused_4bit_float16(dtype, supports_bfloat16 = True):
+    """Fused 4-bit experts compute in the model dtype and overflow float16 (split classes keep down_projs fp32).
+    Without bfloat16, dtype = torch.float32 still computes in float16: gpt-oss is a FORCE_FLOAT32 family, whose
+    float32 request there becomes the float16 weights + float32 islands recipe."""
+    if dtype != torch.float16 and (supports_bfloat16 or dtype != torch.float32):
         return
     raise NotImplementedError(
         "Unsloth: this gpt-oss checkpoint stores fused experts, and in float16 (this GPU has no bfloat16, "
-        "or dtype = torch.float16) its fused 4-bit experts would overflow. Use the pre-quantized "
+        "or dtype = torch.float16) its fused 4-bit experts would overflow. dtype = torch.float32 does not "
+        "help on a GPU without bfloat16, since gpt-oss then still computes in float16. Use the pre-quantized "
         "unsloth/gpt-oss-20b-unsloth-bnb-4bit (or -120b), or a GPU with bfloat16."
     )
 

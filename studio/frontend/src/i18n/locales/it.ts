@@ -138,6 +138,11 @@ export const it = {
     more: "Altro",
     addressPlaceholder: "Cerca o inserisci un URL",
     local: "Locale",
+    browserUse: {
+      label: "Uso del browser",
+      description: "Consenti ai modelli di controllare il browser integrato",
+      unavailable: "Carica un modello in grado di chiamare strumenti per fargli usare il browser.",
+    },
     suggested: "Suggeriti",
     suggestedMenu: {
       open: "Apri",
@@ -2244,6 +2249,7 @@ export const it = {
       liveMonitor: {
         title: "Monitor in tempo reale",
         apiTitle: "Monitor API",
+        apiDescription: "Guarda cosa inviano le altre app all'API di questo server non appena arriva.",
         summary: "Richieste attive, errori e utilizzo dei token",
         status: "{active} attive · {recent} recenti · {model}",
         noModelLoaded: "nessun modello caricato",
@@ -2484,6 +2490,8 @@ export const it = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "Tempo di attività",
         processMemory: "Memoria del processo",
         notInstalled: "Non installato",
@@ -3245,6 +3253,7 @@ export const it = {
       packageVersion: "Versione del pacchetto",
       llamaCppVersion: "Versione di llama.cpp",
       audioCppVersion: "Versione di audio.cpp",
+      mlxVersion: "Versione di MLX",
       whisperCppVersion: "Versione di whisper.cpp",
       engines: {
         title: "Motori",

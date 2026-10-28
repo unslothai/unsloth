@@ -8,6 +8,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # The deps pass can replace this file while bash reads the old one (_setup_rerun_if_replaced).
 _SETUP_SELF="$SCRIPT_DIR/$(basename -- "${BASH_SOURCE[0]}")"
 _SETUP_SELF_SUM=$(cksum < "$_SETUP_SELF" 2>/dev/null || true)
+# Node is provisioned before the dependency pass can install a newer pin.
+_SETUP_NODE_PINS="$SCRIPT_DIR/node_prebuilt_pins.json"
+_SETUP_NODE_PINS_SUM=$(cksum 2>/dev/null < "$_SETUP_NODE_PINS" || true)
 _SETUP_ARGV=("$@")
 _SETUP_START_PWD=$PWD
 # Bash caches PATH entries across cd, so anchor relative entries before the first directory change.
@@ -2063,6 +2066,11 @@ decide_node_source() {
     _dns_node="${1#v}"
     _dns_npm="$2"
     _dns_skip="$3"
+    # A managed Node inherited on PATH still needs the pin check on every setup.
+    if [ "${4:-0}" = 1 ] && [ "$_dns_skip" != 1 ]; then
+        echo bundled
+        return 0
+    fi
     case "$_dns_node" in ''|*[!0-9.]*) _dns_node='' ;; esac
     case "$_dns_npm"  in ''|*[!0-9.]*) _dns_npm=''  ;; esac
     if [ -n "$_dns_node" ] && [ -n "$_dns_npm" ]; then
@@ -2122,7 +2130,16 @@ if [ -n "$_SYS_NODE_VER" ]; then
     _probe_system_node_tool npm
     _SYS_NPM_VER="$_PROBED_VER"
 fi
-NODE_SOURCE="$(decide_node_source "$_SYS_NODE_VER" "$_SYS_NPM_VER" "${UNSLOTH_SKIP_NODE_INSTALL:-0}")"
+# Only installer metadata marks a PATH Node managed (wherever NODE_DIR is); a bare path match may be a user's link.
+_NODE_ON_PATH_IS_MANAGED=0
+_node_on_path="$(command -v node || true)"
+if [ -n "$_node_on_path" ]; then
+    _node_on_path_root="$(cd "$(dirname "$_node_on_path")/.." 2>/dev/null && pwd -P)" || _node_on_path_root=""
+    if [ -n "$_node_on_path_root" ] && [ -f "$_node_on_path_root/UNSLOTH_NODE_PREBUILT_INFO.json" ]; then
+        _NODE_ON_PATH_IS_MANAGED=1
+    fi
+fi
+NODE_SOURCE="$(decide_node_source "$_SYS_NODE_VER" "$_SYS_NPM_VER" "${UNSLOTH_SKIP_NODE_INSTALL:-0}" "$_NODE_ON_PATH_IS_MANAGED")"
 _FRONTEND_SKIP=false
 
 if [ "$NODE_SOURCE" = system ]; then
@@ -2391,14 +2408,15 @@ _setup_rerun_if_replaced() {
     if [ "${UNSLOTH_SETUP_RERUN:-}" = 1 ] || [ -z "$_SETUP_SELF_SUM" ]; then
         return 0
     fi
-    local _now
+    local _now _now_pins
     _now=$(cksum < "$_SETUP_SELF" 2>/dev/null) || return 0
-    if [ -z "$_now" ] || [ "$_now" = "$_SETUP_SELF_SUM" ]; then
+    _now_pins=$(cksum 2>/dev/null < "$_SETUP_NODE_PINS" || true)
+    if [ -z "$_now" ] || { [ "$_now" = "$_SETUP_SELF_SUM" ] && [ "$_now_pins" = "$_SETUP_NODE_PINS_SUM" ]; }; then
         return 0
     fi
     # exec keeps this PID, so the watcher would not stop a build the new script then repeats.
     _frontend_bg_join
-    step "setup" "the update replaced this setup script; finishing with the new version"
+    step "setup" "the update changed setup or its Node pin; finishing with the new version"
     export UNSLOTH_SETUP_RERUN=1
     unset UNSLOTH_STUDIO_FULL_DEPS
     cd "$_SETUP_START_PWD" 2>/dev/null || :
@@ -5201,6 +5219,7 @@ else
             fi
             # Best-effort: the target exists only on llama.cpp trees carrying the diffusion example.
             run_quiet_no_exit "build diffusion visual server" cmake --build "$_BUILD_TMP/build" --config Release --target llama-diffusion-gemma-visual-server -j"$NCPU" || true
+            run_quiet_no_exit "build llama-bench" cmake --build "$_BUILD_TMP/build" --config Release --target llama-bench -j"$NCPU" || true
         fi
 
         # Opt-in smoke test (CUDA JIT stalls); runs before the install swap.
@@ -5230,6 +5249,7 @@ else
                         if [ "$BUILD_OK" = true ]; then
                             run_quiet_no_exit "build llama-quantize (cpu fallback)" cmake --build "$_BUILD_TMP/build" --config Release --target llama-quantize -j"$NCPU" || true
                             run_quiet_no_exit "build diffusion visual server (cpu fallback)" cmake --build "$_BUILD_TMP/build" --config Release --target llama-diffusion-gemma-visual-server -j"$NCPU" || true
+                            run_quiet_no_exit "build llama-bench (cpu fallback)" cmake --build "$_BUILD_TMP/build" --config Release --target llama-bench -j"$NCPU" || true
                         fi
                     else
                         BUILD_OK=false
