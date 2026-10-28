@@ -1576,6 +1576,26 @@ def _wait_for_server_shutdown(timeout: Optional[float] = _SERVER_SHUTDOWN_JOIN_T
     _flush_standard_streams()
 
 
+def _exit_without_finalizing() -> NoReturn:
+    """Exit as the interpreter would, minus finalization: freeing a loaded backend's heap takes over a
+    second, and the desktop app's quit and `unsloth studio stop` wait on the process."""
+    import atexit
+    import threading
+
+    # The interpreter's own exit steps, in its order: join threads, then atexit hooks. The join stays
+    # unbounded: a cancelled request's to_thread work (dataset import, export) must finish its writes.
+    threading._shutdown()
+    atexit._run_exitfuncs()
+    status = 0
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:
+            # CPython's own exit status when it cannot flush a standard stream.
+            status = 120
+    os._exit(status)
+
+
 _server = None
 _server_thread = None
 # "https" for an --ssl-certfile launch, used by every URL the launch prints for itself
@@ -3094,3 +3114,4 @@ if __name__ == "__main__":
     while not _shutdown_event.is_set():
         _shutdown_event.wait(timeout = 1)
     _wait_for_server_shutdown()
+    _exit_without_finalizing()
