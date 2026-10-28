@@ -64,10 +64,12 @@ export function StorageOverview({
 export function StorageBar({
   segments,
   totalBytes,
+  legend = true,
 }: {
   segments: StorageSegment[];
   /** Width of the whole bar; defaults to the sum, so the slices fill it. */
   totalBytes?: number;
+  legend?: boolean;
 }) {
   const sum = segments.reduce(
     (acc, segment) => acc + Math.max(0, segment.bytes),
@@ -90,21 +92,26 @@ export function StorageBar({
             )
           : null}
       </div>
-      <div className="flex flex-wrap gap-x-8 gap-y-3">
-        {segments.map((segment) => (
-          <div key={segment.key} className="flex flex-col gap-1">
-            <span className="flex items-center gap-2 text-sm text-foreground/80">
-              <span
-                className={cn("size-2.5 shrink-0 rounded-full", segment.color)}
-              />
-              {segment.label}
-            </span>
-            <span className="text-sm tabular-nums text-muted-foreground">
-              {segment.value}
-            </span>
-          </div>
-        ))}
-      </div>
+      {legend ? (
+        <div className="flex flex-wrap gap-x-8 gap-y-3">
+          {segments.map((segment) => (
+            <div key={segment.key} className="flex flex-col gap-1">
+              <span className="flex items-center gap-2 text-sm text-foreground/80">
+                <span
+                  className={cn(
+                    "size-2.5 shrink-0 rounded-full",
+                    segment.color,
+                  )}
+                />
+                {segment.label}
+              </span>
+              <span className="text-sm tabular-nums text-muted-foreground">
+                {segment.value}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : null}
     </>
   );
 }

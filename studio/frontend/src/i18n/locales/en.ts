@@ -2431,8 +2431,9 @@ export const en = {
         free: "{value} free",
         total: "{value} total",
         usedOf: "{used} used of {total}",
-        segmentUsed: "In use",
-        segmentOtherApps: "Other apps",
+        segmentUsed: "Used by GPU",
+        segmentSystem: "Used by system",
+        segmentAvailable: "Available",
       },
       llamaBackend: {
         title: "GGUF inference engine",

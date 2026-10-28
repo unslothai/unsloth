@@ -2374,8 +2374,9 @@ export const hi = {
         free: "{value} खाली",
         total: "{value} कुल",
         usedOf: "{total} में से {used} उपयोग में",
-        segmentUsed: "उपयोग में",
-        segmentOtherApps: "अन्य ऐप्स",
+        segmentUsed: "GPU द्वारा उपयोग में",
+        segmentSystem: "सिस्टम द्वारा उपयोग में",
+        segmentAvailable: "उपलब्ध",
       },
       llamaBackend: {
         title: "GGUF इनफ़रेंस इंजन",

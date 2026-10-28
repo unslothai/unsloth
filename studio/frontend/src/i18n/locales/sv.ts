@@ -2545,8 +2545,9 @@ export const sv = {
         free: "{value} ledigt",
         total: "{value} totalt",
         usedOf: "{used} använt av {total}",
-        segmentUsed: "Använt",
-        segmentOtherApps: "Andra appar",
+        segmentUsed: "Används av GPU",
+        segmentSystem: "Används av systemet",
+        segmentAvailable: "Tillgängligt",
       },
       llamaBackend: {
         title: "GGUF-inferensmotor",

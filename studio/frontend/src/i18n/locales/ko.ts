@@ -2362,8 +2362,9 @@ export const ko = {
         free: "{value} 여유",
         total: "총 {value}",
         usedOf: "{total} 중 {used} 사용 중",
-        segmentUsed: "사용 중",
-        segmentOtherApps: "다른 앱",
+        segmentUsed: "GPU 사용 중",
+        segmentSystem: "시스템 사용 중",
+        segmentAvailable: "사용 가능",
       },
       llamaBackend: {
         title: "GGUF 추론 엔진",

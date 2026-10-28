@@ -2471,8 +2471,9 @@ export const he = {
         free: "{value} פנוי",
         total: "{value} סה״כ",
         usedOf: "{used} בשימוש מתוך {total}",
-        segmentUsed: "בשימוש",
-        segmentOtherApps: "אפליקציות אחרות",
+        segmentUsed: "בשימוש ה-GPU",
+        segmentSystem: "בשימוש המערכת",
+        segmentAvailable: "זמין",
       },
       llamaBackend: {
         title: "מנוע הסקה GGUF",

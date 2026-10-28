@@ -988,8 +988,11 @@ export function ResourcesTab() {
             // Its total is mostly system RAM, so "VRAM" beside it overstates the card (#8942).
             const sharedSplit = deviceSharedMemorySplitGb(device);
             const telemetry = telemetryByOrdinal.get(`${ordinal ?? index}`);
-            // A shared pool's free figure is what is left after other apps, not total minus ours.
-            const otherApps =
+            // Shared with system RAM: "used" is every app's GPU allocation (AGX "In use system
+            // memory") and "free" is an available-RAM floor, so the rest is RAM the OS and apps hold.
+            const shared = device.shared_memory === true;
+            const usedBySystem =
+              shared &&
               isFiniteNumber(total) &&
               isFiniteNumber(used) &&
               isFiniteNumber(free)
@@ -1003,20 +1006,24 @@ export function ResourcesTab() {
                 value: usedText,
                 color: STORAGE_COLORS.green,
               },
-              ...(otherApps >= 0.05
+              ...(usedBySystem > 0
                 ? [
                     {
-                      key: "other",
-                      label: t("settings.resources.gpu.segmentOtherApps"),
-                      bytes: otherApps,
-                      value: formatGiB(otherApps),
+                      key: "system",
+                      label: t("settings.resources.gpu.segmentSystem"),
+                      bytes: usedBySystem,
+                      value: formatGiB(usedBySystem),
                       color: STORAGE_COLORS.other,
                     },
                   ]
                 : []),
               {
                 key: "free",
-                label: t("settings.resources.storage.segmentFree"),
+                label: t(
+                  shared
+                    ? "settings.resources.gpu.segmentAvailable"
+                    : "settings.resources.storage.segmentFree",
+                ),
                 bytes: isFiniteNumber(free) ? free : 0,
                 value: freeText,
                 color: STORAGE_COLORS.free,
@@ -1081,9 +1088,11 @@ export function ResourcesTab() {
                     })}
                   </div>
                 ) : (
+                  // A dedicated card has two slices the footer already names, so only a shared pool gets a legend.
                   <StorageBar
                     segments={segments}
                     totalBytes={isFiniteNumber(total) ? total : undefined}
+                    legend={shared}
                   />
                 )}
                 <div className="text-xs text-muted-foreground">
@@ -1091,6 +1100,9 @@ export function ResourcesTab() {
                     used: usedText,
                     total: totalText,
                   })}
+                  {shared
+                    ? null
+                    : ` · ${t("settings.resources.gpu.free", { value: freeText })}`}
                   {sharedSplit && !hasSharedMemoryHeadroom(device) ? (
                     <>
                       {" · "}

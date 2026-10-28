@@ -2350,8 +2350,9 @@ export const ja = {
         free: "{value} 空き",
         total: "{value} 合計",
         usedOf: "{total} 中 {used} 使用中",
-        segmentUsed: "使用中",
-        segmentOtherApps: "他のアプリ",
+        segmentUsed: "GPU が使用中",
+        segmentSystem: "システムが使用中",
+        segmentAvailable: "使用可能",
       },
       llamaBackend: {
         title: "GGUF 推論エンジン",

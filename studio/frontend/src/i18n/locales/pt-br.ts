@@ -2383,8 +2383,9 @@ export const ptBR = {
         free: "{value} livres",
         total: "{value} total",
         usedOf: "{used} em uso de {total}",
-        segmentUsed: "Em uso",
-        segmentOtherApps: "Outros apps",
+        segmentUsed: "Em uso pela GPU",
+        segmentSystem: "Em uso pelo sistema",
+        segmentAvailable: "Disponível",
       },
       llamaBackend: {
         title: "GGUF inference engine",

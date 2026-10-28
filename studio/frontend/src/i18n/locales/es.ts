@@ -2395,8 +2395,9 @@ export const es = {
         free: "Libre: {value}",
         total: "{value} en total",
         usedOf: "{used} en uso de {total}",
-        segmentUsed: "En uso",
-        segmentOtherApps: "Otras apps",
+        segmentUsed: "En uso por la GPU",
+        segmentSystem: "En uso por el sistema",
+        segmentAvailable: "Disponible",
       },
       llamaBackend: {
         title: "Motor de inferencia GGUF",

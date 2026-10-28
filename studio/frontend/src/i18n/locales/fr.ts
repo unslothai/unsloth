@@ -2399,8 +2399,9 @@ export const fr = {
         free: "Disponible : {value}",
         total: "{value} au total",
         usedOf: "{used} utilisés sur {total}",
-        segmentUsed: "Utilisée",
-        segmentOtherApps: "Autres apps",
+        segmentUsed: "Utilisée par le GPU",
+        segmentSystem: "Utilisée par le système",
+        segmentAvailable: "Disponible",
       },
       llamaBackend: {
         title: "Moteur d'inférence GGUF",

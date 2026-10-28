@@ -2368,8 +2368,9 @@ export const ar = {
         free: "{value} متاح",
         total: "{value} إجمالي",
         usedOf: "{used} مستخدمة من {total}",
-        segmentUsed: "قيد الاستخدام",
-        segmentOtherApps: "تطبيقات أخرى",
+        segmentUsed: "مستخدمة بواسطة GPU",
+        segmentSystem: "مستخدمة بواسطة النظام",
+        segmentAvailable: "متاحة",
       },
       llamaBackend: {
         title: "محرك استدلال GGUF",

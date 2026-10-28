@@ -2380,8 +2380,9 @@ export const ru = {
         free: "{value} свободно",
         total: "{value} всего",
         usedOf: "Занято {used} из {total}",
-        segmentUsed: "Занято",
-        segmentOtherApps: "Другие приложения",
+        segmentUsed: "Занято GPU",
+        segmentSystem: "Занято системой",
+        segmentAvailable: "Доступно",
       },
       llamaBackend: {
         title: "Движок инференса GGUF",

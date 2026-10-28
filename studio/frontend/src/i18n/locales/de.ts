@@ -2400,8 +2400,9 @@ export const de = {
         free: "{value} frei",
         total: "{value} gesamt",
         usedOf: "{used} von {total} belegt",
-        segmentUsed: "Belegt",
-        segmentOtherApps: "Andere Apps",
+        segmentUsed: "Von der GPU belegt",
+        segmentSystem: "Vom System belegt",
+        segmentAvailable: "Verfügbar",
       },
       llamaBackend: {
         title: "GGUF-Inferenz-Engine",
