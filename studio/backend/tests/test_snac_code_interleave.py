@@ -62,13 +62,13 @@ def _codes_for(row, dtype):
     if row % 13 == 6:
         levels[1] = levels[1][:, :1]  # short middle level: the existing catch-and-skip
     if row % 17 == 7:
-        levels[2] = levels[2][:, : 4 * frames - 1]  # short fine level
+        levels[2] = levels[2][:, : 4 * frames - 1]
     if row % 19 == 8:
         levels[2] = torch.cat([levels[2], levels[2]], dim = 1)  # longer than needed: ignored
     if row % 23 == 9:
         levels[0] = levels[0].reshape(1, 1, -1)  # 3-D: .item() raises inside the loop
     if row % 29 == 10:
-        levels = [level[:, ::1].t().contiguous().t() for level in levels]  # non-contiguous
+        levels = [level[:, ::1].t().contiguous().t() for level in levels]
     if frames and row % 31 == 11:
         levels[1] = levels[1][:0]  # empty batch (encode always gets batch 1)
     return levels
@@ -209,7 +209,7 @@ def test_host_copy_matches_scalar_loop(monkeypatch, dtype, stop_after):
         calls.update(tolist = 0, item = 0)
 
     assert results[0] == results[1]
-    assert any(event[0] == "warning" for event in results[0][1])  # malformed rows exercised
+    assert any(event[0] == "warning" for event in results[0][1])
     new, old = counts
     assert new["tolist"] > 0 and old["tolist"] == 0
     assert new["item"] < old["item"] // 5
