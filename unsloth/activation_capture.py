@@ -140,6 +140,10 @@ class ActivationCaptureConfig:
     capture_lora_norms: bool = True
     seed: int = 42
 
+    def __post_init__(self):
+        if self.capture_interval < 1:
+            raise ValueError(f"capture_interval must be at least 1, got {self.capture_interval}")
+
 
 # ---------------------------------------------------------------------------
 # Core capture logic

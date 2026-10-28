@@ -99,3 +99,9 @@ def test_the_gradient_norm_spans_row_chunks(tmp_path):
     cap.flush()
     record = json.loads((tmp_path / "activation_log.jsonl").read_text().splitlines()[-1])
     assert record["grad_norms"]["0"] == pytest.approx((rows * H) ** 0.5)
+
+
+@pytest.mark.parametrize("interval", [0, -1])
+def test_a_non_positive_interval_is_refused_up_front(tmp_path, interval):
+    with pytest.raises(ValueError, match = "capture_interval"):
+        ac.ActivationCaptureConfig(output_dir = str(tmp_path), capture_interval = interval)
