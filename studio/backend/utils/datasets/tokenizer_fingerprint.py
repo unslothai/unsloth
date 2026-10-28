@@ -46,13 +46,17 @@ def install_tokenizer_fingerprint() -> bool:
             key in state for key in _INIT_ONLY_STATE
         ):
             return original(pickler, obj)
-        # As datasets' reducer: the encode cache changes between calls, so it is emptied on the live object.
-        if "cache" in state and isinstance(state["cache"], dict):
-            state["cache"] = {}
-        state = {key: value for key, value in state.items() if key not in _INIT_ONLY_STATE}
-        pickler.save_reduce(type(obj), (), state = state, obj = obj)
+        # datasets' own reducer still does the hashing, so what it keeps out of the hash (the encode cache,
+        # and from 4.7 the backend's truncation / padding and deprecation warnings) stays out; the
+        # init-only copies are held off the object only while it runs.
+        held = {key: state.pop(key) for key in _INIT_ONLY_STATE if key in state}
+        try:
+            return original(pickler, obj)
+        finally:
+            state.update(held)
 
     setattr(_save_tokenizer, _MARKER, True)
+    _save_tokenizer.__wrapped__ = original
     # datasets looks the reducer up by name when it first meets a tokenizer class, and keeps it per class.
     _dill._save_transformersPreTrainedTokenizerBase = _save_tokenizer
     for obj_type, reducer in list(pickler.dispatch.items()):
