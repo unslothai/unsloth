@@ -202,6 +202,30 @@ def _build_local_dataset_items() -> list[LocalDatasetItem]:
     return items
 
 
+def _jsonl_head(path: Path, preview_size: int) -> list[dict] | None:
+    """The first ``preview_size`` JSON Lines objects, read with the stdlib (#15681): datasets' json loader
+    parses a whole block through pyarrow's native JSON reader, which segfaulted the server on large
+    tool-calling records. ``None`` when the file is not JSON Lines (an array, a pretty-printed object):
+    the caller keeps the datasets loader for those."""
+    rows = []
+    with path.open(encoding = "utf-8") as f:
+        for line in f:
+            if len(rows) >= preview_size:
+                break
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                return None
+            if not isinstance(row, dict):
+                return None
+            rows.append(row)
+    # Columns are the union over rows, as the Arrow reader builds them (from_list reads row 0's keys).
+    keys = list(dict.fromkeys(key for row in rows for key in row))
+    return [{key: row.get(key) for key in keys} for row in rows]
+
+
 def _stream_file_preview_slice(path: Path, preview_size: int, **load_kwargs):
     """Stream the first ``preview_size`` rows so a large file is never fully parsed into Arrow; returns ``(Dataset, None)`` or ``None`` if empty/unsupported."""
     from itertools import islice
@@ -210,6 +234,10 @@ def _stream_file_preview_slice(path: Path, preview_size: int, **load_kwargs):
 
     name = path.name.lower()
     if name.endswith((".json", ".jsonl")):
+        if not load_kwargs:
+            rows = _jsonl_head(path, preview_size)
+            if rows is not None:
+                return (Dataset.from_list(rows), None) if rows else None
         loader = "json"
     elif name.endswith((".csv", ".tsv")):
         loader = "csv"
