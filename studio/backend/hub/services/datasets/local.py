@@ -240,8 +240,7 @@ def _jsonl_rows_dataset(rows: list[dict], window: bytes):
     from datasets import Dataset
 
     try:
-        # The loader's reader over the loader's window, so values are typed as training types them. One
-        # block without threads: the segfault in #15681 is in the threaded reader.
+        # The loader's reader types as training does; one block, no threads: #15681 segfaults only threaded.
         options = paj.ReadOptions(use_threads = False, block_size = len(window))
         table = paj.read_json(io.BytesIO(window), read_options = options)
         return Dataset.from_list(table.slice(0, len(rows)).to_pylist())
