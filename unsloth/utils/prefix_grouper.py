@@ -51,7 +51,7 @@ from typing import List, Optional, Tuple
 
 import torch
 
-from .prefix_grouper_kernel import build_seg_info_multigroup, PrefixSegInfo
+from .prefix_grouper_kernel import build_seg_info_multigroup, compile_check_failed, PrefixSegInfo
 
 
 def env_on(name: str, default: str = "0") -> bool:
@@ -66,8 +66,11 @@ _TOL_OK = float(os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER_TOL", "0.7"))
 
 
 def prefix_grouper_enabled() -> bool:
-    """PrefixGrouper requires seq-packing on (it reuses its de-pad + scatter machinery)."""
-    return _ENABLED
+    """PrefixGrouper requires seq-packing on (it reuses its de-pad + scatter machinery).
+
+    Also off for the rest of the process once the compiled kernel failed its first-use check.
+    """
+    return _ENABLED and compile_check_failed() is None
 
 
 def verify_on() -> bool:

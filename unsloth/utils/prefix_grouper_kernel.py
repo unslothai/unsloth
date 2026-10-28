@@ -325,6 +325,83 @@ def _run_flex(q, k, v, block_mask, enable_gqa, scale, compiled, T, T_pad):
     return out[:, :, :T, :]
 
 
+class PrefixGrouperCompileError(RuntimeError):
+    """The compiled flex kernel does not build on this GPU / torch; PrefixGrouper is off for the process."""
+
+
+# One-time strict compile check, keyed on everything that picks the generated kernel. dynamo's
+# suppress_errors (set by unsloth_zoo) turns a compile failure into a silent eager flex_attention
+# fallback that materialises the full T x T scores, e.g. torch 2.6 (symbolic codegen errors) or
+# torch 2.7.1 on L4 (bf16 128/64 blocks need more shared memory than sm89 has).
+_COMPILE_CHECKED: Dict[Tuple, bool] = {}
+_COMPILE_FAILURE: Optional[str] = None
+_COMPILE_CHECK_ON = os.environ.get(
+    "UNSLOTH_GRPO_PREFIX_GROUPER_COMPILE_CHECK", "1"
+).lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+)
+
+
+def compile_check_failed() -> Optional[str]:
+    """Reason the compiled kernel failed its one-time check in this process, else None."""
+    return _COMPILE_FAILURE
+
+
+def _compile_failure_reason(exc: BaseException) -> str:
+    root = exc
+    for _ in range(8):  # BackendCompilerFailed wraps the inductor / Triton error
+        inner = getattr(root, "inner_exception", None) or root.__cause__
+        if inner is None or inner is root:
+            break
+        root = inner
+    lines = [
+        line.strip()
+        for line in str(root).splitlines()
+        if line.strip()
+        and not line.lstrip().startswith(("Set TORCHDYNAMO_VERBOSE", "For even more"))
+    ]
+    return f"{type(root).__name__}: {lines[0][:200] if lines else ''}"
+
+
+@torch._dynamo.disable
+def _checked_first_call(q, k, v, seg, block_mask, enable_gqa, scale, T, T_pad, key):
+    """First compiled call for this setup, with dynamo's suppress_errors off.
+
+    Runs the real call (block mask build included) plus a forward + backward on detached copies of
+    the same inputs, so the grad graph and its backward kernel are built too. Both use the shapes,
+    dtype and grad mode the trainer uses, so they are the graphs the following calls reuse: the
+    success path adds one attention forward + backward per process and setup, no extra compile.
+    """
+    global _COMPILE_FAILURE
+    try:
+        with torch._dynamo.config.patch(suppress_errors = False):
+            if block_mask is None:
+                block_mask = get_block_mask(seg, q.device, compile_mask = True)
+            out = _run_flex(q, k, v, block_mask, enable_gqa, scale, True, T, T_pad)
+            with torch.inference_mode(False), torch.enable_grad():
+                qc, kc, vc = (x.detach().clone().requires_grad_(True) for x in (q, k, v))
+                oc = _run_flex(qc, kc, vc, block_mask, enable_gqa, scale, True, T, T_pad)
+                torch.autograd.grad(oc.float().sum(), (qc, kc, vc))
+                del qc, kc, vc, oc
+    except torch.cuda.OutOfMemoryError:
+        raise  # transient: the callers already fall back on OOM, and the next call checks again
+    except Exception as exc:
+        reason = _compile_failure_reason(exc)
+        _COMPILE_CHECKED[key] = False
+        _COMPILE_FAILURE = reason
+        print(
+            f"Unsloth: GRPO PrefixGrouper is off: its flex attention kernel does not compile with "
+            f"torch {torch.__version__} on this GPU ({reason}); using the packed path.",
+            flush = True,
+        )
+        raise PrefixGrouperCompileError(reason) from None
+    _COMPILE_CHECKED[key] = True
+    return out
+
+
 def flex_shared_prefix_attention(
     Q: torch.Tensor,
     K: torch.Tensor,
@@ -362,10 +439,19 @@ def flex_shared_prefix_attention(
     T_pad = prefix_seg_info.T_pad
     assert T == prefix_seg_info.T, f"Q length {T} != seg.T {prefix_seg_info.T}"
 
-    if block_mask is None:
-        block_mask = get_block_mask(prefix_seg_info, device, compile_mask = compiled)
-
-    out = _run_flex(q, k, v, block_mask, enable_gqa, scale, compiled, T, T_pad)
+    out = None
+    if compiled:
+        if _COMPILE_FAILURE is not None:
+            raise PrefixGrouperCompileError(_COMPILE_FAILURE)
+        key = (str(device), q.dtype, n_heads, n_kv, q.shape[3], scale)
+        if _COMPILE_CHECK_ON and key not in _COMPILE_CHECKED:
+            out = _checked_first_call(
+                q, k, v, prefix_seg_info, block_mask, enable_gqa, scale, T, T_pad, key
+            )
+    if out is None:
+        if block_mask is None:
+            block_mask = get_block_mask(prefix_seg_info, device, compile_mask = compiled)
+        out = _run_flex(q, k, v, block_mask, enable_gqa, scale, compiled, T, T_pad)
     # Back to [1, T, n_heads, D].
     return out.transpose(1, 2).contiguous()
 
@@ -377,4 +463,6 @@ __all__ = [
     "get_block_mask",
     "clear_block_mask_cache",
     "flex_shared_prefix_attention",
+    "PrefixGrouperCompileError",
+    "compile_check_failed",
 ]
