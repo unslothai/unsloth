@@ -189,7 +189,9 @@ triton = [
 ]
 
 exllama = [
-    "exllamav3>=0.0.5",
+    # Oldest release exercised end to end (conversion + training); 1.6.x is
+    # exercised for loading + training. Converter options come from its own parser.
+    "exllamav3>=0.0.43",
 ]
 
 huggingfacenotorch = [

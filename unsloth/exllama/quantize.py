@@ -56,6 +56,14 @@ def _calibration_data_dir() -> Optional[str]:
     return os.path.join(os.path.dirname(os.path.abspath(_cd.__file__)), "standard_cal_data")
 
 
+def _network_disabled() -> bool:
+    """True when the user asked for no network access (ours or Hugging Face's)."""
+    for var in ("UNSLOTH_EXL3_NO_NETWORK", "HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
+        if os.environ.get(var, "").strip().lower() in ("1", "true", "yes", "on"):
+            return True
+    return False
+
+
 def ensure_calibration_data() -> bool:
     """Ensure ExLlamaV3's bundled calibration corpora are present on disk.
 
@@ -90,7 +98,7 @@ def ensure_calibration_data() -> bool:
 
     import urllib.request
 
-    if os.environ.get("UNSLOTH_EXL3_NO_NETWORK", "").strip().lower() in ("1", "true", "yes"):
+    if _network_disabled():
         return False
     timeout = float(os.environ.get("UNSLOTH_EXL3_DOWNLOAD_TIMEOUT", "30"))
     for filename in missing:
@@ -248,9 +256,26 @@ def resolve_exl3_cache_dir(
     config: Exl3Config,
     cache_root: Optional[str] = None,
 ) -> str:
-    """Return the canonical output directory for a (model, config) pair."""
+    """Return the canonical output directory for a (model, config) pair.
+
+    The directory is keyed by every option that changes the produced weights.
+    Defaults keep the short ``label()`` name so existing caches stay valid; any
+    non-default option adds a stable hash suffix.
+    """
     root = os.path.expanduser(cache_root) if cache_root else _default_cache_root()
-    return os.path.join(root, _safe_name(model_name), config.label())
+    name = config.label()
+    extra = _conversion_identity(config)
+    if extra:
+        digest = hashlib.sha256(repr(sorted(extra.items())).encode()).hexdigest()[:10]
+        name = f"{name}_{digest}"
+    return os.path.join(root, _safe_name(model_name), name)
+
+
+def _conversion_identity(config: Exl3Config) -> dict:
+    """Conversion-affecting options (beyond ``label()``) that differ from default."""
+    default = Exl3Config()
+    keys = ("codebook", "mtp_bits", "calibrate", "cal_rows", "cal_cols")
+    return {k: getattr(config, k) for k in keys if getattr(config, k) != getattr(default, k)}
 
 
 def _maybe_enable_uncalibrated(cfg):
@@ -449,7 +474,8 @@ def quantize_to_exl3(
     resume = os.path.isdir(resolved_work) and bool(os.listdir(resolved_work))
 
     # Self-heal the calibration corpora if the installed wheel omitted them.
-    if not ensure_calibration_data():
+    # Data-free conversion never reads them, so do not touch the network.
+    if cfg.calibrate and not ensure_calibration_data():
         print(
             "Unsloth: warning - could not verify ExLlamaV3 calibration data. "
             "If quantization fails with a missing .utf8 file, reinstall "
@@ -514,8 +540,51 @@ def _build_conversion_args(
     resume: bool,
     verbose: bool,
 ) -> _ConversionArgs:
-    """Assemble the converter argument namespace from an :class:`Exl3Config`."""
-    return _ConversionArgs(
+    """Assemble the converter argument namespace from an :class:`Exl3Config`.
+
+    Starts from the installed converter's own argparse defaults so options added
+    in newer ExLlamaV3 releases (``recipe``, ``vision_bits``, ...) are present,
+    then overlays the values we control.
+    """
+    args = _converter_defaults()
+    args.update(
+        _conversion_overrides(
+            in_dir = in_dir,
+            out_dir = out_dir,
+            work_dir = work_dir,
+            cfg = cfg,
+            devices = devices,
+            resume = resume,
+            verbose = verbose,
+        )
+    )
+    return _ConversionArgs(**args)
+
+
+def _converter_defaults() -> dict:
+    """Defaults of ``exllamav3.conversion.convert_model.parser``, or ``{}``."""
+    try:
+        from exllamav3.conversion import convert_model
+
+        parser = getattr(convert_model, "parser", None)
+        if parser is None:
+            return {}
+        return vars(parser.parse_args([]))
+    except (Exception, SystemExit):
+        return {}
+
+
+def _conversion_overrides(
+    *,
+    in_dir: str,
+    out_dir: str,
+    work_dir: str,
+    cfg: Exl3Config,
+    devices: str,
+    resume: bool,
+    verbose: bool,
+) -> dict:
+    return dict(
         in_dir = in_dir,
         out_dir = out_dir,
         work_dir = work_dir,

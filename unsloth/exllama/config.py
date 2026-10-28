@@ -94,7 +94,8 @@ class Exl3Config:
         Calibration dataset size (rows x tokens-per-row) used during
         quantization. Larger = slower but slightly better.
     :param skip_modules:
-        Module name fragments to leave unquantized (e.g. task heads).
+        Reserved. ExLlamaV3's converter has no per-module skip list, so only an
+        empty list is accepted (a non-empty one raises instead of being ignored).
     :param compute_dtype:
         Preferred compute dtype for dequantized matmuls / LoRA. String or
         ``torch.dtype``; defaults to bfloat16 where supported.
@@ -147,6 +148,12 @@ class Exl3Config:
             )
         if self.skip_modules is None:
             self.skip_modules = []
+        if self.skip_modules:
+            raise ValueError(
+                "Unsloth: Exl3Config.skip_modules is not supported yet - ExLlamaV3's "
+                "converter quantizes every decoder linear layer. Remove skip_modules "
+                f"(got {list(self.skip_modules)!r})."
+            )
         self.quant_method = QUANT_METHOD_EXL3
 
     # bitsandbytes-compatible surface (load_in_4bit / load_in_8bit probes).

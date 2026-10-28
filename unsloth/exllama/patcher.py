@@ -71,7 +71,8 @@ def _patch_moe_expert_replacement(quantizer_cls) -> None:
                 return
             from .moe import install_quantized_experts_before_load
 
-            install_quantized_experts_before_load(model, path)
+            device_map = kwargs.get("device_map", getattr(self, "device_map", None))
+            install_quantized_experts_before_load(model, path, device_map = device_map)
         except Exception as e:
             # Non-fatal: fall back to the post-load reconstruction path.
             print(f"Unsloth: pre-load MoE expert replacement skipped ({e}).")

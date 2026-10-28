@@ -17,6 +17,8 @@
 from __future__ import annotations
 
 import os
+import weakref
+from collections import OrderedDict
 from typing import Optional
 
 import torch
@@ -337,6 +339,40 @@ def _experts_have_bias(module) -> bool:
     return False
 
 
+# Dense experts reconstructed by every Exl3QuantizedExperts layer share one LRU
+# bounded in bytes, so a long run that touches many experts across many layers
+# cannot grow past the budget (a per-layer count cap scales with depth).
+_DENSE_EXPERT_LRU = OrderedDict()  # (id(owner), key) -> (weakref(owner), nbytes)
+_DENSE_EXPERT_BYTES = 0
+
+
+def _dense_expert_budget_bytes() -> int:
+    mb = float(os.environ.get("UNSLOTH_EXL3_EXPERT_CACHE_MB", "1024"))
+    return max(0, int(mb * (1 << 20)))
+
+
+def _dense_expert_cache_bytes() -> int:
+    """Bytes currently held by the shared dense-expert cache (all layers)."""
+    return _DENSE_EXPERT_BYTES
+
+
+def _dense_expert_forget(owner_id, key):
+    global _DENSE_EXPERT_BYTES
+    entry = _DENSE_EXPERT_LRU.pop((owner_id, key), None)
+    if entry is not None:
+        _DENSE_EXPERT_BYTES -= entry[1]
+
+
+def _dense_expert_evict(budget):
+    global _DENSE_EXPERT_BYTES
+    while _DENSE_EXPERT_LRU and _DENSE_EXPERT_BYTES > budget:
+        (owner_id, key), (ref, nbytes) = _DENSE_EXPERT_LRU.popitem(last = False)
+        _DENSE_EXPERT_BYTES -= nbytes
+        owner = ref()
+        if owner is not None:
+            owner._drop_cached(key)
+
+
 # Keeps each expert quantized and reconstructs only the routed top-k on the fly,
 # so a large MoE stays at its quantized footprint instead of OOMing on dense
 # experts.
@@ -354,14 +390,20 @@ class Exl3QuantizedExperts(torch.nn.Module):
         object.__setattr__(self, "_gate_up", [None] * self.num_experts)
         object.__setattr__(self, "_down", [None] * self.num_experts)
         # LRU cache of reconstructed dense experts (frozen base, so always
-        # valid); bounds VRAM while skipping re-reconstruction of hot experts.
-        import os as _os
-
-        cap = int(_os.environ.get("UNSLOTH_EXL3_EXPERT_CACHE", "64"))
+        # valid). Per-layer count cap plus the shared byte budget above.
+        cap = int(os.environ.get("UNSLOTH_EXL3_EXPERT_CACHE", "8"))
         object.__setattr__(self, "_cache_cap", max(0, cap))
-        object.__setattr__(self, "_gu_cache", {})  # expert idx -> dense gate_up
-        object.__setattr__(self, "_dn_cache", {})  # expert idx -> dense down
-        object.__setattr__(self, "_lru", [])  # recency order of idxs
+        object.__setattr__(self, "_gu_cache", {})  # (idx, dtype, device) -> dense gate_up
+        object.__setattr__(self, "_dn_cache", {})  # (idx, dtype, device) -> dense down
+        object.__setattr__(self, "_lru", [])  # recency order of keys
+
+    def _drop_cached(self, key):
+        self._gu_cache.pop(key, None)
+        self._dn_cache.pop(key, None)
+        try:
+            self._lru.remove(key)
+        except ValueError:
+            pass
 
     def set_expert(self, idx, gate_up_linear, down_linear):
         self._gate_up[idx] = gate_up_linear
@@ -388,29 +430,42 @@ class Exl3QuantizedExperts(torch.nn.Module):
         device = None,
     ):
         """Return (gate_up_dense, down_dense) for expert e, using the LRU cache."""
-        if self._cache_cap <= 0:
+        budget = _dense_expert_budget_bytes()
+        if self._cache_cap <= 0 or budget <= 0:
             return (
                 self._dense(self._gate_up[e], dtype, device),
                 self._dense(self._down[e], dtype, device),
             )
-        if e in self._gu_cache:
-            # Refresh recency.
+        key = (e, dtype, None if device is None else str(device))
+        owner_id = id(self)
+        if key in self._gu_cache:
+            # Refresh recency, locally and in the shared LRU.
             try:
-                self._lru.remove(e)
+                self._lru.remove(key)
             except ValueError:
                 pass
-            self._lru.append(e)
-            return self._gu_cache[e], self._dn_cache[e]
+            self._lru.append(key)
+            if (owner_id, key) in _DENSE_EXPERT_LRU:
+                _DENSE_EXPERT_LRU.move_to_end((owner_id, key))
+            return self._gu_cache[key], self._dn_cache[key]
         gu = self._dense(self._gate_up[e], dtype, device)
         dn = self._dense(self._down[e], dtype, device)
-        self._gu_cache[e] = gu
-        self._dn_cache[e] = dn
-        self._lru.append(e)
-        # Evict least-recently-used beyond the cap.
+        nbytes = gu.numel() * gu.element_size() + dn.numel() * dn.element_size()
+        if nbytes > budget:
+            return gu, dn
+        global _DENSE_EXPERT_BYTES
+        self._gu_cache[key] = gu
+        self._dn_cache[key] = dn
+        self._lru.append(key)
+        _DENSE_EXPERT_LRU[(owner_id, key)] = (weakref.ref(self, _forget_owner(owner_id)), nbytes)
+        _DENSE_EXPERT_BYTES += nbytes
+        # Evict least-recently-used beyond this layer's cap, then globally.
         while len(self._lru) > self._cache_cap:
             old = self._lru.pop(0)
             self._gu_cache.pop(old, None)
             self._dn_cache.pop(old, None)
+            _dense_expert_forget(owner_id, old)
+        _dense_expert_evict(budget)
         return gu, dn
 
     def forward(self, hidden_states, top_k_index, top_k_weights):
@@ -500,6 +555,16 @@ def reload_exl3_experts_quantized(
     return count
 
 
+def _forget_owner(owner_id):
+    """weakref callback: release a collected layer's share of the budget."""
+
+    def _callback(_ref):
+        for owner_key in [k for k in _DENSE_EXPERT_LRU if k[0] == owner_id]:
+            _dense_expert_forget(*owner_key)
+
+    return _callback
+
+
 class _FusedGateUp:
     """Presents concat(gate, up) along the output dim as one 'linear' with a
     ``get_weight_tensor()`` returning the fused [in, 2*inter] tensor (so the
@@ -552,7 +617,31 @@ def _replace_module(model, target, new_module):
 
 
 @torch.no_grad()
-def install_quantized_experts_before_load(model, checkpoint_dir) -> int:
+def _device_for_module(module_path, device_map, default):
+    """CUDA device that ``device_map`` assigns to ``module_path`` (longest prefix).
+
+    The EXL3 trellis kernels are CUDA-only, so CPU/disk assignments keep the
+    default device.
+    """
+    if not isinstance(device_map, dict):
+        return default
+    best, best_len = None, -1
+    for name, dev in device_map.items():
+        if name == "" or module_path == name or module_path.startswith(name + "."):
+            if len(name) > best_len:
+                best, best_len = dev, len(name)
+    if best is None:
+        return default
+    if isinstance(best, int):
+        return torch.device("cuda", best)
+    if isinstance(best, torch.device):
+        return best if best.type == "cuda" else default
+    if isinstance(best, str) and best.startswith("cuda"):
+        return torch.device(best)
+    return default
+
+
+def install_quantized_experts_before_load(model, checkpoint_dir, device_map = None) -> int:
     """Swap fused MoE experts for quantized experts BEFORE transformers loads
     weights, so the dense expert params are never allocated/loaded on GPU.
 
@@ -583,7 +672,7 @@ def install_quantized_experts_before_load(model, checkpoint_dir) -> int:
         return 0
 
     gate_alts, up_alts, down_alts = ("w1", "gate_proj"), ("w3", "up_proj"), ("w2", "down_proj")
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    default_device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     stc = SafetensorsCollection(checkpoint_dir)
     count = 0
     try:
@@ -596,6 +685,8 @@ def install_quantized_experts_before_load(model, checkpoint_dir) -> int:
             # Skip bias-bearing experts (the quantized path can't represent bias).
             if _experts_have_bias(module):
                 continue
+            # Honor device_map placement instead of pinning every expert to GPU 0.
+            device = _device_for_module(module_path, device_map, default_device)
             new = Exl3QuantizedExperts(num_experts, hidden, inter, act_fn)
             ok_all = True
             for e in range(num_experts):

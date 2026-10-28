@@ -23,7 +23,7 @@ import os
 
 # Minimum exllamav3 version that exposes the EXL3 linear layer, the conversion
 # entry points, and the transformers integration we rely on.
-MIN_EXLLAMA_VERSION = "0.0.5"
+MIN_EXLLAMA_VERSION = "0.0.43"
 
 EXLLAMA_IMPORT_ERROR = (
     "Unsloth: ExLlamaV3 is required for EXL3 quantization but is not installed "

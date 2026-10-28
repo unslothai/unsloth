@@ -1344,6 +1344,7 @@ class FastLanguageModel(FastLlamaModel):
                 full_finetuning = full_finetuning,
                 token = token,
                 device_map = device_map,
+                device_map_planner_kwargs = device_map_planner_kwargs,
                 rope_scaling = rope_scaling,
                 fix_tokenizer = fix_tokenizer,
                 trust_remote_code = trust_remote_code,

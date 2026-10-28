@@ -215,8 +215,9 @@ def resolve_exl3_config(
         and str(quantization_config.get("quant_method", "")).lower() == "exl3"
     ):
         cfg = Exl3Config.from_dict(quantization_config)
-    elif load_in_exl3 not in (True, False, None):
-        # e.g. load_in_exl3 = 3 or "2.5bit"
+    elif load_in_exl3 is not None and not isinstance(load_in_exl3, bool):
+        # e.g. load_in_exl3 = 3 or "2.5bit". Identity/type check, not ``in``:
+        # ``1 == True`` would otherwise turn a 1-bpw request into the default.
         cfg = normalize_exl3_config(load_in_exl3)
     else:
         cfg = Exl3Config()
