@@ -176,7 +176,6 @@ def test_backend_truncation_does_not_move_the_hash_where_datasets_ignores_it(res
 
 
 def test_serializing_the_tokenizer_during_a_hash_keeps_init_state(restore_reducer):
-    # Another thread pickling (or saving) the same tokenizer while datasets hashes it must see it whole.
     clones: list = []
 
     def overlapping_serializer(pickler, obj):
@@ -194,7 +193,6 @@ def test_serializing_the_tokenizer_during_a_hash_keeps_init_state(restore_reduce
 
 
 def test_fingerprint_equals_datasets_hash_without_init_state(restore_reducer):
-    # Same cache names as hashing a copy that never had the init-only state.
     tok = _tokenizer()
     bare = _tokenizer()
     del bare._vocab, bare._merges
