@@ -58,6 +58,7 @@ class _Policy(torch.nn.Module):
         self,
         out = 2,
         tied = False,
+        offload = False,
     ):
         super().__init__()
         torch.manual_seed(0)  # the checkpoint's weights
@@ -65,6 +66,8 @@ class _Policy(torch.nn.Module):
         self.head = torch.nn.Linear(2, out)
         if tied:
             self.head.weight = self.lin.weight
+        if offload:  # one meta tensor: two would also differ in tying (both data_ptr 0)
+            self.head.weight = torch.nn.Parameter(self.head.weight.to("meta"))
 
 
 class _Shard(torch.Tensor):  # stands in for DTensor (FSDP2 / tensor parallel)
@@ -85,13 +88,14 @@ def _run(
     out = 2,
     ref_model = None,
     tied = False,
+    offload = False,
 ):
     import transformers.integrations.deepspeed as ds
 
     monkeypatch.setattr(ds, "is_deepspeed_zero3_enabled", lambda: zero3)
     namespace = {
         "_unsloth_dpo_reference_loadable": _NS["_unsloth_dpo_reference_loadable"],
-        "create_model_from_path": lambda path, **kwargs: _Policy(out, tied),
+        "create_model_from_path": lambda path, **kwargs: _Policy(out, tied, offload),
         "is_peft_model": lambda m: False,
         "get_config_model_id": lambda config: config,
         "torch": torch,
@@ -140,17 +144,30 @@ def test_explicit_reference_kept(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "policy, out, tied",
-    [(_Policy, 3, False), (_Policy, 2, True), (_ShardedPolicy, 2, False)],
-    ids = ["resized", "untied_policy_tied_checkpoint", "sharded"],
+    "policy, out, tied, offload",
+    [
+        (_Policy, 3, False, False),
+        (_Policy, 2, True, False),
+        (_ShardedPolicy, 2, False, False),
+        (_Policy, 2, False, True),
+    ],
+    ids = ["resized", "untied_policy_tied_checkpoint", "sharded", "offloaded_reference"],
 )
-def test_mismatched_reference_keeps_whole_checkpoint(monkeypatch, policy, out, tied):
+def test_mismatched_reference_keeps_whole_checkpoint(monkeypatch, policy, out, tied, offload):
     # No tensor is copied, so the reference is never a policy / checkpoint hybrid.
     with pytest.warns(UserWarning, match = "do not match its checkpoint"):
-        ref = _run(hook("__init__", TRL_INIT), _trained(policy), monkeypatch, out = out, tied = tied)
-    checkpoint = _Policy(out, tied)
+        ref = _run(
+            hook("__init__", TRL_INIT),
+            _trained(policy),
+            monkeypatch,
+            out = out,
+            tied = tied,
+            offload = offload,
+        )
+    checkpoint = _Policy(out, tied, offload)
     for name, value in checkpoint.state_dict().items():
-        assert torch.equal(ref.state_dict()[name], value), name
+        if not value.is_meta:
+            assert torch.equal(ref.state_dict()[name], value), name
 
 
 def test_rewrite_scope():
