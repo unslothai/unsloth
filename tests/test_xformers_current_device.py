@@ -27,7 +27,9 @@ def test_guard_switches_to_the_tensor_device(monkeypatch):
     entered = []
     monkeypatch.setattr(ad, "DEVICE_TYPE", "cuda")
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
-    monkeypatch.setattr(torch.cuda, "device", lambda d: entered.append(d) or contextlib.nullcontext())
+    monkeypatch.setattr(
+        torch.cuda, "device", lambda d: entered.append(d) or contextlib.nullcontext()
+    )
     with ad._on_tensor_device(_FakeX(1)):
         pass
     assert entered == [torch.device("cuda", 1)]
@@ -37,7 +39,9 @@ def test_guard_is_a_noop_on_the_current_device(monkeypatch):
     entered = []
     monkeypatch.setattr(ad, "DEVICE_TYPE", "cuda")
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 1)
-    monkeypatch.setattr(torch.cuda, "device", lambda d: entered.append(d) or contextlib.nullcontext())
+    monkeypatch.setattr(
+        torch.cuda, "device", lambda d: entered.append(d) or contextlib.nullcontext()
+    )
     with ad._on_tensor_device(_FakeX(1)):
         pass
     assert entered == []
@@ -60,9 +64,18 @@ def test_run_attention_calls_xformers_on_the_tensor_device(monkeypatch):
     assert torch.isfinite(out).all()
 
 
-def _grouped_no_grad(device, current, S = 2048, n_kv = 8, groups = 2, D = 128):
+def _grouped_no_grad(
+    device,
+    current,
+    S = 2048,
+    n_kv = 8,
+    groups = 2,
+    D = 128,
+):
     g = torch.Generator(device = f"cuda:{device}").manual_seed(0)
-    Q = torch.randn(1, n_kv * groups, S, D, device = f"cuda:{device}", dtype = torch.float16, generator = g)
+    Q = torch.randn(
+        1, n_kv * groups, S, D, device = f"cuda:{device}", dtype = torch.float16, generator = g
+    )
     K = torch.randn(1, n_kv, S, D, device = f"cuda:{device}", dtype = torch.float16, generator = g)
     V = torch.randn(1, n_kv, S, D, device = f"cuda:{device}", dtype = torch.float16, generator = g)
     config = ad.AttentionConfig(backend = ad.XFORMERS, n_kv_heads = n_kv, n_groups = groups)
@@ -81,6 +94,9 @@ def test_grouped_no_grad_attention_on_second_card_matches_reference():
     out, (Q, K, V) = _grouped_no_grad(device = 1, current = 0)
     groups = Q.shape[1] // K.shape[1]
     ref = torch.nn.functional.scaled_dot_product_attention(
-        Q.float(), K.float().repeat_interleave(groups, 1), V.float().repeat_interleave(groups, 1), is_causal = True,
+        Q.float(),
+        K.float().repeat_interleave(groups, 1),
+        V.float().repeat_interleave(groups, 1),
+        is_causal = True,
     ).transpose(1, 2)
     torch.testing.assert_close(out.float(), ref, atol = 2e-2, rtol = 0)
