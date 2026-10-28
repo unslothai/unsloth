@@ -947,7 +947,7 @@ def _refresh_in_background(definition: CacheDefinition) -> bool:
                 # Taken only once this walk can run, so a queued walk never holds up a read of its cache.
                 flight = _flight_for(key)
                 if not flight.acquire(blocking = False):
-                    return  # a foreground walk is storing a newer size
+                    return
                 try:
                     with _size_cache_lock:
                         epoch = _size_epochs.get(key, 0)
