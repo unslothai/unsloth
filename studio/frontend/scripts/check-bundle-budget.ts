@@ -426,8 +426,12 @@ export const BUDGET = {
   // Cosmos3 video families (#14554): +466 B raw / +218 B transfer. Raised by that.
   // Lookup-table pricing (#14465): +1,517 B raw / +470 B transfer on top of the lines above (measured merged with
   // 4db3eaeb55, Node 24, 99 chunks).
-  transferBytes: 2_101_185,
-  rawBytes: 6_973_555,
+  // Chat pins synced through the server (#15293): the sync runtime is a lazy chunk, but the modules it shares
+  // with startup code (chat-settings-api, sidebar-organization-keys) split into their own eager chunks, plus the
+  // mount hook and store wiring: +3,074 B raw / +2,025 B transfer (6,958,762 -> 6,961,836 B raw, 2,099,260 ->
+  // 2,101,285 B transfer against 9c397197e0, Node 24, 106 -> 109 chunks). Raised by that growth.
+  transferBytes: 2_103_210,
+  rawBytes: 6_976_629,
 };
 
 // Chunk count is not budgeted: splitting a page out raises it while lowering bytes.

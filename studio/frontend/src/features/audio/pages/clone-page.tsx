@@ -15,6 +15,7 @@ import {
   AudioHistoryProvider,
   AudioSourceInput,
 } from "../components/audio-source-input";
+import { FieldLabel, FieldTag } from "../components/field";
 import { LanguageSelect } from "../components/language-select";
 import { SaveVoiceDialog } from "../components/save-voice-dialog";
 import {
@@ -79,15 +80,15 @@ function CloneInputs({
       {transcriptField === "hidden" ? null : (
         <div className="grid gap-1.5" data-tour="audio-clone-transcript">
           <div className="flex items-center justify-between gap-2">
-            <label
+            <FieldLabel
               htmlFor={CLONE_REFERENCE_TEXT_FIELD_ID}
               className="text-ui-13 font-medium text-foreground"
             >
               What's said in the clip
-              <span className="ml-1.5 font-normal text-muted-foreground">
+              <FieldTag>
                 {transcriptField === "required" ? "Required" : "Optional"}
-              </span>
-            </label>
+              </FieldTag>
+            </FieldLabel>
             <Button
               type="button"
               variant="ghost"
@@ -140,12 +141,12 @@ function CloneInputs({
         className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-1.5"
         data-tour="audio-clone-text"
       >
-        <label
+        <FieldLabel
           htmlFor={CLONE_TEXT_FIELD_ID}
           className="text-ui-13 font-medium text-foreground"
         >
           Text to speak
-        </label>
+        </FieldLabel>
         <Textarea
           data-type-to-activate="prompt"
           id={CLONE_TEXT_FIELD_ID}

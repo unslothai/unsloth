@@ -617,8 +617,17 @@ def install_native_fsdp2_trainer_init():
     (installed by `_utils.patch_gradient_accumulation_fix`), and UNSLOTH_TP_SIZE applies tensor parallel
     there. FastLanguageModel / FastModel loads and DecisionTrainer install it; a model built without them
     (a FastSentenceTransformer encoder) left the Trainer unwrapped, so it trained under DDP with nothing
-    sharded and no message. Installs the wrapper once either flag asks for it. Returns whether it applies."""
+    sharded and no message. Installs the wrapper once the flag selects native FSDP2 or UNSLOTH_TP_SIZE /
+    UNSLOTH_PP_SIZE asks for a layout, or while a non-CUDA accelerate route is pending (a use_cpu Trainer
+    reclaims native FSDP2 inside the wrapper). Returns whether it applies."""
     if not unsloth_fsdp2_native_requested() and not _parallel_env_requested():
+        if _NON_CUDA_EXPORT is None:
+            return False
+        from transformers import Trainer
+
+        from .models._utils import patch_gradient_accumulation_fix
+
+        patch_gradient_accumulation_fix(Trainer)
         return False
     from transformers import Trainer
 

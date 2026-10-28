@@ -264,6 +264,9 @@ def candidates(
                 "torch": _cache._minor(torch.__version__),
                 library: _minor(library),
             }
+            if class_name == "AutoencoderKL":
+                # Retires entries written from an fp16-decode-rescaled VAE.
+                parts["vae_fp16_decode"] = 1
             out.append(
                 CastCandidate(
                     component = component,
@@ -734,6 +737,12 @@ def save(
                 logger,
                 "info",
                 f"{cand.component}: not cached (a tensor changed dtype or shape after the load)",
+            )
+            return None
+        # Weights were rescaled in place; a cached copy would be rescaled again on the next load.
+        if getattr(module, "_unsloth_fp16_decode", False):
+            _log(
+                logger, "info", f"{cand.component}: not cached (rescaled in place for fp16 decode)"
             )
             return None
         names = list(cand.names)
