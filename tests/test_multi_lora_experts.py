@@ -171,8 +171,19 @@ def test_fold_mode_survives_non_reentrant_checkpointing(base, monkeypatch):
 def test_absent_adapters_stay_in_the_graph(base):
     model, _ = _batched(base)
     ids = _ids()
+    clean = None
+    with torch.no_grad():
+        ml.set_multi_lora_batch(model, torch.tensor([0, 1, 1], device = DEVICE), seq_len = T)
+        clean = model(input_ids = ids, use_cache = False).logits
+        # A diverged absent adapter must not reach the others' outputs.
+        for m in model.modules():
+            if isinstance(m, ml.MultiLoraExperts):
+                for adapter in m.adapters.values():
+                    adapter.lora_B[2].fill_(float("nan"))
     ml.set_multi_lora_batch(model, torch.tensor([0, 1, 1], device = DEVICE), seq_len = T)
-    model(input_ids = ids, use_cache = False).logits.sum().backward()
+    logits = model(input_ids = ids, use_cache = False).logits
+    torch.testing.assert_close(logits, clean, atol = 0, rtol = 0)
+    logits.sum().backward()
     for m in model.modules():
         if isinstance(m, ml.MultiLoraExperts):
             for adapter in m.adapters.values():

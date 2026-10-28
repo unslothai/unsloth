@@ -897,8 +897,9 @@ class MultiLoraExperts(nn.Module):
         if absent and torch.is_grad_enabled():
             # Absent adapters stay in the graph with zero gradient, as the dense layers' do: default DDP needs
             # every trainable parameter used; drop_absent_adapter_grads_ clears them before the step.
+            # Empty slices: exactly zero even when a diverged adapter holds inf / NaN (0 * inf is NaN).
             zero = sum(
-                (A[u].sum() + B[u].sum()) * 0
+                A[u].reshape(-1)[:0].sum() + B[u].reshape(-1)[:0].sum()
                 for adapter in self.adapters.values()
                 for A, B in ((adapter.lora_A, adapter.lora_B),)
                 for u in absent
@@ -1165,7 +1166,9 @@ def adapter_state_dict(
         depth = len(experts.parameter_names)
         for i, param in enumerate(experts.parameter_names):
             key = f"{prefix}{name}" + ".base_layer" * (depth - 1 - i)
-            A, B = experts.adapters[param].peft_tensors(adapter, b_layout)
+            # Folded experts load through PEFT's own ParamWrapper delta, which is rank-major whatever Zoo uses.
+            layout = "rank_major" if experts.mode == "fold" else b_layout
+            A, B = experts.adapters[param].peft_tensors(adapter, layout)
             out[f"{key}.lora_A.weight"] = A
             out[f"{key}.lora_B.weight"] = B
     return out
