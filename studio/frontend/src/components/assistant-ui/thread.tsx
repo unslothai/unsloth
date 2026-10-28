@@ -488,6 +488,7 @@ import { extractTaggedText, updateThreadMessage } from "@/features/chat/utils/up
 import { useComposerPillFit } from "@/hooks/use-composer-pill-fit";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
+import { useExpandedComposerFill } from "./use-expanded-composer-fill";
 import { watchComposerClearance } from "@/lib/toast-offset";
 
 const PageDragContext = createContext(false);
@@ -3113,6 +3114,7 @@ const Composer: FC<{
     setIsWritingExpanded((expanded) => !expanded);
     inputRef.current?.focus({ preventScroll: true });
   };
+  useExpandedComposerFill(editorRef, isWritingExpanded && !isDictating);
   // Cache line metrics so getComputedStyle runs once, not per keystroke.
   const lineMetricsRef = useRef<{ lineHeight: number; padding: number } | null>(
     null,
