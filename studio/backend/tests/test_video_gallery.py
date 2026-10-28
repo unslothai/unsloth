@@ -181,7 +181,6 @@ def test_clear_uses_the_locked_folder_when_the_folder_moves_mid_clear(monkeypatc
     old = gallery.gallery_dir()
     new = tmp_path / "relocated"
     new.mkdir()
-    # Same clip id in the new folder: its sidecar must never be read or unlinked by this clear.
     (new / f"{record['id']}.json").write_text(
         json.dumps(_meta(prompt = "new folder")), encoding = "utf-8"
     )
