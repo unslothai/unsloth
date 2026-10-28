@@ -8,6 +8,7 @@ CUDA/XPU, uses a PyTorch loop; LoRA dropout unsupported."""
 from __future__ import annotations
 
 import contextlib
+import functools
 import inspect
 import math
 import os
@@ -760,6 +761,27 @@ class MultiLoraExpertParam(nn.Module):
         return flat_A.detach().clone(), flat_B.detach().clone()
 
 
+@functools.lru_cache(maxsize = None)
+def _peft_expert_in_axis(is_transposed: bool) -> int:
+    """Which axis of an (E, d1, d2) stack the installed PEFT's ParamWrapper calls in_features (it moved in 0.19)."""
+    import peft
+
+    class Experts(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.w = nn.Parameter(torch.zeros(2, 3, 5))
+            self.is_transposed = is_transposed
+
+    class Block(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.experts = Experts()
+
+    model = peft.get_peft_model(Block(), peft.LoraConfig(r = 1, target_parameters = ["experts.w"]))
+    A = next(p for n, p in model.named_parameters() if "lora_A" in n)
+    return 1 if A.shape[-1] == 3 else 2
+
+
 def _expert_stack_shape(param) -> tuple[int, int, int]:
     shape = getattr(param, "_original_shape", None) or tuple(param.shape)
     if len(shape) != 3:
@@ -821,11 +843,15 @@ class MultiLoraExperts(nn.Module):
         for p in base.parameters():
             p.requires_grad_(False)
         self.parameter_names = tuple(parameter_names)
-        self.transposed = bool(getattr(base, "is_transposed", False))
-        # Shapes follow PEFT (which ignores this flag), the stash follows Zoo's extractor.
-        self.reversed_io = not self.transposed and bool(
-            getattr(base, "_unsloth_grouped_mm_format", False)
+        is_transposed = bool(getattr(base, "is_transposed", False))
+        # Shapes and the folded delta follow the installed PEFT's reading of the stack; the stash follows Zoo's
+        # extractor, whose input axis is the stored one (canonical when the two agree, reversed otherwise).
+        peft_in_axis = _peft_expert_in_axis(is_transposed)
+        zoo_in_axis = (
+            1 if is_transposed or getattr(base, "_unsloth_grouped_mm_format", False) else 2
         )
+        self.transposed = peft_in_axis == 1
+        self.reversed_io = peft_in_axis != zoo_in_axis
         self.adapters = nn.ModuleDict()
         for name in self.parameter_names:
             param = getattr(base, name)
