@@ -5,12 +5,16 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
+import type { ParamSpec } from "../src/features/flows/types.ts";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { trainView, sparklinePath } = await import(
+const { trainView, sparklinePath, rewardMax, rewardText } = await import(
   "../src/features/flows/editor/train-status.ts"
+);
+const { paramVisible } = await import(
+  "../src/features/flows/editor/param-visible.ts"
 );
 
 const catalog = JSON.parse(
@@ -29,17 +33,34 @@ const base = {
   error: null,
 };
 
-test("Fine-tune leads with five fields and keeps the rest under Advanced", () => {
-  const simple = finetune.params
-    .filter((p: { advanced?: boolean }) => !p.advanced)
+const simpleFor = (objective: string) =>
+  finetune.params
+    .filter(
+      (p: ParamSpec) =>
+        !p.advanced && paramVisible(p, { objective }, finetune.params),
+    )
     .map((p: { id: string }) => p.id);
-  assert.deepEqual(simple, [
+
+test("Fine-tune leads with a few fields per objective and keeps the rest under Advanced", () => {
+  assert.deepEqual(simpleFor("sft"), [
     "base_model",
+    "objective",
     "prompt_column",
     "response_column",
     "max_steps",
     "holdout_percent",
   ]);
+  assert.deepEqual(simpleFor("grpo"), [
+    "base_model",
+    "objective",
+    "prompt_column",
+    "answer_column",
+    "rewards",
+    "max_steps",
+    "holdout_percent",
+  ]);
+  assert.deepEqual(simpleFor("dpo"), simpleFor("orpo"));
+  assert.ok(simpleFor("dpo").includes("chosen_column"));
   assert.ok(finetune.params.length > 15);
   assert.ok(
     finetune.outputs.some(
@@ -87,4 +108,39 @@ test("sparkline spans the box and stays flat for a constant series", () => {
   const path = sparklinePath([3, 2, 1], 100, 20);
   assert.ok(path.startsWith("M0.0,1.0") && path.endsWith("L100.0,19.0"), path);
   assert.ok(!sparklinePath([1, 1, 1], 100, 20).includes("NaN"));
+});
+
+test("GRPO shows the reward against its best, with where it started", () => {
+  const grpo = { ...base, params: { ...base.params, objective: "grpo", rewards: [] } };
+  assert.equal(trainView(grpo).detail, "Pick a reward");
+  const live = trainView({
+    ...base,
+    status: "running",
+    partial: {
+      metrics: { steps: 4, total: 40, loss: 0.01, reward: 1, reward_max: 2, reward_history: [0.2, 1] },
+    },
+  });
+  assert.equal(live.detail, "Step 4 of 40 · reward 1.00 / 2");
+  assert.ok(live.reward);
+  assert.deepEqual(live.history, [0.2, 1]);
+  const done = trainView({
+    ...base,
+    status: "done",
+    outputs: {
+      checkpoint: { kind: "checkpoint", name: "run" },
+      metrics: { reward: 1.8, reward_start: 0.4, reward_max: 2.5, reward_history: [0.4, 1.8] },
+    },
+  });
+  assert.equal(done.detail, "reward 1.80 / 2.5 · from 0.40");
+  assert.equal(rewardText(0.5, null), "reward 0.50");
+});
+
+test("reward max is the best weighted sum of the rules", () => {
+  const rules = {
+    "exact-answer": { type: "exact_match", score: { match: 2, miss: 0 }, missing: 0 },
+    "numeric-close": { type: "numeric", bands: [{ within: 0, score: 3 }], else: -1, missing: -2 },
+  };
+  assert.equal(rewardMax([{ name: "exact-answer", weight: 1 }], rules), 2);
+  assert.equal(rewardMax([{ name: "numeric-close", weight: -1 }], rules), 2);
+  assert.equal(rewardMax([{ name: "gone", weight: 1 }], rules), null);
 });

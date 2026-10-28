@@ -385,6 +385,73 @@ function LoraListField({ spec, value, onChange }: FieldProps) {
   );
 }
 
+interface RewardEntry {
+  name: string;
+  weight: number;
+}
+
+function RewardListField({ spec, value, onChange }: FieldProps) {
+  const listId = useId();
+  const suggestions = useRouteSuggestions(spec);
+  const rows = Array.isArray(value) ? (value as RewardEntry[]) : [];
+  const update = (index: number, patch: Partial<RewardEntry>) =>
+    onChange(rows.map((row, i) => (i === index ? { ...row, ...patch } : row)));
+  return (
+    <div className="flex flex-col gap-1.5">
+      {rows.map((row, index) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: rows have no id of their own
+        <div key={index} className="flex items-center gap-1.5">
+          <Input
+            value={row.name}
+            list={listId}
+            placeholder="Reward"
+            onChange={(e) => update(index, { name: e.target.value })}
+            className={FIELD}
+          />
+          <Input
+            type="number"
+            min={-10}
+            max={10}
+            step={0.5}
+            value={row.weight}
+            title="Weight"
+            onChange={(e) =>
+              update(index, { weight: Number(e.target.value) || 0 })
+            }
+            className={`${FIELD} w-20`}
+          />
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-xs"
+            onClick={() => onChange(rows.filter((_, i) => i !== index))}
+            className="text-muted-foreground hover:text-destructive"
+            aria-label="Remove reward"
+          >
+            x
+          </Button>
+        </div>
+      ))}
+      {rows.length < 16 && (
+        <Button
+          type="button"
+          variant="outline"
+          size="xs"
+          onClick={() => onChange([...rows, { name: "", weight: 1 }])}
+          className="self-start"
+        >
+          Add reward
+        </Button>
+      )}
+      <datalist id={listId}>
+        {suggestions.map((id) => (
+          <option key={id} value={id} />
+        ))}
+      </datalist>
+    </div>
+  );
+}
+
 function ParamFieldImpl({ spec, value, onChange }: FieldProps) {
   if (spec.options_from && (spec.kind === "text" || spec.kind === "select"))
     return <RemoteOptionsField spec={spec} value={value} onChange={onChange} />;
@@ -393,6 +460,8 @@ function ParamFieldImpl({ spec, value, onChange }: FieldProps) {
       return <TextField spec={spec} value={value} onChange={onChange} />;
     case "lora_list":
       return <LoraListField spec={spec} value={value} onChange={onChange} />;
+    case "reward_list":
+      return <RewardListField spec={spec} value={value} onChange={onChange} />;
     case "textarea":
       return (
         <div className="flex flex-col gap-1">
@@ -452,7 +521,7 @@ function ParamFieldImpl({ spec, value, onChange }: FieldProps) {
           <SelectContent>
             {(spec.options ?? []).map((option) => (
               <SelectItem key={option} value={option}>
-                {option}
+                {spec.option_labels?.[option] ?? option}
               </SelectItem>
             ))}
           </SelectContent>

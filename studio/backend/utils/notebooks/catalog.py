@@ -41,8 +41,9 @@ _OFFLINE_VALUES = {"1", "true", "yes", "on"}
 _BASED_ON_RE = re.compile(r"#\s*Based on\s+(.+)", re.IGNORECASE)
 _MODEL_RE = re.compile(r"#\s*Model defaults for\s+(\S+)", re.IGNORECASE)
 _CATEGORY_RULES = (
-    # Studio trains SFT / CPT only, so RL and preference recipes stay Colab-only.
-    ("grpo", ("grpo", "gspo", "reinforcement_learning", "nemo_gym", "_ppo")),
+    # GRPO, DPO and ORPO import onto the Fine-tune node; other RL recipes stay Colab-only.
+    ("grpo", ("grpo", "gspo")),
+    ("rl", ("reinforcement_learning", "nemo_gym", "_ppo")),
     # Decision fine-tunes need the Train page's decision wiring, which a Flow Fine-tune block does not have yet.
     ("decision", ("_decision",)),
     ("preference", ("_dpo", "_orpo", "_kto")),
@@ -63,6 +64,8 @@ STUDIO_TASKS = {
     "reasoning": "text",
     "code": "text",
     "raft": "text",
+    "grpo": "text",
+    "preference": "text",
     "vision": "vision",
     "audio": "audio",
     "embedding": "embedding",

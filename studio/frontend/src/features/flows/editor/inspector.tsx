@@ -30,6 +30,8 @@ import { NodeHistory } from "./node-history";
 import { rerollNode, runToNode } from "./node-actions";
 import { OutputValue } from "./output-value";
 import { ParamField } from "./param-fields";
+import { paramVisible } from "./param-visible";
+import { RewardTryPanel } from "./reward-try";
 import { CATEGORY_TONES } from "./node-tones";
 import { TriggerPanel } from "./trigger-panel";
 
@@ -255,7 +257,11 @@ function InspectorImpl() {
             </p>
           )}
           {spec.params
-            .filter((param) => !param.advanced)
+            .filter(
+              (param) =>
+                !param.advanced &&
+                paramVisible(param, node.params, spec.params),
+            )
             .map((param) => (
               <ParamRow
                 key={param.id}
@@ -275,7 +281,11 @@ function InspectorImpl() {
               </CollapsibleTrigger>
               <CollapsibleContent className="mt-3 flex flex-col gap-4">
                 {spec.params
-                  .filter((param) => param.advanced)
+                  .filter(
+                    (param) =>
+                      param.advanced &&
+                      paramVisible(param, node.params, spec.params),
+                  )
                   .map((param) => (
                     <ParamRow
                       key={param.id}
@@ -289,6 +299,8 @@ function InspectorImpl() {
             </Collapsible>
           )}
         </section>
+        {spec.type === "train.finetune" &&
+          node.params.objective === "grpo" && <RewardTryPanel node={node} />}
         {spec.type.startsWith("trigger.") && (
           <TriggerPanel nodeId={node.id} kind={spec.type} />
         )}

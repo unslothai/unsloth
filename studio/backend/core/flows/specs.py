@@ -91,6 +91,11 @@ def out(
     return d
 
 
+GRPO_SYSTEM_PROMPT = (
+    "Respond in the following format:\n<reasoning>\n...\n</reasoning>\n<answer>\n...\n</answer>"
+)
+
+
 def P(
     id: str,
     kind: str,
@@ -1429,7 +1434,7 @@ NODE_SPECS: list[dict] = [
         "train.finetune",
         "Fine-tune",
         "data",
-        "LoRA fine-tune a model on a dataset, optionally holding out rows to score later. Waits for training to finish.",
+        "Fine-tune a model on a dataset (SFT, or GRPO, DPO and ORPO), optionally holding out rows to score later. Waits for training to finish.",
         inputs = [inp("dataset", "dataset")],
         outputs = [
             out("checkpoint", "checkpoint"),
@@ -1438,8 +1443,57 @@ NODE_SPECS: list[dict] = [
         ],
         params = [
             P("base_model", "text", "unsloth/Qwen3-0.6B", "Base model"),
+            P(
+                "objective",
+                "select",
+                "sft",
+                "Objective",
+                options = ["sft", "grpo", "dpo", "orpo"],
+                option_labels = {
+                    "sft": "SFT: learn the responses",
+                    "grpo": "GRPO: learn from rewards",
+                    "dpo": "DPO: prefer chosen over rejected",
+                    "orpo": "ORPO: prefer chosen, no reference model",
+                },
+            ),
             P("prompt_column", "text", "", "Prompt column (blank = detect the format)"),
-            P("response_column", "text", "", "Response column (blank = detect the format)"),
+            P(
+                "response_column",
+                "text",
+                "",
+                "Response column (blank = detect the format)",
+                show_when = {"objective": ["sft"]},
+            ),
+            P(
+                "answer_column",
+                "text",
+                "",
+                "Answer column the rewards check (blank = detect)",
+                show_when = {"objective": ["grpo"]},
+            ),
+            P(
+                "chosen_column",
+                "text",
+                "",
+                "Chosen column (blank = detect)",
+                show_when = {"objective": ["dpo", "orpo"]},
+            ),
+            P(
+                "rejected_column",
+                "text",
+                "",
+                "Rejected column (blank = detect)",
+                show_when = {"objective": ["dpo", "orpo"]},
+            ),
+            P(
+                "rewards",
+                "reward_list",
+                [{"name": "exact-answer", "weight": 1.0}, {"name": "soft-xml-format", "weight": 1.0}],
+                "Rewards",
+                options_from = "/api/rewards",
+                options_path = "[].name",
+                show_when = {"objective": ["grpo"]},
+            ),
             P("max_steps", "int", 60, "Steps", min = 1, max = 100000),
             P(
                 "holdout_percent",
@@ -1450,6 +1504,58 @@ NODE_SPECS: list[dict] = [
                 max = 50,
             ),
             P("training_type", "select", "lora", "Type", options = ["lora", "full"], advanced = True),
+            P(
+                "system_prompt",
+                "textarea",
+                GRPO_SYSTEM_PROMPT,
+                "System prompt (rows without one)",
+                advanced = True,
+                show_when = {"objective": ["grpo"]},
+            ),
+            P(
+                "num_generations",
+                "int",
+                4,
+                "Completions per prompt",
+                min = 2,
+                max = 16,
+                advanced = True,
+                show_when = {"objective": ["grpo"]},
+            ),
+            P(
+                "max_completion_length",
+                "int",
+                None,
+                "Completion tokens (blank = what the prompt leaves)",
+                min = 16,
+                advanced = True,
+                show_when = {"objective": ["grpo"]},
+            ),
+            P(
+                "temperature",
+                "number",
+                1.0,
+                "Sampling temperature",
+                advanced = True,
+                show_when = {"objective": ["grpo"]},
+            ),
+            P(
+                "grpo_variant",
+                "select",
+                "dapo",
+                "Loss variant",
+                options = ["dapo", "dr_grpo", "bnpo", "grpo", "gspo"],
+                advanced = True,
+                show_when = {"objective": ["grpo"]},
+            ),
+            P(
+                "beta",
+                "number",
+                None,
+                "Beta (blank = objective default)",
+                advanced = True,
+                show_when = {"objective": ["grpo", "dpo", "orpo"]},
+            ),
             P("learning_rate", "number", 0.0002, "Learning rate", advanced = True),
             P("lora_r", "int", 16, "LoRA rank", min = 1, max = 256, advanced = True),
             P(

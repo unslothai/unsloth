@@ -45,8 +45,12 @@ VISION = _nb(
 )
 GRPO = _nb(
     "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/Qwen3-4B-Base')",
-    "dataset = load_dataset('open-r1/DAPO-Math-17k-Processed', 'en', split = 'train')",
-    "trainer = GRPOTrainer(model = model, reward_funcs = [match_format], args = GRPOConfig(max_steps = 100))",
+    'SYSTEM_PROMPT = """Answer in <reasoning></reasoning> then <answer></answer>"""',
+    "dataset = load_dataset('openai/gsm8k', 'main', split = 'train')",
+    "def correctness_reward_func(prompts, completions, answer, **kwargs):\n    return []\n"
+    "def soft_format_reward_func(completions, **kwargs):\n    return []",
+    "trainer = GRPOTrainer(model = model, reward_funcs = [correctness_reward_func, soft_format_reward_func, "
+    "int_reward_func], args = GRPOConfig(max_steps = 100, num_generations = 6))",
 )
 
 
@@ -81,12 +85,38 @@ def test_vision_and_audio_notebooks_pick_the_model_task():
     assert _tune(doc)["task"] == "audio"
 
 
-def test_rl_notebook_is_reported_not_imported():
+def test_grpo_notebook_imports_onto_the_fine_tune_node():
     doc, report = notebook_import.read_notebook(GRPO, "Qwen3_(4B)-GRPO.ipynb")
-    assert doc is None
-    assert any("GRPO" in line for line in report["unsupported"])
-    assert any("reward functions" in line for line in report["unsupported"])
+    tune = _tune(doc)
+    assert tune["objective"] == "grpo" and tune["max_steps"] == 100
+    assert tune["rewards"] == [
+        {"name": "exact-answer", "weight": 1.0},
+        {"name": "soft-xml-format", "weight": 1.0},
+    ]
+    assert tune["num_generations"] == 6 and tune["system_prompt"].startswith("Answer in")
+    assert any("int_reward_func" in line for line in report["approximated"])
+    assert not any("correctness_reward_func" in line for line in report["approximated"])
+
+
+def test_grpo_notebook_without_a_library_reward_is_reported_not_imported():
+    nb = _nb(
+        "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/Qwen3-4B-Base')",
+        "dataset = load_dataset('openai/gsm8k', 'main', split = 'train')",
+        "trainer = GRPOTrainer(model = model, reward_funcs = [game_score], args = GRPOConfig(max_steps = 9))",
+    )
+    doc, report = notebook_import.read_notebook(nb, "Qwen3_(4B)-GRPO.ipynb")
+    assert doc is None and any("game_score" in line for line in report["unsupported"])
     assert report["colab_url"].endswith("/nb/Qwen3_(4B)-GRPO.ipynb")
+
+
+def test_dpo_notebook_carries_its_beta():
+    nb = _nb(
+        "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/zephyr-sft')",
+        "PatchDPOTrainer()\ndataset = load_dataset('a/prefs', split = 'train')",
+        "trainer = DPOTrainer(model = model, args = DPOConfig(beta = 0.2, max_steps = 5))",
+    )
+    doc, _ = notebook_import.read_notebook(nb, "Zephyr_(7B)-DPO.ipynb")
+    assert _tune(doc)["objective"] == "dpo" and _tune(doc)["beta"] == 0.2
 
 
 def test_importer_never_executes_notebook_code(tmp_path):
@@ -114,15 +144,16 @@ def test_import_notebook_route(client):  # noqa: F811
     rl = client.post(
         "/api/flows/import/notebook", content = GRPO, params = {"name": "Qwen3_(4B)-GRPO.ipynb"}
     )
-    assert rl.status_code == 200 and rl.json()["flow"] is None
+    assert rl.status_code == 200 and rl.json()["flow"] is not None
     assert client.post("/api/flows/import/notebook", content = b"{}").status_code == 400
 
 
 def test_catalog_marks_what_studio_can_train():
     entry = catalog._entry("Llama3.1_(8B)-Alpaca.ipynb", {}, {})
     assert entry["category"] == "sft" and entry["studio_task"] == "text"
-    assert catalog._entry("Zephyr_(7B)-DPO.ipynb", {}, {})["studio_task"] is None
-    assert catalog._entry("Qwen3_(4B)-GRPO.ipynb", {}, {})["studio_task"] is None
+    assert catalog._entry("Zephyr_(7B)-DPO.ipynb", {}, {})["studio_task"] == "text"
+    assert catalog._entry("Qwen3_(4B)-GRPO.ipynb", {}, {})["studio_task"] == "text"
+    assert catalog._entry("gpt_oss_(20B)_Reinforcement_Learning_2048_Game.ipynb", {}, {})["studio_task"] is None
     assert catalog._entry("EmbeddingGemma_(300M).ipynb", {}, {})["studio_task"] == "embedding"
     assert catalog._entry("Llama3.2_(1B)-Phone_Deployment.ipynb", {}, {})["studio_task"] is None
 
