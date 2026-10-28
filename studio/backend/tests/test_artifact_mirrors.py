@@ -1044,3 +1044,80 @@ def test_the_delete_route_passes_the_mirror_id_to_the_destructive_step(monkeypat
     )
     assert seen["repo_id"] == _FP8_REPO
     assert result["repo_id"] == "Qwen/Qwen-Image-2.1-Turbo"
+
+
+def _mirror_delete_route(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from hub.services.models import cache_inventory, deletion
+
+    fp8 = _cache_repo(tmp_path, _FP8_REPO, {**_FOLDERS, **_DENOISER})
+    monkeypatch.setattr(
+        cache_inventory, "all_hf_cache_scans", lambda: [SimpleNamespace(repos = [fp8])]
+    )
+    monkeypatch.setattr(deletion.account_access, "require_installation_owner", lambda: None)
+    for name in ("_llama_cpp_blocks_delete", "_inference_backend_blocks_delete", "_audio_cpp_blocks_delete"):
+        monkeypatch.setattr(deletion, name, lambda *_a, **_k: False)
+    monkeypatch.setattr(deletion, "_video_blocks_delete", lambda *_a, **_k: None)
+    deleted = []
+    monkeypatch.setattr(
+        deletion,
+        "_delete_cached_model_blocking",
+        lambda repo_id, *_a, **_k: deleted.append(repo_id) or {"status": "deleted", "repo_id": repo_id},
+    )
+    return deletion, fp8, deleted
+
+
+def test_a_load_from_the_mirror_snapshot_blocks_deleting_the_base_row(monkeypatch, tmp_path):
+    import asyncio
+
+    from fastapi import HTTPException
+
+    deletion, fp8, deleted = _mirror_delete_route(monkeypatch, tmp_path)
+    snapshot = str(fp8.revisions[0].snapshot_path)
+    monkeypatch.setattr(
+        deletion,
+        "iter_repo_cache_dirs",
+        lambda _t, rid: [Path(fp8.repo_path)] if rid.lower() == _FP8_REPO.lower() else [],
+    )
+    monkeypatch.setattr(
+        deletion,
+        "_diffusion_blocks_delete",
+        lambda gid: "Unload the model before deleting"
+        if deletion._loaded_id_matches_repo(snapshot, gid)
+        else None,
+    )
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            deletion.delete_cached_model_response(
+                "Qwen/Qwen-Image-2.1-Turbo", None, None, str(fp8.repo_path)
+            )
+        )
+    assert exc.value.status_code == 400 and deleted == []
+
+
+def test_a_download_into_the_mirror_blocks_deleting_the_base_row(monkeypatch, tmp_path):
+    import asyncio
+
+    from fastapi import HTTPException
+
+    deletion, fp8, deleted = _mirror_delete_route(monkeypatch, tmp_path)
+    monkeypatch.setattr(deletion, "_diffusion_blocks_delete", lambda *_a, **_k: None)
+    held, released = [], []
+
+    def begin_delete(key, variant):
+        if key.lower() == _FP8_REPO.lower():
+            return False
+        held.append(key)
+        return True
+
+    monkeypatch.setattr(deletion.downloads.registry, "begin_delete", begin_delete)
+    monkeypatch.setattr(deletion.downloads.registry, "end_delete", lambda key, _v: released.append(key))
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            deletion.delete_cached_model_response(
+                "Qwen/Qwen-Image-2.1-Turbo", None, None, str(fp8.repo_path)
+            )
+        )
+    assert exc.value.status_code == 400 and deleted == []
+    assert held == released == ["Qwen/Qwen-Image-2.1-Turbo"]
