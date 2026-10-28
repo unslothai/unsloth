@@ -4839,18 +4839,22 @@ def _unsloth_grpo_nanmax(tensor):
 
 
 def _unsloth_grpo_flush_metrics(trainer):
-    # One device-to-host read per device for every metric deferred since the last log. float64 holds any
-    # float32 / bfloat16 / float16 value exactly, so each appended float equals what .item() returned.
+    # One device-to-host read per device and kind for every metric deferred since the last log. float32 holds
+    # any float16 / bfloat16 / float32 value exactly, so each appended float equals what .item() returned, and
+    # no float64 op runs on devices without FP64 (Intel Arc XPUs); a float64 metric keeps its own group.
     pending = trainer.__dict__.get("_unsloth_pending_metrics")
     if not pending:
         return
     trainer._unsloth_pending_metrics = []
-    by_device = {}
+    by_key = {}
     for i, (_, value) in enumerate(pending):
-        by_device.setdefault((value.device, value.is_floating_point()), []).append(i)
+        if value.dtype == torch.float64 or not value.is_floating_point():
+            dtype = value.dtype if value.dtype == torch.float64 else torch.int64
+        else:
+            dtype = torch.float32
+        by_key.setdefault((value.device, dtype), []).append(i)
     values = [None] * len(pending)
-    for (_, is_float), idx in by_device.items():
-        dtype = torch.float64 if is_float else torch.int64
+    for (_, dtype), idx in by_key.items():
         host = torch.stack([pending[i][1].reshape(()).to(dtype) for i in idx]).tolist()
         for i, v in zip(idx, host):
             values[i] = v

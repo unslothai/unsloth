@@ -216,3 +216,34 @@ def test_attached_host_lengths_skip_the_read(monkeypatch):
         == 4
     )
     packing.clear_packed_caches()
+
+
+def test_flush_never_converts_to_float64_on_device(monkeypatch):
+    # Intel Arc XPUs have no FP64: the flush must stack metrics in their own dtype and convert on the host.
+    class _Trainer:
+        pass
+
+    trainer = _Trainer()
+    targets = {dt: [] for dt in (torch.float32, torch.bfloat16, torch.float16, torch.int64)}
+    expected = {dt: [] for dt in targets}
+    g = torch.Generator().manual_seed(5)
+    trainer._unsloth_pending_metrics = []
+    for dt, target in targets.items():
+        for _ in range(7):
+            v = (torch.randn((), generator = g) * 100).to(dt)
+            expected[dt].append(v.item())
+            trainer._unsloth_pending_metrics.append((target, v))
+    requested = []
+    orig_to = torch.Tensor.to
+
+    def spy_to(self, *args, **kwargs):
+        dtypes = [a for a in args if isinstance(a, torch.dtype)] + [kwargs.get("dtype")]
+        requested.extend(d for d in dtypes if d is not None)
+        return orig_to(self, *args, **kwargs)
+
+    monkeypatch.setattr(torch.Tensor, "to", spy_to)
+    rr._unsloth_grpo_flush_metrics(trainer)
+    assert torch.float64 not in requested
+    for dt in targets:
+        assert targets[dt] == expected[dt]
+        assert all(type(x) is type(y) for x, y in zip(targets[dt], expected[dt]))
