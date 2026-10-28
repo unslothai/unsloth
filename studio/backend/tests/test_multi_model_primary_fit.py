@@ -312,6 +312,9 @@ def test_mlx_chat_need_prices_one_row_the_prompt_cache_and_a_batch_row_per_extra
     monkeypatch.setattr(inf, "_unified_metal_host", lambda: True)
     need, growth = inf._mlx_chat_need(None, mlx, "m", 4)
     assert (need, growth) == (4096 + 3 * 768, {"mib": 3072, "row_mib": 768, "slots": 4})
+    offloaded = estimate._replace(offloaded = True)
+    monkeypatch.setattr(inf, "_mlx_load_estimate", lambda *a: (None, offloaded))
+    assert inf._mlx_chat_need(None, mlx, "m", 4) is None
 
 
 def test_chat_fit_kwargs(monkeypatch):
@@ -426,6 +429,8 @@ def test_an_mlx_load_is_credited_what_it_replaces_and_more_rows_reprice_it():
     assert (
         "not _mlx_slots_outgrow_price(backend, _n_parallel)" in source[shortcut - 1200 : shortcut]
     )
+    inherit = source.index("# A reload for more rows keeps the context the resident was asked for.")
+    assert inherit < shortcut and '"max_seq_length_requested"' in source[inherit : inherit + 400]
     # A kept slot's reload frees its own worker too; an outgoing llama-server's footprint is not wired-only.
     credit = source.index(
         "mlx_credit_mib = await asyncio.to_thread(mlx_replaced_credit_mib, backend)"
