@@ -1,28 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Best-effort bytecode compile of the Studio environment, run by setup.sh / setup.ps1.
+"""Best-effort .pyc compile of the Studio venv after a dependency pass (uv installs without .pyc).
 
-uv installs without .pyc, so the first launch compiled every module `import main` loads (about
-twice the CPU of a later launch). setup runs this after a dependency pass changed the venv.
-
-Best effort, never part of the install's outcome:
-- only ADDS missing .pyc: a source that already has one (current or not) is left alone, so no
-  existing file is ever modified. A re-run over a compiled tree finds nothing to do and writes nothing;
-- exit 0 on every error, an unwritable directory, a missing interpreter or a timeout; Ctrl+C is
-  passed on as SIGINT, as for any other setup step;
-- prints nothing (setup prints the one progress line);
-- skipped below _MIN_FREE_BYTES free, so it cannot take the space a later install step needs;
-- a timeout (or Ctrl+C) kills the whole worker tree and removes exactly what this run created: the
-  .pyc it was asked to write, their temp files (`<name>.pyc.<digits>`) and the `__pycache__`
-  directories it made. The environment is then as it was before the step.
-
-Skipped when UV_COMPILE_BYTECODE or UNSLOTH_STUDIO_COMPILE_BYTECODE is set to a false value.
-UNSLOTH_STUDIO_COMPILE_BYTECODE_TIMEOUT bounds the whole compile in seconds (default 240, under the
-desktop installer's 5 minute silence report).
-
-Usage: python -I precompile_bytecode.py [DIR ...]   (no DIR: this interpreter's site-packages plus
-the Studio packages that live outside it, i.e. an editable checkout)
+Only adds missing .pyc, never rewrites one; always exits 0; prints nothing; skipped under 4 GiB free.
+A timeout or Ctrl+C kills the worker tree and removes exactly what this run created.
+Opt out: UV_COMPILE_BYTECODE / UNSLOTH_STUDIO_COMPILE_BYTECODE false. Bound:
+UNSLOTH_STUDIO_COMPILE_BYTECODE_TIMEOUT (240 s, under the desktop installer's 5 min silence report).
+Usage: python -I precompile_bytecode.py [DIR ...]
 """
 
 import os
@@ -36,7 +21,6 @@ _FALSE = ("0", "false", "no", "off")
 _DEFAULT_TIMEOUT = 240.0
 _MIN_FREE_BYTES = 4 * 1024**3
 _PACKAGES = ("studio", "unsloth", "unsloth_cli")
-# Never walked inside a checkout: the Node tree, the desktop sources, the test suites.
 _CHECKOUT_SKIP_DIRS = ("node_modules", "frontend", "src-tauri", "tests")
 # importlib's _write_atomic writes "<path>.<id(path)>" and renames it over <path>.
 _PARTIAL_PYC = re.compile(r"\.pyc\.\d+$")
@@ -95,8 +79,7 @@ def default_dirs():
     checkout = []
     import importlib.util
 
-    # Only what the venv itself resolves (site-packages, its .pth files, an editable finder): never
-    # PYTHONPATH, the current directory or this script's directory, which can hold unrelated trees.
+    # Only what the venv itself resolves: PYTHONPATH, cwd and this dir can hold unrelated trees.
     blocked = [p for p in os.environ.get("PYTHONPATH", "").split(os.pathsep) if p]
     blocked += [os.getcwd(), os.path.dirname(os.path.abspath(__file__))]
     saved = list(sys.path)
@@ -118,9 +101,7 @@ def default_dirs():
 
 
 def plan(site, checkout):
-    """(sources lacking a .pyc, their .pyc paths, __pycache__ dirs that do not exist yet).
-
-    Symlinked directories are not followed, as compileall does not follow them either."""
+    """(sources lacking a .pyc, their .pyc paths, __pycache__ dirs that do not exist yet)."""
     import importlib.util
 
     sources, targets, new_dirs = [], [], set()
@@ -158,7 +139,6 @@ def plan(site, checkout):
 
 
 def _child_command(site, checkout):
-    """The child re-plans from the same roots (a 0.15 s walk) rather than take 25k paths on stdin."""
     return (
         [sys.executable, "-I", os.path.abspath(__file__), _CHILD_FLAG]
         + ["site:" + d for d in site]
@@ -167,7 +147,6 @@ def _child_command(site, checkout):
 
 
 def _compile_child(args):
-    """The worker side: compile what plan() finds, on all cores; never raises."""
     import functools
     import py_compile
 
@@ -183,7 +162,7 @@ def _compile_child(args):
         return
     except Exception:
         pass
-    # No working process pool here (no sem_open, for one): one by one.
+    # No working process pool (e.g. no sem_open).
     for source in sources:
         try:
             job(source)
@@ -192,7 +171,6 @@ def _compile_child(args):
 
 
 def undo(targets, new_dirs):
-    """Remove exactly what a cut-short run created."""
     caches = {}
     for target in targets:
         caches.setdefault(os.path.dirname(target), set()).add(os.path.basename(target))
@@ -244,10 +222,10 @@ def _kill_tree(proc):
 
 
 def run(site, checkout, timeout):
-    """Compile in a child process tree under one deadline. True when it finished in time."""
+    """True when the child tree finished within timeout."""
     kwargs = {}
     if os.name != "nt":
-        # Its own process group, so a timeout can kill the pool workers too.
+        # Own process group, so a timeout kills the pool workers too.
         kwargs["start_new_session"] = True
     try:
         proc = subprocess.Popen(
@@ -271,7 +249,7 @@ def run(site, checkout, timeout):
 
 
 def _reraise_sigint():
-    """Die of SIGINT, so the calling shell stops on Ctrl+C exactly as it does for any step."""
+    """bash stops on a child's Ctrl+C only when the child dies of SIGINT."""
     if os.name != "nt":
         import signal
         try:

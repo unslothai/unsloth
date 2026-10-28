@@ -88,9 +88,6 @@ def _snapshot(root: Path) -> dict:
     }
 
 
-# ── Placement ──
-
-
 def test_setup_sh_marks_the_deps_pass_and_compiles_before_the_footer():
     lines = _lines(SETUP_SH)
     stack = _index(lines, r"^    install_python_stack$")
@@ -147,9 +144,6 @@ def test_no_installer_disables_pip_compile():
         assert "PIP_NO_COMPILE" not in text, path
 
 
-# ── setup.sh block: cannot fail, runs only when the venv changed ──
-
-
 def _setup_sh_block() -> str:
     lines = _lines(SETUP_SH)
     start = _index(lines, r"^_setup_bytecode_opted_out\(\) \{$")
@@ -204,13 +198,9 @@ def test_setup_sh_block_never_fails_and_runs_only_after_a_deps_pass(
         env[opt_out[0]] = opt_out[1]
     result = subprocess.run([BASH, "-c", script], env = env, capture_output = True, text = True)
     assert result.returncode == 0, result.stderr
-    # At most one progress line, and none when the step does not run.
     expected = (["python precompiling bytecode..."] if expect_call else []) + ["reached-the-footer"]
     assert result.stdout.splitlines() == expected
     assert marker.exists() is expect_call
-
-
-# ── setup.ps1 block: cannot fail under ErrorActionPreference Stop ──
 
 
 @pytest.mark.skipif(PWSH is None or BASH is None, reason = "needs PowerShell")
@@ -283,9 +273,6 @@ def test_setup_ps1_block_never_fails(tmp_path, opt_out, expect_call):
     ]
     assert [line for line in result.stdout.splitlines() if line.strip()] == expected
     assert marker.exists() is expect_call
-
-
-# ── The helper ──
 
 
 def test_helper_compiles_a_tree_and_is_idempotent(tmp_path, monkeypatch):
@@ -507,8 +494,6 @@ def test_helper_default_dirs_add_an_editable_checkout_once(tmp_path, monkeypatch
     assert got_site == [str(site)]
     assert got_checkout == [str(checkout)]
 
-    # What gets compiled: every source in site-packages lacking a .pyc; in a checkout the same, but
-    # never inside node_modules, the desktop sources, test suites or hidden dirs.
     def src(path):
         path.parent.mkdir(parents = True, exist_ok = True)
         path.write_text("Z = 1\n", encoding = "utf-8")

@@ -10113,10 +10113,7 @@ if (-not $llamaCppIsLink -and (
 
 Complete-FrontendBuildBackground
 
-# ── Precompile bytecode ──
-# uv installs without .pyc, so the first launch would compile them. Only after a dependency pass
-# changed the venv (a rerun runs only after one). Best effort, silent and bounded inside the helper,
-# never fatal; an opt-out prints nothing.
+# ── Precompile bytecode ── (uv installs without .pyc; only after a dependency pass, never fatal)
 $_pycPython = Join-Path $VenvDir 'Scripts\python.exe'
 $_pycHelper = Join-Path $PSScriptRoot 'precompile_bytecode.py'
 $_pycOptedOut = @(@($env:UV_COMPILE_BYTECODE, $env:UNSLOTH_STUDIO_COMPILE_BYTECODE) |
@@ -10125,7 +10122,6 @@ if (($script:SetupVenvChanged -or $env:UNSLOTH_SETUP_RERUN -eq '1') -and -not $_
     (Test-Path -LiteralPath $_pycPython -PathType Leaf) -and
     (Test-Path -LiteralPath $_pycHelper -PathType Leaf)) {
     step "python" "precompiling bytecode..."
-    # Leave $LASTEXITCODE and the preference exactly as the step found them.
     $_pycPrevExit = $global:LASTEXITCODE
     $_pycPrevEAP = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'

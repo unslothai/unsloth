@@ -5488,10 +5488,7 @@ _print_llama_gpu_notes() {
 
 _frontend_bg_join
 
-# ── Precompile bytecode ──
-# uv installs without .pyc, so the first launch would compile them. Only after a dependency pass
-# changed the venv (a rerun runs only after one). Best effort, silent and bounded inside the helper,
-# never fatal; an opt-out prints nothing.
+# ── Precompile bytecode ── (uv installs without .pyc; only after a dependency pass, never fatal)
 _setup_bytecode_opted_out() {
     local _sbo
     for _sbo in "${UV_COMPILE_BYTECODE:-}" "${UNSLOTH_STUDIO_COMPILE_BYTECODE:-}"; do
