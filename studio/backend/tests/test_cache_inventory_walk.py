@@ -142,6 +142,8 @@ def clean_memo(monkeypatch):
     monkeypatch.setattr(cache_inventory, "_size_cache", {})
     monkeypatch.setattr(cache_inventory, "_size_epochs", {})
     monkeypatch.setattr(cache_inventory, "_size_flights", {})
+    # A background walk an earlier test left running (a real cache walk under load) must not hold these up.
+    monkeypatch.setattr(cache_inventory, "_background_walk_lock", threading.Lock())
 
 
 def _expire(key: str, *, walk_seconds: float) -> None:
