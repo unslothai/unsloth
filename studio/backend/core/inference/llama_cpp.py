@@ -462,6 +462,7 @@ from core.inference.tool_loop_controller import (
     _WORKSPACE_READ_TOOLS,
     BROWSER_TOOL_NAMES,
     REPEATABLE_TOOL_NAMES,
+    TRUNCATED_TOOL_TURN_MESSAGE,
     ToolLoopController,
     _reruns_after_new_work,
     append_deferred_nudges,
@@ -17885,7 +17886,12 @@ class LlamaCppBackend:
             s.bind(("127.0.0.1", 0))
             return s.getsockname()[1]
 
-    def _health_listener_is_ours(self, process) -> bool:
+    @staticmethod
+    def _health_listener_is_ours(
+        process,
+        port,
+        bind_host = None,
+    ) -> bool:
         """False when the port answering /health is demonstrably not held by our child's tree.
 
         _find_free_port releases the port before llama-server binds it, so another local user could
@@ -17893,7 +17899,6 @@ class LlamaCppBackend:
         on Linux/macOS, so our own (readable) tree not listening counts as foreign. Unreadable
         ownership keeps today's behaviour. On Windows psutil can report our live listener as NONE
         and/or pid 0 (#15022), so only a named foreign pid refuses there."""
-        port = getattr(self, "_port", None)
         pid = getattr(process, "pid", None)
         if not isinstance(pid, int) or not isinstance(port, int):
             return True
@@ -17915,13 +17920,19 @@ class LlamaCppBackend:
             return True
 
         windows = _socket_owner_is_always_named()
+        bind_ips = set(_LOOPBACK_REACHABLE_BIND_IPS)
+        if bind_host:
+            try:
+                bind_ips.update(a[4][0] for a in socket.getaddrinfo(bind_host, port))
+            except OSError:
+                pass
 
         def _listens(conn) -> bool:
             laddr = getattr(conn, "laddr", None)
             if not (
                 bool(laddr)
                 and getattr(laddr, "port", None) == port
-                and getattr(laddr, "ip", None) in _LOOPBACK_REACHABLE_BIND_IPS
+                and getattr(laddr, "ip", None) in bind_ips
             ):
                 return False
             if conn.status == psutil.CONN_LISTEN:
@@ -35132,7 +35143,7 @@ class LlamaCppBackend:
                         logger.info("llama-server became healthy while the app was shutting down")
                         self._health_wait_cancelled = True
                         return False
-                    if not self._health_listener_is_ours(process):
+                    if not self._health_listener_is_ours(process, getattr(self, "_port", None)):
                         self._stdout_lines.append(_PORT_OWNER_REFUSED_MARKER)
                         return False
                     return True
@@ -38691,6 +38702,29 @@ class LlamaCppBackend:
                         if _meta is not None:
                             yield _meta
                         return
+
+                # A cut turn runs no call, siblings included: a healed tail may be half a rewrite.
+                if _iter_finish_reason in ("length", "content_filter"):
+                    for _pid, _pname in provisional_started_tool_calls.items():
+                        if _pid not in resolved_provisional_tool_call_ids:
+                            resolved_provisional_tool_call_ids.add(_pid)
+                            yield {
+                                "type": "tool_end",
+                                "tool_name": _pname,
+                                "tool_call_id": _pid,
+                                "result": TRUNCATED_TOOL_TURN_MESSAGE,
+                                "provenance": provisional_tool_provenance(_pname),
+                            }
+                    # Empty status resets the route cursor; send only text not already streamed.
+                    display = _strip_tool_markup(cumulative_display, final = True, force = True)
+                    notice = display[len(_last_emitted) :] + ("\n\n" if display else "")
+                    yield {"type": "status", "text": ""}
+                    yield {
+                        "type": "content",
+                        "text": notice + TRUNCATED_TOOL_TURN_MESSAGE,
+                    }
+                    yield _build_metadata_event(_iter_usage, _iter_timings, _iter_finish_reason)
+                    return
 
                 # ── Execute tool calls ──
                 # Progress made: reset stall counters and restore thinking.

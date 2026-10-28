@@ -30,8 +30,12 @@ _QWEN_IMAGE_21_SOURCES: tuple[str, ...] = (
     "L['layer_cache'].v",
     "L['cache_write_slice'].stop",
     "L['segments'][0][1]",
-    r"L\['segments'\]\[\d+\]\[1\]$",
-    r"L\['segments'\]\[[1-9]\d*\]\[0\]$",
+    # Group offload hook paths: ``L['kwargs'][...]``, and ``___stack0[1][...]`` after the eager hook's graph break.
+    r".*\['(hidden_states|rotary_emb|target_token_mask|key_valid|attention_mask)'\]$",
+    r".*\['layer_cache'\]\.[kv]$",
+    r".*\['cache_write_slice'\]\.stop$",
+    r".*\['segments'\]\[\d+\]\[1\]$",
+    r".*\['segments'\]\[[1-9]\d*\]\[0\]$",
 )
 
 # Suffix regexes cover FBCache hook paths: ``L['kwargs'][...]`` and, after a graph break, ``___stack0[1][...]``.

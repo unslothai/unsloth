@@ -448,6 +448,7 @@ class NativeClefAgent:
         return {"Authorization": f"Bearer {self._key}"}
 
     def _wait_ready(self, cancelled: Callable[[], bool] | None) -> None:
+        from core.inference.llama_cpp import LlamaCppBackend
         from utils.process_lifetime import is_process_shutting_down
 
         deadline = time.monotonic() + LOAD_TIMEOUT_S
@@ -463,6 +464,8 @@ class NativeClefAgent:
             try:
                 response = self._client.get(f"{self._base}/health", timeout = 2.0)
                 if response.status_code == 200:
+                    if not LlamaCppBackend._health_listener_is_ours(self._process, self.port):
+                        raise NativeError(f"Another process holds llama.cpp's port {self.port}.")
                     return
             except httpx.TransportError:
                 pass
