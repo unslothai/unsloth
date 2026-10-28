@@ -3055,7 +3055,6 @@ def test_an_unlaunchable_rocm_build_without_its_runtime_is_proven_at_once(
 
 
 def test_the_rocm_runtime_is_probed_in_a_fresh_process(monkeypatch):
-    """In-process ctypes finds torch's own libamdhip64.so.7 by soname; sd-cli never sees it."""
     import subprocess
 
     from core.inference import sd_cpp_backend
@@ -3079,7 +3078,6 @@ def test_the_rocm_runtime_is_probed_in_a_fresh_process(monkeypatch):
 def test_an_unloadable_rocm_runtime_installs_vulkan_without_fetching_rocm(
     fake_settings, monkeypatch, ensure
 ):
-    """A ROCm fetch that stalls or is cut short records nothing, so the runtime is checked before it starts."""
     from core.inference import sd_cpp_backend
 
     monkeypatch.setattr(sd_cpp_backend, "rocm_runtime_resolvable", lambda: False)
