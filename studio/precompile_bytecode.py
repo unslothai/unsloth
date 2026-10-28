@@ -25,7 +25,7 @@ _CHECKOUT_SKIP_DIRS = ("node_modules", "frontend", "src-tauri", "tests")
 # importlib's _write_atomic writes "<path>.<id(path)>" and renames it over <path>.
 _PARTIAL_PYC = re.compile(r"\.pyc\.\d+$")
 _CHILD_FLAG = "--compile-child"
-# More workers only add memory (about 19 MB each): 192 held 3.6 GB.
+# Past this, more workers only add memory.
 _MAX_WORKERS = 32
 
 
