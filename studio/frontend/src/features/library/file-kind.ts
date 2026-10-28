@@ -5,12 +5,11 @@ import {
   Doc01Icon,
   FileEmpty02Icon,
   FlimSlateIcon,
-  Image02Icon,
   Pdf01Icon,
   Presentation01Icon,
   SourceCodeIcon,
 } from "@hugeicons/core-free-icons";
-import { AiSpeechIcon, SheetIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
+import { AiSpeechIcon, IMAGES_ICON_CLASS, ImagesIcon, SheetIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import type { IconSvgElement } from "@hugeicons/react";
 import { documentKind } from "@/components/file-viewer/kind";
 import { attachmentFileKind } from "@/features/chat/lib/attachment-file-kind";
@@ -166,7 +165,7 @@ export const TYPE_FILTER_KINDS: Record<LibraryTypeFilter, LibraryFileKind[]> = {
 };
 
 export const KIND_ICONS: Record<LibraryFileKind, IconSvgElement> = {
-  image: Image02Icon,
+  image: ImagesIcon,
   web: SourceCodeIcon,
   word: Doc01Icon,
   document: FileEmpty02Icon,
@@ -180,6 +179,7 @@ export const KIND_ICONS: Record<LibraryFileKind, IconSvgElement> = {
 };
 
 export const KIND_ICON_CLASS: Partial<Record<LibraryFileKind, string>> = {
+  image: IMAGES_ICON_CLASS,
   word: "text-[#4285F4]",
   spreadsheet: "text-emerald-500",
   pdf: "text-red-500",

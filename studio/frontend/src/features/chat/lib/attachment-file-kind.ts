@@ -7,14 +7,13 @@ import {
   Doc01Icon,
   FileEmpty02Icon,
   FlimSlateIcon,
-  Image02Icon,
   Pdf01Icon,
   Presentation01Icon,
   SourceCodeIcon,
   Zip02Icon,
 } from "@hugeicons/core-free-icons";
 // Relative so the node tests can load this file.
-import { AiSpeechIcon, SheetIcon } from "../../../lib/hugeicons-derived.ts";
+import { AiSpeechIcon, IMAGES_ICON_CLASS, ImagesIcon, SheetIcon } from "../../../lib/hugeicons-derived.ts";
 
 export type AttachmentFileKind =
   | "image"
@@ -97,7 +96,7 @@ export function attachmentFileKind(
 }
 
 export const ATTACHMENT_KIND_ICONS = {
-  image: Image02Icon,
+  image: ImagesIcon,
   pdf: Pdf01Icon,
   audio: AiSpeechIcon,
   video: FlimSlateIcon,
@@ -113,7 +112,7 @@ export const ATTACHMENT_KIND_ICONS = {
 } as const satisfies Record<AttachmentFileKind, unknown>;
 
 export const ATTACHMENT_KIND_ICON_CLASS: Record<AttachmentFileKind, string> = {
-  image: "text-sky-500",
+  image: IMAGES_ICON_CLASS,
   pdf: "text-red-500",
   audio: "text-violet-500",
   video: "text-pink-400 scale-90",

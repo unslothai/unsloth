@@ -27,7 +27,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { type TranslationKey, useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
-import { AiSpeechIcon, SheetIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
+import { AiSpeechIcon, ImagesIcon, SheetIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { ArrowDownUpIcon } from "lucide-react";
@@ -54,7 +54,7 @@ const SOURCE_OPTIONS: MenuOption<LibrarySource>[] = [
 ];
 
 const TYPE_OPTIONS: MenuOption<LibraryTypeFilter>[] = [
-  { value: "images", label: "library.tabs.images", icon: Image02Icon },
+  { value: "images", label: "library.tabs.images", icon: ImagesIcon },
   { value: "videos", label: "library.tabs.videos", icon: FlimSlateIcon },
   { value: "audio", label: "library.tabs.audio", icon: AiSpeechIcon },
   { value: "documents", label: "library.toolbar.documents", icon: FileEmpty02Icon },

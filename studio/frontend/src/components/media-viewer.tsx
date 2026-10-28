@@ -9,7 +9,6 @@ import {
   Delete02Icon,
   Download01Icon,
   Folder01Icon,
-  Image02Icon,
   MoreHorizontalIcon,
 } from "@hugeicons/core-free-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
@@ -34,7 +33,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { type TranslationKey, useLocale, useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
-import { StarPointedIcon } from "@/lib/hugeicons-derived";
+import { IMAGES_ICON_CLASS, ImagesIcon, StarPointedIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
 import { type MediaInset, type MediaZoom, MediaZoomStage } from "./media-zoom";
 import { type MediaNoun, useProjectSubmenu } from "./project-submenu";
@@ -432,7 +431,7 @@ export function MediaViewer({
                 )}
                 title={typeof meta === "string" && meta ? `${title}\n${meta}` : title}
               >
-                <HugeiconsIcon icon={Image02Icon} strokeWidth={1.75} className="size-4.5 shrink-0" />
+                <HugeiconsIcon icon={ImagesIcon} strokeWidth={1.75} className={cn("size-4.5 shrink-0", IMAGES_ICON_CLASS)} />
                 <DialogTitle className="truncate text-sm font-medium">{title}</DialogTitle>
                 <DialogDescription className="sr-only">{meta}</DialogDescription>
               </div>
