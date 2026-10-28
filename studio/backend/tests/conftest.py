@@ -98,6 +98,13 @@ def _no_vae_structural_verdict_cache(monkeypatch):
     monkeypatch.setenv("UNSLOTH_VAE_FUSED_STRUCTURAL_CACHE", "0")
 
 
+@pytest.hookimpl(trylast = True)
+def pytest_collection_modifyitems(config, items):
+    """After xdist tags grouped tests; see tests/_shared/xdist_group_check.py."""
+    from xdist_group_check import check
+    check(config, items)
+
+
 @pytest.fixture(autouse = True)
 def _zoo_without_gdn_decode_kernel(monkeypatch):
     # Whether Qwen3.5 / Qwen3-Next ask for causal-conv1d depends on the installed unsloth_zoo; pin the
