@@ -446,6 +446,10 @@ def _pdf_form_field_lines(page) -> list[str]:
     except Exception as exc:  # noqa: BLE001 - a malformed field must not fail the whole PDF
         logger.warning("skipping form fields on PDF page %d: %s", page.number + 1, exc)
         return []
+    tooltip_owners: dict[str, set[str]] = {}
+    for widget in widgets:
+        tooltip = " ".join((widget.field_label or "").split())
+        tooltip_owners.setdefault(tooltip, set()).add(widget.field_name)
     fields = {}
     for widget in widgets:
         shown = dict(c for c in widget.choice_values or [] if isinstance(c, (list, tuple)))
@@ -456,7 +460,10 @@ def _pdf_form_field_lines(page) -> list[str]:
             if isinstance(part, str)
         )
         radio = widget.field_type == fitz.PDF_WIDGET_TYPE_RADIOBUTTON
-        unchecked = (radio or widget.field_type == fitz.PDF_WIDGET_TYPE_CHECKBOX) and value == "Off"
+        # Kids of one field share its /V; the widget's own /AS says which kid is ticked.
+        unchecked = (radio or widget.field_type == fitz.PDF_WIDGET_TYPE_CHECKBOX) and (
+            value == "Off" or page.parent.xref_get_key(widget.xref, "AS") == ("name", "/Off")
+        )
         password = (
             widget.field_type == fitz.PDF_WIDGET_TYPE_TEXT
             and widget.field_flags & fitz.PDF_TX_FIELD_IS_PASSWORD
@@ -465,8 +472,10 @@ def _pdf_form_field_lines(page) -> list[str]:
         if not widget.field_name or not value.strip() or unchecked or password or hidden:
             continue
         # A radio widget's /TU tooltip names one option, not the group's selected value.
-        tooltip = "" if radio else widget.field_label
-        label = " ".join((tooltip or "").split()) or widget.field_name
+        tooltip = "" if radio else " ".join((widget.field_label or "").split())
+        label = tooltip or widget.field_name
+        if tooltip and len(tooltip_owners[tooltip]) > 1:
+            label = f"{tooltip} ({widget.field_name})"
         fields[widget.field_name] = f"{label}: {value}"
     return list(fields.values())
 

@@ -195,6 +195,50 @@ def test_pdf_form_keeps_which_boxes_are_ticked(tmp_path, monkeypatch, markdown):
     assert "Smoker Yes" not in text
 
 
+@pytest.mark.parametrize("shared_field", [True, False])
+def test_pdf_form_names_the_ticked_box_when_boxes_share_a_name_or_tooltip(tmp_path, shared_field):
+    import pymupdf
+
+    from core.rag import parsers
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+    refs = []
+    for x, answer in ((120, "Yes"), (210, "No")):
+        widget = pymupdf.Widget()
+        widget.field_type = pymupdf.PDF_WIDGET_TYPE_CHECKBOX
+        widget.field_name = f"smoker_{answer.lower()}"
+        widget.field_label = f"Smoker {answer}" if shared_field else "Smoker"
+        widget.field_value = answer == ("Yes" if shared_field else "No")
+        widget.rect = pymupdf.Rect(x, 50, x + 12, 62)
+        refs.append(page.add_widget(widget).xref)
+    if shared_field:
+        # One /Btn field, two kids with export values Yes / No; both inherit /V /Yes.
+        parent = doc.get_new_xref()
+        doc.update_object(
+            parent, f"<< /FT /Btn /T (smoker) /V /Yes /Kids [{refs[0]} 0 R {refs[1]} 0 R] >>"
+        )
+        for ref in refs:
+            doc.xref_set_key(ref, "Parent", f"{parent} 0 R")
+            for key in ("T", "FT", "V"):
+                doc.xref_set_key(ref, key, "null")
+        _, on = doc.xref_get_key(refs[1], "AP/N/Yes")
+        _, off = doc.xref_get_key(refs[1], "AP/N/Off")
+        doc.xref_set_key(refs[1], "AP/N", f"<< /Off {off} /No {on} >>")
+        doc.xref_set_key(doc.pdf_catalog(), "AcroForm/Fields", f"[{parent} 0 R]")
+    pdf = tmp_path / "form.pdf"
+    doc.save(str(pdf))
+    doc.close()
+
+    with pymupdf.open(str(pdf)) as reopened:
+        lines = parsers._pdf_form_field_lines(reopened[0])
+    if shared_field:
+        # pymupdf 2.x labels the kid with its parent field ("smoker: Yes").
+        assert len(lines) == 1 and lines[0].endswith(": Yes") and "No" not in lines[0]
+    else:
+        assert lines == ["Smoker (smoker_no): Yes"]
+
+
 # PyMuPDF raises while loading either widget; main never read widgets, so it parsed these.
 @pytest.mark.parametrize("key, value", [("DA", "(garbage Tf)"), ("Parent", "self")])
 @pytest.mark.parametrize("markdown", [True, False])
