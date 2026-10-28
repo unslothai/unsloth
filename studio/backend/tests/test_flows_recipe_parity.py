@@ -79,6 +79,8 @@ def _routes(seen_jobs):
     def routes(method, path, params, body):
         if path == "/api/data-recipe/validate":
             return {"valid": True}
+        if path == "/api/data-recipe/seed/inspect":
+            return {"resolved_path": f"datasets/{body['dataset_name']}/**/*.parquet"}
         if path == "/api/data-recipe/jobs":
             seen_jobs.append(body)
             return {"job_id": "j1"}
@@ -126,6 +128,10 @@ def test_every_seed_kind_reaches_the_job_as_saved(name, seed_type):
             _run(_compiled(doc), mode = "preview", rows = 2)
         group["config"]["seed_config"]["source"]["path"] = "/srv/uploads/book.pdf"
         payload["recipe"]["seed_config"]["source"]["path"] = "/srv/uploads/book.pdf"
+    if seed_type == "hf":
+        # Shipped as the bare repo id; resolved for the reader as Recipe Studio's seed Load does.
+        source = payload["recipe"]["seed_config"]["source"]
+        source["path"] = f"datasets/{source['path']}/**/*.parquet"
     sent = _run(_compiled(doc), mode = "preview", rows = 2)
     assert sent["recipe"]["seed_config"] == payload["recipe"]["seed_config"]
     assert sent["recipe"]["seed_config"]["source"]["seed_type"] == seed_type
