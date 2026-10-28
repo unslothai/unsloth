@@ -682,7 +682,7 @@
    Flavor themes (Theme > More themes). Each sets --th-* seeds per mode; the
    block below maps them onto the --*-base tokens, so contrast and custom
    colors still apply. */
-:root:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="pina-paraiso"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"], [data-palette="pumpkin"], [data-palette="bloody-valentine"], [data-palette="the-thing"], [data-palette="alien"], [data-palette="gothic"], [data-palette="candy-skull"])[data-palette] {
+:root:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="pina-paraiso"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"], [data-palette="pumpkin"], [data-palette="bloody-valentine"], [data-palette="the-thing"], [data-palette="alien"], [data-palette="gothic"], [data-palette="candy-skull"], [data-palette="trick-or-treat"], [data-palette="ghost-ship"], [data-palette="midnight-haunt"])[data-palette] {
 	--background: var(--th-bg);
 	--foreground-base: var(--th-fg);
 	--action-base: var(--foreground);
@@ -732,17 +732,17 @@
 }
 
 /* Attribute specificity only, so html[data-contrast-adjust] still wins. */
-[data-palette]:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="pina-paraiso"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"], [data-palette="pumpkin"], [data-palette="bloody-valentine"], [data-palette="the-thing"], [data-palette="alien"], [data-palette="gothic"], [data-palette="candy-skull"]) {
+[data-palette]:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="pina-paraiso"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"], [data-palette="pumpkin"], [data-palette="bloody-valentine"], [data-palette="the-thing"], [data-palette="alien"], [data-palette="gothic"], [data-palette="candy-skull"], [data-palette="trick-or-treat"], [data-palette="ghost-ship"], [data-palette="midnight-haunt"]) {
 	--muted-foreground: var(--th-muted);
 }
 
-:root:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="pina-paraiso"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"], [data-palette="pumpkin"], [data-palette="bloody-valentine"], [data-palette="the-thing"], [data-palette="alien"], [data-palette="gothic"], [data-palette="candy-skull"])[data-palette].dark
+:root:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="pina-paraiso"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"], [data-palette="pumpkin"], [data-palette="bloody-valentine"], [data-palette="the-thing"], [data-palette="alien"], [data-palette="gothic"], [data-palette="candy-skull"], [data-palette="trick-or-treat"], [data-palette="ghost-ship"], [data-palette="midnight-haunt"])[data-palette].dark
 	:is(.chat-composer-surface, .unsloth-composer-surface, .unsloth-files-panel) {
 	background-color: color-mix(in srgb, var(--card), var(--th-fg) 4%);
 }
 
 /* Collapsed rail takes the page color, as it does in dark mode. */
-:root:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="pina-paraiso"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"], [data-palette="pumpkin"], [data-palette="bloody-valentine"], [data-palette="the-thing"], [data-palette="alien"], [data-palette="gothic"], [data-palette="candy-skull"])[data-palette]:not(.dark)
+:root:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="pina-paraiso"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"], [data-palette="pumpkin"], [data-palette="bloody-valentine"], [data-palette="the-thing"], [data-palette="alien"], [data-palette="gothic"], [data-palette="candy-skull"], [data-palette="trick-or-treat"], [data-palette="ghost-ship"], [data-palette="midnight-haunt"])[data-palette]:not(.dark)
 	[data-collapsible="icon"] [data-sidebar="sidebar"] {
 	--sidebar-surface: var(--background);
 }
@@ -1800,6 +1800,111 @@
 	--th-chart-3: #1ae0d0;
 	--th-chart-4: #fff0f8;
 	--th-chart-5: #8f7aff;
+}
+
+:root[data-palette="trick-or-treat"]:not(.dark) {
+	--th-bg: #fffae6;
+	--th-surface: #fff0c4;
+	--th-raised: #f8e8bc;
+	--th-hover: #f1e1b4;
+	--th-border: #e9d9ac;
+	--th-fg: #2e1f00;
+	--th-muted: #6d6145;
+	--th-subtle: #a1977f;
+	--th-accent: #8f5c00;
+	--th-accent-fg: #ffffff;
+	--th-chart-1: #8f5c00;
+	--th-chart-2: #c84a00;
+	--th-chart-3: #7a2fe0;
+	--th-chart-4: #5f6f00;
+	--th-chart-5: #c20a7f;
+}
+:root[data-palette="trick-or-treat"].dark {
+	--th-bg: #1a0b24;
+	--th-surface: #251135;
+	--th-raised: #301b39;
+	--th-hover: #3b263d;
+	--th-border: #463040;
+	--th-fg: #fff4d6;
+	--th-muted: #bfb3a4;
+	--th-subtle: #817474;
+	--th-accent: #ffc400;
+	--th-accent-fg: #1f1400;
+	--th-chart-1: #ffc400;
+	--th-chart-2: #ff7a00;
+	--th-chart-3: #c77dff;
+	--th-chart-4: #fff0b3;
+	--th-chart-5: #3dffa0;
+}
+
+:root[data-palette="ghost-ship"]:not(.dark) {
+	--th-bg: #ecfffb;
+	--th-surface: #d4f8f0;
+	--th-raised: #ccf1e9;
+	--th-hover: #c3eae2;
+	--th-border: #bbe3db;
+	--th-fg: #03302a;
+	--th-muted: #496e69;
+	--th-subtle: #83a29d;
+	--th-accent: #00756a;
+	--th-accent-fg: #ffffff;
+	--th-chart-1: #00756a;
+	--th-chart-2: #4f8a00;
+	--th-chart-3: #1f5fc8;
+	--th-chart-4: #a87400;
+	--th-chart-5: #c8102e;
+}
+:root[data-palette="ghost-ship"].dark {
+	--th-bg: #021716;
+	--th-surface: #042420;
+	--th-raised: #0a2e2a;
+	--th-hover: #113934;
+	--th-border: #17433e;
+	--th-fg: #d9fff8;
+	--th-muted: #9dbeb9;
+	--th-subtle: #637f7c;
+	--th-accent: #00e5c8;
+	--th-accent-fg: #00140f;
+	--th-chart-1: #00e5c8;
+	--th-chart-2: #a8ff3d;
+	--th-chart-3: #5ca8ff;
+	--th-chart-4: #ffd23d;
+	--th-chart-5: #ff5c7a;
+}
+
+:root[data-palette="midnight-haunt"]:not(.dark) {
+	--th-bg: #f0f3ff;
+	--th-surface: #dfe5ff;
+	--th-raised: #d7ddf9;
+	--th-hover: #cfd5f3;
+	--th-border: #c7ceee;
+	--th-fg: #0c1442;
+	--th-muted: #50577b;
+	--th-subtle: #898faa;
+	--th-accent: #2f45d6;
+	--th-accent-fg: #ffffff;
+	--th-chart-1: #2f45d6;
+	--th-chart-2: #9a7400;
+	--th-chart-3: #007fa8;
+	--th-chart-4: #8b2fd1;
+	--th-chart-5: #c8102e;
+}
+:root[data-palette="midnight-haunt"].dark {
+	--th-bg: #060a24;
+	--th-surface: #0b1236;
+	--th-raised: #141b40;
+	--th-hover: #1c244a;
+	--th-border: #252c54;
+	--th-fg: #e3e8ff;
+	--th-muted: #a5aac2;
+	--th-subtle: #696e87;
+	--th-accent: #6f86ff;
+	--th-accent-fg: #050a26;
+	--th-chart-1: #6f86ff;
+	--th-chart-2: #ffe066;
+	--th-chart-3: #3ddcff;
+	--th-chart-4: #d67aff;
+	--th-chart-5: #ff6a8a;
 }
 
 /* --------------------------------------------------------------------------- */

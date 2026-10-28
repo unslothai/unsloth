@@ -34,9 +34,12 @@ export const FLAVOR_THEME_IDS = [
 // Offered from the sidebar's Trick or treat row and Theme > Halloween, in October only.
 export const HALLOWEEN_THEME_IDS = [
   "pumpkin",
+  "trick-or-treat",
   "bloody-valentine",
   "alien",
+  "ghost-ship",
   "the-thing",
+  "midnight-haunt",
   "gothic",
   "candy-skull",
 ] as const;
@@ -493,6 +496,51 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
       background: "#1d0617",
       foreground: "#ffe6f4",
       surface: "#2a0a22",
+    },
+  },
+  "trick-or-treat": {
+    name: "Trick or Treat",
+    light: {
+      accent: "#8f5c00",
+      background: "#fffae6",
+      foreground: "#2e1f00",
+      surface: "#fff0c4",
+    },
+    dark: {
+      accent: "#ffc400",
+      background: "#1a0b24",
+      foreground: "#fff4d6",
+      surface: "#251135",
+    },
+  },
+  "ghost-ship": {
+    name: "Ghost Ship",
+    light: {
+      accent: "#00756a",
+      background: "#ecfffb",
+      foreground: "#03302a",
+      surface: "#d4f8f0",
+    },
+    dark: {
+      accent: "#00e5c8",
+      background: "#021716",
+      foreground: "#d9fff8",
+      surface: "#042420",
+    },
+  },
+  "midnight-haunt": {
+    name: "Midnight Haunt",
+    light: {
+      accent: "#2f45d6",
+      background: "#f0f3ff",
+      foreground: "#0c1442",
+      surface: "#dfe5ff",
+    },
+    dark: {
+      accent: "#6f86ff",
+      background: "#060a24",
+      foreground: "#e3e8ff",
+      surface: "#0b1236",
     },
   },
 };

@@ -4817,6 +4817,9 @@ class PersonalizationAppearance(BaseModel):
         "alien",
         "gothic",
         "candy-skull",
+        "trick-or-treat",
+        "ghost-ship",
+        "midnight-haunt",
     ] = "standard"
     language: Optional[str] = Field(None, max_length = 20)
     customization: PersonalizationCustomization = Field(
