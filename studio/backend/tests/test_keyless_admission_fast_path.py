@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""KeylessToolPolicyMiddleware runs on every request. With the setting off (the default) or a fresh settings
-cache it has nothing to read, so it must not borrow an AnyIO worker thread to find that out: a saturated pool
-would otherwise stall even the desktop app's liveness poll."""
+"""Keyless admission with the setting off or a fresh cache takes no AnyIO worker thread, so a saturated pool cannot stall liveness."""
 
 from __future__ import annotations
 
@@ -124,7 +122,6 @@ def test_a_write_in_flight_reads_as_off():
 
 
 def test_an_admitting_scope_still_classifies_the_request(hops):
-    """Only the off answer is short-circuited; a scope that can admit still runs the full check."""
     set_keyless_api_access("inference", tools = False)
     hops[0] = 0
     assert _run_middleware(_scope()) == [True]
