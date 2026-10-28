@@ -863,9 +863,10 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                     if k in _entry
                 }
             )
-            # MLX serves a vision config mlx-lm built as text; the parent must stop accepting images.
-            if model_info["is_mlx"] and _entry.get("is_vision") is False:
-                model_info["is_vision"] = False
+            # MLX decides at load: a vision config mlx-lm built as text reads no images, and a tower
+            # the transformers registry does not know (an mlx-vlm-only family) does.
+            if model_info["is_mlx"] and isinstance(_entry.get("is_vision"), bool):
+                model_info["is_vision"] = _entry["is_vision"]
             # Resolved MLX runtime knobs; only the backend knows what it honored.
             model_info.update(
                 {

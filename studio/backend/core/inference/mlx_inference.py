@@ -1734,6 +1734,20 @@ def _discard_video_clip(path: str) -> None:
         pass
 
 
+def _zoo_declares_multimodal(model_name, hf_token = None) -> bool:
+    """unsloth_zoo's verdict from mlx-vlm's own configs, for families the transformers registry
+    does not know (an audio-only speech model, a tower under another name)."""
+    try:
+        from unsloth_zoo.mlx.loader import _is_vlm
+        from utils.models.model_config import _read_raw_config_json
+
+        config = _read_raw_config_json(model_name, hf_token)
+        return bool(config) and _is_vlm(config)
+    except Exception as exc:  # noqa: BLE001 -- detection must never fail a load
+        logger.debug("unsloth_zoo multimodal detection skipped for %s (%s)", model_name, exc)
+        return False
+
+
 def _classify_mlx_audio_type(
     model,
     processor,
@@ -5260,6 +5274,10 @@ class MLXInferenceBackend:
         self._resume_load_args = (bool(load_in_4bit), repr(dtype), repr(tuple(offload or ())))
         model_name = config.identifier if hasattr(config, "identifier") else str(config)
         is_vision = getattr(config, "is_vision", False)
+        is_lora = getattr(config, "is_lora", False)
+        zoo_multimodal = not is_vision and _zoo_declares_multimodal(
+            getattr(config, "base_model", None) if is_lora else model_name, hf_token
+        )
         kv_bits, turboquant = parse_mlx_kv_quant(kv_quant)
         self._turboquant = turboquant
         if self._turboquant:
@@ -5271,7 +5289,6 @@ class MLXInferenceBackend:
                 ) from exc
         distributed_rank, distributed_size = _mlx_distributed_rank_size(distributed_group)
         is_distributed = distributed_group is not None and distributed_size > 1
-        is_lora = getattr(config, "is_lora", False)
         self._turboquant_refusal = (
             _turboquant_refusal(is_vision = is_vision, is_distributed = is_distributed, is_lora = is_lora)
             if self._turboquant
@@ -5303,6 +5320,7 @@ class MLXInferenceBackend:
         # Speculation runs on mlx-vlm models and caches.
         use_vlm = (
             is_vision
+            or zoo_multimodal
             or speculates
             or (self._turboquant and not self._turboquant_refusal)
             or batches_quantized_text
@@ -5476,6 +5494,9 @@ class MLXInferenceBackend:
                 FastMLXModel.from_pretrained, load_source, load_kwargs, offload
             )
 
+        zoo_loaded_multimodal = zoo_multimodal and not served_by_mlx_lm
+        if zoo_loaded_multimodal:
+            is_vision = getattr(model, "_unsloth_supports_images", None) is True
         self._reads_vision = bool(is_vision)
         if use_vlm:
             processor = tokenizer_or_processor
@@ -5501,7 +5522,7 @@ class MLXInferenceBackend:
         _audio_type = _classify_mlx_audio_type(
             model,
             self._processor,
-            is_vision,
+            is_vision or zoo_loaded_multimodal,
             config_audio_type = _config_audio_type,
         )
         _served_ctx, _native_ctx, _max_ctx = self._resolve_context_lengths(

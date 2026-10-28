@@ -19522,7 +19522,7 @@ async def _load_model_impl(
             status = "loaded",
             model = model_log_label if native_grant_backed else config.identifier,
             display_name = model_log_label if native_grant_backed else config.display_name,
-            is_vision = config.is_vision,
+            is_vision = _model_info.get("is_vision", config.is_vision),
             is_lora = config.is_lora,
             is_gguf = False,
             is_local_model = config.is_local,
