@@ -974,7 +974,13 @@ def _refresh_in_background(definition: CacheDefinition) -> None:
         logger.debug(f"Could not start a {definition.key} cache size refresh: {exc}")
 
 
-def _described(definition: CacheDefinition, *, refresh: bool) -> dict:
+def _described(
+    definition: CacheDefinition,
+    *,
+    refresh: bool,
+    deferred: Optional[list] = None,
+) -> dict:
+    """``deferred`` collects the background refreshes for the caller to start, after its own walks."""
     started = time.monotonic()
     with _size_cache_lock:
         remembered = None if refresh else _size_cache.get(definition.key)
@@ -983,7 +989,10 @@ def _described(definition: CacheDefinition, *, refresh: bool) -> dict:
             return remembered[2]
         # A forced read (the Recheck button) still waits for a fresh walk below.
         if remembered[3] >= _BACKGROUND_WALK_SECONDS:
-            _refresh_in_background(definition)
+            if deferred is None:
+                _refresh_in_background(definition)
+            else:
+                deferred.append(definition)
             return remembered[2]
     # One walk per cache at a time, or simultaneous misses (e.g. two open tabs) each pay a cold walk.
     with _flight_for(definition.key):
@@ -1001,7 +1010,14 @@ def _described(definition: CacheDefinition, *, refresh: bool) -> dict:
 
 
 def cache_inventory(*, refresh: bool = False) -> dict:
-    entries = [_described(definition, refresh = refresh) for definition in CACHE_DEFINITIONS]
+    # Started after the foreground walks, which would otherwise share the GIL with them.
+    deferred: list = []
+    entries = [
+        _described(definition, refresh = refresh, deferred = deferred)
+        for definition in CACHE_DEFINITIONS
+    ]
+    for definition in deferred:
+        _refresh_in_background(definition)
     total = sum(entry["size_bytes"] for entry in entries if entry["present"])
     reclaimable = sum(
         entry["size_bytes"]

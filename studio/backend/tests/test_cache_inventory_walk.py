@@ -261,3 +261,41 @@ def test_background_walks_run_one_at_a_time(monkeypatch, clean_memo):
             break
         time.sleep(0.05)
     assert peak == [1, 1]
+
+
+def test_the_inventory_starts_background_walks_after_its_own(monkeypatch, clean_memo):
+    order: list = []
+    real_refresh = cache_inventory._refresh_in_background
+    monkeypatch.setattr(
+        cache_inventory,
+        "describe_cache",
+        lambda target: (
+            order.append(("walk", target.key)),
+            {
+                "key": target.key,
+                "size_bytes": 1,
+                "present": False,
+                "purgeable": False,
+                "opt_in": False,
+            },
+        )[1],
+    )
+    monkeypatch.setattr(cache_inventory, "_free_bytes", lambda: None)
+    monkeypatch.setattr(cache_inventory, "_total_disk_bytes", lambda: None)
+    cache_inventory.cache_inventory()
+    for definition in cache_inventory.CACHE_DEFINITIONS:
+        _expire(definition.key, walk_seconds = 30 if definition.key == "uv" else 0.01)
+    order.clear()
+    monkeypatch.setattr(
+        cache_inventory,
+        "_refresh_in_background",
+        lambda definition: (order.append(("background", definition.key)), real_refresh(definition)),
+    )
+    cache_inventory.cache_inventory()
+    for _ in range(100):
+        if ("walk", "uv") in order:
+            break
+        time.sleep(0.05)
+    foreground = [key for kind, key in order if kind == "walk" and key != "uv"]
+    assert len(foreground) == len(cache_inventory.CACHE_DEFINITIONS) - 1
+    assert order.index(("background", "uv")) == len(foreground)
