@@ -1,31 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Load a *pre-quantized* transformer instead of quantising a dense one on the GPU.
-
-The runtime transformer_quant path loads the dense bf16 transformer and ``quantize_``s it in place,
-materialising the full bf16 weights on the GPU first (~2x the GGUF peak, plus the full bf16
-download). When a transformer was already quantised and saved
-(``scripts/build_prequant_checkpoint.py``), this loads those weights directly: build the skeleton on
-``meta`` (``init_empty_weights`` + ``from_config``), ``load_state_dict(assign=True)`` the quantized
-state dict (subclass tensors assigned, not copied, so dense bf16 never touches the GPU), then move
-to device. Measured (B200, Z-Image fp8): GPU load peak 12.9 -> 6.3 GB, download 12 -> 6.28 GB,
-output bit-identical (LPIPS 0.0). The checkpoint carries the same scheme + ``min_features`` as the
-runtime path, so the result matches quantising on the fly.
-
-Two containers, one dict. Historically the artifact could only be a ``torch.save`` pickle, because
-torchao's weight subclasses are wrapper tensors and safetensors stores flat ones; that pickle is read
-under ``weights_only`` plus the constructor ALLOWLIST below, never as a free one, since it is a
-mutable remote file reached by loads that never asked for a scheme (auto resolves an unset precision
-to a hosted checkpoint) and "first-party repo" cannot stand in for that restriction. torchao >= 0.16
-can flatten those subclasses, so an artifact may now also be ``.safetensors`` (see
-``prequant_safetensors``), which needs no allowlist at all and answers the validation questions from
-its header. ``_load_prequant_checkpoint`` returns the same ``{"format", "state_dict", "metadata"}``
-for both, so every check in this module applies to them identically and the two cannot drift apart.
-
-Best-effort and lazily imported: a missing / mismatched / unreadable checkpoint returns None and the
-caller falls back to dense-quantise (then GGUF). Inert with nothing configured.
-"""
+"""Pre-quantized transformer load, lazily imported; pickles use weights_only plus allowlist; bad
+files return None so the caller falls back to dense quantise"""
 
 from __future__ import annotations
 
@@ -316,13 +293,17 @@ def _install_fp8_unit_scale() -> None:
 _PREQUANT_MMAP_ENV = "UNSLOTH_DIFFUSION_PREQUANT_MMAP"
 
 
-def prequant_mmap_enabled(destination: Any) -> bool:
-    """Map only for a non-CPU destination: a host-placed module would keep the file open (Windows then cannot delete it)."""
+def prequant_mmap_enabled(destination: Any, *, host_copy_follows: bool = False) -> bool:
+    """Map only for a non-CPU destination: a host-placed module would keep the file open (Windows then cannot delete it).
+    ``host_copy_follows``: host-placed but copied off before first render, so Linux maps (avoids a 20 GB copy)."""
     import os
+    import sys
 
     raw = (os.environ.get(_PREQUANT_MMAP_ENV) or "").strip().lower()
     if raw in ("0", "false", "no", "off"):
         return False
+    if host_copy_follows and sys.platform.startswith("linux"):
+        return True
     dest = str(destination or "").strip().lower()
     return bool(dest) and not dest.startswith("cpu") and dest != "meta"
 
@@ -331,9 +312,11 @@ def _read_prequant_for(
     path: str,
     destination: Any,
     logger: Any = None,
+    *,
+    host_copy_follows: bool = False,
 ) -> Any:
     """``_load_prequant_checkpoint`` mapped when enabled; anything the mapping cannot open is re-read in full."""
-    if prequant_mmap_enabled(destination):
+    if prequant_mmap_enabled(destination, host_copy_follows = host_copy_follows):
         try:
             return _load_prequant_checkpoint(path, map_location = "cpu", mmap = True)
         except Exception as exc:  # noqa: BLE001 - retried unmapped; the real error resurfaces there
@@ -2165,6 +2148,7 @@ def load_prequantized_transformer(
     placement_device: Optional[str] = None,
     family: Optional[str] = None,
     into: Optional[Any] = None,
+    host_copy_follows: bool = False,
 ) -> Optional[Any]:
     """Load the pre-quantized transformer described by ``source`` onto ``device``.
 
@@ -2283,7 +2267,9 @@ def load_prequantized_transformer(
         else:
             # Pickles load only under the ALLOWLIST, never free-running: a mutated file must fail,
             # not run.
-            ckpt = _read_prequant_for(path, placement_device or device, logger)
+            ckpt = _read_prequant_for(
+                path, placement_device or device, logger, host_copy_follows = host_copy_follows
+            )
             if not _validate_checkpoint(
                 ckpt,
                 scheme,
@@ -3225,7 +3211,9 @@ def stream_prequantized_module(
                 payload_mib = sum(
                     tensor_payload_bytes(t) for t in chain(module.parameters(), module.buffers())
                 ) // (1024 * 1024)
-                kwargs["low_cpu_mem_usage"] = not _streamed_pin_plan(payload_mib, 0, logger)[0]
+                kwargs["low_cpu_mem_usage"] = not _streamed_pin_plan(
+                    payload_mib, 0, logger, device = onload
+                )[0]
         # Pin through one slab arena: per-tensor pin_memory() rounds each weight to a power of two.
         from .diffusion_pinned_arena import pinned_arena_for_group_offload
 

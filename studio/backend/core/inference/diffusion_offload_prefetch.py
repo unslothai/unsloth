@@ -1,24 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Event-fenced prefetch for a block-streamed denoiser's diffusers offload groups.
-
-diffusers fences its stream prefetch on the host (``stream.synchronize()`` per onload) and copies one group ahead.
-Here the compute stream waits on a per-group CUDA event instead, and up to ``depth`` streamed groups are copied ahead
-in the order the first forward recorded.
-
-A forward's first copies are queued at the first block's onload (behind a compute-stream event when the top-level
-group uploads on the compute stream): queued earlier they hold that upload back on the copy engine.
-
-Memory stays bounded without a host wait: each offload records a compute-stream event the copy stream waits on, so a
-freed block goes to the next prefetch only after the compute that read it. Bytes in flight never pass ``window``.
-Unpinned copies' temporary pinned staging is capped at ``window`` (else T4 Z-Image pinned the whole denoiser).
-Hooks are per-group / per-module instance attributes; diffusers' classes are untouched.
-
-Cross-forward carry: past the last recorded group, the NEXT forward's first groups are copied into free window
-bytes. Only while a render arms it (never into the last step's decode); held off under a slot ring, step graph,
-capture, or another prefetcher's forward in between (its copies would not be read next).
-"""
+"""Event-fenced prefetch of streamed offload groups, no host sync; a freed block is reused only
+after the compute that read it; bytes in flight never pass window; carry held off under slot
+ring, step graph or capture"""
 
 from __future__ import annotations
 
@@ -890,6 +875,7 @@ def _adopt_top_group(
     module: Any,
     stream: Any,
     logger: Any = None,
+    device: Any = None,
 ) -> Optional[Any]:
     """Give a torchao top-level group (no stream in diffusers: synchronous upload, copy-back every forward) pinned host
     copies and the module's copy stream, so the prefetcher drives it like a block. None if left as it was."""
@@ -910,7 +896,8 @@ def _adopt_top_group(
         return None
     from .host_pinning import host_pinning_allowed
 
-    if not host_pinning_allowed():
+    # ``device``: the module's onload target (None: the current device)
+    if not host_pinning_allowed(device):
         return None
     go = _go()
     registry = getattr(module, "_diffusers_hook", None)
@@ -1034,7 +1021,7 @@ def install_group_prefetch(
         streams = {id(g.stream) for g in groups}
         if len(streams) != 1:
             return 0
-        top = _adopt_top_group(module, groups[0].stream, logger)
+        top = _adopt_top_group(module, groups[0].stream, logger, device = device)
         if top is not None:
             groups = [top] + groups
         pf = GroupPrefetcher(module, groups, device, prefetch_depth() if depth is None else depth)

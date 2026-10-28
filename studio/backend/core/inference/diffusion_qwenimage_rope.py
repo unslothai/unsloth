@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Qwen-Image RoPE in real arithmetic (Inductor cannot lower the complex multiply): points the stock RoPE at
-``diffusion_qwenimage21_rope``'s probed fma wrapper, bit-identical to the complex product. Two stock forms:
-diffusers 0.41.0 routes through ``ROPE_PER_DEVICE["cuda"]`` (its entry is swapped); main d42ebf9c dropped the table
-and the attention processor calls the module global ``apply_rotary_emb_qwen`` (the global is swapped, only while the
-processor matches a known source). Kill switch: ``UNSLOTH_DIFFUSION_QWEN_REAL_ROPE=0``
-(``UNSLOTH_DIFFUSION_Q21_REAL_ROPE=0`` also disables it).
-"""
+"""Real-arithmetic Qwen-Image RoPE, patched into diffusers; kill UNSLOTH_DIFFUSION_QWEN_REAL_ROPE=0"""
 
 from __future__ import annotations
 

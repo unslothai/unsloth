@@ -32,6 +32,7 @@ import {
 } from "@/lib/model-lifecycle-events";
 import type { AgentsMdRecord } from "../utils/agents-md";
 import { showLoadWarning } from "../utils/load-warning-toast";
+import { readAdvertisedPatchGuards } from "../utils/openapi-support";
 import { validateRequestBody, wireLoadRequest } from "../lib/load-request";
 import type {
   MessageRecord,
@@ -554,7 +555,9 @@ export async function resolveToolConfirmation(
   sessionId: string,
   approvalId: string,
   decision: "allow" | "deny",
+  fullAccess = false,
 ): Promise<boolean> {
+  const epoch = getAuthSessionEpoch();
   const response = await authFetch("/api/inference/tool-confirm", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -562,12 +565,15 @@ export async function resolveToolConfirmation(
       session_id: sessionId,
       approval_id: approvalId,
       decision,
+      ...(fullAccess ? { permission_mode: "full" } : {}),
     }),
   });
   // Ahead of parseJsonOrThrow, which folds every non-ok status into one bare Error.
   if (response.status === 404) throw new ToolApprovalGoneError();
-  const parsed = await parseJsonOrThrow<{ resolved?: boolean }>(response);
-  return parsed.resolved === true;
+  const parsed = await parseJsonOrThrow<{ resolved?: boolean; full_access_granted?: boolean }>(response);
+  // An older server may allow this call while ignoring the requested upgrade.
+  return getAuthSessionEpoch() === epoch && parsed.resolved === true &&
+    (!fullAccess || parsed.full_access_granted === true);
 }
 
 export interface CachedGgufRepo {
@@ -813,6 +819,17 @@ export async function deleteFineTunedModel(args: {
   await parseJsonOrThrow<unknown>(response);
 }
 
+let advertisedPatchGuards: boolean | null = null;
+
+export function advertisedThreadPatchGuards(): boolean | null {
+  return advertisedPatchGuards;
+}
+
+function noteAdvertisedPatchGuards(data: unknown): void {
+  const advertised = readAdvertisedPatchGuards(data);
+  if (advertised !== null) advertisedPatchGuards = advertised;
+}
+
 export async function listChatThreads(
   args: {
     modelType?: ModelType;
@@ -831,6 +848,7 @@ export async function listChatThreads(
   const qs = params.toString();
   const response = await authFetch(`/api/chat/threads${qs ? `?${qs}` : ""}`);
   const data = await parseJsonOrThrow<{ threads: ThreadRecord[] }>(response);
+  noteAdvertisedPatchGuards(data);
   // Always hand back an array: an older or misbehaving backend may omit it or send a non-array.
   return Array.isArray(data.threads) ? data.threads : [];
 }
@@ -904,6 +922,7 @@ export async function fetchSidebarRows(
   if (response.status === 404 || response.status === 405) return null;
   if (response.status === 400 && request.cursor) throw new SidebarCursorRejectedError();
   const data = await parseJsonOrThrow<SidebarRowsPage>(response);
+  noteAdvertisedPatchGuards(data);
   return {
     rows: Array.isArray(data.rows) ? data.rows : [],
     nextCursor: data.nextCursor ?? null,

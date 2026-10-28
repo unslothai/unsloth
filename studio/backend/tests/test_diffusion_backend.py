@@ -2265,7 +2265,7 @@ def test_validate_accepts_custom_local_components(fake_runtime, tmp_path):
 
 
 def test_resolve_local_single_file(tmp_path):
-    from core.inference.diffusion import resolve_local_single_file
+    from core.inference.diffusion_local_files import resolve_local_single_file
 
     d = tmp_path / "solo"
     d.mkdir()

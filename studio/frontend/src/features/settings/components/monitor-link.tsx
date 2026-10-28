@@ -49,7 +49,15 @@ export function MonitorLink({
       title={t("settings.resources.liveMonitor.apiTitle")}
       hideHeading={hideHeading}
     >
-      <div className={cn("flex flex-col", hideHeading ? "pt-2" : "pt-3")}>
+      <div className={cn("flex flex-col", hideHeading ? undefined : "pt-3")}>
+        {/* In a shared section the card needs its own title, as the rows beside it have. */}
+        {hideHeading ? (
+          <SettingsRow
+            label={t("settings.resources.liveMonitor.apiTitle")}
+            description={t("settings.resources.liveMonitor.apiDescription")}
+            className="pb-2"
+          />
+        ) : null}
         <button
           type="button"
           onClick={() => {

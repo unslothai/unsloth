@@ -139,6 +139,11 @@ export const zhCN = {
     more: "更多",
     addressPlaceholder: "搜索或输入网址",
     local: "本地",
+    browserUse: {
+      label: "浏览器操作",
+      description: "允许模型控制内置浏览器",
+      unavailable: "请加载支持工具调用的模型，才能让它使用浏览器。",
+    },
     suggested: "推荐",
     suggestedMenu: {
       open: "打开",
@@ -624,6 +629,36 @@ export const zhCN = {
     compactEmpty: "暂无可压缩的内容",
     compactUnsupported: "对话压缩需要支持工具调用的 GGUF 或 MLX 模型",
   },
+  halloween: {
+    navLabel: "不给糖就捣蛋…",
+    title: "不给糖就捣蛋？！",
+    description: "我们为 Unsloth 准备了一些惊吓，持续到十月底。",
+    chooseTheme: "选择一个惊悚主题",
+    spookyGreetings: "惊悚问候",
+    spookyGreetingsDescription: "树懒会在新对话中吓你一跳。",
+    decorations: "蜘蛛和蝙蝠",
+    decorationsDescription:
+      "使用万圣节主题时，角落会有蛛网，偶尔还会出现蜘蛛或蝙蝠。",
+    surprise: "不给糖就捣蛋！",
+    surpriseDescription: "让树懒为你挑选主题。",
+    themesTitle: "惊悚主题",
+    back: "返回",
+    footer: "Unsloth 将于 11 月 1 日零点恢复正常。",
+    removeNow: "立即移除",
+    hideFromSidebar: "从侧边栏隐藏",
+    greeting: {
+      pumpkins: "南瓜灯已经刻好了。接下来做什么？",
+      brewing: "开始熬制魔药吧",
+      trickOrTreat: "不给糖就捣蛋？",
+      manor: "欢迎来到古宅",
+      manorName: "{name}，欢迎来到古宅",
+      happyHalloween: "万圣节快乐",
+      happyHalloweenName: "{name}，万圣节快乐",
+      spirits: "幽灵们正在聆听……",
+      mysteries: "今晚我们要揭开什么谜团？",
+      conjure: "想让我为你变出什么？",
+    },
+  },
   welcome: {
     goodToSeeYou: "很高兴见到你",
     goodToSeeYouName: "很高兴见到你，{name}",
@@ -782,6 +817,8 @@ export const zhCN = {
       guidedTour: "引导教程",
       help: "帮助",
       logOut: "退出登录",
+      logOutNeedsPassword: "退出登录前，请先在 设置 > 远程访问 中设置密码，以便重新登录。",
+      logOutFailed: "无法安全退出登录，请稍后重试。",
       shutdown: "关闭服务",
     },
     commandPalette: {
@@ -926,6 +963,11 @@ export const zhCN = {
   },
   settings: {
     accounts: {
+      signsInAs: "以 {username} 登录",
+      signsInAsOwner: "以 {alias} 或 {username} 登录",
+      signInName: "你的登录名",
+      signInNameDescription: "当此安装有多个账户时，登录时输入的名称。unsloth 也始终可用。留空则只使用 unsloth。",
+      signInNameSave: "保存名称",
       title: "账户",
       description: "创建独立的 Unsloth 账户。新用户使用一次性设置码登录并设置密码。",
       username: "用户名",
@@ -1405,7 +1447,7 @@ export const zhCN = {
       installingRuntime: "正在安装…",
       installRuntimeFailed: "运行时安装失败。",
       installRuntimeError: "无法开始安装运行时。",
-      unsupportedArch: "Windows 沙箱 (MXC) 仅支持 x64 版 Windows，因此在此电脑上不可用。",
+      unsupportedArch: "Windows 沙箱 (MXC) 仅支持 x64 和 ARM64 版 Windows，因此在此电脑上不可用。",
       builtinNeedsUpdate:
         "Windows 内置容器需要版本 {required} 或更高，而这台电脑运行的是 {current}。安装最新的 Windows 更新即可无需管理员步骤使用它，或在下方开启备用沙盒。",
       unsupportedBuild: "Windows 沙箱 (MXC) 需要 Windows 11 24H2（版本 26100）或更高版本，因此在此电脑上不可用。",
@@ -2158,6 +2200,12 @@ export const zhCN = {
         classic: "经典",
         minimal: "极简",
         moreThemes: "更多主题",
+        halloween: "万圣节",
+      },
+      trickOrTreat: {
+        label: "不给糖就捣蛋",
+        description:
+          "万圣节主题和惊悚问候，持续到 11 月 1 日。",
       },
       custom: {
         chatWidth: {
@@ -2282,6 +2330,7 @@ export const zhCN = {
       liveMonitor: {
         title: "实时监控",
         apiTitle: "API 监控",
+        apiDescription: "实时查看其他应用发送到此服务器 API 的内容。",
         summary: "实时请求、错误和 token 用量",
         status: "{active} 个进行中 · {recent} 个近期请求 · {model}",
         noModelLoaded: "未加载模型",
@@ -2300,7 +2349,7 @@ export const zhCN = {
         gpuUnusableDetail: "已检测到，但 PyTorch 无法使用",
         detailedView: "详细视图",
         detailedViewDescription:
-          "在浮动窗口和此处显示 CPU 负载以及每个 GPU 的负载、温度和功耗。",
+          "在浮动窗口中显示 CPU 负载以及每个 GPU 的负载、温度和功耗。",
         cpuLoad: "CPU 负载",
         gpuLoad: "GPU 负载",
         temperature: "温度",
@@ -2331,6 +2380,10 @@ export const zhCN = {
         used: "已用 {value}",
         free: "{value} 可用",
         total: "共 {value}",
+        usedOf: "已用 {used}，共 {total}",
+        segmentUsed: "GPU 已用",
+        segmentSystem: "系统已用",
+        segmentAvailable: "可用",
       },
       llamaBackend: {
         title: "GGUF 推理引擎",
@@ -2457,6 +2510,10 @@ export const zhCN = {
           hideDetailsAction: "隐藏详情",
           clearAction: "清理缓存",
           clearOneAction: "清理",
+          showFolders: "显示文件夹",
+          hideFolders: "隐藏文件夹",
+          previousLocations: "包含以前的位置。主清理按钮作用于当前缓存文件夹。模型按钮仅清理所选副本。",
+          clearModelDescription: "这只会删除此缓存副本。需要时会重新下载。",
           clearingAction: "正在清理...",
           confirmTitle: "要清理缓存文件吗？",
           confirmDescription: "这将释放约{size}。",
@@ -2511,6 +2568,8 @@ export const zhCN = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "运行时长",
         processMemory: "进程内存",
         notInstalled: "未安装",
@@ -3242,6 +3301,7 @@ export const zhCN = {
       desktopAppVersionUnavailable: "不可用",
       llamaCppVersion: "llama.cpp 版本",
       audioCppVersion: "audio.cpp 版本",
+      mlxVersion: "MLX 版本",
       whisperCppVersion: "whisper.cpp 版本",
       engines: {
         title: "引擎",
@@ -4085,7 +4145,6 @@ export const zhCN = {
       terminalStart: "> Unsloth 训练开始...",
       preparingResources: "> 正在准备模型和数据集...",
       gettingReady: "> 正在为本次运行做好准备...",
-      waitingForFirstStep: "> {message} | 正在等待首个训练步...（{step}）",
       resumingTraining: "正在继续训练...",
       startingTraining: "正在开始训练...",
       dataset: "数据集",
@@ -4450,6 +4509,7 @@ export const zhCN = {
       modelsTitle: "还没有微调模型",
       modelsDescription: "你在 Unsloth 中训练或导出的模型会显示在这里。",
       createFolder: "创建文件夹",
+      generateImage: "生成图像",
       generateVideo: "生成视频",
       generateAudio: "生成音频",
       trainModel: "训练模型",
