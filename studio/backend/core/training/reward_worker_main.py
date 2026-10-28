@@ -18,6 +18,7 @@ import traceback
 POLL_SECONDS = 0.002
 # The host touches "alive" every few seconds; a host that died without saying stop goes quiet.
 ALIVE_TIMEOUT_SECONDS = 60.0
+SETUP_TIMEOUT_SECONDS = 60.0
 
 
 def _retry(action, seconds = 10.0):
@@ -155,7 +156,15 @@ def main():
     # Notebook rewards print a lot; a pipe nobody drains would block them.
     log = _BoundedLog(os.path.join(workdir, "worker.log"), LOG_LIMIT_CHARS)
     sys.stdout = sys.stderr = log
-    with open(os.path.join(workdir, "rewards.json"), encoding = "utf-8") as f:
+    setup_path = os.path.join(workdir, "rewards.json")
+    # Written once the host has this worker in its Windows job, so no reward starts a child
+    # outside it.
+    deadline = time.monotonic() + SETUP_TIMEOUT_SECONDS
+    while not os.path.exists(setup_path):
+        if os.path.exists(os.path.join(workdir, "stop")) or time.monotonic() > deadline:
+            return 0
+        time.sleep(POLL_SECONDS)
+    with open(setup_path, encoding = "utf-8") as f:
         setup = json.load(f)
     specs = setup["specs"]
     try:
