@@ -3,7 +3,11 @@
 
 import { create } from "zustand";
 import { AUTH_SESSION_CLEARED_EVENT, getAuthSessionEpoch } from "@/features/auth";
-import { deleteFineTunedModel, emitChatAttachmentDeleted } from "@/features/chat";
+import {
+  deleteFineTunedModel,
+  emitChatAttachmentDeleted,
+  prepareChatAttachmentDeletion,
+} from "@/features/chat";
 import { usePinnedModelsStore } from "@/features/model-picker";
 import { translate } from "@/i18n";
 import { type GalleryKind, notifyGalleryChanged } from "@/lib/gallery-flags";
@@ -196,6 +200,10 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
               });
               usePinnedModelsStore.getState().unpinRepo(model.path);
               return;
+            }
+            if (id.startsWith("attachment:")) {
+              // Fails here, before anything is deleted, if an open chat could not drop it afterwards.
+              await prepareChatAttachmentDeletion(id.split(":").slice(2).join(":"));
             }
             await deleteLibraryItem(id, fingerprint);
           } finally {

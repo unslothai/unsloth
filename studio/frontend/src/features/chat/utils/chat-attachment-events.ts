@@ -93,6 +93,14 @@ export async function chatContentPartAttachmentIdFromSignature(
   return `${CONTENT_PART_ID_PREFIX}${hex}`;
 }
 
+/** Loads what dropping this id from an open chat needs (node-forge without WebCrypto); call before deleting. */
+export async function prepareChatAttachmentDeletion(
+  attachmentId: string,
+): Promise<void> {
+  if (!attachmentId.startsWith(CONTENT_PART_ID_PREFIX)) return;
+  await chatContentPartAttachmentIdFromSignature("");
+}
+
 type Listener = (event: ChatAttachmentDeletedEvent) => void | Promise<void>;
 
 const listeners = new Set<Listener>();
