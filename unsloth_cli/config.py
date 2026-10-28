@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import threading
 from pathlib import Path
 from typing import Literal, Optional, List
 
@@ -220,8 +221,25 @@ def _config_error_message(path: Path, error: ValidationError) -> str:
     return "\n".join(lines)
 
 
+_SCHEMA_LOCK = threading.Lock()
+_schemas_built = False
+
+
+def _build_schemas() -> None:
+    """Build the deferred validators once under a lock: concurrent first builds can corrupt them."""
+    global _schemas_built
+    if _schemas_built:
+        return
+    with _SCHEMA_LOCK:
+        if not _schemas_built:
+            for model in (DataConfig, TrainingConfig, LoraConfig, LoggingConfig, Config):
+                model.model_rebuild()
+            _schemas_built = True
+
+
 def load_config(path: Optional[Path]) -> Config:
     """Load config from YAML/JSON file, or return defaults if no path given."""
+    _build_schemas()
     if not path:
         return Config()
 
