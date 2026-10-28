@@ -83,6 +83,9 @@ def _run_console_script(
         [sys.executable, "-c", probe],
         capture_output = True,
         text = True,
+        # The CLI writes UTF-8 on Windows (rich box drawing in help); the locale codec is cp1252 there.
+        encoding = "utf-8",
+        errors = "replace",
         cwd = str(_REPO_ROOT),
         env = {**__import__("os").environ, "NO_COLOR": "1", "COLUMNS": "80"},
     )
@@ -100,6 +103,9 @@ def _pydantic_preloaded() -> bool:
         [sys.executable, "-c", "import sys, typer, rich; print('pydantic' in sys.modules)"],
         capture_output = True,
         text = True,
+        # The CLI writes UTF-8 on Windows (rich box drawing in help); the locale codec is cp1252 there.
+        encoding = "utf-8",
+        errors = "replace",
     )
     return result.stdout.strip() == "True"
 
