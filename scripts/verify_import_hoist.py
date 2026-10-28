@@ -1004,6 +1004,9 @@ def _top_level_binding(src: str | None, name: str):
             elif isinstance(node, ast.AugAssign):
                 if name in targets(node.target):
                     found.append("ambiguous")
+            elif isinstance(node, ast.Delete):
+                if any(name in targets(t) for t in node.targets):
+                    found.append("ambiguous")
             elif isinstance(node, ast.ImportFrom):
                 for alias in node.names:
                     # `import *` may rebind any name; its exports are not resolved here.
@@ -1043,6 +1046,16 @@ def _top_level_binding(src: str | None, name: str):
         found[start:] = ["ambiguous"] * (len(found) - start)
 
     visit(tree.body)
+    # Rebinding outside the statements above: `global name` in any function, or `name := ...` at module level.
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Global) and name in node.names:
+            found.append("ambiguous")
+    for stmt in tree.body:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            continue
+        for node in ast.walk(stmt):
+            if isinstance(node, ast.NamedExpr) and name in targets(node.target):
+                found.append("ambiguous")
     if not found:
         return None
     return found[0] if len(found) == 1 else "ambiguous"
