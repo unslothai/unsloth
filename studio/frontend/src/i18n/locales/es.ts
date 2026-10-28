@@ -2365,6 +2365,13 @@ export const es = {
         gpuLoad: "Carga de GPU",
         temperature: "Temperatura",
         power: "Consumo",
+        memory: "Memoria",
+        gpuInUse: "En uso por la GPU",
+        availableForModels: "Disponible para modelos",
+        gpuCount: "{count} GPU",
+        refreshRate: "Frecuencia de actualización",
+        refreshRateDescription: "Con qué frecuencia el monitor flotante lee el uso de memoria y GPU mientras está abierto.",
+        refreshEvery: "Cada {seconds} s",
       },
       gpu: {
         title: "Dispositivos GPU",

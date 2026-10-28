@@ -2274,6 +2274,13 @@ export const it = {
         gpuLoad: "Carico GPU",
         temperature: "Temperatura",
         power: "Consumo",
+        memory: "Memoria",
+        gpuInUse: "In uso dalla GPU",
+        availableForModels: "Disponibile per i modelli",
+        gpuCount: "{count} GPU",
+        refreshRate: "Frequenza di aggiornamento",
+        refreshRateDescription: "Ogni quanto il monitor fluttuante legge l'uso di memoria e GPU mentre è aperto.",
+        refreshEvery: "Ogni {seconds} s",
       },
       gpu: {
         title: "Dispositivi GPU",

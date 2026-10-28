@@ -2350,6 +2350,13 @@ export const ru = {
         gpuLoad: "Загрузка GPU",
         temperature: "Температура",
         power: "Мощность",
+        memory: "Память",
+        gpuInUse: "Используется GPU",
+        availableForModels: "Доступно для моделей",
+        gpuCount: "GPU: {count}",
+        refreshRate: "Частота обновления",
+        refreshRateDescription: "Как часто плавающий монитор считывает использование памяти и GPU, пока он открыт.",
+        refreshEvery: "Каждые {seconds} с",
       },
       gpu: {
         title: "Устройства GPU",

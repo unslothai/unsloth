@@ -2442,6 +2442,13 @@ export const he = {
         gpuLoad: "עומס GPU",
         temperature: "טמפרטורה",
         power: "הספק",
+        memory: "זיכרון",
+        gpuInUse: "בשימוש ה-GPU",
+        availableForModels: "זמין למודלים",
+        gpuCount: "{count} מעבדי GPU",
+        refreshRate: "קצב רענון",
+        refreshRateDescription: "באיזו תדירות המוניטור הצף קורא את השימוש בזיכרון וב-GPU כשהוא פתוח.",
+        refreshEvery: "כל {seconds} שנ׳",
       },
       gpu: {
         title: "התקני GPU",

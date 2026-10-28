@@ -2339,6 +2339,13 @@ export const ar = {
         gpuLoad: "حمل GPU",
         temperature: "الحرارة",
         power: "الطاقة",
+        memory: "الذاكرة",
+        gpuInUse: "مستخدمة بواسطة GPU",
+        availableForModels: "متاحة للنماذج",
+        gpuCount: "{count} وحدات GPU",
+        refreshRate: "معدل التحديث",
+        refreshRateDescription: "عدد مرات قراءة الشاشة العائمة لاستخدام الذاكرة وGPU أثناء فتحها.",
+        refreshEvery: "كل {seconds} ث",
       },
       gpu: {
         title: "أجهزة GPU",

@@ -68,7 +68,18 @@ import {
   type StorageSegment,
   StorageOverview,
 } from "../components/storage-overview";
+import {
+  MONITOR_REFRESH_OPTIONS_MS,
+  monitorRefreshMs,
+} from "@/components/monitor-refresh";
 import { useMonitorOverlayStore } from "../stores/monitor-overlay-store";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
 import { ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -288,6 +299,8 @@ export function ResourcesTab() {
     setShowDetails,
     detailMetrics: storedDetailMetrics,
     setDetailMetric,
+    refreshMs,
+    setRefreshMs,
   } = useMonitorOverlayStore();
   const detailMetrics = selectedDetailMetrics(storedDetailMetrics);
   // always fetch once: the switch is persisted now, so gating the hook on it
@@ -819,6 +832,31 @@ export function ResourcesTab() {
             checked={showDetails}
             onCheckedChange={setShowDetails}
           />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.resources.liveMonitor.refreshRate")}
+          description={t("settings.resources.liveMonitor.refreshRateDescription")}
+        >
+          <Select
+            value={String(monitorRefreshMs(refreshMs))}
+            onValueChange={(value) => setRefreshMs(Number(value))}
+          >
+            <SelectTrigger
+              className="w-28"
+              aria-label={t("settings.resources.liveMonitor.refreshRate")}
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {MONITOR_REFRESH_OPTIONS_MS.map((ms) => (
+                <SelectItem key={ms} value={String(ms)}>
+                  {t("settings.resources.liveMonitor.refreshEvery", {
+                    seconds: ms / 1000,
+                  })}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </SettingsRow>
         {showDetails && (
           <div className="flex flex-wrap gap-x-5 gap-y-2 pb-3">

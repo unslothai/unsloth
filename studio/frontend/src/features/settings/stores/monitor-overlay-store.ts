@@ -9,6 +9,10 @@ import {
   type MonitorDetailMetric,
   selectedDetailMetrics,
 } from "@/components/monitor-details";
+import {
+  DEFAULT_MONITOR_REFRESH_MS,
+  monitorRefreshMs,
+} from "@/components/monitor-refresh";
 
 interface MonitorOverlayState {
   isOpen: boolean;
@@ -16,10 +20,12 @@ interface MonitorOverlayState {
   /** Off by default: the monitor looks as it always has until a user opts in. */
   showDetails: boolean;
   detailMetrics: MonitorDetailMetric[];
+  refreshMs: number;
   setIsOpen: (open: boolean) => void;
   toggleMinimized: () => void;
   setShowDetails: (show: boolean) => void;
   setDetailMetric: (metric: MonitorDetailMetric, on: boolean) => void;
+  setRefreshMs: (ms: number) => void;
 }
 
 export const useMonitorOverlayStore = create<MonitorOverlayState>()(
@@ -29,6 +35,7 @@ export const useMonitorOverlayStore = create<MonitorOverlayState>()(
       isMinimized: false,
       showDetails: false,
       detailMetrics: [...MONITOR_DETAIL_METRICS],
+      refreshMs: DEFAULT_MONITOR_REFRESH_MS,
       setIsOpen: (isOpen) => set({ isOpen }),
       toggleMinimized: () => set((state) => ({ isMinimized: !state.isMinimized })),
       setShowDetails: (showDetails) => set({ showDetails }),
@@ -41,6 +48,7 @@ export const useMonitorOverlayStore = create<MonitorOverlayState>()(
             ),
           };
         }),
+      setRefreshMs: (ms) => set({ refreshMs: monitorRefreshMs(ms) }),
     }),
     { name: "unsloth_monitor_overlay" }
   )

@@ -2354,6 +2354,13 @@ export const ptBR = {
         gpuLoad: "Carga da GPU",
         temperature: "Temperatura",
         power: "Consumo",
+        memory: "Memória",
+        gpuInUse: "Em uso pela GPU",
+        availableForModels: "Disponível para modelos",
+        gpuCount: "{count} GPUs",
+        refreshRate: "Taxa de atualização",
+        refreshRateDescription: "Com que frequência o monitor flutuante lê o uso de memória e GPU enquanto está aberto.",
+        refreshEvery: "A cada {seconds} s",
       },
       gpu: {
         title: "Dispositivos de GPU",

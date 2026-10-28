@@ -2333,6 +2333,13 @@ export const ko = {
         gpuLoad: "GPU 부하",
         temperature: "온도",
         power: "전력",
+        memory: "메모리",
+        gpuInUse: "GPU 사용 중",
+        availableForModels: "모델에 사용 가능",
+        gpuCount: "GPU {count}개",
+        refreshRate: "새로 고침 빈도",
+        refreshRateDescription: "플로팅 모니터가 열려 있는 동안 메모리와 GPU 사용량을 읽는 빈도입니다.",
+        refreshEvery: "{seconds}초마다",
       },
       gpu: {
         title: "GPU 장치",

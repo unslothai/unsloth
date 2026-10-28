@@ -2320,6 +2320,13 @@ export const ja = {
         gpuLoad: "GPU 負荷",
         temperature: "温度",
         power: "消費電力",
+        memory: "メモリ",
+        gpuInUse: "GPU 使用中",
+        availableForModels: "モデルに使用可能",
+        gpuCount: "{count} 基の GPU",
+        refreshRate: "更新間隔",
+        refreshRateDescription: "フローティングモニターを開いている間、メモリと GPU の使用量を読み取る頻度です。",
+        refreshEvery: "{seconds} 秒ごと",
       },
       gpu: {
         title: "GPU デバイス",

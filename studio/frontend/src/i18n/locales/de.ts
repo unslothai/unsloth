@@ -2370,6 +2370,13 @@ export const de = {
         gpuLoad: "GPU-Last",
         temperature: "Temperatur",
         power: "Leistung",
+        memory: "Arbeitsspeicher",
+        gpuInUse: "Von der GPU belegt",
+        availableForModels: "Für Modelle verfügbar",
+        gpuCount: "{count} GPUs",
+        refreshRate: "Aktualisierungsrate",
+        refreshRateDescription: "Wie oft der schwebende Monitor Speicher- und GPU-Auslastung liest, solange er geöffnet ist.",
+        refreshEvery: "Alle {seconds} s",
       },
       gpu: {
         title: "GPU-Geräte",

@@ -9,6 +9,7 @@ import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { FIND_PORTAL_ATTRIBUTE } from "@/features/find-in-page/lib/find-attributes";
 
 import { useMonitorOverlayStore } from "@/features/settings";
+import { monitorRefreshMs } from "./monitor-refresh";
 import { useCornerCardFrameStore } from "@/features/settings/stores/monitor-frame-store";
 import { gpuMemoryDisplay } from "@/hooks/gpu-memory-display";
 import { gpuMemoryTotalsGb, resolveGpuVramUsedGb } from "@/hooks/gpu-vram";
@@ -26,7 +27,13 @@ import { cn } from "@/lib/utils";
 import { useRouterState } from "@tanstack/react-router";
 import { CpuIcon, GripVerticalIcon } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import {
+  type ReactNode,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 
 import {
   formatPower,
@@ -106,6 +113,52 @@ function DetailBar({
         className="h-1 rounded-full bg-muted"
         indicatorClassName={indicatorClassName}
       />
+    </div>
+  );
+}
+
+function MemoryRow({
+  label,
+  detail,
+  percent,
+  amount,
+  testId,
+  children,
+}: {
+  label: string;
+  detail?: string;
+  percent: number | null;
+  amount: string;
+  testId: string;
+  children?: ReactNode;
+}) {
+  return (
+    <div className="space-y-1.5" data-testid={testId}>
+      <div className="flex items-baseline justify-between gap-2 text-xs">
+        <span className="font-medium text-foreground">{label}</span>
+        <span
+          className={cn(
+            "shrink-0 font-mono font-medium tabular-nums",
+            percent === null ? "text-muted-foreground" : usageTextClass(percent),
+          )}
+        >
+          {percent === null ? "--" : `${Math.round(percent)}%`}
+        </span>
+      </div>
+      <Progress
+        value={percent ?? 0}
+        className="h-1.5 rounded-full bg-muted"
+        indicatorClassName={usageIndicatorClass(percent ?? 0)}
+      />
+      <div className="space-y-0.5 text-ui-11 text-muted-foreground">
+        <div className="font-mono tabular-nums">{amount}</div>
+        {detail && (
+          <div className="truncate" title={detail}>
+            {detail}
+          </div>
+        )}
+        {children}
+      </div>
     </div>
   );
 }
@@ -214,6 +267,10 @@ function FloatingMonitorPanel({
     vramUsageKnown && vramTotal > 0 ? (vramUsed / vramTotal) * 100 : 0,
   );
   const unknownLabel = t("settings.resources.environment.unknown");
+  const deviceLabel =
+    devices.length > 1
+      ? t("settings.resources.liveMonitor.gpuCount", { count: devices.length })
+      : (devices[0]?.name ?? undefined);
 
   const showDetails = useMonitorOverlayStore((state) => state.showDetails);
   const storedDetailMetrics = useMonitorOverlayStore(
@@ -232,6 +289,12 @@ function FloatingMonitorPanel({
   const hasGpu =
     (displayedGpu?.available ?? false) &&
     (displayedGpu?.devices.length ?? 0) > 0;
+  // Apple unified memory: RAM and "VRAM" are one pool, so two bars contradict each other.
+  const unifiedRow =
+    hasGpu &&
+    devices.length > 0 &&
+    unifiedPool &&
+    memoryDisplay.sharedDevices.length === 0;
 
   // The container sits on the floating panel layer, above the bottom-right overlay stack. The stack
   // is anchored to that same corner and does not move for this monitor; at its default corner the
@@ -265,7 +328,7 @@ function FloatingMonitorPanel({
         exit={{ opacity: 0 }}
         className={cn(
           "settings-surface bg-background pointer-events-auto absolute flex max-h-full w-64 max-w-full cursor-default select-none flex-col overflow-hidden rounded-2xl border border-border/70 p-3 shadow-border ring-0",
-          layout ? "top-0 left-0 resize" : "right-0 bottom-0",
+          layout ? "top-0 left-0" : "right-0 bottom-0",
         )}
         data-testid="floating-monitor"
         // Takes its own clicks over a macOS browser page (native-view.ts).
@@ -346,79 +409,62 @@ function FloatingMonitorPanel({
             data-testid="floating-monitor-content"
             className={cn("space-y-3 transition-opacity", stale && "opacity-50")}
           >
-            <div className="space-y-1">
-              <div className="flex justify-between text-ui-11 font-medium font-mono">
-                <span>{t("settings.resources.liveMonitor.ram")}</span>
-                <span
-                  className={cn(
-                    "tabular-nums",
-                    ramKnown
-                      ? usageTextClass(ramPercent)
-                      : "text-muted-foreground",
-                  )}
-                >
-                  {ramKnown ? `${Math.round(ramPercent)}%` : "--"}
-                </span>
-              </div>
-              <div className="text-xs text-muted-foreground font-mono tabular-nums">
-                {ramKnown
-                  ? `${formatGiB(ramUsed)} / ${formatGiB(ramTotal)}`
-                  : "-- / --"}
-              </div>
-              <Progress
-                value={ramKnown ? ramPercent : 0}
-                className="mt-1 h-1.5 rounded-full bg-muted"
-                indicatorClassName={usageIndicatorClass(ramPercent)}
-              />
-            </div>
-
-            {hasGpu && devices.length > 0 && (
-              <div className="space-y-1">
-                <div className="flex justify-between text-ui-11 font-medium font-mono">
-                  <span className="truncate flex-1 pr-2">
-                    {t("settings.resources.liveMonitor.vram")}{" "}
-                    {devices.length > 1
-                      ? `(${devices.length} GPUs)`
-                      : `(${devices[0].name ?? "GPU"})`}
-                  </span>
-                  <span
-                    className={cn(
-                      "shrink-0 tabular-nums",
-                      vramUsageKnown
-                        ? usageTextClass(vramPercent)
-                        : "text-muted-foreground",
-                    )}
-                  >
-                    {vramUsageKnown ? `${Math.round(vramPercent)}%` : "--"}
+            {unifiedRow ? (
+              <MemoryRow
+                testId="floating-monitor-memory"
+                label={t("settings.resources.liveMonitor.memory")}
+                detail={deviceLabel}
+                percent={ramKnown ? ramPercent : null}
+                amount={
+                  ramKnown
+                    ? `${formatGiB(ramUsed)} / ${formatGiB(ramTotal)}`
+                    : "-- / --"
+                }
+              >
+                <div className="flex justify-between gap-2">
+                  <span>{t("settings.resources.liveMonitor.gpuInUse")}</span>
+                  <span className="shrink-0 font-mono tabular-nums">
+                    {vramUsageKnown ? formatGiB(vramUsed) : unknownLabel}
                   </span>
                 </div>
-                <div className="text-xs text-muted-foreground font-mono tabular-nums">
-                  {vramUsageKnown ? formatGiB(vramUsed) : unknownLabel} /{" "}
-                  {hasSharedPool && !unifiedPool
-                    ? t("settings.resources.environment.vramWithShared", {
-                        vram: formatGiB(memoryTotals.dedicated),
-                        shared: formatGiB(memoryTotals.shared),
-                      })
-                    : formatGiB(vramTotal)}
-                </div>
-                {unifiedPool && memoryDisplay.sharedDevices.length === 0 && (
-                  <div className="text-xs font-mono text-muted-foreground">
-                    {t("settings.resources.gpu.sharedWithSystemRam")}
-                    {memoryDisplay.unifiedAvailableGb !== null && (
-                      <span className="block">
-                        {t("settings.resources.gpu.estimatedAvailable", {
-                          value: formatGiB(memoryDisplay.unifiedAvailableGb),
-                        })}
-                      </span>
-                    )}
+                {memoryDisplay.unifiedAvailableGb !== null && (
+                  <div className="flex justify-between gap-2">
+                    <span>{t("settings.resources.liveMonitor.availableForModels")}</span>
+                    <span className="shrink-0 font-mono tabular-nums">
+                      {formatGiB(memoryDisplay.unifiedAvailableGb)}
+                    </span>
                   </div>
                 )}
-                <Progress
-                  value={vramUsageKnown ? vramPercent : 0}
-                  className="mt-1 h-1.5 rounded-full bg-muted"
-                  indicatorClassName={usageIndicatorClass(vramPercent)}
+              </MemoryRow>
+            ) : (
+              <>
+                <MemoryRow
+                  testId="floating-monitor-ram"
+                  label={t("settings.resources.liveMonitor.ram")}
+                  percent={ramKnown ? ramPercent : null}
+                  amount={
+                    ramKnown
+                      ? `${formatGiB(ramUsed)} / ${formatGiB(ramTotal)}`
+                      : "-- / --"
+                  }
                 />
-              </div>
+                {hasGpu && devices.length > 0 && (
+                  <MemoryRow
+                    testId="floating-monitor-vram"
+                    label={t("settings.resources.liveMonitor.vram")}
+                    detail={deviceLabel}
+                    percent={vramUsageKnown ? vramPercent : null}
+                    amount={`${vramUsageKnown ? formatGiB(vramUsed) : unknownLabel} / ${
+                      hasSharedPool && !unifiedPool
+                        ? t("settings.resources.environment.vramWithShared", {
+                            vram: formatGiB(memoryTotals.dedicated),
+                            shared: formatGiB(memoryTotals.shared),
+                          })
+                        : formatGiB(vramTotal)
+                    }`}
+                  />
+                )}
+              </>
             )}
             {hasGpu && memoryDisplay.sharedDevices.length > 0 && (
               <div className="space-y-1 text-xs">
@@ -630,7 +676,10 @@ export function FloatingMonitor() {
       monitorWidth,
       uiSpaceScale,
     });
-  const systemInfo = useSystemInfo({ enabled: visible, pollMs: 5000 });
+  const refreshMs = useMonitorOverlayStore((state) =>
+    monitorRefreshMs(state.refreshMs),
+  );
+  const systemInfo = useSystemInfo({ enabled: visible, pollMs: refreshMs });
   const [panelKey, setPanelKey] = useState(0);
   const wasOpenRef = useRef(isOpen);
 
