@@ -124,3 +124,11 @@ def test_other_numeric_budgets_match():
             0,
         ):
             assert tools._dense_prefix_chars(text, budget) == _reference(text, budget)
+
+
+def test_str_subclass_keeps_the_scanner():
+    class Text(str):
+        def isascii(self):
+            raise AssertionError("the scanner never calls isascii")
+
+    assert tools._dense_prefix_chars(Text("abcdef"), 1.0) == _reference("abcdef", 1.0) == 4
