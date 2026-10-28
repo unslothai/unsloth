@@ -100,13 +100,29 @@ def maybe_kick(
         from .diffusion_memory import user_budget_reserve_bytes
 
         free, total = torch.cuda.mem_get_info(job["device"])
-        if free - user_budget_reserve_bytes(job["device"], total) < _MIN_FREE_BYTES:
+        pending = _pending_runtime_bytes(pipe)
+        if free - user_budget_reserve_bytes(job["device"], total) - pending < _MIN_FREE_BYTES:
+            if pending and logger is not None:
+                logger.info(
+                    "diffusion.vae_prebuild: skipped (the streamed placement still allocates %d MiB)",
+                    pending >> 20,
+                )
             return False
         return _spawn(job, logger)
     except Exception as exc:  # noqa: BLE001 - a prebuild, never a failed load
         if logger is not None:
             logger.info("diffusion.vae_prebuild: skipped (%s: %s)", type(exc).__name__, exc)
         return False
+
+
+def _pending_runtime_bytes(pipe: Any) -> int:
+    """Streamed-tier seed + prefetch window: budgeted but not yet allocated when this gate reads free memory."""
+    reserve = getattr(pipe, "_unsloth_measured_reserve", None)
+    if not reserve or len(reserve) <= 12 or not reserve[12]:
+        return 0
+    from .diffusion_memory import _stream_window_mib
+
+    return (int(reserve[0] or 0) + max(0, int(_stream_window_mib(pipe)))) << 20
 
 
 def _spawn(job: dict, logger: Any) -> bool:
