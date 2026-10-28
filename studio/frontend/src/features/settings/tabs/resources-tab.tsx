@@ -92,7 +92,6 @@ function usageIndicatorClass(percent: number): string {
   return "bg-control-accent";
 }
 
-// Same thresholds as the tile values, on the accent pill's tint.
 function usagePillClass(percent: number | null): string {
   if (isFiniteNumber(percent) && percent >= 90) {
     return "bg-[#df4530]/10 text-[#df4530] dark:text-[#ef5b40]";
@@ -157,7 +156,6 @@ function formatUptime(seconds: number | null | undefined): string {
   return `${Math.max(1, minutes)}m`;
 }
 
-// The API page's traffic Stat, on the Train and API pages' card without its light-mode shadow.
 function MetricTile({
   label,
   value,
@@ -178,7 +176,6 @@ function MetricTile({
   const safePercent = clampPercent(percent);
   return (
     <div className="flex min-w-0 flex-col gap-3 rounded-xl border border-border/60 bg-card px-5 py-4 dark:border-transparent">
-      {/* Narrow tiles wrap the readings under the percentage instead of truncating them. */}
       <div className="flex min-w-0 flex-wrap items-start justify-between gap-x-4 gap-y-1">
         <div className="flex shrink-0 flex-col gap-0.5">
           <span className="text-ui-12 text-muted-foreground">{label}</span>
@@ -690,7 +687,6 @@ export function ResourcesTab() {
       </header>
 
       <SettingsSection title={t("settings.resources.liveMonitor.title")}>
-        {/* An odd tile out spans the row, so the grid never ends on a hole. */}
         <div className="grid gap-3 py-3 sm:grid-cols-2 sm:[&>:last-child:nth-child(odd)]:col-span-2">
           <MetricTile
             label={t("settings.resources.liveMonitor.cpu")}
@@ -999,8 +995,7 @@ export function ResourcesTab() {
             // Its total is mostly system RAM, so "VRAM" beside it overstates the card (#8942).
             const sharedSplit = deviceSharedMemorySplitGb(device);
             const telemetry = telemetryByOrdinal.get(`${ordinal ?? index}`);
-            // Shared with system RAM: "used" is every app's GPU allocation (AGX "In use system
-            // memory") and "free" is an available-RAM floor, so the rest is RAM the OS and apps hold.
+            // Shared pool: used is every app's GPU allocation (AGX), free an available-RAM floor.
             const shared = device.shared_memory === true;
             const usedBySystem =
               shared &&

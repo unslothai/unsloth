@@ -60,7 +60,6 @@ export function StorageOverview({
   );
 }
 
-/** The segmented bar and its legend, shared by the disk and GPU memory overviews. */
 export function StorageBar({
   segments,
   totalBytes,
