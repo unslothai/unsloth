@@ -432,9 +432,9 @@ try:
     _AUTO_RATIO = float(os.environ.get("UNSLOTH_BLOCK_CUDAGRAPHS_AUTO_RATIO", "1.2"))
 except ValueError:
     _AUTO_RATIO = 1.2
-# Before 2.11 FastLanguageModel LoRA blocks are not compiled (llama._legacy_block_compile), so
-# nothing was measured there.
-_AUTO_MIN_TORCH = "2.11"
+# 2.13+: the graphed region gets its own recompile bucket (isolate_recompiles) instead of sharing
+# the stock region's cache limit. Before 2.11 FastLanguageModel LoRA blocks are not compiled at all.
+_AUTO_MIN_TORCH = "2.13"
 # The graph pool adds 0.5-0.8 GB reserved (Qwen3-0.6B LoRA): keep graphs off without this much free.
 _AUTO_FREE_GB = 2.0
 _AUTO_FREE_FRACTION = 0.10
@@ -1771,8 +1771,6 @@ def _raise_cache_limit(kinds):
     config = torch._dynamo.config
     name = "recompile_limit" if hasattr(config, "recompile_limit") else "cache_size_limit"
     need = 4 * kinds
-    if _CUDAGRAPH_MODE != "off":
-        need *= 2  # the graphs-on and graphs-off regions share one code object's cache
     if getattr(config, name, need) < need:
         setattr(config, name, need)
 
@@ -1843,6 +1841,10 @@ def patch_block_compile(model):
         wrapped.append(cls.__name__)
     if _COMPILE_OPTIONS.get("triton.cudagraphs") or _CUDAGRAPH_MODE == "auto":
         _watch_hidden_states(model)
+    if _CUDAGRAPH_MODE == "auto":
+        # A new model decides again: a launch-bound model loaded first must not turn graphs on for
+        # a GPU-bound one. Graphs that went off for shape churn stay off.
+        _CUDAGRAPH_STATE["auto"] = _new_auto_state()
     if wrapped:
         print(f"Unsloth: compiling each transformer block as one region ({', '.join(wrapped)}).")
     return wrapped

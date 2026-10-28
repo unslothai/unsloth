@@ -243,5 +243,30 @@ def test_static_reason_full_finetuning(monkeypatch):
     for p in layer.parameters():
         p.requires_grad_(False)
     assert bc._auto_static_reason(layer, FakeCuda()) is None
-    monkeypatch.setattr(torch, "__version__", "2.10.0+cu128")
-    assert bc._auto_static_reason(layer, FakeCuda()) == "torch < 2.11"
+    monkeypatch.setattr(torch, "__version__", "2.12.1+cu128")
+    assert bc._auto_static_reason(layer, FakeCuda()) == "torch < 2.13"
+
+
+def test_a_new_model_decides_again(monkeypatch):
+    """Graphs on for one (launch-bound) model must not carry over to the next model loaded."""
+    layers, calls, _, _ = _harness(monkeypatch)
+    for _ in range(5):
+        _step(layers, calls)
+    assert _step(layers, calls) == ["graphs", "graphs"]
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(bc, "_torch_supported", lambda: True)
+
+    class NextDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+
+        def forward(self, hidden_states, **kwargs):
+            return self.proj(hidden_states)
+
+    model = torch.nn.Module()
+    model.layers = torch.nn.ModuleList([NextDecoderLayer(), NextDecoderLayer()])
+    assert bc.patch_block_compile(model) == ["NextDecoderLayer"]
+    assert bc._CUDAGRAPH_STATE["auto"]["phase"] == "probe"
+    model.train()
+    assert _step(model.layers, calls) == ["plain", "plain"]
