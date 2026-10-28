@@ -2397,7 +2397,7 @@ export const en = {
         gpuUnusableDetail: "Detected, but PyTorch cannot use it",
         detailedView: "Detailed view",
         detailedViewDescription:
-          "Show CPU load and each GPU's load, temperature and power in the floating window and here.",
+          "Show CPU load and each GPU's load, temperature and power in the floating window.",
         cpuLoad: "CPU load",
         gpuLoad: "GPU load",
         temperature: "Temperature",
@@ -2430,6 +2430,10 @@ export const en = {
         used: "{value} used",
         free: "{value} free",
         total: "{value} total",
+        usedOf: "{used} used of {total}",
+        segmentUsed: "Used by GPU",
+        segmentSystem: "Used by system",
+        segmentAvailable: "Available",
       },
       llamaBackend: {
         title: "GGUF inference engine",

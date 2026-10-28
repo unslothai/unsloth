@@ -2328,7 +2328,7 @@ export const ko = {
         gpuUnusableDetail: "감지되었지만 PyTorch에서 사용할 수 없습니다",
         detailedView: "자세히 보기",
         detailedViewDescription:
-          "플로팅 창과 여기에 CPU 부하와 각 GPU의 부하, 온도, 전력을 표시합니다.",
+          "플로팅 창에 CPU 부하와 각 GPU의 부하, 온도, 전력을 표시합니다.",
         cpuLoad: "CPU 부하",
         gpuLoad: "GPU 부하",
         temperature: "온도",
@@ -2361,6 +2361,10 @@ export const ko = {
         used: "{value} 사용 중",
         free: "{value} 여유",
         total: "총 {value}",
+        usedOf: "{total} 중 {used} 사용 중",
+        segmentUsed: "GPU 사용 중",
+        segmentSystem: "시스템 사용 중",
+        segmentAvailable: "사용 가능",
       },
       llamaBackend: {
         title: "GGUF 추론 엔진",
