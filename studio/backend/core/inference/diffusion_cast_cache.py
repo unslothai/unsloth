@@ -579,10 +579,43 @@ class _Reader:
                 return src
         return None
 
+    def _kept_copy(self, ref: Any, name: str) -> Any:
+        """While ``ref`` is onloaded: the host copy Studio's offload keeps for it (the top-level group's pinned /
+        re-pointed copy, or the keep-cpu model offload's), which the device copy was uploaded from. Read instead of
+        waiting out the onload and synchronising the device mid-render."""
+        live = ref.data if hasattr(ref, "data") else ref
+        device = getattr(live, "device", None)
+        if device is None or device.type == "cpu":
+            return None
+        src = None
+        try:
+            from .diffusion_memory import TOP_GROUP_HOST_ATTR, offload_host_copy
+            for group in self.groups:
+                top = getattr(group, TOP_GROUP_HOST_ATTR, None)
+                if isinstance(top, dict) and ref in top:
+                    src = top.get(ref)
+                    break
+            if src is None:
+                src = offload_host_copy(self.module, name, ref)
+        except Exception:  # noqa: BLE001 - no kept copy: wait for the host as before
+            return None
+        src = src.data if hasattr(src, "data") else src
+        if (
+            src is None
+            or getattr(src, "device", None) is None
+            or src.device.type != "cpu"
+            or src.dtype != live.dtype
+            or tuple(src.shape) != tuple(live.shape)
+        ):
+            return None
+        return src
+
     def tensor(self, name: str) -> Any:
         while True:
             ref = _resolve_ref(self.module, name)
             host = self._host_copy(ref)
+            if host is None:
+                host = self._kept_copy(ref, name)
             if host is not None:
                 return host.data if hasattr(host, "data") else host
             tensor = ref.data if hasattr(ref, "data") else ref
