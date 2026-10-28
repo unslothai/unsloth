@@ -272,9 +272,10 @@ def test_media_galleries_save_natively_with_feedback():
     assert 'toast.success("Image saved", { description: savedFileName });' in download
     assert 'document.createElement("a")' not in download
 
-    assert "await downloadFile(blob, exportFilename(video, format), blob.type);" in video_page
-    assert "if (isTauri)" in video_download
-    assert 'toast.success("Video saved"' in video_download
+    assert "return downloadFile(blob, exportFilename(video, format), blob.type);" in video_page
+    assert "const savedFileName = await downloadVideo(" in video_download
+    assert "if (savedFileName !== undefined)" in video_download
+    assert 'toast.success("Video saved", { description: savedFileName });' in video_download
     assert "function saveLink(" not in video_page
 
 
@@ -286,8 +287,9 @@ def test_audio_clips_and_stems_save_natively():
 
     # desktop re-reads blob URLs because the page CSP blocks fetch()
     assert 'isTauri && url.startsWith("blob:")' in save_audio
-    assert "await downloadBlobStreaming(blob, filename);" in save_audio
-    assert "await downloadUrl(url, filename);" in save_audio
+    assert "await downloadBlobStreaming(blob, filename)" in save_audio
+    assert "savedFileName = await downloadUrl(url, filename);" in save_audio
+    assert 'toast.success("Audio saved", { description: savedFileName });' in save_audio
     assert "if (isDownloadCancelled(error)) return;" in save_audio
     # tests/audio-stem-mixer-state.test.ts forbids raw anchors in features/audio
     for page in ("hooks/use-audio-gallery.tsx", "pages/separate-page.tsx"):
@@ -394,7 +396,7 @@ def test_gallery_video_links_are_absolute_and_saved_natively():
     assert "downloadUrlStreaming(src, exportFilename(video, format))" in video_page
     assert '"save_native_file_from_url"' in helper
     assert "isDownloadCancelled(err)" in video_page
-    assert "await downloadFile(blob, exportFilename(video, format), blob.type);" in video_page
+    assert "return downloadFile(blob, exportFilename(video, format), blob.type);" in video_page
     assert "URL.createObjectURL(blob)" not in video_page
 
     # media-src, not just connect-src: the signed link is played by an element.

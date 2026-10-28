@@ -150,3 +150,45 @@ test("browser download suggests a name but does not report an unknown final file
   assert.equal(await downloadedBlob?.text(), "contents");
   assert.deepEqual(revoke.mock.calls[0]?.arguments, [objectUrl]);
 });
+
+test("a chunked native save reports the basename the dialog wrote", async () => {
+  const files = loadNativeFiles(true, (command) => {
+    if (command === "begin_native_file_save") return Promise.resolve("token");
+    if (command === "append_native_file_save_chunk") return Promise.resolve(undefined);
+    assert.equal(command, "finish_native_file_save");
+    return Promise.resolve("renamed-stems.zip");
+  });
+  assert.equal(
+    await files.downloadBlobStreaming(new Blob(["stems"]), "stems.zip"),
+    "renamed-stems.zip",
+  );
+});
+
+test("a streamed URL save reports the basename the dialog wrote", async () => {
+  const files = loadNativeFiles(true, (command, args) => {
+    assert.equal(command, "save_native_file_from_url");
+    assert.deepEqual(args, { url: "/clip.mp4", fileName: "clip.mp4" });
+    return Promise.resolve("renamed-clip.mp4");
+  });
+  assert.equal(await files.downloadUrlStreaming("/clip.mp4", "clip.mp4"), "renamed-clip.mp4");
+});
+
+test("a native URL save reports the basename the dialog wrote", async (t) => {
+  t.mock.method(globalThis, "fetch", () =>
+    Promise.resolve(new Response("wav", { headers: { "content-type": "audio/wav" } })),
+  );
+  const files = loadWithStubs<typeof NativeFilesModule>(
+    new URL("../src/lib/native-files.ts", import.meta.url),
+    {
+      "@/lib/api-base": { isTauri: true },
+      "@/lib/data-uri": { isDataUri: () => false },
+      "@tauri-apps/api/core": {
+        invoke: (command: string) => {
+          assert.equal(command, "save_native_file");
+          return Promise.resolve("renamed-clip.wav");
+        },
+      },
+    },
+  );
+  assert.equal(await files.downloadUrl("/clip.wav", "clip.wav"), "renamed-clip.wav");
+});
