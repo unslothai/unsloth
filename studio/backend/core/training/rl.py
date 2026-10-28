@@ -943,7 +943,10 @@ def build_rl_trainer(
             raise ValueError("GRPO needs at least one reward selected.")
         if tokenizer is not None:
             thinking = settings.get("enable_thinking")
-            keep_turns = any(s.get("kind") == "python" for s in reward_specs)
+            # Python rewards read the turns, and sample answers show the question from them.
+            keep_turns = sample_sink is not None or any(
+                s.get("kind") == "python" for s in reward_specs
+            )
             train_dataset, _ = render_grpo_prompts(
                 train_dataset, tokenizer, thinking, keep_turns = keep_turns
             )

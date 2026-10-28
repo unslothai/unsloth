@@ -9,9 +9,12 @@ scores and the last one in the batch hands the finished group to the sink.
 
 from __future__ import annotations
 
+import json
 import math
 import time
 from typing import Any, Callable, Optional
+
+from core.training.rewards import PROMPT_TURNS_COLUMN
 
 MIN_INTERVAL_SECONDS = 15.0
 MAX_PROMPT_CHARS = 2_000
@@ -36,6 +39,17 @@ def _text(
     if len(text) <= limit:
         return text
     return ("…" + text[-limit:]) if last else (text[:limit] + "…")
+
+
+def _prompt_text(prompt: Any, turns: Any) -> str:
+    """The question as the user wrote it: a rendered prompt is the whole chat template, so the
+    turns kept beside it (PROMPT_TURNS_COLUMN) are read instead."""
+    if isinstance(turns, str):
+        try:
+            prompt = json.loads(turns)
+        except ValueError:
+            pass
+    return _text(prompt, MAX_PROMPT_CHARS, last = True)
 
 
 def _score(value: Any) -> Optional[float]:
@@ -117,7 +131,9 @@ class SampleRecorder:
         self.sink(
             {
                 "step": getattr(state, "global_step", None),
-                "prompt": _text((prompts or [None])[0], MAX_PROMPT_CHARS, last = True),
+                "prompt": _prompt_text(
+                    (prompts or [None])[0], (kwargs.get(PROMPT_TURNS_COLUMN) or [None])[0]
+                ),
                 "answer": (
                     _text(answers[0], MAX_ANSWER_CHARS)
                     if isinstance(answers, (list, tuple)) and answers
