@@ -766,6 +766,30 @@ NODE_SPECS: list[dict] = [
         icon = "repeat",
     ),
     spec(
+        "logic.loop",
+        "Loop",
+        "logic",
+        "Repeat the steps in this node's group for a few rounds: generate, train, score. A dashed "
+        "feeds-the-next-round wire carries the score step's failures into the next round's recipe "
+        "seed. Round 1's held-out rows split once into probe rows (their failures feed back) and test "
+        "rows (never fed back; their score decides when to stop).",
+        outputs = [
+            out("score", "number", "Best test score"),
+            out("history", "json", "Rounds"),
+            out("checkpoint", "checkpoint", "Best checkpoint"),
+        ],
+        params = [
+            P("rounds", "int", 3, "Rounds", min = 1, max = 20),
+            P("target", "number", 90, "Target test score %", min = 0, max = 100),
+            P("feedback", "bool", True, "Feed failures into the next round"),
+            P("failure_percent", "int", 50, "Seed rows from failures %", min = 0, max = 100, advanced = True),
+            P("probe_percent", "int", 50, "Held-out rows used as probe %", min = 1, max = 99, advanced = True),
+            P("split_seed", "int", 3407, "Probe/test split seed", min = 0, max = 2**31 - 1, advanced = True),
+        ],
+        cacheable = False,
+        icon = "repeat",
+    ),
+    spec(
         "logic.merge",
         "First Available",
         "logic",

@@ -139,10 +139,31 @@ export function checkConnection(
   const out = sourceSpec.outputs.find((p) => p.id === src.port);
   const inp = targetSpec.inputs.find((p) => p.id === dst.port);
   if (!out || !inp) return { ok: false, reason: "Unknown port" };
+  if (isFeedback(sourceSpec, out, inp)) {
+    return {
+      ok: true,
+      kind: "feedback",
+      sourcePort: out.id,
+      targetPort: inp.id,
+    };
+  }
   if (!typesCompatible(out, inp)) {
     return { ok: false, reason: `${out.type} cannot connect to ${inp.type}` };
   }
   return { ok: true, kind: "data", sourcePort: out.id, targetPort: inp.id };
+}
+
+/** A score step's failures into a dataset input: the Loop's "feeds the next round" wire, never a data edge. */
+export function isFeedback(
+  sourceSpec: NodeSpec,
+  out: PortSpec,
+  inp: PortSpec,
+): boolean {
+  return (
+    out.id === "failures" &&
+    inp.type === "dataset" &&
+    sourceSpec.outputs.some((p) => p.id === "score")
+  );
 }
 
 const COLLECT_PORT = "collect";

@@ -23,6 +23,7 @@ import {
 import type { RfNode } from "./derive-rf";
 import { nodeIcon } from "./icons";
 import { MediaThumb, isMediaValue } from "./media";
+import { LoopNodeBody } from "./loop-node";
 import { TrainNodeBody } from "./train-node";
 import { StructuredBadge, isStructuredValue } from "./value-viewers";
 
@@ -425,7 +426,11 @@ function FlowNodeViewImpl({ id, selected }: NodeProps<RfNode>) {
           {spec.type === "train.finetune" && (
             <TrainNodeBody node={node} runtime={runtime} />
           )}
+          {spec.type === "logic.loop" && (
+            <LoopNodeBody node={node} runtime={runtime} />
+          )}
           {spec.type !== "train.finetune" &&
+            spec.type !== "logic.loop" &&
             (runtime.outputs ||
               runtime.partial ||
               runtime.text ||

@@ -30,7 +30,7 @@ export type PortType =
   | "any"
   | "flow";
 
-export type EdgeKind = "data" | "flow";
+export type EdgeKind = "data" | "flow" | "feedback";
 
 export interface FlowParam {
   id: string;
@@ -91,7 +91,7 @@ export interface FlowGroup {
   color?: string | null;
   rect: [number, number, number, number];
   /** "recipe": one Data Recipe; `config` is the recipe minus its columns (they are recipe.column nodes). */
-  kind?: "recipe" | null;
+  kind?: "recipe" | "loop" | null;
   config?: Record<string, unknown> | null;
   run?: Record<string, unknown> | null;
   ui?: Record<string, unknown> | null;

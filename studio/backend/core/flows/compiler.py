@@ -6,7 +6,9 @@
 Checks: schema and limits, known node types, ports and port types, one edge per non-multi input, flow edges only
 between story control handles, acyclic data edges, For Each bodies, required inputs. A For Each node's body is the
 nodes whose ``group`` is the For Each node's id, plus the other nodes of the For Each node's own group. Edges into a
-For Each node's ``collect`` port come from inside its body and are not dependencies."""
+For Each node's ``collect`` port come from inside its body and are not dependencies. A Loop node's body
+is built the same way, plus the recipe group its ``feedback`` edge feeds; that edge carries one round's
+failures into the next round and is not a dependency either, so the data edges stay acyclic."""
 
 from __future__ import annotations
 
@@ -22,6 +24,9 @@ from core.flows.recipe_import import COLUMN_TYPE, GENERATE_TYPE
 from core.flows.specs import SPECS_BY_TYPE
 
 FOR_EACH = "logic.for_each"
+LOOP = "logic.loop"
+REPEATS = (FOR_EACH, LOOP)
+FEEDBACK = "feedback"
 COLLECT_PORT = "collect"
 # The compiled `{recipe, run}` a Recipe Dataset node runs, filled in from its group at compile time.
 RECIPE_PARAM = "_recipe"
@@ -150,6 +155,8 @@ class Plan:
     waits: dict[str, set[str]] = field(default_factory = dict)
     flow_edges: list[dict] = field(default_factory = list)
     warnings: list[dict] = field(default_factory = list)
+    # Loop node id -> its feeds-the-next-round edge.
+    feedback: dict[str, dict] = field(default_factory = dict)
 
     def top_level(self) -> list[str]:
         return [n for n in self.order if self.owner.get(n) is None]
@@ -183,10 +190,10 @@ class Plan:
         return [n for n in pool if self.specs[n]["lane"] == "gpu"]
 
 
-def _members(doc_nodes: dict[str, dict]) -> dict[str, set[str]]:
+def _members(doc_nodes: dict[str, dict], edges: list[dict]) -> dict[str, set[str]]:
     members: dict[str, set[str]] = {}
     for fid, node in doc_nodes.items():
-        if node["type"] != FOR_EACH:
+        if node["type"] not in REPEATS:
             continue
         found = {nid for nid, n in doc_nodes.items() if n.get("group") == fid}
         if node.get("group"):
@@ -196,6 +203,17 @@ def _members(doc_nodes: dict[str, dict]) -> dict[str, set[str]]:
                 if nid != fid and n.get("group") == node["group"]
             }
         members[fid] = found
+    # A Loop also repeats the recipe group its feedback edge feeds, wherever that frame sits.
+    for edge in edges:
+        if edge.get("kind") != FEEDBACK or edge["target"] not in doc_nodes:
+            continue
+        group = doc_nodes[edge["target"]].get("group")
+        for fid, found in members.items():
+            if doc_nodes[fid]["type"] == LOOP and edge["source"] in found:
+                found.add(edge["target"])
+                if group:
+                    found |= {nid for nid, n in doc_nodes.items() if n.get("group") == group}
+                found.discard(fid)
     return members
 
 
@@ -223,7 +241,7 @@ def compile_flow(doc: dict) -> Plan:
             if isinstance(value, str) and len(value) > schema.MAX_STRING_PARAM:
                 errors.append(issue(f"Parameter {key} is too long", node_id = nid))
 
-    members = _members(nodes)
+    members = _members(nodes, list(doc.get("edges", [])))
     owner: dict[str, Optional[str]] = {nid: None for nid in nodes}
     for fid, found in members.items():
         for nid in found:
@@ -254,6 +272,7 @@ def compile_flow(doc: dict) -> Plan:
     collect: dict[str, tuple[str, str]] = {}
     consumers: dict[str, set[str]] = {nid: set() for nid in nodes}
     flow_edges: list[dict] = []
+    feedback_edges: list[dict] = []
     edge_ids: set[str] = set()
     for edge in doc.get("edges", []):
         eid = edge["id"]
@@ -277,6 +296,9 @@ def compile_flow(doc: dict) -> Plan:
             errors.append(
                 issue("A recipe column only wires to columns of its own recipe", edge_id = eid)
             )
+            continue
+        if edge.get("kind") == FEEDBACK:
+            feedback_edges.append(edge)
             continue
         if edge.get("kind", "data") == "flow":
             if edge["source_port"] not in sspec["flow_out"]:
@@ -350,6 +372,8 @@ def compile_flow(doc: dict) -> Plan:
         existing.append((src, sport["id"]))
         consumers[src].add(dst)
 
+    feedback = _check_feedback(feedback_edges, nodes, specs, owner, inputs, errors)
+
     executable = {
         nid
         for nid, node in nodes.items()
@@ -358,6 +382,14 @@ def compile_flow(doc: dict) -> Plan:
         and not specs[nid].get("design")
         and not node.get("disabled")
     }
+    for nid in executable:
+        if nodes[nid]["type"] == LOOP and nid not in feedback:
+            errors.append(
+                issue(
+                    "Draw the dashed feeds-the-next-round wire from the score step back into the recipe's seed",
+                    node_id = nid,
+                )
+            )
     recipe_groups = {g["id"] for g in doc.get("groups") or [] if g.get("kind") == "recipe"}
     steps: dict[str, int] = {}
     for node in nodes.values():
@@ -456,7 +488,72 @@ def compile_flow(doc: dict) -> Plan:
         waits = waits,
         flow_edges = flow_edges,
         warnings = warnings,
+        feedback = feedback,
     )
+
+
+def _check_feedback(
+    edges: list[dict],
+    nodes: dict[str, dict],
+    specs: dict[str, dict],
+    owner: dict[str, Optional[str]],
+    inputs: dict[str, dict[str, list[tuple[str, str]]]],
+    errors: list[dict],
+) -> dict[str, dict]:
+    found: dict[str, dict] = {}
+    for edge in edges:
+        eid, src, dst = edge["id"], edge["source"], edge["target"]
+        sspec, dspec = specs.get(src), specs.get(dst)
+        if sspec is None or dspec is None:
+            continue
+        loop = owner.get(src)
+        while loop is not None and nodes[loop]["type"] != LOOP:
+            loop = owner.get(loop)
+        if loop is None or not _within(dst, loop, owner):
+            errors.append(issue("A feeds-the-next-round wire runs inside one Loop group", edge_id = eid))
+            continue
+        if not any(p["id"] == edge["source_port"] for p in sspec["outputs"]) or not any(
+            p["id"] == "score" for p in sspec["outputs"]
+        ):
+            errors.append(
+                issue(
+                    "Feed the next round from a step that scores the model (its failures and score)",
+                    edge_id = eid,
+                )
+            )
+            continue
+        dport = next((p for p in dspec["inputs"] if p["id"] == edge["target_port"]), None)
+        if dport is None or dport["type"] != "dataset":
+            errors.append(
+                issue("The next round's failures go into a recipe's seed input", edge_id = eid)
+            )
+            continue
+        if inputs[dst].get(dport["id"]):
+            errors.append(
+                issue(f"{dspec['title']}.{dport['label']} takes one connection", edge_id = eid)
+            )
+            continue
+        held = [
+            src_node
+            for port in sspec["inputs"]
+            if port["type"] == "dataset"
+            for src_node, _ in inputs[src].get(port["id"], ())
+            if _within(src_node, loop, owner)
+        ]
+        if not held:
+            errors.append(
+                issue(
+                    f"{sspec['title']} needs held-out rows from a step inside the Loop "
+                    "(Fine-tune's Held-out rows)",
+                    node_id = src,
+                )
+            )
+            continue
+        if loop in found:
+            errors.append(issue("A Loop takes one feeds-the-next-round wire", edge_id = eid))
+            continue
+        found[loop] = edge
+    return found
 
 
 def _topo(

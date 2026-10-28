@@ -3,7 +3,7 @@
 
 import { toast } from "sonner";
 import { defaultParams, getSpec } from "../stores/catalog-store";
-import { newId, useDocStore } from "../stores/doc-store";
+import { frameAt, newId, useDocStore } from "../stores/doc-store";
 import {
   connectColumns,
   insertStarterRecipe,
@@ -14,7 +14,7 @@ import {
   GENERATE_TYPE,
   groupGenerate,
 } from "../recipe/recipe-columns";
-import type { FlowEdge, FlowNode, PortSpec } from "../types";
+import type { EdgeKind, FlowEdge, FlowNode, PortSpec } from "../types";
 import {
   FLOW_IN_HANDLE,
   FLOW_TARGET_PORT,
@@ -85,6 +85,9 @@ export function tryConnect(req: ConnectRequest): string | null {
   return null;
 }
 
+const LOOP_TYPE = "logic.loop";
+const LOOP_FRAME: [number, number] = [1100, 520];
+
 export function addNodeConnected(
   type: string,
   pos: [number, number],
@@ -92,7 +95,7 @@ export function addNodeConnected(
     nodeId: string;
     handleId: string;
     side: "in" | "out";
-    kind: "data" | "flow";
+    kind: EdgeKind;
     port: PortSpec | null;
   },
   port?: string,
@@ -131,7 +134,23 @@ export function addNodeConnected(
     }
     return generate;
   }
-  useDocStore.getState().addNode(node);
+  if (type === LOOP_TYPE && !frameAt(useDocStore.getState().graph, pos)) {
+    // A Loop repeats the steps in its frame; start with an empty one around it.
+    const groupId = newId("loop");
+    useDocStore.getState().patchGraph({
+      groups: [
+        {
+          id: groupId,
+          label: "Loop",
+          rect: [pos[0] - 40, pos[1] - 60, LOOP_FRAME[0], LOOP_FRAME[1]],
+          kind: "loop",
+        },
+      ],
+      nodes: [{ ...node, group: groupId }],
+    });
+  } else {
+    useDocStore.getState().addNode(node);
+  }
   if (from && port) {
     if (from.kind === "flow") {
       if (from.side === "out") {
