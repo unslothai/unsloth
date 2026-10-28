@@ -34,6 +34,7 @@ export const FLAVOR_THEME_IDS = [
 // Offered from the sidebar's Trick or treat row and Theme > Halloween, in October only.
 export const HALLOWEEN_THEME_IDS = [
   "pumpkin",
+  "black-cat",
   "trick-or-treat",
   "bloody-valentine",
   "alien",
@@ -41,7 +42,6 @@ export const HALLOWEEN_THEME_IDS = [
   "the-thing",
   "midnight-haunt",
   "gothic",
-  "black-cat",
 ] as const;
 
 export const COLOR_THEME_IDS = [
@@ -409,7 +409,7 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
     },
   },
   pumpkin: {
-    name: "Jack-o’-Lantern",
+    name: "Pumpkin Patch",
     light: {
       accent: "#b84800",
       background: "#fff3e3",
@@ -454,7 +454,7 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
     },
   },
   alien: {
-    name: "Abduction",
+    name: "Little Green Men",
     light: {
       accent: "#007a33",
       background: "#eefff4",
@@ -499,7 +499,7 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
     },
   },
   "midnight-haunt": {
-    name: "Graveyard Shift",
+    name: "Full Moon",
     light: {
       accent: "#2f45d6",
       background: "#f0f3ff",
@@ -514,7 +514,7 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
     },
   },
   gothic: {
-    name: "Gothic",
+    name: "Goth",
     light: {
       accent: "#6a24c8",
       background: "#f8f1ff",
@@ -529,7 +529,7 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
     },
   },
   "black-cat": {
-    name: "Black Cat",
+    name: "Hocus Pocus",
     light: {
       accent: "#6a1fd6",
       background: "#f6f1ff",

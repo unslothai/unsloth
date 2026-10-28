@@ -88,12 +88,13 @@ function Row({
   );
 }
 
+// A chevron's arms carry its weight, so nudge it 1px towards the point to look centred.
 function ArrowBadge() {
   return (
     <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground">
       <HugeiconsIcon
         icon={ChevronRightStandardIcon}
-        className="size-4 rtl:rotate-180"
+        className="size-4 translate-x-px rtl:-translate-x-px rtl:rotate-180"
       />
     </span>
   );
@@ -240,7 +241,7 @@ export function TrickOrTreatDialog({
               >
                 <HugeiconsIcon
                   icon={ChevronLeftStandardIcon}
-                  className="size-4 rtl:rotate-180"
+                  className="size-4 -translate-x-px rtl:translate-x-px rtl:rotate-180"
                 />
               </button>
               <DialogTitle className="font-semibold text-lg">
