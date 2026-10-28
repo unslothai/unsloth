@@ -32,8 +32,7 @@ class _RestoreAfterFailedImport:
     ):
         module = self.module
         if module is not None and sys.modules.get(self.name) is not module:
-            # Stay in sys.meta_path: the import system iterates it live, so removing
-            # ourselves here would skip the next finder for this import.
+            # Not removed here: sys.meta_path is iterated live, removal skips the next finder.
             self.module = None
             restore_gc_threshold(remove_hook = False)
         return None
