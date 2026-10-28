@@ -284,6 +284,36 @@ def test_the_dataset_counts_every_batch_not_the_last_one():
     assert out["dataset"]["rows"] == 6
 
 
+def test_a_bare_hub_seed_is_resolved_before_validate_like_recipe_studios_load():
+    payload = json.loads((LEARNING / "instruction-from-answer.json").read_text())
+    assert payload["recipe"]["seed_config"]["source"]["path"] == "unsloth/alpaca-cleaned"
+    resolved = "datasets/unsloth/alpaca-cleaned/**/*.parquet"
+    sent = {}
+
+    def routes(method, path, params, body):
+        if path.endswith("/seed/inspect"):
+            sent["inspect"] = body
+            return {"resolved_path": resolved, "columns": ["output"]}
+        if path.endswith("/validate"):
+            sent["validate"] = body["recipe"]["seed_config"]["source"]["path"]
+            return {"valid": True}
+        if path.endswith("/jobs"):
+            sent["job"] = body["recipe"]["seed_config"]["source"]["path"]
+            return {"job_id": "job3"}
+        if path.endswith("/status"):
+            return {"status": "completed", "rows": 1, "artifact_path": "/x/recipes/r3"}
+        if path.endswith("/dataset"):
+            return {"dataset": [{"output": "x"}], "total": 1}
+        raise AssertionError(path)
+
+    ctx = _Ctx(routes, params = {RECIPE_PARAM: _compiled(_flow(payload)), "rows": 1, "mode": "preview"})
+    asyncio.run(data.recipe_group(ctx))
+    assert sent["inspect"]["dataset_name"] == "unsloth/alpaca-cleaned"
+    assert sent["validate"] == resolved and sent["job"] == resolved
+    # A path the reader already takes is left alone.
+    assert data.bare_hub_seed({"seed_config": {"source": {"seed_type": "hf", "path": resolved}}}) is None
+
+
 def test_an_invalid_recipe_never_starts_a_job():
     routes, seen = _routes([], valid = False)
     ctx = _Ctx(routes, params = {RECIPE_PARAM: _compiled(_flow())})

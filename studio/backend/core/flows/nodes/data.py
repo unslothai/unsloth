@@ -166,6 +166,8 @@ async def recipe_group(ctx: NodeContext) -> dict:
 
     if not isinstance(ctx.inputs.get("seed"), dict) and (seed := missing_seed(body)):
         raise FlowNodeError(seed)
+    if not isinstance(ctx.inputs.get("seed"), dict):  # a wired seed replaces it anyway
+        await resolve_hub_seed(ctx, body)
     checked = await ctx.call("POST", f"{RECIPES}/validate", json = {"recipe": body})
     if isinstance(checked, dict) and checked.get("valid") is False:
         problems = [
@@ -179,6 +181,42 @@ async def recipe_group(ctx: NodeContext) -> dict:
     mode = "preview" if ctx.params.get("mode") == "preview" else "full"
     run = run_settings(compiled.get("run"), int(ctx.params.get("rows") or 0), mode, body)
     return await run_recipe(ctx, body, run, history = RunHistory(ctx))
+
+
+def bare_hub_seed(recipe: dict) -> Optional[dict]:
+    """The recipe's Hub seed source when its path is still a repo id (`owner/name`), not a reader path."""
+    seed = recipe.get("seed_config")
+    source = seed.get("source") if isinstance(seed, dict) else None
+    if not isinstance(source, dict) or source.get("seed_type") != "hf":
+        return None
+    path = str(source.get("path") or "").strip()
+    if not path or path.startswith(("datasets/", "hf://")) or "*" in path:
+        return None
+    return source
+
+
+async def resolve_hub_seed(ctx: NodeContext, recipe: dict) -> None:
+    """Turn a bare Hub seed into the path the reader takes, as Recipe Studio's seed Load does
+    (`/seed/inspect`); a shared or learning recipe often carries only the repo id."""
+    source = bare_hub_seed(recipe)
+    if source is None:
+        return
+    name = str(source["path"]).strip()
+    inspected = await ctx.call(
+        "POST",
+        f"{RECIPES}/seed/inspect",
+        json = {
+            "dataset_name": name,
+            "split": source.get("split") or "train",
+            "subset": source.get("subset"),
+            "hf_token": source.get("token"),
+            "preview_size": 1,
+        },
+    )
+    path = inspected.get("resolved_path") if isinstance(inspected, dict) else None
+    if not path:
+        raise FlowNodeError(f"Unsloth Studio could not read the seed dataset {name}")
+    source["path"] = path
 
 
 class RunHistory:

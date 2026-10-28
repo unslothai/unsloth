@@ -39,6 +39,19 @@ export function runColumns(graph: DocGraph, groupId: string): FlowNode[] {
   return groupColumns(graph, groupId).filter((n) => !n.disabled);
 }
 
+/** The recipe's Hub seed source while its path is still a repo id (`owner/name`), not a reader path; mirrors `data.bare_hub_seed`. */
+export function bareHubSeed(
+  recipe: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const seed = recipe.seed_config as { source?: Record<string, unknown> } | undefined;
+  const source = seed?.source;
+  if (!source || source.seed_type !== "hf") return null;
+  const path = typeof source.path === "string" ? source.path.trim() : "";
+  if (!path || path.startsWith("datasets/") || path.startsWith("hf://") || path.includes("*"))
+    return null;
+  return source;
+}
+
 /** Recipe Studio's server-side check of the group as it would run. */
 export async function checkRecipeGroup(groupId: string): Promise<string[]> {
   const graph = useDocStore.getState().graph;
@@ -49,10 +62,25 @@ export async function checkRecipeGroup(groupId: string): Promise<string[]> {
     const { clientErrors } = await import("./recipe-adapter");
     const local = clientErrors(group, columns);
     if (local.length) return local;
-    const { validateRecipe } = await import("@/features/recipe-studio/api");
-    const result = await validateRecipe({
-      recipe: groupPayload(group, columns).recipe,
-    });
+    const { inspectSeedDataset, validateRecipe } = await import(
+      "@/features/recipe-studio/api"
+    );
+    // A copy: the resolved path is for this check, not written into the group.
+    const recipe = structuredClone(groupPayload(group, columns).recipe);
+    const hub = bareHubSeed(recipe);
+    if (hub) {
+      // As Recipe Studio's seed Load does (and the run): the reader needs the resolved path.
+      const inspected = await inspectSeedDataset({
+        // biome-ignore lint/style/useNamingConvention: api schema
+        dataset_name: String(hub.path).trim(),
+        split: typeof hub.split === "string" ? hub.split : "train",
+        subset: typeof hub.subset === "string" ? hub.subset : undefined,
+        // biome-ignore lint/style/useNamingConvention: api schema
+        preview_size: 1,
+      });
+      hub.path = inspected.resolved_path;
+    }
+    const result = await validateRecipe({ recipe });
     return (result.errors ?? []).map((e) => e.message);
   } catch (error) {
     return [error instanceof Error ? error.message : String(error)];

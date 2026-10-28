@@ -440,3 +440,18 @@ test("Check leaves disabled columns and a disabled Recipe Dataset out, like the 
   assert.deepEqual(clientErrors(group, checked), []);
   assert.ok(clientErrors(group, columns).some((e) => /model is required/.test(e)));
 });
+
+test("a Hub seed still named by its repo id is picked out for resolving, a reader path is not", async () => {
+  const { bareHubSeed } = await import(
+    "../src/features/flows/recipe/recipe-group-actions.ts"
+  );
+  const seed = (path: string, type = "hf") => ({
+    // biome-ignore lint/style/useNamingConvention: api schema
+    seed_config: { source: { seed_type: type, path } },
+  });
+  assert.ok(bareHubSeed(seed("unsloth/alpaca-cleaned")));
+  assert.equal(bareHubSeed(seed("datasets/unsloth/alpaca-cleaned/**/*.parquet")), null);
+  assert.equal(bareHubSeed(seed("unsloth/alpaca-cleaned", "local")), null);
+  assert.equal(bareHubSeed(seed("")), null);
+  assert.equal(bareHubSeed({}), null);
+});
