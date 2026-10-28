@@ -726,7 +726,6 @@ class _Flux3SingleBlock(_Lin):
 
 
 class _Flux3Hooked(torch.nn.Module):
-    """FLUX.3: the per-mode block is called positionally (text, then image), the joint block by keyword."""
 
     def __init__(self):
         super().__init__()
@@ -769,7 +768,6 @@ class _ZImageBlock(_Lin):
 
 
 class _ZImageHooked(torch.nn.Module):
-    """Z-Image: one positional block class for the caption refiner, the noise refiner and the main layers."""
 
     def __init__(self):
         super().__init__()
@@ -802,7 +800,6 @@ class _MossBlock(_Lin):
 
 
 class _MossHooked(torch.nn.Module):
-    """MOSS-Image: the main layers take the video + text sequence positionally as (x, rope, modulation)."""
 
     def __init__(self):
         super().__init__()
@@ -831,7 +828,6 @@ class _H3Block(_Lin):
 
 
 class _H3Hooked(torch.nn.Module):
-    """MiniMax-H3: the transformer block takes (hidden_states, temb, adaln_indices, rotary_emb) positionally."""
 
     def __init__(self):
         super().__init__()
@@ -844,7 +840,6 @@ class _H3Hooked(torch.nn.Module):
     ):
         n = text_len + image_len
         x, rope = torch.randn(1, n, 8), (torch.randn(n, 8), torch.randn(n, 8))
-        # temb has 1 row on the first step and 2 after it
         for n_timesteps in (1, 2):
             temb, idx = torch.randn(n_timesteps, 8), torch.arange(n) % n_timesteps
             for block in self.transformer_blocks:
@@ -928,12 +923,10 @@ def _hooked_graphs_per_render(name):
 
 @pytest.mark.parametrize("name", sorted(_HOOKED_FAMILIES))
 def test_new_prompt_length_under_group_offload_hooks_reuses_the_first_graphs(name):
-    """hook_resident_denoiser (an oversized request, a VAE decode OOM) hooks an already compiled torchao transformer:
-    block inputs become ``L['args'][i]`` / ``L['kwargs'][...]``, and ``L['___stack0'][...]`` after the eager hook."""
+    """Group offload hooks wrap block inputs as ``L['args'][i]`` / ``L['kwargs'][...]`` / ``L['___stack0'][...]``."""
     seen = _hooked_graphs_per_render(name)
     assert seen[0] > 0 and seen[1:] == [0, 0, 0, 0], seen
     if name == "ZImageTransformer2DModel" or (
         name == "MiniMaxH3Transformer3DModel" and dt.unbacked_supported()
     ):
-        # the caption, image and unified lengths (H3: the 1-row then 2-row temb) share the first render's one graph
         assert seen[0] == 1, seen

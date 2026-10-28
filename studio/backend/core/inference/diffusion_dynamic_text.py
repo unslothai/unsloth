@@ -19,8 +19,7 @@ _SLICE_STATE: dict[str, Any] = {}
 
 
 def _hooked_args(tail: str) -> tuple[str, ...]:
-    """A positional block input under group offload hooks: ``L['args'][i]``, ``L['___stack0'][0][i]`` after the eager
-    hook's graph break."""
+    """Positional block input under group offload hooks (``L['args']``, or ``___stack0[0]`` after the graph break)."""
     return tuple(root + tail + "$" for root in (r".*\['args'\]", r".*\['___stack\d+'\]\[0\]"))
 
 
