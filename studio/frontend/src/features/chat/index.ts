@@ -62,6 +62,7 @@ export {
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 export { openFolderAsProject, useOpeningFolder } from "./utils/open-folder-as-project";
+export { streamOneShotCompletion } from "./utils/one-shot-completion";
 export { requestReplyFinishedPermission } from "./utils/reply-finished-notification";
 export { forgetAgentsMd } from "./utils/agents-md";
 export { refreshContextUsage } from "./utils/refresh-context-usage";

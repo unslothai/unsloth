@@ -430,8 +430,11 @@ export const BUDGET = {
   // with startup code (chat-settings-api, sidebar-organization-keys) split into their own eager chunks, plus the
   // mount hook and store wiring: +3,074 B raw / +2,025 B transfer (6,958,762 -> 6,961,836 B raw, 2,099,260 ->
   // 2,101,285 B transfer against 9c397197e0, Node 24, 106 -> 109 chunks). Raised by that growth.
-  transferBytes: 2_103_210,
-  rawBytes: 6_976_629,
+  // Translate page (#15597): the page is lazy; its sidebar row, palette entry, icon, en strings and the shared
+  // one-shot completion helper add 5.2 KB raw / 1.3 KB transfer (6,802.0 -> 6,807.2 KB raw, 2,053.2 -> 2,054.5 KB
+  // transfer against 4e673d32e3, Node 24, 110 chunks either way). Raised by that growth.
+  transferBytes: 2_104_610,
+  rawBytes: 6_982_029,
 };
 
 // Chunk count is not budgeted: splitting a page out raises it while lowering bytes.
