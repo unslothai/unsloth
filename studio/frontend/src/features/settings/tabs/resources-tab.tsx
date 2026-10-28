@@ -87,14 +87,14 @@ function clampPercent(value: number | null | undefined): number {
 }
 
 function usageIndicatorClass(percent: number): string {
-  if (percent >= 90) return "bg-[#e5532d] dark:bg-[#f06a3f]";
+  if (percent >= 90) return "bg-[#df4530] dark:bg-[#ef5b40]";
   if (percent >= 70) return "bg-amber-500";
   return "bg-control-accent";
 }
 
 function usageValueClass(percent: number | null): string {
   if (!isFiniteNumber(percent)) return "text-muted-foreground/70";
-  if (percent >= 90) return "text-[#e5532d] dark:text-[#f06a3f]";
+  if (percent >= 90) return "text-[#df4530] dark:text-[#ef5b40]";
   if (percent >= 70) return "text-amber-600 dark:text-amber-400";
   return "text-foreground";
 }
@@ -1064,11 +1064,11 @@ export function ResourcesTab() {
                         {t("settings.resources.gpu.sharedWithSystemRam")}
                       </span>
                     ) : sharedSplit ? (
-                      <span className="shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold tabular-nums text-control-accent">
+                      <span className="shrink-0 rounded-full bg-control-accent/10 px-1.5 py-1 text-ui-10 leading-none font-semibold tabular-nums text-control-accent">
                         {percentText}
                       </span>
                     ) : (
-                      <span className="shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold tabular-nums text-control-accent">
+                      <span className="shrink-0 rounded-full bg-control-accent/10 px-1.5 py-1 text-ui-10 leading-none font-semibold tabular-nums text-control-accent">
                         {percentText}{" "}
                         {t("settings.resources.gpu.vramUtilization")}
                       </span>
@@ -1120,7 +1120,7 @@ export function ResourcesTab() {
                     />
                   )}
                   {telemetryText ? (
-                    <span className="text-xs tabular-nums text-muted-foreground">
+                    <span className="text-ui-11 tabular-nums text-muted-foreground">
                       {telemetryText}
                     </span>
                   ) : null}
