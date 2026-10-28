@@ -481,8 +481,13 @@ def test_sharded_loading_refusals_leave_the_model_uncut():
 def test_lora_inits_leave_placeholders_storage_free(init):
     """Every PEFT init on a layer whose base weight is a placeholder (another stage reads it) leaves it zero-stride
     and runs nothing on it: LoftQ would quantize on CUDA, CorDA / LoRA-GA would need their calibration data."""
+    import peft
     from peft import LoraConfig, get_peft_model
+    from peft.tuners.lora.layer import LoraLayer
 
+    if init in ("mica", "lora_ga") and not hasattr(LoraLayer, f"{init}_init"):
+        # MiCA and LoRA-GA are newer than the PEFT floor (0.18.0): nothing to wrap there.
+        pytest.skip(f"peft {peft.__version__} has no {init} initialization")
     ppl = _pp_load()
     ppl.install_placeholder_aware_lora_init()
     model = torch.nn.Sequential(torch.nn.Linear(64, 48, bias = False))
