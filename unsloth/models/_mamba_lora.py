@@ -18,7 +18,7 @@ warns once. Mixers without raw-weight adapters are unchanged.
 The torch path (transformers 5 always, 4.x ``cuda_kernels_forward`` outside fused training) also
 reads ``self.dt_proj.weight @ time_step`` raw, in eval and cached decode too. Adapted leaves therefore
 get a ``weight`` property that, while their mixer's forward runs, returns ``W + delta`` (built inside
-autograd, cached across no-grad forwards until a weight, the active adapters or the scale change), so
+autograd and outside autocast, rebuilt on every read so no weight write can leave it stale), so
 unmerged eval and generate match ``merge_and_unload`` and ``disable_adapter()`` gives the base model.
 """
 
@@ -55,7 +55,6 @@ class _Routing(threading.local):
 
 _routing = _Routing()
 _warned = set()
-_CACHE = "_unsloth_raw_weight_cache"
 _TUNER_LAYER = None
 _RAW_READ_CLASSES = {}
 
@@ -157,44 +156,17 @@ def _merged_weight(
     return weight
 
 
-def _cache_key(module):
-    # `p.data = t` keeps id(p) and p._version but moves the storage (and can change the dtype), so
-    # data_ptr / dtype are part of the key too. In-place writes through `p.data` stay invisible.
-    base = module.get_base_layer().weight
-    key = [
-        tuple(module.active_adapters),
-        id(base),
-        base._version,
-        base.data_ptr(),
-        base.dtype,
-        base.device,
-        torch.is_inference_mode_enabled(),
-    ]
-    for name in module.active_adapters:
-        if name in module.lora_A:
-            a, b = module.lora_A[name].weight, module.lora_B[name].weight
-            key += [
-                id(a),
-                a._version,
-                a.data_ptr(),
-                a.dtype,
-                a.device,
-                id(b),
-                b._version,
-                b.data_ptr(),
-                b.dtype,
-                b.device,
-                module.scaling.get(name),
-            ]
-    return tuple(key)
-
-
 def _full_precision_merged(module, names = None):
-    # Built outside autocast (as merge_and_unload does) so the cache is autocast-independent.
+    # Built outside autocast, as merge_and_unload does, so autocast eval matches the merged model.
     device_type = module.get_base_layer().weight.device.type
     try:
-        context = torch.autocast(device_type, enabled = False)
+        # Autocast off already: same tensor without the context's cost, which shows on decode reads.
+        context = None
+        if torch.compiler.is_compiling() or torch.is_autocast_enabled(device_type):
+            context = torch.autocast(device_type, enabled = False)
     except Exception:
+        context = None
+    if context is None:
         return _merged_weight(module, allow_multiple = True, names = names)
     with context:
         return _merged_weight(module, allow_multiple = True, names = names)
@@ -238,23 +210,6 @@ def _per_row_weight(module, names, label):
     return torch.stack([weights[name] for name in names])
 
 
-def _eval_weight(module):
-    """``W + delta`` for a raw read outside the fused training call, cached when grad is off."""
-    if torch.is_grad_enabled():
-        return _full_precision_merged(module)
-    try:
-        key = _cache_key(module)
-    except Exception:
-        # Inference tensors carry no version counter: no cache, recompute per read.
-        return _full_precision_merged(module)
-    cached = module.__dict__.get(_CACHE)
-    if cached is not None and cached[0] == key:
-        return cached[1]
-    weight = _full_precision_merged(module)
-    module.__dict__[_CACHE] = (key, weight)
-    return weight
-
-
 def _warn_raw_read(label):
     if ("raw_read", label) in _warned:
         return
@@ -274,9 +229,6 @@ def _raw_read_class(cls):
         return sub
 
     def weight(self):
-        if torch.is_grad_enabled():
-            # A training forward: the next eval read must rebuild W + delta.
-            self.__dict__.pop(_CACHE, None)
         # Per thread: nn.DataParallel replicas share their leaves' __dict__ contents.
         for module, effective, label in reversed(_routing.raw):
             if module is not self:
@@ -285,7 +237,10 @@ def _raw_read_class(cls):
                 names = _mixed_batch_adapter_names(self)
                 if names is not None:
                     return _per_row_weight(self, names, label)
-                effective = _eval_weight(self)
+                # Rebuilt on every read, never cached: PEFT hotswap_adapter, FlashAdamW and other
+                # `.data` writes skip version counters, so no cache key can see them. The rank-r
+                # rebuild is a few small ops per layer, under 1% of a prefill forward on CPU.
+                effective = _full_precision_merged(self)
             if effective is not None:
                 return effective
             if not torch.compiler.is_compiling():
@@ -293,22 +248,9 @@ def _raw_read_class(cls):
             break
         return super(sub, self).weight
 
-    def train(self, mode = True):
-        # Optimizers such as FlashAdamW update params in place without bumping their version
-        # counters, so the cache key cannot see the step: drop the cached W + delta here.
-        self.__dict__.pop(_CACHE, None)
-        return super(sub, self).train(mode)
-
-    def _apply(self, fn, *args, **kwargs):
-        # The cache sits outside parameters / buffers: drop it so .cpu() / .to() frees the old copy.
-        self.__dict__.pop(_CACHE, None)
-        return super(sub, self)._apply(fn, *args, **kwargs)
-
     def __reduce_ex__(self, protocol):
         # Pickle / deepcopy as the plain adapter layer; the next mixer forward re-installs it.
-        state = self.__dict__.copy()
-        state.pop(_CACHE, None)
-        return copyreg._reconstructor, (cls, object, None), state
+        return copyreg._reconstructor, (cls, object, None), self.__dict__.copy()
 
     qualname = "_RawRead_" + "_".join(f"{cls.__module__}.{cls.__qualname__}".split("."))
     sub = type(
@@ -316,8 +258,6 @@ def _raw_read_class(cls):
         (cls,),
         {
             "weight": property(weight),
-            "train": train,
-            "_apply": _apply,
             "__reduce_ex__": __reduce_ex__,
             "__module__": __name__,
             "__qualname__": qualname,

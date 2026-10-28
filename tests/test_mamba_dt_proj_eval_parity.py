@@ -227,11 +227,11 @@ def test_disable_adapter_gives_base_model(monkeypatch, arch):
 
 
 @pytest.mark.parametrize("arch", ARCHS)
-def test_cached_weight_follows_updates_and_adapter_switches(monkeypatch, arch):
+def test_eval_weight_follows_updates_and_adapter_switches(monkeypatch, arch):
     model = _trained(monkeypatch, arch, ["dt_proj"])
     ids = _ids()
     first = _logits(model, ids)
-    # An in-place optimizer-style update must invalidate the no-grad cache.
+    # An in-place optimizer-style update must show in the next eval forward.
     with torch.no_grad():
         for p in helpers._lora_param(model, "dt_proj", "B"):
             p.mul_(-1.5)
@@ -261,7 +261,7 @@ def test_cached_weight_follows_updates_and_adapter_switches(monkeypatch, arch):
 
 
 @pytest.mark.parametrize("arch", ARCHS)
-def test_cached_weight_follows_data_reassignment(monkeypatch, arch):
+def test_eval_weight_follows_data_reassignment(monkeypatch, arch):
     # `p.data = t` (custom LoRA inits, dtype casts at save time) keeps id(p) and p._version.
     model = _trained(monkeypatch, arch, ["dt_proj"])
     ids = _ids()
@@ -273,9 +273,8 @@ def test_cached_weight_follows_data_reassignment(monkeypatch, arch):
 
 
 @pytest.mark.parametrize("arch", ARCHS)
-def test_cached_weight_follows_dtype_conversion(monkeypatch, arch):
-    # model.double() / .bfloat16() keep the parameter objects and their version counters; the cached
-    # W + delta lives in __dict__, which Module._apply does not convert.
+def test_eval_weight_follows_dtype_conversion(monkeypatch, arch):
+    # model.double() / .bfloat16() keep the parameter objects and their version counters.
     model = _trained(monkeypatch, arch, ["dt_proj"])
     ids = _ids()
     _logits(model, ids)
@@ -285,10 +284,10 @@ def test_cached_weight_follows_dtype_conversion(monkeypatch, arch):
 
 
 @pytest.mark.parametrize("arch", ARCHS)
-def test_cached_weight_follows_unversioned_optimizer_step(monkeypatch, arch):
+def test_eval_weight_follows_unversioned_optimizer_step(monkeypatch, arch):
     # FlashAdamW's Triton update writes the parameters in place without bumping their version
     # counters (as an in-place op through `p.data` does), so eval -> train step -> eval must not
-    # serve the W + delta cached by the first eval.
+    # serve the W + delta of the first eval.
     model = _trained(monkeypatch, arch, ["dt_proj"])
     ids = _ids()
     first = _logits(model, ids)
@@ -306,25 +305,25 @@ def test_cached_weight_follows_unversioned_optimizer_step(monkeypatch, arch):
 
 
 @pytest.mark.parametrize("arch", ARCHS)
-def test_device_or_dtype_move_releases_the_cached_weight(monkeypatch, arch):
-    # The cached W + delta sits outside parameters / buffers, so model.cpu() / .to() must drop it
-    # rather than keep the old device's copy alive.
+def test_eval_holds_no_effective_weight_copy(monkeypatch, arch):
+    # W + delta is rebuilt per read, never stored on the leaf, so model.cpu() / .to() leave no
+    # stale copy behind and every later read sees the converted weights.
     model = _trained(monkeypatch, arch, ["dt_proj"])
     ids = _ids()
     _logits(model, ids)
-    cache = sys.modules["_unsloth_mamba_lora_under_test"]._CACHE
     leaves = [m for m in model.modules() if type(m).__name__ == "Linear" and hasattr(m, "lora_A")]
-    assert any(cache in leaf.__dict__ for leaf in leaves), "eval forward did not cache W + delta"
+    assert leaves
+    for leaf in leaves:
+        assert not any(isinstance(v, torch.Tensor) for v in leaf.__dict__.values())
+        assert not any(isinstance(v, tuple) and any(isinstance(t, torch.Tensor) for t in v)
+                       for v in leaf.__dict__.values())
     model.to(torch.float64)
-    assert not any(cache in leaf.__dict__ for leaf in leaves)
     assert torch.equal(_logits(model, ids), _logits(_merged(model), ids))
-    model.cpu()
-    assert not any(cache in leaf.__dict__ for leaf in leaves)
 
 
 @pytest.mark.parametrize("arch", ARCHS)
 def test_autocast_eval_does_not_leak_into_full_precision(monkeypatch, arch):
-    # The cached W + delta must not keep a bf16-rounded delta from an earlier autocast forward.
+    # W + delta is built outside autocast: no bf16-rounded delta from an earlier autocast forward.
     model = _trained(monkeypatch, arch, ["dt_proj"])
     ids = _ids()
     with torch.autocast("cpu", dtype = torch.bfloat16):
@@ -375,18 +374,16 @@ def test_concurrent_eval_threads_each_see_the_adapter(monkeypatch):
     assert len(results) == 20 and all(results)
 
 
-def test_pickled_model_loads_without_unsloth_and_drops_the_cache(monkeypatch, tmp_path):
-    # torch.save(model) / pickle must stay loadable in a process that never ran the patch, and the
-    # cached W + delta must not ride along in the payload (or in a deepcopy).
+def test_pickled_model_loads_without_unsloth(monkeypatch, tmp_path):
+    # torch.save(model) / pickle / deepcopy must stay loadable in a process that never ran the patch.
     model = _trained(monkeypatch, "mamba", ["dt_proj"])
-    _logits(model, _ids())
-    cache = sys.modules["_unsloth_mamba_lora_under_test"]._CACHE
+    ids = _ids()
+    expected = _logits(model, ids)
     leaf = model.base_model.model.backbone.layers[0].mixer.dt_proj
-    assert cache in leaf.__dict__, "eval forward did not cache W + delta"
     data = pickle.dumps(model)
     assert b"_RawRead_" not in data
-    assert cache.encode() not in data
-    assert cache not in copy.deepcopy(leaf).__dict__
+    assert type(copy.deepcopy(leaf)) is type(leaf).__mro__[1]
+    assert torch.equal(_logits(pickle.loads(data), ids), expected)
     path = tmp_path / "model.pkl"
     path.write_bytes(data)
     code = (
@@ -438,3 +435,67 @@ def test_fused_training_mixer_compiles_fullgraph(monkeypatch, arch):
     for gc, ge in zip(grads_c, grads_e):
         assert ge.abs().sum() > 0
         torch.testing.assert_close(gc, ge, rtol = 1e-4, atol = 1e-6)
+
+
+def _hotswap_fn():
+    try:
+        from peft.utils.hotswap import hotswap_adapter
+    except Exception:
+        return None
+    return hotswap_adapter
+
+
+@pytest.mark.parametrize("arch", ARCHS)
+def test_hotswapped_adapter_applies_in_eval(monkeypatch, arch, tmp_path):
+    # PEFT's hotswap_adapter replaces same-shaped LoRA weights through `old.data.copy_(new)`, which
+    # keeps each parameter's identity, storage and version counter; eval must serve the new adapter.
+    model = _trained(monkeypatch, arch, ["dt_proj"])
+    ids = _ids()
+    other = copy.deepcopy(model)
+    with torch.no_grad():
+        for name, p in other.named_parameters():
+            if ".lora_" in name:
+                p.normal_(std = 2.0, generator = torch.Generator().manual_seed(3))
+    expected = _logits(_merged(other), ids)
+    old = _logits(model, ids)  # an eval forward before the swap
+    assert (expected - old).abs().max() > 1e-3, "the replacement adapter has no effect"
+    hotswap = _hotswap_fn()
+    if hotswap is not None:
+        other.save_pretrained(tmp_path)
+        hotswap(model, str(tmp_path), adapter_name = "default", torch_device = "cpu")
+    else:
+        new = dict(other.named_parameters())
+        for name, p in model.named_parameters():
+            if ".lora_" in name:
+                p.data.copy_(new[name].data)
+    # No model.eval() / train() here: a hot swap in a serving process calls neither.
+    assert torch.equal(_logits(model, ids), expected)
+
+
+@pytest.mark.parametrize("arch", ARCHS)
+def test_eval_mixer_compiles_fullgraph_under_no_grad(monkeypatch, arch):
+    # A no-grad eval forward reads dt_proj.weight raw; under torch.compile it must trace in one
+    # graph (no cache lookups or mutations inside it) and match eager.
+    model = _trained(monkeypatch, arch, ["dt_proj"])
+    with torch.no_grad():
+        for name, p in model.named_parameters():
+            if ".lora_" in name:
+                p.normal_(std = 2.0, generator = torch.Generator().manual_seed(3))
+    mixer = helpers._mixers(model)[0]
+    hidden = torch.randn(2, 8, 16, generator = torch.Generator().manual_seed(2))
+    with torch.no_grad():
+        eager = mixer(hidden)
+        with model.disable_adapter():
+            base = mixer(hidden)
+    assert (eager - base).abs().max() > 1e-5, "the adapter has no effect"
+    torch._dynamo.reset()
+    try:
+        compiled = torch.compile(mixer, backend = "aot_eager", fullgraph = True)
+        with warnings.catch_warnings(), torch.no_grad():
+            warnings.simplefilter("ignore")
+            out = compiled(hidden)
+            again = compiled(hidden)
+    finally:
+        torch._dynamo.reset()
+    torch.testing.assert_close(out, eager, rtol = 1e-5, atol = 1e-6)
+    assert torch.equal(out, again)
