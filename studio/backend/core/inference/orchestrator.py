@@ -1982,6 +1982,8 @@ class InferenceOrchestrator:
 
     # Bumped at publish, not load start, so a same-model reload mid-install is detected.
     load_generation: int = 0
+    # Cleared at each publish; only an explicit UI load sets it, pinning the model against idle unload.
+    _loaded_by_user_action: bool = False
 
     @_invalidates_gpu_memory("inference load")
     @holds_inference
@@ -2293,6 +2295,7 @@ class InferenceOrchestrator:
                             return False
                         self.active_model_name = model_info.get("identifier", model_name)
                         self.load_generation += 1
+                        self._loaded_by_user_action = False
                         # Fresh subprocess holds only this model; a stale name would unload the wrong one.
                         self.models = {}
                         self.models[self.active_model_name] = _mirrored_model_entry(
@@ -2520,6 +2523,7 @@ class InferenceOrchestrator:
                 }
                 self.active_model_name = model
                 self.load_generation += 1
+                self._loaded_by_user_action = False
                 return True
         except Exception:
             self._shutdown_subprocess()
