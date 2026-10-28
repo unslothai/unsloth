@@ -221,6 +221,7 @@ export function useEditorShortcuts(active: boolean): void {
 
 export function groupSelection(
   rectFallback?: [number, number, number, number],
+  label = "Group",
 ): void {
   const doc = useDocStore.getState();
   const ids = useUiStore
@@ -242,7 +243,7 @@ export function groupSelection(
     rect = rectFallback ?? [0, 0, 480, 320];
   }
   doc.groupNodes(
-    { id: newId("g"), label: "Group", color: "#8b5cf6", rect },
+    { id: newId("g"), label, color: "#8b5cf6", rect },
     ids,
   );
 }

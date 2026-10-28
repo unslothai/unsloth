@@ -26,7 +26,7 @@ export function makeSuperCard(): string | null {
     groupId = frames[0].slice(GROUP_PREFIX.length);
   } else if (blocks.length) {
     const before = new Set(graph.groupOrder);
-    groupSelection();
+    groupSelection(undefined, "Super card");
     groupId = useDocStore
       .getState()
       .graph.groupOrder.find((id) => !before.has(id));
