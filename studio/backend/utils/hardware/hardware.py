@@ -2912,8 +2912,8 @@ def get_gpu_summary() -> Dict[str, Any]:
 
 
 def get_package_versions() -> Dict[str, Optional[str]]:
-    """Installed versions of unsloth / torch / transformers / cuda via importlib.metadata, no subprocess; missing packages yield None."""
-    packages = ("unsloth", "torch", "transformers")
+    """Installed versions of unsloth / torch / transformers / mlx and torch's GPU runtimes, no subprocess; missing packages yield None."""
+    packages = ("unsloth", "torch", "transformers", "mlx")
     versions: Dict[str, Optional[str]] = {}
 
     for name in packages:

@@ -201,6 +201,7 @@ from .diffusion_memory import (
     estimate_safetensors_dense_mib,
     file_size_mib,
     largest_streamable_companion_mib,
+    mps_plan_tight,
     normalize_memory_mode,
     plan_diffusion_memory,
     plan_fits_total_capacity,
@@ -12445,7 +12446,7 @@ class DiffusionBackend:
 
             fp8_rule = dict(
                 lora = lora,
-                offload = not plan_keeps_transformer_resident(plan),
+                offload = not plan_keeps_transformer_resident(plan) or mps_plan_tight(plan),
                 widened_mib = transformer_resident,
                 host_available_mib = _available_system_memory_mib(),
             )

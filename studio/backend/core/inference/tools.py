@@ -20922,6 +20922,8 @@ _MAX_REPORTED_FILES = 25
 _MAX_SANDBOX_PATH_SEGMENTS = 4
 _MAX_SNAPSHOT_FILES = 2000  # a shard-writing script must not blow up the result
 _MAX_SNAPSHOT_DIRS = 2000  # nor a directory-writing one stall the next call
+_MAX_HISTORY_FILES = 20000
+_MAX_HISTORY_DIRS = 20000
 
 
 def _user_path_parts(parts: "list[str]", root: "str | None" = None) -> "list[str]":
@@ -21009,32 +21011,40 @@ def _snapshot_skips_dir(base: str, name: str) -> bool:
     return name in _SNAPSHOT_SKIP_DIRS or os.path.isfile(os.path.join(base, name, "pyvenv.cfg"))
 
 
-def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
+def _snapshot_workdir_files(workdir: str | None, history: bool = False) -> "dict[str, tuple]":
     """Maps every regular file to a change key; digests are added only on coarse-timestamp volumes."""
     snapshot: "dict[str, tuple]" = {}
     if not workdir or not os.path.isdir(workdir):
         return snapshot
+    max_files, max_dirs = (
+        (_MAX_HISTORY_FILES, _MAX_HISTORY_DIRS)
+        if history
+        else (_MAX_SNAPSHOT_FILES, _MAX_SNAPSHOT_DIRS)
+    )
     # Directories are budgeted separately: empty folders never reach the file cap.
     visited = 0
     hash_budget = 0 if _volume_timestamps_finely(workdir) else _MAX_SNAPSHOT_HASH_BYTES
     # walked to include nested outputs such as outputs/report.csv that a top-level listing drops.
     for base, dirs, names in os.walk(workdir):
         visited += 1
-        if visited > _MAX_SNAPSHOT_DIRS:
+        if visited > max_dirs:
             return _CappedSnapshot(snapshot)
         # depth 0 is the workdir itself, whose files are one segment.
-        relative = base[len(workdir) :].strip(os.sep)
-        depth = len(_user_path_parts(relative.split(os.sep) if relative else []))
+        folder = base[len(workdir) :].strip(os.sep)
+        depth = len(_user_path_parts(folder.split(os.sep) if folder else []))
+        prefix = folder.replace(os.sep, "/") + "/" if folder else ""
         # skip noisy dot directories except attachments; dot files like .gitignore remain valid artifacts.
         dirs[:] = (
             []
-            if depth >= _MAX_SANDBOX_PATH_SEGMENTS - 1
+            if not history and depth >= _MAX_SANDBOX_PATH_SEGMENTS - 1
             else [
                 d
                 for d in dirs
                 if (not d.startswith(".") or (base == workdir and d == _ATTACHMENTS_DIR))
                 and _servable_segment(d)
                 and not _snapshot_skips_dir(base, d)
+                # history drops scratch anyway; a torch.compile cache there would spend the whole budget.
+                and not (history and base == workdir and not file_history.tracked(d + "/", ()))
             ]
         )
         for name in names:
@@ -21049,7 +21059,7 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
                 stat = os.lstat(path)
                 if not S_ISREG(stat.st_mode):
                     continue
-                relative = os.path.relpath(path, workdir).replace(os.sep, "/")
+                relative = prefix + name
                 content = None
                 if hash_budget and hash_budget >= stat.st_size:
                     content = _content_key(path, stat.st_size)
@@ -21058,7 +21068,7 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
                 snapshot[relative] = (stat.st_mtime_ns, stat.st_size, content)
             except OSError:
                 continue
-            if len(snapshot) >= _MAX_SNAPSHOT_FILES:
+            if len(snapshot) >= max_files:
                 return _CappedSnapshot(snapshot)
     return snapshot
 
@@ -21098,7 +21108,7 @@ def _call_finished(token: "dict | None") -> None:
         return
     if token.get("history") is not None and not token["history"].done:
         # An exit that skipped the file sentinels (a launch error): the folder may still have moved.
-        _history_end(token, _snapshot_workdir_files(token["workdir"]))
+        _history_end(token)
     with _calls_lock:
         running = _workdir_calls.get(token["workdir"])
         if running is None:
@@ -21111,41 +21121,40 @@ def _call_finished(token: "dict | None") -> None:
             _workdir_calls.pop(token["workdir"], None)
 
 
-def _history_snapshot(snap: "dict[str, tuple]") -> "tuple[dict, bool]":
+def _history_walk(workdir: str) -> "tuple[dict, bool]":
     """The walk as file history keeps it: without scratch scripts and Studio's own trees. The flag
     says whether the walk was whole, since a capped one cannot prove a file is gone."""
+    snap = _snapshot_workdir_files(workdir, history = True)
     with _scratch_lock:
         scratch = set(_active_scratch)
     kept = {rel: key for rel, key in snap.items() if file_history.tracked(rel, scratch)}
     return kept, not isinstance(snap, _CappedSnapshot)
 
 
-def _history_begin(call_token: dict, session_id: "str | None", before: "dict[str, tuple]") -> None:
+def _history_begin(call_token: dict, session_id: "str | None") -> None:
     if file_history.current_turn() is None:
         return
-    snap, complete = _history_snapshot(before)
+    snap, complete = _history_walk(call_token["workdir"])
     call_token["history"] = file_history.begin_call(
         session_id, call_token.get("workdir"), snap, complete = complete
     )
 
 
-def _history_end(call_token: "dict | None", after: "dict[str, tuple]") -> None:
+def _history_end(call_token: "dict | None") -> None:
     if not call_token or call_token.get("history") is None:
         return
+    snap, complete = _history_walk(call_token["workdir"])
+    # Checked after the walk: an upload landing mid-walk is in `snap` and must not read as ours.
     if call_token.get("shared"):
-        # An upload or another call wrote here meanwhile: what changed is not all this turn's.
         call_token["history"].ambiguous = True
-    snap, complete = _history_snapshot(after)
     file_history.end_call(call_token["history"], snap, complete = complete)
 
 
 def _walk_lists(workdir: str, rel: str) -> bool:
-    """Whether `_snapshot_workdir_files` would list *rel*, so a file edit_file records is never
+    """Whether `_history_walk` would list *rel*, so a file edit_file records is never
     taken for a deletion by the next python or terminal walk."""
     parts = rel.split("/")
-    if len(_user_path_parts(parts)) > _MAX_SANDBOX_PATH_SEGMENTS or not all(
-        map(_servable_segment, parts)
-    ):
+    if not all(map(_servable_segment, parts)):
         return False
     base = workdir
     for part in parts[:-1]:
@@ -21176,7 +21185,7 @@ def _history_begin_file(session_id: "str | None", target: str) -> dict:
         logger.warning("file history: could not open the index", exc_info = True)
         return {}
     if baseline:
-        snap, complete = _history_snapshot(_snapshot_workdir_files(workdir))
+        snap, complete = _history_walk(workdir)
         # A capped walk can miss the very file being edited; without it, the edit reads as a creation.
         snap = {**_history_file_snapshot(workdir, rel), **snap}
     else:
@@ -21224,7 +21233,7 @@ def _created_file_sentinels(
         # card beats one that names, and downloads, another chat's file.
         return ""
     after = _snapshot_workdir_files(workdir)
-    _history_end(token, after)
+    _history_end(token)
     if token is not None and token.get("shared"):
         # Calls started mid-walk write into `after`, indistinguishable from ours; only known sharing skips.
         return ""
@@ -21344,7 +21353,7 @@ def _python_exec(
     call_token = _call_started(workdir)
     # Snapshot mtimes to detect new and overwritten files.
     _before = _snapshot_workdir_files(workdir)
-    _history_begin(call_token, session_id, _before)
+    _history_begin(call_token, session_id)
     try:
         # In the workdir: sys.path[0] keeps earlier helpers importable and __file__ in the sandbox.
         fd, tmp_path = tempfile.mkstemp(suffix = ".py", prefix = "studio_exec_", dir = workdir)
@@ -21592,7 +21601,7 @@ def _bash_exec(
         call_token = _call_started(workdir)
         # Same pre-run snapshot as _python_exec, so files a command writes are reported, not "(no output)".
         _before = _snapshot_workdir_files(workdir)
-        _history_begin(call_token, session_id, _before)
+        _history_begin(call_token, session_id)
         safe_env = (
             _build_bypass_env(workdir)
             if disable_sandbox

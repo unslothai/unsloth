@@ -324,7 +324,9 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
             values.get("cast_norm_output_to_input_dtype"), True
         ),
         "random_seed": _coerce_seed(values.get("random_seed")),
-        "packing": values.get("packing", False),
+        "packing": values.get(
+            "packing", not (values.get("is_embedding") or values.get("is_decision"))
+        ),
         "optim": optimizer,
         "lr_scheduler_type": values.get("lr_scheduler_type", "linear"),
         "use_lora": values.get("use_lora", True),
@@ -340,7 +342,16 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "use_rslora": values.get("use_rslora", False),
         "use_loftq": values.get("use_loftq", False),
         "use_dora": values.get("use_dora", False),
-        "train_on_completions": values.get("train_on_completions", False),
+        "train_on_completions": values.get(
+            "train_on_completions",
+            not (
+                values.get("is_embedding")
+                or values.get("is_decision")
+                or values.get("dataset_streaming")
+                or values.get("training_type") == "Continued Pretraining"
+                or values.get("format_type") in ("raw", "raw_text")
+            ),
+        ),
         "finetune_vision_layers": values.get("finetune_vision_layers", True),
         "finetune_language_layers": values.get("finetune_language_layers", True),
         "finetune_attention_modules": values.get("finetune_attention_modules", True),
@@ -642,6 +653,14 @@ def _apply_cache_pins(config: dict[str, Any]) -> None:
         config["dataset_snapshot_path"] = None
 
     config["cache_pin_warnings"] = warnings
+
+
+def _finite_or_none(value: Any) -> Optional[float]:
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
 
 
 def _s3_dataset_name(s3_dataset: Any) -> Optional[str]:
@@ -1264,6 +1283,8 @@ class TrainingBackend:
         self._db_total_steps_set: bool = False
         self._db_config: Optional[dict] = None
         self._db_started_at: Optional[str] = None
+        # Multi-LoRA batch: run_id -> member state; the batch id itself never gets a DB row.
+        self._batch_members: dict[str, dict] = {}
 
         # Xet -> HTTP model-load fallback state (config kept for the respawn).
         self._last_full_config: Optional[dict] = None
@@ -1696,10 +1717,13 @@ class TrainingBackend:
         before_spawn = None,
         resume_source_run_id: Optional[str] = None,
         start_request_id: Optional[str] = None,
+        batch_members: Optional[list] = None,
         **kwargs,
     ) -> bool:
         # Reserve first: compare-and-set stops two concurrent requests reaching the spawn.
         validate_job_paths(kwargs, cached_resources = True)
+        for member in batch_members or ():
+            validate_job_paths(member, cached_resources = True)
         with self._new_job_spawn_reservation(job_id) as spawn_reserved:
             if not spawn_reserved:
                 logger.warning("Training subprocess already running")
@@ -1723,6 +1747,7 @@ class TrainingBackend:
                     resume_source_run_id = resume_source_run_id,
                     start_request_id = start_request_id,
                     spawn_already_reserved = True,
+                    batch_members = batch_members,
                     **kwargs,
                 )
 
@@ -1734,6 +1759,7 @@ class TrainingBackend:
         resume_source_run_id: Optional[str] = None,
         start_request_id: Optional[str] = None,
         spawn_already_reserved: bool = False,
+        batch_members: Optional[list] = None,
         **kwargs,
     ) -> bool:
         """before_spawn runs after validation but before GPU auto-selection, so refused starts free
@@ -1762,6 +1788,19 @@ class TrainingBackend:
         self._pump_running = False
 
         config = _build_training_worker_config(kwargs)
+        if batch_members:
+            config["batch_id"] = job_id
+            config["batch_members"] = [
+                {
+                    "run_id": member["run_id"],
+                    "config": _sanitize_db_config(
+                        _build_training_worker_config(
+                            {k: v for k, v in member.items() if k != "run_id"}
+                        )
+                    ),
+                }
+                for member in batch_members
+            ]
         hf_token = hf_token_arg(
             config["hf_token"], allow_ambient_token = config.get("allow_ambient", True)
         )
@@ -1781,9 +1820,14 @@ class TrainingBackend:
             hf_token = hf_token,
             training_type = config["training_type"],
             load_in_4bit = config["load_in_4bit"],
-            batch_size = config.get("batch_size", 4),
+            # A batch (its members include this first one) trains every member's rows and adapter at once.
+            batch_size = sum(int(m.get("batch_size") or 4) for m in batch_members)
+            if batch_members
+            else config.get("batch_size", 4),
             max_seq_length = config.get("max_seq_length", 2048),
-            lora_rank = config.get("lora_r", 16),
+            lora_rank = sum(int(m.get("lora_r") or 16) for m in batch_members)
+            if batch_members
+            else config.get("lora_r", 16),
             target_modules = config.get("target_modules"),
             gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
             optimizer = config.get("optim", DEFAULT_TRAINING_OPTIMIZER),
@@ -1980,8 +2024,12 @@ class TrainingBackend:
             self._db_run_created = False
             self._db_create_in_progress = False
             self._db_total_steps_set = False
-            self._db_config = _sanitize_db_config(config)
+            self._db_config = None if batch_members else _sanitize_db_config(config)
             self._db_started_at = datetime.now(timezone.utc).isoformat()
+            self._batch_members = {
+                member["run_id"]: self._new_batch_member(member["config"], self._db_started_at)
+                for member in config.get("batch_members") or ()
+            }
             # Start each job Xet-first; keep config so a stall can respawn over HTTP.
             self._last_full_config = config
             self._last_hf_cache_env = cache_env
@@ -2049,7 +2097,14 @@ class TrainingBackend:
                 if not expected_job_id or self.current_job_id != expected_job_id:
                     return False
                 run_id = self.current_job_id
-            if not save and run_id:
+                batch = bool(self._batch_members)
+            if not save and run_id and batch:
+                self._cancel_batch_members()
+                with self._lock:
+                    if self.current_job_id != run_id:
+                        return False
+                    self._should_stop = self._cancel_requested = True
+            elif not save and run_id:
                 persist_error: Optional[Exception] = None
                 for attempt in range(_DB_FINALIZE_RETRIES):
                     try:
@@ -2277,6 +2332,10 @@ class TrainingBackend:
             elif status != "completed":
                 self._progress.status_message = "Training stopped."
             # A completed run keeps its message; reaping a wedged worker must not relabel it.
+        if self._batch_members:
+            self._finalize_batch_members(status, error_message, clear_output_dir)
+        # Create the row if a start-time create failed; skipped while the pump is mid-create, whose create-
+        # then-finalize records the run instead.
         self._ensure_db_run_created()
         with self._provenance_lock:
             with self._lock:
@@ -2658,6 +2717,10 @@ class TrainingBackend:
                     self._model_download_repo_id = None
                     self._event_queue = event_queue
                     self._stop_queue = stop_queue
+                    # Member stops sent to the stalled worker's queue died with it; under the lock no new one is lost.
+                    for run_id, member in self._batch_members.items():
+                        if member["stop_requested"] and not member["terminal"]:
+                            stop_queue.put({"type": "stop_member", "run_id": run_id, "save": True})
                     self._proc = new_proc
                     self._spawn_in_progress = False
                     self._pump_thread = new_pump
@@ -3077,6 +3140,9 @@ class TrainingBackend:
         if etype == "stall":
             self._handle_stall_event(event)
             return
+        if event.get("member_run_id"):
+            self._handle_member_event(event)
+            return
 
         with self._lock:
             if etype == "progress":
@@ -3494,6 +3560,12 @@ class TrainingBackend:
         """Claims the finalize under the lock so the watchdog and pump cannot both finalize the same run."""
         if account_is_retired():
             return
+        if self._batch_members:
+            with self._lock:
+                if expected_job_id is not None and self.current_job_id != expected_job_id:
+                    return
+            self._finalize_batch_members(status, error_message, clear_output_dir)
+            return
         with self._provenance_lock:
             with self._lock:
                 if expected_job_id is not None and self.current_job_id != expected_job_id:
@@ -3580,6 +3652,249 @@ class TrainingBackend:
             with self._lock:
                 self._metric_buffer[:0] = batch
             logger.warning("Failed to flush metrics to DB", exc_info = True)
+
+    @staticmethod
+    def _new_batch_member(config: dict, started_at: str) -> dict:
+        return {
+            "config": config,
+            "started_at": started_at,
+            "output_dir": None,
+            "created": False,
+            "terminal": False,
+            "stop_requested": False,
+            "cancelled": False,
+            "total_steps": None,
+            "total_steps_set": False,
+            "step": 0,
+            "loss": None,
+            "elapsed": None,
+            "loss_history": [],
+            "metrics": [],
+        }
+
+    def batch_member_ids(self) -> list[str]:
+        with self._lock:
+            return [run_id for run_id, m in self._batch_members.items() if not m["terminal"]]
+
+    @job_control
+    def stop_member(self, run_id: str) -> bool:
+        with self._lock:
+            member = self._batch_members.get(run_id)
+            if member is None or member["terminal"] or self._stop_queue is None:
+                return False
+            try:
+                self._stop_queue.put({"type": "stop_member", "run_id": run_id, "save": True})
+            except (OSError, ValueError):
+                return False
+            member["stop_requested"] = True
+        return True
+
+    def _cancel_batch_members(self) -> None:
+        from storage.studio_db import mark_run_cancel_requested
+        with self._lock:
+            running = [
+                (run_id, m) for run_id, m in self._batch_members.items() if not m["terminal"]
+            ]
+            for _, member in running:
+                member["cancelled"] = True
+        for run_id, member in running:
+            if member["created"]:
+                mark_run_cancel_requested(run_id)
+
+    def _handle_member_event(self, event: dict) -> None:
+        etype = event.get("type")
+        run_id = event["member_run_id"]
+        with self._lock:
+            member = self._batch_members.get(run_id)
+            if member is None or member["terminal"]:
+                return
+            if etype == "output_dir":
+                member["output_dir"] = event.get("output_dir")
+            elif etype == "progress":
+                step = event.get("step", 0)
+                loss = _finite_or_none(event.get("loss"))
+                if step > 0 and loss is not None:
+                    member["loss_history"].append(loss)
+                member["step"] = step
+                member["loss"] = loss
+                member["elapsed"] = event.get("elapsed_seconds", member["elapsed"])
+                member["total_steps"] = event.get("total_steps") or member["total_steps"]
+                member["metrics"].append(
+                    {
+                        "step": step,
+                        "loss": loss,
+                        "learning_rate": _finite_or_none(event.get("learning_rate")),
+                        "grad_norm": _finite_or_none(event.get("grad_norm")),
+                        "eval_loss": None,
+                        "epoch": event.get("epoch"),
+                        "num_tokens": event.get("num_tokens"),
+                        "elapsed_seconds": event.get("elapsed_seconds"),
+                    }
+                )
+                p = self._progress
+                p.is_training = True
+                p.step = step
+                p.epoch = event.get("epoch", p.epoch)
+                p.loss = loss
+                p.total_steps = event.get("total_steps", p.total_steps)
+                p.elapsed_seconds = event.get("elapsed_seconds", p.elapsed_seconds)
+                p.eta_seconds = event.get("eta_seconds", p.eta_seconds)
+                if event.get("status_message"):
+                    p.status_message = event["status_message"]
+        if etype == "output_dir":
+            self._persist_member(run_id, output_dir_changed = True)
+        elif etype == "progress":
+            self._persist_member(run_id, flush = len(member["metrics"]) >= self.FLUSH_THRESHOLD)
+        elif etype == "complete":
+            status = "stopped" if member["stop_requested"] else "completed"
+            self._finish_member(run_id, status, output_dir = event.get("output_dir"))
+        elif etype == "stopped":
+            self._finish_member(
+                run_id,
+                "stopped",
+                output_dir = event.get("output_dir"),
+                clear_output_dir = not event.get("saved", True),
+            )
+        elif etype == "error":
+            logger.error("Training error for batch member %s: %s", run_id, event.get("error"))
+            self._finish_member(run_id, "error", error_message = event.get("error", "Unknown error"))
+
+    def _persist_member(
+        self,
+        run_id: str,
+        flush: bool = False,
+        output_dir_changed: bool = False,
+    ) -> None:
+        if account_is_retired():
+            return
+        from storage.studio_db import (
+            create_run,
+            insert_metrics_batch,
+            update_run_output_dir,
+            update_run_progress,
+            update_run_total_steps,
+        )
+
+        member = self._batch_members[run_id]
+        try:
+            if not member["created"]:
+                if not member["metrics"] and not member["terminal"]:
+                    return
+                config = member["config"]
+                create_run(
+                    id = run_id,
+                    model_name = config["model_name"],
+                    dataset_name = config.get("hf_dataset")
+                    or next(iter(config.get("local_datasets") or []), None)
+                    or "unknown",
+                    config_json = _json.dumps(config),
+                    started_at = member["started_at"],
+                    total_steps = member["total_steps"],
+                    output_dir = member["output_dir"],
+                    cancel_requested = member["cancelled"],
+                )
+                member["created"] = True
+                member["total_steps_set"] = bool(member["total_steps"])
+                flush = True
+            elif output_dir_changed and member["output_dir"] and not member["cancelled"]:
+                update_run_output_dir(run_id, member["output_dir"])
+            if member["total_steps"] and not member["total_steps_set"]:
+                update_run_total_steps(run_id, member["total_steps"])
+                member["total_steps_set"] = True
+            if flush and member["metrics"]:
+                with self._lock:
+                    batch = list(member["metrics"])
+                    del member["metrics"][: len(batch)]
+                    step, loss, elapsed = member["step"], member["loss"], member["elapsed"]
+                try:
+                    insert_metrics_batch(run_id, batch)
+                    update_run_progress(id = run_id, step = step, loss = loss, duration_seconds = elapsed)
+                except Exception:
+                    with self._lock:
+                        member["metrics"][:0] = batch
+                    raise
+        except Exception:
+            logger.warning("Failed to persist batch member %s", run_id, exc_info = True)
+
+    def _finish_member(
+        self,
+        run_id: str,
+        status: str,
+        *,
+        output_dir: Optional[str] = None,
+        error_message: Optional[str] = None,
+        clear_output_dir: bool = False,
+    ) -> None:
+        with self._lock:
+            member = self._batch_members.get(run_id)
+            if member is None or member["terminal"]:
+                return
+            member["terminal"] = True
+            if output_dir:
+                member["output_dir"] = output_dir
+            clear_output_dir = clear_output_dir or member["cancelled"]
+        # Retried like the finalize below: a member that fails before its first step needs its row created.
+        for attempt in range(_DB_FINALIZE_RETRIES):
+            self._persist_member(run_id, flush = True)
+            if member["created"] or account_is_retired() or attempt + 1 == _DB_FINALIZE_RETRIES:
+                break
+            time.sleep(_DB_FINALIZE_RETRY_S)
+        if not member["created"] or account_is_retired():
+            return
+        from storage.studio_db import finish_run
+        from utils.downsample import downsample
+
+        # Retried like a lone run's finalize: a transient SQLite lock must not leave the row running.
+        for attempt in range(_DB_FINALIZE_RETRIES):
+            try:
+                finish_run(
+                    id = run_id,
+                    status = status,
+                    ended_at = datetime.now(timezone.utc).isoformat(),
+                    final_step = member["step"],
+                    final_loss = member["loss"],
+                    duration_seconds = member["elapsed"],
+                    loss_sparkline = _json.dumps(downsample(member["loss_history"], 50)),
+                    output_dir = None if clear_output_dir else member["output_dir"],
+                    error_message = error_message,
+                    clear_output_dir = clear_output_dir,
+                )
+                return
+            except Exception:
+                if attempt + 1 < _DB_FINALIZE_RETRIES:
+                    time.sleep(_DB_FINALIZE_RETRY_S)
+                    continue
+                logger.warning("Failed to finalize batch member %s", run_id, exc_info = True)
+
+    def _finalize_batch_members(
+        self,
+        status: str,
+        error_message: Optional[str],
+        clear_output_dir: bool = False,
+    ) -> None:
+        # Process-level ending: only members without their own terminal event are finalized here.
+        with self._lock:
+            running = [
+                (run_id, m) for run_id, m in self._batch_members.items() if not m["terminal"]
+            ]
+        for run_id, member in running:
+            saved = bool(member["output_dir"]) and os.path.isfile(
+                os.path.join(member["output_dir"], "adapter_config.json")
+            )
+            if status == "error":
+                self._finish_member(
+                    run_id,
+                    "error",
+                    error_message = error_message or "Training process terminated unexpectedly",
+                )
+            elif clear_output_dir or member["cancelled"]:
+                self._finish_member(run_id, "stopped", clear_output_dir = True)
+            elif saved:
+                self._finish_member(run_id, status)
+            else:
+                self._finish_member(
+                    run_id, "error", error_message = "Training ended without saving this job."
+                )
 
     @staticmethod
     def _read_queue(q: Any, timeout_sec: float) -> Optional[dict]:
