@@ -36808,7 +36808,6 @@ class LlamaCppBackend:
         )
         from state.tool_approvals import LiveToolPermissions, bind_permission_upgrade
 
-        # The route passes the one its skill preload bound, so a Full access upgrade there carries over.
         if live_permissions is None:
             live_permissions = LiveToolPermissions(session_id, cancel_event)
         sandbox_level = normalize_sandbox_level(sandbox_level)
