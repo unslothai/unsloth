@@ -3109,3 +3109,25 @@ def test_a_loadable_rocm_runtime_still_installs_rocm(fake_settings, monkeypatch)
     monkeypatch.setattr(sd_cpp_backend, "rocm_runtime_resolvable", lambda: False)
     assert sd_cpp_backend._skip_unloadable_rocm("vulkan") == "vulkan"
     assert _noted_accelerators(fake_settings) == []
+
+
+def test_clearing_the_record_reprobes_the_rocm_runtime(fake_settings, monkeypatch):
+    """The clear hint says fix the runtime, then clear: a memoised 'missing' must not re-convict ROCm."""
+    import subprocess
+
+    from core.inference import sd_cpp_backend
+
+    monkeypatch.setattr(sd_cpp_backend.os, "name", "posix")
+    monkeypatch.setattr(sd_cpp_backend.sys, "platform", "linux")
+    missing = ["libhipblas.so.3"]
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_a, **_k: types.SimpleNamespace(returncode = 0, stdout = "\n".join(missing)),
+    )
+    monkeypatch.setattr(sd_cpp_backend, "_rocm_missing_memo", None)
+    assert sd_cpp_backend._skip_unloadable_rocm("rocm") == "vulkan"
+    missing.clear()
+    sd_cpp_backend.clear_accelerator_runtime_failures()
+    assert sd_cpp_backend._skip_unloadable_rocm("rocm") == "rocm"
+    assert _noted_accelerators(fake_settings) == []

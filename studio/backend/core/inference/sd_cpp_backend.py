@@ -1963,6 +1963,9 @@ def accelerator_runtime_failure_state() -> dict:
 
 def clear_accelerator_runtime_failures() -> None:
     """Forget every note (``DELETE /settings/diffusion-accelerator-fallback``). BOTH halves: the in-process mirror would otherwise keep diverting."""
+    global _rocm_missing_memo
+    # Clearing is the retry after fixing the runtime, so re-probe it.
+    _rocm_missing_memo = None
     _accelerator_runtime_failures.clear()
     _persist_accelerator_runtime_failures({})
 
