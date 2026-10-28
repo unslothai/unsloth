@@ -21,6 +21,7 @@ from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_m
 import atexit
 import logging
 import os
+import socket
 import struct
 import subprocess
 import sys
@@ -107,6 +108,20 @@ def _gguf_context_length(path: str) -> int | None:
 
 _GGUF_POOLING = {1: "mean", 2: "cls", 3: "last"}
 _GGUF_POOLING_DEFAULT = {"nomic-bert": "mean", "nomic-bert-moe": "mean"}
+
+
+@lru_cache(maxsize = 8)
+def _embed_host(host: str) -> str:
+    """One numeric address for bind, requests and the port-owner check.
+
+    A name resolving to several addresses lets llama-server bind one while the client dials
+    another a different user holds."""
+    try:
+        ips = [a[4][0] for a in socket.getaddrinfo(host, None, type = socket.SOCK_STREAM)]
+    except OSError:
+        return host
+    v4 = [ip for ip in ips if ":" not in ip]
+    return (v4 or ips or [host])[0]
 
 
 @lru_cache(maxsize = 32)
@@ -217,7 +232,8 @@ class LlamaServerBackend:
 
     @property
     def _base_url(self) -> str:
-        return f"http://{config.EMBED_HOST}:{self._port}"
+        host = _embed_host(config.EMBED_HOST)
+        return f"http://{f'[{host}]' if ':' in host else host}:{self._port}"
 
     def _auth_headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
@@ -700,7 +716,7 @@ class LlamaServerBackend:
             "-m",
             model_path,
             "--host",
-            config.EMBED_HOST,
+            _embed_host(config.EMBED_HOST),
             "--port",
             str(port),
             "--embedding",
@@ -937,7 +953,7 @@ class LlamaServerBackend:
                 # trust_env=False: a proxy that 503s 127.0.0.1 must not block this probe.
                 if httpx.get(url, timeout = 2.0, trust_env = False).status_code == 200:
                     return LlamaCppBackend._health_listener_is_ours(
-                        self._process, self._port, config.EMBED_HOST
+                        self._process, self._port, _embed_host(config.EMBED_HOST)
                     )
             except (*_TRANSPORT_ERRORS, httpx.TimeoutException):
                 pass

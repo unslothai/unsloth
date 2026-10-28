@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import http.server
+import socket
 import subprocess
 import sys
 import threading
@@ -13,7 +14,7 @@ pytest.importorskip("psutil")
 
 from core.inference.stt_mtmd_sidecar import MtmdSttSidecar
 from core.rag import config
-from core.rag.embed_llama_server import LlamaServerBackend
+from core.rag.embed_llama_server import LlamaServerBackend, _embed_host
 from core.systemone.native_worker import NativeClefAgent, NativeError
 
 _CHILD_SERVER = r"""
@@ -106,6 +107,52 @@ def test_embedder_accepts_its_own_child_on_a_configured_host(monkeypatch):
     finally:
         p.kill()
         p.wait()
+
+
+def test_embedder_dials_the_address_its_child_bound(monkeypatch):
+    host = "localhost.localdomain"
+    try:
+        families = {a[0] for a in socket.getaddrinfo(host, None, type = socket.SOCK_STREAM)}
+    except OSError:
+        families = set()
+    if families != {socket.AF_INET, socket.AF_INET6}:
+        pytest.skip(f"{host} does not resolve to both ::1 and 127.0.0.1 here")
+
+    class V6(http.server.HTTPServer):
+        address_family = socket.AF_INET6
+
+    hits = []
+
+    class Foreign(_Health):
+        def do_GET(self):
+            hits.append(self.path)
+            super().do_GET()
+
+    foreign = V6(("::1", 0), Foreign)
+    threading.Thread(target = foreign.serve_forever, daemon = True).start()
+    port = foreign.server_address[1]
+    p = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            _CHILD_SERVER.replace(", 0)", ", int(sys.argv[2]))"),
+            _embed_host(host),
+            str(port),
+        ],
+        stdout = subprocess.PIPE,
+        text = True,
+    )
+    try:
+        assert int(p.stdout.readline()) == port
+        b = _embedder(p, port, monkeypatch, host = host)
+        assert b._wait_for_health(timeout = 10.0, interval = 0.05) is True
+        assert b._base_url == f"http://127.0.0.1:{port}"
+        assert hits == []
+    finally:
+        p.kill()
+        p.wait()
+        foreign.shutdown()
+        foreign.server_close()
 
 
 def test_dictation_refuses_a_port_another_process_answers(foreign_port, idle_child):
