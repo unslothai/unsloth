@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { apiUrl } from "@/lib/api-base";
+import { apiUrl, getApiPort, isTauri } from "@/lib/api-base";
 import { setHfEndpoints } from "@/lib/hf-endpoint";
 import {
   isDetectionDeferred,
@@ -112,12 +112,28 @@ export function forgetMeasuredVerdict(): void {
   usePlatformStore.setState({ verdictStale: true, detectionDeferred: false });
 }
 
+// Backend not ready: use client detection, keep fetched=false, but never wipe an authoritative one.
+function localPlatformFallback(force?: boolean): DeviceType {
+  if (shouldKeepAuthoritativePlatform(force)) {
+    return usePlatformStore.getState().deviceType;
+  }
+  const deviceType = detectLocalPlatform();
+  const chatOnly = deviceType === "mac";
+  usePlatformStore.setState({ deviceType, chatOnly, fetched: false });
+  return deviceType;
+}
+
 // `force` re-reads /api/health even if cached, to pick up a late-arriving tunnel URL.
 export async function fetchDeviceType(options?: {
   force?: boolean;
 }): Promise<DeviceType> {
   const { fetched } = usePlatformStore.getState();
   if (fetched && !options?.force) return usePlatformStore.getState().deviceType;
+  // Desktop before server-port: the placeholder port 0 never connects, so go straight to the
+  // fallback a refused fetch reaches.
+  if (isTauri && getApiPort() === null) {
+    return localPlatformFallback(options?.force);
+  }
 
   try {
     // device_type is only reported to authed callers. Read the token directly: importing
@@ -235,14 +251,7 @@ export async function fetchDeviceType(options?: {
       return deviceType;
     }
   } catch {
-    // Backend not ready: use client detection, keep fetched=false, but never wipe an authoritative one.
-    if (shouldKeepAuthoritativePlatform(options?.force)) {
-      return usePlatformStore.getState().deviceType;
-    }
-    const deviceType = detectLocalPlatform();
-    const chatOnly = deviceType === "mac";
-    usePlatformStore.setState({ deviceType, chatOnly, fetched: false });
-    return deviceType;
+    return localPlatformFallback(options?.force);
   }
 
   return usePlatformStore.getState().deviceType;
