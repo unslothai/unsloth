@@ -59,7 +59,6 @@ import {
   ComputerTerminal01Icon,
   Delete02Icon,
   FileSearchIcon,
-  FlashIcon,
   PlusSignIcon,
   Refresh01Icon,
   RemoveCircleIcon,
@@ -69,6 +68,7 @@ import {
 import { Copy01Icon } from "@/lib/copy-icon";
 import { PauseIcon } from "@/lib/media-control-icons";
 import { ReloadIcon } from "@/lib/reload-icon";
+import { SpeedMeterIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import {
   type CSSProperties,
@@ -642,7 +642,7 @@ const RequestRow = memo(function RequestRow({
           {speed ? (
             <span className="flex items-center gap-1" title="Generation speed">
               <HugeiconsIcon
-                icon={FlashIcon}
+                icon={SpeedMeterIcon}
                 strokeWidth={1.75}
                 className="size-3"
               />
@@ -1433,7 +1433,7 @@ export function ApiMonitorPage(): ReactElement {
         </dl>
         <dl className={FACT_CELL}>
           {rowStats.tokensPerSecond != null ? (
-            <Fact label="Speed" icon={FlashIcon}>
+            <Fact label="Speed" icon={SpeedMeterIcon}>
               <span className="tabular-nums">
                 {rowStats.tokensPerSecond.toFixed(1)} tok/s
               </span>

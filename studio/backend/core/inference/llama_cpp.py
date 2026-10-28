@@ -20011,6 +20011,16 @@ class LlamaCppBackend:
                 for name in candidates
                 if name.lower().endswith(".gguf") and not _is_root_dflash_drafter_path(name)
             ]
+            eligible = [
+                name
+                for name in candidates
+                if _is_root_dflash_drafter_path(name)
+                and Path(name).name not in rejected
+                # Before ranking, as dflash_plan_files: the fetch refuses a half-listed set, and returning one would end the loop.
+                and split_listing_is_complete(candidates, name)
+            ]
+            if not eligible:
+                return None
             # Same size bound as dflash_plan_files: header reads only after download, a drafter is a few layers of its target, and an unlisted size keeps the candidate.
             sizes = self._remote_root_gguf_sizes(hf_repo, hf_token)
             try:
@@ -20020,13 +20030,9 @@ class LlamaCppBackend:
             files = sorted(
                 (
                     name
-                    for name in candidates
-                    if _is_root_dflash_drafter_path(name)
-                    and Path(name).name not in rejected
-                    # Before ranking, as dflash_plan_files: the fetch refuses a half-listed set, and returning one would end the loop.
-                    and split_listing_is_complete(candidates, name)
+                    for name in eligible
                     # Whole set, not the picked shard: each half of a split weight can sit under the target while the set does not.
-                    and not (
+                    if not (
                         target_bytes and _drafter_set_bytes(sizes, Path(name).name) >= target_bytes
                     )
                 ),

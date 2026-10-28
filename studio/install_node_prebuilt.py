@@ -38,7 +38,7 @@ _STUDIO_DIR = str(Path(__file__).resolve().parent)
 if _STUDIO_DIR not in sys.path:
     sys.path.insert(0, _STUDIO_DIR)
 
-from prebuilt_core import DownloadProgress, make_staging_dir  # noqa: E402
+from prebuilt_core import DownloadProgress, copy_response_body, make_staging_dir  # noqa: E402
 
 try:
     from filelock import FileLock, Timeout as FileLockTimeout
@@ -301,15 +301,9 @@ def download_file(url: str, destination: Path) -> None:
                     if _LOG_TO_STDOUT:
                         progress.stream = sys.stdout
                         progress.is_tty = progress.is_tty and sys.stdout.isatty()
-                    downloaded_bytes = 0
-                    while True:
-                        chunk = response.read(1024 * 1024)
-                        if not chunk:
-                            break
-                        handle.write(chunk)
-                        downloaded_bytes += len(chunk)
-                        progress.update(downloaded_bytes)
-                    progress.finish(downloaded_bytes)
+                    copy_response_body(
+                        response, handle.write, total_bytes = total_bytes, progress = progress
+                    )
                 handle.flush()
                 os.fsync(handle.fileno())
             if not tmp_path.exists() or tmp_path.stat().st_size == 0:

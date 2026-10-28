@@ -604,6 +604,20 @@ def _auto_measure(call, hidden_states):
     return out
 
 
+def _note_block_mask_call(layer, args, kwargs):
+    """_flex_block_mask_call, also recording `_unsloth_block_flex_only`; the observer runs on each change."""
+    flex = _flex_block_mask_call(args, kwargs)
+    seen = layer.__dict__.get("_unsloth_block_flex_only")
+    if seen is False or seen is flex:
+        return flex
+    # None -> True on a first BlockMask call; True -> False (sticky) on a call without one.
+    layer.__dict__["_unsloth_block_flex_only"] = flex
+    observer = layer.__dict__.get("_unsloth_block_flex_observer")
+    if observer is not None and (flex or seen is True):
+        observer(layer)
+    return flex
+
+
 def _ddp_optimizer_mode():
     # optimize_ddp also takes "python_reducer" / "no_optimization" strings: only "ddp_optimizer"
     # (or True) makes dynamo split graphs (convert_frame.py checks == "ddp_optimizer").
@@ -1442,12 +1456,14 @@ def _wrap(
                             _graphs_off("shapes", _SHAPES_NOTE.format(_CUDAGRAPH_MAX_SHAPES))
                         else:
                             graph_shapes.add(shape)
+                # Before the graphs_off read: the observer may set or clear it for this block.
+                flex = use_graphs and _note_block_mask_call(self, args, kwargs)
                 if use_graphs and (
                     _CUDAGRAPH_STATE["off"] is not None
                     or self.__dict__.get("_unsloth_block_graphs_off", False)
                     or _in_nonreentrant_checkpoint()
                     or _graphs_unsafe_moe(self)
-                    or _flex_block_mask_call(args, kwargs)
+                    or flex
                 ):
                     if _CUDAGRAPH_STATE["off"] is not None and _CUDAGRAPH_STATE["release"] is None:
                         _release_graph_pool()
