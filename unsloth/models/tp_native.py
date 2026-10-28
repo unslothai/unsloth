@@ -2468,10 +2468,63 @@ def _tp_fix_train_sampler(sampler, args, dp_size, dp_rank):
         and getattr(sampler, "generator", None) is None
     ):
         # group_by_length shuffles with the global torch RNG, which any rank-local draw desyncs between tp
-        # peers: give it its own generator seeded like the Trainer's eval sampler.
-        seed = args.data_seed if getattr(args, "data_seed", None) is not None else args.seed
-        sampler.generator = torch.Generator().manual_seed(seed)
+        # peers: shuffle with its own generator, reseeded per epoch (seed + epoch), so a resumed run draws
+        # the order the uninterrupted run drew for that epoch.
+        sampler.__class__ = _tp_length_grouped_sampler_class(type(sampler))
+        sampler.seed = args.data_seed if getattr(args, "data_seed", None) is not None else args.seed
+        sampler.epoch = 0
+        sampler.generator = torch.Generator().manual_seed(sampler.seed)
     return sampler
+
+
+_TP_LENGTH_GROUPED = {}
+
+
+def _tp_length_grouped_sampler_class(base):
+    cls = _TP_LENGTH_GROUPED.get(base)
+    if cls is None:
+
+        def set_epoch(self, epoch):
+            self.epoch = int(epoch)
+
+        def __iter__(self):
+            self.generator = torch.Generator().manual_seed(self.seed + self.epoch)
+            return base.__iter__(self)
+
+        cls = type(
+            "UnslothTensorParallelLengthGroupedSampler",
+            (base,),
+            {"set_epoch": set_epoch, "__iter__": __iter__, "_unsloth_tp_epoch_seeded": True},
+        )
+        _TP_LENGTH_GROUPED[base] = cls
+    return cls
+
+
+def _tp_forward_set_epoch(data_loader):
+    """accelerate's BatchSamplerShard (dp > 1) has no set_epoch, and once skip_first_batches wraps it on resume
+    neither accelerate nor the Trainer reaches the epoch-aware sampler under it, which then replays epoch 0.
+    Forward set_epoch from the shard to the samplers made here (and transformers' BatchRebalanceSampler)."""
+    shard = getattr(data_loader, "batch_sampler", None)
+    inner = getattr(shard, "batch_sampler", None)
+    if shard is None or inner is None or hasattr(shard, "set_epoch"):
+        return
+    from transformers import trainer_pt_utils
+
+    rebalance = getattr(trainer_pt_utils, "BatchRebalanceSampler", None)
+    targets = [
+        x
+        for x in (inner, getattr(inner, "sampler", None))
+        if getattr(type(x), "_unsloth_tp_epoch_seeded", False)
+        or (rebalance is not None and type(x) is rebalance)
+    ]
+    if not targets:
+        return
+
+    def set_epoch(epoch):
+        for target in targets:
+            target.set_epoch(epoch)
+
+    shard.set_epoch = set_epoch
 
 
 def _tp_train_sampler(trainer, dp_size, dp_rank):
@@ -2916,9 +2969,11 @@ def _install_tp_accelerate_hooks():
             },
         )
         try:
-            return original_data_loader(self, data_loader, *args, **kwargs)
+            prepared = original_data_loader(self, data_loader, *args, **kwargs)
         finally:
             self.__class__ = cls
+        _tp_forward_set_epoch(prepared)
+        return prepared
 
     def clip_grad_norm_(
         self,
