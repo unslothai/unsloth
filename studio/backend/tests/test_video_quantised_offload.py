@@ -30,7 +30,6 @@ FAMILIES = {
     "ltx-2": "Lightricks/LTX-2",
 }
 
-# _HN: the hosted int8 pair read as torchao-free W8A8 layers under offload (video_hosted_int8_native).
 _BF, _AO, _W8, _HN = "bf16", "ao", "w8", "hosted-w8"
 EXPECTED = {
     "wan2.2-ti2v-5b": {
@@ -989,7 +988,6 @@ def test_a_cancel_during_the_background_pin_wait_ends_the_render_promptly(
 
 @pytest.mark.parametrize("tier_gib", [12, 16, 24])
 def test_a14b_kill_switch_restores_the_runtime_offload_build(fake_runtime, monkeypatch, tier_gib):
-    """``UNSLOTH_VIDEO_HOSTED_INT8_OFFLOAD=0``: the offloaded A14B declines the hosted pair and quantises at runtime."""
     monkeypatch.setenv("UNSLOTH_VIDEO_HOSTED_INT8_OFFLOAD", "0")
     spy = _spoof(monkeypatch, tier_gib = tier_gib)
     status = VideoBackend().load_pipeline(FAMILIES["wan2.2-t2v-a14b"])

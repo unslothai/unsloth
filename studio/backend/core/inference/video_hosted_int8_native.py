@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Serve a hosted int8 video denoiser to an OFFLOADED load as torchao-free native W8A8 layers.
-
-torchao tensors do not survive the offload hooks' ``Module.to()``, but the codes and scales are plain tensors
-that ``NativeWeightOnlyLinear`` runs with the same ``torch._int_mm`` maths. NOT the runtime offload build
-(ConvRot g256, ``amax / 127``): its codes differ. Kill switch: ``UNSLOTH_VIDEO_HOSTED_INT8_OFFLOAD=0``.
-"""
+"""Hosted int8 video denoiser as torchao-free W8A8 layers for offloaded loads (torchao tensors break
+on the offload hooks' ``Module.to()``). Not the runtime offload build: its codes differ (ConvRot g256, amax / 127)."""
 
 from __future__ import annotations
 
@@ -14,7 +10,6 @@ import os
 from typing import Any, Optional
 
 HOSTED_INT8_OFFLOAD_ENV = "UNSLOTH_VIDEO_HOSTED_INT8_OFFLOAD"
-# Families whose hosted int8 pair is proven to load this way; the resident path serves the same files.
 HOSTED_INT8_OFFLOAD_FAMILIES = frozenset({"wan2.2-t2v-a14b"})
 _ACT_QUANT_NAME = "_int8_symm_per_token_reduced_range_quant"
 
@@ -25,7 +20,6 @@ def hosted_int8_offload_enabled() -> bool:
 
 
 def hosted_int8_offload_eligible(fam: Any, scheme: Optional[str], target: Any) -> bool:
-    """Whether an offloaded load of ``fam`` on ``target`` may serve the hosted ``scheme`` file natively. Never raises."""
     try:
         if not hosted_int8_offload_enabled():
             return False
@@ -45,7 +39,6 @@ def hosted_int8_offload_eligible(fam: Any, scheme: Optional[str], target: Any) -
 
 
 def native_cache_covers(fam: Any, target: Any, base: Optional[str]) -> bool:
-    """Whether this machine's native cache holds the runtime offload build of EVERY expert. Never raises."""
     try:
         from .diffusion_native_cache import lookup, native_spec
         from .diffusion_transformer_quant import TQ_INT8, native_int8_act
@@ -76,8 +69,7 @@ def _is_zero(t: Any) -> bool:
 
 
 def int8_weight_parts(name: str, value: Any) -> Optional[tuple]:
-    """``(codes [n, k] int8, scale [n], dtype)`` of a torchao v1/v2 W8A8 weight, None for a plain tensor.
-    RAISES on any other layout so the load falls back to dense."""
+    """``(codes [n, k] int8, scale [n], dtype)`` of a torchao v1/v2 W8A8 weight, None for a plain tensor; raises on other layouts."""
     import torch
 
     kind = type(value).__name__
@@ -127,8 +119,6 @@ def int8_weight_parts(name: str, value: Any) -> Optional[tuple]:
 
 
 def native_state_from_hosted(model: Any, state_dict: dict) -> tuple[dict, int]:
-    """Swap every int8 Linear of the (meta) ``model`` for a native W8A8 twin holding the file's codes; returns the
-    state dict ``model`` now loads strictly, and the number of layers swapped. Raises on any mismatch."""
     import torch
 
     from .diffusion_native_quant import NATIVE_INT8, native_linear_class
@@ -178,8 +168,7 @@ def load_hosted_int8_native(
     local_files_only: bool = False,
     logger: Any = None,
 ) -> Optional[Any]:
-    """The hosted int8 ``component`` as native W8A8 layers on the CPU, or None (logged). Same checks as the resident
-    reader (header refusal, metadata, payload fingerprint); a rotated artifact is refused. Never raises."""
+    """The hosted int8 ``component`` as native W8A8 layers on the CPU, or None. Same checks as the resident reader."""
     try:
         from . import diffusion_prequant as pq
         from .diffusion_convrot import declares_rotation

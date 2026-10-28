@@ -8884,7 +8884,6 @@ class VideoBackend:
         plan, bf16_plan, quant_replanned = _plan_for_te_scale(
             te_scale, log = True, denoiser_gb = denoiser_seed_gb
         )
-        # An offloaded int8 seed is served as torchao-free W8A8 layers (video_hosted_int8_native).
         from .video_hosted_int8_native import hosted_int8_offload_ok
 
         denoiser_seed_native = False
@@ -9520,7 +9519,7 @@ class VideoBackend:
                 family = fam.name,
                 offload = video_offload,
             )
-            # A seeded denoiser is a torchao checkpoint (unless read natively); the torchao-free path must not claim it.
+            # A seeded denoiser is a torchao checkpoint unless read natively; the torchao-free path must not claim it.
             if kind == "pipeline" and not denoiser_injected
             else TQ_INT8
             if denoiser_injected and denoiser_seed_native

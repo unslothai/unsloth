@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Hosted A14B INT8 served to an offloaded load as torchao-free W8A8 layers: decode, build, gates, routing."""
-
 from __future__ import annotations
 
 import contextlib
@@ -44,7 +42,6 @@ def _family():
 
 
 def tiny_config() -> dict:
-    # 512 wide: every attention / FFN Linear passes the 512 filter, as in the native cache tests.
     return dict(
         patch_size = (1, 2, 2),
         num_attention_heads = 2,
@@ -64,7 +61,6 @@ def tiny_config() -> dict:
 
 @contextlib.contextmanager
 def v1_int8_classes():
-    """Stand-ins for torchao's deleted v1 int8 classes under their pickled names, as torchao 0.17 wrote them."""
 
     class _Base(torch.Tensor):
         __torch_function__ = torch._C._disabled_torch_function_impl
@@ -142,8 +138,6 @@ def v1_int8_classes():
 
 
 def v1_int8_quantise(weight):
-    """torchao v1 ``Int8DynamicActivationInt8WeightConfig`` weight maths: symmetric per row over [-128, 127],
-    scale ``amax / 127.5`` in the weight's dtype."""
     w = weight.detach().float()
     amax = w.abs().amax(dim = 1)
     scale = (amax / 127.5).clamp(min = torch.finfo(torch.float32).eps).to(weight.dtype)
@@ -160,8 +154,6 @@ def write_hosted_v1(
     metadata = None,
     zero_point = None,
 ):
-    """A hosted-format INT8 ``.pt`` of ``model`` (torchao v1 W8A8 pickle, the published A14B layout). Returns
-    ``{fqn: (codes, scale)}`` of the quantised layers."""
     from torchao.quantization.quant_primitives import ZeroPointDomain
 
     keep = tq.make_filter_fn(
@@ -214,7 +206,6 @@ def dense_expert(seed: int):
 
 @pytest.fixture
 def hosted(tmp_path, monkeypatch):
-    """One hosted-format file per expert, served by the resolver without the Hub."""
     files, written, dense = {}, {}, {}
     for seed, component in enumerate(COMPONENTS):
         dense[component] = dense_expert(seed)
@@ -360,9 +351,6 @@ def test_weight_parts_read_int8tensor_and_refuse_what_they_cannot_describe():
             hn.int8_weight_parts("w", _int8_tensor(**extra))
 
 
-# ── gates ────────────────────────────────────────────────────────────────────
-
-
 @pytest.fixture
 def nvidia(monkeypatch):
     monkeypatch.setattr(tq, "torch_is_rocm", lambda: False)
@@ -379,9 +367,9 @@ CUDA_BF16 = types.SimpleNamespace(device = "cuda", dtype = torch.bfloat16)
     [
         (FAMILY, "int8", CUDA_BF16, None, None, True),
         (FAMILY, "INT8", CUDA_BF16, None, None, True),
-        (FAMILY, "int8", CUDA_BF16, "0", None, False),  # kill switch
+        (FAMILY, "int8", CUDA_BF16, "0", None, False),
         (FAMILY, "int8", CUDA_BF16, "off", None, False),
-        (FAMILY, "int8", CUDA_BF16, None, "0", False),  # weight-only native is another build
+        (FAMILY, "int8", CUDA_BF16, None, "0", False),
         (FAMILY, "fp8", CUDA_BF16, None, None, False),
         (FAMILY, "nvfp4", CUDA_BF16, None, None, False),
         ("wan2.2-ti2v-5b", "int8", CUDA_BF16, None, None, False),
@@ -429,12 +417,9 @@ def test_a_full_native_cache_keeps_the_cached_build(nvidia, monkeypatch):
     monkeypatch.setattr(NC, "lookup", lambda fam, spec, component, **k: hits.get(component))
     assert hn.native_cache_covers(_family(), CUDA_BF16, BASE)
     assert not hn.hosted_int8_offload_ok(_family(), "int8", CUDA_BF16, BASE)
-    hits.pop("transformer_2")  # a partial cache is no cache: the hosted pair wins
+    hits.pop("transformer_2")
     assert not hn.native_cache_covers(_family(), CUDA_BF16, BASE)
     assert hn.hosted_int8_offload_ok(_family(), "int8", CUDA_BF16, BASE)
-
-
-# ── routing ──────────────────────────────────────────────────────────────────
 
 
 def _planner(monkeypatch, *, offloads: bool, eligible: bool):
@@ -456,9 +441,9 @@ def _planner(monkeypatch, *, offloads: bool, eligible: bool):
 @pytest.mark.parametrize(
     "offloads, eligible, expect",
     [
-        (True, True, "int8"),  # the hosted pair is fetched, the dense experts are not
-        (True, False, "__declined__"),  # kill switch / cache hit / other host: main's behaviour
-        (False, True, "int8"),  # resident: torchao seed, unchanged
+        (True, True, "int8"),
+        (True, False, "__declined__"),
+        (False, True, "int8"),
         (False, False, "int8"),
     ],
 )

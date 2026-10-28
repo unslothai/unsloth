@@ -113,8 +113,7 @@ def denoiser_prequant_pipe_kwargs(
     logger: Any = None,
     native_offload: bool = False,
 ) -> dict[str, Any]:
-    """Component overrides for pipeline assembly, or ``{}`` (not seeded whole: re-plan memory at bf16).
-    ``native_offload``: build experts as torchao-free W8A8 layers on the CPU."""
+    """Component overrides for pipeline assembly, or ``{}`` (not seeded whole: re-plan memory at bf16)."""
     try:
         import gc
 
