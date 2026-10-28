@@ -95,14 +95,30 @@ def _mask_is_block_causal(
     return verdict
 
 
-def _autocast_dtype_differs(query) -> bool:
+def _autocast_dtype(device_type):
+    """The autocast dtype for device_type, or None when autocast is off there."""
     try:
-        enabled = torch.is_autocast_enabled(query.device.type)
-        dtype = torch.get_autocast_dtype(query.device.type) if enabled else None
+        enabled = torch.is_autocast_enabled(device_type)
+        return torch.get_autocast_dtype(device_type) if enabled else None
     except (AttributeError, TypeError):
-        enabled = torch.is_autocast_enabled()
-        dtype = torch.get_autocast_gpu_dtype() if enabled else None
-    return enabled and dtype != query.dtype
+        return torch.get_autocast_gpu_dtype() if torch.is_autocast_enabled() else None
+
+
+def _autocast_dtype_differs(query) -> bool:
+    dtype = _autocast_dtype(query.device.type)
+    return dtype is not None and dtype != query.dtype
+
+
+def _autocast_float32(query, key, value):
+    """fp32 Q / K / V under fp16 / bf16 autocast, cast as autocast casts SDPA's inputs (a lower precision
+    op): full finetuning's fp32 q_norm / k_norm leave Q and K in fp32, which kept packed rows on the
+    dense-mask SDPA path. Anything else is returned unchanged."""
+    if not (query.dtype == key.dtype == value.dtype == torch.float32):
+        return query, key, value
+    dtype = _autocast_dtype(query.device.type)
+    if dtype not in (torch.float16, torch.bfloat16):
+        return query, key, value
+    return query.to(dtype), key.to(dtype), value.to(dtype)
 
 
 _NO_WINDOW = object()
@@ -426,6 +442,8 @@ def _sdpa_packed_varlen(
             HF_PACKED_ATTENTION_STATS["fallback"] += 1
         return orig(module, query, key, value, attention_mask, *args, **named, **kwargs)
     block_varlen = kwargs.pop(BLOCK_VARLEN_KWARG, None)
+    if kwargs.get("packed_seq_lengths") is not None and not _disabled():
+        query, key, value = _autocast_float32(query, key, value)
     # Before any counter while tracing: Dynamo would guard on it and recompile every forward.
     if block_varlen is not None and torch.compiler.is_compiling() and not _disabled():
         window = _static_window(module, query, key, value, dropout, is_causal, kwargs)
@@ -814,7 +832,12 @@ def _block_varlen_prepare(
     n_kv_heads = getattr(config, "num_key_value_heads", None) or n_heads
     if not all(isinstance(n, int) for n in (head_dim, n_heads, n_kv_heads)):
         return None
-    policy_args = (hidden_states.device, hidden_states.dtype, head_dim, n_heads, n_kv_heads)
+    # SDPA runs in the autocast dtype when autocast casts fp32 activations (_autocast_float32).
+    dtype = hidden_states.dtype
+    if dtype == torch.float32:
+        dtype = _autocast_dtype(hidden_states.device.type) or dtype
+        dtype = dtype if dtype in (torch.float16, torch.bfloat16, torch.float32) else torch.float32
+    policy_args = (hidden_states.device, dtype, head_dim, n_heads, n_kv_heads)
     wants_sdpa = _sdpa_policy_requested(*policy_args)
     if policy is not None:
         policy.append((policy_args, wants_sdpa))
