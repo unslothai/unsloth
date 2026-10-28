@@ -25,7 +25,7 @@ from ._utils import _ignore_block_swap_params_for_ddp
 from ._utils import _tensor_parallel_for_inference, _tensor_parallel_for_training
 from ._utils import __version__, importlib_version
 from ._utils import move_to_device
-from ._utils import per_layer_device
+from ._utils import per_layer_device, refresh_moved_layer_devices
 from ._utils import embedding_applies_scale
 from ._utils import (
     _get_inference_mode_context_manager,
@@ -1781,6 +1781,7 @@ def _LlamaModel_fast_forward_inference(
 
         next_decoder_cache = []
         block_swap = getattr(self.model.layers, "_unsloth_block_swap", None)
+        refresh_moved_layer_devices(self.model.layers, block_swap)
 
         for idx, decoder_layer in enumerate(self.model.layers):
             if block_swap is not None:
