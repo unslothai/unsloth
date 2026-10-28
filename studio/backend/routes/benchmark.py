@@ -26,7 +26,11 @@ backend_path = Path(__file__).parent.parent.parent
 if str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
 
-from auth.authentication import authenticated_via_api_key, get_current_subject
+from auth.authentication import (
+    authenticated_via_api_key,
+    get_current_credential,
+    get_current_subject,
+)
 from hub.utils.host_paths import host_paths_visible, redact_host_paths
 from core.training.account_jobs import _has_managed_accounts
 from utils.account_context import AccountContext, current_account
@@ -53,10 +57,18 @@ from core.benchmark import (
     extract_samples,
     get_benchmark_backend,
 )
+from core.benchmark.recipe_heldout import RECIPE_HELDOUT_TASK_ID
 
 
 # ── Curated benchmark tasks ──────────────────────────
 _CURATED_TASKS: list[BenchmarkTaskInfo] = [
+    BenchmarkTaskInfo(
+        id = RECIPE_HELDOUT_TASK_ID,
+        name = "Recipe held-out",
+        description = "Held-out rows scored with a reference match or an LLM judge (Flows Benchmark node)",
+        task_type = "generation",
+        runner = "recipe",
+    ),
     BenchmarkTaskInfo(
         id = "mmlu",
         name = "MMLU",
@@ -363,8 +375,14 @@ async def run_benchmark(
     request: BenchmarkRunRequest,
     http_request: Request,
     current_subject: str = Depends(get_current_subject),
+    credential: tuple = Depends(get_current_credential),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """Run a benchmark on the specified model using lm_eval."""
+    if request.task == RECIPE_HELDOUT_TASK_ID:
+        from routes.benchmark_recipe import run_recipe_heldout
+
+        return await run_recipe_heldout(request, http_request, credential, via_api_key)
     backend = get_benchmark_backend()
 
     api_key_raw: str | None = None
@@ -413,6 +431,7 @@ async def run_benchmark(
             batch_size = request.batch_size,
             num_fewshot = request.num_fewshot,
             max_tokens = request.max_tokens,
+            limit = request.limit,
         )
         log_kwargs = copy.deepcopy(lm_eval_kwargs)
         log_model_args = log_kwargs.get("model_args", {})
@@ -487,6 +506,7 @@ async def run_benchmark(
             except Exception as e:
                 logger.warning(f"Failed to save benchmark results: {e}")
 
+        stored_run_id = None
         try:
             from storage.studio_db import (
                 insert_benchmark_run,
@@ -513,6 +533,7 @@ async def run_benchmark(
                 samples = extract_samples(results, run_summary["task"])
                 if samples:
                     insert_benchmark_samples(run_summary["id"], samples)
+                stored_run_id = run_summary["id"]
                 backend._append_log("stdout", "Results stored in database")
         except Exception as e:
             logger.warning(f"Failed to store benchmark results in DB: {e}")
@@ -533,6 +554,7 @@ async def run_benchmark(
             details = {
                 "checkpoint_path": request.checkpoint_path,
                 "results": task_results,
+                "run_id": stored_run_id,
             },
         )
     except HTTPException:

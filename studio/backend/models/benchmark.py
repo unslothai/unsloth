@@ -4,7 +4,7 @@
 """Pydantic schemas for Benchmark API."""
 
 from pydantic import BaseModel, Field, ConfigDict
-from typing import Optional, Any
+from typing import Literal, Optional, Any
 
 
 class BenchmarkTaskInfo(BaseModel):
@@ -18,6 +18,10 @@ class BenchmarkTaskInfo(BaseModel):
     task_type: Optional[str] = Field(
         None, description = "Task type: 'log_likelihood' or 'generation'"
     )
+    runner: Literal["lm_eval", "recipe"] = Field(
+        "lm_eval",
+        description = "lm_eval tasks need a GGUF served by llama.cpp; recipe tasks run on any chat model",
+    )
 
 
 class BenchmarkTasksResponse(BaseModel):
@@ -26,6 +30,28 @@ class BenchmarkTasksResponse(BaseModel):
     model_config = ConfigDict(populate_by_name = True)
 
     tasks: list[BenchmarkTaskInfo] = Field(..., description = "Available benchmark tasks")
+
+
+class RecipeHeldoutBaseline(BaseModel):
+    mode: Literal["none", "adapter_off", "alias"] = "none"
+    alias: Optional[str] = None
+
+
+class RecipeHeldoutSpec(BaseModel):
+    """What the Recipe held-out task scores: held-out rows and the model blocks that answer and judge them."""
+
+    rows: list[dict[str, Any]] = Field(default_factory = list, max_length = 200)
+    max_rows: int = Field(20, ge = 1, le = 200)
+    prompt_column: str = Field(..., min_length = 1)
+    reference_column: Optional[str] = None
+    system_prompt: str = ""
+    scorer: Literal["reference", "json", "markdown", "python", "judge"] = "reference"
+    rubric: str = ""
+    model_alias: str = Field(..., min_length = 1)
+    baseline: RecipeHeldoutBaseline = RecipeHeldoutBaseline()
+    judge_alias: Optional[str] = None
+    model_providers: list[dict[str, Any]] = Field(default_factory = list)
+    model_configs: list[dict[str, Any]] = Field(default_factory = list)
 
 
 class BenchmarkRunRequest(BaseModel):
@@ -51,6 +77,12 @@ class BenchmarkRunRequest(BaseModel):
     )
     max_tokens: Optional[int] = Field(
         None, description = "Maximum tokens to generate per sample (None = 32768)"
+    )
+    limit: Optional[int] = Field(
+        None, ge = 1, description = "Score only the first N samples of each task (None = all)"
+    )
+    recipe: Optional[RecipeHeldoutSpec] = Field(
+        None, description = "Inputs for the recipe_heldout task (Flows Benchmark node)"
     )
 
 

@@ -311,6 +311,7 @@ class BenchmarkOrchestrator:
         params: dict,
         account = None,
         op_seq: Optional[int] = None,
+        task_fn = None,
     ) -> dict:
         """Run a benchmark in a worker thread.
 
@@ -333,7 +334,8 @@ class BenchmarkOrchestrator:
                 return {}  # stopped, or superseded, before it started
             cancel_event = self._cancel_event
             clear_progress()
-            future = self._executor.submit(_run_benchmark_task, params)
+            # task_fn runs a non-lm_eval task (Recipe held-out) through the same slot.
+            future = self._executor.submit(task_fn or _run_benchmark_task, params)
             self._worker = future
         my_seq = op_seq
         self._append_log("stdout", "Starting benchmark run...")

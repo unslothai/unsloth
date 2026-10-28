@@ -16,6 +16,7 @@ def build_gguf_kwargs(
     batch_size: str,
     max_tokens: Optional[int] = None,
     num_fewshot: Optional[int] = None,
+    limit: Optional[int] = None,
 ) -> dict:
     """lm_eval kwargs for the ``gguf`` backend pointed at this Studio server
     (see ``gguf_client.StudioGGUFLM``).
@@ -48,6 +49,8 @@ def build_gguf_kwargs(
     }
     if num_fewshot is not None:
         kwargs["num_fewshot"] = num_fewshot
+    if limit is not None:
+        kwargs["limit"] = limit
     return kwargs
 
 
@@ -58,6 +61,7 @@ def resolve_model_details(
     batch_size: str = "auto",
     num_fewshot: Optional[int] = None,
     max_tokens: Optional[int] = None,
+    limit: Optional[int] = None,
 ) -> tuple[list[str], dict]:
     """Resolve model details and return (empty_log_lines, lm_eval_kwargs).
 
@@ -81,6 +85,7 @@ def resolve_model_details(
         batch_size,
         max_tokens = max_tokens,
         num_fewshot = num_fewshot,
+        limit = limit,
     )
 
     return [], lm_eval_kwargs

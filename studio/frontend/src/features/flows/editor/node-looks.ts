@@ -4,6 +4,7 @@
 import type { IconSvgElement } from "@hugeicons/react";
 import type { ComponentType } from "react";
 import type { FlowNode, NodeSpec } from "../types";
+import { BENCHMARK_LOOK } from "./benchmark-node";
 import { TRAIN_LOOK } from "./train-node";
 
 /** Per-type content for the shared node card. Anything left out falls back to the
@@ -26,4 +27,5 @@ export interface NodeLook {
 
 export const NODE_LOOKS: Record<string, NodeLook> = {
   "train.finetune": TRAIN_LOOK,
+  "train.benchmark": BENCHMARK_LOOK,
 };

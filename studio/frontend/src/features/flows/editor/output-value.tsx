@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { DatasetRows, isDatasetPreview } from "./dataset-rows";
 import { MediaThumb, isMediaValue } from "./media";
 import { StructuredOutput, isStructuredValue } from "./value-viewers";
 
@@ -26,6 +27,7 @@ export function OutputValue({ value }: { value: unknown }) {
     );
   }
   if (isStructuredValue(value)) return <StructuredOutput value={value} />;
+  if (isDatasetPreview(value)) return <DatasetRows value={value} />;
   if (typeof value === "string") {
     return (
       <p className="max-h-72 overflow-y-auto whitespace-pre-wrap text-xs leading-relaxed text-foreground">
