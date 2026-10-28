@@ -237,7 +237,7 @@ def _load_rows(
 
 
 class _DecisionRows:
-    """Overlap CPU-only row acquisition with model load, preserving this job's scoped context."""
+    """Reads raw rows on a thread, in this job's context, while the model loads."""
 
     def __init__(self, config, should_stop, status, warn):
         self._config = config
@@ -259,7 +259,7 @@ class _DecisionRows:
         with self._lock:
             if not self._cancelled.is_set():
                 self._last_status = message
-                # A dataset notification must not replace the concurrent model-loading phase.
+                # Held until result(): the model-loading status stays on screen meanwhile.
                 if self._waiting:
                     self._status(message)
 
@@ -303,8 +303,7 @@ class _DecisionRows:
     def __exit__(self, *_exc):
         with self._lock:
             self._cancelled.set()
-        # HF reads cannot always be interrupted; never keep the training worker alive waiting for IO.
-        # Cooperative loaders (including S3) observe cancellation and clean their own temporary files.
+        # Hub reads cannot be interrupted, so never wait on one; S3 polls the cancel flag itself.
         self._thread.join(timeout = 1)
 
 
