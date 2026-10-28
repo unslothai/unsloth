@@ -142,7 +142,7 @@ function SuggestedSite({ site, tabId }: { site: Site; tabId: string }) {
           type="button"
           title={`${site.title}\n${site.url}`}
           onClick={() => navigate(tabId, { url: site.url })}
-          className="flex w-full min-w-0 cursor-pointer flex-col items-center gap-4 rounded-xl px-2 pb-4 pt-5 transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-data-[state=open]/site:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]"
+          className="flex w-full min-w-0 cursor-pointer flex-col items-center gap-4 rounded-2xl px-2 pb-4 pt-5 transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-data-[state=open]/site:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]"
         >
           <SiteIcon site={site} />
           <span className="w-full truncate text-center text-ui-15 text-foreground">
@@ -193,7 +193,7 @@ function ToolButton({
       <HugeiconsIcon
         icon={icon}
         strokeWidth={1.75}
-        className="size-4.5 shrink-0 text-muted-foreground"
+        className="size-5 shrink-0 text-muted-foreground"
       />
       <span className="min-w-0 flex-1 truncate">{label}</span>
     </button>

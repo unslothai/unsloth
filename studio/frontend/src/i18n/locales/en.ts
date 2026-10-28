@@ -4345,7 +4345,7 @@ export const en = {
   // The Scheduled page: prompts that run on a schedule, each run answered in a new chat.
   scheduledTasks: {
     title: "Scheduled",
-    description: "Run prompts on a schedule with any of your models.",
+    description: "Run prompts on a schedule with your loaded model.",
     newTask: "New task",
     upcoming: "Upcoming",
     // Column headers over the list, and the Repeats value of a monthly task.
