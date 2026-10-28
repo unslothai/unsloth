@@ -6,7 +6,7 @@
     model = FastLanguageModel.get_peft_model(model, ...)  # LoRA first: same init as 1 GPU
     apply_tensor_parallel(model, init_device_mesh("cuda", (tp,), mesh_dim_names = ("tp",))["tp"])
 
-v1: LoRA / QLoRA training forward on dense decoders, tp ranks only (no Trainer / FSDP2 / generate).
+LoRA / QLoRA or full finetuning (trainable base weights as Shard DTensors) on dense decoders.
 Custom loop (torchrun --nproc_per_node tp):
 
     params = [p for p in model.parameters() if p.requires_grad]  # DTensors (keep plain ones in their own group)
@@ -37,7 +37,7 @@ The HF / TRL Trainer trains a tensor parallel model (tp only, or dp x tp after s
 the tp ranks, batches sharded over dp only, tp-aware clipping and float16 scaler. Trainer checkpoints are per
 rank (unsloth_tp/rank*.pt: local shards of the trainable weights and optimizer state, resumed on the same
 layout) next to the 1-GPU adapter; bitsandbytes Adam / AdamW step the local shards; evaluate / predict gather over dp only;
-trainer.save_model() writes the 1-GPU adapter.
+trainer.save_model() writes the 1-GPU adapter (full finetuning: the whole 1-GPU model, gathered to rank 0).
 
 Unmodified scripts: UNSLOTH_TP_SIZE=k torchrun ... applies all of the above from the environment
 (models/tp_env.py), with UNSLOTH_FSDP2=1 (native FSDP2) or DDP-style gradient averaging for the dp dimension.
@@ -908,11 +908,8 @@ def _refuse_base(path, proj_module, weight, base):
         raise ValueError(
             f"Unsloth: tensor parallelism v1 cannot shard {weight.dtype} weights ({path})."
         )
-    if weight.requires_grad:
-        raise ValueError(
-            f"Unsloth: tensor parallelism v1 shards LoRA / QLoRA training only; '{path}' has a trainable base "
-            "weight (full finetuning). Use native FSDP2 for full finetuning."
-        )
+    # A trainable base weight (full finetuning) is a Shard DTensor like the LoRA B / A shards: its local
+    # gradient is already complete, and a replicated row bias gets the whole gradient on every rank.
 
 
 def _active_adapter(proj):
@@ -3178,12 +3175,24 @@ def _tp_trainer_save_model(
     output_dir = None,
     _internal_call = False,
 ):
-    """Trainer.save_model for a tensor parallel model: the 1-GPU PEFT adapter (collective, rank 0 writes)."""
+    """Trainer.save_model for a tensor parallel model: the 1-GPU PEFT adapter, or for full finetuning the whole
+    1-GPU model (collective, rank 0 writes)."""
     output_dir = output_dir if output_dir is not None else self.args.output_dir
-    save_tp_adapter(self.model, output_dir)
+    if _has_peft_config(self.model):
+        save_tp_adapter(self.model, output_dir)
+    else:
+        from .tp_replica import tp_collective
+
+        model = self.model
+        # The whole model is gathered to rank 0, which runs the model's own (1-GPU) save_pretrained.
+        tp_collective(model, "save_model", lambda: model.save_pretrained(output_dir), "all")
     processing = getattr(self, "processing_class", None) or getattr(self, "tokenizer", None)
     if processing is not None and self.args.should_save:
         processing.save_pretrained(output_dir)
+
+
+def _has_peft_config(model):
+    return any(getattr(level, "peft_config", None) for level in _tp_chain(model))
 
 
 def _tp_scaler(trainer, dp):

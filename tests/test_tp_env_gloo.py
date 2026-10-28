@@ -121,7 +121,6 @@ def _case_units(rank, world, tmp):
     layout(UNSLOTH_TP_SIZE = 2, WORLD_SIZE = 2)
     wrapped = tp_env.tensor_parallel_env_load(loader)
     out["refuse_vllm"] = _raised(lambda: wrapped("m", fast_inference = True))
-    out["refuse_full_ft"] = _raised(lambda: wrapped("m", False, full_finetuning = True))
     out["refuse_8bit"] = _raised(lambda: wrapped("m", load_in_8bit = True))
     layout(UNSLOTH_TP_SIZE = 2, UNSLOTH_FSDP2 = 1, UNSLOTH_FSDP2_SHARDED_LOAD = 1, WORLD_SIZE = 2)
     out["refuse_fsdp2_sharded_load"] = _raised(lambda: wrapped("m", False))
@@ -612,7 +611,6 @@ def test_env_layout_parsing_and_refusals():
     assert res["fsdp2"] == (2, 2, 4, True)
     assert "native FSDP2 only" in res["accelerate_fsdp"]
     assert "vLLM" in res["refuse_vllm"] and "UNSLOTH_TP_SIZE=2" in res["refuse_vllm"]
-    assert "full finetuning" in res["refuse_full_ft"]
     assert "8-bit weights" in res["refuse_8bit"]
     assert "UNSLOTH_FSDP2_SHARDED_LOAD=1" in (res["refuse_fsdp2_sharded_load"] or ""), res[
         "refuse_fsdp2_sharded_load"

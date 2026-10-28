@@ -197,7 +197,6 @@ def _rank0():
 
 _REFUSED_LOAD_FLAGS = (
     ("fast_inference", "vLLM (fast_inference = True)"),
-    ("full_finetuning", "full finetuning (full_finetuning = True; use UNSLOTH_FSDP2=1 instead)"),
     ("load_in_8bit", "8-bit weights (load_in_8bit = True; load in 4-bit or 16-bit)"),
     ("load_in_fp8", "fp8 weights (load_in_fp8)"),
     ("qat_scheme", "QAT (qat_scheme)"),

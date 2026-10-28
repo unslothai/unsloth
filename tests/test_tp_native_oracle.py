@@ -468,7 +468,7 @@ def test_refuses_dora_and_lora_bias():
             tpn._refuse_adapter(region.path, region.projs[0].module)
 
 
-def test_refuses_quantized_and_trainable_bases():
+def test_refuses_quantized_bases_and_accepts_trainable_ones():
     model = build(LLAMA)
     region = tpn.derive_tp_plan(model, 2).regions[0]
     proj = region.projs[0].module
@@ -481,8 +481,8 @@ def test_refuses_quantized_and_trainable_bases():
     gptq = type("QuantLinear", (torch.nn.Module,), {})()
     with pytest.raises(ValueError, match = "GPTQ"):
         tpn._refuse_base("p", proj, weight, gptq)
-    with pytest.raises(ValueError, match = "full finetuning"):
-        tpn._refuse_base("p", proj, torch.nn.Parameter(weight.detach().clone()), base)
+    # Full finetuning: a trainable base weight shards like any other (tests/test_tp_full_finetune_gloo.py).
+    tpn._refuse_base("p", proj, torch.nn.Parameter(weight.detach().clone()), base)
 
 
 def test_refuses_global_width_attention():
