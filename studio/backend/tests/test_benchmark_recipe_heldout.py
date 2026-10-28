@@ -221,6 +221,9 @@ def test_a_local_judge_never_grades_with_the_adapter_on_even_without_a_baseline(
     assert response.success
     judge = [b for b in harness.bodies if b.get("use_adapter") is False]
     assert len(judge) == 3 and "baseline" not in response.details["recipe"]
+    # every candidate answer turns the adapter back on
+    assert [b.get("use_adapter") for b in harness.bodies] == [True, False] * 3
+    assert response.details["recipe"]["candidate"]["score"] == 1.0
 
 
 def test_a_busy_slot_refuses_and_frees_nothing(harness):
