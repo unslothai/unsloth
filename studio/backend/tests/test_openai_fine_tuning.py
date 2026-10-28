@@ -1129,11 +1129,25 @@ def test_listing_pages_through_a_batch_that_is_still_loading(batch_queue):
         "hybrid_gated_deltanet",
         "qwen3_5_moe",
         "qwen3_moe",
+        "qwen3_moe_on_transformers_4",
+        "qwen3_moe_without_expert_kernels",
     ],
 )
 def test_only_checked_model_kinds_batch(batch_queue, monkeypatch, model_kind):
     import utils.models.diffusion_lm as diffusion_lm
     import utils.models.model_config as model_config
+    import utils.transformers_version as transformers_version
+
+    monkeypatch.setattr(
+        transformers_version,
+        "get_transformers_tier",
+        lambda *a, **k: "457" if model_kind == "qwen3_moe_on_transformers_4" else "default",
+    )
+    monkeypatch.setattr(
+        openai_fine_tuning,
+        "_multi_lora_experts_available",
+        lambda: model_kind != "qwen3_moe_without_expert_kernels",
+    )
 
     client, calls, _live, gpu, _backend = batch_queue
     monkeypatch.setattr(openai_fine_tuning, "_trains_alone", _REAL_TRAINS_ALONE)
@@ -1182,6 +1196,8 @@ def test_only_checked_model_kinds_batch(batch_queue, monkeypatch, model_kind):
             },
         },
         "qwen3_moe": {"model_type": "qwen3_moe", "num_experts": 128},
+        "qwen3_moe_on_transformers_4": {"model_type": "qwen3_moe", "num_experts": 128},
+        "qwen3_moe_without_expert_kernels": {"model_type": "qwen3_moe", "num_experts": 128},
     }
     monkeypatch.setattr(
         model_config,

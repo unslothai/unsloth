@@ -609,6 +609,29 @@ def _multi_lora_available() -> bool:
     return _multi_lora
 
 
+_multi_lora_experts: Optional[bool] = None
+
+
+def _multi_lora_experts_available() -> bool:
+    """Whether the installed multi-LoRA kernels train fused MoE experts (inject_multi_lora_experts)."""
+    global _multi_lora_experts
+    if _multi_lora_experts is None:
+        try:
+            spec = importlib.util.find_spec("unsloth")
+            roots = list(spec.submodule_search_locations or []) if spec is not None else []
+        except (ImportError, ValueError):
+            roots = []
+        _multi_lora_experts = any(
+            "def inject_multi_lora_experts"
+            in (Path(root) / "kernels" / "multi_lora.py").read_text(
+                encoding = "utf-8", errors = "replace"
+            )
+            for root in roots
+            if (Path(root) / "kernels" / "multi_lora.py").is_file()
+        )
+    return _multi_lora_experts
+
+
 def _batchable(request: TrainingStartRequest) -> bool:
     """Text LoRA/QLoRA on local files with nothing the batched trainer does not run; the rest trains alone."""
     from core.training.eval_dataset import evaluation_enabled
@@ -703,13 +726,15 @@ def _moe_config(config: dict) -> bool:
     return False
 
 
-def _moe_batches(config: dict) -> bool:
-    import transformers
+def _moe_batches(config: dict, request: TrainingStartRequest) -> bool:
+    from utils.transformers_version import get_transformers_tier
     configs = _configs(config)
     return (
-        int(transformers.__version__.split(".")[0]) >= 5
-        and any(c.get("model_type") in _BATCHED_MOE_TYPES for c in configs)
+        any(c.get("model_type") in _BATCHED_MOE_TYPES for c in configs)
         and not any(c.get("output_router_logits") for c in configs)
+        and _multi_lora_experts_available()
+        # The worker's transformers: 4.57 holds experts as per-expert Linears, which train alone.
+        and get_transformers_tier(request.model_name, request.hf_token, probe = False) != "457"
     )
 
 
@@ -750,7 +775,7 @@ async def _trains_alone(request: TrainingStartRequest) -> bool:
             return True
         if config is None or _ssm_config(config):
             return True
-        return _moe_config(config) and not _moe_batches(config)
+        return _moe_config(config) and not _moe_batches(config, request)
 
     return await asyncio.to_thread(probe)
 

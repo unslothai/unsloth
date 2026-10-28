@@ -837,7 +837,7 @@ def _run(event_queue, stop_queue, config: dict, members: list) -> None:
 
     from core.training.trainer import normalize_gradient_checkpointing
     from core.training.worker import _send_status, _worker_hf_token
-    from unsloth.kernels.multi_lora import inject_multi_lora, inject_multi_lora_experts
+    from unsloth.kernels.multi_lora import inject_multi_lora
 
     trainer = _new_trainer()
     if hasattr(trainer, "add_progress_callback"):
@@ -960,6 +960,7 @@ def _run(event_queue, stop_queue, config: dict, members: list) -> None:
     targets = sorted({name.rsplit(".", 1)[-1] for name in injected})
     expert_targets = _expert_targets(model, _lone_target_modules(config.get("target_modules")))
     if expert_targets:
+        from unsloth.kernels.multi_lora import inject_multi_lora_experts
         inject_multi_lora_experts(
             model,
             expert_targets,
