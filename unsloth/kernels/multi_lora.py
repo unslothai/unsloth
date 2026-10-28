@@ -728,10 +728,8 @@ class MultiLoraExpertParam(nn.Module):
         adapter: int,
         reversed_io: bool = False,
     ) -> tuple:
-        """Zoo's stash format: (first (E, in, r), second (E, r, out), scaling, E), delta = X @ first @ second.
-
-        ``reversed_io``: input-major experts PEFT reads as (E, out, in); Zoo's extractor then takes lora_B as the
-        input side and lora_A as the output side (_reversed_lora_weights_for_grouped_mm)."""
+        """Zoo's stash (first (E, in, r), second (E, r, out), scaling, E); ``reversed_io`` swaps the factors' roles
+        as Zoo's _reversed_lora_weights_for_grouped_mm does."""
         A, B = self.lora_A[adapter], self.lora_B[adapter]
         if reversed_io:
             return B.contiguous(), A.contiguous(), self.scales[adapter], self.num_experts
@@ -822,12 +820,8 @@ def _adapter_groups(batch: MultiLoraBatch) -> list:
 
 
 class MultiLoraExperts(nn.Module):
-    """Frozen fused experts with per-adapter LoRA on ``parameter_names``.
-
-    Each adapter's tokens go through the experts' own forward with only that adapter's factors, the way a lone
-    PEFT job runs: through Unsloth Zoo's stash when its MoE forward reads one (grouped GEMMs, 4-bit bases), else
-    with the delta folded into the weight.
-    """
+    """Frozen fused experts; each adapter's tokens run the experts' own forward with only its factors, as a lone
+    PEFT job does: through Zoo's stash when its MoE forward reads one, else with the delta folded in."""
 
     def __init__(
         self,
@@ -844,8 +838,7 @@ class MultiLoraExperts(nn.Module):
             p.requires_grad_(False)
         self.parameter_names = tuple(parameter_names)
         is_transposed = bool(getattr(base, "is_transposed", False))
-        # Shapes and the folded delta follow the installed PEFT's reading of the stack; the stash follows Zoo's
-        # extractor, whose input axis is the stored one (canonical when the two agree, reversed otherwise).
+        # Shapes and fold follow the installed PEFT; the stash follows Zoo's extractor (stored input axis).
         peft_in_axis = _peft_expert_in_axis(is_transposed)
         zoo_in_axis = (
             1 if is_transposed or getattr(base, "_unsloth_grouped_mm_format", False) else 2
@@ -941,9 +934,7 @@ class MultiLoraExperts(nn.Module):
         present = {u for u, _ in groups}
         absent = [u for u in range(self.num_adapters) if u not in present]
         if absent and torch.is_grad_enabled():
-            # Absent adapters stay in the graph with zero gradient, as the dense layers' do: default DDP needs
-            # every trainable parameter used; drop_absent_adapter_grads_ clears them before the step.
-            # Empty slices: exactly zero even when a diverged adapter holds inf / NaN (0 * inf is NaN).
+            # Default DDP needs every trainable parameter used; empty slices stay zero even for an inf / NaN adapter.
             zero = sum(
                 A[u].reshape(-1)[:0].sum() + B[u].reshape(-1)[:0].sum()
                 for adapter in self.adapters.values()
@@ -962,8 +953,7 @@ def inject_multi_lora_experts(
     lora_alpha: float | Iterable[float] = 16,
     use_rslora: bool = False,
 ) -> list[str]:
-    """Wrap every fused experts module holding a ``target_parameters`` entry (``"mlp.experts.down_proj"``,
-    matched on the module path's suffix as PEFT does); the entries' order is PEFT's nesting order."""
+    """Wrap every fused experts module holding a ``target_parameters`` entry, matched on path suffix as PEFT does."""
     targets = (
         (target_parameters,) if isinstance(target_parameters, str) else tuple(target_parameters)
     )
@@ -971,7 +961,6 @@ def inject_multi_lora_experts(
     for name, module in model.named_modules():
         if isinstance(module, MultiLoraExperts):
             continue
-        # Registration order, as PEFT nests its ParamWrappers: the first parameter ends up innermost.
         for param, value in module._parameters.items():
             if not isinstance(value, torch.Tensor):
                 continue
