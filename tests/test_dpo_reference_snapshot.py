@@ -42,6 +42,7 @@ TRL_INIT = '''
                 self.ref_model = create_model_from_path(ref_model_path, **ref_model_init_kwargs)
         else:
             self.ref_model = ref_model
+        warnings.warn("later TRL warning")  # e.g. use_liger_kernel, via TRL's module-level import
 '''
 
 
@@ -51,7 +52,8 @@ class _Policy(torch.nn.Module):
     def __init__(self, out = 2):
         super().__init__()
         torch.manual_seed(0)  # the checkpoint's weights
-        self.lin = torch.nn.Linear(2, out)
+        self.lin = torch.nn.Linear(2, 2)
+        self.head = torch.nn.Linear(2, out)
 
 
 class _FSDPModule:
@@ -68,6 +70,7 @@ def _run(
     monkeypatch,
     zero3 = False,
     out = 2,
+    ref_model = None,
 ):
     import torch.distributed.fsdp as fsdp
     import transformers.integrations.deepspeed as ds
@@ -79,10 +82,12 @@ def _run(
         "is_peft_model": lambda m: False,
         "get_config_model_id": lambda config: config,
         "torch": torch,
+        "warnings": __import__("warnings"),
     }
     exec(textwrap.dedent(source), namespace)
     trainer = types.SimpleNamespace()
-    namespace["__init__"](trainer, model)
+    with pytest.warns(UserWarning, match = "later TRL warning"):
+        namespace["__init__"](trainer, model, ref_model)
     return trainer.ref_model
 
 
@@ -116,10 +121,18 @@ def test_path_zero3_fsdp2_keep_checkpoint(monkeypatch, model, zero3):
     assert torch.equal(ref.lin.weight, _Policy().lin.weight)
 
 
-def test_mismatched_reference_warns_and_keeps_checkpoint(monkeypatch):
-    with pytest.warns(UserWarning, match = "could not copy the in-memory policy weights"):
+def test_explicit_reference_kept(monkeypatch):
+    explicit = _Policy()
+    assert _run(hook("__init__", TRL_INIT), _trained(), monkeypatch, ref_model = explicit) is explicit
+
+
+def test_mismatched_reference_keeps_whole_checkpoint(monkeypatch):
+    # A resized head: no tensor is copied, so the reference is not a policy / checkpoint hybrid.
+    with pytest.warns(UserWarning, match = "do not match its checkpoint"):
         ref = _run(hook("__init__", TRL_INIT), _trained(), monkeypatch, out = 3)
-    assert torch.equal(ref.lin.weight, _Policy(3).lin.weight)
+    checkpoint = _Policy(3)
+    assert torch.equal(ref.lin.weight, checkpoint.lin.weight)
+    assert torch.equal(ref.head.weight, checkpoint.head.weight)
 
 
 def test_rewrite_scope():

@@ -757,15 +757,22 @@ def dpo_trainer_reference_snapshot(function_name, function):
             "    _UnslothFSDPModule = ()\n"
             "if _unsloth_dpo_model_is_instance and not is_deepspeed_zero3_enabled() "
             "and not isinstance(self.model, _UnslothFSDPModule):\n"
-            "    try:\n"
-            # Unbound call: rl.py strips every literal `.state_dict()` (legacy vLLM weight loads).
-            "        self.ref_model.load_state_dict(torch.nn.Module.state_dict(self.model))\n"
-            "    except Exception as e:\n"
-            "        import warnings\n"
-            "        warnings.warn(\n"
-            '            f"Unsloth: could not copy the in-memory policy weights into the DPO reference ({e}); "\n'
-            '            "it uses the checkpoint weights. Pass ref_model= to choose the reference."\n'
-            "        )\n",
+            # Unbound calls: rl.py strips every literal `.state_dict()` (legacy vLLM weight loads).
+            "    _unsloth_policy_sd = torch.nn.Module.state_dict(self.model)\n"
+            "    _unsloth_ref_sd = torch.nn.Module.state_dict(self.ref_model)\n"
+            # Checked first: load_state_dict writes matching tensors before raising on the rest.
+            "    if _unsloth_policy_sd.keys() == _unsloth_ref_sd.keys() and all(\n"
+            "        v.shape == _unsloth_ref_sd[k].shape for k, v in _unsloth_policy_sd.items()\n"
+            "    ):\n"
+            "        self.ref_model.load_state_dict(_unsloth_policy_sd)\n"
+            "    else:\n"
+            # Aliased: a bare `import warnings` here would shadow TRL's module-level one in all of __init__.
+            "        import warnings as _unsloth_warnings\n"
+            "        _unsloth_warnings.warn(\n"
+            '            "Unsloth: the in-memory policy\'s parameters do not match its checkpoint (e.g. resized "\n'
+            '            "embeddings), so the DPO reference uses the checkpoint weights. Pass ref_model= to choose it."\n'
+            "        )\n"
+            "    del _unsloth_policy_sd, _unsloth_ref_sd\n",
             m["indent"],
         ),
         function,
