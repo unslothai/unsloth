@@ -1688,7 +1688,17 @@ def test_reentrant_checkpoint_first_trace_keeps_the_block_varlen_path(monkeypatc
 def _dtype_seen():
     seen = []
 
-    def orig(module, q, k, v, mask, dropout = 0.0, scaling = None, is_causal = None, **kwargs):
+    def orig(
+        module,
+        q,
+        k,
+        v,
+        mask,
+        dropout = 0.0,
+        scaling = None,
+        is_causal = None,
+        **kwargs,
+    ):
         seen.append((q.dtype, k.dtype, v.dtype))
         return torch.nn.functional.scaled_dot_product_attention(
             q, k, v, attn_mask = mask, scale = scaling
@@ -1754,7 +1764,9 @@ def test_packed_fp32_rows_under_autocast_take_varlen(monkeypatch, autocast):
     mask, psl = _block_causal(lengths, "cuda"), torch.tensor(lengths, dtype = torch.int32)
     before = dict(hpa.HF_PACKED_ATTENTION_STATS)
     with torch.autocast("cuda", dtype = autocast):
-        fast, _ = hpa._sdpa_packed_varlen(module, q, k, v, mask, scaling = 0.11, packed_seq_lengths = psl)
+        fast, _ = hpa._sdpa_packed_varlen(
+            module, q, k, v, mask, scaling = 0.11, packed_seq_lengths = psl
+        )
         ref, _ = sdpa_attention_forward(module, q, k, v, mask, scaling = 0.11)
     assert hpa.HF_PACKED_ATTENTION_STATS["fast"] == before["fast"] + 1
     assert hpa.HF_PACKED_ATTENTION_STATS["fallback"] == before["fallback"]
