@@ -7700,7 +7700,9 @@ def _sdpa_grad_layout_function():
 
         @staticmethod
         def forward(out):
-            return out.view_as(out)
+            # A clone, not a view: a Function's view output rejects in-place consumers (out.mul_).
+            # Only the compiled path uses this Function, and Inductor drops the clone as a no-op.
+            return out.clone()
 
         @staticmethod
         def setup_context(ctx, inputs, output):
