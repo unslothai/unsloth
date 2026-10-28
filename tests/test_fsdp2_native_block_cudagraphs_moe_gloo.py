@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""UNSLOTH_BLOCK_CUDAGRAPHS=1 under native FSDP2 (gloo, world 2) on a MoE model: _block_compile runs MoE
-blocks without graphs, so FSDP2 must keep freeing their gathered weights at reshard (keeping them would
-hold every expert unsharded on every rank for graphs that never record). Dense blocks keep theirs."""
+"""UNSLOTH_BLOCK_CUDAGRAPHS=1, native FSDP2 (gloo, world 2): MoE blocks run without graphs, so their
+gathered weights must still be freed at reshard; dense blocks keep theirs."""
 
 import importlib.util
 import multiprocessing
@@ -28,7 +27,7 @@ STEPS = 2
 
 
 def _load_block_compile():
-    """_block_compile by file path (a CPU-only `import unsloth` is refused), where fsdp2_native looks."""
+    # by file path: a CPU-only `import unsloth` is refused
     name = "unsloth.models._block_compile"
     if name not in sys.modules:
         path = os.path.join(REPO, "unsloth", "models", "_block_compile.py")
@@ -40,7 +39,7 @@ def _load_block_compile():
 
 
 def _build_moe():
-    """Tiny Qwen3-MoE, random weights: layer 0 dense (mlp_only_layers), layer 1 MoE."""
+    # layer 0 dense (mlp_only_layers), layer 1 MoE
     import transformers
 
     config = transformers.Qwen3MoeConfig(
@@ -62,7 +61,6 @@ def _build_moe():
 
 
 def _block_index(model):
-    """id(module) -> index of the decoder block holding it."""
     out = {}
     for i, layer in enumerate(model.model.layers):
         for m in layer.modules():
@@ -105,7 +103,7 @@ def _worker(rank, world, port, out, path):
                         continue
                     for t in getattr(fsdp_param, "all_gather_outputs", None) or []:
                         sizes[block].append(t.untyped_storage().size())
-            assert _gathered(model)  # the shared helper still reads this model
+            assert _gathered(model)
         finally:
             for cls, original in restore.items():
                 cls.forward = original
