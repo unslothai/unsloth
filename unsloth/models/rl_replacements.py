@@ -5299,9 +5299,7 @@ def grpo_trainer_compute_loss(function_name, function):
             )
             _unsloth_grpo_defer_metric(self, self._metrics[mode]["kl"], mean_kl)
         else:
-            _unsloth_grpo_defer_metric(
-                self, self._metrics["completion_length"], completion_length
-            )
+            _unsloth_grpo_defer_metric(self, self._metrics["completion_length"], completion_length)
             _unsloth_grpo_defer_metric(self, self._metrics["kl"], mean_kl)
 
         if delta is not None and (

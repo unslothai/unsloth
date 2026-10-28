@@ -42,7 +42,10 @@ def test_nanmin_nanmax_match_trl(dtype):
             x[:] = float("nan")
         if i % 13 == 0:
             x[0] = float("inf") if i % 2 else float("-inf")
-        for new, old in ((rr._unsloth_grpo_nanmin, _trl_nanmin), (rr._unsloth_grpo_nanmax, _trl_nanmax)):
+        for new, old in (
+            (rr._unsloth_grpo_nanmin, _trl_nanmin),
+            (rr._unsloth_grpo_nanmax, _trl_nanmax),
+        ):
             a, b = new(x), old(x)
             assert a.dtype == b.dtype and a.shape == b.shape
             assert _same_float(a.item(), b.item())
@@ -52,7 +55,11 @@ class _Trainer:
     def __init__(self):
         self.logged = []
 
-    def log(self, logs, start_time = None):
+    def log(
+        self,
+        logs,
+        start_time = None,
+    ):
         self.logged.append(dict(logs))
 
 
@@ -75,7 +82,10 @@ class _ItemCounter:
 
 def test_deferred_metrics_match_item_and_read_once_per_log(monkeypatch):
     g = torch.Generator().manual_seed(1)
-    values = [torch.randn((), generator = g).to(dt) for dt in (torch.float32, torch.bfloat16, torch.float16) * 5]
+    values = [
+        torch.randn((), generator = g).to(dt)
+        for dt in (torch.float32, torch.bfloat16, torch.float16) * 5
+    ]
     values.append(torch.tensor(7))  # an integer tensor stays an int, like .item()
     expected = {"a": [], "b": []}
     for i, v in enumerate(values):
@@ -89,9 +99,13 @@ def test_deferred_metrics_match_item_and_read_once_per_log(monkeypatch):
     assert counter.n == 0  # nothing read during the step
     assert metrics == {"a": [], "b": []}
     t.log({"loss": 1.0})
-    assert counter.n == 2  # one batched read per (device, float / int) group: the floats, then the int
+    assert (
+        counter.n == 2
+    )  # one batched read per (device, float / int) group: the floats, then the int
     assert metrics == expected
-    assert [type(x) for x in metrics["a"] + metrics["b"]] == [type(x) for x in expected["a"] + expected["b"]]
+    assert [type(x) for x in metrics["a"] + metrics["b"]] == [
+        type(x) for x in expected["a"] + expected["b"]
+    ]
     assert t.logged == [{"loss": 1.0}]
     t.log({"loss": 2.0})  # nothing pending: no read, original log still runs
     assert counter.n == 2 and len(t.logged) == 2
@@ -120,7 +134,12 @@ def test_compute_loss_has_no_item_calls():
 
 def test_helpers_are_emitted_into_generated_trainer():
     pre = "\n".join(rr.RL_PRE_ITEMS["grpo_trainer"])
-    for name in ("_unsloth_grpo_nanmin", "_unsloth_grpo_nanmax", "_unsloth_grpo_flush_metrics", "_unsloth_grpo_defer_metric"):
+    for name in (
+        "_unsloth_grpo_nanmin",
+        "_unsloth_grpo_nanmax",
+        "_unsloth_grpo_flush_metrics",
+        "_unsloth_grpo_defer_metric",
+    ):
         assert f"def {name}(" in pre
 
 
@@ -182,7 +201,9 @@ def test_attached_host_lengths_skip_the_read(monkeypatch):
     lengths = torch.tensor([3, 5, 2], dtype = torch.int32)
     lengths._unsloth_lengths_tuple = (3, 5, 2)
     counter = _ItemCounter(monkeypatch)
-    lens, cu, max_seqlen = packing.get_packed_info_from_kwargs({"packed_seq_lengths": lengths}, torch.device("cpu"))
+    lens, cu, max_seqlen = packing.get_packed_info_from_kwargs(
+        {"packed_seq_lengths": lengths}, torch.device("cpu")
+    )
     assert counter.n == 0
     assert max_seqlen == 5 and cu.tolist() == [0, 3, 8, 10] and torch.equal(lens, lengths)
     assert packing._host_segment_lengths(lengths) == (3, 5, 2)
@@ -190,5 +211,8 @@ def test_attached_host_lengths_skip_the_read(monkeypatch):
     # a tuple that does not match the tensor is ignored (read as before)
     bad = torch.tensor([4, 4], dtype = torch.int32)
     bad._unsloth_lengths_tuple = (4,)
-    assert packing.get_packed_info_from_kwargs({"packed_seq_lengths": bad}, torch.device("cpu"))[2] == 4
+    assert (
+        packing.get_packed_info_from_kwargs({"packed_seq_lengths": bad}, torch.device("cpu"))[2]
+        == 4
+    )
     packing.clear_packed_caches()

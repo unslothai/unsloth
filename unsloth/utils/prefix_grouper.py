@@ -255,7 +255,9 @@ def build_group_layout(
         real_cols_cpu = [list(range(f, f + n)) for f, n in zip(first_cpu, n_real_cpu)]
     else:
         # keep == (input_ids != pad_id), read off the host copy of the ids
-        real_cols_cpu = [[c for c in range(L) if ids_cpu[r][c] != pad_id] for r in range(total_rows)]
+        real_cols_cpu = [
+            [c for c in range(L) if ids_cpu[r][c] != pad_id] for r in range(total_rows)
+        ]
 
     groups = _build_groups(ids_cpu, real_cols_cpu, cstart_cpu, num_generations, total_rows)
     if groups is None:
