@@ -1,9 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A cached unstructured seed is still read in full, but only the rows a caller uses become dicts: the dataset
-URI gets the same path, and the multi-file preview the same rows in the same order with the same total."""
-
 import ast
 import importlib.util
 import sys

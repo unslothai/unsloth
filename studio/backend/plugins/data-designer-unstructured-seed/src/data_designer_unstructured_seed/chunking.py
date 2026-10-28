@@ -198,8 +198,7 @@ def materialize_multi_file_unstructured_seed(
     chunk_overlap: int,
     include_rows: bool = True,
 ) -> tuple[Path, list[dict[str, str]]]:
-    """Chunk multiple files into one parquet dataset with a source_file column. A cache hit still reads the
-    whole file, so a corrupt cache raises; ``include_rows = False`` skips building its row dicts."""
+    """Chunk files into one parquet with a source_file column; ``include_rows = False`` skips cache-hit row dicts."""
     path, rows, cached = _materialize_multi_file(
         file_entries = file_entries,
         chunk_size = chunk_size,
