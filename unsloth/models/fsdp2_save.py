@@ -1246,7 +1246,9 @@ def _sync_replicated_grads(
         dtype = torch.float64 if p.dtype == torch.float64 else torch.float32
         groups.setdefault((str(p.device), dtype), []).append(p)
     for (device, dtype), group in groups.items():
-        sizes = [p.numel() for p in group]
+        # A tensor parallel DTensor left out of FSDP2 is averaged shard by shard: the ranks of `mesh`
+        # (data parallel) hold the same tp slice, so its local tensor is what they share.
+        sizes = [_local_tensor(p).numel() for p in group]
         total = sum(sizes)
         key = tuple((id(p), n) for p, n in zip(group, sizes))
         cached = buffers.get((device, dtype)) if buffers is not None else None
@@ -1256,7 +1258,7 @@ def _sync_replicated_grads(
             flat = torch.empty(total + len(group), dtype = dtype, device = group[0].device)
             if buffers is not None:
                 buffers[(device, dtype)] = (key, flat)
-        grads = [p.grad for p in group]
+        grads = [_local_tensor(p.grad) for p in group]
         local_all = all(g is not None for g in grads)
         flags = flat[total:]
         if local_all:
@@ -1279,12 +1281,64 @@ def _sync_replicated_grads(
         offset = 0
         for i, (p, g, n) in enumerate(zip(group, grads, sizes)):
             if g is not None or used[i] > 0:
-                value = flat[offset : offset + n].view(p.shape)
-                if p.grad is None:
-                    p.grad = value.to(p.dtype, copy = True)
+                value = flat[offset : offset + n].view(_local_tensor(p).shape)
+                if g is None:
+                    p.grad = _like_param(p, value.to(p.dtype, copy = True))
                 else:
-                    p.grad.copy_(value)
+                    g.copy_(value)
             offset += n
+
+
+def _local_tensor(t):
+    """The local shard of a DTensor (a view: writes reach the DTensor); anything else unchanged."""
+    local = getattr(t, "_local_tensor", None)
+    return local if local is not None and getattr(t, "device_mesh", None) is not None else t
+
+
+def _like_param(p, local):
+    """`local` as a gradient for `p`: a DTensor with p's mesh and placements when p is one."""
+    if getattr(p, "device_mesh", None) is None or getattr(p, "_local_tensor", None) is None:
+        return local
+    return _dtensor_class().from_local(local, p.device_mesh, p.placements, run_check = False)
+
+
+def _fsdp_managed_param_ids(model):
+    """ids of the parameters FSDP2 manages (sharded and, if allocated, unsharded), or None when no FSDP2
+    state can be read (the caller then treats every DTensor as FSDP2's)."""
+    ids = set()
+    found = False
+    for unit in fsdp2_units(model):
+        try:
+            st = unit._get_fsdp_state()
+        except Exception:
+            continue
+        groups = getattr(st, "_fsdp_param_groups", None)
+        if groups is None:
+            group = getattr(st, "_fsdp_param_group", None)
+            groups = [group] if group is not None else []
+        for group in groups:
+            for fp in getattr(group, "fsdp_params", None) or ():
+                found = True
+                for attr in ("sharded_param", "_unsharded_param"):
+                    t = getattr(fp, attr, None)
+                    if t is not None:
+                        ids.add(id(t))
+    return ids if found else None
+
+
+def _tp_shard_outside(param, mesh, dist):
+    """True for a DTensor FSDP2 does not manage whose mesh meets `mesh` (the data parallel ranks) only at
+    this rank: its local shard is replicated over `mesh`, so averaging the local gradients is correct.
+    A DTensor whose mesh shares other ranks with `mesh` (or no mesh known) would mix different shards."""
+    if mesh is None:
+        return False
+    try:
+        mine = dist.get_rank()
+        own = set(param.device_mesh.mesh.flatten().tolist())
+        dp = set(mesh.mesh.flatten().tolist())
+    except Exception:
+        return False
+    return own & dp == {mine}
 
 
 def _fsdp_grad_sync_deferred(model, cache):
@@ -1355,9 +1409,21 @@ def reduce_unsharded_trainable_grads(model):
             state["queued"] = True
             torch.autograd.Variable._execution_engine.queue_callback(_sync)
 
+    managed = False  # read once, on the first DTensor
     for name, param in model.named_parameters():
-        if id(param) in seen or not param.requires_grad or isinstance(param, DTensor):
+        if id(param) in seen or not param.requires_grad:
             continue
+        if isinstance(param, DTensor):
+            # FSDP2 reduces its own (sharded) parameters. A tensor parallel DTensor left out of FSDP2
+            # (ignored_params) gets no reduce from it: average its local shard over the dp mesh here.
+            if managed is False:
+                managed = _fsdp_managed_param_ids(model)
+            if (
+                managed is None
+                or id(param) in managed
+                or not _tp_shard_outside(param, mesh, dist)
+            ):
+                continue
         seen.add(id(param))
         if getattr(param, "_unsloth_grad_all_reduce", False):
             continue
