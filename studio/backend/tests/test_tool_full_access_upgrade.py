@@ -349,3 +349,75 @@ def test_skill_preload_upgrade_uses_the_same_live_policy_for_later_mentions(monk
     assert len(asked) == 1
     assert [event["name"] for event in events if event["status"] == "loaded"] == ["first", "second"]
     assert permissions.apply("ask", False) == ("full", True)
+
+
+class _AnswerDuringPoll(threading.Event):
+    """The first poll times out just as a confirmation lands: the race a Stop or expiry meets."""
+
+    def __init__(self, answer):
+        super().__init__()
+        self._answer = answer
+
+    def wait(self, timeout = None):
+        answer, self._answer = self._answer, None
+        if answer is not None:
+            answer()
+            return False
+        return super().wait(timeout)
+
+
+@pytest.mark.parametrize("full_access", [True, False])
+def test_a_committed_allow_wins_over_a_concurrent_stop(full_access):
+    cancel = threading.Event()
+    approval_id, slot, permissions = _slot(cancel = cancel)
+
+    def answer():
+        assert approvals.resolve_tool_decision(
+            approval_id, "allow", session_id = "chat-a", full_access = full_access
+        )
+        cancel.set()
+
+    slot["event"] = _AnswerDuringPoll(answer)
+    slot["event"].clear()
+    verdict = approvals.wait_tool_decision(slot, approval_id, cancel_event = cancel)
+    assert verdict == "allow"
+    assert slot["reason"] == approvals.DECISION_ANSWERED
+    assert permissions.apply("ask", False) == (("full", True) if full_access else ("ask", False))
+
+
+@pytest.mark.parametrize("full_access", [True, False])
+def test_a_settled_expiry_refuses_a_late_confirmation(full_access):
+    approval_id, slot, permissions = _slot()
+    slot["reason"] = approvals.DECISION_EXPIRED
+    assert not approvals.resolve_tool_decision(
+        approval_id, "allow", session_id = "chat-a", full_access = full_access
+    )
+    assert not slot["event"].is_set() and slot["decision"] is None
+    assert permissions.apply("ask", False) == ("ask", False)
+
+
+def test_gguf_skill_preload_and_tool_loop_share_one_live_permission():
+    import ast
+
+    source = (Path(__file__).resolve().parents[1] / "routes" / "inference.py").read_text(
+        encoding = "utf-8"
+    )
+    fn = next(
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.FunctionDef) and node.name == "gguf_generate_with_tools"
+    )
+    passed = {
+        call.func.attr if isinstance(call.func, ast.Attribute) else call.func.id: {
+            kw.arg: ast.unparse(kw.value) for kw in call.keywords
+        }
+        for call in ast.walk(fn)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, (ast.Name, ast.Attribute))
+        and (getattr(call.func, "id", None) or getattr(call.func, "attr", None))
+        in ("load_mentioned_skills", "generate_chat_completion_with_tools")
+    }
+    assert passed["load_mentioned_skills"]["permission_upgrade"] == "gguf_live_permissions"
+    assert (
+        passed["generate_chat_completion_with_tools"]["live_permissions"] == "gguf_live_permissions"
+    )

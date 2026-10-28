@@ -36756,6 +36756,7 @@ class LlamaCppBackend:
         sandbox_level: Optional[str] = None,
         compact_context: bool = False,
         website_policy: Optional[dict] = None,
+        live_permissions = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -36807,7 +36808,9 @@ class LlamaCppBackend:
         )
         from state.tool_approvals import LiveToolPermissions, bind_permission_upgrade
 
-        live_permissions = LiveToolPermissions(session_id, cancel_event)
+        # The route passes the one its skill preload bound, so a Full access upgrade there carries over.
+        if live_permissions is None:
+            live_permissions = LiveToolPermissions(session_id, cancel_event)
         sandbox_level = normalize_sandbox_level(sandbox_level)
         stream_tool_execution = account_tool_stream(stream_tool_execution)
 

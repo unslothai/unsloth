@@ -172,7 +172,12 @@ def wait_tool_decision(
     renew_lease = getattr(cancel_event, "renew_lease", None)
 
     def _settle(verdict, reason):
-        if isinstance(slot, dict):
+        if not isinstance(slot, dict):
+            return verdict
+        # Under the resolver's lock: an Allow committed first wins, else the resolver sees the reason and refuses.
+        with _lock:
+            if slot["event"].is_set():
+                verdict, reason = slot["decision"] or "deny", DECISION_ANSWERED
             slot["reason"] = reason
         return verdict
 
@@ -265,7 +270,11 @@ def resolve_tool_decision(
             return False
         from utils.account_context import current_account_id
 
-        if slot.get("account_id") != current_account_id() or slot["event"].is_set():
+        if (
+            slot.get("account_id") != current_account_id()
+            or slot["event"].is_set()
+            or slot.get("reason") is not None
+        ):
             return False
         if full_access:
             permissions = slot.get("permission_upgrade")
@@ -275,7 +284,6 @@ def resolve_tool_decision(
                 or permissions is None
                 or permissions.account_id != current_account_id()
                 or permissions.session_id != session_id
-                or slot.get("reason") is not None
                 or (permissions.cancel_event is not None and permissions.cancel_event.is_set())
             ):
                 return False
