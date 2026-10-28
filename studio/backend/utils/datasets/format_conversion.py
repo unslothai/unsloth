@@ -447,6 +447,10 @@ def _format_eta(seconds):
         return f"{h}h {m}m"
 
 
+# Concurrent ShareGPT+image row fetches, the default worker count of huggingface_hub's snapshot_download.
+_MAX_ROW_FETCH_WORKERS = 8
+
+
 def _fetch_row_image(url):
     from io import BytesIO
 
@@ -978,7 +982,9 @@ def convert_sharegpt_with_images_to_vlm_format(
         isinstance(first_image, str) and first_image.startswith(("http://", "https://"))
     ):
         from utils.hardware import safe_thread_num_proc
-        num_workers = safe_thread_num_proc()
+
+        # Capped like huggingface_hub's own parallel downloads, so many-core hosts do not open dozens of requests to one host.
+        num_workers = min(safe_thread_num_proc(), _MAX_ROW_FETCH_WORKERS)
     # Bounds how many fetched images can wait for their turn in memory.
     max_pending = 2 * num_workers
     executor = None
@@ -993,7 +999,12 @@ def convert_sharegpt_with_images_to_vlm_format(
     )
     try:
         for sample in pbar:
-            if num_workers > 1 and _needs_network(sample[image_column]):
+            try:
+                to_pool = num_workers > 1 and _needs_network(sample[image_column])
+            except Exception:
+                # A row the converter cannot read fails inside it, recorded like a serial pass.
+                to_pool = False
+            if to_pool:
                 if executor is None:
                     from concurrent.futures import ThreadPoolExecutor
                     executor = ThreadPoolExecutor(max_workers = num_workers)

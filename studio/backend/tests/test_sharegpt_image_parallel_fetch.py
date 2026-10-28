@@ -172,3 +172,25 @@ def test_local_only_dataset_starts_no_threads(monkeypatch, workers, tmp_path):
     assert _widths(converted) == list(range(6))
     assert created == []
     assert threading.active_count() == before
+
+
+def test_concurrent_fetches_are_capped_on_many_core_hosts(monkeypatch):
+    # A 192 core host would otherwise open 64 requests at once to one image host or the Hub.
+    monkeypatch.setattr(utils.hardware, "safe_thread_num_proc", lambda desired = None: 64)
+    fetch = _SlowFetch(delay = 0.05)
+    monkeypatch.setattr(format_conversion, "_fetch_row_image", fetch)
+
+    converted = convert_sharegpt_with_images_to_vlm_format(_dataset(48))
+
+    assert _widths(converted) == list(range(48))
+    assert 1 < fetch.peak <= format_conversion._MAX_ROW_FETCH_WORKERS == 8
+
+
+def test_a_row_without_the_image_key_is_skipped_as_before(monkeypatch, workers):
+    monkeypatch.setattr(format_conversion, "_fetch_row_image", _SlowFetch())
+    rows = list(_dataset(6))
+    del rows[2]["image"]
+
+    converted = convert_sharegpt_with_images_to_vlm_format(rows)
+
+    assert _widths(converted) == [0, 1, 3, 4, 5]
