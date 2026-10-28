@@ -123,7 +123,9 @@ def test_studio_root_symlink_retarget_is_seen_by_the_next_scan(tmp_path, monkeyp
     try:
         link.symlink_to(first, target_is_directory = True)
     except (OSError, NotImplementedError):
-        pytest.skip("symlinks unavailable")
+        pytest.skip(
+            reason = "creating a symlink needs privileges this host lacks (Windows without Developer Mode)"
+        )
     monkeypatch.delenv("STUDIO_HOME", raising = False)
     monkeypatch.delenv("UNSLOTH_HOME", raising = False)
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(link))
