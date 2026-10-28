@@ -22,7 +22,7 @@ export const EXPORT_METHODS: {
   {
     value: "lora",
     title: "LoRA Only",
-    description: "Lightweight adapter files (~100 MB). Needs base model.",
+    description: "Lightweight adapter files. Needs base model.",
     tooltip:
       "Exports only the trained adapter. Pair with the base model at inference time to save storage.",
   },

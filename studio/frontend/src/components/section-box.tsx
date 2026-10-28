@@ -24,7 +24,7 @@ export function SectionBox({
   return (
     <section
       data-tour={dataTour}
-      className="@container/train-card elevated-card flex flex-col gap-7 bg-card p-5 pb-7"
+      className="section-box @container/train-card elevated-card flex flex-col gap-7 bg-card p-5 pb-7"
     >
       {title && (
         <div className="flex flex-col items-stretch gap-3 @md/train-card:flex-row @md/train-card:items-center @md/train-card:justify-between">

@@ -2882,11 +2882,11 @@ html[data-chat-font] .aui-root {
 		background-color: rgb(255 255 255 / calc(0.1 * var(--contrast-wash-gain, 1)));
 	}
 
-	/* Elevated cards sink the shared track; the API page's buttons lift above them instead. */
-	html.dark .api-monitor-page .elevated-card .btn-fill {
+	/* Elevated cards sink the shared track; buttons on API, Train and Export cards lift above them instead. */
+	html.dark :is(.api-monitor-page .elevated-card, .section-box) .btn-fill {
 		background-color: rgb(255 255 255 / calc(0.06 * var(--contrast-wash-gain, 1)));
 	}
-	html.dark .api-monitor-page .elevated-card .btn-fill:hover {
+	html.dark :is(.api-monitor-page .elevated-card, .section-box) .btn-fill:hover {
 		background-color: rgb(255 255 255 / calc(0.1 * var(--contrast-wash-gain, 1)));
 	}
 

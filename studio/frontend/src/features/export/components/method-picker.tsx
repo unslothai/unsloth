@@ -10,7 +10,6 @@ import {
 import { cn } from "@/lib/utils";
 import {
   InformationCircleIcon,
-  CheckmarkCircle02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { EXPORT_METHODS, type ExportMethod } from "../constants";
@@ -43,29 +42,14 @@ export function MethodPicker({
               aria-pressed={selected}
               onClick={() => !isDisabled && onChange(m.value)}
               className={cn(
-                "flex items-start gap-3 rounded-2xl p-4 text-left ring-1 transition-colors",
+                "flex items-start rounded-[18px] p-4 text-left ring-1 transition-colors",
                 isDisabled
                   ? "ring-border opacity-40 cursor-not-allowed"
                   : selected
-                    ? "ring-1 ring-ring-strong bg-wash-5"
+                    ? "ring-transparent bg-wash-5"
                     : "ring-border hover:bg-muted/40",
               )}
             >
-              <div
-                className={cn(
-                  "mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full border transition-colors",
-                  selected
-                    ? "border-primary bg-primary"
-                    : "border-muted-foreground/25",
-                )}
-              >
-                {selected && (
-                  <HugeiconsIcon
-                    icon={CheckmarkCircle02Icon}
-                    className="size-2.5 text-primary-foreground"
-                  />
-                )}
-              </div>
               <div className="flex flex-col gap-1">
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-medium">{m.title}</span>

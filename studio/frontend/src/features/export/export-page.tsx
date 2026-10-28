@@ -1659,9 +1659,11 @@ export function ExportPage() {
                         <div className="space-y-2">
                           <div className="flex items-center justify-between">
                             <div className="text-sm font-medium">Precision</div>
-                            <span className="text-ui-11 text-muted-foreground/70">
-                              — select one or more
-                            </span>
+                            {availableFormats.length > 1 && (
+                              <span className="text-ui-11 text-muted-foreground/70">
+                                Select one or more
+                              </span>
+                            )}
                           </div>
                           <div className="flex flex-wrap gap-2">
                             {availableFormats
@@ -1740,29 +1742,33 @@ export function ExportPage() {
                             )}
                           </div>
 
-                          {selectedFormats.length > 0 && (
-                            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                              <span className="text-ui-11 text-muted-foreground">
-                                {selectedFormats.length} selected:{" "}
-                                {selectedFormats
-                                  .map(
-                                    (v) =>
-                                      MERGED_FORMATS.find((f) => f.value === v)
-                                        ?.label ?? v,
-                                  )
-                                  .join(", ")}
-                              </span>
-                              {selectedFormats.length > 1 && (
-                                <button
-                                  type="button"
-                                  onClick={() => setSelectedFormats(["16-bit"])}
-                                  className="text-ui-11 text-muted-foreground/70 hover:text-foreground transition-colors"
-                                >
-                                  Reset to 16-bit
-                                </button>
-                              )}
-                            </div>
-                          )}
+                          {availableFormats.length > 1 &&
+                            selectedFormats.length > 0 && (
+                              <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                                <span className="text-ui-11 text-muted-foreground">
+                                  {selectedFormats.length} selected:{" "}
+                                  {selectedFormats
+                                    .map(
+                                      (v) =>
+                                        MERGED_FORMATS.find(
+                                          (f) => f.value === v,
+                                        )?.label ?? v,
+                                    )
+                                    .join(", ")}
+                                </span>
+                                {selectedFormats.length > 1 && (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setSelectedFormats(["16-bit"])
+                                    }
+                                    className="text-ui-11 text-muted-foreground/70 hover:text-foreground transition-colors"
+                                  >
+                                    Reset to 16-bit
+                                  </button>
+                                )}
+                              </div>
+                            )}
 
                           {hubMultiFormat && (
                             <div className="text-ui-11 text-amber-600 dark:text-amber-500">
