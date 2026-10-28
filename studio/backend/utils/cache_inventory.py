@@ -911,9 +911,7 @@ def _patterns_for(definition: CacheDefinition) -> Optional[tuple[str, ...]]:
 
 # Walks take seconds on large uv/triton caches, so repeat reads within the TTL reuse the last answer.
 _INVENTORY_TTL_SECONDS = 60.0
-# A cache whose last walk took this long is answered from that walk once the TTL lapses and
-# re-walked in the background: a few million files are tens of seconds of stat calls, which no
-# faster loop removes, and the Settings page would wait on every one of them.
+# Past the TTL, a cache whose last walk took this long answers from it and re-walks in the background.
 _BACKGROUND_WALK_SECONDS = 2.0
 # Tuple of (walk start, store time, entry, walk seconds): TTL uses store time, forced reads compare walk start.
 _size_cache: dict[str, tuple[float, float, dict, float]] = {}
