@@ -274,6 +274,5 @@ def test_hub_holdout_never_downloads_more_than_it_can_use(monkeypatch):
 
 def test_a_coded_route_error_reaches_the_node_as_its_message():
     from core.flows.caller import route_detail
-
     body = b'{"detail": {"code": "hf_model_verification_failed", "message": "The Hugging Face model could not be verified."}}'
     assert route_detail(body) == "The Hugging Face model could not be verified."
