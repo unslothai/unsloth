@@ -100,7 +100,8 @@ async def generate(
 ) -> Optional[dict[str, Any]]:
     """Return the batch result or None; ``shared_outcome`` errors reach all members."""
     cap = batch_max()
-    if cap <= 1 or n >= cap:
+    # An explicit seed renders alone: a batch's pixels differ slightly from a lone render's.
+    if cap <= 1 or n >= cap or seed is not None:
         return None
     loop = asyncio.get_running_loop()
     batch = _OPEN.get(key)

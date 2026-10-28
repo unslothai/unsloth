@@ -160,21 +160,20 @@ def _b64(body: dict) -> dict:
 def test_waiting_compatible_requests_render_as_one_call_and_each_gets_its_own_images(studio):
     app, backend, saved = studio
     bodies = [
-        _b64({"prompt": "a fox", "seed": 5, "n": 2}),
-        _b64({"prompt": "a cat", "seed": 9}),
-        _b64({"prompt": "an owl", "seed": 20}),
+        _b64({"prompt": "a fox", "n": 2}),
+        _b64({"prompt": "a cat"}),
+        _b64({"prompt": "an owl"}),
     ]
     responses = _post_while_rendering(app, backend, bodies, waiting = 3)
     assert [len(r.json()["data"]) for r in responses] == [2, 1, 1]
     [call] = backend.calls
     assert call["batch_size"] == 4 and call["seed"] is None
     assert call["prompt"] == call["prompts"][0]
-    assert sorted(zip(call["prompts"], call["seeds"])) == [
-        ("a cat", 9),
-        ("a fox", 5),
-        ("a fox", 6),
-        ("an owl", 20),
-    ]
+    assert sorted(call["prompts"]) == ["a cat", "a fox", "a fox", "an owl"]
+    seeds = {}
+    for prompt, seed in zip(call["prompts"], call["seeds"]):
+        seeds.setdefault(prompt, []).append(seed)
+    assert seeds["a fox"][1] == (seeds["a fox"][0] + 1) & SEED_MASK
     by_prompt = {}
     for record in saved:
         by_prompt.setdefault(record["prompt"], []).append(
@@ -186,11 +185,33 @@ def test_waiting_compatible_requests_render_as_one_call_and_each_gets_its_own_im
                 record["batch_index"],
             )
         )
+    fox, cat, owl = seeds["a fox"], seeds["a cat"][0], seeds["an owl"][0]
     assert by_prompt == {
-        "a fox": [("a fox#5", 5, 5, 2, 0), ("a fox#6", 6, 5, 2, 1)],
-        "a cat": [("a cat#9", 9, 9, 1, 0)],
-        "an owl": [("an owl#20", 20, 20, 1, 0)],
+        "a fox": [(f"a fox#{fox[0]}", fox[0], fox[0], 2, 0), (f"a fox#{fox[1]}", fox[1], fox[0], 2, 1)],
+        "a cat": [(f"a cat#{cat}", cat, cat, 1, 0)],
+        "an owl": [(f"an owl#{owl}", owl, owl, 1, 0)],
     }
+
+
+def test_a_request_with_a_seed_never_joins_a_batch(studio):
+    app, backend, _saved = studio
+
+    async def run():
+        transport = httpx.ASGITransport(app = app)
+        async with httpx.AsyncClient(transport = transport, base_url = "http://studio") as client:
+            backend.rendering = True
+            sent = [
+                asyncio.ensure_future(client.post("/v1/images/generations", json = _b64(body)))
+                for body in ({"prompt": "a fox", "seed": 5}, {"prompt": "a cat", "seed": 9})
+            ]
+            await asyncio.sleep(0.2)
+            assert _waiting() == 0
+            backend.rendering = False
+            return await asyncio.gather(*sent)
+
+    assert all(r.status_code == 200 for r in asyncio.run(run()))
+    assert [call["prompts"] for call in backend.calls] == [None, None]
+    assert sorted(call["seed"] for call in backend.calls) == [5, 9]
 
 
 def test_requests_that_differ_in_more_than_prompt_seed_and_n_render_apart(studio):
@@ -205,12 +226,12 @@ def test_requests_that_differ_in_more_than_prompt_seed_and_n_render_apart(studio
 def test_a_failed_shared_call_sends_every_request_back_to_render_alone(studio):
     app, backend, _saved = studio
     backend.fail_lists = True
-    bodies = [_b64({"prompt": "a fox", "seed": 1}), _b64({"prompt": "a cat", "seed": 2})]
+    bodies = [_b64({"prompt": "a fox"}), _b64({"prompt": "a cat"})]
     responses = _post_while_rendering(app, backend, bodies, waiting = 2)
     assert [r.status_code for r in responses] == [200, 200]
     assert sorted(backend.calls[0]["prompts"]) == ["a cat", "a fox"]
+    assert sorted(call["prompt"] for call in backend.calls[1:]) == ["a cat", "a fox"]
     assert [call["prompts"] for call in backend.calls[1:]] == [None, None]
-    assert sorted(call["seed"] for call in backend.calls[1:]) == [1, 2]
 
 
 def test_a_cancelled_batch_ends_every_request_without_rendering_again(studio):
@@ -390,7 +411,7 @@ def test_a_batch_stops_collecting_at_the_cap_and_the_rest_render_alone(monkeypat
         def request(prompt, n):
             return asyncio.ensure_future(
                 batching.generate(
-                    "key", prompt, n, 1, busy = lambda: rendering["on"], run_batch = run_batch
+                    "key", prompt, n, None, busy = lambda: rendering["on"], run_batch = run_batch
                 )
             )
 
