@@ -923,3 +923,35 @@ def test_closing_a_worker_kills_what_its_rewards_started(worker_factory):
     else:
         os.kill(pid, signal.SIGKILL)
         pytest.fail("the reward's child outlived its worker")
+
+
+class _FakeJob:
+    def __init__(self):
+        self.calls = []
+
+    def terminate(self):
+        self.calls.append("terminate")
+        return True
+
+    def close(self):
+        self.calls.append("close")
+
+
+def test_closing_a_worker_ends_its_windows_job(worker_factory, monkeypatch):
+    # Windows: the job is what reaches a reward's children once the worker itself has exited.
+    job = _FakeJob()
+    monkeypatch.setattr(python_rewards, "_windows_job", lambda proc: job)
+    worker = worker_factory([_spec("one", "def reward(completions, **kw):\n    return [1.0]\n")])
+    worker.score(["one"], [], [[{"content": "x"}]], {})
+    worker.close()
+    assert job.calls == ["terminate", "close"]
+
+
+def test_the_windows_job_is_closed_even_if_terminating_it_fails():
+    class _Stuck(_FakeJob):
+        def terminate(self):
+            raise OSError("access denied")
+
+    job = _Stuck()
+    python_rewards._kill_group(None, job)
+    assert job.calls == ["close"]
