@@ -514,7 +514,7 @@ def test_a_python_score_too_large_to_weight_fails_alone_in_the_preview(client):
     assert response.status_code == 200, response.text
     body = response.json()
     scores = {s["name"]: s for s in body["scores"]}
-    assert scores["huge"]["weighted"] is None and "is outside" in scores["huge"]["error"]
+    assert scores["huge"]["weighted"] is None and "outside -1,000,000" in scores["huge"]["error"]
     assert body["total"] == 0.5
 
 
@@ -1008,3 +1008,15 @@ def test_without_a_windows_job_close_kills_the_tree_before_the_worker_exits(monk
     os.makedirs(worker._workdir)
     worker.close()
     assert calls == ["kill_tree"]
+
+
+def test_the_worker_bounds_scores_like_rule_rewards():
+    from core.training import reward_worker_main
+    assert reward_worker_main.MAX_SCORE == rewards.MAX_SCORE
+
+
+def test_training_refuses_a_python_score_past_the_bound(worker_factory):
+    huge = _spec("huge", "def reward(completions, **kw):\n    return [1e308]\n")
+    worker = worker_factory([huge])
+    with pytest.raises(PythonRewardError, match = "outside -1,000,000 to 1,000,000"):
+        worker.score(["huge"], [], [[{"content": "x"}]], {})

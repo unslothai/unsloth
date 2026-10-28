@@ -3852,7 +3852,8 @@ class UnslothTrainer:
                     f"{objective.upper()} is not available for vision-language models yet; "
                     "use SFT or GRPO."
                 )
-            if objective == "grpo" and self.is_vlm:
+            image_columns = {"image", "images"} & set(getattr(dataset, "column_names", None) or [])
+            if objective == "grpo" and (self.is_vlm or image_columns):
                 # The prompts carry no image parts and the media columns are dropped, so the run
                 # would quietly train on text only.
                 raise ValueError(
