@@ -207,7 +207,7 @@ def _zoo_gathers_fsdp2_lora():
         from unsloth_zoo import vllm_utils
     except Exception:
         return False
-    return hasattr(vllm_utils, "_gather_lora_tensors")
+    return hasattr(vllm_utils, "_lora_state_dict")
 
 
 def raise_if_fast_inference_under_fsdp2(fast_inference):
