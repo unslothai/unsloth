@@ -75,10 +75,13 @@ def _case(native, case):
         "replicate_frozen": replicate_frozen,
         "frozen_dtensor": sum(isinstance(params[n], DTensor) for n in frozen),
         "frozen_same_storage": sum(
-            not isinstance(params[n], DTensor) and params[n].data_ptr() == ptr for n, ptr in frozen.items()
+            not isinstance(params[n], DTensor) and params[n].data_ptr() == ptr
+            for n, ptr in frozen.items()
         ),
         "n_frozen": len(frozen),
-        "trainable_dtensor": all(isinstance(p, DTensor) for p in params.values() if p.requires_grad),
+        "trainable_dtensor": all(
+            isinstance(p, DTensor) for p in params.values() if p.requires_grad
+        ),
     }
 
 
@@ -94,7 +97,9 @@ def _worker(rank, world, port, out):
     )
     import torch.distributed as dist
 
-    dist.init_process_group("gloo", rank = rank, world_size = world, timeout = datetime.timedelta(seconds = 60))
+    dist.init_process_group(
+        "gloo", rank = rank, world_size = world, timeout = datetime.timedelta(seconds = 60)
+    )
     try:
         native = _load_native()
         res = {}
@@ -103,7 +108,6 @@ def _worker(rank, world, port, out):
                 res[case] = _case(native, case)
             except Exception as exc:
                 import traceback
-
                 res[case] = {"crash": f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"}
         out.put((rank, res))
     finally:
@@ -117,12 +121,16 @@ def test_vllm_shared_frozen_weights_stay_replicated():
     from torch.distributed.fsdp import fully_shard
 
     if "ignored_params" not in inspect.signature(fully_shard).parameters:
-        pytest.skip("fully_shard has no ignored_params (torch < 2.7): frozen weights cannot stay replicated")
+        pytest.skip(
+            "fully_shard has no ignored_params (torch < 2.7): frozen weights cannot stay replicated"
+        )
     import torch.multiprocessing as mp
 
     ctx = mp.get_context("spawn")
     out = ctx.Queue()
-    mp.start_processes(_worker, args = (2, _free_port(), out), nprocs = 2, join = True, start_method = "spawn")
+    mp.start_processes(
+        _worker, args = (2, _free_port(), out), nprocs = 2, join = True, start_method = "spawn"
+    )
     results = {}
     while not out.empty():
         rank, r = out.get(timeout = 5)
@@ -135,6 +143,12 @@ def test_vllm_shared_frozen_weights_stay_replicated():
             assert r["fits"] is False and r["trainable_dtensor"] and r["n_frozen"] > 0, (case, r)
             if case in ("engine_on_peft", "engine_on_inner"):
                 assert r["replicate_frozen"] is True, (case, r)
-                assert r["frozen_dtensor"] == 0 and r["frozen_same_storage"] == r["n_frozen"], (case, r)
+                assert r["frozen_dtensor"] == 0 and r["frozen_same_storage"] == r["n_frozen"], (
+                    case,
+                    r,
+                )
             else:
-                assert r["replicate_frozen"] is False and r["frozen_dtensor"] == r["n_frozen"], (case, r)
+                assert r["replicate_frozen"] is False and r["frozen_dtensor"] == r["n_frozen"], (
+                    case,
+                    r,
+                )

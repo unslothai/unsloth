@@ -1560,7 +1560,6 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         and _frozen_weights_are_vllm_engine_storage(model)
     ):
         from .fsdp2_perf import _env_tristate as _replicate_env
-
         if _replicate_env("UNSLOTH_FSDP2_REPLICATE_FROZEN") is None:
             # fast_inference: the frozen weights are views of the vLLM engine's own weights, which the engine
             # keeps alive. Sharding them frees nothing and allocates every rank's shard on top (half of a 16-bit
