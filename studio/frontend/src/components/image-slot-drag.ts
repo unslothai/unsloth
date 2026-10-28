@@ -11,6 +11,18 @@ const NATIVE_DROP_GRACE_MS = 1000;
 let draggedSlotImage: string | null = null;
 let endedAt: number | null = null;
 
+// Capture runs before the slot's own onDragStart re-arms it.
+if (typeof document !== "undefined") {
+  document.addEventListener(
+    "dragstart",
+    () => {
+      draggedSlotImage = null;
+      endedAt = null;
+    },
+    true,
+  );
+}
+
 export function startImageSlotDrag(dataUrl: string): void {
   draggedSlotImage = dataUrl;
   endedAt = null;

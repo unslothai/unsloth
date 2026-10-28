@@ -13,6 +13,7 @@ import {
 import { readSrc } from "./helpers/kit.ts";
 
 const IMAGE_DROPZONE = readSrc("components/image-dropzone.tsx");
+const SLOT_DRAG = "../src/components/image-slot-drag.ts";
 
 test("an image dragged out of the page is not reported as a bad file format", () => {
   for (const path of [
@@ -80,4 +81,22 @@ test("an in-app native drop never shows the file format error", () => {
     IMAGE_DROPZONE,
     /if \(kind === "in-app"\) \{\s*toast\.error\("Can't drop this image here"/,
   );
+});
+
+// macOS reports every in-page drop natively with no paths, so a gallery tile
+// dropped right after a cancelled slot drag must not land as that slot's image.
+test("any other drag drops the slot image", async () => {
+  const doc = new EventTarget();
+  Object.assign(globalThis, { document: doc });
+  const slot = (await import(
+    `${SLOT_DRAG}?other-drag`
+  )) as typeof import("../src/components/image-slot-drag.ts");
+  slot.startImageSlotDrag("data:image/png;base64,AAAA");
+  slot.endImageSlotDrag(1_000);
+  doc.dispatchEvent(new Event("dragstart"));
+  assert.equal(slot.draggedImageSlot(1_200), null);
+  doc.dispatchEvent(new Event("dragstart"));
+  slot.startImageSlotDrag("data:image/png;base64,BBBB");
+  assert.equal(slot.draggedImageSlot(), "data:image/png;base64,BBBB");
+  Reflect.deleteProperty(globalThis, "document");
 });
