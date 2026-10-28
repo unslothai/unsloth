@@ -17,6 +17,8 @@
 
 import importlib.util
 import pathlib
+import platform
+import subprocess
 import sys
 import types
 
@@ -190,3 +192,32 @@ def test_dir_matches_the_eager_filter(lazy_all, dir_first):
     assert listed == dir(eager)
     # Built: no hook or bookkeeping name is left in trl's namespace.
     assert not {"__getattr__", "__dir__", "_unsloth_mlx_trl_all"} & set(vars(lazy))
+
+
+@pytest.mark.skipif(
+    platform.system() != "Darwin"
+    or platform.machine() != "arm64"
+    or importlib.util.find_spec("mlx") is None
+    or importlib.util.find_spec("trl") is None,
+    reason = "the real MLX import path needs Apple Silicon with mlx and trl",
+)
+def test_real_mlx_import_leaves_trl_all_unbuilt():
+    probe = (
+        "import sys, unsloth, trl\n"
+        "assert unsloth.DEVICE_TYPE == 'mlx', unsloth.DEVICE_TYPE\n"
+        "assert '__all__' not in vars(trl), 'import unsloth filtered trl.__all__ eagerly'\n"
+        "names = trl.__all__\n"
+        "assert {'SFTConfig', 'SFTTrainer'} <= set(names), names\n"
+        "ns = {}\n"
+        "exec('from trl import *', ns)\n"
+        "assert set(names) <= set(ns), set(names) - set(ns)\n"
+        "assert ns['SFTTrainer'] is unsloth.UnslothTrainer\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd = pathlib.Path(__file__).resolve().parents[1],
+        capture_output = True,
+        text = True,
+        timeout = 600,
+    )
+    assert result.returncode == 0, result.stdout[-2000:] + result.stderr[-4000:]
