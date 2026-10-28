@@ -377,14 +377,9 @@ def _can_rewind(f) -> bool:
         return False
 
 
-# Per-process memo of finished string-array walks, so the 2nd..Nth reader of a tokenizer array
-# (a cold GGUF load runs several) seeks to the remembered end instead of walking it again. Keyed on
-# the open file's identity and state (dev, ino, size, mtime_ns, ctime_ns), the start offset and the
-# entry count. Only regular files opened with open(..., "rb") / FileIO take part (BytesIO, wrappers
-# and anything without a usable inode never do), and a walk is remembered only when the file was
-# unchanged across it and last modified more than _WALK_MEMO_SETTLE_NS before it began: a same-size
-# rewrite inside one timestamp tick (FAT 2 s, HFS+ / ext3 1 s, coarse kernel clocks) of a file that
-# old still moves mtime or ctime past the remembered value. Growing files (downloads) change size.
+# Per-process memo of finished string-array walks, keyed on (dev, ino, size, mtime_ns, ctime_ns),
+# offset, count. Remembered only if unchanged across the walk and settled for _WALK_MEMO_SETTLE_NS,
+# so a same-size rewrite within one timestamp tick (FAT 2 s, HFS+ 1 s) still moves a timestamp.
 _WALK_MEMO: "OrderedDict[tuple, tuple]" = OrderedDict()
 _WALK_MEMO_LOCK = threading.Lock()
 _WALK_MEMO_MAX_ENTRIES = 256

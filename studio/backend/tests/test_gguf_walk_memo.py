@@ -152,7 +152,9 @@ def test_same_size_rewrite_with_the_old_mtime_restored_is_walked_again(tmp_path,
     new = os.stat(path)
     assert (new.st_size, new.st_mtime_ns, new.st_ino) == (old.st_size, old.st_mtime_ns, old.st_ino)
     if new.st_ctime_ns == old.st_ctime_ns:
-        pytest.skip("filesystem did not move ctime")
+        pytest.skip(
+            reason = "this filesystem keeps ctime on an in-place write, so the case cannot be built here"
+        )
     assert _skip(path, 3000)[0] == 0
     assert walks["skip"] == 2
 
