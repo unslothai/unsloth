@@ -373,6 +373,8 @@ def build_group_layout(
         and lp.device == input_ids.device
         and _is_int(logits_to_keep)
         and _is_int(pad_id)
+        and (num_generations is None or _is_int(num_generations))
+        and torch.iinfo(input_ids.dtype).min <= pad_id <= torch.iinfo(input_ids.dtype).max
     ):
         return _build_group_layout_reference(*args, **kwargs)
     device = input_ids.device

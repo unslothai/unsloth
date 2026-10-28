@@ -214,3 +214,33 @@ def test_cuda_layout_reads_the_device_once_and_copies_once():
     syncs = [w for w in caught if "synchroniz" in str(w.message).lower()]
     # one device to host read of the ids + one host to device copy of the index tables
     assert len(syncs) <= 2, [str(w.message) for w in syncs]
+
+
+def _outcome(fn, *args, **kwargs):
+    try:
+        return ("ok", fn(*args, **kwargs))
+    except Exception as exc:
+        return ("err", type(exc), str(exc))
+
+
+def test_unusual_arguments_take_the_reference_decision():
+    # A float num_generations must raise the reference's error, a numpy one must keep a
+    # plain int signature, and a pad id outside the ids dtype must compare like the reference.
+    np = pytest.importorskip("numpy")
+    rng = torch.Generator().manual_seed(0)
+    ids, lp = _batch(rng, 2, 4, 32, 16)
+    cases = [
+        ((ids, 16, 0, 4.0, lp), {}),
+        ((ids, 16, 0, np.int64(4), lp), dict(apply_tokr_gate = False)),
+        ((ids.to(torch.int32), 16, 2**32, 4, lp), dict(apply_tokr_gate = False)),
+    ]
+    for args, kwargs in cases:
+        ref = _outcome(pg._build_group_layout_reference, *args, **kwargs)
+        got = _outcome(pg.build_group_layout, *args, **kwargs)
+        assert ref[0] == got[0], (ref, got)
+        if ref[0] == "err":
+            assert ref[1:] == got[1:]
+        else:
+            _assert_same(ref[1], got[1])
+            if ref[1] is not None:
+                assert type(got[1].signature[0]) is type(ref[1].signature[0])
