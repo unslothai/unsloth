@@ -206,12 +206,14 @@ def _stream_file_preview_slice(path: Path, preview_size: int, **load_kwargs):
     """Stream the first ``preview_size`` rows so a large file is never fully parsed into Arrow; returns ``(Dataset, None)`` or ``None`` if empty/unsupported."""
     from itertools import islice
 
-    from datasets import Dataset, load_dataset
-
     name = path.name.lower()
     if name.endswith((".json", ".jsonl")):
-        loader = "json"
-    elif name.endswith((".csv", ".tsv")):
+        from utils.datasets.json_preview import load_json_preview_slice
+        return load_json_preview_slice(path, preview_size, **load_kwargs)
+
+    from datasets import Dataset, load_dataset
+
+    if name.endswith((".csv", ".tsv")):
         loader = "csv"
     elif name.endswith(".parquet"):
         loader = "parquet"

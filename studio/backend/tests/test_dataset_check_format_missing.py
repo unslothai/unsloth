@@ -103,7 +103,7 @@ def test_corrupt_local_file_keeps_its_own_error(no_hub):
     corrupt.write_text("{not valid json at all\n")
 
     error = _check(str(corrupt))
-    assert error.status_code == 500, "an unreadable file is not a missing one"
+    assert error.status_code == 400, "malformed JSON is a client error, not a missing file"
     assert "no longer on disk" not in str(error.detail)
 
 
