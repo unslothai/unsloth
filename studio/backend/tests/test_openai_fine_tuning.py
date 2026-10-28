@@ -1435,3 +1435,73 @@ def test_start_training_batch_refuses_resume_and_reports_a_busy_gpu_per_member(m
     assert [(r.status, r.error, r.job_id) for r in responses] == [
         ("error", "Training already active", "job_running")
     ] * 2
+
+
+@pytest.mark.parametrize(
+    "model", ["//attacker.example/share/model", "\\\\attacker.example\\share\\model"]
+)
+def test_batch_probe_never_touches_a_managed_share_path(batch_queue, monkeypatch, model):
+    """The batch model probe runs as the job's account and behind its path guard: a managed account's UNC
+    model is never handed to a disk / SMB probe, and the job falls back to the single start that refuses it."""
+    import utils.models.diffusion_lm as diffusion_lm
+    import utils.models.model_config as model_config
+    from utils.account_context import AccountContext
+
+    client, calls, _live, gpu, _backend = batch_queue
+    monkeypatch.setattr(openai_fine_tuning, "_trains_alone", _REAL_TRAINS_ALONE)
+    touched = []
+
+    def record(name):
+        def probe(model_name, *a, **k):
+            touched.append((name, model_name))
+            return {"model_type": "qwen3"} if name == "config" else None
+
+        return probe
+
+    monkeypatch.setattr(diffusion_lm, "diffusion_lm_profile_for_model", record("diffusion"))
+    monkeypatch.setattr(model_config, "get_base_model_from_lora_identifier", record("lora"))
+    monkeypatch.setattr(model_config, "_read_raw_config_json", record("config"))
+    managed = AccountContext("acct-managed-1", "alice")
+    monkeypatch.setattr(openai_fine_tuning, "current_account", lambda: managed)
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        for s in "ab":
+            await client.fine_tuning.jobs.create(
+                model = model,
+                training_file = uploaded.id,
+                suffix = s,
+                extra_body = {"packing": False},
+            )
+        gpu["busy"] = False
+        await openai_fine_tuning._drain_once()
+
+    _run(flow())
+    assert touched == []
+    assert calls["batch"] == []
+
+
+def test_batch_probe_unchanged_for_the_owner(batch_queue, monkeypatch):
+    import utils.models.diffusion_lm as diffusion_lm
+    import utils.models.model_config as model_config
+
+    client, calls, _live, gpu, _backend = batch_queue
+    monkeypatch.setattr(openai_fine_tuning, "_trains_alone", _REAL_TRAINS_ALONE)
+    touched = []
+    monkeypatch.setattr(
+        diffusion_lm, "diffusion_lm_profile_for_model", lambda m, *a, **k: touched.append(m)
+    )
+    monkeypatch.setattr(model_config, "get_base_model_from_lora_identifier", lambda *a, **k: None)
+    monkeypatch.setattr(
+        model_config, "_read_raw_config_json", lambda *a, **k: {"model_type": "qwen3"}
+    )
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        for s in "ab":
+            await _create(client, uploaded.id, suffix = s, extra_body = {"packing": False})
+        gpu["busy"] = False
+        await openai_fine_tuning._drain_once()
+
+    _run(flow())
+    assert touched and len(calls["batch"]) == 1
