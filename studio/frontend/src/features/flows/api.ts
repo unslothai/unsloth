@@ -286,12 +286,14 @@ export interface RecipeMigration {
     flow_id: string;
     name: string;
     notices: string[];
+    /** the older flow of a recipe edited since; it is kept */
+    replaces?: string;
   }[];
   skipped: { recipe_id: string; flow_id: string }[];
   failed: { recipe_id: string; name: string; error: string }[];
 }
 
-/** One flow per saved Data Recipe not in Flows yet; repeating it creates nothing new. */
+/** One flow per saved Data Recipe not in Flows yet, or edited since; repeating it creates nothing new. */
 export const importAllRecipes = () =>
   request<RecipeMigration>("/import/recipes", { method: "POST" });
 

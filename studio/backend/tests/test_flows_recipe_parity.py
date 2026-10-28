@@ -282,6 +282,21 @@ def test_recipe_json_round_trips_out_of_flows_and_back(client):
     assert step["params"] == {"rows": 250, "mode": "full"}
 
 
+def test_recipe_json_export_keeps_the_recipes_notes(client):
+    doc = _flow()
+    notes = [n["text"] for n in doc["notes"]]
+    assert notes, "the learning recipe brings its notes in as flow notes"
+    exported = client.post(
+        "/api/flows/export/recipe", json = {"doc": doc, "group_id": "recipe"}
+    ).json()
+    out = [n for n in exported["ui"].get("nodes", []) if n.get("node_type") == "markdown_note"]
+    assert [n["markdown"] for n in out] == notes
+    back = client.post(
+        "/api/flows/import/recipe", json = {"payload": exported, "name": "Back"}
+    ).json()
+    assert [n["text"] for n in back["flow"]["doc"]["notes"]] == notes
+
+
 def test_recipe_json_export_follows_the_sharing_rule(client):
     doc = _flow(_with_tools())
     exported = client.post(

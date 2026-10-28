@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import hashlib
 import json
 import re
 import time
@@ -274,8 +275,30 @@ def _recipe_flow(payload: Any, name: str, source: Optional[dict]) -> tuple[dict,
     return _save(_doc_or_400(doc), None), notices
 
 
+def _recipe_hash(payload: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys = True, separators = (",", ":")).encode()
+    ).hexdigest()[:16]
+
+
 def _recipe_source(record: dict) -> dict:
-    return {"id": record["id"], "name": record.get("name"), "updatedAt": record.get("updatedAt")}
+    return {
+        "id": record["id"],
+        "name": record.get("name"),
+        "updatedAt": record.get("updatedAt"),
+        "hash": _recipe_hash(record.get("payload")),
+    }
+
+
+def _made_from_unchanged(flow: Optional[dict], record: dict) -> bool:
+    """True when ``flow`` was made from ``record`` as it is now. Compares the payload, since Recipe
+    Studio's save bumps ``updatedAt`` even when nothing changed; flows made before the hash fall back."""
+    made_from = ((flow or {}).get("doc", {}).get("meta") or {}).get("from_recipe") or {}
+    if not flow or made_from.get("id") != record["id"]:
+        return False
+    if made_from.get("hash"):
+        return made_from["hash"] == _recipe_hash(record.get("payload"))
+    return made_from.get("updatedAt") == record.get("updatedAt")
 
 
 @router.post("/import/recipe")
@@ -293,8 +316,7 @@ def import_recipe(
         # The recipe unchanged since its newest flow was made: open that flow again.
         known = flows_db.recipe_flows().get(record["id"])
         existing = flows_db.get_flow(known) if known else None
-        made_from = ((existing or {}).get("doc", {}).get("meta") or {}).get("from_recipe") or {}
-        if existing and made_from.get("updatedAt") == record.get("updatedAt") and not body.name:
+        if _made_from_unchanged(existing, record) and not body.name:
             return {"flow": existing, "report": {"notices": [], "reused": True}}
         payload, name, source = record["payload"], record.get("name"), _recipe_source(record)
     elif body.payload is not None:
@@ -313,6 +335,34 @@ def import_recipe(
     return {"flow": flow, "report": {"notices": notices}}
 
 
+def _recipe_notes(doc: dict, group: dict) -> list[dict]:
+    """The flow notes that belong to a recipe group, as Recipe Studio markdown notes: the ones its
+    import made (id ``<group>_...``) and any note sitting on its frame."""
+    gid = str(group.get("id"))
+    gx, gy, gw, gh = (list(group.get("rect") or []) + [0, 0, 0, 0])[:4]
+    out = []
+    for note in doc.get("notes") or []:
+        x, y, w, _ = (list(note.get("rect") or []) + [0, 0, 0, 0])[:4]
+        nid = str(note.get("id") or "")
+        on_frame = gx <= x + w / 2 <= gx + gw and gy <= y <= gy + gh
+        if not (nid.startswith(f"{gid}_") or on_frame):
+            continue
+        name = nid[len(gid) + 1 :] if nid.startswith(f"{gid}_") else nid
+        item = {
+            "id": name,
+            "name": name,
+            "node_type": "markdown_note",
+            "markdown": str(note.get("text") or ""),
+            "x": round(x - gx),
+            "y": round(y - gy),
+            "width": round(w) or 320,
+        }
+        if note.get("color"):
+            item["note_color"] = note["color"]
+        out.append(item)
+    return out
+
+
 @router.post("/export/recipe")
 def export_recipe(body: RecipeExportBody) -> dict:
     """One Recipe group of ``doc`` as recipe JSON Recipe Studio imports (`{recipe, run, ui}`), without
@@ -323,6 +373,9 @@ def export_recipe(body: RecipeExportBody) -> dict:
     except RecipeCompileError as exc:
         raise HTTPException(status_code = 400, detail = str(exc))
     recipe, ui = share_recipe(compiled["recipe"], graph["group"].get("ui"))
+    notes = _recipe_notes(body.doc, graph["group"])
+    if notes:
+        ui["nodes"] = [*(ui.get("nodes") or []), *notes]
     run = compiled["run"]
     # Rows and mode live on the Recipe Dataset step, not on the group.
     step = next((n for n in graph["nodes"] if n.get("type") == GENERATE_TYPE), None)
@@ -336,14 +389,16 @@ def export_recipe(body: RecipeExportBody) -> dict:
 
 @router.post("/import/recipes")
 def import_all_recipes() -> dict:
-    """A flow per saved Data Recipe not in Flows yet. Safe to repeat; recipes are left alone."""
+    """A flow per saved Data Recipe not in Flows yet, and a fresh one for a recipe edited since its
+    flow was made (the old flow stays). Safe to repeat; recipes are left alone."""
     from storage import data_recipes_db
 
     known = flows_db.recipe_flows()
     created, skipped, failed = [], [], []
     for record in data_recipes_db.list_recipes():
-        if record["id"] in known:
-            skipped.append({"recipe_id": record["id"], "flow_id": known[record["id"]]})
+        earlier = known.get(record["id"])
+        if earlier and _made_from_unchanged(flows_db.get_flow(earlier), record):
+            skipped.append({"recipe_id": record["id"], "flow_id": earlier})
             continue
         name = str(record.get("name") or "Data Recipe")
         try:
@@ -351,9 +406,10 @@ def import_all_recipes() -> dict:
         except HTTPException as exc:
             failed.append({"recipe_id": record["id"], "name": name, "error": str(exc.detail)})
             continue
-        created.append(
-            {"recipe_id": record["id"], "flow_id": flow["id"], "name": name, "notices": notices}
-        )
+        made = {"recipe_id": record["id"], "flow_id": flow["id"], "name": name, "notices": notices}
+        if earlier:
+            made["replaces"] = earlier
+        created.append(made)
     return {"created": created, "skipped": skipped, "failed": failed}
 
 

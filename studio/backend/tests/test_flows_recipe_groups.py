@@ -438,18 +438,29 @@ def test_import_a_saved_recipe_or_recipe_json(client):
     body = client.post("/api/flows/import/recipe", json = {"recipe_id": "r1"}).json()
     doc = body["flow"]["doc"]
     assert body["flow"]["name"] == "My SQL"
-    assert doc["meta"]["from_recipe"] == {"id": "r1", "name": "My SQL", "updatedAt": 2}
+    made_from = doc["meta"]["from_recipe"]
+    assert {k: made_from[k] for k in ("id", "name", "updatedAt")} == {
+        "id": "r1",
+        "name": "My SQL",
+        "updatedAt": 2,
+    }
     assert compiler.validate(doc)["ok"]
     loose = client.post("/api/flows/import/recipe", json = {"payload": SQL, "name": "Loose"}).json()
     assert "from_recipe" not in loose["flow"]["doc"]["meta"]
     again = client.post("/api/flows/import/recipe", json = {"recipe_id": "r1"}).json()
     assert again["flow"]["id"] == body["flow"]["id"] and again["report"]["reused"]
+    # Recipe Studio's header saves before "Open in Flows", bumping updatedAt with nothing changed.
     _save_recipe("r1", "My SQL", updated = 3)
+    resaved = client.post("/api/flows/import/recipe", json = {"recipe_id": "r1"}).json()
+    assert resaved["flow"]["id"] == body["flow"]["id"] and resaved["report"]["reused"]
+    edited = copy.deepcopy(SQL)
+    edited["recipe"]["columns"][0]["name"] = "area"
+    _save_recipe("r1", "My SQL", payload = edited, updated = 4)
     changed = client.post("/api/flows/import/recipe", json = {"recipe_id": "r1"}).json()
     assert changed["flow"]["id"] != body["flow"]["id"]
     assert client.post("/api/flows/import/recipe", json = {"recipe_id": "nope"}).status_code == 404
     assert client.post("/api/flows/import/recipe", json = {}).status_code == 400
-    assert data_recipes_db.get_recipe("r1")["payload"] == SQL
+    assert data_recipes_db.get_recipe("r1")["payload"] == edited
 
 
 def test_bringing_every_recipe_in_twice_makes_one_flow_each(client):
@@ -461,8 +472,17 @@ def test_bringing_every_recipe_in_twice_makes_one_flow_each(client):
     assert [f["recipe_id"] for f in first["failed"]] == ["bad"]
     second = client.post("/api/flows/import/recipes").json()
     assert second["created"] == [] and len(second["skipped"]) == 2
+    edited = copy.deepcopy(SQL)
+    edited["recipe"]["columns"][0]["name"] = "area"
+    _save_recipe("r2", "Two", payload = edited, updated = 5)
+    third = client.post("/api/flows/import/recipes").json()
+    assert [c["recipe_id"] for c in third["created"]] == ["r2"]
+    old_two = next(c["flow_id"] for c in first["created"] if c["recipe_id"] == "r2")
+    assert third["created"][0]["replaces"] == old_two
+    assert [s["recipe_id"] for s in third["skipped"]] == ["r1"]
+    client.post("/api/flows/import/recipes")
     flows = client.get("/api/flows").json()["flows"]
-    assert sorted(f["name"] for f in flows) == ["One", "Two"]
+    assert sorted(f["name"] for f in flows) == ["One", "Two", "Two"]
     assert len(data_recipes_db.list_recipes()) == 3
 
 
