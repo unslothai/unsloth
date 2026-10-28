@@ -10,7 +10,6 @@ export interface ExportSummaryRow {
   mono?: boolean;
 }
 
-// Mirrors the Train page's run preview card.
 export function ExportSummaryCard({
   ready,
   rows,
