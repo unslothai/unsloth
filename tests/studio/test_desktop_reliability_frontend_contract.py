@@ -267,8 +267,9 @@ def test_media_galleries_save_natively_with_feedback():
     assert "if (src && !isTauri)" in download
     assert "blob.type !== `image/${format}`" in reencode
     assert "isDownloadCancelled(error)" in download
-    assert "if (isTauri)" in download
-    assert 'toast.success("Image saved", { description: filename });' in download
+    assert "const savedFileName = await downloadFile(" in download
+    assert "if (savedFileName !== undefined)" in download
+    assert 'toast.success("Image saved", { description: savedFileName });' in download
     assert 'document.createElement("a")' not in download
 
     assert "await downloadFile(blob, exportFilename(video, format), blob.type);" in video_page
@@ -319,7 +320,7 @@ def test_chat_exports_await_native_saves_and_markdown_uses_shared_helper():
     projects = _ui_source(FRONTEND / "features/chat/projects-page.tsx")
     assert "async function downloadBlob(" in prompt_storage
     download_blob = prompt_storage.split("async function downloadBlob(", 1)[1].split("\n}\n", 1)[0]
-    assert "return downloadFile(" in download_blob
+    assert "await downloadFile(" in download_blob
     assert "catch (error)" not in download_blob
     assert "isDownloadCancelled(error)" in prompt_storage
 

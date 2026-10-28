@@ -82,11 +82,12 @@ async function fetchDownload(url: string): Promise<Response> {
   return response;
 }
 
+/** Returns the chosen basename after a native save; browsers do not report the final name. */
 export async function downloadFile(
   content: string | Blob | Uint8Array,
   filename: string,
   mimeType = "application/octet-stream",
-): Promise<void> {
+): Promise<string | undefined> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
     const bytes =
@@ -95,15 +96,15 @@ export async function downloadFile(
         : content instanceof Blob
           ? new Uint8Array(await content.arrayBuffer())
           : content;
-    const savedPath = await invoke<string | null>("save_native_file", bytes, {
+    const savedFileName = await invoke<string | null>("save_native_file", bytes, {
       headers: {
         [NATIVE_FILE_NAME_HEADER]: encodeNativeFilename(filename),
       },
     });
-    if (savedPath === null) {
+    if (savedFileName === null) {
       throw new DownloadCancelledError();
     }
-    return;
+    return savedFileName;
   }
 
   const browserContent =
