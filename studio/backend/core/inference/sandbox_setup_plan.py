@@ -1,9 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""What it takes to get OS isolation on this computer, and whether Unsloth can do it from Settings.
-
-Detection only: nothing here runs a privileged command.
-"""
+"""Detects OS isolation support and setup needs from Settings; never runs a privileged command."""
 
 from __future__ import annotations
 

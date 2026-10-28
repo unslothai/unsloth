@@ -793,6 +793,8 @@ export const fr = {
       guidedTour: "Visite guidée",
       help: "Aide",
       logOut: "Se déconnecter",
+      logOutNeedsPassword: "Définissez un mot de passe dans Paramètres > Accès à distance avant de vous déconnecter, pour pouvoir vous reconnecter.",
+      logOutFailed: "Impossible de se déconnecter en toute sécurité. Réessayez dans un instant.",
       shutdown: "Arrêter",
     },
     commandPalette: {
@@ -938,6 +940,11 @@ export const fr = {
   },
   settings: {
     accounts: {
+      signsInAs: "Se connecte en tant que {username}",
+      signsInAsOwner: "Se connecte en tant que {alias} ou {username}",
+      signInName: "Votre nom de connexion",
+      signInNameDescription: "Le nom à saisir pour vous connecter quand cette installation compte plusieurs comptes. unsloth fonctionne toujours aussi. Laissez vide pour n'utiliser que unsloth.",
+      signInNameSave: "Enregistrer le nom",
       title: "Comptes",
       description: "Créez des comptes Unsloth privés. Les nouveaux utilisateurs se connectent avec un code de configuration à usage unique et choisissent un mot de passe.",
       username: "Nom d'utilisateur",
@@ -2364,7 +2371,7 @@ export const fr = {
         gpuUnusableDetail: "Détecté, mais PyTorch ne peut pas l'utiliser",
         detailedView: "Vue détaillée",
         detailedViewDescription:
-          "Affiche la charge du CPU ainsi que la charge, la température et la consommation de chaque GPU dans la fenêtre flottante et ici.",
+          "Affiche la charge du CPU ainsi que la charge, la température et la consommation de chaque GPU dans la fenêtre flottante.",
         cpuLoad: "Charge CPU",
         gpuLoad: "Charge GPU",
         temperature: "Température",
@@ -2398,6 +2405,10 @@ export const fr = {
         used: "Utilisé : {value}",
         free: "Disponible : {value}",
         total: "{value} au total",
+        usedOf: "{used} utilisés sur {total}",
+        segmentUsed: "Utilisée par le GPU",
+        segmentSystem: "Utilisée par le système",
+        segmentAvailable: "Disponible",
       },
       llamaBackend: {
         title: "Moteur d'inférence GGUF",

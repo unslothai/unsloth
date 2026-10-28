@@ -793,6 +793,8 @@ export const de = {
       guidedTour: "Geführte Tour",
       help: "Hilfe",
       logOut: "Abmelden",
+      logOutNeedsPassword: "Legen Sie vor dem Abmelden unter Einstellungen > Fernzugriff ein Passwort fest, damit Sie sich wieder anmelden können.",
+      logOutFailed: "Abmelden war nicht sicher möglich. Versuchen Sie es gleich noch einmal.",
       shutdown: "Herunterfahren",
     },
     commandPalette: {
@@ -938,6 +940,11 @@ export const de = {
   },
   settings: {
     accounts: {
+      signsInAs: "Meldet sich als {username} an",
+      signsInAsOwner: "Meldet sich als {alias} oder {username} an",
+      signInName: "Ihr Anmeldename",
+      signInNameDescription: "Der Name, mit dem Sie sich anmelden, wenn diese Installation mehr als ein Konto hat. unsloth funktioniert immer auch. Leer lassen, um nur unsloth zu verwenden.",
+      signInNameSave: "Name speichern",
       title: "Konten",
       description: "Private Unsloth-Konten anlegen. Neue Nutzer melden sich mit einem einmaligen Einrichtungscode an und wählen ein Passwort.",
       username: "Benutzername",
@@ -2365,7 +2372,7 @@ export const de = {
         gpuUnusableDetail: "Erkannt, aber PyTorch kann sie nicht nutzen",
         detailedView: "Detailansicht",
         detailedViewDescription:
-          "Zeigt CPU-Last sowie Last, Temperatur und Leistungsaufnahme jeder GPU im schwebenden Fenster und hier.",
+          "Zeigt CPU-Last sowie Last, Temperatur und Leistungsaufnahme jeder GPU im schwebenden Fenster.",
         cpuLoad: "CPU-Last",
         gpuLoad: "GPU-Last",
         temperature: "Temperatur",
@@ -2399,6 +2406,10 @@ export const de = {
         used: "{value} belegt",
         free: "{value} frei",
         total: "{value} gesamt",
+        usedOf: "{used} von {total} belegt",
+        segmentUsed: "Von der GPU belegt",
+        segmentSystem: "Vom System belegt",
+        segmentAvailable: "Verfügbar",
       },
       llamaBackend: {
         title: "GGUF-Inferenz-Engine",

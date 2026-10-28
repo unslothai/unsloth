@@ -55,6 +55,7 @@ from typing import Any, Dict, List, Optional, Callable, Union
 from datasets import Dataset
 from core.training.eval_dataset import evaluation_enabled
 from utils.datasets.audio_decode import ensure_audio_decoding
+from utils.datasets.tokenizer_fingerprint import install_tokenizer_fingerprint
 from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
 from utils.hf_dataset_options import hf_dataset_split_instruction_names
 from utils.third_party_source import (
@@ -2481,14 +2482,16 @@ class UnslothTrainer:
                     codes = snac_model.encode(waveform)
 
                 all_codes = []
+                # One host copy per level: .item() is a device sync per scalar on CUDA.
+                c0, c1, c2 = (level[0].tolist() for level in codes[:3])
                 for i in range(codes[0].shape[1]):
-                    all_codes.append(codes[0][0][i].item() + AUDIO_OFFSET)
-                    all_codes.append(codes[1][0][2 * i].item() + AUDIO_OFFSET + 4096)
-                    all_codes.append(codes[2][0][4 * i].item() + AUDIO_OFFSET + (2 * 4096))
-                    all_codes.append(codes[2][0][(4 * i) + 1].item() + AUDIO_OFFSET + (3 * 4096))
-                    all_codes.append(codes[1][0][(2 * i) + 1].item() + AUDIO_OFFSET + (4 * 4096))
-                    all_codes.append(codes[2][0][(4 * i) + 2].item() + AUDIO_OFFSET + (5 * 4096))
-                    all_codes.append(codes[2][0][(4 * i) + 3].item() + AUDIO_OFFSET + (6 * 4096))
+                    all_codes.append(c0[i] + AUDIO_OFFSET)
+                    all_codes.append(c1[2 * i] + AUDIO_OFFSET + 4096)
+                    all_codes.append(c2[4 * i] + AUDIO_OFFSET + (2 * 4096))
+                    all_codes.append(c2[(4 * i) + 1] + AUDIO_OFFSET + (3 * 4096))
+                    all_codes.append(c1[(2 * i) + 1] + AUDIO_OFFSET + (4 * 4096))
+                    all_codes.append(c2[(4 * i) + 2] + AUDIO_OFFSET + (5 * 4096))
+                    all_codes.append(c2[(4 * i) + 3] + AUDIO_OFFSET + (6 * 4096))
 
                 if len(all_codes) == 0:
                     skipped += 1
@@ -3190,6 +3193,9 @@ class UnslothTrainer:
             ensure_audio_decoding()
         except Exception:  # noqa: BLE001 - never let a broken librosa stop a text run
             pass
+
+        # Every map below and TRL's / Unsloth's tokenization hash the tokenizer to name cache files.
+        install_tokenizer_fingerprint()
 
         s3_download = None
         try:

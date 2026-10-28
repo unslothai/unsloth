@@ -101,6 +101,18 @@ def test_list_paginates_with_limit_offset():
     assert len(gallery.list_images(offset = 4)) == 1
 
 
+def test_listing_resolves_the_folder_once(monkeypatch):
+    for i in range(4):
+        _save_with_mtime(f"p{i}", float(i))
+    calls = []
+    real = gallery.gallery_dir
+    monkeypatch.setattr(gallery, "gallery_dir", lambda: calls.append(1) or real())
+    listed = gallery.list_images()
+    assert len(calls) == 1
+    assert [r["prompt"] for r in listed] == ["p3", "p2", "p1", "p0"]
+    assert [r["order_at"] for r in listed] == [3.0, 2.0, 1.0, 0.0]
+
+
 def test_negative_prompt_recorded_in_parameters():
     record = gallery.save(_img(), _meta(negative_prompt = "blurry"))
     raw = base64.b64decode(gallery.image_b64(record["id"]))

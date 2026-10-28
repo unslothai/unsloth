@@ -792,6 +792,8 @@ export const ptBR = {
       guidedTour: "Tour guiado",
       help: "Ajuda",
       logOut: "Sair",
+      logOutNeedsPassword: "Defina uma senha em Configurações > Acesso remoto antes de sair, para conseguir entrar de novo.",
+      logOutFailed: "Não foi possível sair com segurança. Tente de novo em instantes.",
       shutdown: "Desligar",
     },
     commandPalette: {
@@ -936,6 +938,11 @@ export const ptBR = {
   },
   settings: {
     accounts: {
+      signsInAs: "Entra como {username}",
+      signsInAsOwner: "Entra como {alias} ou {username}",
+      signInName: "Seu nome de login",
+      signInNameDescription: "O nome que você digita para entrar quando esta instalação tem mais de uma conta. unsloth também funciona sempre. Deixe vazio para usar só unsloth.",
+      signInNameSave: "Salvar nome",
       title: "Contas",
       description: "Crie contas privadas do Unsloth. Novos usuários entram com um código de configuração de uso único e escolhem uma senha.",
       username: "Nome de usuário",
@@ -2349,7 +2356,7 @@ export const ptBR = {
         gpuUnusableDetail: "Detectada, mas o PyTorch não consegue usá-la",
         detailedView: "Visualização detalhada",
         detailedViewDescription:
-          "Mostra a carga da CPU e a carga, temperatura e consumo de cada GPU na janela flutuante e aqui.",
+          "Mostra a carga da CPU e a carga, temperatura e consumo de cada GPU na janela flutuante.",
         cpuLoad: "Carga da CPU",
         gpuLoad: "Carga da GPU",
         temperature: "Temperatura",
@@ -2382,6 +2389,10 @@ export const ptBR = {
         used: "{value} usados",
         free: "{value} livres",
         total: "{value} total",
+        usedOf: "{used} em uso de {total}",
+        segmentUsed: "Em uso pela GPU",
+        segmentSystem: "Em uso pelo sistema",
+        segmentAvailable: "Disponível",
       },
       llamaBackend: {
         title: "GGUF inference engine",

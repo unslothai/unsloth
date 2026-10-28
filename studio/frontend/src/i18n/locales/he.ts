@@ -875,6 +875,8 @@ export const he = {
       guidedTour: "סיור מודרך",
       help: "עזרה",
       logOut: "התנתקות",
+      logOutNeedsPassword: "לפני ההתנתקות, הגדירו סיסמה בהגדרות > גישה מרחוק כדי שתוכלו להתחבר שוב.",
+      logOutFailed: "לא ניתן היה להתנתק בבטחה. נסו שוב בעוד רגע.",
       shutdown: "כיבוי",
     },
     commandPalette: {
@@ -1019,6 +1021,11 @@ export const he = {
   },
   settings: {
     accounts: {
+      signsInAs: "מתחבר בתור {username}",
+      signsInAsOwner: "מתחבר בתור {alias} או {username}",
+      signInName: "שם ההתחברות שלך",
+      signInNameDescription: "השם שמקלידים כדי להתחבר כשבהתקנה הזו יש יותר מחשבון אחד. גם unsloth תמיד עובד. השאירו ריק כדי להשתמש רק ב-unsloth.",
+      signInNameSave: "שמירת השם",
       title: "חשבונות",
       description:
         "צור חשבונות Unsloth פרטיים. משתמשים חדשים יתחברו באמצעות קוד הגדרה חד-פעמי ויבחרו סיסמה.",
@@ -2437,7 +2444,7 @@ export const he = {
         gpuUnusableDetail: "זוהה, אך PyTorch אינו יכול להשתמש בו",
         detailedView: "תצוגה מפורטת",
         detailedViewDescription:
-          "הצגת עומס המעבד ועומס, טמפרטורה וצריכת חשמל של כל GPU בחלון הצף וכאן.",
+          "הצגת עומס המעבד ועומס, טמפרטורה וצריכת חשמל של כל GPU בחלון הצף.",
         cpuLoad: "עומס מעבד",
         gpuLoad: "עומס GPU",
         temperature: "טמפרטורה",
@@ -2470,6 +2477,10 @@ export const he = {
         used: "{value} בשימוש",
         free: "{value} פנוי",
         total: "{value} סה״כ",
+        usedOf: "{used} בשימוש מתוך {total}",
+        segmentUsed: "בשימוש ה-GPU",
+        segmentSystem: "בשימוש המערכת",
+        segmentAvailable: "זמין",
       },
       llamaBackend: {
         title: "מנוע הסקה GGUF",
