@@ -135,6 +135,40 @@ _lock = threading.Lock()
 _job: Optional[_Job] = None
 
 
+def _refuse_if_running() -> None:
+    if _job is not None and _job.status == "running":
+        raise HTTPException(status_code = 409, detail = "A llama-bench run is already going")
+
+
+def _claim_lease(holder: str) -> None:
+    """Hold the Benchmarks lease for the run, so a config sweep can't start and load a model beside
+    it, and a sweep already holding it refuses this run."""
+    from routes import benchmarks
+
+    now = time.monotonic()
+    with benchmarks._lease_lock:
+        lease = benchmarks._lease
+        if lease and lease["holder"] != holder and lease["expires"] > now:
+            raise HTTPException(
+                status_code = 409,
+                detail = {
+                    "error": "benchmark_running",
+                    "kind": lease["kind"],
+                    "message": "Another benchmark is running in another tab or on another device. "
+                    "Stop it or let it finish first.",
+                },
+            )
+        benchmarks._lease = {"holder": holder, "kind": KIND, "expires": float("inf"), "outside": 0}
+
+
+def _release_lease(holder: str) -> None:
+    from routes import benchmarks
+
+    with benchmarks._lease_lock:
+        if benchmarks._lease and benchmarks._lease["holder"] == holder:
+            benchmarks._lease = None
+
+
 def find_llama_bench() -> Optional[Path]:
     """llama-bench ships beside llama-server, in the directory its libraries live in."""
     from core.inference.llama_cpp import LlamaCppBackend, _llama_lib_dir
@@ -247,6 +281,7 @@ def _run(job: _Job, binary: Path, gguf: str) -> None:
         job.status = "error"
         job.error = str(exc)[:500]
     finally:
+        _release_lease(job.id)
         job.finished_at = int(time.time() * 1000)
         job.stage = ""
         if job.rows:
@@ -309,12 +344,14 @@ async def run(
 
     backend = get_llama_cpp_backend()
     gguf, model, variant = backend.gguf_path, backend.model_identifier, backend.hf_variant
+    # Checked before the model: a run in progress has unloaded it.
+    _refuse_if_running()
     if not (backend.is_loaded and gguf and model):
         raise HTTPException(status_code = 409, detail = "Load a GGUF model first")
     with _lock:
-        if _job is not None and _job.status == "running":
-            raise HTTPException(status_code = 409, detail = "A llama-bench run is already going")
+        _refuse_if_running()
         job = _Job(request, model, variant)
+        _claim_lease(job.id)
         _job = job
     try:
         # The real unload route, so chats still generating refuse it with 409 and keep-warm
@@ -324,6 +361,7 @@ async def run(
         with _lock:
             if _job is job:
                 _job = None
+        _release_lease(job.id)
         raise
     threading.Thread(target = _run, args = (job, binary, gguf), daemon = True).start()
     return _public(job.snapshot(), via_api_key)

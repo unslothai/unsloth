@@ -63,6 +63,7 @@ def bench(tmp_path, monkeypatch):
         staticmethod(lambda binary, **_: None),
     )
     monkeypatch.setattr(llama_bench, "_job", None)
+    monkeypatch.setattr(benchmarks_routes, "_lease", None)
 
     app = FastAPI()
     app.dependency_overrides[get_current_subject] = lambda: "unsloth"
@@ -105,6 +106,7 @@ def test_a_second_run_is_refused_while_one_is_going_and_cancel_stops_it(bench):
     assert client.post("/api/benchmarks/llama-bench/run", json = {}).status_code == 200
     again = client.post("/api/benchmarks/llama-bench/run", json = {})
     assert again.status_code == 409
+    assert again.json()["detail"] == "A llama-bench run is already going"
     client.delete("/api/benchmarks/llama-bench/run")
     assert _wait(client)["status"] == "cancelled"
 
@@ -120,6 +122,26 @@ def test_missing_binary_and_no_model_are_409s_that_unload_nothing(bench, monkeyp
     monkeypatch.setattr(llama_bench, "find_llama_bench", lambda: Path("llama-bench"))
     monkeypatch.setattr(_Backend, "is_loaded", False)
     assert client.post("/api/benchmarks/llama-bench/run", json = {}).status_code == 409
+    assert unloads == []
+
+
+def test_a_run_and_a_config_sweep_lock_each_other_out(bench):
+    client, slow, unloads = bench
+    sweep = {"holder": "sweep-test-1234", "kind": "sweep"}
+    slow["on"] = True
+    assert client.post("/api/benchmarks/llama-bench/run", json = {}).status_code == 200
+    held = client.post("/api/benchmarks/lease", json = sweep)
+    assert held.status_code == 409
+    assert held.json()["detail"]["kind"] == "llama-bench"
+    client.delete("/api/benchmarks/llama-bench/run")
+    assert _wait(client)["status"] == "cancelled"
+    assert client.post("/api/benchmarks/lease", json = sweep).status_code == 200
+
+    # A sweep holding the lease refuses the run before anything is unloaded.
+    unloads.clear()
+    res = client.post("/api/benchmarks/llama-bench/run", json = {})
+    assert res.status_code == 409
+    assert res.json()["detail"]["error"] == "benchmark_running"
     assert unloads == []
 
 
