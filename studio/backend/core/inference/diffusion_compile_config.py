@@ -138,3 +138,21 @@ def _reset_for_tests() -> None:
     with _LOCK:
         _KNOBS.clear()
         _generation += 1
+
+
+_STUDIO_CACHE_TAG_PREFIXES = ("unsloth_fp8_unit_scale=", "unsloth_nvfp4_act_quant=")
+
+
+def canonical_compile_cache_tag(current: str, prefix: str, tag: str | None) -> str:
+    """``torch.compiler.config.cache_key_tag`` with ``prefix``'s token replaced by ``tag`` (dropped on None).
+
+    Studio's own tokens are sorted, so the same patches give the same tag whichever was
+    set (or set again) last: torch keys every FX / AOTAutograd entry on it, and an
+    order-only difference missed the whole cache. Other owners' tokens keep their order."""
+    owned_prefixes = _STUDIO_CACHE_TAG_PREFIXES
+    parts = [p for p in current.split(";") if p and not p.startswith(prefix)]
+    if tag:
+        parts.append(prefix + tag)
+    foreign = [p for p in parts if not p.startswith(owned_prefixes)]
+    owned = sorted(p for p in parts if p.startswith(owned_prefixes))
+    return ";".join(foreign + owned)
