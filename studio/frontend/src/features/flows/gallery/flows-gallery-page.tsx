@@ -27,6 +27,7 @@ import {
   createFlow,
   deleteFlow,
   importFlow,
+  importAllRecipes,
   importNotebook,
   listExamples,
   listFlows,
@@ -40,6 +41,7 @@ import {
   GameController01Icon,
   GridViewIcon,
   PlusSignIcon,
+  TestTube01Icon,
 } from "../editor/icon-data";
 import { MediaThumb } from "../editor/media";
 import type { FlowKind, FlowRecord, FlowSummary } from "../types";
@@ -405,6 +407,7 @@ export function FlowsGalleryPage(): ReactElement {
   const [importOpen, setImportOpen] = useState(false);
   const [category, setCategory] = useState<GalleryCategory | null>(null);
   const [creating, setCreating] = useState(false);
+  const [migrating, setMigrating] = useState(false);
 
   const refresh = useCallback(() => {
     listFlows()
@@ -440,6 +443,35 @@ export function FlowsGalleryPage(): ReactElement {
     }
   };
 
+  const bringRecipes = async () => {
+    setMigrating(true);
+    try {
+      const result = await importAllRecipes();
+      const made = result.created.length;
+      const kept = result.skipped.length;
+      if (made === 0 && kept === 0 && result.failed.length === 0)
+        toast.info("No saved Data Recipes yet");
+      else
+        toast.success(
+          made
+            ? `Brought ${made} Data Recipe${made === 1 ? "" : "s"} into Flows${kept ? `; ${kept} already here` : ""}`
+            : `All ${kept} Data Recipe${kept === 1 ? " is" : "s are"} already in Flows`,
+          {
+            description: result.failed.length
+              ? `Could not bring in: ${result.failed.map((f) => f.name).join(", ")}`
+              : "Your recipes stay on the Data Recipes page too.",
+          },
+        );
+      refresh();
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Could not bring in the recipes",
+      );
+    } finally {
+      setMigrating(false);
+    }
+  };
+
   return (
     <div
       className="mx-auto flex w-full max-w-6xl flex-col gap-8 px-6 py-8"
@@ -456,6 +488,16 @@ export function FlowsGalleryPage(): ReactElement {
             and any flow can be shared as a single file.
           </p>
         </div>
+        <Button
+          variant="outline"
+          disabled={migrating}
+          onClick={() => void bringRecipes()}
+          title="One flow per saved Data Recipe, each an editable recipe group. Safe to run again."
+          data-testid="flows-bring-recipes"
+        >
+          <HugeiconsIcon icon={TestTube01Icon} size={15} />{" "}
+          {migrating ? "Bringing in…" : "Bring in my Data Recipes"}
+        </Button>
         <Button
           variant="outline"
           onClick={() => setImportOpen(true)}

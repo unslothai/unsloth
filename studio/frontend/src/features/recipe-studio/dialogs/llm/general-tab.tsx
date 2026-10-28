@@ -26,7 +26,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { type ReactElement, type RefObject, useMemo, useRef } from "react";
-import { useRecipeStudioStore } from "../../stores/recipe-studio";
+import { useRecipeConfigs } from "../../stores/recipe-configs-context";
 import type { LlmConfig } from "../../types";
 import { isLikelyImageValue } from "../../utils/image-preview";
 import { findInvalidJinjaReferences } from "../../utils/refs";
@@ -81,7 +81,7 @@ export function LlmGeneralTab({
   modelAliasAnchorRef,
   onUpdate,
 }: LlmGeneralTabProps): ReactElement {
-  const configs = useRecipeStudioStore((state) => state.configs);
+  const configs = useRecipeConfigs();
   const modelAliasId = `${config.id}-model-alias`;
   const toolAliasId = `${config.id}-tool-alias`;
   const codeLangId = `${config.id}-code-lang`;

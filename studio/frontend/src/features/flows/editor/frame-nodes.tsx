@@ -3,7 +3,9 @@
 
 import { type NodeProps, NodeResizer } from "@xyflow/react";
 import { memo, useState } from "react";
+import { groupGenerate } from "../recipe/recipe-columns";
 import { useDocStore } from "../stores/doc-store";
+import { useUiStore } from "../stores/ui-store";
 import type { RfNode } from "./derive-rf";
 
 function GroupFrameImpl({ data, selected }: NodeProps<RfNode>) {
@@ -57,6 +59,41 @@ function GroupFrameImpl({ data, selected }: NodeProps<RfNode>) {
           <span className="truncate text-sm font-semibold" style={{ color }}>
             {group.label}
           </span>
+        )}
+        {group.kind === "recipe" &&
+          (["preview", "runs"] as const).map((view, i) => (
+            <button
+              key={view}
+              type="button"
+              className={`nodrag ${i === 0 ? "ml-auto" : ""} shrink-0 rounded px-1.5 py-0.5 text-[11px] capitalize hover:bg-white/10`}
+              style={{ color }}
+              title={
+                view === "preview"
+                  ? "Rows, columns and errors from the latest run"
+                  : "Every run of this recipe"
+              }
+              onClick={() =>
+                useUiStore.getState().setRecipeRuns({ groupId: group.id, view })
+              }
+            >
+              {view}
+            </button>
+          ))}
+        {group.kind === "recipe" && (
+          <button
+            type="button"
+            className="nodrag shrink-0 rounded px-1.5 py-0.5 text-[11px] hover:bg-white/10"
+            style={{ color, background: `${color}22` }}
+            title="Models, seed, rows and columns of this recipe"
+            onClick={() => {
+              const step = groupGenerate(useDocStore.getState().graph, group.id);
+              if (!step) return;
+              useUiStore.getState().setSelection([step.id], []);
+              useUiStore.getState().openInspector(step.id);
+            }}
+          >
+            Data Recipe
+          </button>
         )}
       </div>
     </div>

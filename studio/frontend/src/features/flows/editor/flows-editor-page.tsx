@@ -5,7 +5,14 @@ import "@xyflow/react/dist/style.css";
 import { useNavigate } from "@tanstack/react-router";
 import { ReactFlowProvider } from "@xyflow/react";
 import { useReactFlow } from "@xyflow/react";
-import { type ReactElement, useCallback, useEffect, useState } from "react";
+import {
+  type ReactElement,
+  Suspense,
+  lazy,
+  useCallback,
+  useEffect,
+  useState,
+} from "react";
 import { getFlow } from "../api";
 import { ensureCatalog } from "../stores/catalog-loader";
 import { needsNewerStudio } from "../stores/catalog-store";
@@ -30,6 +37,9 @@ import {
 } from "./use-autosave";
 import { useEditorShortcuts } from "./use-editor-shortcuts";
 
+const RecipeEditor = lazy(() => import("../recipe/recipe-editor"));
+const RecipeRuns = lazy(() => import("../recipe/recipe-runs"));
+
 type LoadState =
   | { status: "loading" }
   | { status: "ready"; readOnly: boolean }
@@ -42,6 +52,8 @@ function EditorBody({
   const navigate = useNavigate();
   const paletteOpen = useUiStore((s) => s.paletteOpen);
   const drawerOpen = useUiStore((s) => s.drawerOpen);
+  const recipeEditorOpen = useUiStore((s) => s.recipeEditor !== null);
+  const recipeRunsOpen = useUiStore((s) => s.recipeRuns !== null);
   const runStatus = useRuntimeStore((s) => s.runStatus);
   const { screenToFlowPosition } = useReactFlow();
   useEditorShortcuts(!readOnly);
@@ -122,6 +134,16 @@ function EditorBody({
         <Inspector />
       </div>
       <QuickAdd />
+      {recipeEditorOpen && (
+        <Suspense fallback={null}>
+          <RecipeEditor />
+        </Suspense>
+      )}
+      {recipeRunsOpen && (
+        <Suspense fallback={null}>
+          <RecipeRuns />
+        </Suspense>
+      )}
     </div>
   );
 }
