@@ -2,15 +2,12 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-/// Distinct timeouts kept; a computed one past this is built per call, as every call used to be.
+/// Past this many distinct timeouts, clients are built per call.
 const MAX_CACHED_CLIENTS: usize = 16;
 
 /// Redirects refused: this client posts `.desktop_secret`, and reqwest strips headers, not bodies,
 /// on cross-host redirects, so a 307 would carry the secret off-host.
-///
-/// One client per timeout, shared: a build loads the TLS roots (about 4 ms), and the startup port
-/// scan and every health probe built a fresh one. No idle pool, so each request still opens its own
-/// connection, as a client built per call did, and none outlives a backend restart.
+/// Shared per timeout: a build loads TLS roots. No idle pool: no connection outlives a restart.
 pub(crate) fn client(timeout: Duration) -> Result<reqwest::Client, reqwest::Error> {
     static CLIENTS: OnceLock<Mutex<HashMap<Duration, reqwest::Client>>> = OnceLock::new();
     let clients = CLIENTS.get_or_init(|| Mutex::new(HashMap::new()));
@@ -76,14 +73,13 @@ mod tests {
     async fn one_client_per_timeout_still_times_out_and_opens_a_connection_per_request() {
         use std::sync::{Arc, Mutex};
 
-        // A timeout no other test uses, so the build count is this test's own.
+        // Unique timeout, so the build count is this test's own.
         let timeout = Duration::from_millis(1_237);
         for _ in 0..5 {
             super::client(timeout).unwrap();
         }
         assert_eq!(builds_of(timeout), 1, "built once, then shared");
 
-        // Each request gets its own connection, as with a client built per call.
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let accepted = Arc::new(Mutex::new(0usize));
@@ -98,7 +94,7 @@ mod tests {
                     let _ = socket
                         .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
                         .await;
-                    // Keep-alive: leave the socket open, so only a pool could reuse it.
+                    // Kept open: only a pool could reuse it.
                     tokio::time::sleep(Duration::from_secs(3)).await;
                 });
             }
@@ -117,7 +113,6 @@ mod tests {
         }
         assert_eq!(*accepted.lock().unwrap(), 3);
 
-        // The shared client keeps its timeout: a silent server fails after it, not later.
         let silent = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let silent_port = silent.local_addr().unwrap().port();
         let _hold = tokio::spawn(async move {
