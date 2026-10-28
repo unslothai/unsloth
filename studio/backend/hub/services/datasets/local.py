@@ -289,6 +289,58 @@ def _stream_file_preview_slice(path: Path, preview_size: int, **load_kwargs):
     return Dataset.from_list(rows, features = load_kwargs.get("features")), None
 
 
+def _parquet_preview_slice(files: list[Path], preview_size: int):
+    """The first ``preview_size`` rows and exact row count of Parquet ``files`` without loading them whole.
+
+    Reads as the datasets Parquet builder does (features from the first file's schema, each batch cast
+    to them), but only the leading row groups, and counts rows from the footers. ``None`` when that may
+    not match the full load: the files' schemas differ, the files hold no rows, or anything fails.
+    """
+    try:
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+        from datasets import Dataset, DatasetInfo, Features
+        from datasets.table import InMemoryTable, table_cast
+
+        schema, total_rows = None, 0
+        for path in files:
+            metadata = pq.read_metadata(path)
+            file_schema = metadata.schema.to_arrow_schema()
+            if schema is None:
+                schema = file_schema
+            elif not file_schema.equals(schema, check_metadata = True):
+                # The full load casts later files to the first one's features or raises; leave both to it.
+                return None
+            total_rows += metadata.num_rows
+        if total_rows <= 0:
+            return None
+
+        features = Features.from_arrow_schema(schema)
+        arrow_schema = features.arrow_schema
+        wanted = min(preview_size, total_rows)
+        tables = []
+        for path in files:
+            if wanted <= 0:
+                break
+            # A file object, so the handle is closed here (Windows would keep the file locked otherwise).
+            with open(path, "rb") as handle:
+                parquet_file = pq.ParquetFile(handle)
+                for batch in parquet_file.iter_batches(batch_size = wanted, use_threads = False):
+                    table = table_cast(pa.Table.from_batches([batch]), arrow_schema)
+                    tables.append(table.slice(0, wanted))
+                    wanted -= tables[-1].num_rows
+                    if wanted <= 0:
+                        break
+        table = pa.concat_tables(tables).combine_chunks()
+        if table.num_rows != min(preview_size, total_rows):
+            return None
+        # The full load writes its rows under the features' own Arrow schema (list child names included).
+        table = table.cast(arrow_schema)
+        return Dataset(InMemoryTable(table), info = DatasetInfo(features = features)), total_rows
+    except Exception:
+        return None
+
+
 def _load_local_preview_slice(*, dataset_path: Path, train_split: str, preview_size: int):
     # Non-streaming loads take the cached builder lock; use the EACCES-safe wrapper.
     from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
@@ -302,6 +354,10 @@ def _load_local_preview_slice(*, dataset_path: Path, train_split: str, preview_s
         )
         parquet_files = drop_appledouble_metadata(sorted(parquet_dir.glob("*.parquet")))
         if parquet_files:
+            if train_split == "train":
+                preview = _parquet_preview_slice(parquet_files, preview_size)
+                if preview is not None:
+                    return preview
             dataset = load_dataset(
                 "parquet",
                 data_files = [str(path) for path in parquet_files],
@@ -324,6 +380,10 @@ def _load_local_preview_slice(*, dataset_path: Path, train_split: str, preview_s
     suffix = dataset_path.suffix.lower()
     # Parquet/Arrow give a cheap exact total_rows; JSON/CSV carry none, so stream and report None.
     if suffix == ".parquet":
+        if train_split == "train":
+            preview = _parquet_preview_slice([dataset_path], preview_size)
+            if preview is not None:
+                return preview
         dataset = load_dataset("parquet", data_files = str(dataset_path), split = train_split)
         total_rows = len(dataset)
         preview_slice = dataset.select(range(min(preview_size, total_rows)))
