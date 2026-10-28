@@ -192,8 +192,7 @@ def _is_moe(model) -> bool:
     return False
 
 
-# Fused-expert families whose Unsloth MoE forward reads a per-call LoRA stash, checked by the batched-vs-alone
-# parity suite. Other MoE layouts (per-expert Linears, packed or remote experts) train alone.
+# Fused-expert families checked batched vs alone; other MoE layouts train alone.
 BATCHED_MOE_MODEL_TYPES = frozenset({"qwen3_moe", "qwen3_5_moe", "qwen3_5_moe_text"})
 
 
@@ -268,7 +267,6 @@ def _resolve_targets(model, target_modules) -> list[str]:
 
 
 def _multi_lora_layers(model):
-    """Every adapter-holding layer: dense LoRA layers and each fused expert stack's LoRA."""
     from unsloth.kernels.multi_lora import _layers
     return _layers(model)
 

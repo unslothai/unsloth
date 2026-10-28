@@ -678,11 +678,9 @@ def _batch_key(entry: _Queued) -> Optional[tuple]:
 
 
 _MOE_COUNT_KEYS = ("num_experts", "n_routed_experts", "num_local_experts")
-# Fused-expert MoE families the batched trainer runs (multi_lora_trainer.BATCHED_MOE_MODEL_TYPES); transformers 4.x
-# holds their experts as per-expert Linears, which train alone.
+# multi_lora_trainer.BATCHED_MOE_MODEL_TYPES.
 _BATCHED_MOE_TYPES = frozenset({"qwen3_moe", "qwen3_5_moe", "qwen3_5_moe_text"})
-# State-space and convolution mixers: their recurrent state and conv windows are not checked batched. Gated DeltaNet
-# (Qwen3.5 / Qwen3-Next "linear_attention" layers) is, and is not matched here.
+# Recurrent / conv state is not checked batched; Gated DeltaNet ("linear_attention") is, and is not matched here.
 _SSM_MODEL_TYPES = frozenset(
     {
         "mamba",
