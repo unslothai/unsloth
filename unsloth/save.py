@@ -100,14 +100,9 @@ def _collect_garbage(
     before = None,
     after = None,
 ):
-    """Up to `passes` full gc.collect() passes, with `before` / `after` run around each.
-
-    Stops after a pass that ran and found nothing: it freed nothing and ran no finalizer, so the next pass
-    would walk the same heap and find nothing either. Keeps going, as every pass used to, whenever that is
-    not certain: gc.callbacks are registered (they run around every pass and may drop references), the
-    pass did not return 0, or the full-collection stats do not show exactly one more collection that freed
-    nothing (CPython returns 0 without collecting while another thread's collection is in progress).
-    """
+    """Up to `passes` gc.collect() passes; stops after one that ran and found nothing (it ran no finalizer, so
+    the next finds nothing either). gc.callbacks, a non-zero result, or a pass skipped while another thread
+    collects (returns 0, stats unmoved) keep every pass."""
     for _ in range(passes):
         if before is not None:
             before()
@@ -1995,8 +1990,7 @@ def unsloth_save_model(
 
     save_pretrained_settings["state_dict"] = None
 
-    # Dropping a tensor frees it by refcount. The loop allocates nothing, so the collect below
-    # finds every cycle a per-entry collect would have, at one full pass instead of one per 10 entries.
+    # No collect per entry: the loop allocates nothing, so the collect below finds the same cycles.
     for j, (key, value) in enumerate(state_dict.items()):
         state_dict[key] = None
         if j % 10 == 0:

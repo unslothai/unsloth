@@ -1,10 +1,4 @@
-"""save.py's repeated full gc.collect() passes stop once a pass that really ran finds nothing.
-
-A pass that finds no unreachable objects frees nothing and runs no finalizer, so the next pass walks the
-same heap and finds nothing either; each full pass costs ~0.1 to 0.5 s on an Unsloth heap. Every other
-case keeps the old behaviour of running all passes: gc.callbacks registered, a non-zero or None result, or
-a pass that was skipped because another thread was collecting (CPython returns 0 without collecting then).
-CPU only: the helper is sliced out of save.py with ast, so nothing heavy is imported."""
+"""save.py's repeated gc.collect() passes stop once a pass that really ran finds nothing."""
 
 from __future__ import annotations
 
@@ -18,8 +12,6 @@ from types import SimpleNamespace
 import pytest
 
 SAVE_PY = Path(__file__).resolve().parents[1] / "unsloth" / "save.py"
-# unsloth_save_model 2, the four merged save / push entry points 3 each, GGUF 1, torchao 3 + 4 + 1,
-# compressed tensors 2, OpenVINO 1.
 CALL_SITES = 26
 
 
@@ -48,8 +40,7 @@ def _helper(gc):
 
 
 class _FakeGC:
-    """`script` items: an int or None is what a pass that runs returns; "skip" is a pass that returns 0
-    without collecting because another thread is mid-collection (stats unchanged)."""
+    """ "skip" = a pass that returns 0 without collecting (another thread is mid-collection)."""
 
     def __init__(
         self,
@@ -90,7 +81,6 @@ def test_stops_after_a_pass_that_ran_and_found_nothing(script, expected):
     order = []
     _helper(gc)(before = lambda: order.append("before"), after = lambda: order.append("after"))
     assert gc.calls == expected
-    # The cache is still cleared around every collect that ran.
     assert order == ["before", "after"] * expected
 
 
@@ -101,8 +91,7 @@ def test_keeps_every_pass_with_gc_callbacks():
 
 
 def test_a_pass_skipped_for_another_threads_collection_does_not_end_it():
-    # Real gc: thread A is inside a collection, blocked in a finalizer, when the helper starts. The
-    # helper's first gc.collect() returns 0 without collecting; stopping there would leave our garbage.
+    # Thread A is mid-collection, so our first pass returns 0 without collecting.
     collect_garbage = _helper(real_gc)
     started, release = threading.Event(), threading.Event()
 
@@ -131,14 +120,12 @@ def test_a_pass_skipped_for_another_threads_collection_does_not_end_it():
         passes = []
 
         def before():
-            # Thread A finishes between our first and second pass.
             if passes:
                 release.set()
                 a.join(30)
             passes.append(1)
 
         collect_garbage(before = before)
-        # Skipped, then found ours, then quiet.
         assert len(passes) == 3
         assert not any(type(o) is Ours for o in real_gc.get_objects())
     finally:
@@ -169,7 +156,6 @@ def test_every_repeated_collect_in_save_py_goes_through_the_helper():
 
 
 def test_unsloth_save_model_releases_state_dict_with_one_collect():
-    # The per-entry release loop allocates nothing; the collect after it finds every cycle.
     fn = _function(_tree(), "unsloth_save_model")
     loop = next(
         n
