@@ -2342,7 +2342,6 @@ def _visible_len(line: str) -> int:
     """Length of *line* without Markdown link destinations. A tracking URL is not
     prose: a card holding one [Read](/x?<300 bytes>) otherwise scored 339 visible
     characters off 4 and displaced the article. Scanned, so no backtracking."""
-    # no link and no escape: every char counts
     if "[" not in line and "\\" not in line:
         return len(line)
     total, i, n = 0, 0, len(line)
