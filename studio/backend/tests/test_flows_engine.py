@@ -622,7 +622,10 @@ async def test_an_unchanged_recipe_group_hands_back_its_last_dataset():
 
     async def generate(ctx):
         jobs.append(ctx.node_id)
-        return {"dataset": {"kind": "dataset", "ref": f"recipes/r{len(jobs)}/parquet-files"}, "preview": []}
+        return {
+            "dataset": {"kind": "dataset", "ref": f"recipes/r{len(jobs)}/parquet-files"},
+            "preview": [],
+        }
 
     eng = _engine({**BASE, GENERATE_TYPE: generate})
     d, _ = flow_from_recipe(sql, name = "Text to SQL")
