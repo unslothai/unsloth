@@ -42,7 +42,10 @@ def dataset_source(value: Any) -> dict:
                 raise DatasetRowsError(
                     "This dataset is no longer available; run the step that made it again"
                 )
-        return {"dataset_name": name, "subset": None, "train_split": "train"}
+        from utils.paths import resolve_dataset_path
+
+        # The account-scoped path, so the managed-account gate never reads a relative ref from the cwd.
+        return {"dataset_name": str(resolve_dataset_path(name)), "subset": None, "train_split": "train"}
     raise DatasetRowsError(f"Unsloth Studio cannot show a {source!r} dataset")
 
 

@@ -44,7 +44,7 @@ def test_each_source_names_what_the_dataset_check_reads():
     recipe = dr.dataset_source(
         {"kind": "dataset", "source": "recipe", "ref": "recipes/run1/parquet-files", "job_id": "j"}
     )
-    assert recipe["dataset_name"] == "recipes/run1/parquet-files"
+    assert recipe["dataset_name"] == str(recipe_datasets_root() / "run1" / "parquet-files")
     for bad in (
         {"kind": "table", "ref": "x"},
         {"kind": "dataset", "source": "hf", "ref": "no-owner"},
@@ -65,6 +65,19 @@ def test_a_recipe_dataset_pages_from_its_parquet(client):
     assert first["total"] == 30 and first["rows"][:2] == ROWS[:2] and len(first["rows"]) == 20
     second = _rows(client, value, offset = 20).json()
     assert second["rows"] == ROWS[20:]
+
+
+def test_a_managed_account_reads_its_recipe_dataset(client, monkeypatch):
+    from core.training import account_jobs
+
+    folder = recipe_datasets_root() / "recipe_run2" / "parquet-files"
+    folder.mkdir(parents = True)
+    pq.write_table(pa.Table.from_pylist(ROWS[:4]), folder / "batch_0.parquet")
+    monkeypatch.setattr(account_jobs, "managed_account", lambda: True)
+    value = {"kind": "dataset", "source": "recipe", "ref": "recipes/recipe_run2/parquet-files"}
+    response = _rows(client, value)
+    assert response.status_code == 200, response.text
+    assert response.json()["rows"] == ROWS[:4]
 
 
 def test_rows_to_dataset_output_reads_from_its_stored_jsonl(client):
