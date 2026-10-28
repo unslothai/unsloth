@@ -35,7 +35,7 @@ class _Member:
     config: dict
     tokenizer: Any = None
     rows: list = field(default_factory = list)
-    # Per row, its documents' lengths when the member's rows are packed; empty when they are not.
+    # Per packed row, its documents' lengths; empty when unpacked.
     seq_lengths: list = field(default_factory = list)
     output_dir: str = ""
     total_steps: int = 0
@@ -469,8 +469,7 @@ class _PerMemberLR:
 
 
 def _packs(model) -> bool:
-    """Whether the single job would pack on this model: Unsloth's SFTTrainer ignores packing on blocklisted models,
-    on forwards that cannot take packed lengths and on hybrids without the varlen kernels (unsloth.trainer)."""
+    """Whether the single job packs here (unsloth.trainer blocklist, packed-kwargs and hybrid varlen gates)."""
     try:
         from unsloth import trainer as unsloth_trainer
         from unsloth.utils.packing import _enable_hf_packed_attention, mark_allow_overlength
@@ -502,8 +501,7 @@ def _packs(model) -> bool:
 
 
 def _packed_forward_isolated(model) -> bool:
-    """Measured, not assumed: a document's logits after another document in one packed row match it alone.
-    Qwen3.5 on transformers 5.3 passes every static check yet lets full attention cross documents."""
+    """Measured: Qwen3.5 on transformers 5.3 passes every static check yet its full attention crossed documents."""
     import torch
 
     embeddings = model.get_input_embeddings()
@@ -584,8 +582,7 @@ def _pack_rows(
 
 
 def _collate_packed(rows: list, slots: list, lengths: list) -> dict:
-    """One padding-free row, as the single job's packed batches: documents end to end with positions restarting at
-    each, every token routed to its own member's adapter, and no label predicted across a document boundary."""
+    """One padding-free row as the single job packs it, each token routed to its member, no label across documents."""
     import torch
 
     seq = [n for row in lengths for n in row]
