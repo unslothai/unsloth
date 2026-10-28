@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Deleting a document scans chunks_fts and chunks_vec once, and removes exactly the rows the
-per-chunk ``chunk_id=?`` deletes removed."""
+"""Document delete scans chunks_fts/chunks_vec once and removes exactly what per-chunk deletes did."""
 
 import random
 import sqlite3
@@ -180,8 +179,7 @@ def _vm_steps(conn, fn):
 
 
 def test_delete_cost_does_not_scale_with_chunks_times_corpus(rag_conn):
-    """Each chunk_id=? delete was a full scan of chunks_fts and chunks_vec, so a 40-chunk document
-    cost ~40x a 1-chunk one. One scan per table keeps the two close."""
+    """Per-chunk deletes full-scanned both indexes, so a 40-chunk doc cost ~40x a 1-chunk one."""
     conn = rag_conn
     rng = random.Random(0)
     for d in range(40):
