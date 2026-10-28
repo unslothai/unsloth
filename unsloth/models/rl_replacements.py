@@ -738,6 +738,81 @@ def dpo_trainer_prepare_dataset(function_name, function):
     return function
 
 
+def _unsloth_dpo_reference_loadable(policy_sd, ref_sd):
+    # Plain materialised tensors only (not DTensor / quantized / meta), equal shapes, equal tying:
+    # an untied policy loaded into a tied reference writes twice into one tensor.
+    if policy_sd.keys() != ref_sd.keys():
+        return False
+    policy_first, ref_first = {}, {}
+    for key, value in policy_sd.items():
+        ref = ref_sd[key]
+        if (
+            type(value) is not torch.Tensor
+            or type(ref) is not torch.Tensor
+            or value.shape != ref.shape
+            or value.is_meta
+            or ref.is_meta
+        ):
+            return False
+        if policy_first.setdefault(value.data_ptr(), key) != ref_first.setdefault(
+            ref.data_ptr(), key
+        ):
+            return False
+    return True
+
+
+def _unsloth_dpo_copy_policy_into_reference(ref_model, policy_sd):
+    # Recast first: load_state_dict would round FP32 norm updates into a BF16 reference; .data keeps ties.
+    tensors = dict(ref_model.named_parameters(remove_duplicate = False))
+    tensors.update(ref_model.named_buffers(remove_duplicate = False))
+    for key, value in policy_sd.items():
+        tensor = tensors.get(key)
+        if tensor is not None and tensor.dtype != value.dtype:
+            tensor.data = tensor.data.to(value.dtype)
+    ref_model.load_state_dict(policy_sd)
+
+
+def dpo_trainer_reference_snapshot(function_name, function):
+    if function_name != "__init__" or "_unsloth_dpo_model_is_instance" in function:
+        return function
+    # TRL reloads the checkpoint, dropping in-memory training: copy the policy's weights into it.
+    # Not deepcopy: instance forward patches (block-compiled experts, packing) close over the policy's modules.
+    function, count = re.subn(
+        r"(?m)^(?P<indent>[ \t]*)ref_model_init_kwargs = [^\n]+\n"
+        r"(?:(?P=indent)[^\n]*\n)*?"
+        r"(?P=indent)self\.ref_model = create_model_from_path\(ref_model_path, \*\*ref_model_init_kwargs\)\n",
+        lambda m: m[0]
+        + textwrap.indent(
+            "from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled\n"
+            "if _unsloth_dpo_model_is_instance and not is_deepspeed_zero3_enabled():\n"
+            # Unbound calls: rl.py strips every literal `.state_dict()` (legacy vLLM weight loads).
+            "    _unsloth_policy_sd = torch.nn.Module.state_dict(self.model)\n"
+            # Checked first: load_state_dict writes matching tensors before raising on the rest.
+            "    if _unsloth_dpo_reference_loadable(_unsloth_policy_sd, torch.nn.Module.state_dict(self.ref_model)):\n"
+            "        _unsloth_dpo_copy_policy_into_reference(self.ref_model, _unsloth_policy_sd)\n"
+            "    else:\n"
+            # Aliased: a bare `import warnings` here would shadow TRL's module-level one in all of __init__.
+            "        import warnings as _unsloth_warnings\n"
+            "        _unsloth_warnings.warn(\n"
+            '            "Unsloth: the in-memory policy\'s parameters do not match its checkpoint (resized, untied or "\n'
+            '            "sharded), so the DPO reference uses the checkpoint weights. Pass ref_model= to choose it."\n'
+            "        )\n"
+            "    del _unsloth_policy_sd\n",
+            m["indent"],
+        ),
+        function,
+        count = 1,
+    )
+    if count:
+        function = _insert_after_docstring(
+            function, ["_unsloth_dpo_model_is_instance = not isinstance(model, str)"]
+        )
+    return function
+
+
+RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_reference_snapshot)
+RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(_unsloth_dpo_reference_loadable))
+RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(_unsloth_dpo_copy_policy_into_reference))
 RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_prepare_dataset)
 RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(dpo_trainer_vision_process_row))
 RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_vision_signature_columns)

@@ -1129,6 +1129,7 @@
       "_LLAMA3_PY_CALL_RE": "'<\\\\|python_tag\\\\|>\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*\\\\.\\\\s*call\\\\s*\\\\(' flags=32",
       "_LLAMA3_WS_RE": "'\\\\s*' flags=32",
       "_MISTRAL_V11_NAME_RE": "'\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*' flags=32",
+      "_OPEN_CALL_WS_RE": "'\\\\s*' flags=32",
       "_OUTER_ENVELOPE_CLOSED_PATS[0]": "'<tool_call>(?:(?!<tool_call>).)*</tool_call>' flags=48",
       "_OUTER_ENVELOPE_CLOSED_PATS[1]": "'<function(?:=[\\\\w.\\\\-]+|\\\\s+name=\"[\\\\w.\\\\-]+\")>(?:(?!<function(?:=[\\\\w.\\\\-]+|\\\\s+name=\"[\\\\w.\\\\-]+\")>).)*</function>' flags=48",
       "_OUTER_ENVELOPE_CLOSED_PATS[2]": "'<\\\\|tool_call>.*?<tool_call\\\\|>' flags=48",
@@ -1200,7 +1201,7 @@
       "re.compile('\\\\[TOOL_CALLS\\\\](?=\\\\s*(?:[\\\\[{]|[A-Za-z_][\\\\w.\\\\-]*(?:[\\\\[{]|\\\\s*$))|\\\\s*$).*$', re.DOTALL)": 1,
       "re.compile('\\\\[TOOL_CALLS\\\\]\\\\s*[\\\\w\\\\.\\\\-]+\\\\s*(?:\\\\[ARGS\\\\])?\\\\s*\\\\{.*?\\\\}', re.DOTALL)": 1,
       "re.compile('\\\\[TOOL_CALLS\\\\]\\\\s*\\\\[.*?\\\\](?:\\\\s*</s>)?', re.DOTALL)": 1,
-      "re.compile('\\\\s*')": 1,
+      "re.compile('\\\\s*')": 2,
       "re.compile('\\\\s*([A-Za-z_][\\\\w.\\\\-]*)\\\\s*:')": 1,
       "re.compile('\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*')": 1,
       "re.compile('\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*\\\\.\\\\s*call\\\\s*\\\\(')": 1,
@@ -1261,6 +1262,18 @@
           "_full_strip": {
             "decorators": [],
             "signature": "self, text: str"
+          },
+          "_gate_clean": {
+            "decorators": [],
+            "signature": "self, text: str"
+          },
+          "_gate_hold": {
+            "decorators": [],
+            "signature": "self, text: str"
+          },
+          "_gate_try_arm": {
+            "decorators": [],
+            "signature": "self, text: str, seg_start: int, out: str, seg_out: str"
           },
           "_is_extension": {
             "decorators": [],
@@ -1516,6 +1529,18 @@
         "kind": "assign"
       },
       "_MISTRAL_V11_NAME_RE": {
+        "kind": "assign"
+      },
+      "_OPEN_CALL_OPENER": {
+        "kind": "assign"
+      },
+      "_OPEN_CALL_TRIGGERS": {
+        "kind": "assign"
+      },
+      "_OPEN_CALL_TRIGGER_MAX_LEN": {
+        "kind": "assign"
+      },
+      "_OPEN_CALL_WS_RE": {
         "kind": "assign"
       },
       "_OUTER_ENVELOPE_CLOSED_PATS": {
