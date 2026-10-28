@@ -26,12 +26,20 @@ from torch.nn.attention.flex_attention import (
     flex_attention,
 )
 
+
 # Many distinct segment lengths: at the default recompile_limit (8) the kernel silently reuses a
 # mismatched specialisation.
-torch._dynamo.config.recompile_limit = max(getattr(torch._dynamo.config, "recompile_limit", 8), 256)
-torch._dynamo.config.accumulated_recompile_limit = max(
-    getattr(torch._dynamo.config, "accumulated_recompile_limit", 256), 2048
-)
+# torch < 2.7 names these cache_size_limit / accumulated_cache_size_limit; setting an unknown
+# dynamo config raises AttributeError, which the lazy importers swallow and turn PrefixGrouper off.
+def _raise_dynamo_limit(names, default, floor):
+    config = torch._dynamo.config
+    name = next((n for n in names if hasattr(config, n)), None)
+    if name is not None:
+        setattr(config, name, max(getattr(config, name, default), floor))
+
+
+_raise_dynamo_limit(("recompile_limit", "cache_size_limit"), 8, 256)
+_raise_dynamo_limit(("accumulated_recompile_limit", "accumulated_cache_size_limit"), 256, 2048)
 
 
 # dynamic=True is required: T changes almost every GRPO batch, and dynamic=False recompiles per T (~14s each).
