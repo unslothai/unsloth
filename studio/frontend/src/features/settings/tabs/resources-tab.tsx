@@ -210,7 +210,6 @@ function MetricTile({
           ) : null}
         </div>
       </div>
-      {/* mt-auto: the meters of side-by-side tiles stay on one line. */}
       {showUsage && (
         <Progress
           value={percentKnown ? safePercent : 0}

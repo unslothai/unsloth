@@ -69,7 +69,6 @@ export function StorageBar({
   segments: StorageSegment[];
   /** Width of the whole bar; defaults to the sum, so the slices fill it. */
   totalBytes?: number;
-  /** "inline" puts each value beside its label, for a bar in a side column. */
   legend?: boolean | "inline";
   barClassName?: string;
 }) {
