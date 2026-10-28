@@ -3,11 +3,9 @@
 
 """Hash tokenizers for datasets cache names without transformers 5's init-only ``_vocab`` / ``_merges``.
 
-They are read only in ``__init__`` to build the Rust ``_tokenizer``, which is hashed too and carries the
-same vocabulary, so dropping them keeps the fingerprint tied to vocab, added tokens and chat template.
-Only datasets' hashing Pickler is patched: multiprocess workers still receive the whole tokenizer.
-The tokenizer itself is never modified, and only classes defined in transformers qualify: a custom
-or remote-code subclass may read ``_vocab`` while encoding, so it keeps the full hash.
+Read only in ``__init__`` to build the hashed Rust ``_tokenizer``; only datasets' hashing Pickler is patched,
+the live tokenizer is never modified, and only transformers' own classes qualify (custom or remote-code
+subclasses may read ``_vocab`` while encoding).
 """
 
 _INIT_ONLY_STATE = ("_vocab", "_merges")
@@ -30,10 +28,7 @@ def _without_init_only(state):
 
 
 class _InitStateFilter:
-    """Pickler proxy whose ``save_reduce`` leaves the init-only keys out of one object's emitted state.
-
-    The live tokenizer keeps ``_vocab`` / ``_merges`` for any thread reading or serializing it meanwhile.
-    """
+    """Pickler proxy dropping the init-only keys from one object's emitted state, so concurrent readers see it whole."""
 
     def __init__(self, pickler, target):
         self._pickler = pickler
