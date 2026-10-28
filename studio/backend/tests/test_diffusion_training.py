@@ -2613,3 +2613,43 @@ def test_llm_start_admission_fails_open_without_a_diffusion_stack(monkeypatch):
     monkeypatch.setitem(sys.modules, "core.training.diffusion_training_service", None)
     with tr._diffusion_gpu_admission():
         pass
+
+
+def test_status_route_preserves_model_download_bytes(client):
+    progress = {
+        "bytes_done": 4,
+        "bytes_total": 10,
+        "label": "model.safetensors",
+        "scope": "active_files",
+    }
+    client._fake.status_extra = {"in_model_load": True, "download_progress": progress}
+    assert client.get("/api/train/diffusion/status").json()["download_progress"] == progress
+
+
+def test_model_download_progress_clears_before_preparation():
+    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    svc._apply_event({"type": "model_load_started"})
+    event = {
+        "type": "model_download_progress",
+        "download_progress": {"bytes_done": 4, "bytes_total": 10},
+    }
+    svc._apply_event(event)
+    assert svc.status()["download_progress"]["bytes_done"] == 4
+    svc._apply_event({"type": "preparing", "stage": "cache_latents", "done": 3, "total": 10})
+    svc._apply_event(event)
+    assert svc.status()["download_progress"] is None
+    assert svc.status()["preparation"]["done"] == 3
+    svc._apply_event({"type": "model_load_started"})
+    svc._apply_event(event)
+    assert svc.status()["preparation"] is None
+    assert svc.status()["download_progress"]["bytes_done"] == 4
+
+
+@pytest.mark.parametrize(
+    "progress", [None, "invalid", {"bytes_done": float("nan"), "bytes_total": 10}]
+)
+def test_model_download_progress_rejects_unknown_byte_counts(progress):
+    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    svc._apply_event({"type": "model_load_started"})
+    svc._apply_event({"type": "model_download_progress", "download_progress": progress})
+    assert svc.status()["download_progress"] is None

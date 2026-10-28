@@ -201,6 +201,7 @@ from .diffusion_memory import (
     estimate_safetensors_dense_mib,
     file_size_mib,
     largest_streamable_companion_mib,
+    mps_plan_tight,
     normalize_memory_mode,
     plan_diffusion_memory,
     plan_fits_total_capacity,
@@ -2796,6 +2797,15 @@ def _measured_target(target: Any) -> bool:
         return False
 
 
+def _references_unpriced(fam: Any) -> bool:
+    """Reference images join the denoiser sequence unpriced by the request guard (FLUX.2 Klein; FLUX.3 charges them)."""
+    return bool(
+        getattr(fam, "reference", False)
+        and not tuple(getattr(fam, "reference_resolutions", ()) or ())
+        and not is_flux3_family(fam)
+    )
+
+
 def _calibrated_activation(
     fam: Any,
     target: Any,
@@ -2808,12 +2818,7 @@ def _calibrated_activation(
         return None
     # Measured without input images: references the guard cannot size (no reference_resolutions) would overflow.
     # FLUX.3 can: every reference is resized to 1 MP and the request guard charges those pixels on top.
-    if (
-        not unpriced_references_ok
-        and getattr(fam, "reference", False)
-        and not tuple(getattr(fam, "reference_resolutions", ()) or ())
-        and not is_flux3_family(fam)
-    ):
+    if not unpriced_references_ok and _references_unpriced(fam):
         return None
     # Measured at 16-bit only; fp32-promoted families (Z-Image pre-Ampere) do not qualify.
     compute = _resolve_diffusion_compute_dtype(fam, getattr(target, "dtype", None))
@@ -10098,6 +10103,13 @@ class DiffusionBackend:
                         logger = logger,
                     )
                     eager_patched = effective_speed != SPEED_OFF
+                    try:
+                        from .diffusion_eager_patches import fp16_rmsnorm_installed
+
+                        # class-level too: unload must restore it with the eager group
+                        eager_patched = eager_patched or fp16_rmsnorm_installed()
+                    except Exception:  # noqa: BLE001
+                        pass
                     autoopt.install_patches(
                         autoopt.STAGE_LOAD,
                         pipe = pipe,
@@ -10333,6 +10345,7 @@ class DiffusionBackend:
                         )
                         # the dense default / max tier seeds hold on the measured target only
                         pipe._unsloth_dense_tier_seeds = _measured_target(target)
+                        pipe._unsloth_unpriced_references = _references_unpriced(fam)
                         # a CFG-capable family may place from a peak recorded without CFG (``cfg:off``)
                         pipe._unsloth_peak_expects_cfg = bool(
                             getattr(fam, "uses_negative_prompt", False)
@@ -12433,7 +12446,7 @@ class DiffusionBackend:
 
             fp8_rule = dict(
                 lora = lora,
-                offload = not plan_keeps_transformer_resident(plan),
+                offload = not plan_keeps_transformer_resident(plan) or mps_plan_tight(plan),
                 widened_mib = transformer_resident,
                 host_available_mib = _available_system_memory_mib(),
             )
@@ -13866,7 +13879,7 @@ class DiffusionBackend:
                         total_steps = progress_steps,
                     )
 
-                # Count GPU-finished steps: under CUDA graphs the host enqueues all steps early.
+                # Count GPU-finished steps: under CUDA graphs or on MPS the host enqueues all steps early.
                 from .video import (
                     _BOUNDARY_MARK_ATTEMPTS,
                     _BOUNDARY_MARK_RETRY_SECONDS,
@@ -14129,7 +14142,7 @@ class DiffusionBackend:
                         def _enter_decode_phase() -> None:
                             """The decoder was entered: a HOST position, possibly far ahead of the GPU. Mark the
                             boundary in the stream and let the poller flip once the GPU reaches it; with no event
-                            to wait on (CPU, MPS) there is no queue to be ahead of, so flip now."""
+                            to wait on (CPU) there is no queue to be ahead of, so flip now."""
                             if peak_probe is not None:
                                 peak_probe.mark_decode()
                             _release_whole_denoiser()
@@ -14990,7 +15003,7 @@ def _offload_controlnet_module(cn_model: Any, device: str, logger: Any) -> bool:
             kwargs["record_stream"] = True
         _apply_group_offloading_packed(apply_group_offloading, cn_model, kwargs, logger)
         if prefetch:
-            if not _pin_top_level_group(cn_model, logger):
+            if not _pin_top_level_group(cn_model, logger, device = onload):
                 _skip_top_level_copy_back(cn_model, logger)
             install_group_prefetch(cn_model, onload, logger)
         return True

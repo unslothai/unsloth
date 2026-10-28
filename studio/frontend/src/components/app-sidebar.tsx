@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { BrushCleaningIcon } from "@/lib/brush-cleaning-icon";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import {
   Sidebar,
@@ -128,7 +129,6 @@ import {
   Logout05Icon,
   MoreHorizontalIcon,
   MoreVerticalIcon,
-  PaintBrush02Icon,
   Search01Icon,
   PinIcon,
   PinOffIcon,
@@ -355,7 +355,7 @@ const SETTINGS_TAB_MENU_ITEMS: Record<
   { icon: typeof ZapIcon; labelKey: TranslationKey }
 > = {
   profile: { icon: UserCircleIcon, labelKey: "settings.tabs.profile" },
-  appearance: { icon: PaintBrush02Icon, labelKey: "settings.tabs.appearance" },
+  appearance: { icon: BrushCleaningIcon, labelKey: "settings.tabs.appearance" },
   resources: { icon: CpuIcon, labelKey: "settings.tabs.resources" },
   chat: { icon: MessageCircleIcon, labelKey: "settings.tabs.chat" },
   connections: { icon: CloudIcon, labelKey: "settings.tabs.connections" },
@@ -389,6 +389,12 @@ const CLOCK_NOTICE_ICON = withNoticeDot(Clock01Icon);
 
 // row kebab with centred dots: Hugeicons draws them half a unit low.
 const MoreVerticalCenteredIcon = MoreVerticalIcon.map(([tag, attrs]) => [
+  tag,
+  { ...attrs, transform: "translate(0 -0.5)" },
+]) as unknown as IconSvgElement;
+
+// The header ellipsis has the same half-unit vertical offset as the row kebab.
+const MoreHorizontalCenteredIcon = MoreHorizontalIcon.map(([tag, attrs]) => [
   tag,
   { ...attrs, transform: "translate(0 -0.5)" },
 ]) as unknown as IconSvgElement;
@@ -1019,7 +1025,8 @@ function MoreMenuItem({
     >
       <HugeiconsIcon icon={icon} strokeWidth={1.75} />
       <span className="min-w-0 flex-1 truncate">{label}</span>
-      {badge && <Badge variant="accent">{badge}</Badge>}
+      {/* -my-0.5: a 20px badge would make the row 36px. */}
+      {badge && <Badge variant="accent" className="-my-0.5">{badge}</Badge>}
       {spinner && <Spinner className="size-3.5 shrink-0 text-muted-foreground" />}
       {newAction && (
         <button
@@ -1094,7 +1101,7 @@ function MediaMoreSubmenu<Id extends string>({
       >
         <HugeiconsIcon icon={icon} strokeWidth={1.75} />
         <span className="min-w-0 flex-1 truncate">{label}</span>
-        {badge && <Badge variant="accent">{badge}</Badge>}
+        {badge && <Badge variant="accent" className="-my-0.5">{badge}</Badge>}
         {spinner && (
           <Spinner className="size-3.5 shrink-0 text-muted-foreground" />
         )}
@@ -4555,7 +4562,8 @@ export function AppSidebar() {
             aria-label={options.ariaLabel}
             className="sidebar-header-action"
           >
-            <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-icon" />
+            {/* Share the circle's viewport; the expanded viewBox preserves the original icon size. */}
+            <HugeiconsIcon icon={MoreHorizontalCenteredIcon} strokeWidth={1.75} viewBox="-4 -4 32 32" className="size-full" />
           </button>
         )}
       >

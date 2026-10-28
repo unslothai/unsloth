@@ -138,6 +138,11 @@ export const it = {
     more: "Altro",
     addressPlaceholder: "Cerca o inserisci un URL",
     local: "Locale",
+    browserUse: {
+      label: "Uso del browser",
+      description: "Consenti ai modelli di controllare il browser integrato",
+      unavailable: "Carica un modello in grado di chiamare strumenti per fargli usare il browser.",
+    },
     suggested: "Suggeriti",
     suggestedMenu: {
       open: "Apri",
@@ -1316,13 +1321,13 @@ export const it = {
       unsupportedArch: "La sandbox di Windows (MXC) funziona solo su Windows x64, quindi non è disponibile su questo PC.",
       builtinNeedsUpdate: "Il container integrato di Windows richiede la build {required} o successiva, e questo PC esegue {current}. Installa l'ultimo aggiornamento di Windows per usarlo senza un passaggio da amministratore, oppure attiva la sandbox di riserva qui sotto.",
       unsupportedBuild: "La sandbox di Windows (MXC) richiede Windows 11 24H2 (build 26100) o successivo, quindi non è disponibile su questo PC.",
-      permissionsIntro: "Scegli quando gli strumenti chiedono prima e se Python e Terminale vengono eseguiti anche nella sandbox del sistema.",
       permissionLabel: "Autorizzazioni strumenti",
+      levelRowLabel: "Livello sandbox",
       levelPickerTitle: "Come isolare il codice?",
       levelOff: "Disattivato",
       levelOffShort: "Accesso completo disattiva la sandbox",
-      levelHighDetail: "Sandbox del sistema. Python e Terminale vengono eseguiti nella sandbox del sistema (bubblewrap, Seatbelt o MXC) oltre alle protezioni software. Senza una sandbox del sistema funzionante, le chiamate rischiose chiedono prima.",
-      levelLowDetail: "Sandbox software. Python e Terminale vengono eseguiti solo con le protezioni software, fuori dalla sandbox del sistema. Le chiamate rischiose chiedono prima, tranne con Accesso completo.",
+      levelHighDetail: "Python e Terminale vengono eseguiti nella sandbox del sistema (bubblewrap, Seatbelt o MXC) oltre alle protezioni software. Senza una sandbox del sistema funzionante, le chiamate rischiose chiedono prima.",
+      levelLowDetail: "Python e Terminale vengono eseguiti solo con le protezioni software, fuori dalla sandbox del sistema. Le chiamate rischiose chiedono prima, tranne con Accesso completo.",
       levelLabel: "Sandbox",
       levelHigh: "Alto",
       levelLow: "Basso",
@@ -1772,13 +1777,13 @@ export const it = {
         },
         details: {
           ask:
-            "Chiede conferma prima di ogni chiamata agli strumenti, compresi codice da terminale e Python, ricerche web, modifiche ai file e strumenti MCP. Gli strumenti eseguiti da un provider esterno non vengono messi in pausa. Ideale se vuoi controllare ogni passaggio.",
+            "Chiede conferma prima di ogni chiamata agli strumenti, compresi codice da terminale e Python, ricerche web, modifiche ai file e strumenti MCP. Gli strumenti eseguiti da un provider esterno non vengono messi in pausa.",
           auto:
             "Esegue da solo le chiamate abituali e chiede conferma solo quando un'azione sembra rischiosa, come leggere credenziali, aumentare i privilegi o eseguire comandi distruttivi.",
           off:
-            "Esegue ogni chiamata agli strumenti senza chiedere. Il codice Python e da terminale viene comunque eseguito nella sandbox, che limita i file del tuo computer a cui può accedere. Se questo computer non ha una sandbox del sistema funzionante, le chiamate rischiose di Python e terminale chiedono prima.",
+            "Esegue ogni chiamata agli strumenti senza chiedere. Il codice Python e da terminale viene comunque eseguito nella sandbox, che limita i file del tuo computer a cui può accedere. Senza una sandbox del sistema funzionante, le chiamate rischiose chiedono prima.",
           full:
-            "Esegue ogni chiamata agli strumenti senza chiedere e disattiva la sandbox del codice, così il codice Python e da terminale può leggere e modificare qualsiasi file accessibile al tuo account. Ideale per attività affidabili che devono lavorare fuori dalla sandbox.",
+            "Esegue ogni chiamata agli strumenti senza chiedere e disattiva la sandbox del codice, così il codice Python e da terminale può leggere e modificare qualsiasi file accessibile al tuo account.",
         },
       },
       notifications: {
@@ -2244,6 +2249,7 @@ export const it = {
       liveMonitor: {
         title: "Monitor in tempo reale",
         apiTitle: "Monitor API",
+        apiDescription: "Guarda cosa inviano le altre app all'API di questo server non appena arriva.",
         summary: "Richieste attive, errori e utilizzo dei token",
         status: "{active} attive · {recent} recenti · {model}",
         noModelLoaded: "nessun modello caricato",
@@ -2484,6 +2490,8 @@ export const it = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "Tempo di attività",
         processMemory: "Memoria del processo",
         notInstalled: "Non installato",
@@ -3245,6 +3253,7 @@ export const it = {
       packageVersion: "Versione del pacchetto",
       llamaCppVersion: "Versione di llama.cpp",
       audioCppVersion: "Versione di audio.cpp",
+      mlxVersion: "Versione di MLX",
       whisperCppVersion: "Versione di whisper.cpp",
       engines: {
         title: "Motori",
@@ -4623,6 +4632,7 @@ export const it = {
       modelsTitle: "Ancora nessun modello con fine-tuning",
       modelsDescription: "I modelli che addestri o esporti in Unsloth compaiono qui.",
       createFolder: "Crea cartella",
+      generateImage: "Genera un'immagine",
       generateVideo: "Genera un video",
       generateAudio: "Genera audio",
       trainModel: "Addestra un modello",

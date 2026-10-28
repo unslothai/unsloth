@@ -475,6 +475,14 @@
       "reason": "Loads unsloth/dataprep/ebooks.py from a fixed path derived from this package's __file__ on MLX to avoid importing torch through dataprep; never an ebook-provided or downloaded code path."
     },
     {
+      "file": "unsloth/_cpu_init.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "4aa05e0119cd9062",
+      "count": 1,
+      "reason": "Loads unsloth/dataprep/raw_text.py and ebooks.py on the CPU backend from a fixed path derived from this package's __file__, with only those two constant names passed and the helper deleted after import, to skip dataprep/__init__ (which needs a GPU device type); never a dataset-provided or downloaded code path."
+    },
+    {
       "file": "unsloth/_gpu_init.py",
       "rule": "dynamic-import",
       "sink": "spec_from_file_location",
@@ -697,6 +705,14 @@
       "digest": "9a08f32d1af83ea3",
       "count": 1,
       "reason": "Reached only after the trust_remote_code gate in _resolve_module_class raises for an untrusted non sentence_transformers class."
+    },
+    {
+      "file": "unsloth/models/tp_replica.py",
+      "rule": "unsafe-deserialize",
+      "sink": "pickle.loads",
+      "digest": "bf2d3c412d57fd50",
+      "count": 1,
+      "reason": "Reads the result rank 0 published to this job's own torch.distributed c10d store (the same trust boundary as broadcast_object_list); no file or network payload from outside the process group."
     },
     {
       "file": "unsloth/save.py",

@@ -9910,6 +9910,10 @@ def _loaded_satisfies(requested: str) -> bool:
         base, [active, public_model_id(active), getattr(backend, "_openai_advertised_id", None)]
     )
     if not matches:
+        # a fine-tuning job's "<run>/checkpoint-N" name for the folder loaded by path
+        trained = _trained_run_dir(requested)
+        matches = trained is not None and _norm_path(trained) == _norm_path(active)
+    if not matches:
         return False
     # Only llama.cpp carries a quant identity, so this backend can only match on the repo.
     if looks_like_quant(variant):
@@ -10001,6 +10005,39 @@ def _matches_any(requested: str, candidates) -> bool:
         if lowered == str(candidate).strip().lower():
             return True
     return False
+
+
+_TRAINED_CHECKPOINT = re.compile(r"checkpoint-\d+")
+
+
+def _trained_run_dir(model: Optional[str]) -> Optional[str]:
+    """The outputs folder a fine-tuning job names as ``<run>`` or ``<run>/checkpoint-<step>``."""
+    from utils.paths import outputs_root
+
+    if not isinstance(model, str) or "\\" in model:
+        return None
+    parts = model.split("/")
+    if len(parts) > 2 or (len(parts) == 2 and not _TRAINED_CHECKPOINT.fullmatch(parts[1])):
+        return None
+    if any(part in ("", ".", "..") or part != os.path.basename(part) for part in parts):
+        return None
+    try:
+        run_dir = outputs_root().joinpath(*parts)
+        return str(run_dir) if run_dir.is_dir() else None
+    except (OSError, ValueError):
+        return None
+
+
+def _resolve_trained_run_request(request) -> bool:
+    """Rewrites a run or checkpoint name on a load / unload request to its folder."""
+    trained = _trained_run_dir(request.model_path)
+    if not trained:
+        return False
+    from hub.utils.host_paths import note_resolved_handle
+
+    note_resolved_handle(request.model_path, trained)
+    request.model_path = trained
+    return True
 
 
 def _looks_like_local_path(value: str) -> bool:
@@ -10223,7 +10260,7 @@ async def _reject_unservable_model(
             ),
         )
 
-    still_indexing = torn = False
+    still_indexing = torn = trained = False
     try:
         if await asyncio.to_thread(_loaded_satisfies, requested_model):
             return
@@ -10308,7 +10345,10 @@ async def _reject_unservable_model(
             and base.strip().count("/") == 1
             and await asyncio.to_thread(local_gguf_torn_only, base)
         )
-        here = here or torn
+        trained = (
+            not here and await asyncio.to_thread(_trained_run_dir, requested_model) is not None
+        )
+        here = here or torn or trained
         switchable = downloaded and get_openai_auto_switch_enabled()
     except HTTPException:
         # A refusal decided above must propagate, not fall through to the resident model.
@@ -10318,7 +10358,7 @@ async def _reject_unservable_model(
         logger.debug("unservable-model check failed for %r: %s", requested_model, exc)
         if not quantified:
             return
-        downloaded = here = switchable = torn = False
+        downloaded = here = switchable = torn = trained = False
     if still_indexing:
         _raise_still_indexing(requested_model, fastapi_request)
     if gguf_hub_repo and not (quantified or here):
@@ -10351,6 +10391,12 @@ async def _reject_unservable_model(
             f"The model '{requested_model}' is only partly downloaded on this server, so it "
             "cannot be served. Finish the download in Unsloth Studio."
         )
+    elif trained:
+        status_code, code = 404, "model_not_found"
+        message = (
+            f"The fine-tuned model '{requested_model}' is not loaded. Load it in Unsloth "
+            "Studio, or with POST /api/inference/load, then retry."
+        )
     elif downloaded:
         status_code, code = 404, "model_not_found"
         message = (
@@ -10382,6 +10428,11 @@ async def _require_named_model_access(
     named_model: str, fastapi_request: Optional[Request] = None
 ) -> None:
     """Authorize a named model via the account catalog, or an uncached Hub ref via caller token."""
+    trained = await asyncio.to_thread(_trained_run_dir, named_model)
+    if trained is not None:
+        # a run name is no Hub id: the Hub allowlist would refuse it, so authorize the folder
+        await asyncio.to_thread(account_access.require_model_access, trained)
+        return
     try:
         await asyncio.to_thread(account_access.require_model_access, named_model)
         return
@@ -10885,8 +10936,13 @@ async def _maybe_auto_switch_model(
                     include_companion_scope = True,
                 )
         if resolved is None:
+            # A "<run>/checkpoint-N" name looks like a Hub id; the reject below refuses it instead.
+            trained = (
+                not reload_only
+                and await asyncio.to_thread(_trained_run_dir, requested_model) is not None
+            )
             # Not on disk. Opt-in: fetch in the background and ask the caller to retry.
-            if auto_switch_on and not reload_only:
+            if auto_switch_on and not reload_only and not trained:
                 await _maybe_auto_download_model(
                     requested_model,
                     fastapi_request,
@@ -14447,13 +14503,16 @@ def _mlx_estimate_fitted_context(config, model_dir: str, load_in_4bit: bool, kv_
 
 
 def _mlx_estimate_offload(
-    request, config, model_dir: str, load_in_4bit: bool, kv_bits: Optional[int]
-) -> tuple[dict, tuple]:
-    """``({"offload": (ple, experts)} or {}, offloadable parts)`` for an MLX load of *request*,
-    "auto" decided as the load does, on its route; neither if the load quantizes, which unsloth_zoo
+    request, config, model_identifier, model_dir: str, load_in_4bit: bool, kv_bits: Optional[int]
+) -> tuple[dict, tuple, Optional[dict]]:
+    """``({"offload": (ple, experts)} or {}, offloadable parts, baseline route)`` for an MLX load of
+    *request*, "auto" decided as the load does, on its route, with the target-only route an auto
+    drafter's costless check measures against; none of them if the load quantizes, which unsloth_zoo
     refuses."""
+    from core.inference import mlx_speculative
     from core.inference.mlx_inference import (
-        mlx_resolve_offload,
+        mlx_offload_route,
+        mlx_resolve_drafter_offload,
         mlx_vlm_snapshot_store_available,
         normalize_mlx_offload,
     )
@@ -14463,19 +14522,28 @@ def _mlx_estimate_offload(
     if load_in_4bit and not (
         checkpoint.get("quantization") or checkpoint.get("quantization_config")
     ):
-        return {}, ()
+        return {}, (), None
     vision = True if _mlx_estimate_speculates(request, model_dir) else None
     try:
         parts = mlx_offloadable_parts(model_dir, vision)
     except Exception as exc:
         logger.info("MLX offload eligibility unknown for %s: %s", model_dir, exc)
         parts = ()
-    offload = mlx_resolve_offload(
+    drafter = vision and mlx_speculative.offload_drafter(
+        request.speculative_type,
+        request.spec_draft_model,
+        model_dir = model_dir,
+        target_name = model_identifier,
+        allowed = _discoverable_drafters(model_identifier),
+    )
+    offload, alone = mlx_resolve_drafter_offload(
         model_dir,
         (
             normalize_mlx_offload(request.mlx_ple_offload),
             normalize_mlx_offload(request.mlx_expert_offload),
         ),
+        drafter or None,
+        auto = mlx_speculative.mlx_spec_mode(request.speculative_type) == "auto",
         pinned = request.max_seq_length or None,
         load_in_4bit = load_in_4bit,
         # As the load: any mlx-vlm route, a speculative text load included, keeps no history without the store.
@@ -14488,7 +14556,8 @@ def _mlx_estimate_offload(
     )
     *offload, step = offload
     route = {"offload": tuple(offload)} if any(offload) else {}
-    return ({**route, "prefill_chunk": step} if step else route), parts
+    route = {**route, "prefill_chunk": step} if step else route
+    return route, parts, alone and mlx_offload_route(alone)
 
 
 def _mlx_offload_warning(info: dict) -> Optional[str]:
@@ -14531,6 +14600,7 @@ def _mlx_estimate_drafter(
     ceiling,
     load_in_4bit: bool,
     offload_route: Optional[dict] = None,
+    baseline: Optional[dict] = None,
 ):
     """``((path, builtin), fitted context, speculates)`` of an MLX load of *request*: the drafter it
     would attach, chosen as the load chooses it, and whether it speculates at all (so loads through mlx-vlm)."""
@@ -14555,6 +14625,7 @@ def _mlx_estimate_drafter(
             source,
             load_in_4bit = load_in_4bit,
             costless = mode == "auto",
+            baseline = baseline,
             **(offload_route or {}),
         )
         if attaches:
@@ -17022,6 +17093,10 @@ async def load_model(
 
     GGUF models load via llama-server (llama.cpp) instead of Unsloth.
     """
+    named = request.model_path
+    if _resolve_trained_run_request(request):
+        # keeps the job's name as the served id, so chat and /v1/models answer to it
+        request._advertised_id = request._advertised_id or named
     return await _tunnel_safe_json(
         load_model_gated(request, fastapi_request, current_subject, user_initiated = True),
         label = "Model load",
@@ -17787,12 +17862,9 @@ async def _managed_engine_request(request):
 
 
 def _managed_engine_unsupported_controls(payload, model_info = None) -> bool:
-    """A spelled-out ``{"type": "text"}`` response_format is the default, not structured output."""
     reasoning = (model_info or {}).get("reasoning_flags") is not None
     return bool(
         payload.use_adapter is not None
-        or _response_format_constrains_decoding(payload)
-        or payload.continue_final_message
         or (
             not reasoning
             and (
@@ -19107,11 +19179,11 @@ async def _load_model_impl(
         _close_load_event(
             _load_event, model_log_label if native_grant_backed else config.identifier, None
         )
-        # Clear the idle-unload stash so the next /v1 request doesn't resurrect an old GGUF.
+        # Consume the reload stash: an MLX swap's chat context is restored, anything else dropped.
         from core.inference.llama_keepwarm import note_model_loaded
 
         if replacing:
-            note_model_loaded()
+            await asyncio.to_thread(note_model_loaded, backend)
             account_access.publish_resident(
                 "chat",
                 request.model_path,
@@ -20483,8 +20555,8 @@ async def estimate_memory(
             if mlx_kv_bits is not None and mlx_kv_quant_is_refused(model_dir, mlx_kv_bits):
                 mlx_kv_bits = None
             mlx_named_ctx = request.max_seq_length or 0
-            mlx_offload, mlx_offloadable = _mlx_estimate_offload(
-                request, config, model_dir, mlx_load_in_4bit, mlx_kv_bits
+            mlx_offload, mlx_offloadable, mlx_offload_baseline = _mlx_estimate_offload(
+                request, config, model_identifier, model_dir, mlx_load_in_4bit, mlx_kv_bits
             )
             mlx_drafter, mlx_fitted_ctx, mlx_speculates = _mlx_estimate_drafter(
                 request,
@@ -20493,6 +20565,7 @@ async def estimate_memory(
                 _mlx_estimate_ceiling(model_dir),
                 mlx_load_in_4bit,
                 mlx_offload,
+                mlx_offload_baseline,
             )
             mlx_route = {**({"vision": True} if mlx_speculates else {}), **mlx_offload}
             if not mlx_named_ctx and mlx_drafter is None:
@@ -20676,6 +20749,8 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
     ``_unload_model_impl`` (as preview awaits ``load_model_gated``), since the padded
     path returns a StreamingResponse, not the payload.
     """
+    # /load records a run name as its folder, so unload and cancel by the same spelling
+    _resolve_trained_run_request(request)
     return await _tunnel_safe_json(
         _unload_model_impl(request, current_subject), label = "Model unload"
     )
@@ -30313,7 +30388,8 @@ async def produce_openai_chat_completions(
             _explicit_studio_tool_loop_requested(payload)
             or not _tools_outrank_response_format(payload, payload.tools)
         ):
-            if not model_info.get("is_mlx"):
+            _engine_grammar = model_info.get("engine") in ("vllm", "sglang")
+            if not (model_info.get("is_mlx") or _engine_grammar):
                 _raise_unsupported_openai_parameter(
                     "response_format",
                     "response_format needs a grammar engine, and the transformers backend "
@@ -30333,9 +30409,10 @@ async def produce_openai_chat_completions(
                     "decoding starts a new document rather than continuing the text before "
                     "it. Send the turn without continue_final_message.",
                 )
-            await asyncio.get_running_loop().run_in_executor(
-                _SCHEMA_VALIDATION_EXECUTOR, _reject_unhonorable_response_format, payload
-            )
+            if not _engine_grammar:
+                await asyncio.get_running_loop().run_in_executor(
+                    _SCHEMA_VALIDATION_EXECUTOR, _reject_unhonorable_response_format, payload
+                )
 
         # ── Audio TTS path: auto-route to audio generation ────
         # Whisper is ASR, not TTS, so it skips this branch and is handled in the audio input path below.
@@ -32777,17 +32854,20 @@ async def produce_openai_chat_completions(
 
     # Classify capability flags from the loaded template.
     _sf_model_info = backend.models.get(backend.active_model_name, {})
-    # Only MLX and managed vLLM count their own prompt exactly, so only they are fitted first.
     _sf_fit_overflow = (
         _rolling_context_policy(payload)
-        if _sf_model_info.get("is_mlx") or _sf_model_info.get("engine") == "vllm"
+        if _sf_model_info.get("is_mlx") or _sf_model_info.get("engine") in ("vllm", "sglang")
         else None
     )
     if _sf_model_info.get("engine") in ("vllm", "sglang"):
         if _managed_engine_unsupported_controls(payload, _sf_model_info):
             raise _reject(
                 400,
-                "This engine integration does not support adapters, structured output, continuation or reasoning controls.",
+                "This engine integration does not support adapters or reasoning controls.",
+            )
+        if _continue_final_message(payload, thought = True) and not _continue_final_message(payload):
+            raise _reject(
+                400, "This engine cannot resume a response that stopped mid-thought. Use Retry."
             )
         from routes.managed_engine_chat import managed_tool_chat
 
@@ -32833,6 +32913,8 @@ async def produce_openai_chat_completions(
     # tool_choice asked directly: _tool_loop_unusable weighs it against GGUF's tools.
     _sf_recall_loop_usable = (
         payload.tool_choice != "none"
+        # Managed engines refuse tools on this path; their tool turns go through managed_tool_chat.
+        and _sf_model_info.get("engine") not in ("vllm", "sglang")
         and not _tool_loop_unusable
         and not _has_client_tool_contract
         and not _response_format_constrains_decoding(payload)
@@ -34706,13 +34788,12 @@ async def reveal_sandbox_dir(
     backend runs on the user's own machine, which is the desktop app.
     """
     await _authenticate_header_or_query(request, token)
+    # Like open: it drives the host's desktop, so only its owner may.
+    account_access.require_installation_owner()
 
     from starlette.concurrency import run_in_threadpool
 
     if file:
-        # Like open: it drives the host's desktop, so only its owner may.
-        account_access.require_installation_owner()
-
         from pathlib import Path
 
         from utils.paths.path_utils import reveal_in_file_manager

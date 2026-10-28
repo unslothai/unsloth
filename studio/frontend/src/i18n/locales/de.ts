@@ -139,6 +139,11 @@ export const de = {
     more: "Mehr",
     addressPlaceholder: "Suchen oder URL eingeben",
     local: "Lokal",
+    browserUse: {
+      label: "Browsernutzung",
+      description: "Modelle den integrierten Browser steuern lassen",
+      unavailable: "Lade ein Modell, das Tools aufrufen kann, damit es den Browser nutzen kann.",
+    },
     suggested: "Vorschläge",
     suggestedMenu: {
       open: "Öffnen",
@@ -1415,13 +1420,13 @@ export const de = {
       unsupportedArch: "Die Windows-Sandbox (MXC) läuft nur unter x64-Windows und ist auf diesem PC daher nicht verfügbar.",
       builtinNeedsUpdate: "Der integrierte Windows-Container benötigt Build {required} oder neuer, auf diesem PC läuft {current}. Installiere das neueste Windows-Update, um ihn ohne Administratorschritt zu nutzen, oder aktiviere unten die Ausweich-Sandbox.",
       unsupportedBuild: "Die Windows-Sandbox (MXC) braucht Windows 11 24H2 (Build 26100) oder neuer und ist auf diesem PC daher nicht verfügbar.",
-      permissionsIntro: "Lege fest, wann Tools zuerst fragen und ob Python und Terminal zusätzlich in der OS-Sandbox laufen.",
       permissionLabel: "Tool-Berechtigungen",
+      levelRowLabel: "Sandbox-Stufe",
       levelPickerTitle: "Wie soll Code abgeschottet werden?",
       levelOff: "Deaktiviert",
       levelOffShort: "Vollzugriff schaltet die Sandbox aus",
-      levelHighDetail: "OS-Sandboxing. Python und Terminal laufen zusätzlich zu den Software-Schutzmaßnahmen in der OS-Sandbox (bubblewrap, Seatbelt oder MXC). Ohne funktionierende OS-Sandbox fragen riskante Aufrufe zuerst.",
-      levelLowDetail: "Software-Sandboxing. Python und Terminal laufen nur mit den Software-Schutzmaßnahmen, außerhalb der OS-Sandbox. Riskante Aufrufe fragen zuerst, außer bei Vollzugriff.",
+      levelHighDetail: "Python und Terminal laufen zusätzlich zu den Software-Schutzmaßnahmen in der OS-Sandbox (bubblewrap, Seatbelt oder MXC). Ohne funktionierende OS-Sandbox fragen riskante Aufrufe zuerst.",
+      levelLowDetail: "Python und Terminal laufen nur mit den Software-Schutzmaßnahmen, außerhalb der OS-Sandbox. Riskante Aufrufe fragen zuerst, außer bei Vollzugriff.",
       levelLabel: "Sandbox",
       levelHigh: "Hoch",
       levelLow: "Niedrig",
@@ -2077,13 +2082,13 @@ export const de = {
         },
         details: {
           ask:
-            "Fragt vor jedem Tool-Aufruf nach, auch bei Terminal- und Python-Code, Websuchen, Dateiänderungen und MCP-Tools. Tools, die ein externer Anbieter ausführt, werden nicht angehalten. Ideal, wenn du jeden Schritt prüfen möchtest.",
+            "Fragt vor jedem Tool-Aufruf nach, auch bei Terminal- und Python-Code, Websuchen, Dateiänderungen und MCP-Tools. Tools, die ein externer Anbieter ausführt, werden nicht angehalten.",
           auto:
             "Führt gewöhnliche Tool-Aufrufe selbst aus und fragt nur nach, wenn eine Aktion riskant wirkt, etwa beim Lesen von Zugangsdaten, beim Erhöhen von Rechten oder bei zerstörerischen Befehlen.",
           off:
-            "Führt jeden Tool-Aufruf ohne Nachfrage aus. Python- und Terminal-Code läuft weiterhin in der Sandbox, die begrenzt, auf welche Dateien deines Computers er zugreifen kann. Hat dieser Computer keine funktionierende OS-Sandbox, fragen riskante Python- und Terminal-Aufrufe zuerst nach.",
+            "Führt jeden Tool-Aufruf ohne Nachfrage aus. Python- und Terminal-Code läuft weiterhin in der Sandbox, die begrenzt, auf welche Dateien deines Computers er zugreifen kann. Ohne funktionierende OS-Sandbox fragen riskante Aufrufe zuerst.",
           full:
-            "Führt jeden Tool-Aufruf ohne Nachfrage aus und schaltet die Code-Sandbox ab, sodass Python- und Terminal-Code jede Datei lesen und ändern kann, auf die dein Konto zugreifen kann. Ideal für vertrauenswürdige Aufgaben, die außerhalb der Sandbox arbeiten müssen.",
+            "Führt jeden Tool-Aufruf ohne Nachfrage aus und schaltet die Code-Sandbox ab, sodass Python- und Terminal-Code jede Datei lesen und ändern kann, auf die dein Konto zugreifen kann.",
         },
       },
     },
@@ -2340,6 +2345,7 @@ export const de = {
       liveMonitor: {
         title: "Live-Monitor",
         apiTitle: "API-Monitor",
+        apiDescription: "Sieh, was andere Apps an die API dieses Servers senden, sobald es ankommt.",
         summary: "Aktive Anfragen, Fehler und Token-Nutzung",
         status: "Aktiv: {active} · kürzlich: {recent} · {model}",
         noModelLoaded: "kein Modell geladen",
@@ -2581,6 +2587,8 @@ export const de = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "Betriebszeit",
         processMemory: "Prozessspeicher",
         notInstalled: "Nicht installiert",
@@ -3343,6 +3351,7 @@ export const de = {
       desktopAppVersionUnavailable: "Nicht verfügbar",
       llamaCppVersion: "llama.cpp-Version",
       audioCppVersion: "audio.cpp-Version",
+      mlxVersion: "MLX-Version",
       whisperCppVersion: "whisper.cpp-Version",
       engines: {
         title: "Engines",
@@ -4623,6 +4632,7 @@ export const de = {
       modelsTitle: "Noch keine feinabgestimmten Modelle",
       modelsDescription: "Modelle, die Sie in Unsloth trainieren oder exportieren, erscheinen hier.",
       createFolder: "Ordner erstellen",
+      generateImage: "Bild generieren",
       generateVideo: "Video generieren",
       generateAudio: "Audio generieren",
       trainModel: "Modell trainieren",

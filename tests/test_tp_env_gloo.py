@@ -323,7 +323,9 @@ def _case_env(
                 train_dataset = data,
             )
         )
-        res["generate"] = _raised(lambda: model.generate(input_ids = ids[:1, :3]))
+        res["generate"] = _raised(
+            lambda: model.generate(input_ids = ids[:1, :3], max_new_tokens = 2, pad_token_id = 0)
+        )
     if dist.is_initialized():
         dist.barrier()
     return res
@@ -355,6 +357,39 @@ def _case_dp_average(rank, world, tmp):
     }
 
 
+def _case_dp_average_dtypes(rank, world, tmp):
+    """fp16 grads whose sum overflows but mean does not; bf16 / fp32 match own-dtype all-reduce."""
+    error = _import_checkout_unsloth()
+    if error is not None:
+        return {"skip": error}
+    import torch.distributed as dist
+    from torch.distributed.device_mesh import init_device_mesh
+
+    from unsloth.models import tp_native
+
+    dist.init_process_group("gloo")
+    mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("dp",))
+    torch.manual_seed(rank)
+    out, params = {}, {}
+    for dtype in (torch.float16, torch.bfloat16, torch.float32):
+        big = torch.nn.Parameter(torch.zeros(4, dtype = dtype))
+        big.grad = torch.tensor([40000.0, 40000.0 if rank else 30000.0, 1e-3, -6e4], dtype = dtype)
+        noise = torch.nn.Parameter(torch.zeros(64, dtype = dtype))
+        noise.grad = (torch.randn(64) * 10.0 ** torch.randint(-6, 4, (64,))).to(dtype)
+        params[dtype] = (big, noise)
+        reference = []
+        for p in (big, noise):
+            g = p.grad.clone()
+            dist.all_reduce(g)
+            reference.append(g.div_(world))
+        out[str(dtype)] = {"reference": reference}
+    tp_native._dp_average([p for pair in params.values() for p in pair], mesh["dp"])
+    for dtype, pair in params.items():
+        out[str(dtype)]["got"] = [p.grad.clone() for p in pair]
+        out[str(dtype)]["dtype"] = [p.grad.dtype for p in pair]
+    return out
+
+
 def _case_accelerate_fsdp(rank, world, tmp, ckpt):
     """UNSLOTH_FSDP2=1 that resolves to accelerate's FSDP: the dp dimension would be left unsynced."""
     error = _import_checkout_unsloth()
@@ -384,11 +419,102 @@ def _case_accelerate_fsdp(rank, world, tmp, ckpt):
     }
 
 
+def _case_model_init(
+    rank,
+    world,
+    tmp,
+    ckpt,
+    hooked,
+    with_model = False,
+    import_only = False,
+):
+    """Trainer(model_init = ...) under UNSLOTH_TP_SIZE: model_init runs after the tp setup saw model = None."""
+    error = _import_checkout_unsloth()
+    if error is not None:
+        return {"skip": error}
+    import transformers
+    from peft import LoraConfig, get_peft_model
+    from transformers import AutoModelForCausalLM
+
+    from unsloth.models import tp_env, tp_native
+    from unsloth.models._utils import patch_gradient_accumulation_fix
+
+    if not import_only:
+        patch_gradient_accumulation_fix(transformers.Trainer)
+
+    def load(name, load_in_4bit = True):
+        model = AutoModelForCausalLM.from_pretrained(name, torch_dtype = torch.float32)
+        if (
+            hooked and import_only
+        ):  # FastLanguageModel.from_pretrained installs the wrapper after loading
+            patch_gradient_accumulation_fix(transformers.Trainer)
+        return model
+
+    def peft(model):
+        return get_peft_model(model, LoraConfig(r = 4, target_modules = "all-linear"))
+
+    if hooked:  # FastLanguageModel.from_pretrained / get_peft_model inside model_init
+        load = tp_env.tensor_parallel_env_load(load)
+        peft = tp_env.tensor_parallel_env_peft(peft)
+    built = []
+
+    def model_init():
+        model = peft(load(ckpt, load_in_4bit = False))
+        built.append(tp_native.is_tensor_parallel(model))
+        return model
+
+    data = _Rows([torch.arange(9)] * 8)
+    trainer = []
+    if import_only:
+
+        def run():
+            trainer.append(
+                transformers.Trainer(
+                    model_init = model_init, args = _trainer_args(tmp, 2), train_dataset = data
+                )
+            )
+            trainer[0].train()
+
+        refused = _raised(run)
+    elif (
+        with_model
+    ):  # transformers 4.x accepts both (FutureWarning) and train() rebuilds from model_init
+        model = peft(load(ckpt, load_in_4bit = False))
+
+        def run():
+            trainer.append(
+                transformers.Trainer(
+                    model = model,
+                    model_init = model_init,
+                    args = _trainer_args(tmp, 2),
+                    train_dataset = data,
+                )
+            )
+            trainer[0].train()
+
+        refused = _raised(run)
+    else:
+        refused = _raised(
+            lambda: trainer.append(
+                transformers.Trainer(
+                    model_init = model_init, args = _trainer_args(tmp, 2), train_dataset = data
+                )
+            )
+        )
+    return {
+        "refused": refused,
+        "built": built,
+        "is_tp": bool(trainer) and tp_native.is_tensor_parallel(trainer[0].model),
+    }
+
+
 CASES = {
     "units": _case_units,
     "env": _case_env,
     "dp_average": _case_dp_average,
+    "dp_average_dtypes": _case_dp_average_dtypes,
     "accelerate_fsdp": _case_accelerate_fsdp,
+    "model_init": _case_model_init,
 }
 
 
@@ -424,7 +550,7 @@ def _spawn(
     ctx = multiprocessing.get_context("spawn")
     port = _free_port()
     with tempfile.TemporaryDirectory() as tmp:
-        if case in ("env", "accelerate_fsdp"):
+        if case in ("env", "accelerate_fsdp", "model_init"):
             kwargs["ckpt"] = _checkpoint(tmp)
         procs = [
             ctx.Process(target = _worker, args = (r, world, port, case, tmp, env or {}, kwargs))
@@ -516,9 +642,7 @@ def test_env_tp2_trainer_matches_one_process(four_bit):
         assert "evaluation during training" in res["eval"] and hint in res["eval"], res["eval"]
         assert "Trainer.evaluate is not supported" in res["evaluate"] and hint in res["evaluate"]
         assert "lion_8bit" in res["lion"], res["lion"]
-        assert "generation is not supported" in res["generate"], res[
-            "generate"
-        ]  # A3: still refused
+        assert res["generate"] is None, res["generate"]  # a whole replica per rank (tp_replica.py)
     assert results[0]["seen"] == results[1]["seen"]  # both tp ranks read the same batches
 
 
@@ -625,7 +749,49 @@ def test_dp_average_matches_ddp_for_gradients_on_some_replicas():
         assert res["none"] is None and res["frozen"] is None, res
 
 
+def test_dp_average_keeps_fp16_finite_and_bf16_fp32_unchanged():
+    results = _spawn("dp_average_dtypes", 2)
+    for res in results:
+        fp16 = res[str(torch.float16)]
+        big, noise = fp16["got"]
+        assert fp16["dtype"] == [torch.float16] * 2
+        assert torch.isfinite(big).all() and torch.isfinite(noise).all(), big
+        assert big.tolist() == [40000.0, 35008.0, 0.0010004043579101562, -6e4], big.tolist()
+        assert not torch.isfinite(fp16["reference"][0]).all()
+        for dtype in (torch.bfloat16, torch.float32):
+            entry = res[str(dtype)]
+            assert entry["dtype"] == [dtype] * 2
+            for got, want in zip(entry["got"], entry["reference"]):
+                assert torch.equal(got, want), (dtype, got, want)
+    for a, b in zip(results[0][str(torch.float16)]["got"], results[1][str(torch.float16)]["got"]):
+        assert torch.equal(a, b)
+
+
 def test_env_tp_x_accelerate_fsdp_is_refused():
     env = {"UNSLOTH_TP_SIZE": "2", "UNSLOTH_FSDP2": "1", "ACCELERATE_USE_FSDP": "true"}
     for res in _spawn("accelerate_fsdp", 4, env):
         assert "needs Unsloth's native FSDP2" in (res["refused"] or ""), res
+
+
+@pytest.mark.parametrize("hooked", [False, True], ids = ["plain", "unsloth_loaders"])
+def test_env_tp_model_init_is_refused(hooked):
+    """Unrefused, a model_init model silently trained as plain DDP despite UNSLOTH_TP_SIZE=2."""
+    for res in _spawn("model_init", 2, {"UNSLOTH_TP_SIZE": "2"}, hooked = hooked):
+        assert "UNSLOTH_TP_SIZE=2" in (res["refused"] or ""), res
+        assert "model_init" in res["refused"] and res["built"] == [], res
+
+
+def test_env_tp_model_and_model_init_is_refused():
+    """Trainer(model = m, model_init = f): 4.x train() swapped tp m for a plain DDP model; 5.x raises ValueError."""
+    for res in _spawn("model_init", 2, {"UNSLOTH_TP_SIZE": "2"}, hooked = False, with_model = True):
+        assert res["refused"] is not None and res["built"] == [], res
+        assert "model_init" in res["refused"], res
+
+
+@pytest.mark.parametrize("hooked", [False, True], ids = ["plain", "unsloth_loaders"])
+def test_env_tp_model_init_is_refused_after_plain_import(hooked):
+    """Only `import unsloth`: nothing installed the Trainer wrapper before model_init ran, so it trained."""
+    env = {"UNSLOTH_TP_SIZE": "2"}
+    for res in _spawn("model_init", 2, env, hooked = hooked, import_only = True):
+        assert "UNSLOTH_TP_SIZE=2" in (res["refused"] or ""), res
+        assert "model_init" in res["refused"] and res["built"] == [], res

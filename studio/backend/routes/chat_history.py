@@ -22,6 +22,7 @@ from pydantic import (
     ValidationError,
     field_serializer,
     field_validator,
+    model_validator,
 )
 
 from auth.authentication import get_current_subject
@@ -43,6 +44,8 @@ from utils.account_context import is_owner_context
 from utils.utils import safe_curated_detail, log_and_http_error
 from storage.studio_db import (
     ChatForkActiveGenerationError,
+    MAX_PINNED_CHAT_IDS,
+    MAX_PINNED_CHAT_ID_LENGTH,
     ChatMessageConflictError,
     ChatMessageProtectedError,
     ChatThreadDeletedError,
@@ -66,6 +69,7 @@ from storage.studio_db import (
     get_chat_attachment,
     get_chat_project,
     get_chat_thread,
+    get_chat_pins,
     get_chat_message,
     next_message_created_at,
     list_chat_attachments_page,
@@ -83,6 +87,7 @@ from storage.studio_db import (
     remap_chat_thread_document_ids,
     set_chat_project_working_folder,
     ProjectWorkingFolderConflictError,
+    migrate_chat_pins,
     sync_chat_messages,
     update_chat_project,
     update_chat_thread,
@@ -521,6 +526,10 @@ class ChatResearchMcpSource(BaseModel):
 class ChatSettingsPayload(BaseModel):
     model_config = ConfigDict(extra = "forbid", allow_inf_nan = False)
 
+    # Sidebar IDs (incl. comparison pair IDs), not thread rows. Omitted = no change; [] unpins all.
+    pinnedChatIds: list[
+        Annotated[str, Field(strict = True, min_length = 1, max_length = MAX_PINNED_CHAT_ID_LENGTH)]
+    ] = Field(default_factory = list, max_length = MAX_PINNED_CHAT_IDS)
     inferenceParams: Optional[ChatInferenceSettings] = None
     # Deep-merged per key so patching one model keeps the others.
     inferenceParamsByModel: Optional[dict[str, ChatInferenceSettings]] = None
@@ -592,6 +601,15 @@ class ChatSettingsPayload(BaseModel):
     contextPolicy: Optional[Literal["inherit", "checkpoint", "rolling"]] = None
     compactionHeadroomRatio: Optional[float] = Field(default = None, ge = 0.0, le = 0.9)
 
+    @field_validator("pinnedChatIds")
+    @classmethod
+    def _unique_pinned_chat_ids(cls, value: list[str]) -> list[str]:
+        if any(0xD800 <= ord(character) <= 0xDFFF for id in value for character in id):
+            raise ValueError("pinnedChatIds must contain valid Unicode")
+        if len(value) != len(set(value)):
+            raise ValueError("pinnedChatIds must not contain duplicate IDs")
+        return value
+
     @field_validator("researchModelTimeoutSeconds", "maxToolCallsPerMessage", mode = "before")
     @classmethod
     def _not_a_boolean(cls, value: Any) -> Any:
@@ -620,6 +638,40 @@ class ConditionalChatSettingsPayload(BaseModel):
     expectedAbsent: list[str] = Field(default_factory = list)
     expectedAbsentPaths: list[list[str]] = Field(default_factory = list)
     patch: ChatSettingsPayload
+    operationId: Optional[Annotated[str, Field(strict = True, min_length = 1, max_length = 128)]] = None
+    # Explicit unpins can predate importing the corresponding legacy thread.
+    unpinnedChatIds: list[
+        Annotated[str, Field(strict = True, min_length = 1, max_length = MAX_PINNED_CHAT_ID_LENGTH)]
+    ] = Field(default_factory = list, max_length = MAX_PINNED_CHAT_IDS)
+
+    # Queued pins this unpin superseded: acknowledged here so a delayed one is never applied.
+    cancelledOperationIds: list[
+        Annotated[str, Field(strict = True, min_length = 1, max_length = 128)]
+    ] = Field(default_factory = list, max_length = MAX_PINNED_CHAT_IDS)
+
+    @field_validator("unpinnedChatIds", "cancelledOperationIds")
+    @classmethod
+    def _unique_unpinned_ids(cls, value: list[str]) -> list[str]:
+        return ChatSettingsPayload._unique_pinned_chat_ids(value)
+
+    @field_validator("operationId")
+    @classmethod
+    def _valid_operation_id(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and any(0xD800 <= ord(character) <= 0xDFFF for character in value):
+            raise ValueError("operationId must contain valid Unicode")
+        return value
+
+    @model_validator(mode = "after")
+    def _operation_is_pin_only(self):
+        if (
+            self.operationId is not None
+            or "unpinnedChatIds" in self.model_fields_set
+            or "cancelledOperationIds" in self.model_fields_set
+        ) and self.patch.model_fields_set != {"pinnedChatIds"}:
+            raise ValueError("Pin operation metadata requires a pinnedChatIds-only patch")
+        if set(self.unpinnedChatIds).intersection(self.patch.pinnedChatIds):
+            raise ValueError("An unpinned chat ID cannot also be pinned in the same patch")
+        return self
 
     @field_validator("expectedAbsent")
     @classmethod
@@ -643,6 +695,23 @@ class ConditionalChatSettingsPayload(BaseModel):
 
 class ConditionalChatSettingsResponse(ChatSettingsResponse):
     applied: bool
+
+
+class ChatPinsResponse(BaseModel):
+    pinnedIds: list[str] = Field(default_factory = list)
+
+
+class ChatPinsMigrationRequest(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    ids: list[
+        Annotated[str, Field(strict = True, min_length = 1, max_length = MAX_PINNED_CHAT_ID_LENGTH)]
+    ] = Field(max_length = MAX_PINNED_CHAT_IDS)
+
+    @field_validator("ids")
+    @classmethod
+    def _unique_ids(cls, value: list[str]) -> list[str]:
+        return ChatSettingsPayload._unique_pinned_chat_ids(value)
 
 
 class ChatMessagesBatchRequest(BaseModel):
@@ -1837,6 +1906,20 @@ async def clear_history(
     }
 
 
+@router.get("/pins", response_model = ChatPinsResponse, response_model_exclude_unset = True)
+def get_pins(current_subject: str = Depends(get_current_subject)):
+    pins = get_chat_pins()
+    return ChatPinsResponse() if pins is None else ChatPinsResponse(pinnedIds = pins)
+
+
+@router.post("/pins/migrate", response_model = ChatPinsResponse, response_model_exclude_unset = True)
+def migrate_pins(
+    payload: ChatPinsMigrationRequest, current_subject: str = Depends(get_current_subject)
+):
+    pins = migrate_chat_pins(payload.ids)
+    return ChatPinsResponse() if pins is None else ChatPinsResponse(pinnedIds = pins)
+
+
 @router.get("/settings", response_model = ChatSettingsResponse)
 def get_settings(current_subject: str = Depends(get_current_subject)):
     return ChatSettingsResponse(settings = list_chat_settings())
@@ -1857,6 +1940,9 @@ def compare_and_set_settings(
             parsed.patch.model_dump(exclude_unset = True),
             parsed.expectedAbsent,
             parsed.expectedAbsentPaths,
+            operation_id = parsed.operationId,
+            unpinned_chat_ids = parsed.unpinnedChatIds,
+            cancelled_operation_ids = parsed.cancelledOperationIds,
         )
         return ConditionalChatSettingsResponse(settings = settings, applied = applied)
     except CorruptSettingsError as exc:
@@ -1948,9 +2034,6 @@ def rewind_thread_files(
             status_code = 409, detail = "This chat is still generating. Rewind it once it finishes."
         )
 
-    def walk(workdir: str):
-        return tools._history_snapshot(tools._snapshot_workdir_files(workdir))
-
     def busy(workdir: str) -> bool:
         with tools._calls_lock:
             return any(os.path.realpath(w) == workdir for w in tools._workdir_calls)
@@ -1959,7 +2042,7 @@ def rewind_thread_files(
         report = file_history.store().rewind(
             thread_id,
             payload.turn_ids,
-            walk,
+            tools._history_walk,
             dry_run = payload.dry_run,
             force = payload.force,
             busy = busy,

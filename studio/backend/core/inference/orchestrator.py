@@ -53,6 +53,18 @@ def __getattr__(name: str):
 
 logger = get_logger(__name__)
 
+# Half a token a UTF-8 byte, and a byte-level token spans at least one, so half the window bounds the real count.
+_ESTIMATED_FIT_HEADROOM = 0.5
+
+
+def _utf8_half_tokens(messages) -> int:
+    import json
+    return sum(
+        (len(json.dumps(message, ensure_ascii = False).encode("utf-8")) + 1) // 2
+        for message in messages
+    )
+
+
 # Delimited, not a whitelist: a whitelist stopped at the apostrophe in `/home/o'connor/`.
 _PATH_COMPONENT = r"[^\s\\/](?:(?:(?![A-Za-z]:[\\/])[^\\/\n\",;])*[^\s\\/])?"
 # Second alternative: the root-level case (`/model.gguf`, `\\server\share`) has no trailing separator.
@@ -2791,6 +2803,7 @@ class InferenceOrchestrator:
             from core.inference.context_window import (
                 messages_without_unpriced_media,
                 retrieval_budget,
+                truncate_oldest_messages,
             )
             from core.inference.llama_cpp import (
                 _archive_and_recall,
@@ -2823,17 +2836,34 @@ class InferenceOrchestrator:
                 for tool in tools or ()
             )
 
+            count_kwargs = {
+                "tools": tools,
+                "enable_thinking": enable_thinking,
+                "reasoning_effort": reasoning_effort,
+                "preserve_thinking": preserve_thinking,
+            }
+            # SGLang 0.5.17's /tokenize returns 500 when model_max_length is the 1e30 sentinel.
+            estimated = False
+            fit_max_tokens = max_tokens
+            if getattr(self, "_managed_engine", None) is not None:
+                try:
+                    self.count_chat_tokens(conversation[-1:], "", **count_kwargs)
+                except Exception as exc:
+                    logger.info("Fitting the managed engine prompt by estimate: %s", exc)
+                    estimated = True
+                    if max_tokens and 0 < max_tokens < context_length:
+                        # The cap is sent whole and the bound at most halves the count: fit to half what it leaves.
+                        context_length = (context_length - max_tokens) * 2 // 3
+                        fit_max_tokens = None
+                    else:
+                        context_length = int(context_length * (1 - _ESTIMATED_FIT_HEADROOM))
+
             def _count(fitted):
                 if cancel_event is not None and cancel_event.is_set():
                     raise RuntimeError("Context compaction cancelled")
-                return self.count_chat_tokens(
-                    fitted,
-                    "",
-                    tools = tools,
-                    enable_thinking = enable_thinking,
-                    reasoning_effort = reasoning_effort,
-                    preserve_thinking = preserve_thinking,
-                )[0]
+                if estimated:
+                    return _utf8_half_tokens(messages_without_unpriced_media(fitted))
+                return self.count_chat_tokens(fitted, "", **count_kwargs)[0]
 
             can_reset = _can_reset_epoch(
                 thread_id,
@@ -2863,10 +2893,8 @@ class InferenceOrchestrator:
                     compaction_headroom_ratio = compaction_headroom_ratio,
                 )
             )
-            fitted, truncation = _fit_with_instruction_pins(
-                conversation,
-                context_length = context_length,
-                max_tokens = max_tokens,
+            fit_kwargs = dict(
+                max_tokens = fit_max_tokens,
                 count_tokens = _count,
                 anchor_ids = anchor_ids,
                 keeps_boundary = _keeps_compaction_boundary(thread_id),
@@ -2879,6 +2907,26 @@ class InferenceOrchestrator:
                 force_reset = force_reset,
                 **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
             )
+            fitted, truncation = _fit_with_instruction_pins(
+                conversation, context_length = context_length, **fit_kwargs
+            )
+            # The bound overprices, so its refusal is served as a rescue: the irreducible suffix, judged by the engine.
+            if (
+                estimated
+                and truncation
+                and not truncation.get("fits")
+                and not truncation.get("dropped_messages")
+            ):
+                suffix, dropped = truncate_oldest_messages(
+                    conversation, 0.0, protected_message_ids = set(anchor_ids or ()) or None
+                )
+                if dropped:
+                    fitted = suffix
+                    truncation = {
+                        **truncation,
+                        "dropped_messages": dropped,
+                        "prompt_tokens_after": _count(suffix),
+                    }
             if not truncation:
                 return {**unchanged, "boundary_applied": True}
 
@@ -2894,7 +2942,7 @@ class InferenceOrchestrator:
                 recall_done = recall_done or not truncation["fits"],
                 recall_budget_tokens = retrieval_budget(
                     context_length,
-                    max_tokens,
+                    fit_max_tokens,
                     truncation.get("prompt_tokens_after") or 0,
                     reply_returns = calls_tools,
                 ),
@@ -3000,6 +3048,90 @@ class InferenceOrchestrator:
         if resp.get("error"):
             raise (ValueError if resp.get("invalid") else RuntimeError)(resp["error"])
         return {"ids": list(resp["ids"]), "text": resp["text"], "n_vocab": resp.get("n_vocab")}
+
+    def _serves_mlx(self) -> bool:
+        if getattr(self, "_managed_engine", None) is not None or not self.active_model_name:
+            return False
+        return bool((self.models.get(self.active_model_name) or {}).get("is_mlx"))
+
+    def _prompt_cache_resume_reply(
+        self,
+        cmd: dict,
+        timeout: float,
+        cancelled = None,
+    ):
+        request_id = str(uuid.uuid4())
+        read_one, _drain, release_mailbox = self._direct_reader(request_id)
+        try:
+            self._send_cmd({**cmd, "request_id": request_id})
+            return self._await_reply(
+                read_one,
+                request_id,
+                f"{cmd['type']}_response",
+                "prompt cache",
+                timeout,
+                cancelled,
+            )
+        finally:
+            release_mailbox()
+
+    def save_prompt_cache_for_resume(
+        self,
+        should_abort: Optional[Callable[[], bool]] = None,
+        timeout: float = 120.0,
+    ) -> Optional[dict]:
+        """The MLX worker's save manifest, or None; a failed or abandoned save's dir is removed."""
+        if not self._serves_mlx() or not self._gen_lock.acquire(blocking = False):
+            return None
+        directory = manifest = None
+        try:
+            with self._mailbox_lock:
+                dispatched = bool(self._mailboxes)
+            if dispatched or self._unload_pending:
+                return None
+            from utils.paths.storage_roots import mlx_prompt_cache_root
+
+            root = mlx_prompt_cache_root()
+            root.mkdir(parents = True, exist_ok = True)
+            # Saved KV encodes chat content; keep it from other local users, as llama-slots does.
+            with contextlib.suppress(OSError):
+                os.chmod(root, 0o700)
+            directory = root / f"resume-{uuid.uuid4().hex}"
+            directory.mkdir(mode = 0o700)
+            resp = self._prompt_cache_resume_reply(
+                {"type": "save_prompt_cache", "directory": str(directory)}, timeout, should_abort
+            )
+            if resp is not None and resp.get("error"):
+                logger.debug("MLX prompt cache save failed: %s", resp["error"])
+            elif resp is not None:
+                manifest = resp.get("result")
+            return manifest
+        finally:
+            self._gen_lock.release()
+            if not manifest and directory is not None:
+                import shutil
+                shutil.rmtree(directory, ignore_errors = True)
+
+    def restore_prompt_cache_for_resume(
+        self,
+        manifest: dict,
+        timeout: float = 120.0,
+    ) -> int:
+        if not self._serves_mlx() or not self._gen_lock.acquire(timeout = timeout):
+            return 0
+        try:
+            resp = self._prompt_cache_resume_reply(
+                {"type": "restore_prompt_cache", "manifest": manifest}, timeout
+            )
+        finally:
+            self._gen_lock.release()
+        if resp is None or resp.get("error"):
+            logger.info(
+                "MLX prompt cache restore failed: %s",
+                "timed out" if resp is None else resp["error"],
+            )
+            return 0
+        return int(resp.get("result") or 0)
 
     def generate_completion(
         self,
@@ -3486,7 +3618,9 @@ class InferenceOrchestrator:
             except EngineHTTPError:
                 raise
             except Exception as exc:
-                yield GenStreamError(str(exc), public = True)
+                yield GenStreamError(
+                    str(exc), public = True, openai_param = getattr(exc, "openai_param", None)
+                )
             return
         if not self._ensure_subprocess_alive():
             yield GenStreamError("Error: Inference subprocess is not running", public = True)

@@ -426,10 +426,11 @@ def h3_te_stream_enabled() -> bool:
     )
 
 
-def h3_te_pin_allowed(payload_bytes: int = 0) -> bool:
+def h3_te_pin_allowed(payload_bytes: int = 0, device: Any = None) -> bool:
     """Whether ``payload_bytes`` (at least one arena) may be pinned. The full payload, not one arena: the hosted
     weights are mmap views already counted as available, so pinning them takes that much. Honours the group offload
-    pin switch and the ~1 GiB pinned cap of Windows / WSL. Never raises."""
+    pin switch and the ~1 GiB pinned cap of Windows / WSL. ``device``: the onload target (None: the current one).
+    Never raises."""
     try:
         import os
 
@@ -438,7 +439,7 @@ def h3_te_pin_allowed(payload_bytes: int = 0) -> bool:
         from .host_pinning import host_pinning_allowed
 
         forced = str(os.environ.get(GROUP_OFFLOAD_PIN_ENV, "")).strip().lower()
-        if forced in ("0", "off", "false", "no") or not host_pinning_allowed():
+        if forced in ("0", "off", "false", "no") or not host_pinning_allowed(device):
             return False
         if forced in ("1", "on", "true", "yes"):
             return True
@@ -462,6 +463,17 @@ def _module_payload_bytes(module: Any) -> int:
 
 def _round_up(value: int, multiple: int) -> int:
     return (value + multiple - 1) // multiple * multiple
+
+
+def _pinned_arena(size: int) -> Any:
+    import torch
+
+    from .diffusion_memory import registered_pinned_empty
+
+    arena = registered_pinned_empty(size)
+    if arena is not None:
+        return arena
+    return torch.empty(size, dtype = torch.uint8, pin_memory = True)
 
 
 def pin_module_in_place(
@@ -499,11 +511,7 @@ def pin_module_in_place(
         slot = next((a for a in arenas if a[0].numel() - a[1] >= need), None)
         if slot is None:
             size = max(int(arena_bytes), 1 << (need - 1).bit_length())
-            arena = (
-                _arena_factory(size)
-                if _arena_factory is not None
-                else torch.empty(size, dtype = torch.uint8, pin_memory = True)
-            )
+            arena = _arena_factory(size) if _arena_factory is not None else _pinned_arena(size)
             slot = [arena, 0]
             arenas.append(slot)
         offset = slot[1]
@@ -566,7 +574,7 @@ def stream_h3_text_encoder(
     if not stream:
         pin = False
     elif pin is None:
-        pin = h3_te_pin_allowed(_module_payload_bytes(text_encoder))
+        pin = h3_te_pin_allowed(_module_payload_bytes(text_encoder), onload)
     if pin:
         try:
             pin_module_in_place(text_encoder)

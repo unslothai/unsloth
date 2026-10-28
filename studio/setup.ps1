@@ -31,6 +31,10 @@ $PackageDir = Split-Path -Parent $ScriptDir
 $script:SetupSelfPath = $MyInvocation.MyCommand.Path
 $script:SetupSelfAtStart = $null
 try { $script:SetupSelfAtStart = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($script:SetupSelfPath)) } catch { }
+# Node is provisioned before the dependency pass can install a newer pin.
+$script:SetupNodePinsPath = Join-Path $ScriptDir 'node_prebuilt_pins.json'
+$script:SetupNodePinsAtStart = $null
+try { $script:SetupNodePinsAtStart = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($script:SetupNodePinsPath)) } catch { }
 $script:SetupArgs = @($args)
 $script:SetupStartEnv = $null
 try { $script:SetupStartEnv = [System.Environment]::GetEnvironmentVariables() } catch { }
@@ -329,7 +333,10 @@ function Complete-FrontendBuildBackground {
 function Test-SetupScriptReplaced {
     if ($env:UNSLOTH_SETUP_RERUN -eq '1' -or -not $script:SetupSelfAtStart) { return $false }
     try { $now = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($script:SetupSelfPath)) } catch { return $false }
-    return ($now -cne $script:SetupSelfAtStart)
+    if ($now -cne $script:SetupSelfAtStart) { return $true }
+    $nowPins = $null
+    try { $nowPins = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($script:SetupNodePinsPath)) } catch { }
+    return ($nowPins -cne $script:SetupNodePinsAtStart)
 }
 
 function Restore-SetupStartEnvironment {
@@ -5093,8 +5100,11 @@ function Get-NodeDecision {
     param(
         [string]$NodeVersion,    # `node -v` output, e.g. v22.17.1 (or empty)
         [string]$NpmVersion,     # `npm -v`  output, e.g. 10.9.2  (or empty)
-        [string]$SkipInstall     # "1" => never auto-install
+        [string]$SkipInstall,    # "1" => never auto-install
+        [bool]$ManagedOnPath = $false
     )
+    # An inherited managed Node must go through the pin check, even when compatible.
+    if ($ManagedOnPath -and $SkipInstall -ne "1") { return "bundled" }
     $node = ($NodeVersion -replace '^v', '').Trim()
     $npm = "$NpmVersion".Trim()
     if ($node -match '^\d+\.\d+' -and $npm -match '^\d+') {
@@ -5108,6 +5118,15 @@ function Get-NodeDecision {
     }
     if ($SkipInstall -eq "1") { return "skip" }
     return "bundled"
+}
+
+
+function Test-ManagedNodeOnPath {
+    # Only installer metadata marks it managed (wherever NodeDir is); a bare path match may be a user's link.
+    $command = Get-Command node -ErrorAction SilentlyContinue
+    if (-not $command -or -not $command.Path) { return $false }
+    $parent = Split-Path -Parent $command.Path
+    return (Test-Path -LiteralPath (Join-Path $parent "UNSLOTH_NODE_PREBUILT_INFO.json") -PathType Leaf)
 }
 
 
@@ -5127,6 +5146,7 @@ $NodeDir = $null
 $SysNodeVersion = ""
 $SysNpmVersion = ""
 $NodeSource = $null
+$NodeOnPathIsManaged = $false
 
 if (-not $IsPipInstall) {
     $_masterRoot = Get-MasterRootOverride
@@ -5167,7 +5187,9 @@ if (-not $IsPipInstall) {
     # Under Stop a bare `node -v` throws past 2>$null.
     $SysNodeVersion = try { if (Get-Command node -ErrorAction SilentlyContinue) { (node -v 2>$null) } else { "" } } catch { "" }
     $SysNpmVersion = try { if (Get-Command npm -ErrorAction SilentlyContinue) { (npm -v 2>$null) } else { "" } } catch { "" }
-    $NodeSource = Get-NodeDecision -NodeVersion "$SysNodeVersion" -NpmVersion "$SysNpmVersion" -SkipInstall "$($env:UNSLOTH_SKIP_NODE_INSTALL)"
+    $NodeOnPathIsManaged = Test-ManagedNodeOnPath
+    $NodeSource = Get-NodeDecision -NodeVersion "$SysNodeVersion" -NpmVersion "$SysNpmVersion" `
+        -SkipInstall "$($env:UNSLOTH_SKIP_NODE_INSTALL)" -ManagedOnPath $NodeOnPathIsManaged
 }
 
 if ($IsPipInstall) {
@@ -5177,6 +5199,8 @@ if ($IsPipInstall) {
 } else {
     if ($NodeSource -eq "system") {
         substep "Node $SysNodeVersion and npm $SysNpmVersion already meet requirements (system)."
+    } elseif ($NodeSource -eq "bundled" -and $NodeOnPathIsManaged) {
+        substep "Checking the isolated Node against the configured version (system Node/npm left untouched)."
     } elseif ($NodeSource -eq "bundled") {
         substep "Node='$SysNodeVersion' npm='$SysNpmVersion' unsuitable; will use an isolated Node (system left untouched)."
     } else {
@@ -8510,7 +8534,7 @@ if ($stackExit -ne 0) {
 # run's variables from the new copy; it cannot see $PSDefaultParameterValues, so those are passed in.
 if (Test-SetupScriptReplaced) {
     Complete-FrontendBuildBackground
-    step "setup" "the update replaced this setup script; finishing with the new version"
+    step "setup" "the update changed setup or its Node pin; finishing with the new version"
     $_setupRerunArgs = $script:SetupArgs
     Restore-SetupStartEnvironment
     Remove-Item Env:UNSLOTH_STUDIO_FULL_DEPS -ErrorAction SilentlyContinue
@@ -10007,6 +10031,11 @@ if ($LocalLlamaCppLinked) {
     # -- Step E: Build the DiffusionGemma visual server (optional, best-effort) --
     if ($BuildOk) {
         $null = cmake --build $BuildDir --config Release --target llama-diffusion-gemma-visual-server -j $NumCpu 2>&1 | Out-String
+    }
+
+    # -- Step F: llama-bench (best-effort) --
+    if ($BuildOk) {
+        $null = cmake --build $BuildDir --config Release --target llama-bench -j $NumCpu 2>&1 | Out-String
     }
 
     # Swap temp build dir into final location (only if we built in a temp dir)

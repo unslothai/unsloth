@@ -137,6 +137,11 @@ export const sv = {
     more: "Mer",
     addressPlaceholder: "Sök eller ange en URL",
     local: "Lokal",
+    browserUse: {
+      label: "Webbläsaranvändning",
+      description: "Låt modeller styra den inbyggda webbläsaren",
+      unavailable: "Läs in en modell som kan anropa verktyg för att låta den använda webbläsaren.",
+    },
     suggested: "Förslag",
     suggestedMenu: {
       open: "Öppna",
@@ -1555,16 +1560,15 @@ export const sv = {
         "Windows inbyggda container kräver version {required} eller senare, och den här datorn kör {current}. Installera den senaste Windows-uppdateringen för att använda den utan administratörssteg, eller slå på reservsandlådan nedan.",
       unsupportedBuild:
         "Windows-sandlådan (MXC) kräver Windows 11 24H2 (version 26100) eller senare, så den är inte tillgänglig på den här datorn.",
-      permissionsIntro:
-        "Välj när verktyg frågar först, och om Python och Terminal även körs i OS-sandlådan.",
       permissionLabel: "Verktygsbehörigheter",
+      levelRowLabel: "Sandlådenivå",
       levelPickerTitle: "Hur ska kod köras i sandlåda?",
       levelOff: "Inaktiverad",
       levelOffShort: "Fullständig åtkomst stänger av sandlådan",
       levelHighDetail:
-        "OS-sandlåda. Python och Terminal körs i OS-sandlådan (bubblewrap, Seatbelt eller MXC) ovanpå programvarusandlådan. Utan en fungerande OS-sandlåda frågar riskabla anrop först.",
+        "Python och Terminal körs i OS-sandlådan (bubblewrap, Seatbelt eller MXC) ovanpå programvarusandlådan. Utan en fungerande OS-sandlåda frågar riskabla anrop först.",
       levelLowDetail:
-        "Programvarusandlåda. Python och Terminal körs bara med programvarusandlådan, utanför OS-sandlådan. Riskabla anrop frågar först om du inte har valt Fullständig åtkomst.",
+        "Python och Terminal körs bara med programvarusandlådan, utanför OS-sandlådan. Riskabla anrop frågar först om du inte har valt Fullständig åtkomst.",
       levelLabel: "Sandlåda",
       levelHigh: "Hög",
       levelLow: "Låg",
@@ -2014,10 +2018,10 @@ export const sv = {
           full: "Fullständig åtkomst",
         },
         details: {
-          ask: "Frågar före varje verktygsanrop, inklusive terminal- och Python-kod, webbsökningar, filredigeringar och MCP-verktyg. Verktyg som körs av en extern leverantör pausas inte. Bäst när du vill granska varje steg.",
+          ask: "Frågar före varje verktygsanrop, inklusive terminal- och Python-kod, webbsökningar, filredigeringar och MCP-verktyg. Verktyg som körs av en extern leverantör pausas inte.",
           auto: "Kör rutinmässiga verktygsanrop på egen hand och frågar bara när en åtgärd ser riskabel ut, till exempel att läsa inloggningsuppgifter, höja behörigheter eller köra destruktiva kommandon.",
-          off: "Kör varje verktygsanrop utan att fråga. Python- och terminalkod körs fortfarande i sandlådan, som begränsar vilka filer de kan nå på din dator. Om den här datorn saknar en fungerande OS-sandlåda frågar riskabla Python- och terminalanrop först.",
-          full: "Kör varje verktygsanrop utan att fråga och stänger av kodsandlådan, så att Python- och terminalkod kan läsa och ändra alla filer som ditt konto har åtkomst till. Bäst för betrodda uppgifter som behöver fungera utanför sandlådan.",
+          off: "Kör varje verktygsanrop utan att fråga. Python- och terminalkod körs fortfarande i sandlådan, som begränsar vilka filer de kan nå på din dator. Utan en fungerande OS-sandlåda frågar riskabla anrop först.",
+          full: "Kör varje verktygsanrop utan att fråga och stänger av kodsandlådan, så att Python- och terminalkod kan läsa och ändra alla filer som ditt konto har åtkomst till.",
         },
       },
       notifications: {
@@ -2486,6 +2490,7 @@ export const sv = {
       liveMonitor: {
         title: "Direktövervakning",
         apiTitle: "API-övervakning",
+        apiDescription: "Se vad andra appar skickar till den här serverns API när det kommer in.",
         summary: "Begäranden, fel och tokenanvändning i realtid",
         status: "{active} aktiva · {recent} senaste · {model}",
         noModelLoaded: "ingen modell inläst",
@@ -2747,6 +2752,8 @@ export const sv = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "Drifttid",
         processMemory: "Processminne",
         notInstalled: "Inte installerad",
@@ -3536,6 +3543,7 @@ export const sv = {
       desktopAppVersionUnavailable: "Inte tillgänglig",
       llamaCppVersion: "llama.cpp-version",
       audioCppVersion: "audio.cpp-version",
+      mlxVersion: "MLX-version",
       whisperCppVersion: "whisper.cpp-version",
       engines: {
         title: "Motorer",
@@ -4832,6 +4840,7 @@ export const sv = {
       modelsDescription:
         "Modeller som du tränar eller exporterar i Unsloth visas här.",
       createFolder: "Skapa mapp",
+      generateImage: "Generera en bild",
       generateVideo: "Generera en video",
       generateAudio: "Generera ljud",
       trainModel: "Träna en modell",

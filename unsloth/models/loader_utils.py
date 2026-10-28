@@ -4174,6 +4174,26 @@ def _hub_live_commit(
         return None
 
 
+_ESCAPING_WEIGHTS_FILENAME = object()
+
+
+def _explicit_weights_filename(transformers_weights):
+    """File transformers loads instead of standard names; None if unused, sentinel if it escapes the model dir."""
+    if not isinstance(transformers_weights, str) or not transformers_weights.endswith(
+        (".safetensors", ".safetensors.index.json")
+    ):
+        return None
+    base = os.path.abspath("model_dir")
+    try:
+        contained = (
+            os.path.commonpath([base, os.path.abspath(os.path.join(base, transformers_weights))])
+            == base
+        )
+    except ValueError:
+        contained = False
+    return transformers_weights if contained else _ESCAPING_WEIGHTS_FILENAME
+
+
 def _checkpoint_tensor_dtypes(
     model_name,
     token = None,
@@ -4183,10 +4203,14 @@ def _checkpoint_tensor_dtypes(
     local_files_only = False,
     variant = None,
     use_safetensors = None,
+    transformers_weights = None,
 ):
     """{tensor name: dtype} (dtype only for fused experts) without downloading weights; mirrors transformers'
-    file order, `variant` and `use_safetensors`. Raises _UnreadableCheckpointNames for an unreadable lone .bin."""
+    file order, `variant`, `use_safetensors` and `transformers_weights`. Raises _UnreadableCheckpointNames for an unreadable lone .bin."""
     if not isinstance(model_name, str) or not model_name:
+        return None
+    explicit = _explicit_weights_filename(transformers_weights)
+    if explicit is _ESCAPING_WEIGHTS_FILENAME:
         return None
     st_index, st_single = (
         _with_variant(f, variant) for f in ("model.safetensors.index.json", "model.safetensors")
@@ -4198,6 +4222,13 @@ def _checkpoint_tensor_dtypes(
         st_index = st_single = None
     elif use_safetensors:
         bin_index = bin_single = None
+    if explicit is not None:
+        # Loaded verbatim (no variant / use_safetensors) with no fallback to standard names.
+        bin_index = bin_single = None
+        if explicit.endswith(".safetensors.index.json"):
+            st_index, st_single = explicit, None
+        else:
+            st_index, st_single = None, explicit
     index_files = [f for f in (st_index, bin_index) if f]
 
     def _local_shard_dtypes(path, names):
@@ -4242,7 +4273,13 @@ def _checkpoint_tensor_dtypes(
                     raise _UnreadableCheckpointNames(path)
             return None
 
-        if not local_files_only and not subfolder and not variant and st_single:
+        if (
+            not local_files_only
+            and not subfolder
+            and not variant
+            and st_single
+            and explicit is None
+        ):
             try:
                 from huggingface_hub import get_safetensors_metadata
 
@@ -4376,6 +4413,7 @@ def gpt_oss_checkpoint_has_fused_experts(
     quant_method = getattr(quant_method, "value", quant_method)
     if str(quant_method).lower() != "bitsandbytes":
         return False
+    hub_kwargs.setdefault("transformers_weights", getattr(config, "transformers_weights", None))
     try:
         dtypes = _checkpoint_tensor_dtypes(model_name, **hub_kwargs)
     except _UnreadableCheckpointNames as exc:
@@ -4423,13 +4461,16 @@ def quantization_config_is_bnb_4bit(quantization_config):
     return quantization_config_selects_bnb_4bit(quantization_config)
 
 
-def refuse_gpt_oss_fused_4bit_float16(dtype):
-    """Fused 4-bit experts compute in the model dtype and overflow float16 (split classes keep down_projs fp32)."""
-    if dtype != torch.float16:
+def refuse_gpt_oss_fused_4bit_float16(dtype, supports_bfloat16 = True):
+    """Fused 4-bit experts compute in the model dtype and overflow float16 (split classes keep down_projs fp32).
+    Without bfloat16, dtype = torch.float32 still computes in float16: gpt-oss is a FORCE_FLOAT32 family, whose
+    float32 request there becomes the float16 weights + float32 islands recipe."""
+    if dtype != torch.float16 and (supports_bfloat16 or dtype != torch.float32):
         return
     raise NotImplementedError(
         "Unsloth: this gpt-oss checkpoint stores fused experts, and in float16 (this GPU has no bfloat16, "
-        "or dtype = torch.float16) its fused 4-bit experts would overflow. Use the pre-quantized "
+        "or dtype = torch.float16) its fused 4-bit experts would overflow. dtype = torch.float32 does not "
+        "help on a GPU without bfloat16, since gpt-oss then still computes in float16. Use the pre-quantized "
         "unsloth/gpt-oss-20b-unsloth-bnb-4bit (or -120b), or a GPU with bfloat16."
     )
 

@@ -139,6 +139,11 @@ export const ko = {
     more: "더보기",
     addressPlaceholder: "검색어 또는 URL 입력",
     local: "로컬",
+    browserUse: {
+      label: "브라우저 사용",
+      description: "모델이 내장 브라우저를 제어하도록 허용",
+      unavailable: "브라우저를 사용하게 하려면 도구를 호출할 수 있는 모델을 불러오세요.",
+    },
     suggested: "추천",
     suggestedMenu: {
       open: "열기",
@@ -1411,13 +1416,13 @@ export const ko = {
       builtinNeedsUpdate:
         "Windows 기본 제공 컨테이너에는 빌드 {required} 이상이 필요하지만 이 PC는 {current}입니다. 관리자 단계 없이 사용하려면 최신 Windows 업데이트를 설치하거나 아래의 대체 샌드박스를 켜세요.",
       unsupportedBuild: "Windows 샌드박스(MXC)는 Windows 11 24H2(빌드 26100) 이상이 필요하므로 이 PC에서는 사용할 수 없습니다.",
-      permissionsIntro: "도구가 먼저 묻는 시점과 Python 및 터미널을 OS 샌드박스 안에서도 실행할지 선택합니다.",
       permissionLabel: "도구 권한",
+      levelRowLabel: "샌드박스 수준",
       levelPickerTitle: "코드를 어떻게 격리할까요?",
       levelOff: "사용 안 함",
       levelOffShort: "전체 액세스는 샌드박스를 끕니다",
-      levelHighDetail: "OS 샌드박스. Python과 터미널이 소프트웨어 보호에 더해 OS 샌드박스(bubblewrap, Seatbelt 또는 MXC) 안에서 실행됩니다. 작동하는 OS 샌드박스가 없으면 위험한 호출은 먼저 묻습니다.",
-      levelLowDetail: "소프트웨어 샌드박스. Python과 터미널이 소프트웨어 보호만으로 OS 샌드박스 밖에서 실행됩니다. 전체 액세스가 아니면 위험한 호출은 먼저 묻습니다.",
+      levelHighDetail: "Python과 터미널이 소프트웨어 보호에 더해 OS 샌드박스(bubblewrap, Seatbelt 또는 MXC) 안에서 실행됩니다. 작동하는 OS 샌드박스가 없으면 위험한 호출은 먼저 묻습니다.",
+      levelLowDetail: "Python과 터미널이 소프트웨어 보호만으로 OS 샌드박스 밖에서 실행됩니다. 전체 액세스가 아니면 위험한 호출은 먼저 묻습니다.",
       levelLabel: "샌드박스",
       levelHigh: "높음",
       levelLow: "낮음",
@@ -2042,13 +2047,13 @@ export const ko = {
         },
         details: {
           ask:
-            "터미널 및 Python 코드, 웹 검색, 파일 편집, MCP 도구를 포함해 모든 도구 호출 전에 묻습니다. 외부 제공업체가 실행하는 도구는 멈추지 않습니다. 각 단계를 직접 확인하고 싶을 때 적합합니다.",
+            "터미널 및 Python 코드, 웹 검색, 파일 편집, MCP 도구를 포함해 모든 도구 호출 전에 묻습니다. 외부 제공업체가 실행하는 도구는 멈추지 않습니다.",
           auto:
             "일반적인 도구 호출은 알아서 실행하고, 자격 증명 읽기, 권한 상승, 파괴적인 명령 실행처럼 위험해 보이는 작업일 때만 묻습니다.",
           off:
-            "모든 도구 호출을 묻지 않고 실행합니다. Python과 터미널 코드는 여전히 샌드박스 안에서 실행되어 컴퓨터에서 접근할 수 있는 파일이 제한됩니다. 이 컴퓨터에 작동하는 OS 샌드박스가 없으면 위험한 Python 및 터미널 호출은 먼저 묻습니다.",
+            "모든 도구 호출을 묻지 않고 실행합니다. Python과 터미널 코드는 여전히 샌드박스 안에서 실행되어 컴퓨터에서 접근할 수 있는 파일이 제한됩니다. 작동하는 OS 샌드박스가 없으면 위험한 호출은 먼저 묻습니다.",
           full:
-            "모든 도구 호출을 묻지 않고 실행하며 코드 샌드박스를 꺼서, Python과 터미널 코드가 계정이 접근할 수 있는 모든 파일을 읽고 변경할 수 있습니다. 샌드박스 밖에서 작업해야 하는 신뢰할 수 있는 작업에 적합합니다.",
+            "모든 도구 호출을 묻지 않고 실행하며 코드 샌드박스를 꺼서, Python과 터미널 코드가 계정이 접근할 수 있는 모든 파일을 읽고 변경할 수 있습니다.",
         },
       },
     },
@@ -2304,6 +2309,7 @@ export const ko = {
       liveMonitor: {
         title: "실시간 모니터",
         apiTitle: "API 모니터",
+        apiDescription: "다른 앱이 이 서버의 API로 보내는 내용을 도착하는 대로 확인합니다.",
         summary: "진행 중인 요청, 오류 및 토큰 사용량",
         status: "진행 중 {active}개 · 최근 {recent}개 · {model}",
         noModelLoaded: "로드된 모델 없음",
@@ -2541,6 +2547,8 @@ export const ko = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "가동 시간",
         processMemory: "프로세스 메모리",
         notInstalled: "설치되지 않음",
@@ -3286,6 +3294,7 @@ export const ko = {
       desktopAppVersionUnavailable: "확인할 수 없음",
       llamaCppVersion: "llama.cpp 버전",
       audioCppVersion: "audio.cpp 버전",
+      mlxVersion: "MLX 버전",
       whisperCppVersion: "whisper.cpp 버전",
       engines: {
         title: "엔진",
@@ -4539,6 +4548,7 @@ export const ko = {
       modelsTitle: "아직 파인튜닝된 모델이 없습니다",
       modelsDescription: "Unsloth에서 학습하거나 내보낸 모델이 여기에 표시됩니다.",
       createFolder: "폴더 만들기",
+      generateImage: "이미지 생성",
       generateVideo: "동영상 생성",
       generateAudio: "오디오 생성",
       trainModel: "모델 학습",

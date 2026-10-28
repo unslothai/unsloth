@@ -140,6 +140,11 @@ export const he = {
     more: "עוד",
     addressPlaceholder: "חפש או הזן URL",
     local: "מקומי",
+    browserUse: {
+      label: "שימוש בדפדפן",
+      description: "אפשר למודלים לשלוט בדפדפן המובנה",
+      unavailable: "טען מודל שיכול לקרוא לכלים כדי שיוכל להשתמש בדפדפן.",
+    },
     suggested: "מוצעים",
     suggestedMenu: {
       open: "פתח",
@@ -1523,14 +1528,13 @@ export const he = {
         "המכל המובנה של Windows דורש גרסת build {required} ומעלה, והמחשב הזה מריץ {current}. התקינו את עדכון Windows האחרון כדי להשתמש בו בלי שלב מנהל, או הפעילו את ארגז החול החלופי שלמטה.",
       unsupportedBuild:
         "ארגז החול של Windows (MXC) דורש Windows 11 24H2 (build 26100) ומעלה, ולכן אינו זמין במחשב זה.",
-      permissionsIntro:
-        "בחר מתי כלים שואלים קודם, והאם Python והטרמינל רצים גם בתוך ארגז החול של מערכת ההפעלה.",
       permissionLabel: "הרשאות כלים",
+      levelRowLabel: "רמת ארגז החול",
       levelPickerTitle: "איך להריץ קוד בארגז חול?",
       levelOff: "מושבת",
       levelOffShort: "גישה מלאה מכבה את ארגז החול",
-      levelHighDetail: "ארגז חול של מערכת ההפעלה. Python והטרמינל רצים בתוך ארגז החול של מערכת ההפעלה (bubblewrap, Seatbelt או MXC) בנוסף לארגז החול בתוכנה. ללא ארגז חול פעיל של מערכת ההפעלה, קריאות מסוכנות ישאלו קודם.",
-      levelLowDetail: "ארגז חול בתוכנה. Python והטרמינל רצים עם ארגז חול בתוכנה בלבד, מחוץ לארגז החול של מערכת ההפעלה. קריאות מסוכנות ישאלו קודם, אלא אם בחרת גישה מלאה.",
+      levelHighDetail: "Python והטרמינל רצים בתוך ארגז החול של מערכת ההפעלה (bubblewrap, Seatbelt או MXC) בנוסף לארגז החול בתוכנה. ללא ארגז חול פעיל של מערכת ההפעלה, קריאות מסוכנות ישאלו קודם.",
+      levelLowDetail: "Python והטרמינל רצים עם ארגז חול בתוכנה בלבד, מחוץ לארגז החול של מערכת ההפעלה. קריאות מסוכנות ישאלו קודם, אלא אם בחרת גישה מלאה.",
       levelLabel: "ארגז חול",
       levelHigh: "גבוהה",
       levelLow: "נמוכה",
@@ -1953,10 +1957,10 @@ export const he = {
           full: "גישה מלאה",
         },
         details: {
-          ask: "שואל לפני כל קריאה לכלי, כולל קוד Terminal ו-Python, חיפושים באינטרנט, עריכת קבצים וכלי MCP. כלים שמורצים על ידי ספק חיצוני אינם מושהים. מתאים כשברצונך לבדוק כל שלב.",
+          ask: "שואל לפני כל קריאה לכלי, כולל קוד Terminal ו-Python, חיפושים באינטרנט, עריכת קבצים וכלי MCP. כלים שמורצים על ידי ספק חיצוני אינם מושהים.",
           auto: "מריץ קריאות שגרתיות לכלים בעצמו ושואל רק כשפעולה נראית מסוכנת, כגון קריאת פרטי התחברות, הסלמת הרשאות או הרצת פקודות הרסניות.",
-          off: "מריץ כל קריאה לכלי בלי לשאול. קוד Python ו-Terminal עדיין רץ בארגז החול, שמגביל לאילו קבצים במחשב שלך הוא יכול לגשת. אם אין במחשב זה ארגז חול תקין של מערכת ההפעלה, קריאות Python ו-Terminal מסוכנות ישאלו קודם.",
-          full: "מריץ כל קריאה לכלי בלי לשאול ומכבה את ארגז החול של הקוד, כך שקוד Python ו-Terminal יכול לקרוא ולשנות כל קובץ שהחשבון שלך יכול לגשת אליו. מתאים למשימות מהימנות שצריכות לפעול מחוץ לארגז החול.",
+          off: "מריץ כל קריאה לכלי בלי לשאול. קוד Python ו-Terminal עדיין רץ בארגז החול, שמגביל לאילו קבצים במחשב שלך הוא יכול לגשת. ללא ארגז חול פעיל של מערכת ההפעלה, קריאות מסוכנות ישאלו קודם.",
+          full: "מריץ כל קריאה לכלי בלי לשאול ומכבה את ארגז החול של הקוד, כך שקוד Python ו-Terminal יכול לקרוא ולשנות כל קובץ שהחשבון שלך יכול לגשת אליו.",
         },
       },
       notifications: {
@@ -2414,6 +2418,7 @@ export const he = {
       liveMonitor: {
         title: "מוניטור חי",
         apiTitle: "מוניטור API",
+        apiDescription: "ראה מה אפליקציות אחרות שולחות ל-API של השרת הזה ברגע שזה מגיע.",
         summary: "בקשות חיות, שגיאות ושימוש בטוקנים",
         status: "{active} פעילות · {recent} לאחרונה · {model}",
         noModelLoaded: "אין מודל טעון",
@@ -2668,6 +2673,8 @@ export const he = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "זמן פעילות",
         processMemory: "זיכרון תהליך",
         notInstalled: "לא מותקן",
@@ -3433,6 +3440,7 @@ export const he = {
       desktopAppVersionUnavailable: "לא זמין",
       llamaCppVersion: "גרסת llama.cpp",
       audioCppVersion: "גרסת audio.cpp",
+      mlxVersion: "גרסת MLX",
       whisperCppVersion: "גרסת whisper.cpp",
       engines: {
         title: "מנועים",
@@ -4690,6 +4698,7 @@ export const he = {
       modelsTitle: "אין עדיין מודלים מכווננים",
       modelsDescription: "מודלים שתאמן או תייצא ב-Unsloth יופיעו כאן.",
       createFolder: "צור תיקייה",
+      generateImage: "יצירת תמונה",
       generateVideo: "צור סרטון",
       generateAudio: "צור אודיו",
       trainModel: "אמן מודל",

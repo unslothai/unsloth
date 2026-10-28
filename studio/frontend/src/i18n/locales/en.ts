@@ -136,6 +136,11 @@ export const en = {
     more: "More",
     addressPlaceholder: "Search or enter a URL",
     local: "Local",
+    browserUse: {
+      label: "Browser use",
+      description: "Let models control the in-built browser",
+      unavailable: "Load a model that can call tools to let it use the browser.",
+    },
     suggested: "Suggested",
     suggestedMenu: {
       open: "Open",
@@ -1468,13 +1473,13 @@ export const en = {
       unsupportedArch: "The Windows sandbox (MXC) only runs on x64 Windows, so it is not available on this PC.",
       builtinNeedsUpdate: "Windows' built-in container needs build {required} or newer, and this PC runs {current}. Install the latest Windows update to use it without an administrator step, or turn on the fallback below.",
       unsupportedBuild: "The Windows sandbox (MXC) needs Windows 11 24H2 (build 26100) or newer, so it is not available on this PC.",
-      permissionsIntro: "Choose when tools ask first, and whether Python and Terminal also run inside the OS sandbox.",
       permissionLabel: "Tool permissions",
+      levelRowLabel: "Sandbox level",
       levelPickerTitle: "How should code be sandboxed?",
       levelOff: "Disabled",
       levelOffShort: "Full access turns the sandbox off",
-      levelHighDetail: "OS sandboxing. Python and Terminal run inside the OS sandbox (bubblewrap, Seatbelt or MXC) on top of software sandboxing. Without a working OS sandbox, risky calls ask first.",
-      levelLowDetail: "Software sandboxing. Python and Terminal run with software sandboxing only, outside the OS sandbox. Risky calls ask first unless you chose Full access.",
+      levelHighDetail: "Python and Terminal run inside the OS sandbox (bubblewrap, Seatbelt or MXC) on top of software sandboxing. Without a working OS sandbox, risky calls ask first.",
+      levelLowDetail: "Python and Terminal run with software sandboxing only, outside the OS sandbox. Risky calls ask first unless you chose Full access.",
       levelLabel: "Sandbox",
       levelHigh: "High",
       levelLow: "Low",
@@ -1909,13 +1914,13 @@ export const en = {
         },
         details: {
           ask:
-            "Asks before every tool call, including terminal and Python code, web searches, file edits and MCP tools. Tools run by an external provider are not paused. Best when you want to review each step.",
+            "Asks before every tool call, including terminal and Python code, web searches, file edits and MCP tools. Tools run by an external provider are not paused.",
           auto:
             "Runs routine tool calls on its own and only asks when an action looks risky, such as reading credentials, escalating privileges or running destructive commands.",
           off:
-            "Runs every tool call without asking. Python and terminal code still run in the sandbox, which limits which files they can reach on your computer. If this computer has no working OS sandbox, risky Python and terminal calls ask first.",
+            "Runs every tool call without asking. Python and terminal code still run in the sandbox, which limits which files they can reach on your computer. Without a working OS sandbox, risky calls ask first.",
           full:
-            "Runs every tool call without asking and turns off the code sandbox, so Python and terminal code can read and change any file your account can access. Best for trusted tasks that need to work outside the sandbox.",
+            "Runs every tool call without asking and turns off the code sandbox, so Python and terminal code can read and change any file your account can access.",
         },
       },
       notifications: {
@@ -2373,6 +2378,7 @@ export const en = {
       liveMonitor: {
         title: "Live monitor",
         apiTitle: "API monitor",
+        apiDescription: "See what other apps send to this server's API as it arrives.",
         summary: "Live requests, errors, and token usage",
         status: "{active} active · {recent} recent · {model}",
         noModelLoaded: "no model loaded",
@@ -2612,6 +2618,8 @@ export const en = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "Uptime",
         processMemory: "Process memory",
         notInstalled: "Not installed",
@@ -3331,7 +3339,7 @@ export const en = {
         loadError: "Couldn't load Decision API settings.",
         sendsTo: "Requests are sent to {provider}.",
         connectionMissing: "This connection is gone or has no decision models. Pick another model.",
-        addConnection: "To use a hosted decision model, add TypeSafe, Liquid AI or OpenRouter in Connections.",
+        addConnection: "To use a cloud hosted decision model, add TypeSafe, OpenRouter etc. in Connections.",
         openConnections: "Open Connections",
       },
       mcp: {
@@ -3357,6 +3365,7 @@ export const en = {
       desktopAppVersionUnavailable: "Unavailable",
       llamaCppVersion: "llama.cpp Version",
       audioCppVersion: "audio.cpp Version",
+      mlxVersion: "MLX Version",
       whisperCppVersion: "whisper.cpp Version",
       engines: {
         title: "Engines",
@@ -4616,6 +4625,7 @@ export const en = {
       modelsTitle: "No fine-tuned models yet",
       modelsDescription: "Models you train or export in Unsloth show up here.",
       createFolder: "Create folder",
+      generateImage: "Generate an image",
       generateVideo: "Generate a video",
       generateAudio: "Generate audio",
       trainModel: "Train a model",

@@ -316,13 +316,17 @@ def _install_fp8_unit_scale() -> None:
 _PREQUANT_MMAP_ENV = "UNSLOTH_DIFFUSION_PREQUANT_MMAP"
 
 
-def prequant_mmap_enabled(destination: Any) -> bool:
-    """Map only for a non-CPU destination: a host-placed module would keep the file open (Windows then cannot delete it)."""
+def prequant_mmap_enabled(destination: Any, *, host_copy_follows: bool = False) -> bool:
+    """Map only for a non-CPU destination: a host-placed module would keep the file open (Windows then cannot delete it).
+    ``host_copy_follows``: host-placed but copied off before first render, so Linux maps (avoids a 20 GB copy)."""
     import os
+    import sys
 
     raw = (os.environ.get(_PREQUANT_MMAP_ENV) or "").strip().lower()
     if raw in ("0", "false", "no", "off"):
         return False
+    if host_copy_follows and sys.platform.startswith("linux"):
+        return True
     dest = str(destination or "").strip().lower()
     return bool(dest) and not dest.startswith("cpu") and dest != "meta"
 
@@ -331,9 +335,11 @@ def _read_prequant_for(
     path: str,
     destination: Any,
     logger: Any = None,
+    *,
+    host_copy_follows: bool = False,
 ) -> Any:
     """``_load_prequant_checkpoint`` mapped when enabled; anything the mapping cannot open is re-read in full."""
-    if prequant_mmap_enabled(destination):
+    if prequant_mmap_enabled(destination, host_copy_follows = host_copy_follows):
         try:
             return _load_prequant_checkpoint(path, map_location = "cpu", mmap = True)
         except Exception as exc:  # noqa: BLE001 - retried unmapped; the real error resurfaces there
@@ -2165,6 +2171,7 @@ def load_prequantized_transformer(
     placement_device: Optional[str] = None,
     family: Optional[str] = None,
     into: Optional[Any] = None,
+    host_copy_follows: bool = False,
 ) -> Optional[Any]:
     """Load the pre-quantized transformer described by ``source`` onto ``device``.
 
@@ -2283,7 +2290,9 @@ def load_prequantized_transformer(
         else:
             # Pickles load only under the ALLOWLIST, never free-running: a mutated file must fail,
             # not run.
-            ckpt = _read_prequant_for(path, placement_device or device, logger)
+            ckpt = _read_prequant_for(
+                path, placement_device or device, logger, host_copy_follows = host_copy_follows
+            )
             if not _validate_checkpoint(
                 ckpt,
                 scheme,
@@ -3225,7 +3234,9 @@ def stream_prequantized_module(
                 payload_mib = sum(
                     tensor_payload_bytes(t) for t in chain(module.parameters(), module.buffers())
                 ) // (1024 * 1024)
-                kwargs["low_cpu_mem_usage"] = not _streamed_pin_plan(payload_mib, 0, logger)[0]
+                kwargs["low_cpu_mem_usage"] = not _streamed_pin_plan(
+                    payload_mib, 0, logger, device = onload
+                )[0]
         # Pin through one slab arena: per-tensor pin_memory() rounds each weight to a power of two.
         from .diffusion_pinned_arena import pinned_arena_for_group_offload
 

@@ -139,6 +139,11 @@ export const zhCN = {
     more: "更多",
     addressPlaceholder: "搜索或输入网址",
     local: "本地",
+    browserUse: {
+      label: "浏览器操作",
+      description: "允许模型控制内置浏览器",
+      unavailable: "请加载支持工具调用的模型，才能让它使用浏览器。",
+    },
     suggested: "推荐",
     suggestedMenu: {
       open: "打开",
@@ -1409,13 +1414,13 @@ export const zhCN = {
       builtinNeedsUpdate:
         "Windows 内置容器需要版本 {required} 或更高，而这台电脑运行的是 {current}。安装最新的 Windows 更新即可无需管理员步骤使用它，或在下方开启备用沙盒。",
       unsupportedBuild: "Windows 沙箱 (MXC) 需要 Windows 11 24H2（版本 26100）或更高版本，因此在此电脑上不可用。",
-      permissionsIntro: "选择工具何时先询问，以及 Python 和终端是否也在操作系统沙盒中运行。",
       permissionLabel: "工具权限",
+      levelRowLabel: "沙盒级别",
       levelPickerTitle: "代码应如何隔离？",
       levelOff: "已停用",
       levelOffShort: "完全访问会关闭沙盒",
-      levelHighDetail: "操作系统沙盒。Python 和终端在软件防护之外，还在操作系统沙盒（bubblewrap、Seatbelt 或 MXC）中运行。没有可用的操作系统沙盒时，有风险的调用会先询问。",
-      levelLowDetail: "软件沙盒。Python 和终端仅使用软件防护，在操作系统沙盒之外运行。除完全访问外，有风险的调用会先询问。",
+      levelHighDetail: "Python 和终端在软件防护之外，还在操作系统沙盒（bubblewrap、Seatbelt 或 MXC）中运行。没有可用的操作系统沙盒时，有风险的调用会先询问。",
+      levelLowDetail: "Python 和终端仅使用软件防护，在操作系统沙盒之外运行。除完全访问外，有风险的调用会先询问。",
       levelLabel: "沙盒",
       levelHigh: "高",
       levelLow: "低",
@@ -2025,13 +2030,13 @@ export const zhCN = {
         },
         details: {
           ask:
-            "每次调用工具前都会询问，包括终端和 Python 代码、网页搜索、编辑文件以及 MCP 工具。由外部提供商运行的工具不会暂停。适合需要逐步检查的场景。",
+            "每次调用工具前都会询问，包括终端和 Python 代码、网页搜索、编辑文件以及 MCP 工具。由外部提供商运行的工具不会暂停。",
           auto:
             "常规工具调用会自动执行，只有在操作看起来有风险时才会询问，例如读取凭据、提升权限或执行破坏性命令。",
           off:
-            "所有工具调用都不再询问。Python 和终端代码仍在沙箱中运行，沙箱会限制它们能访问你电脑上的哪些文件。如果这台电脑没有可用的系统沙箱，高风险的 Python 和终端调用会先询问。",
+            "所有工具调用都不再询问。Python 和终端代码仍在沙箱中运行，沙箱会限制它们能访问你电脑上的哪些文件。没有可用的操作系统沙盒时，有风险的调用会先询问。",
           full:
-            "所有工具调用都不再询问，并关闭代码沙箱，Python 和终端代码可以读取和修改你的账户能访问的任何文件。适合需要在沙箱外工作的可信任务。",
+            "所有工具调用都不再询问，并关闭代码沙箱，Python 和终端代码可以读取和修改你的账户能访问的任何文件。",
         },
       },
     },
@@ -2282,6 +2287,7 @@ export const zhCN = {
       liveMonitor: {
         title: "实时监控",
         apiTitle: "API 监控",
+        apiDescription: "实时查看其他应用发送到此服务器 API 的内容。",
         summary: "实时请求、错误和 token 用量",
         status: "{active} 个进行中 · {recent} 个近期请求 · {model}",
         noModelLoaded: "未加载模型",
@@ -2511,6 +2517,8 @@ export const zhCN = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "运行时长",
         processMemory: "进程内存",
         notInstalled: "未安装",
@@ -3242,6 +3250,7 @@ export const zhCN = {
       desktopAppVersionUnavailable: "不可用",
       llamaCppVersion: "llama.cpp 版本",
       audioCppVersion: "audio.cpp 版本",
+      mlxVersion: "MLX 版本",
       whisperCppVersion: "whisper.cpp 版本",
       engines: {
         title: "引擎",
@@ -4450,6 +4459,7 @@ export const zhCN = {
       modelsTitle: "还没有微调模型",
       modelsDescription: "你在 Unsloth 中训练或导出的模型会显示在这里。",
       createFolder: "创建文件夹",
+      generateImage: "生成图像",
       generateVideo: "生成视频",
       generateAudio: "生成音频",
       trainModel: "训练模型",
