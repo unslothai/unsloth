@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A scoped download start lists the repo once: the blob hashes reuse the listing the size probe just
-fetched with the same credential, and every other case (stale memo, failed probe, other credential)
-lists the repo again exactly as before."""
+"""A scoped download start reuses the size probe's fresh, credential-equivalent listing; otherwise it lists again."""
 
 from __future__ import annotations
 
@@ -141,7 +139,7 @@ def test_one_listing_per_scoped_start(hub, token):
 def test_a_different_credential_lists_again(hub, token, ambient):
     calls, hashes = hub(token, allow_ambient_token = ambient)
     assert [c[0] for c in calls] == ["repo_info", "model_info"]
-    assert calls[1][2] == token  # the blob-hash listing still sends the caller's token verbatim
+    assert calls[1][2] == token
     assert hashes == EXPECTED_V1
 
 
@@ -156,7 +154,6 @@ def test_a_ttl_memo_from_an_earlier_request_is_not_reused(hub):
     hub("hf_abc")  # fills the 60 s size memo with version 1
     hub.state["version"] = 2  # the repo changed since
     calls, hashes = hub("hf_abc")
-    # The size probe answers from its memo; the hashes come from a fresh listing, as before.
     assert [c[0] for c in calls] == ["model_info"]
     assert hashes == frozenset({"sha-a-2", "blob-sha-b-2"})
 
@@ -165,7 +162,7 @@ def test_a_failed_refresh_serving_the_old_listing_is_not_reused(hub, monkeypatch
     hub("hf_abc")
     key = next(iter(download_lifecycle._REPO_SIBLINGS))
     sibs, _ = download_lifecycle._REPO_SIBLINGS[key]
-    download_lifecycle._REPO_SIBLINGS[key] = (sibs, time.monotonic() - 3600)  # expired
+    download_lifecycle._REPO_SIBLINGS[key] = (sibs, time.monotonic() - 3600)
     hub.state["fail_repo_info"] = True
     hub.state["version"] = 2
     calls, hashes = hub("hf_abc")

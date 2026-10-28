@@ -65,10 +65,7 @@ def scoped_file_blob_hashes(
     *,
     siblings: Optional[Sequence] = None,
 ) -> frozenset[str]:
-    """Blob hashes for exactly ``files``, so a scoped job's progress, purge and peer protection cover its own files and nothing else in the repo.
-
-    ``siblings``: a files_metadata listing of the repo already fetched in this request with the same credential; None lists it here.
-    """
+    """Blob hashes for exactly ``files``, so a scoped job's progress, purge and peer protection cover its own files and nothing else in the repo."""
     wanted = set(files)
     if siblings is None:
         from huggingface_hub import HfApi
@@ -389,7 +386,6 @@ async def download_model_response(
         try:
             if scope_variant is not None:
                 # A scope owns exactly its own files: same set for purge and for progress.
-                # The size probe just listed the repo with this credential: reuse that listing, not a second round trip.
                 variant_blob_hashes = await asyncio.to_thread(
                     scoped_file_blob_hashes,
                     repo_id,

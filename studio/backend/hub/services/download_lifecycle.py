@@ -121,14 +121,8 @@ def repo_siblings_fetched_since(
     allow_ambient_token: bool,
     since: float,
 ) -> Optional[tuple]:
-    """The listing _repo_siblings fetched successfully at or after ``since`` (a time.monotonic() taken
-    before the measuring call), else None.
-
-    Answers only when the memo sent exactly the credential a plain ``model_info(token = hf_token)``
-    sends, so a caller can reuse it instead of listing the repo again: a stale TTL hit, a failed
-    refresh serving the last listing, an empty listing, or a different credential all return None
-    and the caller fetches as before.
-    """
+    """The size probe's listing if fetched at/after ``since`` with exactly the credential
+    ``model_info(token = hf_token)`` sends and non-empty, else None (caller lists again)."""
     if hf_token is None:
         if not allow_ambient_token:
             return None  # the memo listed anonymously; model_info(token = None) sends the ambient login
