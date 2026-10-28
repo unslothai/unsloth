@@ -36,6 +36,8 @@ function tint(color: string, percent: number): string {
 // Studio surfaces: groups and default notes are neutral; the group colour is its dot.
 const GROUP_FILL = "color-mix(in oklab, var(--muted) 40%, transparent)";
 const NOTE_STYLE = { background: "var(--muted)", borderColor: "var(--border)" };
+// Recipe Studio's and the examples' default note yellow reads as "no colour picked".
+const DEFAULT_NOTE = "#fde68a";
 
 function GroupFrameImpl({ data, selected }: NodeProps<RfNode>) {
   const groupId = (data as { groupId: string }).groupId;
@@ -107,7 +109,8 @@ function NoteFrameImpl({ data, selected }: NodeProps<RfNode>) {
   const upsertNote = useDocStore((s) => s.upsertNote);
   const [editing, setEditing] = useState(false);
   if (!note) return null;
-  const color = note.color;
+  const color =
+    note.color?.toLowerCase() === DEFAULT_NOTE ? undefined : note.color;
   const showEditor = editing || !note.text;
   return (
     <BaseNode
