@@ -481,6 +481,36 @@ def test_input_viewing_a_trainable_param_copies_its_gradient(monkeypatch, throug
     assert param.grad is not None
 
 
+@pytest.mark.parametrize("source", ["block", "foreign"])
+def test_only_graphed_block_regions_stop_the_input_gradient_walk(monkeypatch, source):
+    """A previous graphed block decided its own input gradient, so the walk stops at its compiled
+    node. Any other compiled function (a compiled prompt preprocessor) can hand the incoming
+    gradient straight to a trainable leaf, so its first .grad would alias the pool: copy it."""
+    real_compile = torch.compile
+    torch._dynamo.reset()
+    # aot_eager gives the real CompiledFunctionBackward nodes on CPU; graphs themselves are faked.
+    monkeypatch.setattr(torch, "compile", lambda fn, **kwargs: real_compile(fn, backend = "aot_eager"))
+    seen = _counting_clones(monkeypatch)
+    A = _linear_layer_class("CompiledRegionDecoderLayer")
+    bc._wrap(A, {**bc._COMPILE_OPTIONS, "triton.cudagraphs": True})
+    layers = [A().train() for _ in range(2)]
+    if source == "foreign":
+        prompt = torch.nn.Parameter(torch.randn(2, 4, 8))
+        x = real_compile(lambda p: p.clone(), backend = "aot_eager")(prompt)
+        assert type(x.grad_fn).__name__.startswith("CompiledFunction")
+        layers[0](x).sum().backward()
+        assert seen["grad"] == 1, seen
+        assert prompt.grad is not None
+    else:
+        # block-to-block hand-off: no copy, the memory win stays
+        y = layers[0](torch.randn(2, 4, 8))
+        assert type(y.grad_fn).__name__.startswith("CompiledFunction")
+        layers[1](y).sum().backward()
+        assert seen["grad"] == 0, seen
+        assert layers[0].proj.weight.grad is not None
+    torch._dynamo.reset()
+
+
 @pytest.mark.parametrize("exposed", ["kwarg", "config", None])
 def test_returned_hidden_states_keep_their_pool_copies(monkeypatch, exposed):
     """output_hidden_states hands every block output to the caller, who may keep it past the

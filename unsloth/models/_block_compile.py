@@ -98,7 +98,7 @@ def _graphed_call(compiled, device, *args, **kwargs):
         if manager is not None:
             managers[device] = manager
     before = len(manager.ids_to_funcs) if manager is not None else 0
-    out = compiled(*args, **kwargs)
+    out = _mark_block_outputs(compiled(*args, **kwargs))
     if manager is None:
         manager = _tree_manager(device)
         if manager is None:
@@ -107,6 +107,20 @@ def _graphed_call(compiled, device, *args, **kwargs):
     if len(manager.ids_to_funcs) > before:
         ids = list(manager.ids_to_funcs)[before:]
         _CUDAGRAPH_STATE["ours"].update(manager.id_to_compile_id.get(i) for i in ids)
+    return out
+
+
+_BLOCK_NODE = "_unsloth_graphed_block"
+
+
+def _mark_block_outputs(out):
+    """Tag the autograd nodes of a graphed block call, so a later block's input check can stop there:
+    that call decided its own input gradient. Other compiled functions may pass gradients through."""
+    import torch.utils._pytree as pytree
+
+    for x in pytree.tree_leaves(out):
+        if torch.is_tensor(x) and x.grad_fn is not None:
+            x.grad_fn.metadata[_BLOCK_NODE] = True
     return out
 
 
@@ -240,7 +254,7 @@ def _input_grad_must_leave_pool(hidden_states):
         if seen > 32:
             return True
         name = type(node).__name__
-        if name.startswith("CompiledFunction"):
+        if name.startswith("CompiledFunction") and node.metadata.get(_BLOCK_NODE, False):
             continue  # the previous block's region: its own input is its own call's decision
         if isinstance(node, torch.autograd.function.BackwardCFunction):
             forward_cls = getattr(node, "_forward_cls", None)
