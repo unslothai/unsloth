@@ -404,3 +404,39 @@ test("Check flags an empty endpoint and model the way Recipe Studio does, before
   assert.ok(errors.some((e) => /endpoint is required/.test(e)), errors.join("; "));
   assert.ok(errors.some((e) => /model is required/.test(e)), errors.join("; "));
 });
+
+test("Check leaves disabled columns and a disabled Recipe Dataset out, like the compiler", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { runColumns } = await import(
+    "../src/features/flows/recipe/recipe-group-actions.ts"
+  );
+  const { groupGenerate } = await import("../src/features/flows/recipe/recipe-columns.ts");
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { group, nodes } = sqlGroup();
+  (group.config as { model_providers: Record<string, unknown>[] }).model_providers[0].endpoint =
+    "http://localhost:8000/v1";
+  // The only columns using the preset with no model are switched off.
+  const off = new Set(["sql_prompt", "sql", "sql-validator"]);
+  const columns = nodes.map((n) =>
+    off.has(columnName(n)) ? { ...n, disabled: true } : n,
+  );
+  const step = (id: string, disabled: boolean): FlowNode => ({
+    id,
+    type: GENERATE_TYPE,
+    v: 1,
+    params: { rows: 5, mode: "preview" },
+    pos: [0, 400],
+    group: "recipe",
+    disabled,
+  });
+  useDocStore.getState().load({
+    ...doc([...columns, step("old_step", true), step("live_step", false)]),
+    groups: [group],
+  });
+  const graph = useDocStore.getState().graph;
+  assert.equal(groupGenerate(graph, "recipe")?.id, "live_step");
+  const checked = runColumns(graph, "recipe");
+  assert.ok(checked.every((n) => !off.has(columnName(n))));
+  assert.deepEqual(clientErrors(group, checked), []);
+  assert.ok(clientErrors(group, columns).some((e) => /model is required/.test(e)));
+});

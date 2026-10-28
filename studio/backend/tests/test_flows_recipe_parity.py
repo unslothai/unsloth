@@ -282,6 +282,19 @@ def test_recipe_json_round_trips_out_of_flows_and_back(client):
     assert step["params"] == {"rows": 250, "mode": "full"}
 
 
+def test_recipe_json_export_reads_the_enabled_recipe_dataset_step(client):
+    doc = _flow()
+    step = next(n for n in doc["nodes"] if n["type"] == "recipe.generate")
+    old = {**copy.deepcopy(step), "id": "old_step", "disabled": True}
+    old["params"].update(rows = 3, mode = "preview")
+    step["params"].update(rows = 40, mode = "full")
+    doc["nodes"].insert(0, old)
+    exported = client.post(
+        "/api/flows/export/recipe", json = {"doc": doc, "group_id": "recipe"}
+    ).json()
+    assert exported["run"]["rows"] == 40 and exported["run"]["preview"] is False
+
+
 def test_recipe_json_export_keeps_the_recipes_notes(client):
     doc = _flow()
     notes = [n["text"] for n in doc["notes"]]

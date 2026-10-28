@@ -38,13 +38,15 @@ export function groupColumns(graph: DocGraph, groupId: string): FlowNode[] {
     .filter((n) => n?.type === COLUMN_TYPE && n.group === groupId);
 }
 
+/** The group's Recipe Dataset step: the enabled one, as the compiler runs it, else the first. */
 export function groupGenerate(
   graph: DocGraph,
   groupId: string,
 ): FlowNode | undefined {
-  return graph.nodeOrder
+  const steps = graph.nodeOrder
     .map((id) => graph.nodes[id])
-    .find((n) => n?.type === GENERATE_TYPE && n.group === groupId);
+    .filter((n) => n?.type === GENERATE_TYPE && n.group === groupId);
+  return steps.find((n) => !n.disabled) ?? steps[0];
 }
 
 const NAME = /[A-Za-z_][A-Za-z0-9_-]*/g;

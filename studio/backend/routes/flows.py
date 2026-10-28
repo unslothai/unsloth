@@ -378,7 +378,8 @@ def export_recipe(body: RecipeExportBody) -> dict:
         ui["nodes"] = [*(ui.get("nodes") or []), *notes]
     run = compiled["run"]
     # Rows and mode live on the Recipe Dataset step, not on the group.
-    step = next((n for n in graph["nodes"] if n.get("type") == GENERATE_TYPE), None)
+    steps = [n for n in graph["nodes"] if n.get("type") == GENERATE_TYPE]
+    step = next((n for n in steps if not n.get("disabled")), steps[0] if steps else None)
     if step:
         params = step.get("params") or {}
         if isinstance(params.get("rows"), int) and params["rows"] > 0:

@@ -4,7 +4,8 @@
 import { toast } from "sonner";
 import { useDocStore } from "../stores/doc-store";
 import { useUiStore } from "../stores/ui-store";
-import type { FlowGroup } from "../types";
+import type { DocGraph } from "../stores/doc-store";
+import type { FlowGroup, FlowNode } from "../types";
 import { groupColumns, groupGenerate, groupPayload } from "./recipe-columns";
 
 /** Why the recipe cannot run yet when its file seed came without the file; mirrors `recipe_share.missing_seed`. */
@@ -33,18 +34,24 @@ function seedWired(groupId: string): boolean {
   );
 }
 
+/** The columns a run sends: disabled ones are left out, as the compiler does. */
+export function runColumns(graph: DocGraph, groupId: string): FlowNode[] {
+  return groupColumns(graph, groupId).filter((n) => !n.disabled);
+}
+
 /** Recipe Studio's server-side check of the group as it would run. */
 export async function checkRecipeGroup(groupId: string): Promise<string[]> {
   const graph = useDocStore.getState().graph;
   const group = graph.groups[groupId];
   if (!group) return ["This recipe is gone"];
   try {
+    const columns = runColumns(graph, groupId);
     const { clientErrors } = await import("./recipe-adapter");
-    const local = clientErrors(group, groupColumns(graph, groupId));
+    const local = clientErrors(group, columns);
     if (local.length) return local;
     const { validateRecipe } = await import("@/features/recipe-studio/api");
     const result = await validateRecipe({
-      recipe: groupPayload(group, groupColumns(graph, groupId)).recipe,
+      recipe: groupPayload(group, columns).recipe,
     });
     return (result.errors ?? []).map((e) => e.message);
   } catch (error) {
