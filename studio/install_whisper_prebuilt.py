@@ -44,7 +44,6 @@ release_asset_download_url = core.release_asset_download_url
 compute_install_fingerprint = core.compute_install_fingerprint
 artifact_coverage = core.artifact_coverage
 emit_resolver_output = core.emit_resolver_output
-_valid_sha256 = core.valid_sha256
 _swap_into_place = core.swap_into_place
 InstallSelection = core.InstallSelection
 ReleaseBundle = core.ReleaseBundle
