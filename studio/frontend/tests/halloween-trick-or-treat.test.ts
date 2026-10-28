@@ -131,7 +131,7 @@ test("every spooky greeting has English text, and named lines keep {name}", () =
   const keys = [...source.matchAll(/"halloween\.greeting\.(\w+)"/g)].map(
     (m) => m[1],
   );
-  assert.ok(keys.length >= 12);
+  assert.equal(keys.length, 7);
   for (const key of keys) {
     const line = en.match(new RegExp(`\\n\\s+${key}: "([^"]+)"`))?.[1];
     assert.ok(line, key);
@@ -156,4 +156,26 @@ test("the sidebar row and dialog are gated on the season", () => {
     "../src/features/settings/components/color-theme-select.tsx",
   );
   assert.match(select, /\{isHalloweenSeason\(\) && \(/);
+});
+
+test("October 30 and 31 always say Happy Halloween", async () => {
+  const { buildSpookyWelcome } = await import(
+    "../src/features/halloween/spooky-greetings.ts"
+  );
+  for (const day of [30, 31]) {
+    const at = new Date(2026, 9, day, 21, 0);
+    assert.equal(
+      buildSpookyWelcome("", at).key,
+      "halloween.greeting.happyHalloween",
+    );
+    assert.deepEqual(buildSpookyWelcome("Ada", at), {
+      key: "halloween.greeting.happyHalloweenName",
+      name: "Ada",
+      sloth: "large sloth yay.png",
+    });
+  }
+  for (let i = 0; i < 40; i++) {
+    const { key } = buildSpookyWelcome("", new Date(2026, 9, 29, 23, 59));
+    assert.notEqual(key, "halloween.greeting.happyHalloween");
+  }
 });
