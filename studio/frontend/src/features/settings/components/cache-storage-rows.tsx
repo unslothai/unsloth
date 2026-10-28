@@ -171,8 +171,9 @@ export function useCacheStorage() {
     const moved = measuredVersion.current !== inventoryVersion;
     measuredVersion.current = inventoryVersion;
     void refresh(moved ? { refresh: true } : {});
-    // Leaving the page stops any follow-up read.
+    // Leaving the page stops any follow-up read, including one still in flight.
     return () => {
+      latestRequest.current += 1;
       if (followUp.current !== null) clearTimeout(followUp.current);
       followUp.current = null;
     };

@@ -170,16 +170,21 @@ function driveRows(options: {
     "./storage-overview": { SettingsCardRow: "SettingsCardRow" },
   });
 
-  return () => {
+  let cleanup: (() => void) | undefined;
+  const render = () => {
     stateCursor = 0;
     refCursor = 0;
     callbackCursor = 0;
     const tree = rows.CacheStorageRows({ cache: rows.useCacheStorage() });
-    const effect = pending;
+    const effect = pending as (() => (() => void) | undefined) | null;
     pending = null;
-    effect?.();
+    if (effect) {
+      cleanup?.();
+      cleanup = effect() ?? undefined;
+    }
     return tree;
   };
+  return Object.assign(render, { unmount: () => cleanup?.() });
 }
 
 type Element = { type: unknown; props?: Record<string, unknown> };
@@ -360,4 +365,26 @@ test("a size still being re-walked is asked for again until it is current", asyn
     .map((element) => element.props?.title)
     .filter((title) => typeof title === "string");
   assert.deepEqual(paths, ["/new/hub"]);
+});
+
+test("leaving the page stops a follow-up read still in flight", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const pending: ((value: unknown) => void)[] = [];
+  const render = driveRows({
+    load: () => new Promise((resolve) => pending.push(resolve)),
+    version: () => 0,
+  });
+
+  render();
+  pending[0]({ ...inventory("/old/hub"), refreshing: true });
+  await settle();
+  t.mock.timers.tick(2000);
+  await settle();
+  assert.equal(pending.length, 2);
+  render.unmount();
+  pending[1]({ ...inventory("/old/hub"), refreshing: true });
+  await settle();
+  t.mock.timers.tick(10_000);
+  await settle();
+  assert.equal(pending.length, 2);
 });
