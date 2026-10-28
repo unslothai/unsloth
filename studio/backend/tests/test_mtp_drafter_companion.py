@@ -4269,7 +4269,6 @@ def test_forced_dflash_on_an_mrope_vision_load_still_launches_and_warns(monkeypa
     "listing, sized",
     [
         (["model-Q4_K_M.gguf", "mmproj-F16.gguf", "MTP/mtp-model.gguf"], False),
-        # Nested, half-listed and header-rejected sidecars leave nothing for the size bound to rule out.
         (["model-Q4_K_M.gguf", "sub/dflash-model.gguf"], False),
         (["model-Q4_K_M.gguf", "dflash-model-00001-of-00002.gguf"], False),
         (["model-Q4_K_M.gguf", "dflash-model.gguf"], True),
@@ -4278,8 +4277,7 @@ def test_forced_dflash_on_an_mrope_vision_load_still_launches_and_warns(monkeypa
 def test_download_dflash_asks_the_hub_for_sizes_only_with_a_candidate(
     monkeypatch, tmp_path, listing, sized
 ):
-    """model_info(files_metadata=True) is a remote call; a listing without an eligible root
-    sidecar has nothing for it to bound, so the pick must not make it."""
+    """No eligible root sidecar, no model_info(files_metadata=True) call."""
     from core.inference.llama_cpp import LlamaCppBackend
 
     weight = tmp_path / "model-Q4_K_M.gguf"

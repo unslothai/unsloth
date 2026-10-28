@@ -20020,7 +20020,6 @@ class LlamaCppBackend:
                 and split_listing_is_complete(candidates, name)
             ]
             if not eligible:
-                # Nothing for the size bound to rule out, so the Hub is not asked for sizes.
                 return None
             # Same size bound as dflash_plan_files: header reads only after download, a drafter is a few layers of its target, and an unlisted size keeps the candidate.
             sizes = self._remote_root_gguf_sizes(hf_repo, hf_token)
