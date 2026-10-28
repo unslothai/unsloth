@@ -1257,6 +1257,18 @@ def _cache_in_use(past):
         return True
 
 
+def _replica_in(module):
+    """A whole replica is gathered (tp_replica: generate / for_inference): the forward runs as on one GPU. A
+    wrapper installed over forward_without_cache after apply_tensor_parallel (the GRPO hidden states forward)
+    keeps calling it, so the check lives here and not only in the forward swap of tp_replica."""
+    root = module.__dict__.get("_unsloth_tp_root")
+    if root is None:
+        return False
+    from .tp_replica import replica_active
+
+    return replica_active(root)
+
+
 def _refuse_cached_forward(module):
     """Refuse a filled KV cache (instance attribute: LoraModel calls self.model.forward directly)."""
     forward = module.forward
@@ -1270,7 +1282,7 @@ def _refuse_cached_forward(module):
         past = kwargs.get("past_key_values", kwargs.get("past_key_value"))
         if past is None and index is not None and len(args) > index:
             past = args[index]
-        if _cache_in_use(past):
+        if _cache_in_use(past) and not _replica_in(module):
             raise RuntimeError(
                 "Unsloth: cached decoding (past_key_values) is not supported on a tensor parallel model in "
                 "v1; save the adapter (save_tp_adapter) and generate on one GPU."

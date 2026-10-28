@@ -1,11 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Tensor parallel evaluation on a gloo CPU world vs one process, fp32.
+"""Tensor parallel evaluation and cached generate on a gloo CPU world vs one process, fp32.
 
 - The HF Trainer with eval_strategy = "steps" (every step), Trainer.evaluate and Trainer.predict on a tp model
   (and dp x tp after shard_model): the gather covers the dp replicas only, so eval_loss / predictions equal
-  one process (the tp ranks of a replica hold identical results; a world gather would count each tp times)."""
+  one process (the tp ranks of a replica hold identical results; a world gather would count each tp times).
+- Cached greedy generate after a forward wrapper is installed over the tensor parallel forward guard (what the
+  GRPO hidden states wrapper in models/rl.py does to the model the GRPO trainer generates with): the gathered
+  replica decodes with a KV cache instead of being refused mid-run."""
 
 import multiprocessing
 import os
@@ -79,7 +82,40 @@ def _case_eval(rank, world, tmp, dp, tp):
     }
 
 
-CASES = {"eval": _case_eval}
+def _case_generate(rank, world, tmp, tp):
+    """Greedy cached generate after the GRPO hidden states forward wrapper wraps the tp forward guard."""
+    error = _import_checkout_unsloth()
+    if error is not None:
+        return {"skip": error}
+    from torch.distributed.device_mesh import init_device_mesh
+    from unsloth.models import rl, tp_native, tp_replica
+
+    model = build(LLAMA)
+    prompt = _batch(model, seed = 3, bsz = 2, seq = 5)
+    if tp > 1:
+        mesh = init_device_mesh("cpu", (tp,), mesh_dim_names = ("tp",))
+        tp_native.apply_tensor_parallel(model, mesh["tp"])
+    wrapped = rl._install_grpo_hidden_states_forward_wrapper(model)
+    model.eval()
+    try:
+        with torch.no_grad():
+            out = model.generate(
+                input_ids = prompt,
+                attention_mask = torch.ones_like(prompt),
+                max_new_tokens = 6,
+                do_sample = False,
+                use_cache = True,
+                pad_token_id = 0,
+            )
+        error = None
+    except Exception as e:
+        out, error = None, f"{type(e).__name__}: {e}"
+    # Training forward after generate runs on the shards again (replica released).
+    active = tp_replica.replica_active(model) if tp > 1 else False
+    return {"out": out, "error": error, "wrapped": wrapped, "replica_after": active}
+
+
+CASES = {"eval": _case_eval, "generate": _case_generate}
 
 
 def _worker(rank, world, port, case, tmp, kwargs):
@@ -146,3 +182,16 @@ def test_trainer_evaluates_a_tensor_parallel_model_like_one_process(dp, tp):
         assert res["predictions"].shape == ref["predictions"].shape, (rank, res["predictions"].shape)
         torch.testing.assert_close(res["predictions"], ref["predictions"], rtol = 1e-4, atol = 1e-5)
         assert torch.equal(res["label_ids"], ref["label_ids"])
+
+
+def test_cached_generate_through_a_wrapped_tp_forward_matches_one_process():
+    ref = _spawn("generate", 1, tp = 1)[0]
+    if "skip" in ref:
+        pytest.skip(f"import unsloth failed on this host: {ref['skip']}")
+    assert ref["error"] is None, ref["error"]
+    results = _spawn("generate", 2, tp = 2)
+    for rank, res in enumerate(results):
+        assert res["wrapped"], "the GRPO hidden states wrapper was not installed: the test proves nothing"
+        assert res["error"] is None, (rank, res["error"])
+        assert torch.equal(res["out"], ref["out"]), (rank, res["out"], ref["out"])
+        assert res["replica_after"] is False
