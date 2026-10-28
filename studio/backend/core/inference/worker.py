@@ -284,13 +284,15 @@ def _apply_worker_hf_token_environment(config: dict) -> None:
 
 def _build_model_config(config: dict):
     from utils.models import ModelConfig
+    from utils.models.model_config import shared_hub_model_info
 
     model_name = config["model_name"]
-    mc = ModelConfig.from_identifier(
-        model_id = model_name,
-        hf_token = _config_hf_token(config),
-        gguf_variant = config.get("gguf_variant"),
-    )
+    with shared_hub_model_info():
+        mc = ModelConfig.from_identifier(
+            model_id = model_name,
+            hf_token = _config_hf_token(config),
+            gguf_variant = config.get("gguf_variant"),
+        )
     if not mc:
         raise ValueError(f"Invalid model identifier: {model_name}")
     return mc

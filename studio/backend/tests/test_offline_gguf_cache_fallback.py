@@ -1112,6 +1112,57 @@ class TestSharedHubModelInfo:
         assert len(hub.calls) == 1
         assert pinned_inside == [True]
 
+    @staticmethod
+    def _two_probe_from_identifier(
+        cls,
+        model_id,
+        hf_token = None,
+        **_kwargs,
+    ):
+        _hub_model_info(model_id, hf_token)
+        _hub_model_info(model_id, hf_token, files_metadata = True)
+        return None
+
+    @pytest.mark.parametrize("route", ["validate", "load"])
+    def test_validate_and_load_read_the_hub_once(self, hub, monkeypatch, route):
+        import asyncio
+
+        import core.inference.llama_cpp as llama_cpp
+        import routes.inference as inf
+        from models.inference import LoadRequest, ValidateModelRequest
+
+        monkeypatch.setattr(
+            inf.ModelConfig, "from_identifier", classmethod(self._two_probe_from_identifier)
+        )
+        monkeypatch.setattr(inf, "_owner_session", lambda _request: True)
+        monkeypatch.setattr(
+            inf, "_hf_offline_if_unreachable_for", lambda *_a: contextlib.nullcontext()
+        )
+        monkeypatch.setattr(
+            llama_cpp, "_hf_offline_if_unreachable_for", lambda *_a: contextlib.nullcontext()
+        )
+
+        if route == "validate":
+            call = inf.validate_model(ValidateModelRequest(model_path = "org/repo"), None, "owner")
+        else:
+            call = inf._load_model_impl(LoadRequest(model_path = "org/repo"), None, "owner")
+        with pytest.raises(inf.HTTPException):
+            asyncio.run(call)
+
+        assert len(hub.calls) == 1
+
+    def test_the_inference_worker_reads_the_hub_once(self, hub, monkeypatch):
+        from core.inference import worker
+
+        monkeypatch.setattr(
+            mc.ModelConfig, "from_identifier", classmethod(self._two_probe_from_identifier)
+        )
+
+        with pytest.raises(ValueError):
+            worker._build_model_config({"model_name": "org/repo"})
+
+        assert len(hub.calls) == 1
+
 
 class _DnsState:
     """Toggles resolver failure. The probe uses ``getaddrinfo`` (IPv4 + IPv6), so patch
