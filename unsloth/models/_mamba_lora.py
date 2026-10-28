@@ -191,7 +191,12 @@ def _mixed_batch_adapter_names(module):
     return None
 
 
-def _per_row_weight(module, names, label, batch = None):
+def _per_row_weight(
+    module,
+    names,
+    label,
+    batch = None,
+):
     """[batch, out, in] effective weights, one per row of a mixed-adapter batch.
 
     ``W @ x`` with a [batch, in, seq] input broadcasts per row, so each row sees its own adapter and
