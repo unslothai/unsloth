@@ -536,8 +536,7 @@ def _pack_rows(
     else:
         packed = pack_dataset(dataset, max_length, map_kwargs = {"num_proc": num_proc})
     ids = [list(x) for x in packed["input_ids"]]
-    # Wrapped packing (TRL < 0.20, or packing_strategy="wrapped") keeps no boundaries: each row is one
-    # sequence, as the single job then trains it.
+    # Wrapped packing (TRL < 0.20) keeps no boundaries: one sequence per row, as the single job trains it.
     lengths = (
         [list(n) for n in packed["seq_lengths"]]
         if "seq_lengths" in packed.column_names
