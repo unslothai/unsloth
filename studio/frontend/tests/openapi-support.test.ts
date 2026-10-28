@@ -145,7 +145,6 @@ test("without a flag (older backend) the schema probe decides as before", async 
   for (const result of [
     { supported: true, settled: true },
     { supported: false, settled: true },
-    // A transient failure stays unsettled, so a later refresh probes again.
     { supported: false, settled: false },
   ]) {
     const { calls, probe } = countingProbe(result);

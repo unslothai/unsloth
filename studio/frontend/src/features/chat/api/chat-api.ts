@@ -814,7 +814,6 @@ export async function deleteFineTunedModel(args: {
   await parseJsonOrThrow<unknown>(response);
 }
 
-/** Last threadPatchGuards a thread-list response carried; null until one does (older backends never do). */
 let advertisedPatchGuards: boolean | null = null;
 
 export function advertisedThreadPatchGuards(): boolean | null {
