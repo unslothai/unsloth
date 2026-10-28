@@ -82,6 +82,45 @@ def _in_nonreentrant_checkpoint():
     return bool(hooks) and getattr(hooks[0], "__module__", None) == "torch.utils.checkpoint"
 
 
+def _graphs_unsafe_moe(layer):
+    """MoE routing / grouped GEMMs read token counts the capture cannot hold (Qwen3-MoE: host copy
+    during capture, routing outputs overwritten by the next replay)."""
+    moe = layer.__dict__.get("_unsloth_block_graphs_moe")
+    if moe is None:
+        # "experts" child: transformers 4.57 DeepSeek-V2 / V3, GLM4-MoE have no num_experts.
+        moe = any(
+            _experts_of(m) is not None
+            or m._modules.get("experts") is not None
+            or (hasattr(m, "num_experts") and hasattr(m, "experts"))
+            for m in layer.modules()
+        )
+        layer.__dict__["_unsloth_block_graphs_moe"] = moe
+        if moe and not _GRAPHS_MOE_LOGGED[0]:
+            _GRAPHS_MOE_LOGGED[0] = True
+            print("Unsloth: block CUDA graphs skip MoE layers; they run compiled without graphs.")
+    return moe
+
+
+_GRAPHS_MOE_LOGGED = [False]
+
+
+def _flex_block_mask_call(args, kwargs):
+    """BlockMask index tensors are static graph inputs rebuilt every step, so the graph re-records
+    each call (StaticInputIdxMismatch is outside the re-record limit); Gemma3 was slower with graphs."""
+    for value in (*args, *kwargs.values()):
+        if type(value).__name__ == "BlockMask":
+            if not _GRAPHS_FLEX_LOGGED[0]:
+                _GRAPHS_FLEX_LOGGED[0] = True
+                print(
+                    "Unsloth: block CUDA graphs skip flex attention blocks; they run compiled without graphs."
+                )
+            return True
+    return False
+
+
+_GRAPHS_FLEX_LOGGED = [False]
+
+
 def _ddp_optimizer_mode():
     # optimize_ddp also takes "python_reducer" / "no_optimization" strings: only "ddp_optimizer"
     # (or True) makes dynamo split graphs (convert_frame.py checks == "ddp_optimizer").
@@ -692,6 +731,9 @@ def _precheck_band(layer, seq_len, args, kwargs):
 
 # Mode of the block being traced (_SPLIT: flex_attention outside); dynamo guards on it.
 _IN_BLOCK = [0]
+# True only inside Unsloth's own compiled block (fullgraph=False, a graph break is legal), not when the
+# block is inlined into a user's torch.compile, which may be fullgraph=True. Read by unsloth_zoo.
+_IN_COMPILED_REGION = [False]
 _PACKED_MODULE = "unsloth.utils.hf_packed_attention"
 _NO_PACKED = [False]
 _OFF, _FULL, _SPLIT = 0, 1, 2
@@ -868,6 +910,7 @@ def _wrap(
         previous = inline_flag[0]
         inline_flag[0] = True
         _IN_BLOCK[0] = mode
+        _IN_COMPILED_REGION[0] = True
         packed_module = sys.modules.get(_PACKED_MODULE)
         packed = getattr(packed_module, "IN_COMPILED_BLOCK", _NO_PACKED)
         packed_previous = packed[0]
@@ -888,7 +931,12 @@ def _wrap(
                     if shape not in graph_shapes:
                         graph_shapes.add(shape)
                         graphs_off[0] = len(graph_shapes) > _CUDAGRAPH_MAX_SHAPES
-                if graphs and (graphs_off[0] or _in_nonreentrant_checkpoint()):
+                if graphs and (
+                    graphs_off[0]
+                    or _in_nonreentrant_checkpoint()
+                    or _graphs_unsafe_moe(self)
+                    or _flex_block_mask_call(args, kwargs)
+                ):
                     return plain(self, hidden_states, *args, **kwargs)
                 if graphs:
                     _param_grads_out_of_pool(self)
@@ -899,6 +947,7 @@ def _wrap(
         finally:
             inline_flag[0] = previous
             _IN_BLOCK[0] = _OFF
+            _IN_COMPILED_REGION[0] = False
             packed[0] = packed_previous
 
     def _inline(self, hidden_states, args, kwargs, mode):

@@ -6,11 +6,12 @@ import {
   Edit03Icon,
   ImageUpload01Icon,
   MagicWand01Icon,
-  PaintBrush02Icon,
   SparklesIcon,
   ZoomInAreaIcon,
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
+// Relative with .ts: the node tests import this file and cannot resolve @/.
+import { AiPaintbrushIcon } from "../../lib/ai-paintbrush-icon.ts";
 
 export type WorkflowId =
   | "create"
@@ -56,7 +57,7 @@ export const WORKFLOW_TABS: Array<{
   {
     id: "inpaint",
     label: "Inpaint",
-    icon: PaintBrush02Icon,
+    icon: AiPaintbrushIcon,
     requires: "inpaint",
     hint: "Regenerate a painted region",
   },

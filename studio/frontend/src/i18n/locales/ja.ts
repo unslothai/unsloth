@@ -140,6 +140,11 @@ export const ja = {
     more: "その他",
     addressPlaceholder: "検索または URL を入力",
     local: "ローカル",
+    browserUse: {
+      label: "ブラウザ操作",
+      description: "モデルに内蔵ブラウザを操作させる",
+      unavailable: "ブラウザを使わせるには、ツールを呼び出せるモデルを読み込んでください。",
+    },
     suggested: "おすすめ",
     suggestedMenu: {
       open: "開く",
@@ -2290,6 +2295,7 @@ export const ja = {
       liveMonitor: {
         title: "リアルタイムモニター",
         apiTitle: "API モニター",
+        apiDescription: "他のアプリがこのサーバーの API に送る内容を、届いたそばから確認できます。",
         summary: "処理中のリクエスト、エラー、トークン使用量",
         status: "処理中 {active} 件 · 最近 {recent} 件 · {model}",
         noModelLoaded: "モデル未読み込み",
@@ -2529,6 +2535,8 @@ export const ja = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "稼働時間",
         processMemory: "プロセスメモリ",
         notInstalled: "未インストール",
@@ -3268,6 +3276,7 @@ export const ja = {
       desktopAppVersionUnavailable: "利用できません",
       llamaCppVersion: "llama.cpp バージョン",
       audioCppVersion: "audio.cpp バージョン",
+      mlxVersion: "MLX バージョン",
       whisperCppVersion: "whisper.cpp バージョン",
       engines: {
         title: "エンジン",

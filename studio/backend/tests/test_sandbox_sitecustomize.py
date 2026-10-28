@@ -404,3 +404,112 @@ def test_os_open_trunc_without_creat_missing_stays_truthful(monkeypatch, tmp_pat
         assert not os.path.exists(os.path.join(os.getcwd(), "missing_xyz.bin"))
     finally:
         _restore_patch_targets(saved)
+
+
+@pytest.mark.parametrize(
+    "init, namespace",
+    [
+        ("__path__ = __import__('pkgutil').extend_path(__path__, __name__)\n", True),
+        ("from pkgutil import extend_path\n__path__ = extend_path(__path__, __name__)\n", True),
+        ("__import__('pkg_resources').declare_namespace(__name__)\n", True),
+        (
+            "try:\n    __import__('pkg_resources').declare_namespace(__name__)\n"
+            "except ImportError:\n    import pkgutil\n"
+            "    __path__ = pkgutil.extend_path(__path__, __name__)\n",
+            True,
+        ),
+        ("# extend_path and declare_namespace are not used here\n", False),
+        ("from pkgutil import extend_path\n", False),
+        ("DOC = '__path__ = extend_path(__path__, __name__)'\n", False),
+        ("if False:\n    __import__('pkg_resources').declare_namespace(__name__)\n", False),
+        ("def setup():\n    __path__ = extend_path(__path__, __name__)\n", False),
+        ("paths = extend_path(['x'], 'other')\n", False),
+        ("this is not python(\n", False),
+        (
+            "try:\n    import _no_such_module\n"
+            "except ImportError:\n    __path__ = __import__('pkgutil').extend_path(__path__, __name__)\n",
+            False,
+        ),
+        (
+            "try:\n    import os\n"
+            "except ImportError:\n    pass\n"
+            "else:\n    __path__ = __import__('pkgutil').extend_path(__path__, __name__)\n",
+            True,
+        ),
+    ],
+)
+def test_host_packages_finder_only_treats_declared_namespaces_as_open(tmp_path, init, namespace):
+    """Only a real extend_path / declare_namespace declaration opens a regular-looking package to
+    the chat folder's portion; text that merely mentions them does not."""
+    finder = _load_shim()._HostPackagesFinder
+    origin = tmp_path / "__init__.py"
+    origin.write_text(init, encoding = "utf-8")
+    assert finder._extends_path(str(origin)) is namespace
+
+
+def _run_with_host_packages(tmp_path, folder, code):
+    """Run ``code`` in a fresh interpreter with the shim installed for ``folder``."""
+    import subprocess
+    import sys
+
+    script = f"import runpy; runpy.run_path({str(_SHIM)!r})\n" + code
+    env = {**os.environ, "_UNSLOTH_HOST_SESSION_PACKAGES": str(folder)}
+    env.pop("PYTHONPATH", None)
+    done = subprocess.run(
+        [sys.executable, "-I", "-c", script],
+        cwd = tmp_path,
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 60,
+    )
+    return done.stdout + done.stderr
+
+
+def test_host_packages_metadata_honours_an_explicit_search_path(tmp_path):
+    """An exact-name lookup scoped to explicit paths never answers from the chat folder."""
+    folder = tmp_path / "packages"
+    trusted = tmp_path / "trusted"
+    trusted.mkdir()
+    info = folder / "chatmeta-1.0.dist-info"
+    info.mkdir(parents = True)
+    (info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: chatmeta\nVersion: 1.0\n", encoding = "utf-8"
+    )
+    out = _run_with_host_packages(
+        tmp_path,
+        folder,
+        "import importlib.metadata as m\n"
+        "print('DEFAULT', m.version('chatmeta'))\n"
+        f"print('TRUSTED', len(list(m.distributions(name = 'chatmeta', path = [{str(trusted)!r}]))))\n"
+        f"print('LISTED', len(list(m.distributions(name = 'chatmeta', path = [{str(folder)!r}]))))\n",
+    )
+    assert "DEFAULT 1.0" in out, out
+    assert "TRUSTED 0" in out, out
+    assert "LISTED 1" in out, out
+
+
+def test_host_packages_pep420_portion_joins_the_namespace_path(tmp_path):
+    """A submodule served from the chat folder's PEP 420 portion sees that portion through the
+    namespace's __path__ (importlib.resources, pkgutil.iter_modules); the host portion stays first."""
+    folder = tmp_path / "packages"
+    host = tmp_path / "host"
+    (host / "chatns").mkdir(parents = True)
+    (host / "chatns" / "host_mod.py").write_text("V = 'host'\n", encoding = "utf-8")
+    (folder / "chatns").mkdir(parents = True)
+    (folder / "chatns" / "data.txt").write_text("chat-data", encoding = "utf-8")
+    (folder / "chatns" / "chat_mod.py").write_text(
+        "import importlib.resources\n"
+        "V = importlib.resources.files('chatns').joinpath('data.txt').read_text()\n",
+        encoding = "utf-8",
+    )
+    out = _run_with_host_packages(
+        tmp_path,
+        folder,
+        f"import sys; sys.path.insert(0, {str(host)!r})\n"
+        "import os, pkgutil, chatns.host_mod, chatns.chat_mod\n"
+        "print('NS', chatns.chat_mod.V,"
+        " [os.path.basename(os.path.dirname(p)) for p in chatns.__path__],"
+        " sorted(i.name for i in pkgutil.iter_modules(chatns.__path__)))\n",
+    )
+    assert "NS chat-data ['host', 'packages'] ['chat_mod', 'host_mod']" in out, out

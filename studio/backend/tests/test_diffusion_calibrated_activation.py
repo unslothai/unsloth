@@ -625,3 +625,38 @@ def test_sdxl_measured_activation_only_ever_adds_the_resident_tier():
             assert plan.offload_policy == OFFLOAD_NONE, gib
     assert resident_from == 15
     assert _plan(12, SDXL_FP16, act).offload_policy == OFFLOAD_MODEL
+
+
+@pytest.mark.parametrize("width, height", [(1024, 1024), (1152, 896), (768, 768)])
+def test_sdxl_controlnet_still_runs_after_the_t4_resident_promotion(monkeypatch, width, height):
+    """Resident SDXL on a T4 must not refuse ControlNet requests that whole-module offload ran."""
+    monkeypatch.setattr(dm, "_vram_budget_fraction", lambda: 0.97)
+    hint = "sdxl stabilityai/stable-diffusion-xl-base-1.0"
+    flat, plan = _t4_plan(None), _t4_plan(calibrated_image_activation("sdxl"))
+    assert flat.offload_policy == OFFLOAD_MODEL and plan.offload_policy == OFFLOAD_NONE
+    resident_free = 14_807 - SDXL_FP16["model_dense_mib"]
+    kw = dict(width = width, height = height, family = hint, tile_side = dm.DEFAULT_VAE_TILE_SIDE)
+    before = _guard(14_807, 14_912, calibrated = False, controlnet = True, **kw)
+    after = _guard(
+        resident_free,
+        14_912,
+        calibrated = "calibrated_headroom_mib" in plan.estimates,
+        controlnet = True,
+        **kw,
+    )
+    assert before.action != dm.ACTIVATION_REFUSE
+    assert after.action != dm.ACTIVATION_REFUSE, after
+    plain = _guard(resident_free, 14_912, calibrated = True, **kw)
+    assert after == plain
+
+
+def test_controlnet_surcharge_still_applies_to_transformer_families_named_like_sdxl():
+    assert dm._resident_only_hint("sdxl stabilityai/stable-diffusion-xl-base-1.0")
+    assert not dm._resident_only_hint("flux.1 someone/flux-sdxl-style")
+    assert not dm._resident_only_hint("")
+    assert not dm._resident_only_hint(None)
+    kw = dict(width = 1024, height = 1024, family = "flux.1 someone/flux-sdxl-style")
+    assert (
+        _guard(6 * GIB, 24 * GIB, calibrated = True, controlnet = True, **kw).action
+        == dm.ACTIVATION_REFUSE
+    )

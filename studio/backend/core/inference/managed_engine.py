@@ -73,6 +73,24 @@ def _mig_rows(gpu_ids: list[int]):
         return None
 
 
+_CA_BUNDLE_VARIABLES = ("SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE")
+
+
+def _point_tls_at_studio_ca_bundle(child_env: dict[str, str]) -> None:
+    """Engines verify TLS with Studio's current certifi unless the user chose a bundle: their
+    hash-pinned venvs keep an old certifi (2026.7.22 still trusts the revoked emSign roots)."""
+    if any(child_env.get(name) for name in _CA_BUNDLE_VARIABLES):
+        return
+    try:
+        import certifi
+        bundle = certifi.where()
+    except Exception:
+        return
+    if os.path.isfile(bundle):
+        child_env["SSL_CERT_FILE"] = bundle
+        child_env["REQUESTS_CA_BUNDLE"] = bundle
+
+
 def _child_cuda_mask(gpu_ids: list[int]) -> str:
     """Instance UUIDs on an R570+ MIG host (numeric ids would name the whole host), else the numeric mask."""
     try:
@@ -278,6 +296,8 @@ def validate_model(
         options["seed"] = seed
     if gpu_memory_utilization is not None:
         options["gpu_memory_utilization"] = gpu_memory_utilization
+    if engine == "sglang" and generation_prompt_opens_thought(template):
+        options["opens_thought"] = True
     if reasoning_parser:
         from .llama_cpp import detect_reasoning_flags
         options["reasoning_parser"] = reasoning_parser
@@ -285,7 +305,7 @@ def validate_model(
             template,
             # The detector reads DeepSeek's `thinking` toggle off the id; a renamed local directory loses it.
             f"deepseek {config.identifier}"
-            if reasoning_parser == "deepseek_v3"
+            if reasoning_parser in ("deepseek_v3", "deepseek-v3")
             else config.identifier,
             log_source = "managed engine",
         )
@@ -476,7 +496,7 @@ def _rocm_visibility(env: dict, gpu_ids) -> dict:
 # SGLang raises when its derived gRPC port (HTTP + 10000) exceeds 65535.
 _PORT_LIMIT = 55535
 # Launch options that change no compiled artifact, so they share the compile cache.
-_UNCACHED_OPTIONS = frozenset(("seed", "gpu_memory_utilization"))
+_UNCACHED_OPTIONS = frozenset(("seed", "gpu_memory_utilization", "opens_thought"))
 
 
 def _free_port(limit: int | None = _PORT_LIMIT) -> int:
@@ -543,6 +563,57 @@ def _token_file_token(env) -> str | None:
     return token or None
 
 
+CONTINUATION_FIELDS = {"continue_final_message": True, "add_generation_prompt": False}
+
+
+def generation_prompt_opens_thought(template) -> bool:
+    """R1 distills, QwQ and Qwen3 Thinking-2507 end the generation prompt inside ``<think>``."""
+    if not isinstance(template, str) or "<think>" not in template:
+        return False
+    from jinja2.sandbox import ImmutableSandboxedEnvironment
+
+    def raise_exception(message):
+        raise ValueError(message)
+
+    try:
+        environment = ImmutableSandboxedEnvironment(
+            extensions = ["jinja2.ext.loopcontrols", "jinja2.ext.do"]
+        )
+        environment.globals["raise_exception"] = raise_exception
+        prompt = environment.from_string(template).render(
+            messages = [{"role": "user", "content": "Hi"}],
+            add_generation_prompt = True,
+            bos_token = "",
+            eos_token = "",
+        )
+    except Exception:
+        return False
+    return prompt.rstrip().endswith("<think>")
+
+
+def sglang_prefill(message: dict, opens_thought: bool) -> dict:
+    """SGLang drops the trailing assistant turn, renders a fresh generation prompt and appends only
+    its string content, so a separately sent thought must travel in that content. Without one the
+    content goes as is: where the prompt opens <think>, SGLang's raw text already holds any close."""
+    content = message.get("content")
+    if isinstance(content, list):
+        content = "".join(part.get("text") or "" for part in content if isinstance(part, dict))
+    thought = (message.get("reasoning_content") or message.get("reasoning") or "").strip()
+    if thought:
+        opener = "" if opens_thought else "<think>\n"
+        content = f"{opener}{thought}\n</think>\n\n{content or ''}"
+    rest = {k: v for k, v in message.items() if k not in ("reasoning", "reasoning_content")}
+    return {**rest, "content": content}
+
+
+# The prompt closed the thought, but a forcing parser (deepseek_r1) files the rest as one.
+def fold_reasoning_into_answer(part: dict) -> None:
+    reasoning = part.pop("reasoning", None)
+    reasoning = part.pop("reasoning_content", None) or reasoning
+    if reasoning:
+        part["content"] = reasoning + (part.get("content") or "")
+
+
 class ManagedEngine:
     def __init__(self, engine: str):
         self.engine = engine
@@ -560,6 +631,7 @@ class ManagedEngine:
         self._last_output = time.monotonic()
         self.base_url = ""
         self.reasoning_parser = None
+        self.opens_thought = False
         self._guest_environment = None
         # A URL-safe token can start with '-', which CLI parsers read as an option.
         self.key = "studio-" + secrets.token_urlsafe(32)
@@ -682,6 +754,7 @@ class ManagedEngine:
                 self.base_url = f"http://127.0.0.1:{port}"
                 self.model, self.context = model, context or 4096
                 self.reasoning_parser = (options or {}).get("reasoning_parser")
+                self.opens_thought = bool((options or {}).get("opens_thought"))
                 stdin = None
                 if info.get("host") == "wsl":
                     command, child_env = self._wsl_command(
@@ -716,6 +789,7 @@ class ManagedEngine:
                     if rocm:
                         child_env.update(_rocm_visibility(child_env, gpu_ids or [0]))
                     child_env["PYTHONNOUSERSITE"] = "1"
+                    _point_tls_at_studio_ca_bundle(child_env)
                     from .engine_install import engine_root
 
                     cache = (
@@ -1032,13 +1106,20 @@ class ManagedEngine:
             fields["reasoning_effort"] = reasoning_effort
         return fields
 
+    def continue_final_message(self, body: dict) -> None:
+        """Resume the trailing assistant turn of ``body["messages"]`` in place."""
+        body.update(CONTINUATION_FIELDS)
+        if self.engine == "sglang" and body.get("messages"):
+            *head, last = body["messages"]
+            body["messages"] = [*head, sglang_prefill(last, self.opens_thought)]
+
     def replay_reasoning(
         self,
         messages,
         preserve_thinking = None,
     ):
-        """vLLM reads a past turn's thinking from ``reasoning``, Studio keeps it as ``reasoning_content``."""
-        if not (self.reasoning_parser and preserve_thinking):
+        """vLLM reads a past turn's thinking from ``reasoning``; SGLang and Studio keep ``reasoning_content``."""
+        if self.engine != "vllm" or not (self.reasoning_parser and preserve_thinking):
             return messages
         # Moved, not copied: the context fit prices the whole message, so a copy charges the thought twice.
         return [
@@ -1051,6 +1132,21 @@ class ManagedEngine:
             else message
             for message in messages
         ]
+
+    def _reply_cap_in_window(self, messages, system_prompt, limit, params):
+        """vLLM and SGLang refuse prompt + max_tokens past the window, where llama-server stops at it."""
+        try:
+            prompt = self.count_tokens(
+                messages,
+                system_prompt,
+                enable_thinking = params.get("enable_thinking"),
+                reasoning_effort = params.get("reasoning_effort"),
+                preserve_thinking = params.get("preserve_thinking"),
+            )[0]
+        except Exception:
+            # An estimate would cut a fitting reply short; the engine judges the cap itself.
+            return limit
+        return max(1, min(limit, self.context - prompt))
 
     def count_tokens(
         self,
@@ -1153,13 +1249,10 @@ class ManagedEngine:
                         )
                         message["content"] = parts
                         break
-        if params.get("continue_final_message") or (
-            not self.reasoning_parser
-            and (params.get("enable_thinking") or params.get("preserve_thinking"))
+        if not self.reasoning_parser and (
+            params.get("enable_thinking") or params.get("preserve_thinking")
         ):
-            raise ValueError(
-                "Continuation and reasoning controls are unavailable for this engine profile."
-            )
+            raise ValueError("Reasoning controls are unavailable for this engine profile.")
         from .engine_transport import engine_messages
 
         messages = self.replay_reasoning(engine_messages(messages), params.get("preserve_thinking"))
@@ -1182,13 +1275,18 @@ class ManagedEngine:
             "seed",
             "stop",
             "logit_bias",
+            "response_format",
         ):
             if params.get(key) is not None:
                 payload[key] = params[key]
         # -1 or full context leaves no room for the prompt; let the engine budget it.
         limit = params.get("max_new_tokens") or 0
         if limit > 0 and (not self.context or limit < self.context):
-            payload["max_tokens"] = limit
+            payload["max_tokens"] = (
+                self._reply_cap_in_window(messages, system_prompt, limit, params)
+                if self.context and not request_images
+                else limit
+            )
         payload.update(
             self.reasoning_fields(
                 params.get("enable_thinking"),
@@ -1196,6 +1294,9 @@ class ManagedEngine:
                 params.get("preserve_thinking"),
             )
         )
+        continuing = bool(params.get("continue_final_message"))
+        if continuing:
+            self.continue_final_message(payload)
         from .engine_transport import stream_chat_events
 
         def cancelled():
@@ -1206,11 +1307,20 @@ class ManagedEngine:
             if event.get("usage") and stats_holder is not None:
                 stats_holder.setdefault("stats", {})["usage"] = event["usage"]
             if event.get("error"):
+                error = event["error"] if isinstance(event["error"], dict) else {}
+                constrained = payload.get("response_format", {"type": "text"}) != {"type": "text"}
+                # vLLM: "Grammar error: ...", SGLang: "Failed to compile json grammar: ...".
+                rejected = re.search(r"grammar|schema", str(error.get("message")), re.IGNORECASE)
+                if constrained and rejected and str(error.get("code")).startswith("4"):
+                    from .grammar_constraint import ResponseFormatError
+                    raise ResponseFormatError(error.get("message") or "Invalid response_format.")
                 raise RuntimeError("Engine generation failed.")
             for choice in event.get("choices", []):
                 if choice.get("finish_reason") and stats_holder is not None:
                     stats_holder.setdefault("stats", {})["finish_reason"] = choice["finish_reason"]
                 delta = choice.get("delta", {})
+                if continuing:
+                    fold_reasoning_into_answer(delta)
                 # The parser splits thinking out; <think> markup is what the route's extractor reads.
                 reasoning = delta.get("reasoning") or delta.get("reasoning_content")
                 if reasoning:

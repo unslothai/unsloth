@@ -140,6 +140,11 @@ export const he = {
     more: "עוד",
     addressPlaceholder: "חפש או הזן URL",
     local: "מקומי",
+    browserUse: {
+      label: "שימוש בדפדפן",
+      description: "אפשר למודלים לשלוט בדפדפן המובנה",
+      unavailable: "טען מודל שיכול לקרוא לכלים כדי שיוכל להשתמש בדפדפן.",
+    },
     suggested: "מוצעים",
     suggestedMenu: {
       open: "פתח",
@@ -2413,6 +2418,7 @@ export const he = {
       liveMonitor: {
         title: "מוניטור חי",
         apiTitle: "מוניטור API",
+        apiDescription: "ראה מה אפליקציות אחרות שולחות ל-API של השרת הזה ברגע שזה מגיע.",
         summary: "בקשות חיות, שגיאות ושימוש בטוקנים",
         status: "{active} פעילות · {recent} לאחרונה · {model}",
         noModelLoaded: "אין מודל טעון",
@@ -2667,6 +2673,8 @@ export const he = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "זמן פעילות",
         processMemory: "זיכרון תהליך",
         notInstalled: "לא מותקן",
@@ -3432,6 +3440,7 @@ export const he = {
       desktopAppVersionUnavailable: "לא זמין",
       llamaCppVersion: "גרסת llama.cpp",
       audioCppVersion: "גרסת audio.cpp",
+      mlxVersion: "גרסת MLX",
       whisperCppVersion: "גרסת whisper.cpp",
       engines: {
         title: "מנועים",
