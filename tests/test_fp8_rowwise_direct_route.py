@@ -56,8 +56,12 @@ def test_autograd_fbgemm_and_kill_switch_keep_the_compiled_path(spies, monkeypat
         assert F8.fbgemm_fp8_linear(*_args(128, requires_grad = True)) == "compiled"
         with torch.no_grad():
             X, w, s = _args(128)
-            # Transposed weight view (LoRA backward's W.t()) and odd scaled_mm dims stay compiled / dequant.
-            assert F8.fbgemm_fp8_linear(X[..., :256], w.t(), s) == "compiled"
+            # Transposed weight (LoRA backward's W.t()) and odd scaled_mm dims stay compiled / dequant. Built with
+            # empty_strided: view ops on fake CUDA tensors raise on CPU-only torch builds.
+            Xt = torch.empty(1, 128, 256, device = "cuda", dtype = torch.bfloat16)
+            wt = torch.empty_strided((512, 256), (1, 512), device = "cuda", dtype = torch.float8_e4m3fn)
+            st = torch.empty(512, 1, device = "cuda", dtype = torch.float32)
+            assert F8.fbgemm_fp8_linear(Xt, wt, st) == "compiled"
             X2, w2, s2 = _args(128, N = 200)
             assert F8.fbgemm_fp8_linear(X2, w2, s2) == "direct"
             assert F8.fbgemm_fp8_linear(*_args(F8._FP8_ROWWISE_DIRECT_MAX_ROWS + 1)) == "compiled"
