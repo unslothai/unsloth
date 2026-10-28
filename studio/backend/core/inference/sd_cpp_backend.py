@@ -2638,6 +2638,10 @@ def _skip_unloadable_rocm(accelerator: str) -> str:
     if not nxt:
         return accelerator
     try:
+        # Only the default release is known to need the host runtime; an override may bundle it.
+        inst = _installer_module()
+        if inst._repo() != inst.DEFAULT_REPO or inst._pinned_tag() != inst.DEFAULT_TAG:
+            return accelerator
         if rocm_runtime_resolvable() is not False:
             return accelerator
         if not accelerator_runtime_failed(klass):

@@ -3088,6 +3088,10 @@ def test_an_unloadable_rocm_runtime_installs_vulkan_without_fetching_rocm(
     installed = []
 
     class _Installer:
+        DEFAULT_REPO, DEFAULT_TAG = "unslothai/stable-diffusion.cpp", "pinned"
+        _repo = staticmethod(lambda: "unslothai/stable-diffusion.cpp")
+        _pinned_tag = staticmethod(lambda: "pinned")
+
         @staticmethod
         def install(**kw):
             installed.append(kw["accelerator"])
@@ -3157,4 +3161,19 @@ def test_an_installed_rocm_build_is_kept_without_the_preflight(
     for allow_install in (True, False):
         got = getattr(sd_cpp_backend, ensure)(allow_install = allow_install, accelerator = "rocm")
         assert got == "/opt/sd/rocm/sd-bin"
+    assert _noted_accelerators(fake_settings) == []
+
+
+@pytest.mark.parametrize(
+    "env",
+    [{"UNSLOTH_SD_CPP_REPO": "someone/sd-rocm-bundled"}, {"UNSLOTH_SD_CPP_TAG": "master-999-abc"}],
+)
+def test_an_overridden_release_skips_the_preflight(fake_settings, monkeypatch, env):
+    """A custom repo or tag may bundle the ROCm runtime; its own start check decides."""
+    from core.inference import sd_cpp_backend
+
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setattr(sd_cpp_backend, "rocm_runtime_resolvable", lambda: False)
+    assert sd_cpp_backend._skip_unloadable_rocm("rocm") == "rocm"
     assert _noted_accelerators(fake_settings) == []
