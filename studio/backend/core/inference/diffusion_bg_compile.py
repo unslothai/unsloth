@@ -70,6 +70,25 @@ def _tensorify_state() -> Any:
     return TensorifyState
 
 
+def _holds_frozenset(const: Any) -> bool:
+    if isinstance(const, frozenset):
+        return True
+    return isinstance(const, tuple) and any(_holds_frozenset(item) for item in const)
+
+
+def _const_repr(const: Any) -> str:
+    """repr, except a frozenset (`x in {"a", "b"}` compiles to one) lists its items sorted.
+
+    Its repr follows PYTHONHASHSEED, so each process would get its own signature and
+    never read the seeds an earlier one saved. Anything without one keeps plain repr,
+    so seed files written before this stay valid."""
+    if not _holds_frozenset(const):
+        return repr(const)
+    if isinstance(const, frozenset):
+        return "frozenset({" + ", ".join(sorted(_const_repr(item) for item in const)) + "})"
+    return "(" + "".join(_const_repr(item) + ", " for item in const) + ")"
+
+
 def _code_digest(code: Any) -> str:
     """Bytecode plus constants; a nested code object (lambda, genexpr) by its own digest, never its address."""
     h = hashlib.sha256(code.co_code)
@@ -77,7 +96,7 @@ def _code_digest(code: Any) -> str:
         if hasattr(const, "co_code"):
             h.update(_code_digest(const).encode("utf-8"))
         else:
-            h.update(repr(const).encode("utf-8"))
+            h.update(_const_repr(const).encode("utf-8"))
     return h.hexdigest()
 
 
