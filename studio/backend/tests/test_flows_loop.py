@@ -280,3 +280,25 @@ def test_a_recipe_names_the_local_model_to_load_before_each_round():
     assert local_model(recipe) == {"repo": "unsloth/Qwen3-1.7B-GGUF", "variant": "Q4_K_M"}
     recipe["model_configs"][0]["provider"] = "api"
     assert local_model(recipe) is None
+
+
+def test_a_recipe_step_validates_against_the_seed_it_runs_on(monkeypatch, tmp_path):
+    from core.flows.compiler import RECIPE_PARAM
+    from core.flows.nodes import data
+
+    from .test_flows_recipe_groups import _compiled, _flow, _routes
+    from .test_flows_recipes import _Ctx
+
+    monkeypatch.setattr(data, "POLL_S", 0)
+    seed = tmp_path / "seed.jsonl"
+    seed.write_text('{"origin": "fresh"}\n')
+    monkeypatch.setattr(data, "local_seed_path", lambda ref: str(seed))
+    routes, _ = _routes(["job1"])
+    ctx = _Ctx(
+        routes,
+        params = {RECIPE_PARAM: _compiled(_flow()), "rows": 1},
+        inputs = {"seed": {"kind": "dataset", "source": "local", "ref": "loop-seed"}},
+    )
+    asyncio.run(data.recipe_group(ctx))
+    checked = next(c[3] for c in ctx.calls if c[1] == "/api/data-recipe/validate")
+    assert checked["recipe"]["seed_config"]["source"] == {"seed_type": "local", "path": str(seed)}

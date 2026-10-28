@@ -86,6 +86,7 @@ async def recipe(ctx: NodeContext) -> dict:
         raise FlowNodeError("Pick a saved Data Recipe")
     record = await ctx.call("GET", f"{RECIPES}/recipes/{quote(recipe_id, safe = '')}")
     body = declarative_recipe(record.get("payload") if isinstance(record, dict) else None)
+    await apply_seed(ctx, body)
     return await run_recipe(ctx, body, {})
 
 
@@ -101,6 +102,8 @@ async def recipe_group(ctx: NodeContext) -> dict:
     if local:
         # Something earlier in the run (a Benchmark, a Loop round) may have swapped the Chat model.
         await ctx.ensure_model("chat", local)
+    # Validate against the seed it will run on: its columns are what the prompts read.
+    await apply_seed(ctx, body)
     checked = await ctx.call("POST", f"{RECIPES}/validate", json = {"recipe": body})
     if isinstance(checked, dict) and checked.get("valid") is False:
         problems = [
@@ -143,11 +146,14 @@ def local_model(recipe: dict) -> Optional[dict]:
     return {"repo": repo, "variant": variant or None}
 
 
-async def run_recipe(ctx: NodeContext, body: dict, run: dict[str, Any]) -> dict:
-    """One Data Designer job for ``body``: its dataset (parquet if saved, else rows), a preview."""
+async def apply_seed(ctx: NodeContext, body: dict) -> None:
     seed = ctx.inputs.get("seed")
     if isinstance(seed, dict) and seed.get("kind") == "dataset":
         body["seed_config"] = await seed_config(ctx, seed, body.get("seed_config"))
+
+
+async def run_recipe(ctx: NodeContext, body: dict, run: dict[str, Any]) -> dict:
+    """One Data Designer job for ``body``: its dataset (parquet if saved, else rows), a preview."""
     run = {**run, "execution_type": "preview" if ctx.params.get("mode") == "preview" else "full"}
     rows = int(ctx.params.get("rows") or 0)
     if rows > 0:
