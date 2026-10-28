@@ -317,6 +317,68 @@ def test_the_real_evict_chat_promotes_the_identity_read_before_unload(env, monke
     assert kw._kv_resume["identity"] == IDENTITY and env.files[0].exists()
 
 
+class _FakeMlxOrchestrator:
+    loading_models = ()
+    _managed_engine = None
+    _openai_advertised_id = None
+
+    def __init__(self, tmp_path):
+        self.root, self.active_model_name, self.restores = tmp_path, "unsloth/A-MLX", []
+
+    def _serves_mlx(self):
+        return self.active_model_name is not None
+
+    def save_prompt_cache_for_resume(self, should_abort):
+        directory = self.root / "resume-mlx"
+        directory.mkdir()
+        (directory / "text-0.safetensors").write_bytes(b"kv")
+        slot = {"filename": "text-0.safetensors", "store": "text"}
+        return {"engine": "mlx", "dir": str(directory), "fingerprint": (), "slots": [slot]}
+
+    def restore_prompt_cache_for_resume(self, manifest):
+        self.restores.append(manifest)
+        return 1
+
+    def unload_model(self, name):
+        self.active_model_name = None
+
+    def _shutdown_subprocess(self, timeout):
+        return True
+
+
+@pytest.mark.parametrize("reload", ["mlx", "gguf"])
+def test_an_mlx_chat_keeps_its_prompt_cache_across_the_swap(env, monkeypatch, tmp_path, reload):
+    import core.inference as inference_pkg
+    import core.inference.llama_cpp as llama_cpp_mod
+    import core.inference.model_slots as model_slots
+    import core.inference.orchestrator as orchestrator_mod
+    from hub.services.models import account_access
+
+    orch = _FakeMlxOrchestrator(tmp_path)
+    env.unload_model()
+    env._wait_for_vram_settle = lambda **k: None
+    monkeypatch.setattr(model_slots, "unload_extra_models", lambda **k: None)
+    monkeypatch.setattr(inference_pkg, "get_inference_backend", lambda: orch)
+    monkeypatch.setattr(orchestrator_mod, "peek_inference_backend", lambda: orch)
+    monkeypatch.setattr(llama_cpp_mod, "chat_load_active", lambda: False)
+    monkeypatch.setattr(account_access, "clear_resident", lambda owner: None)
+    monkeypatch.setitem(arb._EVICTORS, arb.CHAT, arb._evict_chat)
+    _load()
+    stash = kw._kv_resume
+    assert stash["identity"] == ("unsloth/A-MLX", None, "unsloth/A-MLX", "mlx")
+    assert orch.active_model_name is None and Path(stash["dir"]).is_dir()
+    assert [(r["event"], r["reason"]) for r in env.rows] == [("unload", "swap")]
+
+    if reload == "mlx":
+        orch.active_model_name = "unsloth/A-MLX"
+        kw.note_model_loaded(orch)
+    else:
+        env.reload()
+        kw.note_model_loaded(env)
+    assert orch.restores == ([stash] if reload == "mlx" else []) and env.restores == []
+    assert kw._kv_resume is None and not Path(stash["dir"]).exists()
+
+
 @pytest.mark.parametrize(
     "case",
     ["generating", "keep_kv_off", "chat_not_resident", "not_gguf", "other_account", "chat_target"],

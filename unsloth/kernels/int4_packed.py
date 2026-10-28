@@ -11,15 +11,9 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""Triton kernels for compressed-tensors ``pack-quantized`` integer weights kept packed.
-
-Layout (compressed_tensors/compressors/pack_quantized/helpers.py): ``weight_packed`` is int32
-``[N, ceil(K / pf)]`` with ``pf = 32 // bits`` values per word, element ``j`` in bits
-``[j * bits, (j + 1) * bits)``, stored as ``q + 2 ** (bits - 1)``. ``weight_scale`` is ``[N, G]``;
-an asymmetric ``weight_zero_point`` is packed the same way along the OUTPUT dim ``[ceil(N / pf), G]``;
-act-order checkpoints carry ``weight_g_idx`` ``[K]`` (column -> group). The decode
-``(q - zp) * scale`` is exact in fp32, then rounded like compressed-tensors (scale dtype, then output).
-"""
+"""compressed-tensors pack-quantized weights: weight_packed int32 [N, ceil(K/pf)], pf = 32 // bits,
+element j at bits [j*bits, (j+1)*bits) as q + 2**(bits-1); weight_scale [N, G]; weight_zero_point
+packed along N as [ceil(N/pf), G]; act-order weight_g_idx [K]; decode exact in fp32."""
 
 import functools
 import inspect

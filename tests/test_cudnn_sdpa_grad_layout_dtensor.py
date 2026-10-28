@@ -6,12 +6,13 @@ raises "aten.copy_.default got mixed torch.Tensor and DTensor"."""
 
 import json
 import os
-import socket
 import subprocess
 import sys
 import textwrap
 
 import pytest
+
+from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
 
 torch = pytest.importorskip("torch")
 
@@ -64,13 +65,12 @@ def _context_parallel_available():
 
 
 def _free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    from tests._rendezvous_port import free_port
+    return free_port()
 
 
 @pytest.mark.gpu
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
 @pytest.mark.skipif(
     not (torch.distributed.is_available() and torch.distributed.is_nccl_available()),
     reason = "needs NCCL",

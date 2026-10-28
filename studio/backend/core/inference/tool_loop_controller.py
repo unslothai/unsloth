@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Shared controller state for Unsloth local agentic tool loops.
-
-This module is intentionally dependency-light: it owns only per-response
-ledger state and value objects used by the GGUF and safetensors loops.
-Route/SSE conversion, tool execution, and model streaming stay in the
-backend-specific modules.
-"""
+"""Dependency-light per-response ledger for GGUF and safetensors loops; execution lives in backends."""
 
 from __future__ import annotations
 
@@ -153,6 +147,12 @@ def _unreadable_arguments_summary(fragment: str) -> dict[str, str]:
     return {
         "error": (f"arguments were cut off after {len(fragment)} characters and could not be read")
     }
+
+
+TRUNCATED_TOOL_TURN_MESSAGE = (
+    "The model stopped before completing its tool calls. These tool calls were not run. "
+    "Retry with smaller changes or more room for the response."
+)
 
 
 _ONE_SHOT_TOOLS = frozenset({"render_html"})

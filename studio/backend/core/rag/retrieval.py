@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Lexical (FTS5) + dense (vec0 cosine) retrieval fused via Reciprocal Rank
-Fusion. ``dense_score`` is carried so callers can apply a similarity floor."""
+"""Lexical (FTS5) and dense (vec0 cosine) retrieval fused by Reciprocal Rank Fusion; dense_score is
+kept so callers can apply a similarity floor."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import logging
 import sqlite3
 from dataclasses import dataclass
 
-from . import config, embeddings, store
+from . import config, embeddings, reembed, store
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +64,10 @@ def retrieve_dense(
     )
     vec = vectors[0]
     _warn_once_on_untagged(conn)
+    try:
+        reembed.start_after_backend_change(identity)
+    except Exception:  # noqa: BLE001 - re-embedding must never break retrieval
+        logger.warning("could not start re-embedding after an embedder change", exc_info = True)
     return [
         Hit(cid, s, dense_score = s)
         for cid, s in store.search_dense(conn, scope, vec, k, embedding_model = identity)
