@@ -12,10 +12,7 @@ from .diffusion_flux3 import FLUX3_INDEX
 
 
 def resolve_local_single_file(model_path: str) -> Optional[str]:
-    """The sole ``.safetensors`` basename in a local non-pipeline, non-adapter dir, else None.
-
-    The images load route reloads such a picker ``pipeline`` pick as ``single_file``. Never raises.
-    """
+    """The sole ``.safetensors`` basename in a local non-pipeline, non-adapter dir, else None."""
     try:
         root = Path(model_path).expanduser()
         if not root.is_dir() or any(

@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Listing a models folder asks whether it is a bare single-file checkpoint. That check is path-only,
-so it must not import core.inference.diffusion (15k lines plus its pipeline siblings)."""
+"""Model listing and catalog classification must not import core.inference.diffusion."""
 
 from __future__ import annotations
 
