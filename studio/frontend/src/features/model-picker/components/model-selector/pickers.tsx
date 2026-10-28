@@ -120,7 +120,8 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
 import {
   type GgufFitClass,
-  ggufVariantFitSizeBytes,
+  classifyGgufFitWithLookupTables,
+  ggufVariantLookupTableBytes,
   requiredGgufMemoryGb,
 } from "@/lib/gguf-fit";
 import { formatGiB } from "@/lib/memory/format";
@@ -268,7 +269,11 @@ import {
   modelIdsMatchForPicker,
   soleQuantRowState,
 } from "./row-identity";
-import { isStandaloneGgufPath } from "@/features/hub/lib/model-identity";
+import {
+  isHfCacheSnapshotPath,
+  isStandaloneGgufPath,
+  publicModelId,
+} from "@/features/hub/lib/model-identity";
 import { cachedRepoConfigId } from "../../model-config/model-identity";
 import {
   type FormatTone,
@@ -820,6 +825,11 @@ const VRAM_VERDICT: Record<PickerFitStatus, FitVerdict | null> = {
     label: "RAM fallback",
     tone: ORANGE,
     hint: "No GPU detected. Runs on system RAM and CPU. Expect much slower inference.",
+  },
+  streamed: {
+    label: "Fits (lookup tables streamed from disk)",
+    tone: AMBER,
+    hint: "Fits with its lookup tables streamed from disk, llama.cpp's default for them. Prefill and decode can be slower and vary with disk speed.",
   },
   oom: OFFLOADS,
   exceeds: WONT_FIT,
@@ -2083,7 +2093,7 @@ function GgufVariantExpander({
   // One verdict per variant from the download footprint (incl. companions), so badge, order and star agree.
   const getVariantFit = useCallback(
     (variant: GgufVariantDetail): GgufFitClass =>
-      getGgufFit(ggufVariantFitSizeBytes(variant)),
+      classifyGgufFitWithLookupTables(getGgufFit, variant),
     [getGgufFit],
   );
 
@@ -4944,11 +4954,13 @@ export function HubModelPicker({
     downloaded: ReadonlyMap<string, string | null>;
     visionByRepo: ReadonlyMap<string, boolean>;
     sizes: ReadonlyMap<string, number>;
+    lookupTables: ReadonlyMap<string, number>;
   }>({
     validated: false,
     downloaded: new Map(),
     visionByRepo: new Map(),
     sizes: new Map(),
+    lookupTables: new Map(),
   });
   const prunePinnedQuantValidation = useCallback(
     (repoId: string, quant: string) => {
@@ -4997,10 +5009,23 @@ export function HubModelPicker({
               (variant) =>
                 [pinKey(repoId, variant.quant), variant.size_bytes] as const,
             ),
+            lookupTables: downloaded.map(
+              (variant) =>
+                [
+                  pinKey(repoId, variant.quant),
+                  ggufVariantLookupTableBytes(variant),
+                ] as const,
+            ),
           };
         } catch {
           // Hide unverifiable quants rather than claim a missing file is downloaded.
-          return { repoId, hasVision: undefined, downloaded: [], sizes: [] };
+          return {
+            repoId,
+            hasVision: undefined,
+            downloaded: [],
+            sizes: [],
+            lookupTables: [],
+          };
         }
       }),
     ).then((groups) => {
@@ -5016,6 +5041,9 @@ export function HubModelPicker({
             ),
           ),
           sizes: new Map(groups.flatMap((group) => group.sizes)),
+          lookupTables: new Map(
+            groups.flatMap((group) => group.lookupTables),
+          ),
         });
       }
     });
@@ -6133,6 +6161,13 @@ export function HubModelPicker({
             ? { ...selectMeta, ggufVariant: undefined, isGguf: true }
             : selectMeta,
         ];
+    // A path load keeps the menu. A cached download pins and reveals as its repo: the local
+    // reveal endpoint only lists non-cache sources, so it would 404.
+    const pinRepoId = !isLocal
+      ? checkpoint
+      : isHfCacheSnapshotPath(checkpoint)
+        ? publicModelId(checkpoint)
+        : null;
     // Its curated row is hidden while loaded, so this row must open the quant list instead.
     const expandable = Boolean(quant) && !isLocal && isKnownGgufRepo(entry.id);
     const expanded = expandable && expandedGguf === entry.id;
@@ -6174,7 +6209,10 @@ export function HubModelPicker({
             <ModelRowMenu
               ariaLabel={`More options for ${entry.id}`}
               cachePath={
-                isLocal ? undefined : { repoId: checkpoint, variant: quant ?? undefined }
+                pinRepoId === null ? undefined : { repoId: pinRepoId, variant: quant ?? undefined }
+              }
+              onReveal={
+                pinRepoId === null ? () => revealLocalModel(checkpoint, entry.id) : undefined
               }
               // Every loaded row ejects while several are loaded, the active one included.
               items={
@@ -6196,13 +6234,13 @@ export function HubModelPicker({
                   : undefined
               }
               pin={
-                isLocal
+                pinRepoId === null
                   ? undefined
                   : {
-                      pinned: pinnedSet.has(pinKey(checkpoint, quant ?? undefined)),
+                      pinned: pinnedSet.has(pinKey(pinRepoId, quant ?? undefined)),
                       pinLabel: "Pin",
                       unpinLabel: "Unpin",
-                      onToggle: () => togglePinned(checkpoint, quant ?? undefined),
+                      onToggle: () => togglePinned(pinRepoId, quant ?? undefined),
                     }
               }
             />
@@ -6413,7 +6451,14 @@ export function HubModelPicker({
                 diffusionTaskById.get(entry.repoId.toLowerCase()),
               )
                 ? undefined
-                : { repoId: entry.repoId, quant: entry.quant }
+                : {
+                    repoId: entry.repoId,
+                    quant: entry.quant,
+                    sizeBytes,
+                    lookupTableBytes: pinnedQuantValidation.lookupTables.get(
+                      pinKey(entry.repoId, entry.quant),
+                    ),
+                  }
             }
             gpuGb={expanderGpuGb}
             alignMeta="device"
@@ -6562,6 +6607,7 @@ export function HubModelPicker({
                     repoId: c.repo_id,
                     quant: variant.quant,
                     sizeBytes: variant.size_bytes,
+                    lookupTableBytes: ggufVariantLookupTableBytes(variant),
                     loadId: c.load_id,
                   }
             }

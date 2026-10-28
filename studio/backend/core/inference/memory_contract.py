@@ -145,6 +145,8 @@ def build_memory_estimate(
         layer_count = getattr(breakdown, "layer_count", None),
         gpu_layers = getattr(breakdown, "gpu_layers", None),
         moe_offload_unmodelled = bool(moe_offload_unmodelled),
+        lookup_table_bytes = int(getattr(breakdown, "lookup_table_bytes", 0) or 0),
+        lookup_table_on_disk = bool(getattr(breakdown, "lookup_table_on_disk", False)),
         mlx_offload = (
             None
             if getattr(breakdown, "offloadable", None) is None
@@ -189,6 +191,8 @@ def project_estimate_memory_response(estimate: MemoryEstimate) -> dict:
         "layer_count": estimate.layer_count,
         "gpu_layers": estimate.gpu_layers,
         "moe_offload_unmodelled": estimate.moe_offload_unmodelled,
+        "lookup_table_bytes": estimate.lookup_table_bytes,
+        "lookup_table_on_disk": estimate.lookup_table_on_disk,
         "mlx_offload": estimate.mlx_offload,
     }
 
@@ -206,6 +210,8 @@ def project_kv_cache_estimate(
     return {
         # The quant-file meaning. See the module docstring.
         "weights_bytes": estimate.quant_file_bytes or None,
+        # Off the GPU and inside weights_bytes, so the bar can take it off the VRAM segment.
+        "lookup_table_bytes": estimate.lookup_table_bytes or None,
         "kv_bytes": kv_bytes or None,
         "native_context": estimate.native_context,
         "spec_bytes": spec_bytes,

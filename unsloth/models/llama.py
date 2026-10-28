@@ -22,7 +22,7 @@ from typing import Optional, Tuple, List, Union
 from ._utils import *
 from ._utils import apply_unsloth_gradient_checkpointing
 from ._utils import _ignore_block_swap_params_for_ddp
-from ._utils import _refuse_tensor_parallel_for_inference
+from ._utils import _tensor_parallel_for_inference, _tensor_parallel_for_training
 from ._utils import __version__, importlib_version
 from ._utils import move_to_device
 from ._utils import per_layer_device
@@ -3310,6 +3310,22 @@ def _gated_method(cls, name, fast, original):
     return gated
 
 
+def runs_fast_forward(
+    module,
+    fast,
+    name = "forward",
+):
+    """True when `module` runs Unsloth's `fast` as its class `name`: directly, or through the gate that
+    pre_patch installs (which runs `fast` only on modules marked by mark_unsloth_fast_path)."""
+    method = getattr(type(module), name, None)
+    method = getattr(method, "__func__", method)
+    if method is fast:
+        return True
+    if getattr(method, "_unsloth_gated", False) and getattr(method, "__wrapped__", None) is fast:
+        return bool(getattr(module, "_unsloth_fast_path", False))
+    return False
+
+
 def mark_unsloth_fast_path(model):
     """Opt every module of an Unsloth-loaded model into the patched forwards."""
     for module in model.modules():
@@ -5480,7 +5496,7 @@ class FastLlamaModel:
             raise TypeError(
                 "Unsloth: I think you're passing a tokenizer, not the model to for_inference!"
             )
-        _refuse_tensor_parallel_for_inference(model)
+        _tensor_parallel_for_inference(model)
 
         def _for_inference(m):
             if hasattr(m, "gradient_checkpointing"):
@@ -5523,6 +5539,7 @@ class FastLlamaModel:
             raise TypeError(
                 "Unsloth: I think you're passing a tokenizer, not the model to for_training!"
             )
+        _tensor_parallel_for_training(model)
         # Mode last, as model.train() was: a custom train() keeps the final say over the chain below.
         checkpointing, apply_training_mode = switch_training_mode(model, True, defer = True)
         use_gradient_checkpointing = resolve_training_gradient_checkpointing(

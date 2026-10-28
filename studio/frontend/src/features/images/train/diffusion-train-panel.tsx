@@ -1234,6 +1234,11 @@ export function DiffusionTrainPanel({
     },
     [info?.families],
   );
+  // The images loader refuses video bases, so their adapters get no Deploy to Create.
+  const isVideoFamily = useCallback(
+    (famName: string) => info?.families?.find((f) => f.name === famName)?.is_video === true,
+    [info?.families],
+  );
 
   const navigate = useNavigate();
   const exportAdapter = useCallback(
@@ -2060,7 +2065,7 @@ export function DiffusionTrainPanel({
                   : ""}
               </p>
               <div className="flex flex-wrap items-center gap-2">
-                {viewRun.saved && viewRun.catalog_path && (
+                {viewRun.saved && viewRun.catalog_path && !isVideoFamily(viewRun.family || "") && (
                   <Button
                     type="button"
                     size="sm"
@@ -2291,7 +2296,7 @@ export function DiffusionTrainPanel({
                   )}
                 </p>
                 <div className="mt-1 flex flex-wrap gap-2">
-                  {status?.catalog_path && (
+                  {status?.catalog_path && !isVideoFamily(status.family || family?.name || "") && (
                     <Button type="button" size="sm" onClick={onDeployClick}>
                       Deploy to Create
                     </Button>

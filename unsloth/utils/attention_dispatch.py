@@ -1287,8 +1287,12 @@ def _run_attention(
     if backend == FLASH_VARLEN and context.seq_info is None:
         backend = FLASH_DENSE if HAS_FLASH_ATTENTION else SDPA
     xformers_fp32_unsupported = _xformers_rejects_fp32(Q.device)
+    # sm_100+ downcast below must not hand bf16 to an fp32 o_proj (old SDPA path returned fp32).
+    packed_out_dtype = None
     if backend == SDPA and _packed_fp32_prefers_xformers(config, context, Q, K, V):
         backend = XFORMERS
+        if not torch.is_autocast_enabled():
+            packed_out_dtype = Q.dtype
     if _DEVICE_BACKENDS is not None and backend != SDPA:
         device_backend = _backend_for_device(backend, Q.device, Q.dtype)
         if device_backend != backend and _configured_softcap(config):
@@ -1513,7 +1517,7 @@ def _run_attention(
             out = out.reshape(bsz, q_len, n_heads, head_dim)
         else:
             out = out.view(bsz, q_len, n_heads, head_dim)
-        return out
+        return out if packed_out_dtype is None else out.to(packed_out_dtype)
     else:
         local_mask = context.attention_mask
         is_causal_local = False

@@ -140,6 +140,11 @@ export const ja = {
     more: "その他",
     addressPlaceholder: "検索または URL を入力",
     local: "ローカル",
+    browserUse: {
+      label: "ブラウザ操作",
+      description: "モデルに内蔵ブラウザを操作させる",
+      unavailable: "ブラウザを使わせるには、ツールを呼び出せるモデルを読み込んでください。",
+    },
     suggested: "おすすめ",
     suggestedMenu: {
       open: "開く",
@@ -1413,13 +1418,13 @@ export const ja = {
       builtinNeedsUpdate:
         "Windows の組み込みコンテナーにはビルド {required} 以降が必要ですが、この PC は {current} です。管理者の手順なしで使うには最新の Windows Update をインストールするか、下のフォールバック サンドボックスをオンにしてください。",
       unsupportedBuild: "Windows サンドボックス (MXC) には Windows 11 24H2 (ビルド 26100) 以降が必要なため、この PC では使用できません。",
-      permissionsIntro: "ツールが先に確認するタイミングと、Python とターミナルを OS サンドボックス内でも実行するかを選びます。",
       permissionLabel: "ツールの権限",
+      levelRowLabel: "サンドボックスのレベル",
       levelPickerTitle: "コードをどのように隔離しますか？",
       levelOff: "無効",
       levelOffShort: "フルアクセスではサンドボックスがオフになります",
-      levelHighDetail: "OS サンドボックス。Python とターミナルは、ソフトウェアの保護に加えて OS サンドボックス (bubblewrap、Seatbelt または MXC) 内で実行されます。OS サンドボックスが動作しない場合、危険な呼び出しは先に確認します。",
-      levelLowDetail: "ソフトウェア サンドボックス。Python とターミナルはソフトウェアの保護のみで、OS サンドボックスの外で実行されます。フルアクセス以外では、危険な呼び出しは先に確認します。",
+      levelHighDetail: "Python とターミナルは、ソフトウェアの保護に加えて OS サンドボックス (bubblewrap、Seatbelt または MXC) 内で実行されます。OS サンドボックスが動作しない場合、危険な呼び出しは先に確認します。",
+      levelLowDetail: "Python とターミナルはソフトウェアの保護のみで、OS サンドボックスの外で実行されます。フルアクセス以外では、危険な呼び出しは先に確認します。",
       levelLabel: "サンドボックス",
       levelHigh: "高",
       levelLow: "低",
@@ -2033,13 +2038,13 @@ export const ja = {
         },
         details: {
           ask:
-            "ターミナルや Python のコード、ウェブ検索、ファイル編集、MCP ツールを含め、すべてのツール呼び出しの前に確認します。外部プロバイダーが実行するツールは一時停止されません。各ステップを確認したいときに最適です。",
+            "ターミナルや Python のコード、ウェブ検索、ファイル編集、MCP ツールを含め、すべてのツール呼び出しの前に確認します。外部プロバイダーが実行するツールは一時停止されません。",
           auto:
             "通常のツール呼び出しは自動で実行し、認証情報の読み取り、権限昇格、破壊的なコマンドなど、危険そうな操作のときだけ確認します。",
           off:
-            "すべてのツール呼び出しを確認なしで実行します。Python とターミナルのコードは引き続きサンドボックス内で実行され、コンピューター上でアクセスできるファイルが制限されます。このコンピューターで OS サンドボックスが動作しない場合、危険な Python とターミナルの呼び出しは先に確認します。",
+            "すべてのツール呼び出しを確認なしで実行します。Python とターミナルのコードは引き続きサンドボックス内で実行され、コンピューター上でアクセスできるファイルが制限されます。OS サンドボックスが動作しない場合、危険な呼び出しは先に確認します。",
           full:
-            "すべてのツール呼び出しを確認なしで実行し、コードサンドボックスをオフにします。Python とターミナルのコードは、アカウントがアクセスできる任意のファイルを読み取り、変更できます。サンドボックスの外で作業する必要がある、信頼できるタスクに最適です。",
+            "すべてのツール呼び出しを確認なしで実行し、コードサンドボックスをオフにします。Python とターミナルのコードは、アカウントがアクセスできる任意のファイルを読み取り、変更できます。",
         },
       },
     },
@@ -2290,6 +2295,7 @@ export const ja = {
       liveMonitor: {
         title: "リアルタイムモニター",
         apiTitle: "API モニター",
+        apiDescription: "他のアプリがこのサーバーの API に送る内容を、届いたそばから確認できます。",
         summary: "処理中のリクエスト、エラー、トークン使用量",
         status: "処理中 {active} 件 · 最近 {recent} 件 · {model}",
         noModelLoaded: "モデル未読み込み",
@@ -2529,6 +2535,8 @@ export const ja = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "稼働時間",
         processMemory: "プロセスメモリ",
         notInstalled: "未インストール",
@@ -3268,6 +3276,7 @@ export const ja = {
       desktopAppVersionUnavailable: "利用できません",
       llamaCppVersion: "llama.cpp バージョン",
       audioCppVersion: "audio.cpp バージョン",
+      mlxVersion: "MLX バージョン",
       whisperCppVersion: "whisper.cpp バージョン",
       engines: {
         title: "エンジン",
@@ -4498,6 +4507,7 @@ export const ja = {
       modelsTitle: "ファインチューニング済みモデルはまだありません",
       modelsDescription: "Unsloth でトレーニングまたはエクスポートしたモデルがここに表示されます。",
       createFolder: "フォルダを作成",
+      generateImage: "画像を生成",
       generateVideo: "動画を生成",
       generateAudio: "音声を生成",
       trainModel: "モデルをトレーニング",

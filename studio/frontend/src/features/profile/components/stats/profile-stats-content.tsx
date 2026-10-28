@@ -55,7 +55,12 @@ export function ProfileStatsContent() {
             {t("settings.profile.stats.subtitle")}
           </p>
         </div>
-        {hasUsage ? <ExportUsageButton /> : null}
+        {hasUsage ? (
+          // Top edge on the h2's cap top (text-base at leading 1.5; Hellix: 0.372em).
+          <div className="mt-[calc(var(--text-base)*0.372)] shrink-0">
+            <ExportUsageButton />
+          </div>
+        ) : null}
       </header>
 
       <StatsHighlights stats={stats} />

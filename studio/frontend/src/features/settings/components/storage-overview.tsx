@@ -125,7 +125,12 @@ export function SettingsCardRow({
       data-settings-label={label}
       className="flex flex-col border-border/60 py-3.5 not-first:border-t"
     >
-      <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
+      <div
+        className={cn(
+          "flex flex-wrap justify-between gap-x-6 gap-y-2",
+          description ? "items-start" : "items-center",
+        )}
+      >
         <div className="flex min-w-0 flex-1 basis-60 flex-col gap-1">
           <span className="text-sm font-medium text-foreground">
             {label}
@@ -156,7 +161,15 @@ export function SettingsCardRow({
           ) : null}
         </div>
         {children ? (
-          <div className="flex shrink-0 items-center gap-2">{children}</div>
+          <div
+            data-title-line-control={description ? true : undefined}
+            className={cn(
+              "flex shrink-0 gap-2",
+              !description && "items-center",
+            )}
+          >
+            {children}
+          </div>
         ) : null}
       </div>
     </div>

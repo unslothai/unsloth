@@ -673,7 +673,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
             <Button
               variant="outline"
               size="sm"
-              className="shrink-0"
+              className="mt-[var(--ui-title-cap-inset)] shrink-0"
               onClick={handleExportArchived}
               disabled={archivedExporting}
             >

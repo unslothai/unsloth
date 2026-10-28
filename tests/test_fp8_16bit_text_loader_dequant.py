@@ -306,3 +306,69 @@ def test_only_a_load_without_fp8_config_is_marked_dequantized():
     dequantized = model(SimpleNamespace())
     assert _drop_fp8_dequantize_conversions(dequantized) == 1
     assert dequantized._weight_conversions == [] and dequantized._unsloth_fp8_dequantized
+
+
+def _write_tiny_tokenizer(path):
+    from tokenizers import Tokenizer
+    from tokenizers.models import WordLevel
+    from tokenizers.pre_tokenizers import Whitespace
+    from transformers import PreTrainedTokenizerFast
+
+    vocab = {"[UNK]": 0, "[BOS]": 1, "[EOS]": 2, "hello": 3, "world": 4}
+    tok = Tokenizer(WordLevel(vocab, unk_token = "[UNK]"))
+    tok.pre_tokenizer = Whitespace()
+    PreTrainedTokenizerFast(
+        tokenizer_object = tok,
+        unk_token = "[UNK]",
+        bos_token = "[BOS]",
+        eos_token = "[EOS]",
+        pad_token = "[EOS]",
+    ).save_pretrained(path)
+
+
+@pytest.mark.skipif(not _HAS_DEQUANTIZE, reason = "transformers has no fp8 dequantize flag")
+@pytest.mark.skipif(not has_real_cuda(), reason = "fp8 checkpoints load on CUDA")
+@pytest.mark.parametrize("cls_name", ["FastLanguageModel", "FastModel"])
+def test_explicit_dequantize_config_saves_without_fp8_config(tmp_path, cls_name):
+    src, dst = tmp_path / "src", tmp_path / "saved"
+    src.mkdir()
+    _write_tiny_block_fp8_llama(str(src))
+    _write_tiny_tokenizer(str(src))
+    code = f"""
+import json, os, torch
+import unsloth
+from unsloth import {cls_name} as cls
+from transformers import AutoModelForCausalLM, FineGrainedFP8Config
+from safetensors import safe_open
+config = FineGrainedFP8Config(dequantize = True, weight_block_size = [128, 128])
+model, _ = cls.from_pretrained(
+    {str(src)!r}, max_seq_length = 64, dtype = torch.bfloat16, quantization_config = config,
+    local_files_only = True,
+)
+print("MARKED", int(getattr(model, "_unsloth_fp8_dequantized", False)))
+before = {{k: v.detach().cpu().clone() for k, v in model.state_dict().items()}}
+model.save_pretrained({str(dst)!r})
+with open(os.path.join({str(dst)!r}, "config.json")) as f:
+    print("QUANT", json.dumps(json.load(f).get("quantization_config")))
+dtypes = set()
+for name in os.listdir({str(dst)!r}):
+    if name.endswith(".safetensors"):
+        with safe_open(os.path.join({str(dst)!r}, name), "pt") as f:
+            dtypes |= {{f.get_slice(k).get_dtype() for k in f.keys()}}
+print("DTYPES", ",".join(sorted(dtypes)))
+# A GPU without bf16 (T4) loads float16: reload in whatever dtype was saved.
+after = AutoModelForCausalLM.from_pretrained({str(dst)!r}, dtype = next(iter(before.values())).dtype).state_dict()
+same = all(torch.equal(before[k], after[k].cpu()) for k in before if k in after)
+print("RELOAD", int(same and set(before) <= set(after)))
+"""
+    out = subprocess.run([sys.executable, "-c", code], capture_output = True, text = True, timeout = 600)
+    lines = dict(
+        l.split(" ", 1)
+        for l in out.stdout.splitlines()
+        if l.startswith(("MARKED", "QUANT", "DTYPES", "RELOAD"))
+    )
+    assert "RELOAD" in lines, (out.stdout[-2000:], out.stderr[-2000:])
+    assert lines["MARKED"] == "1", lines
+    assert lines["QUANT"] == "null", lines
+    assert lines["DTYPES"] in ("BF16", "F16"), lines
+    assert lines["RELOAD"] == "1", lines
