@@ -418,7 +418,7 @@ def test_the_pending_write_gate_reads_done_and_survives_a_broken_record():
 def test_the_video_load_records_its_cast_writes_before_the_pin_plan():
     from pathlib import Path
 
-    src = (Path(dm.__file__).parent / "video.py").read_text()
+    src = (Path(dm.__file__).parent / "video.py").read_text(encoding = "utf-8")
     deferred = src.index("cast_writes = defer_writes(pipe, cast_missed")
     noted = src.index("note_cast_cache_writes(pipe, cast_writes)")
     planned = src.index("offload_policy, vae_tiling = apply_memory_plan(")

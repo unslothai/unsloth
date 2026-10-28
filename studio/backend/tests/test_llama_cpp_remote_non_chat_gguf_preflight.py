@@ -25,19 +25,21 @@ def _gguf_bytes(
     arch: str | None,
     tensor_count: int = 1,
     declared_kv: int | None = None,
+    general_type: str | None = None,
 ) -> bytes:
     """A GGUF header as BYTES. ``declared_kv`` overstates the KV count without writing the
     pairs -- the shape a byte-range prefix of a chat model has: the counts say more is
     coming and the buffer ends first."""
     body = b""
     kv_count = 0
-    if arch is not None:
-        key = b"general.architecture"
-        val = arch.encode()
+    for key, value in ((b"general.architecture", arch), (b"general.type", general_type)):
+        if value is None:
+            continue
+        val = value.encode()
         body += struct.pack("<Q", len(key)) + key
         body += struct.pack("<I", 8)
         body += struct.pack("<Q", len(val)) + val
-        kv_count = 1
+        kv_count += 1
     if declared_kv is not None:
         kv_count = declared_kv
     return struct.pack("<II", GGUF_MAGIC, 3) + struct.pack("<QQ", tensor_count, kv_count) + body
@@ -88,6 +90,27 @@ def test_a_media_repo_gguf_is_refused_from_its_header_alone(monkeypatch, arch, p
     assert message is not None
     assert page in message
     assert requests == [("owner/model", "model-Q4_K_M.gguf")]
+
+
+def test_adapter_repo_gguf_is_refused_from_its_header_alone(monkeypatch):
+    message, requests = _probe(
+        monkeypatch,
+        header = _gguf_bytes(arch = "deepseek41", general_type = "adapter"),
+    )
+    assert message is not None
+    assert "LoRA adapter" in message
+    assert "base model" in message
+    assert requests == [("owner/model", "model-Q4_K_M.gguf")]
+
+
+def test_adapter_type_is_refused_from_a_prefix_cut_mid_kv(monkeypatch):
+    # An adapter that embeds its tokenizer can outgrow the 256 KiB probe.
+    message, _ = _probe(
+        monkeypatch,
+        header = _gguf_bytes(arch = "phi3", general_type = "adapter", declared_kv = 32),
+    )
+    assert message is not None
+    assert "LoRA adapter" in message
 
 
 def test_a_placeholder_arch_repo_gguf_is_refused(monkeypatch):
@@ -228,7 +251,21 @@ def _repo_load(monkeypatch, backend, order):
     monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *_a, **_k: None)
 
 
-def test_a_media_repo_load_keeps_the_resident_model_and_never_downloads(monkeypatch):
+@pytest.mark.parametrize(
+    "arch,general_type,repo,message_match",
+    [
+        ("wan", None, "unsloth/Wan2.2-TI2V-5B-GGUF", "Video page"),
+        (
+            "deepseek41",
+            "adapter",
+            "AtomicChat/DeepSeek-V4.1-Flash-1017-Uncensored-GGUF",
+            "LoRA adapter",
+        ),
+    ],
+)
+def test_a_non_chat_repo_load_keeps_the_resident_model_and_never_downloads(
+    monkeypatch, arch, general_type, repo, message_match
+):
     backend = LlamaCppBackend()
     order: list[str] = []
     _repo_load(monkeypatch, backend, order)
@@ -236,15 +273,17 @@ def test_a_media_repo_load_keeps_the_resident_model_and_never_downloads(monkeypa
         backend, "_download_gguf", lambda **_kwargs: order.append("download") or "/cache/m.gguf"
     )
     monkeypatch.setattr(
-        diffusion_compat, "_read_gguf_header", lambda *_a, **_k: _gguf_bytes(arch = "wan")
+        diffusion_compat,
+        "_read_gguf_header",
+        lambda *_a, **_k: _gguf_bytes(arch = arch, general_type = general_type),
     )
 
-    with pytest.raises(ValueError, match = "Video page"):
+    with pytest.raises(ValueError, match = message_match):
         backend.load_model(
             GgufLoadIntent(
-                hf_repo = "unsloth/Wan2.2-TI2V-5B-GGUF",
+                hf_repo = repo,
                 hf_variant = "Q4_K_M",
-                model_identifier = "unsloth/Wan2.2-TI2V-5B-GGUF",
+                model_identifier = repo,
             )
         )
 
