@@ -514,3 +514,11 @@ def test_json_schema_scoring_stays_fast_on_an_unclosed_fence():
     start = time.perf_counter()
     assert score_rule(rule, "```json\n" + " " * 65000) == 0.0
     assert time.perf_counter() - start < 1.0
+
+
+@pytest.mark.parametrize("field", ["within", "score"])
+def test_an_integer_past_the_float_range_is_a_reward_error(field):
+    band = {"within": 0, "score": 1.0}
+    band[field] = 10**400
+    with pytest.raises(rewards.RewardError, match = "finite number"):
+        rewards.validate_rule({"type": "numeric", "bands": [band]})
