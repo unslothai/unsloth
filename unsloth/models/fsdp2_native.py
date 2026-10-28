@@ -1010,9 +1010,22 @@ def _skip_free_unsharded_param():
     return None
 
 
+def _block_never_graphed(module):
+    """MoE blocks run compiled without graphs (_block_compile._graphs_unsafe_moe): keeping their
+    gathered weights would hold every expert unsharded on every rank for graphs never recorded."""
+    block_compile = sys.modules.get(f"{__package__}._block_compile") if __package__ else None
+    unsafe_moe = getattr(block_compile, "_graphs_unsafe_moe", None)
+    if not callable(unsafe_moe):
+        return False
+    try:
+        return bool(unsafe_moe(module))
+    except Exception:
+        return False
+
+
 def _compiled_block_modules(model, roots = None):
-    """ids of every module inside a decoder block _block_compile wrapped (and did not turn off);
-    `roots` (a dict) collects id -> block module."""
+    """ids of every module inside a decoder block _block_compile wrapped (and did not turn off)
+    that can run under block CUDA graphs; `roots` (a dict) collects id -> block module."""
     inside = set()
     for module in model.modules():
         if id(module) in inside or not getattr(
@@ -1020,6 +1033,8 @@ def _compiled_block_modules(model, roots = None):
         ):
             continue
         if module.__dict__.get("_unsloth_block_mode", 1) == 0:
+            continue
+        if _block_never_graphed(module):
             continue
         for m in module.modules():
             inside.add(id(m))
