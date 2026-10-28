@@ -321,6 +321,7 @@ def frame_png(
     if max_px:
         image.thumbnail((max_px, max_px), Image.LANCZOS)
     buf = io.BytesIO()
+    # Pillow's default level on purpose: MCP callers gate on these bytes (INLINE_CAP, MAX_IMAGE_BYTES).
     image.save(buf, format = "PNG")
     return buf.getvalue()
 

@@ -2438,7 +2438,8 @@ def _native_condition_images(
                 canvas.paste(img, ((canvas.width - iw) // 2, (canvas.height - ih) // 2))
                 img = canvas
         buf = io.BytesIO()
-        img.save(buf, format = "PNG")
+        # Transport only (sd.cpp decodes it back): zlib level 1 is lossless and faster than Pillow's default.
+        img.save(buf, format = "PNG", compress_level = 1)
         blobs.append(buf.getvalue())
     return int(width), int(height), blobs
 
