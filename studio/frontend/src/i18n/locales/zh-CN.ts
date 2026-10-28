@@ -3145,6 +3145,7 @@ export const zhCN = {
           jobs: "任务",
           other: "其他",
         },
+        chatNote: "聊天永远不会获得{tools}。",
       },
       status: {
         on: "开",

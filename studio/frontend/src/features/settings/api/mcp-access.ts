@@ -11,6 +11,7 @@ export type McpToolSetting = {
   /** the tool's module, used to group rows */
   area: string;
   enabled: boolean;
+  chat?: boolean;
 };
 
 export type McpAccessSettings = {
@@ -38,10 +39,11 @@ export function mcpAccessFromApi(
     forcedByEnv: settings.forced_by_env,
     url: settings.url,
     tools: Array.isArray(settings.tools)
-      ? settings.tools.map(({ name, area, enabled }) => ({
+      ? settings.tools.map(({ name, area, enabled, chat }) => ({
           name,
           area,
           enabled,
+          ...(typeof chat === "boolean" ? { chat } : {}),
         }))
       : null,
   };

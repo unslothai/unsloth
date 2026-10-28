@@ -3438,6 +3438,7 @@ export const en = {
           jobs: "Jobs",
           other: "Other",
         },
+        chatNote: "The chat never gets {tools}.",
       },
       status: {
         on: "On",

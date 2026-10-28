@@ -134,6 +134,7 @@ export function McpToolsDialog({
   saving,
   error,
   onSave,
+  footnote,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -142,6 +143,8 @@ export function McpToolsDialog({
   error: string | null;
   /** Receives the tools to change, by name; the server merges them into its list. */
   onSave: (states: Record<string, boolean>) => void;
+  /** muted line under the groups */
+  footnote?: string | null;
 }): ReactElement {
   const t = useT();
   const groups = groupMcpTools(tools);
@@ -211,6 +214,11 @@ export function McpToolsDialog({
               </section>
             );
           })}
+          {footnote ? (
+            <p className="px-3 text-xs leading-snug text-muted-foreground">
+              {footnote}
+            </p>
+          ) : null}
         </div>
 
         <DialogFooter>

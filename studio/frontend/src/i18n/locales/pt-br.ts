@@ -3219,6 +3219,7 @@ export const ptBR = {
           jobs: "Tarefas",
           other: "Outras",
         },
+        chatNote: "O chat nunca recebe {tools}.",
       },
       status: {
         on: "Ativado",

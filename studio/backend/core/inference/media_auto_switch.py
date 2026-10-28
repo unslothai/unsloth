@@ -447,6 +447,16 @@ async def maybe_auto_switch_media_model(
     if satisfied_by(await asyncio.to_thread(backend_for(owner).status), name, pick):
         return
 
+    from studio_mcp.caller import CHAT_TOOLS_SWITCH_REFUSED, chat_tools_call
+
+    if chat_tools_call():
+        raise refuse(
+            CHAT_TOOLS_SWITCH_REFUSED,
+            status_code = 403,
+            openai_errors = openai_errors,
+            code = "model_switch_refused",
+        )
+
     if before_switch is not None:
         await bounded(
             asyncio.to_thread(before_switch, pick),

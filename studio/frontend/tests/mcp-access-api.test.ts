@@ -75,6 +75,18 @@ test("the tool list is kept in server order, and an older backend without one ma
   assert.equal(c.api.mcpAccessFromApi(BODY).tools, null);
 });
 
+test("each tool keeps its chat flag, and an older backend without one leaves it unset", async () => {
+  const tools = [
+    { name: "list_models", area: "models", enabled: true, chat: true },
+    { name: "cancel", area: "cancel", enabled: true, chat: false },
+    { name: "voices", area: "library", enabled: true },
+  ];
+  const c = client(() => Response.json({ ...BODY, tools }));
+  const loaded = (await c.api.loadMcpAccess()).tools;
+  assert.deepEqual(loaded, tools);
+  assert.equal(loaded?.[2] && "chat" in loaded[2], false);
+});
+
 test("saving tools sends only the full turned-off list", async () => {
   const c = client(() =>
     Response.json({

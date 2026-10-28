@@ -11,7 +11,10 @@ import {
   createMcpStdioSnapshot,
   resolveMcpStdioUrl,
 } from "../src/features/chat/mcp-server-form.ts";
-import { normalizeMcpUrl } from "../src/features/chat/mcp-server-url.ts";
+import {
+  normalizeMcpUrl,
+  UNSLOTH_STUDIO_TOOLS_MCP_URL,
+} from "../src/features/chat/mcp-server-url.ts";
 import {
   readAfterPendingMcpServerMutations,
   readMcpServerMutationSnapshot,
@@ -855,6 +858,40 @@ test("the Decisions row stays hidden while the Decision API is off", () => {
   assert.match(
     MCP_COMPOSER_BUTTON,
     /const enabledCount = servers\.filter\([\s\S]*decisionsUrl !== null \|\| normalizeMcpUrl\(s\.url\) !== "studio:decisions"/,
+  );
+});
+
+test("the Unsloth Studio tools row matches any port and loopback spelling", () => {
+  assert.equal(
+    UNSLOTH_STUDIO_TOOLS_MCP_URL,
+    "http://127.0.0.1/mcp/studio-tools",
+  );
+  for (const url of [
+    UNSLOTH_STUDIO_TOOLS_MCP_URL,
+    "http://127.0.0.1:8888/mcp/studio-tools/",
+    "http://localhost:8889/mcp/studio-tools",
+    "http://[::1]:8888/mcp/studio-tools",
+  ]) {
+    assert.equal(normalizeMcpUrl(url), "studio:tools", url);
+  }
+  for (const url of [
+    "https://127.0.0.1/mcp/studio-tools",
+    "http://example.com/mcp/studio-tools",
+    "http://127.0.0.1/mcp/studio-tools/extra",
+    "http://127.0.0.1/mcp/decisions",
+  ]) {
+    assert.notEqual(normalizeMcpUrl(url), "studio:tools", url);
+  }
+});
+
+test("Unsloth Studio is the first preset and its row never shows as a custom server", () => {
+  assert.match(
+    MCP_COMPOSER_BUTTON,
+    /const MCP_PRESETS: readonly McpPreset\[\] = \[\s*\{\s*id: "unsloth-studio",\s*displayName: "Unsloth",\s*url: UNSLOTH_STUDIO_TOOLS_MCP_URL,/,
+  );
+  assert.match(
+    MCP_COMPOSER_BUTTON,
+    /const customServers = servers\.filter\([\s\S]*normalizeMcpUrl\(s\.url\) !== "studio:tools"/,
   );
 });
 

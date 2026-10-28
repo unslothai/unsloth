@@ -93,6 +93,8 @@ def validate_mcp_address(url: str) -> None:
     # Studio's own Decisions server is answered in process; with a local model no request leaves this machine.
     if not _managed_mcp_restricted() or (is_studio_decisions(url) and _local_decisions()):
         return
+    if is_studio_tools(url):
+        return
     if is_stdio(url):
         from fastapi import HTTPException
         raise HTTPException(
@@ -702,6 +704,22 @@ def is_studio_decisions(url: str) -> bool:
     )
 
 
+def is_studio_tools(url: str) -> bool:
+    from core.inference.studio_tools_mcp import STUDIO_TOOLS_MCP_PATH
+    from utils.host_policy import is_loopback_host
+
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname or ""
+    except ValueError:
+        return False
+    return (
+        parts.scheme == "http"
+        and is_loopback_host(host)
+        and parts.path.rstrip("/") == STUDIO_TOOLS_MCP_PATH
+    )
+
+
 def _client(
     url: str,
     headers: Optional[dict],
@@ -714,6 +732,11 @@ def _client(
     if is_studio_decisions(url):
         from routes.systemone import decisions_mcp
         return Client(decisions_mcp)
+
+    if is_studio_tools(url):
+        # Listing only: calls go through studio_tools_mcp.call, which binds the caller.
+        from core.inference.studio_tools_mcp import chat_tools_mcp
+        return Client(chat_tools_mcp())
 
     if is_stdio(url):
         # Belt-and-suspenders: never spawn unless stdio is enabled on this host.
@@ -2254,6 +2277,19 @@ def call_tool_sync(
     **oauth,
 ) -> str:
     """Never raises: failures return as Error strings; OAuth or scope-less HTTP connects once per call."""
+
+    if is_studio_tools(url):
+        if config_check is not None and not config_check():
+            return f"Error: MCP tool '{name}' failed: MCP server was updated or removed"
+        from core.inference import studio_tools_mcp
+        return studio_tools_mcp.call(
+            name,
+            args,
+            timeout = timeout,
+            cancel_event = cancel_event,
+            ui_resource_uri = ui_resource_uri,
+            config_check = config_check,
+        )
 
     async def _one_shot() -> Any:
         async with _client(url, headers, use_oauth, **oauth) as client:

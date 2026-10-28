@@ -3189,6 +3189,7 @@ export const ko = {
           jobs: "작업",
           other: "기타",
         },
+        chatNote: "채팅에서는 {tools}을(를) 사용할 수 없습니다.",
       },
       status: {
         on: "켜짐",

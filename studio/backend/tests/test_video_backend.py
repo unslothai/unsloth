@@ -1667,6 +1667,46 @@ def test_failed_background_generate_retains_terminal_error(fake_runtime, tmp_pat
     assert backend.generate_progress()["phase"] == "failed"
 
 
+def test_a_stopped_generation_ticket_cancels_the_video_job(fake_runtime, tmp_path, monkeypatch):
+    from core.inference.generation_ticket import GenerationTicket, generation_ticket
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    running = threading.Event()
+    seen = {}
+
+    def _hold(
+        self,
+        *,
+        prompt = None,
+        negative_prompt = None,
+        num_inference_steps = None,
+        guidance_scale = None,
+        width = None,
+        height = None,
+        num_frames = None,
+        frame_rate = None,
+        generator = None,
+        callback_on_step_end = None,
+        **kwargs,
+    ):
+        running.set()
+        seen["cancel"] = backend._active_generate_cancel
+        seen["cancel"].wait(10)
+        raise ValueError("stopped")
+
+    monkeypatch.setattr(type(backend._state.pipe), "__call__", _hold)
+    ticket = GenerationTicket()
+    with generation_ticket(ticket):
+        backend.begin_generate(prompt = "a clip")
+    assert running.wait(10)
+    assert ticket.stop() is True
+    deadline = time.monotonic() + 10
+    while backend.generate_progress()["active"] and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert seen["cancel"].is_set() and backend.generate_progress()["active"] is False
+
+
 def test_cache_bytes_counts_incomplete_blobs(fake_runtime, tmp_path, monkeypatch):
     # scan_cache_dir skips *.incomplete blobs; count both, without double-counting symlinks.
     import core.inference.video as video_mod

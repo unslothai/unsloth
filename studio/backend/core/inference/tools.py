@@ -87,7 +87,9 @@ from core.inference.mcp_client import (
     get_cached_resources,
     get_cached_tools,
     in_failure_cooloff,
+    invalidate_tool_cache,
     is_studio_decisions,
+    is_studio_tools,
     is_stdio,
     list_tools_async,
     oauth_client_kwargs,
@@ -101,7 +103,12 @@ from core.inference.mcp_client import (
     tool_visible_to,
 )
 from storage import mcp_servers_db
-from utils.account_context import account_thread, current_account_id, is_owner_context
+from utils.account_context import (
+    account_thread,
+    current_account,
+    current_account_id,
+    is_owner_context,
+)
 from utils.current_date_prompt_settings import strip_current_date_update_note
 from utils import sandbox_memory_limit, tool_result_limit
 from core.inference.tool_confinement import ToolConfinementUnavailable, account_confinement
@@ -13047,7 +13054,14 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
 
 
 def _enabled_mcp_servers(servers: list[dict]) -> list[dict]:
-    enabled = [server for server in servers if server.get("is_enabled")]
+    from core.inference.studio_tools_mcp import keyless_caller
+
+    keyless = keyless_caller(current_account())
+    enabled = [
+        server
+        for server in servers
+        if server.get("is_enabled") and not (keyless and is_studio_tools(server["url"]))
+    ]
     if not any(is_studio_decisions(server["url"]) for server in enabled):
         return enabled
     from utils import systemone_settings
@@ -13090,9 +13104,13 @@ async def get_enabled_mcp_tools(
     if not servers:
         return []
 
-    # cool-off avoids blocking every send for the full probe timeout when a server is down.
+    # cool-off avoids blocking every send for the full probe timeout when a server is down. The in-process
+    # Unsloth Studio row is re-listed every send, so tool toggles apply at once.
     uncached = [
-        s for s in servers if get_cached_tools(s["id"]) is None and not in_failure_cooloff(s["id"])
+        s
+        for s in servers
+        if is_studio_tools(s["url"])
+        or (get_cached_tools(s["id"]) is None and not in_failure_cooloff(s["id"]))
     ]
     if uncached:
         results = await asyncio.gather(
@@ -13125,6 +13143,9 @@ async def get_enabled_mcp_tools(
                 )
                 # Not cached, but a failure is recorded so a down server isn't re-probed during the cool-off.
                 record_probe_failure(server["id"], bool(fresh.get("use_oauth")))
+                if is_studio_tools(server["url"]):
+                    # Never fall back to an older listing that may name a tool since turned off.
+                    invalidate_tool_cache(server["id"])
                 continue
             cache_tools(server["id"], payload)
 

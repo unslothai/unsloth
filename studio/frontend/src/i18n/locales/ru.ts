@@ -3216,6 +3216,7 @@ export const ru = {
           jobs: "Задачи",
           other: "Другое",
         },
+        chatNote: "Чат никогда не получает {tools}.",
       },
       status: {
         on: "Вкл.",

@@ -3431,6 +3431,7 @@ export const sv = {
           jobs: "Jobb",
           other: "Övrigt",
         },
+        chatNote: "Chatten får aldrig {tools}.",
       },
       status: {
         on: "På",

@@ -1172,6 +1172,10 @@ app.router.lifespan_context = combine_lifespans(
     app.router.lifespan_context, _studio_mcp_app.lifespan
 )
 app.mount("/mcp", StudioMcpGate(_studio_mcp_app))
+from core.inference.studio_tools_mcp import ChatRootPathMiddleware, remember_studio_app  # noqa: E402
+
+remember_studio_app(app)
+app.add_middleware(ChatRootPathMiddleware)
 
 from loggers.config import LogConfig
 from loggers.handlers import LoggingMiddleware

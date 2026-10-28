@@ -206,6 +206,21 @@ test("the API tab row matches the keyless link beside it, shows the status as te
   assert.equal(en.settings.mcp.apiKeysRow.open, "Open in Agents");
 });
 
+test("tools a chat never gets are named once, in a muted note under the groups", () => {
+  assert.equal(en.settings.mcp.tools.chatNote, "The chat never gets {tools}.");
+  assert.match(
+    SECTION,
+    /\.filter\(\(tool\) => tool\.chat === false\)[\s\S]*?t\("settings\.mcp\.tools\.chatNote", \{/,
+  );
+  assert.match(SECTION, /new Intl\.ListFormat\(locale, \{/);
+  assert.match(SECTION, /footnote=\{chatNote\}/);
+  assert.match(
+    TOOLS,
+    /\{footnote \? \(\s*<p className="px-3 text-xs leading-snug text-muted-foreground">/,
+  );
+  assert.doesNotMatch(TOOLS, /notInChat/);
+});
+
 test("no emerald and no unscaled lengths", () => {
   for (const source of [TOOLS, ROW]) {
     assert.doesNotMatch(source, /emerald/);

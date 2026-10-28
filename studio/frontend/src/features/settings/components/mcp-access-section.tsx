@@ -14,7 +14,7 @@ import { Switch } from "@/components/ui/switch";
 import { McpServerIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { usePlatformStore } from "@/config/env";
-import { translate, useT } from "@/i18n";
+import { translate, useLocale, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 import {
@@ -44,6 +44,7 @@ import {
   buildMcpSnippet,
   hasMcpSnippet,
 } from "./mcp-agent-snippet";
+import { mcpToolLabelKey } from "./mcp-tool-labels";
 import { McpToolsDialog } from "./mcp-tools-dialog";
 import { SettingsRow } from "./settings-row";
 import { readUseTunnelPref, subscribeUseTunnelPref } from "./tunnel-preference";
@@ -66,6 +67,7 @@ export function McpAccessSection({
   apiKey?: string | null;
 }): ReactElement | null {
   const t = useT();
+  const locale = useLocale();
   const pillId = useId();
   const [settings, setSettings] = useState<McpAccessSettings | null>(null);
   const [busy, setBusy] = useState(false);
@@ -186,6 +188,25 @@ export function McpAccessSection({
       buildMcpSnippet(agent, settings.url, os, apiKey))
     : null;
   const agentDetails = detailsFor(agent);
+  // One note for the tools a chat never gets, instead of a label on each row.
+  const chatDenied = (settings?.tools ?? [])
+    .filter((tool) => tool.chat === false)
+    .map((tool) => {
+      const key = mcpToolLabelKey(tool.name);
+      return key ? t(key) : tool.name;
+    });
+  const chatNote =
+    chatDenied.length > 0
+      ? t("settings.mcp.tools.chatNote", {
+          tools:
+            typeof Intl.ListFormat === "function"
+              ? new Intl.ListFormat(locale, {
+                  style: "long",
+                  type: "conjunction",
+                }).format(chatDenied)
+              : chatDenied.join(", "),
+        })
+      : null;
 
   return (
     <div
@@ -339,6 +360,7 @@ export function McpAccessSection({
           saving={toolsSaving}
           error={toolsError}
           onSave={(states) => void saveTools(states)}
+          footnote={chatNote}
         />
       ) : null}
     </div>
