@@ -498,7 +498,7 @@ class _FakeGRPOConfigWithGenBatch(_FakeGRPOConfig):
     generation_batch_size: int = None
 
 
-@pytest.mark.parametrize("generations, expected", [(3, 36), (5, 40), (4, None)])
+@pytest.mark.parametrize("generations, expected", [(3, 6), (5, 5), (4, 4)])
 def test_grpo_generation_batch_holds_whole_prompt_groups(monkeypatch, generations, expected):
     fake = types.SimpleNamespace(
         GRPOConfig = _FakeGRPOConfigWithGenBatch, GRPOTrainer = lambda **kw: kw
@@ -523,7 +523,10 @@ def test_grpo_generation_batch_holds_whole_prompt_groups(monkeypatch, generation
         settings = {"num_generations": generations},
         reward_specs = [spec],
     )
-    assert kw["args"].generation_batch_size == expected
+    # Batch 4 x accumulation 8 grows to the next batch that holds whole prompt groups; TRL's own
+    # default (one generation batch per optimizer step) is left alone.
+    assert kw["args"].per_device_train_batch_size == expected
+    assert kw["args"].generation_batch_size is None
 
 
 def test_grpo_generation_batch_counts_every_process(monkeypatch):
@@ -551,8 +554,39 @@ def test_grpo_generation_batch_counts_every_process(monkeypatch):
         settings = {"num_generations": 3},
         reward_specs = [spec],
     )
-    # Global batch 2, three generations: the generation batch rounds up to 6.
-    assert kw["args"].generation_batch_size == 6
+    # Global batch 2 is no multiple of three generations: the per-device batch grows to 3.
+    assert kw["args"].per_device_train_batch_size == 3
+    assert kw["args"].generation_batch_size is None
+
+
+def test_grpo_notebook_config_trains_one_prompt_group_per_step(monkeypatch):
+    # Qwen2.5-3B GRPO notebook: batch 1, accumulation 1, 8 generations.
+    fake = types.SimpleNamespace(
+        GRPOConfig = _FakeGRPOConfigWithGenBatch, GRPOTrainer = lambda **kw: kw
+    )
+    monkeypatch.setitem(sys.modules, "trl", fake)
+    spec = {"name": "len", "rule": {"type": "length", "max_chars": 9, "score": {}}}
+    kw = build_rl_trainer(
+        "grpo",
+        model = None,
+        tokenizer = None,
+        train_dataset = None,
+        eval_dataset = None,
+        config_args = {
+            "output_dir": "o",
+            "max_seq_length": 512,
+            "per_device_train_batch_size": 1,
+            "gradient_accumulation_steps": 1,
+        },
+        settings = {"num_generations": 8},
+        reward_specs = [spec],
+    )
+    args = kw["args"]
+    assert args.per_device_train_batch_size == 8
+    assert args.generation_batch_size is None
+    assert getattr(args, "steps_per_generation", None) is None
+    # TRL then runs steps_per_generation = gradient_accumulation_steps = 1.
+    assert args.gradient_accumulation_steps == 1
 
 
 def test_resume_refuses_a_changed_reward_set():
@@ -622,6 +656,17 @@ def test_grpo_step_estimate_counts_every_process():
         grpo_global_batch(types.SimpleNamespace(per_device_train_batch_size = 4, world_size = 2)) == 8
     )
     assert grpo_global_batch(types.SimpleNamespace(per_device_train_batch_size = 4)) == 4
+
+
+def test_grpo_step_estimate_matches_the_notebook_one_prompt_per_step():
+    from core.training.trainer import grpo_completion_rows, grpo_global_batch
+
+    # Batch grown to 8 for 8 generations; TRL fills generation_batch_size = 8 itself.
+    args = types.SimpleNamespace(
+        num_generations = 8, generation_batch_size = 8, per_device_train_batch_size = 8
+    )
+    rows = grpo_completion_rows(100, args)
+    assert rows // grpo_global_batch(args) == 100
 
 
 @pytest.mark.parametrize("objective", ["dpo", "orpo", "grpo"])

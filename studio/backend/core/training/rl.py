@@ -897,13 +897,15 @@ def build_rl_trainer(
             world = max(int(os.environ.get("WORLD_SIZE") or 1), 1)
         except ValueError:
             world = 1
-        batch = int(grpo_base.get("per_device_train_batch_size") or 1) * world
-        per_step = batch * int(grpo_base.get("gradient_accumulation_steps") or 1)
-        if per_step % num_generations:
-            # TRL wants a generation batch divisible by both the global batch and num_generations.
-            group = batch * num_generations // math.gcd(batch, num_generations)
-            grpo_base["generation_batch_size"] = -(-per_step // group) * group
-        prompts = grpo_base.get("generation_batch_size", per_step) // num_generations
+        device_batch = int(grpo_base.get("per_device_train_batch_size") or 1)
+        others = world * int(grpo_base.get("gradient_accumulation_steps") or 1)
+        if (device_batch * others) % num_generations:
+            # Like Unsloth's own GRPO bump: grow the batch until a step holds whole prompt groups,
+            # and leave generation_batch_size / steps_per_generation to TRL's defaults.
+            unit = num_generations // math.gcd(others, num_generations)
+            device_batch = -(-device_batch // unit) * unit
+            grpo_base["per_device_train_batch_size"] = device_batch
+        prompts = device_batch * others // num_generations
         try:
             rows = len(train_dataset)
         except TypeError:
