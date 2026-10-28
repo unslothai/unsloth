@@ -1597,7 +1597,7 @@
 	--th-surface: #ffe7c9;
 	--th-raised: #f7e0c1;
 	--th-hover: #efd9b9;
-	--th-border: #dfcca9;
+	--th-border: #c1ac8b;
 	--th-fg: #3a1a00;
 	--th-muted: #6e5f3c;
 	--th-subtle: #a6917d;
@@ -1648,7 +1648,7 @@
 	--th-surface: #fff0c4;
 	--th-raised: #f8e8bf;
 	--th-hover: #f0e0bb;
-	--th-border: #e2d0b1;
+	--th-border: #c2b192;
 	--th-fg: #2e1f00;
 	--th-muted: #6f5b58;
 	--th-subtle: #a1977f;
@@ -1695,7 +1695,7 @@
 	--th-surface: #ffe0e6;
 	--th-raised: #f9d8df;
 	--th-hover: #f3cfd8;
-	--th-border: #e6bfca;
+	--th-border: #cca3ae;
 	--th-fg: #3a0510;
 	--th-muted: #7c4759;
 	--th-subtle: #a6868c;
@@ -1746,7 +1746,7 @@
 	--th-surface: #dafbe6;
 	--th-raised: #d4f2df;
 	--th-hover: #ceead8;
-	--th-border: #c1d8cb;
+	--th-border: #a0baab;
 	--th-fg: #032a12;
 	--th-muted: #565f5c;
 	--th-subtle: #849f8e;
@@ -1797,7 +1797,7 @@
 	--th-surface: #d4f8f0;
 	--th-raised: #cef1e7;
 	--th-hover: #c7e9df;
-	--th-border: #badbce;
+	--th-border: #98bbb0;
 	--th-fg: #03302a;
 	--th-muted: #516c5c;
 	--th-subtle: #83a29d;
@@ -1848,7 +1848,7 @@
 	--th-surface: #dcefff;
 	--th-raised: #d6e7f6;
 	--th-hover: #d0dfee;
-	--th-border: #c4d0dc;
+	--th-border: #a2b2c0;
 	--th-fg: #04233a;
 	--th-muted: #585f67;
 	--th-subtle: #8598a6;
@@ -1899,7 +1899,7 @@
 	--th-surface: #dfe5ff;
 	--th-raised: #d8def7;
 	--th-hover: #d1d7ee;
-	--th-border: #c4c8dd;
+	--th-border: #a8adc6;
 	--th-fg: #0c1442;
 	--th-muted: #56596c;
 	--th-subtle: #898faa;
@@ -1950,7 +1950,7 @@
 	--th-surface: #eee0ff;
 	--th-raised: #e8d7f7;
 	--th-hover: #e2cff0;
-	--th-border: #d6bee0;
+	--th-border: #bea6ca;
 	--th-fg: #22093d;
 	--th-muted: #6e4770;
 	--th-subtle: #9889a8;
@@ -1997,7 +1997,7 @@
 	--th-surface: #ebe0ff;
 	--th-raised: #e2d8f6;
 	--th-hover: #dacfed;
-	--th-border: #c9bedb;
+	--th-border: #b4a9c5;
 	--th-fg: #120a1c;
 	--th-muted: #4f4759;
 	--th-subtle: #8f8999;
@@ -2890,15 +2890,16 @@ html[data-chat-font] .aui-root {
 
 	/* Images (Create + Train) and Video: a lighter control border than the palette
 	   default. Light mode only, since dark mode draws these controls borderless.
-	   Overrides the token, so every derived shade stays in step. */
-	html:not(.dark) .diffusion-surface {
+	   Overrides the token, so every derived shade stays in step. Halloween keeps its own
+	   border: a neutral gray vanishes on its tinted pages. */
+	html:not(.dark):not(:where([data-palette="pumpkin"], [data-palette="black-cat"], [data-palette="trick-or-treat"], [data-palette="bloody-valentine"], [data-palette="alien"], [data-palette="ghost-ship"], [data-palette="the-thing"], [data-palette="midnight-haunt"], [data-palette="gothic"])) .diffusion-surface {
 		--border-base: #e9e9e9;
 		--input-base: #e9e9e9;
 		--border: var(--border-base);
 		--input: var(--input-base);
 	}
 	/* The :root derivation is already substituted, so a scoped base must redo it for the slider. */
-	html[data-contrast-adjust]:not(.dark) .diffusion-surface {
+	html[data-contrast-adjust]:not(.dark):not(:where([data-palette="pumpkin"], [data-palette="black-cat"], [data-palette="trick-or-treat"], [data-palette="bloody-valentine"], [data-palette="alien"], [data-palette="ghost-ship"], [data-palette="the-thing"], [data-palette="midnight-haunt"], [data-palette="gothic"])) .diffusion-surface {
 		--border: color-mix(in oklab, var(--border-base), var(--contrast-target) var(--contrast-line-mix));
 		--input: color-mix(in oklab, var(--input-base), var(--contrast-target) var(--contrast-control-mix));
 	}

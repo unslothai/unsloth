@@ -648,12 +648,14 @@ export const ptBR = {
     greeting: {
       pumpkins: "As abóboras estão esculpidas. E agora?",
       brewing: "Vamos preparar a poção",
-      brewingName: "Vamos preparar a poção, {name}",
-      trickOrTreat: "Doces ou travessuras!",
+      trickOrTreat: "Doces ou travessuras?",
       manor: "Boas-vindas à mansão",
       manorName: "Boas-vindas à mansão, {name}",
       happyHalloween: "Feliz Halloween",
       happyHalloweenName: "Feliz Halloween, {name}",
+      spirits: "Os espíritos estão ouvindo…",
+      mysteries: "Que mistérios vamos desvendar esta noite?",
+      conjure: "O que posso conjurar para você?",
     },
   },
   welcome: {
@@ -2228,8 +2230,6 @@ export const ptBR = {
         label: "Doces ou travessuras",
         description:
           "Temas de Halloween e saudações assustadoras, até 1º de novembro.",
-        open: "Abrir",
-        showInSidebar: "Mostrar na barra lateral",
       },
       custom: {
         chatWidth: {

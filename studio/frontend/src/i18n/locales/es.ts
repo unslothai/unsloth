@@ -648,12 +648,14 @@ export const es = {
     greeting: {
       pumpkins: "Las calabazas ya están talladas. ¿Qué sigue?",
       brewing: "¡A preparar la poción!",
-      brewingName: "¡A preparar la poción, {name}!",
-      trickOrTreat: "¡Truco o trato!",
+      trickOrTreat: "¿Truco o trato?",
       manor: "Te damos la bienvenida a la mansión",
       manorName: "Te damos la bienvenida a la mansión, {name}",
       happyHalloween: "¡Feliz Halloween!",
       happyHalloweenName: "¡Feliz Halloween, {name}!",
+      spirits: "Los espíritus están escuchando…",
+      mysteries: "¿Qué misterios descubriremos esta noche?",
+      conjure: "¿Qué puedo conjurar para ti?",
     },
   },
   welcome: {
@@ -2236,8 +2238,6 @@ export const es = {
         label: "Truco o trato",
         description:
           "Temas de Halloween y saludos terroríficos, hasta el 1 de noviembre.",
-        open: "Abrir",
-        showInSidebar: "Mostrar en la barra lateral",
       },
       custom: {
         chatWidth: {

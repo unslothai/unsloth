@@ -647,12 +647,14 @@ export const hi = {
     greeting: {
       pumpkins: "कद्दू तराशे जा चुके हैं। आगे क्या?",
       brewing: "चलो, कुछ जादू घोलें",
-      brewingName: "{name}, चलो कुछ जादू घोलें",
-      trickOrTreat: "ट्रिक या ट्रीट!",
+      trickOrTreat: "ट्रिक या ट्रीट?",
       manor: "हवेली में आपका स्वागत है",
       manorName: "{name}, हवेली में आपका स्वागत है",
       happyHalloween: "हैप्पी हैलोवीन",
       happyHalloweenName: "हैप्पी हैलोवीन, {name}",
+      spirits: "आत्माएँ सुन रही हैं…",
+      mysteries: "आज रात हम कौन-से रहस्य खोलेंगे?",
+      conjure: "मैं आपके लिए क्या जादू करूँ?",
     },
   },
   welcome: {
@@ -2217,8 +2219,6 @@ export const hi = {
         label: "ट्रिक या ट्रीट",
         description:
           "1 नवंबर तक हैलोवीन थीम और डरावने अभिवादन।",
-        open: "खोलें",
-        showInSidebar: "साइडबार में दिखाएं",
       },
       custom: {
         chatWidth: {

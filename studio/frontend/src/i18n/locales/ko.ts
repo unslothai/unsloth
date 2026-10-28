@@ -646,12 +646,14 @@ export const ko = {
     greeting: {
       pumpkins: "호박 조각이 끝났어요. 다음은 뭘까요?",
       brewing: "자, 마법의 물약을 만들어 볼까요",
-      brewingName: "{name}님, 마법의 물약을 만들어 볼까요",
-      trickOrTreat: "트릭 오어 트릿!",
+      trickOrTreat: "트릭 오어 트릿?",
       manor: "저택에 오신 것을 환영해요",
       manorName: "{name}님, 저택에 오신 것을 환영해요",
       happyHalloween: "해피 핼러윈",
       happyHalloweenName: "{name}님, 해피 핼러윈",
+      spirits: "영혼들이 듣고 있어요…",
+      mysteries: "오늘 밤엔 어떤 비밀을 밝혀볼까요?",
+      conjure: "무엇을 마법으로 불러낼까요?",
     },
   },
   welcome: {
@@ -2204,8 +2206,6 @@ export const ko = {
         label: "트릭 오어 트릿",
         description:
           "11월 1일까지 핼러윈 테마와 으스스한 인사말을 즐겨 보세요.",
-        open: "열기",
-        showInSidebar: "사이드바에 표시",
       },
       custom: {
         chatWidth: {

@@ -751,12 +751,14 @@ export const sv = {
     greeting: {
       pumpkins: "Pumporna är snidade. Vad händer nu?",
       brewing: "Dags att brygga",
-      brewingName: "Dags att brygga, {name}",
-      trickOrTreat: "Bus eller godis!",
+      trickOrTreat: "Bus eller godis?",
       manor: "Välkommen till herrgården",
       manorName: "Välkommen till herrgården, {name}",
       happyHalloween: "Glad halloween",
       happyHalloweenName: "Glad halloween, {name}",
+      spirits: "Andarna lyssnar…",
+      mysteries: "Vilka mysterier ska vi avslöja i natt?",
+      conjure: "Vad kan jag trolla fram åt dig?",
     },
   },
   welcome: {
@@ -2388,8 +2390,6 @@ export const sv = {
         label: "Bus eller godis",
         description:
           "Halloweenteman och kusliga hälsningar, till 1 november.",
-        open: "Öppna",
-        showInSidebar: "Visa i sidofältet",
       },
       custom: {
         chatWidth: {

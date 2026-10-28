@@ -733,12 +733,14 @@ export const he = {
     greeting: {
       pumpkins: "הדלעות כבר מגולפות. מה הלאה?",
       brewing: "בואו נרקח משהו",
-      brewingName: "בואו נרקח משהו, {name}",
-      trickOrTreat: "ממתק או תעלול!",
+      trickOrTreat: "ממתק או תעלול?",
       manor: "ברוכים הבאים לאחוזה",
       manorName: "ברוכים הבאים לאחוזה, {name}",
       happyHalloween: "ליל כל הקדושים שמח",
       happyHalloweenName: "ליל כל הקדושים שמח, {name}",
+      spirits: "הרוחות מקשיבות…",
+      mysteries: "אילו תעלומות נגלה הלילה?",
+      conjure: "מה אוכל לכשף בשבילך?",
     },
   },
   welcome: {
@@ -2315,8 +2317,6 @@ export const he = {
         label: "ממתק או תעלול",
         description:
           "ערכות נושא של ליל כל הקדושים וברכות מפחידות, עד 1 בנובמבר.",
-        open: "פתיחה",
-        showInSidebar: "הצגה בסרגל הצד",
       },
       custom: {
         chatWidth: {

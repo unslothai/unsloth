@@ -2697,7 +2697,13 @@ const pickRandom = <T,>(arr: T[]): T =>
 // same mascot. Greeting varies by local time; name-bearing lines drop the
 // name when none is set. Text is a message key, translated at render so a
 // language switch updates the open greeting.
-type Welcome = { key: TranslationKey; name?: string; sloth: string };
+type Welcome = {
+  key: TranslationKey;
+  name?: string;
+  sloth: string;
+  // Pictures drawn small on their canvas render a little larger to match the rest.
+  enlarge?: boolean;
+};
 const DEFAULT_WELCOME: Welcome = {
   key: "welcome.onYourMind",
   sloth: "sloth magnify final.png",
@@ -2774,7 +2780,10 @@ const ThreadWelcome: FC<{
             {showGreetingSloth && !incognito && (
               <MascotImg
                 src={currentEmojiSrc}
-                className="unsloth-welcome-sloth size-[calc(44px*var(--ui-space-scale,1))] -translate-y-[2px]"
+                className={cn(
+                  "unsloth-welcome-sloth size-[calc(44px*var(--ui-space-scale,1))] -translate-y-[2px]",
+                  welcome.enlarge && "scale-[1.15]",
+                )}
               />
             )}
             <h1 className="aui-thread-welcome-message-inner unsloth-welcome-title fade-in slide-in-from-bottom-1 animate-in text-3xl tracking-[-0.02em] duration-200">

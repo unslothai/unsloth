@@ -647,12 +647,14 @@ export const ar = {
     greeting: {
       pumpkins: "نُحتت اليقطينات. ما التالي؟",
       brewing: "هيا نحضّر الجرعة",
-      brewingName: "هيا نحضّر الجرعة يا {name}",
-      trickOrTreat: "حلوى أم خدعة!",
+      trickOrTreat: "حلوى أم خدعة؟",
       manor: "مرحبًا بك في القصر",
       manorName: "مرحبًا بك في القصر يا {name}",
       happyHalloween: "هالوين سعيد",
       happyHalloweenName: "هالوين سعيد يا {name}",
+      spirits: "الأرواح تُصغي…",
+      mysteries: "ما الأسرار التي سنكشفها الليلة؟",
+      conjure: "ماذا أستحضر لك؟",
     },
   },
   welcome: {
@@ -2211,8 +2213,6 @@ export const ar = {
         label: "حلوى أم خدعة",
         description:
           "سمات الهالوين وتحيات مخيفة حتى 1 نوفمبر.",
-        open: "فتح",
-        showInSidebar: "إظهار في الشريط الجانبي",
       },
       custom: {
         chatWidth: {

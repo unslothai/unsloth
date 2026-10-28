@@ -701,12 +701,14 @@ export const en = {
     greeting: {
       pumpkins: "The pumpkins are carved. What’s next?",
       brewing: "Let’s get brewing",
-      brewingName: "Let’s get brewing, {name}",
-      trickOrTreat: "Trick or treat!",
+      trickOrTreat: "Trick or treat?",
       manor: "Welcome to the manor",
       manorName: "Welcome to the manor, {name}",
       happyHalloween: "Happy Halloween",
       happyHalloweenName: "Happy Halloween, {name}",
+      spirits: "The spirits are listening…",
+      mysteries: "What mysteries shall we uncover tonight?",
+      conjure: "What can I conjure up for you?",
     },
   },
   // The empty chat's greeting; {name} is the user's nickname or first name.
@@ -2275,8 +2277,6 @@ export const en = {
         label: "Trick or treat",
         description:
           "Halloween themes and spooky greetings, until November 1.",
-        open: "Open",
-        showInSidebar: "Show in sidebar",
       },
       custom: {
         chatWidth: {

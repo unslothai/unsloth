@@ -647,12 +647,14 @@ export const ja = {
     greeting: {
       pumpkins: "かぼちゃのランタンができました。次は何をしましょう？",
       brewing: "さあ、魔法の薬を作ろう",
-      brewingName: "{name}さん、魔法の薬を作ろう",
-      trickOrTreat: "トリック・オア・トリート！",
+      trickOrTreat: "トリック・オア・トリート？",
       manor: "屋敷へようこそ",
       manorName: "{name}さん、屋敷へようこそ",
       happyHalloween: "ハッピーハロウィン",
       happyHalloweenName: "{name}さん、ハッピーハロウィン",
+      spirits: "精霊たちが耳を澄ませています…",
+      mysteries: "今夜はどんな謎を解き明かしましょう？",
+      conjure: "どんな魔法をかけましょうか？",
     },
   },
   welcome: {
@@ -2193,8 +2195,6 @@ export const ja = {
         label: "トリック・オア・トリート",
         description:
           "11月1日まで、ハロウィンのテーマと怖いあいさつを楽しめます。",
-        open: "開く",
-        showInSidebar: "サイドバーに表示",
       },
       custom: {
         chatWidth: {

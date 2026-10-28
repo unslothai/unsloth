@@ -28,7 +28,7 @@ import {
   removeHalloween,
   useHalloweenStore,
 } from "./halloween-store";
-import { CutePumpkinIcon } from "./pumpkin-icon";
+import { PumpkinIcon } from "./pumpkin-icon";
 
 function NightSky() {
   return (
@@ -66,9 +66,9 @@ function Row({
     <button
       type="button"
       onClick={onClick}
-      className="flex w-full cursor-pointer items-center gap-3.5 rounded-2xl px-3 py-3 text-left outline-none transition-colors hover:bg-accent focus-visible:bg-accent"
+      className="flex min-h-[calc(64px*var(--ui-space-scale,1))] w-full cursor-pointer items-center gap-4 rounded-2xl px-4 py-2.5 text-left outline-none transition-colors hover:bg-accent focus-visible:bg-accent"
     >
-      <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-primary/12 text-primary">
+      <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-primary/12 text-primary">
         <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-5" />
       </span>
       <span className="flex min-w-0 flex-1 flex-col gap-0.5">
@@ -79,7 +79,7 @@ function Row({
           <span className="text-muted-foreground text-xs">{description}</span>
         )}
       </span>
-      {trailing}
+      <span className="flex w-11 shrink-0 justify-end">{trailing}</span>
     </button>
   );
 }
@@ -99,7 +99,7 @@ function ArrowBadge() {
 function ThemeGrid() {
   const { palette } = usePalette();
   return (
-    <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
       {HALLOWEEN_THEME_IDS.map((id) => {
         // The dark accent in both modes: the light ones are deepened for contrast and read muddy.
         const { name, dark: colors } = COLOR_THEMES[id];
@@ -112,13 +112,13 @@ function ThemeGrid() {
             aria-pressed={selected}
             onClick={() => pickHalloweenTheme(id)}
             className={cn(
-              "flex min-w-0 cursor-pointer items-center gap-2.5 rounded-full border py-1.5 pr-4 pl-1.5 text-left outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring",
+              "flex min-w-0 cursor-pointer items-center gap-2 rounded-full border py-1.5 pr-3 pl-1.5 text-left outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring",
               selected ? "border-primary ring-1 ring-primary" : "border-border",
             )}
           >
             <span
               aria-hidden="true"
-              className="size-8 shrink-0 rounded-full border border-black/10 dark:border-white/15"
+              className="size-7 shrink-0 rounded-full border border-black/10 dark:border-white/15"
               style={{
                 background: `linear-gradient(135deg, ${colors.accent} 30%, color-mix(in srgb, ${colors.accent} 55%, black) 100%)`,
               }}
@@ -157,18 +157,18 @@ export function TrickOrTreatDialog({
     >
       <DialogContent
         data-testid="trick-or-treat-dialog"
-        className="gap-0 overflow-hidden px-0 pt-0 pb-0 sm:max-w-[min(calc(640px*var(--ui-space-scale,1)),calc(100%-2rem))]"
+        className="gap-0 overflow-hidden px-0 pt-0 pb-0 sm:max-w-[min(calc(560px*var(--ui-space-scale,1)),calc(100%-2rem))]"
       >
         <div className="pointer-events-none absolute inset-x-0 top-0 h-48 bg-[radial-gradient(110%_100%_at_50%_0%,color-mix(in_oklab,var(--primary)_24%,transparent),transparent_70%)]" />
         {view === "home" && <NightSky />}
         {view === "home" ? (
           <div className="relative flex flex-col">
-            <div className="flex flex-col items-center gap-2.5 px-12 pt-10 pb-6 text-center">
+            <div className="flex flex-col items-center gap-2.5 px-12 pt-10 pb-7 text-center">
               <span className="mb-1 flex size-14 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-[0_0_32px_-4px_var(--primary)]">
                 <HugeiconsIcon
-                  icon={CutePumpkinIcon}
+                  icon={PumpkinIcon}
                   strokeWidth={1.25}
-                  className="size-8"
+                  className="size-9"
                 />
               </span>
               <DialogTitle className="font-semibold text-2xl tracking-[-0.01em]">
@@ -178,7 +178,7 @@ export function TrickOrTreatDialog({
                 {t("halloween.description")}
               </DialogDescription>
             </div>
-            <div className="flex flex-col gap-0.5 px-8">
+            <div className="flex flex-col gap-1 px-6">
               <Row
                 icon={Moon02Icon}
                 label={t("halloween.chooseTheme")}
@@ -210,7 +210,7 @@ export function TrickOrTreatDialog({
                 trailing={<ArrowBadge />}
               />
             </div>
-            <p className="px-12 pt-5 pb-7 text-center text-muted-foreground text-xs italic">
+            <p className="px-12 pt-6 pb-10 text-center text-muted-foreground text-xs italic">
               {t("halloween.footer")}{" "}
               <button
                 type="button"
@@ -226,7 +226,7 @@ export function TrickOrTreatDialog({
             </p>
           </div>
         ) : (
-          <div className="relative flex flex-col gap-5 px-8 pt-6 pb-7">
+          <div className="relative flex flex-col gap-5 px-6 pt-6 pb-7">
             <div className="flex items-center gap-2 pr-8">
               <button
                 type="button"

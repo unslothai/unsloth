@@ -648,12 +648,14 @@ export const de = {
     greeting: {
       pumpkins: "Die Kürbisse sind geschnitzt. Was kommt als Nächstes?",
       brewing: "Lass uns was zusammenbrauen",
-      brewingName: "Lass uns was zusammenbrauen, {name}",
-      trickOrTreat: "Süßes oder Saures!",
+      trickOrTreat: "Süßes oder Saures?",
       manor: "Willkommen im Herrenhaus",
       manorName: "Willkommen im Herrenhaus, {name}",
       happyHalloween: "Fröhliches Halloween",
       happyHalloweenName: "Fröhliches Halloween, {name}",
+      spirits: "Die Geister hören zu…",
+      mysteries: "Welche Geheimnisse lüften wir heute Nacht?",
+      conjure: "Was darf ich für dich herbeizaubern?",
     },
   },
   welcome: {
@@ -2241,8 +2243,6 @@ export const de = {
         label: "Süßes oder Saures",
         description:
           "Halloween-Designs und gruselige Begrüßungen, bis zum 1. November.",
-        open: "Öffnen",
-        showInSidebar: "In der Seitenleiste anzeigen",
       },
       custom: {
         chatWidth: {

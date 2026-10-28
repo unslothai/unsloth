@@ -647,12 +647,14 @@ export const ru = {
     greeting: {
       pumpkins: "Тыквы вырезаны. Что дальше?",
       brewing: "Пора варить зелье",
-      brewingName: "Пора варить зелье, {name}",
-      trickOrTreat: "Сладость или гадость!",
+      trickOrTreat: "Сладость или гадость?",
       manor: "Добро пожаловать в особняк",
       manorName: "Добро пожаловать в особняк, {name}",
       happyHalloween: "С Хэллоуином",
       happyHalloweenName: "С Хэллоуином, {name}",
+      spirits: "Духи слушают…",
+      mysteries: "Какие тайны мы раскроем этой ночью?",
+      conjure: "Что мне наколдовать для вас?",
     },
   },
   welcome: {
@@ -2221,8 +2223,6 @@ export const ru = {
         label: "Сладость или гадость",
         description:
           "Темы Хэллоуина и жуткие приветствия до 1 ноября.",
-        open: "Открыть",
-        showInSidebar: "Показывать на боковой панели",
       },
       custom: {
         chatWidth: {

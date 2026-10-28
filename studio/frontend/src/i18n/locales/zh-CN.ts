@@ -646,12 +646,14 @@ export const zhCN = {
     greeting: {
       pumpkins: "南瓜灯已经刻好了。接下来做什么？",
       brewing: "开始熬制魔药吧",
-      brewingName: "{name}，开始熬制魔药吧",
-      trickOrTreat: "不给糖就捣蛋！",
+      trickOrTreat: "不给糖就捣蛋？",
       manor: "欢迎来到古宅",
       manorName: "{name}，欢迎来到古宅",
       happyHalloween: "万圣节快乐",
       happyHalloweenName: "{name}，万圣节快乐",
+      spirits: "幽灵们正在聆听……",
+      mysteries: "今晚我们要揭开什么谜团？",
+      conjure: "想让我为你变出什么？",
     },
   },
   welcome: {
@@ -2194,8 +2196,6 @@ export const zhCN = {
         label: "不给糖就捣蛋",
         description:
           "万圣节主题和惊悚问候，持续到 11 月 1 日。",
-        open: "打开",
-        showInSidebar: "在侧边栏中显示",
       },
       custom: {
         chatWidth: {

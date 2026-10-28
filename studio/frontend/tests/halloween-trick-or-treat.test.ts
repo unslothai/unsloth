@@ -138,7 +138,7 @@ test("every spooky greeting has English text, and named lines keep {name}", () =
   const keys = [...source.matchAll(/"halloween\.greeting\.(\w+)"/g)].map(
     (m) => m[1],
   );
-  assert.equal(keys.length, 8);
+  assert.equal(keys.length, 10);
   for (const key of keys) {
     const line = en.match(new RegExp(`\\n\\s+${key}: "([^"]+)"`))?.[1];
     assert.ok(line, key);
@@ -158,7 +158,7 @@ test("the sidebar row and dialog are gated on the season", () => {
   );
   assert.match(sidebar, /hideTrickOrTreatRow\(\);/);
   const appearance = read("../src/features/settings/tabs/appearance-tab.tsx");
-  assert.match(appearance, /<TrickOrTreatSettingsRows \/>/);
+  assert.match(appearance, /<TrickOrTreatSettingsRow \/>/);
   const select = read(
     "../src/features/settings/components/color-theme-select.tsx",
   );
@@ -171,12 +171,12 @@ test("Happy Halloween joins the greetings on October 30 and 31 only", async () =
   );
   const draw = (at: Date, name = "") =>
     new Set(
-      Array.from({ length: 200 }, () => buildSpookyWelcome(name, at).key),
+      Array.from({ length: 400 }, () => buildSpookyWelcome(name, at).key),
     );
   for (const day of [30, 31]) {
     const keys = draw(new Date(2026, 9, day, 21, 0));
     assert.ok(keys.has("halloween.greeting.happyHalloween"), `${day}`);
-    assert.equal(keys.size, 5, `${day}: Happy Halloween plus the other four`);
+    assert.equal(keys.size, 8, `${day}: Happy Halloween plus the other seven`);
     assert.ok(
       draw(new Date(2026, 9, day, 21, 0), "Ada").has(
         "halloween.greeting.happyHalloweenName",
@@ -184,7 +184,7 @@ test("Happy Halloween joins the greetings on October 30 and 31 only", async () =
     );
   }
   const before = draw(new Date(2026, 9, 29, 23, 59));
-  assert.equal(before.size, 4);
+  assert.equal(before.size, 7);
   assert.ok(!before.has("halloween.greeting.happyHalloween"));
 });
 
@@ -228,4 +228,65 @@ test("a pick in another tab reaches this tab's restore target", async () => {
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(useHalloweenStore.getState().restorePalette, "matcha");
   assert.equal(useHalloweenStore.getState().spookyGreetings, true);
+});
+
+test("each spooky greeting shows its own Halloween sloths, and every picture exists", async () => {
+  const { buildSpookyWelcome } = await import(
+    "../src/features/halloween/spooky-greetings.ts"
+  );
+  const allowed: Record<string, string[]> = {
+    pumpkins: ["sloth halloween trick or treat.png"],
+    brewing: ["sloth halloween witch.png"],
+    trickOrTreat: [
+      "sloth halloween trick or treat.png",
+      "large sloth cheeky.png",
+      "sloth halloween dead.png",
+      "sloth shock large.png",
+    ],
+    manor: ["sloth halloween vampire.png"],
+    spirits: ["sloth shock large.png"],
+    mysteries: [
+      "sloth halloween trick or treat.png",
+      "sloth halloween witch.png",
+      "sloth halloween dead.png",
+      "sloth halloween vampire.png",
+      "sloth shock large.png",
+      "large sloth cheeky.png",
+    ],
+    conjure: ["sloth halloween witch.png"],
+    happyHalloween: [
+      "sloth halloween trick or treat.png",
+      "sloth halloween witch.png",
+      "sloth halloween dead.png",
+      "sloth halloween vampire.png",
+      "sloth shock large.png",
+    ],
+  };
+  const seen = new Map<string, Set<string>>();
+  for (let i = 0; i < 3000; i++) {
+    const { key, sloth, enlarge } = buildSpookyWelcome(
+      "",
+      new Date(2026, 9, 31, 20, 0),
+    );
+    assert.equal(
+      enlarge,
+      sloth !== "large sloth cheeky.png" &&
+        sloth !== "sloth halloween dead.png" &&
+        sloth !== "sloth shock large.png",
+      sloth,
+    );
+    const line = key.replace("halloween.greeting.", "");
+    assert.ok(allowed[line]?.includes(sloth), `${line}: ${sloth}`);
+    seen.set(line, (seen.get(line) ?? new Set()).add(sloth));
+  }
+  for (const [line, pictures] of Object.entries(allowed)) {
+    assert.equal(
+      seen.get(line)?.size,
+      pictures.length,
+      `${line} uses all its pictures`,
+    );
+    for (const file of pictures) {
+      assert.ok(read(`../public/Sloth emojis/${file}`).length > 0, file);
+    }
+  }
 });

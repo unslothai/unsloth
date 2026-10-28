@@ -2116,8 +2116,6 @@ export const it = {
         label: "Dolcetto o scherzetto",
         description:
           "Temi di Halloween e saluti spaventosi, fino al 1° novembre.",
-        open: "Apri",
-        showInSidebar: "Mostra nella barra laterale",
       },
       custom: {
         chatWidth: {
@@ -3431,12 +3429,14 @@ export const it = {
     greeting: {
       pumpkins: "Le zucche sono intagliate. E adesso?",
       brewing: "Prepariamo la pozione",
-      brewingName: "Prepariamo la pozione, {name}",
-      trickOrTreat: "Dolcetto o scherzetto!",
+      trickOrTreat: "Dolcetto o scherzetto?",
       manor: "Ti diamo il benvenuto nel maniero",
       manorName: "Ti diamo il benvenuto nel maniero, {name}",
       happyHalloween: "Buon Halloween",
       happyHalloweenName: "Buon Halloween, {name}",
+      spirits: "Gli spiriti ci ascoltano…",
+      mysteries: "Quali misteri sveleremo stanotte?",
+      conjure: "Cosa posso evocare per te?",
     },
   },
   welcome: {

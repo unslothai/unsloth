@@ -648,12 +648,14 @@ export const fr = {
     greeting: {
       pumpkins: "Les citrouilles sont sculptées. Et ensuite ?",
       brewing: "Préparons la potion",
-      brewingName: "Préparons la potion, {name}",
-      trickOrTreat: "Un bonbon ou un sort !",
+      trickOrTreat: "Un bonbon ou un sort ?",
       manor: "Bienvenue au manoir",
       manorName: "Bienvenue au manoir, {name}",
       happyHalloween: "Joyeux Halloween",
       happyHalloweenName: "Joyeux Halloween, {name}",
+      spirits: "Les esprits écoutent…",
+      mysteries: "Quels mystères allons-nous percer ce soir ?",
+      conjure: "Que puis-je faire apparaître pour vous ?",
     },
   },
   welcome: {
@@ -2240,8 +2242,6 @@ export const fr = {
         label: "Un bonbon ou un sort",
         description:
           "Thèmes d’Halloween et salutations effrayantes, jusqu’au 1er novembre.",
-        open: "Ouvrir",
-        showInSidebar: "Afficher dans la barre latérale",
       },
       custom: {
         chatWidth: {
