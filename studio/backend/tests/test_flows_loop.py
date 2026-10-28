@@ -41,7 +41,7 @@ def fake_specs(monkeypatch):
             "data",
             "",
             inputs = [inp("checkpoint", "checkpoint"), inp("dataset", "dataset")],
-            outputs = [out("score", "number"), out("failures", "json")],
+            outputs = [out("score", "number"), out("results", "json"), out("failures", "json")],
             side_effect = True,
         ),
     )
@@ -94,11 +94,16 @@ def test_loop_body_takes_the_fed_recipe_group_and_stays_acyclic():
             lambda d: d["edges"][-1].update(source = "train", source_port = "metrics"),
             "scores the model",
         ),
+        (lambda d: d["edges"][-1].update(source_port = "results"), "scores the model"),
         (
             lambda d: d["nodes"][3].pop("group"),
             "runs inside one Loop group",
         ),
         (lambda d: d["edges"].pop(2), "needs held-out rows"),
+        (
+            lambda d: d["edges"][2].update(source = "gen", source_port = "dataset"),
+            "needs held-out rows",
+        ),
         (
             lambda d: (
                 d["nodes"].append(node("after", "output.result")),

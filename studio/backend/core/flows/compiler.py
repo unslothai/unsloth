@@ -514,9 +514,9 @@ def _check_feedback(
         if loop is None or not _within(dst, loop, owner):
             errors.append(issue("A feeds-the-next-round wire runs inside one Loop group", edge_id = eid))
             continue
-        if not any(p["id"] == edge["source_port"] for p in sspec["outputs"]) or not any(
-            p["id"] == "score" for p in sspec["outputs"]
-        ):
+        if edge["source_port"] != "failures" or not {"failures", "score"} <= {
+            p["id"] for p in sspec["outputs"]
+        }:
             errors.append(
                 issue(
                     "Feed the next round from a step that scores the model (its failures and score)",
@@ -539,8 +539,8 @@ def _check_feedback(
             src_node
             for port in sspec["inputs"]
             if port["type"] == "dataset"
-            for src_node, _ in inputs[src].get(port["id"], ())
-            if _within(src_node, loop, owner)
+            for src_node, src_port in inputs[src].get(port["id"], ())
+            if src_port == "holdout" and _within(src_node, loop, owner)
         ]
         if not held:
             errors.append(

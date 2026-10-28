@@ -2111,6 +2111,7 @@ class FlowEngine:
             for port in plan.specs[scorer]["inputs"]
             if port["type"] == "dataset"
             for src in plan.inputs[scorer].get(port["id"], ())
+            if src[1] == "holdout"
         )
         body = plan.body_order(nid)
         after: set[str] = set()
