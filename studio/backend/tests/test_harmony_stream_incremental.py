@@ -4,13 +4,76 @@
 """HarmonyTextStreamer decodes and parses incrementally yet emits exactly what re-decoding and
 re-parsing the whole reply on every token emits."""
 
+import importlib
+import importlib.machinery
 import queue
 import random
 import re
+import sys
+import types
+from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
-inf = pytest.importorskip("core.inference.inference")
+_BACKEND = Path(__file__).resolve().parent.parent
+if str(_BACKEND) not in sys.path:
+    sys.path.insert(0, str(_BACKEND))
+
+_STUBBED: list[str] = []
+
+
+def _stub_if_missing(
+    name,
+    attrs = (),
+    named_spec = False,
+):
+    """Stub a missing dep so CI collection passes without unsloth and trl; real installs are kept."""
+    if name in sys.modules:
+        return
+    try:
+        importlib.import_module(name)
+        return
+    except Exception:  # noqa: BLE001 - unusable here either way, so stub it
+        pass
+    _STUBBED.append(name)
+    module = types.ModuleType(name)
+    module.__spec__ = importlib.machinery.ModuleSpec(name, None) if named_spec else None
+    module.__version__ = "0.0.0"
+    module.__getattr__ = lambda _attr: MagicMock()
+    for attr in attrs:
+        setattr(module, attr, MagicMock())
+    sys.modules[name] = module
+    parent, _, child = name.rpartition(".")
+    if parent and parent in sys.modules:
+        setattr(sys.modules[parent], child, module)
+
+
+# torchao installed but unusable against the local torch poisons transformers for every later module.
+for _torchao in (
+    "torchao",
+    "torchao.prototype",
+    "torchao.prototype.safetensors",
+    "torchao.prototype.safetensors.safetensors_support",
+    "torchao.prototype.safetensors.safetensors_utils",
+    "torchao.quantization",
+    "torchao.dtypes",
+    "torchao.float8",
+    "torchao.utils",
+):
+    _stub_if_missing(_torchao, named_spec = True)
+
+_stub_if_missing("unsloth", ("FastLanguageModel", "FastVisionModel", "is_bfloat16_supported"))
+_stub_if_missing("unsloth.chat_templates", ("get_chat_template",))
+_stub_if_missing("unsloth_zoo")
+_stub_if_missing("trl", ("SFTTrainer", "SFTConfig"))
+
+from core.inference import inference as inf  # noqa: E402
+
+# Drop the stubs now the name is bound; one left behind outlives this module.
+for _name in reversed(_STUBBED):
+    sys.modules.pop(_name, None)
+
 torch = pytest.importorskip("torch")
 tokenizers = pytest.importorskip("tokenizers")
 transformers = pytest.importorskip("transformers")
