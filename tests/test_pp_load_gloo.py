@@ -403,6 +403,13 @@ def test_sharded_loading_matches_full_load_then_split(arch, world, schedule, v, 
         import importlib
         if not importlib.import_module("unsloth.models.pp_schedules").v_schedules_supported():
             pytest.skip(f"V schedules need torch >= 2.12 (refused on {torch.__version__})")
+    init = (peft or {}).get("init_lora_weights")
+    if init in ("mica", "lora_ga"):
+        import peft as peft_module
+        from peft.tuners.lora.layer import LoraLayer
+
+        if not hasattr(LoraLayer, f"{init}_init"):
+            pytest.skip(f"peft {peft_module.__version__} has no {init} initialization")
     with tempfile.TemporaryDirectory() as ckpt:
         _save_checkpoint(arch, ckpt, tie = tie)
         n_mb = 4 if schedule != "gpipe" or world == 4 else 2
