@@ -101,7 +101,6 @@ def _tuner_layer_class():
 
 def mamba_raw_weight_adapters(mixer):
     """Names of the mixer's raw-weight leaves that carry an active, unmerged adapter."""
-    # Runs on every mixer forward, eval and decode included: plain leaves leave after one isinstance.
     modules, tuner = mixer._modules, _TUNER_LAYER or _tuner_layer_class()
     leaves = [name for name in _RAW_WEIGHT_LEAVES if isinstance(modules.get(name), tuner)]
     return [name for name in leaves if _has_active_adapter(modules[name])] if leaves else leaves
@@ -191,8 +190,7 @@ def _cache_key(module):
 
 
 def _full_precision_merged(module, names = None):
-    # Built outside the caller's autocast, as merge_and_unload builds it: the cached weight is then
-    # independent of whether the first eval forward ran under autocast.
+    # Built outside autocast (as merge_and_unload does) so the cache is autocast-independent.
     device_type = module.get_base_layer().weight.device.type
     try:
         context = torch.autocast(device_type, enabled = False)
@@ -276,8 +274,7 @@ def _raw_read_class(cls):
         return sub
 
     def weight(self):
-        # Armed per thread (nn.DataParallel replicas share their leaves' __dict__ contents).
-        # Entries are pushed only for leaves whose adapter is active and unmerged at forward start.
+        # Per thread: nn.DataParallel replicas share their leaves' __dict__ contents.
         for module, effective, label in reversed(_routing.raw):
             if module is not self:
                 continue
@@ -294,8 +291,7 @@ def _raw_read_class(cls):
         return super(sub, self).weight
 
     def __reduce_ex__(self, protocol):
-        # Pickle / deepcopy as the plain adapter layer without the cached W + delta, so a saved model
-        # loads where this module never ran; the next mixer forward installs the property again.
+        # Pickle / deepcopy as the plain adapter layer; the next mixer forward re-installs it.
         state = self.__dict__.copy()
         state.pop(_CACHE, None)
         return copyreg._reconstructor, (cls, object, None), state
@@ -521,8 +517,7 @@ def _patch_class(cls):
                 base = module.get_base_layer().weight
                 merged.append((base, weights[leaf], leaf))
                 merged.append((weights[leaf], weights[leaf], leaf))
-        # Module calls are only tracked for leaves the effective weight does not cover; never
-        # under torch.compile, where registering a hook is unsupported.
+        # No hooks under torch.compile (unsupported there).
         hooks = []
         if not compiling:
             hooks = [
