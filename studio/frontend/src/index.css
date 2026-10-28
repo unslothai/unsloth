@@ -682,7 +682,7 @@
    Flavor themes (Theme > More themes). Each sets --th-* seeds per mode; the
    block below maps them onto the --*-base tokens, so contrast and custom
    colors still apply. */
-:root:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="pina-paraiso"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"], [data-palette="pumpkin"], [data-palette="bloody-valentine"], [data-palette="the-thing"], [data-palette="alien"], [data-palette="gothic"], [data-palette="candy-skull"], [data-palette="trick-or-treat"], [data-palette="ghost-ship"], [data-palette="midnight-haunt"])[data-palette] {
+:root:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="pina-paraiso"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"], [data-palette="pumpkin"], [data-palette="bloody-valentine"], [data-palette="the-thing"], [data-palette="alien"], [data-palette="gothic"], [data-palette="black-cat"], [data-palette="trick-or-treat"], [data-palette="ghost-ship"], [data-palette="midnight-haunt"])[data-palette] {
 	--background: var(--th-bg);
 	--foreground-base: var(--th-fg);
 	--action-base: var(--foreground);
@@ -732,17 +732,17 @@
 }
 
 /* Attribute specificity only, so html[data-contrast-adjust] still wins. */
-[data-palette]:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="pina-paraiso"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"], [data-palette="pumpkin"], [data-palette="bloody-valentine"], [data-palette="the-thing"], [data-palette="alien"], [data-palette="gothic"], [data-palette="candy-skull"], [data-palette="trick-or-treat"], [data-palette="ghost-ship"], [data-palette="midnight-haunt"]) {
+[data-palette]:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="pina-paraiso"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"], [data-palette="pumpkin"], [data-palette="bloody-valentine"], [data-palette="the-thing"], [data-palette="alien"], [data-palette="gothic"], [data-palette="black-cat"], [data-palette="trick-or-treat"], [data-palette="ghost-ship"], [data-palette="midnight-haunt"]) {
 	--muted-foreground: var(--th-muted);
 }
 
-:root:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="pina-paraiso"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"], [data-palette="pumpkin"], [data-palette="bloody-valentine"], [data-palette="the-thing"], [data-palette="alien"], [data-palette="gothic"], [data-palette="candy-skull"], [data-palette="trick-or-treat"], [data-palette="ghost-ship"], [data-palette="midnight-haunt"])[data-palette].dark
+:root:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="pina-paraiso"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"], [data-palette="pumpkin"], [data-palette="bloody-valentine"], [data-palette="the-thing"], [data-palette="alien"], [data-palette="gothic"], [data-palette="black-cat"], [data-palette="trick-or-treat"], [data-palette="ghost-ship"], [data-palette="midnight-haunt"])[data-palette].dark
 	:is(.chat-composer-surface, .unsloth-composer-surface, .unsloth-files-panel) {
 	background-color: color-mix(in srgb, var(--card), var(--th-fg) 4%);
 }
 
 /* Collapsed rail takes the page color, as it does in dark mode. */
-:root:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="pina-paraiso"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"], [data-palette="pumpkin"], [data-palette="bloody-valentine"], [data-palette="the-thing"], [data-palette="alien"], [data-palette="gothic"], [data-palette="candy-skull"], [data-palette="trick-or-treat"], [data-palette="ghost-ship"], [data-palette="midnight-haunt"])[data-palette]:not(.dark)
+:root:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="pina-paraiso"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"], [data-palette="pumpkin"], [data-palette="bloody-valentine"], [data-palette="the-thing"], [data-palette="alien"], [data-palette="gothic"], [data-palette="black-cat"], [data-palette="trick-or-treat"], [data-palette="ghost-ship"], [data-palette="midnight-haunt"])[data-palette]:not(.dark)
 	[data-collapsible="icon"] [data-sidebar="sidebar"] {
 	--sidebar-surface: var(--background);
 }
@@ -1615,8 +1615,7 @@
 	--control-accent-foreground: #ffffff;
 	--nav-icon-idle-base: #588f22;
 	--composer-shadow:
-		0 0 0 1px rgb(184 72 0 / 0.3),
-		0 0 24px -8px rgb(58 125 0 / 0.45),
+		0 0 26px -8px rgb(184 72 0 / 0.4),
 		0 2px 8px -2px rgb(0 0 0 / 0.1);
 }
 :root[data-palette="pumpkin"].dark {
@@ -1642,8 +1641,7 @@
 	--control-accent-foreground: #130901;
 	--nav-icon-idle-base: #73ac2c;
 	--composer-shadow:
-		0 0 0 1px rgb(143 224 58 / 0.35),
-		0 0 30px -8px rgb(255 122 0 / 0.5),
+		0 0 32px -8px rgb(255 122 0 / 0.45),
 		0 4px 20px 4px var(--background);
 }
 
@@ -1670,8 +1668,7 @@
 	--control-accent-foreground: #ffffff;
 	--nav-icon-idle-base: #8e4de1;
 	--composer-shadow:
-		0 0 0 1px rgb(143 92 0 / 0.3),
-		0 0 24px -8px rgb(122 47 224 / 0.45),
+		0 0 26px -8px rgb(143 92 0 / 0.4),
 		0 2px 8px -2px rgb(0 0 0 / 0.1);
 }
 :root[data-palette="trick-or-treat"].dark {
@@ -1697,8 +1694,7 @@
 	--control-accent-foreground: #100716;
 	--nav-icon-idle-base: #a361c8;
 	--composer-shadow:
-		0 0 0 1px rgb(209 125 255 / 0.35),
-		0 0 30px -8px rgb(255 196 0 / 0.5),
+		0 0 32px -8px rgb(255 196 0 / 0.45),
 		0 4px 20px 4px var(--background);
 }
 
@@ -1725,8 +1721,7 @@
 	--control-accent-foreground: #ffffff;
 	--nav-icon-idle-base: #bc438c;
 	--composer-shadow:
-		0 0 0 1px rgb(196 0 31 / 0.3),
-		0 0 24px -8px rgb(176 36 122 / 0.45),
+		0 0 26px -8px rgb(196 0 31 / 0.4),
 		0 2px 8px -2px rgb(0 0 0 / 0.1);
 }
 :root[data-palette="bloody-valentine"].dark {
@@ -1752,8 +1747,7 @@
 	--control-accent-foreground: #130204;
 	--nav-icon-idle-base: #c76895;
 	--composer-shadow:
-		0 0 0 1px rgb(255 138 196 / 0.35),
-		0 0 30px -8px rgb(255 31 67 / 0.5),
+		0 0 32px -8px rgb(255 31 67 / 0.45),
 		0 4px 20px 4px var(--background);
 }
 
@@ -1780,8 +1774,7 @@
 	--control-accent-foreground: #ffffff;
 	--nav-icon-idle-base: #b9369a;
 	--composer-shadow:
-		0 0 0 1px rgb(0 122 51 / 0.3),
-		0 0 24px -8px rgb(176 18 138 / 0.45),
+		0 0 26px -8px rgb(0 122 51 / 0.4),
 		0 2px 8px -2px rgb(0 0 0 / 0.1);
 }
 :root[data-palette="alien"].dark {
@@ -1807,8 +1800,7 @@
 	--control-accent-foreground: #010b06;
 	--nav-icon-idle-base: #c03399;
 	--composer-shadow:
-		0 0 0 1px rgb(255 61 200 / 0.35),
-		0 0 30px -8px rgb(0 255 106 / 0.5),
+		0 0 32px -8px rgb(0 255 106 / 0.45),
 		0 4px 20px 4px var(--background);
 }
 
@@ -1835,8 +1827,7 @@
 	--control-accent-foreground: #ffffff;
 	--nav-icon-idle-base: #997826;
 	--composer-shadow:
-		0 0 0 1px rgb(0 117 106 / 0.3),
-		0 0 24px -8px rgb(138 96 0 / 0.45),
+		0 0 26px -8px rgb(0 117 106 / 0.4),
 		0 2px 8px -2px rgb(0 0 0 / 0.1);
 }
 :root[data-palette="ghost-ship"].dark {
@@ -1862,8 +1853,7 @@
 	--control-accent-foreground: #010e0d;
 	--nav-icon-idle-base: #c0a333;
 	--composer-shadow:
-		0 0 0 1px rgb(255 210 61 / 0.35),
-		0 0 30px -8px rgb(0 229 200 / 0.5),
+		0 0 32px -8px rgb(0 229 200 / 0.45),
 		0 4px 20px 4px var(--background);
 }
 
@@ -1890,8 +1880,7 @@
 	--control-accent-foreground: #ffffff;
 	--nav-icon-idle-base: #c75b26;
 	--composer-shadow:
-		0 0 0 1px rgb(0 98 168 / 0.3),
-		0 0 24px -8px rgb(192 63 0 / 0.45),
+		0 0 26px -8px rgb(0 98 168 / 0.4),
 		0 2px 8px -2px rgb(0 0 0 / 0.1);
 }
 :root[data-palette="the-thing"].dark {
@@ -1917,8 +1906,7 @@
 	--control-accent-foreground: #020b13;
 	--nav-icon-idle-base: #c0541b;
 	--composer-shadow:
-		0 0 0 1px rgb(255 106 26 / 0.35),
-		0 0 30px -8px rgb(61 188 255 / 0.5),
+		0 0 32px -8px rgb(61 188 255 / 0.45),
 		0 4px 20px 4px var(--background);
 }
 
@@ -1945,8 +1933,7 @@
 	--control-accent-foreground: #ffffff;
 	--nav-icon-idle-base: #957926;
 	--composer-shadow:
-		0 0 0 1px rgb(47 69 214 / 0.3),
-		0 0 24px -8px rgb(133 100 0 / 0.45),
+		0 0 26px -8px rgb(47 69 214 / 0.4),
 		0 2px 8px -2px rgb(0 0 0 / 0.1);
 }
 :root[data-palette="midnight-haunt"].dark {
@@ -1972,8 +1959,7 @@
 	--control-accent-foreground: #040616;
 	--nav-icon-idle-base: #c1ab56;
 	--composer-shadow:
-		0 0 0 1px rgb(255 224 102 / 0.35),
-		0 0 30px -8px rgb(111 134 255 / 0.5),
+		0 0 32px -8px rgb(111 134 255 / 0.45),
 		0 4px 20px 4px var(--background);
 }
 
@@ -2000,8 +1986,7 @@
 	--control-accent-foreground: #ffffff;
 	--nav-icon-idle-base: #cc325c;
 	--composer-shadow:
-		0 0 0 1px rgb(106 36 200 / 0.3),
-		0 0 24px -8px rgb(196 16 63 / 0.45),
+		0 0 26px -8px rgb(106 36 200 / 0.4),
 		0 2px 8px -2px rgb(0 0 0 / 0.1);
 }
 :root[data-palette="gothic"].dark {
@@ -2027,79 +2012,68 @@
 	--control-accent-foreground: #0a040f;
 	--nav-icon-idle-base: #c32556;
 	--composer-shadow:
-		0 0 0 1px rgb(255 47 106 / 0.35),
-		0 0 30px -8px rgb(178 122 255 / 0.5),
+		0 0 32px -8px rgb(178 122 255 / 0.45),
 		0 4px 20px 4px var(--background);
 }
 
-:root[data-palette="candy-skull"]:not(.dark) {
-	--th-bg: #fff0f8;
-	--th-surface: #ffdeef;
-	--th-raised: #f8d7e6;
-	--th-hover: #f2cfde;
-	--th-border: #e5c0cd;
-	--th-fg: #3a0627;
-	--th-muted: #794e5a;
-	--th-subtle: #a6879a;
-	--th-accent: #c8076b;
+:root[data-palette="black-cat"]:not(.dark) {
+	--th-bg: #f6f1ff;
+	--th-surface: #ebe0ff;
+	--th-raised: #e2d8f6;
+	--th-hover: #dacfed;
+	--th-border: #c9bedb;
+	--th-fg: #120a1c;
+	--th-muted: #4f4759;
+	--th-subtle: #8f8999;
+	--th-accent: #6a1fd6;
 	--th-accent-fg: #ffffff;
-	--th-second: #9a5a00;
-	--th-chart-1: #c8076b;
-	--th-chart-2: #9a5a00;
-	--th-chart-3: #008f84;
-	--th-chart-4: #6a3fe0;
-	--th-chart-5: #e0500e;
-	--ring: #9a5a00;
-	--sidebar-ring: #9a5a00;
-	--control-accent: #9a5a00;
+	--th-second: #1c1028;
+	--th-chart-1: #6a1fd6;
+	--th-chart-2: #1c1028;
+	--th-chart-3: #4a3fd1;
+	--th-chart-4: #b0128a;
+	--th-chart-5: #5c5470;
+	--ring: #1c1028;
+	--sidebar-ring: #1c1028;
+	--control-accent: #1c1028;
 	--control-accent-foreground: #ffffff;
-	--nav-icon-idle-base: #a97125;
+	--nav-icon-idle-base: #3d3248;
 	--composer-shadow:
-		0 0 0 1px rgb(200 7 107 / 0.3),
-		0 0 24px -8px rgb(154 90 0 / 0.45),
+		0 0 26px -8px rgb(106 31 214 / 0.4),
 		0 2px 8px -2px rgb(0 0 0 / 0.1);
 }
-:root[data-palette="candy-skull"].dark {
-	--th-bg: #1d0617;
-	--th-surface: #2a0a22;
-	--th-raised: #351427;
-	--th-hover: #3f1e2c;
-	--th-border: #553136;
-	--th-fg: #ffe6f4;
-	--th-muted: #cfad99;
-	--th-subtle: #836b7a;
-	--th-accent: #ff3d9e;
-	--th-accent-fg: #11040e;
-	--th-second: #ffb000;
-	--th-chart-1: #ff3d9e;
-	--th-chart-2: #ffb000;
-	--th-chart-3: #1ae0d0;
-	--th-chart-4: #fff0f8;
-	--th-chart-5: #8f7aff;
-	--ring: #ffb000;
-	--sidebar-ring: #ffb000;
-	--control-accent: #ffb000;
-	--control-accent-foreground: #11040e;
-	--nav-icon-idle-base: #c78606;
+:root[data-palette="black-cat"].dark {
+	--th-bg: #08060b;
+	--th-surface: #110d16;
+	--th-raised: #1c1722;
+	--th-hover: #27212d;
+	--th-border: #3c3545;
+	--th-fg: #f3eaff;
+	--th-muted: #bdb1cb;
+	--th-subtle: #726d79;
+	--th-accent: #a259ff;
+	--th-accent-fg: #050407;
+	--th-second: #dcb8ff;
+	--th-chart-1: #a259ff;
+	--th-chart-2: #dcb8ff;
+	--th-chart-3: #7a5cff;
+	--th-chart-4: #ff5cd6;
+	--th-chart-5: #b8b0c4;
+	--ring: #dcb8ff;
+	--sidebar-ring: #dcb8ff;
+	--control-accent: #dcb8ff;
+	--control-accent-foreground: #050407;
+	--nav-icon-idle-base: #a78cc2;
 	--composer-shadow:
-		0 0 0 1px rgb(255 176 0 / 0.35),
-		0 0 30px -8px rgb(255 61 158 / 0.5),
+		0 0 32px -8px rgb(162 89 255 / 0.45),
 		0 4px 20px 4px var(--background);
 }
 
-/* The two hues meet in the composer glow and, in dark mode, the greeting. */
-:root:where([data-palette="pumpkin"], [data-palette="trick-or-treat"], [data-palette="bloody-valentine"], [data-palette="alien"], [data-palette="ghost-ship"], [data-palette="the-thing"], [data-palette="midnight-haunt"], [data-palette="gothic"], [data-palette="candy-skull"])
+:root:where([data-palette="pumpkin"], [data-palette="trick-or-treat"], [data-palette="bloody-valentine"], [data-palette="alien"], [data-palette="ghost-ship"], [data-palette="the-thing"], [data-palette="midnight-haunt"], [data-palette="gothic"], [data-palette="black-cat"])
 	:is(.chat-composer-surface, .unsloth-composer-surface):focus-within {
 	box-shadow:
-		0 0 0 1px color-mix(in srgb, var(--th-second) 60%, transparent),
-		0 0 34px -6px color-mix(in srgb, var(--th-accent) 60%, transparent),
+		0 0 36px -6px color-mix(in srgb, var(--th-accent) 55%, transparent),
 		0 2px 8px -2px rgb(0 0 0 / 0.1);
-}
-:root:where([data-palette="pumpkin"], [data-palette="trick-or-treat"], [data-palette="bloody-valentine"], [data-palette="alien"], [data-palette="ghost-ship"], [data-palette="the-thing"], [data-palette="midnight-haunt"], [data-palette="gothic"], [data-palette="candy-skull"]).dark .unsloth-welcome-title {
-	background-image: linear-gradient(100deg, var(--th-fg) 15%, var(--th-accent) 60%, var(--th-second) 100%);
-	-webkit-background-clip: text;
-	background-clip: text;
-	color: transparent;
 }
 
 /* --------------------------------------------------------------------------- */

@@ -24,7 +24,7 @@ try {
     "honey", "licorice", "macaron", "matcha", "mint", "neon-cyberpunk",
     "oat-milk", "peach", "pina-paraiso", "plum", "tangerine", "taro",
     "wasabi", "yuzu", "pumpkin", "bloody-valentine", "alien", "the-thing",
-    "gothic", "candy-skull", "trick-or-treat", "ghost-ship", "midnight-haunt",
+    "gothic", "black-cat", "trick-or-treat", "ghost-ship", "midnight-haunt",
   ];
   if (palettes.indexOf(palette) !== -1) {
     root.setAttribute("data-palette", palette);

@@ -6233,7 +6233,7 @@ export function AppSidebar() {
                       e.stopPropagation();
                       hideTrickOrTreatRow();
                     }}
-                    className="sidebar-row-action group-hover/halloween-item:opacity-100 group-hover/halloween-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto group-data-[collapsible=icon]:hidden"
+                    className="sidebar-row-action pr-2.5! group-hover/halloween-item:opacity-100 group-hover/halloween-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto group-data-[collapsible=icon]:hidden"
                   >
                     <span className="sidebar-row-action-glyph">
                       <HugeiconsIcon

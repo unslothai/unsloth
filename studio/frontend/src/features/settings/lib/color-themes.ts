@@ -41,7 +41,7 @@ export const HALLOWEEN_THEME_IDS = [
   "the-thing",
   "midnight-haunt",
   "gothic",
-  "candy-skull",
+  "black-cat",
 ] as const;
 
 export const COLOR_THEME_IDS = [
@@ -57,8 +57,6 @@ export type ThemeModeColors = {
   background: string;
   foreground: string;
   surface?: string;
-  // Halloween themes' second hue: controls, rings and the composer glow.
-  second?: string;
 };
 
 type ColorThemeMeta = {
@@ -411,20 +409,18 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
     },
   },
   pumpkin: {
-    name: "Pumpkin",
+    name: "Jack-o’-Lantern",
     light: {
       accent: "#b84800",
       background: "#fff3e3",
       foreground: "#3a1a00",
       surface: "#ffe7c9",
-      second: "#3a7d00",
     },
     dark: {
       accent: "#ff7a00",
       background: "#1f0f02",
       foreground: "#ffeedd",
       surface: "#2b1606",
-      second: "#8fe03a",
     },
   },
   "trick-or-treat": {
@@ -434,14 +430,12 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
       background: "#fffae6",
       foreground: "#2e1f00",
       surface: "#fff0c4",
-      second: "#7a2fe0",
     },
     dark: {
       accent: "#ffc400",
       background: "#1a0b24",
       foreground: "#fff4d6",
       surface: "#251135",
-      second: "#d17dff",
     },
   },
   "bloody-valentine": {
@@ -451,31 +445,27 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
       background: "#fff0f2",
       foreground: "#3a0510",
       surface: "#ffe0e6",
-      second: "#b0247a",
     },
     dark: {
       accent: "#ff1f43",
       background: "#1f0307",
       foreground: "#ffe3e8",
       surface: "#2c070d",
-      second: "#ff8ac4",
     },
   },
   alien: {
-    name: "Alien",
+    name: "Abduction",
     light: {
       accent: "#007a33",
       background: "#eefff4",
       foreground: "#032a12",
       surface: "#dafbe6",
-      second: "#b0128a",
     },
     dark: {
       accent: "#00ff6a",
       background: "#02130a",
       foreground: "#d6ffe6",
       surface: "#051e10",
-      second: "#ff3dc8",
     },
   },
   "ghost-ship": {
@@ -485,14 +475,12 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
       background: "#ecfffb",
       foreground: "#03302a",
       surface: "#d4f8f0",
-      second: "#8a6000",
     },
     dark: {
       accent: "#00e5c8",
       background: "#021716",
       foreground: "#d9fff8",
       surface: "#042420",
-      second: "#ffd23d",
     },
   },
   "the-thing": {
@@ -502,31 +490,27 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
       background: "#eef8ff",
       foreground: "#04233a",
       surface: "#dcefff",
-      second: "#c03f00",
     },
     dark: {
       accent: "#3dbcff",
       background: "#04121f",
       foreground: "#e0f3ff",
       surface: "#081c2e",
-      second: "#ff6a1a",
     },
   },
   "midnight-haunt": {
-    name: "Midnight Haunt",
+    name: "Graveyard Shift",
     light: {
       accent: "#2f45d6",
       background: "#f0f3ff",
       foreground: "#0c1442",
       surface: "#dfe5ff",
-      second: "#856400",
     },
     dark: {
       accent: "#6f86ff",
       background: "#060a24",
       foreground: "#e3e8ff",
       surface: "#0b1236",
-      second: "#ffe066",
     },
   },
   gothic: {
@@ -536,31 +520,27 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
       background: "#f8f1ff",
       foreground: "#22093d",
       surface: "#eee0ff",
-      second: "#c4103f",
     },
     dark: {
       accent: "#b27aff",
       background: "#100619",
       foreground: "#f0e4ff",
       surface: "#190b28",
-      second: "#ff2f6a",
     },
   },
-  "candy-skull": {
-    name: "Candy Skull",
+  "black-cat": {
+    name: "Black Cat",
     light: {
-      accent: "#c8076b",
-      background: "#fff0f8",
-      foreground: "#3a0627",
-      surface: "#ffdeef",
-      second: "#9a5a00",
+      accent: "#6a1fd6",
+      background: "#f6f1ff",
+      foreground: "#120a1c",
+      surface: "#ebe0ff",
     },
     dark: {
-      accent: "#ff3d9e",
-      background: "#1d0617",
-      foreground: "#ffe6f4",
-      surface: "#2a0a22",
-      second: "#ffb000",
+      accent: "#a259ff",
+      background: "#08060b",
+      foreground: "#f3eaff",
+      surface: "#110d16",
     },
   },
 };

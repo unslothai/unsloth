@@ -124,7 +124,7 @@ function ThemeGrid() {
               aria-hidden="true"
               className="size-8 shrink-0 rounded-full border border-black/10 dark:border-white/15"
               style={{
-                background: `linear-gradient(135deg, ${colors.accent} 25%, ${colors.second ?? colors.background} 90%)`,
+                background: `linear-gradient(135deg, ${colors.accent} 30%, color-mix(in srgb, ${colors.accent} 55%, black) 100%)`,
               }}
             />
             <span className="min-w-0 truncate whitespace-nowrap font-medium text-sm">
