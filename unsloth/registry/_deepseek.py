@@ -153,22 +153,6 @@ def register_deepseek_models(include_original_model: bool = False):
     register_deepseek_r1_distill_qwen_models(include_original_model = include_original_model)
 
 
-def _list_deepseek_r1_distill_models():
-    from unsloth.utils.hf_hub import ModelInfo as HfModelInfo
-    from unsloth.utils.hf_hub import list_models
-
-    models: list[HfModelInfo] = list_models(author = "unsloth", search = "Distill", limit = 1000)
-    distill_models = []
-    for model in models:
-        model_id = model.id
-        model_name = model_id.split("/")[-1]
-        # Parse out only the version.
-        version = model_name.removeprefix("DeepSeek-R1-Distill-")
-        distill_models.append(version)
-
-    return distill_models
-
-
 if __name__ == "__main__":
     from unsloth.registry.registry import MODEL_REGISTRY, _check_model_info
 
