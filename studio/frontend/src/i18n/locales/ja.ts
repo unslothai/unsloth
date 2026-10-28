@@ -638,9 +638,6 @@ export const ja = {
     spookyGreetings: "怖いあいさつ",
     spookyGreetingsDescription: "新しいチャットでナマケモノが驚かせます。",
     surprise: "トリック・オア・トリート！",
-    surpriseDescription: "ナマケモノにテーマを選んでもらいましょう。",
-    themesTitle: "怖いテーマ",
-    back: "戻る",
     footer: "Unslothは11月1日の午前0時に元に戻ります。",
     removeNow: "今すぐ解除",
     greeting: {

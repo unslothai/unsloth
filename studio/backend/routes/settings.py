@@ -4812,17 +4812,11 @@ class PersonalizationAppearance(BaseModel):
         "wasabi",
         "yuzu",
         "pumpkin",
-        "trick-or-treat",
         "bloody-valentine",
         "the-thing",
         "alien",
         "gothic",
-        "candy-ghost",
-        "zombie-wedding",
-        "haunted-manor",
-        "ghost-ship",
         "candy-skull",
-        "midnight-haunt",
     ] = "standard"
     language: Optional[str] = Field(None, max_length = 20)
     customization: PersonalizationCustomization = Field(

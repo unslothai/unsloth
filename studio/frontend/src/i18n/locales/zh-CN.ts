@@ -637,9 +637,6 @@ export const zhCN = {
     spookyGreetings: "惊悚问候",
     spookyGreetingsDescription: "树懒会在新对话中吓你一跳。",
     surprise: "不给糖就捣蛋！",
-    surpriseDescription: "让树懒为你挑选主题。",
-    themesTitle: "惊悚主题",
-    back: "返回",
     footer: "Unsloth 将于 11 月 1 日零点恢复正常。",
     removeNow: "立即移除",
     greeting: {

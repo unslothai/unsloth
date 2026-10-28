@@ -639,9 +639,6 @@ export const ptBR = {
     spookyGreetingsDescription:
       "A preguiça recebe os novos chats com um susto.",
     surprise: "Doces ou travessuras!",
-    surpriseDescription: "Deixe a preguiça escolher um tema para você.",
-    themesTitle: "Temas assustadores",
-    back: "Voltar",
     footer: "O Unsloth volta ao normal à meia-noite de 1º de novembro.",
     removeNow: "Remover agora",
     greeting: {

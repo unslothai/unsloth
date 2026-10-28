@@ -34,17 +34,11 @@ export const FLAVOR_THEME_IDS = [
 // Offered from the sidebar's Trick or treat row and Theme > Halloween, in October only.
 export const HALLOWEEN_THEME_IDS = [
   "pumpkin",
-  "trick-or-treat",
   "bloody-valentine",
-  "the-thing",
   "alien",
+  "the-thing",
   "gothic",
-  "candy-ghost",
-  "zombie-wedding",
-  "haunted-manor",
-  "ghost-ship",
   "candy-skull",
-  "midnight-haunt",
 ] as const;
 
 export const COLOR_THEME_IDS = [
@@ -426,21 +420,6 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
       surface: "#21170e",
     },
   },
-  "trick-or-treat": {
-    name: "Trick or Treat",
-    light: {
-      accent: "#9a5c00",
-      background: "#fffaf0",
-      foreground: "#2b1c08",
-      surface: "#fbf1dc",
-    },
-    dark: {
-      accent: "#ffc23d",
-      background: "#171022",
-      foreground: "#fff3dd",
-      surface: "#20172f",
-    },
-  },
   "bloody-valentine": {
     name: "Bloody Valentine",
     light: {
@@ -501,66 +480,6 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
       surface: "#151217",
     },
   },
-  "candy-ghost": {
-    name: "Candy Ghost",
-    light: {
-      accent: "#7a4fd1",
-      background: "#fbf8fd",
-      foreground: "#21183a",
-      surface: "#f2edf8",
-    },
-    dark: {
-      accent: "#e08cff",
-      background: "#120e1a",
-      foreground: "#f3eadb",
-      surface: "#1b1526",
-    },
-  },
-  "zombie-wedding": {
-    name: "Zombie Wedding",
-    light: {
-      accent: "#a8325a",
-      background: "#faf7fc",
-      foreground: "#22172c",
-      surface: "#f2ecf6",
-    },
-    dark: {
-      accent: "#e89ab0",
-      background: "#100c14",
-      foreground: "#ede7f5",
-      surface: "#1a1421",
-    },
-  },
-  "haunted-manor": {
-    name: "Haunted Manor",
-    light: {
-      accent: "#8a6410",
-      background: "#f6f7f8",
-      foreground: "#1a1f27",
-      surface: "#eceef1",
-    },
-    dark: {
-      accent: "#d9b25a",
-      background: "#101318",
-      foreground: "#e6e9ee",
-      surface: "#181d24",
-    },
-  },
-  "ghost-ship": {
-    name: "Ghost Ship",
-    light: {
-      accent: "#0b7d74",
-      background: "#f2f9f8",
-      foreground: "#0a2422",
-      surface: "#e4f2f0",
-    },
-    dark: {
-      accent: "#3fd1c4",
-      background: "#081316",
-      foreground: "#ddf3f0",
-      surface: "#0e1d21",
-    },
-  },
   "candy-skull": {
     name: "Candy Skull",
     light: {
@@ -574,21 +493,6 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
       background: "#140f1c",
       foreground: "#fff4e8",
       surface: "#1e1729",
-    },
-  },
-  "midnight-haunt": {
-    name: "Midnight Haunt",
-    light: {
-      accent: "#3f55c8",
-      background: "#f5f6fb",
-      foreground: "#141a33",
-      surface: "#eaecf6",
-    },
-    dark: {
-      accent: "#8da2ff",
-      background: "#0a0d1a",
-      foreground: "#e4e7f2",
-      surface: "#11162a",
     },
   },
 };

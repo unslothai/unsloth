@@ -639,9 +639,6 @@ export const fr = {
     spookyGreetingsDescription:
       "Le paresseux accueille les nouvelles discussions avec une frayeur.",
     surprise: "Un bonbon ou un sort !",
-    surpriseDescription: "Laissez le paresseux choisir un thème pour vous.",
-    themesTitle: "Thèmes effrayants",
-    back: "Retour",
     footer: "Unsloth redevient normal à minuit le 1er novembre.",
     removeNow: "Retirer maintenant",
     greeting: {

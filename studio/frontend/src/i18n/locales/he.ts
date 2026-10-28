@@ -724,9 +724,6 @@ export const he = {
     spookyGreetings: "ברכות מפחידות",
     spookyGreetingsDescription: "העצלן מקבל שיחות חדשות בהפחדה.",
     surprise: "ממתק או תעלול!",
-    surpriseDescription: "העצלן יבחר בשבילך ערכת נושא.",
-    themesTitle: "ערכות נושא מפחידות",
-    back: "חזרה",
     footer: "Unsloth יחזור לרגיל בחצות של 1 בנובמבר.",
     removeNow: "הסרה עכשיו",
     greeting: {
