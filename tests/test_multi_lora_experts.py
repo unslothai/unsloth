@@ -26,9 +26,9 @@ RANKS, ALPHAS = [2, 4, 3], [4.0, 8.0, 3.0]
 T = 6
 
 
-ON_CUDA = pytest.param(
-    "stash", "cuda", marks = pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA GPU")
-)
+# Zoo's MoE forward launches Triton whenever CUDA is up, so on a GPU host everything runs on the GPU.
+DEVICE = "cuda" if has_real_cuda() else "cpu"
+TOL = 1e-4 if DEVICE == "cuda" else 1e-5
 
 
 @pytest.fixture(scope = "module")
@@ -70,18 +70,17 @@ def _lone(base, model, u):
 
 
 def _ids():
-    return torch.randint(0, 100, (3, T), generator = torch.Generator().manual_seed(1))
+    return torch.randint(0, 100, (3, T), generator = torch.Generator().manual_seed(1)).to(DEVICE)
 
 
-@pytest.mark.parametrize("mode,device", [("stash", "cpu"), ("fold", "cpu"), ON_CUDA])
-def test_each_adapter_matches_its_lone_peft_run(base, monkeypatch, mode, device):
+@pytest.mark.parametrize("mode", ["stash", "fold"])
+def test_each_adapter_matches_its_lone_peft_run(base, monkeypatch, mode):
     if mode == "fold":
         monkeypatch.setattr(ml, "_zoo_stash_read_store", lambda experts: None)
-    base = copy.deepcopy(base).to(device)
     model, wrapped = _batched(base)
     assert len(wrapped) == 2 * len(model.model.language_model.layers)
-    ids = _ids().to(device)
-    ml.set_multi_lora_batch(model, torch.tensor([0, 1, 2], device = device), seq_len = T)
+    ids = _ids()
+    ml.set_multi_lora_batch(model, torch.tensor([0, 1, 2], device = DEVICE), seq_len = T)
     out = model(input_ids = ids, use_cache = False).logits
     modes = {m.mode for m in model.modules() if isinstance(m, ml.MultiLoraExperts)}
     assert modes == {mode}
@@ -90,13 +89,13 @@ def test_each_adapter_matches_its_lone_peft_run(base, monkeypatch, mode, device)
         ref = lone(input_ids = ids[u : u + 1], use_cache = False).logits[0]
         moved = (ref - base(input_ids = ids[u : u + 1]).logits[0]).abs().max()
         assert moved > 1e-3  # the adapter really changes the output
-        torch.testing.assert_close(out[u], ref, atol = 1e-5, rtol = 1e-4)
+        torch.testing.assert_close(out[u], ref, atol = TOL, rtol = 1e-4)
 
 
 def test_expert_grads_match_the_lone_run(base):
     model, _ = _batched(base)
     ids = _ids()
-    ml.set_multi_lora_batch(model, torch.tensor([0, 1, 2]), seq_len = T)
+    ml.set_multi_lora_batch(model, torch.tensor([0, 1, 2], device = DEVICE), seq_len = T)
     u = 1
     model(input_ids = ids, use_cache = False).logits[u].pow(2).mean().backward()
     lone = _lone(base, model, u)
@@ -128,7 +127,7 @@ def test_expert_grads_match_the_lone_run(base):
 def test_another_adapter_cannot_move_a_row(base):
     model, _ = _batched(base)
     ids = _ids()
-    ml.set_multi_lora_batch(model, torch.tensor([0, 1, 2]), seq_len = T)
+    ml.set_multi_lora_batch(model, torch.tensor([0, 1, 2], device = DEVICE), seq_len = T)
     before = model(input_ids = ids, use_cache = False).logits.detach()
     with torch.no_grad():
         for _, layer in ml._layers(model):
