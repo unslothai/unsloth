@@ -164,6 +164,24 @@ def test_retiring_an_account_releases_its_wal_keeper(account_home, module_name):
         keeper.execute("SELECT 1")
 
 
+def test_a_late_rag_open_does_not_reopen_a_retired_accounts_keeper(account_home):
+    """An open that passed ensure_dir before deletion and resumes after retirement released the
+    keeper must not leave a new one holding the workspace open."""
+    from core.training import account_jobs
+
+    alice_db = run_as(ALICE, roots.rag_db_path)
+    run_as(ALICE, rag_db.get_metadata_connection).close()
+    with sqlite3.connect(str(alice_db)) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+    account_jobs._retired.add(ALICE.account_id)
+    rag_db.close_wal_keeper_for(alice_db)
+    run_as(ALICE, rag_db._ensure_wal_keeper, alice_db)
+    assert alice_db.resolve() not in rag_db._wal_keepers
+    account_jobs._retired.discard(ALICE.account_id)
+    run_as(ALICE, rag_db._ensure_wal_keeper, alice_db)
+    assert alice_db.resolve() in rag_db._wal_keepers
+
+
 def _receipt() -> api_usage_db.ApiUsageReceipt:
     return api_usage_db.ApiUsageReceipt(
         id = "same-receipt",

@@ -357,7 +357,7 @@ def _ensure_wal_keeper(db_path: Path) -> None:
     if not _wal_keepers_enabled or db_path in _wal_keeper_paths:
         return
     with _wal_keeper_lock:
-        if not _wal_keepers_enabled:
+        if not _wal_keepers_enabled or _account_retired():
             return
         resolved = db_path.resolve()
         if resolved not in _wal_keepers:
@@ -379,6 +379,18 @@ def _ensure_wal_keeper(db_path: Path) -> None:
         # Remember both spellings so warm operations do not resolve paths repeatedly.
         _wal_keeper_paths[db_path] = resolved
         _wal_keeper_paths[resolved] = resolved
+
+
+def _account_retired() -> bool:
+    # Checked under _wal_keeper_lock so an open that passed ensure_dir before deletion cannot
+    # re-open the keeper close_wal_keeper_for just released (it would block the Windows rename).
+    from utils.account_context import is_owner_context
+
+    if is_owner_context():
+        return False
+    from core.training.account_jobs import account_is_retired
+
+    return account_is_retired()
 
 
 def start_wal_keepers() -> None:
