@@ -304,3 +304,43 @@ def test_llama_reader_and_metadata_reader_share_the_walk(tmp_path, walks):
     gm.read_gguf_general_metadata(str(path))
     gm._parse_gguf_has_mrope_sections(str(path))
     assert walks == {"skip": 0, "take": 1}
+
+
+def test_rename_replacement_with_the_old_mtime_is_walked_again(tmp_path, walks):
+    path = tmp_path / "m.gguf"
+    path.write_bytes(_array(_entries(3000)))
+    _make_old(path)
+    old = os.stat(path)
+    assert _skip(path, 3000)[0] == 3000
+    # A download or copy lands next to the file and is renamed over it, timestamps preserved.
+    staged = tmp_path / "m.gguf.incomplete"
+    rewritten = b"HEAD" + struct.pack("<Q", gm._STRING_SCAN_MAX + 10)
+    staged.write_bytes(rewritten + b"\0" * (old.st_size - len(rewritten)))
+    os.utime(staged, ns = (old.st_atime_ns, old.st_mtime_ns))
+    os.replace(staged, path)
+    assert _skip(path, 3000)[0] == 0
+    assert walks["skip"] == 2
+
+
+def test_in_place_rewrite_is_walked_again_when_ctime_is_creation_time(tmp_path, monkeypatch, walks):
+    """Windows reports the creation time as st_ctime, so only mtime moves on a rewrite."""
+    path = tmp_path / "m.gguf"
+    path.write_bytes(_array(_entries(3000)))
+    _make_old(path)
+    created = os.stat(path).st_ctime_ns - 60 * 10**9
+    real_fstat = os.fstat
+
+    def fstat_with_creation_ctime(fd):
+        st = real_fstat(fd)
+        fields = {n: getattr(st, n) for n in dir(st) if n.startswith("st_")}
+        fields["st_ctime_ns"] = created
+        return SimpleNamespace(**fields)
+
+    monkeypatch.setattr(gm.os, "fstat", fstat_with_creation_ctime)
+    assert _skip(path, 3000)[0] == 3000
+    size = os.stat(path).st_size
+    rewritten = b"HEAD" + struct.pack("<Q", gm._STRING_SCAN_MAX + 10)
+    with open(path, "r+b") as f:
+        f.write(rewritten + b"\0" * (size - len(rewritten)))
+    assert _skip(path, 3000)[0] == 0
+    assert walks["skip"] == 2
