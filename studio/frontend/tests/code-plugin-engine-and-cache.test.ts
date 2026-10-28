@@ -51,6 +51,19 @@ test("the highlighter uses the JavaScript regex engine, not the WASM one", () =>
   );
 });
 
+// A value import from "shiki" pulls its full bundle, whose factory carries the WASM engine.
+const RUNTIME_SHIKI_IMPORT = /^import\s+(?!type\b)[^;]*?\bfrom\s+"shiki";/m;
+
+test("the highlighter factory is built without shiki's default WASM engine", () => {
+  // The plugin always passes its own engine, so shiki's bundled Oniguruma factory only added
+  // startup bytes.
+  assert.ok(
+    !RUNTIME_SHIKI_IMPORT.test(PLUGIN_SOURCE),
+    'code-plugin must take only types from "shiki"; build the factory from shiki/core',
+  );
+  assert.ok(PLUGIN_SOURCE.includes("= createBundledHighlighter<"));
+});
+
 const sourceOfSize = (id: number, chars: number): string => {
   const lines: string[] = [];
   let length = 0;
