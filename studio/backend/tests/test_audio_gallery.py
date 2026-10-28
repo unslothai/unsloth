@@ -1040,3 +1040,66 @@ def test_an_archive_racing_a_group_delete_is_never_lost(monkeypatch):
         threading.Event().wait(0.1)
     # The archive either lands first and spares the stem, or waits and finds it gone.
     assert archived and (archived[0] is None) == (gallery.audio_path(target) is None)
+
+
+def _relocate_after_first_call(monkeypatch, tmp_path, records):
+    """A Settings relocation changes gallery_dir() after the call under test resolved and locked
+    the old folder; the new folder holds a same-id pair that must be left alone."""
+    old = gallery.gallery_dir()
+    new = tmp_path / "relocated"
+    new.mkdir()
+    for record in records:
+        (new / f"{record['id']}.wav").write_bytes(_wav())
+        (new / f"{record['id']}.json").write_text(
+            json.dumps(_meta(prompt = "new folder")), encoding = "utf-8"
+        )
+    calls = []
+
+    def _moving_dir():
+        calls.append(1)
+        return old if len(calls) == 1 else new
+
+    monkeypatch.setattr(gallery, "gallery_dir", _moving_dir)
+    return old, new
+
+
+def _gone_from_old_kept_in_new(old, new, audio_id):
+    assert not (old / f"{audio_id}.wav").exists()
+    assert not (old / f"{audio_id}.json").exists()
+    assert (new / f"{audio_id}.wav").exists()
+    assert (new / f"{audio_id}.json").exists()
+
+
+def test_clear_uses_the_locked_folder_when_the_folder_moves_mid_clear(monkeypatch, tmp_path):
+    record = gallery.save(_wav(), _meta(prompt = "old folder"))
+    old, new = _relocate_after_first_call(monkeypatch, tmp_path, [record])
+    assert gallery.clear(include_archived = True) == 1
+    _gone_from_old_kept_in_new(old, new, record["id"])
+
+
+def test_delete_group_uses_the_locked_folder_when_the_folder_moves(monkeypatch, tmp_path):
+    record = gallery.save(_wav(), _meta(prompt = "stem", group_id = "run-1"))
+    old, new = _relocate_after_first_call(monkeypatch, tmp_path, [record])
+    (new / f"{record['id']}.json").write_text(
+        json.dumps(_meta(prompt = "new folder", group_id = "run-1")),
+        encoding = "utf-8",
+    )
+    assert gallery.delete_group("run-1") == 1
+    _gone_from_old_kept_in_new(old, new, record["id"])
+
+
+def test_delete_uses_one_folder_when_the_folder_moves(monkeypatch, tmp_path):
+    record = gallery.save(_wav(), _meta(prompt = "old folder"))
+    old, new = _relocate_after_first_call(monkeypatch, tmp_path, [record])
+    assert gallery.delete(record["id"]) is True
+    _gone_from_old_kept_in_new(old, new, record["id"])
+
+
+def test_prune_uses_the_locked_folder_when_the_folder_moves(monkeypatch, tmp_path):
+    oldest = _save_with_mtime("oldest", 100.0)
+    newest = _save_with_mtime("newest", 200.0)
+    monkeypatch.setenv("UNSLOTH_AUDIO_GALLERY_MAX_CLIPS", "1")
+    old, new = _relocate_after_first_call(monkeypatch, tmp_path, [oldest])
+    assert gallery._prune_to_cap() == 1
+    _gone_from_old_kept_in_new(old, new, oldest["id"])
+    assert (old / f"{newest['id']}.wav").exists()
