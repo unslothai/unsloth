@@ -394,7 +394,6 @@ def test_repeat_tiled_encode_reuses_its_blend_weights(monkeypatch):
         first = vae._encode(x)
         built = len(calls)
         second = vae._encode(x)
-    # Built once (the width axis tiles); the repeat encode reads the same tensors back.
     assert built >= 1 and len(calls) == built
     assert torch.equal(first, second)
     fresh = vt.axis_weights(
@@ -409,7 +408,7 @@ def test_repeat_tiled_encode_reuses_its_blend_weights(monkeypatch):
     )
     cached = [v for k, v in vae.__dict__["_unsloth_wide_weights"].items() if k[2] == 68]
     assert len(cached) == 1 and all(torch.equal(a, b) for a, b in zip(cached[0], fresh))
-    # The decode blend over the same tiles (narrower margin and ramp) is its own entry.
+    # Decode blend over the same tiles: own entry (narrower margin / ramp).
     ws = vt.tile_starts(68, vt.ENCODE_TILE_LATENTS, vt.ENCODE_OVERLAP_LATENTS)
     decode = vt._cached_axis_weights(vae, ws, vt.ENCODE_TILE_LATENTS, 68, 1, torch, x.device)
     want = real(ws, vt.ENCODE_TILE_LATENTS, 68, 1, torch, x.device)

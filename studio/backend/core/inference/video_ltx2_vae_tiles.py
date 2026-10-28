@@ -91,7 +91,7 @@ _WEIGHTS_ATTR = "_unsloth_ltx2_tile_weights"
 def _cached_weights(
     vae: Any, starts: list[int], tile: int, length: int, scale: int, torch: Any, device: Any
 ) -> list:
-    """``axis_weights`` memoised per VAE: a repeat decode at the same size builds (and syncs) nothing."""
+    """``axis_weights`` memoised per VAE (a repeat decode syncs no device)."""
     cache = vae.__dict__.setdefault(_WEIGHTS_ATTR, {}) if hasattr(vae, "__dict__") else {}
     key = (tuple(starts), int(tile), int(length), int(scale), str(device))
     hit = cache.get(key)
