@@ -4,6 +4,7 @@
 import gc
 import json
 import os
+import signal
 import threading
 import time
 import weakref
@@ -897,3 +898,28 @@ def test_isolation_status_route_reports_what_start_would_say(client, monkeypatch
     monkeypatch.setattr(python_rewards, "python_isolation_refusal", lambda mode: f"no ({mode})")
     assert client.get("/api/rewards/python-isolation").json() == {"refusal": "no (required)"}
     assert client.get("/api/rewards/python-isolation?mode=auto").json() == {"refusal": "no (auto)"}
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "process groups are POSIX")
+def test_closing_a_worker_kills_what_its_rewards_started(worker_factory):
+    # A reward that starts a child and returns: the worker exits cleanly, the child must not.
+    code = (
+        "import subprocess\n\n"
+        "def reward(completions, **kw):\n"
+        "    child = subprocess.Popen(['sleep', '300'])\n"
+        "    return [float(child.pid)]\n"
+    )
+    worker = worker_factory([_spec("spawner", code)])
+    pid = int(worker.score(["spawner"], [], [[{"content": "x"}]], {})["spawner"][0])
+    os.kill(pid, 0)
+    worker.close()
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.1)
+    else:
+        os.kill(pid, signal.SIGKILL)
+        pytest.fail("the reward's child outlived its worker")

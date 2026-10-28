@@ -186,6 +186,17 @@ def _kill_tree(proc) -> None:
         pass
 
 
+def _kill_group(proc) -> None:
+    # The worker leads its own group (setsid in the preexec), so a reward's children stay in it
+    # after the worker exits cleanly; _kill_tree skips an exited worker.
+    if os.name == "nt" or proc is None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except OSError:
+        pass
+
+
 # Reward code is user code: one worker must not fill the disk or memory. No CPU cap, since one
 # worker scores a whole run; the batch timeout bounds a stuck call.
 REWARD_FSIZE_BYTES = 100 * 1024 * 1024
@@ -379,6 +390,7 @@ class RewardWorker:
                 proc.wait(timeout = 5)
             except Exception:  # noqa: BLE001
                 _kill_tree(proc)
+            _kill_group(proc)
         if self._prepared is not None:
             self._prepared.cleanup()
             self._prepared = None

@@ -215,15 +215,19 @@ export function LiveTrainingView(): ReactElement {
         {runtime.rlMetricHistory.length > 0 ? (
           <Suspense fallback={null}>
             <RlChartsGrid history={runtime.rlMetricHistory} />
-            {/* GRPO logs "reward"; DPO/ORPO never send sample answers. */}
-            {runtime.rlMetricHistory.some((p) => "reward" in p.values) && (
-              <RlSamplesCard
-                jobId={runtime.jobId}
-                isTraining={viewData.isTrainingRunning}
-              />
-            )}
           </Suspense>
         ) : null}
+        {/* From the run's saved config, so the card's loading and waiting states show before the
+            first reward log; GRPO logs "reward" once it has one. DPO/ORPO send no samples. */}
+        {(runConfigOverride?.objective === "grpo" ||
+          runtime.rlMetricHistory.some((p) => "reward" in p.values)) && (
+          <Suspense fallback={null}>
+            <RlSamplesCard
+              jobId={runtime.jobId}
+              isTraining={viewData.isTrainingRunning}
+            />
+          </Suspense>
+        )}
       </div>
       {showOverlay ? (
         <TrainingStartOverlay
