@@ -9301,8 +9301,7 @@ def _apply_prepared_launch(prepared, popen_kwargs: dict) -> dict:
     popen_kwargs["env"] = prepared.env
     if sys.platform != "win32":
         if prepared.preexec_fn is _bypass_preexec:
-            # setsid alone: start_new_session runs it in C, so the server is not forked through a Python
-            # pre-exec (a full page-table copy of a multi-GB process per call, and unsafe with threads).
+            # setsid in C: a Python pre-exec forks the whole server instead of vfork.
             popen_kwargs.pop("preexec_fn", None)
             popen_kwargs["start_new_session"] = True
         else:
