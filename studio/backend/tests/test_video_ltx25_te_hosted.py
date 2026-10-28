@@ -292,7 +292,6 @@ def test_a_rejected_hosted_file_refuses_the_dense_fallback_without_room(tmp_path
 @pytest.mark.parametrize(
     "dtype, free_gb, refused",
     [
-        # 23.9 GB is the bf16 size: a float32 dense read (fp16 promoted, e.g. T4) holds about 47.8 GB.
         ("float32", 30, True),
         ("float32", 50, False),
         ("bfloat16", 30, False),

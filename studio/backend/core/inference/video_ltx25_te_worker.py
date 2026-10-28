@@ -207,7 +207,6 @@ def _available_host_bytes() -> Optional[int]:
     return None
 
 
-# Bytes per floating-point weight relative to bf16, keyed by the dtype name the server hands the worker.
 _DTYPE_SCALE_VS_BF16 = {"float32": 2.0, "float": 2.0, "float64": 4.0, "double": 4.0}
 
 
@@ -220,8 +219,7 @@ def _dense_scale_vs_bf16(dtype: Any) -> float:
 def _require_room_for_dense(config: dict, exc: Exception) -> None:
     """The load was planned at the hosted file's size: refuse the dense fallback when free memory cannot hold the
     dense encoder, rather than let the OS kill the process mid-read (on Apple Silicon the same pool as the DiT).
-    ``dense_te_gb`` is the bf16 size; the dense read materializes at the load dtype, so a float32 load (fp16 promoted
-    on a card without bf16) needs twice that."""
+    ``dense_te_gb`` is bf16; a float32 load (fp16 promoted without bf16) needs twice that."""
     need = (
         float(config.get("dense_te_gb") or 0.0)
         * 1000**3
