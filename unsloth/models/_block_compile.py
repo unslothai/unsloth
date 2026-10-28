@@ -96,10 +96,8 @@ def _tree_manager(device):
 
 
 def _block_backend(options):
-    """Inductor with the block options, noting the compile id of every graph it compiles. A tree
-    function is a block's only if its compile id is noted here: a foreign torch.compile region first
-    called inside a block (behind a graph break) compiles through its own backend. None: unsupported,
-    then nothing counts as ours and the pool is kept."""
+    """Inductor noting each compile id it builds, so foreign regions behind a graph break are not
+    counted as ours. None if unsupported (then the pool is kept)."""
     try:
         from torch._guards import CompileContext
         class _BlockInductor(torch._TorchCompileInductorWrapper):
@@ -109,7 +107,7 @@ def _block_backend(options):
                 options = None,
                 **kwargs,
             ):
-                # options: torch.compile hands them back; the constructor already applied them.
+                # options were already applied by the constructor.
                 _CUDAGRAPH_STATE["built"].add(CompileContext.current_compile_id())
                 return super().__call__(*args, **kwargs)
 
@@ -120,8 +118,8 @@ def _block_backend(options):
 
 def _graphed_call(compiled, device, *args, **kwargs):
     """Call the graphs-on region; note the compile ids of tree functions it created (forward here,
-    the backward of the same compile later) that the block backend compiled, so the release can
-    tell its pool is only ours."""
+    the backward of the same compile later) that the block backend built, so the release can tell
+    its pool is only ours."""
     managers = _CUDAGRAPH_STATE["managers"]
     manager = managers.get(device)
     if manager is None:

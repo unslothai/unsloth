@@ -723,8 +723,7 @@ def test_graphed_call_records_the_compile_ids_it_created(monkeypatch):
 
 
 def test_foreign_function_first_called_inside_a_block_is_not_ours(monkeypatch):
-    # A third-party reduce-overhead region behind a graph break in the block registers its tree
-    # function during the block call; only compile ids the block backend built are the block's.
+    # A foreign region behind a graph break registers a tree function during the block call.
     manager = _FakeManager([])
     monkeypatch.setattr(bc, "_tree_manager", lambda device: manager)
     bc._CUDAGRAPH_STATE["built"].add("block")
