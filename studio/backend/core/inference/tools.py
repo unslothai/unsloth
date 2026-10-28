@@ -8748,9 +8748,8 @@ def _sandbox_preexec():
             pass
 
 
-# _sandbox_preexec without a Python pre-exec (Linux): Popen does setsid and umask in C, util-linux setpriv
-# (no_new_privs, death signal) and prlimit (rlimits) exec in place, so the tool keeps the Popen PID and the
-# server is not forked through interpreter code (a page-table copy of the whole server, GIL held, per call).
+# _sandbox_preexec without a Python pre-exec (Linux): Popen does setsid/umask in C, setpriv and prlimit exec in
+# place (same PID), so the server is vforked instead of forked through interpreter code.
 _SANDBOX_SHIM_DIRS = ("/usr/bin", "/bin", "/usr/sbin", "/sbin")
 _sandbox_shims: "tuple[str, str] | None | bool" = False  # False = not probed yet
 _sandbox_shims_lock = threading.Lock()
@@ -8827,7 +8826,7 @@ def _probe_sandbox_shims() -> "tuple[str, str] | None":
     ):
         return None
     try:
-        # The launch waits on /proc/<pid>/exe for the death signal to be armed (_spawn_behind_sandbox_shims).
+        # Read by _wait_for_death_signal.
         os.readlink("/proc/self/exe")
     except OSError:
         return None
@@ -8885,8 +8884,7 @@ def _sandbox_rlimit_args() -> "list[str] | None":
             return None
         hard_cur = _resource.getrlimit(resource_id)[1]
         if hard_cur != _resource.RLIM_INFINITY and value > hard_cur:
-            # Raising a hard limit needs CAP_SYS_RESOURCE: without it the pre-exec skips this limit, so skip it
-            # too; with it, keep the pre-exec, which raises it.
+            # Raising a hard limit needs CAP_SYS_RESOURCE: the pre-exec skips it without, raises it with.
             if _has_cap_sys_resource():
                 return None
             continue
@@ -8926,9 +8924,7 @@ def _sandbox_shim_argv(argv, env) -> "tuple[str, ...] | None":
 
 
 def _wait_for_death_signal(pid: int, setpriv: str) -> None:
-    """Popen returns once setpriv is exec'd, a moment before it arms the death signal. Wait until it has exec'd
-    the next program, so that a server dying after the launch returns still takes the tool with it, as the
-    pre-exec guaranteed (it armed the signal before Popen returned)."""
+    """Popen returns before setpriv arms the death signal; the pre-exec armed it before Popen returned."""
     deadline = time.monotonic() + 2.0
     delay = 0.0001
     while True:
@@ -9309,7 +9305,6 @@ def _apply_prepared_launch(prepared, popen_kwargs: dict) -> dict:
             if prepared.preexec_fn is _sandbox_preexec and prepared.spawn_callback is None:
                 shim_argv = _sandbox_shim_argv(prepared.argv, prepared.env)
             if shim_argv is not None:
-                # The same guarantees, set by setsid/umask in C and by setpriv/prlimit after exec (same PID).
                 popen_kwargs.pop("preexec_fn", None)
                 popen_kwargs["start_new_session"] = True
                 popen_kwargs["umask"] = 0o077
