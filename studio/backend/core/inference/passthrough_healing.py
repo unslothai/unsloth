@@ -173,17 +173,6 @@ def _promote(
     return promoted
 
 
-def _remove_spans(text: str, spans: list) -> str:
-    """Text with the given non-overlapping, sorted (start, end) ranges removed."""
-    pieces = []
-    pos = 0
-    for start, end in spans:
-        pieces.append(text[pos:start])
-        pos = end
-    pieces.append(text[pos:])
-    return "".join(pieces)
-
-
 def heal_openai_message_events(
     msg: dict,
     allowed_tools: set,
