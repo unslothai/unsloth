@@ -158,6 +158,29 @@ def test_probe_memo_copies_reraises_and_skips_network_errors():
     loader_utils._load_probe_memo_scope(body)()
 
 
+def test_reraised_probe_error_notes_stay_per_raise():
+    # A note one caller adds to its copy must not reach the next caller's copy.
+    def load(name, **kwargs):
+        error = ValueError("Can't find 'adapter_config.json'")
+        # What add_note (3.11+) writes; set directly so 3.9 / 3.10 run the same check.
+        error.__notes__ = ["from the loader"]
+        raise error
+
+    seen = []
+
+    def body():
+        for i in range(3):
+            try:
+                loader_utils._memo_config_probe(load, "repo")
+            except ValueError as error:
+                seen.append(list(error.__notes__))
+                # add_note appends to the existing list in place.
+                error.__notes__.append(f"caller {i}")
+
+    loader_utils._load_probe_memo_scope(body)()
+    assert seen == [["from the loader"]] * 3, seen
+
+
 def _tiny_configs():
     yield (
         "llama",

@@ -1842,6 +1842,10 @@ def _copy_error(error):
         return None
     if type(clone) is not type(error) or str(clone) != str(error):
         return None
+    # copy.copy shares the notes list, so a note a caller adds to one raise would show up on every later one.
+    notes = getattr(error, "__notes__", None)
+    if isinstance(notes, list):
+        clone.__notes__ = list(notes)
     clone.__cause__ = error.__cause__
     clone.__context__ = error.__context__
     clone.__suppress_context__ = error.__suppress_context__
