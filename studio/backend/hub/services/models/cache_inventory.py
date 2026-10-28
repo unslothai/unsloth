@@ -1256,8 +1256,7 @@ def _scan_cached_models(
                     payload_snapshots = payload.payload_snapshots,
                 )
                 load_snapshot = identity.load_snapshot
-                # Unless the whole base pipeline is cached there (#15735): then the row IS that base pick, so it lists
-                # under the base id the picker offers and loads like it, its delete scoped to this mirror copy.
+                # Unless the whole base pipeline is cached: then the row is that base pick, listed and loaded by the base id.
                 base_pipeline = (
                     artifact_checkpoint
                     and hf_cache_scan.snapshot_has_pipeline_index(load_snapshot)
@@ -1475,9 +1474,8 @@ def artifact_folder_bytes(*repo_paths: Path) -> int:
 
 
 def artifact_mirror_delete_id(repo_id: str, cache_path: Optional[str]) -> Optional[str]:
-    """The artifact mirror a delete of base *repo_id* removes: the copy ``_scan_cached_models`` lists under the base
-    id. Only a quant-free mirror copy at *cache_path* (else in any root when the base itself is cached nowhere);
-    None means delete *repo_id* as named."""
+    """The quant-free artifact mirror copy a delete of base *repo_id* removes (the one ``_scan_cached_models`` lists
+    under the base id), else None."""
     try:
         from core.inference.diffusion_families import mirror_repo
         mirror = mirror_repo(repo_id)
@@ -1504,7 +1502,7 @@ def artifact_mirror_delete_id(repo_id: str, cache_path: Optional[str]) -> Option
         if not copies or any(_repo_has_gguf_files(repo) for repo in copies):
             return None
         return copies[0].repo_id
-    except Exception:  # noqa: BLE001 -- no answer keeps the delete as named
+    except Exception:  # noqa: BLE001
         return None
 
 

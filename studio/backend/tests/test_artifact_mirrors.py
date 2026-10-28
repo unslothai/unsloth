@@ -953,9 +953,8 @@ _CASED_ARTIFACT_MIRRORS = sorted(m for _u, m in df._MIRROR_PAIRS if df.mirror_ho
 def test_a_base_pipeline_cached_in_an_artifact_mirror_lists_as_the_base(
     monkeypatch, tmp_path, repo, root_checkpoint
 ):
-    """Issue 15735: a bf16 pick of Qwen/Qwen-Image-2.1-Turbo caches the whole pipeline inside
-    unsloth/Qwen-Image-2.1-Turbo-FP8. On Device must offer it as the base the user picked (one row, loading like
-    that pick, sized and deleted as the mirror's copy), not as a single-file row of the mirror no picker shows."""
+    """A bf16 pick of Qwen/Qwen-Image-2.1-Turbo caches the whole pipeline in unsloth/Qwen-Image-2.1-Turbo-FP8: one
+    row under the base id, loading like that pick, sized and deleted as the mirror copy."""
     files = {**_FOLDERS, **_DENOISER, **(_FP8_ROOT if root_checkpoint else {})}
     cached = _cache_repo(tmp_path, repo, files)
     rows = _scan_rows(monkeypatch, [cached], tmp_path)
@@ -974,8 +973,7 @@ def test_a_base_pipeline_cached_in_an_artifact_mirror_lists_as_the_base(
 def test_a_base_pipeline_in_a_mirror_outside_the_active_cache_pins_its_snapshot(
     monkeypatch, tmp_path
 ):
-    """The same copy in a remembered (non-active) cache root loads from its snapshot, as every such row does,
-    instead of sending the base id to a cache that does not hold it."""
+    """In a non-active cache root the row pins its snapshot, as every such row does."""
     cached = _cache_repo(tmp_path / "old", _FP8_REPO, {**_FOLDERS, **_DENOISER})
     rows = _scan_rows(monkeypatch, [cached], tmp_path / "live")
     assert [r["repo_id"] for r in rows] == ["Qwen/Qwen-Image-2.1-Turbo"]
@@ -984,16 +982,14 @@ def test_a_base_pipeline_in_a_mirror_outside_the_active_cache_pins_its_snapshot(
 
 
 def test_an_artifact_mirror_without_the_denoiser_keeps_its_checkpoint_row(monkeypatch, tmp_path):
-    """Only the folders a GGUF borrows (or an FP8 pick's companions): nothing there loads as the base pipeline, so
-    the row stays the mirror's own checkpoint row, as released builds listed it."""
+    """Folders without the denoiser do not load as the base, so the row stays the mirror's checkpoint row."""
     cached = _cache_repo(tmp_path, _FP8_REPO, {**_FP8_ROOT, **_FOLDERS})
     rows = _scan_rows(monkeypatch, [cached], tmp_path)
     assert [(r["repo_id"], r["single_file"]) for r in rows] == [(_FP8_REPO, True)]
 
 
 def test_deleting_the_base_row_targets_the_artifact_mirror_copy(monkeypatch, tmp_path):
-    """The base row's delete names the base id and the mirror's cache path. It removes that mirror copy, and only
-    when the path really is that mirror and it holds no quant a GGUF row lists."""
+    """The base row's delete reaches the mirror copy only when the path is that mirror and it holds no quant."""
     from types import SimpleNamespace
 
     from hub.services.models import cache_inventory

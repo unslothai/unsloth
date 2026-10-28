@@ -1138,7 +1138,7 @@ async def delete_cached_model_response(
                     variant,
                     download_registry.scrub_secrets(str(exc), hf_token = hf_token),
                 )
-        # A base listed from its artifact mirror's copy (#15735) deletes that copy.
+        # A base listed from its artifact mirror's copy deletes that copy.
         mirror_id = (
             await asyncio.to_thread(
                 cache_inventory.artifact_mirror_delete_id, repo_id, cache_path
