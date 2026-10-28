@@ -2449,9 +2449,7 @@ def _tp_fix_train_sampler(sampler, args, dp_size, dp_rank):
 
     rebalance = getattr(trainer_pt_utils, "BatchRebalanceSampler", None)
     if rebalance is not None and type(sampler) is rebalance:
-        # transformers builds it from the global world size / rank, so tp peers would draw different rows.
-        # It is rank-aware itself (the Trainer turns accelerate's batch sharding off for it): rebuild it
-        # over the data parallel replicas instead.
+        # Built from the global world size / rank, so tp peers would draw different rows: rebuild over dp.
         grad_accum = sampler.grad_accum
         return rebalance(
             lengths = sampler.lengths,
@@ -2467,9 +2465,7 @@ def _tp_fix_train_sampler(sampler, args, dp_size, dp_rank):
         type(sampler) is trainer_pt_utils.LengthGroupedSampler
         and getattr(sampler, "generator", None) is None
     ):
-        # group_by_length shuffles with the global torch RNG, which any rank-local draw desyncs between tp
-        # peers: shuffle with its own generator, reseeded per epoch (seed + epoch), so a resumed run draws
-        # the order the uninterrupted run drew for that epoch.
+        # Global torch RNG desyncs across tp peers; own generator seeded seed + epoch keeps resume exact.
         sampler.__class__ = _tp_length_grouped_sampler_class(type(sampler))
         sampler.seed = args.data_seed if getattr(args, "data_seed", None) is not None else args.seed
         sampler.epoch = 0
@@ -2501,9 +2497,7 @@ def _tp_length_grouped_sampler_class(base):
 
 
 def _tp_forward_set_epoch(data_loader):
-    """accelerate's BatchSamplerShard (dp > 1) has no set_epoch, and once skip_first_batches wraps it on resume
-    neither accelerate nor the Trainer reaches the epoch-aware sampler under it, which then replays epoch 0.
-    Forward set_epoch from the shard to the samplers made here (and transformers' BatchRebalanceSampler)."""
+    """BatchSamplerShard has no set_epoch, so on resume the inner sampler would replay epoch 0: forward it."""
     shard = getattr(data_loader, "batch_sampler", None)
     inner = getattr(shard, "batch_sampler", None)
     if shard is None or inner is None or hasattr(shard, "set_epoch"):

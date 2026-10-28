@@ -783,8 +783,7 @@ def _case_sharded_lora_init(rank, world, tmp, ckpt):
 
 
 def _case_sampler(rank, world, tmp, dp, strategy):
-    """The rows each rank's train dataloader yields under a length-aware sampler, after a rank-local draw on
-    the global torch RNG (anything rank-specific the user does between Trainer() and train())."""
+    """Rows each rank's dataloader yields under a length-aware sampler, after a rank-local RNG draw."""
     import transformers
 
     error = _import_checkout_unsloth()
@@ -815,7 +814,7 @@ def _case_sampler(rank, world, tmp, dp, strategy):
     rows = []
     for i in range(48):
         ids = torch.randint(3, 100, (4 + int(torch.randint(0, 9, (1,), generator = g)),), generator = g)
-        ids[0] = 3 + i  # row id
+        ids[0] = 3 + i
         rows.append(ids)
 
     def collate(features):
@@ -845,8 +844,7 @@ def _case_sampler(rank, world, tmp, dp, strategy):
 
 
 def _case_sampler_resume(rank, world, tmp, dp, strategy):
-    """Rows each rank trains on: one uninterrupted run, then resumes from an epoch boundary and from mid
-    epoch in later epochs. Length-aware samplers must replay what the uninterrupted run drew."""
+    """Rows per rank for an uninterrupted run vs resumes at epoch boundaries and mid epoch."""
     import transformers
 
     error = _import_checkout_unsloth()
@@ -866,7 +864,7 @@ def _case_sampler_resume(rank, world, tmp, dp, strategy):
     rows = []
     for i in range(12 * dp):  # 3 optimizer steps per epoch on every layout
         ids = torch.randint(3, 100, (4 + int(torch.randint(0, 9, (1,), generator = g)),), generator = g)
-        ids[0] = 3 + i  # row id
+        ids[0] = 3 + i
         rows.append(ids)
 
     def collate(features):
