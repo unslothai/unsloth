@@ -27,6 +27,7 @@ import {
   getModelConfig,
 } from "../api/models-api";
 import type { BackendModelConfig, DecisionCheckpoint } from "../api/models-api";
+import { isBaseModelName } from "../lib/base-model-name";
 import { cacheReferenceMatchesSelection } from "../lib/cache-reference";
 import { drafterStateFrom } from "../lib/drafter-config";
 import {
@@ -1165,6 +1166,14 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         }
         if (selectionChanged) Object.assign(patch, resolveTrainingToggleDefaults({ ...currentState, ...patch }));
         setUserEdit(patch);
+        if (selectedModel && selectedModel !== previousModel) {
+          // As the notebooks do: the base-model GRPO notebook (Qwen3 4B Base) uses the reasoning
+          // format, the instruct ones do not. Still the user's switch after the pick.
+          const reasoning = isBaseModelName(selectedModel);
+          if (reasoning !== get().grpoReasoningFormat) {
+            get().setGrpoReasoningFormat(reasoning);
+          }
+        }
 
         if (!selectedModel) {
           _modelConfigController?.abort();
