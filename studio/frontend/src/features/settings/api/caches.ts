@@ -45,7 +45,6 @@ export type CacheInventory = {
   reclaimableBytes: number;
   freeBytes: number | null;
   totalDiskBytes: number | null;
-  /** A slow cache was answered from an expired walk that is being redone. */
   refreshing: boolean;
 };
 

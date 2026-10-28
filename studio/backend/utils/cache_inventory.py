@@ -990,10 +990,7 @@ def _described(
     deferred: Optional[list] = None,
     asked_at: Optional[float] = None,
 ) -> dict:
-    """``deferred`` collects the background refreshes for the caller to start, after its own walks.
-
-    ``asked_at`` is when the request arrived; a forced read accepts any walk begun after it.
-    """
+    """``deferred`` collects background refreshes to start after the caller's walks; a forced read accepts any walk begun after ``asked_at``."""
     started = time.monotonic()
     asked = started if asked_at is None else asked_at
     with _size_cache_lock:
@@ -1045,7 +1042,6 @@ def cache_inventory(*, refresh: bool = False) -> dict:
         "reclaimable_bytes": reclaimable,
         "free_bytes": _free_bytes(),
         "total_disk_bytes": _total_disk_bytes(),
-        # Some size came from an expired walk that is being redone; asking again soon returns the new one.
         "refreshing": bool(deferred),
     }
 
@@ -1330,7 +1326,6 @@ def _invalidate_hf_scans() -> None:
     except ImportError as exc:
         logger.debug(f"Could not invalidate the Hugging Face scans: {exc}")
         return
-    # The purge already forgot the sizes it changed; the other Hugging Face caches keep theirs.
     invalidate_hf_cache_scans(sizes = False)
 
 
