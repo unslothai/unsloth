@@ -25,7 +25,7 @@ function FieldLabel({
   hintLabel?: string;
 }) {
   return (
-    <span className="flex items-center gap-1.5 text-ui-11 font-medium uppercase tracking-[0.05em] text-muted-foreground/70">
+    <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
       {children}
       {hint ? <FieldHint text={hint} label={hintLabel ?? hint} /> : null}
     </span>
