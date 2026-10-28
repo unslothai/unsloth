@@ -625,7 +625,12 @@ def _case_tp_fsdp2_trainable_norms(rank, world, tmp):
     }
 
 
-def _case_tp_fsdp2_writer(rank, world, tmp, head_only = False):
+def _case_tp_fsdp2_writer(
+    rank,
+    world,
+    tmp,
+    head_only = False,
+):
     """dp 2 x tp 2: the collective saves name one writer for the model, not one per tp group."""
     import importlib
     from torch.distributed.device_mesh import init_device_mesh
