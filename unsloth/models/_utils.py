@@ -731,6 +731,140 @@ def _prefers_flex_for_head_dim(config):
     return not _sdpa_reaches_cudnn_at_head_dim_256()
 
 
+_PACKED_VARLEN_OVER_FLEX_ENV_VAR = "UNSLOTH_PACKED_VARLEN_OVER_FLEX"
+# Set on a loaded model whose loader call asked for flex_attention: packing keeps it on flex.
+_EXPLICIT_FLEX_ATTR = "_unsloth_explicit_flex_attention"
+
+
+def requests_flex_attention(requested_attn_implementation):
+    requested = requested_attn_implementation
+    return requested == "flex_attention" or (
+        isinstance(requested, dict) and "flex_attention" in requested.values()
+    )
+
+
+def _packed_attention_dtype(model, config):
+    """The dtype attention runs in without autocast: the input embeddings, else the config's."""
+    try:
+        dtype = model.get_input_embeddings().weight.dtype
+    except Exception:
+        dtype = None
+    if isinstance(dtype, torch.dtype):
+        return dtype
+    for attention_config in [config] + _text_attention_configs(config):
+        for name in ("dtype", "torch_dtype"):
+            dtype = _config_get(attention_config, name, None)
+            if isinstance(dtype, str):
+                dtype = getattr(torch, dtype.removeprefix("torch."), None)
+            if isinstance(dtype, torch.dtype):
+                return dtype
+    return None
+
+
+def _packed_varlen_takes_model(model, config, target, head_dim, device_count):
+    """The packed varlen wrapper's call-independent checks, at setup: fp16 / bf16, no softcap or
+    sinks, an SDPA-capable class, and no policy asking for SDPA itself (deterministic algorithms, a
+    disabled flash backend, a math-first priority). Positional-arg calls are only known per call."""
+    from ..utils.hf_packed_attention import _sdpa_policy_requested, _softcapped
+
+    dtype = _packed_attention_dtype(model, config)
+    if dtype not in (torch.float16, torch.bfloat16):
+        return False
+    if not _maskless_causal_sdpa_accepts(config):
+        return False
+    base = model.get_base_model() if hasattr(model, "get_base_model") else model
+    if _declares_no_sdpa(type(base)) or _native_class_refuses_sdpa(type(base)):
+        return False
+    modules = getattr(model, "modules", None)
+    if callable(modules) and any(_softcapped(module, {}) for module in modules()):
+        return False
+    n_heads = _config_get(target, "num_attention_heads", None)
+    n_kv_heads = _config_get(target, "num_key_value_heads", None) or n_heads
+    if not isinstance(n_heads, int) or not isinstance(n_kv_heads, int):
+        return False
+    return not any(
+        _sdpa_policy_requested(torch.device("cuda", index), dtype, head_dim, n_heads, n_kv_heads)
+        for index in range(device_count)
+    )
+
+
+# Longest flattened packed row moved to SDPA: its dense bool mask is T^2 bytes (16384 tokens: 256 MiB).
+_PACKED_SDPA_MAX_ROW_TOKENS = 16384
+
+
+def use_sdpa_for_packed_head_dim_flex(
+    model,
+    max_length = None,
+    row_tokens = None,
+):
+    """Packed / padding-free rows: a decoder on flex only for its head dim (<= 256) moves to "sdpa",
+    whose packed varlen wrapper runs them through torch's varlen flash kernel exactly (B200 head_dim
+    256: 6-10% faster at a fixed packed length, 15-24% with varying lengths, and no flex compile).
+    True when switched. Not the gemma3 family, not head_dim 512, not a forced
+    UNSLOTH_FLEX_ATTENTION_FOR_LARGE_HEAD_DIM, not an explicit flex_attention request, only where
+    torch's varlen kernel runs and only when the wrapper would take the rows (else dense-mask SDPA).
+    max_length: the longest document; one past flash's int32 varlen backward limit stays on flex.
+    row_tokens: tokens in one flattened packed row; SDPA builds a dense [T, T] mask before the varlen
+    wrapper runs (flex keeps a block mask), so rows past _PACKED_SDPA_MAX_ROW_TOKENS stay on flex."""
+    if os.environ.get(_PACKED_VARLEN_OVER_FLEX_ENV_VAR, "1").strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        return False
+    if _flex_large_head_dim_override() is not None:
+        return False
+    config = getattr(model, "config", None)
+    if config is None or _config_prefers_flex_attention(config):
+        return False
+    base = model.get_base_model() if hasattr(model, "get_base_model") else model
+    if getattr(base, _EXPLICIT_FLEX_ATTR, False) or getattr(model, _EXPLICIT_FLEX_ATTR, False):
+        return False
+    head_dim = _text_attention_head_dim(config)
+    if head_dim is None or head_dim > _FLEX_KERNEL_OPTIONS_SAFE_HEAD_DIM:
+        return False
+    if not _prefers_flex_for_head_dim(config):
+        return False
+    text_config = _text_sub_config(config)
+    target = config if text_config is None else text_config
+    if _config_get(target, "_attn_implementation", None) != "flex_attention":
+        return False
+    try:
+        from ..utils.hf_packed_attention import _ORIG_SDPA, _torch_varlen
+
+        if _ORIG_SDPA[0] is None or not torch.cuda.is_available():
+            return False
+        device_count = torch.cuda.device_count()
+        if any(_torch_varlen(torch.device("cuda", index)) is None for index in range(device_count)):
+            return False
+        if not _packed_varlen_takes_model(model, config, target, head_dim, device_count):
+            return False
+        from ..utils.attention_dispatch import (
+            _VARLEN_INT32_GUARD_DISABLED,
+            _varlen_backward_overflows_int32,
+        )
+
+        if isinstance(row_tokens, int) and row_tokens > _PACKED_SDPA_MAX_ROW_TOKENS:
+            return False
+        # The wrapper splits many documents under the limit, but not one document alone.
+        n_heads = _config_get(target, "num_attention_heads", None)
+        if (
+            not _VARLEN_INT32_GUARD_DISABLED
+            and isinstance(max_length, int)
+            and _varlen_backward_overflows_int32(1, max_length, n_heads, head_dim)
+        ):
+            return False
+    except Exception:
+        return False
+    _write_attn_impl(target, "sdpa")
+    logging.getLogger(__name__).info(
+        f"Unsloth: packed rows at head_dim {head_dim} use varlen flash attention via sdpa "
+        f"instead of flex_attention ({_PACKED_VARLEN_OVER_FLEX_ENV_VAR}=0 keeps flex)."
+    )
+    return True
+
+
 # Above head_dim 256 the default flex template faults with misaligned address on torch 2.13 and 2.14; 32x32 blocks pass
 _FLEX_KERNEL_OPTIONS_SAFE_HEAD_DIM = 256
 # BLOCK_M/N drive the forward template, BLOCK_M1/N1/M2/N2 the two backward passes.
