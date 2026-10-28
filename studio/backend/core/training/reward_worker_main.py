@@ -19,6 +19,8 @@ POLL_SECONDS = 0.002
 # The host touches "alive" every few seconds; a host that died without saying stop goes quiet.
 ALIVE_TIMEOUT_SECONDS = 60.0
 SETUP_TIMEOUT_SECONDS = 60.0
+# rewards.MAX_SCORE: this file runs on its own in the worker, so it keeps a copy.
+MAX_SCORE = 1_000_000.0
 
 
 def _retry(action, seconds = 10.0):
@@ -123,6 +125,8 @@ def _score(fn, request):
             scores.append(None)
             continue
         value = float(value)
+        if math.isfinite(value) and abs(value) > MAX_SCORE:
+            raise ValueError("returned %g, outside -1,000,000 to 1,000,000" % value)
         scores.append(value if math.isfinite(value) else None)
     return scores
 

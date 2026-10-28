@@ -127,6 +127,19 @@ def test_grpo_is_refused_on_an_image_dataset(trainer, tmp_path):
     assert "image dataset" in (trainer.training_progress.error or "")
 
 
+def test_grpo_is_refused_on_image_columns_without_the_image_flag(trainer, tmp_path):
+    # An API caller can leave is_dataset_image unset; the columns still say it has images.
+    path = tmp_path / "grpo.jsonl"
+    row = {"prompt": "q", "answer": "a", "image": "cat.png"}
+    path.write_text(json.dumps(row) + "\n", encoding = "utf-8")
+    trainer.is_vlm = False
+    trainer.model_has_vision = True
+    assert (
+        trainer.load_and_format_dataset(None, local_datasets = [str(path)], objective = "grpo") is None
+    )
+    assert "image dataset" in (trainer.training_progress.error or "")
+
+
 def test_grpo_still_runs_for_a_vision_model_on_text_data(trainer, tmp_path):
     path = tmp_path / "grpo.jsonl"
     path.write_text(json.dumps({"prompt": "q", "answer": "a"}) + "\n", encoding = "utf-8")
