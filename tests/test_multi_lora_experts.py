@@ -147,3 +147,36 @@ def test_another_adapter_cannot_move_a_row(base):
     after = model(input_ids = ids, use_cache = False).logits.detach()
     assert (after[0] - before[0]).abs().max() > 1e-3
     torch.testing.assert_close(after[1:], before[1:], atol = 0, rtol = 0)
+
+
+def test_fold_mode_survives_non_reentrant_checkpointing(base, monkeypatch):
+    # A Zoo stash store that this forward never fills: the experts fall back to folding.
+    monkeypatch.setattr(ml, "_zoo_stash_read_store", lambda experts: {})
+    model, _ = _batched(base)
+    ids = _ids()
+    ml.set_multi_lora_batch(model, torch.tensor([0, 1, 2], device = DEVICE), seq_len = T)
+    experts = next(m for m in model.modules() if isinstance(m, ml.MultiLoraExperts))
+    block = next(m for m in model.modules() if getattr(m, "experts", None) is experts)
+    hidden = torch.randn(
+        3 * T, model.config.text_config.hidden_size, device = DEVICE, requires_grad = True
+    )
+    router = block.gate
+    with torch.no_grad():
+        _, weights, indices = router(hidden)
+    out = torch.utils.checkpoint.checkpoint(experts, hidden, indices, weights, use_reentrant = False)
+    out.sum().backward()
+    assert experts.mode == "fold" and hidden.grad is not None
+
+
+def test_absent_adapters_stay_in_the_graph(base):
+    model, _ = _batched(base)
+    ids = _ids()
+    ml.set_multi_lora_batch(model, torch.tensor([0, 1, 1], device = DEVICE), seq_len = T)
+    model(input_ids = ids, use_cache = False).logits.sum().backward()
+    for m in model.modules():
+        if isinstance(m, ml.MultiLoraExperts):
+            for adapter in m.adapters.values():
+                assert (
+                    adapter.lora_A[2].grad is not None and adapter.lora_A[2].grad.abs().max() == 0
+                )
+                assert adapter.lora_A[1].grad is not None
