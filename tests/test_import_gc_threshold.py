@@ -45,15 +45,25 @@ def import_gc():
         ]
 
 
+def _stored(*thresholds):
+    """What gc.get_threshold() reports for these: Python 3.14's incremental GC keeps no threshold2."""
+    before = gc.get_threshold()
+    gc.set_threshold(*thresholds)
+    try:
+        return gc.get_threshold()
+    finally:
+        gc.set_threshold(*before)
+
+
 def test_raise_then_restore_returns_the_callers_thresholds(import_gc):
     gc.set_threshold(700, 11, 12)
     import_gc.raise_gc_threshold()
-    assert gc.get_threshold() == (import_gc.IMPORT_THRESHOLD, 11, 12)
+    assert gc.get_threshold() == _stored(import_gc.IMPORT_THRESHOLD, 11, 12)
     import_gc.restore_gc_threshold()
-    assert gc.get_threshold() == (700, 11, 12)
+    assert gc.get_threshold() == _stored(700, 11, 12)
     # Idempotent: a second restore has nothing to undo.
     import_gc.restore_gc_threshold()
-    assert gc.get_threshold() == (700, 11, 12)
+    assert gc.get_threshold() == _stored(700, 11, 12)
 
 
 def test_a_failed_import_retry_still_restores_the_first_thresholds(import_gc):
@@ -62,7 +72,7 @@ def test_a_failed_import_retry_still_restores_the_first_thresholds(import_gc):
     # The first `import unsloth` raised before its restore; the retry raises again.
     import_gc.raise_gc_threshold()
     import_gc.restore_gc_threshold()
-    assert gc.get_threshold() == (700, 11, 12)
+    assert gc.get_threshold() == _stored(700, 11, 12)
 
 
 def test_a_threshold_changed_after_a_failed_import_is_the_new_original(import_gc):
@@ -71,16 +81,16 @@ def test_a_threshold_changed_after_a_failed_import_is_the_new_original(import_gc
     gc.set_threshold(900, 11, 12)
     import_gc.raise_gc_threshold()
     import_gc.restore_gc_threshold()
-    assert gc.get_threshold() == (900, 11, 12)
+    assert gc.get_threshold() == _stored(900, 11, 12)
 
 
 @pytest.mark.parametrize("threshold", [0, 200_000])
 def test_disabled_or_higher_thresholds_are_left_alone(import_gc, threshold):
     gc.set_threshold(threshold, 11, 12)
     import_gc.raise_gc_threshold()
-    assert gc.get_threshold() == (threshold, 11, 12)
+    assert gc.get_threshold() == _stored(threshold, 11, 12)
     import_gc.restore_gc_threshold()
-    assert gc.get_threshold() == (threshold, 11, 12)
+    assert gc.get_threshold() == _stored(threshold, 11, 12)
 
 
 def test_a_threshold_set_during_the_import_is_kept(import_gc):
@@ -88,7 +98,7 @@ def test_a_threshold_set_during_the_import_is_kept(import_gc):
     import_gc.raise_gc_threshold()
     gc.set_threshold(5000, 11, 12)
     import_gc.restore_gc_threshold()
-    assert gc.get_threshold() == (5000, 11, 12)
+    assert gc.get_threshold() == _stored(5000, 11, 12)
 
 
 def test_generations_1_and_2_changed_during_the_import_are_kept(import_gc):
@@ -96,7 +106,7 @@ def test_generations_1_and_2_changed_during_the_import_are_kept(import_gc):
     import_gc.raise_gc_threshold()
     gc.set_threshold(import_gc.IMPORT_THRESHOLD, 20, 30)
     import_gc.restore_gc_threshold()
-    assert gc.get_threshold() == (700, 20, 30)
+    assert gc.get_threshold() == _stored(700, 20, 30)
 
 
 def _in_flight(name):
@@ -117,7 +127,7 @@ def test_a_failed_import_is_restored_by_the_next_import(import_gc):
     del sys.modules["_unsloth_gc_probe_pkg"]
     with pytest.raises(ModuleNotFoundError):
         importlib.import_module("_unsloth_gc_missing_two")
-    assert gc.get_threshold() == (700, 11, 12)
+    assert gc.get_threshold() == _stored(700, 11, 12)
     assert not any(isinstance(f, import_gc._RestoreAfterFailedImport) for f in sys.meta_path)
 
 
@@ -130,7 +140,7 @@ def test_a_successful_import_removes_the_hook(import_gc):
         import_gc.restore_gc_threshold()
     finally:
         sys.modules.pop("_unsloth_gc_probe_ok", None)
-    assert gc.get_threshold() == (700, 11, 12)
+    assert gc.get_threshold() == _stored(700, 11, 12)
     assert not any(isinstance(f, import_gc._RestoreAfterFailedImport) for f in sys.meta_path)
 
 
