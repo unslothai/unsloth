@@ -1264,7 +1264,12 @@ class _NativeDropoutScale(torch.autograd.Function):
         return torch.ops.aten.native_dropout_backward(grad, mask, ctx.scale), None, None
 
 
-def _apply_mask(x, mask, p, inplace = False):
+def _apply_mask(
+    x,
+    mask,
+    p,
+    inplace = False,
+):
     """x after dropout with this boolean keep mask, rounded as F.dropout rounds on x's device: ATen's fused
     native_dropout on CUDA / XPU / lazy / privateuse1 (scale applied in accumulator precision), else a noise
     tensor in x's dtype holding the rounded 1 / (1 - p) (Dropout.cpp _dropout_impl)."""
@@ -1305,7 +1310,9 @@ def _tp_dropout(
             f"Unsloth: tensor parallelism cannot tell how the dropout input {tuple(input.shape)} inside "
             f"{state.path} is sharded; set that dropout to 0."
         )
-    return _apply_mask(input, _full_mask(input.shape, dim, state.rank, state.tp, p, input), p, inplace)
+    return _apply_mask(
+        input, _full_mask(input.shape, dim, state.rank, state.tp, p, input), p, inplace
+    )
 
 
 def _dropout_mode_class():
