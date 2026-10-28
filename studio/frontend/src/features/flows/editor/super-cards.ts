@@ -51,7 +51,10 @@ export function withSuperCard(
   return next.length ? { ...rest, [SUPER_CARDS_KEY]: next } : rest;
 }
 
-export function superCardTitle(group: { label: string; kind?: unknown }): string {
+export function superCardTitle(group: {
+  label: string;
+  kind?: unknown;
+}): string {
   return group.kind === "recipe" ? `Recipe: ${group.label}` : group.label;
 }
 
@@ -78,7 +81,10 @@ function portLabel(
     return { label: parsed?.side === "out" ? `${name} ›` : name };
   const ports = side === "in" ? spec?.inputs : spec?.outputs;
   const port = ports?.find((p) => p.id === parsed.port);
-  return { label: `${name} · ${port?.label ?? parsed.port}`, color: port?.type };
+  return {
+    label: `${name} · ${port?.label ?? parsed.port}`,
+    color: port?.type,
+  };
 }
 
 /** Collapsed groups become one card; wires crossing the frame re-attach to the card's ports. */
@@ -212,13 +218,18 @@ export function applySuperCards(
   return { nodes: nextNodes, edges: nextEdges };
 }
 
-const FINISHED: ReadonlySet<NodeStatus> = new Set(["done", "cached", "skipped"]);
+const FINISHED: ReadonlySet<NodeStatus> = new Set([
+  "done",
+  "cached",
+  "skipped",
+]);
 
 /** One status for the card from the steps that took part in the run (a recipe's columns never run on
  *  their own): a failure wins, then work in progress, then done when every one of them is. */
 export function rollUpStatus(statuses: (NodeStatus | undefined)[]): {
   status: NodeStatus;
   done: number;
+  total: number;
 } {
   const list = statuses.filter((s): s is NodeStatus => !!s && s !== "idle");
   const done = list.filter((s) => FINISHED.has(s)).length;
@@ -226,11 +237,16 @@ export function rollUpStatus(statuses: (NodeStatus | undefined)[]): {
   let status: NodeStatus = "idle";
   if (has("failed")) status = "failed";
   else if (has("running") || has("loading_model")) status = "running";
-  else if (has("queued") || has("waiting")) status = done ? "running" : "queued";
+  else if (has("queued") || has("waiting"))
+    status = done ? "running" : "queued";
   else if (has("cancelled")) status = "cancelled";
-  else if (list.length && done === list.length && !list.every((s) => s === "skipped"))
+  else if (
+    list.length &&
+    done === list.length &&
+    !list.every((s) => s === "skipped")
+  )
     status = "done";
-  return { status, done };
+  return { status, done, total: list.length };
 }
 
 /** Auto layout places a collapsed card as one block and moves its members by the same amount. */

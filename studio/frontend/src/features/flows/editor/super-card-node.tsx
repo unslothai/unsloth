@@ -40,12 +40,16 @@ function SuperCardViewImpl({ data }: NodeProps<RfNode>) {
   if (!group) return null;
   const steps = memberIds.length;
   const progress =
-    rollup.status === "running" && steps
-      ? ` · ${rollup.done} of ${steps} done`
+    rollup.status === "running" && rollup.total > 1
+      ? ` · ${rollup.done} of ${rollup.total} done`
       : "";
   return (
     <NodeCard
-      runtime={{ ...IDLE_RUNTIME, status: rollup.status, progress: steps ? rollup.done / steps : null }}
+      runtime={{
+        ...IDLE_RUNTIME,
+        status: rollup.status,
+        progress: rollup.total > 1 ? rollup.done / rollup.total : null,
+      }}
       lowDetail={lowDetail}
       className="w-72"
       data-super-card={groupId}
@@ -60,7 +64,9 @@ function SuperCardViewImpl({ data }: NodeProps<RfNode>) {
         title={superCardTitle(group)}
         subtitle={`${steps} ${steps === 1 ? "step" : "steps"}${progress}`}
       >
-        <NodeStatusBadges runtime={{ ...IDLE_RUNTIME, status: rollup.status }} />
+        <NodeStatusBadges
+          runtime={{ ...IDLE_RUNTIME, status: rollup.status }}
+        />
         <Button
           type="button"
           variant="ghost"
@@ -98,7 +104,9 @@ function SuperCardSelectionToolbarImpl({ readOnly }: { readOnly: boolean }) {
     useShallow((s) => {
       if (readOnly) return [] as string[];
       const { graph, meta } = useDocStore.getState();
-      const frames = s.selectedNodes.filter((id) => id.startsWith(GROUP_PREFIX));
+      const frames = s.selectedNodes.filter((id) =>
+        id.startsWith(GROUP_PREFIX),
+      );
       const blocks = s.selectedNodes.filter((id) => graph.nodes[id]);
       if (frames.length === 1 && !blocks.length) {
         const groupId = frames[0].slice(GROUP_PREFIX.length);
