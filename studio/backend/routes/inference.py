@@ -11804,16 +11804,20 @@ def _unified_metal_host() -> bool:
     return _on_metal()
 
 
-def _mlx_cache_bounded(entry: dict) -> bool:
+def _mlx_cache_bounded(entry: dict, slots: int = 1) -> bool:
     from core.inference.gpu_residency import mlx_cache_bounded
-    return mlx_cache_bounded(entry)
+    return mlx_cache_bounded(entry, slots)
 
 
 def _note_mlx_slots(backend, slots: int) -> None:
     """A batch opened at a wider setting keeps its width after the setting drops, so the reservation never shrinks."""
-    growth = (backend.models.get(backend.active_model_name or "") or {}).get("mlx_growth")
+    entry = backend.models.get(backend.active_model_name or "") or {}
+    growth = entry.get("mlx_growth")
     if isinstance(growth, dict):
         growth["slots"] = max(int(growth.get("slots", 1)), int(slots))
+        if not _mlx_cache_bounded(entry, growth["slots"]):
+            # Now wide enough to batch vision rows past the window: unpriced, as at load.
+            entry.pop("mlx_growth")
 
 
 def _mlx_slots_outgrow_price(backend, n_parallel) -> bool:
@@ -19363,7 +19367,9 @@ async def _load_model_impl(
                 list(request.gpu_ids) if request.gpu_ids else None
             )
             # Unbounded, the estimate is no ceiling: the entry stays unpriced, so media beside it evicts or refuses.
-            if mlx_chat_need is not None and _mlx_cache_bounded(_resident_entry):
+            if mlx_chat_need is not None and _mlx_cache_bounded(
+                _resident_entry, mlx_chat_need[1]["slots"]
+            ):
                 from core.inference.gpu_residency import mlx_worker_footprint_mib
                 _resident_entry["mlx_growth"] = {
                     **mlx_chat_need[1],

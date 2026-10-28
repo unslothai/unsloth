@@ -1876,3 +1876,29 @@ def test_the_mlx_base_fetch_keeps_the_fallback_scheduler_config():
     from core.inference.mlx_diffusion_backend import BASE_ALLOW_PATTERNS
     for name in ("scheduler/scheduler_config.json", "model_index.json"):
         assert any(fnmatch.fnmatch(name, pattern) for pattern in BASE_ALLOW_PATTERNS), name
+
+
+def test_the_renderer_sees_the_shared_pool_beside_a_chat_model(monkeypatch):
+    """Its own working set cannot see a chat worker, so tiling decides on the system-wide headroom too."""
+    import sys
+    import types
+
+    import core.inference.gpu_residency as gr
+    import core.inference.llama_cpp as llama_cpp
+
+    core = types.SimpleNamespace(
+        device_info = lambda: {"max_recommended_working_set_size": 96 * _GIB},
+        get_active_memory = lambda: 8 * _GIB,
+    )
+    monkeypatch.setitem(sys.modules, "mlx", types.SimpleNamespace(core = core))
+    monkeypatch.setitem(sys.modules, "mlx.core", core)
+    monkeypatch.setattr(gr, "_on_metal", lambda: True)
+    monkeypatch.setattr(llama_cpp, "_apple_wired_headroom_bytes", lambda: 16 * _GIB)
+    monkeypatch.setattr(gr, "_mlx_chat_unallocated_mib", lambda: 4096)
+    runtime = mb.MfluxRuntime()
+    monkeypatch.setattr(gr, "media_held_mib", lambda: {0: 9000})
+    assert runtime.free_working_set_bytes() == 12 * _GIB
+    assert mb.vae_tiling_needed(2048, 2048, runtime.free_working_set_bytes())
+    # Under Off nothing is priced, and the renderer keeps its own reading.
+    monkeypatch.setattr(gr, "media_held_mib", lambda: {})
+    assert runtime.free_working_set_bytes() == 88 * _GIB

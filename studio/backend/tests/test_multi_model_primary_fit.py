@@ -384,23 +384,28 @@ def test_only_a_bounded_mlx_cache_is_priced_and_its_admitted_width_never_shrinks
     assert inf._mlx_cache_bounded({"context_length_enforced": True})
     assert inf._mlx_cache_bounded({"context_length_enforced": False, "mlx_context_budget": 4096})
     assert not inf._mlx_cache_bounded({"context_length_enforced": None})
-    assert not inf._mlx_cache_bounded(
-        {"context_length_enforced": True, "context_unbounded_when_batched": True}
-    )
+    batching = {"context_length_enforced": True, "context_unbounded_when_batched": True}
+    # One slot never batches, so its window holds; more slots batch vision rows past it.
+    assert inf._mlx_cache_bounded(batching) and not inf._mlx_cache_bounded(batching, 2)
     assert not inf._mlx_cache_bounded(
         {"context_length_enforced": False, "mlx_context_budget": None}
     )
-    entry = {"mlx_growth": {"mib": 1, "row_mib": 1, "slots": 1}}
+    entry = {"context_length_enforced": True, "mlx_growth": {"mib": 1, "row_mib": 1, "slots": 1}}
     backend = SimpleNamespace(models = {"m": entry}, active_model_name = "m")
     for slots in (4, 1):
         inf._note_mlx_slots(backend, slots)
     assert entry["mlx_growth"]["slots"] == 4
+    vision = {**batching, "mlx_growth": {"mib": 1, "row_mib": 1, "slots": 1}}
+    inf._note_mlx_slots(SimpleNamespace(models = {"v": vision}, active_model_name = "v"), 2)
+    assert "mlx_growth" not in vision
     inf._note_mlx_slots(SimpleNamespace(models = {}, active_model_name = None), 2)
     import inspect
 
     source = inspect.getsource(inf._load_model_impl)
     assert "_note_mlx_slots(backend, backend.set_parallel_slots(_n_parallel))" in source
-    assert "if mlx_chat_need is not None and _mlx_cache_bounded(_resident_entry):" in source
+    assert (
+        '_mlx_cache_bounded(\n                _resident_entry, mlx_chat_need[1]["slots"]' in source
+    )
 
 
 def test_the_mlx_diffusers_fallback_forgets_the_mlx_price():

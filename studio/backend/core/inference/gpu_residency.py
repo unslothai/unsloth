@@ -329,7 +329,6 @@ def _mlx_image_need(request: Any, fam: Any) -> Optional[tuple[int, int]]:
     """(weights MiB, decode headroom MiB) for an MLX image load: the quantization plan it will take, from headers."""
     from core.inference.diffusion_families import resolve_base_repo
     from core.inference.mlx_diffusion_backend import (
-        UNTILED_DECODE_HEADROOM_BYTES,
         decode_headroom_bytes,
         fetch_base_snapshot,
         get_mlx_diffusion_backend,
@@ -358,9 +357,8 @@ def _mlx_image_need(request: Any, fam: Any) -> Optional[tuple[int, int]]:
     if plan.source != "plan":
         return None
     mib = 1024 * 1024
-    # The renderer picks tiling from its own process's free memory, blind to a chat worker: reserve the untiled peak.
-    reserve = max(headroom, UNTILED_DECODE_HEADROOM_BYTES)
-    return (plan.planned_bytes - headroom) // mib, -(-reserve // mib)
+    # The tiled peak suffices: the renderer tiles once the shared pool cannot take an untiled decode.
+    return (plan.planned_bytes - headroom) // mib, -(-headroom // mib)
 
 
 def _video_need(request: Any, gpu_ordinal: Optional[int]) -> Optional[tuple[int, int]]:
@@ -416,6 +414,18 @@ def _on_metal() -> bool:
         return get_device() == DeviceType.MLX
     except Exception:  # noqa: BLE001
         return False
+
+
+def shared_metal_headroom_bytes() -> Optional[int]:
+    """What every process on Apple's one GPU may still take, less what resident MLX chat models reserved to grow.
+    None unless priced media is kept on Metal (Off keeps the renderer's own reading) or with no reading."""
+    if not _on_metal() or not media_held_mib():
+        return None
+    from core.inference.llama_cpp import _apple_wired_headroom_bytes
+
+    wired = _apple_wired_headroom_bytes()
+    unallocated = _mlx_chat_unallocated_mib() or 0
+    return None if wired is None else max(0, wired - unallocated * 1024 * 1024)
 
 
 def _metal_pool() -> tuple[Optional[dict[int, dict]], Optional[str]]:
@@ -612,10 +622,11 @@ def mlx_replaced_credit_mib(orch) -> int:
         return 0
 
 
-def mlx_cache_bounded(entry: dict) -> bool:
+def mlx_cache_bounded(entry: dict, slots: int = 1) -> bool:
     """Whether the loaded MLX model's cache stops at the context it was priced at: a cache window or a per-request
-    budget. Without either its growth has no ceiling to reserve; batched vision rows drop the window."""
-    if entry.get("context_unbounded_when_batched"):
+    budget. Without either its growth has no ceiling to reserve; batched vision rows (more than one slot) drop the
+    window."""
+    if slots > 1 and entry.get("context_unbounded_when_batched"):
         return False
     return entry.get("context_length_enforced") is True or bool(entry.get("mlx_context_budget"))
 
