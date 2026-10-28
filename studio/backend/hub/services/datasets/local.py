@@ -202,24 +202,32 @@ def _build_local_dataset_items() -> list[LocalDatasetItem]:
     return items
 
 
+# The datasets json loader types its first batch of this many bytes, so a column first seen there is a column.
+_JSONL_SCHEMA_BYTES = 10 << 20
+
+
 def _jsonl_head(path: Path, preview_size: int) -> list[dict] | None:
     """First ``preview_size`` JSON Lines objects via the stdlib: pyarrow's threaded JSON reader segfaults on mixed-type columns (#15681). ``None`` if not JSON Lines."""
-    rows = []
-    with path.open(encoding = "utf-8") as f:
+    rows, keys, scanned = [], {}, 0
+    with path.open("rb") as f:
         for line in f:
-            if len(rows) >= preview_size:
+            scanned += len(line)
+            if line.strip():
+                try:
+                    row = json.loads(line.decode("utf-8"))
+                except ValueError:
+                    row = None
+                if not isinstance(row, dict):
+                    # Within the preview rows the loader decides; past them only the column scan ends.
+                    if len(rows) < preview_size:
+                        return None
+                    break
+                keys.update(dict.fromkeys(row))
+                if len(rows) < preview_size:
+                    rows.append(row)
+            if len(rows) >= preview_size and scanned >= _JSONL_SCHEMA_BYTES:
                 break
-            if not line.strip():
-                continue
-            try:
-                row = json.loads(line)
-            except ValueError:
-                return None
-            if not isinstance(row, dict):
-                return None
-            rows.append(row)
-    # Columns are the union over rows, as the Arrow reader builds them (from_list reads row 0's keys).
-    keys = list(dict.fromkeys(key for row in rows for key in row))
+    # Columns are the union over the scanned rows, as the Arrow reader builds them (from_list reads row 0's keys).
     return [{key: row.get(key) for key in keys} for row in rows]
 
 

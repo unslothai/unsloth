@@ -109,11 +109,25 @@ def test_columns_are_the_union_over_rows(tmp_path, loader_calls):
     assert dataset["label"] == [None, 1]
 
 
+def test_a_column_first_seen_after_the_preview_rows_is_kept(tmp_path, loader_calls):
+    path = tmp_path / "train.jsonl"
+    rows = [{"question": "Q", "answer": "A"}] * 10 + [
+        {"question": "Q", "answer": "A", "system": "S"}
+    ]
+    _write_jsonl(path, rows)
+    dataset, _ = local._stream_file_preview_slice(path, 10)
+    assert dataset.column_names == ["question", "answer", "system"] and len(dataset) == 10
+
+
 def test_reading_stops_at_the_preview_size(tmp_path, loader_calls):
     path = tmp_path / "train.jsonl"
     _write_jsonl(path, [{"text": str(i)} for i in range(3)], tail = "{not json\n")
     dataset, _ = local._stream_file_preview_slice(path, 3)
     assert dataset["text"] == ["0", "1", "2"] and loader_calls == []
+    undecodable = tmp_path / "tail.jsonl"
+    _write_jsonl(undecodable, [{"text": str(i)} for i in range(3)])
+    undecodable.write_bytes(undecodable.read_bytes() + b"\xff\n")
+    assert local._stream_file_preview_slice(undecodable, 3)[0]["text"] == ["0", "1", "2"]
 
 
 def test_blank_lines_are_skipped_and_an_empty_file_has_no_preview(tmp_path, loader_calls):
