@@ -167,7 +167,9 @@ def test_a_recently_changed_file_is_not_remembered(tmp_path, monkeypatch, walks)
     _skip(path, 3000)
     assert walks["skip"] == 2
     assert not gm._WALK_MEMO
-    monkeypatch.setattr(gm.time, "time_ns", lambda: os.stat(path).st_ctime_ns + 3_000_000_001)
+    st = os.stat(path)
+    settled = max(st.st_mtime_ns, st.st_ctime_ns) + 3_000_000_001
+    monkeypatch.setattr(gm.time, "time_ns", lambda: settled)
     _skip(path, 3000)
     _skip(path, 3000)
     assert walks["skip"] == 3
