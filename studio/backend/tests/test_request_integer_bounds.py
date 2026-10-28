@@ -16,7 +16,9 @@ LARGEST = 2**63 - 1
 
 
 @pytest.fixture
-def client():
+def client(tmp_path, monkeypatch):
+    # A regressed project create makes its folder before it fails: keep that out of ~/Documents.
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
     app = FastAPI()
     app.include_router(chat_history.router, prefix = "/api/chat")
     app.include_router(prompts.router, prefix = "/api/prompts")
