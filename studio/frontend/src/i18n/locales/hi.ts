@@ -4336,6 +4336,8 @@ export const hi = {
     edit: "संपादित करें",
     options: "टास्क विकल्प",
     schedule: {
+      hourly: "हर घंटे",
+      everyHours: "हर {hours} घंटे",
       once: "एक बार, {date} को {time} बजे",
       daily: "हर दिन {time} बजे",
       weekdays: "हर कार्यदिवस {time} बजे",
@@ -4343,6 +4345,9 @@ export const hi = {
       monthly: "हर महीने की {day} तारीख को {time} बजे",
     },
     form: {
+      hourly: "हर घंटे",
+      intervalHours: "अंतराल (घंटे)",
+      hourlyNote: "सहेजने के एक अंतराल बाद पहली बार चलेगा। अंतराल बदलने या फिर से शुरू करने पर प्रतीक्षा दोबारा शुरू होगी।",
       createTitle: "टास्क शेड्यूल करें",
       editTitle: "शेड्यूल किया गया टास्क संपादित करें",
       name: "नाम",

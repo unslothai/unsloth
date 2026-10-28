@@ -4400,6 +4400,8 @@ export const de = {
     edit: "Bearbeiten",
     options: "Aufgabenoptionen",
     schedule: {
+      hourly: "Jede Stunde",
+      everyHours: "Alle {hours} Stunden",
       once: "Einmalig, {date} um {time}",
       daily: "Täglich um {time}",
       weekdays: "Werktags um {time}",
@@ -4407,6 +4409,9 @@ export const de = {
       monthly: "Monatlich am {day}. um {time}",
     },
     form: {
+      hourly: "Stündlich",
+      intervalHours: "Intervall (Stunden)",
+      hourlyNote: "Der erste Lauf erfolgt ein Intervall nach dem Speichern. Beim Ändern des Intervalls oder Fortsetzen beginnt die Wartezeit von vorn.",
       createTitle: "Aufgabe planen",
       editTitle: "Geplante Aufgabe bearbeiten",
       name: "Name",

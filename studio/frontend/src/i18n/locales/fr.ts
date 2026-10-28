@@ -4411,6 +4411,8 @@ export const fr = {
     edit: "Modifier",
     options: "Options de la tâche",
     schedule: {
+      hourly: "Toutes les heures",
+      everyHours: "Toutes les {hours} heures",
       once: "Une fois, le {date} à {time}",
       daily: "Tous les jours à {time}",
       weekdays: "En semaine à {time}",
@@ -4418,6 +4420,9 @@ export const fr = {
       monthly: "Tous les mois le {day} à {time}",
     },
     form: {
+      hourly: "Toutes les heures",
+      intervalHours: "Intervalle (heures)",
+      hourlyNote: "La première exécution a lieu un intervalle après l’enregistrement. Modifier l’intervalle ou reprendre la tâche relance le délai d’attente.",
       createTitle: "Planifier une tâche",
       editTitle: "Modifier la tâche planifiée",
       name: "Nom",

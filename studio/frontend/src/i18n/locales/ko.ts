@@ -4316,6 +4316,8 @@ export const ko = {
     edit: "편집",
     options: "작업 옵션",
     schedule: {
+      hourly: "매시간",
+      everyHours: "{hours}시간마다",
       once: "한 번, {date} {time}",
       daily: "매일 {time}",
       weekdays: "평일 {time}",
@@ -4323,6 +4325,9 @@ export const ko = {
       monthly: "매월 {day}일 {time}",
     },
     form: {
+      hourly: "시간마다",
+      intervalHours: "간격(시간)",
+      hourlyNote: "저장한 뒤 설정한 간격이 지나면 처음 실행됩니다. 간격을 변경하거나 작업을 재개하면 대기 시간이 다시 시작됩니다.",
       createTitle: "작업 예약",
       editTitle: "예약 작업 편집",
       name: "이름",

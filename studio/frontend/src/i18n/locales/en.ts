@@ -4388,6 +4388,8 @@ export const en = {
     edit: "Edit",
     options: "Task options",
     schedule: {
+      hourly: "Every hour",
+      everyHours: "Every {hours} hours",
       once: "Once, {date} at {time}",
       daily: "Every day at {time}",
       weekdays: "Every weekday at {time}",
@@ -4396,6 +4398,9 @@ export const en = {
       monthly: "Every month on day {day} at {time}",
     },
     form: {
+      hourly: "Hourly",
+      intervalHours: "Interval (hours)",
+      hourlyNote: "The first run is one interval after saving. Changing the interval or resuming restarts the wait.",
       createTitle: "Schedule a task",
       editTitle: "Edit scheduled task",
       name: "Name",

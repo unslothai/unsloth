@@ -4275,6 +4275,8 @@ export const ja = {
     edit: "編集",
     options: "タスクのオプション",
     schedule: {
+      hourly: "1時間ごと",
+      everyHours: "{hours}時間ごと",
       once: "1 回のみ、{date} {time}",
       daily: "毎日 {time}",
       weekdays: "平日 {time}",
@@ -4282,6 +4284,9 @@ export const ja = {
       monthly: "毎月 {day} 日 {time}",
     },
     form: {
+      hourly: "時間ごと",
+      intervalHours: "間隔（時間）",
+      hourlyNote: "保存してから指定した間隔が経過すると初回の実行が始まります。間隔の変更や再開を行うと、待機時間がリセットされます。",
       createTitle: "タスクをスケジュール",
       editTitle: "スケジュール済みタスクを編集",
       name: "名前",

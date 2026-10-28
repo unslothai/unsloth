@@ -4591,6 +4591,8 @@ export const sv = {
     edit: "Redigera",
     options: "Uppgiftsalternativ",
     schedule: {
+      hourly: "Varje timme",
+      everyHours: "Med {hours} timmars intervall",
       once: "En gång, {date} kl. {time}",
       daily: "Varje dag kl. {time}",
       weekdays: "Vardagar kl. {time}",
@@ -4598,6 +4600,9 @@ export const sv = {
       monthly: "Dag {day} varje månad kl. {time}",
     },
     form: {
+      hourly: "Varje timme",
+      intervalHours: "Intervall (timmar)",
+      hourlyNote: "Den första körningen sker ett intervall efter att du sparat. Om du ändrar intervallet eller återupptar uppgiften börjar väntetiden om.",
       createTitle: "Schemalägg en uppgift",
       editTitle: "Redigera schemalagd uppgift",
       name: "Namn",

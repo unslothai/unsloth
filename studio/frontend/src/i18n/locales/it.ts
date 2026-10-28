@@ -4400,6 +4400,8 @@ export const it = {
     edit: "Modifica",
     options: "Opzioni attività",
     schedule: {
+      hourly: "Ogni ora",
+      everyHours: "Ogni {hours} ore",
       once: "Una volta, il {date} alle {time}",
       daily: "Ogni giorno alle {time}",
       weekdays: "Nei giorni feriali alle {time}",
@@ -4407,6 +4409,9 @@ export const it = {
       monthly: "Ogni mese il giorno {day} alle {time}",
     },
     form: {
+      hourly: "Ogni ora",
+      intervalHours: "Intervallo (ore)",
+      hourlyNote: "La prima esecuzione avviene un intervallo dopo il salvataggio. Modificare l’intervallo o riprendere l’attività riavvia l’attesa.",
       createTitle: "Pianifica un’attività",
       editTitle: "Modifica attività pianificata",
       name: "Nome",

@@ -4456,6 +4456,8 @@ export const he = {
     edit: "עריכה",
     options: "אפשרויות משימה",
     schedule: {
+      hourly: "כל שעה",
+      everyHours: "כל {hours} שעות",
       once: "פעם אחת, {date} ב-{time}",
       daily: "כל יום ב-{time}",
       weekdays: "בימי חול ב-{time}",
@@ -4463,6 +4465,9 @@ export const he = {
       monthly: "בכל חודש ביום {day} ב-{time}",
     },
     form: {
+      hourly: "כל שעה",
+      intervalHours: "מרווח (שעות)",
+      hourlyNote: "ההרצה הראשונה תתחיל לאחר מרווח אחד מרגע השמירה. שינוי המרווח או חידוש המשימה מתחילים את ההמתנה מחדש.",
       createTitle: "תזמון משימה",
       editTitle: "עריכת משימה מתוזמנת",
       name: "שם",
