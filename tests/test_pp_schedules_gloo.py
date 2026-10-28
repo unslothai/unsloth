@@ -366,7 +366,36 @@ def _case_dp_refusal(rank, world, tmp):
     return out
 
 
-CASES = {"multi": _case_multi, "refusals": _case_refusals, "dp_refusal": _case_dp_refusal}
+def _case_compiled_refusal(rank, world, tmp, schedule):
+    """A split-backward schedule over compiled blocks on a torch whose split backward cannot run them."""
+    from torch.distributed.device_mesh import init_device_mesh
+
+    mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("pp",))["pp"]
+    model = build(LLAMA)
+    for layer in ppn._find_parts(model).layers:
+        layer.compile(dynamic = False)
+    embed, head = model.get_input_embeddings(), model.get_output_embeddings()
+    out = {}
+    try:
+        ppn.apply_pipeline_parallel(model, mesh, n_microbatches = 4, schedule = schedule)
+        out["error"] = None
+    except (ValueError, RuntimeError) as exc:
+        out["error"] = str(exc)
+    out["uncut"] = (
+        not any(type(layer).__name__ == "_PPPassThrough" for layer in ppn._find_parts(model).layers)
+        and model.get_input_embeddings() is embed
+        and model.get_output_embeddings() is head
+        and not ppn.is_pipeline_parallel(model)
+    )
+    return out
+
+
+CASES = {
+    "multi": _case_multi,
+    "refusals": _case_refusals,
+    "dp_refusal": _case_dp_refusal,
+    "compiled_refusal": _case_compiled_refusal,
+}
 
 
 def _worker(rank, world, port, case, tmp, kwargs):
@@ -474,13 +503,21 @@ def test_pp2_zero_bubble_with_non_reentrant_checkpointing_matches_one_process(sc
 
 @pytest.mark.parametrize("schedule", ["interleavedzerobubble", "zbvzerobubble"])
 def test_pp2_zero_bubble_with_compiled_blocks_matches_one_process(schedule):
+    sched = sys.modules["unsloth.models.pp_schedules"]
+    if not sched.split_backward_keeps_function_nodes():
+        # torch <= 2.12: split backward reads _input_metadata of compiled (AOTAutograd) nodes whose graph root
+        # is already released; refused before the model is cut.
+        # V schedules on torch < 2.12 hit the earlier V-placement refusal first.
+        v_refused = schedule in V_SCHEDULES and not _v_supported()
+        for res in _spawn("compiled_refusal", 2, schedule = schedule):
+            if v_refused:
+                assert "(torch >= 2.12)" in (res["error"] or ""), res
+            else:
+                assert "cannot run over torch.compile'd blocks" in (res["error"] or ""), res
+                assert schedule in res["error"] and "interleaved1f1b" in res["error"], res
+            assert res["uncut"], res
+        return
     _skip_v(schedule)
-    if not _v_supported():
-        # torch 2.10 / 2.11 split backward reads Function._input_metadata, which compiled (AOTAutograd) nodes
-        # refuse: zero bubble over torch.compile'd layers is a torch limitation there.
-        pytest.skip(
-            f"zero bubble over compiled layers needs torch >= 2.12 (torch {torch.__version__})"
-        )
     saved = {}
     results = _spawn("multi", 2, keep = saved, arch = "llama", schedule = schedule, compile_layers = True)
     _check_multi(results, saved, 2, schedule)
@@ -543,6 +580,52 @@ def test_schedule_names_normalize():
     assert sched.schedule_spec("zbv").name == "zbvzerobubble"
     assert sched.schedule_spec("looped_bfs").name == "loopedbfs"
     assert sched.schedule_spec("GPipe").name == "gpipe"
+
+
+def test_split_backward_probe_matches_torch_node_ownership():
+    # THPFunction owns its node (c10::intrusive_ptr) from torch 2.13; up to 2.12 it is a std::weak_ptr.
+    sched = sys.modules["unsloth.models.pp_schedules"]
+    major, minor = (int(v) for v in torch.__version__.split(".")[:2])
+    assert sched.split_backward_keeps_function_nodes() == ((major, minor) >= (2, 13))
+
+
+def test_compiled_blocks_refused_for_split_backward_on_affected_torch(monkeypatch):
+    sched = sys.modules["unsloth.models.pp_schedules"]
+    split = {"interleaved": True, "split_backward": True}
+    full = {"interleaved": True, "split_backward": False}
+
+    def model_with(install):
+        block = torch.nn.Linear(2, 2)
+        install(block)
+        return torch.nn.Sequential(torch.nn.Linear(2, 2), block)
+
+    def marked(block):
+        cls = type("Block", (torch.nn.Linear,), {})
+        forward = lambda self, x: torch.nn.Linear.forward(self, x)  # noqa: E731
+        forward._unsloth_block_compiled = True
+        cls.forward = forward
+        block.__class__ = cls
+
+    installs = {
+        "module_compile": lambda b: b.compile(dynamic = False),
+        "block_compile": marked,
+        "compiled_forward": lambda b: setattr(b, "forward", torch.compile(b.forward)),
+    }
+    assert sched.compiled_blocks(torch.nn.Sequential(torch.nn.Linear(2, 2))) == []
+    assert sched.compiled_blocks(torch.compile(torch.nn.Linear(2, 2)))
+    for schedule in ("interleavedzerobubble", "zbvzerobubble", "dualpipev"):
+        spec = sched.schedule_spec(schedule)
+        for kind, install in installs.items():
+            assert sched.compiled_blocks(model_with(install)) == ["1"], kind
+            monkeypatch.setattr(ppn, "split_backward_keeps_function_nodes", lambda: False)
+            with pytest.raises(ValueError, match = "cannot run over torch.compile'd blocks") as exc:
+                ppn._check_schedule(model_with(install), spec, split)
+            assert schedule in str(exc.value) and "UNSLOTH_BLOCK_COMPILE=0" in str(exc.value)
+            ppn._check_schedule(model_with(install), spec, full)  # full backward: not affected
+            monkeypatch.setattr(ppn, "split_backward_keeps_function_nodes", lambda: True)
+            ppn._check_schedule(model_with(install), spec, split)  # torch >= 2.13: allowed
+    monkeypatch.setattr(ppn, "split_backward_keeps_function_nodes", lambda: False)
+    ppn._check_schedule(torch.nn.Sequential(torch.nn.Linear(2, 2)), spec, split)  # nothing compiled
 
 
 def test_single_backward_kernels_unwraps_partials():

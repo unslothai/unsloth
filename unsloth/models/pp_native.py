@@ -60,7 +60,9 @@ import torch.nn as nn
 from .pp_schedules import (
     SCHEDULE_NAMES,
     allow_split_backward,
+    compiled_blocks,
     non_reentrant_checkpointing_only,
+    split_backward_keeps_function_nodes,
     single_backward_kernels,
     resolve_stages_per_rank,
     schedule_spec,
@@ -957,6 +959,18 @@ def _check_schedule(model, spec, props):
             "once. Use schedule = 'interleaved1f1b' (or 'loopedbfs'), or load the model without the fused LoRA "
             "path."
         )
+    if props["split_backward"] and not split_backward_keeps_function_nodes():
+        compiled = compiled_blocks(model)
+        if compiled:
+            shown = ", ".join(compiled[:3]) + (f" and {len(compiled) - 3} more" if len(compiled) > 3 else "")
+            raise ValueError(
+                f"Unsloth: the {spec.name} pipeline schedule splits each backward into an input and a weight "
+                f"pass, which torch {torch.__version__} cannot run over torch.compile'd blocks ({shown}): its "
+                "weight pass reads _input_metadata of the compiled (AOTAutograd) backward nodes after their graph "
+                "root is released, which needs torch >= 2.13. Use schedule = 'interleaved1f1b' (or 'loopedbfs', "
+                "a non zero-bubble schedule), disable the compiled blocks (UNSLOTH_BLOCK_COMPILE=0, no "
+                "module.compile()), or upgrade torch. The model was not modified."
+            )
     if props["split_backward"] and non_reentrant_checkpointing_only(model) is False:
         raise ValueError(
             f"Unsloth: the {spec.name} pipeline schedule splits each backward into an input and a weight pass "
