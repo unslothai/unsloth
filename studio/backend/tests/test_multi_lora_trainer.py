@@ -621,6 +621,11 @@ def test_a_hybrid_or_moe_member_trains_as_it_would_alone(monkeypatch, tmp_path, 
     assert out["batched"][0][1:] == pytest.approx(out["alone"][0][1:], rel = 1e-4)
     for key, value in out["alone"][1].items():
         torch.testing.assert_close(out["batched"][1][key], value, atol = 1e-5, rtol = 1e-4)
+    # Every adapter trained, dense and expert alike (injecting experts must not freeze the dense ones).
+    trained = {
+        k: v.abs().max() > 0 for k, v in out["batched"][1].items() if k.endswith("lora_B.weight")
+    }
+    assert trained and all(trained.values()), [k for k, ok in trained.items() if not ok][:3]
     if kind == "moe":
         config = out["batched"][2]
         assert sorted(config["target_parameters"]) == [
