@@ -2481,14 +2481,48 @@ class UnslothTrainer:
                     codes = snac_model.encode(waveform)
 
                 all_codes = []
-                for i in range(codes[0].shape[1]):
-                    all_codes.append(codes[0][0][i].item() + AUDIO_OFFSET)
-                    all_codes.append(codes[1][0][2 * i].item() + AUDIO_OFFSET + 4096)
-                    all_codes.append(codes[2][0][4 * i].item() + AUDIO_OFFSET + (2 * 4096))
-                    all_codes.append(codes[2][0][(4 * i) + 1].item() + AUDIO_OFFSET + (3 * 4096))
-                    all_codes.append(codes[1][0][(2 * i) + 1].item() + AUDIO_OFFSET + (4 * 4096))
-                    all_codes.append(codes[2][0][(4 * i) + 2].item() + AUDIO_OFFSET + (5 * 4096))
-                    all_codes.append(codes[2][0][(4 * i) + 3].item() + AUDIO_OFFSET + (6 * 4096))
+                frames = codes[0].shape[1]
+                if (
+                    isinstance(codes, (list, tuple))
+                    and len(codes) >= 3
+                    and all(
+                        isinstance(level, torch.Tensor)
+                        and level.layout == torch.strided
+                        and level.dim() == 2
+                        and level.shape[0] >= 1
+                        for level in codes[:3]
+                    )
+                    and codes[1].shape[1] >= 2 * frames
+                    and codes[2].shape[1] >= 4 * frames
+                ):
+                    # Every index below is in bounds: one host copy per level instead of seven
+                    # scalar reads (each a device sync on GPU) per frame. Same ints, same order.
+                    c0, c1, c2 = (level[0].tolist() for level in codes[:3])
+                    for i in range(frames):
+                        all_codes.append(c0[i] + AUDIO_OFFSET)
+                        all_codes.append(c1[2 * i] + AUDIO_OFFSET + 4096)
+                        all_codes.append(c2[4 * i] + AUDIO_OFFSET + (2 * 4096))
+                        all_codes.append(c2[(4 * i) + 1] + AUDIO_OFFSET + (3 * 4096))
+                        all_codes.append(c1[(2 * i) + 1] + AUDIO_OFFSET + (4 * 4096))
+                        all_codes.append(c2[(4 * i) + 2] + AUDIO_OFFSET + (5 * 4096))
+                        all_codes.append(c2[(4 * i) + 3] + AUDIO_OFFSET + (6 * 4096))
+                else:
+                    for i in range(frames):
+                        all_codes.append(codes[0][0][i].item() + AUDIO_OFFSET)
+                        all_codes.append(codes[1][0][2 * i].item() + AUDIO_OFFSET + 4096)
+                        all_codes.append(codes[2][0][4 * i].item() + AUDIO_OFFSET + (2 * 4096))
+                        all_codes.append(
+                            codes[2][0][(4 * i) + 1].item() + AUDIO_OFFSET + (3 * 4096)
+                        )
+                        all_codes.append(
+                            codes[1][0][(2 * i) + 1].item() + AUDIO_OFFSET + (4 * 4096)
+                        )
+                        all_codes.append(
+                            codes[2][0][(4 * i) + 2].item() + AUDIO_OFFSET + (5 * 4096)
+                        )
+                        all_codes.append(
+                            codes[2][0][(4 * i) + 3].item() + AUDIO_OFFSET + (6 * 4096)
+                        )
 
                 if len(all_codes) == 0:
                     skipped += 1
