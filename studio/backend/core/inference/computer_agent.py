@@ -270,8 +270,14 @@ COMPUTER_SCROLL_TOOL = {
                     "type": "number",
                     "description": "Number of scroll clicks/steps (default is 3).",
                 },
-                "x": {"type": "number", "description": "Optional horizontal pixel coordinate to hover before scrolling."},
-                "y": {"type": "number", "description": "Optional vertical pixel coordinate to hover before scrolling."},
+                "x": {
+                    "type": "number",
+                    "description": "Optional horizontal pixel coordinate to hover before scrolling.",
+                },
+                "y": {
+                    "type": "number",
+                    "description": "Optional vertical pixel coordinate to hover before scrolling.",
+                },
             },
         },
     },
@@ -397,7 +403,11 @@ def _validated_computer_request(name: str, arguments: dict) -> dict:
             "y": y,
             "button": button,
             "click_count": click_count,
-            "modifiers": [str(m).lower() for m in modifiers if str(m).lower() in ("ctrl", "alt", "shift", "cmd", "meta")],
+            "modifiers": [
+                str(m).lower()
+                for m in modifiers
+                if str(m).lower() in ("ctrl", "alt", "shift", "cmd", "meta")
+            ],
         }
 
     if name == "computer_move_mouse":
@@ -455,7 +465,11 @@ def _validated_computer_request(name: str, arguments: dict) -> dict:
         return {
             "op": "press_key",
             "key": key,
-            "modifiers": [str(m).lower() for m in modifiers if str(m).lower() in ("ctrl", "alt", "shift", "cmd", "meta")],
+            "modifiers": [
+                str(m).lower()
+                for m in modifiers
+                if str(m).lower() in ("ctrl", "alt", "shift", "cmd", "meta")
+            ],
         }
 
     if name == "computer_scroll":
@@ -493,7 +507,12 @@ def _validated_computer_request(name: str, arguments: dict) -> dict:
     raise ValueError(f"unknown computer tool {name}.")
 
 
-def _with_desktop_screenshot(body: str, image: Any, width: Optional[int] = None, height: Optional[int] = None) -> str:
+def _with_desktop_screenshot(
+    body: str,
+    image: Any,
+    width: Optional[int] = None,
+    height: Optional[int] = None,
+) -> str:
     from .mcp_images import SENTINEL, _png_data_url
 
     if not isinstance(image, str) or not (image.startswith("data:image/") or len(image) > 50):
@@ -561,6 +580,7 @@ def execute_computer_tool(
         new_action_id,
         wait_computer_action,
     )
+
     try:
         from utils.account_context import current_account_id
         acct_id = current_account_id()
