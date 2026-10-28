@@ -66,8 +66,7 @@ def _find_subsequences(haystack: list[str], needle: list[str]) -> list[int]:
 
 
 def _page_tokens(page_words: list) -> tuple[list[str], list[int]]:
-    """Normalized page words, skipping punctuation-only ones so they never break a
-    phrase, plus each token's index into ``page_words``."""
+    """Normalized tokens (punctuation-only words skipped) and their ``page_words`` indices."""
     tokens: list[str] = []
     idx_map: list[int] = []
     for j, w in enumerate(page_words):
@@ -129,10 +128,8 @@ def _rects_from_words(page_words: list, indices: list[int], pw: float, ph: float
 
 
 class _PageMemo:
-    """The last page's words, normalized tokens and size, so consecutive chunks on one
-    page extract and normalize it once. One slot: chunks arrive in page order, and a
-    whole-document memo would hold every page's word list. Only successful reads are
-    kept, so a failing read is retried per chunk exactly as without the memo."""
+    """One-page cache of words, tokens and size: chunks arrive in page order. Failed
+    reads are not cached, so the next chunk retries them."""
 
     __slots__ = ("index", "page", "words", "tokens", "size")
 

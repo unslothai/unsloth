@@ -84,7 +84,6 @@ def test_regions_match_per_chunk_location_in_page_order(tmp_path, get_text_calls
     assert sum(1 for r in expected if r) > len(chunks) // 2
     del get_text_calls[:]
     assert locators.pdf_regions_for_chunks(path, pages, chunks) == expected
-    # One read per page that has chunks (the empty page yields none).
     assert get_text_calls == sorted({c.source_page_index for c in chunks})
 
 
