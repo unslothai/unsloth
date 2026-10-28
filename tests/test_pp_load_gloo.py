@@ -167,6 +167,7 @@ def _case_load(
     config = ppn.PPConfig(stages_per_rank = v)
     peft = peft or {}
     full = _peft(_load(ckpt), **peft)
+
     def lora(m):
         return {
             n: p
@@ -361,9 +362,23 @@ def _spawn(
         ("llama", 2, "gpipe", None, None, None),
         ("qwen3", 2, "1f1b", None, None, None),
         ("gemma3", 2, "gpipe", None, True, None),  # tied embedding: read on both ends
-        ("llama", 4, "gpipe", None, None, None),  # middle ranks hold neither the embedding nor the head
+        (
+            "llama",
+            4,
+            "gpipe",
+            None,
+            None,
+            None,
+        ),  # middle ranks hold neither the embedding nor the head
         ("llama", 2, "interleaved1f1b", 2, None, None),
-        ("gemma3", 2, "zbvzerobubble", 2, True, None),  # V: rank 0 holds the first and the last stage
+        (
+            "gemma3",
+            2,
+            "zbvzerobubble",
+            2,
+            True,
+            None,
+        ),  # V: rank 0 holds the first and the last stage
         # Checkpoint-derived trainables (modules_to_save copies, DoRA magnitudes, trainable token rows) of
         # weights another rank loaded: rank 0's copies come from placeholders and must not reach their owner.
         ("llama", 2, "gpipe", None, None, {"modules_to_save": ["input_layernorm"]}),
@@ -389,9 +404,7 @@ def test_sharded_loading_matches_full_load_then_split(arch, world, schedule, v, 
     with tempfile.TemporaryDirectory() as ckpt:
         _save_checkpoint(arch, ckpt, tie = tie)
         n_mb = 4 if schedule != "gpipe" or world == 4 else 2
-        results = _spawn(
-            "load", world, ckpt = ckpt, schedule = schedule, n_mb = n_mb, v = v, peft = peft
-        )
+        results = _spawn("load", world, ckpt = ckpt, schedule = schedule, n_mb = n_mb, v = v, peft = peft)
     total_numel = None
     for rank, res in enumerate(results):
         stats = res["stats"]

@@ -1531,12 +1531,18 @@ def _local_stage_modules(pp_stage, parts, owned):
     return modules
 
 
-def _sync_trainable(model, group, src, owners = None):
+def _sync_trainable(
+    model,
+    group,
+    src,
+    owners = None,
+):
     """Broadcast every trainable parameter from `src`. With `owners` ({id: pp ranks that loaded it}, from a
     pipeline_sharded_loading model) a parameter listed there is synced only among its owners (from pp rank 0 if
     it is one, else the lowest): a non-owner's copy may be built from a zero placeholder, and the split drops it
     anyway. A single owner keeps its own copy."""
     import torch.distributed as dist
+
     me = dist.get_rank(group) if owners is not None else None
     with torch.no_grad():
         for param in model.parameters():
@@ -1550,7 +1556,11 @@ def _sync_trainable(model, group, src, owners = None):
                 continue
             root = 0 if 0 in held else min(held)
             # Non-owners receive into scratch: their copy may be a zero-stride placeholder.
-            buf = param.data if me in held else torch.empty(param.shape, dtype = param.dtype, device = param.device)
+            buf = (
+                param.data
+                if me in held
+                else torch.empty(param.shape, dtype = param.dtype, device = param.device)
+            )
             dist.broadcast(buf, src = dist.get_global_rank(group, root), group = group)
 
 
