@@ -132,7 +132,6 @@ for (const scope of ["defaults", "chat", "pending chat"] as const) {
 test("unloading does not overwrite a settled chat or its defaults", async (t) => {
   const runtime = await boot(t);
   const store = runtime.useChatRuntimeStore;
-  // Defaults that differ from the chat's, so a leak either way shows.
   store.getState().setToolsEnabled(false);
   store.getState().setCodeToolsEnabled(false);
   store.getState().setActiveThreadId(THREAD);
