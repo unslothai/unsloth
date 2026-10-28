@@ -3,20 +3,24 @@
 torch < 2.7 only has cache_size_limit / accumulated_cache_size_limit, and dynamo's config refuses
 unknown names with AttributeError. Both lazy importers swallow that and turn PrefixGrouper off, so
 the import must not depend on the torch >= 2.7 names.
+
+PrefixGrouper itself stays off below torch 2.7 (its flex kernel does not compile there and the
+silent eager fallback builds the full T x T scores), with one log line and no dynamo change.
 """
 
 import importlib.util
 import pathlib
 import sys
+import types
 
 import pytest
 
 torch = pytest.importorskip("torch")
 pytest.importorskip("torch.nn.attention.flex_attention")
 
-KERNEL = (
-    pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "utils" / "prefix_grouper_kernel.py"
-)
+UTILS = pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "utils"
+KERNEL = UTILS / "prefix_grouper_kernel.py"
+PKG = "_pg_pkg_under_test"
 NEW_NAMES = ("recompile_limit", "accumulated_recompile_limit")
 
 
@@ -56,9 +60,11 @@ def _load_kernel():
     return module
 
 
-def test_import_raises_the_old_names_on_torch_26_config(monkeypatch):
+def test_import_raises_the_old_names_when_only_they_exist(monkeypatch):
+    # The name fallback itself; the version gate is pinned open so it runs on any torch.
     fake = _OldDynamoConfig(torch._dynamo.config)
     monkeypatch.setattr(torch._dynamo, "config", fake)
+    monkeypatch.setattr(torch, "__version__", "2.7.0")
     module = _load_kernel()
     assert callable(module.flex_shared_prefix_attention)
     assert fake.cache_size_limit == 256
@@ -78,3 +84,86 @@ def test_import_raises_the_new_names_when_present(monkeypatch):
     monkeypatch.setattr(config, "recompile_limit", 4096)
     _load_kernel()
     assert config.recompile_limit == 4096
+
+
+def _load_prefix_grouper():
+    """Load prefix_grouper.py + its kernel under a throwaway package (no full unsloth import)."""
+    pkg = types.ModuleType(PKG)
+    pkg.__path__ = [str(UTILS)]
+    names = (PKG, f"{PKG}.prefix_grouper_kernel", f"{PKG}.prefix_grouper")
+    sys.modules[PKG] = pkg
+    try:
+        name = f"{PKG}.prefix_grouper"
+        spec = importlib.util.spec_from_file_location(name, UTILS / "prefix_grouper.py")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    finally:
+        for n in names:
+            sys.modules.pop(n, None)
+    return module
+
+
+@pytest.mark.parametrize(
+    "version, ok",
+    [
+        ("2.6.0+cu124", False),
+        ("2.5.1", False),
+        ("1.13.1", False),
+        ("2.7.0a0+git1234", True),
+        ("2.7.1", True),
+        ("2.10.0", True),
+        ("3.0.0", True),
+        ("not-a-version", True),
+    ],
+)
+def test_torch_version_gate(version, ok):
+    assert _load_kernel().torch_supports_prefix_grouper(version) is ok
+
+
+def test_torch_26_import_is_clean_and_leaves_dynamo_alone(monkeypatch):
+    fake = _OldDynamoConfig(torch._dynamo.config)
+    monkeypatch.setattr(torch._dynamo, "config", fake)
+    monkeypatch.setattr(torch, "__version__", "2.6.0+cu124")
+    module = _load_kernel()
+    assert module.TORCH_SUPPORTS_PREFIX_GROUPER is False
+    assert fake.cache_size_limit == 8
+    assert fake.accumulated_cache_size_limit == 256
+
+
+def test_torch_26_prefix_grouper_off_with_one_log(monkeypatch, capsys):
+    monkeypatch.setenv("UNSLOTH_GRPO_PREFIX_GROUPER", "1")
+    monkeypatch.setenv("UNSLOTH_GRPO_SEQ_PACKING", "1")
+    monkeypatch.setattr(torch._dynamo, "config", _OldDynamoConfig(torch._dynamo.config))
+    monkeypatch.setattr(torch, "__version__", "2.6.0+cu124")
+    pg = _load_prefix_grouper()
+    assert capsys.readouterr().out == ""  # nothing at import
+    assert pg.prefix_grouper_enabled() is False
+    out = capsys.readouterr().out
+    assert out.count("\n") == 1 and "PrefixGrouper is off on torch 2.6.0+cu124" in out
+    assert pg.prefix_grouper_enabled() is False
+    assert capsys.readouterr().out == ""  # logged once per process
+
+
+def test_torch_26_env_off_stays_quiet(monkeypatch, capsys):
+    monkeypatch.setenv("UNSLOTH_GRPO_PREFIX_GROUPER", "0")
+    monkeypatch.setattr(torch, "__version__", "2.6.0")
+    pg = _load_prefix_grouper()
+    assert pg.prefix_grouper_enabled() is False
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize("version", ["2.7.1", "2.8.0", "2.14.1"])
+def test_torch_27_plus_unchanged(monkeypatch, capsys, version):
+    monkeypatch.setenv("UNSLOTH_GRPO_PREFIX_GROUPER", "1")
+    monkeypatch.setenv("UNSLOTH_GRPO_SEQ_PACKING", "1")
+    monkeypatch.setattr(torch, "__version__", version)
+    config = torch._dynamo.config
+    for name in ("recompile_limit", "accumulated_recompile_limit"):
+        if hasattr(config, name):
+            monkeypatch.setattr(config, name, getattr(config, name))
+    pg = _load_prefix_grouper()
+    assert pg.prefix_grouper_enabled() is True
+    monkeypatch.setenv("UNSLOTH_GRPO_SEQ_PACKING", "0")
+    assert _load_prefix_grouper().prefix_grouper_enabled() is False
+    assert capsys.readouterr().out == ""

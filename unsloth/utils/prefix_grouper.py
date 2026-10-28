@@ -51,7 +51,12 @@ from typing import List, Optional, Tuple
 
 import torch
 
-from .prefix_grouper_kernel import build_seg_info_multigroup, PrefixSegInfo
+from .prefix_grouper_kernel import (
+    build_seg_info_multigroup,
+    PrefixSegInfo,
+    PREFIX_GROUPER_MIN_TORCH,
+    TORCH_SUPPORTS_PREFIX_GROUPER,
+)
 
 
 def env_on(name: str, default: str = "0") -> bool:
@@ -59,14 +64,30 @@ def env_on(name: str, default: str = "0") -> bool:
 
 
 # One-time env reads; the helpers stay callable, since unsloth_zoo imports and calls them.
-_ENABLED = env_on("UNSLOTH_GRPO_SEQ_PACKING", "1") and env_on("UNSLOTH_GRPO_PREFIX_GROUPER", "1")
+_ENV_ENABLED = env_on("UNSLOTH_GRPO_SEQ_PACKING", "1") and env_on(
+    "UNSLOTH_GRPO_PREFIX_GROUPER", "1"
+)
+_ENABLED = _ENV_ENABLED and TORCH_SUPPORTS_PREFIX_GROUPER
+_OFF_LOGGED = False
 _VERIFY_ON = env_on("UNSLOTH_GRPO_PREFIX_GROUPER_VERIFY", "1")
 _TOKR_THRESHOLD = float(os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER_TOKR", "1.3"))
 _TOL_OK = float(os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER_TOL", "0.7"))
 
 
 def prefix_grouper_enabled() -> bool:
-    """PrefixGrouper requires seq-packing on (it reuses its de-pad + scatter machinery)."""
+    """PrefixGrouper requires seq-packing on (it reuses its de-pad + scatter machinery) and torch >= 2.7.
+
+    unsloth's GRPO trainer and unsloth_zoo's grad path both gate on this.
+    """
+    global _OFF_LOGGED
+    if _ENV_ENABLED and not _ENABLED and not _OFF_LOGGED:
+        _OFF_LOGGED = True
+        print(
+            f"Unsloth: GRPO PrefixGrouper is off on torch {torch.__version__} (needs torch >= "
+            f"{PREFIX_GROUPER_MIN_TORCH[0]}.{PREFIX_GROUPER_MIN_TORCH[1]}: its flex attention kernel "
+            "does not compile there); using the packed path.",
+            flush = True,
+        )
     return _ENABLED
 
 

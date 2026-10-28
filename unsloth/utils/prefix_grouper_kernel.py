@@ -16,6 +16,7 @@ dependency); imported lazily only when prefix_seg_info is set, so default-off ne
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
@@ -25,6 +26,23 @@ from torch.nn.attention.flex_attention import (
     create_block_mask,
     flex_attention,
 )
+
+
+# PrefixGrouper needs torch >= 2.7. On torch 2.6 inductor cannot compile the dynamic block mask
+# (ZeroDivisionError) or the flex kernel (NameError on symbolic block sizes); with dynamo's
+# suppress_errors both fall back to eager flex_attention, which builds the full T x T scores.
+PREFIX_GROUPER_MIN_TORCH = (2, 7)
+
+
+def torch_supports_prefix_grouper(version = None) -> bool:
+    """True unless the torch major.minor is known to be below PREFIX_GROUPER_MIN_TORCH."""
+    match = re.match(r"(\d+)\.(\d+)", str(torch.__version__ if version is None else version))
+    if match is None:
+        return True
+    return (int(match.group(1)), int(match.group(2))) >= PREFIX_GROUPER_MIN_TORCH
+
+
+TORCH_SUPPORTS_PREFIX_GROUPER = torch_supports_prefix_grouper()
 
 
 # Many distinct segment lengths: at the default recompile_limit (8) the kernel silently reuses a
@@ -38,8 +56,10 @@ def _raise_dynamo_limit(names, default, floor):
         setattr(config, name, max(getattr(config, name, default), floor))
 
 
-_raise_dynamo_limit(("recompile_limit", "cache_size_limit"), 8, 256)
-_raise_dynamo_limit(("accumulated_recompile_limit", "accumulated_cache_size_limit"), 256, 2048)
+# PrefixGrouper stays off below torch 2.7, so leave the global dynamo limits alone there.
+if TORCH_SUPPORTS_PREFIX_GROUPER:
+    _raise_dynamo_limit(("recompile_limit", "cache_size_limit"), 8, 256)
+    _raise_dynamo_limit(("accumulated_recompile_limit", "accumulated_cache_size_limit"), 256, 2048)
 
 
 # dynamic=True is required: T changes almost every GRPO batch, and dynamic=False recompiles per T (~14s each).
@@ -379,6 +399,9 @@ def flex_shared_prefix_attention(
 
 
 __all__ = [
+    "PREFIX_GROUPER_MIN_TORCH",
+    "TORCH_SUPPORTS_PREFIX_GROUPER",
+    "torch_supports_prefix_grouper",
     "PrefixSegInfo",
     "build_seg_info_multigroup",
     "build_seg_info_from_layout",
