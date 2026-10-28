@@ -1344,8 +1344,8 @@ def _nonced_docs_response(html: str, *, tag: "_re.Pattern[str]") -> HTMLResponse
     return HTMLResponse(nonced, headers = {_CSP_SCRIPT_NONCE_HEADER: nonce})
 
 
-# FastAPI's own /openapi.json builds the schema on the event loop: seconds for ~550 routes, fetched by the chat
-# sidebar every session, stalling every request behind it (#9712). Built once in a worker thread instead.
+# FastAPI's own /openapi.json builds the schema on the event loop: seconds for ~550 routes, fetched by older chat
+# sidebars every session, stalling every request behind it (#9712). Built once in a worker thread instead.
 _openapi_build_lock = threading.Lock()
 _build_openapi_schema = app.openapi
 
