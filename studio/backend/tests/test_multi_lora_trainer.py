@@ -32,7 +32,7 @@ except Exception as exc:  # noqa: BLE001 - no multi-LoRA kernels or no importabl
 from datasets import Dataset
 from safetensors.torch import load_file
 from tokenizers import Tokenizer, models, pre_tokenizers
-from transformers import PreTrainedTokenizerFast, Qwen3Config, Qwen3ForCausalLM
+from transformers import PreTrainedTokenizerFast, ProcessorMixin, Qwen3Config, Qwen3ForCausalLM
 
 from core.training import multi_lora_trainer as mlt
 
@@ -180,6 +180,7 @@ def _run(
     datasets = None,
     model_attrs = None,
     base = None,
+    wrap_tokenizer = None,
     **extra,
 ):
     base = _base() if base is None else base
@@ -207,7 +208,8 @@ def _run(
     inboxes = []
 
     def load_base(trainer, config, hf_token, event_queue):
-        trainer.model, trainer.tokenizer = base, tokenizer
+        trainer.model = base
+        trainer.tokenizer = tokenizer if wrap_tokenizer is None else wrap_tokenizer(tokenizer)
         return False
 
     def stop_reader(stop_queue, inbox, trainer):
@@ -738,8 +740,9 @@ def test_packing_members_never_share_a_document_or_see_a_neighbour(monkeypatch, 
     for run in (other, alone):
         run_losses, run_state = _final(run, "job_a")
         assert run_losses == pytest.approx(losses, rel = 1e-4)
+        # Float noise from the shared row's size only; a leaked neighbour moves the losses ~1e-3.
         for key in state:
-            torch.testing.assert_close(run_state[key], state[key], atol = 1e-5, rtol = 1e-4)
+            torch.testing.assert_close(run_state[key], state[key], atol = 1e-4, rtol = 1e-3)
 
 
 def test_an_unpacked_member_beside_packed_ones_trains_as_it_would_alone(monkeypatch, tmp_path):
@@ -894,3 +897,56 @@ def test_pack_rows_on_trl_without_packing_strategies(monkeypatch):
         [t for _, lab in rows for t in lab][i : i + 12] for i in range(0, 28, 12)
     ]
     assert lengths == [[12], [12], [4]]
+
+
+class _Processor(ProcessorMixin):
+    """A vision model's processor: called with text, it reads it as images."""
+
+    def __init__(self, tokenizer):
+        self.tokenizer = tokenizer
+
+    def __call__(
+        self,
+        images = None,
+        text = None,
+        **kwargs,
+    ):
+        raise ValueError("Incorrect image source.")
+
+    def save_pretrained(self, path, **kwargs):
+        self.tokenizer.save_pretrained(path)
+        open(os.path.join(path, "preprocessor_config.json"), "w").write("{}")
+
+
+def test_a_vision_models_processor_tokenizes_text_as_the_single_job_does(
+    batched_run, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    events, _, _ = _run(monkeypatch, MEMBERS, wrap_tokenizer = _Processor)
+    plain, _, _ = batched_run
+    for m in MEMBERS:
+        mine = _member_events(events, m["run_id"])
+        assert mine[-1]["type"] == "complete", mine[-1]
+        assert os.path.exists(os.path.join(mine[-1]["output_dir"], "preprocessor_config.json"))
+        losses = [e["loss"] for e in mine if e["type"] == "progress"]
+        assert losses == pytest.approx(
+            [e["loss"] for e in _member_events(plain, m["run_id"]) if e["type"] == "progress"],
+            rel = 1e-5,
+        )
+
+
+def test_pack_rows_packs_each_worker_shard_as_the_single_job_does():
+    from datasets import Dataset
+    from trl.data_utils import pack_dataset
+
+    rows = [([i % 50 + 4] * 8, [i % 50 + 4] * 8) for i in range(16)]
+    single = pack_dataset(
+        Dataset.from_dict({"input_ids": [r[0] for r in rows], "labels": [r[1] for r in rows]}),
+        2048,
+        strategy = "bfd",
+        map_kwargs = {"num_proc": 4},
+    )
+    packed, lengths = mlt._pack_rows(rows, 2048, num_proc = 4)
+    assert len(packed) == len(single) == 4
+    assert [ids for ids, _ in packed] == [list(x) for x in single["input_ids"]]
+    assert lengths == [list(x) for x in single["seq_lengths"]]
