@@ -1432,7 +1432,8 @@ NODE_SPECS: list[dict] = [
             P("mode", "select", "preview", "Mode", options = ["preview", "full"]),
         ],
         lane = "gpu",
-        side_effect = True,
+        # Cached on the compiled recipe, rows, mode and seed input: an unchanged recipe hands back its
+        # last dataset; Re-roll forces a new job.
         icon = "flask",
     ),
     spec(
