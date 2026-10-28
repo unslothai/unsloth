@@ -144,8 +144,7 @@ _STUDIO_CACHE_TAG_PREFIXES = ("unsloth_fp8_unit_scale=", "unsloth_nvfp4_act_quan
 
 
 def canonical_compile_cache_tag(current: str, prefix: str, tag: str | None) -> str:
-    """``cache_key_tag`` with ``prefix``'s token set to ``tag`` (None drops it); Studio tokens sorted, others kept in order.
-    torch keys FX / AOTAutograd entries on the tag, so a setter-order difference missed the whole cache."""
+    """``prefix``'s token set to ``tag`` (None drops it); Studio's sorted so setter order never changes torch's cache key."""
     parts = [p for p in current.split(";") if p and not p.startswith(prefix)]
     if tag:
         parts.append(prefix + tag)
