@@ -232,7 +232,11 @@ from .diffusion import (
 from .diffusion_native_quant import native_quant_reason
 from .diffusion_batched import is_oom_error
 from .diffusion_block_graph import compile_pipe_below_offload_hooks
-from .diffusion_offload_prefetch import cross_forward_render, cross_forward_step
+from .diffusion_offload_prefetch import (
+    cross_forward_render,
+    cross_forward_step,
+    end_cross_forward,
+)
 from .diffusion_precision import (
     effective_te_quant,
     normalize_te_quant,
@@ -3633,6 +3637,28 @@ def _video_seed_stays_resident(
     if scheme is None:
         return _auto_keeps_resident_bf16(planned, target)
     return plan_keeps_transformer_resident(planned)
+
+
+def _h3_carry_by_scheduler(fam: Any, state: Any, has_step_callback: bool) -> bool:
+    """H3 modular has no step callback: its scheduler.step wrapper drives a streamed denoiser's cross-forward carry."""
+    from .video_minimax_h3_residency import h3_stream_carry_enabled
+    return (
+        not has_step_callback
+        and getattr(fam, "name", None) == "minimax-h3"
+        and bool(getattr(state, "denoiser_streamed", False))
+        and h3_stream_carry_enabled()
+    )
+
+
+def _scheduler_step_carry(pipe: Any, steps: int, on_done: Any, cancelled: Any) -> Any:
+    """``on_done`` after each scheduler.step, then the cross-forward step (forward k's step is index k - 1)."""
+
+    def done(enqueued: int) -> None:
+        on_done(enqueued)
+        if not cancelled():
+            cross_forward_step(pipe, enqueued - 1, total = steps)
+
+    return done
 
 
 def _carried_call(pipe: Any, kwargs: dict, has_step_callback: bool) -> Any:
@@ -12394,6 +12420,11 @@ class VideoBackend:
                         time.sleep(_BOUNDARY_MARK_RETRY_SECONDS)
                     if not marked:
                         _enter_decode_phase()
+                    if carry_by_scheduler:
+                        logger.info(
+                            "video.h3_stream_carry: %d carried copies read across forwards so far",
+                            end_cross_forward(pipe),
+                        )
 
                 def _pump() -> None:
                     """One poll, inside the capture hold-off. Advances the step from the GPU, and
@@ -12435,6 +12466,7 @@ class VideoBackend:
                 has_step_callback = "callback_on_step_end" in call_params
                 if has_step_callback:
                     kwargs["callback_on_step_end"] = _on_step
+                carry_by_scheduler = _h3_carry_by_scheduler(fam, state, has_step_callback)
 
                 @contextlib.contextmanager
                 def progress_ctx():
@@ -12444,7 +12476,13 @@ class VideoBackend:
                             # HunyuanVideo-1.5 and H3 modular have no step callback:
                             # wrap scheduler.step for progress + cancel.
                             stack.enter_context(
-                                _scheduler_step_progress(pipe, _on_scheduler_step_cancel, _tick)
+                                _scheduler_step_progress(
+                                    pipe,
+                                    _on_scheduler_step_cancel,
+                                    _scheduler_step_carry(pipe, steps, _tick, cancel.is_set)
+                                    if carry_by_scheduler
+                                    else _tick,
+                                )
                             )
                             stack.enter_context(scheduler_step_preview(pipe, previewer))
                         stack.enter_context(_denoise_phase(pipe, _enter_denoise))
@@ -12551,7 +12589,11 @@ class VideoBackend:
                             "video",
                             ltx25_render_call
                             if ltx25_render_call is not None
-                            else (lambda: _carried_call(pipe, kwargs, has_step_callback)),
+                            else (
+                                lambda: _carried_call(
+                                    pipe, kwargs, has_step_callback or carry_by_scheduler
+                                )
+                            ),
                         )
                 except _VideoGenerationCancelled:
                     # Unwinding by exception skips maybe_free_model_hooks(); offloaded modules would stay on GPU.
