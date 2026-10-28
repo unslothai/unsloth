@@ -44,6 +44,11 @@ test("each source reads as a short title and summary, never a raw ref", () => {
   assert.equal(datasetTitle(hub), "org/sql");
   assert.equal(datasetTitle(recipe), "Data Recipe");
   assert.equal(datasetTitle(rowsDataset), "Uploaded");
+  const stored = {
+    ...rowsDataset,
+    ref: "uploads/0123456789abcdef0123456789abcdef_bench-rows.jsonl",
+  };
+  assert.equal(datasetTitle(stored), "bench-rows.jsonl");
   assert.equal(datasetSummary(recipe), "Data Recipe · 20 rows");
   assert.equal(datasetSummary(rowsDataset), "Uploaded · 7 rows · 2 columns");
   assert.equal(datasetSummary(hub, 1234), "Hugging Face · 1,234 rows");

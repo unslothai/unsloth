@@ -130,3 +130,27 @@ def test_the_viewer_reads_no_further_than_its_window(client, monkeypatch):
     )
     assert _rows(client, hub, offset = dr.VIEW_ROWS, limit = 50).json()["rows"] == []
     assert max(sizes) == dr.VIEW_ROWS
+
+
+def test_a_rows_to_dataset_output_still_opens_after_a_restart(client):
+    """Its value is cached and saved with the flow, so it must not lean on this process's path table."""
+    import asyncio
+
+    from core.flows.nodes import data
+    from hub.utils import host_paths
+
+    class Ctx:
+        async def call(self, method, path, files = None, **_):
+            name, body, _type = files["file"]
+            stored = dataset_uploads_root() / f"0123abcd_{name}"
+            stored.parent.mkdir(parents = True, exist_ok = True)
+            stored.write_bytes(body)
+            return {"filename": name, "stored_path": str(stored)}
+
+    value = asyncio.run(data.upload_rows(Ctx(), ROWS[:6], "bench rows"))
+    assert not value["ref"].startswith("ref:")
+    with host_paths._reference_lock:
+        host_paths._reference_paths.clear()  # a restarted server starts with an empty table
+    response = _rows(client, value, limit = 4)
+    assert response.status_code == 200, response.text
+    assert response.json()["rows"] == ROWS[:4]

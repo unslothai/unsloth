@@ -41,7 +41,7 @@ export function datasetTitle(value: DatasetValue): string {
   const name = value.ref.split("/").filter((p) => p && p !== "parquet-files").pop();
   return value.source === "recipe" || !name || name.startsWith("ref:")
     ? (SOURCE_LABEL[value.source] ?? "Dataset")
-    : name;
+    : name.replace(/^[0-9a-f]{32}_/, ""); // uploads are stored as `<uuid>_<name>`
 }
 
 export function datasetSummary(value: DatasetValue, total?: number | null): string {

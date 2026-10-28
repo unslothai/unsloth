@@ -452,12 +452,20 @@ async def upload_rows(ctx: NodeContext, rows: list[dict], name: str) -> dict:
     if not isinstance(stored, str) or not stored:
         raise FlowNodeError("Unsloth Studio did not say where it saved the dataset")
     from hub.utils.host_paths import cache_reference
+    from utils.paths.storage_roots import dataset_uploads_root
 
+    # The value is cached and saved with the flow, so it names the upload by its place in the account's
+    # uploads folder: a `ref:` lives only in this process's table and is gone after a restart.
+    path = Path(stored)
+    try:
+        ref = f"uploads/{path.relative_to(dataset_uploads_root()).as_posix()}"
+    except ValueError:
+        ref = cache_reference(stored)
     columns = sorted({k for r in rows for k in r})
     return {
         "kind": "dataset",
         "source": "local",
-        "ref": cache_reference(stored),
+        "ref": ref,
         "rows": len(rows),
         "columns": columns,
     }
