@@ -1564,7 +1564,11 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
                 f"(fully_shard(ignored_params), torch 2.7+); this is torch {torch.__version__}."
             )
         config = dataclasses.replace(config, shard_frozen = False)
-    if config.shard_frozen is None and _frozen_weights_are_vllm_engine_storage(model):
+    if (
+        config.shard_frozen is None
+        and _supports_ignored_params(fully_shard)
+        and _frozen_weights_are_vllm_engine_storage(model)
+    ):
         from .fsdp2_perf import _env_tristate as _replicate_env
 
         if _replicate_env("UNSLOTH_FSDP2_REPLICATE_FROZEN") is None:

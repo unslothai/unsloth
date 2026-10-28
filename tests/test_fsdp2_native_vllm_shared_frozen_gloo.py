@@ -112,6 +112,12 @@ def _worker(rank, world, port, out):
 
 def test_vllm_shared_frozen_weights_stay_replicated():
     pytest.importorskip("peft")
+    import inspect
+
+    from torch.distributed.fsdp import fully_shard
+
+    if "ignored_params" not in inspect.signature(fully_shard).parameters:
+        pytest.skip("fully_shard has no ignored_params (torch < 2.7): frozen weights cannot stay replicated")
     import torch.multiprocessing as mp
 
     ctx = mp.get_context("spawn")
