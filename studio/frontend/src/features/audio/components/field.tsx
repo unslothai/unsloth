@@ -6,8 +6,7 @@ import type { MouseEvent, ReactNode } from "react";
 
 const CONTROL = "button, input, select, textarea, a[href], [role='switch']";
 
-/** A field title: `htmlFor` still names the control, but clicking the text does not focus or toggle it.
- * A control inside the label (a row's Switch) keeps its own click. */
+/** `htmlFor` still names the control; a click on the title text is cancelled, one on a nested control is not. */
 export function FieldLabel({
   htmlFor,
   className,
@@ -32,7 +31,6 @@ export function FieldLabel({
   );
 }
 
-/** "Optional" / "Required" after a field title. */
 export function FieldTag({ children }: { children: ReactNode }) {
   return (
     <span className="ml-1.5 text-ui-11p5 font-normal text-muted-foreground/70">
