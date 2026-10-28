@@ -1767,7 +1767,9 @@ def test_packed_fp32_fallback_rows_keep_their_gradients(monkeypatch, autocast, n
     v = torch.randn(1, n_kv, T, D, requires_grad = True)
     mask, psl = _block_causal(lengths), torch.tensor(lengths, dtype = torch.int32)
     with torch.autocast("cpu", dtype = autocast):
-        out, _ = hpa._sdpa_packed_varlen(module, q, k, v, mask, scaling = 0.125, packed_seq_lengths = psl)
+        out, _ = hpa._sdpa_packed_varlen(
+            module, q, k, v, mask, scaling = 0.125, packed_seq_lengths = psl
+        )
         ref, _ = sdpa_attention_forward(module, q, k, v, mask, scaling = 0.125)
     g = torch.randn_like(ref)
     got = torch.autograd.grad(out, (q, k, v), g)
