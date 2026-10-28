@@ -350,13 +350,17 @@ def compile_check_failed() -> Optional[str]:
     return _COMPILE_FAILURE
 
 
-def _compile_failure_reason(exc: BaseException) -> str:
+def _root_exception(exc: BaseException) -> BaseException:
     root = exc
     for _ in range(8):  # BackendCompilerFailed wraps the inductor / Triton error
         inner = getattr(root, "inner_exception", None) or root.__cause__
         if inner is None or inner is root:
             break
         root = inner
+    return root
+
+
+def _compile_failure_reason(root: BaseException) -> str:
     lines = [
         line.strip()
         for line in str(root).splitlines()
@@ -389,7 +393,10 @@ def _checked_first_call(q, k, v, seg, block_mask, enable_gqa, scale, T, T_pad, k
     except torch.cuda.OutOfMemoryError:
         raise  # transient: the callers already fall back on OOM, and the next call checks again
     except Exception as exc:
-        reason = _compile_failure_reason(exc)
+        root = _root_exception(exc)
+        if isinstance(root, torch.cuda.OutOfMemoryError):
+            raise root from exc  # an OOM while compiling (BackendCompilerFailed) is transient too
+        reason = _compile_failure_reason(root)
         _COMPILE_CHECKED[key] = False
         _COMPILE_FAILURE = reason
         print(

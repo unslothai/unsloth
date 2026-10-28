@@ -277,3 +277,33 @@ def test_kill_switch(monkeypatch):
     monkeypatch.setenv("UNSLOTH_GRPO_PREFIX_GROUPER_COMPILE_CHECK", "0")
     pg, kernel = _load()
     assert kernel._COMPILE_CHECK_ON is False
+
+
+def test_oom_while_compiling_is_not_cached(mods, monkeypatch):
+    """dynamo wraps an OOM raised while compiling in BackendCompilerFailed: still transient."""
+    pg, kernel, calls = mods
+    state = {"n": 0}
+
+    def oom_backend(gm, example_inputs):
+        state["n"] += 1
+        if state["n"] == 1:
+            raise torch.cuda.OutOfMemoryError("CUDA out of memory")
+        return gm.forward
+
+    compiled = torch.compile(flex.flex_attention, backend = oom_backend)
+
+    def flex_oom_once(
+        *args,
+        kernel_options = None,
+        **kwargs,
+    ):
+        return compiled(*args, **kwargs)
+
+    monkeypatch.setattr(kernel, "_flex_attention_compiled", flex_oom_once)
+    seg = _seg(kernel)
+    with torch.no_grad(), pytest.raises(torch.cuda.OutOfMemoryError):
+        kernel.flex_shared_prefix_attention(*_qkv(seg.T), seg)
+    assert state["n"] == 1
+    assert pg.prefix_grouper_enabled() is True
+    assert kernel.compile_check_failed() is None and not kernel._COMPILE_CHECKED
+    assert torch._dynamo.config.suppress_errors is True
