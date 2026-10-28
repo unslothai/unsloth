@@ -1135,8 +1135,7 @@ def _compile_shape_dims(
 
 
 def _kontext_render_size(size: tuple[int, int]) -> tuple[int, int]:
-    """FluxKontextPipeline renders at max_area (1024 ** 2) at the source's aspect, floored to 16, whatever
-    height / width it is given (``__call__``); ComfyUI's template also renders ~1 MP (FluxKontextImageScale)."""
+    """FluxKontextPipeline renders at max_area at the source's aspect whatever size it is given, as ComfyUI does."""
     iw, ih = size
     ratio = float(iw) / float(max(1, ih))
     area = 1024 * 1024

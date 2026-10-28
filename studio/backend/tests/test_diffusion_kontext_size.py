@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""FLUX.1 Kontext renders at ~1 MP whatever the source size: FluxKontextPipeline rescales height x width to
-``max_area`` (1024 ** 2) at the source's aspect, as ComfyUI's template does with FluxKontextImageScale. The memory
-guard, the live preview and the compile-cache registration must size from that render, not from the upload."""
+"""FLUX.1 Kontext renders at ~1 MP whatever the source size; sizing must follow the render, not the upload."""
 
 import pytest
 from PIL import Image
@@ -17,7 +15,6 @@ class _Stop(Exception):
 
 
 def _diffusers_kontext_size(width, height):
-    """The (width, height) FluxKontextPipeline.__call__ itself settles on, read at its check_inputs call."""
     diffusers = pytest.importorskip("diffusers")
     pipe_cls = getattr(diffusers, "FluxKontextPipeline", None)
     if pipe_cls is None:
@@ -74,7 +71,6 @@ def test_kontext_live_preview_tiles_the_rendered_latents():
     spec = factors_for("flux.1-kontext")
     assert spec is not None
     kontext = detect_family("black-forest-labs/FLUX.1-Kontext-dev")
-    # a 768 x 512 upload renders at 1248 x 832: the packed sequence is that grid, not the upload's
     latents = torch.zeros(1, (832 // spec.down) * (1248 // spec.down), spec.channels)
     w, h = _compile_shape_dims("edit", Image.new("RGB", (768, 512)), 512, 512, kontext)
     assert latent_grid(latents, spec, h, w) is not None
