@@ -739,9 +739,8 @@ def dpo_trainer_prepare_dataset(function_name, function):
 
 
 def _unsloth_dpo_reference_loadable(policy_sd, ref_sd):
-    # Plain, materialised tensors on both sides only (DTensor / FSDP2 / TP shards, quantized
-    # subclasses, offloaded meta weights cannot be copied in), same shapes, and the
-    # same tying: an untied policy loaded into a tied reference writes twice into one tensor.
+    # Plain materialised tensors only (not DTensor / quantized / meta), equal shapes, equal tying:
+    # an untied policy loaded into a tied reference writes twice into one tensor.
     if policy_sd.keys() != ref_sd.keys():
         return False
     policy_first, ref_first = {}, {}
@@ -763,8 +762,7 @@ def _unsloth_dpo_reference_loadable(policy_sd, ref_sd):
 
 
 def _unsloth_dpo_copy_policy_into_reference(ref_model, policy_sd):
-    # load_state_dict casts into the destination dtype: a BF16 reference would round away the FP32
-    # norm updates of a BF16 full finetune. Recast first; assigning .data keeps tied parameters tied.
+    # Recast first: load_state_dict would round FP32 norm updates into a BF16 reference; .data keeps ties.
     tensors = dict(ref_model.named_parameters(remove_duplicate = False))
     tensors.update(ref_model.named_buffers(remove_duplicate = False))
     for key, value in policy_sd.items():

@@ -131,7 +131,6 @@ def test_instance_reference_is_in_memory_policy(monkeypatch):
     with torch.no_grad():
         policy.lin.weight.add_(1.0)
     assert torch.equal(ref.lin(x), before)
-    # Base TRL reloads the checkpoint, dropping in-memory training.
     ref = _run(TRL_INIT, _trained(), monkeypatch)
     assert torch.equal(ref.lin.weight, _Policy().lin.weight)
 
@@ -179,7 +178,6 @@ def test_explicit_reference_kept(monkeypatch):
     ],
 )
 def test_mismatched_reference_keeps_whole_checkpoint(monkeypatch, policy, out, tied, offload):
-    # No tensor is copied, so the reference is never a policy / checkpoint hybrid.
     with pytest.warns(UserWarning, match = "do not match its checkpoint"):
         ref = _run(
             hook("__init__", TRL_INIT),
