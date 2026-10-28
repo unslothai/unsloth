@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Checks that ask "does this module run Unsloth's fast forward" must see through the pre_patch gate.
-
-pre_patch's classes are gated so a plain transformers model built later runs the stock forward: the
-class attribute becomes a wrapper around the fast forward. Comparing the class forward with `is` then
-says no for every FastLanguageModel model, so context parallelism refused Llama / Qwen2 / Gemma and the
-async GRPO packed-row path took the branch meant for compiled / vision backbones.
-"""
+"""Fast-forward checks must see through the pre_patch gate (class forward is a wrapper, so `is` fails)."""
 
 import torch
 
@@ -46,7 +40,6 @@ def test_context_parallel_accepts_gated_fast_attention():
     cls = _gated_class(LlamaAttention_fast_forward)
     assert cp._supports_context_parallel(_Stack(cls, marked = True), "ulysses")
     assert cp._supports_context_parallel(_Stack(cls, marked = True), "ring")
-    # Not Unsloth-loaded: the gate runs the stock forward, which context parallelism cannot shard.
     assert not cp._supports_context_parallel(_Stack(cls, marked = False), "ulysses")
 
 
@@ -76,7 +69,7 @@ def test_async_grpo_sees_gated_fast_backbone():
 
     cls = _gated_class(LlamaModel_fast_forward)
     backbone = cls()
-    assert not rl._is_unsloth_fast_backbone(backbone)  # unmarked: runs the stock forward
+    assert not rl._is_unsloth_fast_backbone(backbone)
     mark_unsloth_fast_path(backbone)
     assert rl._is_unsloth_fast_backbone(backbone)
     assert not rl._is_unsloth_fast_backbone(None)
