@@ -111,7 +111,7 @@ const TimelineRow = memo(function TimelineRow({
   recipeGroup?: string;
 }) {
   return (
-    <li className="flex items-center hover:bg-white/5">
+    <li className="flex items-center hover:bg-muted/40">
       <button
         type="button"
         onClick={() => {
@@ -168,7 +168,7 @@ const TimelineRow = memo(function TimelineRow({
                 .getState()
                 .setRecipeRuns({ groupId: recipeGroup, view })
             }
-            className="mr-2 rounded px-1.5 py-0.5 text-[11.5px] capitalize text-sky-300 hover:bg-white/10"
+            className="mr-2 rounded px-1.5 py-0.5 text-[11.5px] capitalize text-sky-700 hover:bg-muted dark:text-sky-300"
           >
             {view}
           </button>

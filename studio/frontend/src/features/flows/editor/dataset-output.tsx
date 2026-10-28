@@ -17,7 +17,7 @@ export function DatasetOutput({
   return (
     <Suspense
       fallback={
-        <span className="text-[11px] text-zinc-400">{datasetSummary(value)}</span>
+        <span className="text-[11px] text-muted-foreground">{datasetSummary(value)}</span>
       }
     >
       <View value={value} />

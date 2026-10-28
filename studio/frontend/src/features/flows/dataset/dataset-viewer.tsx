@@ -262,26 +262,26 @@ export function DatasetPreview({ value }: { value: DatasetValue }): ReactElement
   return (
     <div className="nodrag flex flex-col gap-1" data-testid="flows-dataset-preview">
       <div className="flex items-center justify-between gap-2">
-        <span className="truncate text-[10.5px] text-zinc-400">
+        <span className="truncate text-[10.5px] text-muted-foreground">
           {datasetSummary(value, total)}
           {names.length > COMPACT_COLUMNS ? ` · ${names.length} columns` : ""}
         </span>
         <button
           type="button"
           onClick={() => setOpen(true)}
-          className="shrink-0 rounded bg-white/10 px-1.5 py-0.5 text-[10.5px] text-zinc-100 hover:bg-white/20"
+          className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10.5px] text-foreground hover:bg-muted/70"
         >
           Open
         </button>
       </div>
       {load.state === "error" ? (
-        <p className="line-clamp-2 text-[10.5px] text-red-300">{load.message}</p>
+        <p className="line-clamp-2 text-[10.5px] text-destructive">{load.message}</p>
       ) : load.state === "loading" ? (
-        <p className="text-[10.5px] text-zinc-500">Loading rows…</p>
+        <p className="text-[10.5px] text-muted-foreground">Loading rows…</p>
       ) : (
-        <div className="overflow-hidden rounded border border-white/10">
+        <div className="overflow-hidden rounded border border-border">
           <table className="w-full table-fixed text-left text-[10.5px]">
-            <thead className="bg-white/5 text-zinc-400">
+            <thead className="bg-muted/50 text-muted-foreground">
               <tr>
                 {shown.map((name) => (
                   <th key={name} className="truncate px-1.5 py-1 font-medium">
@@ -293,7 +293,7 @@ export function DatasetPreview({ value }: { value: DatasetValue }): ReactElement
             <tbody>
               {rows.slice(0, COMPACT_ROWS).map((row, i) => (
                 // biome-ignore lint/suspicious/noArrayIndexKey: rows have no id
-                <tr key={i} className={cn("text-zinc-200", i % 2 && "bg-white/[0.03]")}>
+                <tr key={i} className={cn("text-foreground", i % 2 && "bg-muted/30")}>
                   {shown.map((name) => (
                     <td key={name} className="truncate px-1.5 py-0.5">
                       {formatCellValue(row[name])}
