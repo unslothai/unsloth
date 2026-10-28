@@ -248,3 +248,22 @@ def test_fold_mode_under_autocast_matches_the_lone_run(base, monkeypatch):
     for u in range(3):
         # One bf16 ulp of the logits; the bf16 fold was off by about 0.1.
         torch.testing.assert_close(out[u].float(), refs[u].float(), atol = 3e-2, rtol = 0)
+
+
+def test_experts_read_directly_by_their_parent_are_refused():
+    class Experts(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.gate_up_proj = torch.nn.Parameter(torch.zeros(2, 4, 8))
+            self.down_proj = torch.nn.Parameter(torch.zeros(2, 4, 4))
+
+    class FastBlock(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.experts = Experts()
+
+        def forward(self, x):  # a grouped-GEMM fast path that never calls self.experts
+            return x @ self.experts.gate_up_proj[0]
+
+    with pytest.raises(ValueError, match = "reads experts.gate_up_proj itself"):
+        ml.inject_multi_lora_experts(FastBlock(), ["experts.gate_up_proj"], 2, 2, 2)

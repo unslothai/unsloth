@@ -8,8 +8,10 @@ CUDA/XPU, uses a PyTorch loop; LoRA dropout unsupported."""
 from __future__ import annotations
 
 import contextlib
+import inspect
 import math
 import os
+import re
 from dataclasses import dataclass
 from typing import Iterable, Optional
 
@@ -952,6 +954,15 @@ def inject_multi_lora_experts(
                 by_module.setdefault(name, []).append(param)
     if not by_module:
         raise ValueError(f"No fused expert parameters named {targets} found.")
+    for name, params in by_module.items():
+        parent_name, _, child = name.rpartition(".")
+        parent = model.get_submodule(parent_name) if parent_name else model
+        bypass = _reads_experts_directly(parent, child, params)
+        if bypass:
+            raise ValueError(
+                f"{type(parent).__name__}.forward reads {child}.{bypass} itself instead of calling {child}(...), "
+                "so per-adapter expert LoRA would never run there."
+            )
     _freeze_all_but_adapters(model)
     for name, params in by_module.items():
         parent_name, _, child = name.rpartition(".")
@@ -961,6 +972,18 @@ def inject_multi_lora_experts(
             parent, child, MultiLoraExperts(module, params, num_adapters, r, lora_alpha, use_rslora)
         )
     return [f"{name}.{param}" for name, params in by_module.items() for param in params]
+
+
+def _reads_experts_directly(parent: nn.Module, child: str, params: list) -> Optional[str]:
+    """The targeted parameter a parent's forward reads off its experts (e.g. a grouped-GEMM fast path), if any."""
+    try:
+        source = inspect.getsource(type(parent).forward)
+    except (OSError, TypeError):
+        return None
+    for param in params:
+        if re.search(rf"\bself\.{re.escape(child)}\.{re.escape(param)}\b", source):
+            return param
+    return None
 
 
 def _freeze_all_but_adapters(model: nn.Module) -> None:
