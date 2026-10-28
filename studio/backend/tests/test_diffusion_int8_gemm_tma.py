@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""TMA-descriptor variant of the fused-dequant int8 GEMM (``diffusion_int8_gemm._launch_tma``). Dispatch tests fake
-the capability, probe and launches (CPU); the kernel tests need an sm90+ NVIDIA GPU with Triton host descriptors."""
+"""Tests for the TMA int8 GEMM; kernel tests need an sm90+ GPU with Triton host descriptors."""
 
 from __future__ import annotations
 
@@ -105,7 +104,7 @@ def test_failed_tma_probe_keeps_the_pointer_kernel(monkeypatch, result):
     _Fake(monkeypatch, (12, 0), tma_probe = result)
     assert g8.device_config(0) == g8._ARCH_CONFIG[(12, 0)]
     assert g8._DEVICE_TMA.get(0) is None
-    assert g8._DEVICE_TILES[0]  # shape tiles kept
+    assert g8._DEVICE_TILES[0]
 
 
 def test_no_descriptor_api_keeps_the_pointer_kernel(monkeypatch):
@@ -133,8 +132,6 @@ def test_reprobe_drops_a_stale_tma_tile(monkeypatch):
 
 
 class _T:
-    """Just enough of a 2D int8 CUDA tensor for ``_run``'s guards."""
-
     def __init__(self, shape):
         self.shape = shape
         self.device = types_device

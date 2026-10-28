@@ -288,7 +288,6 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         om = pid_m * BLOCK_M
         on = pid_n * BLOCK_N
         acc = tl.zeros((BLOCK_M, BLOCK_N), dtype = tl.int32)
-        # out-of-bounds K / rows load as zeros
         for k in range(0, tl.cdiv(K, BLOCK_K)):
             a = a_desc.load([om, k * BLOCK_K])
             b = w_desc.load([on, k * BLOCK_K])
@@ -319,7 +318,6 @@ def _kernels() -> Optional[types.SimpleNamespace]:
 
 # device index -> probed tile (None = stock).
 _DEVICE_CFG: dict = {}
-# device index -> probed TMA tile (None = pointer loads).
 _DEVICE_TMA: dict = {}
 # device index -> the per-shape rules whose tile passed the probe on that device.
 _DEVICE_TILES: dict = {}
