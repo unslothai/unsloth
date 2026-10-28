@@ -154,8 +154,7 @@ def test_a_creatable_location_never_reaches_the_temp_dir(tmp_path, monkeypatch, 
 
 @pytest.mark.parametrize("value", ["~/ucc", " ucc_padded "])
 def test_the_location_is_taken_verbatim_like_the_compiler(tmp_path, monkeypatch, launch, value):
-    """os.makedirs neither expands ``~`` nor strips spaces, and setup_cache_env keeps an inherited value raw,
-    so the compiler writes to <cwd>/~/ucc, not the home directory."""
+    """os.makedirs neither expands ``~`` nor strips spaces, so the compiler writes to <cwd>/~/ucc."""
     home = tmp_path / "home_dir"
     _write(home / "ucc" / MODULE)
     monkeypatch.setenv("HOME", str(home))
