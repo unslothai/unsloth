@@ -489,7 +489,9 @@ def test_only_graphed_block_regions_stop_the_input_gradient_walk(monkeypatch, so
     real_compile = torch.compile
     torch._dynamo.reset()
     # aot_eager gives the real CompiledFunctionBackward nodes on CPU; graphs themselves are faked.
-    monkeypatch.setattr(torch, "compile", lambda fn, **kwargs: real_compile(fn, backend = "aot_eager"))
+    monkeypatch.setattr(
+        torch, "compile", lambda fn, **kwargs: real_compile(fn, backend = "aot_eager")
+    )
     seen = _counting_clones(monkeypatch)
     A = _linear_layer_class("CompiledRegionDecoderLayer")
     bc._wrap(A, {**bc._COMPILE_OPTIONS, "triton.cudagraphs": True})
