@@ -1357,12 +1357,14 @@ def test_is_ltx23_checkpoint_gguf(monkeypatch, tmp_path):
             "model.diffusion_model.transformer_blocks.0.scale_shift_table": (4096, 6),
         }
     )
+    path.write_bytes(b"xy")
     assert is_ltx23_checkpoint(path) is False
 
     def _boom(path):
         raise RuntimeError("bad magic")
 
     gguf.GGUFReader = _boom
+    path.write_bytes(b"xyz")
     assert is_ltx23_checkpoint(path) is False
 
 

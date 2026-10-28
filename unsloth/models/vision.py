@@ -255,6 +255,8 @@ from ._utils import (
     attention_class_for_load,
     _REMOTE_CLASS_HUB_OPTIONS,
     resolve_attention_implementation,
+    requests_flex_attention,
+    _EXPLICIT_FLEX_ATTR,
     _get_text_only_config,
     _is_family_text_decoder,
     _config_get,
@@ -3755,6 +3757,7 @@ class FastBaseModel:
             supports_sdpa = _attn_supports_sdpa,
             dtype = attn_dtype,
         )
+        _explicit_flex = requests_flex_attention(kwargs.get("attn_implementation", None))
 
         # FP8 models: get_model_name already redirected to the BF16 sibling if the model ships FP8 weights, so just update it here for sanity.
         auto_config.model_name = model_name
@@ -4902,6 +4905,8 @@ class FastBaseModel:
         _mark_loaded_revision(tokenizer, _tokenizer_revision)
         model = _mark_forced_float32(model, do_forced_float32)
         model = _mark_full_finetuning(model, full_finetuning)
+        if _explicit_flex:
+            setattr(model, _EXPLICIT_FLEX_ATTR, True)
         # Last, so the host copies carry the fp32 recasts the passes above make.
         finish_block_swap_load(
             model, _block_swap_state, planned_prefetch_depth(device_map_planner_kwargs)
