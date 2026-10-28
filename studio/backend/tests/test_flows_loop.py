@@ -150,6 +150,7 @@ class LoopEngine(FlowEngine):
 def _engine(leak = False, test_pass = None):
     """Gen records its seed; the model 'learns' every prompt that reached its seed as a failure."""
     seen: list[list[dict]] = []
+    starts: list = []
     scored: list[tuple[str, list[str]]] = []
 
     async def gen(ctx):
@@ -158,6 +159,7 @@ def _engine(leak = False, test_pass = None):
         return {"dataset": {"kind": "dataset", "source": "local", "ref": f"gen{len(seen)}"}}
 
     async def train(ctx):
+        starts.append(ctx.inputs.get("start"))
         learned = {r["failed_prompt"] for rows in seen for r in rows if r["origin"] == "failure"}
         held = {"kind": "dataset", "source": "local", "ref": "held", "rows": len(HELD), "data": [{"prompt": p, "reference": "billing"} for p in HELD]}
         return {"checkpoint": {"kind": "checkpoint", "name": f"run{len(seen)}", "learned": sorted(learned)}, "holdout": held, "metrics": {}}
@@ -181,6 +183,7 @@ def _engine(leak = False, test_pass = None):
     eng.handlers = {"recipe.generate": gen, "train.finetune": train, "test.bench": bench}
     eng.mint_key = lambda account: ("sk-unsloth-test", None)
     eng.revoke_key = lambda key_id: None
+    eng.starts = starts
     return eng, seen, scored
 
 
@@ -317,3 +320,39 @@ def test_a_loop_refuses_an_lm_eval_task_on_its_benchmark():
     assert not errors, errors
     with pytest.raises(CompileError, match = "set Benchmark's Task to Recipe held-out"):
         compile_flow(parsed)
+
+
+
+@run_async
+async def test_round_two_continues_from_round_ones_checkpoint():
+    eng, seen, _ = _engine()
+    rs = await _run(eng, loop_doc(rounds = 3))
+    assert rs.status == "completed", rs.error
+    assert eng.starts[0] is None
+    assert eng.starts[1]["name"] == "run1" and eng.starts[2]["name"] == "run2"
+    rounds = rs.nodes["loop"].outputs["history"]["rounds"]
+    assert [r["continued_from"] for r in rounds] == [None, "run1", "run2"]
+    assert rs.nodes["loop"].outputs["history"]["continue"] is True
+
+
+@run_async
+async def test_continue_off_starts_every_round_from_the_base_model():
+    eng, seen, _ = _engine()
+    rs = await _run(eng, loop_doc(rounds = 2, continue_rounds = False))
+    assert rs.status == "completed", rs.error
+    assert eng.starts == [None, None]
+    assert rs.nodes["loop"].outputs["history"]["continue"] is False
+
+
+def test_fine_tune_continues_a_wired_checkpoint_as_an_adapter(monkeypatch):
+    from core.flows.nodes import training
+
+    from .test_flows_train_node import _Ctx as TrainCtx, _recipe_routes
+
+    monkeypatch.setattr("hub.utils.host_paths.cache_reference", lambda p: f"cache:{p}")
+    started = []
+    ctx = TrainCtx(_recipe_routes(started))
+    ctx.inputs["start"] = {"kind": "checkpoint", "name": "run1", "base_model": "unsloth/Qwen3-0.6B", "output_dir": "/out/run1"}
+    with pytest.raises(RuntimeError, match = "started"):
+        asyncio.run(training.finetune(ctx))
+    assert started[0]["model_name"] == "/out/run1" and started[0]["model_format"] == "adapter"

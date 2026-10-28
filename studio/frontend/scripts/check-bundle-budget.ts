@@ -432,7 +432,9 @@ export const BUDGET = {
   // Flows gallery kept as Daniel's (no Studio Card/Skeleton/Textarea/Spinner there): chunk split moves
   // ~1.2 KB transfer into startup (2,053.3 -> 2,054.5 KB, Node 26, 127 chunks). Raised by that.
   // #12521 + Flows + the Studio theme stacked measure 2,110,771 B transfer at this merge (Node 26). Raised to that.
-  transferBytes: 2_111_300,
+  // Recipe groups (with theme, look, runs, seeds), Fine-tune, Benchmark and the Loop stacked measure
+  // 2063.6 KB transfer at this merge (Node 26, 134 chunks). Raised to that.
+  transferBytes: 2_113_700,
   rawBytes: 6_991_845,
 };
 

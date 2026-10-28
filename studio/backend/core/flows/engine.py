@@ -2135,7 +2135,16 @@ class FlowEngine:
         test_rows: list[dict] = []
         best: Optional[dict] = None
         stopped = "max_rounds"
-        saved = {k: dict(rs.input_overrides.get(k, {})) for k in (seed_node, scorer)}
+        # Steps with an unwired Continue from input keep training last round's checkpoint.
+        carry = [
+            b
+            for b in before
+            if params.get("continue_rounds") is not False
+            and any(p["id"] == "start" and p["type"] == "checkpoint" for p in plan.specs[b]["inputs"])
+            and not plan.inputs[b].get("start")
+        ]
+        last: dict[str, dict] = {}
+        saved = {k: dict(rs.input_overrides.get(k, {})) for k in (seed_node, scorer, *carry)}
 
         def override(node: str, port: str, value: Any) -> None:
             rs.input_overrides[node] = {**saved[node], port: value}
@@ -2169,6 +2178,10 @@ class FlowEngine:
                 fed = sum(1 for row in rows if row["origin"] == "failure")
                 seed = await self._upload_rows(ctx, rows, f"loop-{nid}-round-{r + 1}")
                 override(seed_node, seed_port, seed)
+                for b in carry:
+                    if b in last:
+                        override(b, "start", last[b])
+                continued = next((last[b].get("name") for b in carry if b in last), None)
                 await self._run_scope(rs, before, child, key)
                 if rs.cancelled:
                     break
@@ -2206,7 +2219,12 @@ class FlowEngine:
                     "probe_failures": len(failures),
                     "probe_rows": probe.get("rows"),
                     "test_rows": test.get("rows"),
+                    "continued_from": continued,
                 }
+                for b in carry:
+                    produced = child.values.get(b)
+                    if isinstance(produced, dict) and isinstance(produced.get("checkpoint"), dict):
+                        last[b] = produced["checkpoint"]
                 checkpoint = next(
                     (
                         v["checkpoint"]
@@ -2236,7 +2254,13 @@ class FlowEngine:
             return
         outputs = {
             "score": best["test_score"] if best else None,
-            "history": {"rounds": history, "stopped": stopped, "target": target, "feedback": feed},
+            "history": {
+                "rounds": history,
+                "stopped": stopped,
+                "target": target,
+                "feedback": feed,
+                "continue": bool(carry),
+            },
             "checkpoint": best["checkpoint"] if best else None,
         }
         message = f"Reached {best['test_score']:g}% in round {best['round']}" if stopped == "target" and best else (

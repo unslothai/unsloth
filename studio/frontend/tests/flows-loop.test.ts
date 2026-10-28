@@ -32,7 +32,7 @@ test("Loop keeps rounds, target and feedback on the card, the rest under Advance
   const simple = spec("logic.loop")
     .params.filter((p: { advanced?: boolean }) => !p.advanced)
     .map((p: { id: string }) => p.id);
-  assert.deepEqual(simple, ["rounds", "target", "feedback"]);
+  assert.deepEqual(simple, ["rounds", "target", "feedback", "continue_rounds"]);
 });
 
 test("a score step's failures into a dataset seed is a feedback wire, and never a cycle", () => {
