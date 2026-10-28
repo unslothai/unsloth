@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A JSON Lines preview reads its first rows with the stdlib, not datasets' json loader (#15681): that loader
-parses a whole block through pyarrow's native JSON reader, which segfaulted the server on large tool-calling
-records. Files that are not JSON Lines keep the loader."""
+"""JSON Lines previews skip pyarrow's JSON reader, which segfaulted the server (#15681)."""
 
 from __future__ import annotations
 
@@ -101,8 +99,8 @@ def test_blank_lines_are_skipped_and_an_empty_file_has_no_preview(tmp_path, load
 @pytest.mark.parametrize(
     "text",
     [
-        json.dumps([{"text": "a"}, {"text": "b"}]),  # one JSON array on one line
-        json.dumps([{"text": "a"}, {"text": "b"}], indent = 2),  # a pretty-printed array
+        json.dumps([{"text": "a"}, {"text": "b"}]),
+        json.dumps([{"text": "a"}, {"text": "b"}], indent = 2),
     ],
 )
 def test_a_file_that_is_not_json_lines_keeps_the_loader(tmp_path, loader_calls, text):

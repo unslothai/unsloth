@@ -203,10 +203,7 @@ def _build_local_dataset_items() -> list[LocalDatasetItem]:
 
 
 def _jsonl_head(path: Path, preview_size: int) -> list[dict] | None:
-    """The first ``preview_size`` JSON Lines objects, read with the stdlib (#15681): datasets' json loader
-    parses a whole block through pyarrow's native JSON reader, which segfaulted the server on large
-    tool-calling records. ``None`` when the file is not JSON Lines (an array, a pretty-printed object):
-    the caller keeps the datasets loader for those."""
+    """First ``preview_size`` JSON Lines objects via the stdlib: pyarrow's threaded JSON reader segfaults on mixed-type columns (#15681). ``None`` if not JSON Lines."""
     rows = []
     with path.open(encoding = "utf-8") as f:
         for line in f:
