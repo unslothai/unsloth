@@ -690,7 +690,7 @@ def evaluate_file_security(
     local_only_load: bool = False,
 ) -> FileSecurityDecision:
     """Block a load when HF's security scan flags unsafe serialized files. Call UNCONDITIONALLY before any load (independent of trust_remote_code): a malicious pickle deserializes during ``from_pretrained`` regardless. Metadata-only; when the scan is unavailable, exact cached snapshots receive a local fail-closed inspection while unresolved remote refs remain fail-open. ``load_subdirs`` names subdirs the load calls ``from_pretrained`` on (e.g. ``("LLM",)`` for Spark-TTS / BiCodec, loading ``<snapshot>/LLM``): a flagged file directly under one is root-level there and blocks, and an index inside it is honored when scoping shards. ``local_only_load`` marks an offline load and skips the Hub request."""
-    # Scan the repo the load actually fetches, not the literal alias (which 404s and fails open).
+    # Scan the repo the load actually fetches; the literal alias 404s and fails open.
     model_name, load_subdirs = load_scan_target(model_name, tuple(load_subdirs))
 
     # Local paths have no Hub scan, EXCEPT an HF-cache snapshot whose canonical path encodes a repo id + commit: scan that exact commit so an inactive-cache load can't dodge the gate.

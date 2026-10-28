@@ -18,12 +18,7 @@ from core.inference.tool_loop_controller import is_tool_error
 
 
 def openai_finish_to_anthropic_stop(finish_reason, had_tool_calls = False) -> str:
-    """Map an OpenAI finish_reason to an Anthropic stop_reason.
-    'length' -> 'max_tokens' (truncation wins even mid tool call, so a cut-off
-    tool call isn't mislabeled tool_use); tool_calls / had_tool_calls -> 'tool_use';
-    'stop_sequence' -> 'stop_sequence'; 'stop'/None/unknown -> 'end_turn'."""
-    # Truncation takes precedence: a tool call cut off at max_tokens has possibly incomplete arguments, so report
-    # max_tokens rather than telling the client to run the tool.
+    """Maps finish_reason to stop_reason: length to max_tokens (truncation wins over tool use), tool_calls to tool_use, stop_sequence kept, else end_turn"""
     if finish_reason == "length":
         return "max_tokens"
     if finish_reason == "tool_calls" or had_tool_calls:
@@ -126,14 +121,7 @@ def anthropic_reference_block_text(block: dict) -> str:
 
 
 def _anthropic_image_block_to_openai_part(block: dict) -> Optional[dict]:
-    """Translate one Anthropic ``image`` block to an OpenAI ``image_url`` part.
-
-    Accepts both source shapes:
-      - ``{"type": "base64", "media_type": "image/jpeg", "data": "..."}``
-      - ``{"type": "url", "url": "https://..."}``
-
-    Returns ``None`` when the source is malformed so the caller can skip it.
-    """
+    """Accepts base64 or url image sources; returns None for a malformed source so the caller skips it."""
     source = block.get("source")
     if not isinstance(source, dict):
         return None
@@ -225,9 +213,7 @@ def anthropic_messages_to_openai(
             continue
 
         if role == "assistant":
-            # Assistant content: text + tool_use (no images in Anthropic's model), plus replayed thinking when
-            # preservation is requested. A web search pair splits the turn the way Studio's tool loop ran it: the
-            # call, its result as a tool message, then what followed.
+            # Assistant turns map to text and tool_use; web search pairs split into call, tool result, then text
             text_parts: list[str] = []
             tool_calls: list[dict] = []
             thinking_parts: list[str] = []
@@ -361,10 +347,7 @@ def anthropic_messages_to_openai(
 
 
 def fold_tool_results_into_user(messages: list[dict]) -> list[dict]:
-    """Rewrite ``role="tool"`` as user turns: Gemma 2 / 3 have no tool role and
-    check alternation by index parity, so one makes llama-server 400 the whole
-    request. Shape mirrors minja's ``polyfill_tool_responses``.
-    """
+    """Gemma 2/3 have no tool role and check alternation by index parity, so llama-server would 400."""
     out: list[dict] = []
     call_names: dict[str, str] = {}
     for msg in messages:
@@ -396,8 +379,7 @@ def fold_tool_results_into_user(messages: list[dict]) -> list[dict]:
         if isinstance(content, list):
             images = [p for p in content if isinstance(p, dict) and p.get("type") == "image_url"]
         if images:
-            # Images must be real parts; the rest of the result stays inside the tool_response
-            # wrapper, so tool text never reads as user text and the archive still matches it.
+            # Images must stay real parts; other tool output stays inside the tool_response wrapper so it never reads as user text and still matches the archive
             response["content"] = [p for p in content if p not in images]
             folded_content = [
                 {"type": "text", "text": json.dumps({"tool_response": response}, indent = 2)},
@@ -566,19 +548,7 @@ def anthropic_tools_to_openai(tools: list) -> list[dict]:
 
 
 def anthropic_tool_choice_to_openai(tc: Any) -> Any:
-    """Translate Anthropic `tool_choice` into OpenAI `tool_choice`.
-
-    Anthropic formats (all dict shapes with a ``type`` discriminator):
-
-    - ``{"type": "auto"}``                       → ``"auto"``
-    - ``{"type": "any"}``                        → ``"required"``
-    - ``{"type": "none"}``                       → ``"none"``
-    - ``{"type": "tool", "name": "get_weather"}``
-          → ``{"type": "function", "function": {"name": "get_weather"}}``
-
-    Returns ``None`` for ``None`` or any unrecognized shape (caller falls
-    back to its own default, typically ``"auto"``).
-    """
+    """Maps tool_choice to OpenAI: any to required, tool name to function dict; None or unrecognized returns None, so the caller defaults, usually auto"""
     if tc is None:
         return None
     if not isinstance(tc, dict):
@@ -634,11 +604,7 @@ def _message_delta_usage(usage: Optional[dict]) -> dict:
 
 
 def _partial_tag_suffix_len(text: str, tag: str) -> int:
-    """Length of the longest proper prefix of ``tag`` that ends ``text``.
-
-    A streamed delta can cut a ``<think>`` tag anywhere; the caller holds that
-    suffix back until the next delta settles whether it was markup or prose.
-    """
+    """A streamed delta can split a ``<think>`` tag anywhere; the caller holds back this suffix."""
     for k in range(min(len(text), len(tag) - 1), 0, -1):
         if text.endswith(tag[:k]):
             return k
@@ -654,16 +620,14 @@ class AnthropicStreamEmitter:
         parse_think: bool = True,
         think_provenance: Optional[dict] = None,
     ) -> None:
-        # Off when the route knows reasoning markup cannot be genuine (thinking disabled or a non-reasoning model):
-        # literal <think> in prose then streams as ordinary text instead of being consumed as a trace.
+        # Off when thinking is disabled or the model is non-reasoning, so literal <think> streams as text
         self._parse_think = parse_think
         self.block_index: int = 0
         self._block_index_used: bool = False
         self._text_block_open: bool = False
         self._thinking_block_open: bool = False
         self._open_tool_call_id: Optional[str] = None
-        # The mapped Anthropic ``toolu_*`` id published in content_block_start, reused for the paired tool_result so
-        # consumers can correlate them.
+        # Reuse the toolu_* id from content_block_start for the paired tool_result so they correlate
         self._open_tool_use_id: Optional[str] = None
         self._open_tool_args_sent: bool = False
         self._open_tool_args: dict = {}
@@ -674,22 +638,15 @@ class AnthropicStreamEmitter:
         # _tag_buf holds back a trailing partial tag until the next delta decides it.
         self._route_mode: str = "text"
         self._tag_buf: str = ""
-        # Leading whitespace of a thinking span, held until real reasoning arrives so a whitespace-only trace never
-        # opens a block. See _emit_thinking_delta.
+        # Hold leading thinking whitespace until real reasoning arrives, so blank traces open no block
         self._thinking_ws_hold: str = ""
-        # Genuine reasoning only ever arrives as a single LEADING <think> block per synthesis turn (the generator folds
-        # reasoning_content in as a prefix). Once that block closed, or once real answer text has streamed, any later
-        # <think> is the model quoting the tag and must stay literal.
+        # Genuine reasoning only arrives as one LEADING <think> block; any later one is literal.
         self._think_consumed: bool = False
         self._turn_has_text: bool = False
-        # Live provenance from the generator: "wrapped" counts the leading <think> tags IT opened from
-        # reasoning_content. When provided, a leading tag is only parsed as reasoning if a generator wrap is available
-        # -- a model answering with literal <think> markup (and no genuine trace) keeps it as text. None falls back to
-        # the leading-tag heuristic (test doubles / callers without provenance).
+        # wrapped counts leading think tags the generator opened; a tag parses as reasoning only with a wrap, so literal markup stays text
         self._think_provenance = think_provenance
         self._wraps_consumed: int = 0
-        # Active wrap entry ({"len": N} from the generator) while a provenance-backed thinking block streams: the
-        # block spans exactly N reasoning chars, so a literal "</think>" INSIDE the trace never ends it early.
+        # The block spans exactly N reasoning chars, so a literal "</think>" inside never ends it.
         self._active_wrap: Optional[dict] = None
         self._wrap_chars: int = 0
         self._close_skip: int = 0
@@ -818,8 +775,7 @@ class AnthropicStreamEmitter:
                     break
                 if i:
                     events.extend(self._emit_text_delta(data[:i]))
-                    # Consumed: whatever happens to the tag below, the run before it has already been delivered.
-                    # Re-including it in the literal-text branch below sent it to the client twice.
+                    # Already delivered; re-including it below sent it twice.
                     data = data[i:]
                     i = 0
                     if self._turn_has_text:
@@ -855,8 +811,7 @@ class AnthropicStreamEmitter:
                         self._active_wrap = None
                     continue
                 if self._active_wrap is not None:
-                    # Provenance-backed span: consume exactly the generator's reasoning length, then skip its closing
-                    # tag. A literal "</think>" inside the trace stays part of the thinking.
+                    # Take exactly the provenance reasoning length, so a literal </think> inside it stays thinking
                     remaining = int(self._active_wrap.get("len", 0)) - self._wrap_chars
                     if remaining > 0:
                         take = min(remaining, len(data))
@@ -904,11 +859,7 @@ class AnthropicStreamEmitter:
 
     def _emit_thinking_delta(self, text: str) -> list[str]:
         if not self._thinking_block_open:
-            # A trace that is only whitespace is not a thought: Qwen3-style templates render "<think>\n\n</think>" on
-            # every reply when thinking is off, and llama-server parses that into reasoning_content, so an empty
-            # thinking block would be attached to ordinary answers. The non-streaming reducer already drops those, so
-            # hold the leading whitespace run and only open the block once real reasoning arrives; the held run is
-            # then emitted with it so the trace stays verbatim.
+            # Qwen3 templates emit an empty think block when thinking is off; hold whitespace until real reasoning, else an empty block lands on every answer
             held = self._thinking_ws_hold + text
             if not held.strip():
                 self._thinking_ws_hold = held
@@ -1005,8 +956,7 @@ class AnthropicStreamEmitter:
         events = []
         if self._open_tool_call_id is not None or self._text_block_open:
             events.append(self._close_block())
-        # Reuse the id published in content_block_start; fall back to mapping the raw id only if no tool_start preceded
-        # this end.
+        # Reuse the content_block_start id; map the raw id only when no tool_start preceded this end
         tool_use_id = self._open_tool_use_id or anthropic_tool_use_id(event.get("tool_call_id", ""))
         tool_args, self._open_tool_args = self._open_tool_args, {}
         self._open_tool_call_id = None
@@ -1042,8 +992,7 @@ class AnthropicStreamEmitter:
                     },
                 )
             )
-        # Reset text tracking for the next synthesis turn; the next content delta opens a fresh text (or thinking)
-        # block lazily, and the new turn may legitimately open with its own leading <think> block.
+        # Reset per synthesis turn: a new turn may legitimately open with its own leading <think> block
         self._prev_text = ""
         self._tag_buf = ""
         self._thinking_ws_hold = ""
@@ -1111,9 +1060,7 @@ class AnthropicPassthroughEmitter:
     """
 
     def __init__(self, reasoning_as_thinking: bool = True) -> None:
-        # When thinking is effectively off, llama-server's format parser can still shunt a literal <think> example the
-        # model was asked to produce into reasoning_content; reconstruct it as visible text instead of a typed thinking
-        # block.
+        # With thinking off, llama-server can still shunt a literal think tag into reasoning_content; rebuild it as visible text, not a thinking block
         self._reasoning_as_thinking = reasoning_as_thinking
         self._reasoning_text_open = False
         self.block_index: int = -1
@@ -1135,12 +1082,7 @@ class AnthropicPassthroughEmitter:
         *,
         disable_parallel_tool_use: bool = False,
     ) -> None:
-        """Promote text-form tool calls in streamed content to tool_use blocks.
-
-        Only calls naming a tool in ``allowed_tools`` (the client's declared
-        tools) are promoted; everything else streams as text exactly as before.
-        Never enabled for Unsloth's own tool loop.
-        """
+        """Only tools in ``allowed_tools`` are promoted; never enabled for Unsloth's own tool loop."""
         from core.inference.passthrough_healing import StreamToolCallHealer
 
         self._healer = StreamToolCallHealer(allowed_tools, tools)
@@ -1193,9 +1135,7 @@ class AnthropicPassthroughEmitter:
         delta = choice.get("delta") or {}
         finish_reason = choice.get("finish_reason")
 
-        # Reasoning: llama-server splits <think> into reasoning_content whenever it can parse the model's reasoning
-        # format, which it does for tool-calling turns, i.e. every Claude Code turn. Reading only `content` drops the
-        # entire thinking trace, so the model appears not to think at all.
+        # llama-server splits think into reasoning_content on tool-calling turns; reading only content drops the trace so the model seems not to think
         reasoning = delta.get("reasoning_content")
         if reasoning:
             if not self._reasoning_as_thinking:
@@ -1217,17 +1157,14 @@ class AnthropicPassthroughEmitter:
                         },
                     )
                 )
-        # Reconstructed literal block ends where the answer resumes -- checked unconditionally (not elif): one chunk
-        # can carry the final reasoning fragment AND same-chunk content/tool output, and the closing tag must land
-        # between them.
+        # Not elif: one chunk can carry the last reasoning AND content, and the closing tag goes between.
         if self._reasoning_text_open and (
             delta.get("content") or delta.get("tool_calls") or finish_reason
         ):
             self._reasoning_text_open = False
             events.extend(self._emit_text_delta("</think>"))
 
-        # Structured tool calls take precedence over healing. Grammar mode worked: flush anything the healer held (it
-        # preceded the call in the model's output) and relay verbatim from here on.
+        # Structured tool calls win over healing: flush held text that preceded the call, then relay verbatim
         if delta.get("tool_calls") and self._healer is not None and not self._healer.dormant:
             for kind, value in self._healer.structured_tool_call_seen():
                 if kind == "text" and value:
@@ -1235,8 +1172,7 @@ class AnthropicPassthroughEmitter:
 
         content = delta.get("content")
         if content and self._healer is not None and not self._healer.dormant:
-            # Route text through the healer: held/promoted portions become synthetic tool_use blocks, the rest streams
-            # as text unchanged.
+            # Healer output: held or promoted spans become synthetic tool_use blocks; the rest streams as text
             for kind, value in self._healer.feed(content):
                 if kind == "text":
                     events.extend(self._emit_text_delta(value))
@@ -1254,9 +1190,7 @@ class AnthropicPassthroughEmitter:
                 and tc_idx not in self._tool_call_states
                 and (self._healed_call_count + len(self._tool_call_states)) >= 1
             ):
-                # disable_parallel_tool_use: a healed call already consumed the single allowed slot. The caller's
-                # chunk-level cap only sees native indexes, so drop this native call (and its later argument deltas,
-                # which never allocate a state either).
+                # disable_parallel_tool_use: a healed call already used the single slot, so drop this native call and its later argument deltas
                 continue
             if tc_idx not in self._tool_call_states:
                 if self._current_block_type is not None:
@@ -1364,8 +1298,7 @@ class AnthropicPassthroughEmitter:
         return events
 
     def _emit_healed_tool_use(self, call: dict) -> list[str]:
-        # A healed call arrives complete, so its tool_use block opens, carries one input_json_delta, and closes
-        # immediately; an open text block is closed first (only the safe prefix ever streamed into it).
+        # A healed call arrives whole, so emit one input_json_delta and close; close open text first
         if (
             self._heal_disable_parallel
             and (self._healed_call_count + len(self._tool_call_states)) >= 1

@@ -14,7 +14,6 @@ import { convertGgufToQ4nx } from "../api/export-api";
 
 type Source = "hub" | "local";
 
-// unsloth/Qwen3-0.6B-GGUF -> unsloth/Qwen3-0.6B, the repo holding config.json and the tokenizer.
 function baseRepoFor(repoId: string): string {
   return repoId.trim().replace(/-GGUF$/i, "");
 }

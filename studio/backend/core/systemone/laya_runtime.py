@@ -758,11 +758,7 @@ def _checkpoint_dir(checkpoint: Checkpoint, *, local_only: bool = False) -> Path
 
 
 def _laya():
-    """The vendored laya package, registered as top-level ``laya`` (its modules import each other relatively).
-
-    Loaded by file path, not from ``sys.path``: a laya installed in the venv (Studio pinned one before
-    vendoring it) must not replace this copy, since this module drives laya internals.
-    """
+    """Loads the vendored laya by file path, so a venv-installed laya cannot replace this copy."""
     if (module := sys.modules.get("laya")) is not None:
         return module
     with _import_lock:
@@ -795,15 +791,7 @@ def _utf8_open(
     closefd = True,
     opener = None,
 ):
-    """``open`` for the vendored laya modules: text mode defaults to UTF-8.
-
-    laya reads ``rl_agent_config.json`` and ``tokenizer_config.json`` with a bare ``open()``,
-    which decodes with the locale's code page (ANSI on Windows, ASCII under a C locale). A
-    checkpoint whose tokenizer config holds non-ASCII special tokens then fails to read, and
-    ``_fix_tokenizer_config`` swallows that and skips the repair the model needs to load.
-    The vendored files stay byte-identical to the wheel (vendor/README.md), so the encoding is
-    supplied here, as each laya module's own ``open``.
-    """
+    """Defaults text mode to UTF-8 (laya bare open uses the locale); vendored files stay byte-identical."""
     if encoding is None and "b" not in mode:
         encoding = "utf-8"
     return open(
@@ -993,7 +981,6 @@ class _MLXAgent:
             k: clamp_temperature(v) for k, v in self.cfg.get("temperature_by_options", {}).items()
         }
         self._to_internal = laya.agent.Agent._to_internal
-        # As _precision does for fp16 checkpoints on CUDA: exact fp16 weights, fp16 matmuls, fp32 norms.
         # An unsloth-zoo without compute_dtype casts the whole model instead, so it stays fp32.
         mixed = "compute_dtype" in inspect.signature(load_decision_model).parameters
         self.dtype = mx.float16 if fp16_checkpoint and mixed and not _fp32_forced() else mx.float32
@@ -1233,13 +1220,7 @@ def _load_laya(
     embedding_dtype = None,
     **kwargs,
 ):
-    """``laya.load`` without randomly initialising the encoder's vocabulary embedding.
-
-    laya builds a randomly initialised fp32 encoder and then loads the checkpoint over it. For mmBERT's
-    256000 x 768 embedding that init alone took ~3.2 GB of scratch RAM and ~8 s, all of it overwritten
-    by laya's strict load. The embedding is created with ``skip_init`` instead, in the dtype it will be
-    served in; the rest of the model, including buffers the checkpoint does not carry, is built as before.
-    """
+    """Builds the vocab embedding with skip_init in the serving dtype, avoiding a huge random init."""
     laya = _laya()
     hook = getattr(laya, "agent", None)
     if not hasattr(hook, "build_model"):
@@ -1276,8 +1257,7 @@ def _build_model(
     # ModernBERT reads pad_token_id only for this embedding; others keep it (RoBERTa's position ids).
     if config.model_type != "modernbert" or vocab_size <= 1:
         return original(cfg, encoder_dir = encoder_dir)
-    # A one-row placeholder, with row 0 standing in for the padding id so the check below can
-    # tell the embedding was sized and padded from the config.
+    # One-row placeholder: row 0 stands in for pad, so the check can tell config sized the embedding.
     placeholder_pad = None if pad_token_id is None else 0
     config.vocab_size, config.pad_token_id = 1, placeholder_pad
     try:
@@ -1336,11 +1316,7 @@ def _fp32_forced() -> bool:
 
 
 def _precision(device, fp16_checkpoint: bool):
-    """(weight dtype, compute dtype) for ``device``; ``(None, None)`` keeps laya's fp32 weights and compute.
-
-    An fp16 checkpoint held in fp16 is exact (fp16 -> fp32 is lossless), and fp16 compute tracked fp32 about
-    10x closer than bf16 on both GPU and CPU. Anything else follows the device: bf16 where it is native, else fp16.
-    """
+    """An fp16 checkpoint stays fp16 (exact); otherwise bf16 where native, else fp16."""
     import platform
 
     import torch
@@ -1359,8 +1335,7 @@ def _precision(device, fp16_checkpoint: bool):
             bf16 = torch.cuda.get_device_capability(device)[0] >= 8
         dtype = torch.bfloat16 if bf16 else torch.float16
         return dtype, dtype
-    # CPU only where the ISA has the format natively (AVX512-FP16 / AMX); emulated fp16 or bf16 is slower than fp32.
-    # Measured on x86 only, so other CPUs keep fp32.
+    # CPU only where the ISA has native fp16/bf16 (AVX512-FP16 / AMX); measured on x86 only.
     if device.type == "cpu" and platform.machine().lower() in ("x86_64", "amd64"):
         mkldnn = getattr(torch.ops, "mkldnn", None)
         try:
@@ -1378,12 +1353,7 @@ def _fp32_output(module, args, output):
 
 
 def _cast_matmul_weights(model, dtype) -> None:
-    """Cast the matmul and lookup weights only.
-
-    Norms stay fp32 (CPU layer_norm rejects low-precision parameters) and embedding outputs return to fp32,
-    so the residual stream keeps laya's precision. With bf16 compute this is bit-identical to fp32 weights,
-    since autocast rounds each weight to the same bf16 either way.
-    """
+    """Casts only Linear and Embedding weights; norms stay fp32 as CPU layer_norm rejects low precision."""
     import torch.nn as nn
     for module in model.modules():
         if isinstance(module, (nn.Linear, nn.Embedding)):
@@ -1906,13 +1876,7 @@ def _run_model(agent, batch):
 
 
 def _chunk_budget(device):
-    """Padded tokens per forward, or None for one forward.
-
-    Splitting only saves memory: each extra forward costs a fixed overhead. On a CPU host memory is rarely the
-    limit and that overhead dominates (a 16-core Strix Halo ran the 64-question request 5x slower in 4096-token
-    chunks), so the CPU runs one forward. A GPU splits only past a share of its memory, so a large card keeps
-    one forward and its speed, and a small one still bounds its peak.
-    """
+    """Padded tokens per forward, or None for one pass; CPUs never split, as forward overhead dominates."""
     kind = getattr(device, "type", device)
     budget = _CHUNK_TOKENS.get(kind)
     if kind != "cuda" or budget is None:
@@ -2056,10 +2020,7 @@ def _head_layer(
     mask,
     markers = None,
 ):
-    """One eval-mode pre-norm ``TransformerEncoderLayer``; with ``markers``, only the rows at those positions.
-
-    Keys and values always span every token, so each marker row is exactly what the full layer gives it.
-    """
+    """Eval-mode pre-norm encoder layer; with markers, only those rows, as keys still span every token."""
     import torch
     import torch.nn.functional as F
 
@@ -2085,8 +2046,7 @@ def _head_layer(
         )
         q = q.view(batch, -1, heads, width // heads).transpose(1, 2)
         x = torch.gather(x, 1, index)
-    # Boolean attn_mask is True where attention is allowed (the inverse of src_key_padding_mask); SDPA
-    # applies dropout_p even in eval, so it is passed as 0.
+    # Bool attn_mask is True where attention is allowed; SDPA applies dropout_p even in eval.
     out = F.scaled_dot_product_attention(q, k, v, attn_mask = mask, dropout_p = 0.0)
     out = out.transpose(1, 2).reshape(batch, -1, width)
     x = x.add_(F.linear(out, attn.out_proj.weight, attn.out_proj.bias))
@@ -2103,11 +2063,7 @@ def _decision_logits(
     *,
     padded = True,
 ):
-    """The ``logits`` of laya's ``DecisionModel.forward``, computing only what they read.
-
-    The scorer only reads the option markers, so the last head layer runs at the markers alone, and the
-    action head Studio never returns is skipped.
-    """
+    """Computes only the logits the scorer reads: the last head layer runs at the option markers alone."""
     import torch.nn.functional as F
 
     h = model.encoder(input_ids = input_ids, attention_mask = attention_mask).last_hidden_state
@@ -2145,8 +2101,7 @@ class _CUDAGraphs:
         import torch
 
         self.agent = agent
-        # transformers 4.x wraps ModernBERT's embeddings and MLP in torch.compile on CUDA, which cannot run
-        # under capture; 5.x dropped that path, so this is what 5.x runs anyway.
+        # transformers 4.x wraps ModernBERT parts in torch.compile on CUDA, which cannot run under capture.
         config = getattr(getattr(agent.model, "encoder", None), "config", None)
         if getattr(config, "reference_compile", False) is not False:
             config.reference_compile = False

@@ -204,7 +204,7 @@ def test_generation_defaults(ids, expected):
 
 def test_registry_lists_the_new_families_after_the_existing_ones():
     names = vf.supported_video_family_names()
-    assert names[-2:] == ("hunyuanvideo-1.5", "hunyuanvideo-1.5-720p")
+    assert names[-4:-2] == ("hunyuanvideo-1.5", "hunyuanvideo-1.5-720p")
     assert "wan2.1-t2v-1.3b" in names and "wan2.1-t2v-14b" in names
     for fam in ("wan2.1-t2v-1.3b", "wan2.1-t2v-14b"):
         assert dc.family_page(fam) == dc.PAGE_VIDEO

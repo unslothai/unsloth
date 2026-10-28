@@ -22,6 +22,8 @@ from typing import Any, Iterator, Optional
 from .host_pinning import host_pinning_allowed
 
 STREAM_ENCODE_ENV = "UNSLOTH_STUDIO_VIDEO_STREAM_ENCODE"
+# Kill switch: "0" hides the decode below the session's wrapper from chain walkers again (as before).
+STREAM_CHAIN_ENV = "UNSLOTH_STUDIO_VIDEO_STREAM_ENCODE_CHAIN"
 QUEUE_DEPTH = 8
 _STOP = object()
 
@@ -30,6 +32,13 @@ STATS = {"streamed": 0, "fallback": 0, "last": ""}
 
 def stream_encode_enabled() -> bool:
     return os.environ.get(STREAM_ENCODE_ENV, "").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _expose_inner(wrapper: Any, original: Any) -> Any:
+    """Set ``__wrapped__`` so diffusion_vae_oom's chain walkers see the untiled gate below this wrapper."""
+    if os.environ.get(STREAM_CHAIN_ENV, "").strip().lower() not in ("0", "false", "no", "off"):
+        wrapper.__wrapped__ = original
+    return wrapper
 
 
 def _note(outcome: str, reason: str, logger: Any) -> None:
@@ -178,7 +187,7 @@ class StreamEncode:
                     self._decoding = False
                     self._decoded = True
 
-            return decode
+            return _expose_inner(decode, original)
 
         def _tiled_wrapper(original: Any) -> Any:
             def tiled_decode(*args: Any, **kwargs: Any) -> Any:
@@ -464,7 +473,7 @@ class H3StreamEncode(StreamEncode):
                     self._decoding = False
                     self._decoded = True
 
-            return decode
+            return _expose_inner(decode, original)
 
         def _inner_wrapper(original: Any) -> Any:
             def _decode(*args: Any, **kwargs: Any) -> Any:

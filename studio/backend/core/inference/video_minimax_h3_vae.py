@@ -444,8 +444,7 @@ def _guarded(fast: Any, stock: Any, label: str) -> Any:
     return forward
 
 
-# Activations travel as (tensor, pending_bias): the next fused pass adds the conv bias, avoiding PyTorch's
-# separate strided bias pass. A 1x1 conv folds its input's pending bias through its weight exactly.
+# Activations travel as (tensor, pending_bias): the next fused pass adds the conv bias.
 
 
 def _bias_view(bias: Any) -> Any:

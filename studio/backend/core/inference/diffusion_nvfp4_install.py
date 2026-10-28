@@ -662,8 +662,7 @@ def _pinnable(dists: dict[str, str]) -> dict[str, str]:
     return pins
 
 
-# An unconstrained FlashInfer resolve lands cutlass-dsl 4.8, which the hub FA4 build cannot load: hold a fresh install to
-# the range both load with.
+# cutlass-dsl 4.8 cannot load the hub FA4 build: hold fresh installs to this range.
 _CUTLASS_DSL_CONSTRAINT = "nvidia-cutlass-dsl>=4.4,<4.6"
 
 

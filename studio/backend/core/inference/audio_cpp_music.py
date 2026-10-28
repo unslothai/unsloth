@@ -299,8 +299,7 @@ def edit_request(
         elif action == "cover":
             request_options["route"] = "cover"
             if strength is not None:
-                # strength is how much to change; audio_cover_strength is the share of steps
-                # conditioned on the source (diffusion.cpp), so higher keeps more of it.
+                # audio_cover_strength is the share of steps conditioned on the source, so invert.
                 request_options["audio_cover_strength"] = 1.0 - float(strength)
         else:  # continue: ACE-Step's "complete" adds parts across the whole track.
             request_options["route"] = "complete"

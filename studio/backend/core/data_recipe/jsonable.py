@@ -69,8 +69,7 @@ def _to_pil_from_hf_image_dict(value: Any) -> Any | None:
     return None
 
 
-# Resolved once: to_jsonable runs per value, and importing pandas per value cost 30% of it. The
-# placeholder is a private object rather than None, which a real value can be.
+# Resolved once: importing pandas per value cost 30%. Sentinel, since None is a real value.
 _NO_SENTINEL = object()
 _PANDAS_NA: Any = _NO_SENTINEL
 _PANDAS_NAT: Any = _NO_SENTINEL
@@ -166,11 +165,7 @@ def to_preview_jsonable(value: Any) -> Any:
 
 
 def to_preview_jsonable_row(row: Any) -> Any:
-    """A dataset row, converted a column at a time.
-
-    ``to_preview_jsonable`` answers about a VALUE, and its Hugging Face image detection matches any
-    mapping carrying ``bytes`` or ``path`` -- which a row can be. Handing it a whole row replaced
-    every column, labels included, with one JPEG preview payload."""
+    """Per column: a row with bytes or path keys looks like one image and replaces every column."""
     if isinstance(row, list):
         return [to_preview_jsonable_row(item) for item in row]
     if not isinstance(row, dict):
