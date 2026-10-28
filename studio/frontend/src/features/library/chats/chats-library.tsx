@@ -1161,7 +1161,7 @@ export function ChatsLibrary({
           description={t("library.chats.empty.sectionsDescription")}
           action={
             <Button
-              variant="dark"
+              variant="muted"
               className="rounded-full"
               onClick={() => setMovingIntoNew({ kind: "section", chats: [] })}
             >
@@ -1259,7 +1259,7 @@ export function ChatsLibrary({
           title={t("library.chats.empty.projectsTitle")}
           description={t("library.chats.empty.projectsDescription")}
           action={
-            <Button variant="dark" className="rounded-full" onClick={() => setCreatingProject(true)}>
+            <Button variant="muted" className="rounded-full" onClick={() => setCreatingProject(true)}>
               {t("library.chats.toolbar.newProject")}
             </Button>
           }

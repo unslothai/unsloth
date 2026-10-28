@@ -217,12 +217,13 @@ def test_load_flags_come_from_the_engine_template():
     assert _detect_safetensors_features(backend, None)["supports_reasoning"] is False
 
 
-def test_managed_engine_chat_is_fitted_to_the_engine_window():
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+def test_managed_engine_chat_is_fitted_to_the_engine_window(engine):
     from core.inference.orchestrator import InferenceOrchestrator
 
     orchestrator = InferenceOrchestrator.__new__(InferenceOrchestrator)
     orchestrator.active_model_name = "m"
-    orchestrator.models = {"m": {"engine": "vllm", "context_length": 2048}}
+    orchestrator.models = {"m": {"engine": engine, "context_length": 2048}}
     calls = []
 
     def count(
@@ -255,6 +256,155 @@ def test_managed_engine_chat_is_fitted_to_the_engine_window():
     assert calls[0]["enable_thinking"] is True
     unchanged = orchestrator.compact_chat_context(messages, context_overflow = None, max_tokens = 256)
     assert unchanged["messages"] == messages
+
+
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+def test_both_managed_engines_count_the_prompt_with_their_tokenize_route(monkeypatch, engine):
+    # SGLang's /tokenize renders messages through its chat template like vLLM's.
+    from core.inference import managed_engine
+
+    sent = []
+
+    class _Client:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def post(
+            self,
+            url,
+            headers = None,
+            json = None,
+        ):
+            sent.append((url, json))
+            return SimpleNamespace(raise_for_status = lambda: None, json = lambda: {"count": 11})
+
+    monkeypatch.setattr(managed_engine.httpx, "Client", _Client)
+    managed = ManagedEngine(engine)
+    managed.base_url, managed.model = "http://engine", "m"
+    assert managed.count_tokens([{"role": "user", "content": "hi"}], "Be brief.")[0] == 11
+    url, body = sent[-1]
+    assert url == "http://engine/tokenize"
+    assert body["messages"][0] == {"role": "system", "content": "Be brief."}
+
+
+def test_a_failed_sglang_count_falls_back_to_an_estimated_fit():
+    # SGLang 0.5.17 answers /tokenize 500 for a tokenizer whose model_max_length is the 1e30 sentinel.
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    orchestrator = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    orchestrator.active_model_name = "m"
+    orchestrator.models = {"m": {"engine": "sglang", "context_length": 2048}}
+    orchestrator._managed_engine = SimpleNamespace(adapter = ADAPTERS["sglang"])
+
+    def count(*args, **kwargs):
+        raise RuntimeError("500 Server Error: Integer exceeds 64-bit range")
+
+    orchestrator.count_chat_tokens = count
+    turn = "word " * 400
+    messages = []
+    for index in range(10):
+        messages += [
+            {"role": "user", "content": f"q{index} {turn}"},
+            {"role": "assistant", "content": f"a{index} {turn}"},
+        ]
+    messages.append({"role": "user", "content": "latest"})
+    fitted = orchestrator.compact_chat_context(
+        messages, context_overflow = "truncate_oldest", max_tokens = 256
+    )
+    assert fitted["messages"][-1]["content"] == "latest"
+    truncation = next(e for e in fitted["events"] if e.get("type") == "context_truncated")
+    assert truncation["fits"] and truncation["prompt_tokens_after"] <= 2048 // 2 - 256
+
+
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+def test_a_reply_cap_is_clamped_to_the_room_the_prompt_leaves(monkeypatch, engine):
+    # Both engines refuse prompt + max_tokens past the window, so a fitted chat with a cap would fail.
+    from core.inference import engine_transport
+
+    sent = []
+    monkeypatch.setattr(
+        engine_transport,
+        "stream_chat_events",
+        lambda url, headers, payload, cancelled: sent.append(payload) or iter(()),
+    )
+    managed = ManagedEngine(engine)
+    managed.base_url, managed.model, managed.context = "http://engine", "m", 2048
+    messages = [{"role": "user", "content": "hi"}]
+    for counted, cap, expected in ((1500, 1024, 548), (100, 1024, 1024), (100, 4096, None)):
+        managed.count_tokens = lambda *a, counted = counted, **k: (counted, "m")
+        list(managed.generate(messages = messages, max_new_tokens = cap))
+        assert sent[-1].get("max_tokens") == expected
+
+    def refuse(*a, **k):
+        raise RuntimeError("500 Server Error")
+
+    managed.count_tokens = refuse
+    list(
+        managed.generate(messages = [{"role": "user", "content": "word " * 1250}], max_new_tokens = 256)
+    )
+    # Without a measured prompt the cap is the engine's to judge; an estimate would cut it to 1.
+    assert sent[-1]["max_tokens"] == 256
+
+
+def test_a_latest_turn_the_strict_estimate_refuses_still_drops_old_history():
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    orchestrator = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    orchestrator.active_model_name = "m"
+    orchestrator.models = {"m": {"engine": "sglang", "context_length": 2048}}
+    orchestrator._managed_engine = SimpleNamespace(adapter = ADAPTERS["sglang"])
+
+    def count(*args, **kwargs):
+        raise RuntimeError("500 Server Error: Integer exceeds 64-bit range")
+
+    orchestrator.count_chat_tokens = count
+    messages = []
+    for index in range(10):
+        messages += [
+            {"role": "user", "content": "word " * 400},
+            {"role": "assistant", "content": "ok"},
+        ]
+    messages.append({"role": "user", "content": "word " * 400 + "latest"})
+    fitted = orchestrator.compact_chat_context(
+        messages, context_overflow = "truncate_oldest", max_tokens = 256
+    )
+    assert fitted["messages"][-1]["content"].endswith("latest")
+    assert len(fitted["messages"]) < len(messages)
+
+
+def test_an_estimated_fit_leaves_room_for_the_whole_reply_cap():
+    # The cap is sent unchanged when the count fails, so prompt + cap must fit the real window.
+    import json
+
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    orchestrator = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    orchestrator.active_model_name = "m"
+    orchestrator.models = {"m": {"engine": "sglang", "context_length": 2048}}
+    orchestrator._managed_engine = SimpleNamespace(adapter = ADAPTERS["sglang"])
+
+    def count(*args, **kwargs):
+        raise RuntimeError("500 Server Error: Integer exceeds 64-bit range")
+
+    orchestrator.count_chat_tokens = count
+    messages = []
+    for index in range(10):
+        messages += [
+            {"role": "user", "content": f"question {index}: " + "1,2,3,4,5,6,7,8,9,0," * 70},
+            {"role": "assistant", "content": "ok"},
+        ]
+    messages.append({"role": "user", "content": "Continue."})
+    fitted = orchestrator.compact_chat_context(
+        messages, context_overflow = "truncate_oldest", max_tokens = 1024
+    )
+    # A token spans at least one UTF-8 byte, so the serialized bytes bound the real count.
+    assert sum(len(json.dumps(m).encode()) for m in fitted["messages"]) + 1024 <= 2048
 
 
 def test_tool_stream_reasoning_reaches_studio_as_reasoning_content():
@@ -553,10 +703,26 @@ def test_tool_loop_turns_are_fitted_to_the_engine_window():
     assert _message_fitter(_tool_payload(), _Engine(), "m", tools = None) is None
     sglang = _Engine()
     sglang.engine = "sglang"
-    assert (
-        _message_fitter(_tool_payload(context_overflow = "truncate_oldest"), sglang, "m", None)
-        is None
-    )
+    fit = _message_fitter(_tool_payload(context_overflow = "truncate_oldest"), sglang, "m", None)
+    fitted, _, line = asyncio.run(fit(messages))
+    assert fitted[-1]["content"] == "latest" and len(fitted) < len(messages)
+    assert line and "context_truncated" in line
+
+
+def test_a_window_sized_reply_cap_is_left_to_the_engine():
+    import asyncio
+
+    from routes.managed_engine_chat import _message_fitter
+
+    prompt = [{"role": "user", "content": "word " * 1200}]
+    for engine in ("vllm", "sglang"):
+        managed = _Engine()
+        managed.engine = engine
+        for cap, sent in ((None, None), (4096, None), (256, 256)):
+            payload = _tool_payload(context_overflow = "truncate_oldest")
+            payload.max_tokens = cap
+            fit = _message_fitter(payload, managed, "m", None)
+            assert asyncio.run(fit(prompt))[1] == sent
 
 
 def test_a_managed_refit_recalls_with_the_first_branch_it_saw(monkeypatch):
