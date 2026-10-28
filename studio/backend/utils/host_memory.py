@@ -54,8 +54,8 @@ def _reclaimable_file_bytes(path: str, *, v1: bool, credit_mapped: bool = False)
     """Droppable page cache in bytes: inactive_file + (active_file - mapped - dirty - writeback, conservative).
 
     shmem/tmpfs is on the anon LRU, never counted. Not crediting active_file counted twice-read models as used.
-    ``credit_mapped``: count clean mapped pages too, as MemAvailable does. The default flips with LRU aging
-    (MGLRU moves the same mapped pages between the lists), so a constant live set can read as 0 or several GiB."""
+    ``credit_mapped``: count clean mapped pages too, as MemAvailable does; without it the reading flips as MGLRU
+    moves the same mapped pages between the lists."""
     values: dict[str, int] = {}
     try:
         with open(path, "r", encoding = "utf-8") as f:

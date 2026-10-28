@@ -6202,10 +6202,8 @@ PIN_CREDIT_MAPPED_ENV = "UNSLOTH_DIFFUSION_PIN_CREDIT_MAPPED"
 
 
 def _pin_mapped_cache_credit_mib(available_mib: int) -> int:
-    """Clean mapped page cache a capped cgroup can reclaim for a pin, bounded by host MemAvailable.
-
-    Pinned copies replace the mmap views of checkpoint weights, and the kernel reclaims those pages under the limit,
-    so the pin budget credits them like an uncapped host's MemAvailable does."""
+    """Clean mapped page cache a capped cgroup reclaims for a pin (pins replace the checkpoint's mmap views), bounded by
+    host MemAvailable, which already counts it on an uncapped host."""
     if str(os.environ.get(PIN_CREDIT_MAPPED_ENV, "")).strip().lower() in ("0", "off", "false", "no"):
         return 0
     try:
