@@ -1051,8 +1051,7 @@ function pendingSnapshotReadsLive(key: ClampedPillKey): boolean {
   );
 }
 
-// Search and Tools start on for Unsloth's own models; the rest stay opt-in. Connections keep their
-// own per-provider defaults in chat-page (hosted search and code execution are billed there).
+// Connections keep their own defaults in chat-page: hosted search and code execution are billed.
 function pillDefault(key: ClampedPillKey): boolean {
   return key === "toolsEnabled" || key === "codeToolsEnabled";
 }

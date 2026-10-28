@@ -771,7 +771,6 @@ test("a chat stored before the pill keys has no Search override of its own", asy
   store.getState().setActiveThreadId(THREAD);
   store.getState().applyThreadScopedSettings(THREAD, { permissionMode: "ask" });
   assert.equal(runtime.threadScopedOverride("toolsEnabled"), undefined);
-  // Nothing stored anywhere: Unsloth's own models start with Search and Code on.
   assert.equal(runtime.resolveToolsEnabledOnLoad(true).toolsEnabled, true);
   assert.equal(runtime.resolveToolsEnabledOnLoad(true).codeToolsEnabled, true);
   store.getState().setToolsEnabled(false);
