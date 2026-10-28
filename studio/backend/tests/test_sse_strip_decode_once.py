@@ -61,7 +61,6 @@ def test_rewritten_line_is_read_back_once(decodes):
     stripper = ServerToolCallStripper()
     out = stripper.strip(line)
     assert out is not None and "tool_calls" not in out
-    # The input once, the rewritten line once to see whether it still closes the turn.
     assert len(decodes) == 2
 
 

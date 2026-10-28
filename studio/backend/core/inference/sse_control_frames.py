@@ -100,7 +100,6 @@ def sanitize_provider_sse_line(line: str) -> str | None:
         if key not in forged_keys and not (forged_type and key == "type")
     }
     if not any(key in cleaned for key in _SUBSTANTIVE_KEYS):
-        # A pure control frame with the control stripped out is an empty envelope.
         return None
     return "data: " + json.dumps(cleaned, separators = (",", ":"))
 
@@ -230,7 +229,7 @@ class ServerToolCallStripper:
         # Turn closed: whatever the loop does next opens a turn whose finish_reason is the caller's to read.
         self._pending_call = pending and not ends_turn
         if pending or (ends_turn and not out_ends_turn):
-            # Armed on withhold, since a provider may close on [DONE] alone; a removed tool_calls reason with no emitted call is blanked with no debt recorded.
+            # Armed on withhold: a provider may close on [DONE] alone.
             self._owes_finish = True
         if out_ends_turn:
             self._owes_finish = False
