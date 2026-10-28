@@ -20,13 +20,16 @@ pytest.importorskip("torch")
 _TESTS = str(Path(__file__).resolve().parent)
 _MSG = "Unsloth: OpenAI failed to import - ignoring for now."
 
+# Records the frame whose import statement loaded openai (the first frame outside importlib), so an
+# eager import by a dependency (trl<0.26 judges, during `import unsloth`) is not blamed on unsloth.
 _HEALTHY = """
 import sys
 _importers = []
 _f = sys._getframe(1)
-while _f is not None:
-    _importers.append((_f.f_code.co_filename.replace("\\\\", "/"), _f.f_code.co_name))
+while _f is not None and "importlib" in _f.f_code.co_filename:
     _f = _f.f_back
+if _f is not None:
+    _importers.append((_f.f_code.co_filename.replace("\\\\", "/"), _f.f_code.co_name))
 class OpenAI:
     pass
 """
@@ -94,6 +97,8 @@ def _run(tmp_path, mode, body):
     _fake_openai(tmp_path, body)
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join(p for p in (str(tmp_path), env.get("PYTHONPATH")) if p)
+    # Keep an Apple Silicon host with mlx installed on the GPU path, where unsloth/models/_utils.py runs.
+    env["UNSLOTH_FORCE_GPU_PATH"] = "1"
     result = subprocess.run(
         [sys.executable, "-c", _CHECK, _TESTS, mode],
         capture_output = True,
