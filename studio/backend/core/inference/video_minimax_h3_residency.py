@@ -768,6 +768,17 @@ def defer_streamed_block_pins(
 
 
 H3_STREAM_PREFETCH_ENV = "UNSLOTH_H3_STREAM_PREFETCH"
+H3_STREAM_CARRY_ENV = "UNSLOTH_H3_STREAM_CARRY"
+
+
+def h3_stream_carry_enabled() -> bool:
+    """Cross-forward carry for H3's scheduler.step-driven loop; ``UNSLOTH_H3_STREAM_CARRY=0`` off."""
+    return str(os.environ.get(H3_STREAM_CARRY_ENV, "")).strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
 
 
 def h3_stream_prefetch_depth(block_bytes: list, default_depth: int) -> int:
@@ -847,6 +858,8 @@ def install_h3_stream_prefetch(
                 group_payload_bytes(top) if top is not None else 0,
                 [group_payload_bytes(g) for g in blocks],
             )
+            # a streamed top-level group runs for the whole forward, so only keeping it hides its upload
+            prefetcher.keep_first = h3_stream_carry_enabled()
             # end() puts groups copied ahead but never run back on the host copy; kick() queues copies
             for name in ("end", "kick"):
                 setattr(prefetcher, name, _outside_inference_mode(getattr(prefetcher, name)))
