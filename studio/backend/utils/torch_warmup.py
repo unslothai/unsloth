@@ -437,7 +437,23 @@ _STAGES = (
 )
 
 
-def _warm(epoch: Optional[int] = None) -> None:
+START_GATE_MAX_WAIT_S = 2.0
+
+
+def _wait_for_start_gate(gate: Optional[threading.Event]) -> None:
+    if gate is None:
+        return
+    waited = time.perf_counter()
+    opened = gate.wait(START_GATE_MAX_WAIT_S)
+    logger.info(
+        "torch warm leaving its start gate after %.0fms (%s)",
+        (time.perf_counter() - waited) * 1000,
+        "first response sent" if opened else "no request yet",
+    )
+
+
+def _warm(epoch: Optional[int] = None, gate: Optional[threading.Event] = None) -> None:
+    _wait_for_start_gate(gate)
     started = time.perf_counter()
     if epoch is None:
         epoch = _detection_epoch()
@@ -484,14 +500,20 @@ def _detection_epoch() -> Optional[int]:
         return None
 
 
-def _warm_after(previous: threading.Thread, epoch: Optional[int]) -> None:
+def _warm_after(
+    previous: threading.Thread,
+    epoch: Optional[int],
+    gate: Optional[threading.Event] = None,
+) -> None:
     """Wait out a retired warm, then warm for ``epoch``. One importer at a time."""
     previous.join()
-    _warm(epoch)
+    _warm(epoch, gate)
 
 
-def start_background_warm() -> bool:
-    """A finished thread from an earlier lifespan does not count; shutdown cleared the state it warmed."""
+def start_background_warm(gate: Optional[threading.Event] = None) -> bool:
+    """A finished thread from an earlier lifespan does not count; shutdown cleared the state it warmed.
+
+    ``gate``: reports started now, runs stages once set or after START_GATE_MAX_WAIT_S (utils/first_response_gate.py)."""
     global _thread
     if os.environ.get(DISABLE_ENV_VAR) == "1":
         return False
@@ -499,13 +521,13 @@ def start_background_warm() -> bool:
     # Epoch read before start(): reading it in the child would adopt the post-shutdown one.
     epoch = _detection_epoch()
     with _start_lock:
-        target, args = _warm, (epoch,)
+        target, args = _warm, (epoch, gate)
         if _thread is not None:
             if _thread_epoch is not None and epoch == _thread_epoch:
                 return False
             if _thread.is_alive():
                 # Stale but mid-stage: hand off to a successor that joins it first, keeping one importer.
-                target, args = _warm_after, (_thread, epoch)
+                target, args = _warm_after, (_thread, epoch, gate)
             else:
                 _clear_finished_warm_locked()
         _thread = threading.Thread(
