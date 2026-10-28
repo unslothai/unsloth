@@ -4,6 +4,7 @@
 import type { InternalNode } from "@xyflow/react";
 import { useDocStore } from "../stores/doc-store";
 import type { LayoutRequest, LayoutResult } from "./layout-core";
+import { foldLayout } from "./super-cards";
 
 let worker: Worker | null = null;
 let nextId = 0;
@@ -50,9 +51,12 @@ export async function autoLayout(
     })),
   };
   const id = ++nextId;
+  const folded = foldLayout(request, useDocStore.getState(), (key) =>
+    getInternalNode(key)?.measured,
+  );
   const result = await new Promise<LayoutResult>((resolve, reject) => {
     pending.set(id, { resolve, reject });
-    getWorker().postMessage({ id, request });
+    getWorker().postMessage({ id, request: folded.request });
   });
-  useDocStore.getState().moveNodes(result);
+  useDocStore.getState().moveNodes(folded.unfold(result));
 }

@@ -179,8 +179,9 @@ export function documentSignature(doc: FlowDocument): string {
     meta: metaFromDocument(doc),
     graph: graphFromDocument(doc),
   });
-  const { editor: _editor, ...rest } = canonical;
-  return JSON.stringify(rest);
+  const { editor, ...rest } = canonical;
+  // The viewport is not an edit; a collapsed super card is.
+  return JSON.stringify({ ...rest, super_cards: editor.super_cards });
 }
 
 let idCounter = 0;

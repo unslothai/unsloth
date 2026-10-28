@@ -7,10 +7,13 @@ import {
   BaseNode,
   BaseNodeContent,
 } from "@/features/recipe-studio/components/rf-ui/base-node";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { type NodeProps, NodeResizer } from "@xyflow/react";
 import { Suspense, lazy, memo, useState } from "react";
 import { useDocStore } from "../stores/doc-store";
 import type { RfNode } from "./derive-rf";
+import { PackageIcon } from "./icon-data";
+import { setSuperCard } from "./super-card-actions";
 
 const MarkdownPreview = lazy(() =>
   import("@/components/markdown/markdown-preview").then((m) => ({
@@ -65,6 +68,16 @@ function GroupFrameImpl({ data, selected }: NodeProps<RfNode>) {
         style={{ borderColor: tint(color, 25) }}
         onDoubleClick={() => setEditing(true)}
       >
+        <button
+          type="button"
+          className="nodrag flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+          title="Collapse to a super card"
+          aria-label="Collapse to a super card"
+          data-testid="group-collapse"
+          onClick={() => setSuperCard(group.id, true)}
+        >
+          <HugeiconsIcon icon={PackageIcon} size={12} />
+        </button>
         <span
           className="size-2.5 shrink-0 rounded-full"
           style={{ background: color }}
