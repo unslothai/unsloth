@@ -154,6 +154,15 @@ def test_arg_parser_secure_polarity_and_not_secure_alias():
     assert parser.parse_args(["--not-secure", "--secure"]).secure is True
 
 
+def test_arg_parser_cloudflare_help_names_the_saved_auto_start_setting(monkeypatch):
+    import run
+
+    monkeypatch.setenv("COLUMNS", "1000")
+    help_text = run._build_arg_parser().format_help()
+    assert "'Start automatically' setting also starts one on every launch" in help_text
+    assert "--no-cloudflare forces both off" in help_text
+
+
 def test_arg_parser_dns_pinning_opt_out_defaults_off():
     import run
 
