@@ -195,33 +195,15 @@ def _payload_offers_tool_call(payload: dict[str, Any] | None) -> bool:
 
 
 class ServerToolCallStripper:
-    """``strip_server_executed_tool_call`` with the one bit of turn state it needs.
+    """``strip_server_executed_tool_call`` plus turn state; one instance per request.
 
-    A turn whose calls this server runs is not over when the provider says it is, and the
-    provider does not always say "tool_calls": llama.cpp and vLLM finish a structured call
-    on "stop", which the loop runs anyway. Stripping only the call then leaves a caller
-    holding an empty chunk marked ``finish_reason: "stop"``, and a client that ends the
-    turn there never reads the answer the loop is about to stream -- the same lost reply
-    the control-frame gate exists to prevent, arrived at from the other side.
-
-    So remember, per stream, that a call was withheld and no reply has followed it, and
-    treat the "stop" that closes that turn the way "tool_calls" is already treated. The
-    next turn opens with the flag clear, so its own finish_reason is relayed untouched.
-
-    The flag is raised BEFORE the strip reads it, because a provider may co-emit the call
-    and the finish_reason on one line (any non-streamed upstream relayed as a single line
-    does), and the turn boundary is read on every line, because that same line both opens
-    and closes the turn. Getting either wrong leaks the empty "stop" this exists to hold
-    back, or swallows a later turn's legitimate one.
-
-    Blanking the last finish_reason of a stream would leave the caller none at all --
-    openai-node raises "missing finish_reason for choice 0" outright -- so the withheld
-    ones are counted and ``owed_terminal_chunk`` mints a replacement when the loop ends
-    without opening the turn it promised (a spent tool budget, a discarded call, a
-    provider that failed mid-loop).
-
-    One instance per request. The state is per line, not per choice index, which is exact
-    here because the loop reads choice 0 only and this path rejects n > 1 upstream.
+    llama.cpp and vLLM close a structured call on "stop", so once a call is withheld the
+    "stop" closing that turn is blanked like "tool_calls" (else the client ends the turn
+    before the loop's reply). The flag is raised BEFORE the strip and the turn boundary is
+    read on every line, since one line can both carry the call and close the turn.
+    A blanked last finish_reason is owed: openai-node raises "missing finish_reason for
+    choice 0", so ``owed_terminal_chunk`` mints one. State is per line, not per choice:
+    the loop reads choice 0 only and n > 1 is rejected upstream.
     """
 
     def __init__(self) -> None:
@@ -240,12 +222,10 @@ class ServerToolCallStripper:
         self._pending_call = False
 
     def strip(self, line: str) -> str | None:
-        # Decoded once: every check below reads the same payload, and none of them mutates it.
         payload = _sse_payload(line)
         pending = self._pending_call or _payload_offers_tool_call(payload)
         out = _strip_payload_tool_call(line, payload, pending)
         ends_turn = _payload_ends_turn(payload)
-        # An unchanged line ends the turn exactly when the input did; a rewritten one is read back.
         out_ends_turn = ends_turn if out is line else (out is not None and _line_ends_turn(out))
         # Turn closed: whatever the loop does next opens a turn whose finish_reason is the caller's to read.
         self._pending_call = pending and not ends_turn
