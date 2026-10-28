@@ -38,7 +38,6 @@ def _fake_server(tmp_path, body: str) -> str:
 
 def _launch_flags(caps) -> list[str]:
     from core.inference.llama_server_args import load_mode_support
-
     selected, _ = apply_load_mode_policy(
         [],
         supports_load_mode = load_mode_support(caps),

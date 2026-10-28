@@ -1453,7 +1453,9 @@ def apply_load_mode_policy(
         return [], tokens
     if supports_load_mode is None:
         # Newer builds exit on the legacy flags, so an unknown build gets none.
-        logger.info("llama-server --help probe was inconclusive; skipping the requested %r mode.", mode)
+        logger.info(
+            "llama-server --help probe was inconclusive; skipping the requested %r mode.", mode
+        )
         return [], tokens
     if not supports_load_mode:
         # A build predating the enum understands the spellings it replaced, and only for the values that had one.
