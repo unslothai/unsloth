@@ -19,7 +19,12 @@ def route(monkeypatch):
     monkeypatch.setattr(F8, "_fp8_rowwise_backend", lambda device: "scaled_mm")
     monkeypatch.setattr(F8, "_FP8_ROWWISE_DIRECT", True)
 
-    def run(rows, shape, l2 = L2, env = None):
+    def run(
+        rows,
+        shape,
+        l2 = L2,
+        env = None,
+    ):
         monkeypatch.setattr(F8, "_fp8_l2_cache_bytes", lambda device: l2)
         parsed = F8._parse_fp8_dequant_max_rows(env)
         monkeypatch.setattr(F8, "_FP8_DEQUANT_MAX_ROWS_ENV", parsed)
