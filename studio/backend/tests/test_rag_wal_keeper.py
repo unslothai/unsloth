@@ -99,7 +99,6 @@ def test_metadata_keeper_does_not_require_vector_extension(db, monkeypatch, with
         conn.execute("CREATE TABLE metadata_probe (value INTEGER)")
         conn.execute("INSERT INTO metadata_probe VALUES (3)")
         conn.commit()
-    # The metadata call must create a new keeper after vector support becomes unavailable.
     rag_db.close_wal_keeper()
     rag_db.start_wal_keepers()
 

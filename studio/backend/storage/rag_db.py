@@ -37,7 +37,7 @@ class RagExtensionUnavailable(RuntimeError):
 
 _schema_lock = threading.Lock()
 _schema_ready: set[Path] = set()
-# An idle connection keeps ordinary per-operation closes from removing WAL/SHM.
+# Held idle so per-operation closes do not delete and recreate WAL/SHM (#15552).
 _wal_keepers: dict[Path, sqlite3.Connection] = {}
 _wal_keeper_paths: dict[Path, Path] = {}
 _wal_keeper_lock = threading.Lock()
@@ -361,29 +361,25 @@ def _ensure_wal_keeper(db_path: Path) -> None:
             return
         resolved = db_path.resolve()
         if resolved not in _wal_keepers:
-            # This connection never queries vectors or holds a transaction. Metadata-only
-            # retirement must still work when the optional vector extension is unavailable.
+            # No vec0 load: metadata-only callers must work without sqlite-vec.
             keeper = sqlite_gate.connect(db_path, check_same_thread = False)
             try:
                 mode = keeper.execute("PRAGMA journal_mode").fetchone()[0]
                 if not isinstance(mode, str) or mode.lower() != "wal":
                     keeper.close()
-                    # Metadata can open a new DELETE-mode DB before RAG initializes WAL.
-                    # Do not cache this result: a later operation may enable WAL.
+                    # Not cached: a metadata open can precede RAG switching the file to WAL.
                     return
                 keeper.execute("SELECT 1 FROM sqlite_schema LIMIT 1").fetchall()
             except Exception:
                 keeper.close()
                 raise
             _wal_keepers[resolved] = keeper
-        # Remember both spellings so warm operations do not resolve paths repeatedly.
         _wal_keeper_paths[db_path] = resolved
         _wal_keeper_paths[resolved] = resolved
 
 
 def _account_retired() -> bool:
-    # Checked under _wal_keeper_lock so an open that passed ensure_dir before deletion cannot
-    # re-open the keeper close_wal_keeper_for just released (it would block the Windows rename).
+    # Under _wal_keeper_lock: a late open must not recreate a keeper retirement closed (blocks the Windows rename).
     from utils.account_context import is_owner_context
 
     if is_owner_context():
