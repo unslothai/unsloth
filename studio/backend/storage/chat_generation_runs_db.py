@@ -149,17 +149,6 @@ def _unregister_locked(entry: _PoolEntry | None) -> None:
     _pool_registry[:] = surviving
 
 
-def _discard_pooled() -> None:
-    """Drop this thread's cached connection, for when it has errored or its database has gone."""
-    entry = getattr(_pool, "entry", None)
-    if entry is None:
-        return
-    _pool.entry = None
-    with _pool_lock:
-        _unregister_locked(entry)
-    entry.release()
-
-
 def _discard_all_pooled() -> None:
     """Closes every pooled connection, idle ones at once; one in use is closed by its borrower on return, since yanking it would fail that query."""
     global _pool_generation

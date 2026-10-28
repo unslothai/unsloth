@@ -24,7 +24,6 @@ from .storage import (
     load_jwt_secret,
     save_refresh_token,
     validate_api_key_account,
-    validate_api_key_with_credential,
     verify_refresh_token,
 )
 
@@ -46,25 +45,6 @@ def is_keyless(credentials: Optional[HTTPAuthorizationCredentials]) -> bool:
     return credentials is not None and credentials.scheme in (
         KEYLESS_SCHEME,
         KEYLESS_FALLBACK_SCHEME,
-    )
-
-
-def _names_a_session(token: str) -> bool:
-    """Subject is checked in storage (claim unverified). Expired session must not fall to keyless admin."""
-    subject = _decode_subject_without_verification(token)
-    return subject is not None and get_user_and_secret(subject) is not None
-
-
-def bearer_names_a_session(token: str) -> bool:
-    """Public form of the session check, for callers that only have the raw token."""
-    return _names_a_session(token)
-
-
-def bearer_is_valid_api_key(token: str) -> bool:
-    """Callers must not treat an sk-unsloth key as a keyless stand-in; touch=False defers last_used_at."""
-    return (
-        token.startswith(API_KEY_PREFIX)
-        and validate_api_key_with_credential(token, touch = False) is not None
     )
 
 
