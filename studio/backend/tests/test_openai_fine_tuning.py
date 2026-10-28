@@ -1114,9 +1114,24 @@ def test_listing_pages_through_a_batch_that_is_still_loading(batch_queue):
 
 
 @pytest.mark.parametrize(
-    "model_kind", ["diffusion", "lora_adapter", "moe", "moe_text_config", "dense"]
+    "model_kind",
+    [
+        "diffusion",
+        "lora_adapter",
+        "moe",
+        "moe_text_config",
+        "moe_router_aux_loss",
+        "mamba",
+        "jamba",
+        "lfm2",
+        "ssm_keys",
+        "dense",
+        "hybrid_gated_deltanet",
+        "qwen3_5_moe",
+        "qwen3_moe",
+    ],
 )
-def test_only_plain_dense_models_batch(batch_queue, monkeypatch, model_kind):
+def test_only_checked_model_kinds_batch(batch_queue, monkeypatch, model_kind):
     import utils.models.diffusion_lm as diffusion_lm
     import utils.models.model_config as model_config
 
@@ -1133,8 +1148,40 @@ def test_only_plain_dense_models_batch(batch_queue, monkeypatch, model_kind):
         lambda *a, **k: "unsloth/Qwen3-0.6B" if model_kind == "lora_adapter" else None,
     )
     configs = {
-        "moe": {"model_type": "qwen3_moe", "num_experts": 128},
+        "moe": {"model_type": "deepseek_v3", "n_routed_experts": 256},
         "moe_text_config": {"text_config": {"num_local_experts": 8}},
+        "moe_router_aux_loss": {
+            "model_type": "qwen3_5_moe",
+            "text_config": {
+                "model_type": "qwen3_5_moe_text",
+                "num_experts": 256,
+                "output_router_logits": True,
+            },
+        },
+        "mamba": {"model_type": "mamba2", "state_size": 128},
+        "jamba": {
+            "model_type": "jamba",
+            "num_experts": 16,
+            "layers_block_type": ["mamba", "attention"],
+        },
+        "lfm2": {"model_type": "lfm2", "layer_types": ["conv", "full_attention"]},
+        "ssm_keys": {"model_type": "custom_hybrid", "mamba_d_state": 64},
+        "hybrid_gated_deltanet": {
+            "model_type": "qwen3_5",
+            "text_config": {
+                "model_type": "qwen3_5_text",
+                "layer_types": ["linear_attention", "full_attention"],
+            },
+        },
+        "qwen3_5_moe": {
+            "model_type": "qwen3_5_moe",
+            "text_config": {
+                "model_type": "qwen3_5_moe_text",
+                "num_experts": 256,
+                "layer_types": ["linear_attention", "full_attention"],
+            },
+        },
+        "qwen3_moe": {"model_type": "qwen3_moe", "num_experts": 128},
     }
     monkeypatch.setattr(
         model_config,
@@ -1150,7 +1197,7 @@ def test_only_plain_dense_models_batch(batch_queue, monkeypatch, model_kind):
         await openai_fine_tuning._drain_once()
 
     _run(flow())
-    if model_kind == "dense":
+    if model_kind in ("dense", "hybrid_gated_deltanet", "qwen3_5_moe", "qwen3_moe"):
         assert len(calls["batch"]) == 1 and calls["start"] == []
     else:
         assert calls["batch"] == []
