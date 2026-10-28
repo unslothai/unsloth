@@ -2378,7 +2378,7 @@ def _visible_len(line: str) -> int:
 
 # Scoped conversions shorter than this are rejected as main content, e.g. an empty article stub
 _MIN_MAIN_CONTENT_CHARS = 200
-# absent text = no such tag can tokenize, so that scope finds nothing
+# absent text = no such tag can tokenize, so that scope finds nothing and its pass is skipped
 _ARTICLE_START = re.compile(r"<article", re.IGNORECASE)
 _MAIN_START = re.compile(r"<main", re.IGNORECASE)
 
@@ -2398,20 +2398,25 @@ def html_to_markdown(
     rendered = ""
     full_rendered = ""
     if main_content:
-        tokens = _TokenLog(armed = _ARTICLE_START.search(source_html) is None)
-        length, rendered, articles, article_visible = _select_main_scope_render(
-            source_html, "article", site_links, span_limit, tokens
-        )
+        # A scope whose tag never appears renders nothing, so its pass is skipped for its known empty result.
+        has_article = _ARTICLE_START.search(source_html) is not None
+        # without <article> the first pass is the main scope or the whole page, and an accordion rescan or a
+        # short main scope means another pass follows, so it records; an article pass that settles the page does not
+        tokens = _TokenLog(armed = not has_article)
+        if has_article:
+            length, rendered, articles, article_visible = _select_main_scope_render(
+                source_html, "article", site_links, span_limit, tokens
+            )
+        else:
+            length, rendered, articles, article_visible = 0, "", 0, 0
         if length < _MIN_MAIN_CONTENT_CHARS or articles > 1:
-            # no <main> = main scope scores 0, so the whole-page pass below runs
-            tokens.armed = _MAIN_START.search(source_html) is None and (
-                articles > 2 or length < _MIN_MAIN_CONTENT_CHARS
-            )
-            main_length, main_rendered, _, main_visible = _select_main_scope_render(
-                source_html, "main", site_links, span_limit, tokens
-            )
+            if _MAIN_START.search(source_html) is not None:
+                main_length, main_rendered, _, main_visible = _select_main_scope_render(
+                    source_html, "main", site_links, span_limit, tokens
+                )
+            else:
+                main_length, main_rendered, main_visible = 0, "", 0
             if articles > 2 and main_length < _MIN_MAIN_CONTENT_CHARS:
-                tokens.armed = False
                 main_length, full_rendered = _render_main_document(
                     source_html, site_links, span_limit, tokens
                 )
@@ -2423,7 +2428,6 @@ def html_to_markdown(
                 length, rendered = main_length, main_rendered
         if length < _MIN_MAIN_CONTENT_CHARS:
             if not full_rendered:
-                tokens.armed = False
                 _, full_rendered = _render_main_document(
                     source_html, site_links, span_limit, tokens
                 )
