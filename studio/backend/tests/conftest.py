@@ -584,6 +584,13 @@ def _no_live_metal_wired_ceiling(monkeypatch):
 
 
 @pytest.fixture(autouse = True)
+def _not_on_metal(monkeypatch):
+    """Keep co-residency verdicts off the host's device: on a Mac they take the Metal paths."""
+    from core.inference import gpu_residency
+    monkeypatch.setattr(gpu_residency, "_on_metal", lambda: False)
+
+
+@pytest.fixture(autouse = True)
 def _no_leftover_generation_account(monkeypatch):
     """Reset routes.video's _generation_account per test, since no route ever clears it."""
     routes_video = sys.modules.get("routes.video")
