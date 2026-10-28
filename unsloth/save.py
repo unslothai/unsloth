@@ -2494,6 +2494,23 @@ def _gguf_conversion_staging(gguf_directory):
         return None, False
 
 
+# Windows MAX_PATH is 260 including the terminator unless LongPathsEnabled is set, and the
+# converter appends at most `.BF16-mmproj-00001-of-00002.gguf` (32 characters) to the stem.
+_WINDOWS_MAX_PATH_CHARS = 259
+_GGUF_CONVERTER_SUFFIX_CHARS = 40
+
+
+def _staged_conversion_fits_path_limit(staging, model_name):
+    """False on Windows when a converter output inside `staging` could pass MAX_PATH. The staging folder adds about 31 characters to the intermediate's path, so a destination near the limit that the old CWD placement handled would fail inside the converter; such an export keeps the old placement instead."""
+    if not IS_WINDOWS:
+        return True
+    try:
+        staged = os.path.abspath(os.path.join(staging, model_name))
+    except Exception:
+        return False
+    return len(staged) + _GGUF_CONVERTER_SUFFIX_CHARS <= _WINDOWS_MAX_PATH_CHARS
+
+
 def _remove_empty_directory(directory):
     try:
         os.rmdir(directory)
@@ -2642,6 +2659,13 @@ def save_to_gguf(
     else:
         gguf_directory = os.fspath(gguf_directory)
     conversion_staging, created_gguf_directory = _gguf_conversion_staging(gguf_directory)
+    if conversion_staging is not None and not _staged_conversion_fits_path_limit(
+        conversion_staging, model_name
+    ):
+        shutil.rmtree(conversion_staging, ignore_errors = True)
+        if created_gguf_directory:
+            _remove_empty_directory(gguf_directory)
+        conversion_staging, created_gguf_directory = None, False
     try:
         initial_files, is_vlm_update = _convert_into_gguf_directory(
             model_name = model_name,

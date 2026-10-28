@@ -190,3 +190,97 @@ def test_place_gguf_output_falls_back_to_move_across_filesystems(monkeypatch, tm
     save_mod._place_gguf_output(str(src), str(dst))
     assert moved == [(str(src), str(dst))]
     assert dst.read_bytes() == b"GGUF" and not src.exists()
+
+
+def _deep_layout(tmp_path, monkeypatch, total):
+    """Like `_layout`, with the model folder name padded so its `_gguf` path is `total` characters."""
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    parent = tmp_path / "out"
+    pad = total - len(str(parent / "m")) - len("_gguf")
+    assert pad > 0
+    model_directory = parent / ("m" + "x" * pad)
+    model_directory.mkdir(parents = True)
+    gguf_directory = str(model_directory) + "_gguf"
+    assert len(gguf_directory) == total
+    return cwd, model_directory, gguf_directory
+
+
+@pytest.mark.parametrize("staged", [True, False])
+def test_windows_path_limit_keeps_the_cwd_placement_near_max_path(monkeypatch, tmp_path, staged):
+    """The staging folder lengthens the intermediate's path; on Windows without long paths a destination near MAX_PATH must keep the old CWD write rather than fail inside the converter."""
+    # 150 leaves room for the staged name; 215 does not (215 + 31 + "/MyModel" + 40 > 259) though the final name still fits.
+    cwd, model_directory, gguf_directory = _deep_layout(
+        tmp_path, monkeypatch, 150 if staged else 215
+    )
+    assert len(os.path.join(gguf_directory, "MyModel.BF16-mmproj-00001-of-00002.gguf")) <= 259
+    converter = _Converter()
+    _wire(monkeypatch, converter, [])
+    monkeypatch.setattr(save_mod, "IS_WINDOWS", True)
+    monkeypatch.setattr(save_mod.torch.cuda, "is_bf16_supported", lambda *a, **k: True)
+
+    _save(model_directory, ["bf16"])
+
+    (outfile,) = converter.outfiles
+    if staged:
+        assert os.path.dirname(os.path.dirname(outfile)) == os.path.abspath(gguf_directory)
+    else:
+        assert outfile == os.path.join(str(cwd), "MyModel.BF16.gguf")
+    assert os.listdir(gguf_directory) == ["MyModel.BF16.gguf"]
+    assert os.listdir(cwd) == []
+
+
+def test_projector_and_shards_are_all_placed_and_staging_removed(monkeypatch, tmp_path):
+    """A VLM conversion returns a sharded text model plus an mmproj file; every one lands in the output folder and the staging folder goes."""
+    cwd, model_directory, gguf_directory = _layout(tmp_path, monkeypatch)
+    written = []
+
+    def _convert(**kwargs):
+        stem = kwargs["model_name"]
+        names = [
+            f"{stem}.BF16-00001-of-00002.gguf",
+            f"{stem}.BF16-00002-of-00002.gguf",
+            f"{stem}.BF16-mmproj.gguf",
+        ]
+        for name in names:
+            with open(name, "wb") as handle:
+                handle.write(b"GGUF")
+        written.extend(os.path.abspath(n) for n in names)
+        return names, True
+
+    _wire(monkeypatch, _convert, [])
+    monkeypatch.setattr(save_mod.torch.cuda, "is_bf16_supported", lambda *a, **k: True)
+
+    files, _, _ = save_mod.save_to_gguf(
+        model_name = "MyModel",
+        model_type = "llama",
+        model_dtype = "bfloat16",
+        model_directory = str(model_directory),
+        quantization_method = ["bf16"],
+        is_vlm = True,
+    )
+
+    assert {os.path.dirname(os.path.dirname(f)) for f in written} == {
+        os.path.abspath(gguf_directory)
+    }
+    assert sorted(os.listdir(gguf_directory)) == sorted(os.path.basename(f) for f in written)
+    assert os.listdir(cwd) == []
+
+
+def test_interrupted_conversion_removes_the_staging_folder(monkeypatch, tmp_path):
+    cwd, model_directory, gguf_directory = _layout(tmp_path, monkeypatch)
+
+    def _interrupted(**kwargs):
+        with open(kwargs["model_name"] + ".BF16.gguf", "wb") as handle:
+            handle.write(b"GGUF")
+        raise KeyboardInterrupt
+
+    _wire(monkeypatch, _interrupted, [])
+    monkeypatch.setattr(save_mod.torch.cuda, "is_bf16_supported", lambda *a, **k: True)
+
+    with pytest.raises(KeyboardInterrupt):
+        _save(model_directory, ["q4_k_m"])
+
+    assert not os.path.exists(gguf_directory)
+    assert os.listdir(cwd) == []
