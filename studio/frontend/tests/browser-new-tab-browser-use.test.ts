@@ -20,7 +20,6 @@ test("the new tab page's Browser use switch drives the composer's store", () => 
 });
 
 test("the switch sits under the leading section, outside both show settings", () => {
-  // Suggested leads until something is visited; then Recents leads and Suggested moves below.
   assert.match(
     PAGE,
     /\{visited \? recentsSection : suggestedSection\}\s*<BrowserUseToggle \/>\s*\{visited \? suggestedSection : null\}/,

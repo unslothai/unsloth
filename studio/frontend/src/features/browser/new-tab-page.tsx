@@ -391,7 +391,6 @@ export function NewTabPage({ tabId }: { tabId: string }) {
         </div>
       </section>
     ) : null;
-  // Once anything has been visited, Recents leads and Suggested drops below Browser use.
   const visited = recentsSection !== null;
 
   return (
