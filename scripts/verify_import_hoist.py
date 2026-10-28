@@ -1006,7 +1006,10 @@ def _top_level_binding(src: str | None, name: str):
                     found.append("ambiguous")
             elif isinstance(node, ast.ImportFrom):
                 for alias in node.names:
-                    if (alias.asname or alias.name) == name:
+                    # `import *` may rebind any name; its exports are not resolved here.
+                    if alias.name == "*":
+                        found.append("ambiguous")
+                    elif (alias.asname or alias.name) == name:
                         found.append(
                             ("import", "." * (node.level or 0) + (node.module or ""), alias.name)
                         )
