@@ -63,6 +63,7 @@ test("downloaded GGUFs are grouped by the task the backend classified", async ()
   const speech = gguf("unsloth/orpheus-3b-0.1-ft-GGUF", "text-to-speech");
   const vision = gguf("unsloth/gemma-3-4b-it-GGUF", "text-generation", true);
   const text = gguf("unsloth/Qwen3-8B-GGUF", "text-generation");
+  const unbuildable = gguf("unsloth/Z-Image-Turbo-GGUF", "image-diffusion-unsupported");
   assert.equal(matchesInventoryCapabilities(image, ["image-gen"]), true);
   assert.equal(matchesInventoryCapabilities(image, ["text"]), false);
   assert.equal(matchesInventoryCapabilities(speech, ["audio"]), true);
@@ -70,6 +71,7 @@ test("downloaded GGUFs are grouped by the task the backend classified", async ()
   assert.equal(matchesInventoryCapabilities(vision, ["vision"]), true);
   assert.equal(matchesInventoryCapabilities(vision, ["text"]), false);
   assert.equal(matchesInventoryCapabilities(text, ["text"]), true);
+  assert.equal(matchesInventoryCapabilities(unbuildable, ["text"]), false);
 });
 
 test("Model folders and Free up space are icon buttons with labels", () => {

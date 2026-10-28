@@ -295,6 +295,8 @@ const MEDIA_OUTPUT_TASKS: ReadonlySet<string> = new Set([
   "audio-to-audio",
   "text-to-3d",
   "image-to-3d",
+  // Backend task for a downloaded diffusion GGUF this host cannot build.
+  "image-diffusion-unsupported",
 ]);
 
 /** One Hub filter pick against a row; image and video gen split the shared "diffusion" capability. */
