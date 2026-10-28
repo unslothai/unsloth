@@ -633,6 +633,9 @@ def run_safetensors_tool_loop(
     permission_mode, bypass_permissions = normalize_tool_permissions(
         permission_mode, bypass_permissions
     )
+    from state.tool_approvals import LiveToolPermissions, bind_permission_upgrade
+
+    live_permissions = LiveToolPermissions(session_id, cancel_event)
     sandbox_level = normalize_sandbox_level(sandbox_level)
     stream_tool_execution = account_tool_stream(stream_tool_execution)
     from core.inference.skill_mentions import load_mentioned_skills
@@ -645,6 +648,7 @@ def run_safetensors_tool_loop(
         confirm_tool_calls = confirm_tool_calls,
         session_id = session_id,
         cancel_event = cancel_event,
+        permission_upgrade = live_permissions,
         context_length = context_length,
         continue_final_message = continue_final_message,
         # The downstream tokenizer owns fitting; only system context is guaranteed.
@@ -1441,6 +1445,9 @@ def run_safetensors_tool_loop(
             # Bypass wins here too, so a direct internal caller with both flags
             # never prompts. "auto" pauses only high-risk calls; "off" pauses only a
             # high-risk python/terminal call without OS isolation.
+            permission_mode, bypass_permissions = live_permissions.apply(
+                permission_mode, bypass_permissions
+            )
             needs_confirm = needs_tool_confirmation(
                 confirm_tool_calls = bool(confirm_tool_calls),
                 bypass_permissions = bypass_permissions,
@@ -1463,6 +1470,7 @@ def run_safetensors_tool_loop(
             )
             approval_id = new_approval_id() if needs_confirm else ""
             decision_slot = begin_tool_decision(session_id, approval_id) if needs_confirm else None
+            bind_permission_upgrade(decision_slot, live_permissions, eligible = image_share is None)
             if needs_confirm:
                 note_host_access(approval_id, decision.tool_name, decision.arguments)
             start_event = decision.tool_start_event()
@@ -1494,6 +1502,11 @@ def run_safetensors_tool_loop(
                 )
                 # Read before decision_slot is dropped in the deny branch below.
                 _decision_reason = decision_reason(decision_slot)
+                permission_mode, bypass_permissions = live_permissions.apply(
+                    permission_mode, bypass_permissions
+                )
+                if bypass_permissions:
+                    strict_isolation = False
                 if _decision is not None and _decision != "deny":
                     yield decision.tool_approved_event(approval_id)
                     yield {"type": "status", "text": decision.status_text}

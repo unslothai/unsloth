@@ -2094,11 +2094,6 @@
 	--composer-shadow: 0 0 40px 6px rgb(255 199 44 / 0.16);
 }
 
-/* Halloween keeps its own border on Images and Video: the neutral gray vanishes on its tinted pages. */
-html[data-palette]:not(.dark):where([data-palette="pumpkin"], [data-palette="black-cat"], [data-palette="trick-or-treat"], [data-palette="bloody-valentine"], [data-palette="alien"], [data-palette="ghost-ship"], [data-palette="the-thing"], [data-palette="midnight-haunt"], [data-palette="gothic"], [data-palette="hexberry"], [data-palette="candycorn"]) .diffusion-surface {
-	--border-base: var(--th-border);
-	--input-base: var(--th-border);
-}
 
 :root[data-palette="black-cat"]:not(.dark) {
 	--th-bg: #f6f1ff;

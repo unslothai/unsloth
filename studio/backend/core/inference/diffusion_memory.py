@@ -1014,6 +1014,43 @@ def _wrap_cpu_offload_hook(
     setattr(hook, _KEEP_ATTR, True)
 
 
+def offload_host_copy(module: Any, name: str, tensor: Any) -> Any:
+    """The keep-cpu host tensor for ``name`` while ``tensor`` is on the device unchanged since its onload (``_init_hook``'s
+    re-point rule: same object, version and storage), else None."""
+    state = getattr(module, "__dict__", {}).get(_KEEP_ATTR)
+    if (
+        not isinstance(state, dict)
+        or getattr(getattr(tensor, "device", None), "type", "cpu") == "cpu"
+    ):
+        return None
+    try:
+        kept = (state.get("host") or {}).get(name)
+        if kept is not None:
+            seen = (state.get("version") or {}).get(name)
+            if (
+                (state.get("owner") or {}).get(name) is tensor
+                and seen is not None
+                and seen[0] is tensor
+                and seen[1] == tensor._version
+                and seen[2] == _tensor_ptr(tensor)
+            ):
+                return kept
+            return None
+        kept = (state.get("buffer_host") or {}).get(name)
+        seen = (state.get("buffer_version") or {}).get(name)
+        if (
+            kept is not None
+            and seen is not None
+            and seen[0] is tensor
+            and seen[1] == _buffer_version(tensor)
+            and seen[2] == tensor.data_ptr()
+        ):
+            return kept
+    except Exception:  # noqa: BLE001 - a state mid-update: the caller reads the device copy
+        return None
+    return None
+
+
 def reclaim_offload_host_memory(offload_policy: str, logger: Any = None) -> bool:
     """Return unused allocator pages after whole-model CPU offload, without touching live
     tensors, Python GC, or device caches. Unsupported allocators and failures are non-fatal."""
@@ -7094,6 +7131,8 @@ def install_group_offload_buffer_restore() -> bool:
 
 
 PIN_TOP_GROUP_ENV = "UNSLOTH_DIFFUSION_PIN_TOP_GROUP"
+# read-only: diffusers leaves the top-level group's cpu_param_dict empty
+TOP_GROUP_HOST_ATTR = "_unsloth_top_host"
 
 
 def _pin_top_level_group(
@@ -7190,6 +7229,7 @@ def _pin_top_level_group(
         group.onload_ = onload_
         group.offload_ = offload_
         group._unsloth_pinned_top = True
+        setattr(group, TOP_GROUP_HOST_ATTR, host)
         if pinned_mib is not None:
             pinned_mib[0] = already + need_mib
         if logger is not None:
@@ -7270,6 +7310,7 @@ def _skip_top_level_copy_back(module: Any, logger: Any = None) -> bool:
         group.onload_ = onload_
         group.offload_ = offload_
         group._unsloth_top_no_copy_back = True
+        setattr(group, TOP_GROUP_HOST_ATTR, host)
         if logger is not None:
             logger.info(
                 "diffusion.memory: %s top-level weights (%d MiB) not pinnable here; offload re-points to the host "

@@ -126,3 +126,11 @@ export function withNoticeDot(icon: IconSvgElement): IconSvgElement {
     ],
   ] as unknown as IconSvgElement;
 }
+
+// Speedometer: open-bottom dial broken where the needle points; HugeIcons' DashboardSpeed icons are framed or half-dial.
+export const SpeedMeterIcon: IconSvgElement = [
+  ["path", { d: "M4.929 19.571A10 10 0 0 1 16.226 3.437", stroke: "currentColor", strokeLinecap: "round", strokeWidth: "1.5", key: "0" }],
+  ["path", { d: "M21.063 8.274A10 10 0 0 1 19.071 19.571", stroke: "currentColor", strokeLinecap: "round", strokeWidth: "1.5", key: "1" }],
+  ["circle", { cx: "12", cy: "12.5", r: "2.25", stroke: "currentColor", strokeWidth: "1.5", key: "2" }],
+  ["path", { d: "M13.59 10.91L18.01 6.49", stroke: "currentColor", strokeLinecap: "round", strokeWidth: "1.5", key: "3" }],
+];

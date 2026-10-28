@@ -5615,13 +5615,18 @@ def _full_access_tip(code_tools: list[str]) -> str:
 
 # Avoid the word 'greetings': small models then greet instead of researching.
 _TOOL_RESEARCH_TIP = (
-    "Deep Research is turned on for this conversation. For any question about the world "
-    "-- facts, events, laws, products, papers, prices, comparisons, anything that may have "
-    "changed since your training -- call deep_research instead of answering from memory, "
-    "even when you think you know the answer: the user asked for a researched, cited "
-    "report and your knowledge has a cutoff. If a message has no question in it, such as a "
-    "hello, a thanks, or a remark about you, reply normally. If a topic is too vague to "
-    "research well, ask one short clarifying question first."
+    "Deep Research is turned on for this conversation. For factual questions or requests "
+    "to investigate a topic, compare information, or write a research report, call "
+    "deep_research before drafting an answer, outline, or report, even if you know the "
+    "answer. A research request may be a command or a brief in pasted text or an "
+    "attachment; it does not need to be phrased as a question. Hand off the whole request "
+    "in one concise, self-contained research question covering its main topics and requested "
+    "outputs. Summarize the brief in a few sentences rather than copying it or answering it. "
+    "The research workflow gathers sources and "
+    "writes the report; do not use it only to fill gaps in an answer you write from memory. "
+    "Reply normally to a hello, thanks, or a remark about you, and to requests only to "
+    "rewrite or transform supplied text without outside research. If the topic is too "
+    "vague to research well, ask one short clarifying question first."
 )
 
 _TOOL_ARTIFACT_TIP = (
@@ -21144,6 +21149,15 @@ async def cancel_inference(request: Request, current_subject: str = Depends(get_
 async def confirm_tool_call(
     request: ToolConfirmRequest, current_subject: str = Depends(get_current_subject)
 ):
+    full_access = request.permission_mode == "full"
+    if full_access and (
+        not auth_policy.full_access_permitted() or auth_policy.api_full_access_refused()
+    ):
+        raise HTTPException(
+            status_code = 403,
+            detail = "Full access is only available to the installation owner in the Unsloth UI "
+            "(API callers require UNSLOTH_STUDIO_ALLOW_API_FULL_ACCESS=1).",
+        )
     # Approving a host-path call unsandboxes it: like Full access, the UI's choice, not an API key's. Deny stays open.
     if (
         request.decision == "allow"
@@ -21160,10 +21174,12 @@ async def confirm_tool_call(
         request.approval_id,
         request.decision,
         session_id = request.session_id,
+        full_access = full_access,
     )
     if not matched:
         raise HTTPException(status_code = 404, detail = "No pending tool call confirmation")
-    return {"resolved": True}
+    # An older backend ignores the new request field; clients require this acknowledgement.
+    return {"resolved": True, **({"full_access_granted": True} if full_access else {})}
 
 
 @studio_router.post("/browser-action-result")
@@ -31302,6 +31318,9 @@ async def produce_openai_chat_completions(
 
             def gguf_generate_with_tools():
                 from core.inference.skill_mentions import load_mentioned_skills
+                from state.tool_approvals import LiveToolPermissions
+
+                gguf_live_permissions = LiveToolPermissions(payload.session_id, cancel_event)
 
                 skill_instruction_ids = set()
                 yield from load_mentioned_skills(
@@ -31318,8 +31337,10 @@ async def produce_openai_chat_completions(
                     context_length = llama_backend.context_length,
                     continue_final_message = _continue_final_message(payload, thought = True),
                     protected_message_ids = skill_instruction_ids,
+                    permission_upgrade = gguf_live_permissions,
                 )
                 yield from llama_backend.generate_chat_completion_with_tools(
+                    live_permissions = gguf_live_permissions,
                     instruction_anchor_ids = skill_instruction_ids,
                     messages = gguf_messages,
                     replayed_image_parts = tuple(_gguf_replayed_image_parts),

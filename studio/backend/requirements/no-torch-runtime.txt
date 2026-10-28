@@ -65,7 +65,7 @@ hf_transfer==0.1.9; sys_platform != "win32" or platform_machine != "ARM64"
 regex==2026.7.19; python_version >= "3.10"
 regex==2026.1.15; python_version < "3.10"
 typing_extensions==4.16.0
-filelock==4.2.1; python_version >= "3.11"
+filelock==4.2.4; python_version >= "3.11"
 filelock==3.32.2; python_version >= "3.10" and python_version < "3.11"
 filelock==3.19.1; python_version < "3.10"
 httpx==0.28.1
