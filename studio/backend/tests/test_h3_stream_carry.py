@@ -60,7 +60,7 @@ def _h3_render(pf, groups, steps, calls = None, cancelled = lambda: False):
 
 def test_forwards_after_the_first_read_the_carry_and_nothing_reaches_the_decode():
     pf, groups, log = _cpu_prefetcher("tabcde", depth = 2)
-    _forward(pf, groups)  # records the order
+    _forward(pf, groups)
     log.clear()
     ticks, (ready, carried, inflight), hits = _h3_render(pf, groups, steps = 6)
     assert ticks == [1, 2, 3, 4, 5]
@@ -68,7 +68,6 @@ def test_forwards_after_the_first_read_the_carry_and_nothing_reaches_the_decode(
     assert pf.stats["carried_hits"] == 10 and hits == 10
     assert not ready and not carried and inflight == 0
     assert pf.stats.get("carried_dropped", 0) == 0
-    # every group copied exactly once per forward
     assert _copies(log) == list("tabcde") * 6
 
 
