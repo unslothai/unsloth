@@ -3118,8 +3118,7 @@ const Composer: FC<{
     setIsWritingExpanded((expanded) => !expanded);
     inputRef.current?.focus({ preventScroll: true });
   };
-  // Welcome page: the bottom pin's stabilizer padding shifted the expanded frame up. On every
-  // transition (button, Escape, send), so collapsing always re-pins the toolbar into view.
+  // Welcome page: the bottom pin's stabilizer padding shifts the expanded frame up; any collapse re-pins.
   const wasExpandedRef = useRef(false);
   useLayoutEffect(() => {
     const was = wasExpandedRef.current;
