@@ -445,9 +445,10 @@ def _login_failure_detail() -> str:
 @router.post("/login", response_model = Token)
 async def login(payload: AuthLoginRequest, request: Request) -> Token:
     """Login with username/password. Per-account + per-IP rate-limited."""
-    username = (
-        payload.username.casefold() if policy.installation_is_multi_user() else payload.username
-    )
+    username = payload.username
+    if policy.installation_is_multi_user():
+        # Before the bucket key, so the owner's sign-in name and "unsloth" share one budget.
+        username = storage.resolve_login_username(username.casefold())
     key = _bucket_key(request, username)
     unknown_key = _unknown_user_key(request)
     blocked_for = max(_login_blocked(key), _login_blocked(unknown_key))

@@ -789,6 +789,8 @@ export const ko = {
       guidedTour: "가이드 투어",
       help: "도움말",
       logOut: "로그아웃",
+      logOutNeedsPassword: "로그아웃하기 전에 설정 > 원격 액세스에서 비밀번호를 설정하세요. 다시 로그인하려면 필요합니다.",
+      logOutFailed: "안전하게 로그아웃하지 못했습니다. 잠시 후 다시 시도하세요.",
       shutdown: "종료",
     },
     commandPalette: {
@@ -933,6 +935,11 @@ export const ko = {
   },
   settings: {
     accounts: {
+      signsInAs: "{username}(으)로 로그인",
+      signsInAsOwner: "{alias} 또는 {username}(으)로 로그인",
+      signInName: "로그인 이름",
+      signInNameDescription: "이 설치에 계정이 둘 이상일 때 로그인할 때 입력하는 이름입니다. unsloth도 항상 사용할 수 있습니다. 비워 두면 unsloth만 사용합니다.",
+      signInNameSave: "이름 저장",
       title: "계정",
       description: "개별 Unsloth 계정을 만듭니다. 새 사용자는 일회용 설정 코드로 로그인한 뒤 비밀번호를 정합니다.",
       username: "사용자 이름",
