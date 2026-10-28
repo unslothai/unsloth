@@ -215,7 +215,11 @@ def run_benchmark(
     if "baseline" in per_target:
         summary["baseline"] = _summary(per_target["baseline"])
         a, b = summary["candidate"]["score"], summary["baseline"]["score"]
-        summary["delta"] = (a - b) if a is not None and b is not None else None
+        paired = {r["index"] for r in candidate if r.get("error") is None} == {
+            r["index"] for r in per_target["baseline"] if r.get("error") is None
+        }
+        # Only a difference over the same rows says what the adapter did.
+        summary["delta"] = (a - b) if a is not None and b is not None and paired else None
     return {
         **summary,
         "cancelled": cancelled,

@@ -85,6 +85,20 @@ def test_candidate_against_baseline_and_eval_samples():
     assert eval_metrics(result["candidate"])[0]["name"] == "acc,none"
 
 
+def test_no_delta_when_the_two_sides_scored_different_rows():
+    def chat(target, messages):
+        if target == "baseline" and messages[-1]["content"] == "2+2?":
+            raise RuntimeError("boom")
+        return {"2+2?": "4", "Capital of France?": "Paris", "3*3?": "9"}[messages[-1]["content"]]
+
+    result = run_benchmark(
+        {"rows": ROWS, "prompt_column": "question", "reference_column": "answer", "scorer": "reference", "with_baseline": True},
+        chat = chat,
+    )
+    assert result["candidate"]["score"] == 1.0 and result["baseline"]["score"] == 1.0
+    assert result["delta"] is None
+
+
 def test_judge_and_row_errors():
     def chat(target, messages):
         if target == "judge":

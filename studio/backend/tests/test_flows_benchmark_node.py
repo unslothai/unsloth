@@ -203,3 +203,22 @@ def test_a_hub_split_is_streamed_and_cut_to_max_rows(monkeypatch):
     rows = asyncio.run(benchmark._read_rows(ctx, {"kind": "dataset", "source": "hf", "ref": "o/d"}, 2))
     assert rows == ROWS[:2]
     assert seen == {"name": "o/d", "split": "train", "streaming": True, "take": 2}
+
+
+def test_a_local_file_is_streamed_too(monkeypatch):
+    seen = {}
+
+    class _Stream:
+        def take(self, n):
+            return iter(ROWS[:n])
+
+    def load_dataset(builder, data_files, split, streaming):
+        seen.update(builder = builder, data_files = data_files, streaming = streaming)
+        return _Stream()
+
+    monkeypatch.setattr("datasets.load_dataset", load_dataset)
+    monkeypatch.setattr("core.flows.nodes.data.local_seed_path", lambda ref: "/cache/x.jsonl")
+    monkeypatch.setattr("core.training.account_jobs.account_hf_token", lambda token: None)
+    ctx = _Ctx(lambda *a: {})
+    rows = asyncio.run(benchmark._read_rows(ctx, {"kind": "dataset", "source": "local", "ref": "ref:x"}, 3))
+    assert rows == ROWS[:3] and seen == {"builder": "json", "data_files": "/cache/x.jsonl", "streaming": True}

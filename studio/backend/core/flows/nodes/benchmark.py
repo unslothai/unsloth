@@ -100,39 +100,42 @@ async def _load_target(ctx: NodeContext) -> tuple[str, bool]:
     return label, False
 
 
-def _hub_head(dataset: dict, token: Any, limit: int) -> list[dict]:
-    """The first rows of a Hub split, streamed so a big split is never downloaded whole."""
+def _head(dataset: dict, token: Any, limit: int) -> list[dict]:
+    """The first rows of a dataset, streamed so a big file or split is never read whole."""
     from datasets import load_dataset
 
-    stream = load_dataset(
-        str(dataset["ref"]),
-        dataset.get("subset") or None,
-        split = dataset.get("split") or "train",
-        token = token,
-        streaming = True,
-    )
+    if dataset.get("source") == "hf":
+        stream = load_dataset(
+            str(dataset["ref"]),
+            dataset.get("subset") or None,
+            split = dataset.get("split") or "train",
+            token = token,
+            streaming = True,
+        )
+    else:
+        from core.flows.nodes.data import local_seed_path
+        from core.flows.nodes.training import LOADERS
+
+        path = local_seed_path(dataset.get("ref"))
+        builder = next((b for ext, b in LOADERS.items() if path.endswith(ext)), None)
+        if builder is None:
+            raise FlowNodeError("Benchmark reads Parquet, CSV or JSON rows")
+        stream = load_dataset(builder, data_files = path, split = "train", streaming = True)
     return list(stream.take(limit))
 
 
 async def _read_rows(ctx: NodeContext, dataset: Any, limit: int) -> list[dict]:
     from core.flows.nodes.data import recipe_artifact, recipe_rows
-    from core.flows.nodes.training import _load_rows
     from core.training.account_jobs import account_hf_token
 
     if not isinstance(dataset, dict) or dataset.get("kind") != "dataset":
         raise FlowNodeError("Recipe held-out scores a dataset: wire Fine-tune's Held-out rows or a recipe in")
     if dataset.get("source") == "recipe" and not recipe_artifact(dataset.get("ref")):
         rows = (await recipe_rows(ctx, str(dataset["ref"]), limit = limit))[:limit]
-    elif dataset.get("source") == "hf":
-        token = account_hf_token(getattr(ctx.caller, "hf_token", None))
-        try:
-            rows = await asyncio.to_thread(_hub_head, dataset, token, limit)
-        except Exception as exc:
-            raise FlowNodeError(f"Could not read the rows to score: {exc}") from None
     else:
         token = account_hf_token(getattr(ctx.caller, "hf_token", None))
         try:
-            rows = await asyncio.to_thread(_load_rows, dataset, token, limit - 1)
+            rows = await asyncio.to_thread(_head, dataset, token, limit)
         except FlowNodeError:
             raise
         except Exception as exc:
