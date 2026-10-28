@@ -151,15 +151,24 @@ def test_a_call_with_history_lists_each_folder_once_per_boundary(chat, monkeypat
     real_walk, listed = os.walk, []
 
     def counting_walk(top, *args, **kwargs):
-        for entry in real_walk(top, *args, **kwargs):
-            if entry[0].startswith(str(workdir)):
+        # Patching tools.os.walk patches os.walk everywhere; only the snapshot walks in tools are
+        # counted, not the OS sandbox's own pre-launch safety scan of the folder (macOS seatbelt,
+        # Linux bwrap), which runs once per launch on main and head alike.
+        counted = sys._getframe(1).f_globals.get("__name__") == tools.__name__
+        return _counted(real_walk(top, *args, **kwargs), counted)
+
+    def _counted(walk, counted):
+        for entry in walk:
+            if counted and entry[0].startswith(str(workdir)):
                 listed.append(entry[0])
             yield entry
 
     monkeypatch.setattr(tools.os, "walk", counting_walk)
     file_history.set_turn("chat-1", "u1")
     code = "open('out.txt', 'w').write('x')"
-    args = {"code": code} if tool == "python" else {"command": f'{sys.executable} -c "{code}"'}
+    # Forward slashes and quotes: the terminal tool runs bash on Windows too, which eats backslashes.
+    _exe = sys.executable.replace(os.sep, "/")
+    args = {"code": code} if tool == "python" else {"command": f'"{_exe}" -c "{code}"'}
     result = execute_tool(tool, args, session_id = "s")
     monkeypatch.setattr(tools.os, "walk", real_walk)
 
