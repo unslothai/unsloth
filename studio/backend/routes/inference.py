@@ -14782,10 +14782,12 @@ def _mlx_chat_need(
     except Exception as exc:
         logger.info("MLX load of %s left unpriced: %s", model_identifier, exc)
         return None
+    from core.inference.llama_server_args import clamp_parallel_slots
+
     mib = 1024 * 1024
     one_row = -(-(int(estimate.breakdown.total_bytes) + reserve) // mib)
     row = -(-int(estimate.breakdown.kv_bytes + estimate.breakdown.compute_bytes) // mib)
-    slots = max(1, slots)
+    slots = clamp_parallel_slots(slots)
     growth = {
         "mib": max(0, one_row - int(estimate.breakdown.weights_bytes) // mib),
         "row_mib": row,
@@ -18962,14 +18964,8 @@ async def _load_model_impl(
                 )
                 if post_chat_handoff_expected_free_gb is None:
                     post_chat_handoff_expected_free_gb = chat_wait_gb
-                from core.inference.llama_server_args import clamp_parallel_slots
-
                 mlx_chat_need = await asyncio.to_thread(
-                    _mlx_chat_need,
-                    request,
-                    config,
-                    model_identifier,
-                    clamp_parallel_slots(_n_parallel),
+                    _mlx_chat_need, request, config, model_identifier, _n_parallel
                 )
                 mlx_credit_mib = 0
                 if mlx_chat_need is not None:
