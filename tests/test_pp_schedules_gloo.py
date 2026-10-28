@@ -551,7 +551,11 @@ def test_single_backward_kernels_unwraps_partials():
 
     sched = sys.modules["unsloth.models.pp_schedules"]
 
-    def apply_lora_mlp_swiglu(self, X, inplace = True):  # stands in for fast_lora's fused MLP kernel
+    def apply_lora_mlp_swiglu(
+        self,
+        X,
+        inplace = True,
+    ):  # stands in for fast_lora's fused MLP kernel
         raise AssertionError("not called")
 
     apply_lora_mlp_swiglu.__module__ = "unsloth.kernels.fast_lora"
