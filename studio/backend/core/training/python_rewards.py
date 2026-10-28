@@ -186,9 +186,28 @@ def _kill_tree(proc) -> None:
         pass
 
 
-def _kill_group(proc) -> None:
+def _windows_job(proc):
+    # Windows has no process groups and taskkill /T cannot reach the children of an exited
+    # worker, so the worker goes in a job object that keeps a handle on every descendant.
+    if os.name != "nt" or proc is None:
+        return None
+    try:
+        from core.inference.tools import _windows_job_capture
+        return _windows_job_capture(proc)
+    except Exception:  # noqa: BLE001 - taskkill on a live worker is the fallback
+        return None
+
+
+def _kill_group(proc, job = None) -> None:
     # The worker leads its own group (setsid in the preexec), so a reward's children stay in it
     # after the worker exits cleanly; _kill_tree skips an exited worker.
+    if job is not None:
+        try:
+            job.terminate()
+        except Exception:  # noqa: BLE001
+            pass
+        job.close()
+        return
     if os.name == "nt" or proc is None:
         return
     try:
@@ -247,6 +266,7 @@ class RewardWorker:
         self._lock = threading.Lock()
         self._seq = 0
         self._proc = None
+        self._job = None
         self._prepared = None
         self._workdir: Optional[str] = None
         self._closed = threading.Event()
@@ -301,6 +321,7 @@ class RewardWorker:
                 if self._prepared.pass_fds:
                     popen_kwargs["pass_fds"] = tuple(self._prepared.pass_fds)
             self._proc = os_sandbox.spawn_prepared_launch(self._prepared, **popen_kwargs)
+            self._job = _windows_job(self._proc)
             record = self._prepared.execution_record
             self.isolation = {
                 "backend": self._prepared.backend,
@@ -384,13 +405,16 @@ class RewardWorker:
         # The hook holds this worker (and its reward code) until exit; Try it starts many.
         atexit.unregister(self.close)
         proc, self._proc = self._proc, None
+        job, self._job = self._job, None
         if proc is not None and self._workdir:
             try:
                 Path(self._workdir, "stop").touch()
                 proc.wait(timeout = 5)
             except Exception:  # noqa: BLE001
                 _kill_tree(proc)
-            _kill_group(proc)
+            _kill_group(proc, job)
+        elif job is not None:
+            job.close()
         if self._prepared is not None:
             self._prepared.cleanup()
             self._prepared = None
