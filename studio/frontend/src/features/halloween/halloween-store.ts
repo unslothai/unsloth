@@ -25,12 +25,13 @@ export function isHalloweenSeason(now: Date = new Date()): boolean {
   return now.getMonth() === 9;
 }
 
-/** Milliseconds to the coming local midnight on November 1, or null outside October. */
-export function msUntilSeasonEnd(now: Date = new Date()): number | null {
-  if (!isHalloweenSeason(now)) {
-    return null;
-  }
-  return new Date(now.getFullYear(), 10, 1).getTime() - now.getTime();
+/** Milliseconds to the next local season boundary: November 1 in October, else October 1. */
+export function msUntilSeasonChange(now: Date = new Date()): number {
+  const year = now.getFullYear();
+  const next = isHalloweenSeason(now)
+    ? new Date(year, 10, 1)
+    : new Date(now.getMonth() < 9 ? year : year + 1, 9, 1);
+  return next.getTime() - now.getTime();
 }
 
 // setTimeout overflows past ~24.8 days and sleep stalls timers, so re-arm in bounded steps.
@@ -131,23 +132,20 @@ export function useSpookyGreetings(): boolean {
 }
 
 /** Outside October, hand back the pre-Halloween theme, including one a synced device re-applies.
- *  An open session flips at midnight on November 1, and rechecks on focus after a sleep. */
+ *  An open session follows both boundaries (October 1 and November 1) and rechecks on focus after a
+ *  sleep; the restore itself reads the live date, so a stale flag never undoes an October pick. */
 export function useHalloweenSeasonEnd(): void {
   const { palette } = usePalette();
   const [inSeason, setInSeason] = useState(() => isHalloweenSeason());
   useEffect(() => {
-    if (!inSeason) {
-      return;
-    }
     let timer: ReturnType<typeof setTimeout> | undefined;
     const check = () => {
       clearTimeout(timer);
-      const left = msUntilSeasonEnd();
-      if (left === null) {
-        setInSeason(false);
-        return;
-      }
-      timer = setTimeout(check, Math.min(left, SEASON_CHECK_MAX_MS));
+      setInSeason(isHalloweenSeason());
+      timer = setTimeout(
+        check,
+        Math.min(msUntilSeasonChange(), SEASON_CHECK_MAX_MS),
+      );
     };
     check();
     window.addEventListener("focus", check);
@@ -157,9 +155,10 @@ export function useHalloweenSeasonEnd(): void {
       window.removeEventListener("focus", check);
       document.removeEventListener("visibilitychange", check);
     };
-  }, [inSeason]);
+  }, []);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: inSeason only triggers the recheck at a boundary.
   useEffect(() => {
-    if (!inSeason && isHalloweenThemeId(palette)) {
+    if (!isHalloweenSeason() && isHalloweenThemeId(palette)) {
       restoreNormalTheme();
     }
   }, [palette, inSeason]);
