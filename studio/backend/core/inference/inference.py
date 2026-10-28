@@ -340,7 +340,6 @@ class HarmonyTextStreamer:
         self._concat_decode: bool = _decodes_by_concatenation(tokenizer)
         self._settled_text: str = ""
         self._settled_n: int = 0
-        # Incremental parse of the cumulative text (see _process_incremental).
         self._scan_raw: str = ""
         self._scan_pos: int = 0
         self._open_match = None
@@ -408,14 +407,9 @@ class HarmonyTextStreamer:
             return val
 
     def _process_incremental(self, raw: str) -> None:
-        """Parse harmony channels and emit per-channel deltas (tracked by length, not whole-text diff).
-
-        Equivalent to re-matching every channel of ``raw`` each call, but resumes where the last call
-        stopped: a channel closed by ``<|end|>``/``<|channel|>`` never changes once fully processed, and
-        replaying it can only close ``<think>`` (a final channel), so only the open channel is rescanned.
-        """
+        """Emit per-channel deltas; same output as re-matching all of ``raw``, but only the open channel is
+        rescanned: a closed channel never changes, and replaying one can only close ``<think>`` (final)."""
         if not raw.startswith(self._scan_raw):
-            # Not an extension of the last text: re-match everything.
             self._scan_pos = 0
             self._open_match = None
             self._stable_final = False

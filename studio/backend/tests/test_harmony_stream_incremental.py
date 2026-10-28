@@ -108,7 +108,6 @@ def test_byte_level_tokenizer_takes_the_incremental_decode():
 
 
 def _stripping_tokenizers():
-    """decode / _decode overrides that post-process the whole text, which per-suffix decoding would change."""
     base = _byte_level_tokenizer()
 
     class StripDecode(transformers.PreTrainedTokenizerFast):
