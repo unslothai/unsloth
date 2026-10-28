@@ -43913,7 +43913,7 @@ def _anthropic_tool_response_from_events(
     parse_think = True,
     think_provenance = None,
 ):
-    """Deltas merge into trailing text, tool_use opens a new block; prev_text resets on tool_end."""
+    """Deltas merge into trailing text; tool_end or empty status resets the cumulative cursor."""
     content_blocks: list = []
     tool_blocks_by_id: dict[
         str, Union[AnthropicResponseToolUseBlock, AnthropicResponseServerToolUseBlock]
@@ -43951,6 +43951,8 @@ def _anthropic_tool_response_from_events(
                     # The wrap belongs to the block that OPENS this turn's span (a client tool_use can interrupt it).
                     if _span_guard.claimed and new.startswith("<think>"):
                         _block_wrap[len(content_blocks) - 1] = _span_guard.claimed_wrap
+        elif etype == "status" and not event.get("text"):
+            prev_text = ""
         elif etype == "tool_start":
             tool_call_id = event["tool_call_id"]
             arguments = event.get("arguments", {})
