@@ -382,6 +382,43 @@ def test_encode_within_one_tile_is_untiled_and_kill_switch_keeps_stock(monkeypat
     assert "tiled_encode" not in vae.__dict__
 
 
+def test_repeat_tiled_encode_reuses_its_blend_weights(monkeypatch):
+    monkeypatch.delenv(vt.WIDE_TILES_ENV, raising = False)
+    vae = _diffusers_vae()
+    x = torch.rand(1, 3, 1, 256, 1088, generator = torch.Generator().manual_seed(7)) * 2 - 1
+    real, calls = vt.axis_weights, []
+    monkeypatch.setattr(vt, "axis_weights", lambda *a: calls.append(a) or real(*a))
+    with torch.no_grad():
+        vae.enable_tiling()
+        assert vt.install(vae)
+        first = vae._encode(x)
+        built = len(calls)
+        second = vae._encode(x)
+    # Built once (the width axis tiles); the repeat encode reads the same tensors back.
+    assert built >= 1 and len(calls) == built
+    assert torch.equal(first, second)
+    fresh = vt.axis_weights(
+        vt.tile_starts(68, vt.ENCODE_TILE_LATENTS, vt.ENCODE_OVERLAP_LATENTS),
+        vt.ENCODE_TILE_LATENTS,
+        68,
+        1,
+        torch,
+        x.device,
+        vt.ENCODE_MARGIN_LATENTS,
+        vt.ENCODE_RAMP_LATENTS,
+    )
+    cached = [v for k, v in vae.__dict__["_unsloth_wide_weights"].items() if k[2] == 68]
+    assert len(cached) == 1 and all(torch.equal(a, b) for a, b in zip(cached[0], fresh))
+    # The decode blend over the same tiles (narrower margin and ramp) is its own entry.
+    ws = vt.tile_starts(68, vt.ENCODE_TILE_LATENTS, vt.ENCODE_OVERLAP_LATENTS)
+    decode = vt._cached_axis_weights(vae, ws, vt.ENCODE_TILE_LATENTS, 68, 1, torch, x.device)
+    want = real(ws, vt.ENCODE_TILE_LATENTS, 68, 1, torch, x.device)
+    assert all(torch.equal(a, b) for a, b in zip(decode, want))
+    assert not all(torch.equal(a, b) for a, b in zip(decode, fresh))
+    vt.uninstall(vae)
+    assert "_unsloth_wide_weights" not in vae.__dict__
+
+
 def _decoded_latents(height, width, th, tw):
     return len(vt.tile_starts(height, th)) * th * len(vt.tile_starts(width, tw)) * tw
 
