@@ -468,7 +468,10 @@ def _pdf_form_field_lines(page) -> list[str]:
             widget.field_type == fitz.PDF_WIDGET_TYPE_TEXT
             and widget.field_flags & fitz.PDF_TX_FIELD_IS_PASSWORD
         )
-        hidden = widget.field_display in (1, 3)
+        _, flags = page.parent.xref_get_key(widget.xref, "F")
+        hidden = widget.field_display in (1, 3) or (
+            flags.isdigit() and int(flags) & fitz.PDF_ANNOT_IS_INVISIBLE
+        )
         if not widget.field_name or not value.strip() or unchecked or password or hidden:
             continue
         # A radio widget's /TU tooltip names one option, not the group's selected value.

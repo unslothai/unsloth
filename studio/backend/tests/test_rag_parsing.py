@@ -239,6 +239,30 @@ def test_pdf_form_names_the_ticked_box_when_boxes_share_a_name_or_tooltip(tmp_pa
         assert lines == ["Smoker (smoker_no): Yes"]
 
 
+@pytest.mark.parametrize("flag", [1, 2, 32])
+def test_pdf_form_skips_invisible_hidden_and_noview_fields(tmp_path, flag):
+    import pymupdf
+
+    from core.rag import parsers
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+    for name, y in (("shown", 80), ("masked", 120)):
+        widget = pymupdf.Widget()
+        widget.field_type = pymupdf.PDF_WIDGET_TYPE_TEXT
+        widget.field_name = name
+        widget.field_value = f"{name} value"
+        widget.rect = pymupdf.Rect(40, y, 240, y + 20)
+        xref = page.add_widget(widget).xref
+    doc.xref_set_key(xref, "F", str(flag))
+    pdf = tmp_path / "form.pdf"
+    doc.save(str(pdf))
+    doc.close()
+
+    with pymupdf.open(str(pdf)) as reopened:
+        assert parsers._pdf_form_field_lines(reopened[0]) == ["shown: shown value"]
+
+
 # PyMuPDF raises while loading either widget; main never read widgets, so it parsed these.
 @pytest.mark.parametrize("key, value", [("DA", "(garbage Tf)"), ("Parent", "self")])
 @pytest.mark.parametrize("markdown", [True, False])
