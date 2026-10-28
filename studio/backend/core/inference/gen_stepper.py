@@ -30,8 +30,7 @@ def _waker(requests: queue.SimpleQueue):
 
 
 def _work(ref, requests: queue.SimpleQueue) -> None:
-    # Holds the stepper (so the generator) only while a step runs: a dropped stream's generator is
-    # finalized as soon as its consumer lets go, as with a thread pool.
+    # Holds the stepper only during a step, so a dropped stream's generator is finalized at once.
     while True:
         try:
             request = requests.get(timeout = _IDLE_EXIT_S)
@@ -46,11 +45,11 @@ def _work(ref, requests: queue.SimpleQueue) -> None:
             del stepper
             continue
         if request is None:
-            return  # the stepper was dropped: its stream is over, so this thread is not kept idle
+            return
         loop, future, context, default = request
         stepper = ref()
         if stepper is None:
-            return  # nobody can await this step any more
+            return
         try:
             result, error = context.run(next, stepper._gen, default), None
         except BaseException as exc:
@@ -59,7 +58,7 @@ def _work(ref, requests: queue.SimpleQueue) -> None:
         try:
             loop.call_soon_threadsafe(_resolve, future, result, error)
         except RuntimeError:
-            pass  # loop closed: nobody is waiting
+            pass
         del request, loop, future, context, default, result, error
 
 
