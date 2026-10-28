@@ -190,6 +190,8 @@ def run_benchmark(
                 "correct": bool(r["passed"]),
             }
             for r in results
+            # Same denominator as the score: an errored row was never scored.
+            if r.get("error") is None
         ]
         for target, results in per_target.items()
     }

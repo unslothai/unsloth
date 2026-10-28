@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import time
+import uuid
 from typing import Any, Optional
 
 import httpx
@@ -203,7 +204,7 @@ async def run_recipe_heldout(
             )
 
         duration = time.monotonic() - t0
-        run_id = f"benchmark_{RECIPE_HELDOUT_TASK_ID}_{time.strftime('%Y%m%d_%H%M%S')}"
+        run_id = f"benchmark_{RECIPE_HELDOUT_TASK_ID}_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
         run_ids = {"candidate": run_id}
         _store(run_id, candidate_model, result["candidate"], result["samples"]["candidate"], duration)
         if "baseline" in result:

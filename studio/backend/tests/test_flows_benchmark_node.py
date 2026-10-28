@@ -178,3 +178,23 @@ def test_flows_reach_the_evals_routes_and_nothing_else_under_benchmarks():
     assert flow_caller.checked_path(httpx.URL("http://x/api/benchmarks/evals/run"), "POST")
     with pytest.raises(RuntimeError):
         flow_caller.checked_path(httpx.URL("http://x/api/benchmarks/lease"), "POST")
+
+
+def test_a_hub_split_is_streamed_and_cut_to_max_rows(monkeypatch):
+    seen = {}
+
+    class _Stream:
+        def take(self, n):
+            seen["take"] = n
+            return iter(ROWS[:n])
+
+    def load_dataset(name, subset, split, token, streaming):
+        seen.update(name = name, split = split, streaming = streaming)
+        return _Stream()
+
+    monkeypatch.setattr("datasets.load_dataset", load_dataset)
+    monkeypatch.setattr("core.training.account_jobs.account_hf_token", lambda token: None)
+    ctx = _Ctx(lambda *a: {})
+    rows = asyncio.run(benchmark._read_rows(ctx, {"kind": "dataset", "source": "hf", "ref": "o/d"}, 2))
+    assert rows == ROWS[:2]
+    assert seen == {"name": "o/d", "split": "train", "streaming": True, "take": 2}

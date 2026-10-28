@@ -98,6 +98,8 @@ def test_judge_and_row_errors():
     assert result["candidate"] == {"total": 3, "scored": 2, "passed": 2, "errors": 1, "score": 1.0}
     assert "baseline" not in result
     assert result["failed_examples"][0]["reason"] == "HTTP 500: boom"
+    # stored samples share the score's denominator
+    assert [s["doc_id"] for s in result["samples"]["candidate"]] == [0, 1]
 
 
 def test_stops_on_cancel():
