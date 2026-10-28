@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Hide and refuse the MCP tools the owner turned off in Settings > MCP, and the prompts that read them. The list is installation-wide and read as the owner, so it works with or without a request."""
+"""Hide and refuse the MCP tools the owner turned off in Settings > Agents, and the prompts that read them. The list is installation-wide and read as the owner, so it works with or without a request."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ TAG = "tool_disabled"
 
 
 def disabled_message(name: str) -> str:
-    return f"{name} is turned off in Unsloth Studio. The owner can turn it on in Settings > MCP."
+    return f"{name} is turned off in Unsloth Studio. The owner can turn it on in Settings > Agents."
 
 
 async def _disabled() -> Optional[frozenset[str]]:
@@ -61,6 +61,6 @@ class StudioToolAccess(Middleware):
         if off:
             raise PromptError(
                 f"[{TAG}] The {name} prompt needs {', '.join(off)}, turned off in Unsloth Studio. "
-                "The owner can turn them on in Settings > MCP."
+                "The owner can turn them on in Settings > Agents."
             )
         return await call_next(context)

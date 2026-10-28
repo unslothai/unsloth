@@ -54,9 +54,7 @@ export function ImageDropzone({
 }: {
   value: string | null;
   onChange: (dataUrl: string | null) => void;
-  /** Prompt shown in the empty state. */
   label?: string;
-  /** Accessible remove-button name. */
   removeLabel?: string;
   className?: string;
   /** Larger uploads are downscaled to this per side; null keeps them as chosen. */
@@ -65,11 +63,9 @@ export function ImageDropzone({
 }) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [dragging, setDragging] = useState(false);
-  // File reads can finish after another picker action. Only the newest
-  // selection may update the shared field.
+  // Only the newest selection may update the shared field.
   const selection = useRef(0);
-  // The sequence is per instance, so it cannot see a read outliving this
-  // picker: `onChange` is shared, and a late write lands on whoever holds it.
+  // `onChange` is shared, so a read outliving this picker would land on whoever holds it.
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -77,9 +73,7 @@ export function ImageDropzone({
       mounted.current = false;
     };
   }, []);
-  // The reference slots are keyed by index, so removing one shifts a different
-  // image into a picker that stays mounted. A `value` this picker did not set
-  // means a read in flight is for the slot as it used to be.
+  // Slots are keyed by index; a `value` this picker did not set invalidates a read in flight.
   const seen = useRef(value);
   useEffect(() => {
     if (seen.current === value) return;

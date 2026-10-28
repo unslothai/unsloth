@@ -56,6 +56,7 @@ function harness(response: ReturnType<typeof jsonResponse>) {
         isCoalescedHistoryEvent: () => false,
       },
       "../utils/load-warning-toast": { showLoadWarning: () => {} },
+      "../lib/load-request": {},
       "./generation-length.ts": {},
       "./gguf-variants-request": {},
       "./padded-response": { assertCompletedPaddedBody: () => {} },

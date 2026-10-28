@@ -470,9 +470,7 @@ def detect_custom_format_heuristic(dataset):
             user_candidates.append((col, score))
 
     if not user_candidates and not any(col != assistant_col for col in user_potential):
-        # has_keyword drops "context" from user_potential because "text" only matches
-        # inside it. When nothing else can hold the user turn, that column is a better
-        # user turn than an assistant-worded leftover.
+        # "text" only matches inside "context", so it is still the best user column if nothing else fits.
         shadowed_potential = [
             col
             for col in content_columns
@@ -974,9 +972,24 @@ def detect_vlm_dataset_structure(dataset):
         if not isinstance(sample_value, str):
             return True
 
+        from .remote_images import (
+            guard_url,
+            is_network_share,
+            open_opted_in_url,
+            private_sources_allowed,
+        )
+
         if not sample_value.startswith(("http://", "https://")):
-            from .remote_images import is_network_share
-            return not is_network_share(sample_value) and os.path.exists(sample_value)
+            if is_network_share(sample_value) and not private_sources_allowed():
+                return False
+            return os.path.exists(sample_value)
+        if private_sources_allowed():
+            # Still probe, so a broken column loses to a working one.
+            try:
+                with open_opted_in_url(sample_value, method = "HEAD", timeout = 3) as response:
+                    return response.status < 400
+            except Exception:
+                return False
 
         try:
             import time
@@ -984,7 +997,7 @@ def detect_vlm_dataset_structure(dataset):
             from core.inference.tools import _fetch_url_raw
 
             error, _, _ = _fetch_url_raw(
-                sample_value,
+                guard_url(sample_value),
                 timeout = 3,
                 deadline = time.monotonic() + 3,
                 method = "HEAD",

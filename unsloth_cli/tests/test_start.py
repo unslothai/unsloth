@@ -1581,7 +1581,9 @@ def fake_studio(tmp_path, monkeypatch):
             return state.get("providers", [])
         if url.endswith("/api/inference/load"):
             already_loaded = state["models"][0]["id"] == payload["model_path"]
-            state["models"] = [{"id": payload["model_path"], "context_length": 4096}]
+            state["models"] = [
+                {"id": payload["model_path"], "context_length": MODEL["context_length"]}
+            ]
             return {
                 "status": "already_loaded" if already_loaded else "loaded",
                 "model": payload["model_path"],
@@ -1821,7 +1823,7 @@ def test_connect_claude_as_subagent_preserves_cloud_parent(fake_studio, tmp_path
         "UNSLOTH_CLAUDE_SUBAGENT_API_KEY": "sk-unsloth-feedfacefeedface",
         "UNSLOTH_CLAUDE_SUBAGENT_MODEL": MODEL["id"] + ":UD-Q4_K_XL",
         "UNSLOTH_CLAUDE_SUBAGENT_BYPASS_PERMISSIONS": "0",
-        "UNSLOTH_CLAUDE_SUBAGENT_CONTEXT_WINDOW": "4096",
+        "UNSLOTH_CLAUDE_SUBAGENT_CONTEXT_WINDOW": str(MODEL["context_length"]),
         start._CLAUDE_SUBAGENT_SETTINGS_ENV: str(settings_path),
     }
     settings = json.loads(settings_path.read_text())
@@ -2761,6 +2763,272 @@ def test_connect_codex_no_launch(fake_studio, tmp_path):
     assert (home / "unsloth_api.config.toml").exists()
 
 
+def test_codex_keeps_the_users_mcp_servers(fake_studio, tmp_path, monkeypatch):
+    tomllib = pytest.importorskip("tomllib")
+    source_home = tmp_path / "user-codex"
+    source_home.mkdir()
+    user_config = source_home / "config.toml"
+    user_config.write_text(
+        'model = "cloud-model"\n\n'
+        '[mcp_servers.weather]\ncommand = "python3"\nargs = ["weather.py"]\n\n'
+        '[mcp_servers.weather.env]\nUNITS = "metric"\n\n'
+        '[mcp_servers.docs]\nurl = "http://127.0.0.1:9000/mcp"\n'
+    )
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    home = tmp_path / "agents" / "codex"
+
+    result = CliRunner().invoke(start.start_app, ["codex", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    config = tomllib.loads((home / "config.toml").read_text())
+    assert config["mcp_servers"] == {
+        "weather": {"command": "python3", "args": ["weather.py"], "env": {"UNITS": "metric"}},
+        "docs": {"url": "http://127.0.0.1:9000/mcp"},
+    }
+    assert "model" not in config
+    assert config["model_providers"]["unsloth_api"]["base_url"].endswith("/v1")
+
+    user_config.write_text('[mcp_servers.docs]\nurl = "http://127.0.0.1:9000/mcp"\n')
+    result = CliRunner().invoke(start.start_app, ["codex", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    config = tomllib.loads((home / "config.toml").read_text())
+    assert config["mcp_servers"] == {"docs": {"url": "http://127.0.0.1:9000/mcp"}}
+    assert user_config.read_text() == '[mcp_servers.docs]\nurl = "http://127.0.0.1:9000/mcp"\n'
+
+
+def test_codex_keeps_mcp_servers_added_in_the_saved_home(fake_studio, tmp_path, monkeypatch):
+    tomllib = pytest.importorskip("tomllib")
+    user_home = tmp_path / "user-home"
+    (user_home / ".codex").mkdir(parents = True)
+    (user_home / ".codex" / "config.toml").write_text('[mcp_servers.docs]\nurl = "http://d/mcp"\n')
+    monkeypatch.setenv("HOME", str(user_home))
+    monkeypatch.setenv("USERPROFILE", str(user_home))
+    monkeypatch.delenv("CODEX_HOME", raising = False)
+    home = tmp_path / "agents" / "codex"
+
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    with (home / "config.toml").open("a") as f:
+        f.write('\n[mcp_servers.local]\ncommand = "local-server"\n')
+    # The shell that ran the recipe has CODEX_HOME set to the saved home.
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    result = CliRunner().invoke(start.start_app, ["codex", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    config = tomllib.loads((home / "config.toml").read_text())
+    assert config["mcp_servers"] == {
+        "docs": {"url": "http://d/mcp"},
+        "local": {"command": "local-server"},
+    }
+
+    (user_home / ".codex" / "config.toml").write_text("")
+    monkeypatch.delenv("CODEX_HOME")
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    config = tomllib.loads((home / "config.toml").read_text())
+    assert config["mcp_servers"] == {"local": {"command": "local-server"}}
+
+
+def test_codex_mcp_servers_follow_a_custom_codex_home_through_the_recipe(
+    fake_studio, tmp_path, monkeypatch
+):
+    tomllib = pytest.importorskip("tomllib")
+    user_home = tmp_path / "user-home"
+    (user_home / ".codex").mkdir(parents = True)
+    monkeypatch.setenv("HOME", str(user_home))
+    monkeypatch.setenv("USERPROFILE", str(user_home))
+    custom = tmp_path / "custom-codex"
+    custom.mkdir()
+    (custom / "config.toml").write_text('[mcp_servers.custom]\nurl = "http://c/mcp"\n')
+    monkeypatch.setenv("CODEX_HOME", str(custom))
+    home = tmp_path / "agents" / "codex"
+
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    result = CliRunner().invoke(start.start_app, ["codex", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    config = tomllib.loads((home / "config.toml").read_text())
+    assert config["mcp_servers"] == {"custom": {"url": "http://c/mcp"}}
+
+
+def test_codex_drops_a_removed_server_with_subtables_added_in_the_saved_home(
+    fake_studio, tmp_path, monkeypatch
+):
+    tomllib = pytest.importorskip("tomllib")
+    source_home = tmp_path / "user-codex"
+    source_home.mkdir()
+    (source_home / "config.toml").write_text('[mcp_servers.docs]\nurl = "http://d/mcp"\n')
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    home = tmp_path / "agents" / "codex"
+
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    with (home / "config.toml").open("a") as f:
+        f.write('\n[mcp_servers.docs.env]\nUNITS = "metric"\n')
+        f.write('\n[[mcp_servers.docs.env_vars]]\nname = "TOKEN"\nsource = "local"\n')
+    (source_home / "config.toml").write_text('[mcp_servers.keep]\nurl = "http://k/mcp"\n')
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    config = tomllib.loads((home / "config.toml").read_text())
+    assert config["mcp_servers"] == {"keep": {"url": "http://k/mcp"}}
+
+
+def test_codex_session_from_a_saved_home_reads_its_origin(fake_studio, tmp_path, monkeypatch):
+    tomllib = pytest.importorskip("tomllib")
+    source_home = tmp_path / "user-codex"
+    source_home.mkdir()
+    (source_home / "config.toml").write_text('[mcp_servers.docs]\nurl = "http://d/mcp"\n')
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    saved = tmp_path / "agents" / "codex"
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    with (saved / "config.toml").open("a") as f:
+        f.write('\n[mcp_servers.local]\ncommand = "local-server"')
+
+    (source_home / "config.toml").write_text('[mcp_servers.fresh]\nurl = "http://f/mcp"\n')
+    monkeypatch.setenv("CODEX_HOME", str(saved))
+    session = tmp_path / "session"
+    start.write_codex_config("http://h", {"id": "m"}, session, keep_mcp_servers = True)
+    config = tomllib.loads((session / "config.toml").read_text())
+    assert config["mcp_servers"] == {
+        "local": {"command": "local-server"},
+        "fresh": {"url": "http://f/mcp"},
+    }
+
+    (source_home / "config.toml").write_text(
+        '[mcp_servers.fresh]\nurl = "http://f/mcp"\n\n[mcp_servers.local]\nurl = "http://l/mcp"\n'
+    )
+    start.write_codex_config("http://h", {"id": "m"}, session, keep_mcp_servers = True)
+    config = tomllib.loads((session / "config.toml").read_text())
+    assert config["mcp_servers"] == {
+        "local": {"url": "http://l/mcp"},
+        "fresh": {"url": "http://f/mcp"},
+    }
+
+
+def test_codex_carries_mcp_servers_written_as_root_keys(fake_studio, tmp_path, monkeypatch):
+    tomllib = pytest.importorskip("tomllib")
+    source_home = tmp_path / "user-codex"
+    source_home.mkdir()
+    (source_home / "config.toml").write_text(
+        'mcp_servers.docs.command = "python3"\n'
+        'mcp_servers.docs.env = { "API KEY" = "x" }\n'
+        'mcp_servers.notes = { url = "http://n/mcp", tools = { search = { enabled = false } } }\n'
+    )
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    home = tmp_path / "agents" / "codex"
+
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    config = tomllib.loads((home / "config.toml").read_text())
+    assert (
+        config["mcp_servers"]
+        == tomllib.loads((source_home / "config.toml").read_text())["mcp_servers"]
+    )
+
+
+def test_codex_reads_mcp_servers_from_a_config_with_a_bom(fake_studio, tmp_path, monkeypatch):
+    tomllib = pytest.importorskip("tomllib")
+    source_home = tmp_path / "user-codex"
+    source_home.mkdir()
+    (source_home / "config.toml").write_bytes(
+        b'\xef\xbb\xbf[mcp_servers.docs]\nurl = "http://d/mcp"\n'
+    )
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    home = tmp_path / "agents" / "codex"
+
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    config = tomllib.loads((home / "config.toml").read_text())
+    assert config["mcp_servers"] == {"docs": {"url": "http://d/mcp"}}
+
+
+def test_toml_chunks_split_only_at_real_table_headers():
+    text = (
+        'model = "m"\n'
+        '[mcp_servers.notes]\nargs = ["-c", """echo "hi""""]\nm = [\n[1],\n]\ns = """\n[fake]\n"""\n'
+        "[model_providers.unsloth_api]\nname = 'x'\n"
+    )
+    chunks = start._toml_chunks(text)
+    assert "".join(chunks) == text
+    assert [start._toml_table_path(c) for c in chunks] == [
+        None,
+        ("mcp_servers", "notes"),
+        ("model_providers", "unsloth_api"),
+    ]
+
+
+def test_codex_keeps_saved_servers_when_the_source_is_newer_toml(
+    fake_studio, tmp_path, monkeypatch
+):
+    tomllib = pytest.importorskip("tomllib")
+    source_home = tmp_path / "user-codex"
+    source_home.mkdir()
+    (source_home / "config.toml").write_text('[mcp_servers.docs]\nurl = "http://d/mcp"\n')
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    home = tmp_path / "agents" / "codex"
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+
+    # A multi-line inline table is TOML 1.1: Codex reads it, tomllib does not.
+    (source_home / "config.toml").write_text(
+        '[mcp_servers.docs]\nurl = "http://d/mcp"\nenv = {\n  UNITS = "metric",\n}\n'
+    )
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    config = tomllib.loads((home / "config.toml").read_text())
+    assert config["mcp_servers"] == {"docs": {"url": "http://d/mcp"}}
+
+
+def test_codex_saved_home_outlives_the_session_it_was_made_in(fake_studio, tmp_path, monkeypatch):
+    tomllib = pytest.importorskip("tomllib")
+    source_home = tmp_path / "user-codex"
+    source_home.mkdir()
+    (source_home / "config.toml").write_text('[mcp_servers.docs]\nurl = "http://d/mcp"\n')
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    session = tmp_path / "session"
+    start.write_codex_config("http://h", {"id": "m"}, session, keep_mcp_servers = True)
+
+    monkeypatch.setenv("CODEX_HOME", str(session))
+    saved = tmp_path / "agents" / "codex"
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    shutil.rmtree(session)
+    monkeypatch.setenv("CODEX_HOME", str(saved))
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    config = tomllib.loads((saved / "config.toml").read_text())
+    assert config["mcp_servers"] == {"docs": {"url": "http://d/mcp"}}
+
+
+def test_codex_remembers_an_empty_custom_codex_home(fake_studio, tmp_path, monkeypatch):
+    tomllib = pytest.importorskip("tomllib")
+    user_home = tmp_path / "user-home"
+    (user_home / ".codex").mkdir(parents = True)
+    (user_home / ".codex" / "config.toml").write_text('[mcp_servers.unrelated]\nurl = "http://u"\n')
+    monkeypatch.setenv("HOME", str(user_home))
+    monkeypatch.setenv("USERPROFILE", str(user_home))
+    custom = tmp_path / "custom-codex"
+    custom.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(custom))
+    home = tmp_path / "agents" / "codex"
+
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    (custom / "config.toml").write_text('[mcp_servers.fresh]\nurl = "http://f/mcp"\n')
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    config = tomllib.loads((home / "config.toml").read_text())
+    assert config["mcp_servers"] == {"fresh": {"url": "http://f/mcp"}}
+
+
+def test_codex_carries_mcp_servers_with_multiline_values(fake_studio, tmp_path, monkeypatch):
+    tomllib = pytest.importorskip("tomllib")
+    source_home = tmp_path / "user-codex"
+    source_home.mkdir()
+    (source_home / "config.toml").write_text(
+        '[mcp_servers.notes]\ncommand = "notes"\nargs = ["--banner", """\n[welcome]\nhi"""]\n\n'
+        '[mcp_servers.docs]\nurl = "http://d/mcp"\n'
+    )
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    home = tmp_path / "agents" / "codex"
+
+    result = CliRunner().invoke(start.start_app, ["codex", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    config = tomllib.loads((home / "config.toml").read_text())
+    assert config["model_providers"]["unsloth_api"]["base_url"].endswith("/v1")
+    assert config["mcp_servers"] == {
+        "notes": {"command": "notes", "args": ["--banner", "[welcome]\nhi"]},
+        "docs": {"url": "http://d/mcp"},
+    }
+
+
 def test_connect_codex_as_subagent_preserves_cloud_parent(fake_studio, tmp_path, monkeypatch):
     monkeypatch.setattr(start, "_codex_supports_model_catalog", lambda: True)
     source_home = tmp_path / "user-codex"
@@ -3514,7 +3782,10 @@ def test_connect_model_flag_matches_canonical_id(fake_studio, monkeypatch):
             return {"model": canonical, "display_name": canonical}
         if url.endswith("/api/inference/loaded-models"):
             # Decoy sorts first, so models[0] is the wrong pick on the old code.
-            return {"object": "list", "data": [MODEL, {"id": canonical, "context_length": 4096}]}
+            return {
+                "object": "list",
+                "data": [MODEL, {"id": canonical, "context_length": MODEL["context_length"]}],
+            }
         return inner(method, url, token, payload, timeout, error)
 
     monkeypatch.setattr(start, "_http_json", http_json)
@@ -7515,8 +7786,8 @@ def test_connect_pi_as_subagent_preserves_cloud_parent(fake_studio, tmp_path, yo
         "baseUrl": f"{BASE}/v1",
         "apiKey": "sk-unsloth-feedfacefeedface",
         "model": MODEL["id"] + ":UD-Q4_K_XL",
-        "contextWindow": 4096,
-        "maxTokens": 1024,
+        "contextWindow": MODEL["context_length"],
+        "maxTokens": 32_000,
         "approve": yolo,
     }
     assert "Ask Pi to spawn an Unsloth or local agent." in result.output
@@ -7725,6 +7996,362 @@ def test_dsh_warns_when_the_context_leaves_replies_no_room(fake_studio, window, 
     assert result.exit_code == 0, result.output
     assert (f"loaded with {window:,} tokens of context, too few" in result.output) is warned
     assert ("--max-seq-length 16384" in result.output) is warned
+
+
+@pytest.fixture
+def launched(monkeypatch):
+    calls = []
+    monkeypatch.setattr(start, "_launch", lambda command, env, **kwargs: calls.append(command) or 0)
+    return calls
+
+
+_AGENT_ARGS = {"claude": ["-p", "hi"], "opencode": ["run", "hi"]}
+
+
+@pytest.mark.parametrize(
+    "agent, window, outcome, suggested",
+    [
+        ("claude", 8_192, "too few", 65536),
+        ("claude", 16_384, "too few", 65536),
+        ("claude", 24_576, "too few", 65536),
+        ("claude", 32_768, "tight", 65536),
+        ("claude", 40_960, "tight", 65536),
+        ("claude", 65_536, "ok", None),
+        ("opencode", 8_192, "too few", 32768),
+        ("opencode", 16_384, "tight", 32768),
+        ("opencode", 32_768, "ok", None),
+    ],
+)
+@pytest.mark.parametrize("mode", ["tui", "args", "no-launch"])
+def test_agent_checks_the_context_fits_its_own_prompt(
+    fake_studio, launched, agent, window, outcome, suggested, mode
+):
+    fake_studio.state["models"] = [{**MODEL, "context_length": window}]
+    args = {"tui": [], "args": _AGENT_ARGS[agent], "no-launch": ["--no-launch"]}[mode]
+    result = CliRunner().invoke(start.start_app, [agent, *args])
+    refused = outcome == "too few" and mode == "tui"
+    assert result.exit_code == (1 if refused else 0), result.output
+    assert (f"loaded with {window:,} tokens of context, too few" in result.output) is (
+        outcome == "too few"
+    )
+    assert ("Warning: " in result.output) is (outcome != "ok" and not refused)
+    assert ("so it will compact often" in result.output) is (outcome == "tight")
+    assert (f"--max-seq-length {suggested}" in result.output) is (suggested is not None)
+    assert bool(launched) is (mode != "no-launch" and not refused)
+
+
+def test_opencode_v2_prompt_fits_where_v1_does_not(fake_studio, launched, monkeypatch):
+    monkeypatch.setattr(start, "_opencode_command", lambda *_: ("opencode2", True))
+    fake_studio.state["models"] = [{**MODEL, "context_length": 8_192}]
+    result = CliRunner().invoke(start.start_app, ["opencode"])
+    assert result.exit_code == 0, result.output
+    assert "so it will compact often" in result.output
+    assert launched
+
+
+@pytest.mark.parametrize("agent", ["claude", "opencode"])
+def test_agent_context_check_skips_subagent_mode(fake_studio, agent):
+    fake_studio.state["models"] = [{**MODEL, "context_length": 8_192}]
+    result = CliRunner().invoke(start.start_app, [agent, "--as-subagent", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    assert "tokens of context" not in result.output
+
+
+def test_agent_context_check_caps_the_suggestion_at_the_native_window(capsys):
+    entry = {"id": "m", "context_length": 16_384, "native_context_length": 40_960}
+    with pytest.raises(typer.Exit):
+        start._check_agent_context("claude", "Claude Code", entry, start._CLAUDE_PROMPT_TOKENS)
+    assert "--max-seq-length 40960" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("native", [8_192, 16_384])
+def test_agent_context_check_when_the_native_window_cannot_fit(capsys, native):
+    entry = {"id": "m", "context_length": 8_192, "native_context_length": native}
+    with pytest.raises(typer.Exit):
+        start._check_agent_context("claude", "Claude Code", entry, start._CLAUDE_PROMPT_TOKENS)
+    err = capsys.readouterr().err
+    assert "--max-seq-length" not in err
+    assert f"Its full context is {native:,} tokens" in err
+
+
+def test_agent_context_check_ignores_an_unknown_window(capsys):
+    start._check_agent_context("claude", "Claude Code", {"id": "m"}, start._CLAUDE_PROMPT_TOKENS)
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize(
+    "window, compacts_at",
+    [
+        (16_384, 9_288),
+        (24_576, 15_432),
+        (32_768, 21_576),
+        (40_960, 27_720),
+        (65_536, 46_152),
+        (131_072, 108_072),
+    ],
+)
+def test_claude_compaction_point_matches_claude_code(window, compacts_at):
+    # Measured on Claude Code 2.1.307-2.1.309 (TUI and -p) with the env _claude_local_env writes: compaction starts within 256 tokens past this.
+    assert start._agent_compacts_at("claude", window) == compacts_at
+
+
+@pytest.mark.parametrize("running", [False, True])
+@pytest.mark.parametrize("agent", ["claude", "opencode"])
+def test_agent_context_check_refuses_before_installing_or_loading(
+    fake_studio, launched, monkeypatch, agent, running
+):
+    requirements = []
+    monkeypatch.setattr(start, "_require_agent_for_launch", lambda *args: requirements.append(args))
+    if not running:
+        monkeypatch.setattr(start, "find_studio_server", lambda: None)
+    result = CliRunner().invoke(
+        start.start_app, [agent, "--model", "unsloth/other-GGUF", "--max-seq-length", "8192"]
+    )
+    assert result.exit_code == 1, result.output
+    assert "unsloth/other-GGUF would load with 8,192 tokens of context, too few" in result.output
+    assert not any(url.endswith("/api/inference/load") for _, url, _ in fake_studio)
+    assert not launched
+    assert bool(requirements) is running
+
+
+@pytest.mark.parametrize("agent", ["claude", "opencode"])
+def test_agent_context_check_on_a_connection_never_suggests_a_resize(fake_studio, launched, agent):
+    fake_studio.state["providers"] = [GEMINI_CONNECTION]
+    result = CliRunner().invoke(
+        start.start_app, [agent, "--model", "gemini-2.5-flash", "--max-seq-length", "8192"]
+    )
+    assert result.exit_code == 1, result.output
+    assert "A Connection's context is set by its provider" in result.output
+    assert (
+        "--max-seq-length 65536" not in result.output
+        and "--max-seq-length 32768" not in result.output
+    )
+    assert _loads(fake_studio) == []
+    assert not launched
+
+
+@pytest.mark.parametrize("agent, suggested", [("claude", 65536), ("opencode", 32768)])
+@pytest.mark.parametrize("variant", [None, "Q8_0"])
+def test_agent_context_retry_keeps_the_requested_model(
+    fake_studio, launched, agent, suggested, variant
+):
+    target = "unsloth/other-GGUF"
+    quant = ["--gguf-variant", variant] if variant else []
+    result = CliRunner().invoke(
+        start.start_app, [agent, "--model", target, *quant, "--max-seq-length", "8192"]
+    )
+    assert result.exit_code == 1, result.output
+    selection = f" --gguf-variant {variant}" if variant else ""
+    command = f"unsloth start {agent} --model {target}{selection} --max-seq-length {suggested}"
+    assert command in result.output
+    retry = CliRunner().invoke(start.start_app, shlex.split(command)[2:])
+    assert retry.exit_code == 0, retry.output
+    loads = [payload for _, url, payload in fake_studio if url.endswith("/api/inference/load")]
+    assert len(loads) == 1
+    assert loads[0]["model_path"] == target
+    assert loads[0]["max_seq_length"] == suggested
+    assert loads[0].get("gguf_variant") == variant
+    assert launched
+
+
+def test_agent_context_check_does_not_resize_a_connection(fake_studio):
+    fake_studio.state["providers"] = [GEMINI_CONNECTION]
+    result = CliRunner().invoke(
+        start.start_app,
+        ["claude", "--no-launch", "--model", "gemini-2.5-flash", "--max-seq-length", "8192"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "too few for Claude Code" in result.output
+    assert "A Connection's context is set by its provider" in result.output
+    assert "--max-seq-length 65536" not in result.output
+
+
+@pytest.mark.parametrize("agent", ["claude", "opencode"])
+def test_agent_context_retry_keeps_the_load_flags(fake_studio, launched, agent):
+    flags = ["--no-load-in-4bit", "--tensor-parallel", "--gpu-memory-mode", "manual"]
+    args = [
+        agent,
+        "--model",
+        "unsloth/other",
+        *flags,
+        "--api-key",
+        "sk-secret",
+        "--max-seq-length",
+        "8192",
+    ]
+    result = CliRunner().invoke(start.start_app, args)
+    assert result.exit_code == 1, result.output
+    assert "sk-secret" not in result.output
+    line = next(l for l in result.output.splitlines() if "Run unsloth start" in l)
+    command = line[line.index("unsloth start") : line.index(" (a smaller quant")]
+    assert command.startswith(f"unsloth start {agent} --model unsloth/other ")
+    assert " ".join(flags) in command and "--max-seq-length 8192" not in command
+    retry = CliRunner().invoke(start.start_app, shlex.split(command)[2:])
+    assert retry.exit_code == 0, retry.output
+    load = [p for _, url, p in fake_studio if url.endswith("/api/inference/load")][-1]
+    assert load["load_in_4bit"] is False
+
+
+def test_agent_context_retry_keeps_a_positional_model(fake_studio, launched):
+    result = CliRunner().invoke(
+        start.start_app, ["claude", "unsloth/other-GGUF", "--max-seq-length", "8192"]
+    )
+    assert result.exit_code == 1, result.output
+    command = "unsloth start claude --model unsloth/other-GGUF --max-seq-length 65536"
+    assert command in result.output
+    retry = CliRunner().invoke(start.start_app, shlex.split(command)[2:])
+    assert retry.exit_code == 0, retry.output
+    loads = [p for _, url, p in fake_studio if url.endswith("/api/inference/load")]
+    assert loads[-1]["model_path"] == "unsloth/other-GGUF"
+
+
+def test_agent_context_retry_names_a_typed_key_without_echoing_it(fake_studio, launched):
+    args = [
+        "claude",
+        "--model",
+        "unsloth/other-GGUF",
+        "--api-key",
+        "sk-secret",
+        "--max-seq-length",
+        "8192",
+    ]
+    result = CliRunner().invoke(start.start_app, args)
+    assert result.exit_code == 1, result.output
+    assert "--api-key <your key>" in result.output
+    assert "sk-secret" not in result.output
+
+
+@pytest.mark.parametrize(
+    "agent, passthrough, suggested",
+    [
+        ("claude", ["--continue"], 65536),
+        ("claude", ["-r", "abc123"], 65536),
+        ("claude", ["--resume"], 65536),
+        ("opencode", ["-c"], 32768),
+        ("opencode", ["--session", "ses_1", "--fork"], 32768),
+    ],
+)
+def test_agent_context_check_refuses_a_resumed_session(
+    fake_studio, launched, agent, passthrough, suggested
+):
+    fake_studio.state["models"] = [{**MODEL, "context_length": 8_192}]
+    result = CliRunner().invoke(start.start_app, [agent, *passthrough])
+    assert result.exit_code == 1, result.output
+    assert f"--max-seq-length {suggested} {' '.join(passthrough)}" in result.output
+    assert not launched
+
+
+@pytest.mark.parametrize(
+    "agent, args", [("claude", ["-p", "SECRET_PROMPT"]), ("opencode", ["run", "SECRET_PROMPT"])]
+)
+def test_agent_context_warning_never_echoes_a_scripted_prompt(fake_studio, launched, agent, args):
+    fake_studio.state["models"] = [{**MODEL, "context_length": 8_192}]
+    result = CliRunner().invoke(start.start_app, [agent, *args])
+    assert result.exit_code == 0, result.output
+    assert "too few" in result.output and "plus your other arguments" in result.output
+    assert "SECRET_PROMPT" not in result.output
+
+
+@pytest.mark.parametrize(
+    "simple, refused", [("1", False), ("true", False), ("0", True), ("", True)]
+)
+def test_claude_simple_mode_only_warns(fake_studio, launched, monkeypatch, simple, refused):
+    monkeypatch.setenv("CLAUDE_CODE_SIMPLE", simple)
+    fake_studio.state["models"] = [{**MODEL, "context_length": 8_192}]
+    result = CliRunner().invoke(start.start_app, ["claude"])
+    assert result.exit_code == (1 if refused else 0), result.output
+    assert "too few for Claude Code" in result.output
+    assert bool(launched) is not refused
+
+
+def test_opencode_context_retry_keeps_max_tokens(fake_studio, launched):
+    target = "unsloth/other-GGUF"
+    args = ["opencode", "--model", target, "--max-tokens", "1000", "--max-seq-length", "8192"]
+    result = CliRunner().invoke(start.start_app, args)
+    assert result.exit_code == 1, result.output
+    command = f"unsloth start opencode --model {target} --max-tokens 1000 --max-seq-length 16384"
+    assert command in result.output
+    retry = CliRunner().invoke(start.start_app, shlex.split(command)[2:])
+    assert retry.exit_code == 0, retry.output
+    assert launched
+
+
+@pytest.mark.parametrize("agent, suggested", [("claude", 65536), ("opencode", 32768)])
+def test_agent_context_retry_restarts_the_model_after_fitting(
+    fake_studio, launched, monkeypatch, agent, suggested
+):
+    target = "unsloth/other-GGUF"
+    started, stopped = [], []
+    server = SimpleNamespace(pid = 999, poll = lambda: None)
+    monkeypatch.setattr(start, "find_studio_server", lambda: None)
+
+    def serve(
+        base,
+        model,
+        load,
+        server_options = None,
+    ):
+        started.append((model, load))
+        fake_studio.state["models"] = [{"id": model, "context_length": load.max_seq_length or 8192}]
+        start._auto_served_server = server
+        return base, server
+
+    monkeypatch.setattr(start, "_start_studio_server", serve)
+    monkeypatch.setattr(start, "_shutdown_server", lambda server: stopped.append(server))
+    result = CliRunner().invoke(
+        start.start_app, [agent, "--model", target, "--gguf-variant", "Q8_0"]
+    )
+    assert result.exit_code == 1, result.output
+    assert "is loaded with 8,192 tokens of context, too few" in result.output
+    assert len(started) == len(stopped) == 1
+    command = (
+        f"unsloth start {agent} --model {target} --gguf-variant Q8_0 "
+        f"--max-seq-length {suggested}"
+    )
+    assert command in result.output
+    retry = CliRunner().invoke(start.start_app, shlex.split(command)[2:])
+    assert retry.exit_code == 0, retry.output
+    assert len(started) == 2
+    assert started[1][0] == target
+    assert started[1][1].gguf_variant == "Q8_0"
+    assert started[1][1].max_seq_length == suggested
+    assert launched
+
+
+@pytest.mark.parametrize("args", [["--no-launch"], ["run", "hi"], []])
+def test_agent_context_check_before_loading_only_refuses_the_tui(fake_studio, launched, args):
+    result = CliRunner().invoke(
+        start.start_app,
+        ["opencode", "--model", "unsloth/other-GGUF", "--max-seq-length", "16384", *args],
+    )
+    assert result.exit_code == 0, result.output
+    assert "would load" not in result.output
+    assert any(url.endswith("/api/inference/load") for _, url, _ in fake_studio)
+
+
+def test_agent_context_check_does_not_refuse_a_no_launch_recipe_before_loading(fake_studio):
+    # A driver may extend the recipe with --tools "" (upstream prompt-cache CI), which fits any window.
+    result = CliRunner().invoke(
+        start.start_app,
+        ["claude", "--no-launch", "--model", "unsloth/other-GGUF", "--max-seq-length", "8192"],
+    )
+    assert result.exit_code == 0, result.output
+    assert any(url.endswith("/api/inference/load") for _, url, _ in fake_studio)
+
+
+@pytest.mark.parametrize("window, expected", [(32_768, ""), (99_999, ""), (100_000, "100000")])
+def test_claude_auto_compact_window_is_blank_below_claudes_floor(window, expected):
+    env = start._claude_local_env(BASE, "k", {"id": "m", "context_length": window})
+    assert env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == expected
+    assert env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == str(window)
+
+
+def test_opencode_v2_prompt_fits_where_v1_does_not_without_launch(fake_studio, monkeypatch):
+    monkeypatch.setattr(start, "_opencode_command", lambda *_: ("opencode2", True))
+    fake_studio.state["models"] = [{**MODEL, "context_length": 8_192}]
+    result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    assert "so it will compact often" in result.output
 
 
 def _vibe_settings(env: dict) -> tuple:

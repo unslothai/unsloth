@@ -373,8 +373,7 @@ def serve(
             cancel_event.set()
 
     def handle_shutdown(_signum: int, _frame: Any) -> None:
-        # Claude Code may send SIGINT repeatedly; only the first unwinds stdin, later ones must not
-        # interrupt process-tree cleanup.
+        # Only the first SIGINT unwinds stdin; later ones must not interrupt process-tree cleanup.
         first_signal = not shutdown_started.is_set()
         shutdown_started.set()
         cancel_active()

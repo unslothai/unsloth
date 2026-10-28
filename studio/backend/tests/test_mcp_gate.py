@@ -598,7 +598,7 @@ def test_a_turned_off_tool_leaves_the_listing_live_and_its_call_is_refused(live_
         assert refused["isError"] is True
         assert refused["content"][0]["text"] == (
             "[tool_disabled] cancel is turned off in Unsloth Studio. "
-            "The owner can turn it on in Settings > MCP."
+            "The owner can turn it on in Settings > Agents."
         )
         put([])
         assert listed() == list(tool_names())

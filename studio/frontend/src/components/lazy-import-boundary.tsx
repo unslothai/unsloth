@@ -52,7 +52,7 @@ export function LazyImportFailure({
           ref={reloadRef}
           type="button"
           onClick={() => window.location.reload()}
-          className="btn-fill rounded-full px-3 py-1.5 font-medium text-xs "
+          className="btn-fill rounded-full px-3 py-2 font-medium text-xs "
         >
           {reloadLabel}
         </button>
@@ -60,7 +60,7 @@ export function LazyImportFailure({
           <button
             type="button"
             onClick={onDismiss}
-            className="btn-fill rounded-full px-3 py-1.5 font-medium text-xs "
+            className="btn-fill rounded-full px-3 py-2 font-medium text-xs "
           >
             {dismissLabel}
           </button>

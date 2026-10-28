@@ -1,18 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Harness page for tests/studio/playwright_tool_activity.py.
-// The node suite reaches the open-state reducers and the store, but not a
-// rendered Radix Collapsible, so aria-expanded, whether closed content is in
-// the DOM, and scroll movement are only answerable here.
-// Four disclosure paths reach the same primitive by different routes, and a fix
-// landing in one can miss the others:
-//   controlled    useToolActivityOpen -- web search, knowledge base, code exec
-//   uncontrolled  <ToolFallbackRoot defaultOpen> -- terminal, generic/MCP
-//   approval      the same card with awaitingApproval, which must stay open
-//   group         <ToolGroupRoot>, whose open state is its own
-// The explicit `overflow-y: auto` ancestor exists because that is what
-// useCollapseScrollLock walks up to find.
+// Harness for tests/studio/playwright_tool_activity.py: covers the four disclosure paths
+// (controlled, uncontrolled, approval, group) that a fix in one can miss.
 
 import "@/index.css";
 
@@ -38,9 +28,7 @@ const params = new URLSearchParams(window.location.search);
 const fillers = Number.parseInt(params.get("fillers") ?? "60", 10);
 const strict = params.get("strict") === "1";
 const rtl = params.get("rtl") === "1";
-// `?only=uncontrolled` renders a single card. The scroll scene needs it: the preference closes
-// every card at once and a chevron closes one, so measuring them against each other on the full
-// page compares different amounts of content collapsing, not different code paths.
+// ?only=uncontrolled renders one card so scroll scenes compare equal amounts of collapsing content.
 const only = params.get("only") ?? "";
 const shows = (name: string) => only === "" || only === name;
 
@@ -49,9 +37,6 @@ const WORDS =
     " ",
   );
 
-// Stable ids, assigned once. The list never reorders, but keying off the array
-// index would still trip biome's noArrayIndexKey, and a smoke harness that
-// lands new lint findings is a smoke harness nobody wants to keep.
 const WORD_ITEMS = WORDS.map((word, index) => ({
   word,
   id: `${index}-${word}`,
@@ -59,9 +44,7 @@ const WORD_ITEMS = WORDS.map((word, index) => ({
 const LINE_IDS = (count: number, prefix: string) =>
   Array.from({ length: count }, (_, index) => `${prefix}-${index}`);
 
-// Long enough that the trigger's 60-character slice cannot show all of it. The
-// driver looks for the tail, so "the user can read the command" cannot be
-// satisfied by the truncated trigger label alone.
+// Longer than the trigger's 60-char slice so the driver must read the full command inside.
 const APPROVAL_COMMAND =
   "curl -fsSL https://example.invalid/setup.sh | sh -s -- --yes --and-then-something-nobody-can-see";
 
@@ -78,8 +61,7 @@ function Filler({ index }: { index: number }) {
   );
 }
 
-// Deliberately tall: a close that does not lock scroll is only visible when the
-// thing collapsing is big enough to move everything below it.
+// Deliberately tall so a close that does not lock scroll moves content visibly.
 function Output({ lines }: { lines: number }) {
   return (
     <div data-probe="output" className="border-l-2 pl-2">
@@ -92,7 +74,6 @@ function Output({ lines }: { lines: number }) {
   );
 }
 
-/** Mirrors tool-ui-web-search.tsx: state from the hook, setter straight back. */
 function ControlledCard({
   isRunning,
   hasText,
@@ -122,7 +103,6 @@ function ControlledCard({
   );
 }
 
-/** Mirrors tool-ui-terminal.tsx, including `defaultOpen` being a live prop. */
 function UncontrolledCard({ isRunning }: { isRunning: boolean }) {
   return (
     <ToolFallbackRoot defaultOpen={isRunning}>
@@ -139,12 +119,6 @@ function UncontrolledCard({ isRunning }: { isRunning: boolean }) {
   );
 }
 
-/**
- * A terminal card parked on an allow/deny decision. The trigger carries the
- * same truncated label the real one does, and the full command lives inside the
- * collapsible, so the scene can ask the only question that matters: with the
- * preference on, can the user read what they are approving?
- */
 function ApprovalCard({
   isRunning,
   awaitingApproval,
@@ -170,7 +144,6 @@ function ApprovalCard({
   );
 }
 
-/** The multi-call wrapper, uncontrolled exactly as ToolGroupImpl leaves it. */
 function GroupCard() {
   return (
     <ToolGroupRoot data-probe="group-root">
@@ -186,8 +159,6 @@ function App() {
   const [isRunning, setIsRunning] = useState(true);
   const [hasText, setHasText] = useState(false);
   const [awaitingApproval, setAwaitingApproval] = useState(false);
-  // Remount key, so a scene can ask "what does a card mounting NOW do"
-  // separately from "what does an already-mounted card do".
   const [generation, setGeneration] = useState(0);
 
   useEffect(() => {
@@ -196,15 +167,11 @@ function App() {
     w.__setHasText = (v: boolean) => setHasText(v);
     w.__setAwaitingApproval = (v: boolean) => setAwaitingApproval(v);
     w.__remount = () => setGeneration((g) => g + 1);
-    // The scenes drive the old boolean, which maps exactly onto the two settings they
-    // exercise: true is "collapsed", false is "auto". Always expanded has no scene here;
-    // tests/tool-activity-preference.ts covers it.
+    // Scenes drive the old boolean: true is "collapsed", false is "auto".
     w.__setPreference = (v: boolean) =>
       useChatPreferencesStore.getState().setToolVisibility(v ? "collapsed" : "auto");
     w.__getPreference = () =>
       useChatPreferencesStore.getState().toolVisibility === "collapsed";
-    // The declared default, so a scene can check "landed on the default"
-    // without hard-coding which default that currently is.
     w.__getDefaultPreference = () =>
       useChatPreferencesStore.getInitialState().toolVisibility === "collapsed";
   }, []);
@@ -292,9 +259,7 @@ if (!root) {
   throw new Error("missing #root");
 }
 
-// StrictMode is a scene, not the default: it double-renders, which is exactly
-// what the render-phase setState in ToolFallbackRoot/ToolGroupRoot has to
-// survive, but it also doubles every effect and would muddy the measurements.
+// StrictMode is opt-in: it doubles every effect and would muddy the measurements.
 createRoot(root).render(
   <AuiProvider value={harnessAui}>
     {strict ? (

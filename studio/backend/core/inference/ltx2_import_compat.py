@@ -108,8 +108,7 @@ def ensure_ltx2_pipelines_importable(logger: Any = None) -> bool:
             _done = True
             return True
         try:
-            # First processing_utils import replaces sys.modules["transformers"] (direct_transformers_import), dropping
-            # names bound on the old object: settle the swap first.
+            # First processing_utils import replaces the transformers entry in sys.modules and drops names bound on the old object: settle the swap first.
             importlib.import_module("transformers.processing_utils")
         except Exception:  # noqa: BLE001 -- the pipeline import below reports whatever this was
             pass

@@ -3,7 +3,7 @@
 
 import type { TranslationKey } from "@/i18n";
 
-// Short labels for the tools served at /mcp/. The raw name shows under each one.
+// Short labels for the tools served at /mcp/. The raw name shows on hover.
 export const MCP_TOOL_LABEL_KEYS: Readonly<Record<string, TranslationKey>> = {
   studio_status: "settings.mcp.toolLabels.studioStatus",
   list_models: "settings.mcp.toolLabels.listModels",
@@ -35,4 +35,69 @@ export function mcpToolLabelKey(name: string): TranslationKey | null {
   return Object.hasOwn(MCP_TOOL_LABEL_KEYS, name)
     ? MCP_TOOL_LABEL_KEYS[name]
     : null;
+}
+
+type McpToolGroupId =
+  | "models"
+  | "generate"
+  | "training"
+  | "library"
+  | "jobs"
+  | "other";
+
+// Backend areas (each tool module's short name) folded into a few groups.
+const MCP_TOOL_GROUPS: readonly {
+  id: McpToolGroupId;
+  labelKey: TranslationKey;
+  areas: readonly string[];
+}[] = [
+  {
+    id: "models",
+    labelKey: "settings.mcp.tools.groups.models",
+    areas: ["status", "models"],
+  },
+  {
+    id: "generate",
+    labelKey: "settings.mcp.tools.groups.generate",
+    areas: ["text", "images", "audio", "video"],
+  },
+  {
+    id: "training",
+    labelKey: "settings.mcp.tools.groups.training",
+    areas: ["training", "export"],
+  },
+  {
+    id: "library",
+    labelKey: "settings.mcp.tools.groups.library",
+    areas: ["data", "library"],
+  },
+  {
+    id: "jobs",
+    labelKey: "settings.mcp.tools.groups.jobs",
+    areas: ["jobs", "cancel"],
+  },
+];
+
+export type McpToolGroup<T> = {
+  id: McpToolGroupId;
+  labelKey: TranslationKey;
+  tools: T[];
+};
+
+/** Tools in group order, keeping server order inside a group. Areas this build doesn't know go last. */
+export function groupMcpTools<T extends { area: string }>(
+  tools: readonly T[],
+): McpToolGroup<T>[] {
+  const groups: McpToolGroup<T>[] = MCP_TOOL_GROUPS.map((group) => ({
+    id: group.id,
+    labelKey: group.labelKey,
+    tools: tools.filter((tool) => group.areas.includes(tool.area)),
+  }));
+  const known = new Set(MCP_TOOL_GROUPS.flatMap((group) => group.areas));
+  groups.push({
+    id: "other",
+    labelKey: "settings.mcp.tools.groups.other",
+    tools: tools.filter((tool) => !known.has(tool.area)),
+  });
+  return groups.filter((group) => group.tools.length > 0);
 }

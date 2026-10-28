@@ -521,6 +521,20 @@ class TestContextBufferDSV41:
         split = b._compute_buffer_ctx_bytes(262144, 512, "f16", layer_split = True)
         assert split - one == (LlamaCppBackend._CTX_COMPUTE_SPLIT_MULT - 1) * 512 * 2 * 262144
 
+    def test_flash_attention_off_charges_dense_scores(self):
+        b = _backend(embd = 5120, arch = "deepseek41")
+        b._n_heads = 64
+        b._sliding_window = 128
+        b._context_length = 1048576
+        n_ctx = 262144
+        on = b._compute_buffer_ctx_bytes(n_ctx, 512, "f16")
+        off = b._compute_buffer_ctx_bytes(n_ctx, 512, "f16", flash_attn = False)
+        scores = 2 * 512 * 64 * 4
+        # 768 = window 128 + ub 512, padded.
+        assert off - on == (scores + 512 * 2) * n_ctx + scores * 768
+        # Measured flash-off delta on a CPU reserve graph at these shapes.
+        assert off - on >= 64945 * 1024**2
+
 
 class TestContextBufferLayerSplit:
     """The per-device f16 (KQ-mask) rate steps 4x once the model spans >1 device under
@@ -802,7 +816,8 @@ class TestPipelineParallelPredicate:
     def test_layer_path_scrubs_a_non_layer_split_mode_env(self):
         import inspect
 
-        compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert "self._reconcile_split_mode_env(env" in inspect.getsource(LlamaCppBackend.load_model)
+        compact = "".join(inspect.getsource(LlamaCppBackend._reconcile_split_mode_env).split())
         assert 'if_inherited_smand_inherited_sm!="layer":' in compact
         assert 'env.pop("LLAMA_ARG_SPLIT_MODE",None)' in compact
 

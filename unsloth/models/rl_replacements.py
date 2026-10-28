@@ -180,6 +180,66 @@ def gkd_trainer_mask_prompt(function_name, function):
 RL_FUNCTIONS["gkd_trainer"].append(gkd_trainer_mask_prompt)
 
 
+def gkd_trainer_generate_before_counting(function_name, function):
+    if function_name != "training_step":
+        return function
+    start = re.search(
+        r"^        if (?:self\.seq_kd|random\.random\(\) <= self\.lmbda):", function, re.M
+    )
+    end = function.find("        loss = super().training_step(")
+    if start is None or end < start.start():
+        return function
+    start = start.start()
+    generation = function[start:end]
+    function = (
+        function[:start]
+        + """        pending = getattr(self, "_unsloth_gkd_pending_batches", None)
+        if pending is not None:
+            batches, batch_args, batch_kwargs = pending
+            self._unsloth_gkd_pending_batches = None
+
+            def prepared_batches():
+                for batch in batches:
+                    self._unsloth_prepare_gkd_batch(model, batch)
+                    yield batch
+
+            _, count = super().get_batch_samples(
+                prepared_batches(), len(batches), *batch_args, **batch_kwargs
+            )
+            # TRL 1.7-1.8 mask EOS when it is the pad token, so an all-EOS window counts 0: sum / 0 is NaN.
+            if torch.is_tensor(count):
+                count = count.clamp_min(1)
+            elif count is not None:
+                count = max(count, 1)
+            for batch in batches:
+                batch["_unsloth_gkd_num_items"] = count
+
+        if "_unsloth_gkd_num_items" in inputs:
+            num_items_in_batch = inputs.pop("_unsloth_gkd_num_items")
+        else:
+            self._unsloth_prepare_gkd_batch(model, inputs)
+"""
+        + function[end:]
+    )
+    # Prepare the whole accumulation window before counting its replacement
+    # labels. Keep generation in training_step, after checkpoint RNG restoration.
+    return (
+        function
+        + "\n    def _unsloth_prepare_gkd_batch(self, model, inputs):\n"
+        + generation
+        + """
+    def get_batch_samples(self, epoch_iterator, num_batches, *args, **kwargs):
+        batches, count = super().get_batch_samples(epoch_iterator, num_batches, *args, **kwargs)
+        if self.lmbda > 0 or self.seq_kd:
+            self._unsloth_gkd_pending_batches = (batches, args, kwargs)
+        return batches, count
+"""
+    )
+
+
+RL_FUNCTIONS["gkd_trainer"].append(gkd_trainer_generate_before_counting)
+
+
 def ppo_trainer_free_rollout_logits(function_name, function):
     # TRL keeps the float32 (batch, response_length, vocab) generation logits alive through every PPO
     # epoch, though only the logprobs taken from them are read: 1.2 GB on a T4 for 8 x 256 Qwen3 tokens.
@@ -191,6 +251,223 @@ def ppo_trainer_free_rollout_logits(function_name, function):
 
 
 RL_FUNCTIONS["ppo_trainer"].append(ppo_trainer_free_rollout_logits)
+
+
+def _unsloth_replace_block(function, old_lines, new_lines):
+    """Replace the one run of consecutive lines whose stripped text is ``old_lines`` with ``new_lines`` (written
+    relative to the first old line's indent). None unless the run occurs exactly once."""
+    lines = function.split("\n")
+    stripped = [line.strip() for line in lines]
+    n = len(old_lines)
+    hits = [i for i in range(len(lines) - n + 1) if stripped[i : i + n] == list(old_lines)]
+    if len(hits) != 1:
+        return None
+    i = hits[0]
+    indent = lines[i][: len(lines[i]) - len(lines[i].lstrip())]
+    return "\n".join(
+        lines[:i] + [indent + line if line else line for line in new_lines] + lines[i + n :]
+    )
+
+
+_PPO_FUSED_IMPORT = (
+    "from unsloth.models._fused_rl_logprobs import (",
+    "    ppo_route as _unsloth_ppo_route_of,",
+    "    ppo_batch_generation as _unsloth_ppo_batch_generation,",
+    "    ppo_forward as _unsloth_ppo_forward,",
+    "    ppo_score as _unsloth_ppo_score,",
+    "    ppo_policy_logprobs as _unsloth_ppo_policy_logprobs,",
+    ")",
+    "_unsloth_ppo_route = _unsloth_ppo_route_of(self)",
+)
+_PPO_FUSED_BLOCKS = (
+    # The route is decided once per train() before the first rollout.
+    (
+        ("for update in range(1, args.num_total_batches + 1):",),
+        _PPO_FUSED_IMPORT + ("for update in range(1, args.num_total_batches + 1):",),
+    ),
+    # Rollouts without the stacked float32 generation scores.
+    (
+        ("query_responses, logitss = batch_generation(",),
+        (
+            "query_responses, logitss = (",
+            "    batch_generation if _unsloth_ppo_route is None else _unsloth_ppo_batch_generation",
+            ")(",
+        ),
+    ),
+    # Rollout (old) log-probs: the policy forward + fused scorer the training pass uses.
+    (
+        (
+            "logits = logitss[i : i + args.local_rollout_forward_batch_size]",
+            "logprob = selective_log_softmax(logits, response)",
+            "del logits",
+        ),
+        (
+            "if _unsloth_ppo_route is not None:",
+            "    logprob = _unsloth_ppo_policy_logprobs(",
+            "        _unsloth_ppo_route, forward, selective_log_softmax, model, query_response, response,",
+            "        context_length, processing_class.pad_token_id, args.temperature + 1e-7,",
+            "    )",
+            "else:",
+            "    logits = logitss[i : i + args.local_rollout_forward_batch_size]",
+            "    logprob = selective_log_softmax(logits, response)",
+            "    del logits",
+        ),
+    ),
+    (
+        ("ref_output = forward(model.policy, query_response, processing_class.pad_token_id)",),
+        (
+            "ref_output = _unsloth_ppo_forward(",
+            "    _unsloth_ppo_route, forward, model.policy, query_response, processing_class.pad_token_id",
+            ")",
+        ),
+    ),
+    (
+        ("ref_output = forward(ref_policy, query_response, processing_class.pad_token_id)",),
+        (
+            "ref_output = _unsloth_ppo_forward(",
+            "    _unsloth_ppo_route, forward, ref_policy, query_response, processing_class.pad_token_id",
+            ")",
+        ),
+    ),
+    (
+        (
+            "ref_logits = ref_output.logits[:, context_length - 1 : -1]",
+            "ref_logits /= args.temperature + 1e-7",
+            "ref_logprob = selective_log_softmax(ref_logits, response)",
+            "del ref_output, ref_logits",
+        ),
+        (
+            "_unsloth_scored = _unsloth_ppo_score(",
+            "    _unsloth_ppo_route, model if ref_policy is None else ref_policy,",
+            "    ref_output.logits[:, context_length - 1 : -1], response, args.temperature + 1e-7,",
+            ")",
+            "if _unsloth_scored is None:",
+            "    ref_logits = ref_output.logits[:, context_length - 1 : -1]",
+            "    ref_logits /= args.temperature + 1e-7",
+            "    ref_logprob = selective_log_softmax(ref_logits, response)",
+            "    del ref_output, ref_logits",
+            "else:",
+            "    ref_logprob = _unsloth_scored[0]",
+            "    del ref_output, _unsloth_scored",
+        ),
+    ),
+    # Training pass: the value head still reads the critic backbone; only the policy head is fused.
+    (
+        ("output, vpred_temp = forward(model, mb_query_responses, processing_class.pad_token_id)",),
+        (
+            "output, vpred_temp = _unsloth_ppo_forward(",
+            "    _unsloth_ppo_route, forward, model, mb_query_responses, processing_class.pad_token_id",
+            ")",
+        ),
+    ),
+    (
+        (
+            "logits = output.logits[:, context_length - 1 : -1]",
+            "logits /= args.temperature + 1e-7",
+            "new_logprobs = selective_log_softmax(logits, mb_responses)",
+        ),
+        (
+            "_unsloth_scored = _unsloth_ppo_score(",
+            "    _unsloth_ppo_route, model, output.logits[:, context_length - 1 : -1], mb_responses,",
+            "    args.temperature + 1e-7, entropy = True,",
+            ")",
+            "if _unsloth_scored is None:",
+            "    logits = output.logits[:, context_length - 1 : -1]",
+            "    logits /= args.temperature + 1e-7",
+            "    new_logprobs = selective_log_softmax(logits, mb_responses)",
+            "else:",
+            "    logits = None",
+            "    new_logprobs, _unsloth_entropy = _unsloth_scored",
+            "    del _unsloth_scored",
+        ),
+    ),
+    # The entropy metric comes out of the same kernel pass (detached, temperature-scaled like TRL's).
+    (
+        (
+            "prob_dist = torch.nn.functional.softmax(logits, dim=-1)",
+            "entropy = torch.logsumexp(logits, dim=-1) - torch.sum(prob_dist * logits, dim=-1)",
+        ),
+        (
+            "if logits is None:",
+            "    prob_dist = None",
+            "    entropy = _unsloth_entropy",
+            "else:",
+            "    prob_dist = torch.nn.functional.softmax(logits, dim=-1)",
+            "    entropy = torch.logsumexp(logits, dim=-1) - torch.sum(prob_dist * logits, dim=-1)",
+        ),
+    ),
+)
+
+
+def ppo_trainer_fused_logprobs(function_name, function):
+    """Score PPO's rollout, reference and training log-probs (and the entropy metric) from hidden states with the
+    fused linear kernel. Every anchor must match exactly once, else TRL's source is returned untouched; at run time
+    ``ppo_route`` / ``ppo_score`` keep TRL's lines for any head or forward the kernel cannot serve."""
+    if function_name != "train" or "_unsloth_ppo_route" in function:
+        return function
+    new = function
+    for old_lines, new_lines in _PPO_FUSED_BLOCKS:
+        new = _unsloth_replace_block(new, old_lines, new_lines)
+        if new is None:
+            return function
+    return new
+
+
+RL_FUNCTIONS["ppo_trainer"].append(ppo_trainer_fused_logprobs)
+
+
+_RLOO_LOGPS_DEF = re.compile(
+    r"^(?P<indent>[ \t]*)def _get_per_token_logps_and_entropies\(", re.MULTILINE
+)
+
+
+def rloo_trainer_fused_logprobs(function_name, function):
+    """RLOOTrainer (TRL < 1.15) reads ``model(**inputs).logits``: keep its body as
+    ``_unsloth_stock_get_per_token_logps_and_entropies`` and put a dispatcher in front that scores text-only batches
+    from hidden states. TRL >= 1.15 calls its own fused lm_head, already served by the zoo kernel."""
+    if function_name != "_get_per_token_logps_and_entropies":
+        return function
+    if "fused_lm_head=True" in function or "_unsloth_rloo" in function:
+        return function
+    match = list(_RLOO_LOGPS_DEF.finditer(function))
+    if len(match) != 1 or ".logits" not in function or "self.temperature" not in function:
+        return function
+    indent = match[0].group("indent")
+    try:
+        from unsloth.models._fused_rl_logprobs import rloo_stock_traits
+    except Exception:
+        return function
+    traits = rloo_stock_traits(function)
+    stock = _RLOO_LOGPS_DEF.sub(
+        lambda m: m.group("indent") + "def _unsloth_stock_get_per_token_logps_and_entropies(",
+        function,
+        count = 1,
+    )
+    body = [
+        "def _get_per_token_logps_and_entropies(",
+        "    self, model, input_ids, attention_mask, logits_to_keep, batch_size=None, compute_entropy=False,",
+        "    *args, **kwargs,",
+        "):",
+        "    try:",
+        "        from unsloth.models._fused_rl_logprobs import rloo_fused_logps as _unsloth_rloo_fused_logps",
+        "    except Exception:",
+        "        _unsloth_rloo_fused_logps = None",
+        "    if _unsloth_rloo_fused_logps is not None:",
+        "        _out = _unsloth_rloo_fused_logps(",
+        f"            self, {traits!r}, model, input_ids, attention_mask, logits_to_keep, batch_size,",
+        "            compute_entropy, args, kwargs,",
+        "        )",
+        "        if _out is not None:",
+        "            return _out",
+        "    return self._unsloth_stock_get_per_token_logps_and_entropies(",
+        "        model, input_ids, attention_mask, logits_to_keep, batch_size, compute_entropy, *args, **kwargs",
+        "    )",
+    ]
+    dispatcher = "\n".join(indent + line for line in body) + "\n\n"
+    return dispatcher + stock
+
+
+RL_FUNCTIONS["rloo_trainer"].append(rloo_trainer_fused_logprobs)
 
 
 def dpo_trainer_fix_columns(call_args, extra_args):
@@ -539,7 +816,101 @@ def cpo_trainer_fused_preference_forward(function_name, function):
     )
 
 
+# The replacement reproduces exactly these metric keys and logits reads; any other source keeps TRL's
+# function (0.29.x truncates inside it, 1.15+ already uses TRL's fused lm head).
+_DPO_V1_METRIC_KEYS = frozenset(
+    (
+        "aux_loss",
+        "entropy",
+        "num_tokens",
+        "logits/chosen",
+        "logits/rejected",
+        "mean_token_accuracy",
+        "rewards/chosen",
+        "rewards/rejected",
+        "rewards/accuracies",
+        "rewards/margins",
+        "logps/chosen",
+        "logps/rejected",
+    )
+)
+# Each entry: the spellings (whitespace-insensitive) one of which must appear.
+_DPO_V1_SOURCE_MARKERS = (
+    (
+        "per_token_logps = selective_log_softmax(shift_logits, shift_labels)",
+        "per_token_logps, per_token_entropies = selective_log_softmax_and_entropy( shift_logits, shift_labels,",
+    ),
+    (
+        "ref_per_token_logps = selective_log_softmax(ref_shift_logits, shift_labels)",
+        "ref_per_token_logps = selective_log_softmax( ref_shift_logits, shift_labels, row_mask=shift_completion_mask )",
+    ),
+    (
+        "per_token_entropy = entropy_from_logits(shift_logits.detach())",
+        "per_token_entropy = per_token_entropies",
+    ),
+    ("predictions = chosen_logits.argmax(dim=-1)",),
+)
+# Sources the replacement does not reproduce.
+_DPO_V1_DECLINE_MARKERS = ("self._truncate_inputs(", "fused_lm_head=True")
+# Releases before 1.10 drop the constants of the forward_kl / js f-divergence scores and feed
+# those scores (not the log ratios) to nca_pair / bco_pair / sppo_hard / apo_down.
+_DPO_V1_FDIV_SCORES_MARKER = "chosen_scores = 1 - torch.exp(-chosen_logratios)"
+_DPO_V1_FDIV_LEGACY_MARKER = "chosen_scores = -torch.exp(-chosen_logratios)"
+# Releases before 1.3 log the entropy as a mean of the masked per-token entropies.
+_DPO_V1_ENTROPY_MEAN_MARKER = "entropy = per_token_entropy[shift_completion_mask.bool()].mean()"
+
+
+def _dpo_v1_semantics(function):
+    """The TRL-release differences the fused _compute_loss must follow, read from its source, or
+    None when the source is not one the replacement reproduces."""
+    flat = " ".join(function.split())
+    if any(marker in flat for marker in _DPO_V1_DECLINE_MARKERS):
+        return None
+    for spellings in _DPO_V1_SOURCE_MARKERS:
+        if not any(" ".join(spelling.split()) in flat for spelling in spellings):
+            return None
+    if _DPO_V1_FDIV_SCORES_MARKER in flat:
+        legacy_fdiv = False
+    elif _DPO_V1_FDIV_LEGACY_MARKER in flat:
+        legacy_fdiv = True
+    else:
+        return None
+    return {
+        "legacy_fdiv": legacy_fdiv,
+        "entropy_mean": _DPO_V1_ENTROPY_MEAN_MARKER in flat,
+        "tp_size": "// self._tp_size" in flat,
+    }
+
+
+def dpo_trainer_fused_preference_compute_loss(function_name, function):
+    if function_name != "_compute_loss":
+        return function
+    if os.environ.get("UNSLOTH_FUSED_PREFERENCE_LOSS", "0") != "1":
+        return function
+    if "_unsloth_fused_output" in function:
+        return function
+    if not re.search(r"def _compute_loss\(self, model, inputs, return_outputs\)", function):
+        return function
+    semantics = _dpo_v1_semantics(function)
+    if semantics is None:
+        return function
+    keys = set(re.findall(r'self\._metrics\[mode\]\["([^"]+)"\]', function))
+    if not keys or not keys.issubset(_DPO_V1_METRIC_KEYS):
+        return function
+    return _insert_after_docstring(
+        function,
+        [
+            "from unsloth.models.dpo import unsloth_fused_dpo_compute_loss_v1",
+            "_unsloth_fused_output = unsloth_fused_dpo_compute_loss_v1("
+            f"self, model, inputs, return_outputs, trl_semantics = {semantics!r})",
+            "if _unsloth_fused_output is not None:",
+            "    return _unsloth_fused_output",
+        ],
+    )
+
+
 RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_fused_preference_forward)
+RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_fused_preference_compute_loss)
 RL_FUNCTIONS["orpo_trainer"].append(orpo_trainer_fused_preference_forward)
 RL_FUNCTIONS["cpo_trainer"].append(cpo_trainer_fused_preference_forward)
 
@@ -956,6 +1327,67 @@ def sft_trainer_compute_loss(function_name, function):
         return_outputs = False,
         num_items_in_batch = None,
     ):
+        # TRL >= 1.15 computes loss_type="dft" only in the compute_loss this replaces (else it trains as NLL):
+        # run it on TRL's fused LM head. Older TRL routes DFT through compute_loss_func.
+        # TRL label smoothing applies only to "nll", so label_smoother must not opt dft out.
+        if getattr(self.args, "loss_type", None) == "dft" and self.compute_loss_func is None:
+            import trl.trainer.utils as _trl_utils
+            if hasattr(_trl_utils, "add_fused_lm_head"):
+                # TRL's fused head projects with lm_head.weight directly, skipping QAT fake quantization.
+                try:
+                    head = model.get_output_embeddings()
+                except Exception:
+                    head = None
+                try:
+                    from unsloth.models.llama import lm_head_needs_forward as _needs_forward
+                except Exception:
+                    _needs_forward = lambda module: False
+                if head is not None and (
+                    _needs_forward(head)
+                    or any(
+                        getattr(m, "activation_fake_quantizer", None) is not None
+                        or getattr(m, "weight_fake_quantizer", None) is not None
+                        for m in head.modules()
+                    )
+                ):
+                    raise NotImplementedError(
+                        "Unsloth: loss_type = 'dft' runs on TRL's fused LM head, which skips the QAT fake "
+                        "quantization of lm_head. Leave lm_head out of QAT or use loss_type = 'nll'."
+                    )
+                inputs = {**inputs, "use_cache": False}
+                outputs = model(**inputs, fused_lm_head = True)
+                if getattr(outputs, "log_probs", None) is None:
+                    raise RuntimeError(
+                        "Unsloth: loss_type = 'dft' needs TRL's fused LM head, but the model returned no "
+                        "per-token log-probabilities. Use loss_type = 'nll'."
+                    )
+                per_token_loss = -outputs.log_probs * outputs.log_probs.exp().detach()
+                # Trainer divides by gradient accumulation itself when the model does not take num_items_in_batch.
+                if not getattr(self, "model_accepts_loss_kwargs", True):
+                    num_items_in_batch = None
+                num_tokens = (
+                    outputs.label_mask.sum() if num_items_in_batch is None else num_items_in_batch
+                )
+                loss = per_token_loss.sum() / torch.as_tensor(num_tokens).clamp(min = 1)
+                if self.args.average_tokens_across_devices and num_items_in_batch is not None:
+                    # As TRL / Trainer: tensor parallel ranks share one batch, so they do not count.
+                    tp_size = (
+                        self.get_tp_size() if callable(getattr(self, "get_tp_size", None)) else 1
+                    )
+                    loss = loss * (self.accelerator.num_processes // max(int(tp_size or 1), 1))
+                aux_loss = getattr(outputs, "aux_loss", None)
+                if getattr(self, "aux_loss_enabled", False) and aux_loss is not None:
+                    steps = (
+                        self.current_gradient_accumulation_steps
+                        if num_items_in_batch is not None
+                        else 1
+                    )
+                    loss = loss + self.router_aux_loss_coef * aux_loss / steps
+                if return_outputs:
+                    # prediction_step / compute_metrics read logits, which the fused head never builds (as TRL does).
+                    with torch.no_grad():
+                        outputs = model(**{k: v for k, v in inputs.items() if k != "labels"})
+                return (loss, outputs) if return_outputs else loss
         outputs = super().compute_loss(
             model,
             inputs,
@@ -1236,7 +1668,8 @@ def _unsloth_grpo_refuse_unscored_support(self):
     if mismatch:
         import warnings
         warnings.warn(
-            "Unsloth: ignoring UNSLOTH_GRPO_TRUNCATED_SUPPORT=1 because "
+            "Unsloth: not scoring over the rollouts' top_k / top_p / min_p kept set "
+            "(requested by UNSLOTH_GRPO_TRUNCATED_SUPPORT) because "
             f"{', '.join(mismatch)}: the scored policy is not the sampler, so its top_k / top_p / "
             "min_p kept set differs from vLLM's and the PPO ratio would be unnormalised. "
             "Scoring over the full vocabulary instead.",
@@ -1246,7 +1679,7 @@ def _unsloth_grpo_refuse_unscored_support(self):
 
 
 def _unsloth_grpo_support_mismatch(self):
-    """Why UNSLOTH_GRPO_TRUNCATED_SUPPORT=1 cannot score this trainer, or [] when it can.
+    """Why kept-set scoring (UNSLOTH_GRPO_TRUNCATED_SUPPORT) cannot score this trainer, or [] when it can.
 
     Each scoring call rebuilds the top_k / top_p / min_p kept set from its own logits and always keeps the
     scored token. That is the sampler's set only while the scored weights are the rollout's. A reference
@@ -1354,15 +1787,9 @@ def _unsloth_grpo_split_vision_by_sample(batch):
     num_images = _counts(batch.get("num_images", None))
 
     if isinstance(pixel_values, list):
-        # TRL split it. From 1.1.0 split_pixel_values_by_grid splits by SAMPLE, off num_images;
-        # 0.22.x-0.23.x splits by GRID ROW -- "lengths = batch["image_grid_thw"].prod(dim=1)",
-        # one element per image -- and leaves image_grid_thw itself flat. The shuffle right
-        # after takes its length from the first entry of the batch and indexes everything by
-        # sample, so on a row holding two images that list is both permuted wrongly and
-        # truncated to the sample count. Regroup it, and split the grid the way 1.1.0 does.
-        # all-ones, not len(pixel_values) == len(num_images): over two samples num_images = [0, 2]
-        # makes those two numbers agree while the axes still differ, and the early return would
-        # hand both of the second sample's images to the first.
+        # TRL 1.1.0+ splits by sample; 0.22.x-0.23.x splits by grid row and leaves image_grid_thw flat, so
+        # a two-image row is mis-shuffled. Regroup it. Not len(pixel_values) == len(num_images): [0, 2]
+        # makes them agree while the axes differ.
         _prompt_ids = batch.get("prompt_ids", None)
         if (
             image_grid_thw is None
@@ -1427,12 +1854,7 @@ def _unsloth_grpo_split_vision_by_sample(batch):
         # One padded row per sample already (Idefics, SmolVLM): TRL leaves this alone.
         return batch
     if rows == len(num_images) and any(_count != 1 for _count in num_images):
-        # A padded sample axis and a flat image axis are the same length here, and only the
-        # padded reading keeps each row with the sample it came from: num_images = [2, 0]
-        # over two padded rows would hand both of them to the first sample and the second an
-        # empty tensor. Nothing in the batch tells the two apart, so keep TRL's layout, which
-        # is what every version does today. The all-ones case is excluded because the two
-        # readings agree there. Same hazard the list branch above guards against.
+        # Padded-sample and flat-image axes are ambiguous: keep TRL layout, else [2, 0] misassigns images
         return batch
     split["pixel_values"] = list(torch.split(pixel_values, num_images, dim = 0))
     _image_sizes = batch.get("image_sizes", None)
@@ -1680,9 +2102,7 @@ def _unsloth_reject_grpo_image_list(inputs, trainer = None):
             return
         if getattr(trainer, "vllm_mode", None) != "server":
             return
-    # Every row, not just the first: one list cell anywhere in the batch is enough to put the
-    # images and the placeholders out of step, and a dataset that mixes a bare image with a
-    # list is exactly the shape that puts the list somewhere other than row 0.
+    # Every row: one list cell anywhere desyncs the images and the placeholders.
     try:
         rows = list(inputs)
     except Exception:
@@ -1872,19 +2292,9 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         _use_gc = self.model._unsloth_gradient_checkpointing if hasattr(self.model, '_unsloth_gradient_checkpointing') else getattr(self.args, 'gradient_checkpointing', True)
         self.model.for_training(use_gradient_checkpointing=_use_gc)"""
 
-    # TRL 0.22.x-0.23.x has neither `forward_kwargs` nor `num_images`: it hardcoded one image per
-    # example, counted nothing, and saved only four processor keys. The singular `image` column
-    # normalisation below lets a cell hold several, and every consumer of a multi image batch --
-    # the shared chunker, and the per sample split in _prepare_inputs -- reads those counts, so
-    # without them a two image row is sliced as if it were two rows and the images are handed to
-    # the wrong samples. Built at this anchor rather than in the output block, because the no-grad
-    # old/reference logprob calls a few lines below take it too and the output block only runs once
-    # they have already returned. Counted off the same normalised cells the processor was given, so
-    # the two can never disagree; a row with no image counts zero.
-    #
-    # Inserted only for the versions whose call sites it feeds. 0.24.0 and up leave prompt_inputs
-    # unbound here, so the try below would fall straight through, but not emitting it at all is
-    # what keeps their generated source byte for byte what it was.
+    # TRL 0.22.x-0.23.x has no forward_kwargs / num_images, so a multi-image row is sliced as several
+    # rows. Count images off the same normalised cells. Emitted only for those versions so newer
+    # generated source stays byte-identical.
     _legacy_vision_prologue = """
         _unsloth_legacy_vision = {}
         try:
@@ -1940,9 +2350,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
 
     function = function.replace(line_to_replace, replacement_lines)
 
-    # TRL 0.22.x-0.23.x calls the no-grad old/reference logprob pass with four hand named
-    # processor tensors and no counts, so the shared chunker cannot tell one sample's images
-    # from the next and slices an image indexed grid by sample index.
+    # TRL 0.22.x-0.23.x passes four tensors and no counts, so the chunker cannot split images per sample
     _legacy_vision_call = re.compile(
         r"(^[ \t]+)pixel_values=prompt_inputs\.get\(\"pixel_values\"\),\n"
         r"[ \t]+image_grid_thw=prompt_inputs\.get\(\"image_grid_thw\"\),\n"
@@ -1954,8 +2362,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         r"\1**_unsloth_legacy_vision,\n",
         function,
     )
-    # Every TRL from 0.22.2 to 0.23.1 takes all three rewrites, and 0.24.0 and up pass
-    # forward_kwargs instead and need none, so this is a guard against a future drift.
+    # Guard against future drift: 0.22.2-0.23.1 take all three rewrites, 0.24.0+ need none.
     _legacy_vision_unplumbed = (
         _legacy_vision_calls == 0 and 'prompt_inputs.get("pixel_values")' in function
     )
@@ -2000,15 +2407,11 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         if (
             sum(re.match(rf"{spacing}[^\s]", x) is not None for x in splits) == 2
             and len(spacing) >= 8
-            # The regex above also matches trl 0.18.2 and 0.19.1, which the declared window
-            # admits and which have none of the symbols the replacement below emits; TRL's own
-            # call to the helper is the discriminator (0.20.0-0.23.1 have it, those two do not),
-            # and without it TRL's native slicing must stay. tests/version_compat/
-            # test_grpo_protected_tokens_guard.py measures this per version.
+            # The regex also matches trl 0.18.2 / 0.19.1, which lack the emitted symbols; TRL's own helper call
+            # discriminates (tests/version_compat/test_grpo_protected_tokens_guard.py).
             and "truncate_with_protected_tokens" in replace_part
         ):
-            # getattr: the next emitted line drops None, so an id a fork or subclass leaves
-            # unset means "nothing to protect" rather than AttributeError in generated code.
+            # getattr: an unset id means nothing to protect, not AttributeError in generated code.
             new_replacement = f"""\n{spacing}if self.max_prompt_length is not None:
             # If max_prompt_length is set, we trim the prompt to keep only the last `max_prompt_length` tokens.
             # Then we decode those tokens back into text. We manually remove leading pad tokens from the decoded text,
@@ -2047,10 +2450,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
     string_to_find = """        if "image_sizes" in prompt_inputs:
             output["image_sizes"] = prompt_inputs["image_sizes"]"""
 
-    # 0.22.x-0.23.x saves the four keys above and nothing else, so a processor that emits
-    # spatial_shapes, num_tiles or the Gemma position ids loses them between generation and the
-    # gradient forward, and there is no `if images is not None` anchor here to hang the generic
-    # copy on. Same mapping the no-grad calls above were given, so both policies see one batch.
+    # 0.22.x-0.23.x saves only four processor keys; copy the rest so both policies see one batch.
     replacement_string = """        if "image_sizes" in prompt_inputs:
             output["image_sizes"] = prompt_inputs["image_sizes"]
         try:
@@ -2282,12 +2682,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         "                if isinstance(prompt, list):  # i.e., when using conversational data\n"
         "                    prepare_multimodal_messages(prompt, num_images=1)"
     )
-    # An empty cell takes zero placeholders, not one: the prologue already counts it as zero,
-    # and a batch mixing an image bearing row with an empty one otherwise reaches the processor
-    # a placeholder short of its images. An all empty column is a text batch wearing an image
-    # one, which TRL demotes itself from 0.24.0; ported here, because zero placeholders against
-    # `[[], []]` is an IndexError inside the processor rather than a text run. The guard mirrors
-    # TRL's `all(img_list == [] ...)`, so a `None` cell still fails exactly as it does on main.
+    # Empty cells take zero placeholders; all-empty column becomes text (TRL 0.24.0+), else IndexError
     _placeholder_new = (
         '            if kwargs.get("images") and all(\n'
         '                _unsloth_cell == [] for _unsloth_cell in kwargs["images"]\n'
@@ -2300,25 +2695,14 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         "                        prompt, num_images=len(_unsloth_cell) if _unsloth_cell else 0\n"
         "                    )"
     )
-    # TRL 0.24.0 and up size the placeholders themselves, off the cell they were handed, so the
-    # rewrite above is the whole job there. TRL 0.20.0 and 0.21.0 are the gap: they take the
-    # legacy cell spelling but predate `prepare_multimodal_messages` entirely and inline one
-    # `{"type": "image"}` per user message with no count, so a normalised two image cell would
-    # reach the processor with one placeholder. Nothing else in the batch disagrees, because the
-    # prologue counts the same cells, so it surfaces inside the processor.
+    # TRL 0.24.0+ sizes placeholders itself; 0.20.0 / 0.21.0 inline one per message, so not sized.
     _placeholder_sized = not _legacy_image_cell
     if _placeholder_old in function:
         function = function.replace(_placeholder_old, _placeholder_new)
         _placeholder_sized = True
 
-    # Rewriting the cell is only half of a multi image row: on a legacy TRL the reference
-    # logprob call sites have to carry the counts too, or the images are sliced by sample
-    # index and all but the first are dropped. That surfaces as a token/feature mismatch
-    # raised inside the model, naming neither the column nor the fix, so refuse it here
-    # instead. A single image cell is unaffected either way and keeps working.
-    # `self` and not nothing: on a legacy TRL every other path now carries a multi image row,
-    # so the refusal has to narrow to the vLLM server mode that still cannot. Passing the
-    # trainer moves that decision to runtime, where `vllm_mode` is actually known.
+    # On a legacy TRL the reference logprob calls need counts too, else a multi-image row fails deep in
+    # the model; refuse it. `self` narrows the refusal to vLLM server mode at runtime.
     _guard_argument = ""
     if not _image_cell_normalised or _legacy_vision_unplumbed or not _placeholder_sized:
         pass
@@ -3100,6 +3484,21 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 chunked_selective_log_softmax,
             )
 
+            # Old / ref logps must use the policy pass's scorer, else the ratio starts away from 1 and the KL is biased.
+            try:
+                if os.environ.get("UNSLOTH_GRPO_LOGPROB_RECOMPUTE", "0") == "1":
+                    from unsloth_zoo.rl_replacements import grpo_truncated_support_kwargs
+                    if not grpo_truncated_support_kwargs(self):
+                        from unsloth_zoo.rl_replacements import (
+                            chunked_hidden_states_selective_log_softmax_recompute as chunked_hidden_states_selective_log_softmax,
+                        )
+                else:
+                    from unsloth_zoo.rl_replacements import (
+                        grpo_chunked_hidden_states_logprobs as chunked_hidden_states_selective_log_softmax,
+                    )
+            except ImportError:
+                pass
+
             output_embeddings = unwrapped_model.get_output_embeddings()
             lm_head = output_embeddings.weight
             lm_head_bias = getattr(output_embeddings, "bias", None)
@@ -3153,8 +3552,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     **kwargs,
                 )
 
-            # Opt-in (UNSLOTH_GRPO_TRUNCATED_SUPPORT=1): score over the rollout's top_k / top_p /
-            # min_p kept set, matching vLLM's processed_logprobs. The zoo loss refuses to mix
+            # UNSLOTH_GRPO_TRUNCATED_SUPPORT=1 (or an older zoo's automatic gate): score over the rollout's
+            # top_k / top_p / min_p kept set, matching vLLM's processed_logprobs. The zoo loss refuses to mix
             # normalisations unless this marker says the old / ref logps were scored the same way.
             try:
                 from unsloth_zoo.rl_replacements import grpo_truncated_support_kwargs
@@ -3167,7 +3566,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 if not getattr(self, "_unsloth_truncated_support_refused", False):
                     import warnings
                     warnings.warn(
-                        "Unsloth: ignoring UNSLOTH_GRPO_TRUNCATED_SUPPORT=1 because "
+                        "Unsloth: not scoring over the rollouts' top_k / top_p / min_p kept set "
+                        "(requested by UNSLOTH_GRPO_TRUNCATED_SUPPORT) because "
                         f"{', '.join(_support_mismatch)}: those logprobs come from weights other "
                         "than the rollout's, whose top_k / top_p / min_p kept set differs from the "
                         "sampler's, so per-policy kept sets give unnormalised PPO ratios and KL. "
@@ -3902,8 +4302,7 @@ def _unsloth_resolve_logit_scales(model_config):
 
     Only reached when the installed unsloth_zoo predates that helper. Must stay in step with ``resolve_logit_transforms`` in unsloth/models/llama.py: if the forward applies a transform GRPO does not, the policy log-probabilities come from different logits than the ones generated, which silently shifts every importance ratio.
     """
-    # ``logits_scaling`` is not one knob: Granite divides, HyperCLOVA X multiplies (MuP),
-    # MiniCPM3 scales the hidden states so it is not a logit transform.
+    # Granite divides, HyperCLOVA X multiplies, MiniCPM3 scales hidden states (not a logit transform).
     overrides = {
         ("logits_scaling", "hyperclovax"): "multiply",
         ("logits_scaling", "minicpm3"): None,
@@ -3940,6 +4339,16 @@ def _unsloth_grpo_returns_hidden_states(model, tensor, lm_head):
     if lm_head.shape[0] != lm_head.shape[1]:
         return True  # hidden-wide and vocab_size != hidden_size: hidden states
     return _unsloth_grpo_hidden_states_signal(model) is not False
+
+
+def _unsloth_pref_returns_hidden_states(model, tensor, lm_head):
+    """``_unsloth_grpo_returns_hidden_states`` for the preference routes, which need a zoo that writes the hidden-state
+    markers: a square head with no signal is a forward that ignored the flag, so its output is real logits."""
+    if tensor.shape[-1] != lm_head.shape[1]:
+        return False
+    if lm_head.shape[0] != lm_head.shape[1]:
+        return True
+    return _unsloth_grpo_hidden_states_signal(model) is True
 
 
 def _unsloth_grpo_hidden_states_signal(model):
@@ -4508,16 +4917,8 @@ def grpo_trainer_compute_loss(function_name, function):
                 num_processes = num_processes,
             )
         else:
-            # The gradient path needs the same zoo the no-grad path checks for, and nothing
-            # has checked it here: with beta = 0 and num_iterations = 1 there are no reference
-            # or old logprobs to compute, so _get_per_token_logps_and_entropies -- where that
-            # gate lives -- never runs at all. An older grpo_accumulated_loss accepts
-            # arbitrary kwargs, ignores the keys it does not know (spatial_shapes, num_tiles,
-            # the position ids) and, for a model that carries no image_grid_thw to slice by,
-            # replaces pixel_values with None outright, so training would compute its gradient
-            # logprobs from the text alone and report nothing. Import-probed rather than
-            # signature-probed, and body-local like the one in the no-grad path: this source is
-            # copied out without this module's imports (#6960).
+            # With beta = 0 and num_iterations = 1 the no-grad path (and its zoo gate) never runs, and an older
+            # grpo_accumulated_loss silently drops pixel_values. Body-local: copied out without imports (#6960).
             if pixel_values is not None and not getattr(
                 self, "_unsloth_grpo_vision_zoo_checked", False
             ):
@@ -5297,6 +5698,10 @@ try:
     from unsloth_zoo.rl_replacements import distillation_chunked_jsd
 except Exception:
     distillation_chunked_jsd = None
+try:
+    from unsloth_zoo.fused_losses.fused_linear import fused_linear_jsd as _unsloth_fused_linear_jsd
+except Exception:
+    _unsloth_fused_linear_jsd = None
 
 
 def _unsloth_gkd_canonical(source):
@@ -5557,17 +5962,21 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
     """TRL's GKD loss without either full logits tensor, or ``None`` to run TRL's own ``compute_loss``."""
     if layout is None:
         return None
-    if distillation_chunked_jsd is None:
+    if distillation_chunked_jsd is None and _unsloth_fused_linear_jsd is None:
         return _unsloth_gkd_note_fallback(self, "unsloth_zoo has no distillation_chunked_jsd")
     if os.environ.get("UNSLOTH_GKD_CHUNKED", "1").lower() in ("0", "false", "no", "off"):
         return _unsloth_gkd_note_fallback(self, "UNSLOTH_GKD_CHUNKED=0")
+    # Read per call like the other fused lm_head routes: UNSLOTH_FUSED_LINEAR=0 restores TRL's dense loss.
+    if os.environ.get("UNSLOTH_FUSED_LINEAR", "1") == "0":
+        return _unsloth_gkd_note_fallback(self, "UNSLOTH_FUSED_LINEAR=0")
+    use_fused = _unsloth_fused_linear_jsd is not None
     if getattr(self, "use_liger_gkd_loss", False):
         return _unsloth_gkd_note_fallback(self, "use_liger_gkd_loss")
     if getattr(self, "is_fsdp_enabled", False) or getattr(self, "is_deepspeed_enabled", False):
         return _unsloth_gkd_note_fallback(self, "FSDP / DeepSpeed")
     jsd_kwargs = {}
     scaler = getattr(self.accelerator, "scaler", None)
-    if scaler is not None and scaler.is_enabled():
+    if scaler is not None and scaler.is_enabled() and not use_fused:
         if "scaler" not in inspect.signature(distillation_chunked_jsd).parameters:
             return _unsloth_gkd_note_fallback(self, "unsloth_zoo JSD has no GradScaler support")
         jsd_kwargs["scaler"] = scaler
@@ -5677,6 +6086,34 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
     # A dispatched model can return hidden states off its head's device; the zoo's accumulators follow the states.
     student_states = student_states.to(student_head.weight.device)
     teacher_states = teacher_states.to(teacher_head.weight.device)
+    if use_fused:
+        # Both heads one row chunk at a time, student gradient taken in forward (zoo fused_linear).
+        rows = os.environ.get("UNSLOTH_GKD_CHUNK_SIZE", "")
+        loss = _unsloth_fused_linear_jsd(
+            student_states,
+            student_head.weight,
+            teacher_states.detach(),
+            teacher_head.weight.detach(),
+            labels = shifted_labels,
+            beta = float(self.beta),
+            # No TRL release passes a temperature to generalized_jsd_loss (GKDConfig.temperature is for sampling).
+            temperature = 1.0,
+            student_bias = student_head.bias,
+            teacher_bias = None if teacher_head.bias is None else teacher_head.bias.detach(),
+            student_logit_scale = student_scale,
+            student_logit_softcapping = student_softcap,
+            teacher_logit_scale = teacher_scale,
+            teacher_logit_softcapping = teacher_softcap,
+            num_items_in_batch = items,
+            scaling = scaler.get_scale() if scaler is not None and scaler.is_enabled() else None,
+            rows_per_chunk = int(rows) if rows.strip().isdigit() else None,
+        )
+        try:
+            self._unsloth_gkd_chunked_calls = getattr(self, "_unsloth_gkd_chunked_calls", 0) + 1
+            self._unsloth_gkd_fused_calls = getattr(self, "_unsloth_gkd_fused_calls", 0) + 1
+        except Exception:
+            pass
+        return loss
     loss, _entropy_sum, _n_valid = distillation_chunked_jsd(
         student_states,
         teacher_states.detach(),
@@ -5708,7 +6145,7 @@ def gkd_trainer_compute_loss(function_name, function):
     if function_name != "compute_loss" or "_unsloth_trl_compute_loss" in function:
         return function
     layout = _unsloth_gkd_layout(function)
-    if layout is None or distillation_chunked_jsd is None:
+    if layout is None or (distillation_chunked_jsd is None and _unsloth_fused_linear_jsd is None):
         return function
     renamed, n = re.subn(
         r"\bdef compute_loss\(", "def _unsloth_trl_compute_loss(", function, count = 1
@@ -5766,4 +6203,2024 @@ RL_PRE_ITEMS["gkd_trainer"].append(
     "    from unsloth_zoo.rl_replacements import distillation_chunked_jsd\n"
     "except Exception:\n"
     "    distillation_chunked_jsd = None\n"
+    "try:\n"
+    "    from unsloth_zoo.fused_losses.fused_linear import fused_linear_jsd as _unsloth_fused_linear_jsd\n"
+    "except Exception:\n"
+    "    _unsloth_fused_linear_jsd = None\n"
 )
+
+
+# ORPO / CPO: log-probs from hidden states via a chunked head; anything not reproduced exactly runs TRL's body.
+try:
+    from unsloth_zoo.fused_losses.chunked_logprob import unsloth_chunked_logprobs
+except Exception:
+    unsloth_chunked_logprobs = None
+# Scored positions only, with the logits/* means from the head's affine mean (no backward); older zoo scores every row.
+try:
+    from unsloth_zoo.fused_losses.chunked_logprob import (
+        unsloth_masked_logprobs as _unsloth_pref_masked_logprobs,
+    )
+    from unsloth_zoo.fused_losses.preference_loss import (
+        linear_mean_logits as _unsloth_linear_mean_logits,
+    )
+except Exception:
+    _unsloth_pref_masked_logprobs = _unsloth_linear_mean_logits = None
+
+
+def _unsloth_stock_logps_hook(
+    self,
+    method,
+    hooks = ("get_batch_logps",),
+):
+    """False when a subclass overrides one of ``hooks`` below the class whose ``method`` is the rewritten one: TRL's
+    body would call the override (or it reads the full logits the chunked path replaces with stand-ins)."""
+    owner = None
+    for klass in type(self).__mro__:
+        # The rewritten body calls a chunked or fused-pass helper; a subclass method wrapping it via super() does not.
+        names = getattr(getattr(vars(klass).get(method), "__code__", None), "co_names", ())
+        if any(
+            name.startswith("_unsloth_") and ("chunked" in name or "fused_pass" in name)
+            for name in names
+        ):
+            owner = klass
+            break
+    if owner is None:
+        return True
+    for name in hooks:
+        hook = next((klass for klass in type(self).__mro__ if name in vars(klass)), None)
+        if hook is not None and hook not in owner.__mro__:
+            return False
+    return True
+
+
+def _unsloth_pref_chunked_head(self, model):
+    """The dense output head when this concatenated_forward can score from hidden states, else ``None``."""
+    if unsloth_chunked_logprobs is None or os.environ.get("UNSLOTH_FUSED_LINEAR", "1") == "0":
+        return None
+    if os.environ.get("UNSLOTH_PREFERENCE_CHUNKED", "1").lower() in ("0", "false", "no", "off"):
+        return None
+    if getattr(self, "is_encoder_decoder", False) or getattr(self, "aux_loss_enabled", False):
+        return None
+    # Listing the method itself rejects a subclass wrapping it: it would see stand-in logits.
+    if not _unsloth_stock_logps_hook(
+        self,
+        "concatenated_forward",
+        ("get_batch_logps", "get_batch_loss_metrics", "concatenated_forward"),
+    ):
+        return None
+    # TRL <= 0.25 scores labels against label_pad_token_id but nn.CrossEntropyLoss always ignores -100.
+    if getattr(self, "label_pad_token_id", -100) != -100:
+        return None
+    if getattr(self, "is_fsdp_enabled", False) or getattr(self, "is_deepspeed_enabled", False):
+        return None
+    try:
+        unwrapped = self.accelerator.unwrap_model(model)
+    except Exception:
+        return None
+    head = _unsloth_gkd_dense_head(unwrapped)
+    if head is None:
+        return None
+    # The kernel reads weight / bias directly: a hooked head (accelerate, forward / backward hooks) is not
+    # F.linear(h, W, b), and its backward hooks would never see the gradient.
+    if (
+        hasattr(head, "_hf_hook")
+        or "forward" in vars(head)
+        or head._forward_hooks
+        or head._forward_pre_hooks
+        or head._backward_hooks
+        or getattr(head, "_backward_pre_hooks", None)
+    ):
+        return None
+    # MiniCPM3 divides hidden states by logits_scaling before the head.
+    for config in _unsloth_text_configs(_unsloth_get_model_config(unwrapped)):
+        if getattr(config, "model_type", None) == "minicpm3":
+            return None
+    # DDP(find_unused_parameters=True) marks a head skipped in forward as unused, then its grad hook fires twice.
+    if getattr(model, "find_unused_parameters", False) and any(
+        p is not None and p.requires_grad for p in (head.weight, head.bias)
+    ):
+        return None
+    return head
+
+
+def _unsloth_pref_logit_transforms(model):
+    """``(multiply, divide, softcap)`` for the chunked kernel, from the GKD resolver (one scale, 0.0 = off)."""
+    scale, softcap = _unsloth_gkd_logit_transforms(model)
+    return (0.0 if scale == 1.0 else scale), 0.0, softcap
+
+
+def _unsloth_pref_chunked_forward(self, model, head, concatenated_batch, len_chosen, states, kind):
+    """``(outputs, all_logits)``: ``outputs`` is TRL's return tuple computed from hidden states, or ``None`` with
+    ``all_logits`` holding real logits for TRL's own body (the forward ignored the flag, or a shape TRL rejects)."""
+    unwrapped = self.accelerator.unwrap_model(model)
+    multiply, divide, softcap = _unsloth_pref_logit_transforms(unwrapped)
+    if not _unsloth_pref_returns_hidden_states(unwrapped, states, head.weight):
+        return None, states
+    input_ids = concatenated_batch["concatenated_input_ids"]
+    labels = concatenated_batch["concatenated_labels"]
+    if states.dim() != 3 or states.shape[:2] != labels.shape or labels.shape != input_ids.shape:
+        # TRL raises or reads these itself: hand it the logits it expects.
+        logits = torch.nn.functional.linear(
+            states.to(device = head.weight.device, dtype = head.weight.dtype), head.weight, head.bias
+        )
+        if multiply:
+            logits = logits * multiply
+        if divide:
+            logits = logits / divide
+        if softcap:
+            logits = softcap * torch.tanh(logits / softcap)
+        return None, logits
+
+    device = states.device
+    labels = labels.to(device)
+    input_ids = input_ids.to(device)
+    shifted = labels[:, 1:]
+    label_mask = shifted != -100
+    # cat, not boolean slice assignment: CPU Inductor fails to vectorise that (VecMask<long int, 2> vs VecMask<float, 1>).
+    rejected_off = torch.zeros_like(label_mask[len_chosen:])
+    if kind == "orpo":
+        # ORPO's NLL scores every attended token of prompt + chosen, from input_ids.
+        nll_targets = input_ids[:, 1:]
+        attention_mask = concatenated_batch["concatenated_attention_mask"].to(device)
+        nll_mask = torch.cat((attention_mask[:len_chosen, 1:] == 1, rejected_off), dim = 0)
+        average_log_prob = True
+        # Checking for a second NLL pass needs a host sync, so compiled graphs always take it (correct either way).
+        is_compiling = getattr(getattr(torch, "compiler", None), "is_compiling", None)
+        if is_compiling is not None and is_compiling():
+            split_nll = True
+        else:
+            split_nll = bool((label_mask & nll_mask & (shifted != nll_targets)).any())
+    else:
+        nll_targets = shifted
+        if self.cpo_alpha != 0:
+            nll_mask = torch.cat((label_mask[:len_chosen], rejected_off), dim = 0)
+        else:
+            nll_mask = torch.zeros_like(label_mask)
+        average_log_prob = self.loss_type in ["ipo", "simpo"]
+        split_nll = False
+    targets = torch.where(label_mask, shifted, torch.where(nll_mask, nll_targets, 0))
+
+    # CPO's logits metric averages every position, ORPO's all but the last.
+    rows = states if kind == "cpo" else states[:, :-1]
+    kwargs = dict(
+        logit_scale_multiply = multiply,
+        logit_scale_divide = divide,
+        logit_softcapping = softcap,
+        lm_head_bias = head.bias,
+    )
+    if _unsloth_pref_masked_logprobs is not None and _unsloth_linear_mean_logits is not None:
+        # Prompt and padding rows (often most of each row) never reach the head; they only feed the mean metric.
+        per_token = _unsloth_pref_masked_logprobs(
+            states[:, :-1],
+            head.weight,
+            targets,
+            mask = label_mask if split_nll else label_mask | nll_mask,
+            **kwargs,
+        )
+        mean_logits = _unsloth_linear_mean_logits(
+            rows, head.weight, head.bias, multiply, divide, softcap
+        )
+        if split_nll:
+            nll_per_token = _unsloth_pref_masked_logprobs(
+                states[:len_chosen, :-1],
+                head.weight,
+                nll_targets[:len_chosen],
+                mask = nll_mask[:len_chosen],
+                **kwargs,
+            )
+        else:
+            nll_per_token = per_token[:len_chosen]
+    else:
+        if kind == "cpo":
+            targets = torch.nn.functional.pad(targets, (0, 1))
+        per_token, mean_logits = unsloth_chunked_logprobs(
+            rows, head.weight, targets, return_mean_logits = True, **kwargs
+        )
+        if kind == "cpo":
+            per_token = per_token[:, :-1]
+        if split_nll:
+            nll_per_token = unsloth_chunked_logprobs(
+                states[:len_chosen, :-1],
+                head.weight,
+                torch.where(nll_mask, nll_targets, 0)[:len_chosen],
+                **kwargs,
+            )
+        else:
+            nll_per_token = per_token[:len_chosen]
+
+    loss_mask = label_mask.to(per_token.dtype)
+    all_logps = (per_token * loss_mask).sum(-1)
+    if average_log_prob:
+        all_logps = all_logps / loss_mask.sum(-1)
+    chosen_nll_mask = nll_mask[:len_chosen].to(per_token.dtype)
+    if kind == "cpo" and self.cpo_alpha == 0:
+        nll_loss = torch.tensor(0.0).to(self.accelerator.device)
+    else:
+        nll_loss = -(nll_per_token * chosen_nll_mask).sum() / chosen_nll_mask.sum()
+    try:
+        self._unsloth_pref_chunked_calls = getattr(self, "_unsloth_pref_chunked_calls", 0) + 1
+    except Exception:
+        pass
+    # Stand-ins: TRL only reads chosen/rejected logits as .detach().mean().
+    return (
+        all_logps[:len_chosen],
+        all_logps[len_chosen:],
+        mean_logits[:len_chosen],
+        mean_logits[len_chosen:],
+        nll_loss,
+    ), states
+
+
+_PREF_LAYOUTS = {
+    "orpo": (
+        "labels = torch.where(attention_mask == 1, labels,",
+        "chosen_nll_loss = cross_entropy_loss(all_logits[:len_chosen], labels[:len_chosen])",
+        "average_log_prob=True",
+        "chosen_logits = all_logits[:len_chosen, :-1, :]",
+        "rejected_logits = all_logits[len_chosen:, :-1, :]",
+        "return (chosen_logps, rejected_logps, chosen_logits, rejected_logits, chosen_nll_loss)",
+    ),
+    "cpo": (
+        "labels = concatenated_batch['concatenated_labels'].clone()",
+        "nll_loss = cross_entropy_loss(all_logits[:len_chosen], labels[:len_chosen])",
+        "average_log_prob=self.loss_type in ['ipo', 'simpo']",
+        "chosen_logits = all_logits[:len_chosen]\n",
+        "rejected_logits = all_logits[len_chosen:]\n",
+        "return (chosen_logps, rejected_logps, chosen_logits, rejected_logits, nll_loss)",
+    ),
+}
+_PREF_COMMON = (
+    "len_chosen = batch['chosen_labels'].shape[0]",
+    "all_logps = self.get_batch_logps(all_logits, concatenated_batch['concatenated_labels'], average_log_prob=",
+    "chosen_logps = all_logps[:len_chosen]",
+    "rejected_logps = all_logps[len_chosen:]",
+    "loss_fct = nn.CrossEntropyLoss()",
+)
+
+
+def _unsloth_pref_rewrite_concatenated_forward(function, kind):
+    canonical = _unsloth_gkd_canonical(function)
+    if canonical is None or "_unsloth_pref_chunked_forward" in function:
+        return function
+    if not all(x in canonical for x in _PREF_COMMON + _PREF_LAYOUTS[kind]):
+        return function
+    pattern = re.compile(
+        r"(?ms)^([ \t]*)(outputs = model\(\n.*?^\1\)\n)\1all_logits = outputs\.logits\n"
+    )
+    matches = list(pattern.finditer(function))
+    if len(matches) != 1:
+        return function
+    match = matches[0]
+    indent = match.group(1)
+    call = textwrap.indent(match.group(2), "    ")
+    block = (
+        "_unsloth_pref_head = _unsloth_pref_chunked_head(self, model)\n"
+        "_unsloth_pref_prior = os.environ.get('UNSLOTH_RETURN_HIDDEN_STATES')\n"
+        "if _unsloth_pref_head is not None:\n"
+        "    os.environ['UNSLOTH_RETURN_HIDDEN_STATES'] = '1'\n"
+        "try:\n"
+        f"{call}"
+        "finally:\n"
+        "    if _unsloth_pref_head is not None:\n"
+        "        if _unsloth_pref_prior is None:\n"
+        "            os.environ.pop('UNSLOTH_RETURN_HIDDEN_STATES', None)\n"
+        "        else:\n"
+        "            os.environ['UNSLOTH_RETURN_HIDDEN_STATES'] = _unsloth_pref_prior\n"
+        "all_logits = outputs.logits\n"
+        "if _unsloth_pref_head is not None:\n"
+        "    _unsloth_pref_out, all_logits = _unsloth_pref_chunked_forward(\n"
+        f"        self, model, _unsloth_pref_head, concatenated_batch, len_chosen, all_logits, {kind!r}\n"
+        "    )\n"
+        "    if _unsloth_pref_out is not None:\n"
+        "        return _unsloth_pref_out\n"
+    )
+    return function[: match.start()] + textwrap.indent(block, indent) + function[match.end() :]
+
+
+def orpo_trainer_concatenated_forward(function_name, function):
+    if function_name != "concatenated_forward":
+        return function
+    return _unsloth_pref_rewrite_concatenated_forward(function, "orpo")
+
+
+def cpo_trainer_concatenated_forward(function_name, function):
+    if function_name != "concatenated_forward":
+        return function
+    return _unsloth_pref_rewrite_concatenated_forward(function, "cpo")
+
+
+RL_FUNCTIONS["orpo_trainer"].append(orpo_trainer_concatenated_forward)
+RL_FUNCTIONS["cpo_trainer"].append(cpo_trainer_concatenated_forward)
+for _pref_trainer in ("orpo_trainer", "cpo_trainer"):
+    for _pref_item in (
+        _unsloth_get_model_config,
+        _unsloth_text_configs,
+        _unsloth_get_final_logit_softcapping,
+        _unsloth_resolve_logit_scales,
+        _unsloth_grpo_returns_hidden_states,
+        _unsloth_grpo_hidden_states_signal,
+        _unsloth_pref_returns_hidden_states,
+        _unsloth_gkd_dense_head,
+        _unsloth_stock_logps_hook,
+        _unsloth_pref_chunked_head,
+        _unsloth_gkd_logit_transforms,
+        _unsloth_pref_logit_transforms,
+        _unsloth_pref_chunked_forward,
+    ):
+        RL_PRE_ITEMS[_pref_trainer].append(inspect.getsource(_pref_item))
+    RL_PRE_ITEMS[_pref_trainer].append(
+        "try:\n"
+        "    from unsloth_zoo.device_map_planner import detect_logit_transforms\n"
+        "except Exception:\n"
+        "    detect_logit_transforms = None\n"
+        "try:\n"
+        "    from unsloth_zoo.fused_losses.chunked_logprob import unsloth_chunked_logprobs\n"
+        "except Exception:\n"
+        "    unsloth_chunked_logprobs = None\n"
+        "try:\n"
+        "    from unsloth_zoo.fused_losses.chunked_logprob import unsloth_masked_logprobs as _unsloth_pref_masked_logprobs\n"
+        "    from unsloth_zoo.fused_losses.preference_loss import linear_mean_logits as _unsloth_linear_mean_logits\n"
+        "except Exception:\n"
+        "    _unsloth_pref_masked_logprobs = _unsloth_linear_mean_logits = None\n"
+    )
+
+
+# DPO (TRL < 0.29, concatenated_forward): log-probs from hidden states; TRL >= 1.15 fuses the head itself.
+try:
+    from unsloth_zoo.fused_losses.chunked_logprob import (
+        unsloth_masked_logprobs as _unsloth_masked_logprobs,
+    )
+except Exception:
+    _unsloth_masked_logprobs = None
+
+
+def _unsloth_dpo_chunked_head(
+    self,
+    model,
+    concatenated_batch,
+    method = "concatenated_forward",
+):
+    """``(unwrapped_model, head, (multiply, divide, softcap))`` when concatenated_forward can score from hidden
+    states, else ``None`` (TRL's own logits path runs). Decided before the forward, which then skips the logits."""
+    reason = None
+    if _unsloth_masked_logprobs is None:
+        reason = "unsloth_zoo has no chunked_logprob"
+    elif os.environ.get("UNSLOTH_FUSED_LINEAR", "1") == "0":
+        reason = "UNSLOTH_FUSED_LINEAR=0"
+    elif os.environ.get("UNSLOTH_DPO_CHUNKED", "1").lower() in ("0", "false", "no", "off"):
+        reason = "UNSLOTH_DPO_CHUNKED=0"
+    elif getattr(self, "is_encoder_decoder", False):
+        reason = "encoder-decoder"
+    elif getattr(self, "aux_loss_enabled", False):
+        reason = "router aux loss needs the stock forward"
+    elif not _unsloth_stock_logps_hook(
+        self,
+        method,
+        ("get_batch_logps",)
+        if method == "concatenated_forward"
+        else ("get_batch_logps", "get_batch_loss_metrics", method),
+    ):
+        # KTO hands its callers logits stand-ins; DPO's outputs are exact, so a DPO wrapper is fine.
+        reason = "get_batch_logps / get_batch_loss_metrics overridden"
+    elif getattr(self, "padding_free", False):
+        reason = "padding_free"
+    elif getattr(self, "use_weighting", False):
+        reason = "use_weighting needs full-vocabulary log-probs"
+    elif getattr(self, "is_fsdp_enabled", False) or getattr(self, "is_deepspeed_enabled", False):
+        reason = "FSDP / DeepSpeed"
+    elif any(
+        k in concatenated_batch
+        for k in ("pixel_values", "pixel_attention_mask", "image_sizes", "token_type_ids")
+        + tuple(_DPO_VISION_KEYS)
+    ):
+        reason = "vision inputs"
+    if reason is None:
+        try:
+            unwrapped = self.accelerator.unwrap_model(model)
+        except Exception:
+            unwrapped = None
+            reason = "unwrap_model"
+    if reason is None:
+        head = _unsloth_gkd_dense_head(unwrapped)
+        if head is None:
+            reason = "output head is not a dense nn.Linear"
+        # The kernel reads weight / bias directly: a hooked head (accelerate, forward / backward hooks) is not
+        # F.linear(h, W, b), and its backward hooks would never see the gradient.
+        elif (
+            hasattr(head, "_hf_hook")
+            or "forward" in vars(head)
+            or head._forward_hooks
+            or head._forward_pre_hooks
+            or head._backward_hooks
+            or getattr(head, "_backward_pre_hooks", None)
+        ):
+            reason = "output head has hooks or a patched forward"
+    if reason is None:
+        for config in _unsloth_text_configs(_unsloth_get_model_config(unwrapped)):
+            if getattr(config, "model_type", None) == "minicpm3":
+                reason = "minicpm3 scales hidden states before the head"
+    if reason is None and getattr(model, "find_unused_parameters", False):
+        if any(p is not None and p.requires_grad for p in (head.weight, head.bias)):
+            reason = "DDP find_unused_parameters with a trainable head"
+    if reason is not None:
+        try:
+            fallbacks = self.__dict__.setdefault("_unsloth_dpo_chunked_fallbacks", {})
+            fallbacks[reason] = fallbacks.get(reason, 0) + 1
+        except Exception:
+            pass
+        return None
+    return unwrapped, head, _unsloth_pref_logit_transforms(unwrapped)
+
+
+def _unsloth_dpo_model_forward(model, input_ids, model_kwargs, want_hidden_states):
+    if not want_hidden_states:
+        return model(input_ids, **model_kwargs)
+    prior = os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES")
+    os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
+    try:
+        return model(input_ids, **model_kwargs)
+    finally:
+        if prior is None:
+            os.environ.pop("UNSLOTH_RETURN_HIDDEN_STATES", None)
+        else:
+            os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = prior
+
+
+def _unsloth_dpo_returns_hidden_states(self, chunked, logits):
+    if chunked is None:
+        return False
+    unwrapped, head, _ = chunked
+    hidden = _unsloth_pref_returns_hidden_states(unwrapped, logits, head.weight)
+    if not hidden:
+        fallbacks = self.__dict__.setdefault("_unsloth_dpo_chunked_fallbacks", {})
+        reason = "forward returned logits, not hidden states"
+        fallbacks[reason] = fallbacks.get(reason, 0) + 1
+    return hidden
+
+
+def _unsloth_dpo_hidden_logps(self, chunked, hidden_states, labels, loss_mask):
+    """``(per_token_logps [B, S], mean_logits [B, S, 1])`` where TRL computes ``selective_log_softmax(logits, labels)``
+    and later reads ``logits[mask].mean()``. Rows outside ``loss_mask`` are 0 and never reach the head; the mean over
+    a masked row's vocab equals TRL's element mean, so the stand-in keeps the ``logits/*`` metrics exact."""
+    _, head, (multiply, divide, softcap) = chunked
+    per_token_logps, mean_logits = _unsloth_masked_logprobs(
+        hidden_states.to(head.weight.device),
+        head.weight,
+        labels,
+        mask = loss_mask,
+        logit_scale_multiply = multiply,
+        logit_scale_divide = divide,
+        logit_softcapping = softcap,
+        lm_head_bias = head.bias,
+        return_mean_logits = True,
+    )
+    try:
+        self._unsloth_dpo_chunked_calls = getattr(self, "_unsloth_dpo_chunked_calls", 0) + 1
+    except Exception:
+        pass
+    return per_token_logps.to(labels.device), mean_logits.unsqueeze(-1).to(labels.device)
+
+
+def _unsloth_dpo_nll(chosen_logps, chosen_labels):
+    """``F.cross_entropy(chosen_logits, chosen_labels, ignore_index=0)`` from the per-token log-probs at the same
+    positions (TRL zeroes masked labels, so 0 is its ignore index)."""
+    keep = chosen_labels != 0
+    return -(chosen_logps * keep).sum() / keep.sum()
+
+
+_DPO_CF_FORWARD = (
+    "            outputs = model(input_ids, **model_kwargs)\n            logits = outputs.logits\n"
+)
+_DPO_CF_LOGPS = "        per_token_logps = selective_log_softmax(logits, labels)\n"
+_DPO_CF_START = '        num_examples = batch["prompt_input_ids"].shape[0]\n'
+_DPO_CF_CHOSEN = re.compile(r"^(?P<indent>[ \t]*)chosen_logits = (?P<expr>[^\n]+)\n", re.MULTILINE)
+_DPO_CF_CE = re.compile(
+    r"F\.cross_entropy\(\s*torch\.flatten\(chosen_logits, end_dim=1\),\s*"
+    r"torch\.flatten\(chosen_labels, end_dim=1\),\s*ignore_index=0\s*\)"
+)
+
+
+def dpo_trainer_chunked_logprobs(function_name, function):
+    """Rewrite TRL < 0.29's concatenated_forward to score from hidden states. Every anchor must match exactly once,
+    else TRL's source is returned untouched; at run time ``_unsloth_dpo_chunked_head`` keeps TRL's math for any
+    feature that needs the full logits, and a forward that ignored the flag still takes TRL's path."""
+    if function_name != "concatenated_forward" or _unsloth_masked_logprobs is None:
+        return function
+    if "_unsloth_dpo_hidden" in function:
+        return function
+    if any(function.count(a) != 1 for a in (_DPO_CF_FORWARD, _DPO_CF_LOGPS, _DPO_CF_START)):
+        return function
+    chosen = list(_DPO_CF_CHOSEN.finditer(function))
+    if len(chosen) != 1 or len(_DPO_CF_CE.findall(function)) != 1:
+        return function
+    # Other full-logits readers: padding_free / use_weighting (refused at run time) and the stand-in mean metrics.
+    expr = chosen[0].group("expr")
+    if "logits" not in expr or "shape" in expr:
+        return function
+    new = function.replace(
+        _DPO_CF_START,
+        _DPO_CF_START + "        _unsloth_dpo_hidden = False\n",
+    )
+    new = new.replace(
+        _DPO_CF_FORWARD,
+        "            _unsloth_dpo_chunked = _unsloth_dpo_chunked_head(self, model, concatenated_batch)\n"
+        "            outputs = _unsloth_dpo_model_forward(\n"
+        "                model, input_ids, model_kwargs, _unsloth_dpo_chunked is not None\n"
+        "            )\n"
+        "            logits = outputs.logits\n"
+        "            _unsloth_dpo_hidden = _unsloth_dpo_returns_hidden_states(self, _unsloth_dpo_chunked, logits)\n",
+    )
+    new = new.replace(
+        _DPO_CF_LOGPS,
+        "        if _unsloth_dpo_hidden:\n"
+        "            per_token_logps, logits = _unsloth_dpo_hidden_logps(\n"
+        "                self, _unsloth_dpo_chunked, logits, labels, loss_mask\n"
+        "            )\n"
+        "            _unsloth_dpo_token_logps = per_token_logps\n"
+        "        else:\n"
+        "            per_token_logps = selective_log_softmax(logits, labels)\n",
+    )
+    indent = chosen[0].group("indent")
+    chosen_logps_expr = re.sub(r"\blogits\b", "_unsloth_dpo_token_logps", expr)
+    new = _DPO_CF_CHOSEN.sub(
+        lambda m: m.group(0)
+        + f"{indent}if _unsloth_dpo_hidden:\n"
+        + f"{indent}    _unsloth_dpo_chosen_logps = {chosen_logps_expr}\n",
+        new,
+        count = 1,
+    )
+    new = _DPO_CF_CE.sub(
+        lambda m: "(\n"
+        "                _unsloth_dpo_nll(_unsloth_dpo_chosen_logps, chosen_labels)\n"
+        "                if _unsloth_dpo_hidden\n"
+        f"                else {m.group(0)}\n"
+        "            )",
+        new,
+        count = 1,
+    )
+    return new
+
+
+RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_chunked_logprobs)
+
+
+# DPO (TRL 0.29 - 1.14, _compute_loss): log-probs, entropy, logits/* means and token accuracy from hidden states.
+try:
+    from unsloth_zoo.fused_losses.fused_linear import (
+        fused_linear_logprobs as _unsloth_fused_linear_logprobs,
+    )
+except Exception:
+    _unsloth_fused_linear_logprobs = None
+
+
+def _unsloth_dpo_forward(model, model_kwargs, want_hidden_states):
+    if not want_hidden_states:
+        return model(**model_kwargs)
+    prior = os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES")
+    os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
+    try:
+        return model(**model_kwargs)
+    finally:
+        if prior is None:
+            os.environ.pop("UNSLOTH_RETURN_HIDDEN_STATES", None)
+        else:
+            os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = prior
+
+
+def _unsloth_dpo_loss_head(
+    self,
+    model,
+    inputs,
+    return_outputs = False,
+):
+    """``_unsloth_dpo_chunked_head`` for TRL 0.29 - 1.14's ``_compute_loss``, which also needs the fused linear op
+    (entropy and argmax match) and must not hand hidden states back as ``outputs.logits``."""
+    reason = None
+    if _unsloth_fused_linear_logprobs is None:
+        reason = "unsloth_zoo has no fused_linear_logprobs"
+    elif os.environ.get("UNSLOTH_FUSED_LINEAR", "1") == "0":
+        reason = "UNSLOTH_FUSED_LINEAR=0"
+    elif return_outputs:
+        reason = "return_outputs needs the logits"
+    if reason is not None:
+        try:
+            fallbacks = self.__dict__.setdefault("_unsloth_dpo_chunked_fallbacks", {})
+            fallbacks[reason] = fallbacks.get(reason, 0) + 1
+        except Exception:
+            pass
+        return None
+    return _unsloth_dpo_chunked_head(self, model, inputs, "_compute_loss")
+
+
+def _unsloth_dpo_loss_stats(
+    self,
+    chunked,
+    hidden_states,
+    labels,
+    mask,
+    ref = False,
+):
+    """TRL's per-token statistics of ``logits = head(hidden_states)`` at completion positions (``mask``), the rest 0:
+    ``(log_probs, entropy, mean_logits [.., 1], is_top1)``, or the log-probs alone for ``ref``. ``mean_logits`` stands
+    in for the logits: ``x[mask].mean(-1)`` on it is TRL's vocab mean. No temperature: TRL's DPO scores at 1.0."""
+    _, head, (multiply, divide, softcap) = chunked
+    # TRL projects the reference logits inside its no_grad forward: a trainable (or shared) head gets no gradient.
+    with torch.set_grad_enabled(torch.is_grad_enabled() and not ref):
+        out = _unsloth_fused_linear_logprobs(
+            hidden_states,
+            head.weight,
+            labels,
+            bias = head.bias,
+            mask = mask,
+            logit_scale_multiply = multiply,
+            logit_scale_divide = divide,
+            logit_softcapping = softcap,
+            return_entropy = not ref,
+            return_mean_logits = not ref,
+            return_is_top1 = not ref,
+            entropy_requires_grad = False,
+        )
+    try:
+        self._unsloth_dpo_chunked_calls = getattr(self, "_unsloth_dpo_chunked_calls", 0) + 1
+    except Exception:
+        pass
+    if ref:
+        return out
+    logps, entropy, mean_logits, is_top1 = out
+    return logps, entropy, mean_logits.unsqueeze(-1), is_top1
+
+
+_DPO_CL_MODE = re.compile(
+    r'^(?P<i>[ \t]*)mode = "train" if self\.model\.training else "eval"\n', re.MULTILINE
+)
+_DPO_CL_FORWARD = re.compile(r"^(?P<i>[ \t]*)outputs = model\(\*\*model_kwargs\)\n", re.MULTILINE)
+_DPO_CL_SHIFT = re.compile(
+    r"^[ \t]*shift_logits = outputs\.logits\[\.\.\., :-1, :\](?:\.contiguous\(\))?\n",
+    re.MULTILINE,
+)
+# TRL < 1.14: separate log-prob and entropy calls; 1.14: one fused call with a row mask.
+_DPO_CL_LOGPS = re.compile(
+    r"^(?P<i>[ \t]*)per_token_logps = selective_log_softmax\(shift_logits, shift_labels\)\n",
+    re.MULTILINE,
+)
+_DPO_CL_ENTROPY = re.compile(
+    r"^(?P<i>[ \t]*)per_token_entropy = entropy_from_logits\(shift_logits\.detach\(\)\)\n",
+    re.MULTILINE,
+)
+_DPO_CL_LOGPS_ENT = re.compile(
+    r"^(?P<i>[ \t]*)per_token_logps, per_token_entropies = selective_log_softmax_and_entropy\(\s*"
+    r"shift_logits, shift_labels, entropy_requires_grad=False, row_mask=shift_completion_mask\s*\)\n",
+    re.MULTILINE,
+)
+_DPO_CL_REF_FORWARD = re.compile(
+    r"^(?P<i>[ \t]*)ref_outputs = (?P<model>self\.model|self\.ref_model)\(\*\*(?P<kw>model_kwargs|ref_model_kwargs)\)\n",
+    re.MULTILINE,
+)
+_DPO_CL_REF_LOGPS = re.compile(
+    r"^(?P<i>[ \t]*)ref_per_token_logps = selective_log_softmax\(\s*ref_shift_logits, shift_labels"
+    r"(?P<row_mask>, row_mask=shift_completion_mask)?\s*\)\n",
+    re.MULTILINE,
+)
+_DPO_CL_ARGMAX = re.compile(
+    r"^(?P<i>[ \t]*)predictions = chosen_logits\.argmax\(dim=-1\)\n", re.MULTILINE
+)
+_DPO_CL_SFT = (
+    "F.cross_entropy(chosen_logits[chosen_mask.bool()], chosen_labels[chosen_mask.bool()])"
+)
+
+
+def dpo_trainer_compute_loss_chunked(function_name, function):
+    """Rewrite TRL 0.29 - 1.14's ``_compute_loss`` to score from hidden states: it projects every position of the
+    policy and reference passes to ``[B, S, V]`` logits, then reads log-probs, entropy, the ``logits/*`` means, the
+    argmax token accuracy and the ``sft`` loss term from them. One fused linear call returns all of them at the
+    completion positions (the only ones TRL reads), so neither pass materializes logits. Every anchor must match
+    exactly once (each reference forward at most once), else TRL's source is returned untouched; at run time
+    ``_unsloth_dpo_loss_head`` keeps TRL's path for anything that needs the full logits (``use_weighting``, aux loss,
+    ``return_outputs``, vision, ...) and a forward that ignored the flag still takes TRL's path."""
+    if function_name != "_compute_loss" or _unsloth_fused_linear_logprobs is None:
+        return function
+    if "_unsloth_dpo_hidden" in function:
+        return function
+    fused_entropy = len(_DPO_CL_LOGPS_ENT.findall(function)) == 1
+    single = [
+        _DPO_CL_MODE,
+        _DPO_CL_FORWARD,
+        _DPO_CL_SHIFT,
+        _DPO_CL_ARGMAX,
+        _DPO_CL_REF_LOGPS,
+    ]
+    single += [] if fused_entropy else [_DPO_CL_LOGPS, _DPO_CL_ENTROPY]
+    if any(len(p.findall(function)) != 1 for p in single) or function.count(_DPO_CL_SFT) != 1:
+        return function
+    ref_forwards = _DPO_CL_REF_FORWARD.findall(function)
+    if not 1 <= len(ref_forwards) <= 2 or len({m[1] for m in ref_forwards}) != len(ref_forwards):
+        return function
+    # Any other reader of the full logits would see the stand-in.
+    if function.count("outputs.logits") != 2 or function.count("shift_logits") != (
+        8 if fused_entropy else 9
+    ):
+        return function
+
+    def _sub(pattern, make, text):
+        return pattern.sub(lambda m: make(m.group("i"), m), text, count = 1)
+
+    new = _sub(
+        _DPO_CL_MODE,
+        lambda i, m: m.group(0) + f"{i}_unsloth_dpo_hidden = _unsloth_dpo_ref_hidden = False\n",
+        function,
+    )
+    new = _sub(
+        _DPO_CL_FORWARD,
+        lambda i, m: (
+            f"{i}_unsloth_dpo_chunked = _unsloth_dpo_loss_head(self, model, inputs, return_outputs)\n"
+            f"{i}outputs = _unsloth_dpo_forward(model, model_kwargs, _unsloth_dpo_chunked is not None)\n"
+            f"{i}_unsloth_dpo_hidden = _unsloth_dpo_returns_hidden_states(self, _unsloth_dpo_chunked, outputs.logits)\n"
+        ),
+        new,
+    )
+    stats = (
+        "{i}if _unsloth_dpo_hidden:\n"
+        "{i}    {lhs}, shift_logits, _unsloth_dpo_top1 = _unsloth_dpo_loss_stats(\n"
+        "{i}        self, _unsloth_dpo_chunked, shift_logits, shift_labels, shift_completion_mask\n"
+        "{i}    )\n"
+        "{i}else:\n"
+    )
+    if fused_entropy:
+        new = _sub(
+            _DPO_CL_LOGPS_ENT,
+            lambda i, m: stats.format(i = i, lhs = "per_token_logps, per_token_entropies")
+            + textwrap.indent(m.group(0)[len(i) :], i + "    "),
+            new,
+        )
+    else:
+        new = _sub(
+            _DPO_CL_LOGPS,
+            lambda i, m: stats.format(i = i, lhs = "per_token_logps, _unsloth_dpo_entropy")
+            + f"{i}    {m.group(0).lstrip()}",
+            new,
+        )
+        new = _sub(
+            _DPO_CL_ENTROPY,
+            lambda i, m: (
+                f"{i}if _unsloth_dpo_hidden:\n"
+                f"{i}    per_token_entropy = _unsloth_dpo_entropy\n"
+                f"{i}else:\n"
+                f"{i}    {m.group(0).lstrip()}"
+            ),
+            new,
+        )
+
+    def _ref_forward(m):
+        i, model, kw = m.group("i"), m.group("model"), m.group("kw")
+        return (
+            f"{i}_unsloth_dpo_ref = (\n"
+            f'{i}    _unsloth_dpo_chunked_head(self, {model}, inputs, "_compute_loss") if _unsloth_dpo_hidden else None\n'
+            f"{i})\n"
+            f"{i}ref_outputs = _unsloth_dpo_forward({model}, {kw}, _unsloth_dpo_ref is not None)\n"
+            f"{i}_unsloth_dpo_ref_hidden = _unsloth_dpo_returns_hidden_states(self, _unsloth_dpo_ref, ref_outputs.logits)\n"
+        )
+
+    new = _DPO_CL_REF_FORWARD.sub(_ref_forward, new)
+    new = _sub(
+        _DPO_CL_REF_LOGPS,
+        lambda i, m: (
+            f"{i}if _unsloth_dpo_ref_hidden:\n"
+            f"{i}    ref_per_token_logps = _unsloth_dpo_loss_stats(\n"
+            f"{i}        self, _unsloth_dpo_ref, ref_shift_logits, shift_labels, shift_completion_mask, ref = True\n"
+            f"{i}    )\n"
+            f"{i}else:\n" + textwrap.indent(m.group(0)[len(i) :], i + "    ")
+        ),
+        new,
+    )
+    # TRL's argmax ties go to the first index, as does is_top1; -1 is never a token id.
+    new = _sub(
+        _DPO_CL_ARGMAX,
+        lambda i, m: (
+            f"{i}if _unsloth_dpo_hidden:\n"
+            f"{i}    predictions = torch.where(\n"
+            f"{i}        _unsloth_dpo_top1[: len(_unsloth_dpo_top1) // 2], shift_labels[: len(shift_labels) // 2], -1\n"
+            f"{i}    )\n"
+            f"{i}else:\n"
+            f"{i}    {m.group(0).lstrip()}"
+        ),
+        new,
+    )
+    # The sft term: mean NLL of the chosen completion tokens, from the log-probs already computed.
+    new = new.replace(
+        _DPO_CL_SFT,
+        "(\n"
+        "                    -per_token_logps[: len(per_token_logps) // 2][chosen_mask.bool()].mean()\n"
+        "                    if _unsloth_dpo_hidden\n"
+        f"                    else {_DPO_CL_SFT}\n"
+        "                )",
+        1,
+    )
+    return new
+
+
+RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_compute_loss_chunked)
+for _dpo_item in (
+    _unsloth_get_model_config,
+    _unsloth_text_configs,
+    _unsloth_get_final_logit_softcapping,
+    _unsloth_resolve_logit_scales,
+    _unsloth_grpo_returns_hidden_states,
+    _unsloth_grpo_hidden_states_signal,
+    _unsloth_pref_returns_hidden_states,
+    _unsloth_gkd_dense_head,
+    _unsloth_gkd_logit_transforms,
+    _unsloth_pref_logit_transforms,
+    _unsloth_stock_logps_hook,
+    _unsloth_dpo_chunked_head,
+    _unsloth_dpo_model_forward,
+    _unsloth_dpo_returns_hidden_states,
+    _unsloth_dpo_hidden_logps,
+    _unsloth_dpo_nll,
+    _unsloth_dpo_forward,
+    _unsloth_dpo_loss_head,
+    _unsloth_dpo_loss_stats,
+):
+    RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(_dpo_item))
+RL_PRE_ITEMS["dpo_trainer"].append(
+    "try:\n"
+    "    from unsloth_zoo.device_map_planner import detect_logit_transforms\n"
+    "except Exception:\n"
+    "    detect_logit_transforms = None\n"
+    "try:\n"
+    "    from unsloth_zoo.fused_losses.chunked_logprob import (\n"
+    "        unsloth_masked_logprobs as _unsloth_masked_logprobs,\n"
+    "    )\n"
+    "except Exception:\n"
+    "    _unsloth_masked_logprobs = None\n"
+    "try:\n"
+    "    from unsloth_zoo.fused_losses.fused_linear import (\n"
+    "        fused_linear_logprobs as _unsloth_fused_linear_logprobs,\n"
+    "    )\n"
+    "except Exception:\n"
+    "    _unsloth_fused_linear_logprobs = None\n"
+    f"_DPO_VISION_KEYS = {tuple(_DPO_VISION_KEYS)!r}\n"
+)
+
+
+# KTO (TRL < 1.10, forward + get_batch_logps): the policy pass, the only one that keeps its logits for backward.
+try:
+    from unsloth_zoo.fused_losses.chunked_logprob import (
+        unsloth_chunked_logprobs as _unsloth_chunked_logprobs,
+    )
+except Exception:
+    _unsloth_chunked_logprobs = None
+
+
+def _unsloth_kto_hidden_logps(self, chunked, hidden_states, labels, label_pad_token_id):
+    """``(completion_logps [B], logits stand-in [B, S, 1])`` for TRL's ``get_batch_logps(logits, labels,
+    average_log_prob=False)``. The stand-in holds each position's vocab sum of the logits, so the
+    ``logits/chosen_sum`` metrics (a sum over every position) stay exact."""
+    _, head, (multiply, divide, softcap) = chunked
+    # The model may truncate input_ids (see kto_trainer_get_batch_logps): score the common length.
+    n = min(hidden_states.shape[1], labels.shape[1])
+    out_device = hidden_states.device
+    hidden_states = hidden_states[:, :n]
+    labels = labels[:, :n].to(head.weight.device)
+    shifted = labels[:, 1:]
+    mask = shifted != label_pad_token_id
+    if _unsloth_masked_logprobs is not None and _unsloth_linear_mean_logits is not None:
+        # Only completion tokens reach the head; the logits/* sums come from the head's affine mean (no backward).
+        hidden_states = hidden_states.to(head.weight.device)
+        per_token_logps = _unsloth_masked_logprobs(
+            hidden_states[:, :-1],
+            head.weight,
+            shifted,
+            mask = mask,
+            logit_scale_multiply = multiply,
+            logit_scale_divide = divide,
+            logit_softcapping = softcap,
+            lm_head_bias = head.bias,
+        )
+        mean_logits = _unsloth_linear_mean_logits(
+            hidden_states, head.weight, head.bias, multiply, divide, softcap
+        )
+    else:
+        index = torch.cat(
+            (shifted.masked_fill(~mask, 0), shifted.new_zeros(shifted.shape[0], 1)), dim = 1
+        )
+        per_token_logps, mean_logits = _unsloth_chunked_logprobs(
+            hidden_states.to(head.weight.device),
+            head.weight,
+            index,
+            logit_scale_multiply = multiply,
+            logit_scale_divide = divide,
+            logit_softcapping = softcap,
+            lm_head_bias = head.bias,
+            return_mean_logits = True,
+        )
+        per_token_logps = per_token_logps[:, :-1]
+    try:
+        self._unsloth_dpo_chunked_calls = getattr(self, "_unsloth_dpo_chunked_calls", 0) + 1
+    except Exception:
+        pass
+    completion_logps = (per_token_logps * mask).sum(-1)
+    logits_sum = (mean_logits * head.weight.shape[0]).unsqueeze(-1)
+    return completion_logps.to(out_device), logits_sum.to(out_device)
+
+
+_KTO_FORWARD = re.compile(
+    r"^(?P<indent>[ \t]+)outputs = model\(\n"
+    r"[ \t]+batch\[\"completion_input_ids\"\],\n"
+    r"[ \t]+attention_mask=batch\[\"completion_attention_mask\"\],\n"
+    r"[ \t]+\*\*model_kwargs,\n"
+    r"[ \t]+\)\n"
+    r"[ \t]+completion_logits = outputs\.logits\n",
+    re.MULTILINE,
+)
+_KTO_LOGPS = re.compile(
+    r"^(?P<indent>[ \t]+)completion_logps = self\.get_batch_logps\(\n"
+    r"[ \t]+completion_logits,\n"
+    r"[ \t]+batch\[\"completion_labels\"\],\n"
+    r"[ \t]+average_log_prob=False,\n"
+    r"(?P<rest>(?:[ \t]+(?:is_encoder_decoder=self\.is_encoder_decoder|label_pad_token_id=self\.label_pad_token_id),\n)*)"
+    r"[ \t]+\)\n",
+    re.MULTILINE,
+)
+
+
+def kto_trainer_chunked_logprobs(function_name, function):
+    """Score KTO's policy completions from hidden states. ``completion_logits`` is then the per-position vocab sum,
+    which is all TRL reads from it (``logits/*_sum`` metrics). Untouched unless both anchors match once."""
+    if function_name != "forward" or _unsloth_chunked_logprobs is None:
+        return function
+    if "_unsloth_dpo_hidden" in function or "def get_batch_logps" in function:
+        return function
+    forward = list(_KTO_FORWARD.finditer(function))
+    logps = list(_KTO_LOGPS.finditer(function))
+    if len(forward) != 1 or len(logps) != 1:
+        return function
+    # completion_logits may only be read where a [B, S, 1] stand-in is exact: row selection for the metrics.
+    tail = function[logps[0].end() :]
+    reads = re.findall(r"[^\n]*\bcompletion_logits\b[^\n]*", tail)
+    if any(
+        not re.search(r"completion_logits(\.index_select\(0, \w+\)|\[\w+, \.\.\.\]|\.device)", line)
+        for line in reads
+    ):
+        return function
+    pad = "self.label_pad_token_id" if "label_pad_token_id" in logps[0].group("rest") else "-100"
+    ind = forward[0].group("indent")
+    new_forward = (
+        f'{ind}_unsloth_dpo_chunked = _unsloth_dpo_chunked_head(self, model, batch, "forward")\n'
+        f"{ind}outputs = _unsloth_dpo_model_forward(\n"
+        f'{ind}    model, batch["completion_input_ids"],\n'
+        f'{ind}    dict(model_kwargs, attention_mask=batch["completion_attention_mask"]),\n'
+        f"{ind}    _unsloth_dpo_chunked is not None,\n"
+        f"{ind})\n"
+        f"{ind}completion_logits = outputs.logits\n"
+        f"{ind}_unsloth_dpo_hidden = _unsloth_dpo_returns_hidden_states(self, _unsloth_dpo_chunked, completion_logits)\n"
+    )
+    ind2 = logps[0].group("indent")
+    original_logps = textwrap.indent(textwrap.dedent(logps[0].group(0)), ind2 + "    ")
+    new_logps = (
+        f"{ind2}if _unsloth_dpo_hidden:\n"
+        f"{ind2}    completion_logps, completion_logits = _unsloth_kto_hidden_logps(\n"
+        f'{ind2}        self, _unsloth_dpo_chunked, completion_logits, batch["completion_labels"], {pad}\n'
+        f"{ind2}    )\n"
+        f"{ind2}else:\n"
+        f"{original_logps}"
+    )
+    out = (
+        function[: forward[0].start()] + new_forward + function[forward[0].end() : logps[0].start()]
+    )
+    return out + new_logps + function[logps[0].end() :]
+
+
+RL_FUNCTIONS["kto_trainer"].append(kto_trainer_chunked_logprobs)
+
+
+_KTO_KL = re.compile(
+    r"^(?P<indent>[ \t]+)with torch\.no_grad\(\):\n"
+    r"[ \t]+KL_logits = model\(\*\*KL_model_kwargs\)\.logits\n"
+    r"\n?"
+    r"(?P<logps>[ \t]+KL_logps = self\.get_batch_logps\(\n"
+    r"[ \t]+KL_logits,\n"
+    r"[ \t]+batch\[\"KL_completion_labels\"\],\n"
+    r"[ \t]+average_log_prob=False,\n"
+    r"(?P<rest>(?:[ \t]+(?:is_encoder_decoder=self\.is_encoder_decoder|label_pad_token_id=self\.label_pad_token_id),\n)*)"
+    r"[ \t]+\)\n)",
+    re.MULTILINE,
+)
+
+
+def kto_trainer_chunked_kl_logps(function_name, function):
+    """Score KTO's no-grad KL completions from hidden states too: TRL projects them to full ``[B, S, V]`` logits, the
+    largest tensor of a KTO step once the policy pass is chunked. Untouched unless the anchor matches once."""
+    if function_name != "_compute_kl_logps" or _unsloth_masked_logprobs is None:
+        return function
+    if "_unsloth_dpo_hidden" in function:
+        return function
+    matches = list(_KTO_KL.finditer(function))
+    if len(matches) != 1:
+        return function
+    match = matches[0]
+    ind = match.group("indent")
+    pad = "self.label_pad_token_id" if "label_pad_token_id" in match.group("rest") else "-100"
+    original_logps = textwrap.indent(textwrap.dedent(match.group("logps")), ind + "    ")
+    new = (
+        f'{ind}_unsloth_dpo_chunked = _unsloth_dpo_chunked_head(self, model, batch, "_compute_kl_logps")\n'
+        f"{ind}with torch.no_grad():\n"
+        f"{ind}    _unsloth_kl_outputs = _unsloth_dpo_model_forward(\n"
+        f'{ind}        model, KL_model_kwargs["input_ids"],\n'
+        f'{ind}        {{k: v for k, v in KL_model_kwargs.items() if k != "input_ids"}},\n'
+        f"{ind}        _unsloth_dpo_chunked is not None,\n"
+        f"{ind}    )\n"
+        f"{ind}    KL_logits = _unsloth_kl_outputs.logits\n"
+        f"{ind}    _unsloth_dpo_hidden = _unsloth_dpo_returns_hidden_states(self, _unsloth_dpo_chunked, KL_logits)\n"
+        f"{ind}    if _unsloth_dpo_hidden:\n"
+        f"{ind}        KL_logps, _ = _unsloth_kto_hidden_logps(\n"
+        f'{ind}            self, _unsloth_dpo_chunked, KL_logits, batch["KL_completion_labels"], {pad}\n'
+        f"{ind}        )\n"
+        f"{ind}if not _unsloth_dpo_hidden:\n"
+        f"{original_logps}"
+    )
+    return function[: match.start()] + new + function[match.end() :]
+
+
+RL_FUNCTIONS["kto_trainer"].append(kto_trainer_chunked_kl_logps)
+for _kto_item in (
+    _unsloth_get_model_config,
+    _unsloth_text_configs,
+    _unsloth_get_final_logit_softcapping,
+    _unsloth_resolve_logit_scales,
+    _unsloth_grpo_returns_hidden_states,
+    _unsloth_grpo_hidden_states_signal,
+    _unsloth_pref_returns_hidden_states,
+    _unsloth_gkd_dense_head,
+    _unsloth_gkd_logit_transforms,
+    _unsloth_pref_logit_transforms,
+    _unsloth_stock_logps_hook,
+    _unsloth_dpo_chunked_head,
+    _unsloth_dpo_model_forward,
+    _unsloth_dpo_returns_hidden_states,
+    _unsloth_kto_hidden_logps,
+):
+    RL_PRE_ITEMS["kto_trainer"].append(inspect.getsource(_kto_item))
+RL_PRE_ITEMS["kto_trainer"].append(
+    "try:\n"
+    "    from unsloth_zoo.device_map_planner import detect_logit_transforms\n"
+    "except Exception:\n"
+    "    detect_logit_transforms = None\n"
+    "try:\n"
+    "    from unsloth_zoo.fused_losses.chunked_logprob import (\n"
+    "        unsloth_chunked_logprobs as _unsloth_chunked_logprobs,\n"
+    "        unsloth_masked_logprobs as _unsloth_masked_logprobs,\n"
+    "    )\n"
+    "except Exception:\n"
+    "    _unsloth_chunked_logprobs = _unsloth_masked_logprobs = None\n"
+    "try:\n"
+    "    from unsloth_zoo.fused_losses.preference_loss import linear_mean_logits as _unsloth_linear_mean_logits\n"
+    "except Exception:\n"
+    "    _unsloth_linear_mean_logits = None\n"
+    f"_DPO_VISION_KEYS = {tuple(_DPO_VISION_KEYS)!r}\n"
+)
+
+
+# TRL 1.6 - 1.14 KTO and TRL 0.29 - 1.14 DPO ref log-probs: score from hidden states instead of [B, S, V] logits.
+def _unsloth_fused_pass_head(self, model, inputs, return_outputs, method):
+    """``_unsloth_dpo_chunked_head`` for a rewritten pass that also needs the fused linear op, keeps TRL's path for
+    the kill switch, ``return_outputs`` (the caller reads ``outputs.logits``) and TRL's own liger / chunked head."""
+    reason = None
+    if _unsloth_fused_linear_logprobs is None:
+        reason = "unsloth_zoo has no fused_linear_logprobs"
+    elif os.environ.get("UNSLOTH_FUSED_LINEAR", "1") == "0":
+        reason = "UNSLOTH_FUSED_LINEAR=0"
+    elif return_outputs:
+        reason = "return_outputs needs the logits"
+    elif getattr(self, "use_liger_kernel", False):
+        reason = "use_liger_kernel runs TRL's own chunked head"
+    if reason is not None:
+        try:
+            fallbacks = self.__dict__.setdefault("_unsloth_dpo_chunked_fallbacks", {})
+            fallbacks[reason] = fallbacks.get(reason, 0) + 1
+        except Exception:
+            pass
+        return None
+    return _unsloth_dpo_chunked_head(self, model, inputs, method)
+
+
+def _unsloth_fused_pass_logps(
+    self,
+    chunked,
+    hidden_states,
+    labels,
+    mask,
+    stats = False,
+    grad = False,
+):
+    """TRL's ``selective_log_softmax(head(hidden_states), labels)`` with rows outside ``mask`` zeroed (TRL's
+    ``row_mask`` or its ``logps[mask == 0] = 0.0``). ``stats`` also returns the entropy (no grad, as TRL computes it
+    from detached logits) and the per-position vocab mean ``[.., 1]``: ``x[mask].mean(-1)`` on it is TRL's mean of
+    the logits row. A shorter ``hidden_states`` (the model truncated input_ids) is scored over the common length and
+    zero padded. Only the policy pass (``grad``) keeps a graph: TRL scores the reference / KL logits it built under
+    no_grad, so a trainable head must get no gradient from them."""
+    _, head, (multiply, divide, softcap) = chunked
+    width = labels.shape[1]
+    n = min(hidden_states.shape[1], width)
+    with torch.set_grad_enabled(grad and torch.is_grad_enabled()):
+        out = _unsloth_fused_linear_logprobs(
+            hidden_states[:, :n],
+            head.weight,
+            labels[:, :n],
+            bias = head.bias,
+            mask = mask[:, :n].bool(),
+            logit_scale_multiply = multiply,
+            logit_scale_divide = divide,
+            logit_softcapping = softcap,
+            return_entropy = stats,
+            return_mean_logits = stats,
+            entropy_requires_grad = False,
+        )
+    try:
+        self._unsloth_dpo_chunked_calls = getattr(self, "_unsloth_dpo_chunked_calls", 0) + 1
+    except Exception:
+        pass
+    out = out if isinstance(out, tuple) else (out,)
+    out = tuple(torch.nn.functional.pad(x, (0, width - n)) if n != width else x for x in out)
+    if not stats:
+        return out[0].to(labels.device)
+    logps, entropy, mean_logits = out
+    return (
+        logps.to(labels.device),
+        entropy.to(labels.device),
+        mean_logits.unsqueeze(-1).to(labels.device),
+    )
+
+
+def _unsloth_fused_pass_vocab_sums(self, chunked, hidden_states):
+    """``[B, S, 1]`` per-position vocab sums of ``head(hidden_states)`` (no grad): TRL 1.6 - 1.8 KTO logs
+    ``logits.index_select(0, idx).nansum()``, a sum over every position and vocab entry, which this keeps exact."""
+    _, head, (multiply, divide, softcap) = chunked
+    with torch.no_grad():
+        hidden_states = hidden_states.detach()
+        _, mean_logits = _unsloth_fused_linear_logprobs(
+            hidden_states,
+            head.weight,
+            torch.zeros(hidden_states.shape[:-1], dtype = torch.long, device = hidden_states.device),
+            bias = head.bias,
+            logit_scale_multiply = multiply,
+            logit_scale_divide = divide,
+            logit_softcapping = softcap,
+            return_mean_logits = True,
+        )
+    return (mean_logits * head.weight.shape[0]).unsqueeze(-1).to(hidden_states.device)
+
+
+_KTO_IDS = r'batch\["(?:KL_)?(?:completion_)?input_ids"\]\[:, 1:\](?:\.contiguous\(\))?'
+_KTO_MASK = r'batch\["(?:KL_)?completion_mask"\]\[:, 1:\]'
+_DPO_REF_IDS = r'(?:shift_labels|inputs\["input_ids"\]\[\.\.\., 1:\])'
+_DPO_REF_MASK = r'(?:shift_completion_mask|inputs\["completion_mask"\]\[\.\.\., 1:\])'
+
+
+def _fused_pass_logps_re(ids, mask):
+    # TRL 1.6 - 1.13: ``x = selective_log_softmax(logits, ids)`` then ``x[mask == 0] = 0.0``; 1.14: ``row_mask=``.
+    return re.compile(
+        r"^(?P<i>[ \t]*)(?P<lhs>(?P<out>\w+)(?:, (?P<out2>\w+))?) = "
+        r"(?P<fn>selective_log_softmax(?:_and_entropy)?)\(\s*"
+        r"(?P<logits>\w+),\s*(?P<ids>" + ids + r"),?\s*"
+        r"(?P<ent>entropy_requires_grad=False,\s*)?"
+        r"(?:row_mask=(?P<rm>" + mask + r"),?\s*)?\)\n"
+        r"(?:(?P=i)(?P=out)\[(?P<zm>" + mask + r") == 0\] = 0\.0\n)?",
+        re.MULTILINE,
+    )
+
+
+_KTO_LOGPS_RE = _fused_pass_logps_re(_KTO_IDS, _KTO_MASK)
+_DPO_REF_LOGPS_RE = _fused_pass_logps_re(_DPO_REF_IDS, _DPO_REF_MASK)
+
+
+def _fused_pass_logps_ok(m):
+    """One mask, and a two-name target only for TRL 1.14's ``selective_log_softmax_and_entropy``."""
+    if (m.group("rm") is None) == (m.group("zm") is None):
+        return False
+    both = m.group("fn") == "selective_log_softmax_and_entropy"
+    return both == (m.group("out2") is not None) == (m.group("ent") is not None)
+
+
+def _fused_pass_mask(m):
+    return m.group("rm") or m.group("zm")
+
+
+def _fused_pass_else(m):
+    """TRL's original statement(s), one level deeper, as the ``else`` branch."""
+    i = m.group("i")
+    return f"{i}else:\n" + textwrap.indent(textwrap.dedent(m.group(0)), i + "    ")
+
+
+def _fused_pass_reads_ok(text, name, allowed):
+    """Every line of ``text`` that reads ``name`` matches one of ``allowed`` (anything else would see hidden states
+    or a stand-in where TRL expects logits)."""
+    for line in text.splitlines():
+        if re.search(name, line) and not any(re.fullmatch(p, line.strip()) for p in allowed):
+            return False
+    return True
+
+
+_KTO_KL_INIT = re.compile(r"^(?P<i>[ \t]*)KL_logps = None\n", re.MULTILINE)
+_KTO_KL_FORWARD = re.compile(
+    r"^(?P<i>[ \t]*)KL_logits = model\(\*\*KL_model_kwargs\)\.logits\n", re.MULTILINE
+)
+_KTO_CL_MODE = re.compile(
+    r'^(?P<i>[ \t]*)mode = "train" if self\.model\.training else "eval"\n', re.MULTILINE
+)
+_KTO_CL_FORWARD = re.compile(r"^(?P<i>[ \t]*)outputs = model\(\*\*model_kwargs\)\n", re.MULTILINE)
+_KTO_CL_REF_FORWARD = re.compile(
+    r"^(?P<i>[ \t]*)ref_outputs = (?P<model>self\.model|self\.ref_model)\(\*\*ref_model_kwargs\)\n",
+    re.MULTILINE,
+)
+_KTO_CL_ENTROPY = re.compile(
+    r"^(?P<i>[ \t]*)per_token_entropy = entropy_from_logits\(shift_logits\.detach\(\)\)\n",
+    re.MULTILINE,
+)
+_KTO_CL_SUMS = "outputs.logits.index_select(0, "
+
+
+def _kto_rewrite_kl(function):
+    if len(_KTO_KL_INIT.findall(function)) != 1 or len(_KTO_KL_FORWARD.findall(function)) != 1:
+        return function
+    logps = [m for m in _KTO_LOGPS_RE.finditer(function) if m.group("logits") == "shift_KL_logits"]
+    if (
+        len(logps) != 1
+        or not _fused_pass_logps_ok(logps[0])
+        or "KL_" not in _fused_pass_mask(logps[0])
+    ):
+        return function
+    if logps[0].group("fn") != "selective_log_softmax" or "KL_" not in logps[0].group("ids"):
+        return function
+    rest = function[: logps[0].start()] + function[logps[0].end() :]
+    if not _fused_pass_reads_ok(
+        rest,
+        r"\bshift_KL_logits\b",
+        [r"shift_KL_logits = KL_logits\[:, :-1, :\](?:\.contiguous\(\))?"],
+    ) or not _fused_pass_reads_ok(
+        rest,
+        r"\bKL_logits\b",
+        [
+            r"KL_logits = model\(\*\*KL_model_kwargs\)\.logits",
+            r"shift_KL_logits = KL_logits\[:, :-1, :\](?:\.contiguous\(\))?",
+            # TRL 1.9 - 1.13's liger branch builds real logits; the flag stays False there.
+            r"KL_logits = KL_hidden_states @ lm_head\.weight\.t\(\)",
+            r"KL_logits = KL_logits \+ lm_head\.bias",
+        ],
+    ):
+        return function
+    m = logps[0]
+    i = m.group("i")
+    new = (
+        function[: m.start()]
+        + f"{i}if _unsloth_kto_kl_hidden:\n"
+        + f"{i}    {m.group('out')} = _unsloth_fused_pass_logps(\n"
+        + f"{i}        self, _unsloth_kto_kl, {m.group('logits')}, {m.group('ids')}, {_fused_pass_mask(m)}\n"
+        + f"{i}    )\n"
+        # TRL 1.6's shape gets the truncation clamp kto_trainer_align_completion_logps would have added.
+        + _kto_ref_else(function, m)
+        + function[m.end() :]
+    )
+    new = _KTO_KL_INIT.sub(
+        lambda m: m.group(0) + f"{m.group('i')}_unsloth_kto_kl_hidden = False\n", new, count = 1
+    )
+    return _KTO_KL_FORWARD.sub(
+        lambda m: (
+            f'{m.group("i")}_unsloth_kto_kl = _unsloth_fused_pass_head(self, model, batch, False, "_compute_kl_logps")\n'
+            f"{m.group('i')}KL_logits = _unsloth_dpo_forward(model, KL_model_kwargs, _unsloth_kto_kl is not None).logits\n"
+            f"{m.group('i')}_unsloth_kto_kl_hidden = _unsloth_dpo_returns_hidden_states(self, _unsloth_kto_kl, KL_logits)\n"
+        ),
+        new,
+        count = 1,
+    )
+
+
+def _kto_rewrite_loss(function):
+    for pattern in (_KTO_CL_MODE, _KTO_CL_FORWARD):
+        if len(pattern.findall(function)) != 1:
+            return function
+    ref_forwards = _KTO_CL_REF_FORWARD.findall(function)
+    if not 1 <= len(ref_forwards) <= 2 or len({m[1] for m in ref_forwards}) != len(ref_forwards):
+        return function
+    matches = list(_KTO_LOGPS_RE.finditer(function))
+    policy = [m for m in matches if m.group("logits") == "shift_logits"]
+    ref = [m for m in matches if m.group("logits") == "ref_shift_logits"]
+    if len(policy) != 1 or len(ref) != 1 or len(matches) != 2:
+        return function
+    policy, ref = policy[0], ref[0]
+    if not (_fused_pass_logps_ok(policy) and _fused_pass_logps_ok(ref)) or ref.group("out2"):
+        return function
+    if any("KL_" in m.group(0) for m in (policy, ref)):
+        return function
+    # Which family: 1.14 (fused logps + entropy), 1.9 - 1.13 (entropy_from_logits), 1.6 - 1.8 (logits sums).
+    fused_entropy = policy.group("out2") is not None
+    entropy = len(_KTO_CL_ENTROPY.findall(function))
+    sums = function.count(_KTO_CL_SUMS)
+    stats = fused_entropy or entropy == 1
+    # 1.8 has both: entropy_from_logits and the logits sums.
+    if entropy > 1 or (fused_entropy and entropy) or (fused_entropy and sums) or sums not in (0, 2):
+        return function
+    if not stats and not sums:
+        return function
+    rest = function[: policy.start()] + function[policy.end() : ref.start()] + function[ref.end() :]
+    shift_def = r"shift_logits = outputs\.logits\[:, :-1, :\](?:\.contiguous\(\))?"
+    sliced = re.findall(
+        r"^[ \t]*(\w+) = shift_logits\.detach\(\)\.index_select\(0, \w+\)\n", rest, re.MULTILINE
+    )
+    sliced += re.findall(
+        r"^[ \t]*(\w+) = outputs\.logits\.index_select\(0, \w+\)\n", rest, re.MULTILINE
+    )
+    checks = [
+        (
+            r"(?<!ref_)\bshift_logits\b",
+            [
+                shift_def,
+                r"per_token_entropy = entropy_from_logits\(shift_logits\.detach\(\)\)",
+                r"\w+ = shift_logits\.detach\(\)\.index_select\(0, \w+\)",
+            ],
+        ),
+        (
+            r"(?<!ref_)\boutputs\.logits\b",
+            [
+                shift_def,
+                r"device = outputs\.logits\.device",
+                r"\w+ = outputs\.logits\.index_select\(0, \w+\)",
+            ],
+        ),
+        (
+            r"\bref_shift_logits\b",
+            [r"ref_shift_logits = ref_outputs\.logits\[:, :-1, :\](?:\.contiguous\(\))?"],
+        ),
+        (
+            r"\bref_outputs\.logits\b",
+            [r"ref_shift_logits = ref_outputs\.logits\[:, :-1, :\](?:\.contiguous\(\))?"],
+        ),
+    ]
+    # The sliced stand-ins are only read as TRL's masked row mean (1.9+) or the full sum (1.6 - 1.8).
+    for name in sliced:
+        checks.append(
+            (
+                rf"\b{name}\b",
+                [
+                    rf"{name} = (?:shift_logits\.detach\(\)|outputs\.logits)\.index_select\(0, \w+\)",
+                    rf"\w+ = {name}\[\w+\.bool\(\)\]\.mean\(-1\)\.sum\(\)",
+                    rf"self\.accelerator\.gather_for_metrics\({name}\.nansum\(\)\)\.nansum\(\)\.item\(\) / \w+",
+                ],
+            )
+        )
+    if len(sliced) != 2 or any(not _fused_pass_reads_ok(rest, n, allowed) for n, allowed in checks):
+        return function
+    i = policy.group("i")
+    policy_new = f"{i}if _unsloth_kto_hidden:\n"
+    if sums:
+        policy_new += f"{i}    _unsloth_kto_sums = _unsloth_fused_pass_vocab_sums(self, _unsloth_kto_chunked, outputs.logits)\n"
+    if stats:
+        entropy_name = policy.group("out2") or "_unsloth_kto_entropy"
+        policy_new += (
+            f"{i}    {policy.group('out')}, {entropy_name}, shift_logits = _unsloth_fused_pass_logps(\n"
+            f"{i}        self, _unsloth_kto_chunked, shift_logits, {policy.group('ids')}, {_fused_pass_mask(policy)},\n"
+            f"{i}        stats = True, grad = True,\n"
+            f"{i}    )\n"
+        )
+    else:
+        policy_new += (
+            f"{i}    {policy.group('out')} = _unsloth_fused_pass_logps(\n"
+            f"{i}        self, _unsloth_kto_chunked, shift_logits, {policy.group('ids')}, {_fused_pass_mask(policy)},\n"
+            f"{i}        grad = True,\n"
+            f"{i}    )\n"
+        )
+    j = ref.group("i")
+    ref_new = (
+        f"{j}if _unsloth_kto_ref_hidden:\n"
+        f"{j}    {ref.group('out')} = _unsloth_fused_pass_logps(\n"
+        f"{j}        self, _unsloth_kto_ref, ref_shift_logits, {ref.group('ids')}, {_fused_pass_mask(ref)}\n"
+        f"{j}    )\n"
+    )
+    new = (
+        function[: policy.start()]
+        + policy_new
+        + _fused_pass_else(policy)
+        + function[policy.end() : ref.start()]
+        + ref_new
+        + _fused_pass_else(ref)
+        + function[ref.end() :]
+    )
+    new = _KTO_CL_MODE.sub(
+        lambda m: m.group(0)
+        + f"{m.group('i')}_unsloth_kto_hidden = _unsloth_kto_ref_hidden = False\n",
+        new,
+        count = 1,
+    )
+    new = _KTO_CL_FORWARD.sub(
+        lambda m: (
+            f'{m.group("i")}_unsloth_kto_chunked = _unsloth_fused_pass_head(self, model, inputs, return_outputs, "_compute_loss")\n'
+            f"{m.group('i')}outputs = _unsloth_dpo_forward(model, model_kwargs, _unsloth_kto_chunked is not None)\n"
+            f"{m.group('i')}_unsloth_kto_hidden = _unsloth_dpo_returns_hidden_states(self, _unsloth_kto_chunked, outputs.logits)\n"
+        ),
+        new,
+        count = 1,
+    )
+    new = _KTO_CL_REF_FORWARD.sub(
+        lambda m: (
+            f'{m.group("i")}_unsloth_kto_ref = _unsloth_fused_pass_head(self, {m.group("model")}, inputs, False, "_compute_loss")\n'
+            f"{m.group('i')}ref_outputs = _unsloth_dpo_forward({m.group('model')}, ref_model_kwargs, _unsloth_kto_ref is not None)\n"
+            f"{m.group('i')}_unsloth_kto_ref_hidden = _unsloth_dpo_returns_hidden_states(self, _unsloth_kto_ref, ref_outputs.logits)\n"
+        ),
+        new,
+    )
+    if entropy:
+        new = _KTO_CL_ENTROPY.sub(
+            lambda m: (
+                f"{m.group('i')}if _unsloth_kto_hidden:\n"
+                f"{m.group('i')}    per_token_entropy = _unsloth_kto_entropy\n"
+                f"{m.group('i')}else:\n"
+                f"{m.group('i')}    {m.group(0).lstrip()}"
+            ),
+            new,
+            count = 1,
+        )
+    if sums:
+        new = new.replace(
+            _KTO_CL_SUMS,
+            "(_unsloth_kto_sums if _unsloth_kto_hidden else outputs.logits).index_select(0, ",
+        )
+    return new
+
+
+def kto_trainer_compute_loss_chunked(function_name, function):
+    """Rewrite TRL 1.6 - 1.14's KTO ``_compute_kl_logps`` (the no-grad KL pass, run for the policy and the
+    reference) and ``_compute_loss`` (policy pass with entropy / ``logits/*`` metrics, and the inline reference
+    pass) to score from hidden states with the fused linear op: same completion masks, same metrics, no
+    ``[B, S, V]`` logits. Every anchor must match exactly once and every other reader of the logits must be one the
+    rewrite keeps exact, else TRL's source is returned untouched; at run time ``_unsloth_fused_pass_head`` keeps
+    TRL's path for the kill switch, ``return_outputs``, liger, aux loss, vision, FSDP / DeepSpeed, a non-dense head
+    or a forward that ignored the hidden-states flag."""
+    if _unsloth_fused_linear_logprobs is None or "_unsloth_kto_" in function:
+        return function
+    if function_name == "_compute_kl_logps":
+        return _kto_rewrite_kl(function)
+    if function_name == "_compute_loss":
+        return _kto_rewrite_loss(function)
+    return function
+
+
+_DPO_REF_FORWARD = re.compile(
+    r"^(?P<i>[ \t]*)ref_outputs = (?P<model>self\.model|self\.ref_model|model)\(\*\*model_kwargs\)\n",
+    re.MULTILINE,
+)
+_DPO_REF_SHIFT = r"ref_shift_logits = ref_outputs\.logits\[\.\.\., :-1, :\](?:\.contiguous\(\))?"
+
+
+def dpo_trainer_ref_log_probs_chunked(function_name, function):
+    """Rewrite TRL 0.29 - 1.14's DPO ``compute_ref_log_probs`` (1.14: ``_compute_ref_log_probs``), the
+    ``precompute_ref_log_probs`` pass, to score the reference completions from hidden states. Untouched unless the
+    log-prob anchor matches once and the logits have no other reader; each forward picks its own head."""
+    if function_name not in ("compute_ref_log_probs", "_compute_ref_log_probs"):
+        return function
+    if _unsloth_fused_linear_logprobs is None or "_unsloth_dpo_ref" in function:
+        return function
+    forwards = _DPO_REF_FORWARD.findall(function)
+    logps = list(_DPO_REF_LOGPS_RE.finditer(function))
+    if not 1 <= len(forwards) <= 3 or len(logps) != 1:
+        return function
+    m = logps[0]
+    if not _fused_pass_logps_ok(m) or m.group("logits") != "ref_shift_logits" or m.group("out2"):
+        return function
+    rest = function[: m.start()] + function[m.end() :]
+    if not _fused_pass_reads_ok(
+        rest, r"\bref_shift_logits\b", [_DPO_REF_SHIFT]
+    ) or not _fused_pass_reads_ok(rest, r"\bref_outputs\.logits\b", [_DPO_REF_SHIFT]):
+        return function
+    i = m.group("i")
+    new = (
+        function[: m.start()]
+        + f"{i}if _unsloth_dpo_ref_hidden:\n"
+        + f"{i}    {m.group('out')} = _unsloth_fused_pass_logps(\n"
+        + f"{i}        self, _unsloth_dpo_ref, ref_shift_logits, {m.group('ids')}, {_fused_pass_mask(m)}\n"
+        + f"{i}    )\n"
+        + _fused_pass_else(m)
+        + function[m.end() :]
+    )
+    return _DPO_REF_FORWARD.sub(
+        lambda f: (
+            f'{f.group("i")}_unsloth_dpo_ref = _unsloth_fused_pass_head(self, {f.group("model")}, inputs, False, "{function_name}")\n'
+            f"{f.group('i')}ref_outputs = _unsloth_dpo_forward({f.group('model')}, model_kwargs, _unsloth_dpo_ref is not None)\n"
+            f"{f.group('i')}_unsloth_dpo_ref_hidden = _unsloth_dpo_returns_hidden_states(self, _unsloth_dpo_ref, ref_outputs.logits)\n"
+        ),
+        new,
+    )
+
+
+def _unsloth_kto_ref_chunked_forward(model, want_hidden_states, *args, **kwargs):
+    """``model(*args, **kwargs)``, returning hidden states as ``.logits`` when ``want_hidden_states``."""
+    if not want_hidden_states:
+        return model(*args, **kwargs)
+    prior = os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES")
+    os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
+    try:
+        return model(*args, **kwargs)
+    finally:
+        if prior is None:
+            os.environ.pop("UNSLOTH_RETURN_HIDDEN_STATES", None)
+        else:
+            os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = prior
+
+
+def _unsloth_kto_ref_batch_logps(self, chunked, hidden_states, labels, label_pad_token_id):
+    """TRL < 1.6's ``get_batch_logps(logits, labels, average_log_prob=False)`` (decoder-only) from hidden states."""
+    shifted = labels[:, 1:]
+    mask = shifted != label_pad_token_id
+    return _unsloth_fused_pass_logps(
+        self, chunked, hidden_states[:, :-1], shifted.masked_fill(~mask, 0), mask
+    ).sum(-1)
+
+
+_KTO_REF_NAMES = ("compute_reference_log_probs", "compute_ref_log_probs", "_compute_ref_log_probs")
+_KTO_REF_LOGPS_RE = _fused_pass_logps_re(
+    r'inputs\["(?:KL_)?(?:completion_)?input_ids"\]\[:, 1:\](?:\.contiguous\(\))?',
+    r'inputs\["(?:KL_)?completion_mask"\]\[:, 1:\]',
+)
+# TRL < 1.6: completion_logps = self.get_batch_logps(completion_logits, padded_batch["completion_labels"], ...)
+_KTO_REF_BATCH_LOGPS = re.compile(
+    r"^(?P<i>[ \t]*)(?P<out>completion_logps|KL_logps) = self\.get_batch_logps\(\n"
+    r"[ \t]+(?P<logits>completion_logits|KL_logits),\n"
+    r"[ \t]+(?P<labels>padded_batch\[\"(?:KL_)?completion_labels\"\]),\n"
+    r"[ \t]+average_log_prob=False,\n"
+    r"(?P<rest>(?:[ \t]+(?:is_encoder_decoder=self\.is_encoder_decoder|label_pad_token_id=self\.label_pad_token_id),\n)*)"
+    r"[ \t]+\)\n",
+    re.MULTILINE,
+)
+_KTO_REF_ASSIGN = re.compile(
+    r"^(?P<i>[ \t]*)(?P<lhs>completion_logits|KL_logits) = (?P<model>self\.model|self\.ref_model|model)\(",
+    re.MULTILINE,
+)
+# A decoder-only forward: positional ids + keyword args, no nested calls (the encoder-decoder ones have ``.get(``).
+_KTO_REF_FORWARD = re.compile(
+    r"^(?P<i>[ \t]*)(?P<lhs>completion_logits|KL_logits) = (?P<model>self\.model|self\.ref_model|model)\("
+    r"(?P<args>[^()]*)\)\.logits\n",
+    re.MULTILINE,
+)
+_KTO_REF_BODY = re.compile(r"^(?P<def>[ \t]*def [^\n]*:\n)(?P<doc>[ \t]+\"\"\"[^\n]*\"\"\"\n)?")
+
+
+def _kto_ref_else(function, m):
+    """TRL's statement as the ``else`` branch, in the form ``kto_trainer_align_completion_logps`` gives it today: TRL
+    1.6's ``shift_logits = ...contiguous()`` + statement get the truncation clamp (the shift line stays above the
+    ``if``, shared by both branches), every other layout keeps TRL's text."""
+    line_start = function.rfind("\n", 0, m.start() - 1) + 1
+    pair = function[line_start : m.start()] + m.group(0)
+    for regex, repl in ((_KTO_COMPLETION_RE, _kto_completion_repl), (_KTO_KL_RE, _kto_kl_repl)):
+        clamped, n = regex.subn(repl, pair)
+        if n == 1:
+            i = m.group("i")
+            body = clamped.split("\n", 1)[1]
+            return f"{i}else:\n" + textwrap.indent(textwrap.dedent(body), i + "    ")
+    return _fused_pass_else(m)
+
+
+def kto_trainer_ref_log_probs_chunked(
+    function_name,
+    function,
+    keys = ("KL", "completion"),
+):
+    """Rewrite TRL 0.22 - 1.14's KTO reference log-prob precompute (``compute_reference_log_probs`` < 1.6,
+    ``compute_ref_log_probs`` 1.6 - 1.13, ``_compute_ref_log_probs`` 1.14) to score the completion and KL batches
+    from hidden states with the fused linear op instead of ``[B, S, V]`` logits. Every log-prob statement must match
+    exactly once, every decoder-only forward must be one the rewrite understands and the logits may have no other
+    reader, else TRL's source is returned untouched; each forward picks its own head at run time and keeps TRL's
+    path for the kill switch, liger, encoder-decoder, vision, FSDP / DeepSpeed, a hooked or non-dense head or a
+    forward that ignored the hidden-states flag. TRL >= 1.15 fuses the head itself (no match)."""
+    if function_name not in _KTO_REF_NAMES or _unsloth_fused_linear_logprobs is None:
+        return function
+    if "_unsloth_kto_ref" in function:
+        return function
+    body = _KTO_REF_BODY.match(function)
+    if body is None:
+        return function
+    batch_var = "padded_batch" if function_name == "compute_reference_log_probs" else "inputs"
+    # Log-prob statements: exactly one for the completions and one for the KL completions.
+    old_style = list(_KTO_REF_BATCH_LOGPS.finditer(function))
+    new_style = list(_KTO_REF_LOGPS_RE.finditer(function))
+    if old_style and new_style:
+        return function
+    logps = {}
+    if old_style:
+        if batch_var != "padded_batch":
+            return function
+        for m in old_style:
+            key = "completion" if m.group("logits") == "completion_logits" else "KL"
+            if (m.group("out") == "KL_logps") != (key == "KL") or ("KL_" in m.group("labels")) != (
+                key == "KL"
+            ):
+                return function
+            logps.setdefault(key, []).append(m)
+    else:
+        if batch_var != "inputs":
+            return function
+        for m in new_style:
+            if (
+                not _fused_pass_logps_ok(m)
+                or m.group("out2")
+                or m.group("fn") != "selective_log_softmax"
+            ):
+                return function
+            key = {"shift_logits": "completion", "shift_KL_logits": "KL"}.get(m.group("logits"))
+            if key is None or ("KL_" in m.group("ids")) != (key == "KL"):
+                return function
+            if ("KL_" in _fused_pass_mask(m)) != (key == "KL"):
+                return function
+            logps.setdefault(key, []).append(m)
+    # KTO scores a completion and a KL batch; BCO only the completions.
+    if sorted(logps) != sorted(keys) or any(len(v) != 1 for v in logps.values()):
+        return function
+    # Forwards: every assignment of the logits is a decoder-only forward we rewrite or an encoder-decoder one
+    # (refused at run time, so its flag stays False).
+    forwards = list(_KTO_REF_FORWARD.finditer(function))
+    starts = {m.start() for m in forwards}
+    for m in _KTO_REF_ASSIGN.finditer(function):
+        if m.start() in starts:
+            continue
+        call = function[m.end() : function.find(".logits", m.end())]
+        if "decoder_input_ids" not in call:
+            return function
+    wanted = {"completion_logits"} | ({"KL_logits"} if "KL" in keys else set())
+    if {f.group("lhs") for f in forwards} != wanted:
+        return function
+    for f in forwards:
+        args = f.group("args")
+        if f"{batch_var}[" not in args or "**" in args:
+            return function
+    # The logits (hidden states once rewritten) may only reach the rewritten statements.
+    matched = sorted((v[0] for v in logps.values()), key = lambda m: m.start())
+    rest = function
+    for m in reversed(matched):
+        rest = rest[: m.start()] + rest[m.end() :]
+    shift = (
+        r"shift_(?:KL_)?logits = (?:completion_logits|KL_logits)\[:, :-1, :\](?:\.contiguous\(\))?"
+    )
+    assign = r"(?:completion_logits|KL_logits) = (?:self\.model|self\.ref_model|model)\(.*"
+    if not _fused_pass_reads_ok(rest, r"\b(?:completion_logits|KL_logits)\b", [assign, shift]):
+        return function
+    if not _fused_pass_reads_ok(rest, r"\bshift_(?:KL_)?logits\b", [shift]):
+        return function
+    flag = {"completion": "_unsloth_kto_ref_hidden", "KL": "_unsloth_kto_ref_kl_hidden"}
+    head = {"completion": "_unsloth_kto_ref", "KL": "_unsloth_kto_ref_kl"}
+    new = function
+    # Back to front, so earlier offsets stay valid.
+    edits = [(m.start(), m.end(), "logps", m) for m in matched]
+    edits += [(f.start(), f.end(), "forward", f) for f in forwards]
+    for start, end, kind, m in sorted(edits, key = lambda e: e[0], reverse = True):
+        i = m.group("i")
+        if kind == "forward":
+            key = "completion" if m.group("lhs") == "completion_logits" else "KL"
+            model = m.group("model")
+            args = " ".join(m.group("args").split()).rstrip(",")
+            text = (
+                f'{i}{head[key]} = _unsloth_fused_pass_head(self, {model}, {batch_var}, False, "{function_name}")\n'
+                f"{i}{m.group('lhs')} = _unsloth_kto_ref_chunked_forward(\n"
+                f"{i}    {model}, {head[key]} is not None, {args}\n"
+                f"{i}).logits\n"
+                f"{i}{flag[key]} = _unsloth_dpo_returns_hidden_states(self, {head[key]}, {m.group('lhs')})\n"
+            )
+        elif old_style:
+            key = "completion" if m.group("logits") == "completion_logits" else "KL"
+            pad = "self.label_pad_token_id" if "label_pad_token_id" in m.group("rest") else "-100"
+            text = (
+                f"{i}if {flag[key]}:\n"
+                f"{i}    {m.group('out')} = _unsloth_kto_ref_batch_logps(\n"
+                f"{i}        self, {head[key]}, {m.group('logits')}, {m.group('labels')}, {pad}\n"
+                f"{i}    )\n"
+                f"{i}else:\n" + textwrap.indent(textwrap.dedent(m.group(0)), i + "    ")
+            )
+        else:
+            key = "completion" if m.group("logits") == "shift_logits" else "KL"
+            text = (
+                f"{i}if {flag[key]}:\n"
+                f"{i}    {m.group('out')} = _unsloth_fused_pass_logps(\n"
+                f"{i}        self, {head[key]}, {m.group('logits')}, {m.group('ids')}, {_fused_pass_mask(m)}\n"
+                f"{i}    )\n" + _kto_ref_else(function, m)
+            )
+        new = new[:start] + text + new[end:]
+    # Flags start False: a forward that is not rewritten (encoder-decoder) keeps TRL's statements.
+    first = new[body.end() :].split("\n", 1)[0]
+    indent = first[: len(first) - len(first.lstrip())]
+    return (
+        new[: body.end()]
+        + f"{indent}_unsloth_kto_ref_hidden = _unsloth_kto_ref_kl_hidden = False\n"
+        + new[body.end() :]
+    )
+
+
+# Must precede kto_trainer_align_completion_logps, which would reshape TRL 1.6's KL statement first.
+RL_FUNCTIONS["kto_trainer"].insert(
+    RL_FUNCTIONS["kto_trainer"].index(kto_trainer_align_completion_logps),
+    kto_trainer_compute_loss_chunked,
+)
+RL_FUNCTIONS["kto_trainer"].insert(
+    RL_FUNCTIONS["kto_trainer"].index(kto_trainer_align_completion_logps),
+    kto_trainer_ref_log_probs_chunked,
+)
+RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_ref_log_probs_chunked)
+RL_PRE_ITEMS["kto_trainer"].append(inspect.getsource(_unsloth_kto_ref_chunked_forward))
+RL_PRE_ITEMS["kto_trainer"].append(inspect.getsource(_unsloth_kto_ref_batch_logps))
+for _fused_pass_item in (
+    _unsloth_dpo_forward,
+    _unsloth_fused_pass_head,
+    _unsloth_fused_pass_logps,
+    _unsloth_fused_pass_vocab_sums,
+):
+    RL_PRE_ITEMS["kto_trainer"].append(inspect.getsource(_fused_pass_item))
+    if _fused_pass_item is not _unsloth_dpo_forward:
+        RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(_fused_pass_item))
+RL_PRE_ITEMS["kto_trainer"].append(
+    "try:\n"
+    "    from unsloth_zoo.fused_losses.fused_linear import (\n"
+    "        fused_linear_logprobs as _unsloth_fused_linear_logprobs,\n"
+    "    )\n"
+    "except Exception:\n"
+    "    _unsloth_fused_linear_logprobs = None\n"
+)
+
+
+# BCO (TRL 0.22 - 1.10): the policy / reference ``forward`` and the precompute pass are KTO's (TRL < 1.6) layout.
+def _unsloth_preference_chunked_off():
+    return os.environ.get("UNSLOTH_PREFERENCE_CHUNKED", "1").lower() in ("0", "false", "no", "off")
+
+
+def _unsloth_bco_chunked_head(self, model, batch, method):
+    """``_unsloth_dpo_chunked_head`` that also honours ``UNSLOTH_PREFERENCE_CHUNKED=0``."""
+    if _unsloth_preference_chunked_off():
+        return None
+    return _unsloth_dpo_chunked_head(self, model, batch, method)
+
+
+def _unsloth_bco_fused_pass_head(self, model, batch, return_outputs, method):
+    if _unsloth_preference_chunked_off():
+        return None
+    return _unsloth_fused_pass_head(self, model, batch, return_outputs, method)
+
+
+def bco_trainer_chunked_logprobs(function_name, function):
+    """BCO's ``forward`` is KTO's TRL < 1.6 ``forward`` (``completion_logits`` is read only by row selection for the
+    ``logits/*_sum`` metrics, which the vocab-sum stand-in keeps exact); its ``compute_reference_log_probs`` is KTO's
+    precompute without the KL batch. The UDM classifier reads prompt embeddings, never the logits."""
+    if function_name == "forward":
+        new = kto_trainer_chunked_logprobs(function_name, function)
+        old = '_unsloth_dpo_chunked_head(self, model, batch, "forward")'
+        if new == function or new.count(old) != 1:
+            return function
+        return new.replace(old, '_unsloth_bco_chunked_head(self, model, batch, "forward")')
+    if function_name == "compute_reference_log_probs":
+        new = kto_trainer_ref_log_probs_chunked(function_name, function, keys = ("completion",))
+        if new == function:
+            return function
+        return new.replace(
+            "= _unsloth_fused_pass_head(self, ", "= _unsloth_bco_fused_pass_head(self, "
+        )
+    return function
+
+
+RL_FUNCTIONS["bco_trainer"].append(bco_trainer_chunked_logprobs)
+
+
+# Online DPO (TRL 0.22 - 1.x ``_forward``), XPO / Nash-MD (TRL 0.22 - 1.10 ``_compute_logprobs``): score the
+# completions from hidden states instead of [B, C, V] logits.
+def _unsloth_odpo_chunked_head(self, model, batch, method):
+    """``(unwrapped, head, transforms)`` when this pass can score from hidden states, else ``None``."""
+    reason = None
+    if _unsloth_fused_linear_logprobs is None:
+        reason = "unsloth_zoo has no fused_linear_logprobs"
+    elif os.environ.get("UNSLOTH_FUSED_LINEAR", "1") == "0":
+        reason = "UNSLOTH_FUSED_LINEAR=0"
+    elif _unsloth_preference_chunked_off():
+        reason = "UNSLOTH_PREFERENCE_CHUNKED=0"
+    elif any(k != "attention_mask" and k != "input_ids" for k in batch):
+        # Vision rows (pixel_values, image_grid_thw, ...) keep TRL's layout.
+        reason = "extra model inputs"
+    if reason is not None:
+        try:
+            fallbacks = self.__dict__.setdefault("_unsloth_dpo_chunked_fallbacks", {})
+            fallbacks[reason] = fallbacks.get(reason, 0) + 1
+        except Exception:
+            pass
+        return None
+    return _unsloth_dpo_chunked_head(self, model, batch, method)
+
+
+def _unsloth_odpo_hidden_logps(
+    self,
+    chunked,
+    hidden_states,
+    completion_ids,
+    mask = None,
+):
+    """TRL's ``log_softmax(head(hidden_states))[completion_ids]`` per position (float32). Rows outside ``mask`` are 0
+    (the caller zeroes them anyway). A shape TRL would reject or broadcast gets real logits and TRL's own math."""
+    _, head, (multiply, divide, softcap) = chunked
+    if hidden_states.dim() != 3 or hidden_states.shape[:2] != completion_ids.shape:
+        logits = torch.nn.functional.linear(
+            hidden_states.to(device = head.weight.device, dtype = head.weight.dtype),
+            head.weight,
+            head.bias,
+        )
+        if multiply:
+            logits = logits * multiply
+        if divide:
+            logits = logits / divide
+        if softcap:
+            logits = softcap * torch.tanh(logits / softcap)
+        return torch.take_along_dim(
+            logits.log_softmax(dim = -1), completion_ids.unsqueeze(-1), dim = 2
+        ).squeeze(-1)
+    logps = _unsloth_fused_linear_logprobs(
+        hidden_states,
+        head.weight,
+        completion_ids,
+        bias = head.bias,
+        mask = None if mask is None else mask.bool(),
+        logit_scale_multiply = multiply,
+        logit_scale_divide = divide,
+        logit_softcapping = softcap,
+    )
+    try:
+        self._unsloth_dpo_chunked_calls = getattr(self, "_unsloth_dpo_chunked_calls", 0) + 1
+    except Exception:
+        pass
+    return logps.to(completion_ids.device)
+
+
+_ODPO_CALL = re.compile(
+    r"^(?P<i>[ \t]*)output = model\(prompt_completion_ids, "
+    r"(?P<kwargs>attention_mask=prompt_completion_mask|\*\*model_kwargs)\)[ \t]*\n",
+    re.MULTILINE,
+)
+_ODPO_LOGPS = re.compile(
+    r"^(?P<i>[ \t]*)logprobs = torch\.take_along_dim\(logits\.log_softmax\(dim=-1\), "
+    r"completion_ids\.unsqueeze\(-1\), dim=2\)\.squeeze\(-1\)[ \t]*\n",
+    re.MULTILINE,
+)
+# Between the forward and the log-probs, ``output.logits`` / ``logits`` may only be sliced or row-gathered (the same
+# code then slices hidden states): TRL's slice, and online_dpo_trainer__forward's right-align gather.
+_ODPO_READS = (
+    r"logits = output\.logits\[:, (?:start_idx|prompt_ids\.size\(1\) - 1) ?: ?(?:end_idx|-1)\]",
+    r"_unsloth_index = _unsloth_index\.clamp\(0, output\.logits\.size\(1\) - 1\)",
+    r"_unsloth_rows, _unsloth_len = output\.logits\.shape\[:2\]",
+    r"logits = output\.logits\.reshape\(_unsloth_rows \* _unsloth_len, -1\)\.index_select\(",
+    r"\).view\(_unsloth_rows, -1, output\.logits\.size\(-1\)\)",
+)
+
+
+def online_dpo_trainer_chunked_logprobs(function_name, function):
+    """Rewrite Online DPO's ``_forward``: the forward returns hidden states, TRL's slice (or Unsloth's right-align
+    gather) picks the completion positions, and the fused op scores every one of them (``objective/kl`` and
+    ``objective/entropy`` read the padding positions too). No temperature: TRL scores raw logits. Untouched unless
+    both anchors match once and nothing else reads the logits."""
+    if function_name != "_forward" or _unsloth_fused_linear_logprobs is None:
+        return function
+    if "_unsloth_odpo" in function:
+        return function
+    calls = list(_ODPO_CALL.finditer(function))
+    logps = list(_ODPO_LOGPS.finditer(function))
+    if len(calls) != 1 or len(logps) != 1 or calls[0].end() > logps[0].start():
+        return function
+    between = function[calls[0].end() : logps[0].start()]
+    code = "\n".join(line for line in between.splitlines() if not line.lstrip().startswith("#"))
+    if not _fused_pass_reads_ok(code, r"\blogits\b", _ODPO_READS):
+        return function
+    if (
+        re.search(r"\blogits\b", function[logps[0].end() :])
+        or "output.logits" in function[: calls[0].start()]
+    ):
+        return function
+    c, m = calls[0], logps[0]
+    i = c.group("i")
+    kwargs = (
+        "model_kwargs"
+        if c.group("kwargs") == "**model_kwargs"
+        else "dict(attention_mask=prompt_completion_mask)"
+    )
+    forward = (
+        f"{i}_unsloth_odpo_kwargs = {kwargs}\n"
+        f'{i}_unsloth_odpo = _unsloth_odpo_chunked_head(self, model, _unsloth_odpo_kwargs, "_forward")\n'
+        f"{i}output = _unsloth_dpo_model_forward(\n"
+        f"{i}    model, prompt_completion_ids, _unsloth_odpo_kwargs, _unsloth_odpo is not None\n"
+        f"{i})\n"
+        f"{i}_unsloth_odpo_hidden = _unsloth_dpo_returns_hidden_states(self, _unsloth_odpo, output.logits)\n"
+    )
+    j = m.group("i")
+    score = (
+        f"{j}if _unsloth_odpo_hidden:\n"
+        f"{j}    logprobs = _unsloth_odpo_hidden_logps(self, _unsloth_odpo, logits, completion_ids)\n"
+        f"{j}else:\n" + textwrap.indent(textwrap.dedent(m.group(0)), j + "    ")
+    )
+    return function[: c.start()] + forward + between + score + function[m.end() :]
+
+
+_XPO_LOGPS = re.compile(
+    r"^(?P<i>[ \t]*)output = m\(data\[\"input_ids\"\], attention_mask=data\[\"attention_mask\"\]\)\n"
+    r"(?P=i)logits = output\.logits\[:, context_length - 1 : -1\]\n"
+    r"(?P=i)token_logprobs = selective_log_softmax\(logits, data\[\"input_ids\"\]\[:, context_length:\]\)\n"
+    r"(?P=i)return token_logprobs\n",
+    re.MULTILINE,
+)
+
+
+def xpo_trainer_chunked_logprobs(function_name, function):
+    """XPO / Nash-MD ``_compute_logprobs``: each ``compute_logprobs_for_data`` pass scores the completion tokens from
+    hidden states. Padding rows come back 0, which is what TRL's ``masked_fill(padding_mask, 0.0)`` makes them."""
+    if function_name != "_compute_logprobs" or _unsloth_fused_linear_logprobs is None:
+        return function
+    if "_unsloth_odpo" in function:
+        return function
+    found = list(_XPO_LOGPS.finditer(function))
+    if len(found) != 1 or len(re.findall(r"\blogits\b", function)) != 3:
+        return function
+    if (
+        len(
+            re.findall(
+                r"model_padding_mask = model_data\[\"attention_mask\"\]\[:, context_length:\] == 0",
+                function,
+            )
+        )
+        != 1
+    ):
+        return function
+    i = found[0].group("i")
+    new = (
+        f'{i}_unsloth_odpo_kwargs = dict(attention_mask=data["attention_mask"])\n'
+        f'{i}_unsloth_odpo = _unsloth_odpo_chunked_head(self, m, _unsloth_odpo_kwargs, "_compute_logprobs")\n'
+        f"{i}output = _unsloth_dpo_model_forward(\n"
+        f'{i}    m, data["input_ids"], _unsloth_odpo_kwargs, _unsloth_odpo is not None\n'
+        f"{i})\n"
+        f"{i}logits = output.logits[:, context_length - 1 : -1]\n"
+        f"{i}if _unsloth_dpo_returns_hidden_states(self, _unsloth_odpo, output.logits):\n"
+        f"{i}    return _unsloth_odpo_hidden_logps(\n"
+        f'{i}        self, _unsloth_odpo, logits, data["input_ids"][:, context_length:],\n'
+        f'{i}        data["attention_mask"][:, context_length:] != 0,\n'
+        f"{i}    )\n"
+        f'{i}token_logprobs = selective_log_softmax(logits, data["input_ids"][:, context_length:])\n'
+        f"{i}return token_logprobs\n"
+    )
+    return function[: found[0].start()] + new + function[found[0].end() :]
+
+
+# After online_dpo_trainer__forward, whose right-align gather the rewrite reuses on hidden states.
+RL_FUNCTIONS["online_dpo_trainer"].append(online_dpo_trainer_chunked_logprobs)
+RL_FUNCTIONS["xpo_trainer"].append(xpo_trainer_chunked_logprobs)
+RL_FUNCTIONS["nash_md_trainer"].append(xpo_trainer_chunked_logprobs)
+for _odpo_trainer in ("bco_trainer", "online_dpo_trainer", "xpo_trainer", "nash_md_trainer"):
+    for _odpo_item in (
+        _unsloth_get_model_config,
+        _unsloth_text_configs,
+        _unsloth_get_final_logit_softcapping,
+        _unsloth_resolve_logit_scales,
+        _unsloth_grpo_returns_hidden_states,
+        _unsloth_grpo_hidden_states_signal,
+        _unsloth_pref_returns_hidden_states,
+        _unsloth_gkd_dense_head,
+        _unsloth_gkd_logit_transforms,
+        _unsloth_pref_logit_transforms,
+        _unsloth_stock_logps_hook,
+        _unsloth_dpo_chunked_head,
+        _unsloth_dpo_model_forward,
+        _unsloth_dpo_returns_hidden_states,
+        _unsloth_preference_chunked_off,
+    ):
+        RL_PRE_ITEMS[_odpo_trainer].append(inspect.getsource(_odpo_item))
+    if _odpo_trainer == "bco_trainer":
+        for _odpo_item in (
+            _unsloth_kto_hidden_logps,
+            _unsloth_bco_chunked_head,
+            _unsloth_kto_ref_chunked_forward,
+            _unsloth_kto_ref_batch_logps,
+            _unsloth_fused_pass_head,
+            _unsloth_bco_fused_pass_head,
+            _unsloth_fused_pass_logps,
+        ):
+            RL_PRE_ITEMS[_odpo_trainer].append(inspect.getsource(_odpo_item))
+    else:
+        for _odpo_item in (_unsloth_odpo_chunked_head, _unsloth_odpo_hidden_logps):
+            RL_PRE_ITEMS[_odpo_trainer].append(inspect.getsource(_odpo_item))
+    RL_PRE_ITEMS[_odpo_trainer].append(
+        "try:\n"
+        "    from unsloth_zoo.device_map_planner import detect_logit_transforms\n"
+        "except Exception:\n"
+        "    detect_logit_transforms = None\n"
+        "try:\n"
+        "    from unsloth_zoo.fused_losses.chunked_logprob import (\n"
+        "        unsloth_chunked_logprobs as _unsloth_chunked_logprobs,\n"
+        "        unsloth_masked_logprobs as _unsloth_masked_logprobs,\n"
+        "    )\n"
+        "except Exception:\n"
+        "    _unsloth_chunked_logprobs = _unsloth_masked_logprobs = None\n"
+        "try:\n"
+        "    from unsloth_zoo.fused_losses.preference_loss import linear_mean_logits as _unsloth_linear_mean_logits\n"
+        "except Exception:\n"
+        "    _unsloth_linear_mean_logits = None\n"
+        "try:\n"
+        "    from unsloth_zoo.fused_losses.fused_linear import (\n"
+        "        fused_linear_logprobs as _unsloth_fused_linear_logprobs,\n"
+        "    )\n"
+        "except Exception:\n"
+        "    _unsloth_fused_linear_logprobs = None\n"
+        f"_DPO_VISION_KEYS = {tuple(_DPO_VISION_KEYS)!r}\n"
+    )
