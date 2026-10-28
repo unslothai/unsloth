@@ -202,6 +202,29 @@ def mtp_plan_files(siblings: Sequence) -> tuple[ExpectedFile, ...]:
     return files
 
 
+def preferred_dflash_sibling(
+    siblings: Sequence,
+    weight_name: Optional[str] = None,
+    other_weight_names: Sequence[str] = (),
+) -> Optional[object]:
+    """The DFlash sidecar to fetch alongside ``weight_name``. Root level only, like preferred_mtp_sibling: detect_dflash_file never offers a nested ``quants/dflash-*.gguf``, and a listing cannot read a header, so matching the basename would plan a whole ordinary weight nothing could reject in time. Ordered by dflash_repo_preference_key, as the download, snapshot reuse and offline cache are, so the manifest promises the file the loader launches."""
+    from utils.models.drafters import dflash_repo_preference_key
+
+    candidates = [
+        s
+        for s in siblings
+        if (name := _gguf_rfilename(s)) and "/" not in name and name.lower().startswith("dflash-")
+    ]
+    if not candidates:
+        return None
+    return min(
+        candidates,
+        key = lambda s: dflash_repo_preference_key(
+            getattr(s, "rfilename"), weight_name, other_weight_names
+        ),
+    )
+
+
 def dflash_plan_files(
     siblings: Sequence,
     weight_name: Optional[str] = None,

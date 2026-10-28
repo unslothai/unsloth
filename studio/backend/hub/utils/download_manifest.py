@@ -919,6 +919,38 @@ def has_cancel_marker(
     return path is not None
 
 
+def delete_manifest(
+    repo_type: RepoType,
+    repo_id: str,
+    variant: Optional[str] = None,
+    *,
+    hub_cache: Optional[str | Path] = None,
+) -> bool:
+    requested, raw = _hub_cache_spellings(hub_cache)
+    paths = _owned_state_paths(
+        manifest_path,
+        repo_type,
+        repo_id,
+        variant,
+        requested,
+        fail_closed = False,
+        raw_hub_cache = raw,
+    )
+    paths = [
+        candidate
+        for candidate in paths
+        if candidate is not None
+        and _state_entry_belongs_to_repo(
+            candidate,
+            _read_state_payload(candidate),
+            repo_type,
+            repo_id,
+            variant,
+        )
+    ]
+    return _unlink_state_paths(paths)
+
+
 def purge_state(
     repo_type: RepoType,
     repo_id: str,

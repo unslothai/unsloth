@@ -12,6 +12,15 @@ DESKTOP_MANAGED_ENV = "UNSLOTH_DESKTOP_MANAGED"
 WORK_DIR_NAME = ".unsloth"
 
 
+def windows_root(
+    environ,
+    pathmod = _os.path,
+    isdir = None,
+):
+    """Where Windows is installed, for messages."""
+    return windows_roots(environ, pathmod, isdir)[0]
+
+
 def windows_roots(
     environ,
     pathmod = _os.path,

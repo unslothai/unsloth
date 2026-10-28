@@ -392,6 +392,8 @@ TRANSFORMERS_550_VERSION = "5.5.0"
 TRANSFORMERS_530_VERSION = "5.3.0"
 TRANSFORMERS_457_VERSION = "4.57.6"
 TRANSFORMERS_DEFAULT_VERSION = "5.5.0" if sys.version_info >= (3, 10) else "4.57.6"
+# Backwards-compat alias for the highest 5.x tier; prefer TRANSFORMERS_510_VERSION, TRANSFORMERS_550_VERSION or TRANSFORMERS_530_VERSION.
+TRANSFORMERS_5_VERSION = TRANSFORMERS_510_VERSION
 
 # Pre-installed directories - created by setup.sh / setup.ps1.
 from utils.paths.storage_roots import studio_root as _studio_root  # noqa: E402

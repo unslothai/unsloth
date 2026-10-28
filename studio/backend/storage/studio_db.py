@@ -288,6 +288,11 @@ def _delete_project_workspace(project: dict) -> None:
     shutil.rmtree(root_resolved)
 
 
+def delete_chat_project_workspace(project: dict) -> None:
+    """Backward-compatible name for callers predating sandbox-aware cleanup."""
+    delete_project_workspace(project)
+
+
 _INVENTORY_UPDATE_TRIGGER = "chat_attachment_inventory_dirty_update"
 
 _INVENTORY_UPDATE_TRIGGER_SQL = f"""
@@ -3397,6 +3402,13 @@ def delete_chat_project(id: str, delete_files: bool = False) -> Optional[dict]:
         raise
     finally:
         conn.close()
+
+
+def delete_chat_project_with_active_research_runs(id: str) -> tuple[Optional[dict], list[str]]:
+    project = delete_chat_project(id, delete_files = False)
+    if project is None:
+        return None, []
+    return project, list(project.get("activeResearchRunIds") or [])
 
 
 class ChatMessageConflictError(RuntimeError):
