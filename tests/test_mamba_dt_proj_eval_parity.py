@@ -315,8 +315,10 @@ def test_eval_holds_no_effective_weight_copy(monkeypatch, arch):
     assert leaves
     for leaf in leaves:
         assert not any(isinstance(v, torch.Tensor) for v in leaf.__dict__.values())
-        assert not any(isinstance(v, tuple) and any(isinstance(t, torch.Tensor) for t in v)
-                       for v in leaf.__dict__.values())
+        assert not any(
+            isinstance(v, tuple) and any(isinstance(t, torch.Tensor) for t in v)
+            for v in leaf.__dict__.values()
+        )
     model.to(torch.float64)
     assert torch.equal(_logits(model, ids), _logits(_merged(model), ids))
 
