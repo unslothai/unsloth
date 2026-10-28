@@ -1020,19 +1020,24 @@ def _top_level_binding(src: str | None, name: str):
                         found.append("ambiguous")
                 if isinstance(node, (ast.For, ast.AsyncFor)) and name in targets(node.target):
                     found.append("ambiguous")
-            # Conditional and guarded blocks still bind at module level.
+            # Conditional and guarded blocks (`if TYPE_CHECKING:`, `try:`) may not bind at runtime.
             try_like = isinstance(node, ast.Try) or isinstance(node, getattr(ast, "TryStar", ()))
             if try_like or isinstance(
                 node, (ast.If, ast.For, ast.AsyncFor, ast.While, ast.With, ast.AsyncWith)
             ):
                 for field in ("body", "orelse", "finalbody"):
-                    visit(getattr(node, field, []) or [])
+                    guarded(getattr(node, field, []) or [])
             if try_like:
                 for handler in node.handlers:
-                    visit(handler.body)
+                    guarded(handler.body)
             if isinstance(node, getattr(ast, "Match", ())):
                 for case in node.cases:
-                    visit(case.body)
+                    guarded(case.body)
+
+    def guarded(body) -> None:
+        start = len(found)
+        visit(body)
+        found[start:] = ["ambiguous"] * (len(found) - start)
 
     visit(tree.body)
     if not found:
