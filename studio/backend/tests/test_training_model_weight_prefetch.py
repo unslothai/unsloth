@@ -194,7 +194,7 @@ def test_worker_uses_prefetch_only_without_forking_preparation(
     assert (job is not None) is expected
     assert bool(resolved) is expected
     if job:
-        assert job.repo == "unsloth/model"  # The effective sidecar16bit result reaches the mapper.
+        assert job.repo == "unsloth/model"
         assert job.token is False
         assert job.cache_dir == str(tmp_path)
 

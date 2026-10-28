@@ -261,7 +261,7 @@ def _training_weight_prefetch(config, trainer, hf_token, event_queue):
                 emit = event_queue.put,
                 should_stop = lambda: trainer.should_stop,
             )
-    except Exception as error:  # noqa: BLE001 -- prefetch is never required for training
+    except Exception as error:  # noqa: BLE001
         logger.info("Skipping model checkpoint prefetch: %s", error)
     return None
 
@@ -4897,8 +4897,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 return
 
         _send_status(event_queue, "Loading and formatting dataset...")
-        # Overlap checkpoint I/O with dataset preparation, never model placement:
-        # audio codecs can use the GPU, and formatting still needs the probed tokenizer.
+        # Overlap checkpoint I/O only, never model placement: formatting needs the probed tokenizer.
         from .model_weight_prefetch import prepare_dataset_with_prefetch
 
         dataset, eval_dataset = prepare_dataset_with_prefetch(

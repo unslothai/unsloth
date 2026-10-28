@@ -90,7 +90,7 @@ def checkpoint_files(files, read_json):
         return ["model.safetensors"]
     index_name = "model.safetensors.index.json"
     if index_name not in files:
-        return []  # No speculative .bin, GGUF, variants or adapter-base downloads.
+        return []
     index = read_json(index_name)
     weights = index.get("weight_map") if isinstance(index, dict) else None
     if not isinstance(weights, dict) or not weights:
@@ -189,8 +189,7 @@ class ModelWeightPrefetch:
             self._cancel.set()
             if self._watchdog_stop is not None:
                 self._watchdog_stop.set()
-            # A Hub call may still be exiting on Stop/error. Prevent its late events from
-            # overwriting the next phase; daemon I/O never holds worker shutdown hostage.
+            # A Hub call still exiting on Stop/error must not emit into the next phase.
             with self._lock:
                 self._closed.set()
                 self._emit({"type": "model_load_completed", "ts": time.time()})
