@@ -96,7 +96,6 @@ def test_cached_preview_matches_full_conversion(cache, layout, monkeypatch):
         monkeypatch.undo()
         monkeypatch.setattr(chunking, "_CACHE_DIR", cache / "cache")
         assert got == _oracle_preview(cached, p) == cold_preview[p]
-        # Only rows the round-robin can reach were converted
         assert sum(converted) <= max(0, p) * sources
         if p > 0 and total > p * sources:
             assert sum(converted) < total

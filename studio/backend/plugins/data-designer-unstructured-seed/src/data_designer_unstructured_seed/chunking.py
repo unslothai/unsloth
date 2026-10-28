@@ -101,7 +101,7 @@ def build_multi_file_preview(
 
 
 def _cached_preview(df: Any, preview_size: int) -> tuple[list[dict[str, str]], int]:
-    """Converts only the rows the round-robin can reach: at most ``preview_size`` per source, so its picks are the same."""
+    """Converts at most ``preview_size`` rows per source: all the round-robin can reach, so its picks are unchanged."""
     total = len(df)
     if type(preview_size) is int and preview_size <= 0:
         return [], total
@@ -198,8 +198,8 @@ def materialize_multi_file_unstructured_seed(
     chunk_overlap: int,
     include_rows: bool = True,
 ) -> tuple[Path, list[dict[str, str]]]:
-    """Chunk multiple files into one parquet dataset with a source_file column. A cache hit still reads the whole
-    file (a corrupt cache raises here); ``include_rows = False`` skips turning it into row dicts nobody reads."""
+    """Chunk multiple files into one parquet dataset with a source_file column. A cache hit still reads the
+    whole file, so a corrupt cache raises; ``include_rows = False`` skips building its row dicts."""
     path, rows, cached = _materialize_multi_file(
         file_entries = file_entries,
         chunk_size = chunk_size,
