@@ -342,7 +342,14 @@ def test_probe_times_on_the_blocks_device(monkeypatch):
     monkeypatch.setattr(torch.cuda, "Event", Event)
     monkeypatch.setattr(torch.cuda, "synchronize", lambda device = None: None)
     monkeypatch.setattr(torch.cuda, "_sleep", lambda cycles: log.append(("sleep", current[0])))
-    out, host, gpu = bc._auto_time(lambda: log.append(("call", current[0])) or "out", torch.device("cuda", 1))
+    out, host, gpu = bc._auto_time(
+        lambda: log.append(("call", current[0])) or "out", torch.device("cuda", 1)
+    )
     assert out == "out" and gpu == 2.0 / 1e3 and host is not None
-    assert log == [("sleep", "cuda:1"), ("record", "cuda:1"), ("call", "cuda:1"), ("record", "cuda:1")]
+    assert log == [
+        ("sleep", "cuda:1"),
+        ("record", "cuda:1"),
+        ("call", "cuda:1"),
+        ("record", "cuda:1"),
+    ]
     assert current[0] == "cuda:0"
