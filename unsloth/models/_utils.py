@@ -500,7 +500,10 @@ def _unsloth_reset_stray_compile_cache(self):
 
 
 def _smart_gradient_checkpointing_patched():
-    return getattr(torch.utils.checkpoint.CheckpointFunction, "__name__", "") == "UnslothCheckpointFunction"
+    return (
+        getattr(torch.utils.checkpoint.CheckpointFunction, "__name__", "")
+        == "UnslothCheckpointFunction"
+    )
 
 
 def apply_unsloth_gradient_checkpointing(use_gradient_checkpointing, max_seq_length, dtype):

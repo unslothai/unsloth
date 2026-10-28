@@ -7,6 +7,7 @@ use_gradient_checkpointing = "unsloth" silently stopped offloading (offloads per
 it now keeps "unsloth" when an earlier model turned offloading on; an explicit True / False still turns it off, and
 says so. The function is read from source and run against a stub torch, so no GPU is needed.
 """
+
 import ast
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,8 +25,12 @@ def _load():
     if "apply_unsloth_gradient_checkpointing" not in found:
         pytest.fail("apply_unsloth_gradient_checkpointing not found")
 
-    class Plain: pass
-    class UnslothCheckpointFunction: pass
+    class Plain:
+        pass
+
+    class UnslothCheckpointFunction:
+        pass
+
     ckpt = SimpleNamespace(CheckpointFunction = Plain)
     torch = SimpleNamespace(utils = SimpleNamespace(checkpoint = ckpt))
     log = []
@@ -38,8 +43,11 @@ def _load():
         ckpt.CheckpointFunction = Plain
         log.append("unpatch")
 
-    ns = {"torch": torch, "patch_unsloth_smart_gradient_checkpointing": patch,
-          "unpatch_unsloth_smart_gradient_checkpointing": unpatch}
+    ns = {
+        "torch": torch,
+        "patch_unsloth_smart_gradient_checkpointing": patch,
+        "unpatch_unsloth_smart_gradient_checkpointing": unpatch,
+    }
     exec(compile(ast.Module(body = nodes, type_ignores = []), str(SOURCE), "exec"), ns)
     patched = lambda: ckpt.CheckpointFunction is UnslothCheckpointFunction  # noqa: E731
     return ns["apply_unsloth_gradient_checkpointing"], patched
