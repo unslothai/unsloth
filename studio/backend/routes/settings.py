@@ -4816,6 +4816,8 @@ class PersonalizationAppearance(BaseModel):
         "the-thing",
         "alien",
         "gothic",
+        "hexberry",
+        "candycorn",
         "black-cat",
         "trick-or-treat",
         "ghost-ship",

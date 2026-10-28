@@ -96,6 +96,20 @@ function ArrowBadge() {
   );
 }
 
+// Themes whose point is more than one color show all of them in the swatch.
+const SWATCH_OVERRIDE: Partial<
+  Record<(typeof HALLOWEEN_THEME_IDS)[number], string>
+> = {
+  "trick-or-treat":
+    "linear-gradient(135deg, #ffc400 28%, #b35cff 68%, color-mix(in srgb, #b35cff 75%, black) 100%)",
+  // White tip, orange middle, yellow base, like the candy.
+  candycorn:
+    "linear-gradient(170deg, #fff6e6 12%, #ff8f1f 42%, #ff8f1f 55%, #ffd84a 85%)",
+};
+
+const swatchBackground = (accent: string) =>
+  `linear-gradient(135deg, ${accent} 30%, color-mix(in srgb, ${accent} 55%, black) 100%)`;
+
 function ThemeGrid() {
   const { palette } = usePalette();
   return (
@@ -118,9 +132,10 @@ function ThemeGrid() {
           >
             <span
               aria-hidden="true"
-              className="size-7 shrink-0 rounded-full border border-black/10 dark:border-white/15"
+              className="size-7 shrink-0 rounded-full"
               style={{
-                background: `linear-gradient(135deg, ${colors.accent} 30%, color-mix(in srgb, ${colors.accent} 55%, black) 100%)`,
+                background:
+                  SWATCH_OVERRIDE[id] ?? swatchBackground(colors.accent),
               }}
             />
             <span className="min-w-0 truncate whitespace-nowrap font-medium text-sm">
