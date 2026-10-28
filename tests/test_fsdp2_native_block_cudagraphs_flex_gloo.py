@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""UNSLOTH_BLOCK_CUDAGRAPHS=1, native FSDP2 (gloo, world 2): blocks called with a flex attention BlockMask
-run without graphs, so their gathered weights must be freed at reshard and leave the keep budget; blocks
-called without one keep theirs, also after a BlockMask call first."""
+"""UNSLOTH_BLOCK_CUDAGRAPHS=1, native FSDP2 (gloo, world 2): flex BlockMask blocks free their weights."""
 
 import importlib.util
 import multiprocessing
@@ -39,8 +37,7 @@ def _load_block_compile():
 
 
 def _mark_blocks(model, bc):
-    """Stand in for _block_compile's wrapper (CUDA only): the same per-call BlockMask check run() makes.
-    A block with `_test_no_mask` set is observed as called without a BlockMask (mixed models)."""
+    """Stand-in for _block_compile's CUDA-only wrapper; `_test_no_mask` blocks count as non-BlockMask."""
     note = getattr(bc, "_note_block_mask_call", None)
     restore = {}
     for module in model.modules():
@@ -68,8 +65,7 @@ def _mark_blocks(model, bc):
 
 
 def _dense_flex_on_cpu():
-    """CPU flex attention has no backward: keep transformers' BlockMask (what the blocks are called
-    with) but attend through SDPA with the mask it describes."""
+    """CPU flex attention has no backward: keep the BlockMask but attend through SDPA."""
     from torch.nn.attention.flex_attention import create_mask
     from transformers.integrations.sdpa_attention import sdpa_attention_forward
     from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
@@ -247,8 +243,7 @@ def test_losses_are_unchanged(ranks):
 
 
 def test_flex_note_does_not_count_only_the_first_block(capsys):
-    # The note prints on the first block found flex-only, before the rest of the model has run:
-    # a count there named 1 block for a model whose every block takes a BlockMask.
+    # Regression: the note once counted 1 block when every block takes a BlockMask.
     import types
 
     native = _load_native()

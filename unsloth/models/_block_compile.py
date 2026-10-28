@@ -386,13 +386,12 @@ def _flex_block_mask_call(args, kwargs):
 
 
 def _note_block_mask_call(layer, args, kwargs):
-    """_flex_block_mask_call, also recording on the layer whether every call so far took a BlockMask
-    (`_unsloth_block_flex_only`); its observer (native FSDP2's weight keep) runs on each change."""
+    """_flex_block_mask_call, also recording `_unsloth_block_flex_only`; the observer runs on each change."""
     flex = _flex_block_mask_call(args, kwargs)
     seen = layer.__dict__.get("_unsloth_block_flex_only")
     if seen is False or seen is flex:
         return flex
-    # None -> True: first call took a BlockMask. True -> False: a call without one, sticky after.
+    # None -> True on a first BlockMask call; True -> False (sticky) on a call without one.
     layer.__dict__["_unsloth_block_flex_only"] = flex
     observer = layer.__dict__.get("_unsloth_block_flex_observer")
     if observer is not None and (flex or seen is True):

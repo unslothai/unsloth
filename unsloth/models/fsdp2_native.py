@@ -1047,15 +1047,13 @@ def _hold_unsharded(fsdp_param, hold):
     if hold:
         fsdp_param.free_unsharded_param = _skip_free_unsharded_param
     else:
-        # The class method frees at the next reshard; the next all-gather allocates again.
         fsdp_param.__dict__.pop("free_unsharded_param", None)
     fsdp_param._unsloth_keep_unsharded = hold
 
 
 class _BlockWeightKeep:
-    """Which compiled blocks keep their gathered weights. A block whose every call so far took a flex
-    BlockMask runs without graphs (_block_compile._flex_block_mask_call), so it holds nothing and its
-    bytes leave the budget; one call without a BlockMask makes it a graphed block again."""
+    """Which compiled blocks keep gathered weights. Flex-only blocks (every call took a BlockMask) run
+    ungraphed, so they hold nothing and leave the budget; one non-BlockMask call regraphs them."""
 
     def __init__(self, blocks, budget):
         self.blocks = blocks  # [(block, [fsdp_param], nbytes)]
@@ -1080,7 +1078,7 @@ class _BlockWeightKeep:
         keep, nbytes, flex = self.apply()
         if flex and not self.noted:
             self.noted = True
-            # Printed at the first such block, before the others ran: no count.
+            # First flex block, before the others ran: no count.
             _print_rank0(
                 "Unsloth: native FSDP2 frees the gathered weights of flex attention blocks "
                 "again: they run without block CUDA graphs."
@@ -1101,8 +1099,7 @@ def _keep_unsharded_for_block_cudagraphs(model):
     """FSDP2 frees gathered params at reshard, moving their addresses so block CUDA graphs re-record every
     step (2 x T4 Qwen3 LoRA: 6 records, 0 replays). Keep the storage; the next all-gather refills it in place.
     Only weights inside compiled blocks: the rest (embeddings, head, final norm) never enter a block graph.
-    Over the budget nothing is kept and those blocks run without graphs (never recorded). Blocks found to
-    take a flex BlockMask on every call are dropped from the keep set as they run (_BlockWeightKeep)."""
+    Over the budget nothing is kept and those blocks run without graphs (never recorded)."""
     if not _block_cudagraphs_requested():
         return 0
     roots = {}

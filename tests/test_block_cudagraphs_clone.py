@@ -851,8 +851,7 @@ def test_flex_block_mask_calls_run_without_graphs(monkeypatch, mask):
 
 
 def test_block_mask_calls_are_recorded_for_the_fsdp2_keep(monkeypatch):
-    """The layer records whether every call took a BlockMask; the observer (native FSDP2's weight keep)
-    runs on the first BlockMask call and again once a call without one makes the block graphed."""
+    """The observer runs on the first BlockMask call and again once a non-BlockMask call regraphs."""
     monkeypatch.setattr(torch, "compile", lambda fn, **kwargs: fn)
 
     class FlexKeepDecoderLayer(torch.nn.Module):
