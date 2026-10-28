@@ -762,6 +762,18 @@ def _unsloth_dpo_reference_loadable(policy_sd, ref_sd):
     return True
 
 
+def _unsloth_dpo_copy_policy_into_reference(ref_model, policy_sd):
+    # load_state_dict casts into the destination dtype: a BF16 reference would round away the FP32
+    # norm updates of a BF16 full finetune. Recast first; assigning .data keeps tied parameters tied.
+    tensors = dict(ref_model.named_parameters(remove_duplicate = False))
+    tensors.update(ref_model.named_buffers(remove_duplicate = False))
+    for key, value in policy_sd.items():
+        tensor = tensors.get(key)
+        if tensor is not None and tensor.dtype != value.dtype:
+            tensor.data = tensor.data.to(value.dtype)
+    ref_model.load_state_dict(policy_sd)
+
+
 def dpo_trainer_reference_snapshot(function_name, function):
     if function_name != "__init__" or "_unsloth_dpo_model_is_instance" in function:
         return function
@@ -779,7 +791,7 @@ def dpo_trainer_reference_snapshot(function_name, function):
             "    _unsloth_policy_sd = torch.nn.Module.state_dict(self.model)\n"
             # Checked first: load_state_dict writes matching tensors before raising on the rest.
             "    if _unsloth_dpo_reference_loadable(_unsloth_policy_sd, torch.nn.Module.state_dict(self.ref_model)):\n"
-            "        self.ref_model.load_state_dict(_unsloth_policy_sd)\n"
+            "        _unsloth_dpo_copy_policy_into_reference(self.ref_model, _unsloth_policy_sd)\n"
             "    else:\n"
             # Aliased: a bare `import warnings` here would shadow TRL's module-level one in all of __init__.
             "        import warnings as _unsloth_warnings\n"
@@ -802,6 +814,7 @@ def dpo_trainer_reference_snapshot(function_name, function):
 
 RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_reference_snapshot)
 RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(_unsloth_dpo_reference_loadable))
+RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(_unsloth_dpo_copy_policy_into_reference))
 RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_prepare_dataset)
 RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(dpo_trainer_vision_process_row))
 RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_vision_signature_columns)

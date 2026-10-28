@@ -19,6 +19,7 @@ def _hooks():
     wanted = {
         "_insert_after_docstring",
         "_unsloth_dpo_reference_loadable",
+        "_unsloth_dpo_copy_policy_into_reference",
         "dpo_trainer_reference_snapshot",
     }
     nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in wanted]
@@ -91,13 +92,15 @@ def _run(
     ref_model = None,
     tied = False,
     offload = False,
+    dtype = torch.float32,
 ):
     import transformers.integrations.deepspeed as ds
 
     monkeypatch.setattr(ds, "is_deepspeed_zero3_enabled", lambda: zero3)
     namespace = {
         "_unsloth_dpo_reference_loadable": _NS["_unsloth_dpo_reference_loadable"],
-        "create_model_from_path": lambda path, **kwargs: _Policy(out, tied, offload),
+        "_unsloth_dpo_copy_policy_into_reference": _NS["_unsloth_dpo_copy_policy_into_reference"],
+        "create_model_from_path": lambda path, **kwargs: _Policy(out, tied, offload).to(dtype),
         "is_peft_model": lambda m: False,
         "get_config_model_id": lambda config: config,
         "torch": torch,
@@ -138,6 +141,19 @@ def test_path_and_zero3_keep_checkpoint(monkeypatch, model, zero3):
     model = _trained() if model is None else model
     ref = _run(hook("__init__", TRL_INIT), model, monkeypatch, zero3 = zero3)
     assert torch.equal(ref.lin.weight, _Policy().lin.weight)
+
+
+def test_reference_keeps_policy_dtypes(monkeypatch):
+    # BF16 full finetune keeps FP32 norms; the reference loads in the policy's (BF16) dtype.
+    policy = _trained().to(torch.bfloat16)
+    policy.lin.float()
+    with torch.no_grad():
+        policy.lin.weight.add_(1e-3)  # below BF16 resolution at ~1
+    ref = _run(hook("__init__", TRL_INIT), policy, monkeypatch, dtype = torch.bfloat16)
+    for name, value in policy.state_dict().items():
+        assert ref.state_dict()[name].dtype == value.dtype and torch.equal(
+            ref.state_dict()[name], value
+        ), name
 
 
 def test_explicit_reference_kept(monkeypatch):
@@ -205,7 +221,7 @@ def test_installed_trl_rewrites_and_compiles():
     if "create_model_from_path(ref_model_path" not in source:
         pytest.skip(f"TRL {trl.__version__} already copies the policy")
     patched = hook("__init__", source)
-    assert "self.ref_model.load_state_dict(" in patched
+    assert "_unsloth_dpo_copy_policy_into_reference(self.ref_model" in patched
     # rl.py's _strip_vllm_weight_loads deletes `.state_dict()` from every generated trainer.
     assert ".state_dict()" not in patched
     compile(textwrap.dedent(patched), "<patched>", "exec")
