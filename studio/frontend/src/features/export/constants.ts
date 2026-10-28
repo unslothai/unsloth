@@ -213,7 +213,6 @@ export function mergedFormatPayload(value: string): {
   return { formatType: "16-bit (FP16)", compressedMethod: opt.value };
 }
 
-/** GGUF quants the Q4NX converter packs directly for AMD NPUs. */
 export const Q4NX_SOURCE_QUANTS = ["q4_0", "q4_1", "q4_k_m"];
 
 /** Approximate llama.cpp bits per weight; GGUF size ~= fp16_bytes * bpw / 16. */

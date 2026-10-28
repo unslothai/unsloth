@@ -2882,7 +2882,7 @@ html[data-chat-font] .aui-root {
 		background-color: rgb(255 255 255 / calc(0.1 * var(--contrast-wash-gain, 1)));
 	}
 
-	/* Elevated cards sink the shared track; buttons on API, Train and Export cards lift above them instead. */
+	/* Elevated cards sink the shared track; their buttons lift above it. */
 	html.dark :is(.api-monitor-page .elevated-card, .section-box) .btn-fill {
 		background-color: rgb(255 255 255 / calc(0.06 * var(--contrast-wash-gain, 1)));
 	}

@@ -50,7 +50,7 @@ export function TrainSubNav({
             indicatorClassName="hidden"
             className={cn(
               "relative h-9 flex-none select-none rounded-none border-0 px-0 py-0 text-ui-13 transition-colors disabled:cursor-not-allowed disabled:opacity-40",
-              // Centred on the row's 1px border-b; the base trigger's bottom-[-5px] dropped it below.
+              // TabsTrigger's bottom-[-5px] dropped the bar below the row's border.
               "after:pointer-events-none after:absolute after:inset-x-0 group-data-[orientation=horizontal]/tabs:after:-bottom-px after:h-[2px] after:rounded-full after:bg-foreground after:transition-opacity",
               active
                 ? "font-semibold text-foreground after:opacity-100"
