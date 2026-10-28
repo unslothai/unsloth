@@ -44,6 +44,7 @@ test("only verified model-copy rows expose Clear and retain individual locations
     { ...good, path: "/dataset", cachePath: "/dataset", repoType: "dataset" },
     { ...good, path: "/missing-copy" },
     { name: ".locks", path: "/locks", sizeBytes: 1 },
+    { name: ".locks", path: "/empty-locks", sizeBytes: 0 },
   ];
   const component = loadWithStubs<{
     HuggingFaceCacheFolders: (props: unknown) => unknown;
@@ -107,6 +108,11 @@ test("only verified model-copy rows expose Clear and retain individual locations
   const actions = elements(render()).filter(
     (element) => element.type === "HfCacheModelClear",
   );
+  const listed = elements(render())
+    .map((element) => element.props.title)
+    .filter((title) => typeof title === "string");
+  assert.ok(listed.includes("/locks"));
+  assert.ok(!listed.includes("/empty-locks"));
   assert.deepEqual(
     actions.map((action) => action.props),
     [

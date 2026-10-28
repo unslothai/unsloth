@@ -223,7 +223,10 @@ export function HuggingFaceCacheFolders({
     void loadCacheBreakdown(entry.key).then(
       (next) => {
         if (current) {
-          setRows(next);
+          // Empty bookkeeping folders (one .locks per root) carry no size and no action.
+          setRows(
+            next.filter((row) => row.sizeBytes > 0 || row.deleteAllowed),
+          );
         }
       },
       (reason) => {
@@ -410,13 +413,6 @@ export function CacheStorageRows({ cache }: { cache: CacheStorage }) {
                       {t("settings.resources.storage.caches.previousLocations")}
                     </span>
                   ) : null}
-                  {entry.key === "hf_hub" || entry.key === "hf_datasets" ? (
-                    <HuggingFaceCacheFolders
-                      entry={entry}
-                      version={inventory}
-                      disabled={loading || clearing}
-                    />
-                  ) : null}
                 </div>
                 <div data-title-line-control={true} className="flex gap-3">
                   <span className="text-xs tabular-nums text-muted-foreground">
@@ -441,6 +437,16 @@ export function CacheStorageRows({ cache }: { cache: CacheStorage }) {
                     {t("settings.resources.storage.caches.clearOneAction")}
                   </Button>
                 </div>
+                {/* Own line: inside the title column it widens it and wraps the controls below. */}
+                {entry.key === "hf_hub" || entry.key === "hf_datasets" ? (
+                  <div className="min-w-0 basis-full">
+                    <HuggingFaceCacheFolders
+                      entry={entry}
+                      version={inventory}
+                      disabled={loading || clearing}
+                    />
+                  </div>
+                ) : null}
               </div>
             ))
           )}
