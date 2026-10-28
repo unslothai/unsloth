@@ -24,7 +24,7 @@ def _shared_setup_1(monkeypatch):
     proc = _ToggleProcess()
     b._process = proc
     fired = threading.Event()
-    monkeypatch.setattr(b, "_maybe_recover_from_mtp_crash", lambda *a, **k: fired.set())
+    monkeypatch.setattr(b, "_maybe_recover_from_mtp_crash", lambda *a, **k: fired.set() or True)
     b._start_mtp_crash_watchdog()
     return b, fired, proc
 
