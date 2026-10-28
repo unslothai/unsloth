@@ -2239,6 +2239,11 @@ def grpo_trainer__generate(function_name, function):
     if function_name != "_generate":
         return function
 
+    # A stop string can terminate a completion before the limit without an EOS token.
+    function = function.replace(
+        "ids[-1] not in eos_and_pad",
+        "(self.max_completion_length is None or len(ids) >= self.max_completion_length) and ids[-1] not in eos_and_pad",
+    )
     return _guard_vllm_sync_reload_for_shared_weights(function)
 
 
@@ -2250,6 +2255,10 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
     if function_name != "_generate_and_score_completions":
         return function
 
+    function = function.replace(
+        "ids[-1] not in eos_and_pad",
+        "(self.max_completion_length is None or len(ids) >= self.max_completion_length) and ids[-1] not in eos_and_pad",
+    )
     function = function.replace(
         "prompt_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False",
         "prompt_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False",
