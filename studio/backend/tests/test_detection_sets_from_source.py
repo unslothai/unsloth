@@ -52,7 +52,7 @@ def test_sets_from_source_equal_sets_from_the_import(monkeypatch):
     )
     from_source = mc._build_detection_sets()
     if not _HAS_TRANSFORMERS:
-        pytest.skip("transformers not installed")
+        pytest.skip("parity needs transformers: both arms read its registry")
     if mc._transformers_enables_torch():
         assert read and read[0] is not None
     else:
