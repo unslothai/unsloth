@@ -426,15 +426,19 @@ export const BUDGET = {
   // Cosmos3 video families (#14554): +466 B raw / +218 B transfer. Raised by that.
   // Lookup-table pricing (#14465): +1,517 B raw / +470 B transfer on top of the lines above (measured merged with
   // 4db3eaeb55, Node 24, 99 chunks).
+  // Chat pins synced through the server (#15293): the sync runtime is a lazy chunk, but the modules it shares
+  // with startup code (chat-settings-api, sidebar-organization-keys) split into their own eager chunks, plus the
+  // mount hook and store wiring: +3,074 B raw / +2,025 B transfer (6,958,762 -> 6,961,836 B raw, 2,099,260 ->
+  // 2,101,285 B transfer against 9c397197e0, Node 24, 106 -> 109 chunks). Raised by that growth.
   // Settings > Agents > Desktop apps (the Claude Desktop and Codex Desktop cards, their model pickers, the shared
   // context window / MTP / keep-loaded run settings, API clients and strings) add +8,089 B raw / +2,495 B transfer
   // to the eager settings and locale chunks (6,935,466 -> 6,943,555 B raw, 2,085,390 -> 2,087,885 B transfer against
   // 8f8eaee609, one machine and build, Node 26.8.2, unchanged at 99 chunks). Lazy-loading the cards cost more
   // (+2.4 KB transfer, 7 extra startup chunks), so they are imported statically and the budget raised by that growth.
-  // Merged onto upstream main c4d784214e: main's budget plus the Desktop apps growth above (+2,495 B transfer,
+  // Merged onto upstream main 4e673d32e3: main's budget plus the Desktop apps growth above (+2,495 B transfer,
   // +8,089 B raw).
-  transferBytes: 2_103_680,
-  rawBytes: 6_981_644,
+  transferBytes: 2_105_705,
+  rawBytes: 6_984_718,
 };
 
 // Chunk count is not budgeted: splitting a page out raises it while lowering bytes.
