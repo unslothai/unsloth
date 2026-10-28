@@ -146,8 +146,9 @@ def test_auto_keeps_graphs_off_when_gpu_bound(monkeypatch):
 
 
 def test_auto_ratio_threshold(monkeypatch):
-    """Launching must be clearly slower than running: 1.2x is within what graphs' copies give back."""
-    layers, calls, _, _ = _harness(monkeypatch, host = 1.2e-3, gpu = 1e-3)
+    """Launching must be clearly slower than running: A100 ratios 0.55-0.92 gained nothing with graphs
+    forced on (-1.2% to +1.0%), 1.26 gained 12.6%."""
+    layers, calls, _, _ = _harness(monkeypatch, host = 1.1e-3, gpu = 1e-3)
     for _ in range(6):
         assert _step(layers, calls) == ["plain", "plain"]
     assert bc._CUDAGRAPH_STATE["auto"]["phase"] == "off"
@@ -242,5 +243,5 @@ def test_static_reason_full_finetuning(monkeypatch):
     for p in layer.parameters():
         p.requires_grad_(False)
     assert bc._auto_static_reason(layer, FakeCuda()) is None
-    monkeypatch.setattr(torch, "__version__", "2.9.1+cu128")
-    assert bc._auto_static_reason(layer, FakeCuda()) == "torch < 2.10"
+    monkeypatch.setattr(torch, "__version__", "2.10.0+cu128")
+    assert bc._auto_static_reason(layer, FakeCuda()) == "torch < 2.11"

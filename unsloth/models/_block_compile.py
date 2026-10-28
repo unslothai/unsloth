@@ -429,10 +429,12 @@ _AUTO_WARMUP_PASSES = 2
 _AUTO_MEASURE_CALLS = 4
 _AUTO_SLEEP_CYCLES = 20_000_000  # ~10-15 ms: the block's launches queue behind it
 try:
-    _AUTO_RATIO = float(os.environ.get("UNSLOTH_BLOCK_CUDAGRAPHS_AUTO_RATIO", "1.5"))
+    _AUTO_RATIO = float(os.environ.get("UNSLOTH_BLOCK_CUDAGRAPHS_AUTO_RATIO", "1.2"))
 except ValueError:
-    _AUTO_RATIO = 1.5
-_AUTO_MIN_TORCH = "2.10"
+    _AUTO_RATIO = 1.2
+# Before 2.11 FastLanguageModel LoRA blocks are not compiled (llama._legacy_block_compile), so
+# nothing was measured there.
+_AUTO_MIN_TORCH = "2.11"
 # The graph pool adds 0.5-0.8 GB reserved (Qwen3-0.6B LoRA): keep graphs off without this much free.
 _AUTO_FREE_GB = 2.0
 _AUTO_FREE_FRACTION = 0.10
@@ -1769,6 +1771,8 @@ def _raise_cache_limit(kinds):
     config = torch._dynamo.config
     name = "recompile_limit" if hasattr(config, "recompile_limit") else "cache_size_limit"
     need = 4 * kinds
+    if _CUDAGRAPH_MODE != "off":
+        need *= 2  # the graphs-on and graphs-off regions share one code object's cache
     if getattr(config, name, need) < need:
         setattr(config, name, need)
 
