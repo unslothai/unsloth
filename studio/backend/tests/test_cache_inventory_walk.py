@@ -184,6 +184,23 @@ def test_an_expired_slow_cache_answers_at_once_and_refreshes_behind(monkeypatch,
     assert cache_inventory._described(definition, refresh = False)["size_bytes"] == 20
 
 
+def test_a_studio_download_or_delete_is_never_answered_from_the_older_walk(monkeypatch, clean_memo):
+    """Downloads and deletes call invalidate_hf_cache_scans; Settings must then walk, as base did after the TTL."""
+    from hub.utils.inventory_scan import invalidate_hf_cache_scans
+    for key in ("hf_hub", "hf_xet", "hf_datasets", "hf_assets"):
+        definition = definition_for(key)
+        sizes = iter([100, 999])
+        monkeypatch.setattr(
+            cache_inventory,
+            "describe_cache",
+            lambda target, sizes = sizes: {"key": target.key, "size_bytes": next(sizes)},
+        )
+        assert cache_inventory._described(definition, refresh = False)["size_bytes"] == 100
+        _expire(key, walk_seconds = cache_inventory._BACKGROUND_WALK_SECONDS + 5)
+        invalidate_hf_cache_scans()
+        assert cache_inventory._described(definition, refresh = False)["size_bytes"] == 999, key
+
+
 def test_an_expired_quick_cache_is_still_walked_in_the_request(monkeypatch, clean_memo):
     definition = definition_for("pip")
     sizes = iter([10, 20])
