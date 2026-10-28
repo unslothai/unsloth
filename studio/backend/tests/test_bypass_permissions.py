@@ -135,7 +135,13 @@ def test_python_sandboxed_uses_sandbox_preexec_and_safe_env(captured_prepared_la
     monkeypatch.setenv("HF_TOKEN", "secret-abc")
     _python_exec("print(1)", None, 5, "t", disable_sandbox = False)
     kwargs = captured_prepared_launch["kwargs"]
-    assert _carries(kwargs["preexec_fn"], tools._sandbox_preexec)
+    if "preexec_fn" in kwargs:
+        assert _carries(kwargs["preexec_fn"], tools._sandbox_preexec)
+    else:
+        # The same setup without a Python pre-exec: setsid and umask by Popen, the rest by setpriv/prlimit.
+        argv = captured_prepared_launch["prepared"].argv
+        assert kwargs["start_new_session"] is True and kwargs["umask"] == 0o077
+        assert argv[1:5] == ("--no-new-privs", "--pdeathsig", "KILL", "--")
     assert "HF_TOKEN" not in kwargs["env"]
 
 
