@@ -11804,6 +11804,18 @@ def _unified_metal_host() -> bool:
     return _on_metal()
 
 
+def _mlx_cache_bounded(entry: dict) -> bool:
+    from core.inference.gpu_residency import mlx_cache_bounded
+    return mlx_cache_bounded(entry)
+
+
+def _note_mlx_slots(backend, slots: int) -> None:
+    """A batch opened at a wider setting keeps its width after the setting drops, so the reservation never shrinks."""
+    growth = (backend.models.get(backend.active_model_name or "") or {}).get("mlx_growth")
+    if isinstance(growth, dict):
+        growth["slots"] = max(int(growth.get("slots", 1)), int(slots))
+
+
 def _mlx_slots_outgrow_price(backend, n_parallel) -> bool:
     from core.inference.gpu_residency import mlx_slots_outgrow_price
     return mlx_slots_outgrow_price(backend, n_parallel)
@@ -18543,7 +18555,7 @@ async def _load_model_impl(
             ):
                 api_monitor.discard(_load_event)  # nothing loaded, no monitor row
                 logger.info(f"Model already loaded (Unsloth): {model_log_label}, skipping reload")
-                backend.set_parallel_slots(_n_parallel)
+                _note_mlx_slots(backend, backend.set_parallel_slots(_n_parallel))
                 # A no-op Unsloth load of a preview-owned checkpoint still claims it.
                 _set_preview_resident(None)
                 inference_config = load_inference_config(backend.active_model_name)
@@ -19354,7 +19366,8 @@ async def _load_model_impl(
             _resident_entry["gpu_ids_requested"] = (
                 list(request.gpu_ids) if request.gpu_ids else None
             )
-            if mlx_chat_need is not None:
+            # Unbounded, the estimate is no ceiling: the entry stays unpriced, so media beside it evicts or refuses.
+            if mlx_chat_need is not None and _mlx_cache_bounded(_resident_entry):
                 from core.inference.gpu_residency import mlx_worker_footprint_mib
                 _resident_entry["mlx_growth"] = {
                     **mlx_chat_need[1],

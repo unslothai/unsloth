@@ -613,6 +613,12 @@ def gguf_replaced_credit_mib(llama) -> int:
         return 0
 
 
+def mlx_cache_bounded(entry: dict) -> bool:
+    """Whether the loaded MLX model's cache stops at the context it was priced at: a cache window or a per-request
+    budget. Without either its growth has no ceiling to reserve."""
+    return entry.get("context_length_enforced") is True or bool(entry.get("mlx_context_budget"))
+
+
 def mlx_slots_outgrow_price(orch, n_parallel) -> bool:
     """Whether serving ``n_parallel`` rows grows a resident MLX model beside media past what it was admitted at."""
     try:

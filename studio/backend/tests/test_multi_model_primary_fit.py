@@ -380,6 +380,26 @@ def test_the_replace_fallback_never_refuses_a_partial_fit():
     )
 
 
+def test_only_a_bounded_mlx_cache_is_priced_and_its_admitted_width_never_shrinks():
+    assert inf._mlx_cache_bounded({"context_length_enforced": True})
+    assert inf._mlx_cache_bounded({"context_length_enforced": False, "mlx_context_budget": 4096})
+    assert not inf._mlx_cache_bounded({"context_length_enforced": None})
+    assert not inf._mlx_cache_bounded(
+        {"context_length_enforced": False, "mlx_context_budget": None}
+    )
+    entry = {"mlx_growth": {"mib": 1, "row_mib": 1, "slots": 1}}
+    backend = SimpleNamespace(models = {"m": entry}, active_model_name = "m")
+    for slots in (4, 1):
+        inf._note_mlx_slots(backend, slots)
+    assert entry["mlx_growth"]["slots"] == 4
+    inf._note_mlx_slots(SimpleNamespace(models = {}, active_model_name = None), 2)
+    import inspect
+
+    source = inspect.getsource(inf._load_model_impl)
+    assert "_note_mlx_slots(backend, backend.set_parallel_slots(_n_parallel))" in source
+    assert "if mlx_chat_need is not None and _mlx_cache_bounded(_resident_entry):" in source
+
+
 def test_an_mlx_load_is_credited_what_it_replaces_and_more_rows_reprice_it():
     import inspect
 
