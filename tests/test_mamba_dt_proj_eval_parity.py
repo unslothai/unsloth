@@ -384,7 +384,8 @@ def test_pickled_model_loads_without_unsloth(monkeypatch, tmp_path):
     leaf = model.base_model.model.backbone.layers[0].mixer.dt_proj
     data = pickle.dumps(model)
     assert b"_RawRead_" not in data
-    assert type(copy.deepcopy(leaf)) is type(leaf).__mro__[1]
+    # copy / deepcopy keep the effective-weight class (see the compiled deepcopy test below).
+    assert type(copy.deepcopy(leaf)) is type(leaf)
     assert torch.equal(_logits(pickle.loads(data), ids), expected)
     path = tmp_path / "model.pkl"
     path.write_bytes(data)
@@ -501,3 +502,81 @@ def test_eval_mixer_compiles_fullgraph_under_no_grad(monkeypatch, arch):
         torch._dynamo.reset()
     torch.testing.assert_close(out, eager, rtol = 1e-5, atol = 1e-6)
     assert torch.equal(out, again)
+
+
+def _adapted_mixer(monkeypatch, arch):
+    model = _trained(monkeypatch, arch, ["dt_proj"])
+    with torch.no_grad():
+        for name, p in model.named_parameters():
+            if ".lora_" in name:
+                p.normal_(std = 2.0, generator = torch.Generator().manual_seed(3))
+    return model, helpers._mixers(model)[0]
+
+
+def _compiled_no_grad(mixer, hidden, fullgraph = True):
+    torch._dynamo.reset()
+    try:
+        compiled = torch.compile(mixer, backend = "aot_eager", fullgraph = fullgraph)
+        with warnings.catch_warnings(), torch.no_grad():
+            warnings.simplefilter("ignore")
+            out = compiled(hidden)
+            again = compiled(hidden)
+    finally:
+        torch._dynamo.reset()
+    assert torch.equal(out, again)
+    return out
+
+
+def _eager_and_base(model, mixer, hidden):
+    with torch.no_grad():
+        eager = mixer(hidden)
+        with model.disable_adapter():
+            base = mixer(hidden)
+    assert (eager - base).abs().max() > 1e-5, "the adapter has no effect"
+    return eager
+
+
+@pytest.mark.parametrize("arch", ARCHS)
+def test_deepcopied_eval_mixer_compiles_with_its_adapter(monkeypatch, arch):
+    # A deep copy compiled before any eager forward must still serve W + delta, not the base weight.
+    model, mixer = _adapted_mixer(monkeypatch, arch)
+    copied = copy.deepcopy(mixer)
+    hidden = torch.randn(2, 8, 16, generator = torch.Generator().manual_seed(2))
+    out = _compiled_no_grad(copied, hidden)
+    torch.testing.assert_close(out, _eager_and_base(model, mixer, hidden), rtol = 1e-5, atol = 1e-6)
+    assert type(copied.dt_proj) is type(mixer.dt_proj)
+
+
+@pytest.mark.parametrize("arch", ARCHS)
+def test_adapter_attached_after_patch_compiles_with_it(monkeypatch, arch):
+    # A dt_proj adapter added after the patch, compiled before any eager forward, must apply.
+    model, _ = helpers._build(monkeypatch, arch, ["x_proj"], kernel = helpers._reference_fused)
+    if helpers._legacy(arch):
+        _install_legacy_reference_ops(monkeypatch, arch)
+    model.add_adapter("late", peft.LoraConfig(r = 4, lora_alpha = 8, target_modules = ["dt_proj"]))
+    model.set_adapter("late")
+    model.eval()
+    with torch.no_grad():
+        for name, p in model.named_parameters():
+            if ".lora_" in name and ".late." in name:
+                p.normal_(std = 2.0, generator = torch.Generator().manual_seed(3))
+    mixer = helpers._mixers(model)[0]
+    hidden = torch.randn(2, 8, 16, generator = torch.Generator().manual_seed(2))
+    out = _compiled_no_grad(mixer, hidden)
+    torch.testing.assert_close(out, _eager_and_base(model, mixer, hidden), rtol = 1e-5, atol = 1e-6)
+
+
+@pytest.mark.parametrize("arch", ARCHS)
+def test_unprepared_adapter_never_compiles_silently(monkeypatch, arch):
+    # A leaf that lost its effective-weight class: fullgraph fails loudly, otherwise the frame runs
+    # eagerly (which installs it) and every call applies the adapter.
+    model, mixer = _adapted_mixer(monkeypatch, arch)
+    hidden = torch.randn(2, 8, 16, generator = torch.Generator().manual_seed(2))
+    eager = _eager_and_base(model, mixer, hidden)
+    plain = type(mixer.dt_proj).__mro__[1]
+    mixer.dt_proj.__class__ = plain
+    with pytest.raises(Exception, match = r"dt_proj has an active LoRA adapter"):
+        _compiled_no_grad(mixer, hidden)
+    mixer.dt_proj.__class__ = plain
+    out = _compiled_no_grad(mixer, hidden, fullgraph = False)
+    torch.testing.assert_close(out, eager, rtol = 1e-5, atol = 1e-6)

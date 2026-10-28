@@ -22,6 +22,7 @@ autograd and outside autocast, rebuilt on every read so no weight write can leav
 unmerged eval and generate match ``merge_and_unload`` and ``disable_adapter()`` gives the base model.
 """
 
+import copy
 import copyreg
 import functools
 import inspect
@@ -249,8 +250,22 @@ def _raw_read_class(cls):
         return super(sub, self).weight
 
     def __reduce_ex__(self, protocol):
-        # Pickle / deepcopy as the plain adapter layer; the next mixer forward re-installs it.
+        # Pickle as the plain adapter layer, loadable without Unsloth; the next mixer forward
+        # re-installs it.
         return copyreg._reconstructor, (cls, object, None), self.__dict__.copy()
+
+    # copy / deepcopy keep this class: a copied mixer can be compiled before any eager forward, and
+    # a trace cannot install it (it would read the base weight). Same steps as copy._reconstruct.
+    def __copy__(self):
+        new = object.__new__(type(self))
+        new.__setstate__(self.__dict__.copy())
+        return new
+
+    def __deepcopy__(self, memo):
+        new = object.__new__(type(self))
+        memo[id(self)] = new
+        new.__setstate__(copy.deepcopy(self.__dict__, memo))
+        return new
 
     qualname = "_RawRead_" + "_".join(f"{cls.__module__}.{cls.__qualname__}".split("."))
     sub = type(
@@ -259,6 +274,8 @@ def _raw_read_class(cls):
         {
             "weight": property(weight),
             "__reduce_ex__": __reduce_ex__,
+            "__copy__": __copy__,
+            "__deepcopy__": __deepcopy__,
             "__module__": __name__,
             "__qualname__": qualname,
             _MARK: True,
@@ -280,12 +297,29 @@ def _install_raw_read(mixer, leaf):
         return False
     if getattr(type(module), _MARK, False):
         return True
-    if torch.compiler.is_compiling() or not isinstance(
-        inspect.getattr_static(type(module), "weight", None), property
-    ):
+    if torch.compiler.is_compiling():
+        # Dynamo cannot trace the class swap (nor getattr_static on older torch), and without it the
+        # traced forward would read the base weight and silently drop the adapter. Without fullgraph
+        # Dynamo runs this frame eagerly, which installs it; with fullgraph the error names the fix.
+        raise RuntimeError(
+            f"Unsloth: {type(mixer).__name__}.{leaf} has an active LoRA adapter that was attached "
+            "after Unsloth prepared this Mamba model, so a compiled forward would read its base "
+            "weight and drop the adapter. Run one eager forward, or call "
+            "unsloth.models._mamba_lora.patch_mamba_fused_lora(model), before torch.compile."
+        )
+    if not isinstance(inspect.getattr_static(type(module), "weight", None), property):
         return False
     module.__class__ = _raw_read_class(type(module))
     return True
+
+
+def _prepare_leaves(mixer):
+    """Install the effective-weight class on every adapter leaf of a mixer, active or not."""
+    tuner = _TUNER_LAYER or _tuner_layer_class()
+    modules = mixer.__dict__.get("_modules") or {}
+    for leaf in _RAW_WEIGHT_LEAVES:
+        if tuner and isinstance(modules.get(leaf), tuner):
+            _install_raw_read(mixer, leaf)
 
 
 def _swap(value, merged, used):
@@ -502,7 +536,26 @@ def _patch_class(cls):
 
     setattr(forward_keep_adapters, _MARK, True)
     cls.forward = forward_keep_adapters
+    _prepare_on_assign(cls)
     return True
+
+
+def _prepare_on_assign(cls):
+    # PEFT attaches an adapter by assigning the LoRA layer onto the mixer (get_peft_model,
+    # inject_adapter_in_model, add_adapter on a new target). Install its class right there, so a
+    # mixer adapted after the patch is ready for a compiled forward without an eager one first.
+    original = cls.__setattr__
+    if getattr(original, _MARK, False):
+        return
+
+    @functools.wraps(original)
+    def __setattr__(self, name, value):
+        original(self, name, value)
+        if name in _RAW_WEIGHT_LEAVES and not torch.compiler.is_compiling():
+            _prepare_leaves(self)
+
+    setattr(__setattr__, _MARK, True)
+    cls.__setattr__ = __setattr__
 
 
 def patch_mamba_fused_lora(model):
@@ -520,6 +573,5 @@ def patch_mamba_fused_lora(model):
             except Exception:
                 patched[cls] = False
         if patched[cls]:
-            for leaf in mamba_raw_weight_adapters(module):
-                _install_raw_read(module, leaf)
+            _prepare_leaves(module)
     return model

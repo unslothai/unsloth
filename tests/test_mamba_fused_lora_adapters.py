@@ -148,6 +148,7 @@ def _build(
 
     monkeypatch.setattr(modeling, "mamba_inner_fn", mamba_inner_fn)
     monkeypatch.setattr(mixer_cls, "forward", mixer_cls.forward)  # undo what the fix installs
+    monkeypatch.setattr(mixer_cls, "__setattr__", mixer_cls.__setattr__)
     if hasattr(mixer_cls, "cuda_kernels_forward"):
         # transformers 4.x dispatches to cuda_kernels_forward only on CUDA with mamba_ssm; force it,
         # or its torch path for the non-fused reference.
