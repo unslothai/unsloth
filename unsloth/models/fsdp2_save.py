@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Saving an FSDP2-sharded model. Every rank must call the save: the shards are all-gathered one
-parameter at a time, rank 0 swaps the full tensors (on CPU) into the modules, runs the ordinary
-single-GPU save code, and puts the sharded parameters back. bitsandbytes 4-bit weights are gathered
-as raw bytes and rebuilt as Params4bit with their QuantState, so a merge can still dequantize them.
-"""
+"""FSDP2 save: every rank must call it; rank 0 runs the single-GPU save on gathered CPU tensors."""
 
 __all__ = [
     "fsdp2_units",

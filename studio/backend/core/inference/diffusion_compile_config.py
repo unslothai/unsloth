@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""torch 2.12+ keeps dynamo / inductor config writes in a ContextVar, so knobs set on the load thread are invisible on
-the render thread that compiles. Knobs are recorded here and ``apply()`` re-writes them into the current context."""
+"""torch 2.12+ stores dynamo/inductor config in a ContextVar; apply() re-sets knobs per thread."""
 
 from __future__ import annotations
 

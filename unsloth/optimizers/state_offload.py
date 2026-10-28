@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Optimizer-state-only CPU offload (UNSLOTH_OFFLOAD_OPTIMIZER_STATE=1).
-
-State lives in pinned host memory between steps and visits the GPU only inside optimizer.step,
-so peak memory is max(activations, optimizer state) instead of their sum. The step runs in chunks
-of UNSLOTH_OFFLOAD_OPTIMIZER_STATE_CHUNK_MB (default 1024) of state, so the step itself never holds
-all of it on device either (parameter-local optimizers only, see _CHUNK_SAFE_MODULES).
-"""
+"""UNSLOTH_OFFLOAD_OPTIMIZER_STATE=1: state on host, chunked to GPU in step; parameter-local only."""
 
 import copy
 import os

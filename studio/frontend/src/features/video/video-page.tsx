@@ -14,9 +14,9 @@ import {
   FlimSlateIcon,
   ImageCropIcon,
   InformationCircleIcon,
+  Refresh01Icon,
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
-import { ReloadIcon } from "@/lib/reload-icon";
 import { Volume02Icon } from "@/lib/volume-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
@@ -4500,7 +4500,7 @@ function VideoGenerator({
                         disabled={busy !== null}
                         onClick={handleReapply}
                       >
-                        <HugeiconsIcon icon={ReloadIcon} className="size-4" />
+                        <HugeiconsIcon icon={Refresh01Icon} className="size-4" />
                         Reapply
                       </Button>
                     </TooltipTrigger>

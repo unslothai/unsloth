@@ -146,6 +146,7 @@ import {
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
   IntentAwareScrollProvider,
+  useDetachThreadFromBottom,
   useIntentAwareAutoScroll,
   useIsThreadAtBottom,
   useScrollThreadToBottom,
@@ -488,6 +489,7 @@ import { extractTaggedText, updateThreadMessage } from "@/features/chat/utils/up
 import { useComposerPillFit } from "@/hooks/use-composer-pill-fit";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
+import { useExpandedComposerFill } from "./use-expanded-composer-fill";
 import { watchComposerClearance } from "@/lib/toast-offset";
 
 const PageDragContext = createContext(false);
@@ -3109,10 +3111,29 @@ const Composer: FC<{
   const oneRowHeight = Math.round(40 * uiSpaceScale);
   const [editorHeight, setEditorHeight] = useState(40);
   const [isWritingExpanded, setIsWritingExpanded] = useState(false);
+  const detachFromBottom = useDetachThreadFromBottom();
+  const scrollThreadToBottom = useScrollThreadToBottom();
+  const threadEmpty = useAuiState(({ thread }) => thread.isEmpty);
   const toggleWritingExpanded = () => {
     setIsWritingExpanded((expanded) => !expanded);
     inputRef.current?.focus({ preventScroll: true });
   };
+  // Welcome page: the bottom pin's stabilizer padding shifted the expanded frame up. On every
+  // transition (button, Escape, send), so collapsing always re-pins the toolbar into view.
+  const wasExpandedRef = useRef(false);
+  useLayoutEffect(() => {
+    const was = wasExpandedRef.current;
+    wasExpandedRef.current = isWritingExpanded;
+    if (!threadEmpty || was === isWritingExpanded) {
+      return;
+    }
+    if (isWritingExpanded) {
+      detachFromBottom();
+    } else {
+      window.requestAnimationFrame(() => scrollThreadToBottom("instant"));
+    }
+  }, [isWritingExpanded, threadEmpty, detachFromBottom, scrollThreadToBottom]);
+  useExpandedComposerFill(editorRef, isWritingExpanded && !isDictating);
   // Cache line metrics so getComputedStyle runs once, not per keystroke.
   const lineMetricsRef = useRef<{ lineHeight: number; padding: number } | null>(
     null,

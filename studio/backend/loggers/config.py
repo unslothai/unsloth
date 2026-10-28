@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Structured logging configuration via structlog.
-
-Environment-specific formats (JSON for prod, console for dev), ISO timestamps, context-var
-integration, log-level filtering, and logger caching.
-"""
+"""Structlog config: JSON logs in prod, console in dev, ISO timestamps, context vars, level filter."""
 
 import logging
 import os

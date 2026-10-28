@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Shared, family-agnostic building blocks for diffusion LoRA training: dataset discovery, request
-config + validation, image loading, event emission, the stop protocol, adapter publishing, and
-the family/trainer registry, so the SDXL U-Net trainer (``diffusion_lora_trainer``) and the
-flow-matching DiT trainers share them. The pure helpers have no torch/diffusers import at call
-time and are unit-tested without a GPU; this module only routes a request to the right training
-loop."""
+"""Shared diffusion LoRA helpers and family registry; pure helpers avoid torch, so tests need no GPU."""
 
 from __future__ import annotations
 

@@ -6996,34 +6996,114 @@ def get_vulkan_inference_gpu_info() -> Optional[Dict[str, Any]]:
     }
     try:
         for row in LlamaCppBackend.vulkan_device_inventory():
-            ordinal = row["index"]
-            shared_memory = bool(row["is_igpu"])
-            free_mib = _apply_igpu_host_reserve_mib(row["free_mib"], shared_memory)
-            total_mib = 0 if shared_memory else row["total_mib"]
-            budget_mib = total_mib or free_mib
-            used_mib = max(0, total_mib - free_mib) if total_mib else None
-            result["devices"].append(
-                {
-                    "index": ordinal,
-                    # ggml Vulkan ordinals are the space `--device Vulkan<i>` pins, so unlike a torch-xpu relative ordinal these are selectable.
-                    "index_kind": "vulkan",
-                    "visible_ordinal": ordinal,
-                    "name": row["name"],
-                    "memory_total_gb": round(budget_mib / 1024, 2),
-                    "vram_used_gb": round(used_mib / 1024, 2) if used_mib is not None else None,
-                    "vram_free_gb": round(free_mib / 1024, 2),
-                    "vram_utilization_pct": round((used_mib / total_mib) * 100, 1)
-                    if used_mib is not None and total_mib > 0
-                    else None,
-                    "shared_memory": shared_memory,
-                }
-            )
+            result["devices"].append(_vulkan_inference_device(row, _apply_igpu_host_reserve_mib))
     except Exception as e:
         logger.debug("Vulkan GPU visibility query failed: %s", e)
         return result
 
     result["available"] = bool(result["devices"])
     return result
+
+
+def _vulkan_inference_device(row: Dict[str, Any], apply_igpu_host_reserve_mib) -> Dict[str, Any]:
+    ordinal = row["index"]
+    shared_memory = bool(row["is_igpu"])
+    free_mib = apply_igpu_host_reserve_mib(row["free_mib"], shared_memory)
+    total_mib = 0 if shared_memory else row["total_mib"]
+    budget_mib = total_mib or free_mib
+    used_mib = max(0, total_mib - free_mib) if total_mib else None
+    return {
+        "index": ordinal,
+        # ggml Vulkan ordinals are the space `--device Vulkan<i>` pins, so unlike a torch-xpu relative ordinal these are selectable.
+        "index_kind": "vulkan",
+        "visible_ordinal": ordinal,
+        "name": row["name"],
+        "memory_total_gb": round(budget_mib / 1024, 2),
+        "vram_used_gb": round(used_mib / 1024, 2) if used_mib is not None else None,
+        "vram_free_gb": round(free_mib / 1024, 2),
+        "vram_utilization_pct": round((used_mib / total_mib) * 100, 1)
+        if used_mib is not None and total_mib > 0
+        else None,
+        "shared_memory": shared_memory,
+    }
+
+
+def get_mixed_vulkan_inference_gpu_info(
+    cuda_info: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """``cuda_info`` plus the Vulkan devices a llama.cpp build shipping both CUDA and Vulkan also
+    runs on (an AMD card beside NVIDIA ones), or None when it has none. llama.cpp skips a Vulkan
+    device whose PCI id a CUDA one already holds; a probe without ids falls back to the name.
+    Without a CUDA torch, ``cuda_info`` is not CUDA's and the nvidia-smi rows stand in for it."""
+    try:
+        from core.inference.llama_cpp import (
+            LlamaCppBackend,
+            _apply_igpu_host_reserve_mib,
+        )
+
+        if not {"cuda", "vulkan"} <= LlamaCppBackend._installed_ggml_backends():
+            return None
+        if not cuda_info or cuda_info.get("backend") != "cuda":
+            if _backend_label(get_device()) == "cuda":
+                return None
+            devices = _nvidia_inference_devices()
+            # Capacity-less procfs rows read as 0 GB, as in get_cross_vendor_inference_gpu_info.
+            if not devices or not all((d["memory_total_gb"] or 0) > 0 for d in devices):
+                return None
+            # SMI row numbers, not the ordinals a pin is applied in.
+            cuda_info = {
+                "available": True,
+                "backend": "cuda",
+                "backend_cuda_visible_devices": None,
+                "parent_visible_gpu_ids": [],
+                "devices": devices,
+                "gguf_gpu_ids_supported": False,
+            }
+        if not cuda_info.get("devices"):
+            return None
+        rows = LlamaCppBackend.vulkan_device_inventory()
+    except Exception as e:
+        logger.debug("Could not inspect the llama.cpp Vulkan devices beside CUDA: %s", e)
+        return None
+    if not rows:
+        return None
+
+    from . import nvidia
+
+    cuda_devices = cuda_info["devices"]
+    bus_ids = nvidia.get_pci_bus_ids() if any(row.get("pci_id") for row in rows) else {}
+    cuda_bus_ids = {
+        bus_ids[d["index"]]
+        for d in cuda_devices
+        if d.get("index_kind") == "physical" and d.get("index") in bus_ids
+    }
+    # By id only when every CUDA row has one, else a card nvidia-smi missed would count twice.
+    by_id = bool(cuda_bus_ids) and len(cuda_bus_ids) == len(cuda_devices)
+    cuda_names = [d.get("name") for d in cuda_devices]
+    extra = []
+    for row in rows:
+        # llama.cpp adds an integrated GPU only when no discrete one was found, and CUDA's are.
+        if row["is_igpu"]:
+            continue
+        key = nvidia._normalize_bus_id(row.get("pci_id") or "")
+        if by_id and key is not None:
+            covered = key in cuda_bus_ids
+        else:
+            covered = row["name"] in cuda_names
+            if covered:
+                cuda_names.remove(row["name"])
+        if not covered:
+            extra.append(_vulkan_inference_device(row, _apply_igpu_host_reserve_mib))
+    if not extra:
+        return None
+    return {
+        **cuda_info,
+        "backend": "cuda+vulkan",
+        "devices": [*cuda_devices, *extra],
+        "index_kind": "mixed",
+        # A host aggregate counted on the CUDA cards does not describe the Vulkan ones.
+        "vram_used_gb_aggregate": None,
+    }
 
 
 def _installed_llama_backend() -> Optional[str]:
