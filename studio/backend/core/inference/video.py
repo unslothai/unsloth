@@ -3642,7 +3642,6 @@ def _video_seed_stays_resident(
 def _h3_carry_by_scheduler(fam: Any, state: Any, has_step_callback: bool) -> bool:
     """H3 modular has no step callback: its scheduler.step wrapper drives a streamed denoiser's cross-forward carry."""
     from .video_minimax_h3_residency import h3_stream_carry_enabled
-
     return (
         not has_step_callback
         and getattr(fam, "name", None) == "minimax-h3"

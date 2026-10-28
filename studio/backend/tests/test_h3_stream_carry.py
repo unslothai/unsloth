@@ -41,7 +41,13 @@ def _h3_pipe(pf):
     return pipe
 
 
-def _h3_render(pf, groups, steps, calls = None, cancelled = lambda: False):
+def _h3_render(
+    pf,
+    groups,
+    steps,
+    calls = None,
+    cancelled = lambda: False,
+):
     """H3's loop: ``steps`` forwards, scheduler.step after all but the last (H3 makes 29 calls for 30 steps)."""
     pipe = _h3_pipe(pf)
     calls = steps - 1 if calls is None else calls
@@ -102,7 +108,9 @@ def test_cancel_skips_the_carry_step():
     with op.cross_forward_render(pipe):
         _forward(pf, groups)
         done(1)
-        assert seen == [1] and pf.armed  # the cancel raises before the next step; render exit disarms
+        assert (
+            seen == [1] and pf.armed
+        )  # the cancel raises before the next step; render exit disarms
     assert not pf.armed and not pf.carried
 
 
@@ -124,7 +132,9 @@ def test_gate(monkeypatch, fam_name, streamed, has_cb, env, expected):
     assert video._h3_carry_by_scheduler(fam, state, has_cb) is expected
 
 
-@pytest.mark.parametrize("value, on", [(None, True), ("1", True), ("0", False), ("off", False), ("no", False)])
+@pytest.mark.parametrize(
+    "value, on", [(None, True), ("1", True), ("0", False), ("off", False), ("no", False)]
+)
 def test_kill_switch(monkeypatch, value, on):
     if value is not None:
         monkeypatch.setenv(H3_STREAM_CARRY_ENV, value)
@@ -138,7 +148,9 @@ def test_kill_switch_render_carries_nothing(monkeypatch):
     log.clear()
     pipe = _h3_pipe(pf)
     gate = video._h3_carry_by_scheduler(
-        types.SimpleNamespace(name = "minimax-h3"), types.SimpleNamespace(denoiser_streamed = "stream"), False
+        types.SimpleNamespace(name = "minimax-h3"),
+        types.SimpleNamespace(denoiser_streamed = "stream"),
+        False,
     )
     with op.cross_forward_render(pipe, enabled = gate):
         for _ in range(4):
@@ -157,7 +169,11 @@ def _top_forward(pf, top, blocks):
     pf.end()
 
 
-def _top_render(keep, steps = 6, nbytes = 10):
+def _top_render(
+    keep,
+    steps = 6,
+    nbytes = 10,
+):
     pf, groups, log = _cpu_prefetcher("tabcde", nbytes = nbytes, depth = 2)
     pf.nbytes[id(groups[0])] = 2 * nbytes
     pf.window = 2 * nbytes + 2 * nbytes
