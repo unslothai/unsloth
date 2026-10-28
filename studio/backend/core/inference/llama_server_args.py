@@ -1910,7 +1910,10 @@ def translate_ngram_mod_args(
     while i < len(args):
         _flag, eq, value = args[i].partition("=")
         legacy = _NGRAM_MOD_LEGACY_FLAGS.get(_flag_name(args[i]) or "")
-        if legacy is None or (not eq and i + 1 >= len(args)):
+        # A following flag is not this flag's value; consuming it would orphan that flag's own value.
+        if legacy is None or (
+            not eq and (i + 1 >= len(args) or _flag_name(args[i + 1]) is not None)
+        ):
             out.append(args[i])
             i += 1
             continue
