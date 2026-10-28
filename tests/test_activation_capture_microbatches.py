@@ -186,3 +186,14 @@ def test_a_subclass_can_store_capture_without_files(tmp_path, monkeypatch):
     assert seen["meta"]["model_name"] == "tiny"
     assert [(r["step"], r["loss"]) for r in seen["records"]] == [(0, 0.5)]
     assert list(tmp_path.iterdir()) == []
+
+
+def test_non_finite_values_are_written_as_null(tmp_path):
+    model, cap = _capture(tmp_path, checkpointed = False)
+    cap.mark_capture(step = 0, loss = float("nan"))
+    model(torch.tensor([[[float("inf"), 1.0, 1.0, 1.0]]], requires_grad = True)).sum().backward()
+    cap.flush()
+    line = (tmp_path / "activation_log.jsonl").read_text().splitlines()[-1]
+    record = json.loads(line, parse_constant = lambda c: pytest.fail(f"non-JSON token {c}"))
+    assert record["loss"] is None
+    assert record["layers"]["0"]["mean_abs"][0] is None

@@ -99,6 +99,17 @@ def _in_backward() -> bool:
     return torch._C._current_graph_task_id() != -1
 
 
+def _finite_or_null(value):
+    # JSON has no NaN or Infinity; a strict reader rejects the whole line.
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {k: _finite_or_null(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_finite_or_null(v) for v in value]
+    return value
+
+
 _NON_TEXT_PARTS = (
     "vision",
     "visual",
@@ -560,7 +571,9 @@ class ActivationCapture:
 
     def _write_record(self, record: dict):
         with open(self._log_path, "a", encoding = "utf-8") as f:
-            f.write(json.dumps(record, separators = (",", ":")) + "\n")
+            f.write(
+                json.dumps(_finite_or_null(record), separators = (",", ":"), allow_nan = False) + "\n"
+            )
 
 
 # ---------------------------------------------------------------------------
