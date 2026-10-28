@@ -277,6 +277,7 @@ def test_hub_rows_with_timestamps_still_upload(monkeypatch):
         for i in range(10)
     ]
     monkeypatch.setattr(datasets, "load_dataset", lambda *a, **k: datasets.Dataset.from_list(rows))
+    monkeypatch.setattr(datasets, "load_dataset_builder", lambda *a, **k: 1 / 0)
     loaded = training._load_rows({"source": "hf", "ref": "org/ds"}, None, None)
     assert loaded[0]["at"] == "2026-01-01 00:00:00" and loaded[0]["x"] is None
     json.dumps(loaded, allow_nan = False)
@@ -311,3 +312,20 @@ def test_chat_with_checkpoint_puts_back_the_chat_model_it_replaced(monkeypatch):
     out = asyncio.run(training.chat_checkpoint(ctx))
     assert out == {"text": "hello"}
     assert loads == [("/out/run-1", None), ("unsloth/Qwen3-1.7B-GGUF", "Q4_K_M")]
+
+
+def test_hub_holdout_never_downloads_more_than_it_can_use(monkeypatch):
+    from types import SimpleNamespace
+
+    import datasets
+
+    def no_download(*a, streaming = False, **k):
+        assert streaming, "a full split download"
+        return SimpleNamespace(take = lambda n: [{"q": i} for i in range(n)])
+
+    monkeypatch.setattr(datasets, "load_dataset", no_download)
+    info = SimpleNamespace(splits = {"train": SimpleNamespace(num_examples = 900_000)})
+    monkeypatch.setattr(datasets, "load_dataset_builder", lambda *a, **k: SimpleNamespace(info = info))
+    with pytest.raises(FlowNodeError, match = "900000 rows"):
+        training._load_rows({"source": "hf", "ref": "org/big"}, None, None)
+    assert len(training._load_rows({"source": "hf", "ref": "org/big"}, None, 9)) == 10

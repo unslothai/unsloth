@@ -343,18 +343,40 @@ def holdout_row_ids(total: int, percent: int, seed: int) -> list[int]:
     return sorted(order[:count])
 
 
+def _too_many(rows: int) -> FlowNodeError:
+    return FlowNodeError(
+        f"{rows} rows is too many to hold out from here; set Hold out % to 0 or use a smaller slice"
+    )
+
+
+def _hub_rows(dataset: dict, token: Any, end: Optional[int]) -> Any:
+    """A Hub split, without downloading more than the hold-out can use: a slice streams just its
+    rows, and a split the Hub says is over the cap is refused before anything is fetched."""
+    from datasets import Dataset, load_dataset, load_dataset_builder
+
+    ref, subset = str(dataset["ref"]), dataset.get("subset") or None
+    split = dataset.get("split") or "train"
+    if end is not None:
+        if end + 1 > HOLDOUT_MAX_ROWS:
+            raise _too_many(end + 1)
+        streamed = load_dataset(ref, subset, split = split, token = token, streaming = True)
+        return Dataset.from_list(list(streamed.take(end + 1)))
+    try:
+        known = load_dataset_builder(ref, subset, token = token).info.splits[split].num_examples
+    except Exception:
+        known = None
+    if known and known > HOLDOUT_MAX_ROWS:
+        raise _too_many(known)
+    return load_dataset(ref, subset, split = split, token = token)
+
+
 def _load_rows(dataset: dict, token: Any, end: Optional[int]) -> list[dict]:
     from datasets import load_dataset
 
     from core.flows.nodes.data import local_seed_path
 
     if dataset.get("source") == "hf":
-        loaded = load_dataset(
-            str(dataset["ref"]),
-            dataset.get("subset") or None,
-            split = dataset.get("split") or "train",
-            token = token,
-        )
+        loaded = _hub_rows(dataset, token, end)
     else:
         path = local_seed_path(dataset.get("ref"))
         builder = next((b for ext, b in LOADERS.items() if path.endswith(ext)), None)
@@ -366,9 +388,7 @@ def _load_rows(dataset: dict, token: Any, end: Optional[int]) -> list[dict]:
     if end is not None:
         loaded = loaded.select(range(min(len(loaded), end + 1)))
     if len(loaded) > HOLDOUT_MAX_ROWS:
-        raise FlowNodeError(
-            f"{len(loaded)} rows is too many to hold out from here; set Hold out % to 0 or use a smaller slice"
-        )
+        raise _too_many(len(loaded))
     # Timestamps and decimals in unused columns would stop the JSONL upload; NaN and inf become null.
     return [
         json.loads(json.dumps(row, default = str), parse_constant = lambda _: None)
