@@ -1289,7 +1289,11 @@ def test_trainer_length_samplers_give_tp_peers_the_same_rows(dp, strategy):
     if "skip" in results[0]:
         pytest.skip(results[0]["skip"])
     for rank, res in enumerate(results):
-        assert res["seen"] and res["seen"] == results[rank ^ 1]["seen"], (rank, res, results[rank ^ 1])
+        assert res["seen"] and res["seen"] == results[rank ^ 1]["seen"], (
+            rank,
+            res,
+            results[rank ^ 1],
+        )
     if dp > 1:
         replicas = [{i for batch in results[r]["seen"] for i in batch} for r in (0, 2)]
         assert not replicas[0] & replicas[1], replicas
