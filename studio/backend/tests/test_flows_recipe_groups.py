@@ -253,7 +253,12 @@ def test_the_group_runs_as_one_validated_job():
     out = asyncio.run(data.recipe_group(ctx))
     assert seen[:2] == ["/api/data-recipe/validate", "/api/data-recipe/jobs"]
     sent = [c[3] for c in ctx.calls if c[1] == "/api/data-recipe/jobs"][0]
-    assert sent["run"] == {"execution_type": "preview", "rows": 2}
+    assert sent["run"] == {
+        "execution_type": "preview",
+        "rows": 2,
+        "merge_batches": False,
+        "run_config": {**data.DEFAULT_RUN_CONFIG, "buffer_size": 2},
+    }
     assert [c["name"] for c in sent["recipe"]["columns"]] == [
         c["name"] for c in SQL["recipe"]["columns"]
     ]
@@ -478,3 +483,34 @@ def test_a_restart_ends_the_recipe_runs_it_left_running(client):
     runs = {r["id"]: r for r in flows_db.recipe_runs("f", "gen")}
     assert runs["live"]["status"] == "error" and "restarted" in runs["live"]["error"]
     assert runs["live"]["finishedAt"] and runs["done"]["status"] == "completed"
+
+
+def test_a_shared_recipe_without_its_seed_file_says_so_and_does_not_run():
+    payload = copy.deepcopy(SQL)
+    payload["recipe"]["seed_config"] = {"source": {"seed_type": "local", "path": ""}}
+    doc, notices = flow_from_recipe(payload, name = "SQL")
+    assert any(n.startswith("Load the seed first") for n in notices)
+    routes, seen = _routes(["job1"])
+    ctx = _Ctx(routes, params = {RECIPE_PARAM: _compiled(doc)})
+    with pytest.raises(FlowNodeError, match = "Load the seed first"):
+        asyncio.run(data.recipe_group(ctx))
+    assert seen == []
+    _, _, report = package.read_package(json.dumps(doc).encode())
+    assert any("Load the seed first" in w for w in report["warnings"])
+
+
+def test_a_full_run_keeps_its_run_name(monkeypatch):
+    saved = []
+    from storage import flows_db
+
+    monkeypatch.setattr(
+        flows_db, "save_recipe_run", lambda flow, node, record: saved.append(record)
+    )
+    doc = _flow()
+    doc["groups"][0]["run"] = {"run_name": "nightly sql"}
+    ctx = _FlowCtx(
+        _job_routes("completed", preview_rows = 3),
+        params = {RECIPE_PARAM: _compiled(doc), "rows": 3, "mode": "full"},
+    )
+    asyncio.run(data.recipe_group(ctx))
+    assert saved and all(r["run_name"] == "nightly sql" for r in saved)

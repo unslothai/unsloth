@@ -200,12 +200,18 @@ test("a column node shows its kind and what it says", () => {
   const { nodes } = sqlGroup();
   assert.deepEqual(
     columnSummary(nodes[0].params.column as Record<string, unknown>).badge,
-    "category sampler",
+    "Category",
   );
   assert.equal(
     columnSummary(byName(nodes, "sql").params.column as Record<string, unknown>)
       .badge,
-    "LLM code",
+    "AI code",
+  );
+  assert.equal(
+    columnSummary(
+      byName(nodes, "sql-validator").params.column as Record<string, unknown>,
+    ).badge,
+    "SQL check",
   );
 });
 
@@ -284,4 +290,78 @@ test("Quick Add of a Recipe Dataset from a dataset output wires that dataset int
   assert.ok(
     edges.some((e) => e.source === "hf" && e.target === generate.id && e.target_port === "seed"),
   );
+});
+
+test("every Recipe Studio column can be added, and its card names the block it is", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { addRecipeBlock } = await import("../src/features/flows/recipe/recipe-blocks.ts");
+  const { COLUMN_BLOCKS, columnBlock } = await import(
+    "../src/features/flows/recipe/recipe-kinds.ts"
+  );
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { group, nodes } = sqlGroup();
+  assert.deepEqual(
+    COLUMN_BLOCKS.filter((b) => b.kind === "validator").map((b) => b.label),
+    ["Python check", "SQL check", "JS/TS check", "JSON check", "Markdown check"],
+  );
+  for (const block of COLUMN_BLOCKS) {
+    useDocStore.getState().load({ ...doc(nodes), groups: [group] });
+    addRecipeBlock("recipe", block.kind, block.type);
+    const graph = useDocStore.getState().graph;
+    const added = graph.nodeOrder
+      .map((id) => graph.nodes[id])
+      .find((n) => n.type === COLUMN_TYPE && !nodes.some((m) => m.id === n.id));
+    assert.ok(added, block.type);
+    assert.equal(added.group, "recipe");
+    assert.equal(
+      columnBlock(added.params.column as Record<string, unknown>).type,
+      block.type,
+      block.label,
+    );
+  }
+});
+
+test("a seed, model preset and provider show as cards; a shared file seed says to load it first", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { recipeSetup } = await import("../src/features/flows/recipe/recipe-setup.ts");
+  const { missingSeed } = await import(
+    "../src/features/flows/recipe/recipe-group-actions.ts"
+  );
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { group, nodes } = sqlGroup();
+  const shared = {
+    ...group,
+    config: {
+      ...group.config,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      seed_config: { source: { seed_type: "local", path: "" } },
+    },
+  };
+  useDocStore.getState().load({ ...doc(nodes), groups: [shared] });
+  const { cards, links } = recipeSetup(useDocStore.getState().graph, shared);
+  assert.deepEqual(
+    cards.map((c) => c.kind),
+    ["seed", "model_provider", "model_config"],
+  );
+  assert.equal(cards[0].warning, "Load the seed first");
+  assert.match(missingSeed(shared) ?? "", /^Load the seed first/);
+  assert.equal(missingSeed(group), null);
+  const sql = byName(nodes, "sql");
+  assert.ok(links.some((l) => l.source === cards[2].id && l.target === sql.id));
+});
+
+test("a starter recipe lands in free space, not on top of what is there", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { insertStarterRecipe } = await import(
+    "../src/features/flows/recipe/recipe-actions.ts"
+  );
+  const { doc, node } = await import("./flows-editor-fixtures.ts");
+  useDocStore.getState().load(doc([{ ...node("a", "input.text"), pos: [0, 0] }]));
+  const generate = insertStarterRecipe([10, 10], { rows: 5 });
+  const graph = useDocStore.getState().graph;
+  const group = graph.groups[generate.group as string];
+  assert.ok(group.rect[1] > 100, `frame at ${group.rect}`);
+  useDocStore.getState().load(doc([]));
+  const alone = insertStarterRecipe([10, 10], { rows: 5 });
+  assert.deepEqual(useDocStore.getState().graph.groups[alone.group as string].rect.slice(0, 2), [-30, -50]);
 });

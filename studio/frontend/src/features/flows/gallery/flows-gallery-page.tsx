@@ -44,6 +44,8 @@ import {
   TestTube01Icon,
 } from "../editor/icon-data";
 import { MediaThumb } from "../editor/media";
+import { starterRecipeGraph } from "../recipe/recipe-actions";
+import { COLUMN_TYPE, referenceEdges } from "../recipe/recipe-columns";
 import { RecipeImportDialog } from "../recipe/recipe-import-dialog";
 import type { FlowKind, FlowRecord, FlowSummary } from "../types";
 import {
@@ -445,6 +447,33 @@ export function FlowsGalleryPage(): ReactElement {
     }
   };
 
+  const newRecipe = async () => {
+    setCreating(true);
+    try {
+      const doc = templateDocument("pipeline");
+      const { group, nodes } = starterRecipeGraph([0, 0], {
+        rows: 5,
+        mode: "preview",
+      });
+      const record = await createFlow({
+        ...doc,
+        name: "New recipe",
+        description: "A Data Recipe: columns that generate a dataset.",
+        nodes,
+        edges: referenceEdges(nodes.filter((n) => n.type === COLUMN_TYPE)),
+        groups: [group],
+        notes: [],
+      });
+      open(record.id);
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Could not create the recipe",
+      );
+    } finally {
+      setCreating(false);
+    }
+  };
+
   const bringRecipes = async () => {
     setMigrating(true);
     try {
@@ -500,6 +529,15 @@ export function FlowsGalleryPage(): ReactElement {
             and any flow can be shared as a single file.
           </p>
         </div>
+        <Button
+          variant="outline"
+          disabled={creating}
+          onClick={() => void newRecipe()}
+          title="A new flow with a starter Data Recipe in it"
+          data-testid="flows-new-recipe"
+        >
+          <HugeiconsIcon icon={PlusSignIcon} size={15} /> New recipe
+        </Button>
         <Button
           variant="outline"
           disabled={migrating}

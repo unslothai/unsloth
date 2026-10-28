@@ -36,6 +36,18 @@ def stdio_names(recipe: Any) -> list[str]:
     return [str(p.get("name")) for p in providers or [] if is_stdio(p)]
 
 
+def missing_seed(recipe: Any) -> str | None:
+    """Why the recipe cannot run yet when its file seed came without the file (a shared recipe), else None."""
+    seed = recipe.get("seed_config") if isinstance(recipe, dict) else None
+    source = seed.get("source") if isinstance(seed, dict) else None
+    if not isinstance(source, dict) or source.get("seed_type") not in _LOCAL_SEEDS:
+        return None
+    if source.get("path") or any(source.get("paths") or []):
+        return None
+    what = "document" if source.get("seed_type") == "unstructured" else "CSV or JSON file"
+    return f"Load the seed first: this recipe has no {what} for its seed yet, so open the seed and pick one"
+
+
 def share_recipe(recipe: dict, ui: dict | None = None) -> tuple[dict, dict]:
     """A copy of ``recipe`` (no columns needed) and its Recipe Studio ``ui`` hints that is safe to hand out."""
     recipe = copy.deepcopy(recipe) if isinstance(recipe, dict) else {}

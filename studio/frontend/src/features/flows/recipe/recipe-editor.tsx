@@ -1,78 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Recipe Studio's own block dialogs over a Flows recipe group. Lazy: none of it loads until a column is opened.
+// Recipe Studio's run dialog and GitHub crawler form over a Flows recipe group. Lazy: loads when one opens.
 
-import { getBlockDefinition } from "@/features/recipe-studio/blocks/definitions";
-import type {
-  BlockKind,
-  BlockType,
-} from "@/features/recipe-studio/blocks/definitions";
-import { validateRecipe } from "@/features/recipe-studio/api";
-import { ConfigDialog } from "@/features/recipe-studio/dialogs/config-dialog";
-import { RunDialog } from "@/features/recipe-studio/dialogs/preview-dialog";
-import { GithubCrawlerEasyView } from "@/features/recipe-studio/easy/github-crawler-easy-view";
-import { ProcessorsDialog } from "@/features/recipe-studio/dialogs/processors-dialog";
-import { RecipeConfigsContext } from "@/features/recipe-studio/stores/recipe-configs-context";
-import type {
-  NodeConfig,
-  RecipeProcessorConfig,
-} from "@/features/recipe-studio/types";
-import { buildDialogOptions } from "@/features/recipe-studio/utils/recipe-studio-view";
 import { Dialog, DialogTitle } from "@/components/ui/dialog";
+import { validateRecipe } from "@/features/recipe-studio/api";
+import { RunDialog } from "@/features/recipe-studio/dialogs/preview-dialog";
 import { RecipeDialogContent } from "@/features/recipe-studio/dialogs/shared/recipe-dialog-content";
-import { useRecipeStudioStore } from "@/features/recipe-studio/stores/recipe-studio";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { GithubCrawlerEasyView } from "@/features/recipe-studio/easy/github-crawler-easy-view";
+import { useRef, useState } from "react";
 import { runToNode } from "../editor/node-actions";
-import { newId, useDocStore } from "../stores/doc-store";
+import { useDocStore } from "../stores/doc-store";
 import { useRuntimeStore } from "../stores/runtime-store";
 import { type RecipeEditorTarget, useUiStore } from "../stores/ui-store";
-import type { FlowNode } from "../types";
-import { commitRecipe, nextColumnSlot } from "./recipe-actions";
-import {
-  applyConfigPatch,
-  columnNode,
-  commitStudioEdit,
-  isColumnConfig,
-  studioView,
-} from "./recipe-adapter";
+import { commitRecipe } from "./recipe-actions";
+import { applyConfigPatch, commitStudioEdit, studioView } from "./recipe-adapter";
 import { groupColumns, groupGenerate, groupPayload } from "./recipe-columns";
 import { runWithSettings, settingsFromRun } from "./recipe-run-settings";
-
-function open(target: RecipeEditorTarget) {
-  const graph = useDocStore.getState().graph;
-  const group = graph.groups[target.groupId];
-  const columns = groupColumns(graph, target.groupId);
-  const view = studioView(group, columns);
-  let configs = view.configs;
-  let configId: string | undefined;
-  let added: { nodeId: string; pos: [number, number] } | null = null;
-  if (target.nodeId) configId = view.byNode[target.nodeId];
-  else if (target.seed)
-    configId = Object.values(configs).find((c) => c.kind === "seed")?.id;
-  else if (target.configName)
-    configId = Object.values(configs).find(
-      (c) => c.name === target.configName,
-    )?.id;
-  else if (target.add) {
-    const definition = getBlockDefinition(
-      target.add.kind as BlockKind,
-      target.add.type as BlockType,
-    );
-    if (definition) {
-      configId = `flows-${newId("c")}`;
-      const config = definition.createConfig(configId, Object.values(configs));
-      configs = { ...configs, [configId]: config };
-      if (isColumnConfig(config)) {
-        added = {
-          nodeId: `${target.groupId}_${newId("col")}`,
-          pos: nextColumnSlot(graph, target.groupId).pos,
-        };
-      }
-    }
-  }
-  return { view, initial: configs, configId, added };
-}
 
 type Check = { valid: boolean; errors: string[]; rawDetail: string | null };
 
@@ -160,9 +104,14 @@ function RecipeRunSettings({ target }: { target: RecipeEditorTarget }) {
 
 /** Recipe Studio's GitHub crawler form over a GitHub-seeded recipe group. */
 function RecipeEasyView({ target }: { target: RecipeEditorTarget }) {
-  useNoUploadCleanup();
-  const [opened] = useState(() => open(target));
-  const [configs, setConfigs] = useState(opened.initial);
+  const [view] = useState(() => {
+    const graph = useDocStore.getState().graph;
+    return studioView(
+      graph.groups[target.groupId],
+      groupColumns(graph, target.groupId),
+    );
+  });
+  const [configs, setConfigs] = useState(view.configs);
   const latest = useRef(configs);
   const generate = useDocStore((s) => groupGenerate(s.graph, target.groupId));
   const running = useRuntimeStore((s) => s.runStatus === "running");
@@ -187,7 +136,7 @@ function RecipeEasyView({ target }: { target: RecipeEditorTarget }) {
             const edit = commitStudioEdit(
               group,
               groupColumns(graph, target.groupId),
-              opened.view,
+              view,
               next,
             );
             commitRecipe(
@@ -215,103 +164,6 @@ function RecipeEasyView({ target }: { target: RecipeEditorTarget }) {
   );
 }
 
-/** The seed dialog queues replaced upload dirs for Recipe Studio to delete; a flow can share those dirs with the
- * recipe it came from, so nothing it replaces here is queued. */
-function useNoUploadCleanup() {
-  useEffect(() => {
-    const before = useRecipeStudioStore.getState().pendingUploadCleanups;
-    return useRecipeStudioStore.subscribe((state) => {
-      if (state.pendingUploadCleanups !== before)
-        useRecipeStudioStore.setState({ pendingUploadCleanups: before });
-    });
-  }, []);
-}
-
-function RecipeEditorOpen({ target }: { target: RecipeEditorTarget }) {
-  useNoUploadCleanup();
-  const [opened] = useState(() => open(target));
-  const [configs, setConfigs] = useState(opened.initial);
-  const [processors, setProcessors] = useState<RecipeProcessorConfig[]>(
-    opened.view.processors,
-  );
-  const latest = useRef({ configs, processors });
-  const options = useMemo(
-    () => buildDialogOptions(Object.values(configs)),
-    [configs],
-  );
-  const close = () => useUiStore.getState().setRecipeEditor(null);
-
-  const commit = (
-    nextConfigs: Record<string, NodeConfig>,
-    nextProcessors: RecipeProcessorConfig[],
-  ) => {
-    latest.current = { configs: nextConfigs, processors: nextProcessors };
-    const graph = useDocStore.getState().graph;
-    const group = graph.groups[target.groupId];
-    if (!group) return;
-    const columns = groupColumns(graph, target.groupId);
-    const edit = commitStudioEdit(
-      group,
-      columns,
-      opened.view,
-      nextConfigs,
-      nextProcessors,
-    );
-    const nodes: FlowNode[] = [...edit.nodes];
-    let nextGroup = edit.group;
-    const added = opened.added;
-    const config = opened.configId ? nextConfigs[opened.configId] : undefined;
-    if (added && config) {
-      const existing = graph.nodes[added.nodeId];
-      const node = columnNode(
-        config,
-        nextConfigs,
-        target.groupId,
-        existing?.pos ?? added.pos,
-        added.nodeId,
-      );
-      if (node) nodes.push(node);
-      if (!existing) nextGroup = nextColumnSlot(graph, target.groupId).group;
-    }
-    commitRecipe(target.groupId, nodes, nextGroup, `recipe:${target.groupId}`);
-  };
-
-  if (target.processors) {
-    return (
-      <ProcessorsDialog
-        open={true}
-        onOpenChange={(value) => !value && close()}
-        processors={processors}
-        onProcessorsChange={(next) => {
-          setProcessors(next);
-          commit(latest.current.configs, next);
-        }}
-      />
-    );
-  }
-  const config = opened.configId ? configs[opened.configId] : null;
-  return (
-    <RecipeConfigsContext.Provider value={configs}>
-      <ConfigDialog
-        open={true}
-        onOpenChange={(value) => !value && close()}
-        config={config ?? null}
-        categoryOptions={options.categoryOptions}
-        modelConfigAliases={options.modelConfigAliases}
-        modelProviderOptions={options.modelProviderOptions}
-        localProviderNames={options.localProviderNames}
-        toolProfileAliases={options.toolProfileAliases}
-        datetimeOptions={options.datetimeOptions}
-        onUpdate={(id, patch) => {
-          const next = applyConfigPatch(latest.current.configs, id, patch);
-          setConfigs(next);
-          commit(next, latest.current.processors);
-        }}
-      />
-    </RecipeConfigsContext.Provider>
-  );
-}
-
 export default function RecipeEditor() {
   const target = useUiStore((s) => s.recipeEditor);
   if (!target) return null;
@@ -319,5 +171,5 @@ export default function RecipeEditor() {
     return <RecipeRunSettings key={JSON.stringify(target)} target={target} />;
   if (target.easy)
     return <RecipeEasyView key={JSON.stringify(target)} target={target} />;
-  return <RecipeEditorOpen key={JSON.stringify(target)} target={target} />;
+  return null;
 }

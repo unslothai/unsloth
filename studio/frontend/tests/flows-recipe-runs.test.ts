@@ -81,11 +81,12 @@ test("runs refresh while the flow or a recipe job is still going", () => {
   assert.equal(runsAreLive(toRunRecords([backend("b", 1, "pending")]), false), true);
 });
 
-test("Preview and Runs open from the group frame, the recipe panel and the run drawer", () => {
+test("Preview and Runs open from the recipe panel and the run drawer; the frame runs the recipe", () => {
   const read = (path: string) =>
     readFileSync(new URL(`../src/features/flows/${path}`, import.meta.url), "utf8");
-  for (const file of ["editor/frame-nodes.tsx", "recipe/recipe-panels.tsx", "editor/run-drawer.tsx"])
+  for (const file of ["recipe/recipe-panels.tsx", "editor/run-drawer.tsx"])
     assert.match(read(file), /setRecipeRuns\(/, file);
+  assert.match(read("editor/frame-nodes.tsx"), /runRecipeGroup\(/);
   assert.match(
     read("editor/flows-editor-page.tsx"),
     /lazy\(\(\) => import\("\.\.\/recipe\/recipe-runs"\)\)/,

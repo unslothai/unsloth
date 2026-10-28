@@ -120,6 +120,12 @@ def test_every_seed_kind_reaches_the_job_as_saved(name, seed_type):
     group = doc["groups"][0]
     assert group["config"]["seed_config"] == payload["recipe"]["seed_config"]
     assert group["ui"].get("seed_source_type", seed_type) == seed_type
+    if seed_type == "unstructured":
+        # The learning recipe ships without its document: it runs once one is picked, as in Recipe Studio.
+        with pytest.raises(FlowNodeError, match = "Load the seed first"):
+            _run(_compiled(doc), mode = "preview", rows = 2)
+        group["config"]["seed_config"]["source"]["path"] = "/srv/uploads/book.pdf"
+        payload["recipe"]["seed_config"]["source"]["path"] = "/srv/uploads/book.pdf"
     sent = _run(_compiled(doc), mode = "preview", rows = 2)
     assert sent["recipe"]["seed_config"] == payload["recipe"]["seed_config"]
     assert sent["recipe"]["seed_config"]["source"]["seed_type"] == seed_type
@@ -329,8 +335,15 @@ def test_run_settings_follow_recipe_studios_run_dialog():
     preview = _run(_compiled(doc), mode = "preview", rows = 4)
     assert preview["run"]["run_config"]["buffer_size"] == 4
     assert preview["run"]["merge_batches"] is False and "run_name" not in preview["run"]
+    # Nothing saved: what Recipe Studio's run dialog shows and sends.
     plain = _run(_compiled(_flow()), mode = "preview", rows = 2)
-    assert plain["run"] == {"execution_type": "preview", "rows": 2}
+    assert plain["run"] == {
+        "execution_type": "preview",
+        "rows": 2,
+        "merge_batches": False,
+        "run_config": {**data.DEFAULT_RUN_CONFIG, "buffer_size": 2},
+    }
+    assert plain["run"]["run_config"]["disable_early_shutdown"] is True
 
 
 def test_run_settings_change_the_cache_key_of_the_step():

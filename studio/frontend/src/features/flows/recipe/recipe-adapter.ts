@@ -171,9 +171,14 @@ export function commitStudioEdit(
       params: { ...node.params, column },
     });
   }
-  const recipeLevel = Object.values(configs).some(
-    (config) => !isColumnConfig(config) && config !== before.configs[config.id],
-  );
+  const recipeLevel =
+    Object.values(configs).some(
+      (config) =>
+        !isColumnConfig(config) && config !== before.configs[config.id],
+    ) ||
+    Object.values(before.configs).some(
+      (config) => !isColumnConfig(config) && !configs[config.id],
+    );
   if (!recipeLevel && processors === before.processors) {
     return { nodes, group: null };
   }

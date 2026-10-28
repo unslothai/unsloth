@@ -141,11 +141,37 @@ export function insideRecipeGroup(
   return null;
 }
 
-/** A new Data Recipe group at `pos`: a starter sampler and LLM column wired into a Recipe Dataset step. */
-export function insertStarterRecipe(
+type Box = [number, number, number, number];
+
+const overlaps = (a: Box, b: Box) =>
+  a[0] < b[0] + b[2] && b[0] < a[0] + a[2] && a[1] < b[1] + b[3] && b[1] < a[1] + a[3];
+
+/** `pos` if a `size` box there covers nothing on the canvas, else the same x below everything. */
+export function freeSpot(
+  graph: DocGraph,
+  pos: [number, number],
+  size: [number, number],
+  margin: [number, number] = [40, 60],
+): [number, number] {
+  const boxes: Box[] = [
+    ...graph.nodeOrder.map((id): Box => {
+      const node = graph.nodes[id];
+      return [node.pos[0], node.pos[1], COLUMN_SIZE[0] - 40, COLUMN_SIZE[1] - 40];
+    }),
+    ...graph.groupOrder.map((id) => graph.groups[id].rect as Box),
+    ...graph.noteOrder.map((id) => graph.notes[id].rect as Box),
+  ];
+  const want: Box = [pos[0] - margin[0], pos[1] - margin[1], size[0], size[1]];
+  if (!boxes.some((box) => overlaps(want, box))) return pos;
+  const bottom = Math.max(...boxes.map((box) => box[1] + box[3]));
+  return [pos[0], Math.round(bottom + margin[1] + 80)];
+}
+
+/** A starter recipe group at `pos`: a topic sampler and an LLM column wired into a Recipe Dataset step. */
+export function starterRecipeGraph(
   pos: [number, number],
   generateParams: Record<string, unknown>,
-): FlowNode {
+): { group: FlowGroup; nodes: FlowNode[]; generate: FlowNode } {
   const groupId = newId("recipe");
   const { config, columns } = starterRecipe();
   const nodes: FlowNode[] = columns.map((column, i) => ({
@@ -168,7 +194,6 @@ export function insertStarterRecipe(
   const group: FlowGroup = {
     id: groupId,
     label: "Data Recipe",
-    color: "#3b82f6",
     rect: [
       pos[0] - 40,
       pos[1] - 60,
@@ -179,10 +204,23 @@ export function insertStarterRecipe(
     config,
     run: { rows: 5 },
   };
-  useDocStore
-    .getState()
-    .patchGraph({ groups: [group], nodes: [...nodes, generate] });
-  commitRecipe(groupId, [], null);
+  return { group, nodes: [...nodes, generate], generate };
+}
+
+/** A starter recipe group at `at`, or the nearest free space below it. */
+export function insertStarterRecipe(
+  at: [number, number],
+  generateParams: Record<string, unknown>,
+): FlowNode {
+  const graph = useDocStore.getState().graph;
+  const columns = starterRecipe().columns.length;
+  const pos = freeSpot(graph, at, [
+    (columns + 1) * COLUMN_SIZE[0] + 40,
+    COLUMN_SIZE[1] + 60,
+  ]);
+  const { group, nodes, generate } = starterRecipeGraph(pos, generateParams);
+  useDocStore.getState().patchGraph({ groups: [group], nodes });
+  commitRecipe(group.id, [], null);
   return generate;
 }
 

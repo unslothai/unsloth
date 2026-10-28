@@ -105,23 +105,31 @@ def runnable_recipe(payload: Any) -> dict:
     return recipe
 
 
+DEFAULT_RUN_CONFIG = {
+    "non_inference_max_parallel_workers": 4,
+    "max_conversation_restarts": 5,
+    "max_conversation_correction_steps": 0,
+    "disable_early_shutdown": True,
+    "shutdown_error_rate": 0.5,
+    "shutdown_error_window": 10,
+}
+
+
 def run_settings(saved: Any, rows: int, mode: str, recipe: dict) -> dict:
     """The job's `run` from a group's saved run settings, as Recipe Studio's run dialog builds it:
     batching (``run_config.buffer_size``) only on a full run, else one buffer of ``rows``."""
     saved = saved if isinstance(saved, dict) else {}
     run: dict[str, Any] = {}
     config = saved.get("run_config")
-    if isinstance(config, dict):
-        config = dict(config)
-        batching = mode == "full" and isinstance(config.get("buffer_size"), int)
-        if not batching:
-            config.pop("buffer_size", None)
-            if rows > 0:
-                config["buffer_size"] = rows
-        run["run_config"] = config
-        run["merge_batches"] = bool(batching and saved.get("merge_batches"))
-    elif "merge_batches" in saved:
-        run["merge_batches"] = bool(saved["merge_batches"])
+    # Nothing saved yet: Recipe Studio's run dialog defaults, the values its form shows.
+    config = dict(config) if isinstance(config, dict) else dict(DEFAULT_RUN_CONFIG)
+    batching = mode == "full" and isinstance(config.get("buffer_size"), int)
+    if not batching:
+        config.pop("buffer_size", None)
+        if rows > 0:
+            config["buffer_size"] = rows
+    run["run_config"] = config
+    run["merge_batches"] = bool(batching and saved.get("merge_batches"))
     name = saved.get("run_name")
     if mode == "full" and isinstance(name, str) and name.strip():
         run["run_name"] = name.strip()
@@ -154,6 +162,10 @@ async def recipe_group(ctx: NodeContext) -> dict:
     if not isinstance(compiled, dict):
         raise FlowNodeError("Put this step inside a Data Recipe group")
     body = runnable_recipe(compiled.get("recipe"))
+    from core.flows.recipe_share import missing_seed
+
+    if not isinstance(ctx.inputs.get("seed"), dict) and (seed := missing_seed(body)):
+        raise FlowNodeError(seed)
     checked = await ctx.call("POST", f"{RECIPES}/validate", json = {"recipe": body})
     if isinstance(checked, dict) and checked.get("valid") is False:
         problems = [
@@ -185,7 +197,7 @@ class RunHistory:
             "recipeId": f"flow:{self.flow_id}:{self.node_id}",
             "jobId": job_id,
             "kind": run.get("execution_type") or "full",
-            "run_name": None,
+            "run_name": run.get("run_name"),
             "status": "pending",
             "rows": int(run.get("rows") or 0),
             "createdAt": int(time.time() * 1000),

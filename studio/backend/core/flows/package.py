@@ -26,7 +26,7 @@ from core.flows import assets as asset_store
 from core.flows import glb, schema
 from core.flows.compiler import parse_document
 from core.flows import replication
-from core.flows.recipe_share import share_flow
+from core.flows.recipe_share import missing_seed, share_flow
 from core.flows.specs import SPECS_BY_TYPE
 
 MAX_ENTRIES = schema.MAX_ASSETS + 8
@@ -404,6 +404,9 @@ def read_package(data: bytes) -> tuple[dict, dict[str, tuple[bytes, str]], dict]
             doc["assets"].append(
                 {"id": f"sha256:{digest}", "mime": mime, "bytes": len(blob), "name": None}
             )
+    for group in doc.get("groups") or []:
+        if group.get("kind") == "recipe" and (seed := missing_seed(group.get("config"))):
+            warnings.append(f"{group.get('label') or 'Data Recipe'}: {seed}")
     unknown = sorted({n["type"] for n in doc.get("nodes", []) if n["type"] not in SPECS_BY_TYPE})
     if unknown:
         warnings.append(

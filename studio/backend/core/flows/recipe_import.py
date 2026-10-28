@@ -18,7 +18,7 @@ from typing import Any, Optional
 import jinja2
 from jinja2 import meta, nodes
 
-from core.flows.recipe_share import stdio_names
+from core.flows.recipe_share import missing_seed, stdio_names
 
 RECIPE_GRAPH_VERSION = 1
 COLUMN_TYPE = "recipe.column"
@@ -222,6 +222,8 @@ def flow_from_recipe(
         f"Tool server {server}: local (stdio) servers only run from the Data Recipes page."
         for server in stdio_names(recipe)
     ]
+    if seed := missing_seed(recipe):
+        notices.append(seed)
     graph = import_recipe({"recipe": recipe, "run": run, "ui": ui}, group_id = "recipe")
     graph["group"]["label"] = name[:200] or "Data Recipe"
     generate = graph["nodes"][-1]
