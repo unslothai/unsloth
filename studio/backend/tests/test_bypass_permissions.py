@@ -100,8 +100,7 @@ def captured_popen(monkeypatch):
     cap = {}
 
     def fake_popen(cmd, **kwargs):
-        # First call only: the tool launch. On macOS the child is then recorded through `ps`, which
-        # also goes through subprocess.Popen and would otherwise replace it.
+        # First call only: on macOS a later `ps` Popen would replace the tool launch.
         cap.setdefault("cmd", cmd)
         cap.setdefault("kwargs", kwargs)
         return _FakeProc()
@@ -144,7 +143,6 @@ def test_python_bypass_uses_bypass_preexec_and_bypass_env(captured_popen, monkey
     monkeypatch.setenv("HOSTVAR", "benign-xyz")
     monkeypatch.setenv("HF_TOKEN", "secret-abc")
     _python_exec("print(1)", None, 5, "t", disable_sandbox = True)
-    # The bypass pre-exec is only setsid, which Popen applies itself without a Python pre-exec.
     assert captured_popen["kwargs"]["start_new_session"] is True
     assert "preexec_fn" not in captured_popen["kwargs"]
     env = captured_popen["kwargs"]["env"]
@@ -172,7 +170,6 @@ def test_bash_blocklist_skipped_when_bypassed(captured_popen):
 def test_bash_bypass_uses_bypass_preexec(captured_popen, monkeypatch):
     monkeypatch.delenv("PYTHONIOENCODING", raising = False)
     _bash_exec("echo hi", None, 5, "t", disable_sandbox = True)
-    # The bypass pre-exec is only setsid, which Popen applies itself without a Python pre-exec.
     assert captured_popen["kwargs"]["start_new_session"] is True
     assert "preexec_fn" not in captured_popen["kwargs"]
     assert "PYTHONIOENCODING" not in captured_popen["kwargs"]["env"]
