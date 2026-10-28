@@ -24,19 +24,45 @@ _CACHE_DIRS = [
 ]
 
 
-def _configured_cache_dirs() -> List[Path]:
-    """Cache dirs outside the source tree: the configured one, and the CWD. The candidates above are all source-tree relative, so a cache created in the launcher's CWD (the user profile on Windows) was invisible to cleanup. The CWD is still checked for installs that predate the pinned location."""
-    import os
+_DEFAULT_COMPILE_LEAF = "unsloth_compiled_cache"
 
-    dirs: List[Path] = []
-    configured = (os.environ.get("UNSLOTH_COMPILE_LOCATION") or "").strip()
-    if configured:
-        dirs.append(Path(configured).expanduser())
+
+def _makedirs_could_succeed(path: Path) -> bool:
+    """Whether os.makedirs(path, exist_ok=True) would work, decided without creating anything."""
     try:
-        dirs.append(Path.cwd() / "unsloth_compiled_cache")
-    except OSError:
-        pass
-    return dirs
+        if path.is_dir():
+            return True
+        probe = path
+        while not os.path.lexists(probe):
+            parent = probe.parent
+            if parent == probe:
+                return False
+            probe = parent
+        return probe.is_dir() and os.access(probe, os.W_OK | os.X_OK)
+    except (OSError, ValueError):
+        return False
+
+
+def _configured_cache_dirs() -> List[Path]:
+    """The one directory unsloth_zoo.compiler writes to (``_get_compile_folder``): UNSLOTH_COMPILE_LOCATION when set, else ``unsloth_compiled_cache``, either taken against the CWD as os.makedirs takes it; only when that cannot be created, ``<tempdir>/<same leaf>``. The CWD default is never added beside a configured location: the compiler does not write there, so a directory of that name in the launch folder is somebody else's (or a stale leftover) and is neither cleared nor put on sys.path."""
+    import tempfile
+
+    configured = (os.environ.get("UNSLOTH_COMPILE_LOCATION") or "").strip()
+    raw = configured or _DEFAULT_COMPILE_LEAF
+    try:
+        location = Path(raw).expanduser() if configured else Path.cwd() / raw
+    except (OSError, RuntimeError, ValueError):
+        return []
+    if _makedirs_could_succeed(location):
+        return [location]
+    # basename, as the compiler does it; an empty one (a trailing separator) would make the temp dir itself the cache.
+    leaf = os.path.basename(raw)
+    if not leaf:
+        return []
+    try:
+        return [Path(tempfile.gettempdir()) / leaf]
+    except (OSError, RuntimeError, ValueError):
+        return []
 
 
 def get_existing_cache_dirs() -> List[Path]:
