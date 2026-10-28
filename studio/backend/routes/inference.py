@@ -38652,9 +38652,11 @@ class _ResponsesStreamTranslator:
         self.healer = healer
         self.healed_tc_index = 0
         self.terminated = False
+        self.sequence_number = 0
 
-    @staticmethod
-    def sse(event_name: str, payload: dict) -> str:
+    def sse(self, event_name: str, payload: dict) -> str:
+        payload = {**payload, "sequence_number": self.sequence_number}
+        self.sequence_number += 1
         return f"event: {event_name}\ndata: {json.dumps(payload)}\n\n"
 
     def _healed_tc(self, call: dict):
@@ -39689,6 +39691,7 @@ async def _responses_stream(
             + json.dumps(
                 {
                     "type": "response.failed",
+                    "sequence_number": 0,
                     "response": {
                         "id": resp_id,
                         "object": "response",
