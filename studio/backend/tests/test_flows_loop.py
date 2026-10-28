@@ -99,6 +99,13 @@ def test_loop_body_takes_the_fed_recipe_group_and_stays_acyclic():
             "runs inside one Loop group",
         ),
         (lambda d: d["edges"].pop(2), "needs held-out rows"),
+        (
+            lambda d: (
+                d["nodes"].append(node("after", "output.result")),
+                d["edges"].append(edge("train", "metrics", "after", "value")),
+            ),
+            "only feeds its Loop",
+        ),
     ],
 )
 def test_bad_loops_are_refused(change, message):

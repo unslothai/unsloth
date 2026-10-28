@@ -345,7 +345,9 @@ def compile_flow(doc: dict) -> Plan:
         if src_owner is not None and not inside(dst, src_owner):
             errors.append(
                 issue(
-                    "A node inside a For Each group can only feed its group; connect it to collect",
+                    "A step inside a Loop only feeds its Loop; use the Loop's own outputs"
+                    if nodes[src_owner]["type"] == LOOP
+                    else "A node inside a For Each group can only feed its group; connect it to collect",
                     edge_id = eid,
                 )
             )
