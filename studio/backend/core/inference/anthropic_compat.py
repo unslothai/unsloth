@@ -180,6 +180,8 @@ def anthropic_messages_to_openai(
                     parts.append(block["text"])
                 elif isinstance(block, str):
                     parts.append(block)
+            # Claude Code's per-conversation accounting line; leading the prompt, it defeats prefix caching.
+            parts = [part for part in parts if not part.startswith("x-anthropic-billing-header:")]
             if parts:
                 result.append({"role": "system", "content": "\n".join(parts)})
 
