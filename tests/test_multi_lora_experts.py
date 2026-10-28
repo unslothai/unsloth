@@ -35,7 +35,7 @@ TOL = 1e-4 if DEVICE == "cuda" else 1e-5
 def base():
     from huggingface_hub import snapshot_download
     path = snapshot_download(REPO)
-    return Qwen3_5Moe.from_pretrained(path, torch_dtype = torch.float32).eval()
+    return Qwen3_5Moe.from_pretrained(path, torch_dtype = torch.float32).eval().to(DEVICE)
 
 
 def _batched(base):
