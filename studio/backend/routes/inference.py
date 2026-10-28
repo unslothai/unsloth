@@ -8094,6 +8094,7 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         audio_server_task = None,
         audio_convert = None,
         audio_convert_route = None,
+        audio_clone = None,
         audio_music = None,
         # Older/custom backend doubles predate this additive runtime field.
         preserve_thinking_default = bool(getattr(llama_backend, "preserve_thinking_default", False)),
@@ -19540,6 +19541,7 @@ async def _load_model_impl(
             audio_server_task = _model_info.get("audio_server_task"),
             audio_convert = _model_info.get("audio_convert"),
             audio_convert_route = _model_info.get("audio_convert_route"),
+            audio_clone = _model_info.get("audio_clone"),
             audio_required_inputs = _model_info.get("audio_required_inputs"),
             audio_request_inputs = _model_info.get("audio_request_inputs"),
             audio_device_fallback = _model_info.get("audio_device_fallback"),
@@ -22066,6 +22068,7 @@ async def _slot_status(current_subject: str):
             audio_server_task = model_info.get("audio_server_task"),
             audio_convert = model_info.get("audio_convert"),
             audio_convert_route = model_info.get("audio_convert_route"),
+            audio_clone = model_info.get("audio_clone"),
             audio_reference_text = model_info.get("audio_reference_text"),
             audio_required_inputs = model_info.get("audio_required_inputs"),
             audio_request_inputs = model_info.get("audio_request_inputs"),

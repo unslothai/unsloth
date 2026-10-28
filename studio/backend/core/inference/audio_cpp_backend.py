@@ -194,6 +194,9 @@ def _reread_after_download(model: AudioCppModel, hf_token: Optional[str]) -> Aud
 # Families that read the request's top-level language, not an option (audio.cpp extract_request_language:
 # VoxCPM1 keeps Cantonese text Traditional with zh-HK; Supertonic generation_options_from_request).
 _READS_TOP_LEVEL_LANGUAGE = frozenset({"voxcpm1", "audio8_tts", "supertonic"})
+# Families that read a voice description only as a leading "(description)" on the text
+# (audio.cpp voxcpm2 split_leading_voice_tag); they read no instruct option.
+_DESCRIPTION_IN_TEXT = frozenset({"voxcpm2"})
 # Supertonic's tokenizer refuses anything but a bare ISO code (src/models/supertonic/tokenizer_text.cpp).
 _LANGUAGE_CODE_FAMILIES = frozenset({"supertonic"})
 # English names of the languages Supertonic reads (model_specs/supertonic.json).
@@ -274,7 +277,28 @@ def clone_rules(model: AudioCppModel) -> Optional[dict[str, Any]]:
             [name, list(values)] for name, values in clone.reference_text_waived
         ],
         "emotion_audio": clone.emotion_audio,
+        "description": clone_description(model) is not None,
     }
+
+
+def clone_description(model: AudioCppModel) -> Optional[str]:
+    """How a Clone run delivers a voice description: "text" (a leading tag), "instructions", or None."""
+    clone = model.clone
+    if clone is None or not clone.description:
+        return None
+    if model.family in _DESCRIPTION_IN_TEXT:
+        return "text"
+    # The server hands top-level instructions to the session as the instruction option.
+    keys = model.request_keys
+    return "instructions" if keys is None or "instruction" in keys else None
+
+
+def with_description(text: str, description: Optional[str]) -> str:
+    """``text`` behind a "(description)" tag; a text that opens with its own tag keeps it."""
+    tag = " ".join(str(description or "").replace("(", " ").replace(")", " ").split())
+    if not tag or (text or "").lstrip().startswith("("):
+        return text
+    return f"({tag}){text}"
 
 
 def edit_rules(model: AudioCppModel) -> Optional[dict[str, Any]]:
@@ -986,7 +1010,9 @@ class AudioCppBackend:
         requested: dict[str, Any] = {}
         # A strict contract refuses undeclared options; the retry would then drop the description too.
         keys = model.request_keys
-        if instructions and str(instructions).strip():
+        if instructions and str(instructions).strip() and model.family in _DESCRIPTION_IN_TEXT:
+            body["input"] = with_description(body["input"], str(instructions).strip())
+        elif instructions and str(instructions).strip():
             # Breeze and Irodori v4 call it instruction, DramaBox has neither.
             name = next((n for n in ("instruct", "instruction") if keys is None or n in keys), None)
             if name:
@@ -1071,6 +1097,10 @@ class AudioCppBackend:
         request_options = {name: _option_string(value) for name, value in options.items()}
         body: dict[str, Any] = {"model": server.model_id}
         spoken = speech_input(model, text)
+        description = str(instructions or "").strip()
+        delivery = clone_description(model) if description else None
+        if delivery == "text":
+            spoken = with_description(spoken, description)
         if emotion:
             body["text"] = spoken
         else:
@@ -1091,8 +1121,8 @@ class AudioCppBackend:
                 body["language"] = chosen
         if clone.speed and speed is not None:
             body["speed"] = max(_MIN_SPEED, min(_MAX_SPEED, float(speed)))
-        if clone.instructions and instructions and str(instructions).strip():
-            body["instructions"] = str(instructions).strip()
+        if description and (clone.instructions or delivery == "instructions"):
+            body["instructions"] = description
         if request_options:
             body["options"] = request_options
         if seed is not None:

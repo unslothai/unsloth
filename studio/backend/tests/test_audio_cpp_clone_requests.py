@@ -72,7 +72,13 @@ MODELS = {
     "omnivoice": lambda: _model("omnivoice", "OmniVoice-GGUF"),
     "dots": lambda: _model("dots_tts", "DotTTS-SOAR-GGUF"),
     "irodori": lambda: _model("irodori_tts", "Irodori-TTS-v4-Small-GGUF"),
+    "breeze": lambda: replace(
+        _model("breeze_tts", "Breeze-TTS-2-GGUF"),
+        request_keys = frozenset(STRICT_KEYS["Breeze-TTS-2-GGUF"][1]),
+    ),
+    "fire": lambda: _model("fireredtts3", "FireRedTTS3-GGUF"),
 }
+DESCRIBE = "Calm and slow"
 
 
 class _Recorder:
@@ -147,6 +153,18 @@ SPEECH, TASKS = "/v1/audio/speech", "/v1/tasks/run"
     ("dots", {}, BASE),
     # Irodori refuses a transcript as an unknown option.
     ("irodori", {"reference_text": T}, BASE),
+    # A voice description goes where the family reads it, beside the reference.
+    ("breeze", {"reference_text": T, "instructions": f" {DESCRIBE} "},
+     {**BASE, "reference_text": T, "instructions": DESCRIBE}),
+    ("vox", {"instructions": DESCRIBE}, {**BASE, "input": f"({DESCRIBE}){TEXT}"}),
+    ("vox", {"instructions": "  "}, BASE),
+    # Families that read none (or read it as something else) get the body they always got.
+    ("omnivoice", {"reference_text": T, "instructions": DESCRIBE}, {**BASE, "reference_text": T}),
+    ("irodori", {"instructions": DESCRIBE}, BASE),
+    ("dots", {"instructions": DESCRIBE}, BASE),
+    ("fire", {"reference_text": T, "instructions": DESCRIBE}, {**BASE, "reference_text": T}),
+    ("qwen3", {"reference_text": T, "instructions": DESCRIBE}, {"instructions": ABSENT, "input": TEXT}),
+    ("index", {"instructions": DESCRIBE}, {"instructions": ABSENT, "input": TEXT}),
 ])
 # fmt: on
 def test_clone_request_body(key, kwargs, expect):
@@ -158,11 +176,53 @@ def test_clone_request_body(key, kwargs, expect):
         assert body.keys() == expect.keys()
 
 
-def test_voxcpm2_speak_body_is_unchanged_by_clone_support():
+def test_voxcpm2_speak_sends_the_description_as_a_text_prefix():
+    # VoxCPM2 reads no instruct option, only a leading "(description)" on the text.
     backend, server = _backend(MODELS["vox"]())
-    backend.generate_audio_response(TEXT, seed = 7, language = "en", instructions = "warm")
-    body = {"model": "studio-test", "input": TEXT, "options": {"instruct": "warm", "language": "en"}}
+    backend.generate_audio_response(TEXT, seed = 7, language = "en", instructions = " warm ")
+    body = {"model": "studio-test", "input": f"(warm){TEXT}", "options": {"language": "en"}}
     assert server.calls == [(SPEECH, {**body, "seed": "7"})]
+
+
+# fmt: off
+@pytest.mark.parametrize("text, description, sent", [
+    (TEXT, "warm", f"(warm){TEXT}"),
+    (TEXT, "a (very) warm\nvoice", f"(a very warm voice){TEXT}"),
+    (TEXT, " ( ) ", TEXT),
+    (TEXT, None, TEXT),
+    # The writer's own tag wins over the field.
+    (f"  (whisper){TEXT}", "warm", f"  (whisper){TEXT}"),
+])
+# fmt: on
+def test_with_description_keeps_an_inline_tag(text, description, sent):
+    assert acb.with_description(text, description) == sent
+
+
+@pytest.mark.parametrize("key, sent", [("breeze", True), ("vox", True), ("omnivoice", False)])
+def test_speak_in_a_saved_voice_sends_the_description(key, sent):
+    # A saved voice sends its reference with workflow "speak", so it takes the clone path.
+    backend, server = _backend(MODELS[key]())
+    backend.generate_audio_response(TEXT, audio_inputs = {"reference": REF}, instructions = DESCRIBE)
+    ((_path, body),) = server.calls
+    assert ("instructions" in body or body["input"].startswith(f"({DESCRIBE})")) is sent
+
+
+def test_clone_description_follows_the_contract():
+    assert [acb.clone_description(MODELS[k]()) for k in ("breeze", "vox")] == ["instructions", "text"]
+    for key in ("cosy", "index", "omnivoice", "irodori", "fire", "qwen3", "dots", "chatterbox", "kokoro"):
+        assert acb.clone_description(MODELS[key]()) is None, key
+    # A lenient contract takes it; a strict one that lacks instruction gets none.
+    lenient = replace(MODELS["breeze"](), request_keys = None)
+    strict = replace(MODELS["breeze"](), request_keys = frozenset({"reference_text", "seed"}))
+    assert (acb.clone_description(lenient), acb.clone_description(strict)) == ("instructions", None)
+    backend, server = _backend(strict)
+    backend.generate_audio_response(
+        TEXT, workflow = "clone", audio_inputs = {"reference": REF}, reference_text = T, instructions = DESCRIBE
+    )
+    assert "instructions" not in server.calls[0][1]
+    # A family Unsloth Studio does not list never offers one.
+    spec = {"family": "new_tts", "tasks": ["tts", "clone"]}
+    assert acb.clone_description(_model("new_tts", spec = spec)) is None
 
 
 class _StrictRecorder(_Recorder):
@@ -170,7 +230,9 @@ class _StrictRecorder(_Recorder):
 
     def post_json(self, path, payload, **kwargs):
         keys = self.model.request_keys
-        undeclared = sorted(set(payload.get("options") or {}) - set(keys or ()))
+        # The server hands top-level instructions to the session as the instruction option.
+        sent = set(payload.get("options") or {}) | ({"instruction"} if "instructions" in payload else set())
+        undeclared = sorted(sent - set(keys or ()))
         if keys is not None and undeclared:
             self.calls.append((path, json.loads(json.dumps(payload))))
             raise srv.AudioCppRequestError(500, f"unknown request option: {undeclared[0]}")
@@ -300,6 +362,9 @@ def test_status_fields_name_the_clone_workflow_and_transcript_rule():
         assert (f["audio_workflows"], f["audio_reference_text"]) == (workflows, rt)
     cosy = acb.model_info_fields(MODELS["cosy"]())["audio_clone"]
     assert cosy["reference_text_waived"] == [["template_name", ["cross_lingual", "instruct"]]]
+    # CosyVoice keeps its own Instruct mode, so only Breeze and VoxCPM2 get the Clone field.
+    for key, described in (("breeze", True), ("vox", True), ("cosy", False), ("omnivoice", False), ("fire", False)):
+        assert acb.model_info_fields(MODELS[key]())["audio_clone"]["description"] is described, key
     instruct = {"name": "instruct", "type": "string", "required": True}
     maya = _model("maya1", "Maya1-GGUF", {"tasks": ["tts"], "options": {"request": [instruct]}})
     assert acb.model_info_fields(maya)["audio_required_inputs"] == ["instruct"]
