@@ -41,13 +41,14 @@ def guess_column(columns: list[str], wanted: str, guesses: tuple[str, ...]) -> O
 
 
 def headline(metrics: list[dict]) -> tuple[Optional[float], str]:
-    """The metric the Evals tab leads with: accuracy or exact match before anything else."""
-    scored = [m for m in metrics if isinstance(m.get("score"), (int, float))]
-    for prefix in ("acc,", "acc_norm,", "exact_match,", "prompt_level_strict_acc,"):
-        for m in scored:
-            if str(m.get("name", "")).startswith(prefix):
-                return float(m["score"]), str(m["name"])
-    return (float(scored[0]["score"]), str(scored[0]["name"])) if scored else (None, "")
+    """The metric the Evals tab leads with, so the node and the tab show the same number."""
+    from core.benchmark.parse import pick_default_metric
+
+    name = pick_default_metric(metrics)
+    found = next((m for m in metrics if m.get("name") == name), None)
+    if found is None or not isinstance(found.get("score"), (int, float)):
+        return None, name
+    return float(found["score"]), name
 
 
 def _short(value: Any) -> Any:

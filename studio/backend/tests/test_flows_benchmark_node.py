@@ -168,7 +168,8 @@ def test_lm_eval_refuses_an_adapter_and_scores_a_gguf_with_a_limit(monkeypatch):
     assert sent == [
         {"checkpoint_path": "unsloth/Qwen3-0.6B-GGUF", "model_source": "local", "task": "hellaswag", "limit": 10}
     ]
-    assert out["score"] == 0.25 and out["results"]["metric"] == "acc,none"
+    # The Evals tab's headline metric, acc_norm for HellaSwag, not the first one listed.
+    assert out["score"] == 0.3 and out["results"]["metric"] == "acc_norm,none"
     assert out["failures"]["rows"] == 3
 
 
