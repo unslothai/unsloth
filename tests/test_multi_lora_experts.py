@@ -232,3 +232,19 @@ def test_input_major_grouped_mm_experts_match_their_lone_peft_run(
     for u in range(3):
         ref = _lone(input_major, model, u)(input_ids = ids[u : u + 1], use_cache = False).logits[0]
         torch.testing.assert_close(out[u], ref, atol = TOL, rtol = 1e-4)
+
+
+def test_fold_mode_under_autocast_matches_the_lone_run(base, monkeypatch):
+    monkeypatch.setattr(ml, "_zoo_stash_read_store", lambda experts: None)
+    model, _ = _batched(base)
+    ids = _ids()
+    ml.set_multi_lora_batch(model, torch.tensor([0, 1, 2], device = DEVICE), seq_len = T)
+    with torch.autocast(device_type = DEVICE, dtype = torch.bfloat16):
+        out = model(input_ids = ids, use_cache = False).logits
+        refs = [
+            _lone(base, model, u)(input_ids = ids[u : u + 1], use_cache = False).logits[0]
+            for u in range(3)
+        ]
+    for u in range(3):
+        # One bf16 ulp of the logits; the bf16 fold was off by about 0.1.
+        torch.testing.assert_close(out[u].float(), refs[u].float(), atol = 3e-2, rtol = 0)

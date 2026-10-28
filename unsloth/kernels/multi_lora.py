@@ -739,11 +739,12 @@ class MultiLoraExpertParam(nn.Module):
             self.num_experts,
         )
 
-    def delta_weight(self, adapter: int, transposed: bool, dtype: torch.dtype) -> torch.Tensor:
-        """(E, out, in) delta, or (E, in, out) for a transposed stack."""
-        A, B = self.lora_A[adapter].to(dtype), self.lora_B[adapter].to(dtype)
-        delta = torch.bmm(B, A) * self.scales[adapter]
-        return delta.transpose(1, 2) if transposed else delta
+    def folded(self, W: torch.Tensor, adapter: int, transposed: bool) -> torch.Tensor:
+        """W + delta in W's dtype, as PEFT's ParamWrapper folds it (one baddbmm, autocast off)."""
+        A, B = self.lora_A[adapter].to(W.dtype), self.lora_B[adapter].to(W.dtype)
+        lhs, rhs = (A.transpose(1, 2), B.transpose(1, 2)) if transposed else (B, A)
+        with torch.autocast(device_type = W.device.type, enabled = False):
+            return torch.baddbmm(W, lhs, rhs, alpha = self.scales[adapter])
 
     def peft_tensors(self, adapter: int, b_layout: str) -> tuple[torch.Tensor, torch.Tensor]:
         """PEFT ParamWrapper's packing: lora_A (E*r, in) expert-major, lora_B (out, E*r) in ``b_layout``."""
@@ -875,7 +876,7 @@ class MultiLoraExperts(nn.Module):
                 raise RuntimeError(
                     f"These experts' forward ignores the LoRA stash and {name} is quantized, so its delta cannot be folded."
                 )
-            weights[name] = W + self.adapters[name].delta_weight(adapter, self.transposed, W.dtype)
+            weights[name] = self.adapters[name].folded(W, adapter, self.transposed)
         return torch.func.functional_call(base, weights, args)
 
     def _run(self, adapter: Optional[int], args) -> torch.Tensor:
