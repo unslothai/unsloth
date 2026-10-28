@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""``_dense_prefix_chars`` answers ASCII text with no ``%`` up to the cut arithmetically. Pin that it
-returns exactly what the per-character loop returns for every budget, escapes at the cut included."""
+"""The ASCII fast path in ``_dense_prefix_chars`` must return exactly what the per-character loop does."""
 
 import math
 import random
@@ -102,7 +101,6 @@ def test_ascii_text_is_answered_without_a_per_character_scan(monkeypatch):
     assert tools._dense_prefix_chars(text, 1_000.0) == 4_000
     assert tools._dense_prefix_chars(text, 1e9) == 10_000
     assert calls == []
-    # An escape before the cut still takes the loop, and the loop still reads characters.
     escaped = "a%41" + "a" * 100
     assert tools._dense_prefix_chars(escaped, 10.0) == _reference(escaped, 10.0)
     assert calls

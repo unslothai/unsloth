@@ -15663,8 +15663,7 @@ def _window_context_tokens() -> int | None:
 
 def _dense_prefix_chars(text: str, token_budget: float) -> int:
     """Charges non-ASCII one token each: CJK runs 1.3-1.6 chars per token, so the share stays a share."""
-    # ASCII with no escape up to the cut costs exactly a quarter token a character, so the loop
-    # below would stop at floor(budget * 4). The %-search is bounded by the cut, not the text.
+    # Escape-free ASCII costs 0.25 a char: the loop would stop at floor(budget * 4).
     if (
         type(text) is str
         and type(token_budget) in (int, float)
