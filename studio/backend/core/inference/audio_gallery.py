@@ -495,7 +495,10 @@ def delete(audio_id: str, *, cascade: bool = True) -> bool:
 
     WAV first: sidecar-first then failing would lose a clip with no retry, while this
     leaves at worst an orphan sidecar list_audio ignores."""
-    directory = gallery_dir()
+    return _delete_in(gallery_dir(), audio_id, cascade)
+
+
+def _delete_in(directory: Path, audio_id: str, cascade: bool) -> bool:
     path = audio_path(audio_id, directory)
     if path is None:
         return False
@@ -522,7 +525,7 @@ def delete(audio_id: str, *, cascade: bool = True) -> bool:
         and (_read_meta(_sidecar_path(original, directory)) or {}).get("role") == "source"
         and original not in _sources_in_use(directory, set())
     ):
-        delete(original)
+        _delete_in(directory, original, True)
     return True
 
 

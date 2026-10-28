@@ -1103,3 +1103,17 @@ def test_prune_uses_the_locked_folder_when_the_folder_moves(monkeypatch, tmp_pat
     assert gallery._prune_to_cap() == 1
     _gone_from_old_kept_in_new(old, new, oldest["id"])
     assert (old / f"{newest['id']}.wav").exists()
+
+
+def test_delete_takes_the_hidden_original_from_the_same_folder_when_the_folder_moves(
+    monkeypatch, tmp_path
+):
+    source = gallery.save(_wav(), _meta(workflow = "edit", role = "source"))
+    edit = gallery.save(_wav(), _meta(workflow = "edit", role = "output", source_clip_id = source["id"]))
+    old, new = _relocate_after_first_call(monkeypatch, tmp_path, [edit, source])
+    (new / f"{source['id']}.json").write_text(
+        json.dumps(_meta(workflow = "edit", role = "source")), encoding = "utf-8"
+    )
+    assert gallery.delete(edit["id"]) is True
+    _gone_from_old_kept_in_new(old, new, edit["id"])
+    _gone_from_old_kept_in_new(old, new, source["id"])
