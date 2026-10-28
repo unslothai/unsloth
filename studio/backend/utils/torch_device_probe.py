@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Probe torch allocation in a child so driver crashes do not kill the backend.
-
-Only a child that ran cleanly to the end marks an accelerator usable: a crash, a hang, a kill and a probe that could not run or be read all leave it unusable, since the allocation this stands in front of ends the process rather than raising. Ordinary Python errors are the exception, because the child ran and reported, so the in-process loader raises the same error and describes it better. CPU takes the opposite default, since it cannot fault a driver and condemning it would change the embedding backend. Set ``UNSLOTH_STUDIO_DISABLE_DEVICE_PROBE=1`` to skip the probe.
-"""
+"""Probes torch allocation in a child so a driver crash cannot kill the backend; only a clean exit
+marks an accelerator usable (crash, hang, kill or unreadable result does not), Python errors
+aside. CPU is never condemned. UNSLOTH_STUDIO_DISABLE_DEVICE_PROBE=1 skips it."""
 
 from __future__ import annotations
 

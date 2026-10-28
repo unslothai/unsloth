@@ -3,7 +3,7 @@
 
 import {
   FlimSlateIcon,
-  Image03Icon,
+  Image01Icon,
   LibrariesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -168,7 +168,7 @@ export function SiblingMediaPageLink({ to }: { to: "/images" | "/video" }) {
     <MediaPageLink
       to={to}
       label={label}
-      icon={to === "/images" ? Image03Icon : FlimSlateIcon}
+      icon={to === "/images" ? Image01Icon : FlimSlateIcon}
       tooltip={label}
       iconOnly={true}
       iconArrow={true}

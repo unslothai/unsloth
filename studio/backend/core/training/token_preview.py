@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Owns the token preview subprocess (core.training.token_preview_worker).
-
-One worker at a time, kept for the model it was started for so typing in the preview answers in
-milliseconds; a request for another model, a training start or an idle timeout ends it.
-"""
+"""Token preview subprocess: one worker, kept for its model; a switch, training or idle ends it."""
 
 from __future__ import annotations
 

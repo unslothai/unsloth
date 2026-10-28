@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Audio the user gives the Audio page, kept for a day under the account's ``<gallery_dir>/inputs``.
-
-Requests name an input, a gallery clip or a saved voice by id only; this module resolves the id
-inside the current account, so no client ever names a file."""
+"""Audio page inputs kept a day under <gallery_dir>/inputs; requests name an input, clip or voice by
+id, resolved in the current account, never a file path."""
 
 from __future__ import annotations
 

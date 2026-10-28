@@ -1,14 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Decisions from a GGUF on a private loopback llama-server (``POST /v1/systemone``).
-
-Ported from wasimysaid's native worker in #12770. The server is Studio's own llama.cpp. Clef answers
-are rebuilt with the formatter the PyTorch path uses, so the public response does not depend on the
-backend (llama.cpp's own confidence is a normalised formula, PyTorch's the winning probability).
-GGUF-only models (Kev, lev, Nimble, OpenJev, Laya GGUFs) have no Studio reference, so llama.cpp's
-answer is the reference: checked, then passed through.
-"""
+"""Private loopback llama-server at POST /v1/systemone; Clef answers rebuilt with the PyTorch
+formatter so the public response does not depend on the backend; GGUF-only models are checked,
+then passed through"""
 
 from __future__ import annotations
 
@@ -453,6 +448,7 @@ class NativeClefAgent:
         return {"Authorization": f"Bearer {self._key}"}
 
     def _wait_ready(self, cancelled: Callable[[], bool] | None) -> None:
+        from core.inference.llama_cpp import LlamaCppBackend
         from utils.process_lifetime import is_process_shutting_down
 
         deadline = time.monotonic() + LOAD_TIMEOUT_S
@@ -468,6 +464,8 @@ class NativeClefAgent:
             try:
                 response = self._client.get(f"{self._base}/health", timeout = 2.0)
                 if response.status_code == 200:
+                    if not LlamaCppBackend._health_listener_is_ours(self._process, self.port):
+                        raise NativeError(f"Another process holds llama.cpp's port {self.port}.")
                     return
             except httpx.TransportError:
                 pass

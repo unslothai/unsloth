@@ -1876,3 +1876,56 @@ def test_the_mlx_base_fetch_keeps_the_fallback_scheduler_config():
     from core.inference.mlx_diffusion_backend import BASE_ALLOW_PATTERNS
     for name in ("scheduler/scheduler_config.json", "model_index.json"):
         assert any(fnmatch.fnmatch(name, pattern) for pattern in BASE_ALLOW_PATTERNS), name
+
+
+def test_the_renderer_sees_the_shared_pool_beside_a_chat_model(monkeypatch):
+    """Its own working set cannot see a chat worker, so tiling decides on the system-wide headroom too."""
+    import sys
+    import types
+
+    import core.inference.gpu_residency as gr
+    import core.inference.llama_cpp as llama_cpp
+
+    core = types.SimpleNamespace(
+        device_info = lambda: {"max_recommended_working_set_size": 96 * _GIB},
+        get_active_memory = lambda: 8 * _GIB,
+    )
+    monkeypatch.setitem(sys.modules, "mlx", types.SimpleNamespace(core = core))
+    monkeypatch.setitem(sys.modules, "mlx.core", core)
+    monkeypatch.setattr(gr, "_on_metal", lambda: True)
+    monkeypatch.setattr(llama_cpp, "_apple_wired_headroom_bytes", lambda: 16 * _GIB)
+    monkeypatch.setattr(gr, "_mlx_chat_unallocated_mib", lambda: 4096)
+    runtime = mb.MfluxRuntime()
+    monkeypatch.setattr(gr, "media_held_mib", lambda: {0: 9000})
+    monkeypatch.setattr("psutil.virtual_memory", lambda: types.SimpleNamespace(available = 64 * _GIB))
+    assert runtime.free_working_set_bytes() == 12 * _GIB
+    monkeypatch.setattr("psutil.virtual_memory", lambda: types.SimpleNamespace(available = 5 * _GIB))
+    assert runtime.free_working_set_bytes() == 1 * _GIB
+    assert gr.metal_media_priced()
+    monkeypatch.setattr(gr, "media_held_mib", lambda: {})
+    assert runtime.free_working_set_bytes() == 88 * _GIB
+
+
+@pytest.mark.parametrize("priced, free_gib, expected", [(True, 40.0, True), (False, 40.0, False)])
+def test_a_priced_media_model_on_metal_always_tiles(monkeypatch, priced, free_gib, expected):
+    """Its price reserved the tiled decode, and a chat model may join on it while this render runs."""
+    import sys
+    import types
+
+    import core.inference.gpu_residency as gr
+
+    class _TilingConfig:
+        @staticmethod
+        def may_tile_implicitly(model):
+            return True
+
+    module = types.ModuleType("mflux.models.common.vae.tiling_config")
+    module.TilingConfig = _TilingConfig
+    monkeypatch.setitem(sys.modules, "mflux.models.common.vae.tiling_config", module)
+    monkeypatch.delenv(mb.VAE_TILING_ENV, raising = False)
+    monkeypatch.setattr(gr, "metal_media_priced", lambda: priced)
+    runtime = mb.MfluxRuntime()
+    monkeypatch.setattr(runtime, "free_working_set_bytes", lambda: int(free_gib * _GIB))
+    model = types.SimpleNamespace(tiling_config = None)
+    runtime._plan_vae_tiling(model, 1024, 1024)
+    assert runtime.vae_tiled() is expected

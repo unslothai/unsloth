@@ -46,19 +46,41 @@ export function StorageOverview({
   totalBytes?: number;
   footer?: ReactNode;
 }) {
-  const sum = segments.reduce(
-    (acc, segment) => acc + Math.max(0, segment.bytes),
-    0,
-  );
-  const scale = Math.max(totalBytes ?? sum, sum);
   return (
     <div data-settings-label={label} className="flex flex-col gap-4 py-3">
       <div className="flex min-h-8 items-center justify-between gap-3">
         <p className="text-sm font-semibold text-foreground">{heading}</p>
         {action}
       </div>
+      <StorageBar segments={segments} totalBytes={totalBytes} />
+      {footer ? (
+        <div className="text-xs text-muted-foreground">{footer}</div>
+      ) : null}
+    </div>
+  );
+}
+
+export function StorageBar({
+  segments,
+  totalBytes,
+  legend = true,
+  barClassName = "h-6 rounded-sm",
+}: {
+  segments: StorageSegment[];
+  /** Width of the whole bar; defaults to the sum, so the slices fill it. */
+  totalBytes?: number;
+  legend?: boolean | "inline";
+  barClassName?: string;
+}) {
+  const sum = segments.reduce(
+    (acc, segment) => acc + Math.max(0, segment.bytes),
+    0,
+  );
+  const scale = Math.max(totalBytes ?? sum, sum);
+  return (
+    <>
       {/* A rounded rectangle, not a pill, by design. */}
-      <div className="flex h-6 overflow-hidden rounded-sm bg-muted">
+      <div className={cn("flex overflow-hidden bg-muted", barClassName)}>
         {scale > 0
           ? segments.map((segment) =>
               segment.bytes > 0 ? (
@@ -71,25 +93,39 @@ export function StorageOverview({
             )
           : null}
       </div>
-      <div className="flex flex-wrap gap-x-8 gap-y-3">
-        {segments.map((segment) => (
-          <div key={segment.key} className="flex flex-col gap-1">
-            <span className="flex items-center gap-2 text-sm text-foreground/80">
+      {legend === "inline" ? (
+        <div className="flex flex-wrap gap-x-4 gap-y-1 text-ui-11 text-muted-foreground">
+          {segments.map((segment) => (
+            <span key={segment.key} className="flex items-center gap-1.5">
               <span
-                className={cn("size-2.5 shrink-0 rounded-full", segment.color)}
+                className={cn("size-2 shrink-0 rounded-full", segment.color)}
               />
               {segment.label}
+              <span className="tabular-nums">{segment.value}</span>
             </span>
-            <span className="text-sm tabular-nums text-muted-foreground">
-              {segment.value}
-            </span>
-          </div>
-        ))}
-      </div>
-      {footer ? (
-        <div className="text-xs text-muted-foreground">{footer}</div>
+          ))}
+        </div>
+      ) : legend ? (
+        <div className="flex flex-wrap gap-x-8 gap-y-3">
+          {segments.map((segment) => (
+            <div key={segment.key} className="flex flex-col gap-1">
+              <span className="flex items-center gap-2 text-sm text-foreground/80">
+                <span
+                  className={cn(
+                    "size-2.5 shrink-0 rounded-full",
+                    segment.color,
+                  )}
+                />
+                {segment.label}
+              </span>
+              <span className="text-sm tabular-nums text-muted-foreground">
+                {segment.value}
+              </span>
+            </div>
+          ))}
+        </div>
       ) : null}
-    </div>
+    </>
   );
 }
 

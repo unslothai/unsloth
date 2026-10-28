@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""GGUF tensor layout, bucketed by where each tensor is allowed to live.
-
-Split out from ``offload_planner`` on purpose: this half does file IO and knows
-about GGUF key names, the other half is pure arithmetic. The planner can then be
-tested exhaustively from hand-built layouts with no fixtures on disk.
-"""
+"""GGUF tensor layout by placement bucket; file IO and GGUF keys live here, not in offload_planner."""
 
 from __future__ import annotations
 
