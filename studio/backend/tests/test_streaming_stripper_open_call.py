@@ -108,13 +108,24 @@ _TRIGGERS = (
     "call \n\t :python{code:1}",
     "<|python_tag|>",
     "<param",
+    # Closed forms: the non-final strip removes these, so a missed trigger changes its result.
+    "<function=web_search>x</function>",
+    '[TOOL_CALLS]web_search{"q": 1}',
+    "[TOOL_CALLS][]",
+    "<|tool_call>call:web_search{q:1}<tool_call|>",
+    "<｜tool▁calls▁begin｜>x<｜tool▁calls▁end｜>",
+    "<think>t</think>",
+    "\n</think>\n",
+    "\ncall:web_search{q:1}\n",
 )
 
 
 @pytest.mark.parametrize("trigger", _TRIGGERS)
 @pytest.mark.parametrize("seg_final", [True, False])
 def test_every_trigger_split_one_char_at_a_time_matches(trigger, seg_final):
-    prefix = 'ok <tool_call>{"name": "web_search", "arguments": {"query": "words '
+    # Past the ~128 characters ``_is_extension`` needs to sample a middle, so later tokens are
+    # answered by the gate rather than by a fresh arm and its full strip.
+    prefix = 'ok <tool_call>{"name": "web_search", "arguments": {"query": "' + "words " * 40
     chunks = [prefix] + list(trigger + ' more" }}') + ["</tool_call>", " after"]
     for names in (ENABLED, None):
         assert _replay(StreamingMarkupStripper(names, seg_final = seg_final), chunks) == _replay(
@@ -180,6 +191,7 @@ def test_gate_matches_full_strip_on_seeded_open_calls():
         text += (
             '{"name": "' + rng.choice(("web_search", "python", "nope")) + '", "arguments": {"q": "'
         )
+        text += "filler " * 25
         plain = rng.random()
         text += "".join(
             rng.choice(_PIECES) if rng.random() > plain else "word "
