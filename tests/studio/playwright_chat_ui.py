@@ -790,15 +790,17 @@ def exercise_floating_monitor_geometry(page):
         return monitor_box("drag")
 
     def resize_handle_center(edge):
-        handle = monitor.locator(
-            f'[data-testid="floating-monitor-resize"][data-edge="{edge}"]'
-        )
+        handle = monitor.locator(f'[data-testid="floating-monitor-resize"][data-edge="{edge}"]')
         box = handle.bounding_box()
         if box is None:
             fail(f"floating monitor {edge} resize handle has no bounding box")
         return box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
 
-    def resize_monitor_by(dx, dy, edge = "se"):
+    def resize_monitor_by(
+        dx,
+        dy,
+        edge = "se",
+    ):
         before = monitor_box("resize")
         start_x, start_y = resize_handle_center(edge)
         pointer_drag(start_x, start_y, start_x + dx, start_y + dy)
