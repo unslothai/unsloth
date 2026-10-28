@@ -730,7 +730,6 @@ export const he = {
     footer: "Unsloth יחזור לרגיל בחצות של 1 בנובמבר.",
     removeNow: "הסרה עכשיו",
     hideFromSidebar: "הסתרה מסרגל הצד",
-    lightOnly: "מצב בהיר בלבד",
     greeting: {
       boo: "בו! הבהלתי אותך?",
       booName: "בו! הבהלתי אותך, {name}?",

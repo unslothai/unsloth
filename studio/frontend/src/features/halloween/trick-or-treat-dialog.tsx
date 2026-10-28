@@ -11,7 +11,6 @@ import { Switch } from "@/components/ui/switch";
 import {
   COLOR_THEMES,
   HALLOWEEN_THEME_IDS,
-  LIGHT_ONLY_THEME_IDS,
 } from "@/features/settings/lib/color-themes";
 import { usePalette, useTheme } from "@/features/settings/stores/theme-store";
 import { useT } from "@/i18n";
@@ -25,7 +24,6 @@ import {
   Moon02Icon,
   PumpkinIcon,
   SkullIcon,
-  Sun03Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactNode, useState } from "react";
@@ -102,7 +100,6 @@ function ArrowBadge() {
 }
 
 function ThemeGrid() {
-  const t = useT();
   const { resolved } = useTheme();
   const { palette } = usePalette();
   return (
@@ -123,24 +120,13 @@ function ThemeGrid() {
               selected ? "border-primary ring-1 ring-primary" : "border-border",
             )}
           >
-            <span className="relative shrink-0">
-              <span
-                aria-hidden="true"
-                className="block size-8 rounded-full border border-black/10 dark:border-white/15"
-                style={{
-                  background: `linear-gradient(135deg, ${colors.accent} 30%, color-mix(in srgb, ${colors.accent} 55%, black) 100%)`,
-                }}
-              />
-              {LIGHT_ONLY_THEME_IDS.has(id) && (
-                <span className="-right-1 -bottom-1 absolute flex size-4 items-center justify-center rounded-full bg-background text-foreground ring-1 ring-border">
-                  <HugeiconsIcon
-                    icon={Sun03Icon}
-                    aria-label={t("halloween.lightOnly")}
-                    className="size-3"
-                  />
-                </span>
-              )}
-            </span>
+            <span
+              aria-hidden="true"
+              className="size-8 shrink-0 rounded-full border border-black/10 dark:border-white/15"
+              style={{
+                background: `linear-gradient(135deg, ${colors.accent} 30%, color-mix(in srgb, ${colors.accent} 55%, black) 100%)`,
+              }}
+            />
             <span className="min-w-0 truncate whitespace-nowrap font-medium text-sm">
               {name}
             </span>

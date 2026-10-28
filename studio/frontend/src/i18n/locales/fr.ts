@@ -645,7 +645,6 @@ export const fr = {
     footer: "Unsloth redevient normal à minuit le 1er novembre.",
     removeNow: "Retirer maintenant",
     hideFromSidebar: "Masquer de la barre latérale",
-    lightOnly: "Mode clair uniquement",
     greeting: {
       boo: "Bouh ! Je vous ai fait peur ?",
       booName: "Bouh ! Je vous ai fait peur, {name} ?",

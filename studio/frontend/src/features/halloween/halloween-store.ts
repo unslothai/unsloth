@@ -8,15 +8,12 @@ import {
   type ColorThemeId,
   HALLOWEEN_THEME_IDS,
   type HalloweenThemeId,
-  LIGHT_ONLY_THEME_IDS,
   isColorThemeId,
   isHalloweenThemeId,
 } from "../settings/lib/color-themes.ts";
 import {
   getPalette,
-  getResolvedTheme,
   setPalette,
-  setTheme,
   usePalette,
 } from "../settings/stores/theme-store.ts";
 
@@ -74,10 +71,6 @@ export function pickHalloweenTheme(id: HalloweenThemeId): void {
     useHalloweenStore.setState({ restorePalette: current });
   }
   setPalette(id);
-  // Picking a light-only theme in dark mode would otherwise show nothing new.
-  if (LIGHT_ONLY_THEME_IDS.has(id) && getResolvedTheme() === "dark") {
-    setTheme("light");
-  }
 }
 
 export function pickRandomHalloweenTheme(): HalloweenThemeId {

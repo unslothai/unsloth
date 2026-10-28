@@ -43,7 +43,7 @@ Object.assign(globalThis, {
   },
 });
 
-const { getPalette, getResolvedTheme, setPalette, setTheme } = await import(
+const { getPalette, setPalette } = await import(
   "../src/features/settings/stores/theme-store.ts"
 );
 const {
@@ -97,22 +97,6 @@ test("the sidebar X hides the row without touching the theme, and settings bring
   assert.equal(useHalloweenStore.getState().spookyGreetings, true);
   showTrickOrTreatRow();
   assert.equal(useHalloweenStore.getState().hiddenYear, null);
-});
-
-test("picking a light-only theme in dark mode switches to light mode", () => {
-  setTheme("dark");
-  setPalette("standard");
-  pickHalloweenTheme("black-cat");
-  assert.equal(getResolvedTheme(), "dark");
-  assert.equal(paletteAttr, "black-cat");
-  pickHalloweenTheme("the-thing");
-  assert.equal(getResolvedTheme(), "light");
-  assert.equal(paletteAttr, "the-thing");
-  setTheme("dark");
-  assert.equal(paletteAttr, null, "dark mode shows Standard");
-  assert.equal(getPalette(), "the-thing", "the stored pick survives");
-  setTheme("light");
-  assert.equal(paletteAttr, "the-thing");
 });
 
 test("removing keeps a theme picked outside Halloween", () => {

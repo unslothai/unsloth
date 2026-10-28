@@ -644,7 +644,6 @@ export const ru = {
     footer: "Unsloth вернётся к обычному виду в полночь 1 ноября.",
     removeNow: "Убрать сейчас",
     hideFromSidebar: "Скрыть с боковой панели",
-    lightOnly: "Только светлая тема",
     greeting: {
       boo: "Бу! Испугались?",
       booName: "Бу! Испугались, {name}?",

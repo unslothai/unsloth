@@ -643,7 +643,6 @@ export const zhCN = {
     footer: "Unsloth 将于 11 月 1 日零点恢复正常。",
     removeNow: "立即移除",
     hideFromSidebar: "从侧边栏隐藏",
-    lightOnly: "仅限浅色模式",
     greeting: {
       boo: "哇！吓到你了吗？",
       booName: "哇！吓到你了吗，{name}？",

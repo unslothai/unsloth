@@ -26,9 +26,7 @@ try {
     "wasabi", "yuzu", "pumpkin", "bloody-valentine", "alien", "the-thing",
     "gothic", "black-cat", "trick-or-treat", "ghost-ship", "midnight-haunt",
   ];
-  // Light-only themes (LIGHT_ONLY_THEME_IDS) show Standard in dark mode.
-  var lightOnly = ["trick-or-treat", "bloody-valentine", "the-thing", "gothic"];
-  if (palettes.indexOf(palette) !== -1 && !(dark && lightOnly.indexOf(palette) !== -1)) {
+  if (palettes.indexOf(palette) !== -1) {
     root.setAttribute("data-palette", palette);
   }
 } catch (e) {}

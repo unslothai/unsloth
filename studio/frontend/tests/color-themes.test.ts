@@ -10,9 +10,7 @@ import {
   COLOR_THEME_IDS,
   FLAVOR_THEME_IDS,
   HALLOWEEN_THEME_IDS,
-  LIGHT_ONLY_THEME_IDS,
   isColorThemeId,
-  paletteForMode,
 } from "../src/features/settings/lib/color-themes.ts";
 
 const read = (path: string) =>
@@ -37,15 +35,14 @@ test("the backend accepts every theme id", () => {
   assert.deepEqual([...accepted].sort(), [...COLOR_THEME_IDS].sort());
 });
 
-test("every flavor and Halloween theme has light seeds, and dark ones unless light-only", () => {
+test("every flavor and Halloween theme has light and dark seed blocks", () => {
   for (const id of SEEDED_THEME_IDS) {
     assert.ok(
       indexCss.includes(`:root[data-palette="${id}"]:not(.dark) {`),
       `${id} light`,
     );
-    assert.equal(
+    assert.ok(
       indexCss.includes(`:root[data-palette="${id}"].dark {`),
-      !LIGHT_ONLY_THEME_IDS.has(id),
       `${id} dark`,
     );
     assert.ok(
@@ -102,7 +99,6 @@ test("flavor and Halloween accents used as text meet the accent-text floor", () 
       ["light", `:root[data-palette="${id}"]:not(.dark) {`],
       ["dark", `:root[data-palette="${id}"].dark {`],
     ] as const) {
-      if (mode === "dark" && LIGHT_ONLY_THEME_IDS.has(id)) continue;
       const blocks: string[] = [];
       for (let start = indexCss.indexOf(selector); start >= 0; start = indexCss.indexOf(selector, start + 1)) {
         blocks.push(indexCss.slice(start, indexCss.indexOf("}", start)));
@@ -133,19 +129,4 @@ test("More themes leads with Butterfly Pea and Earl Grey, and Cherry is just Che
   assert.equal(FLAVOR_THEME_IDS.indexOf("blueberry"), 11);
   assert.equal(FLAVOR_THEME_IDS.indexOf("honey"), 13);
   assert.equal(COLOR_THEMES.cherry.name, "Cherry");
-});
-
-test("light-only themes give way to Standard in dark mode, here and in the boot script", () => {
-  assert.ok(LIGHT_ONLY_THEME_IDS.size > 0);
-  for (const id of LIGHT_ONLY_THEME_IDS) {
-    assert.ok(HALLOWEEN_THEME_IDS.includes(id as never), id);
-    assert.equal(paletteForMode(id, "dark"), "standard");
-    assert.equal(paletteForMode(id, "light"), id);
-  }
-  assert.equal(paletteForMode("black-cat", "dark"), "black-cat");
-  const bootList = themeBoot.match(/var lightOnly = \[([^\]]*)\]/)?.[1] ?? "";
-  assert.deepEqual(
-    [...bootList.matchAll(/"([^"]+)"/g)].map((m) => m[1]).sort(),
-    [...LIGHT_ONLY_THEME_IDS].sort(),
-  );
 });

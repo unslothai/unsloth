@@ -21,12 +21,9 @@ const vars = new Map<string, string>();
 const { applyCustomizationToDocument, DEFAULT_CUSTOMIZATION } = await import(
   "../src/features/settings/stores/appearance-custom-store.ts"
 );
-const {
-  COLOR_THEMES,
-  FLAVOR_THEME_IDS,
-  HALLOWEEN_THEME_IDS,
-  LIGHT_ONLY_THEME_IDS,
-} = await import("../src/features/settings/lib/color-themes.ts");
+const { COLOR_THEMES, FLAVOR_THEME_IDS, HALLOWEEN_THEME_IDS } = await import(
+  "../src/features/settings/lib/color-themes.ts"
+);
 
 function luminance(hex: string): number {
   const channel = (i: number) => {
@@ -66,8 +63,6 @@ const withAccent = (accent: string) => ({
 test("custom accents stay readable on each flavor theme's own surfaces", () => {
   for (const id of [...FLAVOR_THEME_IDS, ...HALLOWEEN_THEME_IDS]) {
     for (const mode of ["light", "dark"] as const) {
-      // In dark mode a light-only theme is Standard, which has no theme surfaces.
-      if (mode === "dark" && LIGHT_ONLY_THEME_IDS.has(id)) continue;
       const { background, surface } = COLOR_THEMES[id][mode];
       assert.ok(surface, `${id} ${mode} has no surface`);
       for (const accent of ["#aaaa33", "#22c55e", "#fde68a", "#101010"]) {
