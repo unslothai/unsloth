@@ -985,6 +985,128 @@ exit 1
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn a_cache_miss_runs_help_and_the_capability_probe_at_once() {
+        use std::fs;
+
+        let _cache_guard = MANAGED_CAPABILITY_CACHE_TEST_LOCK.lock().await;
+        let _cache_home = ManagedCapabilityCacheHome::new("miss-overlap");
+        remove_managed_capability_cache();
+        // Each probe waits (up to 5s) to see the other one start, so only overlapping probes pass.
+        let fake = fake_cli(
+            "miss-overlap",
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> "$0.calls"
+wait_for() {
+  i=0
+  while [ ! -f "$1" ]; do
+    i=$((i + 1))
+    if [ "$i" -gt 50 ]; then exit 42; fi
+    sleep 0.1
+  done
+}
+if [ "$1" = "-h" ]; then
+  : > "$0.help_started"
+  wait_for "$0.cap_started"
+  exit 0
+fi
+if [ "$1" = "studio" ] && [ "$2" = "desktop-capabilities" ] && [ "$3" = "--json" ]; then
+  : > "$0.cap_started"
+  wait_for "$0.help_started"
+  printf '{"desktop_protocol_version":1,"desktop_manageability_version":2,"supports_api_only":true,"supports_provision_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_install_ok":true,"version":"2026.8.4"}'
+  exit 0
+fi
+exit 1
+"#,
+        );
+        let bin = fake.bin.clone();
+        assert!(matches!(
+            probe_managed_bin(bin.clone()).await,
+            ManagedProbe::Ready { .. }
+        ));
+        let calls = fs::read_to_string(bin.with_extension("calls")).unwrap();
+        assert_eq!(calls.matches("-h\n").count(), 1);
+        assert_eq!(calls.matches("studio desktop-capabilities --json\n").count(), 1);
+
+        fs::write(bin.with_extension("calls"), "").unwrap();
+        fs::write(bin.with_extension("cap_started"), "").unwrap();
+        assert!(matches!(
+            probe_managed_bin(bin.clone()).await,
+            ManagedProbe::Ready { .. }
+        ));
+        assert_eq!(fs::read_to_string(bin.with_extension("calls")).unwrap(), "-h\n");
+
+        remove_managed_capability_cache();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_cache_miss_still_lets_a_failing_help_decide_over_a_capability_answer() {
+        use std::fs;
+
+        let _cache_guard = MANAGED_CAPABILITY_CACHE_TEST_LOCK.lock().await;
+        let _cache_home = ManagedCapabilityCacheHome::new("miss-help-decides");
+        remove_managed_capability_cache();
+        let fake = fake_cli(
+            "miss-help-decides",
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> "$0.calls"
+if [ "$1" = "-h" ]; then
+  if [ -f "$0.modeh" ]; then exit 42; fi
+  exit 0
+fi
+if [ "$1" = "studio" ] && [ "$2" = "desktop-capabilities" ] && [ "$3" = "--json" ]; then
+  if [ -f "$0.modecap" ]; then exit 42; fi
+  printf '{"desktop_protocol_version":1,"desktop_manageability_version":2,"supports_api_only":true,"supports_provision_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_install_ok":true,"version":"2026.8.4"}'
+  exit 0
+fi
+exit 1
+"#,
+        );
+        let bin = fake.bin.clone();
+        let calls = bin.with_extension("calls");
+        let modeh = bin.with_extension("modeh");
+        let modecap = bin.with_extension("modecap");
+        let reason_of = |probe: ManagedProbe| match probe {
+            ManagedProbe::Stale { reason, .. } => reason,
+            other => panic!("expected Stale, got {other:?}"),
+        };
+
+        // `-h` fails while desktop-capabilities answers: still unusable.
+        fs::write(&modeh, "broken").unwrap();
+        assert_eq!(
+            reason_of(probe_managed_bin(bin.clone()).await),
+            "cli_unusable"
+        );
+
+        fs::remove_file(&modeh).unwrap();
+        fs::write(&calls, "").unwrap();
+        assert!(matches!(
+            probe_managed_bin(bin.clone()).await,
+            ManagedProbe::Ready { .. }
+        ));
+        assert!(fs::read_to_string(&calls)
+            .unwrap()
+            .contains("studio desktop-capabilities --json\n"));
+        remove_managed_capability_cache();
+
+        fs::write(&modeh, "broken").unwrap();
+        fs::write(&modecap, "broken").unwrap();
+        assert_eq!(
+            reason_of(probe_managed_bin(bin.clone()).await),
+            "cli_unusable"
+        );
+
+        fs::remove_file(&modeh).unwrap();
+        assert_eq!(
+            reason_of(probe_managed_bin(bin.clone()).await),
+            "desktop_capability_probe_failed"
+        );
+
+        remove_managed_capability_cache();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn a_passing_launch_help_probe_stands_in_for_the_first_preflight_only() {
         use std::fs;
 
