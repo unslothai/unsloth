@@ -6,6 +6,8 @@ returns exactly what the per-character loop returns for every budget, escapes at
 
 import math
 import random
+from decimal import Decimal
+from fractions import Fraction
 
 import pytest
 
@@ -107,3 +109,18 @@ def test_ascii_text_is_answered_without_a_per_character_scan():
     escaped = _CountingStr("a%41" + "a" * 100)
     assert tools._dense_prefix_chars(escaped, 10.0) == _reference(str(escaped), 10.0)
     assert _CountingStr.reads > 0
+
+
+def test_other_numeric_budgets_match():
+    for text in ("", "abc", "a" * 50, "ab%41cd" * 5, "x" * 10 + "中"):
+        for budget in (
+            Fraction(9, 4),
+            Fraction(1, 3),
+            Decimal("2.25"),
+            Decimal("0.3"),
+            True,
+            False,
+            3,
+            0,
+        ):
+            assert tools._dense_prefix_chars(text, budget) == _reference(text, budget)
