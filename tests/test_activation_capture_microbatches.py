@@ -143,3 +143,46 @@ def test_a_step_without_a_log_is_written_without_a_loss(tmp_path):
     records = _records(tmp_path)
     assert [(r["step"], r["loss"]) for r in records] == [(0, None)]
     assert records[0]["layers"]["0"]["mean_abs"] == pytest.approx([1.0] * H)
+
+
+def test_a_retry_after_an_aborted_run_does_not_double_the_hooks(tmp_path):
+    model, cap = _capture(tmp_path, checkpointed = False)
+    cb = ac.ActivationCaptureCallback(cap)
+    cb.on_train_begin(None, _state(0), None)
+    cb.on_step_begin(None, _state(0), None)
+    # The run raises here: no on_step_end, no on_train_end, capture still armed.
+    cb2 = ac.ActivationCaptureCallback(cap)
+    cb2.on_train_begin(None, _state(0), None)
+    assert len(cap._hooks) == len(cap._layers)
+    assert len(cap._grad_hooks) == len(cap._layers)
+    cb2.on_step_begin(None, _state(0), None)
+    model(torch.full((1, 1, H), 3.0, requires_grad = True)).sum().backward()
+    cb2.on_step_end(None, _state(1), None)
+    cb2.on_log(None, _state(1), None, logs = {"loss": 1.0})
+    assert _records(tmp_path)[-1]["layers"]["0"]["mean_abs"] == pytest.approx([3.0] * H)
+
+
+def test_a_subclass_can_store_capture_without_files(tmp_path, monkeypatch):
+    # The Unsloth Studio worker stores to its DB this way, with no output_dir at all.
+    monkeypatch.chdir(tmp_path)
+    seen = {"meta": None, "records": []}
+
+    class _ToDb(ac.ActivationCapture):
+        def _write_metadata(self, metadata):
+            seen["meta"] = metadata
+
+        def _write_record(self, record):
+            seen["records"].append(record)
+
+    model = _Model(checkpointed = False)
+    cap = _ToDb(
+        model,
+        ac.ActivationCaptureConfig(output_dir = "", capture_interval = 1, capture_lora_norms = False),
+    )
+    cap.attach()
+    cap.mark_capture(step = 0, loss = 0.5)
+    model(torch.ones(1, 1, H, requires_grad = True)).sum().backward()
+    cap.flush()
+    assert seen["meta"]["model_name"] == "tiny"
+    assert [(r["step"], r["loss"]) for r in seen["records"]] == [(0, 0.5)]
+    assert list(tmp_path.iterdir()) == []

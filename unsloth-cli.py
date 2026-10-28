@@ -348,7 +348,12 @@ def run(args):
         callbacks = _callbacks if _callbacks else None,
     )
 
-    _train_with_legacy_save_control(trainer, is_mlx)
+    try:
+        _train_with_legacy_save_control(trainer, is_mlx)
+    finally:
+        # on_train_end never runs when training raises; leave no hooks on the model.
+        if capture_callback is not None:
+            capture_callback.capture.detach()
 
     if args.capture_activations:
         print(

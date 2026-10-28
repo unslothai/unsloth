@@ -99,6 +99,35 @@ def _in_backward() -> bool:
     return torch._C._current_graph_task_id() != -1
 
 
+_NON_TEXT_PARTS = (
+    "vision",
+    "visual",
+    "image",
+    "audio",
+    "speech",
+    "vit",
+    "siglip",
+    "mm_projector",
+    "multi_modal",
+)
+
+
+def _text_decoder_layers(model):
+    found = []
+    for name, module in model.named_modules():
+        parts = name.split(".")
+        if parts[-1] != "layers" or not isinstance(module, torch.nn.ModuleList) or len(module) == 0:
+            continue
+        if any(tag in part.lower() for part in parts[:-1] for tag in _NON_TEXT_PARTS):
+            continue
+        found.append((name, module))
+    if not found:
+        return None
+    # A multimodal model's text stack sits under language_model; otherwise the outermost list wins.
+    found.sort(key = lambda nm: ("language_model" not in nm[0], nm[0].count("."), -len(nm[1])))
+    return found[0][1]
+
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -117,7 +146,10 @@ class ActivationCaptureConfig:
         max_channels:      Number of hidden-state channels (dimensions) to
                            track per layer. Channels are sampled once at init
                            and kept fixed for the whole run so the JS side can
-                           display a stable grid.  Default: 64.
+                           display a stable grid.  Default: 64. A uniform
+                           random sample: an outlier or dead channel outside it
+                           never shows, so dead-neuron and outlier readings
+                           cover only the sampled channels.
         capture_mlp_out:   If True, hook the MLP sub-module output in addition
                            to the full decoder-layer output.  Gives a more
                            "neuron-level" view but doubles storage.
@@ -179,33 +211,12 @@ class ActivationCapture:
         self._loss: Optional[float] = None
         # Cache LoRA modules per layer for fast lookup
         self._lora_modules: Dict[int, List[tuple]] = {}
-
-        os.makedirs(config.output_dir, exist_ok = True)
+        self._lora_targets: List[str] = []
 
         # ---- locate decoder layers (handles PEFT wrapping) ----------------
-        # PeftModel:  model  →  .base_model  →  .model  →  .model  →  .layers
-        # Plain HF:   model  →  .model  →  .layers
-        candidate = model
-        layers = None
-        for _ in range(8):  # unwrap at most 8 levels of nesting
-            layers = getattr(candidate, "layers", None)
-            if layers is not None:
-                break
-            # try going one level deeper via common attribute names
-            # "language_model" covers VLM wrappers like Gemma4ForConditionalGeneration
-            for attr in (
-                "base_model",
-                "model",
-                "language_model",
-                "transformer",
-                "decoder",
-            ):
-                deeper = getattr(candidate, attr, None)
-                if deeper is not None and deeper is not candidate:
-                    candidate = deeper
-                    break
-            else:
-                break  # nothing left to unwrap
+        # A VLM has a text decoder's `.layers` and its encoders' too, so look at every `layers` list
+        # instead of the first one an unwrap reaches, and skip the vision and audio towers.
+        layers = _text_decoder_layers(model)
 
         if layers is None:
             raise ValueError(
@@ -216,8 +227,7 @@ class ActivationCapture:
         self._layers = layers
 
         # ---- read config dimensions ---------------------------------------
-        # `candidate` is now the object that owns `.layers`; walk up from model
-        # trying common nesting patterns so we find the HF config object.
+        # Walk down from model through common nesting patterns to find the HF config object.
         raw_cfg = None
         cfg_candidates = [model]
         _c = model
@@ -261,15 +271,7 @@ class ActivationCapture:
             self._discover_lora_modules()
 
         # ---- write metadata once ------------------------------------------
-        lora_targets = []
-        if self._lora_modules:
-            # Get unique target names across all layers
-            all_targets = set()
-            for mods in self._lora_modules.values():
-                for name, _, _ in mods:
-                    all_targets.add(name)
-            lora_targets = sorted(all_targets)
-
+        self._model_name = model_name
         metadata = {
             "model_name": model_name,
             "num_layers": len(self._layers),
@@ -281,15 +283,10 @@ class ActivationCapture:
             "capture_mlp_out": config.capture_mlp_out,
             "capture_gradients": config.capture_gradients,
             "capture_lora_norms": config.capture_lora_norms,
-            "lora_targets": lora_targets,
+            "lora_targets": self._lora_targets,
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
-        with open(os.path.join(config.output_dir, "metadata.json"), "w", encoding = "utf-8") as f:
-            json.dump(metadata, f, indent = 2)
-
-        # ---- prepare output file -----------------------------------------
-        self._log_path = os.path.join(config.output_dir, "activation_log.jsonl")
-        open(self._log_path, "w", encoding = "utf-8").close()  # truncate / create
+        self._write_metadata(metadata)
 
         logger.info(
             "ActivationCapture: %d channels × %d layers → %s",
@@ -330,6 +327,9 @@ class ActivationCapture:
                     layer_loras.append((target_name, lora_A, lora_B))
             if layer_loras:
                 self._lora_modules[idx] = layer_loras
+        self._lora_targets = sorted(
+            {name for mods in self._lora_modules.values() for name, _, _ in mods}
+        )
 
         if self._lora_modules:
             total_adapters = sum(len(v) for v in self._lora_modules.values())
@@ -381,8 +381,11 @@ class ActivationCapture:
     def attach(self):
         """Register forward hooks on all decoder layers (and optionally MLPs).
 
-        Also registers backward hooks for gradient capture if enabled.
+        Also registers backward hooks for gradient capture if enabled. Hooks left by a run that
+        ended without ``on_train_end`` are removed first, so a retry never doubles them.
         """
+        self.detach()
+        self._should_capture = False
         for idx, layer in enumerate(self._layers):
             h = layer.register_forward_hook(self._make_layer_hook(idx, kind = "layer"))
             self._hooks.append(h)
@@ -511,7 +514,7 @@ class ActivationCapture:
         self._grad_sq.clear()
 
     def flush(self):
-        """Write the buffered stats to JSONL and reset capture state.
+        """Hand the buffered stats to ``_write_record`` and reset capture state.
 
         Called by :class:`ActivationCaptureCallback` after each step completes.
         """
@@ -540,12 +543,24 @@ class ActivationCapture:
                     for target, norm in targets.items()
                 }
 
-        with open(self._log_path, "a", encoding = "utf-8") as f:
-            f.write(json.dumps(record, separators = (",", ":")) + "\n")
-
         self._buffer.clear()
         self._grad_buffer.clear()
         self._should_capture = False
+        self._write_record(record)
+
+    # Where records go; a subclass that stores them elsewhere overrides these two.
+    def _write_metadata(self, metadata: dict):
+        os.makedirs(self.config.output_dir, exist_ok = True)
+        with open(
+            os.path.join(self.config.output_dir, "metadata.json"), "w", encoding = "utf-8"
+        ) as f:
+            json.dump(metadata, f, indent = 2)
+        self._log_path = os.path.join(self.config.output_dir, "activation_log.jsonl")
+        open(self._log_path, "w", encoding = "utf-8").close()  # truncate / create
+
+    def _write_record(self, record: dict):
+        with open(self._log_path, "a", encoding = "utf-8") as f:
+            f.write(json.dumps(record, separators = (",", ":")) + "\n")
 
 
 # ---------------------------------------------------------------------------
@@ -586,6 +601,7 @@ class ActivationCaptureCallback(TrainerCallback):
     def on_train_begin(
         self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs
     ):
+        self._pending = False
         self.capture.attach()
         # Arm capture for step 0 so the pre-finetune baseline is recorded.
         self.capture.mark_capture(step = 0, loss = None)

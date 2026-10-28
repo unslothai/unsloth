@@ -5250,101 +5250,41 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 _job_id = config.get("job_id")
 
                 class _StudioActivationCapture(ActivationCapture):
-                    """ActivationCapture variant that writes only to the Studio SQLite DB.
-
-                    No JSONL files are created.  The base-class output_dir is
-                    pointed at a throwaway temp dir so ``super().__init__``
-                    doesn't crash, but ``_log_path`` is immediately redirected
-                    to ``os.devnull`` so the base-class flush path can never
-                    touch the filesystem.
-                    """
+                    """Writes metadata and records to the Studio DB instead of files."""
 
                     def __init__(self, model, cfg, job_id):
-                        super().__init__(model, cfg)
-                        # Redirect all base-class file writes to /dev/null
-                        self._log_path = os.devnull
                         self._studio_job_id = job_id
-                        if job_id:
-                            try:
-                                # Collect LoRA target names now that
-                                # _lora_modules has been populated by super().
-                                _lora_targets: list = []
-                                if self._lora_modules:
-                                    _all_t: set = set()
-                                    for _mods in self._lora_modules.values():
-                                        for _name, _, _ in _mods:
-                                            _all_t.add(_name)
-                                    _lora_targets = sorted(_all_t)
-                                _meta = {
-                                    "model_name": getattr(self, "_model_name", None),
-                                    "num_layers": len(getattr(self, "_layers", [])),
-                                    "hidden_size": getattr(self, "_hidden_size", None),
-                                    "intermediate_size": getattr(self, "_intermediate_size", None),
-                                    "captured_channels": getattr(self, "_sampled_channels", []),
-                                    "capture_interval": cfg.capture_interval,
-                                    "max_channels": cfg.max_channels,
-                                    "capture_mlp_out": cfg.capture_mlp_out,
-                                    "capture_gradients": cfg.capture_gradients,
-                                    "capture_lora_norms": cfg.capture_lora_norms,
-                                    "lora_targets": _lora_targets,
-                                }
-                                upsert_activation_metadata(job_id, _meta)
-                            except Exception as _e:
-                                logger.warning("DB activation metadata write failed: %s", _e)
+                        super().__init__(model, cfg)
 
-                    def flush(self):
-                        """Write to SQLite DB only — no JSONL file I/O."""
-                        if not self._buffer and not self._grad_buffer:
-                            self._should_capture = False
+                    def _write_metadata(self, metadata):
+                        if not self._studio_job_id:
                             return
+                        try:
+                            upsert_activation_metadata(self._studio_job_id, metadata)
+                        except Exception as _e:
+                            logger.warning("DB activation metadata write failed: %s", _e)
 
-                        _step = self._step
-                        _loss = self._loss
-                        _layers = {str(k): v for k, v in self._buffer.items()}
-                        _grad_norms = (
-                            {str(k): v for k, v in self._grad_buffer.items()}
-                            if self._grad_buffer
-                            else None
-                        )
-
-                        # Compute LoRA norms (mirrors base-class logic)
-                        _lora_norms = None
-                        if self.config.capture_lora_norms and self._lora_modules:
-                            _raw = self._compute_lora_norms()
-                            if _raw:
-                                _lora_norms = {
-                                    f"{_li}.{_tgt}": _norm
-                                    for _li, _tgts in _raw.items()
-                                    for _tgt, _norm in _tgts.items()
-                                }
-
-                        # Clear capture state (same as base class)
-                        self._buffer.clear()
-                        self._grad_buffer.clear()
-                        self._should_capture = False
-
-                        if self._studio_job_id:
-                            try:
-                                insert_activation_record(
-                                    self._studio_job_id,
-                                    _step,
-                                    _loss,
-                                    _layers,
-                                    _grad_norms,
-                                    _lora_norms,
-                                )
-                            except Exception as _e:
-                                logger.warning("DB activation record write failed: %s", _e)
+                    def _write_record(self, record):
+                        if not self._studio_job_id:
+                            return
+                        try:
+                            insert_activation_record(
+                                self._studio_job_id,
+                                record["step"],
+                                record["loss"],
+                                record["layers"],
+                                record.get("grad_norms"),
+                                record.get("lora_norms"),
+                            )
+                        except Exception as _e:
+                            logger.warning("DB activation record write failed: %s", _e)
 
                 # Target ~30 replay frames; fall back to every step when total unknown
                 _cfg_max_steps = config.get("max_steps", 0) or 0
                 _act_interval = max(1, _cfg_max_steps // 30) if _cfg_max_steps > 0 else 20
-                import tempfile as _tempfile
-
                 _act_config = ActivationCaptureConfig(
-                    # output_dir is required by the base class but we redirect
-                    # _log_path to os.devnull in __init__ so no files are kept.
-                    output_dir = _tempfile.mkdtemp(prefix = "unsloth_act_"),
+                    # Unused: the Studio subclass writes to the DB, never to output_dir.
+                    output_dir = "",
                     capture_interval = _act_interval,
                 )
                 _act_capture = _StudioActivationCapture(trainer.model, _act_config, _job_id)
