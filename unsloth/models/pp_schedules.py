@@ -48,9 +48,7 @@ class ScheduleSpec:
 _SPECS = {
     "gpipe": ScheduleSpec("gpipe", "ScheduleGPipe", False, "single", 1),
     "1f1b": ScheduleSpec("1f1b", "Schedule1F1B", False, "single", 1),
-    "interleaved1f1b": ScheduleSpec(
-        "interleaved1f1b", "ScheduleInterleaved1F1B", True, "loop", 2
-    ),
+    "interleaved1f1b": ScheduleSpec("interleaved1f1b", "ScheduleInterleaved1F1B", True, "loop", 2),
     "loopedbfs": ScheduleSpec("loopedbfs", "ScheduleLoopedBFS", True, "loop", 2),
     "interleavedzerobubble": ScheduleSpec(
         "interleavedzerobubble", "ScheduleInterleavedZeroBubble", True, "loop", 2

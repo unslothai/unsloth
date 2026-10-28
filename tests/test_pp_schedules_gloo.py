@@ -46,16 +46,21 @@ N_LAYERS = 8
 
 def _v_supported():
     import importlib
-
     return importlib.import_module("unsloth.models.pp_schedules").v_schedules_supported()
 
 
 def _skip_v(schedule):
     if schedule in V_SCHEDULES and not _v_supported():
-        pytest.skip(f"V schedules need torch >= 2.12 (refused on {torch.__version__}, see the refusal test)")
+        pytest.skip(
+            f"V schedules need torch >= 2.12 (refused on {torch.__version__}, see the refusal test)"
+        )
 
 
-def _stage_map(pp, schedule, v = 2):
+def _stage_map(
+    pp,
+    schedule,
+    v = 2,
+):
     """{global stage: pp rank} as the schedule places them."""
     out = {}
     for r in range(pp):
@@ -108,7 +113,6 @@ def _case_multi(
         # Unsloth compiles each decoder block (torch.compile regions): AOTAutograd's compiled backward donates
         # buffers, which a split (zero bubble) backward with retain_graph cannot run.
         from torch import _dynamo
-
         _dynamo.config.cache_size_limit = 64
         for layer in ppn._find_parts(model).layers:
             layer.compile(dynamic = False)
@@ -140,7 +144,9 @@ def _case_multi(
         loss = pp.step(ids, labels)
         if step == 0:
             grads = {
-                n: p.grad.detach().clone() for n, p in model.named_parameters() if p.grad is not None
+                n: p.grad.detach().clone()
+                for n, p in model.named_parameters()
+                if p.grad is not None
             }
             for h in handles:
                 h.remove()
@@ -186,7 +192,14 @@ def _case_multi(
     }
 
 
-def _check_multi(results, saved, pp, schedule, layers = N_LAYERS, v = 2):
+def _check_multi(
+    results,
+    saved,
+    pp,
+    schedule,
+    layers = N_LAYERS,
+    v = 2,
+):
     total = pp * v
     placement = _stage_map(pp, schedule, v)
     ref = results[0]["ref"]
@@ -207,7 +220,11 @@ def _check_multi(results, saved, pp, schedule, layers = N_LAYERS, v = 2):
             ref["losses"],
         )
         assert res["norms"][0] == pytest.approx(ref["norms"][0], rel = 1e-5), (rank, res["norms"])
-        assert res["norms"] == pytest.approx(ref["norms"], rel = 1e-4), (rank, res["norms"], ref["norms"])
+        assert res["norms"] == pytest.approx(ref["norms"], rel = 1e-4), (
+            rank,
+            res["norms"],
+            ref["norms"],
+        )
         assert set(res["grads"]) == res["owned"], sorted(set(res["grads"]) ^ res["owned"])[:6]
         assert not union & set(res["grads"]), "a trainable parameter lives on two ranks"
         union |= set(res["grads"])
@@ -228,7 +245,10 @@ def _check_multi(results, saved, pp, schedule, layers = N_LAYERS, v = 2):
         owned_layers = {i for k in res["local_stages"] for i in range(*bounds[k])}
         if res["gc"] is None:
             # Each owned layer runs once per micro-batch: a stage never runs this rank's other stages' layers.
-            assert res["layer_calls"] == {i: res["n_mb"] for i in owned_layers}, (rank, res["layer_calls"])
+            assert res["layer_calls"] == {i: res["n_mb"] for i in owned_layers}, (
+                rank,
+                res["layer_calls"],
+            )
         for i, name in enumerate(res["layer_types"]):
             assert (name == "_PPPassThrough") == (i not in owned_layers), (rank, i, name)
         assert "split for pipeline parallelism" in (res["direct_error"] or "")
@@ -373,7 +393,12 @@ def _worker(rank, world, port, case, tmp, kwargs):
         dist.destroy_process_group()
 
 
-def _spawn(case, world = 2, keep = None, **kwargs):
+def _spawn(
+    case,
+    world = 2,
+    keep = None,
+    **kwargs,
+):
     if _torch_pipelining_error():
         pytest.skip(_torch_pipelining_error())
     ctx = multiprocessing.get_context("spawn")
@@ -390,7 +415,8 @@ def _spawn(case, world = 2, keep = None, **kwargs):
         codes = [p.exitcode for p in procs]
         assert codes == [0] * world, f"rank exit codes {codes}"
         results = [
-            torch.load(os.path.join(tmp, f"result_{r}.pt"), weights_only = False) for r in range(world)
+            torch.load(os.path.join(tmp, f"result_{r}.pt"), weights_only = False)
+            for r in range(world)
         ]
         if keep is not None:
             keep["ref"] = _read_adapter(os.path.join(tmp, "ref"))
@@ -452,7 +478,9 @@ def test_pp2_zero_bubble_with_compiled_blocks_matches_one_process(schedule):
     if not _v_supported():
         # torch 2.10 / 2.11 split backward reads Function._input_metadata, which compiled (AOTAutograd) nodes
         # refuse: zero bubble over torch.compile'd layers is a torch limitation there.
-        pytest.skip(f"zero bubble over compiled layers needs torch >= 2.12 (torch {torch.__version__})")
+        pytest.skip(
+            f"zero bubble over compiled layers needs torch >= 2.12 (torch {torch.__version__})"
+        )
     saved = {}
     results = _spawn("multi", 2, keep = saved, arch = "llama", schedule = schedule, compile_layers = True)
     _check_multi(results, saved, 2, schedule)
@@ -460,10 +488,11 @@ def test_pp2_zero_bubble_with_compiled_blocks_matches_one_process(schedule):
 
 def test_pp4_interleaved1f1b_x_tp2_matches_one_process():
     from test_pp_fsdp2_gloo import _check, _spawn as compose_spawn
-
     dims = {"pp": 2, "tp": 2}
     _check(
-        compose_spawn("compose", world = 4, arch = "llama", dims = dims, schedule = "interleaved1f1b", n_mb = 4),
+        compose_spawn(
+            "compose", world = 4, arch = "llama", dims = dims, schedule = "interleaved1f1b", n_mb = 4
+        ),
         dims,
     )
 
@@ -471,7 +500,9 @@ def test_pp4_interleaved1f1b_x_tp2_matches_one_process():
 def test_multi_stage_refusals_leave_the_model_uncut():
     res = _spawn("refusals", 2)[0]
     for key in [k for k in res if not k.endswith(":uncut")]:
-        if key in ("loopedbfs_old_zoo", "interleaved_fused_lora") or (key == "v_schedule" and _v_supported()):
+        if key in ("loopedbfs_old_zoo", "interleaved_fused_lora") or (
+            key == "v_schedule" and _v_supported()
+        ):
             continue
         assert res[key + ":uncut"], (key, res[key])
     assert "pipeline schedule must be one of" in res["unknown"]
@@ -487,7 +518,10 @@ def test_multi_stage_refusals_leave_the_model_uncut():
     assert "splits each backward into an input and a weight pass" in res["zb_reentrant_gc"]
     assert "interleaves forwards and backwards" in res["interleaved_old_zoo"]
     assert res["loopedbfs_old_zoo"] is None
-    assert "runs the backward of Unsloth's fused LoRA kernels (apply_lora_qkv) twice" in res["zb_fused_lora"]
+    assert (
+        "runs the backward of Unsloth's fused LoRA kernels (apply_lora_qkv) twice"
+        in res["zb_fused_lora"]
+    )
     assert res["interleaved_fused_lora"] is None  # full-backward schedules keep the fused kernels
     if _v_supported():
         assert res["v_schedule"] is None
