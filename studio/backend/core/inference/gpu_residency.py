@@ -599,6 +599,20 @@ def mlx_replaced_credit_mib(orch) -> int:
         return 0
 
 
+def gguf_replaced_credit_mib(llama) -> int:
+    """MiB a non-GGUF primary load gets back from the llama-server it tears down first."""
+    try:
+        proc = getattr(llama, "_process", None)
+        if not llama.is_loaded or proc is None or proc.pid is None:
+            return 0
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        usage = LlamaCppBackend._darwin_rusage(proc.pid)
+        return 0 if usage is None else usage[1] // (1024 * 1024)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def mlx_slots_outgrow_price(orch, n_parallel) -> bool:
     """Whether serving ``n_parallel`` rows grows a resident MLX model beside media past what it was admitted at."""
     try:

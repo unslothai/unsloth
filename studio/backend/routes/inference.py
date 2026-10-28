@@ -18958,8 +18958,15 @@ async def _load_model_impl(
                 )
                 mlx_credit_mib = 0
                 if mlx_chat_need is not None and replacing:
-                    from core.inference.gpu_residency import mlx_replaced_credit_mib
-                    mlx_credit_mib = await asyncio.to_thread(mlx_replaced_credit_mib, backend)
+                    from core.inference.gpu_residency import (
+                        gguf_replaced_credit_mib,
+                        mlx_replaced_credit_mib,
+                    )
+
+                    # Whichever primary is serving goes before this load starts.
+                    mlx_credit_mib = await asyncio.to_thread(
+                        mlx_replaced_credit_mib, backend
+                    ) + await asyncio.to_thread(gguf_replaced_credit_mib, llama_backend)
                 handoff_kwargs.update(
                     _chat_fit_kwargs(
                         config,

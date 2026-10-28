@@ -389,6 +389,7 @@ def test_an_mlx_load_is_credited_what_it_replaces_and_more_rows_reprice_it():
         "not _mlx_slots_outgrow_price(backend, _n_parallel)" in source[shortcut - 1200 : shortcut]
     )
     credit = source.index("if mlx_chat_need is not None and replacing:")
+    assert credit < source.index("gguf_replaced_credit_mib, llama_backend", credit)
     assert credit < source.index("mlx_credit_mib = mlx_credit_mib", credit)
 
 
