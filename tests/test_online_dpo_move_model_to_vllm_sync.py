@@ -212,3 +212,38 @@ def test_trl_022_inline_sync_reaches_trl_engine():
     assert rec.loaded[:2] == ["proj.weight", "proj.bias"]
     assert not torch.equal(rec.tensors["proj.weight"], base)
     assert torch.equal(model.base_model.model.proj.base_layer.weight, base)
+
+
+# trl 1.15.0 experimental/online_dpo/online_dpo_trainer.py, generation trimmed.
+_COLOCATE_SOURCE = """
+    def _generate_vllm_colocate(self, prompts, images=None):
+        if self.args.vllm_enable_sleep_mode:
+            self.llm.wake_up(tags=["weights"])
+        if self.state.global_step != self._last_loaded_step:
+            self._move_model_to_vllm()
+            self._last_loaded_step = self.state.global_step
+        if self.args.vllm_enable_sleep_mode:
+            self.llm.sleep(level=2)
+        return prompts
+"""
+
+
+def test_level2_sleep_reloads_weights_on_the_next_microbatch():
+    from unsloth.models.rl_replacements import RL_FUNCTIONS
+
+    source = _COLOCATE_SOURCE
+    for edit in RL_FUNCTIONS["online_dpo_trainer"]:
+        source = edit("_generate_vllm_colocate", source)
+    namespace = {}
+    exec(textwrap.dedent(source), namespace)
+    syncs = []
+    trainer = types.SimpleNamespace(
+        args = types.SimpleNamespace(vllm_enable_sleep_mode = True),
+        llm = types.SimpleNamespace(wake_up = lambda tags: None, sleep = lambda level: None),
+        state = types.SimpleNamespace(global_step = 0),
+        _last_loaded_step = -1,
+        _move_model_to_vllm = lambda: syncs.append(1),
+    )
+    for _ in range(2):
+        namespace["_generate_vllm_colocate"](trainer, ["p"])
+    assert len(syncs) == 2

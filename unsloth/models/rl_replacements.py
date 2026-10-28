@@ -3442,6 +3442,21 @@ def online_dpo_trainer__generate_vllm(function_name, function):
 RL_FUNCTIONS["online_dpo_trainer"].append(online_dpo_trainer__generate_vllm)
 
 
+def online_dpo_trainer__generate_vllm_colocate(function_name, function):
+    # Level-2 sleep discards the weights, but the next microbatch of the same step skips the sync.
+    if function_name != "_generate_vllm_colocate":
+        return function
+    return re.sub(
+        r"^([ \t]+)self\.llm\.sleep\(level=2\)\n",
+        r"\1self.llm.sleep(level=2)\n\1self._last_loaded_step = -1\n",
+        function,
+        flags = re.MULTILINE,
+    )
+
+
+RL_FUNCTIONS["online_dpo_trainer"].append(online_dpo_trainer__generate_vllm_colocate)
+
+
 def grpo_trainer__get_per_token_logps(function_name, function):
     if function_name != "_get_per_token_logps":
         return function
