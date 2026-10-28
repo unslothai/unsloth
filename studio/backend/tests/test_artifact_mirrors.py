@@ -209,7 +209,9 @@ def test_the_fp8_artifact_mirror_lists_as_its_checkpoint_not_as_a_pipeline(
     gave the FP8 repo before the folders arrived): visible and deletable, never offered as a pipeline load the backend
     rejects, never a companion-prefetch partial."""
     if cached == "full" and scan is _inventory_row:
-        pytest.skip("a whole base pipeline lists as the base: test_a_base_pipeline_cached_in_an_artifact_mirror_...")
+        pytest.skip(
+            "a whole base pipeline lists as the base: test_a_base_pipeline_cached_in_an_artifact_mirror_..."
+        )
     files = {**_FP8_ROOT, **_FOLDERS, **(_DENOISER if cached == "full" else {})}
     row = scan(monkeypatch, tmp_path, _FP8_REPO, files)
     assert row["single_file"] is True
@@ -965,9 +967,7 @@ def test_a_base_pipeline_cached_in_an_artifact_mirror_lists_as_the_base(
     assert row["single_file"] is False and not row["partial"] and not row["companion"]
     assert row["load_id"] == base
     assert row["cache_path"] == str(cached.repo_path)
-    assert row["size_bytes"] == sum(
-        v for k, v in files.items() if k.endswith(".safetensors")
-    )
+    assert row["size_bytes"] == sum(v for k, v in files.items() if k.endswith(".safetensors"))
 
 
 def test_a_base_pipeline_in_a_mirror_outside_the_active_cache_pins_its_snapshot(
@@ -1001,7 +1001,10 @@ def test_deleting_the_base_row_targets_the_artifact_mirror_copy(monkeypatch, tmp
     resolve = cache_inventory.artifact_mirror_delete_id
     assert resolve("Qwen/Qwen-Image-2.1-Turbo", str(fp8.repo_path)) == _FP8_REPO
     assert resolve("Qwen/Qwen-Image-2.1-Turbo", None) == _FP8_REPO
-    assert resolve("Qwen/Qwen-Image-2.1-Turbo", str(tmp_path / "models--Qwen--Qwen-Image-2.1-Turbo")) is None
+    assert (
+        resolve("Qwen/Qwen-Image-2.1-Turbo", str(tmp_path / "models--Qwen--Qwen-Image-2.1-Turbo"))
+        is None
+    )
     assert resolve(_FP8_REPO, str(fp8.repo_path)) is None
     assert resolve("Qwen/Qwen-Image-2512", None) is None
     # A -GGUF mirror holding a quant: its folders belong to the GGUF row, never deleted through the base.
@@ -1023,7 +1026,13 @@ def test_the_delete_route_passes_the_mirror_id_to_the_destructive_step(monkeypat
     monkeypatch.setattr(deletion.account_access, "require_installation_owner", lambda: None)
     seen = {}
 
-    def fake_delete(repo_id, variant, hf_token, cache_path = None, **_kw):
+    def fake_delete(
+        repo_id,
+        variant,
+        hf_token,
+        cache_path = None,
+        **_kw,
+    ):
         seen["repo_id"] = repo_id
         return {"status": "deleted", "repo_id": repo_id}
 

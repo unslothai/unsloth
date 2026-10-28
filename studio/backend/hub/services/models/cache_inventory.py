@@ -1265,6 +1265,7 @@ def _scan_cached_models(
                 cached_id = repo_id
                 if base_pipeline:
                     from core.inference.diffusion_families import canonical_base
+
                     artifact_checkpoint = False
                     repo_id = canonical_base(cached_id)
                     if identity.load_id == cached_id:
@@ -1478,6 +1479,7 @@ def artifact_mirror_delete_id(repo_id: str, cache_path: Optional[str]) -> Option
     under the base id), else None."""
     try:
         from core.inference.diffusion_families import mirror_repo
+
         mirror = mirror_repo(repo_id)
         if not mirror or not _hosts_artifacts(mirror):
             return None

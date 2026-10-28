@@ -1140,9 +1140,7 @@ async def delete_cached_model_response(
                 )
         # A base listed from its artifact mirror's copy deletes that copy.
         mirror_id = (
-            await asyncio.to_thread(
-                cache_inventory.artifact_mirror_delete_id, repo_id, cache_path
-            )
+            await asyncio.to_thread(cache_inventory.artifact_mirror_delete_id, repo_id, cache_path)
             if variant is None
             else None
         )
