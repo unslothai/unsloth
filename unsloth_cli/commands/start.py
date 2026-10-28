@@ -5944,8 +5944,7 @@ def _vibe_env(
     if window:
         window = int(window)
         entry["max_context_length"] = window
-        # Vibe compacts at 200k tokens by default, past most local windows.
-        # Vibe 3 refuses a threshold that leaves less than min(24k, window / 4) free.
+        # Vibe's 200k default is past most local windows; Vibe 3 needs min(24k, window / 4) free.
         entry["auto_compact_threshold"] = min(
             int(window * 0.9), window - min(24_000, math.ceil(window / 4))
         )
