@@ -22,6 +22,8 @@ import sys
 import time
 from pathlib import Path
 
+from unsloth_pwsh_runner import run_pwsh
+
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -268,7 +270,7 @@ def test_setup_ps1_block_never_fails(tmp_path, opt_out, expect_call):
         env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)}
     if opt_out:
         env[opt_out[0]] = opt_out[1]
-    result = subprocess.run(
+    result = run_pwsh(
         [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
         env = env,
         capture_output = True,
