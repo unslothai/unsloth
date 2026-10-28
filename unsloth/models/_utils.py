@@ -1668,10 +1668,6 @@ def _get_flash_attention_disable_reason(config):
     return None
 
 
-def _is_flash_attention_disabled(config):
-    return _get_flash_attention_disable_reason(config) is not None
-
-
 def _is_flash_attention_requested(attn_implementation):
     return isinstance(attn_implementation, str) and attn_implementation.startswith(
         "flash_attention"
