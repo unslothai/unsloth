@@ -1185,7 +1185,8 @@ def _swap_on(
             recs = [(m, r) for m, r in recs if r[1] is None]
             if logger is not None:
                 logger.info(
-                    "diffusion.int8_gemm: rotated Linears keep the stock path on cuda:%d (rotq_h16 off)", index
+                    "diffusion.int8_gemm: rotated Linears keep the stock path on cuda:%d (rotq_h16 off)",
+                    index,
                 )
     if not gemm and logger is not None and _UNLISTED_TIMING.get(index):
         t = _UNLISTED_TIMING[index]
@@ -1248,7 +1249,9 @@ def _swap_on(
             count,
             "run the fused-dequant GEMM (bf16 out)" if gemm else "keep cuBLAS",
             *torch.cuda.get_device_capability(index),
-            f" (latency check: {timing['fused']:.0f} vs {timing['stock']:.0f} us cuBLAS)" if timing else "",
+            f" (latency check: {timing['fused']:.0f} vs {timing['stock']:.0f} us cuBLAS)"
+            if timing
+            else "",
             (
                 ", ConvRot rotation fused into the act quant ("
                 + ("H16 x H16 kernel" if _H16_DEVICE.get(index) else "dense rotation kernel")

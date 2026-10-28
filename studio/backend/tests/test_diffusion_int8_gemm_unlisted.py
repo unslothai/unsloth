@@ -24,7 +24,13 @@ _ENVS = (
 
 
 def _reset():
-    for d in (g8._DEVICE_CFG, g8._DEVICE_TILES, g8._UNLISTED_PROBE, g8._UNLISTED_OK, g8._UNLISTED_TIMING):
+    for d in (
+        g8._DEVICE_CFG,
+        g8._DEVICE_TILES,
+        g8._UNLISTED_PROBE,
+        g8._UNLISTED_OK,
+        g8._UNLISTED_TIMING,
+    ):
         d.clear()
     g8._UNLISTED_CARDS.clear()
 
@@ -39,7 +45,13 @@ def _clean(monkeypatch):
 
 
 class _Fake:
-    def __init__(self, monkeypatch, cap, probe = True, timing = None):
+    def __init__(
+        self,
+        monkeypatch,
+        cap,
+        probe = True,
+        timing = None,
+    ):
         self.probes, self.timed = [], []
         self.timing = timing if timing is not None else {"fused": 10.0, "stock": 20.0}
         monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
@@ -191,7 +203,9 @@ def test_gate_takes_no_int8_fused_lock(monkeypatch, timing):
     monkeypatch.setattr(f8, "_act_quant_device_ok", lambda index: True)
     monkeypatch.setattr(f8, "_act_quant_op", lambda: "actq")
     seen = []
-    monkeypatch.setattr(cq, "unlisted_device_ok", lambda index, stock = None: seen.append(stock) or True)
+    monkeypatch.setattr(
+        cq, "unlisted_device_ok", lambda index, stock = None: seen.append(stock) or True
+    )
     out = []
     with f8._LOCK:
         t = threading.Thread(target = lambda: out.append(g8.rotated_swapped(0)), daemon = True)
@@ -233,7 +247,11 @@ def _swap(monkeypatch, gemm, rot):
 def test_swap_unlisted_with_rotq_h16_takes_every_linear(monkeypatch):
     count, recs = _swap(monkeypatch, gemm = True, rot = True)
     assert count == 3
-    assert [r[2] for r in recs] == [False, True, True]  # rotation fused into the act quant on the rotated ones
+    assert [r[2] for r in recs] == [
+        False,
+        True,
+        True,
+    ]  # rotation fused into the act quant on the rotated ones
     assert all(r[4] for r in recs)  # fused GEMM on all
 
 
