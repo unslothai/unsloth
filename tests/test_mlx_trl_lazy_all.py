@@ -155,3 +155,38 @@ def test_a_reentrant_all_read_during_filtering_sees_the_raw_names(lazy_all):
     assert trl.__all__ == ["A"]
     assert seen == [["A", "B"]]
     assert trl.__all__ == ["A"]
+
+
+class _LazyDirLike(_LazyLike):
+    """trl's _LazyModule.__dir__: the namespace listing, then any __all__ name not in it."""
+
+    def __dir__(self):
+        result = super().__dir__()
+        for attr in self.__all__:
+            if attr not in result:
+                result.append(attr)
+        return result
+
+
+@pytest.mark.parametrize("dir_first", [True, False])
+def test_dir_matches_the_eager_filter(lazy_all, dir_first):
+    def make():
+        trl = _LazyDirLike(
+            "trl", {"DataCollator": object, "Broken": _broken, "GRPOTrainer": object}
+        )
+        trl.SFTTrainer = trl.SFTConfig = object
+        return trl
+
+    eager = make()
+    eager.__all__ = _filter(eager, list(eager.__all__))
+    lazy = make()
+    lazy_all.install_lazy_trl_all(lazy, _filter)
+    if dir_first:
+        listed = dir(lazy)
+        assert lazy.__all__ == eager.__all__
+    else:
+        assert lazy.__all__ == eager.__all__
+        listed = dir(lazy)
+    assert listed == dir(eager)
+    # Built: no hook or bookkeeping name is left in trl's namespace.
+    assert not {"__getattr__", "__dir__", "_unsloth_mlx_trl_all"} & set(vars(lazy))
