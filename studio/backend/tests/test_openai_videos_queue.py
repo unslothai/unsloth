@@ -383,9 +383,9 @@ def test_creates_arriving_together_cannot_pass_the_cap_together(client, backend,
     monkeypatch.setattr(video_routes, "VIDEO_QUEUE_MAX_PER_ACCOUNT", 1)
     real_display = video_routes._queued_job_display
 
-    def _slow_display(body, inputs):
+    def _slow_display(*args):
         time.sleep(0.2)
-        return real_display(body, inputs)
+        return real_display(*args)
 
     monkeypatch.setattr(video_routes, "_queued_job_display", _slow_display)
     _render_one(client, backend)
@@ -403,3 +403,71 @@ def test_creates_arriving_together_cannot_pass_the_cap_together(client, backend,
         backend.gate.set()
     assert statuses == [200, 429]
     assert len(video_routes._VIDEO_QUEUE) == 1
+
+
+def test_a_queued_start_is_counted_by_the_media_admission_gate(client, backend, monkeypatch):
+    from core.inference import media_keepwarm
+    from core.inference.gpu_arbiter import VIDEO
+
+    first = _render_one(client, backend)
+    queued = client.post("/v1/videos", json = {"prompt": "counted"}).json()
+    backend.gate.set()
+    _wait_terminal(client, first["id"])
+    tracker = media_keepwarm._TRACKERS[VIDEO]
+    real_start = video_routes._start_openai_video
+    seen = []
+
+    async def _start_and_count(*args, **kwargs):
+        seen.append(tracker.outstanding())
+        return await real_start(*args, **kwargs)
+
+    monkeypatch.setattr(video_routes, "_start_openai_video", _start_and_count)
+    before = tracker.outstanding()
+    _drain()
+    assert seen == [before + 1]
+    assert tracker.outstanding() == before
+    assert _wait_terminal(client, queued["id"])["status"] == "completed"
+
+
+def test_a_queued_video_waits_while_a_model_load_is_in_flight(client, backend):
+    first = _render_one(client, backend)
+    queued = client.post("/v1/videos", json = {"prompt": "after the load"}).json()
+    backend.gate.set()
+    _wait_terminal(client, first["id"])
+    backend.loaded = False
+    backend.loading = ("unsloth/LTX-2.3-GGUF",)
+    _drain()
+    assert client.get(f"/v1/videos/{queued['id']}").json()["status"] == "queued"
+    assert [entry.id for entry in video_routes._VIDEO_QUEUE] == [queued["id"]]
+
+    backend.loading = ()
+    backend.loaded = True
+    _drain()
+    assert _wait_terminal(client, queued["id"])["status"] == "completed"
+
+
+def test_model_dependent_input_is_refused_at_once_rather_than_queued(client, backend):
+    bad = ({"num_frames": 2}, {"size": "769x512"})
+    idle = [client.post("/v1/videos", json = {"prompt": "bad", **payload}) for payload in bad]
+    assert [r.status_code for r in idle] == [400, 400]
+    _render_one(client, backend)
+    try:
+        busy = [client.post("/v1/videos", json = {"prompt": "bad", **payload}) for payload in bad]
+        assert [r.status_code for r in busy] == [400, 400]
+        assert [r.json()["error"] for r in busy] == [r.json()["error"] for r in idle]
+        assert video_routes._VIDEO_QUEUE == []
+    finally:
+        backend.gate.set()
+
+
+def test_a_queued_job_names_the_resident_model_when_auto_switch_is_off(
+    client, backend, monkeypatch
+):
+    import utils.openai_auto_switch_settings as auto_switch_settings
+
+    monkeypatch.setattr(auto_switch_settings, "get_media_auto_switch_enabled", lambda: False)
+    first = _render_one(client, backend)
+    queued = client.post("/v1/videos", json = {"prompt": "x", "model": "sora-2"}).json()
+    assert queued["status"] == "queued"
+    assert queued["model"] == first["model"] != "sora-2"
+    backend.gate.set()
