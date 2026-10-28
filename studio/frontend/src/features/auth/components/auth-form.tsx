@@ -375,7 +375,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
           className="mx-auto mb-2 h-20 w-20 object-contain"
           style={spookySloth?.enlarge ? { scale: "1.15" } : undefined}
         />
-        <h2 className="font-semibold text-[26px] text-foreground leading-tight tracking-[-0.02em]">{title}</h2>
+        <h2 className="font-semibold text-ui-28 text-foreground leading-tight tracking-[-0.02em]">{title}</h2>
         <p className="text-muted-foreground text-sm">{subtitle}</p>
       </div>
       {/* Not a live region: it re-renders every second, so it would be read aloud on every tick. */}
