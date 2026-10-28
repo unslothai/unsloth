@@ -173,8 +173,7 @@ def _ddp_scenario(rank, scenario, usable):
 
 
 def _join_scenario(rank, scenario, usable):
-    """DDP.join() with uneven inputs: rank 0 runs out after one batch, before the planning forward
-    rank 1 reaches at its second batch."""
+    """DDP.join(): rank 0 runs out of inputs before rank 1's planning forward."""
     from torch.nn.parallel import DistributedDataParallel as DDP
 
     T, ns = _load()
@@ -374,8 +373,7 @@ def test_fsdp2_training_unchanged_and_ranks_agree(accumulation):
 
 
 def test_ddp_join_with_uneven_inputs_keeps_every_layer_checkpointed():
-    # Under DDP.join() a rank that ran out of inputs only shadows DDP's own collectives: a planning
-    # all_reduce on the other rank would pair with them. Join keeps every layer checkpointed.
+    # A joined rank only shadows DDP's collectives, so a planning all_reduce would mispair.
     usable = [8 * GIB, 8 * GIB]
     auto = _launch("join", True, usable)
     reference = _launch("join", False, usable)
