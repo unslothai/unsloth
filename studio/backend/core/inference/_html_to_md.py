@@ -798,7 +798,6 @@ class _MarkdownRenderer(HTMLParser):
         page_span_limit: int | None = None,
     ):
         super().__init__(convert_charrefs = False)
-        # handler calls kept for later passes over the same document (see _TokenLog)
         self._record: list | None = None
         # parser positions of buttons that carry their heading title, found by _TitleButtonScan
         self.title_buttons: frozenset[tuple[int, int]] = frozenset()
@@ -2003,8 +2002,7 @@ class _MarkdownRenderer(HTMLParser):
         self._emit(text)
 
     def replay(self, events: list) -> None:
-        """Run the handler calls ``_TokenLog`` recorded, as ``feed(source); close()`` would make
-        them: same order, same arguments, ``getpos()`` at each start tag as the tokenizer had it."""
+        """Re-run recorded handler calls in order, restoring ``getpos()`` at each start tag."""
         start, end, data = self.handle_starttag, self.handle_endtag, self.handle_data
         for kind, arg in events:
             if kind == 2:
@@ -2164,20 +2162,15 @@ def _strip_boilerplate_lines(text: str, site_links: SiteLinks | None = None) -> 
 
 
 class _TokenLog:
-    """The stdlib tokenizer's handler calls for one document, shared by every renderer pass of one
-    ``html_to_markdown`` call. The first pass records them while it renders (``feed`` + ``close`` as
-    always, so a tokenizer or renderer error surfaces exactly where it did); later passes replay
-    them (``_MarkdownRenderer.replay``). Every pass uses the same settings (``convert_charrefs =
-    False``, one ``feed`` then ``close``), the renderer overrides only these five handlers, and it
-    reads parser state only through ``getpos()`` in ``handle_starttag``."""
+    """Handler calls of one document, recorded by the first fed pass and replayed by later ones.
+    Sound only while the renderer overrides just these five handlers and reads parser state only
+    via ``getpos()`` in ``handle_starttag``."""
 
     __slots__ = ("events", "armed")
 
     def __init__(self, armed: bool) -> None:
         self.events: list | None = None
-        # Recording costs a little, so a pass records only when html_to_markdown knows another
-        # pass will follow it (set before each scope pass); a pass that turns out not to be the
-        # last (a scoring or title-button pass) is still fed, as before.
+        # record only when html_to_markdown knows another pass follows
         self.armed = armed
 
 
@@ -2276,7 +2269,6 @@ def _select_main_scope_render(
     best_visible = 0
     for i, seg in enumerate(renderer.scope_segments):
         rendered = _strip_boilerplate_lines(_cleanup(seg), site_links)
-        # Same pure cleanup of the same text when no span-scoring pass ran.
         scored = (
             rendered
             if scoring is renderer
@@ -2350,7 +2342,7 @@ def _visible_len(line: str) -> int:
     """Length of *line* without Markdown link destinations. A tracking URL is not
     prose: a card holding one [Read](/x?<300 bytes>) otherwise scored 339 visible
     characters off 4 and displaced the article. Scanned, so no backtracking."""
-    # Without a bracket there is no link and without a backslash no escape: every char counts once.
+    # no link and no escape: every char counts
     if "[" not in line and "\\" not in line:
         return len(line)
     total, i, n = 0, 0, len(line)
@@ -2387,7 +2379,7 @@ def _visible_len(line: str) -> int:
 
 # Scoped conversions shorter than this are rejected as main content, e.g. an empty article stub
 _MIN_MAIN_CONTENT_CHARS = 200
-# Without this text no tag can tokenize as <article> / <main>, so that scope finds nothing.
+# absent text = no such tag can tokenize, so that scope finds nothing
 _ARTICLE_START = re.compile(r"<article", re.IGNORECASE)
 _MAIN_START = re.compile(r"<main", re.IGNORECASE)
 
@@ -2407,13 +2399,12 @@ def html_to_markdown(
     rendered = ""
     full_rendered = ""
     if main_content:
-        # Scope passes, scoring passes and the whole-page fallback all tokenize the same source once.
         tokens = _TokenLog(armed = _ARTICLE_START.search(source_html) is None)
         length, rendered, articles, article_visible = _select_main_scope_render(
             source_html, "article", site_links, span_limit, tokens
         )
         if length < _MIN_MAIN_CONTENT_CHARS or articles > 1:
-            # With no <main> the main scope scores 0, so the whole-page pass below runs.
+            # no <main> = main scope scores 0, so the whole-page pass below runs
             tokens.armed = _MAIN_START.search(source_html) is None and (
                 articles > 2 or length < _MIN_MAIN_CONTENT_CHARS
             )
