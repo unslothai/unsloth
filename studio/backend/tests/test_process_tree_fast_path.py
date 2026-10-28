@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""/api/system sums the RSS of the backend's process tree every few seconds. On Linux the tree is
-walked through /proc/<pid>/task/<tid>/children instead of psutil's host-wide scan; it must find the
-same descendants, and psutil still answers whenever the walk cannot."""
+"""The /proc walk finds what psutil finds, and psutil answers whenever the walk cannot."""
 
 from __future__ import annotations
 
@@ -36,8 +34,7 @@ def tree():
     # Earlier tests in this session can leave children of their own; count only ours.
     before = {child.pid for child in me.children(recursive = True)}
     procs = [_sleeper(), subprocess.Popen([sys.executable, "-c", nested])]
-    # A child forked by another thread is listed under that thread's task while the thread lives
-    # (once it exits the child moves to the main task), so keep it alive across the walk.
+    # A live thread lists its own children (they move to the main task once it exits): keep it alive.
     forked = threading.Event()
     release = threading.Event()
 
@@ -115,8 +112,7 @@ def test_a_descendant_exiting_mid_walk_is_skipped(tmp_path, monkeypatch):
 
 @linux_only
 def test_a_thread_vanishing_mid_walk_defers_to_psutil(tmp_path, monkeypatch):
-    # Thread 7 was listed, then exited before its children file was read; its live children may have
-    # moved to thread 1, already read, so the walk cannot vouch for a complete answer.
+    # Thread 7 exited mid-walk; its children may have moved to thread 1, already read.
     root = tmp_path / "1" / "task"
     (root / "1").mkdir(parents = True)
     (root / "1" / "children").write_text("2", encoding = "utf-8")
@@ -132,5 +128,4 @@ def test_tree_memory_uses_the_walk_and_falls_back_to_psutil(tree, monkeypatch):
     walked = main._process_tree_rss_mb(tree)
     monkeypatch.setattr(process_tree, "linux_descendant_pids", lambda pid: None)
     scanned = main._process_tree_rss_mb(tree)
-    # Same processes either way; RSS can move a little between the two reads.
     assert abs(walked - scanned) <= max(8, scanned // 20)
