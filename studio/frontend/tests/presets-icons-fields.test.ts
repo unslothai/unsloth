@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { WORKFLOW_TABS } from "../src/features/images/workflows.ts";
-import { AiPaintbrushIcon } from "../src/lib/ai-paintbrush-icon.ts";
+import { PaintbrushIcon } from "../src/lib/paintbrush-icon.ts";
 import { readSrc } from "./helpers/kit.ts";
 
 const PRESETS = readSrc(
@@ -24,12 +24,12 @@ test("preset menu actions use Hugeicons' upload and clipboard-paste", () => {
   assert.doesNotMatch(PRESETS, /ImageUp|ClipboardPaste,/);
 });
 
-test("Inpaint uses the vendored AI paintbrush", () => {
+test("Inpaint uses the vendored paintbrush", () => {
   assert.equal(
     WORKFLOW_TABS.find((tab) => tab.id === "inpaint")?.icon,
-    AiPaintbrushIcon,
+    PaintbrushIcon,
   );
-  assert.equal(AiPaintbrushIcon.length, 3);
+  assert.equal(PaintbrushIcon.length, 4);
 });
 
 test("the save row shares the preset list's 8px sides", () => {

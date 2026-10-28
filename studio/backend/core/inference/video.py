@@ -13165,7 +13165,7 @@ class VideoBackend:
                 if image is None:
                     return None
                 path = Path(scratch) / f"{name}.png"
-                image.save(path, format = "PNG")
+                image.save(path, format = "PNG", compress_level = 1)
                 return str(path)
 
             init_img = stage(first_frame, "first")

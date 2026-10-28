@@ -39,7 +39,7 @@ test("API, Library, then the other media page with an arrow, at the chat header'
   );
   assert.match(
     LINK,
-    /icon=\{to === "\/images" \? Image03Icon : FlimSlateIcon\}/,
+    /icon=\{to === "\/images" \? Image01Icon : FlimSlateIcon\}/,
   );
 });
 
@@ -103,6 +103,6 @@ test("Create and Train get roomy tabs on Images and Video", () => {
 
 test("Reapply's icon sits at the button's own gap", () => {
   for (const page of [IMAGES, VIDEO]) {
-    assert.match(page, /<HugeiconsIcon icon=\{ReloadIcon\} className="size-4" \/>\s*Reapply/);
+    assert.match(page, /<HugeiconsIcon icon=\{Refresh01Icon\} className="size-4" \/>\s*Reapply/);
   }
 });

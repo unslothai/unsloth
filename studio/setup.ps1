@@ -158,6 +158,7 @@ $script:NvidiaLibraryInventoryProbed = $false
 $script:NvidiaLibraryInventory = $null
 # Initialised for Set-StrictMode and for a dot-sourced rerun in the same session.
 $script:OfflineFastPath = $false
+$script:SetupVenvChanged = $false
 $script:CudaToolkitReady = $false
 $script:NvccPath = $null
 $script:CudaToolkitRoot = $null
@@ -8394,6 +8395,7 @@ if (-not $NoTorchMode) {
 substep "running ordered dependency installation..."
 python "$PSScriptRoot\install_python_stack.py"
 $stackExit = $LASTEXITCODE
+$script:SetupVenvChanged = $true
 
 # ── Intel XPU: bitsandbytes must carry XPU kernels ──
 # Only bitsandbytes' XPU library exports the 4-bit kernels; floor 0.50.0 (<=0.49.2 NaNs on AMD).
@@ -10110,6 +10112,22 @@ if (-not $llamaCppIsLink -and (
 }
 
 Complete-FrontendBuildBackground
+
+# ── Precompile bytecode ── (uv installs without .pyc; only after a dependency pass, never fatal)
+$_pycPython = Join-Path $VenvDir 'Scripts\python.exe'
+$_pycHelper = Join-Path $PSScriptRoot 'precompile_bytecode.py'
+$_pycOptedOut = @(@($env:UV_COMPILE_BYTECODE, $env:UNSLOTH_STUDIO_COMPILE_BYTECODE) |
+    Where-Object { $_ -and (@('0', 'false', 'no', 'off') -contains $_.Trim().ToLowerInvariant()) }).Count -gt 0
+if (($script:SetupVenvChanged -or $env:UNSLOTH_SETUP_RERUN -eq '1') -and -not $_pycOptedOut -and
+    (Test-Path -LiteralPath $_pycPython -PathType Leaf) -and
+    (Test-Path -LiteralPath $_pycHelper -PathType Leaf)) {
+    step "python" "precompiling bytecode..."
+    $_pycPrevExit = $global:LASTEXITCODE
+    $_pycPrevEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { & $_pycPython -I $_pycHelper } catch { } finally { $ErrorActionPreference = $_pycPrevEAP }
+    $global:LASTEXITCODE = $_pycPrevExit
+}
 
 # ─────────────────────────────────────────────
 # Footer

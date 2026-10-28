@@ -18,8 +18,9 @@ from .llama import (
     _gqa_decode_values,
     _LazyDeviceScratch,
 )
+from .._gc_passes import collect_garbage
 from ._utils import __version__
-from ._utils import move_to_device, per_layer_device, DEVICE_TYPE
+from ._utils import move_to_device, per_layer_device, refresh_moved_layer_devices, DEVICE_TYPE
 from unsloth_zoo.utils import _get_dtype, Version
 from unsloth_zoo.hf_utils import dtype_from_config
 from ..utils.packing import get_packed_info_from_kwargs
@@ -579,6 +580,7 @@ def Gemma2Model_fast_forward_inference(
     )
     next_decoder_cache = []
     block_swap = getattr(self.model.layers, "_unsloth_block_swap", None)
+    refresh_moved_layer_devices(self.model.layers, block_swap)
     for idx, decoder_layer in enumerate(self.model.layers):
         if block_swap is not None:
             block_swap.enter(idx)
@@ -700,9 +702,5 @@ class FastGemma2Model(FastLlamaModel):
                 if not hasattr(module, "variance_epsilon"):
                     module.variance_epsilon = module.eps  # Gemma doesn't use variance_epsilon
 
-        import gc
-
-        for _ in range(3):
-            gc.collect()
-            clean_gpu_cache()
+        collect_garbage(after = clean_gpu_cache)
         return model, tokenizer

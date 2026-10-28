@@ -2130,7 +2130,7 @@ def test_the_block_graph_drops_the_prompt_upsampler_step(monkeypatch, with_upsam
 def test_a_modular_flux3_dir_with_one_root_checkpoint_stays_a_pipeline(tmp_path):
     # FLUX.3 ships modular_model_index.json, not model_index.json: a lone root .safetensors must not turn
     # the directory into a single-file load before the modular validation sees it.
-    from core.inference.diffusion import resolve_local_single_file
+    from core.inference.diffusion_local_files import resolve_local_single_file
     from core.inference.diffusion_flux3 import FLUX3_INDEX
 
     d = tmp_path / "flux3-klein"

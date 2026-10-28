@@ -2,23 +2,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Cross-platform Node.js prebuilt installer for Unsloth Studio.
-
-Downloads an official Node.js archive from nodejs.org (or the dist mirror in
-``UNSLOTH_NODE_MIRROR``) into an isolated
-``<UNSLOTH_HOME>/node`` and never touches the system Node/npm. Pinning Node 24+
-LTS clears the Unsloth frontend build floor (Vite 8: Node ^20.19 || >=22.12,
-npm >= 11) with the npm it bundles.
-
-Archives are verified against sha256 digests pinned in ``node_prebuilt_pins.json``
-(committed in-tree), not a checksum re-fetched from the same origin as the archive.
-
-Mirrors ``install_llama_prebuilt.py`` so the setup scripts drive it the same way.
-Exit codes: 0 success, 1 error, 2 fallback, 3 busy, 4 access denied. A re-run that already matches
-logs "already matches" and returns 0 without downloading (the scripts grep it).
-A failed update that keeps a usable install logs "keeping existing isolated Node" and
-also returns 0 (the scripts grep that too).
-"""
+"""Installs isolated Node.js 24+ LTS into <UNSLOTH_HOME>/node, never touching system Node/npm;
+archives sha256-checked against in-tree node_prebuilt_pins.json, not from the archive origin;
+exit 0 success, 1 error, 2 fallback, 3 busy, 4 access denied; setup scripts grep the already
+matches line."""
 
 from __future__ import annotations
 
