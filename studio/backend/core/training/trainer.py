@@ -1682,7 +1682,8 @@ class UnslothTrainer:
                     f"Access denied for '{model_name}'. This model is gated or private. "
                     f"Please add a Hugging Face token with access and try again."
                 )
-            logger.error(f"Error loading model: {e}")
+            # The traceback names the failing call; str(e) alone (e.g. "[WinError 6]") does not (#15583).
+            logger.error(f"Error loading model: {e}", exc_info = True)
             self._update_progress(error = error_msg, is_training = False)
             return False
         except Exception as e:
@@ -1704,7 +1705,7 @@ class UnslothTrainer:
                     f"Access denied for '{model_name}'. This model is gated or private. "
                     f"Please add a Hugging Face token with access and try again."
                 )
-            logger.error(f"Error loading model: {e}")
+            logger.error(f"Error loading model: {e}", exc_info = True)
             self._update_progress(error = error_msg, is_training = False)
             return False
         finally:

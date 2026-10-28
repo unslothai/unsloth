@@ -432,15 +432,20 @@ export const BUDGET = {
   // 2,101,285 B transfer against 9c397197e0, Node 24, 106 -> 109 chunks). Raised by that growth.
   // Mermaid, node-forge and js-yaml load on first use: -998.5 KB raw / -260.1 KB transfer against 4e673d32e.
   // Lowered by that, so the headroom stays what it was and a regression of that size fails here.
+  // Full Access from a tool approval card (#15485: per-chat grant store and the card's confirm dialog) adds
+  // 5,293 B raw / 1,953 B transfer to the eager chat chunk (5,940,337 -> 5,945,630 B raw, 1,835,497 ->
+  // 1,837,450 B transfer against 8222149ee, Node 24, 85 chunks). Raised by that growth.
   // Settings > Agents > Desktop apps (the Claude Desktop and Codex Desktop cards, their model pickers, the shared
   // context window / MTP / keep-loaded run settings, API clients and strings) add +8,089 B raw / +2,495 B transfer
   // to the eager settings and locale chunks (6,935,466 -> 6,943,555 B raw, 2,085,390 -> 2,087,885 B transfer against
   // 8f8eaee609, one machine and build, Node 26.8.2, unchanged at 99 chunks). Lazy-loading the cards cost more
   // (+2.4 KB transfer, 7 extra startup chunks), so they are imported statically and the budget raised by that growth.
-  // Merged onto upstream main 913e0c2f86: main's budget plus the Desktop apps growth above (+2,495 B transfer,
-  // +8,089 B raw).
-  transferBytes: 1_839_363,
-  rawBytes: 5_962_254,
+  // Merged onto upstream main 21127b21bf. Main alone measures over its own budget on this machine (5,837.6 KB raw /
+  // 1,801.9 KB transfer on Node 26.8.2, 1,806.1 KB transfer on Node 24.22, 85 chunks), and the Desktop apps still add
+  // +8.0 KB raw / +2.5 KB transfer on top (merged: 5,845.6 KB raw, 1,804.4 KB transfer on Node 26, 1,808.6 KB on
+  // Node 24). Re-measured: the merged size plus a few KB of headroom.
+  transferBytes: 1_856_000,
+  rawBytes: 6_000_000,
 };
 
 // Chunk count is not budgeted: splitting a page out raises it while lowering bytes.

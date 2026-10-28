@@ -629,6 +629,37 @@ export const ar = {
     compactEmpty: "لا يوجد ما يمكن ضغطه بعد",
     compactUnsupported: "ضغط المحادثة يتطلب نموذج GGUF أو MLX يدعم الأدوات",
   },
+  halloween: {
+    navLabel: "حلوى أم خدعة…",
+    title: "حلوى أم خدعة?!",
+    description:
+      "حضّرنا بعض المفاجآت المخيفة لـ Unsloth، وستبقى حتى نهاية أكتوبر.",
+    chooseTheme: "اختر سمة مخيفة",
+    spookyGreetings: "تحيات مخيفة",
+    spookyGreetingsDescription: "يستقبل الكسلان المحادثات الجديدة بإخافة.",
+    decorations: "عناكب وخفافيش",
+    decorationsDescription:
+      "شباك عنكبوت في الزوايا، وعنكبوت أو خفاش بين حين وآخر مع سمة الهالوين.",
+    surprise: "حلوى أم خدعة!",
+    surpriseDescription: "دع الكسلان يختار سمة لك.",
+    themesTitle: "سمات مخيفة",
+    back: "رجوع",
+    footer: "يعود Unsloth إلى طبيعته عند منتصف ليل 1 نوفمبر.",
+    removeNow: "إزالة الآن",
+    hideFromSidebar: "إخفاء من الشريط الجانبي",
+    greeting: {
+      pumpkins: "نُحتت اليقطينات. ما التالي؟",
+      brewing: "هيا نحضّر الجرعة",
+      trickOrTreat: "حلوى أم خدعة؟",
+      manor: "مرحبًا بك في القصر",
+      manorName: "مرحبًا بك في القصر يا {name}",
+      happyHalloween: "هالوين سعيد",
+      happyHalloweenName: "هالوين سعيد يا {name}",
+      spirits: "الأرواح تُصغي…",
+      mysteries: "ما الأسرار التي سنكشفها الليلة؟",
+      conjure: "ماذا أستحضر لك؟",
+    },
+  },
   welcome: {
     goodToSeeYou: "سعيد برؤيتك",
     goodToSeeYouName: "سعيد برؤيتك يا {name}",
@@ -2186,6 +2217,12 @@ export const ar = {
         classic: "كلاسيكية",
         minimal: "بسيطة",
         moreThemes: "المزيد من السمات",
+        halloween: "هالوين",
+      },
+      trickOrTreat: {
+        label: "حلوى أم خدعة",
+        description:
+          "سمات الهالوين وتحيات مخيفة حتى 1 نوفمبر.",
       },
       custom: {
         chatWidth: {
@@ -2507,6 +2544,10 @@ export const ar = {
           hideDetailsAction: "إخفاء التفاصيل",
           clearAction: "مسح ذاكرات التخزين المؤقت",
           clearOneAction: "مسح",
+          showFolders: "إظهار المجلدات",
+          hideFolders: "إخفاء المجلدات",
+          previousLocations: "يشمل المواقع السابقة. يؤثر زر المسح الرئيسي على مجلد ذاكرة التخزين المؤقت الحالي. تمسح أزرار النماذج النسخة المحددة فقط.",
+          clearModelDescription: "يؤدي هذا إلى إزالة هذه النسخة المخزنة مؤقتًا فقط. سيتم تنزيلها مرة أخرى عند الحاجة.",
           clearingAction: "جارٍ المسح...",
           confirmTitle: "هل تريد مسح الملفات المخزّنة مؤقتًا؟",
           confirmDescription: "سيؤدي ذلك إلى تحرير نحو {size}.",

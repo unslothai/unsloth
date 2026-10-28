@@ -613,6 +613,10 @@ def _start_llama_cpp_probes_if_enabled(app: FastAPI) -> None:
     ).start()
 
 
+# Torch warm start gate: set by the first response, and at shutdown so a parked warm reaches its epoch check.
+_first_response_sent = threading.Event()
+
+
 _post_warm_thread: Optional[threading.Thread] = None
 _post_warm_lock = threading.Lock()
 # Bumped every start/stop so a worker parked in join_background_warm() cannot act after shutdown.
@@ -794,6 +798,10 @@ async def lifespan(app: FastAPI):
     import structlog as _structlog
 
     _lifespan_log = _structlog.get_logger(__name__)
+    # Started first so keygen overlaps the steps below.
+    from core.inference.key_exchange import start_key_pair
+
+    _install_key_pair = start_key_pair()
     clear_compiled_cache_unless_shared(app)
 
     # Without a catch-all the engine paths answer 405, read as 'exists'.
@@ -853,6 +861,10 @@ async def lifespan(app: FastAPI):
     overlay_dir = Path(__file__).resolve().parent.parent.parent / ".venv_overlay"
     if overlay_dir.is_dir():
         shutil.rmtree(overlay_dir, ignore_errors = True)
+
+    from storage import rag_db
+
+    rag_db.start_wal_keepers()
 
     # Before the first writer, so startup's own connections stop checkpointing too.
     try:
@@ -971,9 +983,7 @@ async def lifespan(app: FastAPI):
     app.state.idle_unload_task = asyncio.create_task(idle_unload_loop())
 
     # Initialize RSA key pair for API key encryption (external providers).
-    from core.inference.key_exchange import init_key_pair
-
-    init_key_pair()
+    _install_key_pair()
 
     # Stall thread-dump watchdog (#9712), only with UNSLOTH_STUDIO_STALL_WATCHDOG=1.
     from utils.stall_watchdog import stand_down_for_the_warm, start_stall_watchdog
@@ -1031,8 +1041,9 @@ async def lifespan(app: FastAPI):
         target = _recover_claude_desktop, name = "claude-desktop-recover", daemon = True
     ).start()
 
-    # Last, so it never contends for the GIL before the socket binds.
-    start_background_warm()
+    # Last, so it never contends for the GIL before the socket binds; its stages wait for the first response.
+    _first_response_sent.clear()
+    start_background_warm(gate = _first_response_sent)
     _start_post_warm_thread()
 
     _lifespan_log.info(
@@ -1066,6 +1077,7 @@ async def lifespan(app: FastAPI):
     _invalidate_detection = getattr(_hw_module, "invalidate_detection", None)
     if _invalidate_detection is not None:
         _invalidate_detection()
+    _first_response_sent.set()
 
     # First of the slow steps: the desktop shell SIGKILLs a backend that is still shutting down after
     # ~5 s, and a switch that doesn't finish here is only undone on the next start.
@@ -1139,6 +1151,7 @@ async def lifespan(app: FastAPI):
     from storage.studio_db import close_wal_keeper
 
     close_wal_keeper()
+    rag_db.close_wal_keeper()
     try:
         storage.close_wal_keeper()
     except Exception as exc:
@@ -1186,6 +1199,10 @@ logger = LogConfig.setup_logging(
 )
 
 app.add_middleware(LoggingMiddleware)
+
+from utils.first_response_gate import FirstResponseGateMiddleware  # noqa: E402
+
+app.add_middleware(FirstResponseGateMiddleware, event = _first_response_sent)
 
 if os.environ.get("UNSLOTH_STUDIO_MCP_TOKEN", "").strip():
     logger.warning(
@@ -3328,3 +3345,9 @@ def setup_frontend(
     # The lifespan reads this to decide whether engine paths need their own GET denial.
     app.state.frontend_mounted = True
     return True
+
+
+# Last, after every module-level route is registered; routes added later stay unguarded.
+from utils.route_prefix_guard import install_route_prefix_guards  # noqa: E402
+
+install_route_prefix_guards(app.router.routes)

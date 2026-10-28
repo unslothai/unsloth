@@ -22,6 +22,8 @@ import sys
 import time
 from pathlib import Path
 
+from unsloth_pwsh_runner import run_pwsh
+
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -94,8 +96,13 @@ def _snapshot(root: Path) -> dict:
 def test_setup_sh_marks_the_deps_pass_and_compiles_before_the_footer():
     lines = _lines(SETUP_SH)
     stack = _index(lines, r"^    install_python_stack$")
-    assert lines[stack + 1] == "    _SETUP_VENV_CHANGED=true"
-    assert lines[stack + 2] == "    _setup_rerun_if_replaced"
+    # The handoff stays directly behind the dependency pass (tests/sh/test_setup_rerun_after_replace.sh);
+    # the flag follows it inside the same branch, and a replaced copy compiles on UNSLOTH_SETUP_RERUN.
+    assert lines[stack + 1] == "    _setup_rerun_if_replaced"
+    flag = _index(lines, r"^    _SETUP_VENV_CHANGED=true$", stack)
+    assert flag <= stack + 3 and lines[flag - 1].lstrip().startswith(
+        ("#", "_setup_rerun_if_replaced")
+    )
     assert _index(lines, r"^_SETUP_VENV_CHANGED=false$") < stack
     block = _index(lines, r"_SETUP_VENV_CHANGED:-false")
     call = _index(lines, r'"\$VENV_DIR/bin/python" -I "\$SCRIPT_DIR/precompile_bytecode.py"', block)
@@ -263,7 +270,7 @@ def test_setup_ps1_block_never_fails(tmp_path, opt_out, expect_call):
         env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)}
     if opt_out:
         env[opt_out[0]] = opt_out[1]
-    result = subprocess.run(
+    result = run_pwsh(
         [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
         env = env,
         capture_output = True,

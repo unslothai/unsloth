@@ -732,6 +732,38 @@ export const sv = {
     compactEmpty: "Inget att komprimera än",
     compactUnsupported: "Komprimering kräver en GGUF- eller MLX-modell med verktygsstöd",
   },
+  halloween: {
+    navLabel: "Bus eller godis…",
+    title: "Bus eller godis?!",
+    description:
+      "Vi har bryggt ihop lite skräck för Unsloth, här resten av oktober.",
+    chooseTheme: "Välj ett läskigt tema",
+    spookyGreetings: "Läskiga hälsningar",
+    spookyGreetingsDescription:
+      "Sengångaren hälsar nya chattar med en liten skräck.",
+    decorations: "Spindlar och fladdermöss",
+    decorationsDescription:
+      "Spindelnät i hörnen och då och då en spindel eller fladdermus med ett halloweentema.",
+    surprise: "Bus eller godis!",
+    surpriseDescription: "Låt sengångaren välja ett tema åt dig.",
+    themesTitle: "Läskiga teman",
+    back: "Tillbaka",
+    footer: "Unsloth återgår till det normala vid midnatt den 1 november.",
+    removeNow: "Ta bort nu",
+    hideFromSidebar: "Dölj från sidofältet",
+    greeting: {
+      pumpkins: "Pumporna är snidade. Vad händer nu?",
+      brewing: "Dags att brygga",
+      trickOrTreat: "Bus eller godis?",
+      manor: "Välkommen till herrgården",
+      manorName: "Välkommen till herrgården, {name}",
+      happyHalloween: "Glad halloween",
+      happyHalloweenName: "Glad halloween, {name}",
+      spirits: "Andarna lyssnar…",
+      mysteries: "Vilka mysterier ska vi avslöja i natt?",
+      conjure: "Vad kan jag trolla fram åt dig?",
+    },
+  },
   welcome: {
     goodToSeeYou: "Kul att se dig",
     goodToSeeYouName: "Kul att se dig, {name}",
@@ -2362,6 +2394,12 @@ export const sv = {
         classic: "Klassisk",
         minimal: "Minimal",
         moreThemes: "Fler teman",
+        halloween: "Halloween",
+      },
+      trickOrTreat: {
+        label: "Bus eller godis",
+        description:
+          "Halloweenteman och kusliga hälsningar, till 1 november.",
       },
       custom: {
         chatWidth: {
@@ -2716,6 +2754,10 @@ export const sv = {
           hideDetailsAction: "Dölj detaljer",
           clearAction: "Rensa cacheminnen",
           clearOneAction: "Rensa",
+          showFolders: "Visa mappar",
+          hideFolders: "Dölj mappar",
+          previousLocations: "Inkluderar tidigare platser. Huvudknappen Rensa påverkar den aktuella cachemappen. Modellknapparna rensar bara den valda kopian.",
+          clearModelDescription: "Detta tar bara bort den här cachade kopian. Den laddas ned igen vid behov.",
           clearingAction: "Rensar...",
           confirmTitle: "Rensa cachade filer?",
           confirmDescription: "Detta frigör ungefär {size}.",

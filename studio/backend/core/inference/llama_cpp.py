@@ -36812,6 +36812,7 @@ class LlamaCppBackend:
         sandbox_level: Optional[str] = None,
         compact_context: bool = False,
         website_policy: Optional[dict] = None,
+        live_permissions = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -36861,6 +36862,10 @@ class LlamaCppBackend:
         permission_mode, bypass_permissions = normalize_tool_permissions(
             permission_mode, bypass_permissions
         )
+        from state.tool_approvals import LiveToolPermissions, bind_permission_upgrade
+
+        if live_permissions is None:
+            live_permissions = LiveToolPermissions(session_id, cancel_event)
         sandbox_level = normalize_sandbox_level(sandbox_level)
         stream_tool_execution = account_tool_stream(stream_tool_execution)
 
@@ -38937,6 +38942,9 @@ class LlamaCppBackend:
                     # Bypass wins here too, so a direct internal caller with both
                     # flags never prompts. "auto" pauses only high-risk calls; "off"
                     # pauses only a high-risk python/terminal call without OS isolation.
+                    permission_mode, bypass_permissions = live_permissions.apply(
+                        permission_mode, bypass_permissions
+                    )
                     needs_confirm = needs_tool_confirmation(
                         confirm_tool_calls = bool(confirm_tool_calls),
                         bypass_permissions = bypass_permissions,
@@ -38963,6 +38971,9 @@ class LlamaCppBackend:
                     approval_id = new_approval_id() if needs_confirm else ""
                     decision_slot = (
                         begin_tool_decision(session_id, approval_id) if needs_confirm else None
+                    )
+                    bind_permission_upgrade(
+                        decision_slot, live_permissions, eligible = image_share is None
                     )
                     if needs_confirm:
                         note_host_access(approval_id, decision.tool_name, decision.arguments)
@@ -38999,6 +39010,11 @@ class LlamaCppBackend:
                         )
                         # Read before decision_slot is dropped in the deny branch.
                         _decision_reason = decision_reason(decision_slot)
+                        permission_mode, bypass_permissions = live_permissions.apply(
+                            permission_mode, bypass_permissions
+                        )
+                        if bypass_permissions:
+                            strict_isolation = False
                         if _decision is not None and _decision != "deny":
                             # tool_approved first: the route forwards it before retaking the model slot.
                             yield decision.tool_approved_event(approval_id)

@@ -656,11 +656,6 @@ class DecodeSession:
 
         return Change(f"moved:{name}", lambda: _return_to(comp, device), settle, defer)
 
-    def _component_undo(self, name: str, comp: Any) -> tuple:
-        """(undo, defer) for a component moved to the host; kept for callers recording a move by hand."""
-        change = self._component_change(name, comp)
-        return change.retry, lambda exc: change.defer(change.retry, exc)
-
     def offload_vae(self) -> bool:
         """Step (c): the VAE's weights stream per layer from the host (diffusers leaf-level group offload)."""
         if self.vae_offloaded or getattr(self.device, "type", None) != "cuda" or _hooked(self.vae):

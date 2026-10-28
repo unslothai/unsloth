@@ -678,9 +678,9 @@ async function downloadImage(
       }
     }
     const filename = exportFilename(image, outputFormat);
-    await downloadFile(output, filename, output.type || "image/png");
-    if (isTauri) {
-      toast.success("Image saved", { description: filename });
+    const savedFileName = await downloadFile(output, filename, output.type || "image/png");
+    if (savedFileName !== undefined) {
+      toast.success("Image saved", { description: savedFileName });
     }
   } catch (error) {
     if (isDownloadCancelled(error)) {
