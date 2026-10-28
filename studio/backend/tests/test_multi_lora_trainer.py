@@ -869,3 +869,28 @@ def test_member_loss_scale_follows_grad_scaler_rules():
     p.grad = torch.tensor([1.0, float("nan"), 0.0])
     assert not scale.unscale_(0, [p]) and p.grad is None
     assert scale.scale == [4.0, 16.0] and scale.good_steps == [0, 2 % 2]
+
+
+def test_pack_rows_on_trl_without_packing_strategies(monkeypatch):
+    import trl.data_utils
+
+    real = trl.data_utils.pack_dataset
+
+    def legacy(
+        dataset,
+        seq_length,
+        map_kwargs = None,
+    ):
+        return real(dataset, seq_length, strategy = "wrapped")
+
+    monkeypatch.setattr(trl.data_utils, "pack_dataset", legacy)
+    rows = [([i] * n, [-100] + [i] * (n - 1)) for i, n in enumerate([5, 9, 3, 7, 4], start = 1)]
+    packed, lengths = mlt._pack_rows(rows, 12)
+    # Documents wrap across rows; each row is one sequence, as TRL's wrapped packing trains it.
+    assert [ids for ids, _ in packed] == [
+        [t for ids, _ in rows for t in ids][i : i + 12] for i in range(0, 28, 12)
+    ]
+    assert [labels for _, labels in packed] == [
+        [t for _, lab in rows for t in lab][i : i + 12] for i in range(0, 28, 12)
+    ]
+    assert lengths == [[12], [12], [4]]

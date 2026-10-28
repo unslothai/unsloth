@@ -615,25 +615,30 @@ def _packs(model) -> bool:
 def _pack_rows(rows: list, max_length: int) -> tuple[list, list]:
     """The single job's packing (TRL's default strategy) of one member's documents into rows of max_length."""
     import dataclasses
+    import inspect
 
     from datasets import Dataset
     from trl import SFTConfig
     from trl.data_utils import pack_dataset
 
-    strategy = next(
-        (f.default for f in dataclasses.fields(SFTConfig) if f.name == "packing_strategy"), "bfd"
+    dataset = Dataset.from_dict({"input_ids": [r[0] for r in rows], "labels": [r[1] for r in rows]})
+    if "strategy" in inspect.signature(pack_dataset).parameters:
+        strategy = next(
+            (f.default for f in dataclasses.fields(SFTConfig) if f.name == "packing_strategy"),
+            "bfd",
+        )
+        packed = pack_dataset(dataset, max_length, strategy = strategy)
+    else:
+        packed = pack_dataset(dataset, max_length)
+    ids = [list(x) for x in packed["input_ids"]]
+    # Wrapped packing (TRL < 0.20, or packing_strategy="wrapped") keeps no boundaries: each row is one
+    # sequence, as the single job then trains it.
+    lengths = (
+        [list(n) for n in packed["seq_lengths"]]
+        if "seq_lengths" in packed.column_names
+        else [[len(x)] for x in ids]
     )
-    packed = pack_dataset(
-        Dataset.from_dict({"input_ids": [r[0] for r in rows], "labels": [r[1] for r in rows]}),
-        max_length,
-        strategy = strategy,
-    )
-    if "seq_lengths" not in packed.column_names:
-        raise RuntimeError(f"TRL's '{strategy}' packing does not keep document lengths.")
-    return (
-        [(list(ids), list(lab)) for ids, lab in zip(packed["input_ids"], packed["labels"])],
-        [list(n) for n in packed["seq_lengths"]],
-    )
+    return [(x, list(lab)) for x, lab in zip(ids, packed["labels"])], lengths
 
 
 def _collate_packed(rows: list, slots: list, lengths: list) -> dict:
