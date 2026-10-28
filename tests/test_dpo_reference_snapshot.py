@@ -6,11 +6,11 @@
 import ast
 import pathlib
 import re
-import sys
 import textwrap
 import types
 
 import pytest
+import torch
 
 
 def _hooks():
@@ -45,15 +45,20 @@ TRL_INIT = '''
 '''
 
 
-class _Model:
+class _Policy(torch.nn.Module):
     config = "ckpt"
+
+    def __init__(self, out = 2):
+        super().__init__()
+        torch.manual_seed(0)  # the checkpoint's weights
+        self.lin = torch.nn.Linear(2, out)
 
 
 class _FSDPModule:
     pass
 
 
-class _ShardedModel(_Model, _FSDPModule):
+class _ShardedPolicy(_Policy, _FSDPModule):
     pass
 
 
@@ -62,47 +67,58 @@ def _run(
     model,
     monkeypatch,
     zero3 = False,
+    out = 2,
 ):
-    calls = []
     import torch.distributed.fsdp as fsdp
     import transformers.integrations.deepspeed as ds
 
     monkeypatch.setattr(fsdp, "FSDPModule", _FSDPModule)
     monkeypatch.setattr(ds, "is_deepspeed_zero3_enabled", lambda: zero3)
-    utils = types.ModuleType("trl.experimental.utils")
-    utils.create_reference_model = lambda m: calls.append(("snapshot", m)) or "snapshot"
-    monkeypatch.setitem(sys.modules, "trl.experimental.utils", utils)
-
-    def create_model_from_path(path, **kwargs):
-        calls.append(("load", path))
-        return _Model() if path != "ckpt" else "reloaded"
-
     namespace = {
-        "create_model_from_path": create_model_from_path,
+        "create_model_from_path": lambda path, **kwargs: _Policy(out),
         "is_peft_model": lambda m: False,
         "get_config_model_id": lambda config: config,
     }
     exec(textwrap.dedent(source), namespace)
     trainer = types.SimpleNamespace()
     namespace["__init__"](trainer, model)
-    return trainer.ref_model, calls
+    return trainer.ref_model
 
 
-def test_instance_reference_is_snapshot(monkeypatch):
-    model = _Model()
-    ref, calls = _run(hook("__init__", TRL_INIT), model, monkeypatch)
-    assert ref == "snapshot" and calls == [("snapshot", model)]
+def _trained(cls = _Policy):
+    policy = cls()
+    with torch.no_grad():
+        policy.lin.weight.add_(1.0)
+    return policy
+
+
+def test_instance_reference_is_in_memory_policy(monkeypatch):
+    policy = _trained()
+    # Unsloth patches instance forwards with closures over the policy's modules (block-compiled experts).
+    policy.lin.forward = torch.compiler.disable(policy.lin.forward)
+    ref = _run(hook("__init__", TRL_INIT), policy, monkeypatch)
+    assert ref is not policy and torch.equal(ref.lin.weight, policy.lin.weight)
+    x = torch.ones(1, 2)
+    before = ref.lin(x)
+    with torch.no_grad():
+        policy.lin.weight.add_(1.0)
+    assert torch.equal(ref.lin(x), before)
     # Base TRL reloads the checkpoint, dropping in-memory training.
-    ref, _ = _run(TRL_INIT, model, monkeypatch)
-    assert ref == "reloaded"
+    ref = _run(TRL_INIT, _trained(), monkeypatch)
+    assert torch.equal(ref.lin.weight, _Policy().lin.weight)
 
 
-@pytest.mark.parametrize(
-    "model, zero3", [("hub/id", False), (_Model(), True), (_ShardedModel(), False)]
-)
-def test_path_and_zero3_keep_loader(monkeypatch, model, zero3):
-    ref, calls = _run(hook("__init__", TRL_INIT), model, monkeypatch, zero3 = zero3)
-    assert ref == "reloaded" and calls[-1] == ("load", "ckpt")
+@pytest.mark.parametrize("model, zero3", [("hub/id", False), (None, True), (_ShardedPolicy, False)])
+def test_path_zero3_fsdp2_keep_checkpoint(monkeypatch, model, zero3):
+    model = _trained(model or _Policy) if not isinstance(model, str) else model
+    ref = _run(hook("__init__", TRL_INIT), model, monkeypatch, zero3 = zero3)
+    assert torch.equal(ref.lin.weight, _Policy().lin.weight)
+
+
+def test_mismatched_reference_warns_and_keeps_checkpoint(monkeypatch):
+    with pytest.warns(UserWarning, match = "could not copy the in-memory policy weights"):
+        ref = _run(hook("__init__", TRL_INIT), _trained(), monkeypatch, out = 3)
+    assert torch.equal(ref.lin.weight, _Policy(3).lin.weight)
 
 
 def test_rewrite_scope():
@@ -130,5 +146,5 @@ def test_installed_trl_rewrites_and_compiles():
     if "create_model_from_path(ref_model_path" not in source:
         pytest.skip(f"TRL {trl.__version__} already copies the policy")
     patched = hook("__init__", source)
-    assert "_unsloth_dpo_model_is_instance and not is_deepspeed_zero3_enabled()" in patched
+    assert "self.ref_model.load_state_dict(self.model.state_dict())" in patched
     compile(textwrap.dedent(patched), "<patched>", "exec")

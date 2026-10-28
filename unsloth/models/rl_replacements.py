@@ -741,23 +741,31 @@ def dpo_trainer_prepare_dataset(function_name, function):
 def dpo_trainer_reference_snapshot(function_name, function):
     if function_name != "__init__" or "_unsloth_dpo_model_is_instance" in function:
         return function
-    # The reference must include in-memory training, not reload the original checkpoint.
+    # TRL reloads the checkpoint, dropping in-memory training: copy the policy's weights into it.
+    # Not deepcopy: instance forward patches (block-compiled experts, packing) close over the policy's modules.
+    # ZeRO-3 and native FSDP2 (sharded in Trainer.__init__) hold partitioned weights, so they keep TRL's reload.
     function, count = re.subn(
         r"(?m)^(?P<indent>[ \t]*)ref_model_init_kwargs = [^\n]+\n"
         r"(?:(?P=indent)[^\n]*\n)*?"
-        r"(?P=indent)self\.ref_model = create_model_from_path\(ref_model_path, \*\*ref_model_init_kwargs\)",
-        lambda m: (
-            f"{m['indent']}from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled\n"
-            # Native FSDP2 shards the policy in Trainer.__init__, and FSDP2 modules refuse deepcopy.
-            f"{m['indent']}try:\n"
-            f"{m['indent']}    from torch.distributed.fsdp import FSDPModule as _UnslothFSDPModule\n"
-            f"{m['indent']}except ImportError:\n"
-            f"{m['indent']}    _UnslothFSDPModule = ()\n"
-            f"{m['indent']}if _unsloth_dpo_model_is_instance and not is_deepspeed_zero3_enabled() "
-            f"and not isinstance(self.model, _UnslothFSDPModule):\n"
-            f"{m['indent']}    from trl.experimental.utils import create_reference_model\n"
-            f"{m['indent']}    self.ref_model = create_reference_model(self.model)\n"
-            f"{m['indent']}else:\n" + textwrap.indent(m[0], "    ")
+        r"(?P=indent)self\.ref_model = create_model_from_path\(ref_model_path, \*\*ref_model_init_kwargs\)\n",
+        lambda m: m[0]
+        + textwrap.indent(
+            "from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled\n"
+            "try:\n"
+            "    from torch.distributed.fsdp import FSDPModule as _UnslothFSDPModule\n"
+            "except ImportError:\n"
+            "    _UnslothFSDPModule = ()\n"
+            "if _unsloth_dpo_model_is_instance and not is_deepspeed_zero3_enabled() "
+            "and not isinstance(self.model, _UnslothFSDPModule):\n"
+            "    try:\n"
+            "        self.ref_model.load_state_dict(self.model.state_dict())\n"
+            "    except Exception as e:\n"
+            "        import warnings\n"
+            "        warnings.warn(\n"
+            '            f"Unsloth: could not copy the in-memory policy weights into the DPO reference ({e}); "\n'
+            '            "it uses the checkpoint weights. Pass ref_model= to choose the reference."\n'
+            "        )\n",
+            m["indent"],
         ),
         function,
         count = 1,
