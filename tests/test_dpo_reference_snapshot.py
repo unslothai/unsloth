@@ -16,14 +16,19 @@ import torch
 def _hooks():
     path = pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "models" / "rl_replacements.py"
     tree = ast.parse(path.read_text(encoding = "utf-8"))
-    wanted = {"_insert_after_docstring", "dpo_trainer_reference_snapshot"}
+    wanted = {
+        "_insert_after_docstring",
+        "_unsloth_dpo_reference_loadable",
+        "dpo_trainer_reference_snapshot",
+    }
     nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in wanted]
-    namespace = {"re": re, "textwrap": textwrap}
+    namespace = {"re": re, "textwrap": textwrap, "torch": torch}
     exec(compile(ast.Module(body = nodes, type_ignores = []), str(path), "exec"), namespace)
-    return namespace["dpo_trainer_reference_snapshot"]
+    return namespace
 
 
-hook = _hooks()
+_NS = _hooks()
+hook = _NS["dpo_trainer_reference_snapshot"]
 
 # Shape of TRL >= 0.29 DPOTrainer.__init__ around the default reference.
 TRL_INIT = '''
@@ -49,19 +54,27 @@ TRL_INIT = '''
 class _Policy(torch.nn.Module):
     config = "ckpt"
 
-    def __init__(self, out = 2):
+    def __init__(
+        self,
+        out = 2,
+        tied = False,
+    ):
         super().__init__()
         torch.manual_seed(0)  # the checkpoint's weights
         self.lin = torch.nn.Linear(2, 2)
         self.head = torch.nn.Linear(2, out)
+        if tied:
+            self.head.weight = self.lin.weight
 
 
-class _FSDPModule:
+class _Shard(torch.Tensor):  # stands in for DTensor (FSDP2 / tensor parallel)
     pass
 
 
-class _ShardedPolicy(_Policy, _FSDPModule):
-    pass
+class _ShardedPolicy(_Policy):
+    def __init__(self):
+        super().__init__()
+        self.lin.weight = torch.nn.Parameter(self.lin.weight.detach().as_subclass(_Shard))
 
 
 def _run(
@@ -71,14 +84,14 @@ def _run(
     zero3 = False,
     out = 2,
     ref_model = None,
+    tied = False,
 ):
-    import torch.distributed.fsdp as fsdp
     import transformers.integrations.deepspeed as ds
 
-    monkeypatch.setattr(fsdp, "FSDPModule", _FSDPModule)
     monkeypatch.setattr(ds, "is_deepspeed_zero3_enabled", lambda: zero3)
     namespace = {
-        "create_model_from_path": lambda path, **kwargs: _Policy(out),
+        "_unsloth_dpo_reference_loadable": _NS["_unsloth_dpo_reference_loadable"],
+        "create_model_from_path": lambda path, **kwargs: _Policy(out, tied),
         "is_peft_model": lambda m: False,
         "get_config_model_id": lambda config: config,
         "torch": torch,
@@ -114,9 +127,9 @@ def test_instance_reference_is_in_memory_policy(monkeypatch):
     assert torch.equal(ref.lin.weight, _Policy().lin.weight)
 
 
-@pytest.mark.parametrize("model, zero3", [("hub/id", False), (None, True), (_ShardedPolicy, False)])
-def test_path_zero3_fsdp2_keep_checkpoint(monkeypatch, model, zero3):
-    model = _trained(model or _Policy) if not isinstance(model, str) else model
+@pytest.mark.parametrize("model, zero3", [("hub/id", False), (None, True)])
+def test_path_and_zero3_keep_checkpoint(monkeypatch, model, zero3):
+    model = _trained() if model is None else model
     ref = _run(hook("__init__", TRL_INIT), model, monkeypatch, zero3 = zero3)
     assert torch.equal(ref.lin.weight, _Policy().lin.weight)
 
@@ -126,13 +139,18 @@ def test_explicit_reference_kept(monkeypatch):
     assert _run(hook("__init__", TRL_INIT), _trained(), monkeypatch, ref_model = explicit) is explicit
 
 
-def test_mismatched_reference_keeps_whole_checkpoint(monkeypatch):
-    # A resized head: no tensor is copied, so the reference is not a policy / checkpoint hybrid.
+@pytest.mark.parametrize(
+    "policy, out, tied",
+    [(_Policy, 3, False), (_Policy, 2, True), (_ShardedPolicy, 2, False)],
+    ids = ["resized", "untied_policy_tied_checkpoint", "sharded"],
+)
+def test_mismatched_reference_keeps_whole_checkpoint(monkeypatch, policy, out, tied):
+    # No tensor is copied, so the reference is never a policy / checkpoint hybrid.
     with pytest.warns(UserWarning, match = "do not match its checkpoint"):
-        ref = _run(hook("__init__", TRL_INIT), _trained(), monkeypatch, out = 3)
-    checkpoint = _Policy(3)
-    assert torch.equal(ref.lin.weight, checkpoint.lin.weight)
-    assert torch.equal(ref.head.weight, checkpoint.head.weight)
+        ref = _run(hook("__init__", TRL_INIT), _trained(policy), monkeypatch, out = out, tied = tied)
+    checkpoint = _Policy(out, tied)
+    for name, value in checkpoint.state_dict().items():
+        assert torch.equal(ref.state_dict()[name], value), name
 
 
 def test_rewrite_scope():
