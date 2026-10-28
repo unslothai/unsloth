@@ -53,6 +53,18 @@ def __getattr__(name: str):
 
 logger = get_logger(__name__)
 
+# Half a token a UTF-8 byte, and a byte-level token spans at least one, so half the window bounds the real count.
+_ESTIMATED_FIT_HEADROOM = 0.5
+
+
+def _utf8_half_tokens(messages) -> int:
+    import json
+    return sum(
+        (len(json.dumps(message, ensure_ascii = False).encode("utf-8")) + 1) // 2
+        for message in messages
+    )
+
+
 # Delimited, not a whitelist: a whitelist stopped at the apostrophe in `/home/o'connor/`.
 _PATH_COMPONENT = r"[^\s\\/](?:(?:(?![A-Za-z]:[\\/])[^\\/\n\",;])*[^\s\\/])?"
 # Second alternative: the root-level case (`/model.gguf`, `\\server\share`) has no trailing separator.
@@ -2791,6 +2803,7 @@ class InferenceOrchestrator:
             from core.inference.context_window import (
                 messages_without_unpriced_media,
                 retrieval_budget,
+                truncate_oldest_messages,
             )
             from core.inference.llama_cpp import (
                 _archive_and_recall,
@@ -2823,17 +2836,34 @@ class InferenceOrchestrator:
                 for tool in tools or ()
             )
 
+            count_kwargs = {
+                "tools": tools,
+                "enable_thinking": enable_thinking,
+                "reasoning_effort": reasoning_effort,
+                "preserve_thinking": preserve_thinking,
+            }
+            # SGLang 0.5.17's /tokenize returns 500 when model_max_length is the 1e30 sentinel.
+            estimated = False
+            fit_max_tokens = max_tokens
+            if getattr(self, "_managed_engine", None) is not None:
+                try:
+                    self.count_chat_tokens(conversation[-1:], "", **count_kwargs)
+                except Exception as exc:
+                    logger.info("Fitting the managed engine prompt by estimate: %s", exc)
+                    estimated = True
+                    if max_tokens and 0 < max_tokens < context_length:
+                        # The cap is sent whole and the bound at most halves the count: fit to half what it leaves.
+                        context_length = (context_length - max_tokens) * 2 // 3
+                        fit_max_tokens = None
+                    else:
+                        context_length = int(context_length * (1 - _ESTIMATED_FIT_HEADROOM))
+
             def _count(fitted):
                 if cancel_event is not None and cancel_event.is_set():
                     raise RuntimeError("Context compaction cancelled")
-                return self.count_chat_tokens(
-                    fitted,
-                    "",
-                    tools = tools,
-                    enable_thinking = enable_thinking,
-                    reasoning_effort = reasoning_effort,
-                    preserve_thinking = preserve_thinking,
-                )[0]
+                if estimated:
+                    return _utf8_half_tokens(messages_without_unpriced_media(fitted))
+                return self.count_chat_tokens(fitted, "", **count_kwargs)[0]
 
             can_reset = _can_reset_epoch(
                 thread_id,
@@ -2863,10 +2893,8 @@ class InferenceOrchestrator:
                     compaction_headroom_ratio = compaction_headroom_ratio,
                 )
             )
-            fitted, truncation = _fit_with_instruction_pins(
-                conversation,
-                context_length = context_length,
-                max_tokens = max_tokens,
+            fit_kwargs = dict(
+                max_tokens = fit_max_tokens,
                 count_tokens = _count,
                 anchor_ids = anchor_ids,
                 keeps_boundary = _keeps_compaction_boundary(thread_id),
@@ -2879,6 +2907,26 @@ class InferenceOrchestrator:
                 force_reset = force_reset,
                 **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
             )
+            fitted, truncation = _fit_with_instruction_pins(
+                conversation, context_length = context_length, **fit_kwargs
+            )
+            # The bound overprices, so its refusal is served as a rescue: the irreducible suffix, judged by the engine.
+            if (
+                estimated
+                and truncation
+                and not truncation.get("fits")
+                and not truncation.get("dropped_messages")
+            ):
+                suffix, dropped = truncate_oldest_messages(
+                    conversation, 0.0, protected_message_ids = set(anchor_ids or ()) or None
+                )
+                if dropped:
+                    fitted = suffix
+                    truncation = {
+                        **truncation,
+                        "dropped_messages": dropped,
+                        "prompt_tokens_after": _count(suffix),
+                    }
             if not truncation:
                 return {**unchanged, "boundary_applied": True}
 
@@ -2894,7 +2942,7 @@ class InferenceOrchestrator:
                 recall_done = recall_done or not truncation["fits"],
                 recall_budget_tokens = retrieval_budget(
                     context_length,
-                    max_tokens,
+                    fit_max_tokens,
                     truncation.get("prompt_tokens_after") or 0,
                     reply_returns = calls_tools,
                 ),
