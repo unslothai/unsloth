@@ -69,9 +69,8 @@ def prime_cuda_driver(torch_module = None) -> bool:
     if _done.is_set():
         return False
     if torch_module is None:
-        # Never imports torch: a caller still inside `import torch` would deadlock its waiters. Torch not imported
-        # yet, or still mid-import on another thread (``torch.cuda`` is bound near the end of ``torch/__init__``), is
-        # no attempt, so it does not latch: the later call from hardware detection still primes.
+        # Never imports torch (would deadlock mid-import waiters). Torch absent or mid-import (no ``torch.cuda`` yet)
+        # must not latch, so hardware detection's later call still primes.
         torch_module = sys.modules.get("torch")
         if torch_module is None or getattr(torch_module, "cuda", None) is None:
             return False
