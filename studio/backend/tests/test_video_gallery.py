@@ -88,6 +88,18 @@ def test_list_paginates_with_limit_offset():
     assert len(gallery.list_videos(offset = 4)) == 1
 
 
+def test_listing_resolves_the_folder_once(monkeypatch):
+    for i in range(4):
+        _save_with_mtime(f"p{i}", float(i))
+    calls = []
+    real = gallery.gallery_dir
+    monkeypatch.setattr(gallery, "gallery_dir", lambda: calls.append(1) or real())
+    listed = gallery.list_videos()
+    assert len(calls) == 1
+    assert [r["prompt"] for r in listed] == ["p3", "p2", "p1", "p0"]
+    assert [r["order_at"] for r in listed] == [3.0, 2.0, 1.0, 0.0]
+
+
 def test_video_path_rejects_unsafe_ids():
     assert gallery.video_path("../../etc/passwd") is None
     assert gallery.video_path("/etc/passwd") is None
@@ -161,6 +173,30 @@ def test_clear_returns_count():
     assert gallery.clear() == 2
     assert gallery.list_videos() == []
     assert list(gallery.gallery_dir().glob("*.json")) == []
+
+
+def test_clear_uses_the_locked_folder_when_the_folder_moves_mid_clear(monkeypatch, tmp_path):
+    # A Settings relocation can change gallery_dir() while clear() holds the old folder's lock.
+    record = gallery.save(_mp4(), _meta(prompt = "old folder"))
+    old = gallery.gallery_dir()
+    new = tmp_path / "relocated"
+    new.mkdir()
+    (new / f"{record['id']}.json").write_text(
+        json.dumps(_meta(prompt = "new folder")), encoding = "utf-8"
+    )
+    (new / f"{record['id']}.mp4").write_bytes(_mp4())
+    calls = []
+
+    def _moving_dir():
+        calls.append(1)
+        return old if len(calls) == 1 else new
+
+    monkeypatch.setattr(gallery, "gallery_dir", _moving_dir)
+    assert gallery.clear(include_archived = True, return_ids = True) == [record["id"]]
+    assert not (old / f"{record['id']}.mp4").exists()
+    assert not (old / f"{record['id']}.json").exists()
+    assert (new / f"{record['id']}.json").exists()
+    assert (new / f"{record['id']}.mp4").exists()
 
 
 def test_clear_preserves_orphan_mp4():

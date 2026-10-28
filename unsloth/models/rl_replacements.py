@@ -738,6 +738,81 @@ def dpo_trainer_prepare_dataset(function_name, function):
     return function
 
 
+def _unsloth_dpo_reference_loadable(policy_sd, ref_sd):
+    # Plain materialised tensors only (not DTensor / quantized / meta), equal shapes, equal tying:
+    # an untied policy loaded into a tied reference writes twice into one tensor.
+    if policy_sd.keys() != ref_sd.keys():
+        return False
+    policy_first, ref_first = {}, {}
+    for key, value in policy_sd.items():
+        ref = ref_sd[key]
+        if (
+            type(value) is not torch.Tensor
+            or type(ref) is not torch.Tensor
+            or value.shape != ref.shape
+            or value.is_meta
+            or ref.is_meta
+        ):
+            return False
+        if policy_first.setdefault(value.data_ptr(), key) != ref_first.setdefault(
+            ref.data_ptr(), key
+        ):
+            return False
+    return True
+
+
+def _unsloth_dpo_copy_policy_into_reference(ref_model, policy_sd):
+    # Recast first: load_state_dict would round FP32 norm updates into a BF16 reference; .data keeps ties.
+    tensors = dict(ref_model.named_parameters(remove_duplicate = False))
+    tensors.update(ref_model.named_buffers(remove_duplicate = False))
+    for key, value in policy_sd.items():
+        tensor = tensors.get(key)
+        if tensor is not None and tensor.dtype != value.dtype:
+            tensor.data = tensor.data.to(value.dtype)
+    ref_model.load_state_dict(policy_sd)
+
+
+def dpo_trainer_reference_snapshot(function_name, function):
+    if function_name != "__init__" or "_unsloth_dpo_model_is_instance" in function:
+        return function
+    # TRL reloads the checkpoint, dropping in-memory training: copy the policy's weights into it.
+    # Not deepcopy: instance forward patches (block-compiled experts, packing) close over the policy's modules.
+    function, count = re.subn(
+        r"(?m)^(?P<indent>[ \t]*)ref_model_init_kwargs = [^\n]+\n"
+        r"(?:(?P=indent)[^\n]*\n)*?"
+        r"(?P=indent)self\.ref_model = create_model_from_path\(ref_model_path, \*\*ref_model_init_kwargs\)\n",
+        lambda m: m[0]
+        + textwrap.indent(
+            "from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled\n"
+            "if _unsloth_dpo_model_is_instance and not is_deepspeed_zero3_enabled():\n"
+            # Unbound calls: rl.py strips every literal `.state_dict()` (legacy vLLM weight loads).
+            "    _unsloth_policy_sd = torch.nn.Module.state_dict(self.model)\n"
+            # Checked first: load_state_dict writes matching tensors before raising on the rest.
+            "    if _unsloth_dpo_reference_loadable(_unsloth_policy_sd, torch.nn.Module.state_dict(self.ref_model)):\n"
+            "        _unsloth_dpo_copy_policy_into_reference(self.ref_model, _unsloth_policy_sd)\n"
+            "    else:\n"
+            # Aliased: a bare `import warnings` here would shadow TRL's module-level one in all of __init__.
+            "        import warnings as _unsloth_warnings\n"
+            "        _unsloth_warnings.warn(\n"
+            '            "Unsloth: the in-memory policy\'s parameters do not match its checkpoint (resized, untied or "\n'
+            '            "sharded), so the DPO reference uses the checkpoint weights. Pass ref_model= to choose it."\n'
+            "        )\n"
+            "    del _unsloth_policy_sd\n",
+            m["indent"],
+        ),
+        function,
+        count = 1,
+    )
+    if count:
+        function = _insert_after_docstring(
+            function, ["_unsloth_dpo_model_is_instance = not isinstance(model, str)"]
+        )
+    return function
+
+
+RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_reference_snapshot)
+RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(_unsloth_dpo_reference_loadable))
+RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(_unsloth_dpo_copy_policy_into_reference))
 RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_prepare_dataset)
 RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(dpo_trainer_vision_process_row))
 RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_vision_signature_columns)
@@ -1669,8 +1744,7 @@ def _unsloth_grpo_refuse_unscored_support(self):
         import warnings
         warnings.warn(
             "Unsloth: not scoring over the rollouts' top_k / top_p / min_p kept set "
-            "(UNSLOTH_GRPO_TRUNCATED_SUPPORT=1, or automatic for truncated vLLM rollouts "
-            "feeding the IS correction or off-policy mask) because "
+            "(requested by UNSLOTH_GRPO_TRUNCATED_SUPPORT) because "
             f"{', '.join(mismatch)}: the scored policy is not the sampler, so its top_k / top_p / "
             "min_p kept set differs from vLLM's and the PPO ratio would be unnormalised. "
             "Scoring over the full vocabulary instead.",
@@ -2240,6 +2314,11 @@ def grpo_trainer__generate(function_name, function):
     if function_name != "_generate":
         return function
 
+    # A stop string can terminate a completion before the limit without an EOS token.
+    function = function.replace(
+        "ids[-1] not in eos_and_pad",
+        "(self.max_completion_length is None or len(ids) >= self.max_completion_length) and ids[-1] not in eos_and_pad",
+    )
     return _guard_vllm_sync_reload_for_shared_weights(function)
 
 
@@ -2251,6 +2330,10 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
     if function_name != "_generate_and_score_completions":
         return function
 
+    function = function.replace(
+        "ids[-1] not in eos_and_pad",
+        "(self.max_completion_length is None or len(ids) >= self.max_completion_length) and ids[-1] not in eos_and_pad",
+    )
     function = function.replace(
         "prompt_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False",
         "prompt_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False",
@@ -2929,7 +3012,11 @@ def _unsloth_vllm_active_adapters(model):
     configs = getattr(model, "peft_config", None) or {}
     active = getattr(model, "active_adapters", None)
     if callable(active):
-        active = active()
+        try:
+            active = active()
+        except ValueError:
+            # transformers' PeftAdapterMixin raises on a model with no adapter (full finetuning).
+            active = None
     if isinstance(active, str):
         active = [active]
     return set(active) if active else set(configs)
@@ -3374,6 +3461,85 @@ def grpo_trainer__move_model_to_vllm(function_name, function):
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__move_model_to_vllm)
 
 
+def online_dpo_trainer__move_model_to_vllm(function_name, function):
+    if function_name != "_move_model_to_vllm":
+        return function
+    function = grpo_trainer__move_model_to_vllm(function_name, function)
+    return re.sub(
+        r"^([ \t]+)return _unsloth_vllm_sync_peft_merged\(self\)\n",
+        r"\1if self.vllm_mode == 'server' and self.accelerator.is_main_process and hasattr(self.vllm_client, 'weight_update'):\n"
+        r"\1    with self.vllm_client.weight_update():\n"
+        r"\1        return _unsloth_vllm_sync_peft_merged(self)\n"
+        r"\1return _unsloth_vllm_sync_peft_merged(self)\n",
+        function,
+        count = 1,
+        flags = re.MULTILINE,
+    )
+
+
+RL_FUNCTIONS["online_dpo_trainer"].append(online_dpo_trainer__move_model_to_vllm)
+
+
+def _unsloth_vllm_load_state_dict(trainer, model):
+    deepspeed_plugin = getattr(trainer.accelerator.state, "deepspeed_plugin", None)
+    if getattr(trainer, "is_fsdp_enabled", False) or (
+        deepspeed_plugin is not None and getattr(deepspeed_plugin, "zero_stage", 0) == 3
+    ):
+        raise RuntimeError(
+            "Unsloth: Online DPO with use_vllm = True on TRL < 0.23 cannot sync sharded "
+            "(FSDP / DeepSpeed ZeRO-3) weights into vLLM. Upgrade TRL to 0.23 or later."
+        )
+    model = trainer.accelerator.unwrap_model(model)
+    model = getattr(model, "_orig_mod", model)
+    trainer.llm.llm_engine.model_executor.driver_worker.model_runner.model.load_weights(
+        model.state_dict().items()
+    )
+    trainer.llm.reset_prefix_cache()
+
+
+def online_dpo_trainer__generate_vllm(function_name, function):
+    # TRL < 0.23 syncs inline here, which _strip_vllm_weight_loads would turn into pass.
+    if function_name != "_generate_vllm":
+        return function
+    match = re.search(
+        r"^(?P<indent>[ \t]+)llm_model = self\.llm\.llm_engine\.model_executor\.driver_worker\.model_runner\.model\n"
+        r"(?P=indent)llm_model\.load_weights\(model\.state_dict\(\)\.items\(\)\)\n",
+        function,
+        re.MULTILINE,
+    )
+    if match is None:
+        return function
+    i = match.group("indent")
+    sync = (
+        f"{i}if not getattr(self.llm, 'shared_weights', False):\n"
+        f"{i}    from unsloth.models.rl_replacements import _unsloth_vllm_sync_kind_cached, _unsloth_vllm_sync_peft_merged, _unsloth_vllm_load_state_dict\n"
+        f"{i}    _unsloth_sync_kind = _unsloth_vllm_sync_kind_cached(self)\n"
+        f"{i}    if _unsloth_sync_kind == 'peft_merged':\n"
+        f"{i}        _unsloth_vllm_sync_peft_merged(self)\n"
+        f"{i}    elif _unsloth_sync_kind == 'trl':\n"
+        f"{i}        _unsloth_vllm_load_state_dict(self, model)\n"
+    )
+    return function[: match.start()] + sync + function[match.end() :]
+
+
+RL_FUNCTIONS["online_dpo_trainer"].append(online_dpo_trainer__generate_vllm)
+
+
+def online_dpo_trainer__generate_vllm_colocate(function_name, function):
+    # Level-2 sleep discards the weights, but the next microbatch of the same step skips the sync.
+    if function_name != "_generate_vllm_colocate":
+        return function
+    return re.sub(
+        r"^([ \t]+)self\.llm\.sleep\(level=2\)\n",
+        r"\1self.llm.sleep(level=2)\n\1self._last_loaded_step = -1\n",
+        function,
+        flags = re.MULTILINE,
+    )
+
+
+RL_FUNCTIONS["online_dpo_trainer"].append(online_dpo_trainer__generate_vllm_colocate)
+
+
 def grpo_trainer__get_per_token_logps(function_name, function):
     if function_name != "_get_per_token_logps":
         return function
@@ -3553,7 +3719,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     **kwargs,
                 )
 
-            # UNSLOTH_GRPO_TRUNCATED_SUPPORT (=1 or zoo's automatic gate): score over the rollout's
+            # UNSLOTH_GRPO_TRUNCATED_SUPPORT=1 (or an older zoo's automatic gate): score over the rollout's
             # top_k / top_p / min_p kept set, matching vLLM's processed_logprobs. The zoo loss refuses to mix
             # normalisations unless this marker says the old / ref logps were scored the same way.
             try:
@@ -3568,8 +3734,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     import warnings
                     warnings.warn(
                         "Unsloth: not scoring over the rollouts' top_k / top_p / min_p kept set "
-                        "(UNSLOTH_GRPO_TRUNCATED_SUPPORT=1, or automatic for truncated vLLM "
-                        "rollouts feeding the IS correction or off-policy mask) because "
+                        "(requested by UNSLOTH_GRPO_TRUNCATED_SUPPORT) because "
                         f"{', '.join(_support_mismatch)}: those logprobs come from weights other "
                         "than the rollout's, whose top_k / top_p / min_p kept set differs from the "
                         "sampler's, so per-policy kept sets give unnormalised PPO ratios and KL. "

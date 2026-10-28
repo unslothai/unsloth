@@ -22,6 +22,7 @@ import {
   thinkToggleAriaLabel,
 } from "@/components/assistant-ui/think-aria-label";
 import { ComposerDraftPreview } from "@/components/assistant-ui/composer-draft-preview";
+import { useExpandedComposerFill } from "@/components/assistant-ui/use-expanded-composer-fill";
 import { useChatPreferencesStore } from "./stores/chat-preferences-store";
 import {
   composerSubmitIntent,
@@ -1223,6 +1224,7 @@ export function SharedComposer({
     setIsWritingExpanded((expanded) => !expanded);
     textareaRef.current?.focus({ preventScroll: true });
   };
+  useExpandedComposerFill(editorRef, isWritingExpanded, true);
 
   const addFilesUntracked = useCallback(
     async (input: FileList | readonly File[] | null) => {

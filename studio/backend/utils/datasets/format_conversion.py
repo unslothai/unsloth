@@ -214,6 +214,51 @@ def standardize_chat_format(
     return result
 
 
+_CHATML_ROLES = {"system", "user", "assistant", "tool"}
+
+
+def normalize_chatml_roles(
+    dataset,
+    chat_column,
+    batch_size = 1000,
+):
+    def _fold_message(message):
+        if not isinstance(message, dict):
+            return message
+        role = _normalize_role_alias(message.get("role"))
+        if role in _CHATML_ROLES and message.get("role") != role:
+            return {**message, "role": role}
+        return message
+
+    try:
+        import pyarrow.compute as pc
+        roles = pc.unique(
+            pc.struct_field(pc.list_flatten(dataset.data.column(chat_column)), "role")
+        )
+        if not any(
+            _normalize_role_alias(r) in _CHATML_ROLES and _normalize_role_alias(r) != r
+            for r in roles.to_pylist()
+        ):
+            return dataset
+    except Exception:
+        pass
+
+    def _fold(examples):
+        return {
+            chat_column: [
+                [_fold_message(message) for message in convo] if isinstance(convo, list) else convo
+                for convo in examples[chat_column]
+            ]
+        }
+
+    return dataset.map(
+        _fold,
+        batched = True,
+        batch_size = batch_size,
+        features = getattr(dataset, "features", None),
+    )
+
+
 def _content_text(content):
     if isinstance(content, list):
         return "\n".join(

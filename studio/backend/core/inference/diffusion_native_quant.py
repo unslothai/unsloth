@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Torchao-free weight-only int8 / fp8 for the diffusion transformer (ROCm, Windows torchao stub).
-
-Plain buffers, unlike torchao tensors, survive the offload hooks' ``Module.to()``; torch imported lazily.
-"""
+"""Torchao-free int8/fp8 weight-only quant for ROCm and Windows; plain buffers survive offload
+hooks' Module.to(); torch imported lazily"""
 
 from __future__ import annotations
 
@@ -60,6 +58,14 @@ def fp8_bits_to_float32(bits: Any, fmt: str = "float8_e4m3fn") -> Any:
     else:
         mag = torch.where((e == 15) & (m == 7), float("nan"), mag)
     return torch.where((b & 0x80) != 0, -mag, mag)
+
+
+@lru_cache(maxsize = None)
+def fp8_lookup_table(fmt: str, device: str) -> Any:
+    """float32 value of every fp8 code on ``device``. MPS has no fp8 casts before torch 2.15; indexing this table
+    with the uint8 codes gives the same bits as the cast on any torch."""
+    import torch
+    return torch.arange(256, dtype = torch.uint8).view(getattr(torch, fmt)).float().to(device)
 
 
 def int8_act_requested() -> bool:
@@ -449,6 +455,11 @@ def native_linear_class():
                 wide = self.weight_q.to(torch.float32)
             elif torch.compiler.is_compiling():
                 wide = fp8_bits_to_float32(self.weight_q, self.fp8_format)
+            elif self.weight_q.device.type == "mps":
+                lut = fp8_lookup_table(self.fp8_format, str(self.weight_q.device))
+                wide = lut.index_select(0, self.weight_q.reshape(-1).int()).view(
+                    self.weight_q.shape
+                )
             else:
                 wide = self.weight_q.view(getattr(torch, self.fp8_format)).to(torch.float32)
             return (wide * scale[:, None]).to(dtype)

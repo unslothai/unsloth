@@ -134,7 +134,7 @@ async function downloadBlob(
   filename: string,
   mimeType: string,
 ): Promise<void> {
-  return downloadFile(content, filename, mimeType);
+  await downloadFile(content, filename, mimeType);
 }
 
 function exportPromptJsonl(entry: PromptEntry): Promise<void> {

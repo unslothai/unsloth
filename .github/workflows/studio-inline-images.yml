@@ -49,6 +49,8 @@ jobs:
       run:
         shell: bash
     env:
+      # A release published mid-run puts an update card over the controls the scripts click.
+      UNSLOTH_DISABLE_UPDATE_CHECK: '1'
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/temp/inline-image-validation/browsers
       PIP_CACHE_DIR: ${{ github.workspace }}/temp/inline-image-validation/pip-cache
     steps:

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { hasChatFullAccess, withChatFullAccess } from "../utils/chat-full-access";
+
 import { attachedMediaUnavailableReason } from "../lib/attached-media-gate";
 import { readGenerationProgress } from "../lib/generation-progress";
 import { externalModelLabel } from "../lib/external-model-label";
@@ -381,6 +383,7 @@ import type { CachedGgufRepo, CachedModelRepo } from "./chat-api";
 import {
   budgetImpliesTruncation,
   CONTINUE_INSTRUCTION,
+  carriedThought,
   continuationSeed,
   createContinuationMerger,
   hasRenderableContent,
@@ -2287,7 +2290,7 @@ export async function buildLocalTokenCountExtras(
         checkpoint: state.params.checkpoint,
       }),
       isMlx: state.loadedIsMlx === true,
-      isManagedEngine: state.loadedEngine === "vllm",
+      isManagedEngine: state.loadedEngine !== "auto",
       autoCompactEnabled: state.autoCompactEnabled,
     }),
   };
@@ -4971,6 +4974,7 @@ export function createOpenAIStreamAdapter(
               ),
             }
         : liveRuntime;
+      runtime = withChatFullAccess(runtime, liveRuntime.chatFullAccessGrants, resolvedThreadId);
       const { params } = runtime;
       const sandboxSessionId = await resolveSandboxSessionId(
         resolvedThreadId,
@@ -5210,17 +5214,20 @@ export function createOpenAIStreamAdapter(
       }
 
       // Carry reasoning only to a backend that can resume it.
-      const resumedThought =
-        continuation &&
-        resumesThought({
-          loadedIsGguf: runtime.loadedIsGguf,
-          loadedIsMlx: runtime.loadedIsMlx,
-          activeGgufVariant: runtime.activeGgufVariant,
-          activeNativePathToken: runtime.activeNativePathToken,
-          checkpoint: params.checkpoint,
-        })
-          ? (continuation.reasoning ?? "")
-          : "";
+      const resumedThought = continuation
+        ? carriedThought(continuation, {
+            resumesThought: resumesThought({
+              loadedIsGguf: runtime.loadedIsGguf,
+              loadedIsMlx: runtime.loadedIsMlx,
+              activeGgufVariant: runtime.activeGgufVariant,
+              activeNativePathToken: runtime.activeNativePathToken,
+              checkpoint: params.checkpoint,
+            }),
+            managedEngine:
+              !isExternalModelId(params.checkpoint) &&
+              runtime.loadedEngine !== "auto",
+          })
+        : "";
       const hasGeminiReplayContinuation = Boolean(
         continuation &&
           externalProvider?.providerType === "gemini" &&
@@ -5480,10 +5487,11 @@ export function createOpenAIStreamAdapter(
           ? shownBrowserChat()
           : undefined;
       // A first turn files its handles under "__default" and autosave re-keys them mid-run, so resolve per use.
-      const liveThreadKey = (owner: () => void) =>
-        threadKey === "__default"
-          ? useChatRuntimeStore.getState().runKeyForOwner(threadKey, owner)
-          : threadKey;
+      const liveThreadKey = (owner: () => void) => {
+        const key = threadKey === "__default" ? useChatRuntimeStore.getState().runKeyForOwner(threadKey, owner) : threadKey;
+        if (key !== "__default") useChatRuntimeStore.getState().adoptChatFullAccessRun(cancelId, key);
+        return key;
+      };
 
       // Per-run token so a delayed stop POST can't match the next run.
       const cancelId =
@@ -5517,7 +5525,7 @@ export function createOpenAIStreamAdapter(
       const isMlxForCompaction =
         !isExternalModelId(params.checkpoint) && runtime.loadedIsMlx === true;
       const isManagedEngineForCompaction =
-        !isExternalModelId(params.checkpoint) && runtime.loadedEngine === "vllm";
+        !isExternalModelId(params.checkpoint) && runtime.loadedEngine !== "auto";
       // Taken once, so a retried request still carries it and the next turn does not.
       const compactNow =
         takeThreadCompactionRequest(resolvedThreadId) &&
@@ -7382,7 +7390,9 @@ export function createOpenAIStreamAdapter(
                           // Resolved per action: a first turn is re-keyed from "__default" to its id.
                           scope: liveThreadKey(serverCancel),
                           userText,
-                          fullAccess: bypassPermissions,
+                          fullAccess: (bypassPermissions && runtime.chatFullAccessPreviousMode === null) || hasChatFullAccess(
+                            useChatRuntimeStore.getState().chatFullAccessGrants, liveThreadKey(serverCancel), cancelId,
+                          ),
                           temporary: browserTemporary,
                           signal: runSignal,
                         });
@@ -7581,6 +7591,7 @@ export function createOpenAIStreamAdapter(
                         toolConfirmationScopeId,
                         confirmationThreadKey === "__default" ? "" : confirmationThreadKey,
                         toolEvent.image_disclosure as ImageDisclosure | undefined,
+                        cancelId,
                       );
                   }
                 } else if (toolEvent.type === "tool_end") {
@@ -8950,6 +8961,7 @@ export function createOpenAIStreamAdapter(
         abortSignal.removeEventListener("abort", forwardAbort);
         // Resolve once: the clears below drop the owner the lookup keys on.
         const cleanupKey = liveThreadKey(serverCancel);
+        useChatRuntimeStore.getState().clearUnadoptedChatFullAccessRun(cancelId);
         const confirmStore = useChatRuntimeStore.getState();
         for (const part of toolCallParts) {
           confirmStore.clearToolConfirmation(part.toolCallId);

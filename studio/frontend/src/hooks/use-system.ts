@@ -109,6 +109,8 @@ export interface SystemInfoResponse {
   ml_packages: {
     torch?: string;
     transformers?: string;
+    mlx_lm?: string;
+    mlx_vlm?: string;
   };
 }
 

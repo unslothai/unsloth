@@ -1,18 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Keep the turns the rolling context window evicts, and hand them back on request.
-
-Each evicted turn is indexed into a per-thread RAG scope, reusing the store, chunker, embedder and
-hybrid retrieval that back attached documents. The stored transcript is never touched; this is only
-a search index over turns the projection cannot carry.
-
-Two properties are load-bearing and easy to break. The archive is CUMULATIVE: nothing is cleared or
-re-scoped per compaction, so the fifth compaction can still find what the first evicted (on MRCR v2
-over 11 compaction events, cumulative scored 0.450 against 0.058 for latest-compaction-only). And
-nothing here may break a chat: every entry point no-ops on failure, because the alternative to a
-degraded archive is a working conversation, not an error.
-"""
+"""Search index over evicted turns in a per-thread RAG scope; transcript untouched; cumulative,
+never reset per compaction; entry points no-op on failure."""
 
 from __future__ import annotations
 

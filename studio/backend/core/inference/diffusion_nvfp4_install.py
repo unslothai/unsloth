@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Install FlashInfer on demand for an NVFP4 load, without ever moving the resident torch stack.
-
-Pinned flashinfer-python plus the CUDA-matched jit-cache; every installed distribution is constrained to its
-exact version, verified in a fresh interpreter, and rolled back on any drift.
-"""
+"""On-demand FlashInfer install for NVFP4 loads; pins exact versions, never moves torch, rolls back."""
 
 from __future__ import annotations
 
