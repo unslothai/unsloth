@@ -308,3 +308,41 @@ def test_auto_hooks_the_model_only_where_graphs_can_turn_on(monkeypatch, version
     model.layers = torch.nn.ModuleList([HookDecoderLayer(), HookDecoderLayer()])
     assert bc.patch_block_compile(model) == ["HookDecoderLayer"]
     assert model.__dict__.get("_unsloth_watch_hidden_states", False) is hooked
+
+
+def test_probe_times_on_the_blocks_device(monkeypatch):
+    """A block on cuda:1 while cuda:0 is current: sleep and both events must run on cuda:1."""
+    current = ["cuda:0"]
+    log = []
+
+    class Guard:
+        def __init__(self, device):
+            self.device = str(device)
+
+        def __enter__(self):
+            self.prev, current[0] = current[0], self.device
+
+        def __exit__(self, *exc):
+            current[0] = self.prev
+
+    class Event:
+        def __init__(self, enable_timing = False):
+            pass
+
+        def record(self):
+            log.append(("record", current[0]))
+
+        def synchronize(self):
+            pass
+
+        def elapsed_time(self, other):
+            return 2.0
+
+    monkeypatch.setattr(torch.cuda, "device", Guard)
+    monkeypatch.setattr(torch.cuda, "Event", Event)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda device = None: None)
+    monkeypatch.setattr(torch.cuda, "_sleep", lambda cycles: log.append(("sleep", current[0])))
+    out, host, gpu = bc._auto_time(lambda: log.append(("call", current[0])) or "out", torch.device("cuda", 1))
+    assert out == "out" and gpu == 2.0 / 1e3 and host is not None
+    assert log == [("sleep", "cuda:1"), ("record", "cuda:1"), ("call", "cuda:1"), ("record", "cuda:1")]
+    assert current[0] == "cuda:0"

@@ -569,24 +569,30 @@ def _auto_time(call, device):
     """(output, host seconds to launch one block call, GPU seconds to run it). The launches queue
     behind a GPU sleep, so the event pair after the sleep sees the block's kernels back to back; if
     launching outlasts the sleep the GPU time includes gaps, which can only understate the ratio.
+    Sleep and events run on the block's device (cuda:1 or a device_map shard need not be current).
     Host / GPU are None when timing is unavailable."""
     try:
-        torch.cuda.synchronize(device)
-        start = torch.cuda.Event(enable_timing = True)
-        end = torch.cuda.Event(enable_timing = True)
-        torch.cuda._sleep(_AUTO_SLEEP_CYCLES)
-        start.record()
+        guard = torch.cuda.device(device)
     except Exception:
         return call(), None, None
-    t0 = time.perf_counter()
-    out = call()
-    host = time.perf_counter() - t0
-    try:
-        end.record()
-        end.synchronize()
-        return out, host, start.elapsed_time(end) / 1e3
-    except Exception:
-        return out, None, None
+    with guard:
+        try:
+            torch.cuda.synchronize(device)
+            start = torch.cuda.Event(enable_timing = True)
+            end = torch.cuda.Event(enable_timing = True)
+            torch.cuda._sleep(_AUTO_SLEEP_CYCLES)
+            start.record()
+        except Exception:
+            return call(), None, None
+        t0 = time.perf_counter()
+        out = call()
+        host = time.perf_counter() - t0
+        try:
+            end.record()
+            end.synchronize()
+            return out, host, start.elapsed_time(end) / 1e3
+        except Exception:
+            return out, None, None
 
 
 def _auto_measure(call, hidden_states):
