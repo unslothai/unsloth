@@ -782,6 +782,68 @@ def _case_sharded_lora_init(rank, world, tmp, ckpt):
     return out
 
 
+def _case_sampler(rank, world, tmp, dp, strategy):
+    """The rows each rank's train dataloader yields under a length-aware sampler, after a rank-local draw on
+    the global torch RNG (anything rank-specific the user does between Trainer() and train())."""
+    import transformers
+
+    error = _import_checkout_unsloth()
+    if error is not None:
+        return {"skip": error}
+    fields = transformers.TrainingArguments.__dataclass_fields__
+    if strategy == "batch_rebalance" and "train_sampling_strategy" not in fields:
+        return {"skip": "this transformers has no train_sampling_strategy = 'batch_rebalance'"}
+    from torch.distributed.device_mesh import init_device_mesh
+    from unsloth.models import fsdp2_native, tp_native
+    from unsloth.models._utils import patch_gradient_accumulation_fix
+
+    patch_gradient_accumulation_fix(transformers.Trainer)
+    tp = world // dp
+    model = build(LLAMA)
+    mesh = init_device_mesh("cpu", (dp, tp), mesh_dim_names = ("dp", "tp"))
+    tp_native.apply_tensor_parallel(model, mesh["tp"])
+    if dp > 1:
+        try:
+            fsdp2_native.shard_model(
+                model, fsdp2_native.FSDP2Config(param_dtype = torch.float32, mesh = mesh["dp"])
+            )
+        except Exception as e:
+            if "torch < 2.7" in str(e) or "torch 2.7+" in str(e):
+                return {"skip": "torch < 2.7: tensor parallel x FSDP2 is refused"}
+            raise
+    g = torch.Generator().manual_seed(1)
+    rows = []
+    for i in range(48):
+        ids = torch.randint(3, 100, (4 + int(torch.randint(0, 9, (1,), generator = g)),), generator = g)
+        ids[0] = 3 + i  # row id
+        rows.append(ids)
+
+    def collate(features):
+        n = max(len(f["input_ids"]) for f in features)
+        ids = torch.zeros(len(features), n, dtype = torch.long)
+        for i, f in enumerate(features):
+            ids[i, : len(f["input_ids"])] = f["input_ids"]
+        return {"input_ids": ids, "labels": ids.clone()}
+
+    if strategy == "group_by_length" and "train_sampling_strategy" not in fields:
+        overrides = {"group_by_length": True}
+    else:
+        overrides = {"train_sampling_strategy": strategy}
+    trainer = transformers.Trainer(
+        model = model,
+        args = _trainer_args(tmp, 2, dataloader_drop_last = False, **overrides),
+        train_dataset = _Rows(rows),
+        data_collator = collate,
+    )
+    torch.rand(1 + 5 * rank)
+    seen = []
+    for step, batch in enumerate(trainer.get_train_dataloader()):
+        if step == 6:
+            break
+        seen.append([int(r[0]) - 3 for r in batch["input_ids"]])
+    return {"seen": seen}
+
+
 CASES = {
     "parity": _case_parity,
     "save_subgroup": _case_save_subgroup,
@@ -794,6 +856,7 @@ CASES = {
     "tp_fsdp2": _case_tp_fsdp2,
     "tp_fsdp2_trainable_norms": _case_tp_fsdp2_trainable_norms,
     "trainer": _case_trainer,
+    "sampler": _case_sampler,
 }
 
 
@@ -1217,3 +1280,16 @@ def test_trainer_trains_a_tensor_parallel_model_like_one_process(dp, tp):
     assert set(saved) == set(saved_ref)
     for key in saved_ref:
         torch.testing.assert_close(saved[key], saved_ref[key], rtol = 1e-4, atol = 1e-6, msg = key)
+
+
+@pytest.mark.parametrize("strategy", ["batch_rebalance", "group_by_length"])
+@pytest.mark.parametrize("dp", [1, 2])
+def test_trainer_length_samplers_give_tp_peers_the_same_rows(dp, strategy):
+    results = _spawn("sampler", 2 * dp, dp = dp, strategy = strategy)
+    if "skip" in results[0]:
+        pytest.skip(results[0]["skip"])
+    for rank, res in enumerate(results):
+        assert res["seen"] and res["seen"] == results[rank ^ 1]["seen"], (rank, res, results[rank ^ 1])
+    if dp > 1:
+        replicas = [{i for batch in results[r]["seen"] for i in batch} for r in (0, 2)]
+        assert not replicas[0] & replicas[1], replicas

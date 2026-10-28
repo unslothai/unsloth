@@ -2443,6 +2443,49 @@ def _refuse_tp_trainer_args(args, cpu_shards = False):
         )
 
 
+def _tp_fix_train_sampler(sampler, args, dp_size, dp_rank):
+    """Make a Trainer train sampler identical on the tp ranks of one data parallel replica."""
+    from transformers import trainer_pt_utils
+
+    rebalance = getattr(trainer_pt_utils, "BatchRebalanceSampler", None)
+    if rebalance is not None and type(sampler) is rebalance:
+        # transformers builds it from the global world size / rank, so tp peers would draw different rows.
+        # It is rank-aware itself (the Trainer turns accelerate's batch sharding off for it): rebuild it
+        # over the data parallel replicas instead.
+        grad_accum = sampler.grad_accum
+        return rebalance(
+            lengths = sampler.lengths,
+            effective_batch_size = args.train_batch_size * grad_accum * dp_size,
+            dp_size = dp_size,
+            grad_accum = grad_accum,
+            shuffle = sampler.shuffle,
+            seed = sampler.seed,
+            rank = dp_rank,
+            drop_last = sampler.drop_last,
+        )
+    if (
+        type(sampler) is trainer_pt_utils.LengthGroupedSampler
+        and getattr(sampler, "generator", None) is None
+    ):
+        # group_by_length shuffles with the global torch RNG, which any rank-local draw desyncs between tp
+        # peers: give it its own generator seeded like the Trainer's eval sampler.
+        seed = args.data_seed if getattr(args, "data_seed", None) is not None else args.seed
+        sampler.generator = torch.Generator().manual_seed(seed)
+    return sampler
+
+
+def _tp_train_sampler(trainer, dp_size, dp_rank):
+    get_sampler = getattr(trainer, "_get_train_sampler", None)
+    if get_sampler is None:
+        return
+
+    @functools.wraps(get_sampler)
+    def _get_train_sampler(*args, **kwargs):
+        return _tp_fix_train_sampler(get_sampler(*args, **kwargs), trainer.args, dp_size, dp_rank)
+
+    trainer.__dict__["_get_train_sampler"] = _get_train_sampler
+
+
 def tp_trainer_setup(
     model = None,
     phase = "pre",
@@ -2477,6 +2520,7 @@ def tp_trainer_setup(
     ddp_mesh = _ddp_mesh(model)
     dp_size, dp_rank = (dp_mesh.size(), dp_mesh.get_local_rank()) if dp_mesh is not None else (1, 0)
     trainer.accelerator.__dict__[_TP_DATA] = (dp_size, dp_rank)
+    _tp_train_sampler(trainer, dp_size, dp_rank)
     trainer.__dict__["_unsloth_tensor_parallel"] = (
         True  # the generated TRL trainers skip for_inference()
     )
