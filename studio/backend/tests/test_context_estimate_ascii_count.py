@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The dense and conservative estimators count ASCII with ``str.encode`` instead of a per-character
-loop. Pin that every integer they return equals the original loop's, emoji and lone surrogates
-included."""
+"""The ``str.encode`` ASCII count returns the same integers as the old ``ord()`` loops."""
 
 import json
 import random
