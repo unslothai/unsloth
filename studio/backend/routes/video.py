@@ -2764,6 +2764,10 @@ async def _start_queued_video(entry: _QueuedVideo) -> bool:
             await activity.start()
             await media_keepwarm.begin_request(VIDEO)
             entered = True
+            # A load can start while the admission waits held this start.
+            if await asyncio.to_thread(_video_engine_busy):
+                entry.starting = False
+                return False
             await arun_as(
                 entry.account,
                 _start_openai_video(
@@ -2786,6 +2790,8 @@ async def _start_queued_video(entry: _QueuedVideo) -> bool:
             return True
         except Exception as exc:  # noqa: BLE001 -- settle failures and continue draining
             wait = _video_wait(exc)
+            if wait is None and await asyncio.to_thread(_video_engine_busy):
+                wait = "busy"
             if wait == "conflict":
                 entry.idle_conflicts += 1
                 if entry.idle_conflicts >= VIDEO_QUEUE_IDLE_CONFLICTS:

@@ -528,6 +528,57 @@ def test_a_queued_video_waits_while_a_model_load_is_in_flight(client, backend):
     assert _wait_terminal(client, queued["id"])["status"] == "completed"
 
 
+def test_a_load_that_starts_during_the_admission_wait_keeps_the_job_queued(
+    client, backend, monkeypatch
+):
+    from core.inference import media_keepwarm
+
+    first = _render_one(client, backend)
+    queued = client.post("/v1/videos", json = {"prompt": "second"}).json()
+    backend.gate.set()
+    _wait_terminal(client, first["id"])
+    real_begin = media_keepwarm.begin_request
+
+    async def _switch_starts(*args, **kwargs):
+        backend.loaded = False
+        backend.loading = ("unsloth/LTX-2.3-GGUF",)
+        return await real_begin(*args, **kwargs)
+
+    monkeypatch.setattr(media_keepwarm, "begin_request", _switch_starts)
+    _drain()
+    assert client.get(f"/v1/videos/{queued['id']}").json()["status"] == "queued"
+    assert [entry.id for entry in video_routes._VIDEO_QUEUE] == [queued["id"]]
+
+    monkeypatch.setattr(media_keepwarm, "begin_request", real_begin)
+    backend.loading = ()
+    backend.loaded = True
+    _drain()
+    assert _wait_terminal(client, queued["id"])["status"] == "completed"
+
+
+def test_a_not_loaded_refusal_during_a_load_keeps_the_job_queued(client, backend, monkeypatch):
+    first = _render_one(client, backend)
+    queued = client.post("/v1/videos", json = {"prompt": "second"}).json()
+    backend.gate.set()
+    _wait_terminal(client, first["id"])
+    real_start = video_routes._start_openai_video
+
+    async def _load_begins_mid_start(*args, **kwargs):
+        backend.loaded = False
+        backend.loading = ("unsloth/LTX-2.3-GGUF",)
+        return await real_start(*args, **kwargs)
+
+    monkeypatch.setattr(video_routes, "_start_openai_video", _load_begins_mid_start)
+    _drain()
+    assert client.get(f"/v1/videos/{queued['id']}").json()["status"] == "queued"
+
+    monkeypatch.setattr(video_routes, "_start_openai_video", real_start)
+    backend.loading = ()
+    backend.loaded = True
+    _drain()
+    assert _wait_terminal(client, queued["id"])["status"] == "completed"
+
+
 def test_model_dependent_input_is_refused_at_once_rather_than_queued(client, backend):
     bad = ({"num_frames": 2}, {"size": "769x512"})
     idle = [client.post("/v1/videos", json = {"prompt": "bad", **payload}) for payload in bad]
