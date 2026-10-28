@@ -15,7 +15,8 @@ import {
   PlusSignIcon,
 } from "./icon-data";
 
-const FIT_VIEW_OPTIONS = { padding: 0.2, maxZoom: 1.1, duration: 200 };
+// React Flow Controls' fit (default padding), animated.
+const FIT_VIEW_OPTIONS = { duration: 200 };
 const MINIMAP_STYLE = { width: 168, height: 112 };
 // Recipe Studio's floating button, as a true circle (its class adds corner-squircle).
 const ROUND_BUTTON =
