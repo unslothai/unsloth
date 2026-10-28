@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Post-training cells on a tensor parallel model; every rank must make these calls.
-
-- for_inference / generate: every rank gathers a whole one-GPU replica in place; the sharded parameters come
-  back on for_training or the next training forward. tp rank 0's RNG is copied so all ranks sample alike.
-- saves / exports: weights are gathered to global rank 0, which runs the single-process save; the other ranks
-  wait on the rendezvous store (no collective timeout, no NCCL watchdog) and return rank 0's result.
-"""
+"""Post-training calls on a TP model, every rank must make them; saves gather to rank 0 while other
+ranks wait (no collective timeout); generate copies tp rank 0 RNG."""
 
 from __future__ import annotations
 

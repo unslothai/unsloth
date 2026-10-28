@@ -1,21 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Per-family policy data carried on ``DiffusionFamily.profile`` / ``VideoFamily.profile``.
-
-Stdlib only (the transformer-quant smoke-probe child imports its consumers). Everything a new family needs beyond its
-registry row lives here as data; the consumer modules (transformer quant, text-encoder quant, untiled VAE decode,
-preview, step skip, trusted repos) derive their lookup tables from the registries through ``profile_table`` and keep
-their historical names and lookup semantics.
-
-The quant fields are baked into PUBLISHED prequant artifacts and validated at load (``diffusion_prequant.
-_validate_checkpoint`` requires an artifact's exclude tokens to be a superset of ``exclude_tokens_for_scheme``), so a
-change to ``int8_exclude_tokens`` / ``int8_convrot`` / ``nvfp4_zero_row_tokens`` on a family with a hosted checkpoint
-needs a rebuild and republish; tests/test_diffusion_family_data_freeze.py pins every resolved value.
-
-Scheme names are spelled as plain strings ("int8", "fp8", "mxfp8", "nvfp4") to keep this module import-free; they
-equal ``diffusion_transformer_quant.TQ_*``.
-"""
+"""Stdlib only; quant fields are baked into published artifacts, so changing them on a family with a
+hosted checkpoint needs rebuild and republish"""
 
 from __future__ import annotations
 

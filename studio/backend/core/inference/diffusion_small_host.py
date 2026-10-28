@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Small-host load route: a bf16 repo loaded at fp16/fp32 materialises every converted weight in anonymous host RAM
-(FLUX.1 at fp16: 35 GB, OOM-killed on a 31 GB host before the planner runs). Engaged only when that dense load would
-not fit: big components load at their stored bf16 (memory-mapped), encoders stream with layerwise casting, a streamed
-denoiser is stored as int8 per-channel weights. ``UNSLOTH_DIFFUSION_SMALL_HOST=0|1`` disables / forces it;
-``UNSLOTH_DIFFUSION_HOST_RAM_CHECK=0`` skips the pre-load refusal.
-"""
+"""Low-RAM load route, used only when a dense load would not fit RAM; UNSLOTH_DIFFUSION_SMALL_HOST=0|1."""
 
 from __future__ import annotations
 

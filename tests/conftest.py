@@ -86,6 +86,13 @@ def _no_deleted_torch_config_entries():
     check_after_test()
 
 
+@pytest.hookimpl(trylast = True)
+def pytest_collection_modifyitems(config, items):
+    """After xdist tags grouped tests; see tests/_shared/xdist_group_check.py."""
+    from xdist_group_check import check
+    check(config, items)
+
+
 def _has_real_accelerator() -> bool:
     """Calls the probe before any spoof; the name is pinned by a test that reads this file's AST."""
     from real_accelerator import has_real_accelerator

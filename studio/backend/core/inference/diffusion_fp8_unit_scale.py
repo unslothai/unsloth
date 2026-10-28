@@ -1,16 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""sm_89 precise-accumulate fp8 GEMM: unit-scale ``torch._scaled_mm`` + fp32 row x column scale epilogue.
-
-On sm_89 torchao's row-wise ``_scaled_mm`` hits a slow CUTLASS stream-K kernel. L4, torch 2.14.1, 1024 px linears:
-* precise accumulate: row-wise 29-32 TFLOP/s, per-tensor 102-134 TFLOP/s; end to end klein-4B 1.034 -> 0.480 s/step,
-  Z-Image-Turbo 1.708 -> 0.772 s/step.
-* fast accumulate: row-wise 85-108, per-tensor 91-127 TFLOP/s, no end-to-end gain, so left on torchao (bit-identical).
-Only difference vs row-wise: one bf16 rounding of the unscaled accumulator (relative error <= 2^-9).
-
-``UNSLOTH_DIFFUSION_FP8_UNIT_SCALE``: ``0`` off, ``1`` every arch + both accumulate modes (testing), else auto.
-"""
+"""sm_89 precise-accumulate fp8: unit-scale _scaled_mm beats torchao row-wise (fast accumulate stays
+on torchao, no gain); UNSLOTH_DIFFUSION_FP8_UNIT_SCALE=0 off."""
 
 from __future__ import annotations
 

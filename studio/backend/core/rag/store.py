@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unified SQLite store: relational chunks + FTS5 lexical + sqlite-vec dense.
-
-Module-level functions each take a ``conn`` the caller opens and closes. Inserts
-are incremental: ``add_chunks`` appends one document's rows without rebuilding the
-scope. Scope ("kb_<id>" / "thread_<id>") is a column on every table and the vec0
-partition key.
-"""
+"""Unified SQLite store (chunks, FTS5, sqlite-vec); caller-opened conn; add_chunks appends
+incrementally; scope kb_<id>/thread_<id> is the vec0 partition key."""
 
 from __future__ import annotations
 

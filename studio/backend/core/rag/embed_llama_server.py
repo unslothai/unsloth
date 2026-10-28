@@ -1,17 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""GGUF embedder over the bundled llama.cpp, served via HTTP (no torch).
-
-Opt-in (``RAG_EMBED_BACKEND=llama-server``). Runs a dedicated ``llama-server --embedding``
-subprocess on its own port and calls its OpenAI-style ``/v1/embeddings`` + ``/tokenize``, fully
-isolated from the chat backend.
-
-Device is ``auto`` (GPU when present, else CPU, falling back to CPU if a GPU server fails);
-``RAG_EMBED_DEVICE`` forces it. We call only llama_cpp's *static* helpers (no torch), copying the
-instance-coupled bits locally, since constructing a ``LlamaCppBackend`` runs an ``__init__`` reaper
-that kills any Unsloth llama-server, so each request re-spawns ours if it died.
-"""
+"""Opt-in GGUF embedder (RAG_EMBED_BACKEND=llama-server, no torch): own llama-server --embedding
+subprocess on /v1/embeddings and /tokenize; auto falls back to CPU if GPU fails, RAG_EMBED_DEVICE
+forces; each request respawns it if dead; only llama_cpp static helpers, no LlamaCppBackend()."""
 
 from __future__ import annotations
 
